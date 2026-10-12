@@ -1,7 +1,7 @@
 import @vibe/compiler {
   configure_cfg_flags, executable_exports_stripped, strip_executable_wasm_env
 }
-// Synchronous compiler preparation/replay surrounds the Async-only coordinator.
+// One synchronous compiler instance surrounds the Async-only coordinator.
 // The component composition cannot host the compiler's Env/Fs imports yet.
 import @vibe/blake3/simd {
   blake3_bytes_simd
@@ -16,7 +16,7 @@ import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode_rc_body_cached_split
 }
 import @vibe/compiler/codegen/wasi {
-  PreludeEnv, PreludeTail, prelude_tail_record, prelude_with_module_executor
+  PreludeEnv, PreludeModuleBatch, prelude_tail_record, prelude_with_module_batch_executor
 }
 import @vibe/compiler/normalize/desugar {
   dtd_eq_invisible_nominals, eq_invisible_nominals_reset
@@ -28,7 +28,7 @@ import @vibe/lowering_worker {
   PreludeModuleJob
 }
 import @vibe/lowering_worker {
-  decode_prelude_module_product, encode_prelude_module_job
+  decode_prelude_module_product, write_prelude_module_job
 }
 
 fn job_of(own: Array[Stmt], interfaces: Array[Stmt], index: Int, entry: String, offsets: Array[Int], keys: Array[String], env: PreludeEnv) -> PreludeModuleJob {
@@ -54,114 +54,133 @@ fn compile_input() -> Bytes with Env + Exception + Fs {
   compile_file_fs_mode_rc_body_cached_split(Env::get("VIBE_LOWERING_INPUT"), Env::get("VIBE_LOWERING_ENTRY"), "off", true)
 }
 
-fn prepare(directory: String) -> Unit with Env + Exception + Fs {
-  let jobs: Array[PreludeModuleJob] = []
-  let complete: Array[Bool] = [false]
-  let _ = handle {
-    prelude_with_module_executor((own: Array[Stmt], interfaces: Array[Stmt], index: Int, count: Int, entry: String, offsets: Array[Int], keys: Array[String], env: PreludeEnv, _synth: Array[String], _tail: PreludeTail, _diags: Array[String]) -> Unit with Exception {
-      if index != Array::length(jobs) {
-        throw("lowering: preparation order mismatch")
-      } else ()
-      Array::push(jobs, job_of(own, interfaces, index, entry, offsets, keys, env))
-      if index + 1 == count {
-        Array::set(complete, 0, true)
-        throw("lowering: prepared module boundary")
-      } else ()
-    }, () -> Bytes with Env + Exception + Fs {
-      compile_input()
-    })
-  } with { Exception::Throw(message) => {
-    if message == "lowering: prepared module boundary" && Array::get(complete, 0) {
-      Bytes::new()
-    } else {
-      throw(message)
-    }
-  } }
-  if !Array::get(complete, 0) {
-    throw("build without VIBE_TASKGROUP_LOWERING=1 for this program")
+// These callbacks belong to this transient compile image. The host calls
+// them on the paused parent instance; workers always use separate instances.
+let batches: Array[PreludeModuleBatch] = []
+let jobs: Array[PreludeModuleJob] = []
+let input_digests: Array[String] = []
+let input_buffer: Array[Bytes] = [Bytes::new()]
+let input_inner: Array[Bytes] = [Bytes::new()]
+let product_buffer: Array[Bytes] = [Bytes::new()]
+let product_capacity: Array[Int] = [0]
+let cursor: Array[Int] = [0]
+
+// Bytes are raw pointers in the RC ABI. Reset only the length; preserve the
+// allocation and capacity. No decoded AST or strings borrow these buffers.
+fn clear_bytes(bytes: Bytes) -> Int = wasm
+"local.get $bytes i32.wrap_i64 i32.const 0 i32.store offset=4 i64.const 0"
+
+export fn lowering_job_input(index: Int) -> Bytes with Exception {
+  if index == 0 {
+    Array::set(input_buffer, 0, Bytes::with_capacity(64 * 1024 * 1024))
+    Array::set(input_inner, 0, Bytes::with_capacity(64 * 1024 * 1024))
   } else ()
-  let rows: Array[String] = []
-  let mut index = 0
-  while index < Array::length(jobs) {
-    // Only this job's byte buffer is live; never collect the encoded corpus.
-    let bytes = encode_prelude_module_job(Array::get(jobs, index))
-    let path = directory + "/" + Int::to_string(index) + ".job"
-    Fs::write_bytes(path, bytes)
-    Array::push(rows, path + "\t" + blake3_bytes_simd(bytes))
-    index = index + 1
-  }
-  Fs::write_file(directory + "/jobs.tsv", String::join(rows, "\n"))
+  let bytes = Array::get(input_buffer, 0)
+  let inner = Array::get(input_inner, 0)
+  clear_bytes(bytes)
+  clear_bytes(inner)
+  write_prelude_module_job(bytes, inner, Array::get(jobs, index))
+  Array::set(input_digests, index, blake3_bytes_simd(bytes))
+  bytes
 }
 
-fn replay(directory: String) -> Unit with Env + Exception + Fs {
-  let products: Array[Bytes] = []
-  let digests: Array[String] = []
-  for row in String::split(Fs::read_file(directory + "/jobs.tsv"), "\n") {
-    let cols = String::split(row, "\t")
-    if Array::length(cols) != 2 {
-      throw("lowering: malformed job receipt")
-    } else ()
-    let path = Array::get(cols, 0) + ".product"
-    let product = Fs::read_bytes(path)
-    let receipt = String::split(Fs::read_file(path + ".receipt"), "\t")
-    if Array::length(receipt) != 2 {
-      throw("lowering: malformed product receipt")
-    } else ()
-    if Array::get(receipt, 0) != Array::get(cols, 1) || Array::get(receipt, 1) != blake3_bytes_simd(product) {
-      throw("lowering: product does not match its prepared input")
-    } else ()
-    Array::push(products, product)
-    Array::push(digests, Array::get(cols, 1))
+export fn lowering_input_release() -> Unit {
+  clear_bytes(Array::get(input_buffer, 0))
+  clear_bytes(Array::get(input_inner, 0))
+  ()
+}
+
+export fn lowering_product_allocate(index: Int, length: Int) -> Bytes with Exception {
+  if index != Array::get(cursor, 0) || length <= 0 {
+    throw("lowering: invalid product allocation order or length")
+  } else ()
+  if length > Array::get(product_capacity, 0) {
+    Array::set(product_buffer, 0, Bytes::with_capacity(length))
+    Array::set(product_capacity, 0, length)
+  } else ()
+  let buffer = Array::get(product_buffer, 0)
+  clear_bytes(buffer)
+  buffer
+}
+
+export fn lowering_product_consume(index: Int, input_digest: String, product_digest: String) -> Unit with Exception {
+  if index != Array::get(cursor, 0) || index >= Array::length(jobs) {
+    throw("lowering: product count or order mismatch")
+  } else ()
+  let bytes = Array::get(product_buffer, 0)
+  if input_digest != Array::get(input_digests, index) {
+    throw("lowering: product does not match its prepared input: input receipt")
+  } else ()
+  if product_digest != blake3_bytes_simd(bytes) {
+    throw("lowering: product does not match its prepared input: product digest")
+  } else ()
+  let product = decode_prelude_module_product(bytes)
+  let job = Array::get(jobs, index)
+  if product.module_tag != job.trait_job.module_tag {
+    throw("lowering: product belongs to a different module")
+  } else ()
+  let batch = Array::get(batches, 0)
+  let own = job.trait_job.own
+  Array::truncate(own, 0)
+  for stmt in product.own {
+    Array::push(own, stmt)
   }
-  let cursor: Array[Int] = [0]
-  let bytes = prelude_with_module_executor((own: Array[Stmt], interfaces: Array[Stmt], index: Int, count: Int, entry: String, offsets: Array[Int], keys: Array[String], env: PreludeEnv, synth: Array[String], tail: PreludeTail, diags: Array[String]) -> Unit with Exception {
-    if index != Array::get(cursor, 0) || count != Array::length(products) {
-      throw("lowering: product count or order mismatch")
-    } else ()
-    let job = job_of(own, interfaces, index, entry, offsets, keys, env)
-    if blake3_bytes_simd(encode_prelude_module_job(job)) != Array::get(digests, index) {
-      throw("lowering: build inputs changed after preparation; rebuild")
-    } else ()
-    let product = decode_prelude_module_product(Array::get(products, index))
-    if product.module_tag != job.trait_job.module_tag {
-      throw("lowering: product belongs to a different module")
-    } else ()
-    Array::set(products, index, Bytes::new())
-    Array::truncate(own, 0)
-    for stmt in product.own {
-      Array::push(own, stmt)
+  for key in product.synth_keys {
+    Array::push(batch.synth, key)
+  }
+  let mut i = 0
+  while i < Array::length(product.tail.keys) {
+    prelude_tail_record(batch.tail, Array::get(product.tail.keys, i), Array::get(product.tail.passes, i))
+    i = i + 1
+  }
+  for diag in product.diagnostics {
+    Array::push(batch.diagnostics, diag)
+  }
+  for name in product.inline_names {
+    Array::push(batch.env.iw_names, name)
+  }
+  for wat in product.inline_wats {
+    Array::push(batch.env.iw_wats, wat)
+  }
+  module_lowering_deferred_merge(product.deferred)
+  eq_invisible_nominals_reset()
+  for name in product.invisible_nominals {
+    Array::push(dtd_eq_invisible_nominals, name)
+  }
+  clear_bytes(Array::get(product_buffer, 0))
+  Array::set(cursor, 0, index + 1)
+}
+
+fn execute_batch(batch: PreludeModuleBatch) -> Unit with Exception {
+  Array::push(batches, batch)
+  let count = Array::length(batch.parts)
+  let mut index = 0
+  while index < count {
+    let entry = if index == batch.entry_fid {
+      batch.entry_name
+    } else {
+      ""
     }
-    for key in product.synth_keys {
-      Array::push(synth, key)
-    }
-    let mut i = 0
-    while i < Array::length(product.tail.keys) {
-      prelude_tail_record(tail, Array::get(product.tail.keys, i), Array::get(product.tail.passes, i))
-      i = i + 1
-    }
-    for diag in product.diagnostics {
-      Array::push(diags, diag)
-    }
-    for name in product.inline_names {
-      Array::push(env.iw_names, name)
-    }
-    for wat in product.inline_wats {
-      Array::push(env.iw_wats, wat)
-    }
-    module_lowering_deferred_merge(product.deferred)
-    eq_invisible_nominals_reset()
-    for name in product.invisible_nominals {
-      Array::push(dtd_eq_invisible_nominals, name)
-    }
-    Array::set(cursor, 0, index + 1)
-    ()
-  }, () -> Bytes with Env + Exception + Fs {
+    Array::push(jobs, job_of(Array::get(batch.parts, index), Array::get(batch.contexts, index), index, entry, batch.offsets, batch.keys, batch.env))
+    Array::push(input_digests, "")
+    index = index + 1
+  }
+  let completed = compiler_lowering_run(count)
+  if completed != count || Array::get(cursor, 0) != count {
+    throw("lowering: unconsumed module products")
+  } else ()
+  Array::truncate(jobs, 0)
+  Array::truncate(input_digests, 0)
+  Array::truncate(batches, 0)
+}
+
+fn single_compile() -> Unit with Env + Exception + Fs {
+  let bytes = prelude_with_module_batch_executor(execute_batch, () -> Bytes with Env + Exception + Fs {
     compile_input()
   })
-  if Array::get(cursor, 0) != Array::length(products) {
-    throw("lowering: unconsumed products")
+  if Array::get(cursor, 0) == 0 {
+    throw("build without VIBE_TASKGROUP_LOWERING=1 for this program")
   } else ()
-  // Publication is after every input identity and all global passes validate.
   Fs::write_bytes(Env::get("VIBE_LOWERING_OUTPUT"), strip_executable_wasm_env(bytes, Env::get("VIBE_LOWERING_ENTRY")))
 }
 
@@ -169,17 +188,13 @@ fn main() -> Unit allows Env + Exception + Fs {
   configure_cfg_flags()
   set_executable_exports_stripped(executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")))
   set_error_row_checked(Env::get("VIBE_CHECK_ERROR_ROW") != "0")
-  let directory = Env::get("VIBE_LOWERING_DIRECTORY")
   let mode = Env::get("VIBE_LOWERING_MODE")
   if mode == "serial" {
     Fs::write_bytes(Env::get("VIBE_LOWERING_OUTPUT"), strip_executable_wasm_env(compile_input(), Env::get("VIBE_LOWERING_ENTRY")))
-  } else if mode == "prepare" {
-    prepare(directory)
-  }
-  else if mode == "replay" {
-    replay(directory)
+  } else if mode == "single" {
+    single_compile()
   }
   else {
-    throw("lowering: expected serial, prepare or replay mode")
+    throw("lowering: expected serial or single mode")
   }
 }

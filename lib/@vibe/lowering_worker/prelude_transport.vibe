@@ -22,7 +22,7 @@ import ./module_job.vibe {
   ModuleLoweringProduct
 }
 import ./transport.vibe {
-  decode_module_lowering_job, decode_module_lowering_product, encode_module_lowering_job, encode_module_lowering_product
+  decode_module_lowering_job, decode_module_lowering_product, encode_module_lowering_product, write_module_lowering_job
 }
 fn put_blob(b: Bytes, bytes: Bytes) -> Unit {
   ast_binary_write_varint(b, Bytes::length(bytes)); Bytes::append(b, bytes)
@@ -64,8 +64,18 @@ fn expect_end(r: AstBinaryReader) -> Unit with Exception {
 }
 export fn encode_prelude_module_job(job: PreludeModuleJob) -> Bytes with Exception {
   let b = Bytes::new()
+  write_prelude_module_job(b, Bytes::new(), job)
+  b
+}
+
+/// Write the canonical envelope using two distinct empty caller-owned buffers.
+export fn write_prelude_module_job(b: Bytes, inner: Bytes, job: PreludeModuleJob) -> Unit with Exception {
+  if Bytes::length(b) != 0 || Bytes::length(inner) != 0 {
+    throw("prelude module: job buffers must be empty")
+  } else ()
   ast_binary_write_string(b, "vibe-prelude-module-job-1")
-  put_blob(b, encode_module_lowering_job(job.trait_job))
+  write_module_lowering_job(inner, job.trait_job)
+  put_blob(b, inner)
   ast_binary_write_string(b, job.entry_name)
   ast_binary_write_varint(b, Array::length(job.alias_renames))
   for pair in job.alias_renames {
@@ -74,7 +84,7 @@ export fn encode_prelude_module_job(job: PreludeModuleJob) -> Bytes with Excepti
   ast_binary_write_bool(b, job.calls_host_future)
   ast_binary_write_bool(b, job.waiter_hooks)
   ast_binary_write_string(b, job.aw_note)
-  b
+  ()
 }
 export fn decode_prelude_module_job(bytes: Bytes) -> PreludeModuleJob with Exception {
   let r = ast_binary_reader_new(bytes)

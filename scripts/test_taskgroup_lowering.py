@@ -43,15 +43,32 @@ def main():
             return output, trace, result
 
         control, _, _ = build("serial", [])
+        # The new unqualified builtin must remain shadowable by source code.
+        for rc in ["0", "1"]:
+            shadow_output = project / f"shadow-{rc}.wasm"
+            current = dict(env, VIBE_RC=rc, VIBE_FS_COMPILE="1", VIBE_IMPORT_ABI="raw",
+                           VIBE_PREOPEN_DIR=str(repo), VIBE_BUILD_CACHE_DIR=str(project / f"shadow-{rc}-cache"))
+            result = subprocess.run([str(runner), str(compiler),
+                str(repo / "fixtures/rc_user_shadowed_lowering_service_test.vibe"),
+                str(shadow_output), "main"], env=current, capture_output=True, text=True, timeout=180)
+            assert result.returncode == 0, result
+            result = subprocess.run([str(runner), str(shadow_output)], capture_output=True, text=True)
+            assert result.returncode == 0 and result.stdout.strip() == "8", result
         for jobs in [1, 2, 4]:
             output, trace, _ = build(f"jobs{jobs}", ["--jobs", str(jobs)],
                                      {"VIBE_TASKGROUP_LOWERING": "1"})
             assert output.read_bytes() == control.read_bytes(), f"Wasm differs: {jobs} workers"
             report = json.loads(trace.read_text())
             assert report["modules"] == 67 and report["workers"] == jobs, report
+            assert report["preparation_count"] == 1 and report["replay_ms"] == 0, report
+            assert report["finalize_ms"] > 0 and "encoding" in report["phase_scope"], report
             assert len(report["waves"]) >= 2, report
             assert report["peak_queued_jobs"] <= 16 * jobs, report
             assert report["peak_queued_input_bytes"] <= 64 * 1024 * 1024, report
+        empty_cache, trace, _ = build("empty-cache", ["--jobs", "2"],
+            {"VIBE_TASKGROUP_LOWERING": "1", "VIBE_BUILD_CACHE_DIR": ""})
+        assert empty_cache.read_bytes() == control.read_bytes(), empty_cache
+        assert json.loads(trace.read_text())["preparation_count"] == 1, trace
         default_build = subprocess.run(["bash", str(repo / "runtime/vibe"), "build", "main.vibe", "--jobs", "2"],
             cwd=project, env=dict(env, VIBE_TASKGROUP_LOWERING="1"), capture_output=True, text=True, timeout=180)
         assert default_build.returncode == 0, default_build
@@ -173,8 +190,7 @@ try {
                                       {"VIBE_TASKGROUP_LOWERING": "1", **extra}, expected=1)
             assert output.read_bytes() == b"keep previous output" and message in result.stderr, result
 
-        # Mutation after a real preparation: replay must compare every current
-        # input with the prepared input, rather than trust a matching module tag.
+        # Mutation after a real preparation must refuse before publishing.
         proxy = project / "runner.py"
         proxy.write_text(f"#!{sys.executable}\nimport subprocess,sys,os,json\nfrom pathlib import Path\n"
                          "if Path(sys.argv[1]).name == 'coordinator.component.wasm':\n"
@@ -182,6 +198,11 @@ try {
                          "  plan=json.loads(Path(os.environ['VIBE_LOWERING_WORKERS']).read_text())\n"
                          "  p=Path(next(p for q in plan['queues'] for p in q))\n"
                          "  p.write_bytes(p.read_bytes().replace(b'f0',b'g0',1))\n"
+                         " elif os.environ.get('LOWERING_TEST_MUTATION') == 'worker-failure':\n"
+                         "  sys.exit(23)\n"
+                         " elif os.environ.get('LOWERING_TEST_MUTATION') == 'import':\n"
+                         f"  p=Path({str(project / 'm0.vibe')!r})\n"
+                         "  p.write_text(p.read_text().replace('{ 0 }', '{ 9 }'))\n"
                          " else:\n"
                          f"  p=Path({str(project / 'main.vibe')!r})\n"
                          "  p.write_text(p.read_text().replace('f0() +', '100 +'))\n"
@@ -205,6 +226,17 @@ try {
              "VIBE_LOWERING_ARTIFACT_DIR": str(altered), "LOWERING_TEST_MUTATION": "job"}, expected=1)
         assert not output.exists() and not trace.exists(), result
         assert "product does not match its prepared input" in result.stderr, result
+        for mutation, message in [("import", "inputs changed after preparation"),
+                                  ("worker-failure", "coordinator exited 23")]:
+            label = f"refuse-{mutation}"
+            target = project / f"{label}.wasm"
+            target.write_bytes(b"keep previous output")
+            output, trace, result = build(label, ["--jobs", "2"],
+                {"VIBE_TASKGROUP_LOWERING": "1", "VIBE_RUNNER": str(proxy),
+                 "VIBE_LOWERING_ARTIFACT_DIR": str(altered), "LOWERING_TEST_MUTATION": mutation}, expected=1)
+            assert output.read_bytes() == b"keep previous output" and not trace.exists(), result
+            assert message in result.stderr, result
+            (project / "m0.vibe").write_bytes(previous)
     print("TaskGroup lowering: public CLI parity 1/2/4, bounded waves, input freshness, trace aliases and protected output passed")
 
 

@@ -72,7 +72,7 @@ memory improvement is claimed. The default CLI remains sequential.
 ## Bounded TaskGroup dogfood
 
 `scripts/build_taskgroup_lowering.sh <stage2.wasm>` builds three independent
-images: the compiler preparation/replay entry, the lowering worker, and an
+images: the synchronous compiler entry, the lowering worker, and an
 Async-only coordinator. Their receipt binds the compiler, native runner and
 all three images. `VIBE_TASKGROUP_LOWERING=1 VIBE_UNSTABLE=1 vibe build --jobs 2`
 selects this route in a repository checkout. `VIBE_LOWERING_ARTIFACT_DIR`
@@ -85,20 +85,41 @@ worker instances. Each wave contains at most 16 jobs per slot and 64 MiB of
 serialized input. The native bridge independently enforces both limits and
 rejects duplicate jobs and pre-existing products. Every future owns its child;
 drop/cancellation kills and reaps it through the existing checker supervisor.
-The frontend waits for a complete wave before deleting its inputs and opening
-another wave. Disk products remain private until replay succeeds.
+The parent waits for a complete wave, consumes its products in source order,
+and deletes its input and product files before opening another wave. Disk
+products and the final compiler output stay private until all phases succeed.
 
-The current Async component composition cannot satisfy the compiler's Env/Fs
-imports. Preparation and replay therefore use a synchronous compiler image
-around the Async coordinator. `prelude_with_module_executor` scopes its callback
-to one compile and clears it on success or exception. Oracle observations keep
-the sequential path. Preparation captures raw module AST references and writes
-one encoded job at a time rather than retaining all input byte buffers. Replay
-rechecks each current input's BLAKE3 digest and module tag, merges complete
-products in source order, and runs whole-program finalization. Worker receipts
-bind both the consumed input and the encoded product. The host rechecks images
-before atomically publishing the final Wasm; any failure preserves an existing
-output.
+The Async component composition cannot satisfy the compiler's Env/Fs imports.
+`prelude_with_module_batch_executor` therefore suspends one synchronous compiler
+instance after passes 0..3. The opt-in native `compiler_lowering_run` CPU service
+reenters that same instance's exports to encode job inputs and consume products;
+it invokes the existing Vibe TaskGroup component for each bounded wave. The
+compiler retains its prepared AST and runs passes 11 onward and final codegen
+once after all products have merged. There is no second preparation or replay.
+The old per-module executor and the batch executor share a scope guard, restore
+the sequential path on success or exception, and refuse nested scopes. Oracle
+observations still use the sequential path.
+
+Job inputs use two reusable 64 MiB raw Bytes buffers; product storage is reused
+up to the largest product seen so far. The codecs preserve the existing wire
+format. Decoding copies strings and AST values, so later buffer reuse cannot
+change a merged module. This bounds retained transfer buffers; it does not
+reclaim every temporary allocation made by the decoder or compiler. A fresh
+cold CLI compile exhausted wasm32 memory before the buffer reuse fix.
+
+Worker receipts bind the consumed input and encoded product. The parent
+checks both hashes and the module tag before merging side channels. The native
+service snapshots compiler filesystem reads, probes and directory listings,
+checks source freshness after each wave and before writing the private output,
+and excludes build-cache data. An empty cache setting selects the same default
+cache directory as the compiler. The frontend rechecks image, compiler and
+runner hashes before atomically publishing the final Wasm. Failure preserves
+an existing output.
+
+The service requires an explicit private configuration and unstable RC mode.
+Its parent callbacks use tagged Int arguments followed by the closure environment
+slot, raw Bytes pointers, and packed String values. The native bridge validates
+callback types, product allocation bounds and lengths before writing guest memory.
 
 `VIBE_LOWERING_TRACE_OUT` optionally saves a versioned lowering report. Its
 path must not alias the entry or output, including symlinks and hardlinks.
@@ -108,9 +129,10 @@ The report is staged before the output is published, so a trace write failure
 also preserves the previous output.
 
 Outstanding worker inputs are bounded; total compiler memory is not thereby
-bounded. Preparation still holds the whole raw AST, and replay currently loads
-completed encoded products before the second compiler preparation. That second
-preparation and digest computation are included in full-build walltime. The
+bounded. Preparation still holds the whole raw AST. The retained parent keeps preparation
+allocations live through worker execution, while job context encoding, product
+decoding and final codegen remain serial. Full-build walltime includes these
+costs and transport digest computation. The
 route is opt-in dogfood until coordinator-inclusive cold/warm measurements
 justify a default change; worker-only timings above do not establish that.
 
@@ -131,8 +153,38 @@ Sampled summed warm RSS is about 895 MiB and 2,789 MiB with two workers,
 compared with 574 MiB and 2,039 MiB for ordinary whole builds. These are live
 process RSS sums, not allocation volume; shared mappings may be counted twice.
 
-Default enablement is blocked by repeated compiler preparation, repeated AST
-encoding/decoding and replay's completed-product buffers. A continuation-based
-compiler entry or a synchronous native CPU-service boundary would avoid the
-second preparation; shared immutable interface dictionaries could reduce repeated
-wire context. Those changes need their own correctness and full-build measurements.
+The batch service above removes the second compiler preparation. Default
+enablement remains blocked by repeated immutable facts and interface transport,
+serial parent encoding/decoding and final codegen, and cold memory pressure from
+retaining the parent instance. Shared immutable context transport and its full
+cold/warm memory measurements must precede increasing worker counts. The table
+above describes the earlier two-preparation route; it is not a measurement of
+the retained-parent service.
+
+## Retained-parent full-build measurements (2026-10-13)
+
+The [raw report](../../../bench/perf/analysis/module-single-preparation-2026-10-13.json)
+records 48 full builds against `b49d197282991286d7c222ec011aa9355e426be2`.
+Each cold/warm pair has an isolated parsed-source cache; other guest caches are
+off and native JIT caches are primed. Three rounds alternate old/new order on
+one frozen corpus with no concurrent builds, tests or source edits. All output
+Wasm bytes agree across both variants, both temperatures and both serial controls.
+
+| full build | old TaskGroup 2 | retained-parent TaskGroup 2 | wall change | summed RSS, old → new | RSS change | new serial split |
+|---|---:|---:|---:|---:|---:|---:|
+| compiler cold | 17.36 s | 15.98 s | -8.0% | 960 → 1,220 MiB | +27.0% | 12.67 s |
+| compiler warm | 13.51 s | 11.77 s | -12.9% | 906 → 844 MiB | -6.8% | 8.73 s |
+| CLI cold | 49.78 s | 45.70 s | -8.2% | 2,822 → 3,189 MiB | +13.0% | 31.95 s |
+| CLI warm | 41.48 s | 36.71 s | -11.5% | 2,813 → 2,450 MiB | -12.9% | 23.67 s |
+
+Values are medians of three samples per cell. RSS sums the live process tree
+every 25 ms and can count shared mappings twice; it is not allocation volume.
+Serial split changed by about 0.5% warm and 1.1–1.3% cold; its raw samples and
+RSS are retained in the report. The new service's `worker_ms` includes parent
+encoding, decoding and merging, so it cannot be compared directly with the old
+worker-only phase field.
+
+One preparation improves TaskGroup walltime and warm RSS, but raises cold RSS
+and remains slower than serial split. This route therefore stays opt-in. The
+next step is to share immutable context once, then reduce retained products,
+and only then assess higher worker counts.

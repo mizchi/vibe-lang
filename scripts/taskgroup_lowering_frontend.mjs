@@ -8,7 +8,6 @@ import { basename, dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
-const LIMIT_BYTES = 64 * 1024 * 1024, LIMIT_JOBS = 16;
 
 // Resolve existing symlinks even when the final file or its parent is absent.
 async function canonicalDestination(path) {
@@ -92,45 +91,17 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
     VIBE_LOWERING_DIRECTORY: work, VIBE_PREOPEN_DIR: root, VIBE_IMPORT_ABI: "raw" };
   try {
     const privateOutput = join(work, "result.wasm");
-    await run(runner, join(artifacts, "compile.wasm"), root, { ...base, VIBE_LOWERING_MODE: "prepare" });
-    const prepared = performance.now();
-    const rows = (await readFile(join(work, "jobs.tsv"), "utf8")).split("\n").map(row => {
-      const cols = row.split("\t");
-      if (cols.length !== 2 || !/^[0-9a-f]{64}$/.test(cols[1])) throw new Error("malformed lowering receipt");
-      return cols[0];
-    });
-    const sizes = await Promise.all(rows.map(async p => (await stat(p)).size));
-    let next = 0, peakBytes = 0, peakJobs = 0;
-    const waves = [];
-    while (next < rows.length) {
-      const queues = [[], [], [], []], weights = [0, 0, 0, 0];
-      let bytes = 0, count = 0;
-      while (next < rows.length) {
-        const size = sizes[next];
-        if (size > LIMIT_BYTES) throw new Error("one lowering job exceeds 64 MiB");
-        const available = weights.slice(0, jobs).map((weight, slot) => ({ weight, slot }))
-          .filter(x => queues[x.slot].length < LIMIT_JOBS).sort((a, b) => a.weight - b.weight);
-        if (!available.length || bytes + size > LIMIT_BYTES) break;
-        const slot = available[0].slot;
-        queues[slot].push(rows[next++]); weights[slot] += size; bytes += size; count++;
-      }
-      if (!count) throw new Error("lowering wave made no progress");
-      const manifest = join(work, `wave-${waves.length}.json`);
-      await writeFile(manifest, JSON.stringify({ version: 1, wasm: join(artifacts, "worker.wasm"), cwd: root, queues }));
-      const before = performance.now();
-      const completed = await run(runner, join(artifacts, "coordinator.component.wasm"), root,
-        { ...base, VIBE_LOWERING_WORKERS: manifest });
-      if (completed !== String(count)) throw new Error("lowering coordinator returned an incomplete wave");
-      for (const path of queues.flat()) {
-        if (!(await stat(path + ".product")).size) throw new Error("lowering worker has no product");
-        await rm(path);
-      }
-      peakBytes = Math.max(peakBytes, bytes); peakJobs = Math.max(peakJobs, count);
-      waves.push({ jobs: count, input_bytes: bytes, wall_ms: performance.now() - before });
+    const service = join(work, "service.json");
+    await writeFile(service, JSON.stringify({ version: 1,
+      worker: join(artifacts, "worker.wasm"), coordinator: join(artifacts, "coordinator.component.wasm"),
+      runner, cwd: root, directory: work, jobs }));
+    await run(runner, join(artifacts, "compile.wasm"), root, { ...base,
+      VIBE_LOWERING_MODE: "single", VIBE_LOWERING_OUTPUT: privateOutput,
+      VIBE_LOWERING_SERVICE_CONFIG: service });
+    const serviceReport = JSON.parse(await readFile(join(work, "service-report.json"), "utf8"));
+    if (serviceReport.preparation_count !== 1 || serviceReport.modules <= 0 || serviceReport.workers !== jobs) {
+      throw new Error("lowering returned an incomplete native service report");
     }
-    const lowered = performance.now();
-    await run(runner, join(artifacts, "compile.wasm"), root,
-      { ...base, VIBE_LOWERING_MODE: "replay", VIBE_LOWERING_OUTPUT: privateOutput });
     if (receipt.compiler_sha256 !== await digest(resolve(compiler)) || receipt.runner_sha256 !== await digest(runner)) {
       throw new Error("compiler or runner changed during lowering");
     }
@@ -149,11 +120,8 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
     try {
       await writeFile(staging, result, { flag: "wx" });
       const finished = performance.now();
-      const report = { version: 1, kind: "vibe-taskgroup-lowering",
-        modules: rows.length, workers: jobs, peak_queued_jobs: peakJobs,
-        peak_queued_input_bytes: peakBytes, prepare_ms: prepared - started,
-        worker_ms: lowered - prepared, replay_ms: finished - lowered,
-        total_ms: finished - started, waves };
+      const report = { ...serviceReport, version: 1, kind: "vibe-taskgroup-lowering",
+        total_ms: finished - started };
       if (trace) {
         await refuseTraceAlias(trace, destination);
         await refuseTraceAlias(trace, resolve(root, input), "source entry");

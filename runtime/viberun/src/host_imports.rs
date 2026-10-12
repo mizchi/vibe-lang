@@ -697,6 +697,19 @@ pub(super) fn vibe_stat_token(path: &str) -> i64 {
 pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
     linker.func_wrap(
         "vibe",
+        "compiler_lowering_run",
+        |mut caller: Caller<'_, HostState>, count: i64| -> Result<i64> {
+            super::lowering_service::run(&mut caller, count).map_err(|e| {
+                if e.is::<wasmtime::ThrownException>() {
+                    e
+                } else {
+                    vibe_host_error(&mut caller, format!("{e:#}"))
+                }
+            })
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
         "env-get",
         |mut caller: Caller<'_, HostState>, name: i64| -> Result<i64> {
             let name = vibe_read_packed_str(&mut caller, name)?;
@@ -751,6 +764,9 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
                     ))
                 }
             };
+            if let Some(inputs) = caller.data_mut().lowering_inputs.as_mut() {
+                inputs.file(&path, &content);
+            }
             let s = String::from_utf8_lossy(&content).into_owned();
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.read_file_returned_bytes += s.len() as u64;
@@ -766,7 +782,11 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.exists_calls += 1;
             }
-            Ok(i64::from(std::path::Path::new(&path).exists()))
+            let value = std::path::Path::new(&path).exists();
+            if let Some(inputs) = caller.data_mut().lowering_inputs.as_mut() {
+                inputs.probe(&path, 0, value);
+            }
+            Ok(i64::from(value))
         },
     )?;
     linker.func_wrap(
@@ -776,6 +796,9 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
             let path = vibe_read_packed_str(&mut caller, path)?;
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.stat_token_calls += 1;
+            }
+            if let Some(inputs) = caller.data_mut().lowering_inputs.as_mut() {
+                inputs.stat_file(&path);
             }
             Ok(vibe_stat_token(&path))
         },
@@ -966,7 +989,11 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         "fs_is_dir",
         |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
             let path = vibe_read_packed_str(&mut caller, path)?;
-            Ok(i64::from(std::path::Path::new(&path).is_dir()))
+            let value = std::path::Path::new(&path).is_dir();
+            if let Some(inputs) = caller.data_mut().lowering_inputs.as_mut() {
+                inputs.probe(&path, 2, value);
+            }
+            Ok(i64::from(value))
         },
     )?;
     linker.func_wrap(
@@ -974,7 +1001,11 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         "fs_is_file",
         |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
             let path = vibe_read_packed_str(&mut caller, path)?;
-            Ok(i64::from(std::path::Path::new(&path).is_file()))
+            let value = std::path::Path::new(&path).is_file();
+            if let Some(inputs) = caller.data_mut().lowering_inputs.as_mut() {
+                inputs.probe(&path, 1, value);
+            }
+            Ok(i64::from(value))
         },
     )?;
     linker.func_wrap(
@@ -1004,7 +1035,24 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         |mut caller: Caller<'_, HostState>, path: i64, bytes: i64| -> Result<()> {
             let path = vibe_read_packed_str(&mut caller, path)?;
             let data = vibe_read_packed_bytes(&mut caller, bytes)?;
-            vibe_atomic_write(&path, &data)
+            if std::env::var("VIBE_LOWERING_OUTPUT").as_deref() == Ok(path.as_str()) {
+                if let Some(inputs) = caller.data().lowering_inputs.as_ref() {
+                    inputs
+                        .verify()
+                        .map_err(|e| vibe_host_error(&mut caller, format!("{e:#}")))?;
+                }
+            }
+            vibe_atomic_write(&path, &data)?;
+            if std::env::var("VIBE_LOWERING_OUTPUT").as_deref() == Ok(path.as_str()) {
+                if let Some((started, report_path)) = caller.data_mut().lowering_finalize.take() {
+                    let mut report: serde_json::Value =
+                        serde_json::from_slice(&fs::read(&report_path)?)?;
+                    report["finalize_ms"] =
+                        serde_json::json!(started.elapsed().as_secs_f64() * 1000.0);
+                    fs::write(report_path, serde_json::to_vec(&report)?)?;
+                }
+            }
+            Ok(())
         },
     )?;
     // #632: fs_read_bytes — binary-exact file read into a guest Bytes value (the
@@ -1029,6 +1077,9 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.read_bytes_returned_bytes += data.len() as u64;
             }
+            if let Some(inputs) = caller.data_mut().lowering_inputs.as_mut() {
+                inputs.file(&path, &data);
+            }
             vibe_alloc_packed_bytes(&mut caller, &data)
         },
     )?;
@@ -1049,7 +1100,11 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         "vibe",
         "fs_read_dir_nul",
         |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
+            let source_path = vibe_read_packed_str(&mut caller, path)?;
             let names = vibe_read_dir_names(&mut caller, path)?;
+            if let Some(inputs) = caller.data_mut().lowering_inputs.as_mut() {
+                inputs.directory(&source_path, &names);
+            }
             vibe_alloc_packed_str(&mut caller, &names.join("\0"))
         },
     )?;
@@ -1057,7 +1112,11 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         "vibe",
         "fs_read_dir",
         |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
+            let source_path = vibe_read_packed_str(&mut caller, path)?;
             let names = vibe_read_dir_names(&mut caller, path)?;
+            if let Some(inputs) = caller.data_mut().lowering_inputs.as_mut() {
+                inputs.directory(&source_path, &names);
+            }
             vibe_alloc_packed_str(&mut caller, &names.join("\n"))
         },
     )?;
