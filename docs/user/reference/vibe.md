@@ -334,7 +334,10 @@ foo -x=1 -y=2
 Rules:
 - `x~` is required (must be supplied by label).
 - `y?` is optional and is bound as `Option[Int]` inside the function body.
-- Default values in parameter lists are not part of the current surface syntax.
+- A typed parameter of a `fn` declaration may carry a default (`times: Int = 1`):
+  the call may omit it, and the body sees `Int`. Defaults are trailing, may
+  read only earlier parameters, and apply only to a direct call; see the
+  cheatsheet's "Optional arguments" section for the full rules.
 - Call arguments are reordered to match the parameter order during lowering.
 - Missing optional args are passed as `None`.
 

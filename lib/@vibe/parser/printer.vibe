@@ -215,6 +215,47 @@ fn print_name(name: String) -> String {
   } else name
 }
 
+/// One parameter of a printed `fn` or lambda. An optional parameter `x?`
+/// (#1500, and #3120's defaulted `x: T = d`, which the parser lowers to it)
+/// is stored as `Option[T]`, but `x?: T` is how it is spelled: the parser
+/// wraps the written type again, so printing the stored type would re-parse
+/// as `Option[Option[T]]`.
+fn print_param(param: (String, Option[TypeExpr])) -> String {
+  let (name, ty_opt) = param
+  let nl = String::length(name)
+  let is_optional = nl > 0 && name[nl - 1: nl] == "?"
+  match ty_opt {
+    Some(ty) => {
+      let shown = if is_optional {
+        match ty {
+          TyApp(head, args) => if head == "Option" && Array::length(args) == 1 {
+            Array::get(args, 0)
+          } else {
+            ty
+          },
+          _ => ty
+        }
+      } else {
+        ty
+      }
+      String::concat(print_param_name(name), String::concat(": ", print_type_expr(shown)))
+    },
+    None => print_param_name(name)
+  }
+}
+
+/// A parameter name with its `~` / `?` marker. The marker sits after the
+/// name, so a keyword name is escaped BEFORE it is attached: `r#match?`, not
+/// `match?` (Codex on #3438).
+fn print_param_name(name: String) -> String {
+  let nl = String::length(name)
+  if nl > 0 && (name[nl - 1: nl] == "?" || name[nl - 1: nl] == "~") {
+    String::concat(print_name(name[0: nl - 1]), name[nl - 1: nl])
+  } else {
+    print_name(name)
+  }
+}
+
 fn escape_string(s: String) -> String {
   let len = String::length(s)
   let b = ArrayBuilder::new()
@@ -590,11 +631,7 @@ export fn print_expr(e: Expr) -> String {
     EFn(type_params, bounds, params, ret_ty, effect, body) => {
       let tp_str = print_fn_type_params(type_params, bounds)
       let parts = for param in params {
-        let (name, ty_opt) = param
-        match ty_opt {
-          Some(ty) => String::concat(print_name(name), String::concat(": ", print_type_expr(ty))),
-          None => print_name(name)
-        }
+        print_param(param)
       }
       let ret_str = match ret_ty {
         Some(rt) => {
@@ -693,11 +730,7 @@ export fn print_stmt(s: Stmt) -> String {
         EFn(type_params, bounds, params, ret_ty, effect, body) => {
           let tp_str = print_fn_type_params(type_params, bounds)
           let parts = for param in params {
-            let (pn, ty_opt) = param
-            match ty_opt {
-              Some(ty) => String::concat(print_name(pn), String::concat(": ", print_type_expr(ty))),
-              None => print_name(pn)
-            }
+            print_param(param)
           }
           let ret_str = match ret_ty {
             Some(rt) => print_type_expr(rt),

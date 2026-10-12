@@ -5,7 +5,11 @@ import ./parser_source_span.vibe {
 }
 
 import @vibe/ast {
-  Expr, Pat, Stmt, TypeExpr, builtin_ref, trait_ref_key
+  Expr, Pat, Stmt, TypeExpr, builtin_ref, builtin_ref_offset, trait_ref_key
+}
+
+import ./lexer.vibe {
+  lex_with_offsets
 }
 
 import ./parser_base.vibe {
@@ -32,6 +36,7 @@ import ./parser_base.vibe {
   parse_enum_stmt,
   parse_impl_stmt_dispatch,
   parse_import_item,
+  parse_one_param_with_binder_context,
   parse_param_list,
   parse_param_list_with_binder_context,
   parse_pattern,
@@ -815,11 +820,188 @@ fn parse_fn_name(tokens: Array[Token], pos: Int, context: Option[ParserBinderCon
   }
 }
 
-fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext], contract_rows: Option[(ArrayBuilder[SourceBinder], ArrayBuilder[SourceBinder])]) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
+/// #3120: a `fn` declaration's parameter list, where a typed parameter may
+/// carry a default -- `times: Int = 1`. `parse_one_param_with_binder_context`
+/// already turned such a parameter into the optional `times?: Option[Int]`
+/// (#1500) and stopped at the `=`; this reads the default expression and
+/// returns it beside the parameter's bare name. `fn_param_defaults_wrap`
+/// unwraps the parameter at the top of the body.
+fn parse_fn_param_list_with_defaults(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Array[(String, TypeExpr, Expr)], Int) with Exception {
+  let params: Array[(String, Option[TypeExpr])] = []
+  let defaults: Array[(String, TypeExpr, Expr)] = []
+  // (parameter index, first token, end token) of each default expression.
+  let default_spans: Array[(Int, Int, Int)] = []
+  match peek(tokens, pos) {
+    TRParen => (params, defaults, pos + 1),
+    _ => {
+      let mut p = pos
+      let mut done = false
+      while !done {
+        let (param, pn) = parse_one_param_with_binder_context(tokens, p, context)
+        Array::push(params, param)
+        let after = match peek(tokens, pn) {
+          TEq => {
+            let (pname, pty) = param
+            let base = pname[0: String::length(pname) - 1]
+            // The parameter is `Option[T]`; the body binds `T`.
+            let declared = match pty {
+              Some(TyApp(_, args)) => Array::get(args, 0),
+              Some(other) => other,
+              None => throw("parameter '\{base}' has a default but no type")
+            }
+            let (dflt, dn) = parse_impl_with_binder_context(tokens, starts, pn + 1, 0, context)
+            Array::push(defaults, (base, declared, dflt))
+            Array::push(default_spans, (Array::length(params) - 1, pn + 1, dn))
+            dn
+          },
+          _ => {
+            let (pname, _) = param
+            let pl = String::length(pname)
+            if Array::length(defaults) > 0 && !(pl > 0 && pname[pl - 1: pl] == "?") {
+              throw("parameter '\{pname}' follows a parameter with a default, so it must have a default too (an omitted argument can only be a trailing one)")
+            } else {
+              ()
+            }
+            pn
+          }
+        }
+        match peek(tokens, after) {
+          TComma => match peek(tokens, after + 1) {
+            TRParen => {
+              p = after + 2
+              done = true
+            },
+            _ => {
+              p = after + 1
+            }
+          },
+          TRParen => {
+            p = after + 1
+            done = true
+          },
+          _ => {
+            let actual = tk_name(peek(tokens, after))
+            throw("expected ',' or ')' in param list at #\{after} token=\{actual}")
+          }
+        }
+      }
+      fn_param_defaults_refuse_forward_refs(tokens, params, default_spans)
+      (params, defaults, p)
+    }
+  }
+}
+
+/// A parameter's name without its `~` / `?` marker.
+fn fn_param_base_name(raw: String) -> String {
+  let n = String::length(raw)
+  if n > 0 && (raw[n - 1: n] == "?" || raw[n - 1: n] == "~") {
+    raw[0: n - 1]
+  } else {
+    raw
+  }
+}
+
+/// #3120: the defaults are unwrapped in declaration order, so while a default
+/// runs, the parameter itself and every later one are still the `Option` the
+/// call site passed. Reading one would see that hidden representation
+/// (Codex on #3438: `fn f(x: Option[Int] = y, y: Int = 7)` answered `None`).
+/// Refused instead. The check reads the default's TOKENS, so a field or a
+/// lambda parameter that merely shares the name is refused too -- the safe
+/// direction.
+fn fn_param_defaults_refuse_forward_refs(tokens: Array[Token], params: Array[(String, Option[TypeExpr])], spans: Array[(Int, Int, Int)]) -> Unit with Exception {
+  for span in spans {
+    let (at, first, end) = span
+    let (own, _) = Array::get(params, at)
+    let later: Array[String] = []
+    let mut j = at
+    while j < Array::length(params) {
+      let (pj, _) = Array::get(params, j)
+      Array::push(later, fn_param_base_name(pj))
+      j = j + 1
+    }
+    match fn_param_default_names_any(tokens, first, end, later) {
+      Some(n) => throw("the default of parameter '\{fn_param_base_name(own)}' reads '\{n}', which is declared at or after it; a default can only read the parameters before it"),
+      None => ()
+    }
+  }
+  ()
+}
+
+/// The first identifier among `tokens[first..end)` named in `names`. An
+/// interpolated string is one token whose expression fragments are re-lexed
+/// only when it is built (Codex on #3438: `x: String = "\{y}"` hid `y`), so
+/// each fragment is lexed and scanned here too.
+fn fn_param_default_names_any(tokens: Array[Token], first: Int, end: Int, names: Array[String]) -> Option[String] with Exception {
+  let mut found = None
+  let mut t = first
+  while t < end && found == None {
+    match peek(tokens, t) {
+      TIdent(n) => {
+        for name in names {
+          if name == n {
+            found = Some(n)
+          } else {
+            ()
+          }
+        }
+      },
+      TStringInterp(parts, _) => {
+        let mut i = 1
+        while i < Array::length(parts) && found == None {
+          let (ftoks, _, _) = lex_with_offsets(Array::get(parts, i))
+          found = fn_param_default_names_any(ftoks, 0, Array::length(ftoks), names)
+          i = i + 2
+        }
+      },
+      _ => ()
+    }
+    t = t + 1
+  }
+  found
+}
+
+/// The identity `(__asc: T) -> __asc` a written `let x: T = e` parses to
+/// (`ascribe_wrap`): the checker enforces `e : T` at the call.
+fn param_default_ascription(declared: TypeExpr) -> Expr {
+  EFn(_no_tp(), _no_tb(), [("__asc", Some(declared))], None, None, EIdent("__asc", 0 - 1))
+}
+
+/// #3120: unwrap each defaulted parameter at the top of the body, in
+/// declaration order, so a default may read the parameters before it:
+/// `let times: T = match times { Some(times) => times, None => <default> }`.
+/// The body then sees `T`, never the `Option[T]` the call site passes. The
+/// `let` carries the declared type (the same ascription a written
+/// `let x: T = e` parses to), so a default of the wrong type is reported
+/// against `T`, and every later pass reads `T` for the name rather than the
+/// parameter's `Option[T]` (#3434).
+fn fn_param_defaults_wrap(body: Expr, defaults: Array[(String, TypeExpr, Expr)]) -> Expr {
+  let mut out = body
+  let mut i = Array::length(defaults)
+  while i > 0 {
+    i = i - 1
+    let (name, declared, dflt) = Array::get(defaults, i)
+    // The default is ascribed on its own as well, so a default of the wrong
+    // type is reported at the default ("expected Int, got String") rather
+    // than as two match arms that disagree.
+    let unwrap = EMatch(EIdent(name, 0 - 1), [
+      (PCtor("Some", [PBind(name)]), EIdent(name, 0 - 1)),
+      (PCtor("None", []), ECall(param_default_ascription(declared), [dflt], 0 - 1, [
+      ]))
+    ])
+    // The `let` carries the compiler-synthesized offset, which no written
+    // binding has: the checker reads it to tell this unwrap from a program's
+    // own `let x: T = match x { .. }` over an `x?` parameter (Codex on #3438).
+    out = ELet(name, ECall(param_default_ascription(declared), [unwrap], 0 - 1, [
+    ]), out, builtin_ref_offset())
+  }
+  out
+}
+
+fn parse_fn_signature_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext], contract_rows: Option[(ArrayBuilder[SourceBinder], ArrayBuilder[SourceBinder])]) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Array[(String, TypeExpr, Expr)], Int) with Exception {
   let (name, name_next) = parse_fn_name(tokens, pos, context)
   let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next, context)
   let lp = expect_tk(tokens, after_gen, "(")
-  let (params, after_params) = parse_param_list_with_binder_context(tokens, lp, context)
+  let (params, param_defaults, after_params) = parse_fn_param_list_with_defaults(tokens, starts, lp, context)
   let mut pi = 0
   while pi < Array::length(params) {
     let param = Array::get(params, pi)
@@ -922,11 +1104,28 @@ fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, contex
   } else {
     ()
   }
-  ((name, tps, tbs), (params, ret_ty, eff_opt), (reqs, enss), where_next)
+  // #3120: a `where` contract's conditions run before the body, where a
+  // defaulted parameter is still the `Option` the call site passed. Refused
+  // until the contract lowering learns to run after the unwrap.
+  if Array::length(param_defaults) > 0 && (Array::length(reqs) > 0 || Array::length(enss) > 0) {
+    throw("`fn \{name}` combines a parameter default with a `where` contract, which is not supported yet; declare the parameter `x?: T` and match on the `Option`, or drop the contract")
+  } else {
+    ()
+  }
+  ((name, tps, tbs), (params, ret_ty, eff_opt), (reqs, enss), param_defaults, where_next)
 }
 
 export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
-  parse_fn_signature_with_binder_context(tokens, pos, None, None)
+  let no_starts: Array[Int] = []
+  let (head, sig, contracts, defaults, next) = parse_fn_signature_with_binder_context(tokens, no_starts, pos, None, None)
+  // #3120: a bodyless declaration (a `.vpkg` contract) has no body to run a
+  // default in; the implementation owns it.
+  if Array::length(defaults) > 0 {
+    let (fname, _, _) = head
+    throw("the declaration of `\{fname}` gives a parameter default, which only a `fn` with a body can carry; declare the parameter `x?: T` here")
+  } else {
+    (head, sig, contracts, next)
+  }
 }
 
 /// ADR-0069 Phase 1: `fn main { ... }` / `fn main allows Fs { ... }` — the ONE
@@ -1078,7 +1277,7 @@ fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exp
     Some(_) => Some((ArrayBuilder::new(), ArrayBuilder::new())),
     None => None
   }
-  let (head, sig, contracts, where_next) = parse_fn_signature_with_binder_context(tokens, pos, context, contract_rows)
+  let (head, sig, contracts, param_defaults, where_next) = parse_fn_signature_with_binder_context(tokens, starts, pos, context, contract_rows)
   let (name, tps, tbs) = head
   let (params, ret_ty, eff_opt) = sig
   let (reqs, enss) = contracts
@@ -1090,12 +1289,15 @@ fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exp
     },
     _ => false
   }
-  if is_wasm_body {
+  if is_wasm_body && Array::length(param_defaults) > 0 {
+    throw("`fn \{name}` gives a parameter default, which an `= wasm` body cannot run; declare the parameter `x?: T`")
+  } else if is_wasm_body {
     parse_fn_wasm_body(tokens, where_next + 2, exported, name, tps, tbs, params, ret_ty, eff_opt, reqs, enss, context)
   } else {
     let br = expect_tk(tokens, where_next, "{")
     let body_mark = binder_capture_mark(context)
-    let (body, end) = parse_impl_with_binder_context(tokens, starts, br, mode_block, context)
+    let (parsed_body, end) = parse_impl_with_binder_context(tokens, starts, br, mode_block, context)
+    let body = fn_param_defaults_wrap(parsed_body, param_defaults)
     match contract_rows {
       Some((req_out, ens_out)) => {
         let body_rows = binder_capture_take_from(context, body_mark)
