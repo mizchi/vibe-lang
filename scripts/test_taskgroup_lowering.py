@@ -132,6 +132,36 @@ def main():
             {"VIBE_TASKGROUP_LOWERING": "1", "VIBE_LOWERING_TRACE_OUT": str(reusable)})
         assert output.read_bytes() == control.read_bytes(), output
 
+        # Exercise the real frontend with the old PID-derived staging name
+        # pre-existing as a symlink. Neither success nor failure may follow it.
+        protected = project / "protected-user-data"
+        protected.write_bytes(b"user data must remain unchanged")
+        probe = """
+import { symlink, rm } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+const [frontend, compiler, input, output, root, artifacts, runner, protectedPath] = process.argv.slice(2);
+const oldStaging = output + `.lowering-${process.pid}.tmp`;
+await symlink(protectedPath, oldStaging);
+try {
+  const { buildTaskGroupLowering } = await import(pathToFileURL(frontend));
+  await buildTaskGroupLowering({ compiler, input, output, entry: 'main', jobs: 2, root, artifacts, runner });
+} finally { await rm(oldStaging, { force: true }); }
+"""
+        for failure in [False, True]:
+            target = project / f"staging-{failure}.wasm"
+            if failure:
+                target.write_bytes(b"keep previous output")
+            trace = project / ("missing-parent/staging-report.json" if failure else "staging-report.json")
+            result = subprocess.run(["node", "--input-type=module", "-e", probe, "staging-probe",
+                str(repo / "scripts/taskgroup_lowering_frontend.mjs"), str(compiler), "main.vibe",
+                str(target), str(project), str(artifacts), str(runner), str(protected)],
+                cwd=project, env=dict(env, VIBE_LOWERING_TRACE_OUT=str(trace)),
+                capture_output=True, text=True, timeout=180)
+            assert result.returncode == (1 if failure else 0), result
+            assert protected.read_bytes() == b"user data must remain unchanged", result
+            assert target.read_bytes() == (b"keep previous output" if failure else control.read_bytes()), result
+            assert not list(project.glob(".vibe-lowering-output-*")), project
+
         for label, extra, flags, message in [
             ("stable-refusal", {"VIBE_UNSTABLE": "0"}, [], "requires VIBE_UNSTABLE=1"),
             ("bump-refusal", {"VIBE_RC": "0"}, [], "requires the RC backend"),

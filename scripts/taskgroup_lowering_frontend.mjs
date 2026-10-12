@@ -143,10 +143,11 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
     // exposing partial compiler output or products.
     const { rename } = await import("node:fs/promises");
     await mkdir(dirname(destination), { recursive: true });
-    const staging = destination + `.lowering-${process.pid}.tmp`;
+    const outputStaging = await mkdtemp(join(dirname(destination), ".vibe-lowering-output-"));
+    const staging = join(outputStaging, "result.wasm");
     let traceWritten = false, published = false, traceStaging = null;
     try {
-      await writeFile(staging, result);
+      await writeFile(staging, result, { flag: "wx" });
       const finished = performance.now();
       const report = { version: 1, kind: "vibe-taskgroup-lowering",
         modules: rows.length, workers: jobs, peak_queued_jobs: peakJobs,
@@ -159,7 +160,7 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
         await refuseUnrelatedTrace(trace);
         traceStaging = await mkdtemp(join(dirname(trace), ".vibe-lowering-trace-"));
         const stagedReport = join(traceStaging, "report.json");
-        await writeFile(stagedReport, JSON.stringify(report));
+        await writeFile(stagedReport, JSON.stringify(report), { flag: "wx" });
         await rename(stagedReport, trace);
         traceWritten = true;
         // Once created, an absent case-folded alias can be checked by inode.
@@ -170,7 +171,7 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
       published = true;
       return report;
     } finally {
-      await rm(staging, { force: true });
+      await rm(outputStaging, { recursive: true, force: true });
       if (traceStaging) await rm(traceStaging, { recursive: true, force: true });
       if (traceWritten && !published) await rm(trace, { force: true });
     }
