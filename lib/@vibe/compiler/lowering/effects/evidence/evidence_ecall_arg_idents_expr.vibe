@@ -230,19 +230,141 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
 /// parameter's; one that calls a local closure is left as written.
 fn edp_stamp_returned_closure(stmts: Array[Stmt], i: Int, pure_names: MutSet[String]) -> Unit {
   match Array::get(stmts, i) {
-    SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(TyFn(rptys, rret, Some(rrow))), eff, fb)) => if edp_slot_row_stampable(rrow) {
-      let scope: Array[String] = []
-      let mut pi = 0
-      while pi < Array::length(ps) {
-        Array::push(scope, edp_param_base_name(Array::get(ps, pi).0))
-        pi = pi + 1
+    SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(rty), eff, fb)) => {
+      // A declared result spelled through an alias (`fn mid() -> Thunk`) is
+      // expanded as an alias-annotated binding's is (Codex on #3447).
+      let resolved = match rty {
+        TyFn(_, _, Some(_)) => Some(rty),
+        TyName(_) => edp_alias_fn_type(stmts, rty),
+        _ => None
       }
-      let fb2 = edp_stamp_tail(fb, (Array::length(rptys), rrow), scope, pure_names)
-      Array::set(stmts, i, SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(TyFn(rptys, rret, Some(rrow))), eff, fb2)))
-    } else {
-      ()
+      match resolved {
+        Some(TyFn(rptys, _, Some(rrow))) => if edp_slot_row_stampable(rrow) {
+          let scope: Array[String] = []
+          let mut pi = 0
+          while pi < Array::length(ps) {
+            Array::push(scope, edp_param_base_name(Array::get(ps, pi).0))
+            pi = pi + 1
+          }
+          let slot = (Array::length(rptys), rrow)
+          // A `return` anywhere in the body hands its value to the caller as
+          // the tail does (Codex on #3447).
+          let fb2 = edp_stamp_tail(edp_stamp_returns(fb, slot, scope, pure_names), slot, scope, pure_names)
+          Array::set(stmts, i, SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(rty), eff, fb2)))
+        } else {
+          ()
+        },
+        _ => ()
+      }
     },
     _ => ()
+  }
+}
+
+/// `e` with each `return`'s value stamped as a tail is. A nested lambda's
+/// `return` is its own and is not entered.
+fn edp_stamp_returns(e: Expr, slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  match e {
+    EReturn(x) => EReturn(edp_stamp_tail(edp_stamp_returns(x, slot, scope, pure_names), slot, scope, pure_names)),
+    ESeq(a, b) => ESeq(edp_stamp_returns(a, slot, scope, pure_names), edp_stamp_returns(b, slot, scope, pure_names)),
+    ELet(n, v, b, off) => {
+      let v2 = edp_stamp_returns(v, slot, scope, pure_names)
+      Array::push(scope, n)
+      let b2 = edp_stamp_returns(b, slot, scope, pure_names)
+      Array::truncate(scope, Array::length(scope) - 1)
+      ELet(n, v2, b2, off)
+    },
+    ELetMut(n, v, b, off) => {
+      let v2 = edp_stamp_returns(v, slot, scope, pure_names)
+      Array::push(scope, n)
+      let b2 = edp_stamp_returns(b, slot, scope, pure_names)
+      Array::truncate(scope, Array::length(scope) - 1)
+      ELetMut(n, v2, b2, off)
+    },
+    EIf(c, t, el) => EIf(edp_stamp_returns(c, slot, scope, pure_names), edp_stamp_returns(t, slot, scope, pure_names), edp_stamp_returns(el, slot, scope, pure_names)),
+    EMatch(sc, arms) => EMatch(edp_stamp_returns(sc, slot, scope, pure_names), for a in arms {
+      let (pp, ex) = a
+      let base = Array::length(scope)
+      for pn in edp_pat_names(pp) {
+        Array::push(scope, pn)
+      }
+      let ex2 = edp_stamp_returns(ex, slot, scope, pure_names)
+      Array::truncate(scope, base)
+      (pp, ex2)
+    }),
+    EWhile(c, b) => EWhile(edp_stamp_returns(c, slot, scope, pure_names), edp_stamp_returns(b, slot, scope, pure_names)),
+    EForIn(n, idx, it, b) => {
+      let it2 = edp_stamp_returns(it, slot, scope, pure_names)
+      let base = Array::length(scope)
+      Array::push(scope, n)
+      match idx {
+        Some(ix) => Array::push(scope, ix),
+        None => ()
+      }
+      let b2 = edp_stamp_returns(b, slot, scope, pure_names)
+      Array::truncate(scope, base)
+      EForIn(n, idx, it2, b2)
+    },
+    ELoop(pairs, b) => {
+      let base = Array::length(scope)
+      let pairs2 = for pr in pairs {
+        let (n, v) = pr
+        (n, edp_stamp_returns(v, slot, scope, pure_names))
+      }
+      for pr in pairs {
+        Array::push(scope, pr.0)
+      }
+      let b2 = edp_stamp_returns(b, slot, scope, pure_names)
+      Array::truncate(scope, base)
+      ELoop(pairs2, b2)
+    },
+    EHandle(bd, arms) => EHandle(edp_stamp_returns(bd, slot, scope, pure_names), for a in arms {
+      let (pp, ex) = a
+      let base = Array::length(scope)
+      for pn in edp_pat_names(pp) {
+        Array::push(scope, pn)
+      }
+      let ex2 = edp_stamp_returns(ex, slot, scope, pure_names)
+      Array::truncate(scope, base)
+      (pp, ex2)
+    }),
+    _ => e
+  }
+}
+
+/// How many tail positions of `e` are the bare name `n`, reading tails as
+/// `edp_stamp_tail` does and stopping where a binder rebinds `n`.
+fn edp_tail_name_count(e: Expr, n: String) -> Int {
+  match e {
+    EIdent(x, _) => if x == n {
+      1
+    } else {
+      0
+    },
+    ESeq(_, b) => edp_tail_name_count(b, n),
+    ELet(m, _, b, _) => if m == n {
+      0
+    } else {
+      edp_tail_name_count(b, n)
+    },
+    ELetMut(m, _, b, _) => if m == n {
+      0
+    } else {
+      edp_tail_name_count(b, n)
+    },
+    EIf(_, t, el) => edp_tail_name_count(t, n) + edp_tail_name_count(el, n),
+    EMatch(_, arms) => {
+      let mut total = 0
+      for a in arms {
+        if !edp_str_array_contains(edp_pat_names(a.0), n) {
+          total = total + edp_tail_name_count(a.1, n)
+        } else {
+          ()
+        }
+      }
+      total
+    },
+    _ => 0
   }
 }
 
@@ -251,10 +373,21 @@ fn edp_stamp_tail(e: Expr, slot: (Int, String), scope: Array[String], pure_names
   match e {
     ESeq(a, b) => ESeq(a, edp_stamp_tail(b, slot, scope, pure_names)),
     ELet(n, v, b, off) => {
+      // A closure bound here and returned by its name (`let f = () -> mk();
+      // f`) is the result itself, when the body uses the name nowhere else
+      // (Codex on #3447).
+      let v2 = match v {
+        EFn(_, _, _, _, None, lb) => if edp_tail_name_count(b, n) > 0 && edp_tail_name_count(b, n) == edp_count_ident_uses(b, n) && !edp_literal_calls_local(v, lb, scope) {
+          edp_stamp_slot_arg_at(v, scope, pure_names, Some(slot))
+        } else {
+          v
+        },
+        _ => v
+      }
       Array::push(scope, n)
       let b2 = edp_stamp_tail(b, slot, scope, pure_names)
       Array::truncate(scope, Array::length(scope) - 1)
-      ELet(n, v, b2, off)
+      ELet(n, v2, b2, off)
     },
     ELetMut(n, v, b, off) => {
       Array::push(scope, n)
