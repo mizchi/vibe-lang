@@ -619,15 +619,32 @@ fn lsp_parse_diag_line_for(path: String, source: String, raw: String) -> Json {
           lsp_diag_fallback(msg)
         } else {
           let col_field = rest1[0: colon2]
-          let text = String::trim(rest1[colon2 + 1: String::length(rest1)])
+          let tail = rest1[colon2 + 1: String::length(rest1)]
           let line1 = lsp_parse_uint_or(line_str, 1)
           let dash = String::index_of(col_field, "-")
+          // #3348: `L:C-L2:C2` ends on a later line. The message after a
+          // position always opens with a space, so a digit right after this
+          // colon is the end column, not the message.
+          let colon3 = String::index_of(tail, ":")
+          let multi = dash >= 0 && colon3 > 0 && lsp_parse_uint_or(tail[0: colon3], 0) > 0 && String::byte_at(tail, 0) >= 48 && String::byte_at(tail, 0) <= 57
+          let text = if multi {
+            String::trim(tail[colon3 + 1: String::length(tail)])
+          } else {
+            String::trim(tail)
+          }
           let col1 = if dash < 0 {
             lsp_parse_uint_or(col_field, 1)
           } else {
             lsp_parse_uint_or(col_field[0: dash], 1)
           }
-          let end_col1 = if dash < 0 {
+          let end_line1 = if multi {
+            lsp_parse_uint_or(col_field[dash + 1: String::length(col_field)], line1)
+          } else {
+            line1
+          }
+          let end_col1 = if multi {
+            lsp_parse_uint_or(tail[0: colon3], 0)
+          } else if dash < 0 {
             0
           } else {
             lsp_parse_uint_or(col_field[dash + 1: String::length(col_field)], 0)
@@ -644,7 +661,14 @@ fn lsp_parse_diag_line_for(path: String, source: String, raw: String) -> Json {
           }
           let line_start = lsp_line_start_offset(source, line0)
           let col0 = lsp_byte_col_to_utf16(source, line_start, byte_col0)
-          let end_col0 = if end_col1 > col1 {
+          let end_line0 = if multi && end_line1 > line1 {
+            end_line1 - 1
+          } else {
+            line0
+          }
+          let end_col0 = if end_line0 > line0 && end_col1 > 0 {
+            lsp_byte_col_to_utf16(source, lsp_line_start_offset(source, end_line0), end_col1 - 1)
+          } else if end_col1 > col1 {
             lsp_byte_col_to_utf16(source, line_start, end_col1 - 1)
           } else {
             col0 + 1
@@ -653,7 +677,7 @@ fn lsp_parse_diag_line_for(path: String, source: String, raw: String) -> Json {
           // (present, JNull when there's no structured fix -- e.g. every
           // diagnostic that isn't an effect-row mismatch).
           JObj(Map::from_pairs([
-            ("range", jrange(line0, col0, line0, end_col0)),
+            ("range", jrange(line0, col0, end_line0, end_col0)),
             ("severity", jnum_int(lsp_diag_severity(text))),
             ("source", JStr("vibe")),
             ("message", JStr(text)),

@@ -1,0 +1,59 @@
+// #3424: a literal at a row-typed parameter that calls a local closure is
+// given a copy of that closure's binding. The copy must read the bindings the
+// original reads: here a name the closure mentions is rebound between the
+// closure and the literal, and by an enclosing parameter.
+effect Box[T] {
+  Put(T) -> Int
+}
+
+fn run_str(f: () -> Int with Box[String]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(s) => resume(String::length(s))
+  }
+}
+
+fn rebound() -> Int {
+  let k = 1
+  let helper = () -> k
+  let k = 2
+  run_str(() -> helper() * 10 + k)
+}
+
+fn param_clash() -> Int {
+  let k = 7
+  let helper = () -> k
+  let run_k = (k: Int) -> run_str(() -> helper() + k)
+  run_k(100)
+}
+
+// The closure only ASSIGNS the captured name, which the AST keeps as the
+// assignment's target rather than an identifier (Codex on #3437).
+fn assigned() -> Int {
+  let mut x = 1
+  let helper = () -> {
+    x = 9
+    0
+  }
+  let x = 5
+  run_str(() -> helper()) + x
+}
+
+// A snapshot's name is one nothing in the program spells: a binding of the
+// first name it would try sits between the closure and the literal (Codex on
+// #3437).
+fn collide() -> Int {
+  let k = 1
+  let helper = () -> k
+  let k = 2
+  let __edpc0_k = 9
+  run_str(() -> helper()) + k + __edpc0_k
+}
+
+test "a copied local closure keeps its own bindings" {
+  inspect(rebound(), "12")
+  inspect(param_clash(), "107")
+  inspect(assigned(), "5")
+  inspect(collide(), "12")
+}

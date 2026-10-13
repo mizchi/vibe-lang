@@ -212,10 +212,11 @@ the edit that fixes them rather than an internal pass name.
 
 ## Known gaps
 
-- `EInt` / `EFloat` / `EBool` carry no source offset, so a type mismatch on
-  such a literal passed as an *argument* still points at the callee. A
-  binding's literal initializer is located from the source text instead, and
-  every other type error carries its own range; `vibe check` reports every
+- `EInt` / `EFloat` / `EBool` carry no source offset. A literal argument and a
+  binding's literal initializer are located from the source text instead, and
+  a call the source does not show as the checker saw it (a pipe's argument, a
+  method receiver, `-1`) still points at the callee; every other type error
+  carries its own range, across lines too. `vibe check` reports every
   collected diagnostic, identically on the FS lane, `--single-file` and
   `--json` ([source-range-contract.md](../reference/source-range-contract.md)).
 - Everything in §6 of [stable-surface.md](../reference/stable-surface.md) is

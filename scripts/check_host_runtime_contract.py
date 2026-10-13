@@ -587,13 +587,20 @@ def node_imports(text: str) -> set[str]:
     return found
 
 
+def validate_native_core_providers(names: set[str], rust: set[str], node: set[str]) -> None:
+    if names - rust:
+        die(f"viberun lacks native core imports: {sorted(names-rust)}")
+    if names & node:
+        die(f"native-core-only imports leaked into the node provider: {sorted(names & node)}")
+
+
 def main() -> None:
     try:
         manifest = json.loads(MANIFEST.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         die(f"invalid manifest: {exc}")
-    required = {"portableCore", "nodeCoreOnly", "viberunDebugOnly", "componentAdapterOnly"}
-    if set(manifest) < required:
+    required = {"portableCore", "nodeCoreOnly", "viberunDebugOnly", "viberunCoreOnly", "componentAdapterOnly"}
+    if required - set(manifest):
         die(f"manifest missing keys: {sorted(required - set(manifest))}")
     bands = {key: set(manifest[key]) for key in required}
     all_names: set[str] = set()
@@ -627,6 +634,7 @@ def main() -> None:
         die(f"node runner lacks node-only imports: {sorted(bands['nodeCoreOnly']-node)}")
     if bands["viberunDebugOnly"] - rust:
         die(f"viberun lacks debug imports: {sorted(bands['viberunDebugOnly']-rust)}")
+    validate_native_core_providers(bands["viberunCoreOnly"], rust, node)
     if bands["componentAdapterOnly"] & (rust | node):
         die("component-adapter-only imports leaked into a standalone provider")
 

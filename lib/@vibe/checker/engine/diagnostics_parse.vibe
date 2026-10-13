@@ -737,19 +737,22 @@ export fn engine_offset_line_col_prefix(source: String, off: Int) -> String {
   let (line, col) = offset_to_line_col(source, off)
   String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
 }
-/// Build a `line L:colC-E: ` RANGE prefix from a (start, end) char-offset span.
-/// When start and end fall on the same source line this carries the exact end
-/// column so the LSP can highlight the precise token (incl. qualified names);
-/// when end is on a later line (or not greater than start) it degrades to the
-/// point prefix. Backward compatible: `line L:` still leads, so existing
-/// `grep -F "line N:"` assertions keep matching. String::concat only.
+/// Build a `line L:C-E: ` RANGE prefix from a (start, end) byte-offset span,
+/// so the LSP can highlight the exact token (incl. qualified names). A span
+/// that ends on a later line is `line L:C-L2:C2: ` (#3348): a multi-line
+/// literal used to degrade to the point at its start. An end not greater than
+/// start gives the point prefix. Backward compatible: `line L:` still leads,
+/// so existing `grep -F "line N:"` assertions keep matching, and the position
+/// still ends at the first `": "`. String::concat only.
 export fn engine_offset_line_col_range_prefix(source: String, start: Int, endo: Int) -> String {
   let (l1, c1) = offset_to_line_col(source, start)
   let (l2, c2) = offset_to_line_col(source, endo)
-  if l1 == l2 && endo > start {
+  if endo <= start {
+    engine_offset_line_col_prefix(source, start)
+  } else if l1 == l2 {
     String::concat("line ", String::concat(__to_string(l1), String::concat(":", String::concat(__to_string(c1), String::concat("-", String::concat(__to_string(c2), ": "))))))
   } else {
-    engine_offset_line_col_prefix(source, start)
+    String::concat("line ", String::concat(__to_string(l1), String::concat(":", String::concat(__to_string(c1), String::concat("-", String::concat(__to_string(l2), String::concat(":", String::concat(__to_string(c2), ": "))))))))
   }
 }
 /// Parse a non-negative decimal integer from msg[start..end). Returns -1 if the

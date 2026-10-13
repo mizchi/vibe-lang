@@ -23,6 +23,15 @@ import @vibe/core {
   array_empty, struct MutMap, struct MutSet
 }
 
+import ./prelude_module_batch.vibe {
+  PreludeModuleBatch,
+  enter_module_executor_scope,
+  leave_module_executor_scope,
+  prelude_batch_contexts,
+  prelude_execute_module_batch,
+  prelude_module_batch_active
+}
+
 import @vibe/compiler/normalize {
   ModuleTraitFacts,
   collect_explicit_derived_op_names,
@@ -168,6 +177,28 @@ import ./linked_compile_linkedhostplan.vibe {
   prelude_tail_new,
   prelude_tail_rank_of,
   prelude_tail_record
+}
+
+// The opt-in independent build unit supplies a scoped module executor.
+// Ordinary compiles and oracle observations retain the sequential path.
+let prelude_module_executors: Array[(Array[Stmt], Array[Stmt], Int, Int, String, Array[Int], Array[String], PreludeEnv, Array[String], PreludeTail, Array[String]) -> Unit with Exception] = [
+]
+
+/// Install one independent executor only for this compile. Nested use is
+/// refused, and success or an exception restores the ordinary sequential lane.
+export fn prelude_with_module_executor(executor: (Array[Stmt], Array[Stmt], Int, Int, String, Array[Int], Array[String], PreludeEnv, Array[String], PreludeTail, Array[String]) -> Unit with Exception, action: () -> Bytes with Env + Exception + Fs) -> Bytes with Env + Exception + Fs {
+  enter_module_executor_scope()
+  Array::push(prelude_module_executors, executor)
+  handle {
+    let result = action()
+    Array::truncate(prelude_module_executors, 0)
+    leave_module_executor_scope()
+    result
+  } with { Exception::Throw(message) => {
+    Array::truncate(prelude_module_executors, 0)
+    leave_module_executor_scope()
+    throw(message)
+  } }
 }
 
 /// #1536(c) / #1511(b): the ADR-0076 effect-lowering pass prefix of
@@ -917,8 +948,26 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   // per module.
   // #2634: the union of the synthesis requests each module made.
   // #2633: the union of what each module reports just before the evidence pass.
+  let execute_batch = match observations {
+    None => prelude_module_batch_active(),
+    Some(_) => false
+  }
+  if execute_batch {
+    prelude_execute_module_batch(PreludeModuleBatch::{
+      parts: parts,
+      contexts: prelude_batch_contexts(parts, ifaces, iface_keys, import_closure),
+      entry_fid: entry_fid,
+      entry_name: entry_name,
+      offsets: checker_eq_offsets,
+      keys: checker_eq_type_keys,
+      env: env,
+      synth: synth_keys,
+      tail: link.tail,
+      diagnostics: link.diags
+    })
+  } else ()
   fi = 0
-  while fi < file_count {
+  while fi < file_count && !execute_batch {
     let part_entry = if fi == entry_fid {
       entry_name
     } else {
@@ -1012,61 +1061,69 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       },
       None => ()
     }
-    let synthesized = desugar_trait_dicts_module_with_facts(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys, env.trait_facts)
-    match observations {
-      Some(st) => {
-        lc_union_into(st.requests, eq_synthesis_requests_list())
-        lc_union_into(st.refusals, eq_typed_refusals_list())
-        lc_union_into(st.deferrals, eq_deferred_requests_list())
-      },
-      None => ()
+    let execute_module = match observations {
+      None => Array::length(prelude_module_executors) != 0,
+      Some(_) => false
     }
-    let mut sy = 0
-    while sy < Array::length(synthesized) {
-      // The keys this module SYNTHESIZED, recorded before the rest of the
-      // prelude runs over them. They are the only keys the link may fold: a
-      // declaration the source wrote is never offered to it, so a definition
-      // the whole program legitimately carries twice cannot be collapsed.
-      Array::push(synth_keys, oracle_stmt_key(Array::get(synthesized, sy)))
-      // Rank 4: `desugar_trait_dicts_module` is the trait-dict pass, and what
-      // it RETURNS is what the whole-program entry appends at the end of the
-      // program. Its own in-place growth (the trait namespace operations, put
-      // right after their trait) is not in this array and keeps its position.
-      prelude_tail_record(link.tail, oracle_stmt_key(Array::get(synthesized, sy)), 4)
-      Array::push(part, Array::get(synthesized, sy))
-      sy = sy + 1
-    }
-    // PASSES 5..10 PER MODULE. The entry provider and exception boundary
-    // (11) require the linked program: a dependency interface has no body,
-    // and a handler must intercept host calls in imported implementations.
-    //
-    // #2633 moved 15 and 16 to the link: `evidence_dict_pass` decides from a
-    // union over the whole program -- declared effects union every effect
-    // label a handle site names, and "zero performs ANYWHERE" -- and that
-    // dependence runs BACKWARDS along the import graph, so no module can make
-    // the decision its own way and have the results link.
-    //
-    // Pass 12 has the same shape and was missed: `lc_inject_async_sleep_boundary`
-    // fires only when the entry's row carries `Async` AND the program calls
-    // `sleep` / `host_future_*` / a host-stream op. Those two live in different
-    // modules routinely, so neither partition sees both and NO machinery is
-    // injected -- a program that links cleanly and suspends differently. It
-    // cannot be served by a precomputed fact the way 2, 6 and 9 are, because
-    // what it injects has to be visible to 13 and 14, so 12, 13 and 14 join 15
-    // and 16 at the link.
-    //
-    // What the split still buys: 0..10 is most of the prelude, and it is the
-    // half a per-module cache can reuse.
-    let mut j2 = 5
-    while j2 < 11 {
-      lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, link.tail, link.diags, env)
-      // After pass 5, where production runs it.
-      if j2 == 5 {
-        lc_collect_stdin_provider_diag(part, link.diags)
-      } else {
-        ()
+    if execute_module {
+      Array::get(prelude_module_executors, 0)(part, ctx, fi, file_count, part_entry, checker_eq_offsets, checker_eq_type_keys, env, synth_keys, link.tail, link.diags)
+    } else {
+      let synthesized = desugar_trait_dicts_module_with_facts(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys, env.trait_facts)
+      match observations {
+        Some(st) => {
+          lc_union_into(st.requests, eq_synthesis_requests_list())
+          lc_union_into(st.refusals, eq_typed_refusals_list())
+          lc_union_into(st.deferrals, eq_deferred_requests_list())
+        },
+        None => ()
       }
-      j2 = j2 + 1
+      let mut sy = 0
+      while sy < Array::length(synthesized) {
+        // The keys this module SYNTHESIZED, recorded before the rest of the
+        // prelude runs over them. They are the only keys the link may fold: a
+        // declaration the source wrote is never offered to it, so a definition
+        // the whole program legitimately carries twice cannot be collapsed.
+        Array::push(synth_keys, oracle_stmt_key(Array::get(synthesized, sy)))
+        // Rank 4: `desugar_trait_dicts_module` is the trait-dict pass, and what
+        // it RETURNS is what the whole-program entry appends at the end of the
+        // program. Its own in-place growth (the trait namespace operations, put
+        // right after their trait) is not in this array and keeps its position.
+        prelude_tail_record(link.tail, oracle_stmt_key(Array::get(synthesized, sy)), 4)
+        Array::push(part, Array::get(synthesized, sy))
+        sy = sy + 1
+      }
+      // PASSES 5..10 PER MODULE. The entry provider and exception boundary
+      // (11) require the linked program: a dependency interface has no body,
+      // and a handler must intercept host calls in imported implementations.
+      //
+      // #2633 moved 15 and 16 to the link: `evidence_dict_pass` decides from a
+      // union over the whole program -- declared effects union every effect
+      // label a handle site names, and "zero performs ANYWHERE" -- and that
+      // dependence runs BACKWARDS along the import graph, so no module can make
+      // the decision its own way and have the results link.
+      //
+      // Pass 12 has the same shape and was missed: `lc_inject_async_sleep_boundary`
+      // fires only when the entry's row carries `Async` AND the program calls
+      // `sleep` / `host_future_*` / a host-stream op. Those two live in different
+      // modules routinely, so neither partition sees both and NO machinery is
+      // injected -- a program that links cleanly and suspends differently. It
+      // cannot be served by a precomputed fact the way 2, 6 and 9 are, because
+      // what it injects has to be visible to 13 and 14, so 12, 13 and 14 join 15
+      // and 16 at the link.
+      //
+      // What the split still buys: 0..10 is most of the prelude, and it is the
+      // half a per-module cache can reuse.
+      let mut j2 = 5
+      while j2 < 11 {
+        lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, link.tail, link.diags, env)
+        // After pass 5, where production runs it.
+        if j2 == 5 {
+          lc_collect_stdin_provider_diag(part, link.diags)
+        } else {
+          ()
+        }
+        j2 = j2 + 1
+      }
     }
     match observations {
       Some(st) => {

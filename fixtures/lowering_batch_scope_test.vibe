@@ -1,0 +1,38 @@
+import @vibe/compiler/codegen/wasi {
+  PreludeModuleBatch, prelude_module_batch_active, prelude_with_module_batch_executor
+}
+
+fn unused_batch(batch: PreludeModuleBatch) -> Unit with Exception {
+  let _ = batch
+}
+
+fn empty_bytes() -> Bytes with Env + Exception + Fs {
+  Bytes::new()
+}
+
+test "batch executor restores its scope after success and failure" {
+  let _ = prelude_with_module_batch_executor(unused_batch, empty_bytes)
+  inspect(prelude_module_batch_active(), content = "false")
+  let outcome = handle {
+    let _ = prelude_with_module_batch_executor(unused_batch, () -> Bytes with Env + Exception + Fs {
+      throw("failed compile")
+    })
+    "accepted"
+  } with { Exception::Throw(message) => message }
+  inspect(outcome, content = "failed compile")
+  inspect(prelude_module_batch_active(), content = "false")
+  let _ = prelude_with_module_batch_executor(unused_batch, empty_bytes)
+  inspect(prelude_module_batch_active(), content = "false")
+}
+
+test "nested batch executor refuses and cleans both scopes" {
+  let outcome = handle {
+    let _ = prelude_with_module_batch_executor(unused_batch, () -> Bytes with Env + Exception + Fs {
+      prelude_with_module_batch_executor(unused_batch, empty_bytes)
+    })
+    "accepted"
+  } with { Exception::Throw(message) => message }
+  inspect(outcome, content = "lowering: a module executor is already active")
+  inspect(prelude_module_batch_active(), content = "false")
+  let _ = prelude_with_module_batch_executor(unused_batch, empty_bytes)
+}

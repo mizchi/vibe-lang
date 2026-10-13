@@ -99,7 +99,7 @@ never calls costs nothing.
 `docs/generated/host-runtime-contract.json` partitions every emitted import
 field into bands, and `scripts/check_host_runtime_contract.py` enforces them
 fail-closed (run in the compiler gate's mid lane, with its mutation suite under
-`pkf run test-check-host-runtime-contract`). The manifest today holds 68
+`pkf run test-check-host-runtime-contract`). The manifest today holds 69
 static fields and 5 name patterns:
 
 | band | count | who provides it |
@@ -107,13 +107,14 @@ static fields and 5 name patterns:
 | `portableCore` | 49 | **both** runners, required |
 | `nodeCoreOnly` | 1 | the node runner only (`resolve_path`) |
 | `viberunDebugOnly` | 2 | viberun only (`dbg_break`, `dbg_line`) |
+| `viberunCoreOnly` | 1 | viberun only (`compiler_lowering_run`, opt-in retained-parent lowering) |
 | `componentAdapterOnly` | 16 + 5 patterns | the component adapter; the gate REJECTS these leaking into either standalone runner |
 
-So no in-contract module reaches the fallback: every `portableCore` name is
-implemented on both sides, and the gate proves it. The fallback is what lets an
-out-of-band module (one carrying `componentAdapterOnly` imports, say)
-instantiate under the node runner, where viberun refuses, and a call to such an
-import throws.
+Every `portableCore` name is implemented on both sides, and the gate proves it.
+The native CPU service is explicitly classified in `viberunCoreOnly`; a node
+call reaches the fallback and throws. The fallback also lets a module carrying
+`componentAdapterOnly` imports instantiate under node, where a call throws and
+viberun refuses the standalone module.
 
 > **"Linkable, but not callable" is the answer an optional capability needs.**
 > viberun alone cannot give it: an import it does not register makes the whole

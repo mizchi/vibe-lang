@@ -1,0 +1,53 @@
+import @vibe/compiler/core {
+  Stmt
+}
+import @vibe/compiler/codegen/wasi {
+  PreludeEnv, PreludeTail, prelude_with_module_executor
+}
+
+fn ignore_module(_own: Array[Stmt], _interfaces: Array[Stmt], _index: Int, _count: Int, _entry: String, _offsets: Array[Int], _keys: Array[String], _env: PreludeEnv, _synth: Array[String], _tail: PreludeTail, _diags: Array[String]) -> Unit with Exception {
+  ()
+}
+
+test "module executor is cleared after a failed build" {
+  let message = handle {
+    let _ = prelude_with_module_executor(ignore_module, () -> Bytes with Env + Exception + Fs {
+      throw("test build failure")
+    })
+    ""
+  } with { Exception::Throw(message) => message }
+  assert(message == "test build failure")
+  let result = prelude_with_module_executor(ignore_module, () -> Bytes with Env + Exception + Fs {
+    let bytes = Bytes::new()
+    Bytes::push(bytes, 42)
+    bytes
+  })
+  assert(Bytes::length(result) == 1)
+  assert(Bytes::get(result, 0) == 42)
+}
+
+test "nested executor refuses without clearing its caller" {
+  let result = prelude_with_module_executor(ignore_module, () -> Bytes with Env + Exception + Fs {
+    let message = handle {
+      prelude_with_module_executor(ignore_module, () -> Bytes with Env + Exception + Fs {
+        Bytes::new()
+      })
+      ""
+    } with { Exception::Throw(message) => message }
+    assert(message == "lowering: a module executor is already active")
+    // A refused nested call must leave the outer executor installed.
+    let again = handle {
+      prelude_with_module_executor(ignore_module, () -> Bytes with Env + Exception + Fs {
+        Bytes::new()
+      })
+      ""
+    } with { Exception::Throw(message) => message }
+    assert(again == message)
+    Bytes::new()
+  })
+  assert(Bytes::length(result) == 0)
+  let _ = prelude_with_module_executor(ignore_module, () -> Bytes with Env + Exception + Fs {
+    Bytes::new()
+  })
+  ()
+}

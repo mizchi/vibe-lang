@@ -14,6 +14,33 @@ spec.loader.exec_module(module)
 
 
 class HostRuntimeContractTest(unittest.TestCase):
+    def test_native_core_provider_is_present(self):
+        manifest = json.loads(module.MANIFEST.read_text())
+        module.validate_native_core_providers(
+            set(manifest["viberunCoreOnly"]),
+            module.rust_imports(module.read_source_group(module.RUST)),
+            module.node_imports(module.read_source_group(module.NODE)),
+        )
+
+    def test_missing_native_service_fails(self):
+        text = module.read_source_group(module.RUST)
+        mutated = text.replace('"compiler_lowering_run"', '"missing_lowering_service"', 1)
+        self.assertTrue(mutated != text, "mutation did not apply")
+        with self.assertRaises(SystemExit):
+            module.validate_native_core_providers(
+                {"compiler_lowering_run"}, module.rust_imports(mutated), set()
+            )
+
+    def test_native_service_leaking_into_node_fails(self):
+        text = module.read_source_group(module.NODE)
+        anchor = '["env-get"](nameTagged)'
+        mutated = text.replace(anchor, 'compiler_lowering_run(count) { return count; },\n      ' + anchor, 1)
+        self.assertTrue(mutated != text, "mutation did not apply")
+        with self.assertRaises(SystemExit):
+            module.validate_native_core_providers(
+                {"compiler_lowering_run"}, {"compiler_lowering_run"}, module.node_imports(mutated)
+            )
+
     def test_extracts_static_emitter_import_and_type(self):
         source = '''emit_name(import_content, "vibe")
 emit_name(import_content, "env-get")

@@ -1,0 +1,38 @@
+// #3416: a local lambda with a row of its own, under a name another function
+// binds to a row-free lambda. The migration gives the literal a dict
+// parameter and decides by name whether a call passes one, and the other
+// binding dropped the name from that set: `run()` was compiled with one
+// argument too few and trapped ("null function or function signature
+// mismatch"). Each such literal is bound under a name of its own now.
+
+effect Box[T] {
+  Put(T) -> Int
+}
+
+fn bare_mk() -> Int with Box {
+  perform Box::Put(41)
+}
+
+fn other() -> Int {
+  let run = (x: Int) -> Int { x + 1 }
+  run(1)
+}
+
+fn fwd() -> Int with Box {
+  let run = () -> Int with Box[Int] { bare_mk() + 1 }
+  run()
+}
+
+fn fwd_top() -> Int with Box[Int] {
+  fwd()
+}
+
+test "a row-carrying local lambda keeps its dict beside a same-named binding" {
+  let w = handle {
+    fwd_top()
+  } with {
+    Box::Put(n) => resume(n * 2)
+  }
+  inspect(w, "83")
+  inspect(other(), "2")
+}
