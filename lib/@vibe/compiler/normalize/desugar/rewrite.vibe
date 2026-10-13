@@ -714,9 +714,17 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Ar
 /// witness, and a composite that holds one (Codex on #3453). With no row the
 /// name is seeded unannotated, which is a fresh name. Anything else gets the
 /// environment itself, without allocating.
+///
+/// An UNLOCATED name (offset -1: the merged, linked-library and
+/// linked-artifact lanes parse without offsets and pass no rows) has no
+/// checker answer to seed from, so it keeps the outer binding's entries, as
+/// before #3434. Seeding it unannotated instead rendered a same-type shadow
+/// through `__to_string`: a `Char` as its code point, an `Option` as an
+/// address (Codex on #3453). A shadow that changes the type is still read as
+/// the outer type on those lanes; that is #3456.
 fn render_classify_var_types(var_types: Array[(String, String)], arg: Expr) -> Array[(String, String)] {
   match arg {
-    EIdent(n, _) => if render_masked(var_types, n) {
+    EIdent(n, off) => if off >= 0 && render_masked(var_types, n) {
       let row = match dtd_typed_render_row_arg(arg) {
         // An annotation spells `Unit` by name, and that is what the Unit
         // classifier reads.
