@@ -1,0 +1,27 @@
+// #3443: a type imported under an alias and, again, under its own name through
+// a re-export of the same module. The two imports looked like a name collision,
+// whose fallback clones only VALUE definitions, so the alias was dropped and
+// nothing replaced it: `B::plain` reached code generation unresolved. The
+// runtime answer is in `fixtures/import_alias_reexport_companion_test.vibe`.
+
+import @vibe/compiler/runtime {
+  db_grouped_merged_source, db_new
+}
+
+fn merged(main_src: String) -> String with Env + Exception {
+  let groups = [
+    ("g1", [
+      ("dep2.vibe", "export struct Box {\n  n: Int\n}\nfn Box::plain(x: Int) -> Box {\n  Box::{ n: x }\n}\n"),
+      ("facade2.vibe", "export ./dep2.vibe { Box }\n"),
+      ("main.vibe", main_src)
+    ])
+  ]
+  let (src, _, _) = db_grouped_merged_source(db_new(), groups)
+  src
+}
+
+test "an aliased type's companion is rewritten beside a re-exported import" {
+  let src = merged("import ./dep2.vibe { Box as B }\nimport ./facade2.vibe { Box }\nfn main() -> Int {\n  B::plain(3).n\n}\n")
+  inspect(String::contains(src, "B::plain"), "false")
+  inspect(String::contains(src, "Box::plain(3)"), "true")
+}

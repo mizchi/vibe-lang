@@ -1,0 +1,68 @@
+import @vibe/compiler/lowering/effects/evidence {
+  evidence_dict_pass
+}
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+
+// The printed `mid` after the evidence pass over `decls`.
+fn mid_after(decls: String) -> String with Exception {
+  let head = "effect Box[T] {\n  Put(T) -> Int\n}\nfn mk() -> Int with Box[Int] {\n  perform Box::Put(12345)\n}\nfn drive(f: () -> Int with Box[Int]) -> Int {\n  handle {\n    f()\n  } with { Box::Put(n) => resume(n + 1) }\n}\nfn main() -> Int {\n  drive(mid())\n}\n"
+  let stmts = parse_program(lex(String::concat(head, decls)))
+  let _ = evidence_dict_pass(stmts, "main")
+  let mut out = ""
+  for s in stmts {
+    match s {
+      SLet(_, _, n, _, _) => if n == "mid" {
+        out = print_stmt(s)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+// #3435: the closure a function returns at a declared row takes the dict its
+// caller passes. It was left at arity 0, so `drive(mid())` failed to
+// instantiate. The runtime answers are in
+// `fixtures/returned_row_closure_test.vibe`.
+test "a returned closure takes the declared row's dict" {
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  () -> mk()\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } }")
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  if true {\n    () -> mk()\n  } else {\n    () -> 3\n  }\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { if true { (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } } else { (__ev_Box: __EvDict_Box) -> { 3 } } }")
+}
+
+// Three more shapes the result reaches the caller in (Codex on #3447): a
+// closure bound and returned by its name, an explicit `return`, and a result
+// type spelled through an alias.
+test "a closure returned by name, by return, or at an aliased row takes the dict" {
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let f = () -> mk()\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let __edpc0_f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; __edpc0_f } }")
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  return () -> mk()\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { return (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } }")
+  inspect(mid_after("type Thunk = () -> Int with Box[Int]\nfn mid() -> Thunk {\n  () -> mk()\n}\n"), "let rec mid = () -> Thunk { (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } }")
+}
+
+// Four more (Codex on #3447): a `return` after an assignment (kept in the
+// assignment's continuation), a closure produced by a tail `handle`, an
+// applied alias, and a returned name beside an unrelated binder of its
+// spelling.
+test "a closure returned after an assignment, from a handle, at an applied alias, or beside a shadow" {
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let mut x = 0\n  x = 1\n  return () -> mk()\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut x = 0; { x = 1; return (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } } } }")
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  handle {\n    () -> mk()\n  } with {\n    Box::Put(n) => resume(n)\n  }\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } }")
+  inspect(mid_after("type Thunk[T] = () -> Int with Box[Int]\nfn mid() -> Thunk[Unit] {\n  () -> mk()\n}\n"), "let rec mid = () -> Thunk[Unit] { (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } }")
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let f = () -> mk()\n  let _ = ((f: Int) -> f)(0)\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let __edpc1_f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; { let _ = ((f: Int) -> { f })(0); __edpc1_f } } }")
+}
+
+// A local closure handed back by `return f`, and a closure behind a `let rec`
+// (Codex on #3447).
+test "a closure returned by return-by-name or after a let rec takes the dict" {
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let f = () -> mk()\n  return f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let __edpc2_f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; return __edpc2_f } }")
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let rec go = (n: Int) -> Int { n }\n  () -> mk()\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let rec go = (n: Int) -> Int { n }; (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } } }")
+}
+
+// A local lambda that returns a closure at its declared row, and a `return`
+// inside an array element (Codex on #3447).
+test "a local lambda's returned closure and a return inside an aggregate take the dict" {
+  inspect(mid_after("fn mid() -> Int {\n  let lmid = () -> (() -> Int with Box[Int]) {\n    () -> mk()\n  }\n  drive(lmid())\n}\n"), "let rec mid = () -> Int { { let lmid = () -> () -> Int with Box[Int] { (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } }; drive(lmid()) } }")
+  inspect(mid_after("fn mid(c: Bool) -> (() -> Int with Box[Int]) {\n  let xs = [1, if c {\n    return () -> mk()\n  } else {\n    2\n  }]\n  () -> 0\n}\n"), "let rec mid = (c: Bool) -> () -> Int with Box[Int] { { let xs = [1, if c { return (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } } else { 2 }]; (__ev_Box: __EvDict_Box) -> { 0 } } }")
+}

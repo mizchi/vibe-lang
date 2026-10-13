@@ -545,10 +545,12 @@ fn lapw_scan(e: Expr, pname: String, pty: Type, bound: Array[String], env: TypeE
     ELet(n, v, b, _) => {
       lapw_scan(v, pname, pty, bound, env, errors)
       lapw_scan(b, pname, pty, lapw_with(bound, [n]), env, errors)
+      lapw_scan_alias(n, v, b, pname, pty, bound, env, errors)
     },
     ELetMut(n, v, b, _) => {
       lapw_scan(v, pname, pty, bound, env, errors)
       lapw_scan(b, pname, pty, lapw_with(bound, [n]), env, errors)
+      lapw_scan_alias(n, v, b, pname, pty, bound, env, errors)
     },
     ELetRec(n, v, b) => {
       let inner = lapw_with(bound, [n])
@@ -606,6 +608,35 @@ fn lapw_scan(e: Expr, pname: String, pty: Type, bound: Array[String], env: TypeE
   }
 }
 
+/// A binding whose value holds the parameter (`let alias = c`, `let w =
+/// Some(c)`) is the parameter again for the writes in its scope, so `body` is
+/// scanned for `n` as well (Codex on #3437: `let alias = c; Array::push(sink,
+/// alias)` escaped). `n` is not taken as bound there: it is the name looked for.
+fn lapw_scan_alias(n: String, v: Expr, body: Expr, pname: String, pty: Type, bound: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
+  // `let c = c` rebinds the parameter's own spelling to the parameter, so it
+  // is scanned under that name too (Codex on #3447); the ordinary `let` scan
+  // takes `c` for a new local there.
+  if !lapw_has(bound, pname) && lapw_stores_param(v, pname) {
+    // An earlier binder of the same spelling is shadowed by this one, so it
+    // does not hide the alias (Codex on #3447).
+    lapw_scan(body, n, pty, lapw_without(bound, n), env, errors)
+  } else {
+    ()
+  }
+}
+
+fn lapw_without(bound: Array[String], name: String) -> Array[String] {
+  let out: Array[String] = []
+  for n in bound {
+    if n != name {
+      Array::push(out, n)
+    } else {
+      ()
+    }
+  }
+  out
+}
+
 fn lapw_with(bound: Array[String], names: Array[String]) -> Array[String] {
   let out: Array[String] = []
   for n in bound {
@@ -632,8 +663,8 @@ fn lapw_report(message: String, value: Expr, errors: Array[String]) -> Unit {
 /// call, tuple, array or record literal holding it at any depth (Codex on
 /// #3437: `Some((c, 0))`), or a form whose value is one of its parts -- either
 /// branch of an `if`, any arm of a `match`, the tail of a block or `let`
-/// (`if flag { c } else { c }`)? A value a function call computes from it is
-/// not the parameter.
+/// (`if flag { c } else { c }`)? A map literal's values count as a record's
+/// do. A value a function call computes from it is not the parameter.
 fn lapw_stores_param(value: Expr, pname: String) -> Bool {
   match value {
     EIdent(n, _) => n == pname,
@@ -656,19 +687,22 @@ fn lapw_stores_param(value: Expr, pname: String) -> Bool {
     ECall(EIdent(ctor, _), cargs, _, _) => lapw_is_ctor_name(ctor) && lapw_any_stores(cargs, pname),
     ETuple(items) => lapw_any_stores(items, pname),
     EArray(items) => lapw_any_stores(items, pname),
-    ERecord(_, fields, _) => {
-      let mut found = false
-      for f in fields {
-        if lapw_stores_param(f.1, pname) {
-          found = true
-        } else {
-          ()
-        }
-      }
-      found
-    },
+    ERecord(_, fields, _) => lapw_fields_store(fields, pname),
+    EMap(fields) => lapw_fields_store(fields, pname),
     _ => false
   }
+}
+
+fn lapw_fields_store(fields: Array[(String, Expr)], pname: String) -> Bool {
+  let mut found = false
+  for f in fields {
+    if lapw_stores_param(f.1, pname) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
 }
 
 /// A constructor's last segment is capitalized (`Some`, `Maybe::Some`); a

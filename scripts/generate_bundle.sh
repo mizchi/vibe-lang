@@ -1007,6 +1007,30 @@ merge_flatten_tool_fingerprint() {
   bash "$helper" --print-fingerprint 2>/dev/null || true
 }
 
+# #3439: the seed compiles the whole compiler in the two steps below with bump
+# allocation (VIBE_RC=0), so a compile's peak is everything it allocates and
+# the wasm32 maximum (4 GiB) is a hard ceiling. Crossing it traps with
+# `memory access out of bounds` and names no source location. VIBE_MEM=1 has
+# the runner report what the compile allocated (it does not change the
+# output); this names the headroom on success and the ceiling on failure.
+SEED_COMPILE_MEMORY_CEILING=4294967296
+seed_compile_memory_note() {
+  local log="$1" label="$2"
+  local allocated peak
+  allocated="$(sed -n 's/.*vibe::mem .*allocated=\([0-9][0-9]*\).*/\1/p' "$log" 2>/dev/null | tail -1)"
+  peak="$(sed -n 's/.*vibe::mem .*heap_peak=\([0-9][0-9]*\).*/\1/p' "$log" 2>/dev/null | tail -1)"
+  [ -n "$allocated" ] && [ -n "$peak" ] || return 0
+  # The ceiling bounds the heap's highest address, so the headroom is read
+  # from the peak; `allocated` leaves out the heap base below it (Codex on
+  # #3447).
+  local headroom=$(( SEED_COMPILE_MEMORY_CEILING - peak ))
+  if [ "$headroom" -lt $(( 16 * 1048576 )) ]; then
+    echo "generate_bundle: $label ran the seed out of wasm32 memory: its heap reached $peak of $SEED_COMPILE_MEMORY_CEILING bytes. The seed compiles the whole compiler here without freeing, so a change that makes the compiler source more expensive to compile can cross the ceiling; see #3439." >&2
+  else
+    echo "generate_bundle: $label allocated $allocated bytes; its heap peaked $(( headroom / 1048576 )) MiB under the wasm32 ceiling (#3439)" >&2
+  fi
+}
+
 bootstrap_merge_flatten_tool() {
   local flatten_wasm="$1"
   local seed_wasm
@@ -1047,10 +1071,11 @@ bootstrap_merge_flatten_tool() {
   # Pass 3: compile it -- this is the current source's merge machinery.
   rm -f "$flatten_wasm" "$flatten_wasm.diag"
   (cd "$PROJECT_ROOT" && \
-    export VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+    export VIBE_RC=0 VIBE_MEM=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
       VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" VIBE_NODE_WASM_FLAGS="$tool_node_flags" && \
     run_bundle_runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$seed_wasm" \
       "$seed_modsrc" "$flatten_wasm" cli_main >"$tool_log" 2>&1) || true
+  seed_compile_memory_note "$tool_log" "the merge-flatten compile (bootstrap pass 3)"
   rm -f "$seed_merged" "$seed_merged.diag" "$seed_modsrc" "$seed_modsrc.diag"
   if [ -s "$flatten_wasm" ] && [ -n "$want" ]; then
     printf '%s\n' "$want" > "$stamp"
@@ -1140,7 +1165,7 @@ validate_module_source_compiles() {
   trace_begin "validate module source (seed compile)"
   local vtok="$TRACE_TOKEN"
   if (cd "$PROJECT_ROOT" && \
-    export VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+    export VIBE_RC=0 VIBE_MEM=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
       VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" VIBE_NODE_WASM_FLAGS="$tool_node_flags" && \
     run_bundle_runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$seed_wasm" \
       "$candidate" "$check_wasm" cli_main >"$check_log" 2>&1); then
@@ -1149,6 +1174,7 @@ validate_module_source_compiles() {
     fi
   fi
   trace_end "$vtok" "$(( ok == 1 ? 0 : 1 ))"
+  seed_compile_memory_note "$check_log" "the module-source validation compile"
   if [ "$ok" != "1" ]; then
     echo "generate_bundle: candidate module source failed to compile (#979 sticky-failure guard) -- leaving any existing $ADAPTER_MODULE_SOURCE_OUT untouched" >&2
     cat "$check_wasm.diag" >&2 2>/dev/null || true

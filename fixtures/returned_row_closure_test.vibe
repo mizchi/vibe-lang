@@ -1,0 +1,168 @@
+// #3435: a function whose declared result is a function type with a row
+// returns a closure that its caller calls with the dict. The returned literal
+// took no dict, so `drive(mid())` failed to instantiate ("not enough arguments
+// on the stack for call"), and with the row on `mid` too it trapped ("null
+// function or function signature mismatch").
+
+effect Box[T] {
+  Put(T) -> Int
+}
+
+fn mk() -> Int with Box[Int] {
+  perform Box::Put(12345)
+}
+
+fn mid() -> (() -> Int with Box[Int]) {
+  () -> mk()
+}
+
+fn drive(f: () -> Int with Box[Int]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(n) => resume(n + 1)
+  }
+}
+
+// The row on the function as well: the closure is made under a handler and
+// run under another.
+fn mid_row() -> (() -> Int with Box[Int]) with Box[Int] {
+  let base = perform Box::Put(1)
+  () -> mk() + base
+}
+
+fn seven() -> Int {
+  7
+}
+
+// A row-free named function returned at the row takes a wrapper that accepts
+// the dict.
+fn mid_named() -> (() -> Int with Box[Int]) {
+  seven
+}
+
+// Each branch's closure is the result.
+fn mid_branch(flag: Bool) -> (() -> Int with Box[Int]) {
+  if flag {
+    () -> mk()
+  } else {
+    () -> 3
+  }
+}
+
+// A closure bound and returned by its name, and one handed back by `return`
+// (Codex on #3447).
+fn mid_named_local() -> (() -> Int with Box[Int]) {
+  let f = () -> mk()
+  f
+}
+
+fn mid_return(flag: Bool) -> (() -> Int with Box[Int]) {
+  if flag {
+    return () -> mk()
+  } else {
+    ()
+  }
+  () -> 5
+}
+
+// A `return` after an assignment, a closure produced by a tail `handle`, and
+// a returned name beside an unrelated binder of its spelling (Codex on
+// #3447).
+fn mid_assign() -> (() -> Int with Box[Int]) {
+  let mut x = 0
+  x = 1
+  return () -> mk() + x
+}
+
+fn mid_handle() -> (() -> Int with Box[Int]) {
+  handle {
+    () -> mk()
+  } with {
+    Box::Put(n) => resume(n)
+  }
+}
+
+// A bound closure handed back by `return`, and a closure after a `let rec`
+// (Codex on #3447). The closure does not call `go` itself: a returned closure
+// that calls a local closure is left as written, as an argument one is.
+fn mid_return_name() -> (() -> Int with Box[Int]) {
+  let f = () -> mk()
+  return f
+}
+
+fn mid_let_rec() -> (() -> Int with Box[Int]) {
+  let rec go = (n: Int) -> Int {
+    if n == 0 {
+      0
+    } else {
+      go(n - 1)
+    }
+  }
+  let k = go(3)
+  () -> mk() + k
+}
+
+fn mid_shadow() -> (() -> Int with Box[Int]) {
+  let f = () -> mk()
+  let _ = ((f: Int) -> f)(0)
+  f
+}
+
+// A local lambda whose declared result is a function type with a row, and
+// a `return` inside an array element (Codex on #3447).
+fn local_mid() -> Int {
+  let lmid = () -> (() -> Int with Box[Int]) {
+    () -> mk()
+  }
+  drive(lmid())
+}
+
+fn mid_return_in_array(flag: Bool) -> (() -> Int with Box[Int]) {
+  let xs = [1, if flag {
+    return () -> mk()
+  } else {
+    2
+  }]
+  () -> Array::length(xs)
+}
+
+// A result type spelled through an alias, bare or applied (Codex on #3447;
+// the checker accepted neither before #3450).
+type Thunk = () -> Int with Box[Int]
+
+type Gen[T] = () -> Int with Box[Int]
+
+fn mid_alias() -> Thunk {
+  () -> mk()
+}
+
+fn mid_applied() -> Gen[Unit] {
+  () -> mk()
+}
+
+test "a returned closure takes the dict its caller passes" {
+  inspect(drive(mid()), "12346")
+  let f = handle {
+    mid_row()
+  } with {
+    Box::Put(n) => resume(n * 10)
+  }
+  inspect(drive(f), "12356")
+  inspect(drive(mid_named()), "7")
+  inspect(drive(mid_branch(true)), "12346")
+  inspect(drive(mid_branch(false)), "3")
+  inspect(drive(mid_named_local()), "12346")
+  inspect(drive(mid_return(true)), "12346")
+  inspect(drive(mid_return(false)), "5")
+  inspect(drive(mid_assign()), "12347")
+  inspect(drive(mid_handle()), "12346")
+  inspect(drive(mid_shadow()), "12346")
+  inspect(drive(mid_return_name()), "12346")
+  inspect(drive(mid_let_rec()), "12346")
+  inspect(drive(mid_alias()), "12346")
+  inspect(drive(mid_applied()), "12346")
+  inspect(local_mid(), "12346")
+  inspect(drive(mid_return_in_array(true)), "12346")
+  inspect(drive(mid_return_in_array(false)), "2")
+}

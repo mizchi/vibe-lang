@@ -132,6 +132,31 @@ export fn check_perform_effects_expr(root: Expr, root_declared: Array[String], r
   check_perform_effects_expr_tx(root, root_declared, root_in_handle, no_str_labels(), no_ov_effs(), no_str_labels(), no_ov_effs())
 }
 
+/// #3450: a declared result spelled through an alias (`fn mid() -> Thunk`,
+/// `type Thunk = () -> Int with Box[Int]`) declares the rows of the function
+/// type it names, as the written arrow does. Without the expansion the
+/// returned closure's performs were charged to `mid` itself.
+fn expand_ret_alias(ret: Option[TypeExpr]) -> Option[TypeExpr] {
+  match ret {
+    Some(r) => match dh_expand_type_alias(r) {
+      Some(x) => Some(x),
+      None => ret
+    },
+    None => None
+  }
+}
+
+/// The same for the return slot of a binding's signature.
+fn expand_sig_ret_alias(ty: Option[TypeExpr]) -> Option[TypeExpr] {
+  match ty {
+    Some(TyFn(ps, r, e)) => match dh_expand_type_alias(r) {
+      Some(x) => Some(TyFn(ps, x, e)),
+      None => ty
+    },
+    _ => ty
+  }
+}
+
 fn check_perform_effects_binding_tx(fn_name: String, written_ty: Option[TypeExpr], body: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
   // #3347: a function-type alias annotation declares its row like a written one.
   let ty = dh_expand_sig(written_ty)
@@ -152,7 +177,7 @@ fn check_perform_effects_binding_tx(fn_name: String, written_ty: Option[TypeExpr
       // function VALUES it produces. Publish them for nested closure literals
       // (see ret_fn_row_labels' doc comment); the body's own declared set below
       // is deliberately NOT widened by them.
-      set_ret_fn_rows(labels_union(ret_fn_rows_from_sig(ty), ret_fn_row_labels(fret)))
+      set_ret_fn_rows(labels_union(ret_fn_rows_from_sig(expand_sig_ret_alias(ty)), ret_fn_row_labels(expand_ret_alias(fret))))
       // #1344 follow-up: the same merged parameter list seeds the payload-kind
       // scope, so `fn f(e: IoError) { throw(e) }` resolves from the very first
       // frame -- the walk never re-descends through this EFn to pick the
@@ -169,7 +194,7 @@ fn check_perform_effects_binding_tx(fn_name: String, written_ty: Option[TypeExpr
     _ => {
       // #1451: a non-EFn binding declares no arrow of its own; clear the cell so
       // the PREVIOUS binding's return-type rows cannot leak into this walk.
-      set_ret_fn_rows(ret_fn_rows_from_sig(ty))
+      set_ret_fn_rows(ret_fn_rows_from_sig(expand_sig_ret_alias(ty)))
       check_perform_effects_expr_tx_in(fn_name, body, sig_labels, false, fn_names, fn_effs, fn_index, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds())
     }
   }

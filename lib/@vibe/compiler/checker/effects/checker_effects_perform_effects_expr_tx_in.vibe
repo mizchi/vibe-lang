@@ -47,6 +47,7 @@ import ./checker_effects_dh_call_to_binding.vibe {
   ascribed_closure_literal_row,
   closure_arg_declared,
   closure_row_extra_labels,
+  dh_expand_type_alias,
   error_row_checked,
   labels_without_exception_family_marker,
   make_contextual_row_error,
@@ -100,6 +101,10 @@ import ./checker_effects_mutability_expr_into.vibe {
   handle_arms_handle_async,
   label_is_effect_var,
   no_str_labels,
+  pop_ret_fn_rows,
+  push_ret_fn_rows,
+  ret_fn_row_labels,
+  ret_rows_pop_marker,
   row_callback_scope_start_cell,
   row_formal_scope,
   row_scope_callback_marker,
@@ -1308,10 +1313,30 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
         } else {
           ()
         }
+        // A lambda whose declared result is a function type with a row hands
+        // that row to the closure literals its body returns, as a top-level
+        // binding's result does (Codex on #3447): `let lmid = () -> (() -> Int
+        // with Box[Int]) { () -> mk() }` charged `mk()` to the enclosing
+        // function. The lambda's own direct performs do not get it.
+        let own_ret_rows = ret_fn_row_labels(match fret {
+          Some(r) => match dh_expand_type_alias(r) {
+            Some(x) => Some(x),
+            None => fret
+          },
+          None => None
+        })
+        if Array::length(own_ret_rows) > 0 {
+          push_ret_fn_rows(labels_union(current_ret_fn_rows(), own_ret_rows))
+          pe_push(stack, stack_ci, EIdent(ret_rows_pop_marker(), 0 - 1), ci)
+        } else {
+          ()
+        }
         pe_push(stack, stack_ci, body, pe_ctx(ctxs, body_declared, in_handle, body_ov_names, body_ov_effs, throw_kind_bind_params(kinds, params)))
       },
       EIdent(ident, _) => if ident == row_scope_pop_marker() {
         row_scope_pop()
+      } else if ident == ret_rows_pop_marker() {
+        pop_ret_fn_rows()
       } else {
         ()
       },

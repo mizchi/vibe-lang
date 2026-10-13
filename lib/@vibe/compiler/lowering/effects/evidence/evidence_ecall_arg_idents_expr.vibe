@@ -1,17 +1,7 @@
 // lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — ecall arg idents expr.
 
 import @vibe/compiler/core {
-  Expr,
-  Pat,
-  Stmt,
-  TypeExpr,
-  builtin_shadow_source_name,
-  expr_child_at,
-  expr_children,
-  expr_children_pop,
-  expr_children_push,
-  expr_children_top,
-  is_runtime_scheduled_effect
+  Expr, Pat, Stmt, TypeExpr, builtin_shadow_source_name, expr_children, is_runtime_scheduled_effect
 }
 
 import @vibe/core {
@@ -36,11 +26,15 @@ import @vibe/compiler/lowering/effects/queries {
 }
 
 import ./evidence_handle_effect_names_expr.vibe {
-  edp_append_ctor_inert_names, edp_expr_binds_name
+  edp_append_ctor_inert_names
 }
 
 import ./evidence_poison_expr.vibe {
   edp_row_typed_param_names, edp_type_is_fn_row_exactly, empty_str_array
+}
+
+import ./evidence_scan_view_expr.vibe {
+  edp_lambda_row_params, edp_needing_scan_view, edp_param_base_name, edp_pat_names, edp_rename_free
 }
 
 /// Any top-level fn with a row-E-typed parameter?
@@ -185,8 +179,10 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
   Array::truncate(edp_snap_taken, 0)
   Array::truncate(edp_snap_program, 0)
   Array::push(edp_snap_program, (stmts, fn_defs))
+  edp_note_program_aliases(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
+    edp_stamp_returned_closure(stmts, i, pure_names)
     let stmt = Array::get(stmts, i)
     let body = match stmt {
       SLet(_, _, _, _, e) => Some(e),
@@ -217,6 +213,446 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
     i = i + 1
   }
   ()
+}
+
+/// #3435: a function whose declared result is a function type with a row
+/// (`fn mid() -> (() -> Int with Box[Int]) { () -> mk() }`) hands its caller a
+/// closure the caller calls with the dict, as a callee calls one written at
+/// its row-typed parameter. The returned literal took no dict, so `drive(mid())`
+/// passed one it had no parameter for and the module failed to instantiate
+/// ("not enough arguments on the stack for call"). The closure in tail
+/// position takes the declared row, the way `edp_stamp_slot_arg_at` gives a
+/// parameter's; one that calls a local closure is left as written.
+fn edp_stamp_returned_closure(stmts: Array[Stmt], i: Int, pure_names: MutSet[String]) -> Unit {
+  match Array::get(stmts, i) {
+    SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(rty), eff, fb)) => match edp_result_slot(stmts, rty) {
+      Some(slot) => {
+        let scope: Array[String] = []
+        let mut pi = 0
+        while pi < Array::length(ps) {
+          Array::push(scope, edp_param_base_name(Array::get(ps, pi).0))
+          pi = pi + 1
+        }
+        Array::set(stmts, i, SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(rty), eff, edp_stamp_result(fb, slot, scope, pure_names))))
+      },
+      None => ()
+    },
+    _ => ()
+  }
+}
+
+/// The slot (arity and row) a declared result `rty` gives the closure a
+/// function returns, when it is a function type with a stampable row.
+fn edp_result_slot(stmts: Array[Stmt], rty: TypeExpr) -> Option[(Int, String)] {
+  // A declared result spelled through an alias (`fn mid() -> Thunk`) is
+  // expanded as an alias-annotated binding's is (Codex on #3447).
+  // Only a name the program declares as an alias is looked up: every
+  // function with a named result reaches this, and a scan of the
+  // program per function cost the selfcompile KPI 3.6 MB.
+  let resolved = match rty {
+    TyFn(_, _, Some(_)) => Some(rty),
+    TyName(an) => if edp_is_program_alias(an) {
+      edp_alias_fn_type(stmts, rty)
+    } else {
+      None
+    },
+    TyApp(an, _) => if edp_is_program_alias(an) {
+      edp_applied_alias_fn_type(stmts, an)
+    } else {
+      None
+    },
+    _ => None
+  }
+  match resolved {
+    Some(TyFn(rptys, _, Some(rrow))) => if edp_slot_row_stampable(rrow) {
+      Some((Array::length(rptys), rrow))
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// A function body `fb` with the closure it returns stamped at `slot`: each
+/// tail position, and the value of every `return` in it (Codex on #3447).
+fn edp_stamp_result(fb: Expr, slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  edp_stamp_tail(edp_stamp_returns(fb, slot, scope, pure_names), slot, scope, pure_names)
+}
+
+/// `e` with each `return`'s value stamped as a tail is. A nested lambda's
+/// `return` is its own and is not entered.
+fn edp_stamp_returns(e: Expr, slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  match e {
+    EReturn(x) => EReturn(edp_stamp_tail(edp_stamp_returns(x, slot, scope, pure_names), slot, scope, pure_names)),
+    ESeq(a, b) => ESeq(edp_stamp_returns(a, slot, scope, pure_names), edp_stamp_returns(b, slot, scope, pure_names)),
+    ELet(n, v, b, off) => {
+      let v2 = edp_stamp_returned_let(n, edp_stamp_returns(v, slot, scope, pure_names), b, slot, scope, pure_names)
+      Array::push(scope, n)
+      let b2 = edp_stamp_returns(b, slot, scope, pure_names)
+      Array::truncate(scope, Array::length(scope) - 1)
+      ELet(n, v2, b2, off)
+    },
+    ELetRec(n, v, b) => {
+      Array::push(scope, n)
+      let b2 = edp_stamp_returns(b, slot, scope, pure_names)
+      Array::truncate(scope, Array::length(scope) - 1)
+      ELetRec(n, v, b2)
+    },
+    ELetMut(n, v, b, off) => {
+      let v2 = edp_stamp_returns(v, slot, scope, pure_names)
+      Array::push(scope, n)
+      let b2 = edp_stamp_returns(b, slot, scope, pure_names)
+      Array::truncate(scope, Array::length(scope) - 1)
+      ELetMut(n, v2, b2, off)
+    },
+    EIf(c, t, el) => EIf(edp_stamp_returns(c, slot, scope, pure_names), edp_stamp_returns(t, slot, scope, pure_names), edp_stamp_returns(el, slot, scope, pure_names)),
+    EMatch(sc, arms) => EMatch(edp_stamp_returns(sc, slot, scope, pure_names), for a in arms {
+      let (pp, ex) = a
+      let base = Array::length(scope)
+      for pn in edp_pat_names(pp) {
+        Array::push(scope, pn)
+      }
+      let ex2 = edp_stamp_returns(ex, slot, scope, pure_names)
+      Array::truncate(scope, base)
+      (pp, ex2)
+    }),
+    EWhile(c, b) => EWhile(edp_stamp_returns(c, slot, scope, pure_names), edp_stamp_returns(b, slot, scope, pure_names)),
+    EAssign(n, v, c, off) => EAssign(n, edp_stamp_returns(v, slot, scope, pure_names), edp_stamp_returns(c, slot, scope, pure_names), off),
+    EAssignOp(n, op, v, c, off) => EAssignOp(n, op, edp_stamp_returns(v, slot, scope, pure_names), edp_stamp_returns(c, slot, scope, pure_names), off),
+    EForIn(n, idx, it, b) => {
+      let it2 = edp_stamp_returns(it, slot, scope, pure_names)
+      let base = Array::length(scope)
+      Array::push(scope, n)
+      match idx {
+        Some(ix) => Array::push(scope, ix),
+        None => ()
+      }
+      let b2 = edp_stamp_returns(b, slot, scope, pure_names)
+      Array::truncate(scope, base)
+      EForIn(n, idx, it2, b2)
+    },
+    ELoop(pairs, b) => {
+      let base = Array::length(scope)
+      let pairs2 = for pr in pairs {
+        let (n, v) = pr
+        (n, edp_stamp_returns(v, slot, scope, pure_names))
+      }
+      for pr in pairs {
+        Array::push(scope, pr.0)
+      }
+      let b2 = edp_stamp_returns(b, slot, scope, pure_names)
+      Array::truncate(scope, base)
+      ELoop(pairs2, b2)
+    },
+    EHandle(bd, arms) => EHandle(edp_stamp_returns(bd, slot, scope, pure_names), for a in arms {
+      let (pp, ex) = a
+      let base = Array::length(scope)
+      for pn in edp_pat_names(pp) {
+        Array::push(scope, pn)
+      }
+      let ex2 = edp_stamp_returns(ex, slot, scope, pure_names)
+      Array::truncate(scope, base)
+      (pp, ex2)
+    }),
+    // A `return` inside an operand, an argument or an aggregate's element
+    // leaves the function as well (Codex on #3447: `[1, if c { return f }
+    // else { 2 }]`).
+    ECall(callee, args, off, res) => ECall(edp_stamp_returns(callee, slot, scope, pure_names), edp_stamp_returns_all(args, slot, scope, pure_names), off, res),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_stamp_returns(l, slot, scope, pure_names), edp_stamp_returns(r, slot, scope, pure_names), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, edp_stamp_returns(x, slot, scope, pure_names)),
+    EDot(o, f, o1, o2) => EDot(edp_stamp_returns(o, slot, scope, pure_names), f, o1, o2),
+    ELabeledArg(l, ln, v) => ELabeledArg(l, ln, edp_stamp_returns(v, slot, scope, pure_names)),
+    EBreak(Some(x)) => EBreak(Some(edp_stamp_returns(x, slot, scope, pure_names))),
+    EContinue(args) => EContinue(edp_stamp_returns_all(args, slot, scope, pure_names)),
+    ETuple(items) => ETuple(edp_stamp_returns_all(items, slot, scope, pure_names)),
+    EArray(items) => EArray(edp_stamp_returns_all(items, slot, scope, pure_names)),
+    ERecord(rn, fields, tas) => ERecord(rn, for f in fields {
+      (f.0, edp_stamp_returns(f.1, slot, scope, pure_names))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      (f.0, edp_stamp_returns(f.1, slot, scope, pure_names))
+    }),
+    ESpread(x) => ESpread(edp_stamp_returns(x, slot, scope, pure_names)),
+    _ => e
+  }
+}
+
+fn edp_stamp_returns_all(es: Array[Expr], slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Array[Expr] {
+  for x in es {
+    edp_stamp_returns(x, slot, scope, pure_names)
+  }
+}
+
+/// How many tail positions of `e` are the bare name `n`, reading tails as
+/// `edp_stamp_tail` does and stopping where a binder rebinds `n`.
+fn edp_tail_name_count(e: Expr, n: String) -> Int {
+  match e {
+    EIdent(x, _) => if x == n {
+      1
+    } else {
+      0
+    },
+    ESeq(_, b) => edp_tail_name_count(b, n),
+    ELet(m, _, b, _) => if m == n {
+      0
+    } else {
+      edp_tail_name_count(b, n)
+    },
+    ELetMut(m, _, b, _) => if m == n {
+      0
+    } else {
+      edp_tail_name_count(b, n)
+    },
+    ELetRec(m, _, b) => if m == n {
+      0
+    } else {
+      edp_tail_name_count(b, n)
+    },
+    EIf(_, t, el) => edp_tail_name_count(t, n) + edp_tail_name_count(el, n),
+    EAssign(_, _, c, _) => edp_tail_name_count(c, n),
+    EAssignOp(_, _, _, c, _) => edp_tail_name_count(c, n),
+    EHandle(bd, arms) => edp_tail_name_count(bd, n) + edp_tail_name_count_arms(arms, n),
+    EMatch(_, arms) => edp_tail_name_count_arms(arms, n),
+    _ => 0
+  }
+}
+
+/// A closure bound by `let` and returned by its name -- in a tail position or
+/// through `return` (Codex on #3447: `let f = () -> mk(); return f`) -- is
+/// the result itself, when every use of the name the binding reaches is such
+/// a return. It takes the declared row then; otherwise it is left as written.
+fn edp_stamp_returned_let(n: String, v: Expr, b: Expr, slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  match v {
+    EFn(_, _, _, _, None, lb) => {
+      let results = edp_tail_name_count(b, n) + edp_return_name_count(b, n)
+      if results > 0 && results == edp_free_use_count(b, n) && !edp_literal_calls_local(v, lb, scope) {
+        edp_stamp_slot_arg_at(v, scope, pure_names, Some(slot))
+      } else {
+        v
+      }
+    },
+    _ => v
+  }
+}
+
+/// How many `return`s in `e` hand back the bare name `n`, walking as
+/// `edp_stamp_returns` does and stopping where a binder rebinds `n`.
+fn edp_return_name_count(e: Expr, n: String) -> Int {
+  match e {
+    EReturn(x) => edp_tail_name_count(x, n) + edp_return_name_count(x, n),
+    ESeq(a, b) => edp_return_name_count(a, n) + edp_return_name_count(b, n),
+    ELet(m, v, b, _) => edp_return_name_count(v, n) + if m == n {
+      0
+    } else {
+      edp_return_name_count(b, n)
+    },
+    ELetMut(m, v, b, _) => edp_return_name_count(v, n) + if m == n {
+      0
+    } else {
+      edp_return_name_count(b, n)
+    },
+    ELetRec(m, _, b) => if m == n {
+      0
+    } else {
+      edp_return_name_count(b, n)
+    },
+    EIf(c, t, el) => edp_return_name_count(c, n) + edp_return_name_count(t, n) + edp_return_name_count(el, n),
+    EWhile(c, b) => edp_return_name_count(c, n) + edp_return_name_count(b, n),
+    EAssign(_, v, c, _) => edp_return_name_count(v, n) + edp_return_name_count(c, n),
+    EAssignOp(_, _, v, c, _) => edp_return_name_count(v, n) + edp_return_name_count(c, n),
+    EMatch(sc, arms) => edp_return_name_count(sc, n) + edp_return_name_count_arms(arms, n),
+    EHandle(bd, arms) => edp_return_name_count(bd, n) + edp_return_name_count_arms(arms, n),
+    EForIn(m, ix, it, b) => edp_return_name_count(it, n) + if m == n || ix == Some(n) {
+      0
+    } else {
+      edp_return_name_count(b, n)
+    },
+    ELoop(pairs, b) => {
+      let mut total = 0
+      let mut shadows = false
+      for pr in pairs {
+        total = total + edp_return_name_count(pr.1, n)
+        if pr.0 == n {
+          shadows = true
+        } else {
+          ()
+        }
+      }
+      if shadows {
+        total
+      } else {
+        total + edp_return_name_count(b, n)
+      }
+    },
+    // A nested lambda's `return` is its own. Every other form binds nothing,
+    // so its children are counted as they are.
+    EFn(_, _, _, _, _, _) => 0,
+    _ => {
+      let mut total = 0
+      for c in expr_children(e) {
+        total = total + edp_return_name_count(c, n)
+      }
+      total
+    }
+  }
+}
+
+fn edp_return_name_count_arms(arms: Array[(Pat, Expr)], n: String) -> Int {
+  let mut total = 0
+  for a in arms {
+    if !edp_str_array_contains(edp_pat_names(a.0), n) {
+      total = total + edp_return_name_count(a.1, n)
+    } else {
+      ()
+    }
+  }
+  total
+}
+
+fn edp_tail_name_count_arms(arms: Array[(Pat, Expr)], n: String) -> Int {
+  let mut total = 0
+  for a in arms {
+    if !edp_str_array_contains(edp_pat_names(a.0), n) {
+      total = total + edp_tail_name_count(a.1, n)
+    } else {
+      ()
+    }
+  }
+  total
+}
+
+/// The uses of `n` in `e` that the binding around `e` reaches: a binder of `n`
+/// inside `e` hides it in its scope (Codex on #3447: `let _ = ((f: Int) ->
+/// f)(0)` is not a use of the outer `f`).
+fn edp_free_use_count(e: Expr, n: String) -> Int {
+  let marker = "#free-use"
+  edp_count_ident_uses(edp_rename_free(e, n, marker), marker)
+}
+
+/// An applied alias (`Thunk[Unit]`) whose body is a function type with a
+/// stampable row that names none of the alias's parameters, so the row reads
+/// the same at every application.
+fn edp_applied_alias_fn_type(stmts: Array[Stmt], alias: String) -> Option[TypeExpr] {
+  let mut out: Option[TypeExpr] = None
+  for st in stmts {
+    match st {
+      STypeAlias(_, an, tparams, TyFn(ps, r, Some(row))) => if an == alias && edp_slot_row_stampable(row) && !edp_row_mentions_any(row, tparams) {
+        out = Some(TyFn(ps, r, Some(row)))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// Does `row` spell any of `names` as a whole token?
+fn edp_row_mentions_any(row: String, names: Array[String]) -> Bool {
+  let mut found = false
+  let mut start = 0
+  let mut i = 0
+  let len = String::length(row)
+  while i <= len {
+    let boundary = i == len || {
+      let c = String::byte_at(row, i)
+      !(c >= 97 && c <= 122 || c >= 65 && c <= 90 || c >= 48 && c <= 57 || c == 95)
+    }
+    if boundary {
+      if i > start && edp_str_array_contains(names, String::substring(row, start, i)) {
+        found = true
+      } else {
+        ()
+      }
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The type-alias names the program declares, taken once per stamp pass
+/// (`edp_note_program_aliases`).
+let edp_program_aliases: Array[MutSet[String]] = []
+
+fn edp_note_program_aliases(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(edp_program_aliases, 0)
+  let names = MutSet::new_string()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(_, n, _, _) => MutSet::insert(names, n),
+      _ => ()
+    }
+    i = i + 1
+  }
+  Array::push(edp_program_aliases, names)
+}
+
+fn edp_is_program_alias(name: String) -> Bool {
+  Array::length(edp_program_aliases) > 0 && MutSet::has(Array::get(edp_program_aliases, 0), name)
+}
+
+/// Each arm of a `match` or `handle` stamped as a tail, its pattern's binders in
+/// scope.
+fn edp_stamp_tail_arms(arms: Array[(Pat, Expr)], slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (pp, ex) = a
+    let base = Array::length(scope)
+    for pn in edp_pat_names(pp) {
+      Array::push(scope, pn)
+    }
+    let ex2 = edp_stamp_tail(ex, slot, scope, pure_names)
+    Array::truncate(scope, base)
+    (pp, ex2)
+  }
+}
+
+/// `e` with the closure it evaluates to, in each tail position, given `slot`.
+fn edp_stamp_tail(e: Expr, slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  match e {
+    ESeq(a, b) => ESeq(a, edp_stamp_tail(b, slot, scope, pure_names)),
+    ELet(n, v, b, off) => {
+      // A closure bound here and returned by its name (`let f = () -> mk();
+      // f`) is the result itself, when the body uses the name nowhere else
+      // (Codex on #3447).
+      let v2 = edp_stamp_returned_let(n, v, b, slot, scope, pure_names)
+      Array::push(scope, n)
+      let b2 = edp_stamp_tail(b, slot, scope, pure_names)
+      Array::truncate(scope, Array::length(scope) - 1)
+      ELet(n, v2, b2, off)
+    },
+    ELetMut(n, v, b, off) => {
+      Array::push(scope, n)
+      let b2 = edp_stamp_tail(b, slot, scope, pure_names)
+      Array::truncate(scope, Array::length(scope) - 1)
+      ELetMut(n, v, b2, off)
+    },
+    // A recursive binding keeps the rest of its block as its continuation
+    // (Codex on #3447).
+    ELetRec(n, v, b) => {
+      Array::push(scope, n)
+      let b2 = edp_stamp_tail(b, slot, scope, pure_names)
+      Array::truncate(scope, Array::length(scope) - 1)
+      ELetRec(n, v, b2)
+    },
+    EIf(c, t, el) => EIf(c, edp_stamp_tail(t, slot, scope, pure_names), edp_stamp_tail(el, slot, scope, pure_names)),
+    EMatch(sc, arms) => EMatch(sc, edp_stamp_tail_arms(arms, slot, scope, pure_names)),
+    // An assignment keeps the rest of its block as its continuation, and a
+    // handle's value is its body's or an arm's (Codex on #3447).
+    EAssign(n, v, c, off) => EAssign(n, v, edp_stamp_tail(c, slot, scope, pure_names), off),
+    EAssignOp(n, op, v, c, off) => EAssignOp(n, op, v, edp_stamp_tail(c, slot, scope, pure_names), off),
+    EHandle(bd, arms) => EHandle(edp_stamp_tail(bd, slot, scope, pure_names), edp_stamp_tail_arms(arms, slot, scope, pure_names)),
+    EFn(_, _, _, _, None, lb) => if edp_literal_calls_local(e, lb, scope) {
+      e
+    } else {
+      edp_stamp_slot_arg_at(e, scope, pure_names, Some(slot))
+    },
+    EIdent(_, _) => edp_stamp_slot_arg_at(e, scope, pure_names, Some(slot)),
+    _ => e
+  }
 }
 
 /// #3347: a top-level `let side: Thunk = () -> Int { .. }` keeps its alias
@@ -293,6 +729,10 @@ fn edp_expr_passes_literal_arg(e: Expr, pure_names: MutSet[String]) -> Bool {
       ELet(_, EFn(_, _, _, _, _, _), _, _) => {
         found = true
       },
+      // A lambda that returns a closure at a declared row (Codex on #3447).
+      EFn(_, _, _, Some(TyFn(_, _, Some(_))), _, _) => {
+        found = true
+      },
       _ => ()
     }
     for child in expr_children(cur) {
@@ -308,26 +748,24 @@ fn edp_expr_passes_literal_arg(e: Expr, pure_names: MutSet[String]) -> Bool {
 /// so stamping it would turn an accepted program into a refused one; such a
 /// literal is left as written.
 fn edp_literal_calls_local(lit: Expr, body: Expr, scope: Array[String]) -> Bool {
-  let own = edp_collect_program_binders([SExpr(lit)])
-  let mut found = false
-  let stack: Array[Expr] = [body]
-  while !found && Array::length(stack) > 0 {
-    let n = Array::length(stack)
-    let cur = Array::get(stack, n - 1)
-    Array::truncate(stack, n - 1)
-    match cur {
-      ECall(EIdent(cn, _), _, _, _) => if edp_scope_has(scope, cn) || MutSet::has(own, cn) || String::starts_with(cn, "__hoisted_lam_") {
-        found = true
-      } else {
-        ()
-      },
-      _ => ()
-    }
-    for child in expr_children(cur) {
-      Array::push(stack, child)
-    }
+  // Scoped as the copy's own census is (`edp_call_census`): a call counts as
+  // the literal's own binder only where that binder is in scope, so a call to
+  // a top-level `helper` beside a `let helper` in another branch is not one
+  // (Codex on #3437). Read unscoped, it left the literal unstamped and the
+  // callee's dict met a closure of its source arity.
+  let names: Array[String] = []
+  match lit {
+    EFn(_, _, ps, _, _, _) => {
+      let mut pi = 0
+      while pi < Array::length(ps) {
+        Array::push(names, edp_param_base_name(Array::get(ps, pi).0))
+        pi = pi + 1
+      }
+    },
+    _ => ()
   }
-  found
+  let called: Array[String] = []
+  !edp_call_census(body, names, scope, called) || Array::length(called) > 0
 }
 
 /// #3424: the closure literals `let`-bound around the expression the stamp is
@@ -702,284 +1140,6 @@ fn edp_int_array_has(xs: Array[Int], x: Int) -> Bool {
   found
 }
 
-/// #3416: the parameters of a lambda whose function type carries `ename`
-/// (`edp_row_typed_param_names`) and that its body does not bind again. A call
-/// through one is passed the dict; a binder of the same name in the body would
-/// make the spelling ambiguous, so such a parameter is left out and a call
-/// through it stays unsafe.
-export fn edp_lambda_row_params(params: Array[(String, Option[TypeExpr])], body: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Array[String] {
-  // Every lambda of every needing body is asked, so the common answer (no
-  // parameter has a function type with a row) allocates nothing; the shared
-  // empty array is only ever read.
-  let mut maybe = false
-  let mut pi = 0
-  while !maybe && pi < Array::length(params) {
-    match Array::get(params, pi).1 {
-      Some(TyFn(_, _, Some(_))) => {
-        maybe = true
-      },
-      _ => ()
-    }
-    pi = pi + 1
-  }
-  if !maybe {
-    return edp_no_row_params
-  } else {
-    ()
-  }
-  let all = edp_row_typed_param_names(params, ename, es_names, es_members_list)
-  if Array::length(all) == 0 {
-    all
-  } else {
-    let out = empty_str_array()
-    for p in all {
-      if edp_expr_binds_name(body, p) {
-        ()
-      } else {
-        Array::push(out, p)
-      }
-    }
-    out
-  }
-}
-
-let edp_no_row_params: Array[String] = []
-
-/// Does `e` hold a lambda with a parameter `edp_lambda_row_params` keeps?
-fn edp_has_row_param_lambda(e: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
-  match e {
-    EFn(_, _, params, _, _, body) => Array::length(edp_lambda_row_params(params, body, ename, es_names, es_members_list)) > 0 || edp_has_row_param_lambda(body, ename, es_names, es_members_list),
-    _ => {
-      let mark = expr_children_push(e)
-      let top = expr_children_top()
-      let mut found = false
-      let mut i = mark
-      while !found && i < top {
-        found = edp_has_row_param_lambda(expr_child_at(i), ename, es_names, es_members_list)
-        i = i + 1
-      }
-      expr_children_pop(mark)
-      found
-    }
-  }
-}
-
-/// The body a needing function's eligibility scan reads (#3416). Inside a
-/// local lambda, a parameter `edp_lambda_row_params` keeps is spelled
-/// `#rowp:<name>`, which nothing binds, and that spelling is pushed to `safe`:
-/// the rewrite passes a call through the parameter the dict, as it does a call
-/// to a needing function (`edp_rewrite_needing_body`'s `EFn` arm), so the scan
-/// asks the same question of it. Without a rename the scan meets the
-/// parameter's own binder and refuses the call. The body is returned as
-/// written when it holds no such lambda.
-export fn edp_needing_scan_view(e: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]], safe: Array[String]) -> Expr {
-  if edp_has_row_param_lambda(e, ename, es_names, es_members_list) {
-    edp_scan_view_rename(e, ename, es_names, es_members_list, safe)
-  } else {
-    e
-  }
-}
-
-fn edp_scan_view_rename(e: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]], safe: Array[String]) -> Expr {
-  match e {
-    EFn(tps, tbs, params, ret, eff, body) => {
-      let mut b = edp_scan_view_rename(body, ename, es_names, es_members_list, safe)
-      for p in edp_lambda_row_params(params, body, ename, es_names, es_members_list) {
-        let spelled = String::concat("#rowp:", p)
-        b = edp_rename_free(b, p, spelled)
-        if edp_str_array_contains(safe, spelled) {
-          ()
-        } else {
-          Array::push(safe, spelled)
-        }
-      }
-      EFn(tps, tbs, params, ret, eff, b)
-    },
-    ECall(callee, args, off, res) => ECall(edp_scan_view_rename(callee, ename, es_names, es_members_list, safe), for a in args {
-      edp_scan_view_rename(a, ename, es_names, es_members_list, safe)
-    }, off, res),
-    ELet(n, v, b, off) => ELet(n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe), off),
-    ELetMut(n, v, b, off) => ELetMut(n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe), off),
-    ELetRec(n, v, b) => ELetRec(n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
-    ESeq(a, b) => ESeq(edp_scan_view_rename(a, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
-    EIf(c, t, el) => EIf(edp_scan_view_rename(c, ename, es_names, es_members_list, safe), edp_scan_view_rename(t, ename, es_names, es_members_list, safe), edp_scan_view_rename(el, ename, es_names, es_members_list, safe)),
-    EMatch(sc, arms) => EMatch(edp_scan_view_rename(sc, ename, es_names, es_members_list, safe), for a in arms {
-      let (pp, ex) = a
-      (pp, edp_scan_view_rename(ex, ename, es_names, es_members_list, safe))
-    }),
-    EHandle(bd, arms) => EHandle(edp_scan_view_rename(bd, ename, es_names, es_members_list, safe), for a in arms {
-      let (pp, ex) = a
-      (pp, edp_scan_view_rename(ex, ename, es_names, es_members_list, safe))
-    }),
-    EWhile(c, b) => EWhile(edp_scan_view_rename(c, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
-    EForIn(n, idx, it, b) => EForIn(n, idx, edp_scan_view_rename(it, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
-    ELoop(pairs, b) => ELoop(for pr in pairs {
-      let (n, v) = pr
-      (n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe))
-    }, edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
-    EBinOp(op, l, r, boff) => EBinOp(op, edp_scan_view_rename(l, ename, es_names, es_members_list, safe), edp_scan_view_rename(r, ename, es_names, es_members_list, safe), boff),
-    EUnaryOp(op, x) => EUnaryOp(op, edp_scan_view_rename(x, ename, es_names, es_members_list, safe)),
-    EAssign(n, v, c, target_off) => EAssign(n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(c, ename, es_names, es_members_list, safe), target_off),
-    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(c, ename, es_names, es_members_list, safe), target_off),
-    EReturn(x) => EReturn(edp_scan_view_rename(x, ename, es_names, es_members_list, safe)),
-    EDot(o, f, o1, o2) => EDot(edp_scan_view_rename(o, ename, es_names, es_members_list, safe), f, o1, o2),
-    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe)),
-    EBreak(opt) => EBreak(match opt {
-      Some(x) => Some(edp_scan_view_rename(x, ename, es_names, es_members_list, safe)),
-      None => None
-    }),
-    EContinue(args) => EContinue(for a in args {
-      edp_scan_view_rename(a, ename, es_names, es_members_list, safe)
-    }),
-    ETuple(items) => ETuple(for a in items {
-      edp_scan_view_rename(a, ename, es_names, es_members_list, safe)
-    }),
-    EArray(items) => EArray(for a in items {
-      edp_scan_view_rename(a, ename, es_names, es_members_list, safe)
-    }),
-    ERecord(n, fields, tas) => ERecord(n, for f in fields {
-      let (fn2, v) = f
-      (fn2, edp_scan_view_rename(v, ename, es_names, es_members_list, safe))
-    }, tas),
-    EMap(fields) => EMap(for f in fields {
-      let (fn2, v) = f
-      (fn2, edp_scan_view_rename(v, ename, es_names, es_members_list, safe))
-    }),
-    ESpread(x) => ESpread(edp_scan_view_rename(x, ename, es_names, es_members_list, safe)),
-    _ => e
-  }
-}
-
-/// `e` with its free uses of `from` spelled `to`. A binder of `from` inside
-/// `e` stops the rename in its scope.
-fn edp_rename_free(e: Expr, from: String, to: String) -> Expr {
-  match e {
-    EIdent(n, o) => if n == from {
-      EIdent(to, o)
-    } else {
-      e
-    },
-    ECall(callee, args, off, res) => ECall(edp_rename_free(callee, from, to), for a in args {
-      edp_rename_free(a, from, to)
-    }, off, res),
-    EFn(tps, tbs, params, ret, eff, body) => {
-      let mut binds = false
-      for p in params {
-        if edp_param_base_name(p.0) == from {
-          binds = true
-        } else {
-          ()
-        }
-      }
-      if binds {
-        e
-      } else {
-        EFn(tps, tbs, params, ret, eff, edp_rename_free(body, from, to))
-      }
-    },
-    ELet(n, v, b, off) => ELet(n, edp_rename_free(v, from, to), if n == from {
-      b
-    } else {
-      edp_rename_free(b, from, to)
-    }, off),
-    ELetMut(n, v, b, off) => ELetMut(n, edp_rename_free(v, from, to), if n == from {
-      b
-    } else {
-      edp_rename_free(b, from, to)
-    }, off),
-    ELetRec(n, v, b) => if n == from {
-      e
-    } else {
-      ELetRec(n, edp_rename_free(v, from, to), edp_rename_free(b, from, to))
-    },
-    ESeq(a, b) => ESeq(edp_rename_free(a, from, to), edp_rename_free(b, from, to)),
-    EIf(c, t, el) => EIf(edp_rename_free(c, from, to), edp_rename_free(t, from, to), edp_rename_free(el, from, to)),
-    EMatch(sc, arms) => EMatch(edp_rename_free(sc, from, to), for a in arms {
-      let (pp, ex) = a
-      (pp, if edp_str_array_contains(edp_pat_names(pp), from) {
-        ex
-      } else {
-        edp_rename_free(ex, from, to)
-      })
-    }),
-    EHandle(bd, arms) => EHandle(edp_rename_free(bd, from, to), for a in arms {
-      let (pp, ex) = a
-      (pp, if edp_str_array_contains(edp_pat_names(pp), from) {
-        ex
-      } else {
-        edp_rename_free(ex, from, to)
-      })
-    }),
-    EWhile(c, b) => EWhile(edp_rename_free(c, from, to), edp_rename_free(b, from, to)),
-    EForIn(n, idx, it, b) => {
-      let shadows = n == from || match idx {
-        Some(i) => i == from,
-        None => false
-      }
-      EForIn(n, idx, edp_rename_free(it, from, to), if shadows {
-        b
-      } else {
-        edp_rename_free(b, from, to)
-      })
-    },
-    ELoop(pairs, b) => {
-      let mut shadows = false
-      let pairs2 = for pr in pairs {
-        let (n, v) = pr
-        if n == from {
-          shadows = true
-        } else {
-          ()
-        }
-        (n, edp_rename_free(v, from, to))
-      }
-      ELoop(pairs2, if shadows {
-        b
-      } else {
-        edp_rename_free(b, from, to)
-      })
-    },
-    EBinOp(op, l, r, boff) => EBinOp(op, edp_rename_free(l, from, to), edp_rename_free(r, from, to), boff),
-    EUnaryOp(op, x) => EUnaryOp(op, edp_rename_free(x, from, to)),
-    EAssign(n, v, c, target_off) => EAssign(if n == from {
-      to
-    } else {
-      n
-    }, edp_rename_free(v, from, to), edp_rename_free(c, from, to), target_off),
-    EAssignOp(n, op, v, c, target_off) => EAssignOp(if n == from {
-      to
-    } else {
-      n
-    }, op, edp_rename_free(v, from, to), edp_rename_free(c, from, to), target_off),
-    EReturn(x) => EReturn(edp_rename_free(x, from, to)),
-    EDot(o, f, o1, o2) => EDot(edp_rename_free(o, from, to), f, o1, o2),
-    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_rename_free(v, from, to)),
-    EBreak(opt) => EBreak(match opt {
-      Some(x) => Some(edp_rename_free(x, from, to)),
-      None => None
-    }),
-    EContinue(args) => EContinue(for a in args {
-      edp_rename_free(a, from, to)
-    }),
-    ETuple(items) => ETuple(for a in items {
-      edp_rename_free(a, from, to)
-    }),
-    EArray(items) => EArray(for a in items {
-      edp_rename_free(a, from, to)
-    }),
-    ERecord(n, fields, tas) => ERecord(n, for f in fields {
-      let (fn2, v) = f
-      (fn2, edp_rename_free(v, from, to))
-    }, tas),
-    EMap(fields) => EMap(for f in fields {
-      let (fn2, v) = f
-      (fn2, edp_rename_free(v, from, to))
-    }),
-    ESpread(x) => ESpread(edp_rename_free(x, from, to)),
-    _ => e
-  }
-}
-
 /// Recorded by `edp_free_names` for a part it cannot read names out of (an
 /// interpolation's text), so a copy is declined rather than trusted.
 let edp_free_names_opaque = "#opaque"
@@ -1239,7 +1399,17 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
       for param in params {
         Array::push(scope, edp_param_base_name(param.0))
       }
-      let body2 = edp_stamp_expr(body, stmts, fn_defs, scope, pure_names)
+      let body1 = edp_stamp_expr(body, stmts, fn_defs, scope, pure_names)
+      // A local lambda whose declared result is a function type with a row
+      // returns a closure its caller calls with the dict, as a top-level
+      // function does (Codex on #3447).
+      let body2 = match ret {
+        Some(rty) => match edp_result_slot(stmts, rty) {
+          Some(slot) => edp_stamp_result(body1, slot, scope, pure_names),
+          None => body1
+        },
+        None => body1
+      }
       Array::truncate(scope, base)
       EFn(tps, tbs, params, ret, eff, body2)
     },
@@ -1684,20 +1854,6 @@ fn edp_scope_has(scope: Array[String], name: String) -> Bool {
 }
 
 /// A parameter's name without its labeled (`~`) or optional (`?`) marker.
-fn edp_param_base_name(pn: String) -> String {
-  let ln = String::length(pn)
-  if ln > 0 && (pn[ln - 1: ln] == "~" || pn[ln - 1: ln] == "?") {
-    pn[0: ln - 1]
-  } else {
-    pn
-  }
-}
-
-/// The names a pattern binds, read with the same census the pass uses.
-fn edp_pat_names(p: Pat) -> Array[String] {
-  let census = edp_collect_program_binders([SExpr(EMatch(EInt(0), [(p, EUnit)]))])
-  MutSet::to_array(census)
-}
 
 /// The index of the parameter of the top-level `callee` a label names, or -1.
 fn edp_param_index_by_label(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee: String, label: String) -> Int {

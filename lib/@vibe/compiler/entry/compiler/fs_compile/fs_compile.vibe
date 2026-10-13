@@ -32,7 +32,6 @@ import @vibe/compiler/core {
   apply_export_renames_stmts,
   build_export_rename_plan,
   builtin_iterator_serialized_boundary_markers,
-  collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
   collect_import_value_renames,
   dce_stmts_before_trait_desugar,
@@ -237,7 +236,7 @@ fn string_array_contains_local(items: Array[String], target: String) -> Bool {
 /// would fall back to the syntactic classifier and print raw bits. Entries for
 /// provider statements the clone does not contain match no node and stay
 /// inert.
-fn append_inline_import_alias_collision_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], file_paths: Array[String], located_file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, excluded_locals: Array[String], flat_paths: Array[String], flat_bases: Array[Int], clone_offset_delta: Array[Int], clone_offset_span: Int, clone_float_offsets_out: Array[Int]) -> Unit with Exception {
+fn append_inline_import_alias_collision_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], file_paths: Array[String], located_file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, excluded_locals: Array[String], flat_paths: Array[String], flat_bases: Array[Int], clone_offset_delta: Array[Int], clone_offset_span: Int, clone_float_offsets_out: Array[Int]) -> Array[String] with Exception {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
   let base_dir = dir_of_path(current_path)
@@ -285,6 +284,7 @@ fn append_inline_import_alias_collision_defs(merged: Array[Stmt], current_path: 
     }
     i = i + 1
   }
+  emitted
 }
 
 /// The index of `path` in the merge's flat file list. A collision ref names an
@@ -498,8 +498,11 @@ fn build_merged_stmts_inline_impl(sources: Array[(String, String)], flat_paths_o
     } else {
       namespace_private_value_stmts(path, export_renamed)
     }
-    let skipped_locals = collect_import_alias_collision_locals(stmts)
-    append_inline_import_alias_collision_defs(merged, path, stmts, file_paths, located_file_stmts, plan, import_value_rename_locals(import_renames), flat_paths_out, flat_bases_out, clone_offset_delta, clone_offset_span, clone_float_offsets_out)
+    // #3443: only the locals the fallback cloned stop being rewritten. A
+    // collision local with no value to clone (a type, a constructor) keeps
+    // its alias: dropping it left `B::plain` unresolved at codegen when `Box`
+    // also arrived through a re-export of the same module.
+    let skipped_locals = append_inline_import_alias_collision_defs(merged, path, stmts, file_paths, located_file_stmts, plan, import_value_rename_locals(import_renames), flat_paths_out, flat_bases_out, clone_offset_delta, clone_offset_span, clone_float_offsets_out)
     append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
     si = si + 1
   }

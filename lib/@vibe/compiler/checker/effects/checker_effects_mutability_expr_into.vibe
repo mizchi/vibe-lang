@@ -982,12 +982,40 @@ export fn ret_fn_rows_from_sig(topt: Option[TypeExpr]) -> Array[String] {
 /// fixed tuple shape and eight call sites, so threading a ninth parameter through
 /// it to reach one arm costs more than it buys. Set per binding by
 /// `check_perform_effects_binding_tx`, read by the walker's `EFn` arm. Walks are
-/// sequential (one binding at a time), so no save/restore stack is needed.
+/// sequential (one binding at a time). Within a walk, a nested lambda whose
+/// declared result is a function type with a row adds that row for its body's
+/// closure literals (`push_ret_fn_rows`), and the marker it leaves below the
+/// body restores the outer rows (`pop_ret_fn_rows`).
 let ret_fn_rows_cell: Array[Array[String]] = array_empty()
 
+let ret_fn_rows_saved: Array[Array[String]] = array_empty()
+
 export fn set_ret_fn_rows(rows: Array[String]) -> Unit {
+  Array::truncate(ret_fn_rows_saved, 0)
   Array::truncate(ret_fn_rows_cell, 0)
   Array::push(ret_fn_rows_cell, rows)
+}
+
+export fn ret_rows_pop_marker() -> String {
+  "#ret-rows-pop"
+}
+
+export fn push_ret_fn_rows(rows: Array[String]) -> Unit {
+  Array::push(ret_fn_rows_saved, current_ret_fn_rows())
+  Array::truncate(ret_fn_rows_cell, 0)
+  Array::push(ret_fn_rows_cell, rows)
+}
+
+export fn pop_ret_fn_rows() -> Unit {
+  let n = Array::length(ret_fn_rows_saved)
+  if n > 0 {
+    let prev = Array::get(ret_fn_rows_saved, n - 1)
+    Array::truncate(ret_fn_rows_saved, n - 1)
+    Array::truncate(ret_fn_rows_cell, 0)
+    Array::push(ret_fn_rows_cell, prev)
+  } else {
+    ()
+  }
 }
 
 export fn current_ret_fn_rows() -> Array[String] {
