@@ -300,7 +300,7 @@ fn edp_stamp_returns(e: Expr, slot: (Int, String), scope: Array[String], pure_na
     },
     ELetMut(n, v, b, off) => {
       let v1 = edp_stamp_returns(v, slot, scope, pure_names)
-      let v2 = if edp_assigns_name(b, n) {
+      let v2 = if edp_assigns_free(b, n) {
         v1
       } else {
         edp_stamp_returned_let(n, v1, b, slot, scope, pure_names)
@@ -534,9 +534,17 @@ fn edp_free_use_count(e: Expr, n: String) -> Int {
   edp_count_ident_uses(edp_rename_free(e, n, marker), marker)
 }
 
-/// Does `e` assign the name `n` anywhere, a nested lambda included? Binders
-/// are not scoped: an assignment to any binder of the spelling counts, which
-/// can only leave a closure as written.
+/// Does `e` assign the binding `n` it reaches, a nested lambda that captures it
+/// included? An inner binder of the spelling is not `n` (Codex on #3452:
+/// `let _ = { let mut f = 0; f = 1; f }`), so the free uses are renamed first,
+/// as `edp_free_use_count` does.
+fn edp_assigns_free(e: Expr, n: String) -> Bool {
+  let marker = "#free-assign"
+  edp_assigns_name(edp_rename_free(e, n, marker), marker)
+}
+
+/// Does `e` assign the name `n` anywhere? Unscoped: `edp_assigns_free` asks
+/// it of a marker no binder spells.
 fn edp_assigns_name(e: Expr, n: String) -> Bool {
   let mut found = false
   let stack: Array[Expr] = [e]
@@ -696,7 +704,7 @@ fn edp_stamp_tail(e: Expr, slot: (Int, String), scope: Array[String], pure_names
     ELetMut(n, v, b, off) => {
       // A mutable binding returned by its name is the result as an immutable
       // one is, unless the body assigns it (Codex on #3447).
-      let v2 = if edp_assigns_name(b, n) {
+      let v2 = if edp_assigns_free(b, n) {
         v
       } else {
         edp_stamp_returned_let(n, v, b, slot, scope, pure_names)
