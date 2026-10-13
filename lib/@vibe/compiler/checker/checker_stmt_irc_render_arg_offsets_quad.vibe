@@ -60,6 +60,10 @@ import @vibe/compiler/checker/type_relations {
   check_assignable_set_type_defs
 }
 
+import ./checker_merge_capture_provenance.vibe {
+  eq_formal_row_of, eq_formal_vars
+}
+
 import ./checker.vibe {
   TypedOccurrenceRoleLaneCapture,
   callee_formal_bindings,
@@ -389,7 +393,17 @@ fn irc_render_arg_offsets_quad(checked: CheckedProgram, want_a: Int, want_b: Int
 /// the literal's shape, so a Bool or Double leaf needs the row as much as an
 /// Option does.
 fn irc_render_row_key(checked: CheckedProgram, oty: Type, literal_item: Bool) -> String {
-  let t = subst_apply(checked.final_subst, oty)
+  // #3434: a render argument typed by a formal of an enclosing binder (`x:
+  // T`, `x: Option[T]`) files its row with the formal spelled by name. The
+  // interpolation pass reads it for an untyped shadowing `let`, whose type
+  // it cannot see otherwise; every reader that expands a shape still drops a
+  // row naming a formal in scope there. A literal ELEMENT keeps the plain
+  // spelling: its readers take any row they are given.
+  let t = if literal_item {
+    subst_apply(checked.final_subst, oty)
+  } else {
+    irc_render_formals_named(subst_apply(checked.final_subst, oty))
+  }
   // #3074: an applied nominal (`G[Bool]`), whose derived renderer erases its
   // formals. #3075: a `Char` / `Unit` leaf, which the runtime renderer cannot
   // tell from an Int.
@@ -416,6 +430,37 @@ fn irc_render_row_key(checked: CheckedProgram, oty: Type, literal_item: Bool) ->
   } else {
     ""
   }
+}
+
+/// #3434: `t` with each variable that is a recorded binder formal replaced by
+/// a nullary named type of the formal's source name, so the row spells it.
+/// Any other variable is left as it is, and still keeps the row absent.
+fn irc_render_formals_named(t: Type) -> Type {
+  match t {
+    CtVar(vid) => {
+      let r = eq_formal_row_of(vid)
+      if r >= 0 {
+        let (_, name) = Array::get(eq_formal_vars, r)
+        CtNamed(name, [])
+      } else {
+        t
+      }
+    },
+    CtOption(inner) => CtOption(irc_render_formals_named(inner)),
+    CtArray(inner) => CtArray(irc_render_formals_named(inner)),
+    CtTuple(items) => CtTuple(irc_render_formals_named_all(items)),
+    CtNamed(n, args) => CtNamed(n, irc_render_formals_named_all(args)),
+    CtApplied(head, args) => CtApplied(irc_render_formals_named(head), irc_render_formals_named_all(args)),
+    _ => t
+  }
+}
+
+fn irc_render_formals_named_all(ts: Array[Type]) -> Array[Type] {
+  let out: Array[Type] = []
+  for x in ts {
+    Array::push(out, irc_render_formals_named(x))
+  }
+  out
 }
 
 /// Does this occurrence's type resolve to the head tag `want` asks for?
