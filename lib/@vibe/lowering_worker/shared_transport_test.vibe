@@ -1,0 +1,137 @@
+import ./shared_transport.vibe {
+  PreludeSharedContext, decode_prelude_shared_context, decode_prelude_shared_job, write_prelude_shared_context, write_prelude_shared_job
+}
+import ./prelude_job.vibe {
+  run_prelude_module_job
+}
+import @vibe/compiler/codegen/wasi {
+  oracle_stmt_key, prelude_batch_context_indices
+}
+import @vibe/compiler/core {
+  Stmt, namespace_rename_original, namespace_rename_originals_restore
+}
+import @vibe/compiler/normalize/desugar {
+  module_trait_facts_none
+}
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+
+fn context() -> PreludeSharedContext with Exception {
+  PreludeSharedContext::{
+    interfaces: parse_program(lex("struct Point { x: Int }\nfn foreign() -> Int { 0 }")),
+    typed_offsets: [17],
+    typed_keys: ["row"],
+    facts: module_trait_facts_none(),
+    namespace_originals: [("Point", "SourcePoint")],
+    alias_renames: [("old", "new")],
+    calls_host_future: false,
+    waiter_hooks: true,
+    aw_note: "note"
+  }
+}
+fn wire(own: Array[Stmt], indices: Array[Int]) -> Bytes with Exception {
+  let b = Bytes::new()
+  write_prelude_shared_job(b, own, indices, "f7", "", "expected")
+  b
+}
+fn rendered(stmts: Array[Stmt]) -> String {
+  let rows: Array[String] = []
+  for stmt in stmts {
+    Array::push(rows, print_stmt(stmt))
+  }
+  String::join(rows, "\n")
+}
+
+test "shared context roundtrip and ordered repeated interface positions" {
+  let b = Bytes::new()
+  write_prelude_shared_context(b, context())
+  let decoded = decode_prelude_shared_context(b)
+  let again = Bytes::new()
+  write_prelude_shared_context(again, decoded)
+  inspect(again == b, content = "true")
+  let job = decode_prelude_shared_job(wire([], [1, 0, 1]), decoded, "expected")
+  inspect(Array::length(job.trait_job.interfaces), content = "3")
+  inspect(print_stmt(Array::get(job.trait_job.interfaces, 0)) == print_stmt(Array::get(decoded.interfaces, 1)), content = "true")
+  inspect(print_stmt(Array::get(job.trait_job.interfaces, 1)) == print_stmt(Array::get(decoded.interfaces, 0)), content = "true")
+  inspect(Array::get(job.trait_job.typed_offsets, 0), content = "17")
+  inspect(Array::get(job.trait_job.typed_keys, 0), content = "row")
+  inspect(Array::get(job.alias_renames, 0).0, content = "old")
+  inspect(Array::get(job.alias_renames, 0).1, content = "new")
+  inspect(job.waiter_hooks, content = "true")
+  inspect(job.aw_note, content = "note")
+}
+
+test "shared jobs refuse mismatched context bounds suffix and truncation" {
+  let shared = context()
+  let mismatch = handle {
+    let _ = decode_prelude_shared_job(wire([], []), shared, "different"); "accepted"
+  } with { Exception::Throw(msg) => msg }
+  inspect(String::contains(mismatch, "context digest"), content = "true")
+  let bounds = handle {
+    let _ = decode_prelude_shared_job(wire([], [2]), shared, "expected"); "accepted"
+  } with { Exception::Throw(msg) => msg }
+  inspect(String::contains(bounds, "interface index"), content = "true")
+  let b = wire([], [])
+  Bytes::push(b, 0)
+  let suffix = handle {
+    let _ = decode_prelude_shared_job(b, shared, "expected"); "accepted"
+  } with { Exception::Throw(msg) => msg }
+  inspect(suffix, content = "shared lowering: trailing bytes")
+  let truncated = handle {
+    let _ = decode_prelude_shared_context(Bytes::new()); false
+  } with { Exception::Throw(_) => true }
+  inspect(truncated, content = "true")
+}
+
+test "shared positions above 63 use unsigned encoding" {
+  let shared = context()
+  let mut i = 0
+  while i < 100 {
+    Array::push(shared.interfaces, Array::get(shared.interfaces, 0)); i = i + 1
+  }
+  let job = decode_prelude_shared_job(wire([], [64, 101]), shared, "expected")
+  inspect(Array::length(job.trait_job.interfaces), content = "2")
+}
+
+test "shared pool preserves provenance visibility exclusion and closure order" {
+  let own = parse_program(lex("fn owned() -> Int { 1 }"))
+  let first = parse_program(lex("fn same() -> Int { 10 }\nfn owned() -> Int { 0 }"))
+  let second = parse_program(lex("fn same() -> Int { 20 }"))
+  let (pool, indices) = prelude_batch_context_indices([own, [], []], [
+    [],
+    first,
+    second
+  ], [
+    [],
+    [
+      oracle_stmt_key(Array::get(first, 0)),
+      oracle_stmt_key(Array::get(first, 1))
+    ],
+    [oracle_stmt_key(Array::get(second, 0))]
+  ], [[2, 1, 2, 0, -1, 9], [], []])
+  inspect(Array::length(pool), content = "3")
+  inspect(Array::get(indices, 0) == [2, 0, 2], content = "true")
+  inspect(print_stmt(Array::get(pool, 0)) != print_stmt(Array::get(pool, 2)), content = "true")
+}
+
+test "two lowered jobs leave the shared context and parent namespace unchanged" {
+  let shared = context()
+  let before = Bytes::new()
+  write_prelude_shared_context(before, shared)
+  namespace_rename_originals_restore([("Point", "ParentPoint")])
+  let own = "struct Point { x: Int } derive (Show)"
+  let one = run_prelude_module_job(decode_prelude_shared_job(wire(parse_program(lex(own)), [
+    1
+  ]), shared, "expected"))
+  let two = run_prelude_module_job(decode_prelude_shared_job(wire(parse_program(lex(own)), [
+    1
+  ]), shared, "expected"))
+  inspect(rendered(one.own) == rendered(two.own), content = "true")
+  inspect(String::contains(rendered(one.own), "SourcePoint"), content = "true")
+  let after = Bytes::new()
+  write_prelude_shared_context(after, shared)
+  inspect(after == before, content = "true")
+  inspect(namespace_rename_original("Point"), content = "ParentPoint")
+  namespace_rename_originals_restore([])
+}

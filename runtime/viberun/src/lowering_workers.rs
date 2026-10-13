@@ -16,6 +16,7 @@ const INPUT_BYTES: u64 = 64 * 1024 * 1024;
 struct Plan {
     wasm: PathBuf,
     cwd: PathBuf,
+    context: Option<PathBuf>,
     queues: Vec<Vec<PathBuf>>,
 }
 
@@ -41,14 +42,25 @@ impl Plan {
         let obj = v
             .as_object()
             .ok_or_else(|| format_err!("lowering: expected plan object"))?;
-        if obj.len() != 4
+        let shared = v["version"].as_u64() == Some(2);
+        let expected = if shared { 5 } else { 4 };
+        if obj.len() != expected
             || obj
                 .keys()
-                .any(|k| !["version", "wasm", "cwd", "queues"].contains(&k.as_str()))
-            || v["version"].as_u64() != Some(1)
+                .any(|k| !["version", "wasm", "cwd", "queues", "context"].contains(&k.as_str()))
+            || (!shared && (v["version"].as_u64() != Some(1) || obj.contains_key("context")))
         {
             bail!("lowering: unsupported wave plan");
         }
+        let context = if shared {
+            let context = path(&v["context"])?;
+            if !context.is_file() || !(1..=INPUT_BYTES).contains(&context.metadata()?.len()) {
+                bail!("lowering: shared context must be a nonempty file within 64 MiB");
+            }
+            Some(context)
+        } else {
+            None
+        };
         let wasm = path(&v["wasm"])?;
         if std::fs::read(&wasm)?.get(..8) != Some(b"\0asm\x01\0\0\0") {
             bail!("lowering: worker must be a core Wasm module");
@@ -89,7 +101,12 @@ impl Plan {
             }
             queues.push(queue);
         }
-        Ok(Self { wasm, cwd, queues })
+        Ok(Self {
+            wasm,
+            cwd,
+            context,
+            queues,
+        })
     }
 }
 
@@ -152,8 +169,14 @@ pub(super) fn link(linker: &mut Linker<StoreLimits>) -> Result<()> {
                     .collect::<Vec<_>>()
                     .join("\n");
                 std::fs::write(&list, text)?;
-                let mut child =
-                    CheckerProcess::start_lowering(&plan.wasm, &plan.cwd, &list, slot, permit)?;
+                let mut child = CheckerProcess::start_lowering(
+                    &plan.wasm,
+                    &plan.cwd,
+                    &list,
+                    plan.context.as_deref(),
+                    slot,
+                    permit,
+                )?;
                 let code = child.wait().await?;
                 if code != 0 {
                     bail!("lowering: worker exited {code}: {}", child.failure_detail());
@@ -214,6 +237,36 @@ mod tests {
         let value = serde_json::json!({ "version": 1, "wasm": wasm,
             "cwd": dir.path(), "queues": [[job], [], [], []] });
         (dir, value)
+    }
+
+    #[test]
+    fn shared_plan_requires_a_bounded_context_and_exact_version() {
+        let (dir, mut value) = inputs();
+        let context = dir.path().join("shared.context");
+        std::fs::write(&context, b"context").unwrap();
+        value["version"] = serde_json::json!(2);
+        assert!(Plan::parse(&value.to_string()).is_err());
+        value["context"] = serde_json::json!(context);
+        assert_eq!(
+            Plan::parse(&value.to_string()).unwrap().context,
+            Some(context.clone())
+        );
+        value["version"] = serde_json::json!(1);
+        assert!(Plan::parse(&value.to_string()).is_err());
+        value["version"] = serde_json::json!(2);
+        value["extra"] = serde_json::json!(true);
+        assert!(Plan::parse(&value.to_string()).is_err());
+        value.as_object_mut().unwrap().remove("extra");
+        std::fs::write(&context, b"").unwrap();
+        assert!(Plan::parse(&value.to_string()).is_err());
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&context)
+            .unwrap();
+        file.set_len(INPUT_BYTES + 1).unwrap();
+        assert!(Plan::parse(&value.to_string()).is_err());
+        std::fs::remove_file(&context).unwrap();
+        assert!(Plan::parse(&value.to_string()).is_err());
     }
 
     #[test]

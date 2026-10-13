@@ -299,6 +299,7 @@ impl CheckerProcess {
         wasm: &Path,
         cwd: &Path,
         list: &Path,
+        context: Option<&Path>,
         slot: usize,
         permit: SlotPermit,
     ) -> Result<Self> {
@@ -312,6 +313,11 @@ impl CheckerProcess {
             .stdout(Stdio::null())
             .stderr(stderr)
             .env("VIBE_LOWERING_WORKER_LIST", list);
+        if let Some(context) = context {
+            command.env("VIBE_LOWERING_SHARED_CONTEXT", context);
+        } else {
+            command.env_remove("VIBE_LOWERING_SHARED_CONTEXT");
+        }
         for name in [
             "VIBE_LOWERING_SERVICE_CONFIG",
             "VIBE_LOWERING_WORKERS",
