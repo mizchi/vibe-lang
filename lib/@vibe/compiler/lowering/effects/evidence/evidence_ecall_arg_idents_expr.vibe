@@ -252,12 +252,12 @@ fn edp_result_slot(stmts: Array[Stmt], rty: TypeExpr) -> Option[(Int, String)] {
   let resolved = match rty {
     TyFn(_, _, Some(_)) => Some(rty),
     TyName(an) => if edp_is_program_alias(an) {
-      edp_alias_fn_type(stmts, rty)
+      edp_result_alias_fn_type(stmts, rty)
     } else {
       None
     },
     TyApp(an, _) => if edp_is_program_alias(an) {
-      edp_applied_alias_fn_type(stmts, an)
+      edp_result_alias_fn_type(stmts, rty)
     } else {
       None
     },
@@ -299,7 +299,12 @@ fn edp_stamp_returns(e: Expr, slot: (Int, String), scope: Array[String], pure_na
       ELetRec(n, v, b2)
     },
     ELetMut(n, v, b, off) => {
-      let v2 = edp_stamp_returns(v, slot, scope, pure_names)
+      let v1 = edp_stamp_returns(v, slot, scope, pure_names)
+      let v2 = if edp_assigns_name(b, n) {
+        v1
+      } else {
+        edp_stamp_returned_let(n, v1, b, slot, scope, pure_names)
+      }
       Array::push(scope, n)
       let b2 = edp_stamp_returns(b, slot, scope, pure_names)
       Array::truncate(scope, Array::length(scope) - 1)
@@ -529,20 +534,84 @@ fn edp_free_use_count(e: Expr, n: String) -> Int {
   edp_count_ident_uses(edp_rename_free(e, n, marker), marker)
 }
 
-/// An applied alias (`Thunk[Unit]`) whose body is a function type with a
-/// stampable row that names none of the alias's parameters, so the row reads
-/// the same at every application.
-fn edp_applied_alias_fn_type(stmts: Array[Stmt], alias: String) -> Option[TypeExpr] {
-  let mut out: Option[TypeExpr] = None
-  for st in stmts {
-    match st {
-      STypeAlias(_, an, tparams, TyFn(ps, r, Some(row))) => if an == alias && edp_slot_row_stampable(row) && !edp_row_mentions_any(row, tparams) {
-        out = Some(TyFn(ps, r, Some(row)))
+/// Does `e` assign the name `n` anywhere, a nested lambda included? Binders
+/// are not scoped: an assignment to any binder of the spelling counts, which
+/// can only leave a closure as written.
+fn edp_assigns_name(e: Expr, n: String) -> Bool {
+  let mut found = false
+  let stack: Array[Expr] = [e]
+  while !found && Array::length(stack) > 0 {
+    let k = Array::length(stack)
+    let cur = Array::get(stack, k - 1)
+    Array::truncate(stack, k - 1)
+    match cur {
+      EAssign(m, _, _, _) => if m == n {
+        found = true
+      } else {
+        ()
+      },
+      EAssignOp(m, _, _, _, _) => if m == n {
+        found = true
       } else {
         ()
       },
       _ => ()
     }
+    for c in expr_children(cur) {
+      Array::push(stack, c)
+    }
+  }
+  found
+}
+
+/// The function type a declared result spelled through an alias names,
+/// following an alias of an alias, bare or applied, as the checker's
+/// `dh_expand_type_alias` does (Codex on #3447: `type Gen[T] = Thunk`). An
+/// applied alias's arguments are not substituted, so a row that names one of
+/// its parameters is not read; the step bound stops a cycle.
+fn edp_result_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] {
+  let mut cur = ty
+  let mut out: Option[TypeExpr] = None
+  let mut steps = 0
+  let mut done = false
+  while !done && steps < 32 {
+    let head = match cur {
+      TyName(an) => an,
+      TyApp(an, _) => an,
+      _ => ""
+    }
+    let mut next: Option[(Array[String], TypeExpr)] = None
+    if String::length(head) > 0 {
+      for st in stmts {
+        match st {
+          STypeAlias(_, an, tparams, body) => if an == head {
+            next = Some((tparams, body))
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      }
+    } else {
+      ()
+    }
+    match next {
+      Some((tparams, TyFn(ps, r, Some(row)))) => {
+        if edp_slot_row_stampable(row) && !edp_row_mentions_any(row, tparams) {
+          out = Some(TyFn(ps, r, Some(row)))
+        } else {
+          ()
+        }
+        done = true
+      },
+      Some((_, body)) => {
+        cur = body
+      },
+      None => {
+        done = true
+      }
+    }
+    steps = steps + 1
   }
   out
 }
@@ -625,10 +694,17 @@ fn edp_stamp_tail(e: Expr, slot: (Int, String), scope: Array[String], pure_names
       ELet(n, v2, b2, off)
     },
     ELetMut(n, v, b, off) => {
+      // A mutable binding returned by its name is the result as an immutable
+      // one is, unless the body assigns it (Codex on #3447).
+      let v2 = if edp_assigns_name(b, n) {
+        v
+      } else {
+        edp_stamp_returned_let(n, v, b, slot, scope, pure_names)
+      }
       Array::push(scope, n)
       let b2 = edp_stamp_tail(b, slot, scope, pure_names)
       Array::truncate(scope, Array::length(scope) - 1)
-      ELetMut(n, v, b2, off)
+      ELetMut(n, v2, b2, off)
     },
     // A recursive binding keeps the rest of its block as its continuation
     // (Codex on #3447).
