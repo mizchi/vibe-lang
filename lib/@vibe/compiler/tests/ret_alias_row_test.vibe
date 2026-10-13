@@ -1,0 +1,20 @@
+import ./checker_parity_test_support.vibe {
+  check_source_error_message, check_source_ok
+}
+
+// #3450: a declared result spelled through an alias declares the row of the
+// function type it names, as the written arrow does. The returned closure's
+// call to `mk` was charged to `mid_alias` itself: "missing { Box[Int] }".
+fn src(decl: String) -> String {
+  String::concat("effect Box[T] {\n  Put(T) -> Int\n}\nfn mk() -> Int with Box[Int] {\n  perform Box::Put(12345)\n}\ntype Thunk = () -> Int with Box[Int]\ntype Gen[T] = () -> Int with Box[Int]\n", decl)
+}
+
+test "a closure returned at an aliased row is the result's, not the function's" {
+  assert(check_source_ok(src("fn mid_written() -> (() -> Int with Box[Int]) {\n  () -> mk()\n}\n")))
+  assert(check_source_ok(src("fn mid_alias() -> Thunk {\n  () -> mk()\n}\n")))
+  assert(check_source_ok(src("fn mid_applied() -> Gen[Unit] {\n  () -> mk()\n}\n")))
+}
+
+test "an alias does not excuse a perform the function makes itself" {
+  inspect(String::contains(check_source_error_message(src("fn mid_alias() -> Thunk {\n  let _ = mk()\n  () -> mk()\n}\n")), "missing { Box[Int] }"), "true")
+}
