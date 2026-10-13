@@ -45,7 +45,7 @@ import ./type_name_occurrences.vibe {
 }
 
 import ./type_names.vibe {
-  fn_body_tail_expr
+  fn_body_tail_expr, lookup_var_type, render_mask_key
 }
 
 import ./witness_targets.vibe {
@@ -102,7 +102,13 @@ export fn bind_let_env(var_types: Array[(String, String)], name: String, val: Ex
 export fn bind_let_env_into(out: Array[(String, String)], name: String, val: Expr, inferred: Option[String], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   match inferred {
     Some(tname) => Array::push(out, (name, tname)),
-    None => ()
+    // #3434: a shadowing binding the renderer cannot type must not render
+    // through the outer one's entry (`"\{b}"` printed `None` for 5). Only
+    // the renderer reads the mask; see `render_masked`.
+    None => match lookup_var_type(out, name) {
+      Some(_) => Array::push(out, (render_mask_key(name), "")),
+      None => ()
+    }
   }
   dtd_mask_shadowed_fn_into(out, name, fn_returns)
   bind_impl_target_key_into(out, name, val, struct_sets, fn_returns)

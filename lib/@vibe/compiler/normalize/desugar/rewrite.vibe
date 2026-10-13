@@ -260,6 +260,7 @@ import ./type_names.vibe {
   fn_exists,
   lookup_var_type,
   prepend_expr,
+  render_masked,
   struct_set_has,
   struct_set_member
 }
@@ -703,11 +704,25 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Ar
 
 fn interp_expand_checked(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
   dtd_check_top_interp(arg, dict_binds, traits, struct_sets, var_types, fn_returns)
-  let head = match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
-    Some(h) => h,
-    None => ""
+  // #3434: a name whose innermost binding this pass could not type is read as
+  // a fresh name, not through an outer binding's stale entry.
+  let masked = match arg {
+    EIdent(n, _) => render_masked(var_types, n),
+    _ => false
   }
-  let syn_sh = interp_shape(infer_shape(arg, struct_sets, var_types, fn_returns))
+  let head = if masked {
+    ""
+  } else {
+    match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+      Some(h) => h,
+      None => ""
+    }
+  }
+  let syn_sh = if masked {
+    ""
+  } else {
+    interp_shape(infer_shape(arg, struct_sets, var_types, fn_returns))
+  }
   // #3066: where this pass expands the argument itself, the checker's type
   // (a render row) outranks the syntactic shape. The syntax is exact for a
   // literal, but a payload it cannot type -- `Some(k())` through a local
