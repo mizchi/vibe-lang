@@ -2,7 +2,13 @@ import ./prelude_job.vibe {
   PreludeModuleJob, run_prelude_module_job
 }
 import ./module_job.vibe {
-  ModuleLoweringJob
+  ModuleLoweringJob, ModuleLoweringProduct
+}
+import @vibe/compiler/cache {
+  ast_binary_write_string, ast_binary_write_varint
+}
+import ./transport.vibe {
+  encode_module_lowering_product
 }
 import @vibe/compiler/normalize/desugar {
   module_trait_facts_none
@@ -55,4 +61,45 @@ test "module prelude wire refuses trailing input" {
     let _ = decode_prelude_module_job(wire); "accepted"
   } with { Exception::Throw(msg) => msg }
   inspect(outcome, content = "prelude module: trailing bytes")
+}
+
+test "module product child length cannot consume the following envelope fields" {
+  let product = run_prelude_module_job(sample_job())
+  let inner = encode_module_lowering_product(ModuleLoweringProduct::{
+    own: product.own,
+    synthesized: [],
+    synthesis_requests: product.synthesis_requests,
+    deferred: product.deferred,
+    invisible_nominals: product.invisible_nominals
+  })
+  for delta in [0 - 1, 1] {
+    let bytes = Bytes::new()
+    ast_binary_write_string(bytes, "vibe-prelude-module-product-1")
+    ast_binary_write_string(bytes, product.module_tag)
+    ast_binary_write_varint(bytes, Bytes::length(inner) + delta)
+    Bytes::append(bytes, inner)
+    // Keep all envelope fields physically present; only the child bound changes.
+    let mut i = 0
+    while i < 7 {
+      Bytes::push(bytes, 0); i = i + 1
+    }
+    let outcome = handle {
+      let _ = decode_prelude_module_product(bytes); "accepted"
+    } with { Exception::Throw(msg) => msg }
+    inspect(outcome == "accepted", content = "false")
+  }
+}
+
+test "decoded module products own their strings across input buffer reuse" {
+  let product = run_prelude_module_job(sample_job())
+  let bytes = encode_prelude_module_product(product)
+  let decoded = decode_prelude_module_product(bytes)
+  let expected = encode_prelude_module_product(decoded)
+  let mut i = 0
+  while i < Bytes::length(bytes) {
+    Bytes::set(bytes, i, 0); i = i + 1
+  }
+  inspect(encode_prelude_module_product(decoded) == expected, content = "true")
+  inspect(Array::get(decoded.inline_names, 0), content = "raw")
+  inspect(Array::get(decoded.inline_wats, 0), content = "(i64.const 7)")
 }
