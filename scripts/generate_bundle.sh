@@ -1016,14 +1016,18 @@ merge_flatten_tool_fingerprint() {
 SEED_COMPILE_MEMORY_CEILING=4294967296
 seed_compile_memory_note() {
   local log="$1" label="$2"
-  local allocated
+  local allocated peak
   allocated="$(sed -n 's/.*vibe::mem .*allocated=\([0-9][0-9]*\).*/\1/p' "$log" 2>/dev/null | tail -1)"
-  [ -n "$allocated" ] || return 0
-  local headroom=$(( SEED_COMPILE_MEMORY_CEILING - allocated ))
+  peak="$(sed -n 's/.*vibe::mem .*heap_peak=\([0-9][0-9]*\).*/\1/p' "$log" 2>/dev/null | tail -1)"
+  [ -n "$allocated" ] && [ -n "$peak" ] || return 0
+  # The ceiling bounds the heap's highest address, so the headroom is read
+  # from the peak; `allocated` leaves out the heap base below it (Codex on
+  # #3447).
+  local headroom=$(( SEED_COMPILE_MEMORY_CEILING - peak ))
   if [ "$headroom" -lt $(( 16 * 1048576 )) ]; then
-    echo "generate_bundle: $label ran the seed out of wasm32 memory: it allocated $allocated of $SEED_COMPILE_MEMORY_CEILING bytes. The seed compiles the whole compiler here without freeing, so a change that makes the compiler source more expensive to compile can cross the ceiling; see #3439." >&2
+    echo "generate_bundle: $label ran the seed out of wasm32 memory: its heap reached $peak of $SEED_COMPILE_MEMORY_CEILING bytes. The seed compiles the whole compiler here without freeing, so a change that makes the compiler source more expensive to compile can cross the ceiling; see #3439." >&2
   else
-    echo "generate_bundle: $label allocated $allocated bytes, $(( headroom / 1048576 )) MiB under the wasm32 ceiling (#3439)" >&2
+    echo "generate_bundle: $label allocated $allocated bytes; its heap peaked $(( headroom / 1048576 )) MiB under the wasm32 ceiling (#3439)" >&2
   fi
 }
 

@@ -225,47 +225,58 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
 /// parameter's; one that calls a local closure is left as written.
 fn edp_stamp_returned_closure(stmts: Array[Stmt], i: Int, pure_names: MutSet[String]) -> Unit {
   match Array::get(stmts, i) {
-    SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(rty), eff, fb)) => {
-      // A declared result spelled through an alias (`fn mid() -> Thunk`) is
-      // expanded as an alias-annotated binding's is (Codex on #3447).
-      // Only a name the program declares as an alias is looked up: every
-      // function with a named result reaches this, and a scan of the
-      // program per function cost the selfcompile KPI 3.6 MB.
-      let resolved = match rty {
-        TyFn(_, _, Some(_)) => Some(rty),
-        TyName(an) => if edp_is_program_alias(an) {
-          edp_alias_fn_type(stmts, rty)
-        } else {
-          None
-        },
-        TyApp(an, _) => if edp_is_program_alias(an) {
-          edp_applied_alias_fn_type(stmts, an)
-        } else {
-          None
-        },
-        _ => None
-      }
-      match resolved {
-        Some(TyFn(rptys, _, Some(rrow))) => if edp_slot_row_stampable(rrow) {
-          let scope: Array[String] = []
-          let mut pi = 0
-          while pi < Array::length(ps) {
-            Array::push(scope, edp_param_base_name(Array::get(ps, pi).0))
-            pi = pi + 1
-          }
-          let slot = (Array::length(rptys), rrow)
-          // A `return` anywhere in the body hands its value to the caller as
-          // the tail does (Codex on #3447).
-          let fb2 = edp_stamp_tail(edp_stamp_returns(fb, slot, scope, pure_names), slot, scope, pure_names)
-          Array::set(stmts, i, SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(rty), eff, fb2)))
-        } else {
-          ()
-        },
-        _ => ()
-      }
+    SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(rty), eff, fb)) => match edp_result_slot(stmts, rty) {
+      Some(slot) => {
+        let scope: Array[String] = []
+        let mut pi = 0
+        while pi < Array::length(ps) {
+          Array::push(scope, edp_param_base_name(Array::get(ps, pi).0))
+          pi = pi + 1
+        }
+        Array::set(stmts, i, SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(rty), eff, edp_stamp_result(fb, slot, scope, pure_names))))
+      },
+      None => ()
     },
     _ => ()
   }
+}
+
+/// The slot (arity and row) a declared result `rty` gives the closure a
+/// function returns, when it is a function type with a stampable row.
+fn edp_result_slot(stmts: Array[Stmt], rty: TypeExpr) -> Option[(Int, String)] {
+  // A declared result spelled through an alias (`fn mid() -> Thunk`) is
+  // expanded as an alias-annotated binding's is (Codex on #3447).
+  // Only a name the program declares as an alias is looked up: every
+  // function with a named result reaches this, and a scan of the
+  // program per function cost the selfcompile KPI 3.6 MB.
+  let resolved = match rty {
+    TyFn(_, _, Some(_)) => Some(rty),
+    TyName(an) => if edp_is_program_alias(an) {
+      edp_alias_fn_type(stmts, rty)
+    } else {
+      None
+    },
+    TyApp(an, _) => if edp_is_program_alias(an) {
+      edp_applied_alias_fn_type(stmts, an)
+    } else {
+      None
+    },
+    _ => None
+  }
+  match resolved {
+    Some(TyFn(rptys, _, Some(rrow))) => if edp_slot_row_stampable(rrow) {
+      Some((Array::length(rptys), rrow))
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// A function body `fb` with the closure it returns stamped at `slot`: each
+/// tail position, and the value of every `return` in it (Codex on #3447).
+fn edp_stamp_result(fb: Expr, slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  edp_stamp_tail(edp_stamp_returns(fb, slot, scope, pure_names), slot, scope, pure_names)
 }
 
 /// `e` with each `return`'s value stamped as a tail is. A nested lambda's
@@ -343,7 +354,32 @@ fn edp_stamp_returns(e: Expr, slot: (Int, String), scope: Array[String], pure_na
       Array::truncate(scope, base)
       (pp, ex2)
     }),
+    // A `return` inside an operand, an argument or an aggregate's element
+    // leaves the function as well (Codex on #3447: `[1, if c { return f }
+    // else { 2 }]`).
+    ECall(callee, args, off, res) => ECall(edp_stamp_returns(callee, slot, scope, pure_names), edp_stamp_returns_all(args, slot, scope, pure_names), off, res),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_stamp_returns(l, slot, scope, pure_names), edp_stamp_returns(r, slot, scope, pure_names), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, edp_stamp_returns(x, slot, scope, pure_names)),
+    EDot(o, f, o1, o2) => EDot(edp_stamp_returns(o, slot, scope, pure_names), f, o1, o2),
+    ELabeledArg(l, ln, v) => ELabeledArg(l, ln, edp_stamp_returns(v, slot, scope, pure_names)),
+    EBreak(Some(x)) => EBreak(Some(edp_stamp_returns(x, slot, scope, pure_names))),
+    EContinue(args) => EContinue(edp_stamp_returns_all(args, slot, scope, pure_names)),
+    ETuple(items) => ETuple(edp_stamp_returns_all(items, slot, scope, pure_names)),
+    EArray(items) => EArray(edp_stamp_returns_all(items, slot, scope, pure_names)),
+    ERecord(rn, fields, tas) => ERecord(rn, for f in fields {
+      (f.0, edp_stamp_returns(f.1, slot, scope, pure_names))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      (f.0, edp_stamp_returns(f.1, slot, scope, pure_names))
+    }),
+    ESpread(x) => ESpread(edp_stamp_returns(x, slot, scope, pure_names)),
     _ => e
+  }
+}
+
+fn edp_stamp_returns_all(es: Array[Expr], slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Array[Expr] {
+  for x in es {
+    edp_stamp_returns(x, slot, scope, pure_names)
   }
 }
 
@@ -448,7 +484,16 @@ fn edp_return_name_count(e: Expr, n: String) -> Int {
         total + edp_return_name_count(b, n)
       }
     },
-    _ => 0
+    // A nested lambda's `return` is its own. Every other form binds nothing,
+    // so its children are counted as they are.
+    EFn(_, _, _, _, _, _) => 0,
+    _ => {
+      let mut total = 0
+      for c in expr_children(e) {
+        total = total + edp_return_name_count(c, n)
+      }
+      total
+    }
   }
 }
 
@@ -682,6 +727,10 @@ fn edp_expr_passes_literal_arg(e: Expr, pure_names: MutSet[String]) -> Bool {
       // A row-free one may take a row from its uses; one with a row is
       // bound under a name of its own (`edp_unique_row_lit_name`, #3416).
       ELet(_, EFn(_, _, _, _, _, _), _, _) => {
+        found = true
+      },
+      // A lambda that returns a closure at a declared row (Codex on #3447).
+      EFn(_, _, _, Some(TyFn(_, _, Some(_))), _, _) => {
         found = true
       },
       _ => ()
@@ -1350,7 +1399,17 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
       for param in params {
         Array::push(scope, edp_param_base_name(param.0))
       }
-      let body2 = edp_stamp_expr(body, stmts, fn_defs, scope, pure_names)
+      let body1 = edp_stamp_expr(body, stmts, fn_defs, scope, pure_names)
+      // A local lambda whose declared result is a function type with a row
+      // returns a closure its caller calls with the dict, as a top-level
+      // function does (Codex on #3447).
+      let body2 = match ret {
+        Some(rty) => match edp_result_slot(stmts, rty) {
+          Some(slot) => edp_stamp_result(body1, slot, scope, pure_names),
+          None => body1
+        },
+        None => body1
+      }
       Array::truncate(scope, base)
       EFn(tps, tbs, params, ret, eff, body2)
     },
