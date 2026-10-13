@@ -4,15 +4,37 @@ import @vibe/blake3/simd {
 import ./prelude_transport.vibe {
   decode_prelude_module_job, encode_prelude_module_product
 }
+import ./shared_transport.vibe {
+  decode_prelude_shared_context, decode_prelude_shared_job
+}
 import ./prelude_job.vibe {
   run_prelude_module_job
 }
 fn main() -> Unit allows Env + Exception + Fs {
+  let context_path = Env::get("VIBE_LOWERING_SHARED_CONTEXT")
+  let context_bytes = if context_path == "" {
+    Bytes::new()
+  } else {
+    Fs::read_bytes(context_path)
+  }
+  let context = if context_path == "" {
+    None
+  } else {
+    Some(decode_prelude_shared_context(context_bytes))
+  }
+  let context_digest = if context_path == "" {
+    ""
+  } else {
+    blake3_bytes_simd(context_bytes)
+  }
   let list = Fs::read_file(Env::get("VIBE_LOWERING_WORKER_LIST"))
   for path in String::split(list, "\n") {
     if path != "" {
       let input = Fs::read_bytes(path)
-      let job = decode_prelude_module_job(input)
+      let job = match context {
+        None => decode_prelude_module_job(input),
+        Some(shared) => decode_prelude_shared_job(input, shared, context_digest)
+      }
       let product = run_prelude_module_job(job)
       let output = encode_prelude_module_product(product)
       Fs::write_bytes(path + ".product", output)

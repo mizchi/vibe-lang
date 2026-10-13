@@ -61,6 +61,7 @@ def main():
             report = json.loads(trace.read_text())
             assert report["modules"] == 67 and report["workers"] == jobs, report
             assert report["preparation_count"] == 1 and report["replay_ms"] == 0, report
+            assert report["context_serialization_count"] == 1 and report["shared_context_bytes"] > 0, report
             assert report["finalize_ms"] > 0 and "encoding" in report["phase_scope"], report
             assert len(report["waves"]) >= 2, report
             assert report["peak_queued_jobs"] <= 16 * jobs, report
@@ -197,7 +198,13 @@ try {
                          " if os.environ.get('LOWERING_TEST_MUTATION') == 'job':\n"
                          "  plan=json.loads(Path(os.environ['VIBE_LOWERING_WORKERS']).read_text())\n"
                          "  p=Path(next(p for q in plan['queues'] for p in q))\n"
-                         "  p.write_bytes(p.read_bytes().replace(b'f0',b'g0',1))\n"
+                         "  old=p.read_bytes(); new=old.replace(b'\\x02f0',b'\\x02g0',1); assert new != old\n"
+                         "  p.write_bytes(new)\n"
+                         " elif os.environ.get('LOWERING_TEST_MUTATION') == 'context':\n"
+                         "  plan=json.loads(Path(os.environ['VIBE_LOWERING_WORKERS']).read_text())\n"
+                         "  p=Path(plan['context']); old=p.read_bytes()\n"
+                         "  new=old.replace(b'f0',b'g0',1); assert new != old\n"
+                         "  p.write_bytes(new)\n"
                          " elif os.environ.get('LOWERING_TEST_MUTATION') == 'worker-failure':\n"
                          "  sys.exit(23)\n"
                          " elif os.environ.get('LOWERING_TEST_MUTATION') == 'symlink':\n"
@@ -230,7 +237,8 @@ try {
              "VIBE_LOWERING_ARTIFACT_DIR": str(altered), "LOWERING_TEST_MUTATION": "job"}, expected=1)
         assert not output.exists() and not trace.exists(), result
         assert "product does not match its prepared input" in result.stderr, result
-        for mutation, message in [("import", "inputs changed after preparation"),
+        for mutation, message in [("context", "context digest does not match the prepared input"),
+                                  ("import", "inputs changed after preparation"),
                                   ("symlink", "inputs changed after preparation"),
                                   ("worker-failure", "coordinator exited 23")]:
             label = f"refuse-{mutation}"

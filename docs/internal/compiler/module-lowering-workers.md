@@ -100,9 +100,18 @@ The old per-module executor and the batch executor share a scope guard, restore
 the sequential path on success or exception, and refuse nested scopes. Oracle
 observations still use the sequential path.
 
-Job inputs use two reusable 64 MiB raw Bytes buffers; product storage is reused
-up to the largest product seen so far. The codecs preserve the existing wire
-format. Decoding copies strings and AST values, so later buffer reuse cannot
+The parent serializes a shared interface pool, typed equality rows, trait facts,
+namespace originals and prelude environment once. Pool positions retain each
+source declaration, including equal names with different contents. Each job
+contains its owned AST and the exact ordered positions selected by the existing
+import closure and own-key exclusion. Workers decode the shared context once
+per instance, before their bounded job loop; each wave still starts fresh
+instances. The shared-job format carries the context's BLAKE3 digest, bound by
+the existing parent-validated input receipt. The native service also verifies
+the context file after each wave. Legacy standalone job codecs remain available.
+
+Inputs and shared context use one reusable 64 MiB raw Bytes buffer; product
+storage is reused up to the largest product seen so far. Decoding copies strings and AST values, so later buffer reuse cannot
 change a merged module. This bounds retained transfer buffers; it does not
 reclaim every temporary allocation made by the decoder or compiler. A fresh
 cold CLI compile exhausted wasm32 memory before the buffer reuse fix.
@@ -130,7 +139,7 @@ also preserves the previous output.
 
 Outstanding worker inputs are bounded; total compiler memory is not thereby
 bounded. Preparation still holds the whole raw AST. The retained parent keeps preparation
-allocations live through worker execution, while job context encoding, product
+allocations live through worker execution, while job encoding, product
 decoding and final codegen remain serial. Full-build walltime includes these
 costs and transport digest computation. The
 route is opt-in dogfood until coordinator-inclusive cold/warm measurements
@@ -187,6 +196,49 @@ The new service's `worker_ms` includes parent encoding, decoding and merging,
 so it cannot be compared directly with the old worker-only phase field.
 
 One preparation improves TaskGroup walltime and warm RSS, but raises cold RSS
-and remains slower than serial split. This route therefore stays opt-in. The
-next step is to share immutable context once, then reduce retained products,
-and only then assess higher worker counts.
+and remains slower than serial split. This route therefore stays opt-in. The shared-context transport above is the next optimization. Retained products
+and higher worker counts still need separate full-build measurements.
+
+
+## Shared immutable context measurements (2026-10-13)
+
+The [raw report](../../../bench/perf/analysis/module-shared-context-2026-10-13.json)
+compares merged retained-parent baseline `b26188a4` with shared-context transport
+on one frozen corpus. It records the pre-edit baseline and volume probe,
+48 final full builds, source/artifact hashes and the measurement harness.
+Three rounds alternate old/new TaskGroup 2 cold/warm pairs with isolated
+parsed-source caches; other guest caches are off and native JIT is primed.
+No local builds, tests or edits overlap measurements.
+
+| full build | retained-parent TG2 | shared-context TG2 | wall change | summed RSS, old → new | RSS change | candidate serial split | baseline ordinary whole |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| compiler cold | 16.87 s | 15.16 s | -10.2% | 1,228 → 1,198 MiB | -2.4% | 13.08 s | 6.02 s |
+| compiler warm | 12.40 s | 10.78 s | -13.0% | 844 → 822 MiB | -2.7% | 9.01 s | 4.13 s |
+| CLI cold | 48.19 s | 43.45 s | -9.8% | 3,198 → 3,095 MiB | -3.2% | 33.24 s | 16.80 s |
+| CLI warm | 38.52 s | 34.06 s | -11.6% | 2,450 → 2,365 MiB | -3.4% | 24.70 s | 12.32 s |
+
+Each cell is the median of three runs. The 36 TaskGroup and serial-split
+outputs are byte-identical per subject. Ordinary whole builds produce a
+different Wasm and are separately consistent across their 12 control runs.
+RSS samples sum the process tree every 25 ms, can double-count shared pages,
+and do not measure allocation volume.
+
+Parent serialization falls from 40,208,406 to 8,410,453 bytes for 324 compiler
+modules (-79.1%), and from 144,308,880 to 64,982,064 bytes for 619 CLI modules
+(-55.0%). The shared files are 472,168 and 888,865 bytes respectively. Those
+totals count each shared file once at the parent; fresh worker instances still
+read and decode it once per wave. Context files and each wave's queued jobs
+have separate 64 MiB limits, and slot queues retain the 16-job bound.
+
+The native wave protocol uses version 2 with an explicit context path. Version
+1 remains available for legacy standalone jobs and removes inherited shared
+context settings. Unsupported fields, missing/empty/oversized contexts and
+wrong job context digests are refused. Context mutation after preparation is
+also checked before products merge. Interface positions preserve provenance,
+closure order, duplicates and own-key exclusions; workers do not expose every
+pool declaration to every job.
+
+Sharing improves both temperatures but leaves cold RSS near 1.2/3.0 GiB and
+TaskGroup 2 slower than serial split. Default enablement stays off. Next:
+reduce retained product and decode allocations, then measure higher worker
+counts only after that memory work.

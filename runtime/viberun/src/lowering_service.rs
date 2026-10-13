@@ -282,6 +282,16 @@ pub(super) fn run(caller: &mut Caller<'_, HostState>, count: i64) -> Result<i64>
     caller.data_mut().lowering_service_used = true;
     let started = caller.data().start_instant.elapsed().as_secs_f64() * 1000.0;
     let service_start = Instant::now();
+    let pointer = callback(caller, "lowering_shared_context", &[])?;
+    let context = vibe_read_packed_bytes(caller, pointer)?;
+    if context.is_empty() || context.len() > INPUT_LIMIT {
+        bail!("lowering: shared context exceeds 64 MiB input limit");
+    }
+    let context_bytes = context.len();
+    let context_hash: [u8; 32] = Sha256::digest(&context).into();
+    let context_path = directory.join("shared.context");
+    std::fs::write(&context_path, context)?;
+    callback(caller, "lowering_input_release", &[])?;
     let mut waves = Vec::new();
     let mut next = 0_usize;
     let mut peak_jobs = 0;
@@ -328,7 +338,7 @@ pub(super) fn run(caller: &mut Caller<'_, HostState>, count: i64) -> Result<i64>
         std::fs::write(
             &wave,
             serde_json::to_vec(&serde_json::json!({
-                "version":1, "wasm":worker, "cwd":cwd, "queues":queues,
+                "version":2, "wasm":worker, "cwd":cwd, "queues":queues, "context":context_path,
             }))?,
         )?;
         let before = Instant::now();
@@ -351,6 +361,15 @@ pub(super) fn run(caller: &mut Caller<'_, HostState>, count: i64) -> Result<i64>
             .as_ref()
             .ok_or_else(|| format_err!("lowering: missing input snapshot"))?
             .verify()?;
+        let mut context = Vec::new();
+        std::fs::File::open(&context_path)?
+            .take(INPUT_LIMIT as u64 + 1)
+            .read_to_end(&mut context)?;
+        if context.len() != context_bytes
+            || <[u8; 32]>::from(Sha256::digest(&context)) != context_hash
+        {
+            bail!("lowering: shared context changed after preparation");
+        }
         for index in &indices {
             let job = directory.join(format!("{index}.job"));
             let product = read_product(&directory.join(format!("{index}.job.product")))?;
@@ -392,7 +411,7 @@ pub(super) fn run(caller: &mut Caller<'_, HostState>, count: i64) -> Result<i64>
         waves.push(serde_json::json!({"jobs":indices.len(),"input_bytes":total,"wall_ms":before.elapsed().as_secs_f64()*1000.0}));
     }
     let report = serde_json::json!({"modules":count,"workers":slots,"peak_queued_jobs":peak_jobs,
-        "peak_queued_input_bytes":peak_bytes,"prepare_ms":started,"worker_ms":service_start.elapsed().as_secs_f64()*1000.0,
+        "peak_queued_input_bytes":peak_bytes,"shared_context_bytes":context_bytes,"context_serialization_count":1,"prepare_ms":started,"worker_ms":service_start.elapsed().as_secs_f64()*1000.0,
         "replay_ms":0,"preparation_count":1,"waves":waves,
         "phase_scope":"prepare: one parent preparation; worker: encoding, bounded TaskGroup waves, decoding and merging; finalize: global passes, codegen, source verification and private output write"});
     let report_path = directory.join("service-report.json");

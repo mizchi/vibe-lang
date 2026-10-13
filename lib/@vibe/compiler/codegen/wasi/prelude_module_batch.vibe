@@ -19,7 +19,8 @@ import ./linked_compile_lc_inject_async_sleep_boundary.vibe {
 /// Interfaces and shared facts remain read-only throughout the batch.
 export struct PreludeModuleBatch {
   parts: Array[Array[Stmt]];
-  contexts: Array[Array[Stmt]];
+  context_pool: Array[Stmt];
+  context_indices: Array[Array[Int]];
   entry_fid: Int;
   entry_name: String;
   offsets: Array[Int];
@@ -72,19 +73,27 @@ export fn prelude_execute_module_batch(batch: PreludeModuleBatch) -> Unit with E
 
 /// The same exact-closure projection as the sequential module loop. Build it
 /// before any owned AST is rewritten so synthesis cannot change visibility.
-export fn prelude_batch_contexts(parts: Array[Array[Stmt]], interfaces: Array[Array[Stmt]], interface_keys: Array[Array[String]], closure: Array[Array[Int]]) -> Array[Array[Stmt]] with Exception {
+export fn prelude_batch_context_indices(parts: Array[Array[Stmt]], interfaces: Array[Array[Stmt]], interface_keys: Array[Array[String]], closure: Array[Array[Int]]) -> (Array[Stmt], Array[Array[Int]]) with Exception {
   let count = Array::length(parts)
   if Array::length(closure) != count {
     throw("lowering: import closure does not match the module batch")
   } else ()
-  let contexts: Array[Array[Stmt]] = []
+  let pool: Array[Stmt] = []
+  let starts: Array[Int] = []
+  for rows in interfaces {
+    Array::push(starts, Array::length(pool))
+    for row in rows {
+      Array::push(pool, row)
+    }
+  }
+  let contexts: Array[Array[Int]] = []
   let mut i = 0
   while i < count {
     let own_keys: MutMap[String, Bool] = MutMap::new_string()
     for stmt in Array::get(parts, i) {
       MutMap::set(own_keys, oracle_stmt_key(stmt), true)
     }
-    let context: Array[Stmt] = []
+    let context: Array[Int] = []
     for dependency in Array::get(closure, i) {
       if dependency != i && dependency >= 0 && dependency < count {
         let rows = Array::get(interfaces, dependency)
@@ -92,7 +101,7 @@ export fn prelude_batch_contexts(parts: Array[Array[Stmt]], interfaces: Array[Ar
         let mut j = 0
         while j < Array::length(rows) {
           if !MutMap::has(own_keys, Array::get(keys, j)) {
-            Array::push(context, Array::get(rows, j))
+            Array::push(context, Array::get(starts, dependency) + j)
           } else ()
           j = j + 1
         }
@@ -100,6 +109,20 @@ export fn prelude_batch_contexts(parts: Array[Array[Stmt]], interfaces: Array[Ar
     }
     Array::push(contexts, context)
     i = i + 1
+  }
+  (pool, contexts)
+}
+
+/// Materialize the exact dependency projection for legacy callers.
+export fn prelude_batch_contexts(parts: Array[Array[Stmt]], interfaces: Array[Array[Stmt]], interface_keys: Array[Array[String]], closure: Array[Array[Int]]) -> Array[Array[Stmt]] with Exception {
+  let (pool, indices) = prelude_batch_context_indices(parts, interfaces, interface_keys, closure)
+  let contexts: Array[Array[Stmt]] = []
+  for ids in indices {
+    let rows: Array[Stmt] = []
+    for id in ids {
+      Array::push(rows, Array::get(pool, id))
+    }
+    Array::push(contexts, rows)
   }
   contexts
 }
