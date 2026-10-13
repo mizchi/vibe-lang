@@ -260,7 +260,6 @@ import ./type_names.vibe {
   fn_exists,
   lookup_var_type,
   prepend_expr,
-  render_classify_var_types,
   render_masked,
   struct_set_has,
   struct_set_member
@@ -700,6 +699,40 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Ar
     Some(EString(String::concat("<", String::concat(erased_throw_head, ">")), -1))
   } else {
     interp_expand_checked(arg, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  }
+}
+
+/// #3434: the environment the renderer's TYPE QUERIES read for `arg`. For a
+/// masked name it is a copy whose newest entry for the name is the type the
+/// checker gave this render argument -- a scalar or nominal head (`Bool`,
+/// `Char`, `Unit`, `Pt`), or "" (unknown) when the row is composite or
+/// absent. So the Bool / Double / Char / Unit classifiers and the show-target
+/// lookup see the binding that is in scope, not the outer one an untyped
+/// shadow left behind (Codex on #3453: an `Int` over a `Bool` printed `true`;
+/// a `Char` or a `Pt` over the same type lost its renderer). Anything else
+/// gets the environment itself, without allocating. Expansion keeps the real
+/// environment: it reads the mask, and a composite row, on its own.
+fn render_classify_var_types(var_types: Array[(String, String)], arg: Expr) -> Array[(String, String)] {
+  match arg {
+    EIdent(n, _) => if render_masked(var_types, n) {
+      let copy = Array::slice(var_types, 0, Array::length(var_types))
+      Array::push(copy, (n, masked_row_head(arg)))
+      copy
+    } else {
+      var_types
+    },
+    _ => var_types
+  }
+}
+
+fn masked_row_head(arg: Expr) -> String {
+  let raw = dtd_typed_render_raw_shape_for(arg)
+  if raw == "{u}" {
+    "Unit"
+  } else if String::contains(raw, "{") || String::contains(raw, "[") || String::contains(raw, "(") {
+    ""
+  } else {
+    raw
   }
 }
 
