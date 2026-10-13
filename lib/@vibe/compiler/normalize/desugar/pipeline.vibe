@@ -127,7 +127,8 @@ import ./state.vibe {
   dtd_typed_index_offs,
   dtd_typed_index_verdicts,
   dtd_typed_render_keys,
-  dtd_typed_render_offs
+  dtd_typed_render_offs,
+  dtd_typed_rows_lane
 }
 
 import ./trait_bounds.vibe {
@@ -169,11 +170,23 @@ export fn desugar_array_spread(stmts: Array[Stmt]) -> Unit {
 /// single-file pipeline desugars before generic-stripping and codegen re-runs on
 /// the same stmts after) finds the bounds already stripped (so no function is
 /// re-threaded) and skips dict structs that already exist.
+///
+/// This entry passes no typed rows: an untyped shadowing `let` is rendered
+/// through the outer binding's entries, as before #3434.
 export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
-  desugar_trait_dicts_with_typed_eq(stmts, array_empty(), array_empty())
+  Array::set(dtd_typed_rows_lane, 0, false)
+  dtd_whole_program(stmts, array_empty(), array_empty())
 }
 
+/// The entry for a lane whose checker ran on a located AST: `typed_eq_offsets`
+/// / `typed_eq_keys` are that checker's rows, possibly none for a program
+/// that files none.
 export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {
+  Array::set(dtd_typed_rows_lane, 0, true)
+  dtd_whole_program(stmts, typed_eq_offsets, typed_eq_keys)
+}
+
+fn dtd_whole_program(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {
   // #3132: this pass synthesizes `Array::get` / `Array::length` / ... calls
   // (interpolation, structural `==`, iteration), which must reach the
   // builtin. Every entry pipeline reaches here before its first such
@@ -237,6 +250,7 @@ export fn desugar_trait_dicts_module(own: Array[Stmt], ctx: Array[Stmt], module_
 /// above passes none, which is right for a MEASUREMENT and wrong for a
 /// production driver -- a caller that means to compile passes real ones.
 export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], facts: ModuleTraitFacts) -> Array[Stmt] with Exception {
+  Array::set(dtd_typed_rows_lane, 0, true)
   dtd_facts_set(facts)
   let stmts: Array[Stmt] = []
   let mut i = 0

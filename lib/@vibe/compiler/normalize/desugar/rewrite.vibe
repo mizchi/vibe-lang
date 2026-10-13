@@ -230,6 +230,7 @@ import ./state.vibe {
   dtd_scope_formals,
   dtd_show_generic_enum_stack,
   dtd_show_self_fn,
+  dtd_typed_rows_lane,
   dtd_user_assert_eq,
   dtd_user_assert_eq_alias_blocker,
   dtd_user_assert_eq_program,
@@ -715,16 +716,19 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Ar
 /// name is seeded unannotated, which is a fresh name. Anything else gets the
 /// environment itself, without allocating.
 ///
-/// An UNLOCATED name (offset -1: the merged, linked-library and
-/// linked-artifact lanes parse without offsets and pass no rows) has no
-/// checker answer to seed from, so it keeps the outer binding's entries, as
-/// before #3434. Seeding it unannotated instead rendered a same-type shadow
-/// through `__to_string`: a `Char` as its code point, an `Option` as an
-/// address (Codex on #3453). A shadow that changes the type is still read as
+/// Seeding needs the checker's answer for this argument, and a missing row is
+/// an answer (a scalar) only on a lane that was handed the rows. A lane that
+/// was not (`desugar_trait_dicts`: the merged, linked-library and
+/// linked-artifact lanes, `vibe check --single-file`'s interpolation pass),
+/// or an unlocated name (offset -1), keeps the outer binding's entries, as
+/// before #3434. Seeding it unannotated there rendered a same-type shadow
+/// through `__to_string` -- a `Char` as its code point, an `Option` as an
+/// address -- and let an outer `Raw` without `Show` past the missing-Show
+/// refusal (Codex on #3453). A shadow that changes the type is still read as
 /// the outer type on those lanes; that is #3456.
 fn render_classify_var_types(var_types: Array[(String, String)], arg: Expr) -> Array[(String, String)] {
   match arg {
-    EIdent(n, off) => if off >= 0 && render_masked(var_types, n) {
+    EIdent(n, off) => if off >= 0 && Array::get(dtd_typed_rows_lane, 0) && render_masked(var_types, n) {
       let row = match dtd_typed_render_row_arg(arg) {
         // An annotation spells `Unit` by name, and that is what the Unit
         // classifier reads.
