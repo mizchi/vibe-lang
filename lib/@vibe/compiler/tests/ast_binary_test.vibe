@@ -20,6 +20,8 @@ import @vibe/compiler/cache {
   ast_binary_read_varint,
   ast_binary_read_varint_checked,
   ast_binary_reader_new,
+  ast_binary_reader_remaining,
+  ast_binary_reader_take,
   ast_binary_write_bool,
   ast_binary_write_header,
   ast_binary_write_optstr,
@@ -27,6 +29,40 @@ import @vibe/compiler/cache {
   ast_binary_write_string,
   ast_binary_write_svarint,
   ast_binary_write_varint
+}
+
+test "ast_binary: child cursors cannot read adjacent bytes or nested UTF-8" {
+  let r = ast_binary_reader_new(Bytes::from_array([1, 194, 162, 9]))
+  let child = ast_binary_reader_take(r, 2)
+  let outcome = handle {
+    let _ = ast_binary_read_string_checked(child); "accepted"
+  } with { Exception::Throw(msg) => msg }
+  inspect(outcome, content = "ast_binary: string is not well-formed UTF-8 within its declared length")
+  inspect(ast_binary_read_byte(r), content = "162")
+  inspect(ast_binary_read_byte(r), content = "9")
+  inspect(ast_binary_reader_remaining(r), content = "0")
+  let bytes = ast_binary_reader_new(Bytes::from_array([42, 43, 44]))
+  let outer = ast_binary_reader_take(bytes, 2)
+  let inner = ast_binary_reader_take(outer, 1)
+  inspect(ast_binary_read_byte(inner), content = "42")
+  inspect(ast_binary_read_byte(inner), content = "-1")
+  inspect(ast_binary_read_byte(outer), content = "43")
+  inspect(ast_binary_read_byte(outer), content = "-1")
+  inspect(ast_binary_read_byte(bytes), content = "44")
+}
+
+test "ast_binary: child lengths are checked before the parent advances" {
+  let r = ast_binary_reader_new(Bytes::from_array([7, 8]))
+  for length in [0 - 1, 3] {
+    let outcome = handle {
+      let _ = ast_binary_reader_take(r, length); "accepted"
+    } with { Exception::Throw(msg) => msg }
+    inspect(outcome, content = "ast_binary: child length exceeds remaining input")
+    inspect(ast_binary_reader_remaining(r), content = "2")
+  }
+  let empty = ast_binary_reader_take(r, 0)
+  inspect(ast_binary_read_byte(empty), content = "-1")
+  inspect(ast_binary_read_byte(r), content = "7")
 }
 
 //# Functions

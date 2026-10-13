@@ -163,24 +163,37 @@ export fn ast_binary_write_header(buf: Bytes) -> Unit {
 //# field to advance the read position.
 export struct AstBinaryReader {
   bytes: Bytes;
-  mut pos: Int
+  mut pos: Int;
+  end: Int
 }
 
 export fn ast_binary_reader_new(bytes: Bytes) -> AstBinaryReader {
   AstBinaryReader::{
     bytes: bytes,
-    pos: 0
+    pos: 0,
+    end: Bytes::length(bytes)
   }
 }
 
 export fn ast_binary_reader_remaining(r: AstBinaryReader) -> Int {
-  Bytes::length(r.bytes) - r.pos
+  r.end - r.pos
+}
+
+/// Take a bounded child cursor without copying bytes; advance the parent past it.
+/// Decoded strings and AST nodes own their data, so they outlive buffer reuse.
+export fn ast_binary_reader_take(r: AstBinaryReader, length: Int) -> AstBinaryReader with Exception {
+  if length < 0 || length > ast_binary_reader_remaining(r) {
+    throw("ast_binary: child length exceeds remaining input")
+  } else ()
+  let start = r.pos
+  r.pos = start + length
+  AstBinaryReader::{ bytes: r.bytes, pos: start, end: r.pos }
 }
 
 //# Read one byte and advance the cursor. Returns -1 on EOF; callers
 //# are expected to validate ahead-of-read for non-trivial decodes.
 export fn ast_binary_read_byte(r: AstBinaryReader) -> Int {
-  if r.pos >= Bytes::length(r.bytes) {
+  if r.pos >= r.end {
     0 - 1
   } else {
     let b = Bytes::get(r.bytes, r.pos)

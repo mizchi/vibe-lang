@@ -242,3 +242,65 @@ Sharing improves both temperatures but leaves cold RSS near 1.2/3.0 GiB and
 TaskGroup 2 slower than serial split. Default enablement stays off. Next:
 reduce retained product and decode allocations, then measure higher worker
 counts only after that memory work.
+
+## Bounded product decoding measurements (2026-10-14)
+
+The parent already consumes one product at a time. The remaining copy was
+inside the product envelope: decoding its nested module blob pushed every byte
+into a fresh growing `Bytes` buffer before decoding the AST. The parent now
+uses a child `AstBinaryReader` over the original bytes with an independent
+end bound. Byte, varint, string/UTF-8 and nested count checks respect that bound,
+and the module decoder still rejects trailing bytes inside the child. The wire
+format and input/product receipts are unchanged. Keep the shared bytes immutable
+until both cursors finish reading; decoded AST nodes and strings own their data.
+Tests cover nested bounds, invalid child lengths, UTF-8 across a child boundary,
+shortened/extended product blobs and overwriting the buffer after decoding.
+
+After the synchronous lowering service returns and all products are consumed,
+the compile image clears its callback buffer references and capacity/digest
+state. `Bytes` remain bump-backed even on the RC lane: this bookkeeping does
+not reclaim their capacity or shrink linear memory. Workers and host callbacks
+cannot retain those pointers past the service return. The measured allocation
+reduction comes from avoiding copies, rather than releasing those reservations.
+
+The [raw report](../../../bench/perf/analysis/module-product-decode-2026-10-14.json)
+records a pre-edit baseline, 36 final full builds, codec probes, separate parent
+CPU profiles, source/artifact hashes and the harnesses. Baseline `77733f789` and
+the candidate compile one frozen main corpus; three rounds alternate TaskGroup
+2 cold/warm pairs, with candidate serial-split controls. Parsed-source caches
+are isolated per pair, other guest caches are off and native JIT is primed.
+Generated vpkg type declarations are prepared before measurement with separate
+scratch caches: the initial attempt that created them during a build was refused
+by input freshness checks and is excluded. No builds, tests or edits overlap
+the measured runs. All 36 Wasm outputs are byte-identical per subject; all 945
+captured worker product envelopes also match byte for byte.
+
+| full build | shared-context TG2 | bounded decoder TG2 | wall change | summed RSS, old → new | RSS change | candidate serial split |
+|---|---:|---:|---:|---:|---:|---:|
+| compiler cold | 14.29 s | 14.13 s | -1.2% | 1,204 → 1,186 MiB | -1.6% | 12.41 s |
+| compiler warm | 10.23 s | 9.97 s | -2.5% | 819 → 807 MiB | -1.4% | 8.58 s |
+| CLI cold | 40.70 s | 39.12 s | -3.9% | 3,112 → 2,947 MiB | -5.3% | 31.30 s |
+| CLI warm | 31.89 s | 30.20 s | -5.3% | 2,363 → 2,190 MiB | -7.3% | 23.25 s |
+
+Cells are medians of three runs. Small compiler wall differences remain near
+the noise floor. RSS sums the process tree every 25 ms, can double-count shared
+pages and measures neither total allocations nor uniquely resident physical
+memory. These results use a different main corpus from the preceding table;
+compare old/new rows within each table rather than combining them.
+
+Compiler products total 7,804,337 bytes across 325 modules; CLI products total
+63,731,031 bytes across 620 modules, including one 39,170,471-byte envelope.
+On those same captured products, three codec runs reduce RC1 decode time from
+2.24 to 1.57 s for the compiler and 15.58 to 10.21 s for the CLI. Bump-mode
+decode allocation volume falls by 22,023,488 and 210,765,440 bytes respectively.
+RC1 heap-pointer deltas measure additional heap growth under reuse, not total
+allocation volume; the report retains both modes. These standalone codec times
+are not full-build walltime. Separate cold parent CPU samples no longer contain
+the blob-copy frame; inclusive result-decode samples fall from 6.0% to 4.1% for
+the compiler and 14.2% to 9.9% for the CLI. Inclusive percentages overlap and are
+approximate.
+
+The change reduces transfer allocations and full-build memory, but TaskGroup 2
+remains slower than serial split. Default parallel lowering stays off. Next,
+measure higher worker counts and the remaining serialization/codegen costs
+before choosing an enablement policy.
