@@ -52,7 +52,8 @@ import ./state.vibe {
   dtd_scope_formals,
   dtd_type_param_names,
   dtd_typed_render_keys,
-  dtd_typed_render_offs
+  dtd_typed_render_offs,
+  scope_formal_mark_prefix
 }
 
 import ./typed_equality.vibe {
@@ -88,6 +89,36 @@ export fn dtd_typed_render_leaf_for(arg: Expr) -> String {
 
 /// The row's type in the shape grammar, unfiltered.
 export fn dtd_typed_render_raw_shape_for(arg: Expr) -> String {
+  match dtd_typed_render_row_arg(arg) {
+    Some(t) => if eq_ty_mentions_scope_formal(t) {
+      ""
+    } else {
+      ty_to_eq_shape(t)
+    },
+    None => ""
+  }
+}
+
+/// #3434: the name of the in-scope formal the checker filed as the type of
+/// a rendered `arg`, or "" when the row is anything else. A masked shadow
+/// such as `let x = if c { x } else { x }` over `x: T` keeps `T`, and the
+/// expansion needs that head to find `T`'s `Show` witness; the raw shape
+/// above filters formals out because a shape cannot carry one.
+export fn dtd_typed_render_formal_head_for(arg: Expr) -> String {
+  match dtd_typed_render_row_arg(arg) {
+    Some(TyName(n)) => if !eq_ty_mentions_scope_formal(TyName(n)) {
+      ""
+    } else if is_marked_formal_name(n) {
+      String::substring(n, String::length(scope_formal_mark_prefix), String::length(n))
+    } else {
+      n
+    },
+    _ => ""
+  }
+}
+
+/// The type the checker filed for a rendered `arg`, keyed by its offset.
+fn dtd_typed_render_row_arg(arg: Expr) -> Option[TypeExpr] {
   let off = typed_lowering_arg_offset(arg)
   let mut key = ""
   if off >= 0 {
@@ -104,15 +135,15 @@ export fn dtd_typed_render_raw_shape_for(arg: Expr) -> String {
     ()
   }
   if String::length(key) == 0 {
-    ""
+    None
   } else {
     match impl_target_from_key(key) {
-      Some(TyApp(head, args)) => if head == typed_render_row_head() && Array::length(args) == 1 && !eq_ty_mentions_scope_formal(Array::get(args, 0)) {
-        ty_to_eq_shape(Array::get(args, 0))
+      Some(TyApp(head, args)) => if head == typed_render_row_head() && Array::length(args) == 1 {
+        Some(Array::get(args, 0))
       } else {
-        ""
+        None
       },
-      _ => ""
+      _ => None
     }
   }
 }
