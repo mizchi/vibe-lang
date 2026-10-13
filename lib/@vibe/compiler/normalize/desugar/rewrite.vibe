@@ -227,6 +227,7 @@ import ./state.vibe {
   dtd_eq_known_types,
   dtd_generic_show_shims,
   dtd_interp_site_off,
+  dtd_scope_formals,
   dtd_show_generic_enum_stack,
   dtd_show_self_fn,
   dtd_user_assert_eq,
@@ -274,8 +275,8 @@ import ./typed_rendering.vibe {
   dtd_interp_expands_itself,
   dtd_typed_eq_admitted_ty,
   dtd_typed_eq_residual,
-  dtd_typed_render_formal_head_for,
   dtd_typed_render_raw_shape_for,
+  dtd_typed_render_row_arg,
   dtd_typed_render_shape_for,
   dtd_unnamed_head_row
 }
@@ -703,22 +704,26 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Ar
   }
 }
 
-/// #3434: the environment the renderer's TYPE QUERIES read for `arg`. For a
-/// masked name it is a copy whose newest entry for the name is the type the
-/// checker gave this render argument -- a scalar or nominal head (`Bool`,
-/// `Char`, `Unit`, `Pt`), or "" (unknown) when the row is composite or
-/// absent. So the Bool / Double / Char / Unit classifiers and the show-target
-/// lookup see the binding that is in scope, not the outer one an untyped
-/// shadow left behind (Codex on #3453: an `Int` over a `Bool` printed `true`;
-/// a `Char` or a `Pt` over the same type lost its renderer). Anything else
-/// gets the environment itself, without allocating. Expansion keeps the real
-/// environment: it reads the mask, and a composite row, on its own.
+/// #3434: the environment the renderer reads for `arg`. A masked name -- a
+/// shadow this pass could not type -- is seeded the way a parameter annotated
+/// with the checker's type for this render argument is (`seed_var_types`):
+/// the outer binding's entries are dropped and the row's head and shapes are
+/// recorded, formals included. So every reader sees the binding in scope,
+/// exactly as `let x: T = ..` would show it: the Bool / Double / Char / Unit
+/// classifiers, the show-target lookup, a nominal's renderer, a formal's
+/// witness, and a composite that holds one (Codex on #3453). With no row the
+/// name is seeded unannotated, which is a fresh name. Anything else gets the
+/// environment itself, without allocating.
 fn render_classify_var_types(var_types: Array[(String, String)], arg: Expr) -> Array[(String, String)] {
   match arg {
     EIdent(n, _) => if render_masked(var_types, n) {
-      let copy = Array::slice(var_types, 0, Array::length(var_types))
-      Array::push(copy, (n, masked_row_head(arg)))
-      copy
+      let row = match dtd_typed_render_row_arg(arg) {
+        // An annotation spells `Unit` by name, and that is what the Unit
+        // classifier reads.
+        Some(TyUnit) => Some(TyName("Unit")),
+        other => other
+      }
+      seed_var_types([(n, row)], dtd_scope_formals, var_types)
     } else {
       var_types
     },
@@ -726,42 +731,16 @@ fn render_classify_var_types(var_types: Array[(String, String)], arg: Expr) -> A
   }
 }
 
-fn masked_row_head(arg: Expr) -> String {
-  let raw = dtd_typed_render_raw_shape_for(arg)
-  if raw == "" {
-    dtd_typed_render_formal_head_for(arg)
-  } else if raw == "{u}" {
-    "Unit"
-  } else if String::contains(raw, "{") || String::contains(raw, "[") || String::contains(raw, "(") {
-    ""
-  } else {
-    raw
-  }
-}
-
 fn interp_expand_checked(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
-  // #3434: a masked name is checked as the binding in scope, not an outer
-  // formal it shadows (Codex on #3453).
-  dtd_check_top_interp(arg, dict_binds, traits, struct_sets, render_classify_var_types(var_types, arg), fn_returns)
-  // #3434: a name whose innermost binding this pass could not type is read as
-  // a fresh name, not through an outer binding's stale entry.
-  let masked = match arg {
-    EIdent(n, _) => render_masked(var_types, n),
-    _ => false
+  // #3434: a masked name is read as the binding in scope, not through the
+  // stale entries of an outer one it shadows (`render_classify_var_types`).
+  let var_types = render_classify_var_types(var_types, arg)
+  dtd_check_top_interp(arg, dict_binds, traits, struct_sets, var_types, fn_returns)
+  let head = match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    Some(h) => h,
+    None => ""
   }
-  let head = if masked {
-    masked_row_head(arg)
-  } else {
-    match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
-      Some(h) => h,
-      None => ""
-    }
-  }
-  let syn_sh = if masked {
-    ""
-  } else {
-    interp_shape(infer_shape(arg, struct_sets, var_types, fn_returns))
-  }
+  let syn_sh = interp_shape(infer_shape(arg, struct_sets, var_types, fn_returns))
   // #3066: where this pass expands the argument itself, the checker's type
   // (a render row) outranks the syntactic shape. The syntax is exact for a
   // literal, but a payload it cannot type -- `Some(k())` through a local
@@ -771,14 +750,7 @@ fn interp_expand_checked(arg: Expr, derived_only: Bool, gens: Array[DictGen], tr
   // has no syntactic head either, so the gate below would never ask; it is
   // shaped from its arms (`dtd_offsetless_shape`), and `interp_shape` keeps
   // only a composite answer.
-  let typed_sh = if masked {
-    // #3434 (Codex on #3453): a masked name keeps the checker's row, whatever
-    // its shape, so a rebinding that stays an `Option` (`let b = match b {
-    // Some(v) => Some(v), None => None }`) still renders structurally. Only
-    // the stale syntactic evidence is dropped; a scalar row is "" and falls
-    // through to the fresh-name path below.
-    dtd_typed_render_shape_for(arg)
-  } else if typed_lowering_arg_offset(arg) < 0 {
+  let typed_sh = if typed_lowering_arg_offset(arg) < 0 {
     interp_shape(dtd_offsetless_shape(arg, struct_sets, var_types, fn_returns))
   } else if dtd_interp_expands_itself(syn_sh, head) {
     dtd_typed_render_shape_for(arg)
