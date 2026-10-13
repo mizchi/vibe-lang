@@ -260,6 +260,7 @@ import ./type_names.vibe {
   fn_exists,
   lookup_var_type,
   prepend_expr,
+  render_classify_var_types,
   render_masked,
   struct_set_has,
   struct_set_member
@@ -893,7 +894,7 @@ fn assert_eq_concat(a: Expr, b: Expr) -> Expr {
 /// (`derived_only`) so a missing Show becomes `<unprintable>` instead of a
 /// pointer decimal or a compile error.
 fn assert_eq_render(arg: Expr, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
-  let target = interp_show_target(arg, true, struct_sets, var_types, fn_returns)
+  let target = interp_show_target(arg, true, struct_sets, render_classify_var_types(var_types, arg), fn_returns)
   if target != "" {
     ECall(EIdent(target, -1), Array::slice([arg], 0, 1), -1, [])
   } else {
@@ -1084,10 +1085,12 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         // #3007: a `derive (Show)` generic struct whose instantiation this pass
         // can see renders field by field (`interp_expand_shape`'s `{g:` arm);
         // its one derived `to_string` erases the formals.
-        let generic_syn_sh = interp_shape(infer_shape(Array::get(args, 0), struct_sets, var_types, fn_returns))
+        // #3434: the type queries below read a masked name as unknown.
+        let cvt = render_classify_var_types(var_types, Array::get(args, 0))
+        let generic_syn_sh = interp_shape(infer_shape(Array::get(args, 0), struct_sets, cvt, fn_returns))
         // #3074: the checker's render row supplies the instantiation where the
         // syntax does not (a call result, a binder it never recorded).
-        let generic_head = match infer_arg_type_name(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+        let generic_head = match infer_arg_type_name(Array::get(args, 0), struct_sets, cvt, fn_returns) {
           Some(h) => h,
           None => ""
         }
@@ -1140,7 +1143,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         } else if String::length(leaked_nominal) > 0 && !is_scalar_type_name(leaked_nominal) && fn_exists(fn_returns, String::concat(leaked_nominal, "::to_string")) && String::concat(leaked_nominal, "::to_string") != Array::get(dtd_show_self_fn, 0) {
           String::concat(leaked_nominal, "::to_string")
         } else {
-          interp_show_target(Array::get(args, 0), false, struct_sets, var_types, fn_returns)
+          interp_show_target(Array::get(args, 0), false, struct_sets, cvt, fn_returns)
         }
         // #3074: the only renderer left is the derived one, which erases the
         // enum's formals -- `G[Bool]` printed `GA(1)`. A payload-free
@@ -1157,7 +1160,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           Some(ECall(EIdent(show_target, -1), Array::slice([
             rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
           ], 0, 1), off, callee_resolution))
-        } else if interp_arg_is_bool(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+        } else if interp_arg_is_bool(Array::get(args, 0), struct_sets, cvt, fn_returns) {
           // #1527: a Bool that reaches `"\{...}"` through a CALL or a NAME
           // whose recorded type is Bool printed `1`/`0` — Bool and Int share
           // the tagged-int representation, and codegen's boolish classifiers
@@ -1170,7 +1173,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           // excluded — every classifier already answers it, and skipping it
           // keeps the common case's lowering untouched.
           Some(EIf(rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns), EString("true", -1), EString("false", -1)))
-        } else if interp_arg_is_double(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+        } else if interp_arg_is_double(Array::get(args, 0), struct_sets, cvt, fn_returns) {
           // #2993: the same gap for a Double. A container's element reaches
           // here as a synthesized binder (`let __show_vN = Array::get(xs, i)`)
           // whose recorded type is Double, but codegen's floatish classifiers
@@ -1180,10 +1183,10 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           Some(ECall(builtin_ref("Double::to_string"), Array::slice([
             rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
           ], 0, 1), off, callee_resolution))
-        } else if interp_arg_is_char(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+        } else if interp_arg_is_char(Array::get(args, 0), struct_sets, cvt, fn_returns) {
           // #3075: a `Char` printed its code point (`97` for `'a'`).
           Some(char_render_expr(rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
-        } else if interp_arg_is_unit(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+        } else if interp_arg_is_unit(Array::get(args, 0), struct_sets, cvt, fn_returns) {
           // #3075: a `Unit` printed `0` (`Some(())` -> `Some(0)`).
           Some(unit_render_expr(rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
         } else {

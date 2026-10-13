@@ -163,6 +163,26 @@ export fn render_masked(var_types: Array[(String, String)], name: String) -> Boo
   result
 }
 
+/// #3434 (Codex on #3453): the environment the renderer's TYPE QUERIES read
+/// for `arg`. For a masked name it is a copy with an empty entry appended,
+/// so the Bool / Double / Char / Unit classifiers and the show-target lookup
+/// answer "unknown" instead of reading the outer binding's type (an outer
+/// `b: Bool` shadowed by an `Int` printed `true`). Anything else gets the
+/// environment itself, without allocating. Expansion keeps the real
+/// environment: it reads the mask on its own.
+export fn render_classify_var_types(var_types: Array[(String, String)], arg: Expr) -> Array[(String, String)] {
+  match arg {
+    EIdent(n, _) => if render_masked(var_types, n) {
+      let copy = Array::slice(var_types, 0, Array::length(var_types))
+      Array::push(copy, (n, ""))
+      copy
+    } else {
+      var_types
+    },
+    _ => var_types
+  }
+}
+
 export fn lookup_var_type(var_types: Array[(String, String)], name: String) -> Option[String] {
   // `extend_var_types` APPENDS on each `let`, so a shadowing rebind adds a second
   // entry for the same name. Return the LAST match (the innermost binding in
