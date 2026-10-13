@@ -40,9 +40,11 @@ import @vibe/compiler/cache {
 import @vibe/compiler/checker {
   aggregate_export_names,
   collect_builtin_shadowing_names,
+  env_param_name_rows,
   export_local_nonvalue_kind,
   irc_show_wrapper_facts,
   is_explicit_builtin_declaration,
+  param_names_marker,
   publish_type_constructor_binding_rows,
   publish_type_def_row_nominals,
   unresolved_aggregate_export_name,
@@ -54,6 +56,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   bsearch_leftmost,
+  env_bind,
   env_flat_bindings,
   env_lookup,
   env_lookup_flat,
@@ -763,7 +766,85 @@ export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_c
       ()
     }
   }
-  env_with_show_wrapper_facts(published_env, exported_wrappers, exported_unknown)
+  env_with_show_wrapper_facts(engine_bind_param_name_markers(stmts, publication_env, published_env), exported_wrappers, exported_unknown)
+}
+/// #3432: one `param_names_marker` per published function with an optional
+/// (`x?`) parameter, so an importer can omit it or pass it by label the way
+/// the defining module can. The test is whether the NAME is published, not
+/// whether it is in the value surface: a type companion (`fn Box::make`)
+/// rides out with its type (Codex on #3441). A re-exported function carries
+/// the marker its own import brought in.
+fn engine_bind_param_name_markers(stmts: Array[Stmt], publication_env: TypeEnv, published: TypeEnv) -> TypeEnv {
+  // Allocates nothing for a module without an optional parameter in sight:
+  // this runs at every publication, and the self-compile heap budget is
+  // measured across all of them.
+  let mut acc = published
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, fname, _, EFn(_, _, params, _, _, _)) => if engine_params_have_optional(params) && engine_env_has_value(published, fname) {
+        let fields: Array[(String, Type)] = []
+        for param in params {
+          let (pn, _) = param
+          Array::push(fields, (pn, CtUnit))
+        }
+        acc = env_bind(acc, param_names_marker(fname), CtRecord(fields))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  // The markers this module's imports brought in, for what it re-publishes:
+  // a re-exported function, or the companions of a re-exported type. An own
+  // top-level binding of the same name hides the imported marker.
+  for row in env_param_name_rows(publication_env) {
+    let (fname, names) = row
+    if engine_env_has_value(published, fname) && !engine_stmts_bind_top_level(stmts, fname) {
+      let fields: Array[(String, Type)] = []
+      for pn in names {
+        Array::push(fields, (pn, CtUnit))
+      }
+      acc = env_bind(acc, param_names_marker(fname), CtRecord(fields))
+    } else {
+      ()
+    }
+  }
+  acc
+}
+
+fn engine_params_have_optional(params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let mut found = false
+  for param in params {
+    let (pn, _) = param
+    found = found || String::ends_with(pn, "?")
+  }
+  found
+}
+
+/// Whether the module binds `name` at top level: a local `fn` or `let` of
+/// that name is what gets published, so it hides an imported marker even
+/// when it is not written as a lambda (`export let f: (Int) -> Int = g`,
+/// Codex on #3441).
+fn engine_stmts_bind_top_level(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    let bound = match stmt {
+      SLet(_, _, n, _, _) => n == name,
+      SLetMut(n, _, _) => n == name,
+      SExternLet(n, _) => n == name,
+      SFnDecl(_, n, _, _, _) => n == name,
+      _ => false
+    }
+    found = found || bound
+  }
+  found
+}
+
+fn engine_env_has_value(env: TypeEnv, name: String) -> Bool {
+  match env_lookup(env, name) {
+    Some(_) => true,
+    None => false
+  }
 }
 /// Every declaration line, with its declared type-parameter ARITY.
 ///

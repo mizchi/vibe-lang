@@ -118,7 +118,12 @@ import ./checker_stmt_imported_decl_kind.vibe {
 }
 
 import ./checker_stmt_labeled_name_check_expr.vibe {
-  collect_defaulted_param_fns, collect_labeled_check_fns, labeled_name_check_expr, labeled_name_marker, struct_derives_has
+  collect_defaulted_param_fns,
+  collect_labeled_check_fns,
+  labeled_name_check_expr,
+  labeled_name_marker,
+  labeled_param_base_name,
+  struct_derives_has
 }
 
 import ./checker_stmt_push_source_scope_names.vibe {
@@ -1763,12 +1768,28 @@ fn labeled_name_check_stmt(stmt: Stmt, tbl: Array[(String, Array[String])], erro
 /// validly-reordered fully-labeled call is not misjudged against its
 /// original call-site order.
 export fn check_labeled_arg_names_stmts(stmts: Array[Stmt], errors: Array[String], pre_desugar: Bool) -> Unit {
+  check_labeled_arg_names_stmts_with_imports(stmts, errors, pre_desugar, array_empty())
+}
+
+/// #3432: the same validation with the imported functions' raw parameter
+/// names (`times?`, `x~`) added to the table, so a call to an imported
+/// function gets the unknown / out-of-order label refusals a local callee
+/// gets. Without them `greet(typo = 1)` for an imported
+/// `greet(name: String, times?: Int)` was padded with `None` and compiled,
+/// passing the `Int` where the `String` goes (Codex on #3441).
+export fn check_labeled_arg_names_stmts_with_imports(stmts: Array[Stmt], errors: Array[String], pre_desugar: Bool, imported: Array[(String, Array[String])]) -> Unit {
   if pre_desugar {
     ()
   } else {
     report_unresolved_mut_labeled_calls(errors)
   }
   let tbl = collect_labeled_check_fns(stmts)
+  for row in imported {
+    let (fname, params) = row
+    Array::push(tbl, (fname, for pn in params {
+      labeled_param_base_name(pn)
+    }))
+  }
   if pre_desugar {
     collect_defaulted_param_fns(stmts, errors)
   } else {

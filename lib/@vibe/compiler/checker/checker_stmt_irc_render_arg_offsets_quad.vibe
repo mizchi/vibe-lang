@@ -97,6 +97,7 @@ import @vibe/compiler/normalize {
   desugar_labeled_args,
   desugar_railway_binds,
   erase_railway_origin_markers,
+  imported_params_set,
   inject_trait_method_generics
 }
 
@@ -166,7 +167,7 @@ import ./checker_stmt_stmts_with_binders.vibe {
 import ./checker_stmt_unknown_effect_label_errors.vibe {
   builtin_seed_withheld,
   canonicalize_stdin_provider_type_import_heads,
-  check_labeled_arg_names_stmts,
+  check_labeled_arg_names_stmts_with_imports,
   check_program_bounds,
   collect_async_effect_errors,
   collect_constructor_binder_errors,
@@ -1017,6 +1018,184 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
 /// As `check_program_result`, seeded with an importing module's environment.
 /// The non-empty path intentionally keeps the existing imported-module checks
 /// and error behavior unchanged.
+/// #3432: the binding a published env uses to carry a function's raw
+/// parameter names (`times?`, `x~`) to its importers. A `TypeEnv` row keeps
+/// only parameter TYPES, so `times?: Int` and `times: Option[Int]` publish the
+/// same row, and an importer could neither omit the argument nor pass it by
+/// label. The marker is bound to a record whose field names are the parameter
+/// names; no source identifier can spell it.
+export fn param_names_marker(name: String) -> String {
+  String::concat(param_names_prefix, name)
+}
+
+let param_names_prefix: String = "#params:"
+
+/// Whether a binding name is a `param_names_marker`. Allocates nothing, so a
+/// scan over every binding of a dependency costs no heap.
+export fn is_param_names_marker(name: String) -> Bool {
+  String::starts_with(name, param_names_prefix)
+}
+
+/// The function a `param_names_marker` binding names.
+export fn param_names_marker_target(name: String) -> String {
+  String::substring(name, String::length(param_names_prefix), String::length(name))
+}
+
+/// Every `param_names_marker` row in `env`, as (function name, parameter
+/// names), nearest binding first and each name once. One walk over the chain,
+/// so an importer finds a type companion's row (`Box::make`, reached by
+/// importing `Box`) without knowing its name in advance.
+///
+/// A marker bound to anything but a record is a TOMBSTONE: a later import of
+/// the same name that carries no parameter names. It hides every older
+/// marker for that name and yields no row (Codex on #3441).
+///
+/// An env with no marker at all, which is nearly every env, answers a shared
+/// empty array without allocating. Callers only read the answer.
+export fn env_param_name_rows(env: TypeEnv) -> Array[(String, Array[String])] {
+  if env_param_marker_count(env) == 0 {
+    no_param_name_rows
+  } else {
+    let rows: Array[(String, Array[String])] = []
+    let tombs: Array[String] = []
+    let mut current = env
+    let mut done = false
+    while !done {
+      match current {
+        EnvBind(name, binding, rest) => {
+          param_name_row_push(rows, tombs, name, binding.ty)
+          current = rest
+        },
+        EnvFlat(bindings) => {
+          for entry in bindings {
+            let (name, binding) = entry
+            param_name_row_push(rows, tombs, name, binding.ty)
+          }
+          done = true
+        },
+        EnvShowWrappers(_, _, rest) => current = rest,
+        EnvTraitDef(_, _, _, _, rest, _, _) => current = rest,
+        EnvTraitImpl(_, _, rest) => current = rest,
+        EnvTraitImplGen(_, _, _, _, rest) => current = rest,
+        EnvTypeDefs(_, _, rest) => current = rest,
+        EnvMutCell(_, _, rest) => current = rest,
+        EnvCached(_, _, rest) => current = rest,
+        EnvEmpty => done = true
+      }
+    }
+    rows
+  }
+}
+
+let no_param_name_rows: Array[(String, Array[String])] = []
+
+fn env_param_marker_count(env: TypeEnv) -> Int {
+  let mut count = 0
+  let mut current = env
+  let mut done = false
+  while !done {
+    match current {
+      EnvBind(name, _, rest) => {
+        if is_param_names_marker(name) {
+          count = count + 1
+        } else {
+          ()
+        }
+        current = rest
+      },
+      EnvFlat(bindings) => {
+        for entry in bindings {
+          let (name, _) = entry
+          if is_param_names_marker(name) {
+            count = count + 1
+          } else {
+            ()
+          }
+        }
+        done = true
+      },
+      EnvShowWrappers(_, _, rest) => current = rest,
+      EnvTraitDef(_, _, _, _, rest, _, _) => current = rest,
+      EnvTraitImpl(_, _, rest) => current = rest,
+      EnvTraitImplGen(_, _, _, _, rest) => current = rest,
+      EnvTypeDefs(_, _, rest) => current = rest,
+      EnvMutCell(_, _, rest) => current = rest,
+      EnvCached(_, _, rest) => current = rest,
+      EnvEmpty => done = true
+    }
+  }
+  count
+}
+
+/// Whether `name` has a row in `rows`.
+export fn param_name_rows_have(rows: Array[(String, Array[String])], name: String) -> Bool {
+  let mut found = false
+  for row in rows {
+    let (n, _) = row
+    found = found || n == name
+  }
+  found
+}
+
+fn param_name_row_push(rows: Array[(String, Array[String])], tombs: Array[String], name: String, ty: Type) -> Unit {
+  if is_param_names_marker(name) {
+    let fname = param_names_marker_target(name)
+    let mut seen = param_name_rows_have(rows, fname)
+    for t in tombs {
+      seen = seen || t == fname
+    }
+    if seen {
+      ()
+    } else {
+      match ty {
+        CtRecord(fields) => Array::push(rows, (fname, for field in fields {
+          let (pn, _) = field
+          pn
+        })),
+        _ => Array::push(tombs, fname)
+      }
+    }
+  } else {
+    ()
+  }
+}
+
+/// The imported rows whose name this module does not bind itself. A
+/// top-level `fn f` or `let f` shadows an imported `f`, so the import's
+/// parameter names must not rewrite its calls (Codex on #3441): a local
+/// `fn f(x: Int)` would otherwise see `f(1)` wrapped as `f(Some(1))`.
+fn unshadowed_param_rows(rows: Array[(String, Array[String])], stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  if Array::length(rows) == 0 {
+    rows
+  } else {
+    let kept: Array[(String, Array[String])] = []
+    for row in rows {
+      let (fname, _) = row
+      if stmts_bind_top_level(stmts, fname) {
+        ()
+      } else {
+        Array::push(kept, row)
+      }
+    }
+    kept
+  }
+}
+
+fn stmts_bind_top_level(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    let bound = match stmt {
+      SLet(_, _, n, _, _) => n == name,
+      SLetMut(n, _, _) => n == name,
+      SExternLet(n, _) => n == name,
+      SFnDecl(_, n, _, _, _) => n == name,
+      _ => false
+    }
+    found = found || bound
+  }
+  found
+}
+
 fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool) -> CheckedProgramTypeDefsObservation with Exception {
   match initial_env {
     EnvEmpty => check_program_type_defs_observation_impl(stmts, capture, role_lane_capture),
@@ -1039,10 +1218,16 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       collect_derive_field_errors(stmts, initial_env, frozen_errors)
       // #1455 step 3: see check_program.
       let qualified_pattern_refs = collect_qualified_pattern_refs(stmts)
+      // #3432: the imported functions' parameter names, so an omitted
+      // optional argument or a label reaches the callee it names, and a label
+      // the callee does not declare is refused as it is for a local callee.
+      let imported_param_rows = unshadowed_param_rows(env_param_name_rows(initial_env), stmts)
       // #1001: mixed argument-mode validation before desugar (see check_program).
-      check_labeled_arg_names_stmts(stmts, frozen_errors, true)
+      check_labeled_arg_names_stmts_with_imports(stmts, frozen_errors, true, imported_param_rows)
       // #986: reorder fully-labeled calls before checking (see check_program).
+      imported_params_set(imported_param_rows)
       desugar_labeled_args(stmts)
+      imported_params_set(array_empty())
       // #1571: see check_program.
       desugar_inspect_calls(stmts)
       // #3301: see check_program.
@@ -1086,7 +1271,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       set_generic_fn_decls(stmts)
       check_assignable_set_type_defs(empty_defs)
       // #986: labeled-argument name validation (see check_program).
-      check_labeled_arg_names_stmts(stmts, frozen_errors, false)
+      check_labeled_arg_names_stmts_with_imports(stmts, frozen_errors, false, imported_param_rows)
       // Keep CheckedProgram.checked_stmts as the original post-desugar source,
       // but match the ordinary path by checking and validating an expanded copy.
       let expanded_stmts = es_expand_top_level_effectset_rows(stmts, initial_env)

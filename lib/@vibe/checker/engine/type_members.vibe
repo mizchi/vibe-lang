@@ -26,6 +26,9 @@ import @vibe/compiler/core {
   resolve_import_path,
   resolve_import_path_candidates
 }
+import @vibe/compiler/checker {
+  is_param_names_marker, param_names_marker, param_names_marker_target
+}
 import @vibe/compiler/runtime/eval_loader {
   contains_str
 }
@@ -514,6 +517,41 @@ export fn engine_selected_module_binding_origin(dep_env: TypeEnv, resolved: Stri
     BindingOriginModuleExport(path, original_name)
   }
 }
+// What `env_flat_param_rows` answers for a binding list with no marker, which
+// is nearly every dependency: shared, so the answer allocates nothing.
+// Callers only read it.
+let no_param_rows: Array[(String, Type)] = array_empty()
+
+/// #3432: the `param_names_marker` rows of a flat binding list, as (function
+/// name, marker type). Allocates nothing when there are none, which is nearly
+/// every dependency: it runs for every imported type of every dependency, and
+/// the self-compile heap gate measures all of them.
+export fn env_flat_param_rows(bindings: Array[(String, Type)]) -> Array[(String, Type)] {
+  let mut hits = 0
+  for entry in bindings {
+    let (name, _) = entry
+    if is_param_names_marker(name) {
+      hits = hits + 1
+    } else {
+      ()
+    }
+  }
+  if hits == 0 {
+    no_param_rows
+  } else {
+    let rows: Array[(String, Type)] = []
+    for entry in bindings {
+      let (name, ty) = entry
+      if is_param_names_marker(name) {
+        Array::push(rows, (param_names_marker_target(name), ty))
+      } else {
+        ()
+      }
+    }
+    rows
+  }
+}
+
 export fn engine_bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv, resolved: String, dep_bindings: Array[(String, Type)], source_owner: String, local_owner: String, trait_mappings: Array[(String, String)], reexport_surface_only: Bool) -> TypeEnv {
   let qual_prefix = String::concat(source_owner, "::")
   let mut out = acc
@@ -538,6 +576,7 @@ export fn engine_bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv
   // method-style dispatch on the result (`T::of(..) |> length` reported
   // `unknown name: length`) and indexed-for classification. Bind each
   // companion once, from its first flat entry, matching env_lookup_flat.
+  let param_rows = env_flat_param_rows(dep_bindings)
   let seen = array_empty()
   let mut i = 0
   while i < Array::length(dep_bindings) {
@@ -558,6 +597,14 @@ export fn engine_bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv
         // free function under the same type (`local_type_member_markers`).
         if contains_str(members, candidate_name) {
           out = env_bind(out, engine_type_member_marker(local_name), CtUnit)
+        }
+        // #3432: so do its parameter names, so `Box::make()` can omit an
+        // optional argument when only `Box` was imported (Codex on #3441).
+        match env_lookup_flat(param_rows, candidate_name) {
+          Some(t) => {
+            out = env_bind(out, param_names_marker(local_name), t)
+          },
+          None => ()
         }
       }
     }

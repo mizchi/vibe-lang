@@ -26,7 +26,8 @@ import ./type_members.vibe {
   engine_typedef_projection_add_named,
   engine_typedef_projection_contains,
   engine_typedef_projection_name,
-  engine_uppercase_binding_slots_into
+  engine_uppercase_binding_slots_into,
+  env_flat_param_rows
 }
 import @vibe/ast {
   TypeExpr, TypeExpr::is_array_of_int, trait_ref_args, trait_ref_name, type_param_arity, type_param_name
@@ -35,7 +36,7 @@ import @vibe/compiler/cache {
   compact_source_fingerprint_memo, typing_module_fingerprint
 }
 import @vibe/compiler/checker {
-  import_item_kind_errors
+  env_param_name_rows, import_item_kind_errors, param_name_rows_have, param_names_marker
 }
 import @vibe/compiler/contract {
   vpkg_path_escape_one_line, vpkg_types_contract_of_source, vpkg_types_decl_pos_for_line
@@ -1713,6 +1714,10 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
   }
   let dep_env = view.env
   let dep_bindings = view.bindings
+  // #3432: the dependency's parameter-name rows, usually none.
+  let dep_param_rows = env_flat_param_rows(dep_bindings)
+  // The markers earlier imports of this module already bound.
+  let acc_param_rows = env_param_name_rows(acc)
   engine_builtin_shadow_diagnostics_into(dep_bindings, resolved, unresolved)
   let dep_traits = view.traits
   let dep_upper_slots = view.upper_slots
@@ -1833,7 +1838,20 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
           with_name
         }
       }
-      bind_names(j + 1, with_companions)
+      // #3432: the parameter names that let this module omit an optional
+      // argument or pass it by label, under the name it imports.
+      // A later import of the name that carries none hides an earlier
+      // import's marker with a tombstone, so the binding that won is the one
+      // whose parameters the checker reads (Codex on #3441).
+      let with_params = match env_lookup_flat(dep_param_rows, name) {
+        Some(t) => env_bind(with_companions, param_names_marker(bound_name), t),
+        None => if param_name_rows_have(acc_param_rows, bound_name) {
+          env_bind(with_companions, param_names_marker(bound_name), CtUnit)
+        } else {
+          with_companions
+        }
+      }
+      bind_names(j + 1, with_params)
     }
   }
   for item in declaration_names {
