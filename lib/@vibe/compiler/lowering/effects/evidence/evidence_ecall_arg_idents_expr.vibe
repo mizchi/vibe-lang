@@ -275,11 +275,17 @@ fn edp_stamp_returns(e: Expr, slot: (Int, String), scope: Array[String], pure_na
     EReturn(x) => EReturn(edp_stamp_tail(edp_stamp_returns(x, slot, scope, pure_names), slot, scope, pure_names)),
     ESeq(a, b) => ESeq(edp_stamp_returns(a, slot, scope, pure_names), edp_stamp_returns(b, slot, scope, pure_names)),
     ELet(n, v, b, off) => {
-      let v2 = edp_stamp_returns(v, slot, scope, pure_names)
+      let v2 = edp_stamp_returned_let(n, edp_stamp_returns(v, slot, scope, pure_names), b, slot, scope, pure_names)
       Array::push(scope, n)
       let b2 = edp_stamp_returns(b, slot, scope, pure_names)
       Array::truncate(scope, Array::length(scope) - 1)
       ELet(n, v2, b2, off)
+    },
+    ELetRec(n, v, b) => {
+      Array::push(scope, n)
+      let b2 = edp_stamp_returns(b, slot, scope, pure_names)
+      Array::truncate(scope, Array::length(scope) - 1)
+      ELetRec(n, v, b2)
     },
     ELetMut(n, v, b, off) => {
       let v2 = edp_stamp_returns(v, slot, scope, pure_names)
@@ -361,6 +367,11 @@ fn edp_tail_name_count(e: Expr, n: String) -> Int {
     } else {
       edp_tail_name_count(b, n)
     },
+    ELetRec(m, _, b) => if m == n {
+      0
+    } else {
+      edp_tail_name_count(b, n)
+    },
     EIf(_, t, el) => edp_tail_name_count(t, n) + edp_tail_name_count(el, n),
     EAssign(_, _, c, _) => edp_tail_name_count(c, n),
     EAssignOp(_, _, _, c, _) => edp_tail_name_count(c, n),
@@ -368,6 +379,89 @@ fn edp_tail_name_count(e: Expr, n: String) -> Int {
     EMatch(_, arms) => edp_tail_name_count_arms(arms, n),
     _ => 0
   }
+}
+
+/// A closure bound by `let` and returned by its name -- in a tail position or
+/// through `return` (Codex on #3447: `let f = () -> mk(); return f`) -- is
+/// the result itself, when every use of the name the binding reaches is such
+/// a return. It takes the declared row then; otherwise it is left as written.
+fn edp_stamp_returned_let(n: String, v: Expr, b: Expr, slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  match v {
+    EFn(_, _, _, _, None, lb) => {
+      let results = edp_tail_name_count(b, n) + edp_return_name_count(b, n)
+      if results > 0 && results == edp_free_use_count(b, n) && !edp_literal_calls_local(v, lb, scope) {
+        edp_stamp_slot_arg_at(v, scope, pure_names, Some(slot))
+      } else {
+        v
+      }
+    },
+    _ => v
+  }
+}
+
+/// How many `return`s in `e` hand back the bare name `n`, walking as
+/// `edp_stamp_returns` does and stopping where a binder rebinds `n`.
+fn edp_return_name_count(e: Expr, n: String) -> Int {
+  match e {
+    EReturn(x) => edp_tail_name_count(x, n) + edp_return_name_count(x, n),
+    ESeq(a, b) => edp_return_name_count(a, n) + edp_return_name_count(b, n),
+    ELet(m, v, b, _) => edp_return_name_count(v, n) + if m == n {
+      0
+    } else {
+      edp_return_name_count(b, n)
+    },
+    ELetMut(m, v, b, _) => edp_return_name_count(v, n) + if m == n {
+      0
+    } else {
+      edp_return_name_count(b, n)
+    },
+    ELetRec(m, _, b) => if m == n {
+      0
+    } else {
+      edp_return_name_count(b, n)
+    },
+    EIf(c, t, el) => edp_return_name_count(c, n) + edp_return_name_count(t, n) + edp_return_name_count(el, n),
+    EWhile(c, b) => edp_return_name_count(c, n) + edp_return_name_count(b, n),
+    EAssign(_, v, c, _) => edp_return_name_count(v, n) + edp_return_name_count(c, n),
+    EAssignOp(_, _, v, c, _) => edp_return_name_count(v, n) + edp_return_name_count(c, n),
+    EMatch(sc, arms) => edp_return_name_count(sc, n) + edp_return_name_count_arms(arms, n),
+    EHandle(bd, arms) => edp_return_name_count(bd, n) + edp_return_name_count_arms(arms, n),
+    EForIn(m, ix, it, b) => edp_return_name_count(it, n) + if m == n || ix == Some(n) {
+      0
+    } else {
+      edp_return_name_count(b, n)
+    },
+    ELoop(pairs, b) => {
+      let mut total = 0
+      let mut shadows = false
+      for pr in pairs {
+        total = total + edp_return_name_count(pr.1, n)
+        if pr.0 == n {
+          shadows = true
+        } else {
+          ()
+        }
+      }
+      if shadows {
+        total
+      } else {
+        total + edp_return_name_count(b, n)
+      }
+    },
+    _ => 0
+  }
+}
+
+fn edp_return_name_count_arms(arms: Array[(Pat, Expr)], n: String) -> Int {
+  let mut total = 0
+  for a in arms {
+    if !edp_str_array_contains(edp_pat_names(a.0), n) {
+      total = total + edp_return_name_count(a.1, n)
+    } else {
+      ()
+    }
+  }
+  total
 }
 
 fn edp_tail_name_count_arms(arms: Array[(Pat, Expr)], n: String) -> Int {
@@ -479,14 +573,7 @@ fn edp_stamp_tail(e: Expr, slot: (Int, String), scope: Array[String], pure_names
       // A closure bound here and returned by its name (`let f = () -> mk();
       // f`) is the result itself, when the body uses the name nowhere else
       // (Codex on #3447).
-      let v2 = match v {
-        EFn(_, _, _, _, None, lb) => if edp_tail_name_count(b, n) > 0 && edp_tail_name_count(b, n) == edp_free_use_count(b, n) && !edp_literal_calls_local(v, lb, scope) {
-          edp_stamp_slot_arg_at(v, scope, pure_names, Some(slot))
-        } else {
-          v
-        },
-        _ => v
-      }
+      let v2 = edp_stamp_returned_let(n, v, b, slot, scope, pure_names)
       Array::push(scope, n)
       let b2 = edp_stamp_tail(b, slot, scope, pure_names)
       Array::truncate(scope, Array::length(scope) - 1)
@@ -497,6 +584,14 @@ fn edp_stamp_tail(e: Expr, slot: (Int, String), scope: Array[String], pure_names
       let b2 = edp_stamp_tail(b, slot, scope, pure_names)
       Array::truncate(scope, Array::length(scope) - 1)
       ELetMut(n, v, b2, off)
+    },
+    // A recursive binding keeps the rest of its block as its continuation
+    // (Codex on #3447).
+    ELetRec(n, v, b) => {
+      Array::push(scope, n)
+      let b2 = edp_stamp_tail(b, slot, scope, pure_names)
+      Array::truncate(scope, Array::length(scope) - 1)
+      ELetRec(n, v, b2)
     },
     EIf(c, t, el) => EIf(c, edp_stamp_tail(t, slot, scope, pure_names), edp_stamp_tail(el, slot, scope, pure_names)),
     EMatch(sc, arms) => EMatch(sc, edp_stamp_tail_arms(arms, slot, scope, pure_names)),
