@@ -686,7 +686,7 @@ fn interp_expand_by_head(arg: Expr, head: String, derived_only: Bool, gens: Arra
 /// this pass has no shape to work from and the `__to_string` call must stand.
 fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
   let erased_throw_head = if derived_only {
-    dtd_erased_top_formal_head(arg, dict_binds, traits, struct_sets, var_types, fn_returns)
+    dtd_erased_top_formal_head(arg, dict_binds, traits, struct_sets, render_classify_var_types(var_types, arg), fn_returns)
   } else {
     ""
   }
@@ -737,7 +737,9 @@ fn masked_row_head(arg: Expr) -> String {
 }
 
 fn interp_expand_checked(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
-  dtd_check_top_interp(arg, dict_binds, traits, struct_sets, var_types, fn_returns)
+  // #3434: a masked name is checked as the binding in scope, not an outer
+  // formal it shadows (Codex on #3453).
+  dtd_check_top_interp(arg, dict_binds, traits, struct_sets, render_classify_var_types(var_types, arg), fn_returns)
   // #3434: a name whose innermost binding this pass could not type is read as
   // a fresh name, not through an outer binding's stale entry.
   let masked = match arg {
@@ -1233,8 +1235,8 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           if interp_has_repl(expanded) {
             expanded
           } else {
-            let missing = interp_missing_show_type(Array::get(args, 0), struct_sets, var_types, fn_returns)
-            let unresolved_array = interp_unresolved_array_call(Array::get(args, 0), struct_sets, var_types, fn_returns)
+            let missing = interp_missing_show_type(Array::get(args, 0), struct_sets, cvt, fn_returns)
+            let unresolved_array = interp_unresolved_array_call(Array::get(args, 0), struct_sets, cvt, fn_returns)
             if missing != "" {
               throw(interp_missing_show_msg(missing, off))
             } else if String::length(unresolved_array) > 0 {
