@@ -1,17 +1,7 @@
 // lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — ecall arg idents expr.
 
 import @vibe/compiler/core {
-  Expr,
-  Pat,
-  Stmt,
-  TypeExpr,
-  builtin_shadow_source_name,
-  expr_child_at,
-  expr_children,
-  expr_children_pop,
-  expr_children_push,
-  expr_children_top,
-  is_runtime_scheduled_effect
+  Expr, Pat, Stmt, TypeExpr, builtin_shadow_source_name, expr_children, is_runtime_scheduled_effect
 }
 
 import @vibe/core {
@@ -36,11 +26,15 @@ import @vibe/compiler/lowering/effects/queries {
 }
 
 import ./evidence_handle_effect_names_expr.vibe {
-  edp_append_ctor_inert_names, edp_expr_binds_name
+  edp_append_ctor_inert_names
 }
 
 import ./evidence_poison_expr.vibe {
   edp_row_typed_param_names, edp_type_is_fn_row_exactly, empty_str_array
+}
+
+import ./evidence_scan_view_expr.vibe {
+  edp_lambda_row_params, edp_needing_scan_view, edp_param_base_name, edp_pat_names, edp_rename_free
 }
 
 /// Any top-level fn with a row-E-typed parameter?
@@ -185,6 +179,7 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
   Array::truncate(edp_snap_taken, 0)
   Array::truncate(edp_snap_program, 0)
   Array::push(edp_snap_program, (stmts, fn_defs))
+  edp_note_program_aliases(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
     edp_stamp_returned_closure(stmts, i, pure_names)
@@ -233,10 +228,21 @@ fn edp_stamp_returned_closure(stmts: Array[Stmt], i: Int, pure_names: MutSet[Str
     SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(rty), eff, fb)) => {
       // A declared result spelled through an alias (`fn mid() -> Thunk`) is
       // expanded as an alias-annotated binding's is (Codex on #3447).
+      // Only a name the program declares as an alias is looked up: every
+      // function with a named result reaches this, and a scan of the
+      // program per function cost the selfcompile KPI 3.6 MB.
       let resolved = match rty {
         TyFn(_, _, Some(_)) => Some(rty),
-        TyName(_) => edp_alias_fn_type(stmts, rty),
-        TyApp(alias, _) => edp_applied_alias_fn_type(stmts, alias),
+        TyName(an) => if edp_is_program_alias(an) {
+          edp_alias_fn_type(stmts, rty)
+        } else {
+          None
+        },
+        TyApp(an, _) => if edp_is_program_alias(an) {
+          edp_applied_alias_fn_type(stmts, an)
+        } else {
+          None
+        },
         _ => None
       }
       match resolved {
@@ -426,6 +432,28 @@ fn edp_row_mentions_any(row: String, names: Array[String]) -> Bool {
     i = i + 1
   }
   found
+}
+
+/// The type-alias names the program declares, taken once per stamp pass
+/// (`edp_note_program_aliases`).
+let edp_program_aliases: Array[MutSet[String]] = []
+
+fn edp_note_program_aliases(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(edp_program_aliases, 0)
+  let names = MutSet::new_string()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(_, n, _, _) => MutSet::insert(names, n),
+      _ => ()
+    }
+    i = i + 1
+  }
+  Array::push(edp_program_aliases, names)
+}
+
+fn edp_is_program_alias(name: String) -> Bool {
+  Array::length(edp_program_aliases) > 0 && MutSet::has(Array::get(edp_program_aliases, 0), name)
 }
 
 /// Each arm of a `match` or `handle` stamped as a tail, its pattern's binders in
@@ -966,284 +994,6 @@ fn edp_int_array_has(xs: Array[Int], x: Int) -> Bool {
     }
   }
   found
-}
-
-/// #3416: the parameters of a lambda whose function type carries `ename`
-/// (`edp_row_typed_param_names`) and that its body does not bind again. A call
-/// through one is passed the dict; a binder of the same name in the body would
-/// make the spelling ambiguous, so such a parameter is left out and a call
-/// through it stays unsafe.
-export fn edp_lambda_row_params(params: Array[(String, Option[TypeExpr])], body: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Array[String] {
-  // Every lambda of every needing body is asked, so the common answer (no
-  // parameter has a function type with a row) allocates nothing; the shared
-  // empty array is only ever read.
-  let mut maybe = false
-  let mut pi = 0
-  while !maybe && pi < Array::length(params) {
-    match Array::get(params, pi).1 {
-      Some(TyFn(_, _, Some(_))) => {
-        maybe = true
-      },
-      _ => ()
-    }
-    pi = pi + 1
-  }
-  if !maybe {
-    return edp_no_row_params
-  } else {
-    ()
-  }
-  let all = edp_row_typed_param_names(params, ename, es_names, es_members_list)
-  if Array::length(all) == 0 {
-    all
-  } else {
-    let out = empty_str_array()
-    for p in all {
-      if edp_expr_binds_name(body, p) {
-        ()
-      } else {
-        Array::push(out, p)
-      }
-    }
-    out
-  }
-}
-
-let edp_no_row_params: Array[String] = []
-
-/// Does `e` hold a lambda with a parameter `edp_lambda_row_params` keeps?
-fn edp_has_row_param_lambda(e: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
-  match e {
-    EFn(_, _, params, _, _, body) => Array::length(edp_lambda_row_params(params, body, ename, es_names, es_members_list)) > 0 || edp_has_row_param_lambda(body, ename, es_names, es_members_list),
-    _ => {
-      let mark = expr_children_push(e)
-      let top = expr_children_top()
-      let mut found = false
-      let mut i = mark
-      while !found && i < top {
-        found = edp_has_row_param_lambda(expr_child_at(i), ename, es_names, es_members_list)
-        i = i + 1
-      }
-      expr_children_pop(mark)
-      found
-    }
-  }
-}
-
-/// The body a needing function's eligibility scan reads (#3416). Inside a
-/// local lambda, a parameter `edp_lambda_row_params` keeps is spelled
-/// `#rowp:<name>`, which nothing binds, and that spelling is pushed to `safe`:
-/// the rewrite passes a call through the parameter the dict, as it does a call
-/// to a needing function (`edp_rewrite_needing_body`'s `EFn` arm), so the scan
-/// asks the same question of it. Without a rename the scan meets the
-/// parameter's own binder and refuses the call. The body is returned as
-/// written when it holds no such lambda.
-export fn edp_needing_scan_view(e: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]], safe: Array[String]) -> Expr {
-  if edp_has_row_param_lambda(e, ename, es_names, es_members_list) {
-    edp_scan_view_rename(e, ename, es_names, es_members_list, safe)
-  } else {
-    e
-  }
-}
-
-fn edp_scan_view_rename(e: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]], safe: Array[String]) -> Expr {
-  match e {
-    EFn(tps, tbs, params, ret, eff, body) => {
-      let mut b = edp_scan_view_rename(body, ename, es_names, es_members_list, safe)
-      for p in edp_lambda_row_params(params, body, ename, es_names, es_members_list) {
-        let spelled = String::concat("#rowp:", p)
-        b = edp_rename_free(b, p, spelled)
-        if edp_str_array_contains(safe, spelled) {
-          ()
-        } else {
-          Array::push(safe, spelled)
-        }
-      }
-      EFn(tps, tbs, params, ret, eff, b)
-    },
-    ECall(callee, args, off, res) => ECall(edp_scan_view_rename(callee, ename, es_names, es_members_list, safe), for a in args {
-      edp_scan_view_rename(a, ename, es_names, es_members_list, safe)
-    }, off, res),
-    ELet(n, v, b, off) => ELet(n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe), off),
-    ELetMut(n, v, b, off) => ELetMut(n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe), off),
-    ELetRec(n, v, b) => ELetRec(n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
-    ESeq(a, b) => ESeq(edp_scan_view_rename(a, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
-    EIf(c, t, el) => EIf(edp_scan_view_rename(c, ename, es_names, es_members_list, safe), edp_scan_view_rename(t, ename, es_names, es_members_list, safe), edp_scan_view_rename(el, ename, es_names, es_members_list, safe)),
-    EMatch(sc, arms) => EMatch(edp_scan_view_rename(sc, ename, es_names, es_members_list, safe), for a in arms {
-      let (pp, ex) = a
-      (pp, edp_scan_view_rename(ex, ename, es_names, es_members_list, safe))
-    }),
-    EHandle(bd, arms) => EHandle(edp_scan_view_rename(bd, ename, es_names, es_members_list, safe), for a in arms {
-      let (pp, ex) = a
-      (pp, edp_scan_view_rename(ex, ename, es_names, es_members_list, safe))
-    }),
-    EWhile(c, b) => EWhile(edp_scan_view_rename(c, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
-    EForIn(n, idx, it, b) => EForIn(n, idx, edp_scan_view_rename(it, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
-    ELoop(pairs, b) => ELoop(for pr in pairs {
-      let (n, v) = pr
-      (n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe))
-    }, edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
-    EBinOp(op, l, r, boff) => EBinOp(op, edp_scan_view_rename(l, ename, es_names, es_members_list, safe), edp_scan_view_rename(r, ename, es_names, es_members_list, safe), boff),
-    EUnaryOp(op, x) => EUnaryOp(op, edp_scan_view_rename(x, ename, es_names, es_members_list, safe)),
-    EAssign(n, v, c, target_off) => EAssign(n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(c, ename, es_names, es_members_list, safe), target_off),
-    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(c, ename, es_names, es_members_list, safe), target_off),
-    EReturn(x) => EReturn(edp_scan_view_rename(x, ename, es_names, es_members_list, safe)),
-    EDot(o, f, o1, o2) => EDot(edp_scan_view_rename(o, ename, es_names, es_members_list, safe), f, o1, o2),
-    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe)),
-    EBreak(opt) => EBreak(match opt {
-      Some(x) => Some(edp_scan_view_rename(x, ename, es_names, es_members_list, safe)),
-      None => None
-    }),
-    EContinue(args) => EContinue(for a in args {
-      edp_scan_view_rename(a, ename, es_names, es_members_list, safe)
-    }),
-    ETuple(items) => ETuple(for a in items {
-      edp_scan_view_rename(a, ename, es_names, es_members_list, safe)
-    }),
-    EArray(items) => EArray(for a in items {
-      edp_scan_view_rename(a, ename, es_names, es_members_list, safe)
-    }),
-    ERecord(n, fields, tas) => ERecord(n, for f in fields {
-      let (fn2, v) = f
-      (fn2, edp_scan_view_rename(v, ename, es_names, es_members_list, safe))
-    }, tas),
-    EMap(fields) => EMap(for f in fields {
-      let (fn2, v) = f
-      (fn2, edp_scan_view_rename(v, ename, es_names, es_members_list, safe))
-    }),
-    ESpread(x) => ESpread(edp_scan_view_rename(x, ename, es_names, es_members_list, safe)),
-    _ => e
-  }
-}
-
-/// `e` with its free uses of `from` spelled `to`. A binder of `from` inside
-/// `e` stops the rename in its scope.
-fn edp_rename_free(e: Expr, from: String, to: String) -> Expr {
-  match e {
-    EIdent(n, o) => if n == from {
-      EIdent(to, o)
-    } else {
-      e
-    },
-    ECall(callee, args, off, res) => ECall(edp_rename_free(callee, from, to), for a in args {
-      edp_rename_free(a, from, to)
-    }, off, res),
-    EFn(tps, tbs, params, ret, eff, body) => {
-      let mut binds = false
-      for p in params {
-        if edp_param_base_name(p.0) == from {
-          binds = true
-        } else {
-          ()
-        }
-      }
-      if binds {
-        e
-      } else {
-        EFn(tps, tbs, params, ret, eff, edp_rename_free(body, from, to))
-      }
-    },
-    ELet(n, v, b, off) => ELet(n, edp_rename_free(v, from, to), if n == from {
-      b
-    } else {
-      edp_rename_free(b, from, to)
-    }, off),
-    ELetMut(n, v, b, off) => ELetMut(n, edp_rename_free(v, from, to), if n == from {
-      b
-    } else {
-      edp_rename_free(b, from, to)
-    }, off),
-    ELetRec(n, v, b) => if n == from {
-      e
-    } else {
-      ELetRec(n, edp_rename_free(v, from, to), edp_rename_free(b, from, to))
-    },
-    ESeq(a, b) => ESeq(edp_rename_free(a, from, to), edp_rename_free(b, from, to)),
-    EIf(c, t, el) => EIf(edp_rename_free(c, from, to), edp_rename_free(t, from, to), edp_rename_free(el, from, to)),
-    EMatch(sc, arms) => EMatch(edp_rename_free(sc, from, to), for a in arms {
-      let (pp, ex) = a
-      (pp, if edp_str_array_contains(edp_pat_names(pp), from) {
-        ex
-      } else {
-        edp_rename_free(ex, from, to)
-      })
-    }),
-    EHandle(bd, arms) => EHandle(edp_rename_free(bd, from, to), for a in arms {
-      let (pp, ex) = a
-      (pp, if edp_str_array_contains(edp_pat_names(pp), from) {
-        ex
-      } else {
-        edp_rename_free(ex, from, to)
-      })
-    }),
-    EWhile(c, b) => EWhile(edp_rename_free(c, from, to), edp_rename_free(b, from, to)),
-    EForIn(n, idx, it, b) => {
-      let shadows = n == from || match idx {
-        Some(i) => i == from,
-        None => false
-      }
-      EForIn(n, idx, edp_rename_free(it, from, to), if shadows {
-        b
-      } else {
-        edp_rename_free(b, from, to)
-      })
-    },
-    ELoop(pairs, b) => {
-      let mut shadows = false
-      let pairs2 = for pr in pairs {
-        let (n, v) = pr
-        if n == from {
-          shadows = true
-        } else {
-          ()
-        }
-        (n, edp_rename_free(v, from, to))
-      }
-      ELoop(pairs2, if shadows {
-        b
-      } else {
-        edp_rename_free(b, from, to)
-      })
-    },
-    EBinOp(op, l, r, boff) => EBinOp(op, edp_rename_free(l, from, to), edp_rename_free(r, from, to), boff),
-    EUnaryOp(op, x) => EUnaryOp(op, edp_rename_free(x, from, to)),
-    EAssign(n, v, c, target_off) => EAssign(if n == from {
-      to
-    } else {
-      n
-    }, edp_rename_free(v, from, to), edp_rename_free(c, from, to), target_off),
-    EAssignOp(n, op, v, c, target_off) => EAssignOp(if n == from {
-      to
-    } else {
-      n
-    }, op, edp_rename_free(v, from, to), edp_rename_free(c, from, to), target_off),
-    EReturn(x) => EReturn(edp_rename_free(x, from, to)),
-    EDot(o, f, o1, o2) => EDot(edp_rename_free(o, from, to), f, o1, o2),
-    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_rename_free(v, from, to)),
-    EBreak(opt) => EBreak(match opt {
-      Some(x) => Some(edp_rename_free(x, from, to)),
-      None => None
-    }),
-    EContinue(args) => EContinue(for a in args {
-      edp_rename_free(a, from, to)
-    }),
-    ETuple(items) => ETuple(for a in items {
-      edp_rename_free(a, from, to)
-    }),
-    EArray(items) => EArray(for a in items {
-      edp_rename_free(a, from, to)
-    }),
-    ERecord(n, fields, tas) => ERecord(n, for f in fields {
-      let (fn2, v) = f
-      (fn2, edp_rename_free(v, from, to))
-    }, tas),
-    EMap(fields) => EMap(for f in fields {
-      let (fn2, v) = f
-      (fn2, edp_rename_free(v, from, to))
-    }),
-    ESpread(x) => ESpread(edp_rename_free(x, from, to)),
-    _ => e
-  }
 }
 
 /// Recorded by `edp_free_names` for a part it cannot read names out of (an
@@ -1950,20 +1700,6 @@ fn edp_scope_has(scope: Array[String], name: String) -> Bool {
 }
 
 /// A parameter's name without its labeled (`~`) or optional (`?`) marker.
-fn edp_param_base_name(pn: String) -> String {
-  let ln = String::length(pn)
-  if ln > 0 && (pn[ln - 1: ln] == "~" || pn[ln - 1: ln] == "?") {
-    pn[0: ln - 1]
-  } else {
-    pn
-  }
-}
-
-/// The names a pattern binds, read with the same census the pass uses.
-fn edp_pat_names(p: Pat) -> Array[String] {
-  let census = edp_collect_program_binders([SExpr(EMatch(EInt(0), [(p, EUnit)]))])
-  MutSet::to_array(census)
-}
 
 /// The index of the parameter of the top-level `callee` a label names, or -1.
 fn edp_param_index_by_label(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee: String, label: String) -> Int {
