@@ -130,6 +130,39 @@ export fn prepend_expr(head: Expr, rest: Array[Expr]) -> Array[Expr] {
   out
 }
 
+// #3434: the interpolation renderer's own mask for a name whose innermost
+// binding has no syntactic type. It is a separate key, not an empty entry
+// under the name itself, because operator lowering reads `var_types` too and
+// relies on a same-type rebind finding the outer entry; only the renderer may
+// treat the binding as unknown.
+let render_mask_prefix: String = "#render-unknown:"
+
+/// #3434: the key `bind_let_env_into` pushes when an unannotated `let` with no
+/// inferable type shadows a name that already has an entry.
+export fn render_mask_key(name: String) -> String {
+  String::concat(render_mask_prefix, name)
+}
+
+/// #3434: whether the innermost binding of `name` is masked for rendering --
+/// a render mask for it comes after the last plain entry. Allocates nothing.
+export fn render_masked(var_types: Array[(String, String)], name: String) -> Bool {
+  let plen = String::length(render_mask_prefix)
+  let mut i = Array::length(var_types) - 1
+  let mut result = false
+  while i >= 0 {
+    let (vn, _) = Array::get(var_types, i)
+    if vn == name {
+      i = -1
+    } else if String::length(vn) == plen + String::length(name) && String::starts_with(vn, render_mask_prefix) && String::ends_with(vn, name) {
+      result = true
+      i = -1
+    } else {
+      i = i - 1
+    }
+  }
+  result
+}
+
 export fn lookup_var_type(var_types: Array[(String, String)], name: String) -> Option[String] {
   // `extend_var_types` APPENDS on each `let`, so a shadowing rebind adds a second
   // entry for the same name. Return the LAST match (the innermost binding in

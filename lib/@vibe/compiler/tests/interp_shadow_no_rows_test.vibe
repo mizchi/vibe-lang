@@ -1,0 +1,69 @@
+//# Imports
+
+// #3434 (Codex on #3453): a lane that passes the desugar no typed rows (the
+// merged, linked-library and linked-artifact lanes, which parse without
+// offsets, and `vibe check`'s interpolation pass, which parses WITH them) has
+// no checker type for an untyped shadowing `let`. There it keeps the outer
+// binding's entries: a same-type shadow renders as that type. Seeding it as a
+// fresh name sent the shapes below to `__to_string` -- a `Char` as its code
+// point, an `Option` as an address -- and let a struct with no Show past the
+// missing-Show refusal. A type-changing shadow on these lanes is #3456.
+
+import @vibe/compiler/normalize {
+  desugar_trait_dicts
+}
+
+import @vibe/compiler/syntax {
+  lex, lex_with_offsets, parse_program, parse_program_located, print_program
+}
+
+//# Functions
+
+fn desugared(source: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  desugar_trait_dicts(stmts)
+  print_program(stmts)
+}
+
+fn desugared_located(source: String) -> String with Exception {
+  let (toks, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(toks, starts, source)
+  desugar_trait_dicts(stmts)
+  print_program(stmts)
+}
+
+fn refused_located(source: String) -> Bool {
+  handle {
+    let _ = desugared_located(source)
+    false
+  } with { Exception::Throw(_) => true }
+}
+
+fn shadowed(param_type: String) -> String {
+  String::concat("fn f(c: ", String::concat(param_type, ", b: Bool) -> String {\n  let c = if b {\n    c\n  } else {\n    c\n  }\n  \"\\{c}\"\n}\n"))
+}
+
+//# Tests
+
+test "#3434: an unlocated same-type Char shadow renders as a Char" {
+  let out = desugared(shadowed("Char"))
+  inspect(String::contains(out, "Char::to_int(c)"), content = "true")
+  inspect(String::contains(out, "__to_string(c)"), content = "false")
+}
+
+test "#3434: an unlocated same-type Option shadow expands structurally" {
+  let out = desugared(shadowed("Option[Int]"))
+  inspect(String::contains(out, "\"Some(\""), content = "true")
+  inspect(String::contains(out, "__to_string(c)"), content = "false")
+}
+
+test "#3434: a located same-type shadow with no typed rows renders as the outer type" {
+  let out = desugared_located(shadowed("Char"))
+  inspect(String::contains(out, "Char::to_int(c)"), content = "true")
+  inspect(String::contains(out, "__to_string(c)"), content = "false")
+}
+
+test "#3434: a located same-type shadow of a struct with no Show is refused with no typed rows" {
+  let src = String::concat("struct Raw {\n  n: Int\n}\n\n", shadowed("Raw"))
+  inspect(refused_located(src), content = "true")
+}

@@ -1,0 +1,204 @@
+// #3434: an unannotated `let` that shadows an `Option` binding renders as its
+// own value, not through the outer binding's type. Before, `"\{b}"` printed
+// `None` for 5: the interpolation renderer read the outer `Option[Int]` entry
+// for the inner `b`, whose type it could not infer syntactically.
+
+fn param_shadow(b: Option[Int]) -> String {
+  let b = match b {
+    Some(v) => v,
+    None => 5
+  }
+  "\{b}"
+}
+
+fn optional_param_shadow(b?: Int) -> String {
+  let b = match b {
+    Some(v) => v,
+    None => 5
+  }
+  "\{b}"
+}
+
+fn local_shadow() -> String {
+  let b: Option[Int] = None
+  let b = match b {
+    Some(v) => v,
+    None => 5
+  }
+  "\{b}"
+}
+
+fn fresh_name(b: Option[Int]) -> String {
+  let c = match b {
+    Some(v) => v,
+    None => 5
+  }
+  "\{c}"
+}
+
+fn annotated_shadow(b: Option[Int]) -> String {
+  let b: Int = match b {
+    Some(v) => v,
+    None => 5
+  }
+  "\{b}"
+}
+
+fn string_shadow(s: Option[String]) -> String {
+  let s = match s {
+    Some(v) => v,
+    None => "fallback"
+  }
+  "[\{s}]"
+}
+
+fn unshadowed(b: Option[Int]) -> String {
+  "\{b}"
+}
+
+fn reshadowed_with_inferable(b: Option[Int]) -> String {
+  let b = match b {
+    Some(v) => v,
+    None => 5
+  }
+  let b = Some(b + 1)
+  "\{b}"
+}
+
+// A shadowing binding the pass cannot type that stays composite still renders
+// structurally, from the checker's row (Codex on #3453).
+fn same_opt(b: Option[Int]) -> String {
+  let b = match b {
+    Some(v) => Some(v),
+    None => None
+  }
+  "\{b}"
+}
+
+fn to_opt_str(b: Option[Int]) -> String {
+  let b = match b {
+    Some(v) => Some("v\{v}"),
+    None => None
+  }
+  "\{b}"
+}
+
+fn same_arr(xs: Array[Int]) -> String {
+  let xs = if Array::length(xs) > 0 {
+    xs
+  } else {
+    [9]
+  }
+  "\{xs}"
+}
+
+// A shadowing binding over a scalar the renderer has a dedicated branch for
+// (Bool, Double, Char) is not rendered through that branch (Codex on #3453).
+fn from_bool(b: Bool) -> String {
+  let b = match b {
+    true => 1,
+    false => 0
+  }
+  "\{b}"
+}
+
+fn from_double(d: Double) -> String {
+  let d = match d > 1.0 {
+    true => 7,
+    false => 8
+  }
+  "\{d}"
+}
+
+fn from_char(c: Char) -> String {
+  let c = match c == 'a' {
+    true => 65,
+    false => 66
+  }
+  "\{c}"
+}
+
+// A shadowing binding the pass cannot type that keeps the outer type still
+// renders through that type's renderer, read from the checker's row (Codex on
+// #3453): a Char as a character, a Unit as `()`, a nominal through its Show.
+struct Pt {
+  x: Int
+} derive (Show)
+
+fn same_char(c: Char, other: Char) -> String {
+  let c = match c == other {
+    true => other,
+    false => c
+  }
+  "\{c}"
+}
+
+fn same_unit(u: Unit) -> String {
+  let u = match 1 {
+    _ => u
+  }
+  "[\{u}]"
+}
+
+fn same_pt(p: Pt) -> String {
+  let p = match p.x > 0 {
+    true => p,
+    false => Pt::{ x: 1 }
+  }
+  "\{p}"
+}
+
+// A shadowing binding over a formal is checked and rendered as the concrete
+// binding in scope, not as the erased `T` it shadows (Codex on #3453).
+fn over_formal[T](x: T, c: Bool) -> String {
+  let x = if c {
+    1
+  } else {
+    2
+  }
+  "\{x}"
+}
+
+test "a shadowing let renders as its own value" {
+  inspect(param_shadow(None), content = "5")
+  inspect(param_shadow(Some(3)), content = "3")
+  inspect(optional_param_shadow(), content = "5")
+  inspect(optional_param_shadow(b = 9), content = "9")
+  inspect(local_shadow(), content = "5")
+  inspect(string_shadow(None), content = "[fallback]")
+  inspect(string_shadow(Some("x")), content = "[x]")
+}
+
+test "controls" {
+  inspect(fresh_name(None), content = "5")
+  inspect(annotated_shadow(None), content = "5")
+  inspect(unshadowed(Some(2)), content = "Some(2)")
+  inspect(reshadowed_with_inferable(None), content = "Some(6)")
+}
+
+test "a shadowing let that stays composite renders structurally" {
+  inspect(same_opt(Some(1)), content = "Some(1)")
+  inspect(same_opt(None), content = "None")
+  inspect(to_opt_str(Some(3)), content = "Some(v3)")
+  inspect(same_arr([1, 2]), content = "[1, 2]")
+  inspect(same_arr([]), content = "[9]")
+}
+
+test "a shadowing let over a Bool, Double or Char renders as its own value" {
+  inspect(from_bool(true), content = "1")
+  inspect(from_bool(false), content = "0")
+  inspect(from_double(2.0), content = "7")
+  inspect(from_char('a'), content = "65")
+}
+
+test "a shadowing let that keeps a Char, Unit or nominal type renders through it" {
+  inspect(same_char('a', 'a'), content = "a")
+  inspect(same_char('z', 'a'), content = "z")
+  inspect(same_unit(()), content = "[()]")
+  inspect(same_pt(Pt::{ x: 3 }), content = "Pt { x: 3 }")
+}
+
+test "a shadowing let over a formal renders as the concrete binding" {
+  inspect(over_formal("ignored", true), content = "1")
+  inspect(over_formal(5, false), content = "2")
+}
