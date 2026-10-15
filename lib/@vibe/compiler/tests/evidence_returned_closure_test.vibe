@@ -72,7 +72,7 @@ test "a local lambda's returned closure and a return inside an aggregate take th
 // assigns is left as written.
 test "a closure returned from a let mut or at an alias chain takes the dict" {
   inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; f } }")
-  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f = () -> 3\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = () -> { mk() }; { f = () -> { 3 }; f } } }")
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f = () -> 3\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; { f = (__ev_Box: __EvDict_Box) -> { 3 }; f } } }")
   inspect(mid_after("type Thunk = () -> Int with Box[Int]\ntype Gen[T] = Thunk\nfn mid() -> Gen[Unit] {\n  () -> mk()\n}\n"), "let rec mid = () -> Gen[Unit] { (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } }")
 }
 
@@ -80,4 +80,11 @@ test "a closure returned from a let mut or at an alias chain takes the dict" {
 // assignment to it (Codex on #3452).
 test "an inner assigned binder of the spelling does not keep a returned let mut as written" {
   inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  let _ = {\n    let mut f = 0\n    f = 1\n    f\n  }\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; { let _ = { let mut f = 0; { f = 1; f } }; f } } }")
+}
+
+// Every closure assigned to a returned `let mut` takes the row with its
+// initializer, and none does when one of them cannot (Codex on #3452).
+test "a closure assigned to a returned let mut takes the dict, or none does" {
+  inspect(mid_after("fn mid(c: Bool) -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  if c {\n    f = () -> 3\n  } else {\n    ()\n  }\n  f\n}\n"), "let rec mid = (c: Bool) -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; { if c { { f = (__ev_Box: __EvDict_Box) -> { 3 }; () } }; f } } }")
+  inspect(mid_after("fn other() -> Int with Box[Int] {\n  4\n}\nfn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f = other\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = () -> { mk() }; { f = other; f } } }")
 }

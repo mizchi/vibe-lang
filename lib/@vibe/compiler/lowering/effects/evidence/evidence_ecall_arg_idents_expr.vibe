@@ -37,6 +37,10 @@ import ./evidence_scan_view_expr.vibe {
   edp_lambda_row_params, edp_needing_scan_view, edp_param_base_name, edp_pat_names, edp_rename_free
 }
 
+import ./evidence_returned_scan_expr.vibe {
+  edp_assigns_name, edp_has_unstamped_assign, edp_return_name_count, edp_row_mentions_any, edp_tail_name_count
+}
+
 /// Any top-level fn with a row-E-typed parameter?
 /// The first top-level fn whose declared parameters carry `ename` in a
 /// function type -- the row-carrying closure VALUE the V1 guard is about
@@ -299,14 +303,9 @@ fn edp_stamp_returns(e: Expr, slot: (Int, String), scope: Array[String], pure_na
       ELetRec(n, v, b2)
     },
     ELetMut(n, v, b, off) => {
-      let v1 = edp_stamp_returns(v, slot, scope, pure_names)
-      let v2 = if edp_assigns_free(b, n) {
-        v1
-      } else {
-        edp_stamp_returned_let(n, v1, b, slot, scope, pure_names)
-      }
+      let (v2, b1) = edp_stamp_returned_mut(n, edp_stamp_returns(v, slot, scope, pure_names), b, slot, scope, pure_names)
       Array::push(scope, n)
-      let b2 = edp_stamp_returns(b, slot, scope, pure_names)
+      let b2 = edp_stamp_returns(b1, slot, scope, pure_names)
       Array::truncate(scope, Array::length(scope) - 1)
       ELetMut(n, v2, b2, off)
     },
@@ -388,40 +387,6 @@ fn edp_stamp_returns_all(es: Array[Expr], slot: (Int, String), scope: Array[Stri
   }
 }
 
-/// How many tail positions of `e` are the bare name `n`, reading tails as
-/// `edp_stamp_tail` does and stopping where a binder rebinds `n`.
-fn edp_tail_name_count(e: Expr, n: String) -> Int {
-  match e {
-    EIdent(x, _) => if x == n {
-      1
-    } else {
-      0
-    },
-    ESeq(_, b) => edp_tail_name_count(b, n),
-    ELet(m, _, b, _) => if m == n {
-      0
-    } else {
-      edp_tail_name_count(b, n)
-    },
-    ELetMut(m, _, b, _) => if m == n {
-      0
-    } else {
-      edp_tail_name_count(b, n)
-    },
-    ELetRec(m, _, b) => if m == n {
-      0
-    } else {
-      edp_tail_name_count(b, n)
-    },
-    EIf(_, t, el) => edp_tail_name_count(t, n) + edp_tail_name_count(el, n),
-    EAssign(_, _, c, _) => edp_tail_name_count(c, n),
-    EAssignOp(_, _, _, c, _) => edp_tail_name_count(c, n),
-    EHandle(bd, arms) => edp_tail_name_count(bd, n) + edp_tail_name_count_arms(arms, n),
-    EMatch(_, arms) => edp_tail_name_count_arms(arms, n),
-    _ => 0
-  }
-}
-
 /// A closure bound by `let` and returned by its name -- in a tail position or
 /// through `return` (Codex on #3447: `let f = () -> mk(); return f`) -- is
 /// the result itself, when every use of the name the binding reaches is such
@@ -440,98 +405,77 @@ fn edp_stamp_returned_let(n: String, v: Expr, b: Expr, slot: (Int, String), scop
   }
 }
 
-/// How many `return`s in `e` hand back the bare name `n`, walking as
-/// `edp_stamp_returns` does and stopping where a binder rebinds `n`.
-fn edp_return_name_count(e: Expr, n: String) -> Int {
-  match e {
-    EReturn(x) => edp_tail_name_count(x, n) + edp_return_name_count(x, n),
-    ESeq(a, b) => edp_return_name_count(a, n) + edp_return_name_count(b, n),
-    ELet(m, v, b, _) => edp_return_name_count(v, n) + if m == n {
-      0
-    } else {
-      edp_return_name_count(b, n)
-    },
-    ELetMut(m, v, b, _) => edp_return_name_count(v, n) + if m == n {
-      0
-    } else {
-      edp_return_name_count(b, n)
-    },
-    ELetRec(m, _, b) => if m == n {
-      0
-    } else {
-      edp_return_name_count(b, n)
-    },
-    EIf(c, t, el) => edp_return_name_count(c, n) + edp_return_name_count(t, n) + edp_return_name_count(el, n),
-    EWhile(c, b) => edp_return_name_count(c, n) + edp_return_name_count(b, n),
-    EAssign(_, v, c, _) => edp_return_name_count(v, n) + edp_return_name_count(c, n),
-    EAssignOp(_, _, v, c, _) => edp_return_name_count(v, n) + edp_return_name_count(c, n),
-    EMatch(sc, arms) => edp_return_name_count(sc, n) + edp_return_name_count_arms(arms, n),
-    EHandle(bd, arms) => edp_return_name_count(bd, n) + edp_return_name_count_arms(arms, n),
-    EForIn(m, ix, it, b) => edp_return_name_count(it, n) + if m == n || ix == Some(n) {
-      0
-    } else {
-      edp_return_name_count(b, n)
-    },
-    ELoop(pairs, b) => {
-      let mut total = 0
-      let mut shadows = false
-      for pr in pairs {
-        total = total + edp_return_name_count(pr.1, n)
-        if pr.0 == n {
-          shadows = true
-        } else {
-          ()
-        }
-      }
-      if shadows {
-        total
-      } else {
-        total + edp_return_name_count(b, n)
-      }
-    },
-    // A nested lambda's `return` is its own. Every other form binds nothing,
-    // so its children are counted as they are.
-    EFn(_, _, _, _, _, _) => 0,
-    _ => {
-      let mut total = 0
-      for c in expr_children(e) {
-        total = total + edp_return_name_count(c, n)
-      }
-      total
-    }
-  }
-}
-
-fn edp_return_name_count_arms(arms: Array[(Pat, Expr)], n: String) -> Int {
-  let mut total = 0
-  for a in arms {
-    if !edp_str_array_contains(edp_pat_names(a.0), n) {
-      total = total + edp_return_name_count(a.1, n)
-    } else {
-      ()
-    }
-  }
-  total
-}
-
-fn edp_tail_name_count_arms(arms: Array[(Pat, Expr)], n: String) -> Int {
-  let mut total = 0
-  for a in arms {
-    if !edp_str_array_contains(edp_pat_names(a.0), n) {
-      total = total + edp_tail_name_count(a.1, n)
-    } else {
-      ()
-    }
-  }
-  total
-}
-
 /// The uses of `n` in `e` that the binding around `e` reaches: a binder of `n`
 /// inside `e` hides it in its scope (Codex on #3447: `let _ = ((f: Int) ->
 /// f)(0)` is not a use of the outer `f`).
 fn edp_free_use_count(e: Expr, n: String) -> Int {
   let marker = "#free-use"
   edp_count_ident_uses(edp_rename_free(e, n, marker), marker)
+}
+
+/// A `let mut n = v` whose body `b` hands `n` back as the result, with the
+/// initializer and every closure assigned to `n` stamped at `slot` (Codex on
+/// #3452: `let mut f = () -> mk(); f = () -> 3; f`). Each of them can be the
+/// value returned, so all of them take the row or none do: when an
+/// assignment's value is not a row-free literal this can stamp -- a name, a
+/// call, an assignment inside a nested lambda -- both are left as written.
+fn edp_stamp_returned_mut(n: String, v: Expr, b: Expr, slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> (Expr, Expr) {
+  let v2 = edp_stamp_returned_let(n, v, b, slot, scope, pure_names)
+  if !edp_assigns_free(b, n) {
+    (v2, b)
+  } else {
+    match v2 {
+      EFn(_, _, _, _, Some(_), _) => {
+        let marker = "#ret-mut"
+        let stamped = edp_stamp_assigned_lits(edp_rename_free(b, n, marker), marker, slot, scope, pure_names)
+        if edp_has_unstamped_assign(stamped, marker) {
+          (v, b)
+        } else {
+          (v2, edp_rename_free(stamped, marker, n))
+        }
+      },
+      _ => (v, b)
+    }
+  }
+}
+
+/// `e` with each row-free closure literal assigned to `marker` stamped at
+/// `slot`. A nested lambda is not entered; `edp_has_unstamped_assign` sees
+/// what is left.
+fn edp_stamp_assigned_lits(e: Expr, marker: String, slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  match e {
+    EAssign(m, v, c, off) => {
+      let v2 = if m == marker {
+        match v {
+          EFn(_, _, _, _, None, lb) => if edp_literal_calls_local(v, lb, scope) {
+            v
+          } else {
+            edp_stamp_slot_arg_at(v, scope, pure_names, Some(slot))
+          },
+          _ => v
+        }
+      } else {
+        edp_stamp_assigned_lits(v, marker, slot, scope, pure_names)
+      }
+      EAssign(m, v2, edp_stamp_assigned_lits(c, marker, slot, scope, pure_names), off)
+    },
+    EAssignOp(m, op, v, c, off) => EAssignOp(m, op, v, edp_stamp_assigned_lits(c, marker, slot, scope, pure_names), off),
+    ESeq(a, b) => ESeq(edp_stamp_assigned_lits(a, marker, slot, scope, pure_names), edp_stamp_assigned_lits(b, marker, slot, scope, pure_names)),
+    ELet(x, v, b, off) => ELet(x, edp_stamp_assigned_lits(v, marker, slot, scope, pure_names), edp_stamp_assigned_lits(b, marker, slot, scope, pure_names), off),
+    ELetMut(x, v, b, off) => ELetMut(x, edp_stamp_assigned_lits(v, marker, slot, scope, pure_names), edp_stamp_assigned_lits(b, marker, slot, scope, pure_names), off),
+    ELetRec(x, v, b) => ELetRec(x, v, edp_stamp_assigned_lits(b, marker, slot, scope, pure_names)),
+    EIf(c, t, el) => EIf(edp_stamp_assigned_lits(c, marker, slot, scope, pure_names), edp_stamp_assigned_lits(t, marker, slot, scope, pure_names), edp_stamp_assigned_lits(el, marker, slot, scope, pure_names)),
+    EMatch(sc, arms) => EMatch(edp_stamp_assigned_lits(sc, marker, slot, scope, pure_names), for a in arms {
+      (a.0, edp_stamp_assigned_lits(a.1, marker, slot, scope, pure_names))
+    }),
+    EHandle(bd, arms) => EHandle(edp_stamp_assigned_lits(bd, marker, slot, scope, pure_names), for a in arms {
+      (a.0, edp_stamp_assigned_lits(a.1, marker, slot, scope, pure_names))
+    }),
+    EWhile(c, b) => EWhile(edp_stamp_assigned_lits(c, marker, slot, scope, pure_names), edp_stamp_assigned_lits(b, marker, slot, scope, pure_names)),
+    EForIn(x, idx, it, b) => EForIn(x, idx, it, edp_stamp_assigned_lits(b, marker, slot, scope, pure_names)),
+    ELoop(pairs, b) => ELoop(pairs, edp_stamp_assigned_lits(b, marker, slot, scope, pure_names)),
+    _ => e
+  }
 }
 
 /// Does `e` assign the binding `n` it reaches, a nested lambda that captures it
@@ -541,35 +485,6 @@ fn edp_free_use_count(e: Expr, n: String) -> Int {
 fn edp_assigns_free(e: Expr, n: String) -> Bool {
   let marker = "#free-assign"
   edp_assigns_name(edp_rename_free(e, n, marker), marker)
-}
-
-/// Does `e` assign the name `n` anywhere? Unscoped: `edp_assigns_free` asks
-/// it of a marker no binder spells.
-fn edp_assigns_name(e: Expr, n: String) -> Bool {
-  let mut found = false
-  let stack: Array[Expr] = [e]
-  while !found && Array::length(stack) > 0 {
-    let k = Array::length(stack)
-    let cur = Array::get(stack, k - 1)
-    Array::truncate(stack, k - 1)
-    match cur {
-      EAssign(m, _, _, _) => if m == n {
-        found = true
-      } else {
-        ()
-      },
-      EAssignOp(m, _, _, _, _) => if m == n {
-        found = true
-      } else {
-        ()
-      },
-      _ => ()
-    }
-    for c in expr_children(cur) {
-      Array::push(stack, c)
-    }
-  }
-  found
 }
 
 /// The function type a declared result spelled through an alias names,
@@ -622,32 +537,6 @@ fn edp_result_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr
     steps = steps + 1
   }
   out
-}
-
-/// Does `row` spell any of `names` as a whole token?
-fn edp_row_mentions_any(row: String, names: Array[String]) -> Bool {
-  let mut found = false
-  let mut start = 0
-  let mut i = 0
-  let len = String::length(row)
-  while i <= len {
-    let boundary = i == len || {
-      let c = String::byte_at(row, i)
-      !(c >= 97 && c <= 122 || c >= 65 && c <= 90 || c >= 48 && c <= 57 || c == 95)
-    }
-    if boundary {
-      if i > start && edp_str_array_contains(names, String::substring(row, start, i)) {
-        found = true
-      } else {
-        ()
-      }
-      start = i + 1
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
 }
 
 /// The type-alias names the program declares, taken once per stamp pass
@@ -703,14 +592,10 @@ fn edp_stamp_tail(e: Expr, slot: (Int, String), scope: Array[String], pure_names
     },
     ELetMut(n, v, b, off) => {
       // A mutable binding returned by its name is the result as an immutable
-      // one is, unless the body assigns it (Codex on #3447).
-      let v2 = if edp_assigns_free(b, n) {
-        v
-      } else {
-        edp_stamp_returned_let(n, v, b, slot, scope, pure_names)
-      }
+      // one is (Codex on #3447), and so is every closure assigned to it.
+      let (v2, b1) = edp_stamp_returned_mut(n, v, b, slot, scope, pure_names)
       Array::push(scope, n)
-      let b2 = edp_stamp_tail(b, slot, scope, pure_names)
+      let b2 = edp_stamp_tail(b1, slot, scope, pure_names)
       Array::truncate(scope, Array::length(scope) - 1)
       ELetMut(n, v2, b2, off)
     },
