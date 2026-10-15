@@ -1,0 +1,87 @@
+// #3455: interpolating a FRESH `let` the normalize pass cannot type renders
+// through the type the checker gave it. The binding had no entry in the
+// interpolation environment, so nothing found its renderer: a `Pt` printed
+// its address and a `Char` its code point.
+//
+// A `match` whose arms mix a char LITERAL with a `Char` is typed `Int` by the
+// checker (#3075), so it is not covered here.
+
+struct Pt {
+  x: Int
+} derive (Show)
+
+enum Hue {
+  Red;
+  Blue
+} derive (Show)
+
+fn fresh_pt(p: Pt) -> String {
+  let q = match p.x > 0 {
+    true => p,
+    false => Pt::{ x: 1 }
+  }
+  "\{q}"
+}
+
+fn fresh_hue(h: Hue, c: Bool) -> String {
+  let k = if c {
+    h
+  } else {
+    Hue::Red
+  }
+  "\{k}"
+}
+
+fn fresh_char(c: Char, e: Char) -> String {
+  let d = match c == e {
+    true => e,
+    false => c
+  }
+  "\{d}"
+}
+
+fn fresh_unit(c: Bool) -> String {
+  let u = match c {
+    _ => ()
+  }
+  "\{u}"
+}
+
+fn fresh_option(o: Option[Int], c: Bool) -> String {
+  let v = if c {
+    o
+  } else {
+    None
+  }
+  "\{v}"
+}
+
+fn fresh_int(n: Int, c: Bool) -> String {
+  let v = if c {
+    n
+  } else {
+    0
+  }
+  "\{v}"
+}
+
+test "a fresh untyped let of a nominal renders through its Show" {
+  inspect(fresh_pt(Pt::{ x: 3 }), content = "Pt { x: 3 }")
+  inspect(fresh_pt(Pt::{ x: 0 }), content = "Pt { x: 1 }")
+  inspect(fresh_hue(Hue::Blue, true), content = "Blue")
+}
+
+test "a fresh untyped let of a Char or Unit renders as that type" {
+  inspect(fresh_char('a', 'z'), content = "a")
+  inspect(fresh_char('q', 'q'), content = "q")
+  inspect(fresh_unit(true), content = "()")
+}
+
+test "a fresh untyped let of an Option expands structurally" {
+  inspect(fresh_option(Some(2), true), content = "Some(2)")
+  inspect(fresh_option(Some(2), false), content = "None")
+}
+
+test "a fresh untyped let of an Int still renders as an Int" {
+  inspect(fresh_int(7, true), content = "7")
+}

@@ -740,10 +740,44 @@ fn render_classify_var_types(var_types: Array[(String, String)], arg: Expr) -> A
         },
         None => var_types
       }
+    } else if off >= 0 && !has_var_entry(var_types, n) {
+      // #3455: a FRESH name this pass could not type (`let q = match .. { true
+      // => p, false => Pt::{ x: 1 } }`) had no entry, so nothing found its
+      // renderer: a `Pt` rendered as an address. Read it through the
+      // checker's row, as a masked name is. A row the default rendering
+      // already answers (an `Int`, `String`, `Bool` or `Double`, which the
+      // codegen channels type) needs no seeding, and an unknown one names no
+      // renderer to seed.
+      match dtd_typed_render_row_arg(arg) {
+        Some(TyUnit) => seed_var_types([(n, Some(TyName("Unit")))], dtd_scope_formals, var_types),
+        Some(ty) => if fresh_render_row_needs_seeding(ty) {
+          seed_var_types([(n, Some(ty))], dtd_scope_formals, var_types)
+        } else {
+          var_types
+        },
+        None => var_types
+      }
     } else {
       var_types
     },
     _ => var_types
+  }
+}
+
+fn has_var_entry(var_types: Array[(String, String)], n: String) -> Bool {
+  match lookup_var_type(var_types, n) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// #3455: does a fresh name's render row name a type whose rendering the
+/// entry-less default gets wrong? Everything but the scalars the codegen
+/// channels already type, and the row that names no type at all.
+fn fresh_render_row_needs_seeding(ty: TypeExpr) -> Bool {
+  match ty {
+    TyName(n) => !(n == "Int" || n == "String" || n == "Bool" || n == "Double" || dtd_typed_render_row_is_unknown(ty)),
+    _ => true
   }
 }
 
