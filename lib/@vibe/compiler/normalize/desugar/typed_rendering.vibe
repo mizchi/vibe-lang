@@ -1,7 +1,7 @@
 // Typed rendering.
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, typed_lowering_arg_offset, typed_render_row_head
+  Expr, Stmt, TypeExpr, typed_lowering_arg_offset, typed_render_row_head, typed_render_unknown_name
 }
 
 import @vibe/ast {
@@ -89,12 +89,21 @@ export fn dtd_typed_render_leaf_for(arg: Expr) -> String {
 /// The row's type in the shape grammar, unfiltered.
 export fn dtd_typed_render_raw_shape_for(arg: Expr) -> String {
   match dtd_typed_render_row_arg(arg) {
-    Some(t) => if eq_ty_mentions_scope_formal(t) {
+    Some(t) => if eq_ty_mentions_scope_formal(t) || dtd_typed_render_row_is_unknown(t) {
       ""
     } else {
       ty_to_eq_shape(t)
     },
     None => ""
+  }
+}
+
+/// #3456: the row a bare name the checker typed takes when no row can spell
+/// its type (`typed_render_unknown_name`). It has no shape to render.
+export fn dtd_typed_render_row_is_unknown(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => n == typed_render_unknown_name(),
+    _ => false
   }
 }
 
@@ -248,7 +257,7 @@ fn dtd_typed_item_shape_at(off: Int) -> String {
     ""
   } else {
     match impl_target_from_key(key) {
-      Some(TyApp(head, args)) => if head == typed_render_row_head() && Array::length(args) == 1 && !eq_ty_mentions_scope_formal(Array::get(args, 0)) {
+      Some(TyApp(head, args)) => if head == typed_render_row_head() && Array::length(args) == 1 && !eq_ty_mentions_scope_formal(Array::get(args, 0)) && !dtd_typed_render_row_is_unknown(Array::get(args, 0)) {
         ty_to_eq_shape(Array::get(args, 0))
       } else {
         ""

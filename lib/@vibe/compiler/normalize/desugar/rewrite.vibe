@@ -277,6 +277,7 @@ import ./typed_rendering.vibe {
   dtd_typed_eq_residual,
   dtd_typed_render_raw_shape_for,
   dtd_typed_render_row_arg,
+  dtd_typed_render_row_is_unknown,
   dtd_typed_render_shape_for,
   dtd_unnamed_head_row
 }
@@ -715,13 +716,14 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Ar
 /// gets the environment itself, without allocating.
 ///
 /// #3456: the checker files a row for every name it types, scalars included,
-/// so a missing row is no answer at all: a lane that passes no rows, an
-/// unlocated name, or a type the row cannot spell. Such a name keeps the
-/// outer binding's entries, as before #3434; a lane that wants the shadow's
-/// own type must hand the rows over (`vibe check` does). Reading a missing
-/// row as a fresh name instead rendered a same-type `Char` shadow as its code
-/// point and an `Option` one as an address, and let a `Raw` without `Show`
-/// past the missing-Show refusal.
+/// and one naming `typed_render_unknown_name` for a type no row can spell
+/// (a closure, a record), which seeds the name as fresh. So a missing row is
+/// no answer at all: a lane that passes no rows, or an unlocated name. Such a
+/// name keeps the outer binding's entries, as before #3434; a lane that wants
+/// the shadow's own type must hand the rows over (`vibe check` does). Reading
+/// a missing row as a fresh name instead rendered a same-type `Char` shadow as
+/// its code point and an `Option` one as an address, and let a `Raw` without
+/// `Show` past the missing-Show refusal.
 fn render_classify_var_types(var_types: Array[(String, String)], arg: Expr) -> Array[(String, String)] {
   match arg {
     EIdent(n, off) => if off >= 0 && render_masked(var_types, n) {
@@ -729,7 +731,13 @@ fn render_classify_var_types(var_types: Array[(String, String)], arg: Expr) -> A
         // An annotation spells `Unit` by name, and that is what the Unit
         // classifier reads.
         Some(TyUnit) => seed_var_types([(n, Some(TyName("Unit")))], dtd_scope_formals, var_types),
-        Some(ty) => seed_var_types([(n, Some(ty))], dtd_scope_formals, var_types),
+        // Typed, but as nothing a row spells (a closure, a record): a fresh
+        // name, never the outer binding's type (Codex on #3458).
+        Some(ty) => if dtd_typed_render_row_is_unknown(ty) {
+          seed_var_types([(n, None)], dtd_scope_formals, var_types)
+        } else {
+          seed_var_types([(n, Some(ty))], dtd_scope_formals, var_types)
+        },
         None => var_types
       }
     } else {
