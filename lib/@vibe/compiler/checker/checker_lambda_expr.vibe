@@ -690,12 +690,15 @@ fn lapw_stores_param(value: Expr, pname: String) -> Bool {
       found
     },
     ESeq(_, b) => lapw_stores_param(b, pname),
-    ELet(n, v, b, _) => n != pname && (lapw_stores_param(b, pname) || lapw_stores_param(b, n) && lapw_stores_param(v, pname)),
+    // A binder of the parameter's own spelling (`let c = c; c`) hides it in
+    // the body, which then carries it only through the binding (Codex on
+    // #3452: the value assigned to a mutable alias).
+    ELet(n, v, b, _) => n != pname && lapw_stores_param(b, pname) || lapw_stores_param(b, n) && lapw_stores_param(v, pname),
     // A mutable binding carries the parameter the way an immutable one does
     // (Codex on #3447: `{ let mut alias = c; alias }`), and so does one the
     // body assigns it to anywhere, a branch included (Codex on #3452: `if f {
     // alias = Some(c) } else { () }; alias`).
-    ELetMut(n, v, b, _) => n != pname && (lapw_stores_param(b, pname) || lapw_stores_param(b, n) && (lapw_stores_param(v, pname) || lapw_assigns_param(b, n, pname))),
+    ELetMut(n, v, b, _) => n != pname && lapw_stores_param(b, pname) || lapw_stores_param(b, n) && (lapw_stores_param(v, pname) || lapw_assigns_param(b, n, pname)),
     // An assignment keeps the rest of its block as its continuation, and a
     // value assigned to a name the continuation hands back is carried too
     // (Codex on #3452: `let mut alias = 0; alias = c; alias`).
