@@ -14,7 +14,7 @@ import @vibe/ast {
 
 import @vibe/compiler/checker {
   CheckedProgram,
-  check_program,
+  check_program_double_call_result_located_observation,
   check_program_type_table,
   detect_redundant_namespace_imports,
   detect_top_level_let_star,
@@ -49,7 +49,7 @@ import @vibe/compiler/codegen {
 }
 
 import @vibe/compiler/entry/source_compile/wasi_only {
-  expand_interp_stmts
+  expand_interp_stmts, expand_interp_stmts_with_rows
 }
 
 import @vibe/compiler/contract {
@@ -1365,11 +1365,17 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
       // ordinary match.
       let let_star_warns = detect_top_level_let_star(stmts)
       handle {
-        let _env = check_program(stmts)
-        // #1948: full `vibe check` rejects a missing Show renderer here via
-        // check_linked_file -> expand_interp_stmts. The single-file lane
-        // must run the same pass or it reports clean for the same source.
-        expand_interp_stmts(stmts)
+        // #1948: full `vibe check` rejects a missing Show renderer in its
+        // interpolation pass; the single-file lane must run the same pass or
+        // it reports clean for the same source.
+        // #3456: the check that types the program also answers the typed
+        // rows, and the pass reads them: an untyped shadowing `let` is
+        // rendered through its own type, as the build renders it, not
+        // through the outer binding's.
+        match check_program_double_call_result_located_observation(stmts) {
+          Some((_checked, _floats, eq_offs, eq_keys)) => expand_interp_stmts_with_rows(stmts, eq_offs, eq_keys),
+          None => expand_interp_stmts(stmts)
+        }
         // #946(4): the type checker never touches inline-wasm bodies (they're
         // opaque `%wasm(...)` marker calls until codegen extracts them — see
         // collect_inline_wasm_fns above), so a clean typecheck says nothing

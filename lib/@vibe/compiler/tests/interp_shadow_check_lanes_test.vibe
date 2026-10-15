@@ -1,0 +1,85 @@
+//# Imports
+
+// #3456: `vibe check` answers an untyped shadowing `let` the way the build
+// does. Both check lanes ran the interpolation pass with no typed rows, so the
+// shadow was read through the OUTER binding's type: a `b: Raw` (no Show)
+// rebound to an `Int` was refused although the build compiles it, and an
+// `Int` rebound to a `Raw` was passed although the build refuses it.
+
+import ../cli_support.vibe {
+  check_linked_file
+}
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+import @vibe/core {
+  array_empty
+}
+
+//# Functions
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = array_empty()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+/// `"\{name}"` without writing an interpolation in THIS file.
+fn interp_of(name: String) -> String {
+  String::concat("\"", String::concat("\\", String::concat("{", String::concat(name, "}\""))))
+}
+
+/// `b: Raw` rebound to an `Int`: renders as the `Int`.
+fn raw_to_int_source() -> String {
+  String::concat("struct Raw {\n  n: Int\n}\n\nfn f(b: Raw, c: Bool) -> String {\n  let b = if c {\n    b.n\n  } else {\n    0\n  }\n  ", String::concat(interp_of("b"), "\n}\n"))
+}
+
+/// `b: Int` rebound to a `Raw` with no Show: refused, at the interpolation.
+fn int_to_raw_source() -> String {
+  String::concat("struct Raw {\n  n: Int\n}\n\nfn f(b: Int, c: Bool) -> String {\n  let b = if c {\n    Raw::{ n: b }\n  } else {\n    Raw::{ n: 0 }\n  }\n  ", String::concat(interp_of("b"), "\n}\n"))
+}
+
+fn fs_check(path: String, source: String) -> String with Env + Fs {
+  Fs::write_bytes(path, string_to_bytes(source))
+  handle {
+    let _ = check_linked_file(path)
+    ""
+  } with { Exception::Throw(m) => m }
+}
+
+fn single_file(source: String) -> String {
+  handle {
+    String::join(collect_all_diagnostics(source), "\n")
+  } with { Exception::Throw(m) => m }
+}
+
+//# Tests
+
+test "#3456: vibe check accepts a Show-less struct rebound to an Int" {
+  inspect(fs_check("/tmp/vibe_interp_shadow_raw_to_int.vibe", raw_to_int_source()), content = "")
+}
+
+test "#3456: vibe check refuses an Int rebound to a Show-less struct, at its line" {
+  inspect(fs_check("/tmp/vibe_interp_shadow_int_to_raw.vibe", int_to_raw_source()), content = "/tmp/vibe_interp_shadow_int_to_raw.vibe: line 11:4: cannot interpolate a value of type `Raw`: it has no Show renderer -- add `derive(Show)` to `Raw`, or define `fn Raw::to_string(v) -> String` (#1445)")
+}
+
+test "#3456: a refusal in the entry is located when a dependency is merged before it" {
+  let base_dir = "/tmp/vibe_interp_shadow_entry_after_dep"
+  Fs::mkdir_p(base_dir)
+  // A dependency long enough that the entry's offsets move in the merge.
+  Fs::write_bytes(String::concat(base_dir, "/dep.vibe"), string_to_bytes("export fn twice(n: Int) -> Int {\n  let pad = \"padding padding padding padding padding padding padding\"\n  n * 2\n}\n"))
+  let source = String::concat("import ./dep.vibe { twice }\n\n", int_to_raw_source())
+  inspect(fs_check(String::concat(base_dir, "/main.vibe"), source), content = "/tmp/vibe_interp_shadow_entry_after_dep/main.vibe: line 13:4: cannot interpolate a value of type `Raw`: it has no Show renderer -- add `derive(Show)` to `Raw`, or define `fn Raw::to_string(v) -> String` (#1445)")
+}
+
+test "#3456: vibe check --single-file answers both shadows like the build" {
+  inspect(single_file(raw_to_int_source()), content = "")
+  inspect(single_file(int_to_raw_source()), content = "line 11:4: cannot interpolate a value of type `Raw`: it has no Show renderer -- add `derive(Show)` to `Raw`, or define `fn Raw::to_string(v) -> String` (#1445)")
+}

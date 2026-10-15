@@ -230,7 +230,6 @@ import ./state.vibe {
   dtd_scope_formals,
   dtd_show_generic_enum_stack,
   dtd_show_self_fn,
-  dtd_typed_rows_lane,
   dtd_user_assert_eq,
   dtd_user_assert_eq_alias_blocker,
   dtd_user_assert_eq_program,
@@ -712,30 +711,27 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Ar
 /// recorded, formals included. So every reader sees the binding in scope,
 /// exactly as `let x: T = ..` would show it: the Bool / Double / Char / Unit
 /// classifiers, the show-target lookup, a nominal's renderer, a formal's
-/// witness, and a composite that holds one (Codex on #3453). With no row the
-/// name is seeded unannotated, which is a fresh name. Anything else gets the
-/// environment itself, without allocating.
+/// witness, and a composite that holds one (Codex on #3453). Anything else
+/// gets the environment itself, without allocating.
 ///
-/// Seeding needs the checker's answer for this argument, and a missing row is
-/// an answer (a scalar) only on a lane that was handed the rows. A lane that
-/// was not (`desugar_trait_dicts`: the merged, linked-library and
-/// linked-artifact lanes, `vibe check --single-file`'s interpolation pass),
-/// or an unlocated name (offset -1), keeps the outer binding's entries, as
-/// before #3434. Seeding it unannotated there rendered a same-type shadow
-/// through `__to_string` -- a `Char` as its code point, an `Option` as an
-/// address -- and let an outer `Raw` without `Show` past the missing-Show
-/// refusal (Codex on #3453). A shadow that changes the type is still read as
-/// the outer type on those lanes; that is #3456.
+/// #3456: the checker files a row for every name it types, scalars included,
+/// so a missing row is no answer at all: a lane that passes no rows, an
+/// unlocated name, or a type the row cannot spell. Such a name keeps the
+/// outer binding's entries, as before #3434; a lane that wants the shadow's
+/// own type must hand the rows over (`vibe check` does). Reading a missing
+/// row as a fresh name instead rendered a same-type `Char` shadow as its code
+/// point and an `Option` one as an address, and let a `Raw` without `Show`
+/// past the missing-Show refusal.
 fn render_classify_var_types(var_types: Array[(String, String)], arg: Expr) -> Array[(String, String)] {
   match arg {
-    EIdent(n, off) => if off >= 0 && Array::get(dtd_typed_rows_lane, 0) && render_masked(var_types, n) {
-      let row = match dtd_typed_render_row_arg(arg) {
+    EIdent(n, off) => if off >= 0 && render_masked(var_types, n) {
+      match dtd_typed_render_row_arg(arg) {
         // An annotation spells `Unit` by name, and that is what the Unit
         // classifier reads.
-        Some(TyUnit) => Some(TyName("Unit")),
-        other => other
+        Some(TyUnit) => seed_var_types([(n, Some(TyName("Unit")))], dtd_scope_formals, var_types),
+        Some(ty) => seed_var_types([(n, Some(ty))], dtd_scope_formals, var_types),
+        None => var_types
       }
-      seed_var_types([(n, row)], dtd_scope_formals, var_types)
     } else {
       var_types
     },
