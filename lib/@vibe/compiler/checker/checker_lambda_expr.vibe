@@ -550,7 +550,14 @@ fn lapw_scan(e: Expr, pname: String, pty: Type, bound: Array[String], env: TypeE
     ELetMut(n, v, b, _) => {
       lapw_scan(v, pname, pty, bound, env, errors)
       lapw_scan(b, pname, pty, lapw_with(bound, [n]), env, errors)
-      lapw_scan_alias(n, v, b, pname, pty, bound, env, errors)
+      // A binding the body assigns the parameter to holds it as well, from
+      // the assignment on; it is scanned from the start, because a loop can
+      // reach an earlier write after the assignment (Codex on #3452).
+      if !lapw_stores_param(v, pname) && !lapw_has(bound, pname) && lapw_assigns_param(b, n, pname) {
+        lapw_scan(b, n, pty, lapw_without(bound, n), env, errors)
+      } else {
+        lapw_scan_alias(n, v, b, pname, pty, bound, env, errors)
+      }
     },
     ELetRec(n, v, b) => {
       let inner = lapw_with(bound, [n])
@@ -685,8 +692,10 @@ fn lapw_stores_param(value: Expr, pname: String) -> Bool {
     ESeq(_, b) => lapw_stores_param(b, pname),
     ELet(n, v, b, _) => n != pname && (lapw_stores_param(b, pname) || lapw_stores_param(b, n) && lapw_stores_param(v, pname)),
     // A mutable binding carries the parameter the way an immutable one does
-    // (Codex on #3447: `{ let mut alias = c; alias }`).
-    ELetMut(n, v, b, _) => n != pname && (lapw_stores_param(b, pname) || lapw_stores_param(b, n) && lapw_stores_param(v, pname)),
+    // (Codex on #3447: `{ let mut alias = c; alias }`), and so does one the
+    // body assigns it to anywhere, a branch included (Codex on #3452: `if f {
+    // alias = Some(c) } else { () }; alias`).
+    ELetMut(n, v, b, _) => n != pname && (lapw_stores_param(b, pname) || lapw_stores_param(b, n) && (lapw_stores_param(v, pname) || lapw_assigns_param(b, n, pname))),
     // An assignment keeps the rest of its block as its continuation, and a
     // value assigned to a name the continuation hands back is carried too
     // (Codex on #3452: `let mut alias = 0; alias = c; alias`).
@@ -699,6 +708,76 @@ fn lapw_stores_param(value: Expr, pname: String) -> Bool {
     EMap(fields) => lapw_fields_store(fields, pname),
     _ => false
   }
+}
+
+/// Does `e` assign the binding `n` a value that stores the parameter? A binder
+/// of the same spelling hides `n` in its scope; a nested lambda that captures
+/// and assigns `n` counts, since it can run.
+fn lapw_assigns_param(e: Expr, n: String, pname: String) -> Bool {
+  match e {
+    EAssign(t, v, rest, _) => t == n && lapw_stores_param(v, pname) || lapw_assigns_param(v, n, pname) || lapw_assigns_param(rest, n, pname),
+    ELet(x, v, b, _) => lapw_assigns_param(v, n, pname) || x != n && lapw_assigns_param(b, n, pname),
+    ELetMut(x, v, b, _) => lapw_assigns_param(v, n, pname) || x != n && lapw_assigns_param(b, n, pname),
+    ELetRec(x, v, b) => x != n && (lapw_assigns_param(v, n, pname) || lapw_assigns_param(b, n, pname)),
+    EFn(_, _, ps, _, _, body) => {
+      let names: Array[String] = []
+      for p in ps {
+        Array::push(names, lapw_base_name(p.0))
+      }
+      !lapw_has(names, n) && lapw_assigns_param(body, n, pname)
+    },
+    EMatch(sc, arms) => lapw_assigns_param(sc, n, pname) || lapw_arms_assign(arms, n, pname),
+    EHandle(bd, arms) => lapw_assigns_param(bd, n, pname) || lapw_arms_assign(arms, n, pname),
+    EForIn(x, idx, it, b) => {
+      let hidden = x == n || match idx {
+        Some(i) => i == n,
+        None => false
+      }
+      lapw_assigns_param(it, n, pname) || !hidden && lapw_assigns_param(b, n, pname)
+    },
+    ELoop(pairs, b) => {
+      let mut found = false
+      let mut hidden = false
+      for pair in pairs {
+        if lapw_assigns_param(pair.1, n, pname) {
+          found = true
+        } else {
+          ()
+        }
+        if pair.0 == n {
+          hidden = true
+        } else {
+          ()
+        }
+      }
+      found || !hidden && lapw_assigns_param(b, n, pname)
+    },
+    _ => {
+      let mut found = false
+      for child in expr_children(e) {
+        if lapw_assigns_param(child, n, pname) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    }
+  }
+}
+
+fn lapw_arms_assign(arms: Array[(Pat, Expr)], n: String, pname: String) -> Bool {
+  let mut found = false
+  for arm in arms {
+    let names: Array[String] = []
+    lapw_pat_binders(arm.0, names)
+    if !lapw_has(names, n) && lapw_assigns_param(arm.1, n, pname) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
 }
 
 fn lapw_fields_store(fields: Array[(String, Expr)], pname: String) -> Bool {
