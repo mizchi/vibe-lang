@@ -304,3 +304,59 @@ The change reduces transfer allocations and full-build memory, but TaskGroup 2
 remains slower than serial split. Default parallel lowering stays off. Next,
 measure higher worker counts and the remaining serialization/codegen costs
 before choosing an enablement policy.
+
+### Owned string copies in the linear transport
+
+The parent product reader and shared-context/job readers use an explicit
+`AstBinaryReader` string-copy callback. Bounded child readers inherit it; the
+checked reader still validates the declared length and UTF-8 span before the
+callback runs. Default cache readers retain the portable byte-string decoder.
+The wire format is unchanged.
+
+`@vibe/lowering_worker/linear` keeps the linear-only implementation outside the
+portable transport. Its private inline-Wasm kernel forms a temporary packed
+String view of Bytes, and `String::substring` selects the checked span.
+`String::concat(span, "")` immediately copies it through the existing string
+allocator and memory-growth checks. No view reaches the decoded AST, so the
+parent can overwrite its product buffer after consumption. This also works on
+the bump lane; no integer arguments cross the inline-Wasm boundary.
+
+Inline Wasm admits a String result as the existing `(pointer << 32) | length`
+i64 ABI, in addition to a tagged Int result. It remains linear-only and uses
+the existing i64 stack validator. Compiler sources do not use this new syntax;
+only the transport images built by the new compiler do, preserving seed
+bootstrap compatibility.
+
+Measurements on 2026-10-16 use a frozen baseline corpus, N3 interleaved
+cold/warm pairs, primed native code, isolated parsed-source caches per pair,
+pre-created vpkg declarations and other persistent caches disabled. No builds
+or tests overlapped timings. An initial 60 builds include ordinary whole
+controls. After a seed-only upstream update, the compiler/worker/coordinator
+remain byte-identical but parent pointers/data change, so another 36 split
+builds were timed on the latest parent. All 96 outputs match within each subject
+and compilation lane; whole and split are compared separately.
+
+| Subject | Cache | Serial split after | TaskGroup4 before → after |
+|---|---|---:|---:|
+| compiler | cold | 12.546s | 13.361 → 12.941s |
+| compiler | warm | 8.781s | 9.173 → 8.833s |
+| cli | cold | 31.777s | 36.992 → 33.750s |
+| cli | warm | 23.513s | 27.733 → 24.641s |
+
+Ordinary whole compilation stays within noise (compiler warm 4.036 → 4.055s,
+CLI warm 11.893 → 11.916s, unchanged compiler/runner after the seed update) and
+remains much faster than split. This does not enable parallelism by default.
+Compiler split walltime deltas are small, near noise, and its RSS ranges overlap.
+
+N3 separate CPU profiles show string construction in the largest CLI worker
+queue dropping 56.9% → 1.7% of guest CPU samples. Its remaining checked-string
+share is 51.6%, including 49.5% UTF-8 validation; percentages overlap and are not
+whole-build shares. All 945 input jobs match the earlier baseline captures.
+All 945 actual product envelopes roundtrip unchanged through both codecs in
+RC0/RC1, N3. Bump decoder allocation falls 150,392,700 → 28,780,536 bytes for
+compiler products and 419,037,864 → 104,073,756 bytes for CLI products. RC1
+heap-pointer deltas represent growth under reuse, not allocation volume.
+
+Raw samples, codec aggregates, profile counts, artifact/source hashes, seed
+provenance and reproduction harnesses are in
+`bench/perf/analysis/lowering-string-copy-2026-10-16.json`.

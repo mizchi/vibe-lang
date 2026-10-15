@@ -2894,7 +2894,11 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   error. The declared signature is trusted (extern-let style).
 - **v0.3 slice restrictions**: monomorphic only (no `[T]`), empty effect row,
   no `where` contracts, params typed `Int`, `Bytes` or `Array[Int]`, return
-  type `Int`. A `Bytes` param passes the RAW untagged object pointer (linear
+  type `Int` or `String`. An `Int` result uses the tagged integer ABI above;
+  a `String` result is the raw `(data_pointer << 32) | byte_length` value.
+  The kernel is responsible for the returned bytes remaining valid. Copy a
+  temporary view with `String::concat(view, "")` before its backing buffer
+  is changed or reused. A `Bytes` param passes the RAW untagged object pointer (linear
   heap layout: length at `obj+4`, data pointer at `obj+8`) — the body can
   `i32.load offset=8` the data pointer and feed `v128.load`/`v128.store`
   (the pointer is only valid while the Bytes is alive and un-grown). No

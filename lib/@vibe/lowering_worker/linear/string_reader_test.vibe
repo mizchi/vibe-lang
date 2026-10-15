@@ -1,0 +1,92 @@
+import ./string_reader.vibe {
+  linear_string_reader
+}
+import @vibe/compiler/cache {
+  ast_binary_read_byte,
+  ast_binary_read_string,
+  ast_binary_read_string_checked,
+  ast_binary_reader_new,
+  ast_binary_reader_remaining,
+  ast_binary_reader_take,
+  ast_binary_write_varint
+}
+
+test "linear string reader: owned UTF-8 and NUL survive input reuse" {
+  for padding in [0, 1016, 1017, 1018, 65536] {
+    let bytes = Bytes::new()
+    ast_binary_write_varint(bytes, padding + 7)
+    let mut i = 0
+    while i < padding {
+      Bytes::push(bytes, 97); i = i + 1
+    }
+    for byte in [195, 169, 240, 159, 141, 163, 0] {
+      Bytes::push(bytes, byte)
+    }
+    Bytes::push(bytes, 127)
+    let slow = ast_binary_read_string_checked(ast_binary_reader_new(bytes))
+    let reader = linear_string_reader(bytes)
+    let fast = ast_binary_read_string_checked(reader)
+    assert(fast == slow)
+    inspect(ast_binary_read_byte(reader), content = "127")
+    Bytes::fill(bytes, 0, Bytes::length(bytes))
+    assert(fast == slow)
+    inspect(String::length(fast) == padding + 7, content = "true")
+    inspect(String::byte_at(fast, padding + 1), content = "169")
+  }
+}
+
+test "linear string reader: child boundaries and malformed UTF-8 are checked" {
+  for raw in [
+    [1, 194, 162],
+    [2, 194, 127],
+    [1, 128],
+    [2, 192, 128],
+    [3, 237, 160, 128],
+    [4, 244, 144, 128, 128]
+  ] {
+    let bytes = Bytes::from_array(raw)
+    let slow = handle {
+      ast_binary_read_string_checked(ast_binary_reader_new(bytes)); "accepted"
+    } with { Exception::Throw(msg) => msg }
+    let fast = handle {
+      ast_binary_read_string_checked(linear_string_reader(bytes)); "accepted"
+    } with { Exception::Throw(msg) => msg }
+    assert(fast == slow)
+    assert(fast != "accepted")
+  }
+  let reader = linear_string_reader(Bytes::from_array([2, 195, 169, 127]))
+  let child = ast_binary_reader_take(reader, 2)
+  let error = handle {
+    ast_binary_read_string_checked(child); "accepted"
+  } with { Exception::Throw(msg) => msg }
+  inspect(error, content = "ast_binary: string length exceeds remaining input")
+  inspect(ast_binary_read_byte(reader), content = "169")
+  let nested = ast_binary_reader_take(reader, 1)
+  inspect(ast_binary_read_byte(nested), content = "127")
+  inspect(ast_binary_reader_remaining(reader), content = "0")
+}
+
+test "linear string reader: raw clipping and empty strings keep cursor behavior" {
+  for raw in [[0, 127], [1, 97, 127], [5, 97, 98, 195, 169], [3, 0, 0, 127]] {
+    let bytes = Bytes::from_array(raw)
+    let slow = ast_binary_reader_new(bytes)
+    let fast = linear_string_reader(bytes)
+    assert(ast_binary_read_string(fast) == ast_binary_read_string(slow))
+    inspect(ast_binary_reader_remaining(fast) == ast_binary_reader_remaining(slow), content = "true")
+    inspect(ast_binary_read_byte(fast) == ast_binary_read_byte(slow), content = "true")
+  }
+}
+
+test "linear string reader: valid child strings stay owned after buffer reuse" {
+  let bytes = Bytes::from_array([3, 195, 169, 0, 127])
+  let reader = linear_string_reader(bytes)
+  let child = ast_binary_reader_take(reader, 4)
+  let value = ast_binary_read_string_checked(child)
+  inspect(ast_binary_reader_remaining(child), content = "0")
+  inspect(ast_binary_read_byte(reader), content = "127")
+  Bytes::fill(bytes, 0, Bytes::length(bytes))
+  inspect(String::length(value), content = "3")
+  inspect(String::byte_at(value, 0), content = "195")
+  inspect(String::byte_at(value, 1), content = "169")
+  inspect(String::byte_at(value, 2), content = "0")
+}

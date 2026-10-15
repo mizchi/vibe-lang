@@ -341,7 +341,7 @@ test "inline wasm parse: v0.3 slice restrictions" {
   let e3 = parse_err("fn f(a: String) -> Int = wasm \"(local.get $a)\"")
   assert(String::contains(e3, "must be typed Int"))
   // non-Int return
-  let e4 = parse_err("fn f(a: Int) -> String = wasm \"(local.get $a)\"")
+  let e4 = parse_err("fn f(a: Int) -> Bool = wasm \"(local.get $a)\"")
   assert(String::contains(e4, "return type must be Int"))
   // where-contract
   let e5 = parse_err("fn f(a: Int) -> Int where { requires: a > 0 } = wasm \"(local.get $a)\"")
@@ -802,4 +802,16 @@ test "#2348 part 2: vibe check refuses the same bodies the build refuses" {
   // still needs the explicit wrap, and forgetting it is a located error.
   let unwrapped = "fn k(xs: Array[Int]) -> Int = wasm \"(i64.extend_i32_u (i32.load offset=4 (local.get $xs)))\""
   assert(String::index_of(check_lane_err(unwrapped), "expects i32") >= 0)
+}
+
+test "inline wasm: String results use the declared packed i64 ABI" {
+  let src = "fn view(b: Bytes) -> String = wasm \"local.get $b i32.wrap_i64 i32.load offset=8 i64.extend_i32_u i64.const 32 i64.shl local.get $b i32.wrap_i64 i32.load offset=4 i64.extend_i32_u i64.or\"\nfn use_it() -> String { String::concat(view(Bytes::from_array([65, 0, 66])), \"\") }"
+  inspect(parse_err(src), content = "")
+  inspect(check_lane_err(src), content = "")
+  inspect(compiles_linear(src), content = "true")
+  inspect(String::contains(gc_err(src), "linear-backend only"), content = "true")
+  let stmts = parse_program_preserving(lex(src))
+  let printed = print_stmt(Array::get(stmts, 0))
+  assert(String::contains(printed, "String"))
+  assert(parse_err(printed) == "")
 }
