@@ -1096,10 +1096,10 @@ nursery scope`).
   generic `each_of[T](xs: Array[T], f: (T) -> Int)`. A callee that spells the
   parameter's type itself, `f: (TaskHandle[Int]) -> Int`, erases the region in
   that annotation, so the same write through it still compiles and runs
-  (measured). So does a callback bound by `let` and passed by name (`let
-  stash = (c) -> { Array::push(sink, c); 0 }; Array::map(cells, stash)`): the
-  check needs the closure's body at the call, and the checker keeps no record
-  of which binding a name refers to there. Joining the escaped handle after the group returns the task's
+  (measured). A callback bound by `let` and passed by name (`let stash = (c)
+  -> { Array::push(sink, c); 0 }; Array::map(cells, stash)`) is checked as the
+  literal it binds, found through the binding marker the region-retention
+  pass keeps (`retention_local_closure_literal`). Joining the escaped handle after the group returns the task's
   value (measured), so no program is answered wrongly, but nothing enforces
   that the handle stays in its group.
 - **Mid-run cancellation.** A cancel request is observed at dispatch and at a

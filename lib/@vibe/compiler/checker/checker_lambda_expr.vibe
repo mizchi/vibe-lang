@@ -163,6 +163,7 @@ import ./checker_region_retention.vibe {
   retention_active_region_names,
   retention_bind_param_callee,
   retention_bind_param_carry,
+  retention_local_closure_literal,
   retention_note_result,
   retention_region_listed,
   retention_result_regions,
@@ -437,8 +438,8 @@ export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type]
   if env_has_active_region(env) {
     let mut ai = 0
     while ai < Array::length(args) && ai < Array::length(param_tys) {
-      match Array::get(args, ai) {
-        EFn(_, _, ps, _, _, body) => match subst_apply(s, Array::get(param_tys, ai)) {
+      match lapw_callback_literal(Array::get(args, ai), env) {
+        Some(EFn(_, _, ps, _, _, body)) => match subst_apply(s, Array::get(param_tys, ai)) {
           CtFn(ptys, _, _) => {
             let mut pi = 0
             while pi < Array::length(ps) && pi < Array::length(ptys) {
@@ -475,8 +476,8 @@ export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type]
 export fn lambda_arg_elem_write_check(arg: Expr, recv_ty: Type, pidx: Int, s: Subst, env: TypeEnv, errors: Array[String]) -> Unit {
   if env_has_active_region(env) {
     match subst_apply(s, recv_ty) {
-      CtArray(elem) => match arg {
-        EFn(_, _, ps, _, _, body) => if pidx < Array::length(ps) {
+      CtArray(elem) => match lapw_callback_literal(arg, env) {
+        Some(EFn(_, _, ps, _, _, body)) => if pidx < Array::length(ps) {
           let (pn, pann) = Array::get(ps, pidx)
           let pname = lapw_base_name(pn)
           let ety = subst_apply(s, elem)
@@ -497,6 +498,17 @@ export fn lambda_arg_elem_write_check(arg: Expr, recv_ty: Type, pidx: Int, s: Su
     }
   } else {
     ()
+  }
+}
+
+/// The closure literal a callback argument is: the literal written at the call,
+/// or the one a local `let` binds the name passed (#3360: `let stash = (c) ->
+/// { .. }; Array::map(cells, stash)` was not rechecked).
+fn lapw_callback_literal(arg: Expr, env: TypeEnv) -> Option[Expr] {
+  match arg {
+    EFn(_, _, _, _, _, _) => Some(arg),
+    EIdent(n, _) => retention_local_closure_literal(env, n),
+    _ => None
   }
 }
 
