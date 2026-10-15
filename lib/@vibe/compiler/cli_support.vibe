@@ -1057,12 +1057,14 @@ export fn check_redundant_import_warnings(input_path: String) -> Array[String] w
 /// closed on every multi-file program.
 /// `[@fn=]` (no fragment offset) still owns the file whose binder the
 /// marker resolves, and only that file.
-/// #3456: `msg` with its `[@off=N]` marker rewritten from the merged offset
-/// space (`merged_offset_owner`) to the owning file's own offset. The check's
-/// prelude merges into that space (so its typed rows key one expression
-/// each), while the ownership checks below read a marker against one file's
-/// text, as they did when the merge kept each file's own offsets. A marker no recorded file owns -- no merge recorded, or an
-/// alias-collision clone past the last file -- is left as it is.
+/// #3456: `msg` with its `[@off=N]` / `[@off=N:M]` marker rewritten from the
+/// merged offset space (`merged_offset_owner`) to the owning file's own
+/// offsets -- the range end `M` by the same base as `N`. The check's prelude
+/// merges into that space (so its typed rows key one expression each), while
+/// the ownership checks below read a marker against one file's text, as they
+/// did when the merge kept each file's own offsets. A marker no recorded file
+/// owns -- no merge recorded, or an alias-collision clone past the last file
+/// -- is left as it is.
 fn marker_in_file_space(msg: String) -> String {
   let marker = " [@off="
   let mi = String::index_of(msg, marker)
@@ -1071,20 +1073,43 @@ fn marker_in_file_space(msg: String) -> String {
   } else {
     let inner_start = mi + String::length(marker)
     let rest = String::substring(msg, inner_start, String::length(msg))
-    let mut digits_end = 0
-    while digits_end < String::length(rest) && String::char_code_at(rest, digits_end) >= 48 && String::char_code_at(rest, digits_end) <= 57 {
-      digits_end = digits_end + 1
-    }
-    let n = parse_marker_digits(String::substring(rest, 0, digits_end))
+    let start_end = marker_digits_end(rest, 0)
+    let n = parse_marker_digits(String::substring(rest, 0, start_end))
     if n < 0 {
       msg
     } else {
       match merged_offset_owner(n) {
-        Some((_, _, local)) => String::concat(String::substring(msg, 0, inner_start), String::concat(Int::to_string(local), String::substring(rest, digits_end, String::length(rest)))),
+        Some((_, _, local)) => {
+          let delta = n - local
+          let mut out = String::concat(String::substring(msg, 0, inner_start), Int::to_string(local))
+          let mut tail_from = start_end
+          if start_end < String::length(rest) && String::char_code_at(rest, start_end) == 58 {
+            let range_end = marker_digits_end(rest, start_end + 1)
+            let m = parse_marker_digits(String::substring(rest, start_end + 1, range_end))
+            if m >= 0 {
+              out = String::concat(out, String::concat(":", Int::to_string(m - delta)))
+              tail_from = range_end
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          String::concat(out, String::substring(rest, tail_from, String::length(rest)))
+        },
         None => msg
       }
     }
   }
+}
+
+/// The index just past the run of ASCII digits in `s` starting at `from`.
+fn marker_digits_end(s: String, from: Int) -> Int {
+  let mut i = from
+  while i < String::length(s) && String::char_code_at(s, i) >= 48 && String::char_code_at(s, i) <= 57 {
+    i = i + 1
+  }
+  i
 }
 
 fn missing_show_source_owns(source: String, msg: String) -> Bool {

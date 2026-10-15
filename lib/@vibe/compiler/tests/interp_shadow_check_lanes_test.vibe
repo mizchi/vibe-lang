@@ -83,3 +83,16 @@ test "#3456: vibe check --single-file answers both shadows like the build" {
   inspect(single_file(raw_to_int_source()), content = "")
   inspect(single_file(int_to_raw_source()), content = "line 11:4: cannot interpolate a value of type `Raw`: it has no Show renderer -- add `derive(Show)` to `Raw`, or define `fn Raw::to_string(v) -> String` (#1445)")
 }
+
+test "#3456: a culprit range in the entry is located when a dependency is merged before it" {
+  // The prelude's culprit marker is `[@off=N:M]`; both ends index the merge,
+  // and both must come back to the entry's own text to render a range.
+  let base_dir = "/tmp/vibe_interp_shadow_culprit_after_dep"
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(String::concat(base_dir, "/dep.vibe"), string_to_bytes("export fn twice(n: Int) -> Int {\n  let pad = \"padding padding padding padding padding padding padding\"\n  n * 2\n}\n"))
+  let source = "import ./dep.vibe { twice }\n\neffect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { ((y: Int) -> Int { y })(twice(x)) }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"
+  let msg = fs_check(String::concat(base_dir, "/main.vibe"), source)
+  inspect(String::contains(msg, "here: the call to 'bump'"), content = "true")
+  inspect(String::contains(msg, "line 7:12-16"), content = "true")
+  inspect(String::contains(msg, "[@off="), content = "false")
+}
