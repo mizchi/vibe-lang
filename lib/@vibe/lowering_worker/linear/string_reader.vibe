@@ -1,0 +1,19 @@
+import @vibe/compiler/cache {
+  AstBinaryReader, ast_binary_reader_with_string_copy
+}
+
+// A private borrowed view, valid only while bytes is alive and unchanged.
+// It never escapes copy_string_span: concat allocates the owned result using
+// the existing string allocator and memory-growth checks on either RC lane.
+fn bytes_string_view(bytes: Bytes) -> String = wasm
+"local.get $bytes i32.wrap_i64 i32.load offset=8 i64.extend_i32_u i64.const 32 i64.shl"
+"local.get $bytes i32.wrap_i64 i32.load offset=4 i64.extend_i32_u i64.or"
+
+fn copy_string_span(bytes: Bytes, at: Int, length: Int) -> String {
+  String::concat(String::substring(bytes_string_view(bytes), at, at + length), "")
+}
+
+/// Linear-only transport reader; all untrusted span and UTF-8 checks stay in cache.
+export fn linear_string_reader(bytes: Bytes) -> AstBinaryReader {
+  ast_binary_reader_with_string_copy(bytes, copy_string_span)
+}

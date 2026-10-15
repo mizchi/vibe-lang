@@ -164,14 +164,27 @@ export fn ast_binary_write_header(buf: Bytes) -> Unit {
 export struct AstBinaryReader {
   bytes: Bytes;
   mut pos: Int;
-  end: Int
+  end: Int;
+  string_copy: Option[(Bytes, Int, Int) -> String]
 }
 
 export fn ast_binary_reader_new(bytes: Bytes) -> AstBinaryReader {
   AstBinaryReader::{
     bytes: bytes,
     pos: 0,
-    end: Bytes::length(bytes)
+    end: Bytes::length(bytes),
+    string_copy: None
+  }
+}
+
+/// Supply a trusted owned-copy primitive for an immutable bounded byte span.
+/// Checked readers still validate UTF-8 before calling it. Child cursors inherit it.
+export fn ast_binary_reader_with_string_copy(bytes: Bytes, copy: (Bytes, Int, Int) -> String) -> AstBinaryReader {
+  AstBinaryReader::{
+    bytes: bytes,
+    pos: 0,
+    end: Bytes::length(bytes),
+    string_copy: Some(copy)
   }
 }
 
@@ -187,7 +200,12 @@ export fn ast_binary_reader_take(r: AstBinaryReader, length: Int) -> AstBinaryRe
   } else ()
   let start = r.pos
   r.pos = start + length
-  AstBinaryReader::{ bytes: r.bytes, pos: start, end: r.pos }
+  AstBinaryReader::{
+    bytes: r.bytes,
+    pos: start,
+    end: r.pos,
+    string_copy: r.string_copy
+  }
 }
 
 //# Read one byte and advance the cursor. Returns -1 on EOF; callers
@@ -273,6 +291,21 @@ let ast_binary_byte_strings: Array[String] = []
 
 export fn ast_binary_read_string(r: AstBinaryReader) -> String {
   let byte_len = ast_binary_read_varint(r)
+  match r.string_copy {
+    Some(copy) => {
+      let length = if byte_len < 0 {
+        0
+      } else if byte_len > ast_binary_reader_remaining(r) {
+        ast_binary_reader_remaining(r)
+      } else {
+        byte_len
+      }
+      let value = copy(r.bytes, r.pos, length)
+      r.pos = r.pos + length
+      return value
+    },
+    None => ()
+  }
   if Array::length(ast_binary_byte_strings) == 0 {
     let mut byte = 0
     while byte < 256 {

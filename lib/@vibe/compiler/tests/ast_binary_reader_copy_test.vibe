@@ -1,0 +1,62 @@
+import @vibe/compiler/cache {
+  ast_binary_read_byte,
+  ast_binary_read_string,
+  ast_binary_read_string_checked,
+  ast_binary_reader_new,
+  ast_binary_reader_remaining,
+  ast_binary_reader_take,
+  ast_binary_reader_with_string_copy
+}
+
+fn copy_bytes(bytes: Bytes, at: Int, length: Int) -> String {
+  let parts: Array[String] = []
+  let mut i = 0
+  while i < length {
+    Array::push(parts, String::from_byte(Bytes::get(bytes, at + i)))
+    i = i + 1
+  }
+  String::join(parts, "")
+}
+
+test "reader string copies: child policy is inherited without changing defaults" {
+  let bytes = Bytes::from_array([2, 195, 169, 127])
+  let calls: Array[Int] = [0]
+  let reader = ast_binary_reader_with_string_copy(bytes, (b, at, n) -> {
+    Array::set(calls, 0, Array::get(calls, 0) + 1)
+    copy_bytes(b, at, n)
+  })
+  let child = ast_binary_reader_take(reader, 3)
+  let value = ast_binary_read_string_checked(child)
+  inspect(Array::get(calls, 0), content = "1")
+  inspect(ast_binary_reader_remaining(child), content = "0")
+  inspect(ast_binary_read_byte(reader), content = "127")
+  assert(value == ast_binary_read_string_checked(ast_binary_reader_new(bytes)))
+  inspect(Array::get(calls, 0), content = "1")
+  Bytes::fill(bytes, 0, Bytes::length(bytes))
+  assert(value == "é")
+}
+
+test "reader string copies: invalid spans do not call the copy primitive" {
+  for raw in [[2, 97], [1, 194, 162], [2, 192, 128]] {
+    let calls: Array[Int] = [0]
+    let reader = ast_binary_reader_with_string_copy(Bytes::from_array(raw), (b, at, n) -> {
+      Array::set(calls, 0, Array::get(calls, 0) + 1)
+      copy_bytes(b, at, n)
+    })
+    let result = handle {
+      ast_binary_read_string_checked(reader); "accepted"
+    } with { Exception::Throw(msg) => msg }
+    assert(result != "accepted")
+    inspect(Array::get(calls, 0), content = "0")
+  }
+}
+
+test "reader string copies: raw input is clipped before dispatch" {
+  let reader = ast_binary_reader_with_string_copy(Bytes::from_array([9, 65, 66]), (b, at, n) -> {
+    assert(at == 1)
+    assert(n == 2)
+    copy_bytes(b, at, n)
+  })
+  inspect(ast_binary_read_string(reader), content = "AB")
+  inspect(ast_binary_reader_remaining(reader), content = "0")
+}
