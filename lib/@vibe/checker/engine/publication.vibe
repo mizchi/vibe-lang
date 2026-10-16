@@ -724,9 +724,26 @@ fn engine_append_env_tail(head: TypeEnv, tail: TypeEnv) -> TypeEnv {
 /// from publishing `TaskGroup::spawn_suspend` through `TaskGroup`. An ordinary
 /// module keeps the older companion rule.
 export fn engine_checked_module_public_env_for_path(path: String, stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv) -> TypeEnv with Exception {
-  engine_checked_module_public_env_publishing(stmts, full_checked_env, reexport_declarations, is_contract_ext(path))
+  engine_checked_module_public_env_with_keeps(stmts, full_checked_env, reexport_declarations, is_contract_ext(path), !engine_is_region_runtime_path(path))
 }
+
+/// #3360 (Codex on #3467): is `path` a file of `@vibe/concurrent`, the
+/// runtime the regions are made of? Its region types' methods hand tokens to
+/// the scheduler's own state by design (`TaskHandle::join` passes `h.group`
+/// on), and those that retain are listed by name and checked at the call like
+/// `Array::push`, so it publishes no keeps summary. The package is identified
+/// by the directory `@vibe/concurrent` resolves to (`lib/` or
+/// `.vibe/store/`), not by the names it declares, which any module can
+/// declare too.
+fn engine_is_region_runtime_path(path: String) -> Bool {
+  String::starts_with(path, "@vibe/concurrent/") || String::contains(path, "/@vibe/concurrent/")
+}
+
 export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv, strict: Bool) -> TypeEnv with Exception {
+  engine_checked_module_public_env_with_keeps(stmts, full_checked_env, reexport_declarations, strict, true)
+}
+
+fn engine_checked_module_public_env_with_keeps(stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv, strict: Bool, keeps: Bool) -> TypeEnv with Exception {
   // Local declarations stay ahead of the publication-only projection, which
   // preserves lexical shadowing when both select the same public spelling.
   let publication_env = engine_bind_type_member_markers(engine_append_env_tail(full_checked_env, reexport_declarations), engine_local_type_member_markers(stmts, full_checked_env))
@@ -769,7 +786,13 @@ export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_c
       ()
     }
   }
-  env_with_show_wrapper_facts(engine_bind_keeps_markers(publication_env, engine_bind_param_name_markers(stmts, publication_env, published_env)), exported_wrappers, exported_unknown)
+  let with_params = engine_bind_param_name_markers(stmts, publication_env, published_env)
+  let with_keeps = if keeps {
+    engine_bind_keeps_markers(publication_env, with_params)
+  } else {
+    with_params
+  }
+  env_with_show_wrapper_facts(with_keeps, exported_wrappers, exported_unknown)
 }
 /// #3432: one `param_names_marker` per published function with an optional
 /// (`x?`) parameter, so an importer can omit it or pass it by label the way

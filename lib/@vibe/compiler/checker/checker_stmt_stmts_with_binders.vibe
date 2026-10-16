@@ -2079,56 +2079,14 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
 /// carry a region is probed (`retention_param_kept`). A top-level binding
 /// that keeps nothing hides an imported marker of its own name, so the
 /// marker a module publishes always describes the binding it publishes.
+///
+/// Every module is probed, the runtime's own included. Codex on #3467: the
+/// runtime the regions are made of (`TaskHandle::join` hands `h.group` to the
+/// scheduler by design; its retaining operations are listed by name and
+/// checked at the call like `Array::push`) is recognized by its path where
+/// the module's interface is published (`engine_bind_keeps_markers`), not by
+/// the names it declares, which another module can declare too.
 fn retention_bind_keeps(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> TypeEnv {
-  retention_bind_keeps_probed(stmts, env, defs, s, c, retention_runtime_owned_types(stmts))
-}
-
-/// The module that declares `TaskGroup` and `TaskHandle` is the runtime the
-/// regions are made of: the methods of its region types hand tokens to the
-/// scheduler's own state by design (`TaskHandle::join` passes `h.group` on,
-/// `Parallel::map` spawns into its group), and those of them that retain are
-/// listed by name and checked at the call like `Array::push`. They publish no
-/// summary. Codex on #3467: only those types' methods are exempt -- not the
-/// whole module, nor another type it declares (`Slot::hold` beside
-/// look-alike structs still says what it keeps). The checker has no module
-/// path here, so the runtime is recognized by the two declarations.
-fn retention_runtime_owned_types(stmts: Array[Stmt]) -> Array[String] {
-  let mut has_group = false
-  let mut has_handle = false
-  for stmt in stmts {
-    match stmt {
-      SStruct(_, name, _, _, _, _) => {
-        has_group = has_group || name == "TaskGroup"
-        has_handle = has_handle || name == "TaskHandle"
-      },
-      _ => ()
-    }
-  }
-  if has_group && has_handle {
-    [
-      "TaskGroup::",
-      "TaskHandle::",
-      "Sender::",
-      "Receiver::",
-      "Channel::",
-      "Task::",
-      "Nursery::",
-      "Parallel::"
-    ]
-  } else {
-    array_empty()
-  }
-}
-
-fn retention_name_owned(owned: Array[String], name: String) -> Bool {
-  let mut hit = false
-  for prefix in owned {
-    hit = hit || String::starts_with(name, prefix)
-  }
-  hit
-}
-
-fn retention_bind_keeps_probed(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, exempt: Array[String]) -> TypeEnv {
   retention_decl_memo_reset()
   let imported = env_keeps_rows(env)
   // Which functions may store anything at all, read from their syntax and
@@ -2146,7 +2104,7 @@ fn retention_bind_keeps_probed(stmts: Array[Stmt], env: TypeEnv, defs: Array[Typ
     changed = false
     for stmt in stmts {
       match stmt {
-        SLet(_, _, fname, _, EFn(_, _, _, _, _, _)) => if !published_name_listed(keepers, fname) && !retention_name_owned(exempt, fname) {
+        SLet(_, _, fname, _, EFn(_, _, _, _, _, _)) => if !published_name_listed(keepers, fname) {
           let lit = match stmt {
             SLet(_, _, _, _, e) => e,
             _ => EUnit

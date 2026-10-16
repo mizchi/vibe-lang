@@ -695,12 +695,16 @@ with a task group's token in a field, and from which a value reaches such a
 store; a parameter the first probe finds kept pays for
 the probes that say where. The module's storing functions are probed callees
 first, and a probe reads a callee's summary instead of checking its body
-again, which keeps the compiler's own self-compile within 3% of its heap
-without the check. The summary travels like the parameter names of #3432: through a
+again, which keeps the compiler's own self-compile within about 4% of its
+heap without the check. The summary travels like the parameter names of #3432: through a
 re-export, with a type's companions (`Cell::stash`), and hidden by a later
 binding of the name that keeps nothing; an exported alias of a function
 (`export let put_alias = put`) publishes what that function keeps. The standard library's own retaining
-operations remain listed by name and checked like `Array::push`.
+operations remain listed by name and checked like `Array::push`, so
+`@vibe/concurrent` itself -- recognized by the directory the package resolves
+to, not by the names it declares -- publishes no summary: its region types'
+methods hand tokens to the scheduler by design (`TaskHandle::join` passes
+`h.group` on).
 
 A closure handed to a function is checked before the call has fixed its
 parameter's type, so its writes of that parameter are checked again once the
