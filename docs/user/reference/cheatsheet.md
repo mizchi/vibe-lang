@@ -2199,15 +2199,16 @@ separate `ambiguous trait import alias` error.
 
 ### Same-named types from two modules are rejected (#3448)
 
-A compiled program holds one type per name: a dependency's exported `struct`,
-`enum` or `suberror`, and every type the entry file declares, keep their bare
-names. When two modules the program uses both declare one (`depa.vibe` and
-`depb.vibe` each `export struct Box`, or the entry declares `enum Hue` and
-imports from a module that exports another `Hue`), the build is refused with
-``rename one of the structs named `Box`: ...`` rather than running one module's
-fields and methods for the other's type. Rename one of them. A package member
-the program never imports from does not count: a local `enum Attempt` beside
-`import @vibe/core { str_lt }` is fine.
+A compiled program holds one type per name, and a dependency's exported
+`struct`, `enum` or `suberror` keeps its bare name. When two modules the
+program uses both publish one under the same name with different definitions
+(`depa.vibe` exports `struct Box { n: Int }`, `depb.vibe` exports
+`struct Box { m: Int }`), the build is refused with
+``rename one of the structs named `Box`: ...`` rather than running one
+module's fields and methods for the other's type. Rename one of them. Two
+identical definitions (up to the names of their type parameters) are one type
+and are accepted, a package member the program never imports from does not
+count, and the entry file's own types are its own.
 
 ### A local binding shadows an import; the last re-export wins (#3444, #3445)
 

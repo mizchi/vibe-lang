@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  index_site_key
+  index_site_key, type_param_arity, type_param_name
 }
 
 import ./module_graph_path.vibe {
@@ -583,12 +583,13 @@ fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], e
   origin
 }
 
-/// #3448: the struct, enum or error type `stmt` publishes into the merged
-/// program, as `(name, kind)`, or `("", "")`. A dependency's EXPORTED type
-/// keeps its bare name (a private one is namespaced by its path), and every
-/// type of the entry file keeps its bare name, so two such declarations of one
-/// name collide. A package contract restates its implementation's types, so
-/// it publishes none of its own.
+/// #3448: the struct, enum or error type a dependency's `stmt` publishes into
+/// the merged program, as `(name, kind)`, or `("", "")`. A dependency's
+/// EXPORTED type keeps its bare name (a private one is namespaced by its
+/// path), so two such declarations of one name collide. The entry's own types
+/// are its own (#3343), and a clash the entry can see through an import is the
+/// checker's to refuse (#3035), so the entry publishes none here. A package
+/// contract restates its implementation's types, so it publishes none either.
 fn published_type_of(stmt: Stmt, path: String, is_entry: Bool, exported_names: Array[String]) -> (String, String) {
   let (declared, name, kind) = match stmt {
     SStruct(exported, name, _, _, _, _) => (exported, name, "structs"),
@@ -596,11 +597,163 @@ fn published_type_of(stmt: Stmt, path: String, is_entry: Bool, exported_names: A
     SSuberror(exported, name, _) => (exported, name, "error types"),
     _ => (false, "", "")
   }
-  if name == "" || is_contract_ext(path) || !(is_entry || declared || import_alias_rewrite_string_array_contains(exported_names, name)) {
+  if name == "" || is_entry || is_contract_ext(path) || !(declared || import_alias_rewrite_string_array_contains(exported_names, name)) {
     ("", "")
   } else {
     (name, kind)
   }
+}
+
+/// #3448: are two published declarations of one name the same type? The
+/// checker reads them as one when they are the same definition (#3036): the
+/// same fields or constructors in the same order, their types equal up to a
+/// renaming of the type parameters, and a row read as a set of labels. Such a
+/// pair has one layout and one meaning in the merged program.
+fn published_types_equivalent(a: Stmt, b: Stmt) -> Bool {
+  match (a, b) {
+    (SStruct(_, _, af, _, am, ap), SStruct(_, _, bf, _, bm, bp)) => {
+      let ar = type_param_renames(ap)
+      let br = type_param_renames(bp)
+      let mut ok = Array::length(af) == Array::length(bf) && Array::length(am) == Array::length(bm) && type_param_arities_match(ap, bp)
+      let mut i = 0
+      while ok && i < Array::length(af) {
+        let (an, aty) = Array::get(af, i)
+        let (bn, bty) = Array::get(bf, i)
+        ok = an == bn && type_exprs_equivalent(aty, ar, bty, br)
+        i = i + 1
+      }
+      let mut j = 0
+      while ok && j < Array::length(am) {
+        ok = import_alias_rewrite_string_array_contains(bm, Array::get(am, j))
+        j = j + 1
+      }
+      ok
+    },
+    (SEnum(_, _, ap, actors, _), SEnum(_, _, bp, bctors, _)) => type_param_arities_match(ap, bp) && ctors_equivalent(actors, type_param_renames(ap), bctors, type_param_renames(bp)),
+    (SSuberror(_, _, actors), SSuberror(_, _, bctors)) => ctors_equivalent(actors, [], bctors, []),
+    _ => false
+  }
+}
+
+fn ctors_equivalent(a: Array[(String, Array[TypeExpr])], ar: Array[(String, String)], b: Array[(String, Array[TypeExpr])], br: Array[(String, String)]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while ok && i < Array::length(a) {
+    let (an, ats) = Array::get(a, i)
+    let (bn, bts) = Array::get(b, i)
+    ok = an == bn && type_expr_lists_equivalent(ats, ar, bts, br)
+    i = i + 1
+  }
+  ok
+}
+
+/// Each type parameter's name mapped to its position, so `Box[T]` and
+/// `Box[U]` compare equal.
+fn type_param_renames(params: Array[String]) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  let mut i = 0
+  while i < Array::length(params) {
+    Array::push(out, (type_param_name(Array::get(params, i)), String::concat("#", Int::to_string(i))))
+    i = i + 1
+  }
+  out
+}
+
+fn type_param_arities_match(a: Array[String], b: Array[String]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while ok && i < Array::length(a) {
+    ok = type_param_arity(Array::get(a, i)) == type_param_arity(Array::get(b, i))
+    i = i + 1
+  }
+  ok
+}
+
+fn renamed_type_name(renames: Array[(String, String)], name: String) -> String {
+  let mut out = name
+  for r in renames {
+    if r.0 == name {
+      out = r.1
+    }
+  }
+  out
+}
+
+fn type_expr_lists_equivalent(a: Array[TypeExpr], ar: Array[(String, String)], b: Array[TypeExpr], br: Array[(String, String)]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while ok && i < Array::length(a) {
+    ok = type_exprs_equivalent(Array::get(a, i), ar, Array::get(b, i), br)
+    i = i + 1
+  }
+  ok
+}
+
+fn type_exprs_equivalent(a: TypeExpr, ar: Array[(String, String)], b: TypeExpr, br: Array[(String, String)]) -> Bool {
+  match (a, b) {
+    (TyName(x), TyName(y)) => renamed_type_name(ar, x) == renamed_type_name(br, y),
+    (TyApp(x, xs), TyApp(y, ys)) => renamed_type_name(ar, x) == renamed_type_name(br, y) && type_expr_lists_equivalent(xs, ar, ys, br),
+    (TyFn(xps, xr, xrow), TyFn(yps, yr, yrow)) => type_expr_lists_equivalent(xps, ar, yps, br) && type_exprs_equivalent(xr, ar, yr, br) && row_label_sets_equal(row_labels_renamed(xrow, ar), row_labels_renamed(yrow, br)),
+    (TyTuple(xs), TyTuple(ys)) => type_expr_lists_equivalent(xs, ar, ys, br),
+    (TyUnit, TyUnit) => true,
+    _ => false
+  }
+}
+
+/// A row's labels with the type parameters renamed, split at the top-level
+/// `+` and `,` separators. `Fs + Env` and `Env + Fs + Env` give one set.
+fn row_labels_renamed(row: Option[String], renames: Array[(String, String)]) -> Array[String] {
+  let out: Array[String] = []
+  match row {
+    Some(text) => {
+      let mut label = ""
+      let mut word = ""
+      let mut depth = 0
+      let mut i = 0
+      let n = String::length(text)
+      while i <= n {
+        let c = if i < n {
+          String::byte_at(text, i)
+        } else {
+          0
+        }
+        let is_word = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+        if is_word {
+          word = String::concat(word, String::substring(text, i, i + 1))
+        } else {
+          label = String::concat(label, renamed_type_name(renames, word))
+          word = ""
+          if c == '[' {
+            depth = depth + 1
+          } else if c == ']' {
+            depth = depth - 1
+          }
+          if c == 0 || (depth == 0 && (c == '+' || c == ',')) {
+            let t = String::trim(label)
+            if t != "" && !import_alias_rewrite_string_array_contains(out, t) {
+              Array::push(out, t)
+            }
+            label = ""
+          } else if c != ' ' {
+            label = String::concat(label, String::substring(text, i, i + 1))
+          }
+        }
+        i = i + 1
+      }
+    },
+    None => ()
+  }
+  out
+}
+
+fn row_label_sets_equal(a: Array[String], b: Array[String]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  for x in a {
+    if !import_alias_rewrite_string_array_contains(b, x) {
+      ok = false
+    }
+  }
+  ok
 }
 
 /// The top-level name `stmt` declares, for import reachability, or "".
@@ -715,6 +868,7 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
     wi = wi + 1
   }
   let first_path: MutMap[String, String] = MutMap::new_string()
+  let first_decl: MutMap[String, Stmt] = MutMap::new_string()
   let errors: Array[String] = []
   let mut ci = 0
   while ci < file_count {
@@ -724,15 +878,24 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
       let exported_names = collect_exported_value_names(stmts)
       let mut pi = 0
       while pi < Array::length(stmts) {
-        let (name, kind) = published_type_of(Array::get(stmts, pi), path, path == entry_path, exported_names)
+        let stmt = Array::get(stmts, pi)
+        let (name, kind) = published_type_of(stmt, path, path == entry_path, exported_names)
         if name != "" {
+          let same = match MutMap::get(first_decl, name) {
+            Some(prior_decl) => published_types_equivalent(prior_decl, stmt),
+            None => false
+          }
           match MutMap::get(first_path, name) {
-            // "\n" marks a name already refused: it is never a path.
-            Some(prior) => if prior != path && prior != "\n" {
+            // "\n" marks a name already refused: it is never a path. Two
+            // equivalent declarations are one type (#3036).
+            Some(prior) => if prior != path && prior != "\n" && !same {
               Array::push(errors, String::concat("rename one of the ", String::concat(kind, String::concat(" named `", String::concat(name, String::concat("`: `", String::concat(prior, String::concat("` and `", String::concat(path, "` both declare it for this program, and a program holds one type per name, so code compiled against one would run with the other's fields and methods")))))))))
               MutMap::set(first_path, name, "\n")
             },
-            None => MutMap::set(first_path, name, path)
+            None => {
+              MutMap::set(first_path, name, path)
+              MutMap::set(first_decl, name, stmt)
+            }
           }
         } else {
           ()

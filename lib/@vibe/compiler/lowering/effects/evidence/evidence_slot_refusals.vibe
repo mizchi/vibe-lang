@@ -127,15 +127,25 @@ fn edp_slot_consequence(callee: String) -> String {
 }
 
 /// A closure literal whose local helpers could not be copied into it.
-/// `opaque` is a local it calls that is not a `let`-bound closure literal (a
-/// parameter, a `let mut`): no row written anywhere lets the handler through
-/// such a call, so the edit is to make it outside the closure. Otherwise the
-/// helpers are literals, and writing the row on them and on the closure works.
-export fn edp_refuse_uncopied_literal(callee: String, row: String, opaque: String) -> Unit {
-  if opaque == "" {
-    edp_push_refusal(row, String::concat("write the effect row on ", String::concat(edp_slot_site(callee), String::concat(": `(..) -> T with ", String::concat(row, String::concat(" { .. }`, and give the local closures it calls the same row. It calls a local closure the compiler cannot thread that handler through. ", edp_slot_consequence(callee)))))))
+/// `local` is a local it calls; `opaque` says it is not a `let`-bound closure
+/// literal (a parameter, a `let mut`). No row written on the closure lets the
+/// handler through such a call, so the edit is to make the call outside it.
+/// A `let`-bound helper can move to a top-level `fn`, which takes the handler
+/// like any function the closure calls (measured for a nested helper and for
+/// one generic in its payload).
+export fn edp_refuse_uncopied_literal(callee: String, row: String, called: (String, Bool)) -> Unit {
+  let (local, opaque) = called
+  if opaque {
+    edp_push_refusal(row, String::concat("call `", String::concat(local, String::concat("` outside ", String::concat(edp_slot_site(callee), String::concat(" and use its result there (`let v = ", String::concat(local, String::concat("(..)`). `", String::concat(local, String::concat("` is a function value the compiler cannot thread the `", String::concat(row, String::concat("` handler through. ", edp_slot_consequence(callee)))))))))))))
   } else {
-    edp_push_refusal(row, String::concat("call `", String::concat(opaque, String::concat("` outside ", String::concat(edp_slot_site(callee), String::concat(" and use its result there (`let v = ", String::concat(opaque, String::concat("(..)`). `", String::concat(opaque, String::concat("` is a function value the compiler cannot thread that handler through, with or without a row on the closure. ", edp_slot_consequence(callee)))))))))))
+    // A generic local lambda is hoisted before this pass and has no name a
+    // reader wrote, so the message names the closures it calls generally.
+    let which = if local == "" {
+      "the local closures"
+    } else {
+      String::concat("the local closure `", String::concat(local, "`"))
+    }
+    edp_push_refusal(row, String::concat("move ", String::concat(which, String::concat(" that ", String::concat(edp_slot_site(callee), String::concat(" calls to a top-level `fn`: the compiler cannot thread the `", String::concat(row, String::concat("` handler through a local closure there. ", edp_slot_consequence(callee)))))))))
   }
 }
 

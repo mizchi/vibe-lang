@@ -906,7 +906,12 @@ test "#3445: an import through a facade follows the later of two re-exports" {
   let b = parse_program(lex("export fn foo(x: Option[Int]) -> Int { 0 }"))
   let facade = parse_program(lex("export ./a.vibe { f as foo }\nexport ./b.vibe { foo }"))
   let entry = parse_program(lex("import ./facade.vibe { foo }\nlet answer = foo(None)"))
-  let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/facade.vibe", "/virtual/entry.vibe"]
+  let paths = [
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
   let plan = build_export_rename_plan(paths, [a, b, facade, entry], "/virtual/entry.vibe")
   let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
   inspect(Array::length(renames), "1")
@@ -918,39 +923,64 @@ test "#3448: two modules exporting a struct of one name are refused with the ren
   let depa = parse_program(lex("export struct Box { n: Int }\nfn Box::plain(x: Int) -> Box { Box::{ n: x } }"))
   let depb = parse_program(lex("export struct Box { m: Int }\nfn Box::plain(x: Int) -> Box { Box::{ m: x * 100 } }"))
   let entry = parse_program(lex("import ./depa.vibe { Box as A }\nimport ./depb.vibe { Box }\nlet answer = Box::plain(3).m"))
-  let paths = ["/virtual/depa.vibe", "/virtual/depb.vibe", "/virtual/entry.vibe"]
+  let paths = [
+    "/virtual/depa.vibe",
+    "/virtual/depb.vibe",
+    "/virtual/entry.vibe"
+  ]
   let msg = plan_refusal(paths, [depa, depb, entry], "/virtual/entry.vibe", entry)
   inspect(String::starts_with(msg, "rename one of the structs named `Box`: `/virtual/depa.vibe` and `/virtual/depb.vibe` both declare it"), "true")
 }
 
-test "#3448: an entry type colliding with a dependency's exported one is refused" {
-  let dep = parse_program(lex("export enum Hue { Red; Blue }"))
-  let entry = parse_program(lex("import ./dep.vibe { Hue as Shade }\nenum Hue { Green }\nlet answer = 1"))
+test "#3448: the entry's own type is its own and is not judged here" {
+  // #3343: a program's own type is its own; a clash the entry sees through an
+  // import is the checker's to refuse (#3035).
+  let dep = parse_program(lex("export enum Hue {\n  Red;\n  Blue\n}\nexport fn red() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./dep.vibe { red }\nenum Hue {\n  Green\n}\nlet answer = red()"))
   let paths = ["/virtual/dep.vibe", "/virtual/entry.vibe"]
-  let msg = plan_refusal(paths, [dep, entry], "/virtual/entry.vibe", entry)
-  inspect(String::starts_with(msg, "rename one of the enums named `Hue`"), "true")
+  inspect(plan_refusal(paths, [dep, entry], "/virtual/entry.vibe", entry), "clean")
+}
+
+test "#3448: two dependencies publishing one definition are one type (#3036)" {
+  let a = parse_program(lex("export struct Box[T] {\n  value: T\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: n }\n}"))
+  let b = parse_program(lex("export struct Box[U] {\n  value: U\n}\nexport fn unbox(b: Box[Int]) -> Int {\n  b.value\n}"))
+  let entry = parse_program(lex("import ./a.vibe { box_of }\nimport ./b.vibe { unbox }\nlet answer = unbox(box_of(1))"))
+  let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
+  inspect(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "clean")
+  let ja = parse_program(lex("export struct Job {\n  run: () -> Unit with Fs + Env\n}\nexport fn ta(j: Job) -> Int {\n  1\n}"))
+  let jb = parse_program(lex("export struct Job {\n  run: () -> Unit with Env + Fs + Env\n}\nexport fn tb(j: Job) -> Int {\n  1\n}"))
+  let jentry = parse_program(lex("import ./a.vibe { ta }\nimport ./b.vibe { tb }\nlet answer = 1"))
+  inspect(plan_refusal(paths, [ja, jb, jentry], "/virtual/entry.vibe", jentry), "clean")
+  // A field of another type is another type.
+  let c = parse_program(lex("export struct Box[U] {\n  value: Option[U]\n}\nexport fn unbox(b: Box[Int]) -> Int {\n  0\n}"))
+  inspect(String::starts_with(plan_refusal(paths, [a, c, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
 }
 
 test "#3448: a private type of the same name in a dependency is not a collision" {
   let depa = parse_program(lex("struct Box { n: Int }\nexport fn make() -> Int { Box::{ n: 1 }.n }"))
   let depb = parse_program(lex("export struct Box { m: Int }"))
   let entry = parse_program(lex("import ./depa.vibe { make }\nimport ./depb.vibe { Box }\nlet answer = make()"))
-  let paths = ["/virtual/depa.vibe", "/virtual/depb.vibe", "/virtual/entry.vibe"]
+  let paths = [
+    "/virtual/depa.vibe",
+    "/virtual/depb.vibe",
+    "/virtual/entry.vibe"
+  ]
   inspect(plan_refusal(paths, [depa, depb, entry], "/virtual/entry.vibe", entry), "clean")
 }
 
-test "#3448: a package member the program never reaches does not collide with an entry type" {
+test "#3448: a package member the program never reaches does not collide" {
   // As `import @vibe/core { str_lt }` merges every member of the package, the
   // facade's other member is in the program without being used.
-  let used = parse_program(lex("export fn str_lt(a: Int, b: Int) -> Bool { a < b }"))
-  let unused = parse_program(lex("export enum Attempt { Good; Bad }\nexport fn attempt_good() -> Attempt { Good }"))
+  let used = parse_program(lex("export fn str_lt(a: Int, b: Int) -> Bool {\n  a < b\n}"))
+  let unused = parse_program(lex("export enum Attempt {\n  Good;\n  Bad\n}\nexport fn attempt_good() -> Attempt {\n  Good\n}"))
   let facade = parse_program(lex("export ./used.vibe { str_lt }\nexport ./unused.vibe { Attempt, attempt_good }"))
-  let entry = parse_program(lex("import ./facade.vibe { str_lt }\nenum Attempt { Mine }\nlet answer = str_lt(1, 2)"))
-  let paths = ["/virtual/used.vibe", "/virtual/unused.vibe", "/virtual/facade.vibe", "/virtual/entry.vibe"]
-  inspect(plan_refusal(paths, [used, unused, facade, entry], "/virtual/entry.vibe", entry), "clean")
+  let other = parse_program(lex("export enum Attempt {\n  Mine\n}\nexport fn mine() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./facade.vibe { str_lt }\nimport ./other.vibe { mine }\nlet answer = str_lt(1, mine())"))
+  let paths = ["/virtual/used.vibe", "/virtual/unused.vibe", "/virtual/facade.vibe", "/virtual/other.vibe", "/virtual/entry.vibe"]
+  inspect(plan_refusal(paths, [used, unused, facade, other, entry], "/virtual/entry.vibe", entry), "clean")
   // Importing the member's function through the facade reaches it, and then
-  // its `Attempt` and the entry's are two types in one program.
-  let entry2 = parse_program(lex("import ./facade.vibe { attempt_good }\nenum Attempt { Mine }\nlet answer = 1"))
-  let msg = plan_refusal(paths, [used, unused, facade, entry2], "/virtual/entry.vibe", entry2)
+  // its `Attempt` and the other module's are two types in one program.
+  let entry2 = parse_program(lex("import ./facade.vibe { attempt_good }\nimport ./other.vibe { mine }\nlet answer = mine()"))
+  let msg = plan_refusal(paths, [used, unused, facade, other, entry2], "/virtual/entry.vibe", entry2)
   inspect(String::starts_with(msg, "rename one of the enums named `Attempt`"), "true")
 }
