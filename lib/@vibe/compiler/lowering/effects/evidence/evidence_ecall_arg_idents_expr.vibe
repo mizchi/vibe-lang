@@ -498,6 +498,34 @@ fn edp_stamp_assigned_lits(e: Expr, marker: String, slot: (Int, String), scope: 
     ELoop(pairs, b) => ELoop(pairs, edp_stamp_assigned_scoped(b, for pr in pairs {
       pr.0
     }, marker, slot, scope, pure_names)),
+    // An assignment can sit under a `return`, an operand, an argument or an
+    // aggregate element, as a `return` can for `edp_stamp_returns` (Codex on
+    // #3462: `return { f = () -> 3; f }`).
+    EReturn(x) => EReturn(edp_stamp_assigned_lits(x, marker, slot, scope, pure_names)),
+    ECall(callee, args, off, res) => ECall(edp_stamp_assigned_lits(callee, marker, slot, scope, pure_names), for x in args {
+      edp_stamp_assigned_lits(x, marker, slot, scope, pure_names)
+    }, off, res),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_stamp_assigned_lits(l, marker, slot, scope, pure_names), edp_stamp_assigned_lits(r, marker, slot, scope, pure_names), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, edp_stamp_assigned_lits(x, marker, slot, scope, pure_names)),
+    EDot(o, f, o1, o2) => EDot(edp_stamp_assigned_lits(o, marker, slot, scope, pure_names), f, o1, o2),
+    ELabeledArg(l, ln, v) => ELabeledArg(l, ln, edp_stamp_assigned_lits(v, marker, slot, scope, pure_names)),
+    EBreak(Some(x)) => EBreak(Some(edp_stamp_assigned_lits(x, marker, slot, scope, pure_names))),
+    EContinue(args) => EContinue(for x in args {
+      edp_stamp_assigned_lits(x, marker, slot, scope, pure_names)
+    }),
+    ETuple(items) => ETuple(for x in items {
+      edp_stamp_assigned_lits(x, marker, slot, scope, pure_names)
+    }),
+    EArray(items) => EArray(for x in items {
+      edp_stamp_assigned_lits(x, marker, slot, scope, pure_names)
+    }),
+    ERecord(rn, fields, tas) => ERecord(rn, for fl in fields {
+      (fl.0, edp_stamp_assigned_lits(fl.1, marker, slot, scope, pure_names))
+    }, tas),
+    EMap(fields) => EMap(for fl in fields {
+      (fl.0, edp_stamp_assigned_lits(fl.1, marker, slot, scope, pure_names))
+    }),
+    ESpread(x) => ESpread(edp_stamp_assigned_lits(x, marker, slot, scope, pure_names)),
     _ => e
   }
 }
