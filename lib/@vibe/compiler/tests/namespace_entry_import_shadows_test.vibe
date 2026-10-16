@@ -40,7 +40,23 @@ test "an entry with no colliding name is unchanged" {
   inspect(entry(source) == one_line(print_program(parse_program(lex(source)))), content = "true")
 }
 
-test "an exported declaration keeps its name" {
-  let out = entry("import ./dep.vibe { g }\nexport fn g(n: Int) -> Int {\n  n\n}\n")
-  inspect(String::contains(out, "g_dep_main_vibe"), content = "false")
+test "an exported declaration sharing a name with an import is refused" {
+  // Its name is the program's surface, so it cannot move (Codex on #3470).
+  let msg = handle {
+    let _ = entry("import ./dep.vibe { g }\nexport fn g(n: Int) -> Int {\n  n\n}\n")
+    ""
+  } with { Exception::Throw(m) => m }
+  inspect(msg, content = "`g` is exported here and also imported from './dep.vibe': an exported declaration cannot share a name with an import -- remove `g` from the import list, or import it under another name (`{ g as other_name }`) [@fn=g]")
+}
+
+test "re-publishing an import is not a declaration" {
+  let source = "import ./dep.vibe { g }\nexport { g }\n"
+  inspect(entry(source) == one_line(print_program(parse_program(lex(source)))), content = "true")
+}
+
+test "the namespaced name avoids one the entry already declares" {
+  // `g_dep_main_vibe` is what `g` would become; the entry spells it itself
+  // (Codex on #3470).
+  let out = entry("import ./dep.vibe { g }\nfn g(n: Int) -> Int {\n  n\n}\nfn g_dep_main_vibe() -> Int {\n  7\n}\nfn use_both() -> Int {\n  g(1) + g_dep_main_vibe()\n}\n")
+  inspect(out, content = "import ./dep.vibe { g } | let rec g_dep_main_vibe_ = (n: Int) -> Int { n } | let rec g_dep_main_vibe = () -> Int { 7 } | let rec use_both = () -> Int { (g_dep_main_vibe_(1) + g_dep_main_vibe()) } | ")
 }
