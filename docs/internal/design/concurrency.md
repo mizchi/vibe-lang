@@ -690,8 +690,12 @@ body is accepted. Only a function whose body can store anything is probed
 -- a field or element write, a retaining operation (`Array::push`,
 `Sender::send`, ...), an assignment to a binding it did not declare, or a
 call to a function that does one of these -- and only its parameters whose
-type is a region head, a type variable, or a type holding one; a parameter
-the first probe finds kept pays for the probes that say where. The summary travels like the parameter names of #3432: through a
+type is a region head, a type variable, or a type holding one, and from which
+a value reaches such a store; a parameter the first probe finds kept pays for
+the probes that say where. The module's storing functions are probed callees
+first, and a probe reads a callee's summary instead of checking its body
+again, which keeps the compiler's own self-compile within 3% of its heap
+without the check. The summary travels like the parameter names of #3432: through a
 re-export, with a type's companions (`Cell::stash`), and hidden by a later
 binding of the name that keeps nothing. The standard library's own retaining
 operations remain listed by name and checked like `Array::push`.
