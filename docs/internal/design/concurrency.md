@@ -1134,10 +1134,12 @@ nursery scope`).
 
 ## Known gaps
 
-- **What an imported function's summary does not cover.** A module whose
-  exports include more than 256 functions that take an argument that may
-  carry a region publishes no summaries (`retention_summary_budget`), since
-  each costs at least one re-check of its body; its functions are trusted.
+- **What an imported function's summary does not cover.** A module that
+  publishes more than 256 functions that take an argument that may carry a
+  region publishes no summaries (`retention_summary_budget`), since each
+  costs at least one re-check of its body; its functions are trusted. A
+  companion of a type the module keeps private is not published and not
+  counted.
   An imported function passed on as a callback (`Array::map(hs, stash)` with
   `stash` imported) is not followed into; a body named at `TaskGroup::run`
   is judged by its summary.

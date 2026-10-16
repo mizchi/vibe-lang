@@ -360,27 +360,69 @@ fn retention_summary_opaque(params: Array[Type], defs: Array[TypeDef]) -> String
 }
 
 /// The names `stmts` may publish as functions: each `export` declaration,
-/// each name an `export { .. }` lists, and each type companion (`Box::put`),
-/// which an exported type publishes without its own `export` (Codex on
-/// #3473). Publication decides which of them go out; a summary of one that
-/// does not is never read. A name listed twice is an error the checker
-/// reports, so the list is not deduplicated.
+/// each name an `export { .. }` lists, and each companion (`Box::put`) of a
+/// type the module publishes, which goes out with the type without an
+/// `export` of its own (Codex on #3473). A companion of a type the module
+/// keeps private is not counted against the budget. A name listed twice is
+/// an error the checker reports, so the list is not deduplicated.
 fn retention_published_names(stmts: Array[Stmt]) -> Array[String] {
+  let types: Array[String] = []
   let names: Array[String] = []
   for stmt in stmts {
     match stmt {
-      SLet(exported, _, fname, _, _) => if exported || String::contains(fname, "::") {
-        Array::push(names, fname)
+      SStruct(exported, tname, _, _, _, _) => if exported {
+        Array::push(types, tname)
+      } else {
+        ()
+      },
+      SEnum(exported, tname, _, _, _) => if exported {
+        Array::push(types, tname)
+      } else {
+        ()
+      },
+      SSuberror(exported, tname, _) => if exported {
+        Array::push(types, tname)
+      } else {
+        ()
+      },
+      STypeAlias(exported, tname, _, _) => if exported {
+        Array::push(types, tname)
       } else {
         ()
       },
       SExport(items) => for n in items {
+        Array::push(types, n)
         Array::push(names, n)
       },
       _ => ()
     }
   }
+  for stmt in stmts {
+    match stmt {
+      SLet(exported, _, fname, _, _) => if exported || retention_companion_published(fname, types) {
+        Array::push(names, fname)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
   names
+}
+
+/// Whether `fname` is a companion (`T::m`) of a type in `types`.
+fn retention_companion_published(fname: String, types: Array[String]) -> Bool {
+  let parts = String::split(fname, "::")
+  if Array::length(parts) < 2 {
+    false
+  } else {
+    let owner = Array::get(parts, 0)
+    let mut found = false
+    for t in types {
+      found = found || t == owner
+    }
+    found
+  }
 }
 
 /// `env` with the summary of each function `stmts` publish, unless more
