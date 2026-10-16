@@ -1,0 +1,78 @@
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+import @vibe/compiler/lowering/effects/evidence {
+  edp_collect_fn_defs, edp_fn_statement_index, edp_indexed_params_of_fn, edp_params_of_fn
+}
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+
+fn parameter_signature(params: Option[Array[(String, Option[TypeExpr])]]) -> String {
+  match params {
+    Some(ps) => print_stmt(SLet(false, false, "signature", None, EFn([], [], ps, None, None, EInt(0)))),
+    None => "missing"
+  }
+}
+
+test "indexed lookup preserves parameter annotations, labels, empty params and misses" {
+  let stmts = parse_program(lex("fn target(label~: Int, callback?: () -> Int with Box[Int]) -> Int { 0 }\nfn empty() -> Int { 1 }\nlet value = 2\n"))
+  let defs = edp_collect_fn_defs(stmts)
+  let index = edp_fn_statement_index(defs)
+  for name in ["target", "empty", "value", "absent"] {
+    assert(parameter_signature(edp_indexed_params_of_fn(stmts, index, name)) == parameter_signature(edp_params_of_fn(stmts, defs, name)))
+  }
+  inspect(parameter_signature(edp_indexed_params_of_fn(stmts, index, "empty")), content = "let signature = () -> { 0 }")
+}
+
+test "definition order and table names decide duplicate precedence" {
+  let stmts = parse_program(lex("fn first(a: Int) -> Int { a }\nfn second(b: String) -> String { b }\nlet not_fn = 0\n"))
+  // Deliberately not statement order; keys need not match current AST names.
+  let defs = [
+    (1, false, false, "key", None, ""),
+    (2, false, false, "key", None, ""),
+    (0, false, false, "key", None, ""),
+    (2, false, false, "key", None, "")
+  ]
+  let index = edp_fn_statement_index(defs)
+  inspect(parameter_signature(edp_indexed_params_of_fn(stmts, index, "key")), content = "let signature = (a: Int) -> { 0 }")
+  assert(parameter_signature(edp_indexed_params_of_fn(stmts, index, "key")) == parameter_signature(edp_params_of_fn(stmts, defs, "key")))
+  inspect(parameter_signature(edp_indexed_params_of_fn(stmts, index, "first")), content = "missing")
+}
+
+test "indexed lookup reads updated params and falls back past changed non-functions" {
+  let stmts = parse_program(lex("fn f(a: Int) -> Int { a }\nfn f(b: String) -> String { b }\n"))
+  let defs = edp_collect_fn_defs(stmts)
+  let index = edp_fn_statement_index(defs)
+  inspect(parameter_signature(edp_indexed_params_of_fn(stmts, index, "f")), content = "let signature = (b: String) -> { 0 }")
+  Array::set(stmts, 1, SLet(false, false, "renamed", None, EFn([], [], [
+    ("updated", Some(TyName("Bool")))
+  ], None, None, EBool(true))))
+  inspect(parameter_signature(edp_indexed_params_of_fn(stmts, index, "f")), content = "let signature = (updated: Bool) -> { 0 }")
+  Array::set(stmts, 1, SLet(false, false, "f", None, EInt(7)))
+  inspect(parameter_signature(edp_indexed_params_of_fn(stmts, index, "f")), content = "let signature = (a: Int) -> { 0 }")
+  Array::set(stmts, 0, SLetMut("f", None, EFn([], [], [], None, None, EInt(0))))
+  inspect(parameter_signature(edp_indexed_params_of_fn(stmts, index, "f")), content = "missing")
+  assert(parameter_signature(edp_indexed_params_of_fn(stmts, index, "f")) == parameter_signature(edp_params_of_fn(stmts, defs, "f")))
+}
+
+test "matching non-functions at index creation can become live functions" {
+  let stmts = [SExpr(EInt(0))]
+  let defs = [(0, false, false, "later", None, "")]
+  let index = edp_fn_statement_index(defs)
+  inspect(parameter_signature(edp_indexed_params_of_fn(stmts, index, "later")), content = "missing")
+  Array::set(stmts, 0, SLet(false, false, "later", None, EFn([], [], [
+    ("now", None)
+  ], None, None, EInt(0))))
+  inspect(parameter_signature(edp_indexed_params_of_fn(stmts, index, "later")), content = "let signature = (now) -> { 0 }")
+}
+
+test "independent program indexes do not retain another program's signatures" {
+  let first = parse_program(lex("fn f(old: Int) -> Int { old }"))
+  let second = parse_program(lex("fn f(fresh: Bool) -> Bool { fresh }"))
+  let a = edp_fn_statement_index(edp_collect_fn_defs(first))
+  let b = edp_fn_statement_index(edp_collect_fn_defs(second))
+  inspect(parameter_signature(edp_indexed_params_of_fn(first, a, "f")), content = "let signature = (old: Int) -> { 0 }")
+  inspect(parameter_signature(edp_indexed_params_of_fn(second, b, "f")), content = "let signature = (fresh: Bool) -> { 0 }")
+  inspect(parameter_signature(edp_indexed_params_of_fn(first, a, "f")), content = "let signature = (old: Int) -> { 0 }")
+}
