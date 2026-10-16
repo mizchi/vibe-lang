@@ -2210,12 +2210,10 @@ identical definitions (up to the names of their type parameters) are one type
 and are accepted, a package member the program never imports from does not
 count, and the entry file's own types are its own.
 
-### A local binding shadows an import; the last re-export wins (#3444, #3445)
+### Two re-exports of one name: the later one wins (#3445)
 
-A top-level `fn` or `let` named like an import shadows it in that file: its
-calls are typed AND run against the local. When a facade re-exports two
-bindings under one name, the later re-export is the one an importer sees, both
-in the checker and at run time.
+When a facade re-exports two bindings under one name, the later re-export is
+the one an importer sees, both in the checker and at run time.
 
 ### Qualified names
 
