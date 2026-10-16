@@ -716,7 +716,11 @@ under a synthetic region it carries, and the summary records where it goes:
   already carries what its arguments carry.
 
 Every function the module publishes is summarized: one declared `export`,
-one an `export { .. }` lists, and one published as an alias of either. A
+one an `export { .. }` lists, a type companion an exported type publishes
+(`fn Box::put`, carried to an importer of `Box` with the type), and one
+published as an alias of any of them. A function that keeps nothing
+publishes an empty summary, which hides one an import of the same name
+brought in. A
 published function value whose body cannot be traced, a closure a call
 produced, keeps each argument where no call can see (`i>f`).
 

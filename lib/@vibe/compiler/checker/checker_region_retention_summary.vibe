@@ -359,30 +359,23 @@ fn retention_summary_opaque(params: Array[Type], defs: Array[TypeDef]) -> String
   String::join(rows, ",")
 }
 
-/// The names `stmts` publish as values: each `export` declaration and each
-/// name an `export { .. }` lists, once.
+/// The names `stmts` may publish as functions: each `export` declaration,
+/// each name an `export { .. }` lists, and each type companion (`Box::put`),
+/// which an exported type publishes without its own `export` (Codex on
+/// #3473). Publication decides which of them go out; a summary of one that
+/// does not is never read. A name listed twice is an error the checker
+/// reports, so the list is not deduplicated.
 fn retention_published_names(stmts: Array[Stmt]) -> Array[String] {
   let names: Array[String] = []
-  let add = (n: String) -> {
-    let mut seen = false
-    for m in names {
-      seen = seen || m == n
-    }
-    if !seen {
-      Array::push(names, n)
-    } else {
-      ()
-    }
-  }
   for stmt in stmts {
     match stmt {
-      SLet(exported, _, fname, _, _) => if exported {
-        add(fname)
+      SLet(exported, _, fname, _, _) => if exported || String::contains(fname, "::") {
+        Array::push(names, fname)
       } else {
         ()
       },
       SExport(items) => for n in items {
-        add(n)
+        Array::push(names, n)
       },
       _ => ()
     }
@@ -399,7 +392,12 @@ fn retention_published_names(stmts: Array[Stmt]) -> Array[String] {
 /// overrides, key)` is `retention_summarize`'s re-check of that literal.
 export fn retention_summaries_bind(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], resolve: (String) -> (Int, Expr), fresh: (Int) -> Type, recheck: (Expr, Array[(Type, Array[String], String, Array[String])], String) -> (Int, Bool)) -> TypeEnv {
   let candidates: Array[(String, Int, Expr, Array[Type])] = []
-  for name in retention_published_names(stmts) {
+  let names = retention_published_names(stmts)
+  let mut ni = 0
+  // Past the budget nothing is summarized, so the scan stops there.
+  while ni < Array::length(names) && Array::length(candidates) <= retention_summary_budget() {
+    let name = Array::get(names, ni)
+    ni = ni + 1
     match env_lookup(env, name) {
       Some(fty) => match retention_fn_param_types(fty) {
         Some(params) => if retention_summary_candidate(params, defs) {
@@ -428,11 +426,11 @@ export fn retention_summaries_bind(stmts: Array[Stmt], env: TypeEnv, defs: Array
       } else {
         retention_summary_opaque(params, defs)
       }
-      if summary != "" {
-        out = env_bind(out, retention_summary_marker(name), CtNamed(summary, []))
-      } else {
-        ()
-      }
+      // One that keeps nothing is bound too, as `""`: it hides a summary an
+      // import of the same name brought in, so a local function that
+      // shadows a retaining import is not published with the import's
+      // summary (Codex on #3473).
+      out = env_bind(out, retention_summary_marker(name), CtNamed(summary, []))
     }
     out
   }
