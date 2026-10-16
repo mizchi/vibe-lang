@@ -1427,7 +1427,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     // linemap; their live `--break`/dbg_line hooks are unaffected).
     linemap: linemap_disabled(),
     // #2669 slice 2: the payload arrays are SHARED, like table_slots_used --
-    // a lambda body's references belong in the module-level log. Only the
+    // a lambda body's references belong in its enclosing function output. Only the
     // owner cell is this body's own, and it holds `pending` because the
     // lambda's index is not drawn from the plan until the body is finished
     // (see blind_reloc_assign_pending below).
@@ -1491,8 +1491,8 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   //
   // It now comes from the PLAN: count_lambda_sites_expr counts the EFn nodes
   // in each user function's body and linked_compile prefix-sums those into a
-  // per-function base, all without compiling anything. The live length is
-  // still computed and still compared, as an invariant rather than as the
+  // per-function base, all without compiling anything. The table base plus its
+  // live length is still computed and compared, as an invariant rather than the
   // source of truth -- the two agreeing everywhere is what made this swap a
   // no-op on the emitted bytes, and a future divergence would mean the count
   // and the walk disagree about which EFn nodes get compiled. Keying a body's
@@ -1500,9 +1500,9 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   // corruption the plan exists to prevent, so it stays fatal.
   //
   // No plan (an empty cell) means this ctx was built outside the planned body
-  // loop; the live length is then the only answer available and still the
+  // loop; the table base plus its length is the answer available and still the
   // right one, since nothing else is allocating into the table concurrently.
-  let live_idx = Array::length(ctx.lambda_table.bodies)
+  let live_idx = ctx.lambda_table.base + Array::length(ctx.lambda_table.bodies)
   let lambda_idx = if Array::length(ctx.lambda_plan_next) > 0 {
     let planned = Array::get(ctx.lambda_plan_next, 0)
     if planned != live_idx {
