@@ -485,6 +485,7 @@ export fn edp_refuse_tail_calls(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int
         edp_refuse_rowless_result(stmts, fn_defs, f, "", row)
       }
     },
+    ECall(EDot(_, m, _, _), _, _, _) => edp_refuse_rowless_method_result(stmts, fn_defs, m, "", row),
     _ => ()
   }
   ()
@@ -540,5 +541,34 @@ fn edp_declared_result(stmts: Array[Stmt], idx: Int) -> Option[TypeExpr] {
       Some(cur)
     },
     _ => None
+  }
+}
+
+/// Codex on #3467: a method-style call (`maker.mk()`) names its method
+/// without the type. When every top-level function the program spells
+/// `T::m` declares a row-free function result, the call's closure is one,
+/// and it is refused as a direct call to the first of them is.
+export fn edp_refuse_rowless_method_result(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], m: String, callee: String, row: String) -> Unit {
+  let suffix = String::concat("::", m)
+  let mut seen = 0
+  let mut rowless = 0
+  let mut first = ""
+  for d in fn_defs {
+    let (idx, _, _, dname, _, _) = d
+    if String::ends_with(dname, suffix) {
+      seen = seen + 1
+      match edp_declared_result(stmts, idx) {
+        Some(TyFn(_, _, None)) => {
+          rowless = rowless + 1
+          if first == "" {
+            first = dname
+          }
+        },
+        _ => ()
+      }
+    }
+  }
+  if seen > 0 && rowless == seen {
+    edp_refuse_rowless_result(stmts, fn_defs, first, callee, row)
   }
 }

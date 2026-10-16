@@ -699,9 +699,19 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
   let all: Array[(String, String, Array[String], TypeExpr)] = []
   let mut fi = 0
   while fi < Array::length(stmts_list) {
-    for stmt in Array::get(stmts_list, fi) {
+    let stmts = Array::get(stmts_list, fi)
+    let own = file_type_aliases(stmts)
+    for stmt in stmts {
       match stmt {
-        STypeAlias(true, name, params, target) => Array::push(all, (Array::get(paths, fi), name, params, target)),
+        // Codex on #3467: the target is read in its provider, whose own
+        // aliases (`type Hidden = Int; export type N = Hidden`) the importer
+        // cannot see. A parameter of the alias is never one of them.
+        STypeAlias(true, name, params, target) => {
+          let renames = for p in params {
+            (p, String::concat("#param:", p))
+          }
+          Array::push(all, (Array::get(paths, fi), name, params, expand_type_aliases(target, own, renames, 0)))
+        },
         _ => ()
       }
     }

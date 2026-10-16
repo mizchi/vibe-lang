@@ -50,6 +50,7 @@ import ./evidence_slot_refusals.vibe {
   edp_fn_result_has_row,
   edp_note_params,
   edp_refuse_assigned_calls,
+  edp_refuse_rowless_method_result,
   edp_refuse_rowless_param,
   edp_refuse_rowless_result,
   edp_refuse_tail_calls,
@@ -436,6 +437,11 @@ fn edp_stamp_returned_let(n: String, v: Expr, b: Expr, slot: (Int, String), scop
     } else {
       v
     },
+    ECall(EDot(_, _, _, _), _, _, _) => if edp_tail_name_count(b, n) + edp_return_name_count(b, n) > 0 {
+      edp_stamp_slot_arg_at(v, scope, pure_names, Some(slot))
+    } else {
+      v
+    },
     _ => v
   }
 }
@@ -812,6 +818,8 @@ fn edp_stamp_tail(e: Expr, slot: (Int, String), scope: Array[String], pure_names
     // declare (`edp_refuse_rowless_result`); a callee whose result carries
     // the row is left alone.
     ECall(EIdent(_, _), _, _, _) => edp_stamp_slot_arg_at(e, scope, pure_names, Some(slot)),
+    // Codex on #3467: a method-style factory (`maker.mk()`) too.
+    ECall(EDot(_, _, _, _), _, _, _) => edp_stamp_slot_arg_at(e, scope, pure_names, Some(slot)),
     _ => e
   }
 }
@@ -1923,6 +1931,13 @@ fn edp_stamp_slot_arg_at(a: Expr, scope: Array[String], pure_names: MutSet[Strin
           edp_refuse_rowless_result(pstmts, pdefs, fname, callee, row)
         } else {
           ()
+        }
+        a
+      },
+      ECall(EDot(_, m, _, _), _, _, _) => {
+        if Array::length(edp_snap_program) > 0 {
+          let (pstmts, pdefs) = Array::get(edp_snap_program, 0)
+          edp_refuse_rowless_method_result(pstmts, pdefs, m, callee, row)
         }
         a
       },
