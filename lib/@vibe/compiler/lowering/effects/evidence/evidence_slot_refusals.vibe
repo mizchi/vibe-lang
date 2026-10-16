@@ -12,6 +12,10 @@ import ./evidence_scan_view_expr.vibe {
   edp_param_base_name
 }
 
+import @vibe/compiler/lowering/effects/queries {
+  edp_resolve_effect_names_into
+}
+
 /// #3424: a function value passed at a parameter whose function type carries
 /// a row is called by its callee WITH that row's evidence dict. The stamp
 /// (`edp_stamp_slot_arg_at`) gives a closure literal, a row-free top-level
@@ -57,27 +61,25 @@ export fn edp_slot_refusals_reset() -> Unit {
 }
 
 /// The refusals the last stamp walk collected whose row names one of the
-/// migrated effects `enames`.
-export fn edp_slot_refusals_for(enames: Array[String]) -> Array[String] {
+/// migrated effects `enames`. A row separates its labels with `,` or `+`
+/// (`with E + Fs`), as `edp_slot_row_stampable` reads it, and a label may be
+/// an `effectset` alias (`with AskAll`), resolved with the table the
+/// migration planner uses (Codex on #3467).
+export fn edp_slot_refusals_for(enames: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Array[String] {
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(edp_slot_refusal_msgs) {
-    let mut hit = false
-    // A row separates its labels with `,` or `+` (`with E + Fs`), as
-    // `edp_slot_row_stampable` reads it (Codex on #3467).
+    let labels: Array[String] = []
     for part in String::split(Array::get(edp_slot_refusal_rows, i), ",") {
       for label in String::split(part, "+") {
-        let t = String::trim(label)
-        let k = String::index_of(t, "[")
-        let head = if k > 0 {
-          String::substring(t, 0, k)
-        } else {
-          t
-        }
-        for en in enames {
-          if en == head {
-            hit = true
-          }
+        edp_resolve_effect_names_into(String::trim(label), es_names, es_members_list, labels)
+      }
+    }
+    let mut hit = false
+    for head in labels {
+      for en in enames {
+        if en == head {
+          hit = true
         }
       }
     }

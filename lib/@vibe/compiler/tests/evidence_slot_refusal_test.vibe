@@ -92,3 +92,17 @@ test "a call's closure returned at a declared row is refused with the row to dec
   // that takes the dict.
   inspect(refusals("fn rf() -> (() -> Int with Box[String]) {\n  () -> 8\n}\nfn direct() -> (() -> Int with Box[String]) {\n  rf()\n}\nfn go() -> Int {\n  run_str(direct())\n}\n"), "clean")
 }
+
+test "a slot whose row is an effectset alias is refused for the effect it names" {
+  // Codex on #3467: `with AskAll` was compared as the label `AskAll` against
+  // the migrated `Ask`, and the refusal was dropped.
+  let stmts = parse_program(lex("effect Ask {\n  Get() -> Int\n}\neffectset AskAll = { Ask }\nfn run_ask(f: () -> Int with AskAll) -> Int {\n  handle {\n    f()\n  } with {\n    Ask::Get() => resume(7)\n  }\n}\nfn get_one() -> Int with Ask {\n  perform Ask::Get()\n}\nfn mk() -> (() -> Int) {\n  () -> 9\n}\nfn main() -> Int {\n  run_ask(() -> get_one()) + run_ask(mk())\n}\n"))
+  let errs = evidence_dict_pass(stmts, "main")
+  let mut hit = false
+  for e in errs {
+    if String::starts_with(e, "declare the effect row on the function type `mk` returns") {
+      hit = true
+    }
+  }
+  inspect(hit, "true")
+}
