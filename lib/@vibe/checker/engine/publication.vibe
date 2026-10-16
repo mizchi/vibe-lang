@@ -41,12 +41,14 @@ import @vibe/compiler/checker {
   aggregate_export_names,
   collect_builtin_shadowing_names,
   env_param_name_rows,
+  env_retention_summary_rows,
   export_local_nonvalue_kind,
   irc_show_wrapper_facts,
   is_explicit_builtin_declaration,
   param_names_marker,
   publish_type_constructor_binding_rows,
   publish_type_def_row_nominals,
+  retention_summary_marker,
   unresolved_aggregate_export_name,
   unresolved_export_message
 }
@@ -766,7 +768,23 @@ export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_c
       ()
     }
   }
-  env_with_show_wrapper_facts(engine_bind_param_name_markers(stmts, publication_env, published_env), exported_wrappers, exported_unknown)
+  env_with_show_wrapper_facts(engine_bind_retention_summary_markers(publication_env, engine_bind_param_name_markers(stmts, publication_env, published_env)), exported_wrappers, exported_unknown)
+}
+/// #3360: the summary of what each published function keeps of its
+/// arguments, for an importer that calls it inside a region. A function of
+/// this module carries the one its check found; a re-exported one carries the
+/// one its own import brought in, so both are read off the same chain.
+fn engine_bind_retention_summary_markers(publication_env: TypeEnv, published: TypeEnv) -> TypeEnv {
+  let mut acc = published
+  for row in env_retention_summary_rows(publication_env) {
+    let (fname, ty) = row
+    if engine_env_has_value(published, fname) {
+      acc = env_bind(acc, retention_summary_marker(fname), ty)
+    } else {
+      ()
+    }
+  }
+  acc
 }
 /// #3432: one `param_names_marker` per published function with an optional
 /// (`x?`) parameter, so an importer can omit it or pass it by label the way

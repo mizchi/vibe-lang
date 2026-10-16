@@ -54,9 +54,9 @@
 //# other -- a parameter of the function that minted the region, a value a call
 //# returned, a `let mut` closure, a function stored in a field -- is refused
 //# when it is handed the region, since nothing about what it keeps is known. A
-//# function imported from another module is not re-checked: its body was
-//# checked in its own module and its interface carries only its type
-//# (docs/internal/design/concurrency.md, "Known gaps").
+//# function imported from another module is judged by the summary of what it
+//# keeps that its module published (`checker_region_retention_summary.vibe`,
+//# #3360); one that published none keeps nothing.
 
 import @vibe/compiler/checker/diagnostics {
   off_marker, off_marker_len
@@ -117,6 +117,23 @@ import ./checker_merge_capture_provenance.vibe {
 
 import ./checker_infer_binop_type.vibe {
   TypedOccurrenceRoleLaneCapture, callee_is_run_shaped, spawn_value_let_rhs_cell
+}
+
+import ./checker_region_retention_summary.vibe {
+  is_retention_summary_marker,
+  retention_any_nursery,
+  retention_call_message,
+  retention_fn_param_types,
+  retention_opaque_message,
+  retention_regions_mentioned,
+  retention_summaries_enabled,
+  retention_summarize,
+  retention_summary_budget,
+  retention_summary_candidate,
+  retention_summary_index,
+  retention_summary_marker,
+  retention_summary_refuses,
+  retention_summary_region
 }
 
 export ./checker_region_retention_types.vibe {
@@ -1984,12 +2001,14 @@ fn retention_decl_index(name: String) -> Int {
 /// What a call reaches: a lambda the checker can re-check (the literal, the
 /// scope its body is checked in, and a key naming it), a parameter of an
 /// enclosing lambda (named, to place it against the regions), a function
-/// value whose body is not visible, or a callee whose retention is someone
-/// else's question (a builtin, a constructor, an import).
+/// value whose body is not visible, a function imported with the summary of
+/// what it keeps (#3360), or a callee whose retention is someone else's
+/// question (a builtin, a constructor, an import that keeps nothing).
 enum RetentionCallee {
   RetentionVisible(Expr, TypeEnv, String);
   RetentionParam(String);
   RetentionOpaque;
+  RetentionSummary(String);
   RetentionTrusted
 }
 
@@ -2006,7 +2025,7 @@ fn retention_module_env() -> Option[TypeEnv] {
 fn retention_top_level_callee(name: String, depth: Int) -> RetentionCallee {
   let index = retention_decl_index(name)
   if index < 0 {
-    RetentionTrusted
+    retention_imported_callee(name)
   } else if depth > 8 {
     RetentionOpaque
   } else {
@@ -2028,11 +2047,27 @@ fn retention_top_level_callee(name: String, depth: Int) -> RetentionCallee {
   }
 }
 
+/// #3360: a name no declaration of this module binds -- an import, a builtin
+/// -- answers by the summary its module published, if any.
+fn retention_imported_callee(name: String) -> RetentionCallee {
+  match retention_module_env() {
+    Some(module_env) => match env_lookup(module_env, retention_summary_marker(name)) {
+      Some(CtNamed(summary, _)) => if summary == "" {
+        RetentionTrusted
+      } else {
+        RetentionSummary(summary)
+      },
+      _ => RetentionTrusted
+    },
+    None => RetentionTrusted
+  }
+}
+
 /// What the marker in front of the binding of `name` says the binding is.
 fn retention_marker_callee(env: TypeEnv, name: String, payload: Type) -> RetentionCallee {
   match payload {
     CtNamed(text, _) => if String::starts_with(text, "c:") {
-      let index = decimal_text(String::substring(text, 2, String::length(text)))
+      let index = retention_summary_index(String::substring(text, 2, String::length(text)))
       if index >= 0 && index < Array::length(retention_closures) {
         let (lit, bound_name, is_rec) = Array::get(retention_closures, index)
         match retention_closure_scope(env, bound_name, text) {
@@ -2060,7 +2095,7 @@ fn retention_marker_callee(env: TypeEnv, name: String, payload: Type) -> Retenti
     } else if String::starts_with(text, "p:") {
       // A re-checked lambda's parameter, bound to the function its argument
       // was at the call being judged.
-      let index = decimal_text(String::substring(text, 2, String::length(text)))
+      let index = retention_summary_index(String::substring(text, 2, String::length(text)))
       if index >= 0 && index < Array::length(retention_arg_lambdas) {
         let (lit, scope, _) = Array::get(retention_arg_lambdas, index)
         RetentionVisible(lit, scope, text)
@@ -2073,30 +2108,6 @@ fn retention_marker_callee(env: TypeEnv, name: String, payload: Type) -> Retenti
       RetentionOpaque
     },
     _ => RetentionOpaque
-  }
-}
-
-fn decimal_text(text: String) -> Int {
-  if String::length(text) == 0 {
-    0 - 1
-  } else {
-    let mut out = 0
-    let mut ok = true
-    let mut i = 0
-    while i < String::length(text) {
-      let d = String::byte_at(text, i) - 48
-      if d < 0 || d > 9 {
-        ok = false
-      } else {
-        out = out * 10 + d
-      }
-      i = i + 1
-    }
-    if ok {
-      out
-    } else {
-      0 - 1
-    }
   }
 }
 
@@ -2530,67 +2541,6 @@ fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], 
   }
 }
 
-fn retention_regions_mentioned(ty: Type, regions: Array[(String, Bool)]) -> Array[(String, Bool)] {
-  let out = array_empty()
-  for r in regions {
-    let (rname, _) = r
-    if type_mentions_named(ty, rname) {
-      Array::push(out, r)
-    } else {
-      ()
-    }
-  }
-  out
-}
-
-fn retention_any_nursery(regions: Array[(String, Bool)]) -> Bool {
-  let mut any = false
-  for r in regions {
-    let (_, nursery) = r
-    if nursery {
-      any = true
-    } else {
-      ()
-    }
-  }
-  any
-}
-
-fn retention_call_message(callee: String, nursery: Bool, kind: Int) -> String {
-  let head = String::concat(if nursery {
-    "region escapes its nursery scope: this call to `"
-  } else {
-    "region escapes its scope: this call to `"
-  }, callee)
-  let token = if nursery {
-    "this TaskGroup::run call's own Nursery/Task/Sender/Receiver token"
-  } else {
-    "a value that captures this region"
-  }
-  let fix = if nursery {
-    " -- join the task (or use the endpoint) inside the body and pass the result instead"
-  } else {
-    ""
-  }
-  if kind == 1 {
-    if nursery {
-      String::concat(head, String::concat("` stores ", String::concat(token, String::concat(" in a binding declared outside the body", String::concat(fix, ", or declare the binding inside the body")))))
-    } else {
-      String::concat(head, "` stores a value that captures this region into an outer binding")
-    }
-  } else {
-    String::concat(head, String::concat("` passes ", String::concat(token, String::concat(" on to a function whose body the checker cannot see", fix))))
-  }
-}
-
-fn retention_opaque_message(callee: String, nursery: Bool) -> String {
-  if nursery {
-    String::concat("region escapes its nursery scope: this call passes this TaskGroup::run call's own Nursery/Task/Sender/Receiver token to `", String::concat(callee, "`, a function whose body the checker cannot see, so it may keep the token after the group closes -- join the task (or use the endpoint) inside the body and pass the result instead, or call a function or `let`-bound closure written in this file"))
-  } else {
-    String::concat("region escapes its scope: this call passes a value that captures this region to `", String::concat(callee, "`, a function whose body the checker cannot see, so it may keep the value after the region ends"))
-  }
-}
-
 /// The argument types of a call, checked in a throwaway lane, with the
 /// substitution they were read against and the next variable of the
 /// re-check's own range.
@@ -2682,6 +2632,8 @@ fn retention_arg_callee(arg: Expr, arg_ty: Type, env: TypeEnv) -> String {
       match retention_named_callee(env, an) {
         RetentionVisible(lit, scope, key) => lambda_index(lit, scope, retention_callee_identity(key)),
         RetentionTrusted => "t",
+        // An imported function handed on as an argument is not followed into.
+        RetentionSummary(_) => "t",
         RetentionParam(pn) => if Array::length(retention_name_predates(env, pn)) == 0 {
           ""
         } else {
@@ -2710,7 +2662,7 @@ fn retention_arg_callee(arg: Expr, arg_ty: Type, env: TypeEnv) -> String {
 /// only the first callback checked.
 fn retention_callee_identity(key: String) -> String {
   if String::starts_with(key, "p:") {
-    let index = decimal_text(String::substring(key, 2, String::length(key)))
+    let index = retention_summary_index(String::substring(key, 2, String::length(key)))
     if index >= 0 && index < Array::length(retention_arg_lambdas) {
       let (_, _, identity) = Array::get(retention_arg_lambdas, index)
       identity
@@ -2849,6 +2801,36 @@ fn retention_check_callee(callee: RetentionCallee, callee_expr: Expr, label: Str
         } else {
           ()
         },
+        // #3360: an imported function, by the summary its module published:
+        // what each argument carries, against where each is declared.
+        RetentionSummary(summary) => if Array::length(mentioned) > 0 {
+          let carried = array_empty()
+          let predates = array_empty()
+          let mut ai = 0
+          while ai < Array::length(args) {
+            let names = array_empty()
+            let hidden = Array::get(hidden_by_arg, ai)
+            for r in regions {
+              let (rname, _) = r
+              if type_mentions_named(Array::get(arg_tys, ai), rname) || retention_string_has(hidden, rname) {
+                Array::push(names, rname)
+              } else {
+                ()
+              }
+            }
+            Array::push(carried, names)
+            Array::push(predates, retention_arg_predates(Array::get(args, ai), env))
+            ai = ai + 1
+          }
+          let kind = retention_summary_refuses(summary, carried, predates)
+          if kind > 0 {
+            Array::push(errors, String::concat(retention_call_message(label, retention_any_nursery(mentioned), kind), marker))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        },
         _ => if Array::length(mentioned) > 0 {
           Array::push(errors, String::concat(retention_opaque_message(label, retention_any_nursery(mentioned)), marker))
         } else {
@@ -2922,7 +2904,11 @@ export fn retention_named_run_body(body: Expr, env: TypeEnv, defs: Array[TypeDef
           }, ",")))), defs, s, c + retention_counter_gap(), check_child)
           (kind, retention_string_has(result_regions, rname))
         },
-        // A function imported from another module: see the header.
+        // A function imported from another module: by the summary it
+        // published (#3360), whose one argument is the group.
+        RetentionSummary(summary) => (retention_summary_refuses(summary, [
+          [rname]
+        ], [array_empty()]), false),
         RetentionTrusted => (0, false),
         // Codex on #3359: a `let mut` closure, a value no closure literal is
         // bound to, a parameter -- checked where it was written, outside
@@ -2950,5 +2936,62 @@ export fn retention_named_run_body_message(body_name: String, kind: Int) -> Stri
     String::concat("region escapes its nursery scope: ", String::concat(named, " is a function whose body the checker cannot see, so what it keeps of the call's own Nursery/Task/Sender/Receiver token cannot be checked -- write the body inline at the call, or bind it with `let` to a closure literal and pass that name"))
   } else {
     String::concat("region escapes its nursery scope: ", String::concat(named, " passes the call's own Nursery/Task/Sender/Receiver token on to a function whose body the checker cannot see -- join the task (or use the endpoint) inside the body and pass the result instead"))
+  }
+}
+
+//# What an exported function keeps
+
+/// #3360: `env` with the summary of what each function this module exports
+/// keeps of its arguments (`checker_region_retention_summary.vibe`), each
+/// found by re-checking the function's literal as a call made in a region
+/// would. Only a module checked for publication is summarized, and only one
+/// within `retention_summary_budget`.
+export fn retention_bind_module_summaries(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> TypeEnv {
+  if !retention_summaries_enabled() {
+    env
+  } else {
+    let candidates: Array[(String, Expr, Array[Type])] = []
+    for stmt in stmts {
+      match stmt {
+        SLet(exported, _, fname, _, value) => if exported {
+          match (let_rhs_closure_literal(value), env_lookup(env, fname)) {
+            (Some(lit), Some(fty)) => match retention_fn_param_types(fty) {
+              Some(params) => if retention_summary_candidate(params, defs) {
+                Array::push(candidates, (fname, lit, params))
+              } else {
+                ()
+              },
+              None => ()
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+    }
+    if Array::length(candidates) > retention_summary_budget() {
+      env
+    } else {
+      let scope = env_bind(env, "#interp.top.fn", CtBool)
+      let regions = [(retention_summary_region(), false)]
+      let base = c + retention_counter_gap()
+      let mut out = env
+      for cand in candidates {
+        let (fname, lit, params) = cand
+        let summary = retention_summarize(params, defs, (k) -> CtVar(base + k), (overrides, key) -> {
+          let (kind, _) = retention_recheck(lit, scope, regions, overrides, String::concat("summary|", String::concat(fname, String::concat("|", key))), defs, s, base + Array::length(params), check_child)
+          kind
+        })
+        if summary != "" {
+          out = env_bind(out, retention_summary_marker(fname), CtNamed(summary, [
+          ]))
+        } else {
+          ()
+        }
+      }
+      out
+    }
   }
 }

@@ -1,0 +1,51 @@
+// #3360: helpers the taskgroup_escape_import_* fixtures import. Each is
+// checked here, where its body is; what it keeps of its arguments is
+// published with its type, so a call made inside another module's group is
+// judged by it.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+let kept: Array[TaskHandle[Int]] = []
+
+/// Keeps `v` in `c`.
+export fn put[T](c: Array[T], v: T) -> Unit {
+  Array::push(c, v)
+}
+
+/// Keeps `h` in a module-level array.
+export fn put_global(h: TaskHandle[Int]) -> Unit {
+  Array::push(kept, h)
+}
+
+/// Keeps `v` through `put`, a helper of its own module.
+export fn put_via[T](c: Array[T], v: T) -> Unit {
+  put(c, v)
+}
+
+/// Hands `v` to `f`, whose body this module cannot see.
+export fn apply_to[T](v: T, f: (T) -> Int) -> Int {
+  f(v)
+}
+
+/// Reads `v`; keeps nothing.
+export fn peek[T](v: T) -> Int {
+  let _ = v
+  0
+}
+
+/// Joins `h`; keeps only the joined value.
+export fn wait(h: TaskHandle[Int]) -> Int with Exception {
+  TaskHandle::join(h)
+}
+
+/// A `TaskGroup::run` body that keeps a handle of its group in the
+/// module-level array.
+export let keep_body = (n) -> {
+  Array::push(kept, TaskGroup::spawn(n, () -> { 41 }))
+  1
+}
+
+/// A body that keeps its handle in an array it declares itself.
+export let local_body = (n) -> {
+  let mine = [TaskGroup::spawn(n, () -> { 41 })]
+  Array::length(mine)
+}
