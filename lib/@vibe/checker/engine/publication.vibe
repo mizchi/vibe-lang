@@ -40,6 +40,7 @@ import @vibe/compiler/cache {
 import @vibe/compiler/checker {
   aggregate_export_names,
   collect_builtin_shadowing_names,
+  env_keeps_rows,
   env_param_name_rows,
   export_local_nonvalue_kind,
   irc_show_wrapper_facts,
@@ -47,6 +48,7 @@ import @vibe/compiler/checker {
   param_names_marker,
   publish_type_constructor_binding_rows,
   publish_type_def_row_nominals,
+  retention_keeps_marker,
   unresolved_aggregate_export_name,
   unresolved_export_message
 }
@@ -59,6 +61,7 @@ import @vibe/compiler/core {
   env_bind,
   env_flat_bindings,
   env_lookup,
+  env_lookup_binding_including_surface,
   env_lookup_flat,
   env_preserve_type_definition_origins,
   env_selectable_type_defs,
@@ -766,7 +769,7 @@ export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_c
       ()
     }
   }
-  env_with_show_wrapper_facts(engine_bind_param_name_markers(stmts, publication_env, published_env), exported_wrappers, exported_unknown)
+  env_with_show_wrapper_facts(engine_bind_keeps_markers(publication_env, engine_bind_param_name_markers(stmts, publication_env, published_env)), exported_wrappers, exported_unknown)
 }
 /// #3432: one `param_names_marker` per published function with an optional
 /// (`x?`) parameter, so an importer can omit it or pass it by label the way
@@ -812,6 +815,26 @@ fn engine_bind_param_name_markers(stmts: Array[Stmt], publication_env: TypeEnv, 
   acc
 }
 
+/// #3360: the `retention_keeps_marker` of every published function that
+/// keeps a parameter, own or re-exported, so a region body in an importer is
+/// refused when it hands the function its token. The checker binds a module's
+/// own markers at the end of the module, over any imported marker of the same
+/// name, so the nearest row is the published binding's. A module with no
+/// marker in sight allocates nothing.
+fn engine_bind_keeps_markers(publication_env: TypeEnv, published: TypeEnv) -> TypeEnv {
+  let mut acc = published
+  for row in env_keeps_rows(publication_env) {
+    let (fname, ty) = row
+    match ty {
+      CtRecord(_) => if engine_env_has_value(published, fname) {
+        acc = env_bind(acc, retention_keeps_marker(fname), ty)
+      },
+      _ => ()
+    }
+  }
+  acc
+}
+
 fn engine_params_have_optional(params: Array[(String, Option[TypeExpr])]) -> Bool {
   let mut found = false
   for param in params {
@@ -840,8 +863,13 @@ fn engine_stmts_bind_top_level(stmts: Array[Stmt], name: String) -> Bool {
   found
 }
 
+/// Whether `env` publishes a value named `name`. An aliased re-export
+/// (`export ./a.vibe { greet as hi }`) publishes `hi` as a surface-only
+/// binding, which `env_lookup` deliberately does not resolve; counting only
+/// what it resolves dropped the markers of every aliased re-export, so an
+/// importer of `hi` could not omit its optional argument.
 fn engine_env_has_value(env: TypeEnv, name: String) -> Bool {
-  match env_lookup(env, name) {
+  match env_lookup_binding_including_surface(env, name) {
     Some(_) => true,
     None => false
   }

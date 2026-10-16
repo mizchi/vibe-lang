@@ -65,7 +65,11 @@ import ./checker_eq_generalized_site.vibe {
 }
 
 import ./checker_region_retention.vibe {
-  retention_begin_module, retention_end_module, retention_note_module_env
+  retention_begin_module, retention_end_module, retention_note_module_env, retention_param_kept
+}
+
+import ./checker_region_retention_types.vibe {
+  env_keeps_rows, keeps_rows_lookup, retention_body_may_store, retention_keeps_marker, retention_type_may_carry_region
 }
 
 import ./checker.vibe {
@@ -2052,8 +2056,185 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     ()
   }
   match retention_saved {
-    Some(saved) => retention_end_module(saved),
+    Some(saved) => {
+      // #3360: what each published function keeps, for its importers.
+      cur_env = retention_bind_keeps(stmts, cur_env, defs, cur_s, cur_c)
+      retention_end_module(saved)
+    },
     None => ()
   }
   (cur_env, cur_s, cur_c)
+}
+
+/// #3360: bind a `retention_keeps_marker` for every published function that
+/// keeps a parameter, so a region body in an importing module is refused
+/// when it hands that function its token. Only a parameter whose type can
+/// carry a region is probed (`retention_param_kept`). A top-level binding
+/// that keeps nothing hides an imported marker of its own name, so the
+/// marker a module publishes always describes the binding it publishes.
+fn retention_bind_keeps(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> TypeEnv {
+  if retention_stmts_implement_groups(stmts) {
+    env
+  } else {
+    retention_bind_keeps_probed(stmts, env, defs, s, c)
+  }
+}
+
+/// The module that declares `TaskGroup` and `TaskHandle` is the runtime the
+/// regions are made of: its functions hand tokens to the scheduler's own
+/// state by design (`TaskHandle::join` passes `h.group` on), and the
+/// operations of it that retain are listed by name and checked at the call
+/// like `Array::push`. It publishes no summary of its own.
+fn retention_stmts_implement_groups(stmts: Array[Stmt]) -> Bool {
+  let mut has_group = false
+  let mut has_handle = false
+  for stmt in stmts {
+    match stmt {
+      SStruct(_, name, _, _, _, _) => {
+        has_group = has_group || name == "TaskGroup"
+        has_handle = has_handle || name == "TaskHandle"
+      },
+      _ => ()
+    }
+  }
+  has_group && has_handle
+}
+
+fn retention_bind_keeps_probed(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> TypeEnv {
+  let imported = env_keeps_rows(env)
+  let published: Array[String] = []
+  for stmt in stmts {
+    match stmt {
+      SExport(items) => for item in items {
+        Array::push(published, item)
+      },
+      _ => ()
+    }
+  }
+  // Which functions may store anything at all, read from their syntax and
+  // closed over calls between them: only these are probed.
+  let keepers: Array[String] = []
+  for row in imported {
+    match row {
+      (n, CtRecord(_)) => Array::push(keepers, n),
+      _ => ()
+    }
+  }
+  let mut changed = true
+  while changed {
+    changed = false
+    for stmt in stmts {
+      match stmt {
+        SLet(_, _, fname, _, EFn(_, _, _, _, _, _)) => if !published_name_listed(keepers, fname) {
+          let lit = match stmt {
+            SLet(_, _, _, _, e) => e,
+            _ => EUnit
+          }
+          if retention_body_may_store(lit, keepers) {
+            Array::push(keepers, fname)
+            changed = true
+          }
+        },
+        _ => ()
+      }
+    }
+  }
+  let mut out = env
+  for stmt in stmts {
+    let fields: Array[(String, Type)] = []
+    let bound = match stmt {
+      SLet(exported, _, fname, _, EFn(_, _, params, _, _, _)) => {
+        if Array::length(params) > 0 && (exported || String::contains(fname, "::") || published_name_listed(published, fname)) && published_name_listed(keepers, fname) {
+          let lit = match stmt {
+            SLet(_, _, _, _, e) => e,
+            _ => EUnit
+          }
+          let param_tys = retention_fn_param_types(env_lookup(env, fname))
+          let scope = env_bind(env, "#interp.top.fn", CtBool)
+          let n = if Array::length(param_tys) < Array::length(params) {
+            Array::length(param_tys)
+          } else {
+            Array::length(params)
+          }
+          let mut i = 0
+          while i < n {
+            for field in retention_kept_sinks(lit, scope, param_tys, i, n, fname, defs, s, c) {
+              Array::push(fields, (field, CtUnit))
+            }
+            i = i + 1
+          }
+        }
+        fname
+      },
+      SLet(_, _, n, _, _) => n,
+      SLetMut(n, _, _) => n,
+      SExternLet(n, _) => n,
+      SFnDecl(_, n, _, _, _) => n,
+      _ => ""
+    }
+    if Array::length(fields) > 0 {
+      out = env_bind(out, retention_keeps_marker(bound), CtRecord(fields))
+    } else if bound != "" {
+      match keeps_rows_lookup(imported, bound) {
+        Some(CtRecord(_)) => out = env_bind(out, retention_keeps_marker(bound), CtUnit),
+        _ => ()
+      }
+    }
+  }
+  out
+}
+
+/// #3360: where `fname`'s parameter `i` is kept, as marker fields: `i` when
+/// a module binding or a function out of sight may keep it, `i>j` for each
+/// other parameter `j` it may be stored in. One probe with every other
+/// parameter as a sink answers whether it is kept at all, which is the
+/// common "no"; only a kept parameter pays for the probes that say where.
+fn retention_kept_sinks(lit: Expr, scope: TypeEnv, param_tys: Array[Type], i: Int, n: Int, fname: String, defs: Array[TypeDef], s: Subst, c: Int) -> Array[String] {
+  let out: Array[String] = []
+  if retention_type_may_carry_region(Array::get(param_tys, i), defs) {
+    let key = String::concat("keep:", String::concat(fname, String::concat(":", Int::to_string(i))))
+    let others: Array[Int] = []
+    let mut j = 0
+    while j < n {
+      if j != i {
+        Array::push(others, j)
+      }
+      j = j + 1
+    }
+    if retention_param_kept(lit, scope, param_tys, i, others, key, defs, s, c, check_expr_capture) {
+      if retention_param_kept(lit, scope, param_tys, i, [], key, defs, s, c, check_expr_capture) {
+        Array::push(out, Int::to_string(i))
+      } else {
+        for sink in others {
+          if retention_param_kept(lit, scope, param_tys, i, [sink], key, defs, s, c, check_expr_capture) {
+            Array::push(out, String::concat(Int::to_string(i), String::concat(">", Int::to_string(sink))))
+          }
+        }
+        // Kept only through two sinks at once: answer as kept anywhere.
+        if Array::length(out) == 0 {
+          Array::push(out, Int::to_string(i))
+        }
+      }
+    }
+  }
+  out
+}
+
+fn published_name_listed(names: Array[String], name: String) -> Bool {
+  let mut found = false
+  for n in names {
+    if n == name {
+      found = true
+    }
+  }
+  found
+}
+
+/// A function binding's parameter types, under its quantifier.
+fn retention_fn_param_types(t: Option[Type]) -> Array[Type] {
+  match t {
+    Some(CtForAll(_, _, body)) => retention_fn_param_types(Some(body)),
+    Some(CtFn(ptys, _, _)) => ptys,
+    _ => []
+  }
 }

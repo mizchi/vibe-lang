@@ -1,0 +1,55 @@
+import @vibe/compiler/checker {
+  check_program_result, env_keeps_rows
+}
+import @vibe/compiler/core {
+  Type
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+// #3360: what each published function keeps, as the module's checker binds
+// it for publication. A row is `name=fields`, a field `i` (kept where any
+// region outlives the call) or `i>j` (kept into parameter `j`).
+
+fn keeps(src: String) -> String with Exception {
+  let env = check_program_result(parse_program(lex(src))).final_env
+  let parts: Array[String] = []
+  let rows: Array[(String, Type)] = env_keeps_rows(env)
+  for row in rows {
+    let (name, ty) = row
+    let names: Array[String] = []
+    match ty {
+      CtRecord(fs) => {
+        let fields_of: Array[(String, Type)] = fs
+        for f in fields_of {
+          let (k, _) = f
+          Array::push(names, k)
+        }
+      },
+      _ => Array::push(names, "-")
+    }
+    let fields = String::join(names, ",")
+    Array::push(parts, String::concat(name, String::concat("=", fields)))
+  }
+  String::join(parts, " ")
+}
+
+let cell = "export struct Cell[T] {\n  mut v: Option[T]\n}\n"
+
+test "a function that stores a parameter in another keeps it into that one" {
+  inspect(keeps(String::concat(cell, "export fn put[T](c: Cell[T], x: T) -> Unit {\n  c.v = Some(x)\n}\n")), "put=1>0")
+}
+
+test "a store into the function's own binding, or of something else, keeps nothing" {
+  inspect(keeps("let sink: Array[Int] = []\nexport fn keep(x: Int) -> Unit {\n  Array::push(sink, x)\n}\nexport fn hold[T](xs: Array[T], x: T) -> Unit {\n  let local: Array[T] = []\n  Array::push(local, x)\n}\n"), "")
+  inspect(keeps("let sink: Array[Option[Int]] = []\nexport fn keep[T](x: T) -> Unit {\n  let _ = x\n  Array::push(sink, None)\n}\n"), "")
+}
+
+test "what a function passes on to one that keeps it is kept too" {
+  inspect(keeps(String::concat(cell, "fn put[T](c: Cell[T], x: T) -> Unit {\n  c.v = Some(x)\n}\nexport fn relay[T](c: Cell[T], x: T) -> Unit {\n  put(c, x)\n}\n")), "relay=1>0")
+}
+
+test "a function that only reads its parameters keeps nothing" {
+  inspect(keeps(String::concat(cell, "export fn peek[T](c: Cell[T], x: T) -> Bool {\n  match c.v {\n    Some(_) => true,\n    None => false\n  }\n}\nexport fn local[T](x: T) -> Int {\n  let out: Array[T] = []\n  Array::push(out, x)\n  Array::length(out)\n}\n")), "")
+}

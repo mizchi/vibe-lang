@@ -670,11 +670,31 @@ Any other -- a parameter of the function that minted the region
 group), a value a call returned, a `let mut` closure, a function stored in a
 field -- is refused when it is handed the token, since nothing about what it
 keeps is known (`this call passes this TaskGroup::run call's own ... token to
-`cb`, a function whose body the checker cannot see`). A function imported from
-another module is not checked again; see [Known gaps](#known-gaps). The second
-check runs only inside a region and only for such a call; its diagnostics,
-types and substitution are discarded, and the per-run tables it touches are
-restored (`lib/@vibe/compiler/checker/checker_region_retention.vibe`).
+`cb`, a function whose body the checker cannot see`). The second check runs
+only inside a region and only for such a call; its diagnostics, types and
+substitution are discarded, and the per-run tables it touches are restored
+(`lib/@vibe/compiler/checker/checker_region_retention.vibe`).
+
+A function imported from another module has no body in sight, so its module
+answers the same question once, when it is checked, and publishes the answer
+in its interface (#3360). Each published function is checked again under a
+probe region carried by one parameter, with the others' locations predating
+it; a parameter the function stores where it outlives the call -- a module
+binding, another parameter, a function whose body is out of sight -- is
+recorded as kept, and where. A call in a region body that hands the token to
+a kept position is refused with the message a function of the same module
+gets (`this call to `put` stores ... in a binding declared outside the
+body`); a position kept into another parameter is refused only when that
+argument predates the region, so `put(inner, h)` with `inner` declared in the
+body is accepted. Only a function whose body can store anything is probed
+-- a field or element write, a retaining operation (`Array::push`,
+`Sender::send`, ...), an assignment to a binding it did not declare, or a
+call to a function that does one of these -- and only its parameters whose
+type is a region head, a type variable, or a type holding one; a parameter
+the first probe finds kept pays for the probes that say where. The summary travels like the parameter names of #3432: through a
+re-export, with a type's companions (`Cell::stash`), and hidden by a later
+binding of the name that keeps nothing. The standard library's own retaining
+operations remain listed by name and checked like `Array::push`.
 
 A closure handed to a function is checked before the call has fixed its
 parameter's type, so its writes of that parameter are checked again once the
@@ -1096,19 +1116,15 @@ nursery scope`).
 
 ## Known gaps
 
-- **Functions imported from another module.** Code written outside a body is
-  checked again where the token reaches it, which needs the callee's body; a
-  module's interface carries only types. A helper imported from another module
-  that stores its argument (`put(c, handle)` with `put` exported by
-  `./cells.vibe`) is trusted, so it still keeps the handle past its group, and
-  the program compiles and runs (measured). Refusing every imported callee
-  instead would refuse the library itself (`TaskHandle::join(h)`,
-  `Sender::send(tx, v)`); the standard library's own retaining operations are
-  listed by name and checked like `Array::push`. Closing it needs a summary of
-  which arguments a function keeps, published in the module's interface.
-  Joining the escaped handle after the group returns the task's value
-  (measured), so no program is answered wrongly, but nothing enforces that the
-  handle stays in its group.
+- **Closures and declarations handed to an imported function.** What a
+  function keeps is published only for parameters typed by a region head, a
+  type variable, or a type holding one (above). An imported function that
+  stores a closure parameter, or a struct parameter that hides a token in a
+  field, is still trusted: probing every closure-typed parameter re-checks
+  most of the compiler's own checker and exceeds the self-compile heap.
+  Joining an escaped handle after its group returns the task's value
+  (measured), so no program is answered wrongly, but nothing enforces that
+  such a handle stays in its group.
 - **Mid-run cancellation.** A cancel request is observed at dispatch and at a
   parked task only. A running task, and a suspendable task that is running
   when the request arrives, are not interrupted.

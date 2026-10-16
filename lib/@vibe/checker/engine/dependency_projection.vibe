@@ -36,7 +36,14 @@ import @vibe/compiler/cache {
   compact_source_fingerprint_memo, typing_module_fingerprint
 }
 import @vibe/compiler/checker {
-  env_param_name_rows, import_item_kind_errors, param_name_rows_have, param_names_marker
+  env_keeps_rows,
+  env_param_name_rows,
+  flat_keeps_rows,
+  import_item_kind_errors,
+  keeps_rows_lookup,
+  param_name_rows_have,
+  param_names_marker,
+  retention_keeps_marker
 }
 import @vibe/compiler/contract {
   vpkg_path_escape_one_line, vpkg_types_contract_of_source, vpkg_types_decl_pos_for_line
@@ -1718,6 +1725,10 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
   let dep_param_rows = env_flat_param_rows(dep_bindings)
   // The markers earlier imports of this module already bound.
   let acc_param_rows = env_param_name_rows(acc)
+  // #3360: what the dependency's functions keep, and what earlier imports
+  // bound; usually none, and then nothing is allocated.
+  let dep_keeps_rows = flat_keeps_rows(dep_bindings)
+  let acc_keeps_rows = env_keeps_rows(acc)
   engine_builtin_shadow_diagnostics_into(dep_bindings, resolved, unresolved)
   let dep_traits = view.traits
   let dep_upper_slots = view.upper_slots
@@ -1851,7 +1862,16 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
           with_companions
         }
       }
-      bind_names(j + 1, with_params)
+      // #3360: which parameters the function keeps, under the name it
+      // imports; a later import that keeps nothing hides an earlier marker.
+      let with_keeps = match keeps_rows_lookup(dep_keeps_rows, name) {
+        Some(t) => env_bind(with_params, retention_keeps_marker(bound_name), t),
+        None => match keeps_rows_lookup(acc_keeps_rows, bound_name) {
+          Some(CtRecord(_)) => env_bind(with_params, retention_keeps_marker(bound_name), CtUnit),
+          _ => with_params
+        }
+      }
+      bind_names(j + 1, with_keeps)
     }
   }
   for item in declaration_names {

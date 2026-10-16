@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Type, TypeDef
+  Expr, Type, TypeDef, TypeEnv, env_lookup, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
 }
 import @vibe/core {
   array_empty
@@ -252,3 +252,401 @@ fn retention_string_has(items: Array[String], wanted: String) -> Bool {
   }
   found
 }
+
+//# What a function keeps (#3360)
+
+/// #3360: the binding that publishes which parameters a function keeps -- a
+/// value passed there may be stored where it outlives the call (another
+/// parameter, a module binding). A region body that passes its token at such
+/// a position to an IMPORTED function is refused the way a call to a function
+/// of its own module is, whose body is checked again at the call: an
+/// importer sees only the dependency's interface, and this marker is how the
+/// answer of that check crosses it. Bound to a record whose field names are
+/// the kept positions; no source identifier can spell it.
+export fn retention_keeps_marker(name: String) -> String {
+  String::concat(retention_keeps_prefix, name)
+}
+
+let retention_keeps_prefix: String = "#keeps:"
+
+/// Whether a binding name is a `retention_keeps_marker`. Allocates nothing.
+export fn is_retention_keeps_marker(name: String) -> Bool {
+  String::starts_with(name, retention_keeps_prefix)
+}
+
+/// The function a `retention_keeps_marker` binding names.
+export fn retention_keeps_marker_target(name: String) -> String {
+  String::substring(name, String::length(retention_keeps_prefix), String::length(name))
+}
+
+/// The kept parameter positions a marker's type records, each with where it
+/// is kept: another parameter's position, or -1 for a module binding or a
+/// function whose body is out of sight. A field is spelled `i` or `i>j`. A
+/// tombstone (an import later hidden by a binding that keeps nothing)
+/// records none.
+export fn retention_keeps_positions(t: Type) -> Array[(Int, Int)] {
+  let out: Array[(Int, Int)] = []
+  match t {
+    CtRecord(fields) => for field in fields {
+      let (k, _) = field
+      let parts = String::split(k, ">")
+      if Array::length(parts) == 2 {
+        Array::push(out, (retention_keeps_decimal(Array::get(parts, 0)), retention_keeps_decimal(Array::get(parts, 1))))
+      } else {
+        Array::push(out, (retention_keeps_decimal(k), 0 - 1))
+      }
+    },
+    _ => ()
+  }
+  out
+}
+
+fn retention_keeps_decimal(text: String) -> Int {
+  let mut n = 0
+  let mut i = 0
+  while i < String::length(text) {
+    n = n * 10 + String::byte_at(text, i) - '0'
+    i = i + 1
+  }
+  n
+}
+
+/// The keeps marker for a function in `env`, innermost first, or None.
+export fn retention_keeps_in_env(env: TypeEnv, name: String) -> Option[Type] {
+  env_lookup(env, retention_keeps_marker(name))
+}
+
+/// Every `retention_keeps_marker` row in `env`, as (function name, marker
+/// type), nearest binding first and each name once. A row whose type is not a
+/// record is a tombstone: a later binding of the name that keeps nothing.
+/// An env with no marker, which is nearly every env, answers a shared empty
+/// array without allocating.
+export fn env_keeps_rows(env: TypeEnv) -> Array[(String, Type)] {
+  if env_keeps_marker_count(env) == 0 {
+    no_keeps_rows
+  } else {
+    let rows: Array[(String, Type)] = []
+    let mut current = env
+    let mut done = false
+    while !done {
+      match current {
+        EnvBind(name, binding, rest) => {
+          keeps_row_push(rows, name, binding.ty)
+          current = rest
+        },
+        EnvFlat(bindings) => {
+          for entry in bindings {
+            let (name, binding) = entry
+            keeps_row_push(rows, name, binding.ty)
+          }
+          done = true
+        },
+        EnvShowWrappers(_, _, rest) => current = rest,
+        EnvTraitDef(_, _, _, _, rest, _, _) => current = rest,
+        EnvTraitImpl(_, _, rest) => current = rest,
+        EnvTraitImplGen(_, _, _, _, rest) => current = rest,
+        EnvTypeDefs(_, _, rest) => current = rest,
+        EnvMutCell(_, _, rest) => current = rest,
+        EnvCached(_, _, rest) => current = rest,
+        EnvEmpty => done = true
+      }
+    }
+    rows
+  }
+}
+
+let no_keeps_rows: Array[(String, Type)] = []
+
+fn env_keeps_marker_count(env: TypeEnv) -> Int {
+  let mut count = 0
+  let mut current = env
+  let mut done = false
+  while !done {
+    match current {
+      EnvBind(name, _, rest) => {
+        if is_retention_keeps_marker(name) {
+          count = count + 1
+        }
+        current = rest
+      },
+      EnvFlat(bindings) => {
+        for entry in bindings {
+          let (name, _) = entry
+          if is_retention_keeps_marker(name) {
+            count = count + 1
+          }
+        }
+        done = true
+      },
+      EnvShowWrappers(_, _, rest) => current = rest,
+      EnvTraitDef(_, _, _, _, rest, _, _) => current = rest,
+      EnvTraitImpl(_, _, rest) => current = rest,
+      EnvTraitImplGen(_, _, _, _, rest) => current = rest,
+      EnvTypeDefs(_, _, rest) => current = rest,
+      EnvMutCell(_, _, rest) => current = rest,
+      EnvCached(_, _, rest) => current = rest,
+      EnvEmpty => done = true
+    }
+  }
+  count
+}
+
+fn keeps_row_push(rows: Array[(String, Type)], name: String, ty: Type) -> Unit {
+  if is_retention_keeps_marker(name) {
+    let fname = retention_keeps_marker_target(name)
+    let mut seen = false
+    for row in rows {
+      let (n, _) = row
+      seen = seen || n == fname
+    }
+    if !seen {
+      Array::push(rows, (fname, ty))
+    }
+  }
+}
+
+/// The `retention_keeps_marker` rows of a flat binding list (a dependency's
+/// published bindings), as (function name, marker type), first entry of each
+/// name. Allocates nothing when there are none, which is nearly every
+/// dependency.
+export fn flat_keeps_rows(bindings: Array[(String, Type)]) -> Array[(String, Type)] {
+  let mut hits = 0
+  for entry in bindings {
+    let (name, _) = entry
+    if is_retention_keeps_marker(name) {
+      hits = hits + 1
+    }
+  }
+  if hits == 0 {
+    no_keeps_rows
+  } else {
+    let rows: Array[(String, Type)] = []
+    for entry in bindings {
+      let (name, ty) = entry
+      keeps_row_push(rows, name, ty)
+    }
+    rows
+  }
+}
+
+/// The row `rows` holds for `name`, if any.
+export fn keeps_rows_lookup(rows: Array[(String, Type)], name: String) -> Option[Type] {
+  let mut found: Option[Type] = None
+  for row in rows {
+    let (n, t) = row
+    if n == name {
+      match found {
+        None => found = Some(t),
+        Some(_) => ()
+      }
+    }
+  }
+  found
+}
+
+/// #3360: whether a parameter of type `t` is probed for what its function
+/// keeps: a region head, a type variable a caller can instantiate to one, or
+/// a type that holds either (`Cell[T]`, `Array[TaskHandle[Int]]`). A closure,
+/// and a declaration that hides a region in a field, are not probed: every
+/// checker function takes a closure, and re-checking all of them costs more
+/// heap than the compiler's own self-compile has.
+export fn retention_type_may_carry_region(t: Type, defs: Array[TypeDef]) -> Bool {
+  match t {
+    CtVar(_) => true,
+    CtNamed(name, args) => String::starts_with(name, "#region_") || retention_is_region_head(name) || retention_types_may_carry_region(args, defs),
+    CtApplied(head, args) => retention_type_may_carry_region(head, defs) || retention_types_may_carry_region(args, defs),
+    CtArray(e) => retention_type_may_carry_region(e, defs),
+    CtOption(e) => retention_type_may_carry_region(e, defs),
+    CtTuple(items) => retention_types_may_carry_region(items, defs),
+    CtForAll(_, _, body) => retention_type_may_carry_region(body, defs),
+    _ => false
+  }
+}
+
+fn retention_types_may_carry_region(items: Array[Type], defs: Array[TypeDef]) -> Bool {
+  let mut any = false
+  for item in items {
+    any = any || retention_type_may_carry_region(item, defs)
+  }
+  any
+}
+
+/// #3360: whether a function body can store anything where it outlives the
+/// call, read from its syntax: a field or element write, a call to a
+/// retaining operation (`Array::push`, `Map::insert`, `Sender::send`, ...),
+/// an assignment to a binding the body did not declare, or a call to a
+/// function named in `keepers` (this module's functions already found to
+/// store, and imported ones that publish what they keep). A write into a
+/// binding the body itself made fresh (`let out = []`, `MutMap::new()`) is
+/// not one: nothing outside the call can reach it unless another write stores
+/// it, and that write is counted. A body that does none of these keeps
+/// nothing, so it is not checked again; this is what keeps the probes
+/// affordable.
+export fn retention_body_may_store(body: Expr, keepers: Array[String]) -> Bool {
+  let mut_locals: Array[String] = []
+  let fresh: Array[String] = []
+  let other: Array[String] = []
+  retention_collect_locals(body, mut_locals, fresh, other)
+  // A name also bound some other way (a parameter, a `let` of a value from
+  // outside) may be that other binding at the write, so only a name every
+  // binder of which is fresh counts as fresh.
+  let only_fresh: Array[String] = []
+  for n in fresh {
+    if !retention_string_has(other, n) {
+      Array::push(only_fresh, n)
+    }
+  }
+  retention_scan_store(body, mut_locals, only_fresh, keepers)
+}
+
+fn retention_collect_locals(e: Expr, mut_locals: Array[String], fresh: Array[String], other: Array[String]) -> Unit {
+  match e {
+    ELet(name, v, _, _) => if retention_is_fresh_value(v) {
+      Array::push(fresh, name)
+    } else {
+      Array::push(other, name)
+    },
+    ELetMut(name, v, _, _) => {
+      Array::push(mut_locals, name)
+      if retention_is_fresh_value(v) {
+        Array::push(fresh, name)
+      } else {
+        Array::push(other, name)
+      }
+    },
+    EForIn(name, _, _, _) => Array::push(other, name),
+    EFn(_, _, params, _, _, _) => for p in params {
+      let (pn, _) = p
+      Array::push(other, pn)
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(e)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    retention_collect_locals(expr_child_at(i), mut_locals, fresh, other)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// A value that is a new container no one else holds: a literal, a
+/// constructor call (`MutMap::new()`, `Array::make(n, x)`, `array_empty()`),
+/// or one of these under a `let` annotation's ascription wrapper.
+fn retention_is_fresh_value(v: Expr) -> Bool {
+  match v {
+    EArray(_) => true,
+    ERecord(_, _, _) => true,
+    EMap(_) => true,
+    ECall(EFn(_, _, _, _, _, EIdent("__asc", _)), args, _, _) => Array::length(args) == 1 && retention_is_fresh_value(Array::get(args, 0)),
+    ECall(EIdent(name, _), _, _, _) => name == "array_empty" || String::ends_with(name, "::new") || String::ends_with(name, "::new_string") || String::ends_with(name, "::new_int") || String::ends_with(name, "::make") || String::ends_with(name, "::with_capacity"),
+    _ => false
+  }
+}
+
+fn retention_scan_store(e: Expr, locals: Array[String], fresh: Array[String], keepers: Array[String]) -> Bool {
+  let here = match e {
+    EAssign(name, _, _, _) => !retention_string_has(locals, name),
+    EAssignOp(name, _, _, _, _) => !retention_string_has(locals, name),
+    ECall(EIdent(name, _), args, _, _) => if retention_string_has(keepers, name) {
+      true
+    } else if retention_is_store_op(name) {
+      !retention_targets_fresh(args, fresh)
+    } else {
+      false
+    },
+    _ => false
+  }
+  if here {
+    true
+  } else {
+    let mark = expr_children_push(e)
+    let top = expr_children_top()
+    let mut found = false
+    let mut i = mark
+    while i < top && !found {
+      found = retention_scan_store(expr_child_at(i), locals, fresh, keepers)
+      i = i + 1
+    }
+    expr_children_pop(mark)
+    found
+  }
+}
+
+/// Whether a retaining operation writes into a fresh local: its target, the
+/// first argument, names one directly.
+fn retention_targets_fresh(args: Array[Expr], fresh: Array[String]) -> Bool {
+  if Array::length(args) == 0 {
+    false
+  } else {
+    match Array::get(args, 0) {
+      EIdent(n, _) => retention_string_has(fresh, n),
+      _ => false
+    }
+  }
+}
+
+fn retention_is_store_op(name: String) -> Bool {
+  // Suffix tests allocate nothing; this runs on every named call of every
+  // published function body.
+  name == "__set_field" || String::ends_with(name, "::push") || String::ends_with(name, "::push_all") || String::ends_with(name, "::push_back") || String::ends_with(name, "::push_front") || String::ends_with(name, "::set") || String::ends_with(name, "::unsafe_set") || String::ends_with(name, "::insert") || String::ends_with(name, "::add") || String::ends_with(name, "::append") || String::ends_with(name, "::blit") || String::ends_with(name, "::fill") || String::ends_with(name, "::send") || String::ends_with(name, "::put")
+}
+
+/// The probed parameter's type with every type variable read as the probe
+/// region, so a value of it carries the probe in plain view the way a token
+/// passed at a call does (`T` becomes the probe; `Cell[T]` holds it; the
+/// `rg` of a `TaskHandle[rg, e, T]` is it).
+export fn retention_probe_type(t: Type, probe: String) -> Type {
+  match t {
+    CtVar(_) => CtNamed(probe, array_empty()),
+    CtNamed(name, args) => CtNamed(name, for a in args {
+      retention_probe_type(a, probe)
+    }),
+    CtApplied(head, args) => CtApplied(retention_probe_type(head, probe), for a in args {
+      retention_probe_type(a, probe)
+    }),
+    CtArray(e) => CtArray(retention_probe_type(e, probe)),
+    CtOption(e) => CtOption(retention_probe_type(e, probe)),
+    CtTuple(items) => CtTuple(for a in items {
+      retention_probe_type(a, probe)
+    }),
+    _ => t
+  }
+}
+
+export fn retention_call_message(callee: String, nursery: Bool, kind: Int) -> String {
+  let head = String::concat(if nursery {
+    "region escapes its nursery scope: this call to `"
+  } else {
+    "region escapes its scope: this call to `"
+  }, callee)
+  let token = if nursery {
+    "this TaskGroup::run call's own Nursery/Task/Sender/Receiver token"
+  } else {
+    "a value that captures this region"
+  }
+  let fix = if nursery {
+    " -- join the task (or use the endpoint) inside the body and pass the result instead"
+  } else {
+    ""
+  }
+  if kind == 1 {
+    if nursery {
+      String::concat(head, String::concat("` stores ", String::concat(token, String::concat(" in a binding declared outside the body", String::concat(fix, ", or declare the binding inside the body")))))
+    } else {
+      String::concat(head, "` stores a value that captures this region into an outer binding")
+    }
+  } else {
+    String::concat(head, String::concat("` passes ", String::concat(token, String::concat(" on to a function whose body the checker cannot see", fix))))
+  }
+}
+
+export fn retention_opaque_message(callee: String, nursery: Bool) -> String {
+  if nursery {
+    String::concat("region escapes its nursery scope: this call passes this TaskGroup::run call's own Nursery/Task/Sender/Receiver token to `", String::concat(callee, "`, a function whose body the checker cannot see, so it may keep the token after the group closes -- join the task (or use the endpoint) inside the body and pass the result instead, or call a function or `let`-bound closure written in this file"))
+  } else {
+    String::concat("region escapes its scope: this call passes a value that captures this region to `", String::concat(callee, "`, a function whose body the checker cannot see, so it may keep the value after the region ends"))
+  }
+}
+

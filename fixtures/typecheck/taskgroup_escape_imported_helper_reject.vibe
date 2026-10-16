@@ -1,0 +1,22 @@
+// #3360: a helper imported from another module stores its argument, so
+// `put(c, h)` keeps the handle past the group the way a helper of this module
+// does (`taskgroup_escape_helper_field_reject`). An importer sees only the
+// helper's interface, so the dependency publishes which parameters each
+// function keeps, and the call is refused from that. Before, the import was
+// trusted and the handle was joined after its group closed.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+import ./taskgroup_escape_imported_helper_dep_ok.vibe { Cell, put }
+
+fn main() -> Unit allows Exception + Console {
+  let c: Cell[TaskHandle[Int]] = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    let h = TaskGroup::spawn(n, () -> { 41 })
+    put(c, h)
+    1
+  })
+  let after = match c.v {
+    Some(h) => TaskHandle::join(h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

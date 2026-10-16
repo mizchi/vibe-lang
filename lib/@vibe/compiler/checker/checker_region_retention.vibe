@@ -123,6 +123,11 @@ export ./checker_region_retention_types.vibe {
   retention_type_hides_region
 }
 import ./checker_region_retention_types.vibe {
+  retention_call_message,
+  retention_keeps_in_env,
+  retention_keeps_positions,
+  retention_opaque_message,
+  retention_probe_type,
   retention_type_hides_region
 }
 
@@ -1990,7 +1995,10 @@ enum RetentionCallee {
   RetentionVisible(Expr, TypeEnv, String);
   RetentionParam(String);
   RetentionOpaque;
-  RetentionTrusted
+  RetentionTrusted;
+  // #3360: an imported function whose interface says it keeps the
+  // arguments at these positions (`retention_keeps_marker`).
+  RetentionKeeps(Array[(Int, Int)])
 }
 
 fn retention_module_env() -> Option[TypeEnv] {
@@ -2171,7 +2179,17 @@ fn retention_named_callee(env: TypeEnv, name: String) -> RetentionCallee {
           None => RetentionOpaque
         }
       } else {
-        retention_top_level_callee(name, 0)
+        match retention_top_level_callee(name, 0) {
+          RetentionTrusted => match retention_keeps_in_env(env, name) {
+            Some(t) => if Array::length(retention_keeps_positions(t)) > 0 {
+              RetentionKeeps(retention_keeps_positions(t))
+            } else {
+              RetentionTrusted
+            },
+            None => RetentionTrusted
+          },
+          other => other
+        }
       }
     }
   }
@@ -2495,6 +2513,37 @@ fn retention_region_env(base: TypeEnv, regions: Array[(String, Bool)]) -> TypeEn
   env
 }
 
+/// #3360: does `lit` keep its parameter `i`? Checked again under a probe
+/// region that argument carries and the `sinks` parameters predate: storing
+/// it in a module binding or a sink, or handing it to a function out of
+/// sight, is keeping it.
+export fn retention_param_kept(lit: Expr, scope: TypeEnv, param_tys: Array[Type], i: Int, sinks: Array[Int], key: String, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Bool {
+  let probe = "#region_keep_probe"
+  let overrides = array_empty()
+  let mut k = 0
+  while k < Array::length(param_tys) {
+    let mut sink = false
+    for j in sinks {
+      sink = sink || j == k
+    }
+    if k == i {
+      Array::push(overrides, (retention_probe_type(Array::get(param_tys, k), probe), array_empty(), "", [
+        probe
+      ]))
+    } else if sink {
+      Array::push(overrides, (Array::get(param_tys, k), [probe], "", array_empty()))
+    } else {
+      Array::push(overrides, (Array::get(param_tys, k), array_empty(), "", array_empty()))
+    }
+    k = k + 1
+  }
+  let shape = String::join(for j in sinks {
+    Int::to_string(j)
+  }, ",")
+  let (kind, _) = retention_recheck(lit, scope, [(probe, true)], overrides, String::concat(key, String::concat(">", shape)), defs, s, c + retention_counter_gap(), check_child)
+  kind > 0
+}
+
 /// Check `lit` again in `scope` under `regions`, with `overrides` for its
 /// parameters, and report what its writes do with them. `c` is already in the
 /// re-check's own variable range. `key` names the
@@ -2554,41 +2603,6 @@ fn retention_any_nursery(regions: Array[(String, Bool)]) -> Bool {
     }
   }
   any
-}
-
-fn retention_call_message(callee: String, nursery: Bool, kind: Int) -> String {
-  let head = String::concat(if nursery {
-    "region escapes its nursery scope: this call to `"
-  } else {
-    "region escapes its scope: this call to `"
-  }, callee)
-  let token = if nursery {
-    "this TaskGroup::run call's own Nursery/Task/Sender/Receiver token"
-  } else {
-    "a value that captures this region"
-  }
-  let fix = if nursery {
-    " -- join the task (or use the endpoint) inside the body and pass the result instead"
-  } else {
-    ""
-  }
-  if kind == 1 {
-    if nursery {
-      String::concat(head, String::concat("` stores ", String::concat(token, String::concat(" in a binding declared outside the body", String::concat(fix, ", or declare the binding inside the body")))))
-    } else {
-      String::concat(head, "` stores a value that captures this region into an outer binding")
-    }
-  } else {
-    String::concat(head, String::concat("` passes ", String::concat(token, String::concat(" on to a function whose body the checker cannot see", fix))))
-  }
-}
-
-fn retention_opaque_message(callee: String, nursery: Bool) -> String {
-  if nursery {
-    String::concat("region escapes its nursery scope: this call passes this TaskGroup::run call's own Nursery/Task/Sender/Receiver token to `", String::concat(callee, "`, a function whose body the checker cannot see, so it may keep the token after the group closes -- join the task (or use the endpoint) inside the body and pass the result instead, or call a function or `let`-bound closure written in this file"))
-  } else {
-    String::concat("region escapes its scope: this call passes a value that captures this region to `", String::concat(callee, "`, a function whose body the checker cannot see, so it may keep the value after the region ends"))
-  }
 }
 
 /// The argument types of a call, checked in a throwaway lane, with the
@@ -2682,6 +2696,9 @@ fn retention_arg_callee(arg: Expr, arg_ty: Type, env: TypeEnv) -> String {
       match retention_named_callee(env, an) {
         RetentionVisible(lit, scope, key) => lambda_index(lit, scope, retention_callee_identity(key)),
         RetentionTrusted => "t",
+        // #3360: an imported function that keeps a parameter, passed on as a
+        // value, is checked like a function whose body is out of sight.
+        RetentionKeeps(_) => "o",
         RetentionParam(pn) => if Array::length(retention_name_predates(env, pn)) == 0 {
           ""
         } else {
@@ -2844,6 +2861,34 @@ fn retention_check_callee(callee: RetentionCallee, callee_expr: Expr, label: Str
         // carries is answered for at that lambda's own calls, where the
         // argument is known; one bound before the region (the function that
         // minted it took it) is not.
+        // #3360: an imported function that keeps an argument it is handed
+        // carrying a region keeps the token past the call.
+        RetentionKeeps(positions) => {
+          // A position kept into a module binding keeps any region its
+          // argument carries; one kept into another parameter keeps the
+          // regions that parameter's argument predates.
+          let kept = array_empty()
+          for entry in positions {
+            let (pos, sink) = entry
+            if pos < Array::length(args) && sink < Array::length(args) {
+              let hidden = Array::get(hidden_by_arg, pos)
+              let outlives = if sink < 0 {
+                array_empty()
+              } else {
+                retention_arg_predates(Array::get(args, sink), env)
+              }
+              for r in regions {
+                let (rname, _) = r
+                if (type_mentions_named(Array::get(arg_tys, pos), rname) || retention_string_has(hidden, rname)) && (sink < 0 || retention_string_has(outlives, rname)) {
+                  Array::push(kept, r)
+                }
+              }
+            }
+          }
+          if Array::length(kept) > 0 {
+            Array::push(errors, String::concat(retention_call_message(label, retention_any_nursery(kept), 1), marker))
+          }
+        },
         RetentionParam(pname) => if Array::length(mentioned) > 0 && retention_regions_intersect(retention_name_predates(env, pname), mentioned) {
           Array::push(errors, String::concat(retention_opaque_message(label, retention_any_nursery(mentioned)), marker))
         } else {
