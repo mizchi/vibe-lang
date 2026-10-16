@@ -27,7 +27,13 @@ import @vibe/compiler/core {
   resolve_import_path_candidates
 }
 import @vibe/compiler/checker {
-  is_param_names_marker, param_names_marker, param_names_marker_target
+  is_param_names_marker,
+  is_retention_summary_marker,
+  param_names_marker,
+  param_names_marker_target,
+  retention_summary_marker,
+  retention_summary_marker_target,
+  retention_summary_skips_path
 }
 import @vibe/compiler/runtime/eval_loader {
   contains_str
@@ -577,6 +583,18 @@ export fn engine_bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv
   // `unknown name: length`) and indexed-for classification. Bind each
   // companion once, from its first flat entry, matching env_lookup_flat.
   let param_rows = env_flat_param_rows(dep_bindings)
+  // #3360: what each companion keeps of its arguments, the standard
+  // library's excepted (Codex on #3473: `Box::put`, and an unqualified
+  // `Make(..) -> Box`, both reached by importing `Box`).
+  let retention_rows: Array[(String, Type)] = []
+  if !retention_summary_skips_path(resolved) {
+    for entry in dep_bindings {
+      let (bname, bty) = entry
+      if is_retention_summary_marker(bname) {
+        Array::push(retention_rows, (retention_summary_marker_target(bname), bty))
+      }
+    }
+  }
   let seen = array_empty()
   let mut i = 0
   while i < Array::length(dep_bindings) {
@@ -603,6 +621,12 @@ export fn engine_bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv
         match env_lookup_flat(param_rows, candidate_name) {
           Some(t) => {
             out = env_bind(out, param_names_marker(local_name), t)
+          },
+          None => ()
+        }
+        match env_lookup_flat(retention_rows, candidate_name) {
+          Some(t) => {
+            out = env_bind(out, retention_summary_marker(local_name), t)
           },
           None => ()
         }

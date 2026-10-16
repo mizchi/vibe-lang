@@ -715,10 +715,11 @@ under a synthetic region it carries, and the summary records where it goes:
   spawned is judged as returning the group's token. Any other call's result
   already carries what its arguments carry.
 
-Every function the module publishes is summarized: one declared `export`,
-one an `export { .. }` lists, a type companion an exported type publishes
-(`fn Box::put`, carried to an importer of `Box` with the type), and one
-published as an alias of any of them. A
+Every top-level function of the module is summarized, and publication keeps
+the summaries of the ones it publishes: one declared `export`, one an
+`export { .. }` lists, a companion an exported type publishes (`fn Box::put`,
+or a function returning `Box`, carried to an importer of `Box` with the
+type), and an alias of any of them. A
 published function value whose body cannot be traced, a closure a call
 produced, keeps each argument where no call can see (`i>f`).
 
@@ -1132,12 +1133,11 @@ nursery scope`).
 
 ## Known gaps
 
-- **What an imported function's summary does not cover.** A module that
-  publishes more than 256 functions that take an argument that may carry a
-  region publishes no summaries (`retention_summary_budget`), since each
-  costs at least one re-check of its body; its functions are trusted. A
-  companion of a type the module keeps private is not published and not
-  counted.
+- **What an imported function's summary does not cover.** A module with
+  more than 4096 top-level statements publishes no summaries
+  (`retention_summary_budget`), since each function costs at least one
+  re-check of its body; its functions are trusted. That keeps a whole program
+  flattened into one source out of the pass.
   An imported function passed on as a callback (`Array::map(hs, stash)` with
   `stash` imported) is not followed into; a body named at `TaskGroup::run`
   is judged by its summary.

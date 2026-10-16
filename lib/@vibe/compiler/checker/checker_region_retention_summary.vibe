@@ -151,12 +151,15 @@ export fn retention_summaries_enabled() -> Bool {
   Array::length(retention_summaries_cell) > 0 && Array::get(retention_summaries_cell, 0)
 }
 
-/// The most exported functions a module may have whose arguments may carry
-/// a region before none is summarized. Each costs at least one re-check of
-/// its body; a module past this (a whole program flattened into one source)
-/// is not summarized, and its importers trust it as before.
+/// The most top-level statements a module may have before none of its
+/// functions is summarized. Each function whose arguments may carry a region
+/// costs at least one re-check of its body; a module past this (a whole
+/// program flattened into one source) is not summarized, and its importers
+/// trust it as before. Counting statements rather than candidates keeps a
+/// module's private functions from deciding whether its exports are
+/// summarized (Codex on #3473).
 export fn retention_summary_budget() -> Int {
-  256
+  4096
 }
 
 /// Whether a function with parameter types `params` has an argument that
@@ -359,50 +362,20 @@ fn retention_summary_opaque(params: Array[Type], defs: Array[TypeDef]) -> String
   String::join(rows, ",")
 }
 
-/// The names `stmts` may publish as functions: each `export` declaration,
-/// each name an `export { .. }` lists, and each companion (`Box::put`) of a
-/// type the module publishes, which goes out with the type without an
-/// `export` of its own (Codex on #3473). A companion of a type the module
-/// keeps private is not counted against the budget. A name listed twice is
-/// an error the checker reports, so the list is not deduplicated.
-fn retention_published_names(stmts: Array[Stmt]) -> Array[String] {
-  let types: Array[String] = []
+/// The names a summary is computed for: every top-level binding and every
+/// name an `export { .. }` lists. Publication decides which of them go out --
+/// an `export` declaration, a listed name, a type's companion (`Box::put`, or
+/// a function returning the type), an alias of any of these -- and a summary
+/// of one it keeps private is never read (Codex on #3473, whose rounds found
+/// each of those routes in turn). A name listed twice is an error the
+/// checker reports, so the list is not deduplicated.
+fn retention_summary_names(stmts: Array[Stmt]) -> Array[String] {
   let names: Array[String] = []
   for stmt in stmts {
     match stmt {
-      SStruct(exported, tname, _, _, _, _) => if exported {
-        Array::push(types, tname)
-      } else {
-        ()
-      },
-      SEnum(exported, tname, _, _, _) => if exported {
-        Array::push(types, tname)
-      } else {
-        ()
-      },
-      SSuberror(exported, tname, _) => if exported {
-        Array::push(types, tname)
-      } else {
-        ()
-      },
-      STypeAlias(exported, tname, _, _) => if exported {
-        Array::push(types, tname)
-      } else {
-        ()
-      },
+      SLet(_, _, fname, _, _) => Array::push(names, fname),
       SExport(items) => for n in items {
-        Array::push(types, n)
         Array::push(names, n)
-      },
-      _ => ()
-    }
-  }
-  for stmt in stmts {
-    match stmt {
-      SLet(exported, _, fname, _, _) => if exported || retention_companion_published(fname, types) {
-        Array::push(names, fname)
-      } else {
-        ()
       },
       _ => ()
     }
@@ -410,36 +383,20 @@ fn retention_published_names(stmts: Array[Stmt]) -> Array[String] {
   names
 }
 
-/// Whether `fname` is a companion (`T::m`) of a type in `types`.
-fn retention_companion_published(fname: String, types: Array[String]) -> Bool {
-  let parts = String::split(fname, "::")
-  if Array::length(parts) < 2 {
-    false
-  } else {
-    let owner = Array::get(parts, 0)
-    let mut found = false
-    for t in types {
-      found = found || t == owner
-    }
-    found
-  }
-}
-
-/// `env` with the summary of each function `stmts` publish, unless more
-/// than `retention_summary_budget` of them take an argument that may carry a
-/// region. `resolve(name)` answers what a published name is: `(1, literal)`
+/// `env` with the summary of each function `stmts` bind, unless there are
+/// more than `retention_summary_budget` of them. `resolve(name)` answers what a published name is: `(1, literal)`
 /// for a closure literal (an alias of one followed), `(2, _)` for a function
 /// value whose body cannot be traced, `(0, _)` for one that is not this
 /// module's (a re-export carries its own summary). `recheck(literal,
 /// overrides, key)` is `retention_summarize`'s re-check of that literal.
 export fn retention_summaries_bind(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], resolve: (String) -> (Int, Expr), fresh: (Int) -> Type, recheck: (Expr, Array[(Type, Array[String], String, Array[String])], String) -> (Int, Bool)) -> TypeEnv {
   let candidates: Array[(String, Int, Expr, Array[Type])] = []
-  let names = retention_published_names(stmts)
-  let mut ni = 0
-  // Past the budget nothing is summarized, so the scan stops there.
-  while ni < Array::length(names) && Array::length(candidates) <= retention_summary_budget() {
-    let name = Array::get(names, ni)
-    ni = ni + 1
+  let names = if Array::length(stmts) > retention_summary_budget() {
+    array_empty()
+  } else {
+    retention_summary_names(stmts)
+  }
+  for name in names {
     match env_lookup(env, name) {
       Some(fty) => match retention_fn_param_types(fty) {
         Some(params) => if retention_summary_candidate(params, defs) {
@@ -457,7 +414,7 @@ export fn retention_summaries_bind(stmts: Array[Stmt], env: TypeEnv, defs: Array
       None => ()
     }
   }
-  if Array::length(candidates) > retention_summary_budget() {
+  if Array::length(names) == 0 {
     env
   } else {
     let mut out = env
