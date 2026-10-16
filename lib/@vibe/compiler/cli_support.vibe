@@ -1129,8 +1129,9 @@ fn starts_with_known_path(msg: String, paths: Array[String]) -> Bool {
 /// path. A culprit-call refusal (`culprit`) must also spell the culprit at its
 /// span in that file (`verify_culprit_off_marker`), or it keeps only the
 /// name. Fails closed to the bare message for an offset past every recorded
-/// file (an alias-collision clone) and for a dependency whose text the loader
-/// synthesized, where a parsed offset is not one in the file on disk.
+/// file (an alias-collision clone) and for a file, the entry included, whose
+/// text the loader synthesized, where a parsed offset is not one in the file on
+/// disk.
 fn locate_merged_marker(input_path: String, entry_source: String, source_groups: Array[(String, Array[(String, String)])], msg: String, culprit: Bool) -> String with Env + Exception + Fs {
   let marker = " [@off="
   let mi = String::index_of(msg, marker)
@@ -1144,14 +1145,16 @@ fn locate_merged_marker(input_path: String, entry_source: String, source_groups:
   match owner {
     Some((path, source, _)) => {
       let local = marker_in_file_space(msg)
-      if path == input_path {
+      // The entry too: its recorded text can be synthesized (a directory's
+      // shared vpkg imports prepended), and `entry_source` is the file as read.
+      if String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker) {
+        locate_type_error("", verify_culprit_off_marker("", local))
+      } else if path == input_path {
         locate_type_error(entry_source, if culprit {
           verify_culprit_off_marker(entry_source, local)
         } else {
           local
         })
-      } else if String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker) {
-        locate_type_error("", verify_culprit_off_marker("", local))
       } else {
         let verified = if culprit {
           verify_culprit_off_marker(source, local)

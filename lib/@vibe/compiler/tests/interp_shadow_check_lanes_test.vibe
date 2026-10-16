@@ -150,3 +150,18 @@ test "#3456: a bare constructor of an unrenderable type still renders" {
   inspect(fs_check("/tmp/vibe_interp_shadow_bare_none.vibe", source), content = "")
   inspect(single_file(source), content = "")
 }
+
+test "#3456: a prelude refusal in an entry with shared vpkg imports names no shifted line" {
+  // The entry under an `index.vpkg` with a directory-shared import is checked
+  // with that import PREPENDED, so the marker indexes the synthesized text,
+  // not the file on disk (Codex on #3458). A located answer must be the
+  // physical line; an unlocated one is acceptable.
+  let base_dir = "/tmp/vibe_interp_shadow_shared_entry/pkg"
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(String::concat(base_dir, "/index.vpkg"), string_to_bytes("import @vibe/random { seed }\n\nfn show_it() -> String\n"))
+  let source = String::concat("enum G[T] {\n  GA(T);\n  GB\n} derive (Show)\n\nfn show_g[T](g: G[T]) -> String {\n  ", String::concat(interp_of("g"), "\n}\n\nexport fn show_it() -> String {\n  show_g(GA(1))\n}\n"))
+  let msg = fs_check(String::concat(base_dir, "/impl.vibe"), source)
+  inspect(String::contains(msg, "its type arguments are not known here"), content = "true")
+  inspect(String::contains(msg, "line ") && !String::contains(msg, "line 7:4"), content = "false")
+  inspect(String::contains(msg, "[@off="), content = "false")
+}
