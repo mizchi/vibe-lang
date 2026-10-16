@@ -940,6 +940,11 @@ test "#3448: two dependencies publishing one definition are one type (#3036)" {
   let jb = parse_program(lex("export struct Job {\n  run: () -> Unit with Env + Fs + Env\n}\nexport fn tb(j: Job) -> Int {\n  1\n}"))
   let jentry = parse_program(lex("import ./a.vibe { ta }\nimport ./b.vibe { tb }\nlet answer = 1"))
   inspect(plan_refusal(paths, [ja, jb, jentry], "/virtual/entry.vibe", jentry), "clean")
+  // A field spelled through the module's own transparent alias is that type
+  // (Codex on #3467).
+  let na = parse_program(lex("type N = Int\nexport struct Box[T] {\n  value: N\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: n }\n}"))
+  let nb = parse_program(lex("type Ints[X] = Array[X]\nexport struct Box[U] {\n  value: Int\n}\nexport fn unbox(b: Box[Int]) -> Int {\n  b.value\n}"))
+  inspect(plan_refusal(paths, [na, nb, entry], "/virtual/entry.vibe", entry), "clean")
   // A field of another type is another type.
   let c = parse_program(lex("export struct Box[U] {\n  value: Option[U]\n}\nexport fn unbox(b: Box[Int]) -> Int {\n  0\n}"))
   inspect(String::starts_with(plan_refusal(paths, [a, c, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
@@ -965,7 +970,13 @@ test "#3448: a package member the program never reaches does not collide" {
   let facade = parse_program(lex("export ./used.vibe { str_lt }\nexport ./unused.vibe { Attempt, attempt_good }"))
   let other = parse_program(lex("export enum Attempt {\n  Mine\n}\nexport fn mine() -> Int {\n  1\n}"))
   let entry = parse_program(lex("import ./facade.vibe { str_lt }\nimport ./other.vibe { mine }\nlet answer = str_lt(1, mine())"))
-  let paths = ["/virtual/used.vibe", "/virtual/unused.vibe", "/virtual/facade.vibe", "/virtual/other.vibe", "/virtual/entry.vibe"]
+  let paths = [
+    "/virtual/used.vibe",
+    "/virtual/unused.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/other.vibe",
+    "/virtual/entry.vibe"
+  ]
   inspect(plan_refusal(paths, [used, unused, facade, other, entry], "/virtual/entry.vibe", entry), "clean")
   // Importing the member's function through the facade reaches it, and then
   // its `Attempt` and the other module's are two types in one program.

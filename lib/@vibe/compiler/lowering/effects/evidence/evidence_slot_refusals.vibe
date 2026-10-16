@@ -5,7 +5,11 @@ import @vibe/compiler/core {
 }
 
 import @vibe/core {
-  struct MutSet
+  struct MutMap, struct MutSet
+}
+
+import ./evidence_scan_view_expr.vibe {
+  edp_param_base_name
 }
 
 /// #3424: a function value passed at a parameter whose function type carries
@@ -29,6 +33,13 @@ let edp_slot_refusal_rows: Array[String] = []
 /// function's declared result (the closure it returns).
 let edp_slot_callee_cell: Array[String] = [""]
 
+/// Whether the parameter the stamp is reading an argument for is mentioned in
+/// its callee's body. A callee that never calls (or passes on) the parameter
+/// passes no dict to the value, so nothing there traps and nothing is refused
+/// (Codex on #3467). Set with the callee for the next slot (index 0) and
+/// latched for the slot being read (index 1) when the callee is taken.
+let edp_slot_used_cell: Array[Bool] = [true, true]
+
 /// The parameters of the lambdas around the stamp walk: the `scope` index of
 /// each, and its annotation.
 let edp_param_ty_slots: Array[Int] = []
@@ -39,6 +50,8 @@ export fn edp_slot_refusals_reset() -> Unit {
   Array::truncate(edp_slot_refusal_msgs, 0)
   Array::truncate(edp_slot_refusal_rows, 0)
   Array::set(edp_slot_callee_cell, 0, "")
+  Array::set(edp_slot_used_cell, 0, true)
+  Array::set(edp_slot_used_cell, 1, true)
   Array::truncate(edp_param_ty_slots, 0)
   Array::truncate(edp_param_ty_vals, 0)
 }
@@ -50,17 +63,21 @@ export fn edp_slot_refusals_for(enames: Array[String]) -> Array[String] {
   let mut i = 0
   while i < Array::length(edp_slot_refusal_msgs) {
     let mut hit = false
-    for label in String::split(Array::get(edp_slot_refusal_rows, i), ",") {
-      let t = String::trim(label)
-      let k = String::index_of(t, "[")
-      let head = if k > 0 {
-        String::substring(t, 0, k)
-      } else {
-        t
-      }
-      for en in enames {
-        if en == head {
-          hit = true
+    // A row separates its labels with `,` or `+` (`with E + Fs`), as
+    // `edp_slot_row_stampable` reads it (Codex on #3467).
+    for part in String::split(Array::get(edp_slot_refusal_rows, i), ",") {
+      for label in String::split(part, "+") {
+        let t = String::trim(label)
+        let k = String::index_of(t, "[")
+        let head = if k > 0 {
+          String::substring(t, 0, k)
+        } else {
+          t
+        }
+        for en in enames {
+          if en == head {
+            hit = true
+          }
         }
       }
     }
@@ -73,20 +90,74 @@ export fn edp_slot_refusals_for(enames: Array[String]) -> Array[String] {
 }
 
 fn edp_push_refusal(row: String, msg: String) -> Unit {
-  Array::push(edp_slot_refusal_rows, row)
-  Array::push(edp_slot_refusal_msgs, msg)
+  if Array::get(edp_slot_used_cell, 1) {
+    Array::push(edp_slot_refusal_rows, row)
+    Array::push(edp_slot_refusal_msgs, msg)
+  }
 }
 
-/// Name the callee whose argument the next stamp reads.
-export fn edp_set_slot_callee(callee: String) -> Unit {
+/// Name the callee whose argument the next stamp reads, and whether its
+/// body mentions the parameter that argument is passed at.
+export fn edp_set_slot_callee(callee: String, used: Bool) -> Unit {
   Array::set(edp_slot_callee_cell, 0, callee)
+  Array::set(edp_slot_used_cell, 0, used)
 }
 
-/// Read and clear the callee the stamp is reading an argument of.
+/// Read and clear the callee the stamp is reading an argument of, latching
+/// whether its parameter is used for this slot's refusals.
 export fn edp_take_slot_callee() -> String {
   let callee = Array::get(edp_slot_callee_cell, 0)
   Array::set(edp_slot_callee_cell, 0, "")
+  Array::set(edp_slot_used_cell, 1, Array::get(edp_slot_used_cell, 0))
+  Array::set(edp_slot_used_cell, 0, true)
   callee
+}
+
+/// Does the body of the top-level function `callee` mention its parameter at
+/// `pos`? Any mention counts -- a call, or the value passed on -- so only a
+/// parameter the body never names reads as unused.
+export fn edp_callee_param_used(stmts: Array[Stmt], index: MutMap[String, Array[Int]], callee: String, pos: Int) -> Bool {
+  let mut used = true
+  match MutMap::get(index, callee) {
+    Some(positions) => {
+      let mut i = Array::length(positions)
+      let mut found = false
+      while i > 0 && !found {
+        i = i - 1
+        match Array::get(stmts, Array::get(positions, i)) {
+          SLet(_, _, _, _, EFn(_, _, params, _, _, body)) => {
+            found = true
+            if pos >= 0 && pos < Array::length(params) {
+              used = edp_expr_mentions(body, edp_param_base_name(Array::get(params, pos).0))
+            }
+          },
+          _ => ()
+        }
+      }
+    },
+    None => ()
+  }
+  used
+}
+
+fn edp_expr_mentions(e: Expr, name: String) -> Bool {
+  let mut found = false
+  let stack: Array[Expr] = [e]
+  while !found && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      EIdent(x, _) => if x == name {
+        found = true
+      },
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+  }
+  found
 }
 
 /// Record the parameters of a lambda whose first parameter sits at `base` in

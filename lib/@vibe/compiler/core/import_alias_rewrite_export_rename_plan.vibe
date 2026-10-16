@@ -609,7 +609,7 @@ fn published_type_of(stmt: Stmt, path: String, is_entry: Bool, exported_names: A
 /// same fields or constructors in the same order, their types equal up to a
 /// renaming of the type parameters, and a row read as a set of labels. Such a
 /// pair has one layout and one meaning in the merged program.
-fn published_types_equivalent(a: Stmt, b: Stmt) -> Bool {
+fn published_types_equivalent(a: Stmt, aa: Array[(String, Array[String], TypeExpr)], b: Stmt, ba: Array[(String, Array[String], TypeExpr)]) -> Bool {
   match (a, b) {
     (SStruct(_, _, af, _, am, ap), SStruct(_, _, bf, _, bm, bp)) => {
       let ar = type_param_renames(ap)
@@ -619,7 +619,7 @@ fn published_types_equivalent(a: Stmt, b: Stmt) -> Bool {
       while ok && i < Array::length(af) {
         let (an, aty) = Array::get(af, i)
         let (bn, bty) = Array::get(bf, i)
-        ok = an == bn && type_exprs_equivalent(aty, ar, bty, br)
+        ok = an == bn && type_exprs_equivalent(expand_type_aliases(aty, aa, ar, 0), ar, expand_type_aliases(bty, ba, br, 0), br)
         i = i + 1
       }
       let mut j = 0
@@ -629,22 +629,117 @@ fn published_types_equivalent(a: Stmt, b: Stmt) -> Bool {
       }
       ok
     },
-    (SEnum(_, _, ap, actors, _), SEnum(_, _, bp, bctors, _)) => type_param_arities_match(ap, bp) && ctors_equivalent(actors, type_param_renames(ap), bctors, type_param_renames(bp)),
-    (SSuberror(_, _, actors), SSuberror(_, _, bctors)) => ctors_equivalent(actors, [], bctors, []),
+    (SEnum(_, _, ap, actors, _), SEnum(_, _, bp, bctors, _)) => type_param_arities_match(ap, bp) && ctors_equivalent(actors, aa, type_param_renames(ap), bctors, ba, type_param_renames(bp)),
+    (SSuberror(_, _, actors), SSuberror(_, _, bctors)) => ctors_equivalent(actors, aa, [
+    ], bctors, ba, []),
     _ => false
   }
 }
 
-fn ctors_equivalent(a: Array[(String, Array[TypeExpr])], ar: Array[(String, String)], b: Array[(String, Array[TypeExpr])], br: Array[(String, String)]) -> Bool {
+fn ctors_equivalent(a: Array[(String, Array[TypeExpr])], aa: Array[(String, Array[String], TypeExpr)], ar: Array[(String, String)], b: Array[(String, Array[TypeExpr])], ba: Array[(String, Array[String], TypeExpr)], br: Array[(String, String)]) -> Bool {
   let mut ok = Array::length(a) == Array::length(b)
   let mut i = 0
   while ok && i < Array::length(a) {
     let (an, ats) = Array::get(a, i)
     let (bn, bts) = Array::get(b, i)
-    ok = an == bn && type_expr_lists_equivalent(ats, ar, bts, br)
+    ok = an == bn && type_expr_lists_equivalent(for t in ats {
+      expand_type_aliases(t, aa, ar, 0)
+    }, ar, for t in bts {
+      expand_type_aliases(t, ba, br, 0)
+    }, br)
     i = i + 1
   }
   ok
+}
+
+/// The transparent `type` aliases a source file declares, as
+/// `(name, parameters, target)`.
+fn file_type_aliases(stmts: Array[Stmt]) -> Array[(String, Array[String], TypeExpr)] {
+  let out: Array[(String, Array[String], TypeExpr)] = []
+  for stmt in stmts {
+    match stmt {
+      STypeAlias(_, name, params, target) => Array::push(out, (name, params, target)),
+      _ => ()
+    }
+  }
+  out
+}
+
+/// `t` with the file's aliases expanded, as the checker reads them (Codex on
+/// #3467): `type N = Int; struct Box { n: N }` is the `Box { n: Int }` of
+/// another module. A type parameter (renamed in `renames`) is never an
+/// alias, an alias applied to the wrong number of arguments (a constructor
+/// argument, `Holder[Inner]`) stays as written, and the depth bounds a cycle.
+fn expand_type_aliases(t: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)], renames: Array[(String, String)], depth: Int) -> TypeExpr {
+  if depth > 16 || Array::length(aliases) == 0 {
+    t
+  } else {
+    match t {
+      TyName(x) => match find_type_alias(aliases, renames, x, 0) {
+        Some(target) => expand_type_aliases(target, aliases, renames, depth + 1),
+        None => t
+      },
+      TyApp(x, args) => {
+        let expanded = for arg in args {
+          expand_type_aliases(arg, aliases, renames, depth + 1)
+        }
+        let mut out = TyApp(x, expanded)
+        for al in aliases {
+          let (an, ap, target) = al
+          if an == x && renamed_type_name(renames, x) == x && Array::length(ap) == Array::length(expanded) && Array::length(ap) > 0 {
+            out = expand_type_aliases(substitute_type_params(target, ap, expanded), aliases, renames, depth + 1)
+          }
+        }
+        out
+      },
+      TyFn(ps, r, row) => TyFn(for p in ps {
+        expand_type_aliases(p, aliases, renames, depth + 1)
+      }, expand_type_aliases(r, aliases, renames, depth + 1), row),
+      TyTuple(items) => TyTuple(for item in items {
+        expand_type_aliases(item, aliases, renames, depth + 1)
+      }),
+      TyUnit => t
+    }
+  }
+}
+
+fn find_type_alias(aliases: Array[(String, Array[String], TypeExpr)], renames: Array[(String, String)], name: String, arity: Int) -> Option[TypeExpr] {
+  let mut out: Option[TypeExpr] = None
+  if renamed_type_name(renames, name) == name {
+    for al in aliases {
+      let (an, ap, target) = al
+      if an == name && Array::length(ap) == arity {
+        out = Some(target)
+      }
+    }
+  }
+  out
+}
+
+fn substitute_type_params(t: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+  match t {
+    TyName(x) => {
+      let mut out = t
+      let mut i = 0
+      while i < Array::length(params) {
+        if type_param_name(Array::get(params, i)) == x {
+          out = Array::get(args, i)
+        }
+        i = i + 1
+      }
+      out
+    },
+    TyApp(x, xs) => TyApp(x, for a in xs {
+      substitute_type_params(a, params, args)
+    }),
+    TyFn(ps, r, row) => TyFn(for p in ps {
+      substitute_type_params(p, params, args)
+    }, substitute_type_params(r, params, args), row),
+    TyTuple(items) => TyTuple(for item in items {
+      substitute_type_params(item, params, args)
+    }),
+    TyUnit => t
+  }
 }
 
 /// Each type parameter's name mapped to its position, so `Box[T]` and
@@ -869,6 +964,7 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
   }
   let first_path: MutMap[String, String] = MutMap::new_string()
   let first_decl: MutMap[String, Stmt] = MutMap::new_string()
+  let first_aliases: MutMap[String, Array[(String, Array[String], TypeExpr)]] = MutMap::new_string()
   let errors: Array[String] = []
   let mut ci = 0
   while ci < file_count {
@@ -876,14 +972,15 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
     if MutMap::has(reached, path) {
       let stmts = Array::get(stmts_list, ci)
       let exported_names = collect_exported_value_names(stmts)
+      let aliases = file_type_aliases(stmts)
       let mut pi = 0
       while pi < Array::length(stmts) {
         let stmt = Array::get(stmts, pi)
         let (name, kind) = published_type_of(stmt, path, path == entry_path, exported_names)
         if name != "" {
-          let same = match MutMap::get(first_decl, name) {
-            Some(prior_decl) => published_types_equivalent(prior_decl, stmt),
-            None => false
+          let same = match (MutMap::get(first_decl, name), MutMap::get(first_aliases, name)) {
+            (Some(prior_decl), Some(prior_aliases)) => published_types_equivalent(prior_decl, prior_aliases, stmt, aliases),
+            _ => false
           }
           match MutMap::get(first_path, name) {
             // "\n" marks a name already refused: it is never a path. Two
@@ -895,6 +992,7 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
             None => {
               MutMap::set(first_path, name, path)
               MutMap::set(first_decl, name, stmt)
+              MutMap::set(first_aliases, name, aliases)
             }
           }
         } else {

@@ -59,3 +59,23 @@ test "with nothing performing the effect, no dict is passed and nothing is refus
   let stmts = parse_program(lex("effect Box[T] {\n  Put(T) -> Int\n}\nfn run_str(f: () -> Int with Box[String]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\nfn mk() -> (() -> Int) {\n  () -> 9\n}\nfn main() -> Int {\n  run_str(mk())\n}\n"))
   inspect(Array::length(evidence_dict_pass(stmts, "main")), "0")
 }
+
+test "a callee that never names the parameter passes no dict, so nothing is refused" {
+  // Codex on #3467: `ignore` never calls `f`, so no handler argument reaches
+  // the value and the trap cannot happen.
+  inspect(refusals("fn ignore(f: () -> Int with Box[String]) -> Int {\n  0\n}\nfn mk() -> (() -> Int) {\n  () -> 9\n}\nfn go() -> Int {\n  ignore(mk())\n}\n"), "clean")
+}
+
+test "a slot whose row names several effects with `+` is refused for the migrated one" {
+  // Codex on #3467: the row `Box[String] + Log` was read as one label, and the
+  // refusal was dropped.
+  let stmts = parse_program(lex("effect Box[T] {\n  Put(T) -> Int\n}\neffect Log {\n  Note(Int) -> Int\n}\nfn run2(f: () -> Int with Box[String] + Log) -> Int {\n  handle {\n    handle {\n      f()\n    } with {\n      Box::Put(s) => resume(String::length(s))\n    }\n  } with {\n    Log::Note(n) => resume(n)\n  }\n}\nfn put_abc() -> Int with Box[String] {\n  perform Box::Put(\"abc\")\n}\nfn mk() -> (() -> Int) {\n  () -> 9\n}\nfn main() -> Int {\n  run2(() -> put_abc()) + run2(mk())\n}\n"))
+  let errs = evidence_dict_pass(stmts, "main")
+  let mut hit = false
+  for e in errs {
+    if String::starts_with(e, "declare the effect row on the function type `mk` returns") {
+      hit = true
+    }
+  }
+  inspect(hit, "true")
+}
