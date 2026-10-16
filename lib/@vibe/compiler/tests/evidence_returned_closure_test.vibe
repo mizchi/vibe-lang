@@ -89,6 +89,16 @@ test "a closure assigned to a returned let mut takes the dict, or none does" {
   inspect(mid_after("fn other() -> Int with Box[Int] {\n  4\n}\nfn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f = other\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = () -> { mk() }; { f = other; f } } }")
 }
 
+// #3463: an assigned value is read through its tails, an assignment inside a
+// lambda that captures the binding counts, and a row-free function's name is
+// wrapped. A tail that calls a local closure leaves every value as written.
+test "an assigned if, a captured assignment and a function's name take the dict" {
+  inspect(mid_after("fn mid(c: Bool) -> (() -> Int with Box[Int]) {\n  let mut f = () -> 0\n  f = if c {\n    () -> mk()\n  } else {\n    () -> 3\n  }\n  f\n}\n"), "let rec mid = (c: Bool) -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { 0 }; { f = if c { (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } } else { (__ev_Box: __EvDict_Box) -> { 3 } }; f } } }")
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> 3\n  let set = () -> {\n    f = () -> mk()\n  }\n  set()\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { 3 }; { let set = () -> { { f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; () } }; { set(); f } } } }")
+  inspect(mid_after("fn seven() -> Int {\n  7\n}\nfn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f = seven\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; { f = (__ev_Box: __EvDict_Box) -> { seven() }; f } } }")
+  inspect(mid_after("fn mid(c: Bool) -> (() -> Int with Box[Int]) {\n  let g = () -> mk()\n  let mut f = () -> 0\n  f = if c {\n    () -> g()\n  } else {\n    () -> 3\n  }\n  f\n}\n"), "let rec mid = (c: Bool) -> () -> Int with Box[Int] { { let g = () -> { mk() }; { let mut f = () -> { 0 }; { f = if c { () -> { g() } } else { () -> { 3 } }; f } } } }")
+}
+
 // An assigned closure that calls a local the body declares is left as
 // written, and with it the initializer (Codex on #3462).
 test "an assigned closure that calls a body-local helper keeps the binding as written" {
@@ -105,4 +115,14 @@ test "a closure assigned under a return takes the dict with its initializer" {
 // #3465).
 test "a closure assigned inside a compound assignment's value takes the dict" {
   inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let mut n = 0\n  let mut f = () -> mk()\n  n += {\n    f = () -> 5\n    1\n  }\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut n = 0; { let mut f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; { n += { f = (__ev_Box: __EvDict_Box) -> { 5 }; 1 }; f } } } }")
+}
+
+// A call's result, and a name that is not a row-free top-level function
+// (`String::length`), are closures the stamp cannot adapt, so a returned let
+// mut they are assigned to stays as written, the initializer too (Codex on
+// #3466).
+test "a call's result assigned to a returned let mut keeps the binding as written" {
+  inspect(mid_after("fn mid() -> ((String) -> Int with Box[Int]) {\n  let mut f = (s: String) -> mk()\n  f = String::length\n  f\n}\n"), "let rec mid = () -> (String) -> Int with Box[Int] { { let mut f = (s: String) -> { mk() }; { f = String::length; f } } }")
+  inspect(mid_after("fn pure_factory() -> (() -> Int) {\n  () -> 8\n}\nfn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f = pure_factory()\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = () -> { mk() }; { f = pure_factory(); f } } }")
+  inspect(mid_after("fn pure_factory() -> (() -> Int) {\n  () -> 8\n}\nfn mid(c: Bool) -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f = if c {\n    pure_factory()\n  } else {\n    () -> 3\n  }\n  f\n}\n"), "let rec mid = (c: Bool) -> () -> Int with Box[Int] { { let mut f = () -> { mk() }; { f = if c { pure_factory() } else { () -> { 3 } }; f } } }")
 }
