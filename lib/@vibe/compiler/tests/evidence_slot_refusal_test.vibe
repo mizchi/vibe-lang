@@ -79,3 +79,16 @@ test "a slot whose row names several effects with `+` is refused for the migrate
   }
   inspect(hit, "true")
 }
+
+test "a call's closure returned at a declared row is refused with the row to declare" {
+  // #3472: the callee declares a row-free result, so the closure it hands
+  // back takes no dict, and the caller of `direct` passes one.
+  let direct = refusals("fn pf() -> (() -> Int) {\n  () -> 8\n}\nfn direct() -> (() -> Int with Box[String]) {\n  pf()\n}\nfn go() -> Int {\n  run_str(direct())\n}\n")
+  inspect(String::starts_with(direct, "declare the effect row on the function type `pf` returns: `-> ((..) -> T with Box[String])`"), "true")
+  inspect(String::contains(direct, "returned from here at that row"), "true")
+  let named = refusals("fn pf() -> (() -> Int) {\n  () -> 8\n}\nfn direct() -> (() -> Int with Box[String]) {\n  let f = pf()\n  f\n}\nfn go() -> Int {\n  run_str(direct())\n}\n")
+  inspect(String::starts_with(named, "declare the effect row on the function type `pf` returns"), "true")
+  // A callee whose result already carries the row hands back a closure
+  // that takes the dict.
+  inspect(refusals("fn rf() -> (() -> Int with Box[String]) {\n  () -> 8\n}\nfn direct() -> (() -> Int with Box[String]) {\n  rf()\n}\nfn go() -> Int {\n  run_str(direct())\n}\n"), "clean")
+}
