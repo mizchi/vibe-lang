@@ -1,0 +1,79 @@
+import @vibe/compiler/codegen/common_base {
+  LambdaTable
+}
+import ./linked_compile_lc_rename_sleep_calls.vibe {
+  lc_fresh_bytes_array, lc_fresh_int_array, lc_fresh_string_matrix
+}
+
+/// Append-only outputs owned by one function emission. Lambda indices remain
+/// global, but every growing table and the allocation cursor are private.
+/// This is compiler-local state, not a Send value or a worker transport.
+export struct LinkedFunctionEffects {
+  lambdas: LambdaTable;
+  lambda_next: Array[Int];
+  slots: Array[Int];
+  blind_owners: Array[Int];
+  blind_offsets: Array[Int];
+  blind_kinds: Array[Int];
+  blind_syms: Array[Int]
+}
+
+/// Start an independent output at the function's preassigned lambda base.
+export fn lc_function_effects_new(lambda_base: Int) -> LinkedFunctionEffects {
+  LinkedFunctionEffects::{
+    lambdas: LambdaTable::{
+      base: lambda_base,
+      bodies: lc_fresh_bytes_array(),
+      param_counts: lc_fresh_int_array(),
+      captures: lc_fresh_string_matrix(),
+      meta_i32: lc_fresh_int_array(),
+      meta_i64: lc_fresh_int_array()
+    },
+    lambda_next: [lambda_base],
+    slots: lc_fresh_int_array(),
+    blind_owners: lc_fresh_int_array(),
+    blind_offsets: lc_fresh_int_array(),
+    blind_kinds: lc_fresh_int_array(),
+    blind_syms: lc_fresh_int_array()
+  }
+}
+
+/// Publish a complete function output in canonical order to a whole-module
+/// table (base zero). Validate counts, range and cursor before writing any
+/// destination. The caller owns both states and must not alias their arrays.
+/// Payload references are appended; code bytes and captures are not recopied.
+export fn lc_commit_function_effects(src: LinkedFunctionEffects, dst: LambdaTable, slots: Array[Int], blind_owners: Array[Int], blind_offsets: Array[Int], blind_kinds: Array[Int], blind_syms: Array[Int], planned_end: Int) -> Unit with Exception {
+  let n = Array::length(src.lambdas.bodies)
+  let at = Array::length(dst.bodies)
+  let m = Array::length(src.slots)
+  let previous = Array::length(slots)
+  if dst.base != 0 || src.lambdas.base < 0 || src.lambdas.base != at || planned_end - src.lambdas.base != n || Array::length(src.lambda_next) != 1 {
+    throw("function effects: lambda range does not match canonical publication order")
+  } else if Array::get(src.lambda_next, 0) != planned_end {
+    throw("function effects: lambda cursor did not reach the planned end")
+  } else if Array::length(src.lambdas.param_counts) != n || Array::length(src.lambdas.captures) != n || Array::length(src.lambdas.meta_i32) != n || Array::length(src.lambdas.meta_i64) != n || Array::length(dst.param_counts) != at || Array::length(dst.captures) != at || Array::length(dst.meta_i32) != at || Array::length(dst.meta_i64) != at {
+    throw("function effects: lambda metadata arrays are not aligned")
+  } else if Array::length(src.blind_owners) != m || Array::length(src.blind_offsets) != m || Array::length(src.blind_kinds) != m || Array::length(src.blind_syms) != m || Array::length(blind_owners) != previous || Array::length(blind_offsets) != previous || Array::length(blind_kinds) != previous || Array::length(blind_syms) != previous {
+    throw("function effects: funcref slots and blind references are not aligned")
+  } else {
+    ()
+  }
+  let mut i = 0
+  while i < n {
+    Array::push(dst.bodies, Array::get(src.lambdas.bodies, i))
+    Array::push(dst.param_counts, Array::get(src.lambdas.param_counts, i))
+    Array::push(dst.captures, Array::get(src.lambdas.captures, i))
+    Array::push(dst.meta_i32, Array::get(src.lambdas.meta_i32, i))
+    Array::push(dst.meta_i64, Array::get(src.lambdas.meta_i64, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < m {
+    Array::push(slots, Array::get(src.slots, j))
+    Array::push(blind_owners, Array::get(src.blind_owners, j))
+    Array::push(blind_offsets, Array::get(src.blind_offsets, j))
+    Array::push(blind_kinds, Array::get(src.blind_kinds, j))
+    Array::push(blind_syms, Array::get(src.blind_syms, j))
+    j = j + 1
+  }
+}
