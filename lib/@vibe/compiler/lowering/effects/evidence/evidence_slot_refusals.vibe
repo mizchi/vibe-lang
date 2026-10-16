@@ -334,7 +334,13 @@ export fn edp_expr_passes_value_to_slot(e: Expr, slot_callees: MutSet[String]) -
         },
         _ => array_empty()
       }
-      for a in slot_args {
+      for a0 in slot_args {
+        // A labeled argument (`run(f = h)`) passes its value the same way
+        // (Codex on #3467).
+        let a = match a0 {
+          ELabeledArg(_, _, v) => v,
+          other => other
+        }
         match a {
           EIdent(_, _) => {
             found = true
@@ -531,10 +537,10 @@ fn edp_declared_result(stmts: Array[Stmt], idx: Int) -> Option[TypeExpr] {
         // An applied alias (`Thunk[Int]` of `type Thunk[T] = () -> T`) is
         // followed by its head (Codex on #3467): whether the function type
         // it names carries a row does not depend on its arguments.
-        let (alias, applied) = match cur {
-          TyName(a) => (a, false),
-          TyApp(a, _) => (a, true),
-          _ => ("", false)
+        let (alias, applied, targs) = match cur {
+          TyName(a) => (a, false, array_empty()),
+          TyApp(a, xs) => (a, true, xs),
+          _ => ("", false, array_empty())
         }
         if alias == "" {
           done = true
@@ -543,7 +549,10 @@ fn edp_declared_result(stmts: Array[Stmt], idx: Int) -> Option[TypeExpr] {
           for st in stmts {
             match st {
               STypeAlias(_, n, tparams, body) => if n == alias && (applied || Array::length(tparams) == 0) {
-                next = Some(body)
+                // The alias's arguments are substituted into its body
+                // (Codex on #3467: `type Id[T] = T; fn mk() -> Id[() -> Int]`
+                // declares the function type its argument names).
+                next = Some(edp_alias_subst(body, tparams, targs))
               },
               _ => ()
             }
@@ -558,6 +567,36 @@ fn edp_declared_result(stmts: Array[Stmt], idx: Int) -> Option[TypeExpr] {
       Some(cur)
     },
     _ => None
+  }
+}
+
+/// `ty` with each alias parameter in `params` replaced by the argument at
+/// its position in `args`. A parameter with no argument is left as written.
+fn edp_alias_subst(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+  match ty {
+    TyName(n) => {
+      let mut out = ty
+      let mut i = 0
+      while i < Array::length(params) && i < Array::length(args) {
+        if Array::get(params, i) == n {
+          out = Array::get(args, i)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      out
+    },
+    TyApp(n, xs) => TyApp(n, for x in xs {
+      edp_alias_subst(x, params, args)
+    }),
+    TyFn(ps, result, effect) => TyFn(for p in ps {
+      edp_alias_subst(p, params, args)
+    }, edp_alias_subst(result, params, args), effect),
+    TyTuple(xs) => TyTuple(for x in xs {
+      edp_alias_subst(x, params, args)
+    }),
+    _ => ty
   }
 }
 

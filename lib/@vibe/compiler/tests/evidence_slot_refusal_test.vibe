@@ -142,3 +142,20 @@ test "a method-call result passed to a row-typed slot is refused for a row-free 
   let msg = refusals("struct Maker {\n  k: Int\n}\nfn Maker::mk(m: Maker) -> (() -> Int) {\n  () -> m.k\n}\nfn go() -> Int {\n  let maker = Maker::{ k: 9 }\n  run_str(maker.mk())\n}\n")
   inspect(String::starts_with(msg, "declare the effect row on the function type `Maker::mk` returns"), "true")
 }
+
+test "a value passed to a labeled row-typed slot is refused like a positional one" {
+  // Codex on #3467: `run_str(f = h)` wrapped the value in a labeled argument,
+  // and the statement was not selected for the check.
+  let param = refusals("fn go2(h: () -> Int) -> Int {\n  run_str(f = h)\n}\nfn go() -> Int {\n  go2(() -> 6)\n}\n")
+  inspect(String::starts_with(param, "annotate the parameter `h` with the effect row"), "true")
+  let result = refusals("fn mk() -> (() -> Int) {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(f = mk())\n}\n")
+  inspect(String::starts_with(result, "declare the effect row on the function type `mk` returns"), "true")
+  inspect(refusals("fn mk() -> (() -> Int with Box[String]) {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(f = mk())\n}\n"), "clean")
+}
+
+test "an applied alias whose body is its parameter declares the argument's function type" {
+  // Codex on #3467: `Id[() -> Int]` expanded to the raw body `T`.
+  let msg = refusals("type Id[T] = T\nfn mk() -> Id[() -> Int] {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(mk())\n}\n")
+  inspect(String::starts_with(msg, "declare the effect row on the function type `mk` returns"), "true")
+  inspect(refusals("type Id[T] = T\nfn mk() -> Id[() -> Int with Box[String]] {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(mk())\n}\n"), "clean")
+}
