@@ -574,22 +574,24 @@ fn edp_declared_result(stmts: Array[Stmt], idx: Int) -> Option[TypeExpr] {
 /// its position in `args`. A parameter with no argument is left as written.
 fn edp_alias_subst(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
   match ty {
-    TyName(n) => {
-      let mut out = ty
-      let mut i = 0
-      while i < Array::length(params) && i < Array::length(args) {
-        if Array::get(params, i) == n {
-          out = Array::get(args, i)
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      out
+    TyName(n) => match edp_alias_arg(params, args, n) {
+      Some(a) => a,
+      None => ty
     },
-    TyApp(n, xs) => TyApp(n, for x in xs {
-      edp_alias_subst(x, params, args)
-    }),
+    // A constructor parameter in head position (`F[A]` of `type Apply[F[_],
+    // A] = F[A]`) takes the constructor it is given (Codex on #3467), and
+    // an alias given there (`Apply[Thunk, Int]`) is applied to the
+    // substituted arguments.
+    TyApp(n, xs) => {
+      let sub = for x in xs {
+        edp_alias_subst(x, params, args)
+      }
+      match edp_alias_arg(params, args, n) {
+        Some(TyName(h)) => TyApp(h, sub),
+        Some(TyApp(h, _)) => TyApp(h, sub),
+        _ => TyApp(n, sub)
+      }
+    },
     TyFn(ps, result, effect) => TyFn(for p in ps {
       edp_alias_subst(p, params, args)
     }, edp_alias_subst(result, params, args), effect),
@@ -598,6 +600,31 @@ fn edp_alias_subst(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]) -
     }),
     _ => ty
   }
+}
+
+/// The argument given for the alias parameter spelled `name`. A kinded
+/// parameter (`F[_]`) is keyed `<prefix><arity>$F` (`type_param_name`), and
+/// a name holds no `$`, so its spelling follows the last one.
+fn edp_alias_arg(params: Array[String], args: Array[TypeExpr], name: String) -> Option[TypeExpr] {
+  let mut out: Option[TypeExpr] = None
+  let mut i = 0
+  while i < Array::length(params) && i < Array::length(args) {
+    let p = Array::get(params, i)
+    let mut cut = 0
+    let mut j = 0
+    while j < String::length(p) {
+      if String::char_code_at(p, j) == '$' {
+        cut = j + 1
+      }
+      j = j + 1
+    }
+    let base = String::substring(p, cut, String::length(p))
+    if base == name {
+      out = Some(Array::get(args, i))
+    }
+    i = i + 1
+  }
+  out
 }
 
 /// Codex on #3467: a method-style call (`maker.mk()`) names its method
