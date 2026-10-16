@@ -518,23 +518,30 @@ fn edp_declared_result(stmts: Array[Stmt], idx: Int) -> Option[TypeExpr] {
       let mut steps = 0
       let mut done = false
       while !done && steps < 32 {
-        match cur {
-          TyName(alias) => {
-            let mut next: Option[TypeExpr] = None
-            for st in stmts {
-              match st {
-                STypeAlias(_, n, tparams, body) => if n == alias && Array::length(tparams) == 0 {
-                  next = Some(body)
-                },
-                _ => ()
-              }
+        // An applied alias (`Thunk[Int]` of `type Thunk[T] = () -> T`) is
+        // followed by its head (Codex on #3467): whether the function type
+        // it names carries a row does not depend on its arguments.
+        let (alias, applied) = match cur {
+          TyName(a) => (a, false),
+          TyApp(a, _) => (a, true),
+          _ => ("", false)
+        }
+        if alias == "" {
+          done = true
+        } else {
+          let mut next: Option[TypeExpr] = None
+          for st in stmts {
+            match st {
+              STypeAlias(_, n, tparams, body) => if n == alias && (applied || Array::length(tparams) == 0) {
+                next = Some(body)
+              },
+              _ => ()
             }
-            match next {
-              Some(t) => cur = t,
-              None => done = true
-            }
-          },
-          _ => done = true
+          }
+          match next {
+            Some(t) => cur = t,
+            None => done = true
+          }
         }
         steps = steps + 1
       }

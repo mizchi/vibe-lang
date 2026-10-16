@@ -2080,19 +2080,19 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
 /// that keeps nothing hides an imported marker of its own name, so the
 /// marker a module publishes always describes the binding it publishes.
 fn retention_bind_keeps(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> TypeEnv {
-  if retention_stmts_implement_groups(stmts) {
-    env
-  } else {
-    retention_bind_keeps_probed(stmts, env, defs, s, c)
-  }
+  retention_bind_keeps_probed(stmts, env, defs, s, c, retention_runtime_owned_types(stmts))
 }
 
 /// The module that declares `TaskGroup` and `TaskHandle` is the runtime the
-/// regions are made of: its functions hand tokens to the scheduler's own
-/// state by design (`TaskHandle::join` passes `h.group` on), and the
-/// operations of it that retain are listed by name and checked at the call
-/// like `Array::push`. It publishes no summary of its own.
-fn retention_stmts_implement_groups(stmts: Array[Stmt]) -> Bool {
+/// regions are made of: the methods of its types hand tokens to the
+/// scheduler's own state by design (`TaskHandle::join` passes `h.group` on,
+/// `Parallel::map` spawns into its group), and those of them that retain are
+/// listed by name and checked at the call like `Array::push`. They publish no
+/// summary. Codex on #3467: only the methods of the types such a module
+/// declares are exempt, not the whole module -- a free helper declared beside
+/// them still says what it keeps.
+fn retention_runtime_owned_types(stmts: Array[Stmt]) -> Array[String] {
+  let owned: Array[String] = []
   let mut has_group = false
   let mut has_handle = false
   for stmt in stmts {
@@ -2100,14 +2100,28 @@ fn retention_stmts_implement_groups(stmts: Array[Stmt]) -> Bool {
       SStruct(_, name, _, _, _, _) => {
         has_group = has_group || name == "TaskGroup"
         has_handle = has_handle || name == "TaskHandle"
+        Array::push(owned, String::concat(name, "::"))
       },
+      SEnum(_, name, _, _, _) => Array::push(owned, String::concat(name, "::")),
       _ => ()
     }
   }
-  has_group && has_handle
+  if has_group && has_handle {
+    owned
+  } else {
+    array_empty()
+  }
 }
 
-fn retention_bind_keeps_probed(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> TypeEnv {
+fn retention_name_owned(owned: Array[String], name: String) -> Bool {
+  let mut hit = false
+  for prefix in owned {
+    hit = hit || String::starts_with(name, prefix)
+  }
+  hit
+}
+
+fn retention_bind_keeps_probed(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, exempt: Array[String]) -> TypeEnv {
   retention_decl_memo_reset()
   let imported = env_keeps_rows(env)
   // Which functions may store anything at all, read from their syntax and
@@ -2125,7 +2139,7 @@ fn retention_bind_keeps_probed(stmts: Array[Stmt], env: TypeEnv, defs: Array[Typ
     changed = false
     for stmt in stmts {
       match stmt {
-        SLet(_, _, fname, _, EFn(_, _, _, _, _, _)) => if !published_name_listed(keepers, fname) {
+        SLet(_, _, fname, _, EFn(_, _, _, _, _, _)) => if !published_name_listed(keepers, fname) && !retention_name_owned(exempt, fname) {
           let lit = match stmt {
             SLet(_, _, _, _, e) => e,
             _ => EUnit
