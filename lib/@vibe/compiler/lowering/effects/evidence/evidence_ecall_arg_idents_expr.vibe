@@ -25,6 +25,10 @@ import @vibe/compiler/lowering/effects/queries {
   edp_strip_tilde
 }
 
+import ./evidence_fn_statement_index.vibe {
+  edp_fn_statement_index, edp_indexed_params_of_fn
+}
+
 import ./evidence_handle_effect_names_expr.vibe {
   edp_append_ctor_inert_names
 }
@@ -180,6 +184,8 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
   Array::truncate(edp_snap_program, 0)
   Array::push(edp_snap_program, (stmts, fn_defs))
   edp_note_program_aliases(stmts)
+  // This walk replaces statement bodies in place; the lookup reads live params.
+  let fn_index = edp_fn_statement_index(fn_defs)
   let mut i = 0
   while i < Array::length(stmts) {
     edp_stamp_returned_closure(stmts, i, pure_names)
@@ -195,7 +201,7 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
     }
     match body {
       Some(e) => if edp_expr_passes_literal_arg(e, pure_names) {
-        let stamped = edp_stamp_expr(e, stmts, fn_defs, [], pure_names)
+        let stamped = edp_stamp_expr(e, stmts, fn_index, [], pure_names)
         match stmt {
           SLet(exported, is_rec, nm, ty, _) => Array::set(stmts, i, SLet(exported, is_rec, nm, ty, stamped)),
           SLetMut(nm, ty, _) => Array::set(stmts, i, SLetMut(nm, ty, stamped)),
@@ -1408,8 +1414,8 @@ fn edp_slot_row_stampable(row: String) -> Bool {
 
 /// The arity and row of the function type a top-level function's parameter
 /// `pos` declares, when that type carries a row.
-fn edp_slot_fn_type(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee: String, pos: Int) -> Option[(Int, String)] {
-  match edp_params_of_fn(stmts, fn_defs, callee) {
+fn edp_slot_fn_type(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], callee: String, pos: Int) -> Option[(Int, String)] {
+  match edp_indexed_params_of_fn(stmts, fn_index, callee) {
     Some(params) => if pos < Array::length(params) {
       let (_, pty) = Array::get(params, pos)
       match pty {
@@ -1453,8 +1459,8 @@ fn edp_slot_wrapper(name: String, arity: Int, row: String) -> Expr {
 
 /// The row a top-level function's parameter `pos` declares on its function
 /// type, or None.
-fn edp_slot_row(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee: String, pos: Int) -> Option[String] {
-  match edp_params_of_fn(stmts, fn_defs, callee) {
+fn edp_slot_row(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], callee: String, pos: Int) -> Option[String] {
+  match edp_indexed_params_of_fn(stmts, fn_index, callee) {
     Some(params) => if pos < Array::length(params) {
       let (_, pty) = Array::get(params, pos)
       match pty {
@@ -1472,18 +1478,18 @@ fn edp_slot_row(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Opt
   }
 }
 
-fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], pure_names: MutSet[String]) -> Expr {
+fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], scope: Array[String], pure_names: MutSet[String]) -> Expr {
   match e {
     ECall(callee, args, off, res) => match edp_alias_ascribed_literal(callee, args, stmts, scope) {
-      Some(lit) => edp_stamp_expr(lit, stmts, fn_defs, scope, pure_names),
-      None => edp_stamp_call(callee, args, off, res, stmts, fn_defs, scope, pure_names)
+      Some(lit) => edp_stamp_expr(lit, stmts, fn_index, scope, pure_names),
+      None => edp_stamp_call(callee, args, off, res, stmts, fn_index, scope, pure_names)
     },
     EFn(tps, tbs, params, ret, eff, body) => {
       let base = Array::length(scope)
       for param in params {
         Array::push(scope, edp_param_base_name(param.0))
       }
-      let body1 = edp_stamp_expr(body, stmts, fn_defs, scope, pure_names)
+      let body1 = edp_stamp_expr(body, stmts, fn_index, scope, pure_names)
       // A local lambda whose declared result is a function type with a row
       // returns a closure its caller calls with the dict, as a top-level
       // function does (Codex on #3447).
@@ -1498,7 +1504,7 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
       EFn(tps, tbs, params, ret, eff, body2)
     },
     ELet(n0, v, b0, off) => {
-      let v2 = edp_stamp_let_literal(n0, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names), b0, stmts, fn_defs, scope)
+      let v2 = edp_stamp_let_literal(n0, edp_stamp_expr(v, stmts, fn_index, scope, pure_names), b0, stmts, fn_index, scope)
       let (n, b) = edp_unique_row_lit_name(n0, v2, b0)
       // #3424: a closure literal stays visible to a literal in its body that
       // calls it (`edp_copy_local_helpers` copies only a row-free one), and
@@ -1514,49 +1520,49 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
         _ => ()
       }
       let hslot = Array::length(scope)
-      let b2 = edp_stamp_scoped(b, [n], stmts, fn_defs, scope, pure_names)
+      let b2 = edp_stamp_scoped(b, [n], stmts, fn_index, scope, pure_names)
       Array::truncate(edp_local_lit_names, mark)
       Array::truncate(edp_local_lit_slots, mark)
       Array::truncate(edp_local_lit_vals, mark)
       ELet(n, v2, edp_wrap_snapshots(b2, hslot), off)
     },
-    ELetRec(n, v, b) => ELetRec(n, edp_stamp_scoped(v, [n], stmts, fn_defs, scope, pure_names), edp_stamp_scoped(b, [
+    ELetRec(n, v, b) => ELetRec(n, edp_stamp_scoped(v, [n], stmts, fn_index, scope, pure_names), edp_stamp_scoped(b, [
       n
-    ], stmts, fn_defs, scope, pure_names)),
+    ], stmts, fn_index, scope, pure_names)),
     ELetMut(n, v, b, off) => {
-      let v2 = edp_stamp_expr(v, stmts, fn_defs, scope, pure_names)
+      let v2 = edp_stamp_expr(v, stmts, fn_index, scope, pure_names)
       let mmark = Array::length(edp_local_mut_slots)
       Array::push(edp_local_mut_slots, Array::length(scope))
-      let b2 = edp_stamp_scoped(b, [n], stmts, fn_defs, scope, pure_names)
+      let b2 = edp_stamp_scoped(b, [n], stmts, fn_index, scope, pure_names)
       Array::truncate(edp_local_mut_slots, mmark)
       ELetMut(n, v2, b2, off)
     },
-    ESeq(a, b) => ESeq(edp_stamp_expr(a, stmts, fn_defs, scope, pure_names), edp_stamp_expr(b, stmts, fn_defs, scope, pure_names)),
-    EIf(c, t, el) => EIf(edp_stamp_expr(c, stmts, fn_defs, scope, pure_names), edp_stamp_expr(t, stmts, fn_defs, scope, pure_names), edp_stamp_expr(el, stmts, fn_defs, scope, pure_names)),
-    EMatch(sc, arms) => EMatch(edp_stamp_expr(sc, stmts, fn_defs, scope, pure_names), for a in arms {
+    ESeq(a, b) => ESeq(edp_stamp_expr(a, stmts, fn_index, scope, pure_names), edp_stamp_expr(b, stmts, fn_index, scope, pure_names)),
+    EIf(c, t, el) => EIf(edp_stamp_expr(c, stmts, fn_index, scope, pure_names), edp_stamp_expr(t, stmts, fn_index, scope, pure_names), edp_stamp_expr(el, stmts, fn_index, scope, pure_names)),
+    EMatch(sc, arms) => EMatch(edp_stamp_expr(sc, stmts, fn_index, scope, pure_names), for a in arms {
       let (pp, ex) = a
-      (pp, edp_stamp_scoped(ex, edp_pat_names(pp), stmts, fn_defs, scope, pure_names))
+      (pp, edp_stamp_scoped(ex, edp_pat_names(pp), stmts, fn_index, scope, pure_names))
     }),
-    EHandle(bd, arms) => EHandle(edp_stamp_expr(bd, stmts, fn_defs, scope, pure_names), for a in arms {
+    EHandle(bd, arms) => EHandle(edp_stamp_expr(bd, stmts, fn_index, scope, pure_names), for a in arms {
       let (pp, ex) = a
-      (pp, edp_stamp_scoped(ex, edp_pat_names(pp), stmts, fn_defs, scope, pure_names))
+      (pp, edp_stamp_scoped(ex, edp_pat_names(pp), stmts, fn_index, scope, pure_names))
     }),
-    EWhile(c, b) => EWhile(edp_stamp_expr(c, stmts, fn_defs, scope, pure_names), edp_stamp_expr(b, stmts, fn_defs, scope, pure_names)),
+    EWhile(c, b) => EWhile(edp_stamp_expr(c, stmts, fn_index, scope, pure_names), edp_stamp_expr(b, stmts, fn_index, scope, pure_names)),
     EForIn(n, idx, it, b) => {
-      let it2 = edp_stamp_expr(it, stmts, fn_defs, scope, pure_names)
+      let it2 = edp_stamp_expr(it, stmts, fn_index, scope, pure_names)
       let names = [n]
       match idx {
         Some(iname) => Array::push(names, iname),
         None => ()
       }
-      EForIn(n, idx, it2, edp_stamp_scoped(b, names, stmts, fn_defs, scope, pure_names))
+      EForIn(n, idx, it2, edp_stamp_scoped(b, names, stmts, fn_index, scope, pure_names))
     },
     ELoop(pairs, b) => {
       let names: Array[String] = []
       let pairs2 = for pr in pairs {
         let (n, v) = pr
         Array::push(names, n)
-        (n, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names))
+        (n, edp_stamp_expr(v, stmts, fn_index, scope, pure_names))
       }
       let mmark = Array::length(edp_local_mut_slots)
       let mut li = 0
@@ -1564,39 +1570,39 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
         Array::push(edp_local_mut_slots, Array::length(scope) + li)
         li = li + 1
       }
-      let b2 = edp_stamp_scoped(b, names, stmts, fn_defs, scope, pure_names)
+      let b2 = edp_stamp_scoped(b, names, stmts, fn_index, scope, pure_names)
       Array::truncate(edp_local_mut_slots, mmark)
       ELoop(pairs2, b2)
     },
-    EBinOp(op, l, r, boff) => EBinOp(op, edp_stamp_expr(l, stmts, fn_defs, scope, pure_names), edp_stamp_expr(r, stmts, fn_defs, scope, pure_names), boff),
-    EUnaryOp(op, x) => EUnaryOp(op, edp_stamp_expr(x, stmts, fn_defs, scope, pure_names)),
-    EAssign(n, v, c, target_off) => EAssign(n, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names), edp_stamp_expr(c, stmts, fn_defs, scope, pure_names), target_off),
-    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names), edp_stamp_expr(c, stmts, fn_defs, scope, pure_names), target_off),
-    EReturn(x) => EReturn(edp_stamp_expr(x, stmts, fn_defs, scope, pure_names)),
-    EDot(o, f, o1, o2) => EDot(edp_stamp_expr(o, stmts, fn_defs, scope, pure_names), f, o1, o2),
-    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names)),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_stamp_expr(l, stmts, fn_index, scope, pure_names), edp_stamp_expr(r, stmts, fn_index, scope, pure_names), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, edp_stamp_expr(x, stmts, fn_index, scope, pure_names)),
+    EAssign(n, v, c, target_off) => EAssign(n, edp_stamp_expr(v, stmts, fn_index, scope, pure_names), edp_stamp_expr(c, stmts, fn_index, scope, pure_names), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, edp_stamp_expr(v, stmts, fn_index, scope, pure_names), edp_stamp_expr(c, stmts, fn_index, scope, pure_names), target_off),
+    EReturn(x) => EReturn(edp_stamp_expr(x, stmts, fn_index, scope, pure_names)),
+    EDot(o, f, o1, o2) => EDot(edp_stamp_expr(o, stmts, fn_index, scope, pure_names), f, o1, o2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_stamp_expr(v, stmts, fn_index, scope, pure_names)),
     EBreak(opt) => EBreak(match opt {
-      Some(x) => Some(edp_stamp_expr(x, stmts, fn_defs, scope, pure_names)),
+      Some(x) => Some(edp_stamp_expr(x, stmts, fn_index, scope, pure_names)),
       None => None
     }),
     EContinue(args) => EContinue(for a in args {
-      edp_stamp_expr(a, stmts, fn_defs, scope, pure_names)
+      edp_stamp_expr(a, stmts, fn_index, scope, pure_names)
     }),
     ETuple(items) => ETuple(for a in items {
-      edp_stamp_expr(a, stmts, fn_defs, scope, pure_names)
+      edp_stamp_expr(a, stmts, fn_index, scope, pure_names)
     }),
     EArray(items) => EArray(for a in items {
-      edp_stamp_expr(a, stmts, fn_defs, scope, pure_names)
+      edp_stamp_expr(a, stmts, fn_index, scope, pure_names)
     }),
     ERecord(n, fields, tas) => ERecord(n, for f in fields {
       let (fn2, v) = f
-      (fn2, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names))
+      (fn2, edp_stamp_expr(v, stmts, fn_index, scope, pure_names))
     }, tas),
     EMap(fields) => EMap(for f in fields {
       let (fn2, v) = f
-      (fn2, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names))
+      (fn2, edp_stamp_expr(v, stmts, fn_index, scope, pure_names))
     }),
-    ESpread(x) => ESpread(edp_stamp_expr(x, stmts, fn_defs, scope, pure_names)),
+    ESpread(x) => ESpread(edp_stamp_expr(x, stmts, fn_index, scope, pure_names)),
     _ => e
   }
 }
@@ -1607,7 +1613,7 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
 /// the way one written at the slot does: the callee passes the dict, and the
 /// literal had no parameter for it. Any other use (a direct call, a capture,
 /// a slot without a row, two different rows) leaves it as written.
-fn edp_stamp_let_literal(name: String, v: Expr, body: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String]) -> Expr {
+fn edp_stamp_let_literal(name: String, v: Expr, body: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], scope: Array[String]) -> Expr {
   match v {
     EFn(tps, tbs, ps, ret, None, lb) => if edp_literal_calls_local(v, lb, scope) {
       v
@@ -1618,7 +1624,7 @@ fn edp_stamp_let_literal(name: String, v: Expr, body: Expr, stmts: Array[Stmt], 
       // `body` spells is taken to be that local, not the top-level function
       // (Codex on #3426).
       let inner = edp_collect_program_binders([SExpr(body)])
-      edp_slot_uses_of(body, name, stmts, fn_defs, scope, inner, rows)
+      edp_slot_uses_of(body, name, stmts, fn_index, scope, inner, rows)
       if total > 0 && Array::length(rows) == total && edp_rows_agree(rows) {
         EFn(tps, tbs, ps, ret, Some(Array::get(rows, 0)), lb)
       } else {
@@ -1632,7 +1638,7 @@ fn edp_stamp_let_literal(name: String, v: Expr, body: Expr, stmts: Array[Stmt], 
 /// The slot rows of every use of `name` passed as an argument of a top-level
 /// function. A use at a slot with no stampable row records "" so it never
 /// agrees.
-fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], inner: MutSet[String], rows: Array[String]) -> Unit {
+fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], scope: Array[String], inner: MutSet[String], rows: Array[String]) -> Unit {
   let stack: Array[Expr] = [e]
   while Array::length(stack) > 0 {
     let n = Array::length(stack)
@@ -1656,13 +1662,13 @@ fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_defs: Array[(I
               Array::push(rows, if labeled {
                 ""
               } else {
-                edp_slot_row_or_empty(stmts, fn_defs, cn, ai)
+                edp_slot_row_or_empty(stmts, fn_index, cn, ai)
               })
             } else {
               ()
             },
             ELabeledArg(l, _, EIdent(an, _)) => if an == name {
-              Array::push(rows, edp_slot_row_or_empty(stmts, fn_defs, cn, edp_param_index_by_label(stmts, fn_defs, cn, l)))
+              Array::push(rows, edp_slot_row_or_empty(stmts, fn_index, cn, edp_param_index_by_label(stmts, fn_index, cn, l)))
             } else {
               ()
             },
@@ -1682,11 +1688,11 @@ fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_defs: Array[(I
   ()
 }
 
-fn edp_slot_row_or_empty(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee: String, pos: Int) -> String {
+fn edp_slot_row_or_empty(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], callee: String, pos: Int) -> String {
   if pos < 0 {
     ""
   } else {
-    match edp_slot_row(stmts, fn_defs, callee, pos) {
+    match edp_slot_row(stmts, fn_index, callee, pos) {
       Some(row) => row,
       None => ""
     }
@@ -1705,8 +1711,8 @@ fn edp_rows_agree(rows: Array[String]) -> Bool {
   ok
 }
 
-fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], pure_names: MutSet[String]) -> Expr {
-  let callee2 = edp_stamp_expr(callee, stmts, fn_defs, scope, pure_names)
+fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  let callee2 = edp_stamp_expr(callee, stmts, fn_index, scope, pure_names)
   let mut labeled = false
   for a in args {
     match a {
@@ -1737,18 +1743,18 @@ fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], st
   let out: Array[Expr] = []
   let mut ai = 0
   while ai < Array::length(args) {
-    let a2 = edp_stamp_expr(Array::get(args, ai), stmts, fn_defs, scope, pure_names)
+    let a2 = edp_stamp_expr(Array::get(args, ai), stmts, fn_index, scope, pure_names)
     // A labeled argument names its parameter; a positional one beside a
     // labeled one has no position to trust, so only the labeled one is
     // stamped there.
     let a3 = match a2 {
       ELabeledArg(l, m, v) => if String::length(named) > 0 {
-        ELabeledArg(l, m, edp_stamp_slot_arg(v, stmts, fn_defs, scope, pure_names, named, edp_param_index_by_label(stmts, fn_defs, named, l)))
+        ELabeledArg(l, m, edp_stamp_slot_arg(v, stmts, fn_index, scope, pure_names, named, edp_param_index_by_label(stmts, fn_index, named, l)))
       } else {
         a2
       },
       other => if String::length(named) > 0 && !labeled {
-        edp_stamp_slot_arg(other, stmts, fn_defs, scope, pure_names, named, ai)
+        edp_stamp_slot_arg(other, stmts, fn_index, scope, pure_names, named, ai)
       } else if String::length(local_callee) > 0 && !labeled {
         edp_stamp_slot_arg_at(other, scope, pure_names, edp_local_slot_fn_type(local_callee, scope, ai))
       } else {
@@ -1849,12 +1855,12 @@ fn edp_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] {
 }
 
 /// `e` walked with `names` bound on top of `scope`.
-fn edp_stamp_scoped(e: Expr, names: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], pure_names: MutSet[String]) -> Expr {
+fn edp_stamp_scoped(e: Expr, names: Array[String], stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], scope: Array[String], pure_names: MutSet[String]) -> Expr {
   let base = Array::length(scope)
   for n in names {
     Array::push(scope, n)
   }
-  let out = edp_stamp_expr(e, stmts, fn_defs, scope, pure_names)
+  let out = edp_stamp_expr(e, stmts, fn_index, scope, pure_names)
   Array::truncate(scope, base)
   out
 }
@@ -1862,11 +1868,11 @@ fn edp_stamp_scoped(e: Expr, names: Array[String], stmts: Array[Stmt], fn_defs: 
 /// One argument at the parameter `pos` of the top-level `callee` (-1: no
 /// such parameter). A row-free literal takes the slot's row (#3370), and a
 /// row-free top-level function passed by name is wrapped (#3424).
-fn edp_stamp_slot_arg(a: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], pure_names: MutSet[String], callee: String, pos: Int) -> Expr {
+fn edp_stamp_slot_arg(a: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], scope: Array[String], pure_names: MutSet[String], callee: String, pos: Int) -> Expr {
   if pos < 0 {
     a
   } else {
-    edp_stamp_slot_arg_at(a, scope, pure_names, edp_slot_fn_type(stmts, fn_defs, callee, pos))
+    edp_stamp_slot_arg_at(a, scope, pure_names, edp_slot_fn_type(stmts, fn_index, callee, pos))
   }
 }
 
@@ -1940,8 +1946,8 @@ fn edp_scope_has(scope: Array[String], name: String) -> Bool {
 /// A parameter's name without its labeled (`~`) or optional (`?`) marker.
 
 /// The index of the parameter of the top-level `callee` a label names, or -1.
-fn edp_param_index_by_label(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee: String, label: String) -> Int {
-  match edp_params_of_fn(stmts, fn_defs, callee) {
+fn edp_param_index_by_label(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], callee: String, label: String) -> Int {
+  match edp_indexed_params_of_fn(stmts, fn_index, callee) {
     Some(params) => {
       let mut found = 0 - 1
       let mut i = 0
