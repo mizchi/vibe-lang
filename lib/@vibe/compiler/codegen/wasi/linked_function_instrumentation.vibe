@@ -1,0 +1,76 @@
+import @vibe/compiler/codegen/common_base {
+  CovState, LineMapState
+}
+import @vibe/compiler/core {
+  bytebuf_new
+}
+import ./linked_compile_lc_rename_sleep_calls.vibe {
+  lc_fresh_int_array
+}
+
+/// A worker-local scratch reused after each function's cache rows have been
+/// harvested and its rows encoded. It never aliases the module's publisher.
+export fn lc_function_linemap_new(enabled: Bool) -> LineMapState {
+  LineMapState::{
+    enabled: enabled,
+    cur_fn: [0],
+    funcs: lc_fresh_int_array(),
+    offsets: lc_fresh_int_array(),
+    file_ids: lc_fresh_int_array(),
+    lines: lc_fresh_int_array(),
+    stream: bytebuf_new(),
+    grp_fn: lc_fresh_int_array(),
+    grp_first_off: lc_fresh_int_array(),
+    grp_start: lc_fresh_int_array(),
+    site: [0]
+  }
+}
+
+/// Reuse only an already published scratch. The enclosing source site is
+/// function-local too; a leading call must never restore another body's line.
+export fn lc_function_linemap_begin(lm: LineMapState, owner: Int) -> Unit with Exception {
+  if Array::length(lm.funcs) != 0 || Array::length(lm.offsets) != 0 || Array::length(lm.file_ids) != 0 || Array::length(lm.lines) != 0 {
+    throw("function linemap: previous rows have not been published")
+  } else ()
+  Array::set(lm.cur_fn, 0, owner)
+  Array::set(lm.site, 0, 0)
+}
+
+/// Private coverage output over a coordinator-assigned starting ID. Coverage
+/// emission remains serial until these ranges can be planned independently.
+export fn lc_function_cov_new(base: Int, cap: Int, start: Int, owner: Int) -> CovState {
+  CovState::{
+    enabled: true,
+    base: base,
+    cap: cap,
+    next: [start],
+    cur_fn: [owner],
+    owners: lc_fresh_int_array()
+  }
+}
+
+/// Validate the complete private contribution before changing the publisher.
+/// A stale range, incomplete owner log or wrong owner must not advance IDs.
+export fn lc_commit_function_cov(src: CovState, dst: CovState, start: Int, owner: Int) -> Unit with Exception {
+  if !src.enabled || !dst.enabled || src.base != dst.base || src.cap != dst.cap || start < 0 || start > src.cap || Array::length(src.next) != 1 || Array::length(src.cur_fn) != 1 || Array::length(dst.next) != 1 {
+    throw("function coverage: incompatible state")
+  } else ()
+  let end = Array::get(src.next, 0)
+  let n = Array::length(src.owners)
+  if Array::get(dst.next, 0) != start || Array::length(dst.owners) != start || Array::get(src.cur_fn, 0) != owner || end < start || end > src.cap || end - start != n {
+    throw("function coverage: range or owner log does not match publication order")
+  } else ()
+  let mut i = 0
+  while i < n {
+    if Array::get(src.owners, i) != owner {
+      throw("function coverage: branch belongs to a different function")
+    } else ()
+    i = i + 1
+  }
+  let mut j = 0
+  while j < n {
+    Array::push(dst.owners, Array::get(src.owners, j))
+    j = j + 1
+  }
+  Array::set(dst.next, 0, end)
+}

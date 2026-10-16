@@ -1,0 +1,77 @@
+// A leading call used to restore the previous function's enclosing line.
+// Whole compilation and a slice skipping that function then disagreed.
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache, DbgProv, codegen_body_cache_discard, codegen_body_cache_find_named, codegen_body_cache_new, get_efn_body, get_slet_expr
+}
+import @vibe/compiler/codegen/wasi {
+  compile_wasi_module_linked_impl
+}
+import @vibe/compiler/codegen/common_extractors {
+  first_offset
+}
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+
+fn harvest(cache: CodegenBodyCache, lo: Int, hi: Int, rc: Bool) -> CodegenBodyCache with Exception {
+  let source = String::join([
+    "fn first(n: Int) -> Int {",
+    "  let a = n",
+    "  if n <= 0 { a } else { first(n - 1) + a }",
+    "}",
+    "export fn second() -> Int {",
+    "  first(2)",
+    "}",
+    "fn main() -> Int { second() }"
+  ], String::from_char_code(10))
+  let nls: Array[Int] = []
+  let mut i = 0
+  while i < String::length(source) {
+    if String::char_code_at(source, i) == 10 {
+      Array::push(nls, i)
+    } else ()
+    i = i + 1
+  }
+  assert_eq(Array::length(nls), 7)
+  let prov = DbgProv::{
+    files: ["input.vibe"],
+    stmt_file_id: [0, 0, 0],
+    file_nls: [nls]
+  }
+  let out = codegen_body_cache_new()
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let parsed = parse_program_located(tokens, starts, source)
+  let offset = first_offset(get_efn_body(get_slet_expr(Array::get(parsed, 1))))
+  assert(offset >= 0)
+  compile_wasi_module_linked_impl(parsed, "main", [("input.vibe", source)], [], true, rc, false, false, false, false, false, prov, cache, out, lo, hi)
+  out
+}
+
+fn rows_for(cache: CodegenBodyCache, name: String) -> Array[(Int, Int, Int)] with Exception {
+  let at = codegen_body_cache_find_named(cache, name)
+  assert(at >= 0)
+  let owner = Array::get(cache.fn_indices, at)
+  let rows: Array[(Int, Int, Int)] = []
+  let mut i = 0
+  while i < Array::length(cache.lm_owner) {
+    if Array::get(cache.lm_owner, i) == owner {
+      Array::push(rows, (Array::get(cache.lm_offsets, i), Array::get(cache.lm_file_ids, i), Array::get(cache.lm_lines, i)))
+    } else ()
+    i = i + 1
+  }
+  rows
+}
+
+test "a leading call has the same source rows with or without its predecessor" {
+  for rc in [false, true] {
+    let whole = harvest(codegen_body_cache_discard(), 0, -1, rc)
+    let slice = harvest(codegen_body_cache_discard(), 1, 2, rc)
+    let expected: Array[(Int, Int, Int)] = rows_for(slice, "second")
+    let actual: Array[(Int, Int, Int)] = rows_for(whole, "second")
+    assert(Array::length(expected) > 0)
+    assert(actual == expected)
+    for row in actual {
+      assert_eq(row.2, 6)
+    }
+  }
+}
