@@ -53,6 +53,8 @@ import @vibe/compiler/core {
   typed_lowering_float_key,
   typed_render_refuse_key,
   typed_render_row_head,
+  typed_render_unknown_name,
+  typed_render_unrenderable_name,
   types_equal
 }
 
@@ -135,6 +137,7 @@ import ./checker_stmt_program_type_defs_observation_impl.vibe {
   forin_receiver_rows_from_capture,
   index_receiver_rows_from_capture,
   irc_collect_stmts,
+  irc_ident_arg_keys,
   irc_index_of,
   irc_int_array_has,
   irc_literal_depth,
@@ -255,10 +258,12 @@ fn irc_render_arg_offsets_quad(checked: CheckedProgram, want_a: Int, want_b: Int
   let raw: Array[Int] = []
   let shims = irc_shim_set(irc_show_shim_names_with_env(checked.checked_stmts, checked.final_env))
   Array::truncate(irc_literal_item_keys, 0)
+  Array::truncate(irc_ident_arg_keys, 0)
   Array::set(irc_literal_depth, 0, 0)
   irc_collect_stmts(checked.checked_stmts, raw, want_a, shims)
   let cands = irc_sorted_unique(raw)
   let literal_items = irc_sorted_unique(irc_literal_item_keys)
+  let ident_args = irc_sorted_unique(irc_ident_arg_keys)
   let shim_args = if want_c >= 0 || want_rows {
     irc_shim_body_arg_offsets(checked.checked_stmts)
   } else {
@@ -320,7 +325,7 @@ fn irc_render_arg_offsets_quad(checked: CheckedProgram, want_a: Int, want_b: Int
             Array::set(all_c, idx, 0)
           }
           if want_rows && Array::get(row_state, idx) != 2 {
-            let rk = irc_render_row_key(checked, oty, irc_index_of(literal_items, ooff) >= 0)
+            let rk = irc_render_row_key(checked, oty, irc_index_of(literal_items, ooff) >= 0, irc_index_of(ident_args, ooff) >= 0)
             if String::length(rk) == 0 {
               Array::set(row_state, idx, 2)
             } else if Array::get(row_state, idx) == 0 {
@@ -392,7 +397,12 @@ fn irc_render_arg_offsets_quad(checked: CheckedProgram, want_a: Int, want_b: Int
 /// the channel can spell, scalars included -- the pass renders an element from
 /// the literal's shape, so a Bool or Double leaf needs the row as much as an
 /// Option does.
-fn irc_render_row_key(checked: CheckedProgram, oty: Type, literal_item: Bool) -> String {
+///
+/// #3456: so does a bare NAME (`ident_arg`). The pass renders an untyped
+/// shadowing `let` through the checker's type for it, and a name the checker
+/// typed must have a row even when that type is a scalar: a missing row then
+/// means "no answer here" (a lane that passes no rows), not "a scalar".
+fn irc_render_row_key(checked: CheckedProgram, oty: Type, literal_item: Bool, ident_arg: Bool) -> String {
   // #3434: a render argument typed by a formal of an enclosing binder (`x:
   // T`, `x: Option[T]`) files its row with the formal spelled by name. The
   // interpolation pass reads it for an untyped shadowing `let`, whose type
@@ -422,10 +432,23 @@ fn irc_render_row_key(checked: CheckedProgram, oty: Type, literal_item: Bool) ->
     CtUnit => true,
     _ => false
   }
-  if composite || literal_item {
+  if composite || literal_item || ident_arg {
     match eq_channel_type_expr(t) {
       Some(te) => impl_target_key(TyApp(typed_render_row_head(), [te])),
-      None => ""
+      // A name the checker typed with a type no row can spell still answers:
+      // "typed, unknown here", so the pass does not fall back to the outer
+      // binding a shadow hides (Codex on #3458). One the runtime renderer
+      // cannot print says so, and the pass refuses it as the build does.
+      None => if ident_arg && !literal_item {
+        let verdict = if irc_resolves_to_unrenderable(checked.final_subst, oty) {
+          typed_render_unrenderable_name()
+        } else {
+          typed_render_unknown_name()
+        }
+        impl_target_key(TyApp(typed_render_row_head(), [TyName(verdict)]))
+      } else {
+        ""
+      }
     }
   } else {
     ""

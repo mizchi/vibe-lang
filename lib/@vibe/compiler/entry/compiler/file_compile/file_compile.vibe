@@ -1358,6 +1358,10 @@ export fn prepare_file_fs_cached(db: TypeDb, entry_path: String) -> TypeDb with 
 /// compile_file_fs_mode already relies on for a real compile's (working)
 /// typecheck pass -- and stop before build_grouped_merged_stmts/codegen.
 export fn check_file_fs_mode_from_source_groups(entry_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with Env + Exception + Fs {
+  // #3456: the merge below records the offset space its markers index. A
+  // diagnostic the walk throws first indexes its own file, so it must not be
+  // read against an earlier check's record (`vibe lsp` checks repeatedly).
+  merged_offset_space_reset()
   let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_walk")
   // #1536(c) / #1511(b): after the typecheck passes, run the ADR-0076
@@ -1371,9 +1375,21 @@ export fn check_file_fs_mode_from_source_groups(entry_path: String, source_group
   // produced. Entry name "main" matches what `vibe build`/`vibe run` compile
   // with; a program with no `main` simply has no entry-keyed boundary
   // machinery installed, same as its real compile would.
-  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  //
+  // #3456: merged into the DISJOINT offset space with the walk's typed rows,
+  // the way the build merges. The prelude's interpolation pass reads the rows,
+  // so an untyped shadowing `let` is rendered -- and refused or not -- through
+  // its own type, as the build does. Without them it read the outer binding's
+  // entry: `vibe check` refused a `b: Raw` rebound to an `Int` that the build
+  // compiles, and passed an `Int` rebound to a `Raw` with no Show that the
+  // build refuses. The merge records the space, so a marker the prelude
+  // throws is mapped back to its file (cli_support `marker_in_file_space`).
+  let flat_paths: Array[String] = array_empty()
+  let flat_bases: Array[Int] = array_empty()
+  let merged_stmts = build_grouped_merged_stmts_impl(source_groups, true, flat_paths, flat_bases, array_empty(), array_empty())
+  let (eq_offs, eq_keys) = union_module_typed_eq_rows(flat_paths, flat_bases)
   let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_merge")
-  let lowering_errs = effect_lowering_prelude(merged_stmts, "main", array_empty(), array_empty(), array_empty(), array_empty(), array_empty())
+  let lowering_errs = effect_lowering_prelude(merged_stmts, "main", array_empty(), array_empty(), array_empty(), eq_offs, eq_keys)
   let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_effect_prelude")
   if Array::length(lowering_errs) > 0 {
     throw(Array::get(lowering_errs, 0))

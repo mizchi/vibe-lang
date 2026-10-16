@@ -60,7 +60,7 @@ import @vibe/compiler/loader {
 // its own name, so the two call sites that used `empty_stmt_array()` now
 // call `array_empty()` directly instead.
 import @vibe/compiler/entry/source_compile/wasi_only {
-  collect_linked_compile_inputs, compile_file_wasi_library, expand_interp_stmts
+  collect_linked_compile_inputs, compile_file_wasi_library
 }
 
 import ./type_db.vibe {
@@ -898,15 +898,19 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
       // very snapshot. Parsing again here allocated the whole closure's ASTs
       // a further time -- measured 359 MB of the 4 GB a cold `vibe check
       // lib/@vibe/cli/entry.vibe` needed -- and the bump heap never gives it
-      // back. The memo hands out a fresh top-level array, which is all the
-      // in-place `expand_interp_stmts` below writes to.
+      // back. The memo hands out a fresh top-level array, so appending to
+      // it below writes to nothing the memo shares.
       append_stmt_array(stmts, parse_program_located_shared(dep_path, dep_source))
       dsi = dsi + 1
     }
     let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_dep_reparse")
     append_stmt_array(stmts, entry_stmts)
-    expand_interp_stmts(stmts)
-    let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_expand_interp")
+    // #3456: no interpolation pass here. The prelude above already ran it on
+    // the merged program, with the checker's typed rows, and refused there
+    // what the build refuses. This array has neither the rows nor a shared
+    // offset space to key them in, so a second pass read an untyped
+    // shadowing `let` through the OUTER binding's type: it refused `"\{b}"`
+    // for a `b: Raw` rebound to an `Int`, which the build compiles.
     // #946(3): locate errors against the ENTRY file's own source text. `stmts`
     // is the MERGED entry+deps statement list, so a [@off=N]/by-name location
     // is only exact for errors whose blame is in the entry file itself (the
@@ -924,12 +928,11 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
     // drops the potentially false entry location.
     Exception::Throw(msg) => {
       if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
-        let (snapshot_entry_source, verified) = verify_culprit_off_marker_snapshot(input_path, source_groups, msg)
-        throw(locate_type_error(snapshot_entry_source, verified))
+        throw(locate_merged_marker(input_path, entry_source, source_groups, msg, true))
       } else {
         // #2198: the missing-Show interpolation throw escapes the desugar
-        // (reached via check_file_fs_mode's effect_lowering_prelude, or via
-        // expand_interp_stmts below) with no `<path>: ` prefix -- path
+        // (reached via check_file_fs_mode's effect_lowering_prelude) with no
+        // `<path>: ` prefix -- path
         // prefixing lives in check_module_job, which that throw bypasses.
         // Prefix this one message class here; every other message reaching
         // this catch is already path-prefixed by its module job, and
@@ -949,6 +952,7 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
         // byte) fail closed to the unlocated message with no path --
         // missing information beats misinformation.
         if String::starts_with(msg, "cannot interpolate a value of type `") {
+          let msg = marker_in_file_space(msg)
           let mut owner_path = ""
           let mut owner_source = ""
           let mut owners = 0
@@ -1015,7 +1019,11 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
               Array::push(known_paths, mpath)
             }
           }
-          throw(String::join(locate_type_error_lines_except_paths(entry_source, msg, known_paths), "\n"))
+          if String::contains(msg, " [@off=") && !starts_with_known_path(msg, known_paths) {
+            throw(locate_merged_marker(input_path, entry_source, source_groups, msg, false))
+          } else {
+            throw(String::join(locate_type_error_lines_except_paths(entry_source, msg, known_paths), "\n"))
+          }
         }
       }
     }
@@ -1051,6 +1059,139 @@ export fn check_redundant_import_warnings(input_path: String) -> Array[String] w
 /// closed on every multi-file program.
 /// `[@fn=]` (no fragment offset) still owns the file whose binder the
 /// marker resolves, and only that file.
+/// #3456: `msg` with its `[@off=N]` / `[@off=N:M]` marker rewritten from the
+/// merged offset space (`merged_offset_owner`) to the owning file's own
+/// offsets -- the range end `M` by the same base as `N`. The check's prelude
+/// merges into that space (so its typed rows key one expression each), while
+/// the ownership checks below read a marker against one file's text, as they
+/// did when the merge kept each file's own offsets. A marker no recorded file
+/// owns -- no merge recorded, or an alias-collision clone past the last file
+/// -- is left as it is.
+fn marker_in_file_space(msg: String) -> String {
+  let marker = " [@off="
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    msg
+  } else {
+    let inner_start = mi + String::length(marker)
+    let rest = String::substring(msg, inner_start, String::length(msg))
+    let start_end = marker_digits_end(rest, 0)
+    let n = parse_marker_digits(String::substring(rest, 0, start_end))
+    if n < 0 {
+      msg
+    } else {
+      match merged_offset_owner(n) {
+        Some((_, _, local)) => {
+          let delta = n - local
+          let mut out = String::concat(String::substring(msg, 0, inner_start), Int::to_string(local))
+          let mut tail_from = start_end
+          if start_end < String::length(rest) && String::byte_at(rest, start_end) == 58 {
+            let range_end = marker_digits_end(rest, start_end + 1)
+            let m = parse_marker_digits(String::substring(rest, start_end + 1, range_end))
+            if m >= 0 {
+              out = String::concat(out, String::concat(":", Int::to_string(m - delta)))
+              tail_from = range_end
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          String::concat(out, String::substring(rest, tail_from, String::length(rest)))
+        },
+        None => msg
+      }
+    }
+  }
+}
+
+/// True when `msg` already names one of `paths` -- a module job's diagnostic,
+/// which carries its own location.
+fn starts_with_known_path(msg: String, paths: Array[String]) -> Bool {
+  let mut found = false
+  for p in paths {
+    if String::length(p) > 0 && String::starts_with(msg, String::concat(p, ": ")) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// #3456: a refusal the check's prelude throws, located in the file that owns
+/// its `[@off=]` marker. The prelude runs on the merged program, so the marker
+/// indexes the merged offset space; read against the entry's own text, an
+/// entry that follows a dependency lost its location or named a wrong line.
+///
+/// The owner comes from the merge's record, so it is one file, and only that
+/// file is read: the entry is located as before, a dependency is named by its
+/// path. A culprit-call refusal (`culprit`) must also spell the culprit at its
+/// span in that file (`verify_culprit_off_marker`), or it keeps only the
+/// name. Fails closed to the bare message for an offset past every recorded
+/// file (an alias-collision clone) and for a file, the entry included, whose
+/// text the loader synthesized, where a parsed offset is not one in the file on
+/// disk.
+fn locate_merged_marker(input_path: String, entry_source: String, source_groups: Array[(String, Array[(String, String)])], msg: String, culprit: Bool) -> String with Env + Exception + Fs {
+  let marker = " [@off="
+  let mi = String::index_of(msg, marker)
+  let rest = String::substring(msg, mi + String::length(marker), String::length(msg))
+  let n = parse_marker_digits(String::substring(rest, 0, marker_digits_end(rest, 0)))
+  let owner = if n < 0 {
+    None
+  } else {
+    merged_offset_owner(n)
+  }
+  match owner {
+    Some((path, source, _)) => {
+      let local = marker_in_file_space(msg)
+      // The entry too: its recorded text can be synthesized (a directory's
+      // shared vpkg imports prepended), and `entry_source` is the file as read.
+      if String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker) {
+        locate_type_error("", verify_culprit_off_marker("", local))
+      } else if path == input_path {
+        locate_type_error(entry_source, if culprit {
+          verify_culprit_off_marker(entry_source, local)
+        } else {
+          local
+        })
+      } else {
+        let verified = if culprit {
+          verify_culprit_off_marker(source, local)
+        } else {
+          local
+        }
+        if String::contains(verified, marker) {
+          String::concat(path, String::concat(": ", locate_type_error(source, verified)))
+        } else {
+          locate_type_error("", verified)
+        }
+      }
+    },
+    // No merge recorded (the first file's base is 0, so `owner(0)` is Some
+    // whenever one is): the offsets are still each file's own.
+    None => if merged_offset_owner(0) is None {
+      if culprit {
+        let (snapshot_entry_source, verified) = verify_culprit_off_marker_snapshot(input_path, source_groups, msg)
+        locate_type_error(snapshot_entry_source, verified)
+      } else {
+        locate_type_error(entry_source, msg)
+      }
+    } else {
+      locate_type_error("", verify_culprit_off_marker("", msg))
+    }
+  }
+}
+
+/// The index just past the run of ASCII digits in `s` starting at `from`.
+fn marker_digits_end(s: String, from: Int) -> Int {
+  let mut i = from
+  while i < String::length(s) && String::byte_at(s, i) >= 48 && String::byte_at(s, i) <= 57 {
+    i = i + 1
+  }
+  i
+}
+
 fn missing_show_source_owns(source: String, msg: String) -> Bool {
   let marker = " [@off="
   let mi = String::index_of(msg, marker)
