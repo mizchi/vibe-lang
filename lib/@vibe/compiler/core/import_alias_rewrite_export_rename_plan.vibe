@@ -720,28 +720,45 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
   // Each alias is keyed by its provider as well as its name (Codex on
   // #3467): an import reads only the provider's own, so two modules
   // exporting `N` do not cancel each other.
-  let out = all
   // Codex on #3467: an exported alias spelled through an alias its provider
   // imports (`import ./n.vibe { N }; export type M = N`) is read through
-  // that import too. One more round, so a chain one import deep resolves; a
-  // longer one stays unexpanded, which can only keep two types apart.
-  let resolved: Array[(String, String, Array[String], TypeExpr)] = []
-  for al in out {
-    let (from, name, params, target) = al
-    let mut fi = 0
-    let env: Array[(String, Array[String], TypeExpr)] = []
-    while fi < Array::length(paths) {
-      if Array::get(paths, fi) == from {
-        imported_type_aliases_into(Array::get(stmts_list, fi), from, paths, out, env)
+  // that import too. Each round reads one more import deep, until a round
+  // changes nothing; the round bound stops a cycle, and a chain longer than
+  // it stays unexpanded, which can only keep two types apart.
+  let mut cur = all
+  let mut changed = true
+  let mut rounds = 0
+  while changed && rounds < 16 {
+    changed = false
+    let resolved: Array[(String, String, Array[String], TypeExpr)] = []
+    let mut ai = 0
+    while ai < Array::length(all) {
+      // The provider's own spelling is re-read each round: a target already
+      // rewritten names the imported provider's aliases, not this one's.
+      let (from, name, params, target) = Array::get(all, ai)
+      let (_, _, _, prev) = Array::get(cur, ai)
+      let mut fi = 0
+      let env: Array[(String, Array[String], TypeExpr)] = []
+      while fi < Array::length(paths) {
+        if Array::get(paths, fi) == from {
+          imported_type_aliases_into(Array::get(stmts_list, fi), from, paths, cur, env)
+        }
+        fi = fi + 1
       }
-      fi = fi + 1
+      let renames = for p in params {
+        (p, String::concat("#param:", p))
+      }
+      let next = expand_type_aliases(target, env, renames, 0)
+      if !type_exprs_equivalent(next, renames, prev, renames) {
+        changed = true
+      }
+      Array::push(resolved, (from, name, params, next))
+      ai = ai + 1
     }
-    let renames = for p in params {
-      (p, String::concat("#param:", p))
-    }
-    Array::push(resolved, (from, name, params, expand_type_aliases(target, env, renames, 0)))
+    cur = resolved
+    rounds = rounds + 1
   }
-  resolved
+  cur
 }
 
 /// `t` with the file's aliases expanded, as the checker reads them (Codex on
