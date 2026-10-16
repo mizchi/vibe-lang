@@ -432,7 +432,7 @@ fn edp_stamp_returned_mut(n: String, v: Expr, b: Expr, slot: (Int, String), scop
     (edp_stamp_returned_let(n, v, b, slot, scope, pure_names), b)
   } else {
     let results = edp_tail_name_count(b, n) + edp_return_name_count(b, n)
-    if results > 0 && results == edp_free_use_count(b, n) && edp_mut_value_stampable(v, scope) {
+    if results > 0 && results == edp_free_use_count(b, n) && edp_mut_value_stampable(v, scope, pure_names) {
       let marker = "#ret-mut"
       let renamed = edp_rename_free(b, n, marker)
       // [values met, values that cannot be stamped]
@@ -453,29 +453,30 @@ fn edp_stamp_returned_mut(n: String, v: Expr, b: Expr, slot: (Int, String), scop
 /// Can a value a returned `let mut` holds take the declared row, or keep its
 /// own? It is read through its tail positions as `edp_stamp_tail` stamps them.
 /// A literal that calls a local closure cannot be stamped in place, and a
-/// local binding's name is a closure nothing here stamps. A top-level name is
-/// wrapped or already takes the dict, and a `return` hands back no value
-/// here. Any other value, a call's result among them, is a closure
+/// local binding's name is a closure nothing here stamps. A row-free top-level
+/// function's name is wrapped; any other name, a builtin or a constructor
+/// among them, is not (Codex on #3466: `f = String::length`). A `return`
+/// hands back no value here. Any other value, a call's result among them, is a closure
 /// `edp_stamp_tail` cannot adapt (Codex on #3466: `f = pure_factory()`).
-fn edp_mut_value_stampable(val: Expr, scope: Array[String]) -> Bool {
+fn edp_mut_value_stampable(val: Expr, scope: Array[String], pure_names: MutSet[String]) -> Bool {
   match val {
     EFn(_, _, _, _, None, lb) => !edp_literal_calls_local(val, lb, scope),
     EFn(_, _, _, _, Some(_), _) => true,
-    EIdent(x, _) => !edp_scope_has(scope, x),
+    EIdent(x, _) => MutSet::has(pure_names, x) && !edp_scope_has(scope, x),
     EReturn(_) => true,
-    ESeq(_, b) => edp_mut_value_stampable(b, scope),
-    EIf(_, t, el) => edp_mut_value_stampable(t, scope) && edp_mut_value_stampable(el, scope),
-    EAssign(_, _, c, _) => edp_mut_value_stampable(c, scope),
-    ELet(x, _, b, _) => edp_mut_value_stampable_in(b, [x], scope),
-    ELetMut(x, _, b, _) => edp_mut_value_stampable_in(b, [x], scope),
-    ELetRec(x, _, b) => edp_mut_value_stampable_in(b, [x], scope),
-    EMatch(_, arms) => edp_mut_arms_stampable(arms, scope),
-    EHandle(bd, arms) => edp_mut_value_stampable(bd, scope) && edp_mut_arms_stampable(arms, scope),
+    ESeq(_, b) => edp_mut_value_stampable(b, scope, pure_names),
+    EIf(_, t, el) => edp_mut_value_stampable(t, scope, pure_names) && edp_mut_value_stampable(el, scope, pure_names),
+    EAssign(_, _, c, _) => edp_mut_value_stampable(c, scope, pure_names),
+    ELet(x, _, b, _) => edp_mut_value_stampable_in(b, [x], scope, pure_names),
+    ELetMut(x, _, b, _) => edp_mut_value_stampable_in(b, [x], scope, pure_names),
+    ELetRec(x, _, b) => edp_mut_value_stampable_in(b, [x], scope, pure_names),
+    EMatch(_, arms) => edp_mut_arms_stampable(arms, scope, pure_names),
+    EHandle(bd, arms) => edp_mut_value_stampable(bd, scope, pure_names) && edp_mut_arms_stampable(arms, scope, pure_names),
     _ => false
   }
 }
 
-fn edp_mut_value_stampable_in(e: Expr, names: Array[String], scope: Array[String]) -> Bool {
+fn edp_mut_value_stampable_in(e: Expr, names: Array[String], scope: Array[String], pure_names: MutSet[String]) -> Bool {
   let inner: Array[String] = []
   for x in scope {
     Array::push(inner, x)
@@ -483,13 +484,13 @@ fn edp_mut_value_stampable_in(e: Expr, names: Array[String], scope: Array[String
   for x in names {
     Array::push(inner, x)
   }
-  edp_mut_value_stampable(e, inner)
+  edp_mut_value_stampable(e, inner, pure_names)
 }
 
-fn edp_mut_arms_stampable(arms: Array[(Pat, Expr)], scope: Array[String]) -> Bool {
+fn edp_mut_arms_stampable(arms: Array[(Pat, Expr)], scope: Array[String], pure_names: MutSet[String]) -> Bool {
   let mut ok = true
   for a in arms {
-    if !edp_mut_value_stampable_in(a.1, edp_pat_names(a.0), scope) {
+    if !edp_mut_value_stampable_in(a.1, edp_pat_names(a.0), scope, pure_names) {
       ok = false
     } else {
       ()
@@ -509,7 +510,7 @@ fn edp_stamp_assigned_lits(e: Expr, marker: String, slot: (Int, String), scope: 
     EAssign(m, v, c, off) => {
       let v2 = if m == marker {
         Array::set(state, 0, Array::get(state, 0) + 1)
-        if edp_mut_value_stampable(v, scope) && edp_count_assigns_name(v, marker) == 0 {
+        if edp_mut_value_stampable(v, scope, pure_names) && edp_count_assigns_name(v, marker) == 0 {
           edp_stamp_tail(v, slot, scope, pure_names)
         } else {
           Array::set(state, 1, Array::get(state, 1) + 1)

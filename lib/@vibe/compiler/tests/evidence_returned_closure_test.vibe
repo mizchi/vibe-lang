@@ -86,7 +86,7 @@ test "an inner assigned binder of the spelling does not keep a returned let mut 
 // initializer, and none does when one of them cannot (Codex on #3452).
 test "a closure assigned to a returned let mut takes the dict, or none does" {
   inspect(mid_after("fn mid(c: Bool) -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  if c {\n    f = () -> 3\n  } else {\n    ()\n  }\n  f\n}\n"), "let rec mid = (c: Bool) -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; { if c { { f = (__ev_Box: __EvDict_Box) -> { 3 }; () } }; f } } }")
-  inspect(mid_after("fn other() -> Int with Box[Int] {\n  4\n}\nfn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f = other\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; { f = other; f } } }")
+  inspect(mid_after("fn other() -> Int with Box[Int] {\n  4\n}\nfn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f = other\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = () -> { mk() }; { f = other; f } } }")
 }
 
 // #3463: an assigned value is read through its tails, an assignment inside a
@@ -117,9 +117,12 @@ test "a closure assigned inside a compound assignment's value takes the dict" {
   inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let mut n = 0\n  let mut f = () -> mk()\n  n += {\n    f = () -> 5\n    1\n  }\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut n = 0; { let mut f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; { n += { f = (__ev_Box: __EvDict_Box) -> { 5 }; 1 }; f } } } }")
 }
 
-// A call's result is a closure the stamp cannot adapt, so a returned let mut
-// it is assigned to stays as written, the initializer too (Codex on #3466).
+// A call's result, and a name that is not a row-free top-level function
+// (`String::length`), are closures the stamp cannot adapt, so a returned let
+// mut they are assigned to stays as written, the initializer too (Codex on
+// #3466).
 test "a call's result assigned to a returned let mut keeps the binding as written" {
+  inspect(mid_after("fn mid() -> ((String) -> Int with Box[Int]) {\n  let mut f = (s: String) -> mk()\n  f = String::length\n  f\n}\n"), "let rec mid = () -> (String) -> Int with Box[Int] { { let mut f = (s: String) -> { mk() }; { f = String::length; f } } }")
   inspect(mid_after("fn pure_factory() -> (() -> Int) {\n  () -> 8\n}\nfn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f = pure_factory()\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = () -> { mk() }; { f = pure_factory(); f } } }")
   inspect(mid_after("fn pure_factory() -> (() -> Int) {\n  () -> 8\n}\nfn mid(c: Bool) -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f = if c {\n    pure_factory()\n  } else {\n    () -> 3\n  }\n  f\n}\n"), "let rec mid = (c: Bool) -> () -> Int with Box[Int] { { let mut f = () -> { mk() }; { f = if c { pure_factory() } else { () -> { 3 } }; f } } }")
 }
