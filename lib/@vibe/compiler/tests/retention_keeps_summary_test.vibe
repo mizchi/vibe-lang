@@ -9,7 +9,8 @@ import @vibe/compiler/syntax {
 }
 
 // #3360: what each published function keeps, as the module's checker binds
-// it for publication. A row is `name=fields`, a field `i` (kept where any
+// it for publication (a private function's summary is bound too, and
+// publication drops it). A row is `name=fields`, a field `i` (kept where any
 // region outlives the call) or `i>j` (kept into parameter `j`).
 
 fn keeps(src: String) -> String with Exception {
@@ -18,19 +19,19 @@ fn keeps(src: String) -> String with Exception {
   let rows: Array[(String, Type)] = env_keeps_rows(env)
   for row in rows {
     let (name, ty) = row
-    let names: Array[String] = []
+    // A tombstone (a function found to keep nothing) is not listed.
     match ty {
       CtRecord(fs) => {
+        let names: Array[String] = []
         let fields_of: Array[(String, Type)] = fs
         for f in fields_of {
           let (k, _) = f
           Array::push(names, k)
         }
+        Array::push(parts, String::concat(name, String::concat("=", String::join(names, ","))))
       },
-      _ => Array::push(names, "-")
+      _ => ()
     }
-    let fields = String::join(names, ",")
-    Array::push(parts, String::concat(name, String::concat("=", fields)))
   }
   String::join(parts, " ")
 }
@@ -47,7 +48,7 @@ test "a store into the function's own binding, or of something else, keeps nothi
 }
 
 test "what a function passes on to one that keeps it is kept too" {
-  inspect(keeps(String::concat(cell, "fn put[T](c: Cell[T], x: T) -> Unit {\n  c.v = Some(x)\n}\nexport fn relay[T](c: Cell[T], x: T) -> Unit {\n  put(c, x)\n}\n")), "relay=1>0")
+  inspect(keeps(String::concat(cell, "fn put[T](c: Cell[T], x: T) -> Unit {\n  c.v = Some(x)\n}\nexport fn relay[T](c: Cell[T], x: T) -> Unit {\n  put(c, x)\n}\n")), "relay=1>0 put=1>0")
 }
 
 test "a function that only reads its parameters keeps nothing" {

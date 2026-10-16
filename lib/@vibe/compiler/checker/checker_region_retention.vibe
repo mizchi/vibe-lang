@@ -124,11 +124,13 @@ export ./checker_region_retention_types.vibe {
 }
 import ./checker_region_retention_types.vibe {
   retention_call_message,
+  retention_decimal_text,
   retention_keeps_in_env,
   retention_keeps_positions,
   retention_opaque_message,
   retention_probe_type,
-  retention_type_hides_region
+  retention_type_hides_region,
+  retention_type_open
 }
 
 //# Per-module tables
@@ -1001,41 +1003,6 @@ fn retention_walk_children(expr: Expr, env: TypeEnv, local: Array[(String, Array
 //# with other arguments, and the captures of a closure of this scope that is
 //# called with it. What a write inside a closure writes from the closure's
 //# own parameters is not known here, so it counts as every region.
-
-/// `t` contains a part the checker has not determined yet, which may still
-/// become a type that hides a region.
-fn retention_type_open(t: Type) -> Bool {
-  match t {
-    CtVar(_) => true,
-    CtUnknown => true,
-    CtArray(e) => retention_type_open(e),
-    CtOption(e) => retention_type_open(e),
-    CtTuple(items) => {
-      let mut any = false
-      for item in items {
-        if retention_type_open(item) {
-          any = true
-        } else {
-          ()
-        }
-      }
-      any
-    },
-    CtNamed(_, args) => {
-      let mut any = false
-      for a in args {
-        if retention_type_open(a) {
-          any = true
-        } else {
-          ()
-        }
-      }
-      any
-    },
-    CtForAll(_, _, body) => retention_type_open(body),
-    _ => false
-  }
-}
 
 /// The values `expr` reads by name (a callee spelled by name excluded).
 fn retention_value_names(expr: Expr) -> Array[String] {
@@ -2040,7 +2007,7 @@ fn retention_top_level_callee(name: String, depth: Int) -> RetentionCallee {
 fn retention_marker_callee(env: TypeEnv, name: String, payload: Type) -> RetentionCallee {
   match payload {
     CtNamed(text, _) => if String::starts_with(text, "c:") {
-      let index = decimal_text(String::substring(text, 2, String::length(text)))
+      let index = retention_decimal_text(String::substring(text, 2, String::length(text)))
       if index >= 0 && index < Array::length(retention_closures) {
         let (lit, bound_name, is_rec) = Array::get(retention_closures, index)
         match retention_closure_scope(env, bound_name, text) {
@@ -2068,7 +2035,7 @@ fn retention_marker_callee(env: TypeEnv, name: String, payload: Type) -> Retenti
     } else if String::starts_with(text, "p:") {
       // A re-checked lambda's parameter, bound to the function its argument
       // was at the call being judged.
-      let index = decimal_text(String::substring(text, 2, String::length(text)))
+      let index = retention_decimal_text(String::substring(text, 2, String::length(text)))
       if index >= 0 && index < Array::length(retention_arg_lambdas) {
         let (lit, scope, _) = Array::get(retention_arg_lambdas, index)
         RetentionVisible(lit, scope, text)
@@ -2081,30 +2048,6 @@ fn retention_marker_callee(env: TypeEnv, name: String, payload: Type) -> Retenti
       RetentionOpaque
     },
     _ => RetentionOpaque
-  }
-}
-
-fn decimal_text(text: String) -> Int {
-  if String::length(text) == 0 {
-    0 - 1
-  } else {
-    let mut out = 0
-    let mut ok = true
-    let mut i = 0
-    while i < String::length(text) {
-      let d = String::byte_at(text, i) - 48
-      if d < 0 || d > 9 {
-        ok = false
-      } else {
-        out = out * 10 + d
-      }
-      i = i + 1
-    }
-    if ok {
-      out
-    } else {
-      0 - 1
-    }
   }
 }
 
@@ -2166,6 +2109,45 @@ fn retention_with_call_regions(def: TypeEnv, call: TypeEnv) -> TypeEnv {
   out
 }
 
+/// #3360: while a module's own functions are probed for what they keep, the
+/// module's functions that may store anything (`retention_probe_keepers`).
+/// A probe reads a callee of the module from the summary already bound for
+/// it, or skips one that stores nothing, instead of checking its body again:
+/// re-checking every callee of every probed function cost the compiler's own
+/// self-compile a fifth of its heap.
+let retention_probe_keepers: Array[Array[String]] = []
+
+export fn retention_probe_begin(keepers: Array[String]) -> Unit {
+  Array::truncate(retention_probe_keepers, 0)
+  Array::push(retention_probe_keepers, keepers)
+}
+
+export fn retention_probe_end() -> Unit {
+  Array::truncate(retention_probe_keepers, 0)
+}
+
+fn retention_probe_summary_callee(env: TypeEnv, name: String, callee: RetentionCallee) -> RetentionCallee {
+  if Array::length(retention_probe_keepers) == 0 {
+    callee
+  } else {
+    match callee {
+      RetentionVisible(_, _, _) => if !retention_string_has(Array::get(retention_probe_keepers, 0), name) {
+        RetentionTrusted
+      } else {
+        match retention_keeps_in_env(env, name) {
+          Some(t) => if Array::length(retention_keeps_positions(t)) > 0 {
+            RetentionKeeps(retention_keeps_positions(t))
+          } else {
+            RetentionTrusted
+          },
+          None => callee
+        }
+      },
+      _ => callee
+    }
+  }
+}
+
 fn retention_named_callee(env: TypeEnv, name: String) -> RetentionCallee {
   match env_marker_before(env, retention_marker(name), name) {
     Some(payload) => retention_marker_callee(env, name, payload),
@@ -2188,7 +2170,7 @@ fn retention_named_callee(env: TypeEnv, name: String) -> RetentionCallee {
             },
             None => RetentionTrusted
           },
-          other => other
+          other => retention_probe_summary_callee(env, name, other)
         }
       }
     }
@@ -2727,7 +2709,7 @@ fn retention_arg_callee(arg: Expr, arg_ty: Type, env: TypeEnv) -> String {
 /// only the first callback checked.
 fn retention_callee_identity(key: String) -> String {
   if String::starts_with(key, "p:") {
-    let index = decimal_text(String::substring(key, 2, String::length(key)))
+    let index = retention_decimal_text(String::substring(key, 2, String::length(key)))
     if index >= 0 && index < Array::length(retention_arg_lambdas) {
       let (_, _, identity) = Array::get(retention_arg_lambdas, index)
       identity

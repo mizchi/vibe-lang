@@ -65,11 +65,11 @@ import ./checker_eq_generalized_site.vibe {
 }
 
 import ./checker_region_retention.vibe {
-  retention_begin_module, retention_end_module, retention_note_module_env, retention_param_kept
+  retention_begin_module, retention_end_module, retention_note_module_env, retention_param_kept, retention_probe_begin, retention_probe_end
 }
 
 import ./checker_region_retention_types.vibe {
-  env_keeps_rows, keeps_rows_lookup, retention_body_may_store, retention_keeps_marker, retention_type_may_carry_region
+  env_keeps_rows, keeps_rows_lookup, retention_body_may_store, retention_keeps_marker, retention_param_may_reach_store, retention_type_may_carry_region
 }
 
 import ./checker.vibe {
@@ -2102,17 +2102,9 @@ fn retention_stmts_implement_groups(stmts: Array[Stmt]) -> Bool {
 
 fn retention_bind_keeps_probed(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> TypeEnv {
   let imported = env_keeps_rows(env)
-  let published: Array[String] = []
-  for stmt in stmts {
-    match stmt {
-      SExport(items) => for item in items {
-        Array::push(published, item)
-      },
-      _ => ()
-    }
-  }
   // Which functions may store anything at all, read from their syntax and
-  // closed over calls between them: only these are probed.
+  // closed over calls between them, in the order they were found: a
+  // function's callees among them come first. Only these are probed.
   let keepers: Array[String] = []
   for row in imported {
     match row {
@@ -2139,42 +2131,38 @@ fn retention_bind_keeps_probed(stmts: Array[Stmt], env: TypeEnv, defs: Array[Typ
       }
     }
   }
+  // Each keeper's summary is bound before its callers are probed, and a
+  // probe reads a callee's summary rather than checking its body again
+  // (`retention_probe_begin`). A keeper found to keep nothing is bound a
+  // tombstone, which also hides an imported marker of its name.
   let mut out = env
-  for stmt in stmts {
-    let fields: Array[(String, Type)] = []
-    let bound = match stmt {
-      SLet(exported, _, fname, _, EFn(_, _, params, _, _, _)) => {
-        if Array::length(params) > 0 && (exported || String::contains(fname, "::") || published_name_listed(published, fname)) && published_name_listed(keepers, fname) {
-          let lit = match stmt {
-            SLet(_, _, _, _, e) => e,
-            _ => EUnit
-          }
-          let param_tys = retention_fn_param_types(env_lookup(env, fname))
-          let scope = env_bind(env, "#interp.top.fn", CtBool)
-          let n = if Array::length(param_tys) < Array::length(params) {
-            Array::length(param_tys)
-          } else {
-            Array::length(params)
-          }
-          let mut i = 0
-          while i < n {
-            for field in retention_kept_sinks(lit, scope, param_tys, i, n, fname, defs, s, c) {
-              Array::push(fields, (field, CtUnit))
-            }
-            i = i + 1
-          }
+  retention_probe_begin(keepers)
+  for k in keepers {
+    match retention_fn_literal(stmts, k) {
+      Some(lit) => {
+        let fields = retention_fn_keeps_fields(lit, k, out, defs, s, c, keepers)
+        if Array::length(fields) > 0 {
+          out = env_bind(out, retention_keeps_marker(k), CtRecord(fields))
+        } else {
+          out = env_bind(out, retention_keeps_marker(k), CtUnit)
         }
-        fname
       },
+      None => ()
+    }
+  }
+  retention_probe_end()
+  // Any other top-level binding keeps nothing, and hides an imported marker
+  // of its name, so the marker a module publishes describes the binding it
+  // publishes.
+  for stmt in stmts {
+    let bound = match stmt {
       SLet(_, _, n, _, _) => n,
       SLetMut(n, _, _) => n,
       SExternLet(n, _) => n,
       SFnDecl(_, n, _, _, _) => n,
       _ => ""
     }
-    if Array::length(fields) > 0 {
-      out = env_bind(out, retention_keeps_marker(bound), CtRecord(fields))
-    } else if bound != "" {
+    if bound != "" && !published_name_listed(keepers, bound) {
       match keeps_rows_lookup(imported, bound) {
         Some(CtRecord(_)) => out = env_bind(out, retention_keeps_marker(bound), CtUnit),
         _ => ()
@@ -2182,6 +2170,53 @@ fn retention_bind_keeps_probed(stmts: Array[Stmt], env: TypeEnv, defs: Array[Typ
     }
   }
   out
+}
+
+/// The function literal a top-level `fn` or `let` named `name` binds.
+fn retention_fn_literal(stmts: Array[Stmt], name: String) -> Option[Expr] {
+  let mut found: Option[Expr] = None
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, n, _, EFn(_, _, _, _, _, _)) => if n == name {
+        match stmt {
+          SLet(_, _, _, _, e) => found = Some(e),
+          _ => ()
+        }
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+/// The marker fields for what the function literal `lit`, bound to `fname`,
+/// keeps (`retention_kept_sinks`), probing only a parameter whose value can
+/// reach a store (`retention_param_may_reach_store`).
+fn retention_fn_keeps_fields(lit: Expr, fname: String, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, keepers: Array[String]) -> Array[(String, Type)] {
+  let fields: Array[(String, Type)] = []
+  match lit {
+    EFn(_, _, params, _, _, _) => {
+      let param_tys = retention_fn_param_types(env_lookup(env, fname))
+      let scope = env_bind(env, "#interp.top.fn", CtBool)
+      let n = if Array::length(param_tys) < Array::length(params) {
+        Array::length(param_tys)
+      } else {
+        Array::length(params)
+      }
+      let mut i = 0
+      while i < n {
+        let (pname, _) = Array::get(params, i)
+        if retention_param_may_reach_store(lit, pname, keepers) {
+          for field in retention_kept_sinks(lit, scope, param_tys, i, n, fname, defs, s, c) {
+            Array::push(fields, (field, CtUnit))
+          }
+        }
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+  fields
 }
 
 /// #3360: where `fname`'s parameter `i` is kept, as marker fields: `i` when

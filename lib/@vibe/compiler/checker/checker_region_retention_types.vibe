@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr, Type, TypeDef, TypeEnv, env_lookup, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
+  Expr, Pat, Type, TypeDef, TypeEnv, env_lookup, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
 }
 import @vibe/core {
   array_empty
@@ -587,6 +587,153 @@ fn retention_targets_fresh(args: Array[Expr], fresh: Array[String]) -> Bool {
   }
 }
 
+/// #3360: whether parameter `pname` of the function literal `lit` can reach a
+/// store at all, read from its syntax. The names bound from a value that
+/// mentions it (`let`, `for`, a `match` on it) carry it too; it reaches a
+/// store when one of them is an argument of a retaining operation that does
+/// not write a fresh local, of a function in `keepers`, or of a call to a
+/// function value; or the value assigned to a binding the body did not
+/// declare. A parameter that reaches none of these is not kept, and the
+/// probe that would re-check the body for it is skipped.
+export fn retention_param_may_reach_store(lit: Expr, pname: String, keepers: Array[String]) -> Bool {
+  let tainted: Array[String] = [pname]
+  let mut grew = true
+  while grew {
+    let before = Array::length(tainted)
+    retention_taint_bindings(lit, tainted)
+    grew = Array::length(tainted) > before
+  }
+  let mut_locals: Array[String] = []
+  let fresh: Array[String] = []
+  let other: Array[String] = []
+  retention_collect_locals(lit, mut_locals, fresh, other)
+  let only_fresh: Array[String] = []
+  for n in fresh {
+    if !retention_string_has(other, n) {
+      Array::push(only_fresh, n)
+    }
+  }
+  let callables: Array[String] = []
+  match lit {
+    EFn(_, _, params, _, _, _) => for p in params {
+      let (pn, _) = p
+      Array::push(callables, pn)
+    },
+    _ => ()
+  }
+  retention_tainted_store(lit, tainted, mut_locals, only_fresh, keepers, callables)
+}
+
+fn retention_taint_bindings(e: Expr, tainted: Array[String]) -> Unit {
+  match e {
+    ELet(n, v, _, _) => retention_taint_if(n, v, tainted),
+    ELetMut(n, v, _, _) => retention_taint_if(n, v, tainted),
+    EForIn(n, _, it, _) => retention_taint_if(n, it, tainted),
+    EAssign(n, v, _, _) => retention_taint_if(n, v, tainted),
+    EMatch(sc, arms) => if retention_mentions_any(sc, tainted) {
+      for arm in arms {
+        let (pat, _) = arm
+        retention_taint_pat(pat, tainted)
+      }
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(e)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    retention_taint_bindings(expr_child_at(i), tainted)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+fn retention_taint_if(n: String, v: Expr, tainted: Array[String]) -> Unit {
+  if !retention_string_has(tainted, n) && retention_mentions_any(v, tainted) {
+    Array::push(tainted, n)
+  }
+}
+
+fn retention_taint_pat(p: Pat, tainted: Array[String]) -> Unit {
+  match p {
+    PBind(n) => if !retention_string_has(tainted, n) {
+      Array::push(tainted, n)
+    },
+    PCtor(_, ps) => for q in ps {
+      retention_taint_pat(q, tainted)
+    },
+    PTuple(ps) => for q in ps {
+      retention_taint_pat(q, tainted)
+    },
+    POr(a, b) => {
+      retention_taint_pat(a, tainted)
+      retention_taint_pat(b, tainted)
+    },
+    PStruct(_, fs) => for f in fs {
+      let (_, q) = f
+      retention_taint_pat(q, tainted)
+    },
+    _ => ()
+  }
+}
+
+fn retention_mentions_any(e: Expr, names: Array[String]) -> Bool {
+  match e {
+    EIdent(n, _) => retention_string_has(names, n),
+    _ => {
+      let mark = expr_children_push(e)
+      let top = expr_children_top()
+      let mut found = false
+      let mut i = mark
+      while i < top && !found {
+        found = retention_mentions_any(expr_child_at(i), names)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      found
+    }
+  }
+}
+
+fn retention_args_mention(args: Array[Expr], names: Array[String]) -> Bool {
+  let mut found = false
+  for a in args {
+    found = found || retention_mentions_any(a, names)
+  }
+  found
+}
+
+fn retention_tainted_store(e: Expr, tainted: Array[String], locals: Array[String], fresh: Array[String], keepers: Array[String], callables: Array[String]) -> Bool {
+  let here = match e {
+    EAssign(name, v, _, _) => !retention_string_has(locals, name) && retention_mentions_any(v, tainted),
+    EAssignOp(name, _, v, _, _) => !retention_string_has(locals, name) && retention_mentions_any(v, tainted),
+    ECall(EIdent(name, _), args, _, _) => if retention_string_has(keepers, name) || retention_string_has(callables, name) || retention_string_has(tainted, name) {
+      retention_args_mention(args, tainted)
+    } else if retention_is_store_op(name) {
+      !retention_targets_fresh(args, fresh) && retention_args_mention(args, tainted)
+    } else {
+      false
+    },
+    ECall(EIdent(_, _), _, _, _) => false,
+    ECall(_, args, _, _) => retention_args_mention(args, tainted),
+    _ => false
+  }
+  if here {
+    true
+  } else {
+    let mark = expr_children_push(e)
+    let top = expr_children_top()
+    let mut found = false
+    let mut i = mark
+    while i < top && !found {
+      found = retention_tainted_store(expr_child_at(i), tainted, locals, fresh, keepers, callables)
+      i = i + 1
+    }
+    expr_children_pop(mark)
+    found
+  }
+}
+
 fn retention_is_store_op(name: String) -> Bool {
   // Suffix tests allocate nothing; this runs on every named call of every
   // published function body.
@@ -612,6 +759,65 @@ export fn retention_probe_type(t: Type, probe: String) -> Type {
       retention_probe_type(a, probe)
     }),
     _ => t
+  }
+}
+
+/// `t` contains a part the checker has not determined yet, which may still
+/// become a type that hides a region.
+export fn retention_type_open(t: Type) -> Bool {
+  match t {
+    CtVar(_) => true,
+    CtUnknown => true,
+    CtArray(e) => retention_type_open(e),
+    CtOption(e) => retention_type_open(e),
+    CtTuple(items) => {
+      let mut any = false
+      for item in items {
+        if retention_type_open(item) {
+          any = true
+        } else {
+          ()
+        }
+      }
+      any
+    },
+    CtNamed(_, args) => {
+      let mut any = false
+      for a in args {
+        if retention_type_open(a) {
+          any = true
+        } else {
+          ()
+        }
+      }
+      any
+    },
+    CtForAll(_, _, body) => retention_type_open(body),
+    _ => false
+  }
+}
+
+export fn retention_decimal_text(text: String) -> Int {
+  if String::length(text) == 0 {
+    0 - 1
+  } else {
+    let mut out = 0
+    let mut ok = true
+    let mut i = 0
+    while i < String::length(text) {
+      let d = String::byte_at(text, i) - 48
+      if d < 0 || d > 9 {
+        ok = false
+      } else {
+        out = out * 10 + d
+      }
+      i = i + 1
+    }
+    if ok {
+      out
+    } else {
+      0 - 1
+    }
   }
 }
 
