@@ -690,14 +690,16 @@ body is accepted. Only a function whose body can store anything is probed
 -- a field or element write, a retaining operation (`Array::push`,
 `Sender::send`, ...), an assignment to a binding it did not declare, or a
 call to a function that does one of these -- and only its parameters whose
-type is a region head, a type variable, or a type holding one, and from which
-a value reaches such a store; a parameter the first probe finds kept pays for
+type is a region head, a type variable, a type holding one, or a declaration
+with a task group's token in a field, and from which a value reaches such a
+store; a parameter the first probe finds kept pays for
 the probes that say where. The module's storing functions are probed callees
 first, and a probe reads a callee's summary instead of checking its body
 again, which keeps the compiler's own self-compile within 3% of its heap
 without the check. The summary travels like the parameter names of #3432: through a
 re-export, with a type's companions (`Cell::stash`), and hidden by a later
-binding of the name that keeps nothing. The standard library's own retaining
+binding of the name that keeps nothing; an exported alias of a function
+(`export let put_alias = put`) publishes what that function keeps. The standard library's own retaining
 operations remain listed by name and checked like `Array::push`.
 
 A closure handed to a function is checked before the call has fixed its
@@ -1120,15 +1122,15 @@ nursery scope`).
 
 ## Known gaps
 
-- **Closures and declarations handed to an imported function.** What a
-  function keeps is published only for parameters typed by a region head, a
-  type variable, or a type holding one (above). An imported function that
-  stores a closure parameter, or a struct parameter that hides a token in a
-  field, is still trusted: probing every closure-typed parameter re-checks
-  most of the compiler's own checker and exceeds the self-compile heap.
-  Joining an escaped handle after its group returns the task's value
-  (measured), so no program is answered wrongly, but nothing enforces that
-  such a handle stays in its group.
+- **Closures handed to an imported function.** What a function keeps is
+  published for parameters typed by a region head, a type variable, a type
+  holding one, or a declaration with a task group's token in a field. An
+  imported function that stores a closure parameter, or a declaration that
+  hides the token only in a closure field, is still trusted: probing every
+  closure-typed parameter re-checks most of the compiler's own checker and
+  exceeds the self-compile heap. Joining an escaped handle after its group
+  returns the task's value (measured), so no program is answered wrongly, but
+  nothing enforces that such a handle stays in its group.
 - **Mid-run cancellation.** A cancel request is observed at dispatch and at a
   parked task only. A running task, and a suspendable task that is running
   when the request arrives, are not interrupted.
