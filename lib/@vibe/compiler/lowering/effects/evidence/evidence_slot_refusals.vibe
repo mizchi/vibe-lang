@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — callback slot refusals.
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, expr_children
+  Expr, Stmt, TypeExpr, expr_children, is_runtime_scheduled_effect
 }
 
 import @vibe/core {
@@ -345,4 +345,163 @@ export fn edp_expr_passes_value_to_slot(e: Expr, slot_callees: MutSet[String]) -
     }
     found
   }
+}
+
+/// Can a literal at a slot with this row be given it? Only when every label
+/// is a concrete effect. A row variable (`TaskGroup::run`'s `with e`) is
+/// admitted by the argument-inertness rule when the literal has no row of its
+/// own (`edp_argcond_admits`), and the callee passes no dict through it, so a
+/// stamp would only refuse the call. A runtime-scheduled effect (`Async`)
+/// belongs to the suspend lane, which lowers it before this pass
+/// (`TaskGroup::spawn_suspend`).
+export fn edp_slot_row_stampable(row: String) -> Bool {
+  let mut ok = String::length(String::trim(row)) > 0
+  for item in String::split(row, "+") {
+    for part in String::split(item, ",") {
+      let label = String::trim(part)
+      let bracket = String::index_of(label, "[")
+      let head = if bracket > 0 {
+        String::substring(label, 0, bracket)
+      } else {
+        label
+      }
+      if String::length(head) == 0 {
+        ()
+      } else if String::byte_at(head, 0) >= 97 && String::byte_at(head, 0) <= 122 {
+        ok = false
+      } else if is_runtime_scheduled_effect(head) {
+        ok = false
+      } else {
+        ()
+      }
+    }
+  }
+  ok
+}
+
+/// The row of a non-generic type alias that names a function type with a
+/// concrete row, or None.
+export fn edp_alias_fn_row(stmts: Array[Stmt], ty: TypeExpr) -> Option[String] {
+  match edp_alias_fn_type(stmts, ty) {
+    Some(TyFn(_, _, Some(row))) => Some(row),
+    _ => None
+  }
+}
+
+/// The function type a non-generic type alias names, directly or through
+/// other aliases, when its row is concrete, or None.
+export fn edp_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] {
+  // An alias of an alias is followed, as the checker's
+  // `dh_expand_type_alias` does; the step bound stops a cycle (Codex on
+  // #3426).
+  let mut cur = ty
+  let mut out: Option[TypeExpr] = None
+  let mut steps = 0
+  let mut done = false
+  while !done && steps < 32 {
+    match cur {
+      TyName(alias) => {
+        let mut next: Option[TypeExpr] = None
+        for st in stmts {
+          match st {
+            STypeAlias(_, n, tparams, body) => if n == alias && Array::length(tparams) == 0 {
+              next = Some(body)
+            } else {
+              ()
+            },
+            _ => ()
+          }
+        }
+        match next {
+          Some(TyFn(ps, r, Some(row))) => {
+            if edp_slot_row_stampable(row) {
+              out = Some(TyFn(ps, r, Some(row)))
+            } else {
+              ()
+            }
+            done = true
+          },
+          Some(TyName(n2)) => {
+            cur = TyName(n2)
+          },
+          _ => {
+            done = true
+          }
+        }
+      },
+      _ => {
+        done = true
+      }
+    }
+    steps = steps + 1
+  }
+  out
+}
+
+/// #3472: refuse each call in a value assigned to `marker` in `e` whose callee
+/// declares a row-free function result (`edp_refuse_tail_calls`).
+export fn edp_refuse_assigned_calls(e: Expr, marker: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row: String, scope: Array[String]) -> Unit {
+  match e {
+    EAssign(m, val, _, _) => if m == marker {
+      edp_refuse_tail_calls(val, stmts, fn_defs, row, scope)
+    },
+    _ => ()
+  }
+  for child in expr_children(e) {
+    edp_refuse_assigned_calls(child, marker, stmts, fn_defs, row, scope)
+  }
+  ()
+}
+
+/// #3472: refuse each call in a tail position of `e` to a top-level function
+/// whose declared result is a function type with no row. A name `scope`
+/// binds is a local, not that function.
+export fn edp_refuse_tail_calls(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row: String, scope: Array[String]) -> Unit {
+  match e {
+    ESeq(_, b) => edp_refuse_tail_calls(b, stmts, fn_defs, row, scope),
+    ELet(_, _, b, _) => edp_refuse_tail_calls(b, stmts, fn_defs, row, scope),
+    ELetMut(_, _, b, _) => edp_refuse_tail_calls(b, stmts, fn_defs, row, scope),
+    ELetRec(_, _, b) => edp_refuse_tail_calls(b, stmts, fn_defs, row, scope),
+    EIf(_, t, el) => {
+      edp_refuse_tail_calls(t, stmts, fn_defs, row, scope)
+      edp_refuse_tail_calls(el, stmts, fn_defs, row, scope)
+    },
+    EMatch(_, arms) => for arm in arms {
+      edp_refuse_tail_calls(arm.1, stmts, fn_defs, row, scope)
+    },
+    EHandle(bd, arms) => {
+      edp_refuse_tail_calls(bd, stmts, fn_defs, row, scope)
+      for arm in arms {
+        edp_refuse_tail_calls(arm.1, stmts, fn_defs, row, scope)
+      }
+    },
+    EAssign(_, _, c, _) => edp_refuse_tail_calls(c, stmts, fn_defs, row, scope),
+    ECall(EIdent(f, _), _, _, _) => {
+      let mut local = false
+      for x in scope {
+        local = local || x == f
+      }
+      if !local {
+        edp_refuse_rowless_result(stmts, fn_defs, f, "", row)
+      }
+    },
+    _ => ()
+  }
+  ()
+}
+
+/// #3472: whether the top-level function `fname` declares a function result
+/// that carries a row.
+export fn edp_fn_result_has_row(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], fname: String) -> Bool {
+  let mut found = false
+  for d in fn_defs {
+    let (idx, _, _, dname, _, _) = d
+    if dname == fname {
+      match Array::get(stmts, idx) {
+        SLet(_, _, _, _, EFn(_, _, _, Some(TyFn(_, _, Some(r))), _, _)) => found = found || String::length(String::trim(r)) > 0,
+        _ => ()
+      }
+    }
+  }
+  found
 }
