@@ -446,29 +446,131 @@ export fn keeps_rows_lookup(rows: Array[(String, Type)], name: String) -> Option
 
 /// #3360: whether a parameter of type `t` is probed for what its function
 /// keeps: a region head, a type variable a caller can instantiate to one, or
-/// a type that holds either (`Cell[T]`, `Array[TaskHandle[Int]]`). A closure,
-/// and a declaration that hides a region in a field, are not probed: every
+/// a type that holds either (`Cell[T]`, `Array[TaskHandle[Int]]`, a struct
+/// with such a field). A closure, and a closure field, are not probed: every
 /// checker function takes a closure, and re-checking all of them costs more
 /// heap than the compiler's own self-compile has.
 export fn retention_type_may_carry_region(t: Type, defs: Array[TypeDef]) -> Bool {
+  retention_may_carry(t, defs, array_empty())
+}
+
+fn retention_may_carry(t: Type, defs: Array[TypeDef], visiting: Array[String]) -> Bool {
   match t {
     CtVar(_) => true,
-    CtNamed(name, args) => String::starts_with(name, "#region_") || retention_is_region_head(name) || retention_types_may_carry_region(args, defs),
-    CtApplied(head, args) => retention_type_may_carry_region(head, defs) || retention_types_may_carry_region(args, defs),
-    CtArray(e) => retention_type_may_carry_region(e, defs),
-    CtOption(e) => retention_type_may_carry_region(e, defs),
-    CtTuple(items) => retention_types_may_carry_region(items, defs),
-    CtForAll(_, _, body) => retention_type_may_carry_region(body, defs),
+    // Inside a declaration only a task group's tokens count: a field of a
+    // `MutList` is how the compiler's own builders are shaped, and following
+    // those re-checked enough of it to reach the self-compile heap gate.
+    CtNamed(name, args) => String::starts_with(name, "#region_") || (retention_is_region_head(name) && (Array::length(visiting) == 0 || retention_is_task_head(name))) || retention_any_may_carry(args, defs, visiting) || retention_decl_may_carry(name, args, defs, visiting),
+    CtStruct(name) => retention_decl_may_carry(name, array_empty(), defs, visiting),
+    CtEnum(name) => retention_decl_may_carry(name, array_empty(), defs, visiting),
+    CtApplied(head, args) => retention_may_carry(head, defs, visiting) || retention_any_may_carry(args, defs, visiting),
+    CtArray(e) => retention_may_carry(e, defs, visiting),
+    CtOption(e) => retention_may_carry(e, defs, visiting),
+    CtTuple(items) => retention_any_may_carry(items, defs, visiting),
+    CtForAll(_, _, body) => retention_may_carry(body, defs, visiting),
     _ => false
   }
 }
 
-fn retention_types_may_carry_region(items: Array[Type], defs: Array[TypeDef]) -> Bool {
+fn retention_any_may_carry(items: Array[Type], defs: Array[TypeDef], visiting: Array[String]) -> Bool {
   let mut any = false
   for item in items {
-    any = any || retention_type_may_carry_region(item, defs)
+    any = any || retention_may_carry(item, defs, visiting)
   }
   any
+}
+
+fn retention_is_task_head(name: String) -> Bool {
+  name == "TaskHandle" || name == "TaskGroup" || name == "Sender" || name == "Receiver" || name == "Channel" || name == "Task" || name == "Nursery"
+}
+
+/// Codex on #3467: a declaration whose fields or payloads hold a task group's
+/// token (`struct Box { h: TaskHandle[Int] }`) carries the token its value is
+/// built from. Its closure fields are not followed, as a closure parameter is
+/// not.
+fn retention_decl_may_carry(name: String, args: Array[Type], defs: Array[TypeDef], visiting: Array[String]) -> Bool {
+  if retention_string_has(visiting, name) {
+    false
+  } else if Array::length(args) == 0 {
+    // A declaration used without arguments answers the same for the whole
+    // module, so its answer is kept (`retention_decl_memo_reset`).
+    match retention_decl_memo_get(name) {
+      Some(b) => b,
+      None => {
+        let answer = retention_decl_fields_may_carry(name, args, defs, visiting)
+        if Array::length(visiting) == 0 {
+          Array::push(retention_decl_memo, (name, answer))
+        }
+        answer
+      }
+    }
+  } else {
+    retention_decl_fields_may_carry(name, args, defs, visiting)
+  }
+}
+
+/// What `retention_decl_may_carry` answered for an argument-less declaration
+/// in the module being checked.
+let retention_decl_memo: Array[(String, Bool)] = []
+
+export fn retention_decl_memo_reset() -> Unit {
+  Array::truncate(retention_decl_memo, 0)
+}
+
+fn retention_decl_memo_get(name: String) -> Option[Bool] {
+  let mut out: Option[Bool] = None
+  for row in retention_decl_memo {
+    let (n, b) = row
+    if n == name {
+      out = Some(b)
+    }
+  }
+  out
+}
+
+fn retention_decl_fields_may_carry(name: String, args: Array[Type], defs: Array[TypeDef], visiting: Array[String]) -> Bool {
+  let mut found = false
+  let mut answer = false
+  Array::push(visiting, name)
+  for d in defs {
+    if !found {
+      match d {
+        TDStruct(dn, fields, _, tparams) => if String::equals(dn, name) {
+          found = true
+          for field in fields {
+            let (_, fty) = field
+            answer = answer || retention_may_carry(retention_subst_if(fty, tparams, args), defs, visiting)
+          }
+        },
+        TDEnum(dn, tparams, variants) => if String::equals(dn, name) {
+          found = true
+          for v in variants {
+            let (_, tys) = v
+            for ty in tys {
+              answer = answer || retention_may_carry(retention_subst_if(ty, tparams, args), defs, visiting)
+            }
+          }
+        },
+        TDAlias(dn, tparams, body) => if String::equals(dn, name) {
+          found = true
+          answer = retention_may_carry(retention_subst_if(body, tparams, args), defs, visiting)
+        },
+        _ => ()
+      }
+    }
+  }
+  Array::truncate(visiting, Array::length(visiting) - 1)
+  answer
+}
+
+/// `t` with the declaration's parameters substituted, or `t` itself when it
+/// is used without arguments (no copy is made).
+fn retention_subst_if(t: Type, tparams: Array[String], args: Array[Type]) -> Type {
+  if Array::length(args) == 0 {
+    t
+  } else {
+    retention_subst_params(t, tparams, args)
+  }
 }
 
 /// #3360: whether a function body can store anything where it outlives the

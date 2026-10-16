@@ -69,7 +69,14 @@ import ./checker_region_retention.vibe {
 }
 
 import ./checker_region_retention_types.vibe {
-  env_keeps_rows, keeps_rows_lookup, retention_body_may_store, retention_keeps_marker, retention_param_may_reach_store, retention_type_may_carry_region
+  env_keeps_rows,
+  keeps_rows_lookup,
+  retention_body_may_store,
+  retention_decl_memo_reset,
+  retention_keeps_in_env,
+  retention_keeps_marker,
+  retention_param_may_reach_store,
+  retention_type_may_carry_region
 }
 
 import ./checker.vibe {
@@ -2101,6 +2108,7 @@ fn retention_stmts_implement_groups(stmts: Array[Stmt]) -> Bool {
 }
 
 fn retention_bind_keeps_probed(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> TypeEnv {
+  retention_decl_memo_reset()
   let imported = env_keeps_rows(env)
   // Which functions may store anything at all, read from their syntax and
   // closed over calls between them, in the order they were found: a
@@ -2151,6 +2159,22 @@ fn retention_bind_keeps_probed(stmts: Array[Stmt], env: TypeEnv, defs: Array[Typ
     }
   }
   retention_probe_end()
+  // Codex on #3467: a top-level alias of a function (`export let alias =
+  // keep`) keeps what that function keeps, whether it is this module's or an
+  // imported one; an importer sees only the alias.
+  let aliased: Array[String] = []
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, n, _, EIdent(src, _)) => match retention_keeps_in_env(out, src) {
+        Some(CtRecord(fields)) => {
+          out = env_bind(out, retention_keeps_marker(n), CtRecord(fields))
+          Array::push(aliased, n)
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+  }
   // Any other top-level binding keeps nothing, and hides an imported marker
   // of its name, so the marker a module publishes describes the binding it
   // publishes.
@@ -2162,7 +2186,7 @@ fn retention_bind_keeps_probed(stmts: Array[Stmt], env: TypeEnv, defs: Array[Typ
       SFnDecl(_, n, _, _, _) => n,
       _ => ""
     }
-    if bound != "" && !published_name_listed(keepers, bound) {
+    if bound != "" && !published_name_listed(keepers, bound) && !published_name_listed(aliased, bound) {
       match keeps_rows_lookup(imported, bound) {
         Some(CtRecord(_)) => out = env_bind(out, retention_keeps_marker(bound), CtUnit),
         _ => ()

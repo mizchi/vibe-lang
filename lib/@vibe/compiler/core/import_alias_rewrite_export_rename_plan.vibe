@@ -665,6 +665,29 @@ fn file_type_aliases(stmts: Array[Stmt]) -> Array[(String, Array[String], TypeEx
   out
 }
 
+/// The shared aliases a file imports by name, each under the name its import
+/// binds (`import ./a.vibe { N as M }` reads `N`'s target as `M`).
+fn imported_type_aliases_into(stmts: Array[Stmt], shared: Array[(String, Array[String], TypeExpr)], out: Array[(String, Array[String], TypeExpr)]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SImport(_, items) => for item in items {
+        let local = match item.alias {
+          Some(a) => a,
+          None => item.name
+        }
+        for al in shared {
+          let (an, ap, target) = al
+          if an == item.name {
+            Array::push(out, (local, ap, target))
+          }
+        }
+      },
+      _ => ()
+    }
+  }
+  ()
+}
+
 /// The exported transparent aliases of the program whose name exactly one
 /// file exports.
 fn unique_exported_type_aliases(stmts_list: Array[Array[Stmt]]) -> Array[(String, Array[String], TypeExpr)] {
@@ -1001,9 +1024,10 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
   let errors: Array[String] = []
   // Codex on #3467: a field may spell an alias the file imports
   // (`import ./aliases.vibe { N }`). An exported alias exactly one file of
-  // the program declares is that one, so it is read after the file's own; a
-  // name two files export stays unexpanded, which can only keep two types
-  // apart, never join two that differ.
+  // the program declares is that one, so a file's import of the name reads
+  // it, under the name the import binds; a name two files export, or one the
+  // file does not import (its own private `struct N`), stays unexpanded,
+  // which can only keep two types apart, never join two that differ.
   let shared_aliases = unique_exported_type_aliases(stmts_list)
   let mut ci = 0
   while ci < file_count {
@@ -1012,9 +1036,7 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
       let stmts = Array::get(stmts_list, ci)
       let exported_names = collect_exported_value_names(stmts)
       let aliases = file_type_aliases(stmts)
-      for al in shared_aliases {
-        Array::push(aliases, al)
-      }
+      imported_type_aliases_into(stmts, shared_aliases, aliases)
       let mut pi = 0
       while pi < Array::length(stmts) {
         let stmt = Array::get(stmts, pi)
