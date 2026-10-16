@@ -86,7 +86,17 @@ test "an inner assigned binder of the spelling does not keep a returned let mut 
 // initializer, and none does when one of them cannot (Codex on #3452).
 test "a closure assigned to a returned let mut takes the dict, or none does" {
   inspect(mid_after("fn mid(c: Bool) -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  if c {\n    f = () -> 3\n  } else {\n    ()\n  }\n  f\n}\n"), "let rec mid = (c: Bool) -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; { if c { { f = (__ev_Box: __EvDict_Box) -> { 3 }; () } }; f } } }")
-  inspect(mid_after("fn other() -> Int with Box[Int] {\n  4\n}\nfn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f = other\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = () -> { mk() }; { f = other; f } } }")
+  inspect(mid_after("fn other() -> Int with Box[Int] {\n  4\n}\nfn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f = other\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; { f = other; f } } }")
+}
+
+// #3463: an assigned value is read through its tails, an assignment inside a
+// lambda that captures the binding counts, and a row-free function's name is
+// wrapped. A tail that calls a local closure leaves every value as written.
+test "an assigned if, a captured assignment and a function's name take the dict" {
+  inspect(mid_after("fn mid(c: Bool) -> (() -> Int with Box[Int]) {\n  let mut f = () -> 0\n  f = if c {\n    () -> mk()\n  } else {\n    () -> 3\n  }\n  f\n}\n"), "let rec mid = (c: Bool) -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { 0 }; { f = if c { (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } } else { (__ev_Box: __EvDict_Box) -> { 3 } }; f } } }")
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> 3\n  let set = () -> {\n    f = () -> mk()\n  }\n  set()\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { 3 }; { let set = () -> { { f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; () } }; { set(); f } } } }")
+  inspect(mid_after("fn seven() -> Int {\n  7\n}\nfn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  f = seven\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; { f = (__ev_Box: __EvDict_Box) -> { seven() }; f } } }")
+  inspect(mid_after("fn mid(c: Bool) -> (() -> Int with Box[Int]) {\n  let g = () -> mk()\n  let mut f = () -> 0\n  f = if c {\n    () -> g()\n  } else {\n    () -> 3\n  }\n  f\n}\n"), "let rec mid = (c: Bool) -> () -> Int with Box[Int] { { let g = () -> { mk() }; { let mut f = () -> { 0 }; { f = if c { () -> { g() } } else { () -> { 3 } }; f } } } }")
 }
 
 // An assigned closure that calls a local the body declares is left as
