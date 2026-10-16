@@ -937,15 +937,22 @@ export fn linemap_disabled() -> LineMapState {
 /// predecessor, the rebase touches `grp_first_off` alone -- so the emitter
 /// re-encodes that one field and blits the rest of the group unchanged.
 export fn linemap_flush_fn(lm: LineMapState) -> Unit {
+  linemap_flush_fn_into(lm, lm)
+}
+
+/// Encode a completed function's private scratch directly into the publisher's
+/// stream. No intermediate stream or module-wide row arrays are allocated.
+/// The caller harvests cache rows first and owns both states exclusively.
+export fn linemap_flush_fn_into(lm: LineMapState, dst: LineMapState) -> Unit {
   let n = Array::length(lm.offsets)
   if n == 0 {
     ()
   } else {
-    Array::push(lm.grp_fn, Array::get(lm.funcs, 0))
-    Array::push(lm.grp_first_off, Array::get(lm.offsets, 0))
-    Array::push(lm.grp_start, bytebuf_length(lm.stream))
-    leb128_encode_u32(lm.stream, Array::get(lm.file_ids, 0))
-    leb128_encode_u32(lm.stream, Array::get(lm.lines, 0))
+    Array::push(dst.grp_fn, Array::get(lm.funcs, 0))
+    Array::push(dst.grp_first_off, Array::get(lm.offsets, 0))
+    Array::push(dst.grp_start, bytebuf_length(dst.stream))
+    leb128_encode_u32(dst.stream, Array::get(lm.file_ids, 0))
+    leb128_encode_u32(dst.stream, Array::get(lm.lines, 0))
     let mut i = 1
     while i < n {
       // The zero function delta is part of the row, not an optimization the
@@ -955,10 +962,10 @@ export fn linemap_flush_fn(lm: LineMapState) -> Unit {
       // for rows after the group's first cost a whole afternoon: the module
       // still validated, and the prune re-emitted 449 bytes of plausible
       // garbage where 406 KiB of rows belonged.
-      leb128_encode_u32(lm.stream, 0)
-      leb128_encode_u32(lm.stream, Array::get(lm.offsets, i) - Array::get(lm.offsets, i - 1))
-      leb128_encode_u32(lm.stream, Array::get(lm.file_ids, i))
-      leb128_encode_u32(lm.stream, Array::get(lm.lines, i))
+      leb128_encode_u32(dst.stream, 0)
+      leb128_encode_u32(dst.stream, Array::get(lm.offsets, i) - Array::get(lm.offsets, i - 1))
+      leb128_encode_u32(dst.stream, Array::get(lm.file_ids, i))
+      leb128_encode_u32(dst.stream, Array::get(lm.lines, i))
       i = i + 1
     }
     Array::truncate(lm.funcs, 0)
