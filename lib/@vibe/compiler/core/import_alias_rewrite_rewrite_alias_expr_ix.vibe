@@ -2037,6 +2037,100 @@ export fn namespace_private_value_stmts(path: String, stmts: Array[Stmt]) -> Arr
   namespace_private_type_ctor_stage(path, value_renamed, namespace_suffix_box, exported)
 }
 
+/// #3444: the ENTRY module's private top-level values that share a name with
+/// one of its own imports, namespaced as every other module's privates are.
+/// The entry keeps its names bare (they are the program's surface), so a local
+/// `fn g` and an imported `g` were one name in the merged program, and the
+/// import ran where the checker had typed the local. A dependency module never
+/// had this: its privates are always namespaced, so a sibling's own
+/// declaration shadows an import there (#897). Only the colliding names move.
+///
+/// The new name is checked against every name the entry declares or imports,
+/// and extended until it is free: `g` in `main.vibe` becomes `g_dep_main_vibe`
+/// unless the entry already spells that (Codex on #3470). An EXPORTED
+/// declaration cannot move, because its name is the program's surface, so
+/// the pair is refused with the edit.
+export fn namespace_entry_import_shadows(path: String, stmts: Array[Stmt]) -> Array[Stmt] with Exception {
+  let imports = import_value_locals_with_paths(stmts)
+  if Array::length(imports) == 0 {
+    stmts
+  } else {
+    let imported = for entry in imports {
+      let (local, _) = entry
+      local
+    }
+    let exported = collect_exported_value_names(stmts)
+    let declared = top_level_value_names(stmts)
+    for entry in imports {
+      let (local, from) = entry
+      // `import { g }; export { g }` re-publishes the import: no declaration.
+      if import_alias_rewrite_string_array_contains(exported, local) && import_alias_rewrite_string_array_contains(declared, local) {
+        throw("`\{local}` is exported here and also imported from '\{from}': an exported declaration cannot share a name with an import -- remove `\{local}` from the import list, or import it under another name (`{ \{local} as other_name }`) [@fn=\{local}]")
+      } else {
+        ()
+      }
+    }
+    let taken = declared
+    for local in imported {
+      Array::push(taken, local)
+    }
+    let renames = empty_aliases()
+    for rename in collect_private_value_renames(path, stmts, [""], exported) {
+      let (name, mangled) = rename
+      if import_alias_rewrite_string_array_contains(imported, name) {
+        let mut fresh = mangled
+        while import_alias_rewrite_string_array_contains(taken, fresh) {
+          fresh = String::concat(fresh, "_")
+        }
+        Array::push(taken, fresh)
+        Array::push(renames, (name, fresh))
+      } else {
+        ()
+      }
+    }
+    if Array::length(renames) == 0 {
+      stmts
+    } else {
+      let ram = aliasidx_build(renames)
+      for stmt in stmts {
+        namespace_private_stmt(stmt, ram)
+      }
+    }
+  }
+}
+
+/// `(local name, import path)` for each item `stmts`' top-level imports bind:
+/// the item's alias, or its own name.
+fn import_value_locals_with_paths(stmts: Array[Stmt]) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  for stmt in stmts {
+    match stmt {
+      SImport(from, items) => for item in items {
+        Array::push(out, (match item.alias {
+          Some(a) => a,
+          None => item.name
+        }, from))
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+fn top_level_value_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = empty_strings()
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, _) => Array::push(out, name),
+      SLetMut(name, _, _) => Array::push(out, name),
+      SExternLet(name, _) => Array::push(out, name),
+      SFnDecl(_, name, _, _, _) => Array::push(out, name),
+      _ => ()
+    }
+  }
+  out
+}
+
 /// The statement as `apply_export_renames_stmts` leaves its head: the
 /// definition name or export items renamed, the body shared.
 export fn export_renamed_head(stmt: Stmt, exports: AliasIdx) -> Stmt {

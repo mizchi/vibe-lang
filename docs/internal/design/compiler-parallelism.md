@@ -717,9 +717,10 @@ checks the planned range and aligned metadata before appending those outputs.
 Body-cache harvest and replay still use the canonical aggregate and unchanged
 persistent formats. Sliced output tables retain their positional padding.
 
-This does **not** enable parallel function emission. Coverage IDs and line-map
-state still need isolation/planning, body-cache publication belongs to the
-coordinator, and compiler globals need an audit before concurrent entry. The
+This does **not** enable parallel function emission. The subsequent
+instrumentation slice isolates coverage and line-map writes (below), but
+coverage ranges still need planning, body-cache publication belongs to the
+coordinator, and compiler globals require isolated worker instances. The
 output record still contains mutable arrays and Bytes: it is not `Send`.
 `TaskGroup::spawn` on the current cooperative backend cannot turn this CPU
 work into parallel execution. A native multi-worker backend must own isolated
@@ -729,6 +730,44 @@ The [measurement report](../../../bench/perf/analysis/function-local-emission-20
 retains the cold/warm samples, compiler receipts and language probes. Walltime
 medians differ by less than 0.7%, with overlapping ranges; median RSS grows
 1.1–1.9 MiB. This is an output-isolation step, with no speedup claim.
+
+### Function instrumentation boundary
+
+Function emission and cache replay now write line-map rows into an
+emitter-private scratch, never the module's accumulator. The coordinator
+harvests those rows for the body cache, then encodes them directly into the
+canonical stream and clears the scratch. One scratch is reused per emitter;
+there is no second encoded stream or new row allocation per function. A new
+body resets its owner and enclosing source site and refuses unconsumed rows.
+Resetting the site also removes an ordering dependency: a leading call must
+not restore a source line left by a previously compiled function. Slices and
+cache hits must begin with the same empty enclosing site.
+
+Coverage emission receives a private counter and owner log initialized with
+the coordinator's starting ID. Publication validates the range, capacity and
+every owner before updating the aggregate. This preserves the existing
+saturating ID assignment and byte encoding, but does not precompute coverage
+ranges. **Coverage-enabled compilation remains serial** in the first native
+function-worker experiment; private counters alone do not permit parallel ID
+allocation. Ordinary non-instrumented function jobs do not need that counter.
+
+Body-cache recording remains a coordinator operation after a complete body.
+The remaining mutable Perceus scratch (`pe_store_tail_names`,
+`pe_store_tail_offs`, `pe_cons_scratch`, `pr_drop_stamp`, `pr_alias_stamp` and
+`pr_seen_gen`) is instance-local, not safe for concurrent re-entry into one
+instance. The native experiment must use a separate Store, Instance and heap
+per worker, sequential jobs within each worker, and copied job/result values.
+This boundary does not authorize shared-memory threads.
+
+The [instrumentation measurement](../../../bench/perf/analysis/function-instrumentation-2026-10-16.json)
+records four interleaved cold/warm A/B pairs per subject and three separate
+warm CPU profiles. Wall medians change -0.63% to +1.29%, with overlapping
+ranges; median RSS changes -0.14 to -0.41 MiB. No speedup is claimed. The CLI
+output remains byte-identical. The compiler corpus differs only in its
+`vibe.linemap` section, which shrinks by 30,284 bytes after the inherited-site
+fix; every executable and other section byte matches. A whole-versus-slice
+regression fails on the old library and passes in both RC modes after the
+fix. Coverage fixture outputs are byte-identical and execute successfully.
 
 ### Language and library proposals, not implemented surfaces
 

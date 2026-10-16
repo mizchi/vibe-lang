@@ -56,7 +56,7 @@ import ./evidence_slot_refusals.vibe {
 }
 
 import ./evidence_returned_scan_expr.vibe {
-  edp_assigns_name, edp_has_unstamped_assign, edp_return_name_count, edp_row_mentions_any, edp_tail_name_count
+  edp_assigns_name, edp_count_assigns_name, edp_return_name_count, edp_row_mentions_any, edp_tail_name_count
 }
 
 /// Any top-level fn with a row-E-typed parameter?
@@ -443,128 +443,182 @@ fn edp_free_use_count(e: Expr, n: String) -> Int {
 }
 
 /// A `let mut n = v` whose body `b` hands `n` back as the result, with the
-/// initializer and every closure assigned to `n` stamped at `slot` (Codex on
+/// initializer and every value assigned to `n` stamped at `slot` (Codex on
 /// #3452: `let mut f = () -> mk(); f = () -> 3; f`). Each of them can be the
-/// value returned, so all of them take the row or none do: when an
-/// assignment's value is not a row-free literal this can stamp -- a name, a
-/// call, an assignment inside a nested lambda -- both are left as written.
+/// value returned, so all of them take the row or none do. A value is read
+/// through its tail positions, as a returned body is (#3463: `f = if c { ..
+/// } else { .. }`), and an assignment inside a lambda that captures `n`
+/// counts. When one cannot be stamped (`edp_mut_value_stampable`), or an
+/// assignment sits where the walk does not reach, all are left as written.
 fn edp_stamp_returned_mut(n: String, v: Expr, b: Expr, slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> (Expr, Expr) {
-  let v2 = edp_stamp_returned_let(n, v, b, slot, scope, pure_names)
   if !edp_assigns_free(b, n) {
-    (v2, b)
+    (edp_stamp_returned_let(n, v, b, slot, scope, pure_names), b)
   } else {
-    match v2 {
-      EFn(_, _, _, _, Some(_), _) => {
-        let marker = "#ret-mut"
-        // The binding itself is in scope for the literals assigned to it.
-        let stamped = edp_stamp_assigned_scoped(edp_rename_free(b, n, marker), [
-          marker
-        ], marker, slot, scope, pure_names)
-        if edp_has_unstamped_assign(stamped, marker) {
-          (v, b)
-        } else {
-          (v2, edp_rename_free(stamped, marker, n))
-        }
-      },
-      _ => (v, b)
+    let results = edp_tail_name_count(b, n) + edp_return_name_count(b, n)
+    if results > 0 && results == edp_free_use_count(b, n) && edp_mut_value_stampable(v, scope, pure_names) {
+      let marker = "#ret-mut"
+      let renamed = edp_rename_free(b, n, marker)
+      // [values met, values that cannot be stamped]
+      let state = [0, 0]
+      // The binding itself is in scope for the values assigned to it.
+      let stamped = edp_stamp_assigned_scoped(renamed, [marker], marker, slot, scope, pure_names, state)
+      if Array::get(state, 1) == 0 && Array::get(state, 0) == edp_count_assigns_name(renamed, marker) {
+        (edp_stamp_tail(v, slot, scope, pure_names), edp_rename_free(stamped, marker, n))
+      } else {
+        (v, b)
+      }
+    } else {
+      (v, b)
     }
   }
 }
 
-/// `e` with each row-free closure literal assigned to `marker` stamped at
-/// `slot`. Each binder passed on the way is laid on `scope`, so a literal that
-/// calls a local the body declares is seen to (Codex on #3462: `let helper =
-/// () -> 3; f = () -> helper()`) and left as written. Every child
-/// `expr_children` gives is entered except a nested lambda's body (Codex on
-/// #3465: `x += { f = () -> 4; 1 }`), so `edp_has_unstamped_assign` finds
-/// only what this declined.
-fn edp_stamp_assigned_lits(e: Expr, marker: String, slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Expr {
+/// Can a value a returned `let mut` holds take the declared row, or keep its
+/// own? It is read through its tail positions as `edp_stamp_tail` stamps them.
+/// A literal that calls a local closure cannot be stamped in place, and a
+/// local binding's name is a closure nothing here stamps. A row-free top-level
+/// function's name is wrapped; any other name, a builtin or a constructor
+/// among them, is not (Codex on #3466: `f = String::length`). A `return`
+/// hands back no value here. Any other value, a call's result among them, is a closure
+/// `edp_stamp_tail` cannot adapt (Codex on #3466: `f = pure_factory()`).
+fn edp_mut_value_stampable(val: Expr, scope: Array[String], pure_names: MutSet[String]) -> Bool {
+  match val {
+    EFn(_, _, _, _, None, lb) => !edp_literal_calls_local(val, lb, scope),
+    EFn(_, _, _, _, Some(_), _) => true,
+    EIdent(x, _) => MutSet::has(pure_names, x) && !edp_scope_has(scope, x),
+    EReturn(_) => true,
+    ESeq(_, b) => edp_mut_value_stampable(b, scope, pure_names),
+    EIf(_, t, el) => edp_mut_value_stampable(t, scope, pure_names) && edp_mut_value_stampable(el, scope, pure_names),
+    EAssign(_, _, c, _) => edp_mut_value_stampable(c, scope, pure_names),
+    ELet(x, _, b, _) => edp_mut_value_stampable_in(b, [x], scope, pure_names),
+    ELetMut(x, _, b, _) => edp_mut_value_stampable_in(b, [x], scope, pure_names),
+    ELetRec(x, _, b) => edp_mut_value_stampable_in(b, [x], scope, pure_names),
+    EMatch(_, arms) => edp_mut_arms_stampable(arms, scope, pure_names),
+    EHandle(bd, arms) => edp_mut_value_stampable(bd, scope, pure_names) && edp_mut_arms_stampable(arms, scope, pure_names),
+    _ => false
+  }
+}
+
+fn edp_mut_value_stampable_in(e: Expr, names: Array[String], scope: Array[String], pure_names: MutSet[String]) -> Bool {
+  let inner: Array[String] = []
+  for x in scope {
+    Array::push(inner, x)
+  }
+  for x in names {
+    Array::push(inner, x)
+  }
+  edp_mut_value_stampable(e, inner, pure_names)
+}
+
+fn edp_mut_arms_stampable(arms: Array[(Pat, Expr)], scope: Array[String], pure_names: MutSet[String]) -> Bool {
+  let mut ok = true
+  for a in arms {
+    if !edp_mut_value_stampable_in(a.1, edp_pat_names(a.0), scope, pure_names) {
+      ok = false
+    } else {
+      ()
+    }
+  }
+  ok
+}
+
+/// `e` with each value assigned to `marker` stamped at `slot`, through its
+/// tail positions. Each binder passed on the way is laid on `scope`, so a
+/// literal that calls a local the body declares is seen to (Codex on #3462:
+/// `let helper = () -> 3; f = () -> helper()`). `state[0]` counts the values
+/// met and `state[1]` the ones that cannot be stamped, which are left as
+/// written; a value that itself assigns `marker` is one of those.
+fn edp_stamp_assigned_lits(e: Expr, marker: String, slot: (Int, String), scope: Array[String], pure_names: MutSet[String], state: Array[Int]) -> Expr {
   match e {
     EAssign(m, v, c, off) => {
       let v2 = if m == marker {
-        match v {
-          EFn(_, _, _, _, None, lb) => if edp_literal_calls_local(v, lb, scope) {
-            v
-          } else {
-            edp_stamp_slot_arg_at(v, scope, pure_names, Some(slot))
-          },
-          _ => v
+        Array::set(state, 0, Array::get(state, 0) + 1)
+        if edp_mut_value_stampable(v, scope, pure_names) && edp_count_assigns_name(v, marker) == 0 {
+          edp_stamp_tail(v, slot, scope, pure_names)
+        } else {
+          Array::set(state, 1, Array::get(state, 1) + 1)
+          v
         }
       } else {
-        edp_stamp_assigned_lits(v, marker, slot, scope, pure_names)
+        edp_stamp_assigned_lits(v, marker, slot, scope, pure_names, state)
       }
-      EAssign(m, v2, edp_stamp_assigned_lits(c, marker, slot, scope, pure_names), off)
+      EAssign(m, v2, edp_stamp_assigned_lits(c, marker, slot, scope, pure_names, state), off)
     },
-    EAssignOp(m, op, v, c, off) => EAssignOp(m, op, edp_stamp_assigned_lits(v, marker, slot, scope, pure_names), edp_stamp_assigned_lits(c, marker, slot, scope, pure_names), off),
-    ESeq(a, b) => ESeq(edp_stamp_assigned_lits(a, marker, slot, scope, pure_names), edp_stamp_assigned_lits(b, marker, slot, scope, pure_names)),
-    ELet(x, v, b, off) => ELet(x, edp_stamp_assigned_lits(v, marker, slot, scope, pure_names), edp_stamp_assigned_scoped(b, [
+    EAssignOp(m, op, v, c, off) => EAssignOp(m, op, edp_stamp_assigned_lits(v, marker, slot, scope, pure_names, state), edp_stamp_assigned_lits(c, marker, slot, scope, pure_names, state), off),
+    ESeq(a, b) => ESeq(edp_stamp_assigned_lits(a, marker, slot, scope, pure_names, state), edp_stamp_assigned_lits(b, marker, slot, scope, pure_names, state)),
+    ELet(x, v, b, off) => ELet(x, edp_stamp_assigned_lits(v, marker, slot, scope, pure_names, state), edp_stamp_assigned_scoped(b, [
       x
-    ], marker, slot, scope, pure_names), off),
-    ELetMut(x, v, b, off) => ELetMut(x, edp_stamp_assigned_lits(v, marker, slot, scope, pure_names), edp_stamp_assigned_scoped(b, [
+    ], marker, slot, scope, pure_names, state), off),
+    ELetMut(x, v, b, off) => ELetMut(x, edp_stamp_assigned_lits(v, marker, slot, scope, pure_names, state), edp_stamp_assigned_scoped(b, [
       x
-    ], marker, slot, scope, pure_names), off),
-    ELetRec(x, v, b) => ELetRec(x, v, edp_stamp_assigned_scoped(b, [x], marker, slot, scope, pure_names)),
-    EIf(c, t, el) => EIf(edp_stamp_assigned_lits(c, marker, slot, scope, pure_names), edp_stamp_assigned_lits(t, marker, slot, scope, pure_names), edp_stamp_assigned_lits(el, marker, slot, scope, pure_names)),
-    EMatch(sc, arms) => EMatch(edp_stamp_assigned_lits(sc, marker, slot, scope, pure_names), for a in arms {
-      (a.0, edp_stamp_assigned_scoped(a.1, edp_pat_names(a.0), marker, slot, scope, pure_names))
+    ], marker, slot, scope, pure_names, state), off),
+    ELetRec(x, v, b) => ELetRec(x, v, edp_stamp_assigned_scoped(b, [x], marker, slot, scope, pure_names, state)),
+    // A lambda that captures the binding can assign it whenever it runs
+    // (#3463), so its body is walked with its parameters in scope.
+    EFn(tps, tbs, ps, ret, eff, fb) => EFn(tps, tbs, ps, ret, eff, edp_stamp_assigned_scoped(fb, for pp in ps {
+      edp_param_base_name(pp.0)
+    }, marker, slot, scope, pure_names, state)),
+    EIf(c, t, el) => EIf(edp_stamp_assigned_lits(c, marker, slot, scope, pure_names, state), edp_stamp_assigned_lits(t, marker, slot, scope, pure_names, state), edp_stamp_assigned_lits(el, marker, slot, scope, pure_names, state)),
+    EMatch(sc, arms) => EMatch(edp_stamp_assigned_lits(sc, marker, slot, scope, pure_names, state), for a in arms {
+      (a.0, edp_stamp_assigned_scoped(a.1, edp_pat_names(a.0), marker, slot, scope, pure_names, state))
     }),
-    EHandle(bd, arms) => EHandle(edp_stamp_assigned_lits(bd, marker, slot, scope, pure_names), for a in arms {
-      (a.0, edp_stamp_assigned_scoped(a.1, edp_pat_names(a.0), marker, slot, scope, pure_names))
+    EHandle(bd, arms) => EHandle(edp_stamp_assigned_lits(bd, marker, slot, scope, pure_names, state), for a in arms {
+      (a.0, edp_stamp_assigned_scoped(a.1, edp_pat_names(a.0), marker, slot, scope, pure_names, state))
     }),
-    EWhile(c, b) => EWhile(edp_stamp_assigned_lits(c, marker, slot, scope, pure_names), edp_stamp_assigned_lits(b, marker, slot, scope, pure_names)),
+    EWhile(c, b) => EWhile(edp_stamp_assigned_lits(c, marker, slot, scope, pure_names, state), edp_stamp_assigned_lits(b, marker, slot, scope, pure_names, state)),
     EForIn(x, idx, it, b) => {
       let names = [x]
       match idx {
         Some(i) => Array::push(names, i),
         None => ()
       }
-      EForIn(x, idx, edp_stamp_assigned_lits(it, marker, slot, scope, pure_names), edp_stamp_assigned_scoped(b, names, marker, slot, scope, pure_names))
+      EForIn(x, idx, edp_stamp_assigned_lits(it, marker, slot, scope, pure_names, state), edp_stamp_assigned_scoped(b, names, marker, slot, scope, pure_names, state))
     },
     // An initializer is read before its own binder is in scope.
     ELoop(pairs, b) => ELoop(for pr in pairs {
-      (pr.0, edp_stamp_assigned_lits(pr.1, marker, slot, scope, pure_names))
+      (pr.0, edp_stamp_assigned_lits(pr.1, marker, slot, scope, pure_names, state))
     }, edp_stamp_assigned_scoped(b, for pr in pairs {
       pr.0
-    }, marker, slot, scope, pure_names)),
+    }, marker, slot, scope, pure_names, state)),
     // An assignment can sit under a `return`, an operand, an argument or an
     // aggregate element, as a `return` can for `edp_stamp_returns` (Codex on
     // #3462: `return { f = () -> 3; f }`).
-    EReturn(x) => EReturn(edp_stamp_assigned_lits(x, marker, slot, scope, pure_names)),
-    ECall(callee, args, off, res) => ECall(edp_stamp_assigned_lits(callee, marker, slot, scope, pure_names), for x in args {
-      edp_stamp_assigned_lits(x, marker, slot, scope, pure_names)
+    EReturn(x) => EReturn(edp_stamp_assigned_lits(x, marker, slot, scope, pure_names, state)),
+    ECall(callee, args, off, res) => ECall(edp_stamp_assigned_lits(callee, marker, slot, scope, pure_names, state), for x in args {
+      edp_stamp_assigned_lits(x, marker, slot, scope, pure_names, state)
     }, off, res),
-    EBinOp(op, l, r, boff) => EBinOp(op, edp_stamp_assigned_lits(l, marker, slot, scope, pure_names), edp_stamp_assigned_lits(r, marker, slot, scope, pure_names), boff),
-    EUnaryOp(op, x) => EUnaryOp(op, edp_stamp_assigned_lits(x, marker, slot, scope, pure_names)),
-    EDot(o, f, o1, o2) => EDot(edp_stamp_assigned_lits(o, marker, slot, scope, pure_names), f, o1, o2),
-    ELabeledArg(l, ln, v) => ELabeledArg(l, ln, edp_stamp_assigned_lits(v, marker, slot, scope, pure_names)),
-    EBreak(Some(x)) => EBreak(Some(edp_stamp_assigned_lits(x, marker, slot, scope, pure_names))),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_stamp_assigned_lits(l, marker, slot, scope, pure_names, state), edp_stamp_assigned_lits(r, marker, slot, scope, pure_names, state), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, edp_stamp_assigned_lits(x, marker, slot, scope, pure_names, state)),
+    EDot(o, f, o1, o2) => EDot(edp_stamp_assigned_lits(o, marker, slot, scope, pure_names, state), f, o1, o2),
+    ELabeledArg(l, ln, v) => ELabeledArg(l, ln, edp_stamp_assigned_lits(v, marker, slot, scope, pure_names, state)),
+    EBreak(Some(x)) => EBreak(Some(edp_stamp_assigned_lits(x, marker, slot, scope, pure_names, state))),
     EContinue(args) => EContinue(for x in args {
-      edp_stamp_assigned_lits(x, marker, slot, scope, pure_names)
+      edp_stamp_assigned_lits(x, marker, slot, scope, pure_names, state)
     }),
     ETuple(items) => ETuple(for x in items {
-      edp_stamp_assigned_lits(x, marker, slot, scope, pure_names)
+      edp_stamp_assigned_lits(x, marker, slot, scope, pure_names, state)
     }),
     EArray(items) => EArray(for x in items {
-      edp_stamp_assigned_lits(x, marker, slot, scope, pure_names)
+      edp_stamp_assigned_lits(x, marker, slot, scope, pure_names, state)
     }),
     ERecord(rn, fields, tas) => ERecord(rn, for fl in fields {
-      (fl.0, edp_stamp_assigned_lits(fl.1, marker, slot, scope, pure_names))
+      (fl.0, edp_stamp_assigned_lits(fl.1, marker, slot, scope, pure_names, state))
     }, tas),
     EMap(fields) => EMap(for fl in fields {
-      (fl.0, edp_stamp_assigned_lits(fl.1, marker, slot, scope, pure_names))
+      (fl.0, edp_stamp_assigned_lits(fl.1, marker, slot, scope, pure_names, state))
     }),
-    ESpread(x) => ESpread(edp_stamp_assigned_lits(x, marker, slot, scope, pure_names)),
+    ESpread(x) => ESpread(edp_stamp_assigned_lits(x, marker, slot, scope, pure_names, state)),
     _ => e
   }
 }
 
 /// `edp_stamp_assigned_lits` over `e` with `names` bound on top of `scope`.
-fn edp_stamp_assigned_scoped(e: Expr, names: Array[String], marker: String, slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Expr {
+fn edp_stamp_assigned_scoped(e: Expr, names: Array[String], marker: String, slot: (Int, String), scope: Array[String], pure_names: MutSet[String], state: Array[Int]) -> Expr {
   let base = Array::length(scope)
   for n in names {
     Array::push(scope, n)
   }
-  let out = edp_stamp_assigned_lits(e, marker, slot, scope, pure_names)
+  let out = edp_stamp_assigned_lits(e, marker, slot, scope, pure_names, state)
   Array::truncate(scope, base)
   out
 }

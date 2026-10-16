@@ -154,6 +154,7 @@ import @vibe/compiler/codegen/common_base {
   codegen_body_cache_record,
   codegen_body_cache_replay,
   codegen_body_cache_slot_index,
+  cov_disabled,
   emit_i32_eqz,
   emit_i32_ge_u,
   emit_i32_mul,
@@ -163,7 +164,7 @@ import @vibe/compiler/codegen/common_base {
   get_efn_body,
   is_efn,
   is_eident,
-  linemap_flush_fn,
+  linemap_flush_fn_into,
   rc_exit_push,
   region_exn_tag_linear,
   str_table_index_of,
@@ -225,6 +226,10 @@ import ./linked_compile_lc_rename_sleep_calls.vibe {
 
 import ./linked_function_effects.vibe {
   lc_commit_function_effects, lc_function_effects_new
+}
+
+import ./linked_function_instrumentation.vibe {
+  lc_commit_function_cov, lc_function_cov_new, lc_function_linemap_begin, lc_function_linemap_new
 }
 
 import ./linked_function_plan.vibe {
@@ -332,9 +337,13 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   let lc_struct_names_sorted_pos = input.lc_struct_names_sorted_pos
   let lc_type_names_sorted = input.lc_type_names_sorted
   let library_mode = input.library_mode
-  let linemap_off = input.linemap_off
+  let linemap_off = lc_function_linemap_new(false)
   let linemap_on = input.linemap_on
   let linemap_state = input.linemap_state
+  // One scratch per emitter/worker, reused only after canonical publication.
+  // The module's line-map accumulator is never passed to compile_expr.
+  let function_linemap = lc_function_linemap_new(linemap_on)
+  let function_cov_off = cov_disabled()
   let lt_w = input.lt_w
   let map_build_index_idx = input.map_build_index_idx
   let map_cap_idx = input.map_cap_idx
@@ -950,10 +959,11 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
         0 - 1
       }
       let fn_linemap = if dbg_fid_placed >= 0 {
-        linemap_state
+        function_linemap
       } else {
         linemap_off
       }
+      lc_function_linemap_begin(fn_linemap, bi)
       if __cache_hit >= 0 {
         let __r_slot_lo = Array::length(table_slots_used)
         let __r_blind_lo = Array::length(blind_owners)
@@ -978,7 +988,12 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
         let __slot_lo = Array::length(table_slots_used)
         // #2669 slice 2: the same suffix, for the blind-reference log.
         let __blind_lo = Array::length(blind_owners)
-        let __lm_lo = Array::length(linemap_state.offsets)
+        let cov_start = Array::get(cov_state.next, 0)
+        let function_cov = if coverage {
+          lc_function_cov_new(cov_state.base, cov_state.cap, cov_start, bi)
+        } else {
+          function_cov_off
+        }
         // #703 follow-up: under RC, lift temporary match scrutinees into lets so the
         // Perceus pass (which drops named bindings) reclaims them. Applied here, the
         // SAME transformed body feeds both build_perceus_plan (below) and the body
@@ -995,19 +1010,12 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
         // counters and diverge from what the plan counted.
         let __bi_expr = Array::get(planned_bodies, bi)
         let body_buf = bytebuf_new()
-        // #644: tell the linemap recorder which user function `body_buf`'s
-        // offsets belong to (mirrors cov_state.cur_fn below). Set unconditionally
-        // -- linemap_record itself is a no-op unless linemap_state.enabled.
-        Array::set(linemap_state.cur_fn, 0, bi)
         // #cov: mark this user function as executed (store 1 at cov_base + bi).
         // Stack-neutral and local-free, so prepending it to the body is safe.
         if coverage {
           emit_i32_const(body_buf, cov_base + bi)
           emit_i32_const(body_buf, 1)
           emit_i32_store8(body_buf, 0, 0)
-          // #cov branch: tell branch instrumentation which function owns the branches
-          // emitted while compiling this body.
-          Array::set(cov_state.cur_fn, 0, bi)
         } else {
           ()
         }
@@ -1438,7 +1446,7 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
           effect_names: effect_names_list,
           effect_op_keys: effect_op_keys_list,
           effect_op_arities: effect_op_arities_list,
-          cov: cov_state,
+          cov: function_cov,
           dbg_line_idx: dbg_line_import_idx,
           dbg_line_nl: dbg_nls,
           dbg_line_file_id: dbg_fid,
@@ -1963,16 +1971,15 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
         // agrees with the planned range. Cache harvest still reads the canonical
         // aggregate, so replay and persistent formats remain unchanged.
         lc_commit_function_effects(function_effects, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms, lambda_planned_end)
-        codegen_body_cache_record(body_cache_out, bi, Array::get(fn_names_list, bi), lc_fn_origin_lookup(lc_fn_file_of, Array::get(fn_names_list, bi)), lc_fn_origin_lookup(lc_fn_stmt_of, Array::get(fn_names_list, bi)), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used), blind_owners, blind_offsets, blind_kinds, blind_syms, __blind_lo, Array::length(blind_owners), linemap_state, __lm_lo)
+        if coverage {
+          lc_commit_function_cov(function_cov, cov_state, cov_start, bi)
+        } else ()
+        codegen_body_cache_record(body_cache_out, bi, Array::get(fn_names_list, bi), lc_fn_origin_lookup(lc_fn_file_of, Array::get(fn_names_list, bi)), lc_fn_origin_lookup(lc_fn_stmt_of, Array::get(fn_names_list, bi)), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used), blind_owners, blind_offsets, blind_kinds, blind_syms, __blind_lo, Array::length(blind_owners), fn_linemap, 0)
       }
+      // Cache harvest reads private rows before encoding empties the scratch.
+      // Replay fills the same scratch and follows the same publication path.
+      linemap_flush_fn_into(fn_linemap, linemap_state)
     }
-    // #2874: this function is done contributing rows -- on the replay path,
-    // the compile path, and the slice-skipped path alike -- so encode them and
-    // hand the scratch tables back empty. It runs AFTER
-    // `codegen_body_cache_record`, which reads the very rows being flushed.
-    // Outside the in-slice branch on purpose: a skipped function recorded
-    // nothing, and a flush of nothing is a no-op.
-    linemap_flush_fn(linemap_state)
     bi = bi + 1
   }
   LinkedBodyPlan::{
