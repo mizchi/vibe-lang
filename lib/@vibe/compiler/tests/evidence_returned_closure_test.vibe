@@ -94,3 +94,15 @@ test "a closure assigned to a returned let mut takes the dict, or none does" {
 test "an assigned closure that calls a body-local helper keeps the binding as written" {
   inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  let helper = () -> 3\n  f = () -> helper()\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = () -> { mk() }; { let helper = () -> { 3 }; { f = () -> { helper() }; f } } } }")
 }
+
+// An assignment under a `return` is reached as one in a tail position is
+// (Codex on #3462).
+test "a closure assigned under a return takes the dict with its initializer" {
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let mut f = () -> mk()\n  return {\n    f = () -> 3\n    f\n  }\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; return { f = (__ev_Box: __EvDict_Box) -> { 3 }; f } } }")
+}
+
+// An assignment inside a compound assignment's value is reached too (Codex on
+// #3465).
+test "a closure assigned inside a compound assignment's value takes the dict" {
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let mut n = 0\n  let mut f = () -> mk()\n  n += {\n    f = () -> 5\n    1\n  }\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut n = 0; { let mut f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; { n += { f = (__ev_Box: __EvDict_Box) -> { 5 }; 1 }; f } } } }")
+}
