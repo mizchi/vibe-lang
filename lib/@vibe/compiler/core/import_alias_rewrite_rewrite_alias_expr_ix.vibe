@@ -2037,6 +2037,58 @@ export fn namespace_private_value_stmts(path: String, stmts: Array[Stmt]) -> Arr
   namespace_private_type_ctor_stage(path, value_renamed, namespace_suffix_box, exported)
 }
 
+/// #3444: the ENTRY module's private top-level values that share a name with
+/// one of its own imports, namespaced as every other module's privates are.
+/// The entry keeps its names bare (they are the program's surface), so a local
+/// `fn g` and an imported `g` were one name in the merged program, and the
+/// import ran where the checker had typed the local. A dependency module never
+/// had this: its privates are always namespaced, so a sibling's own
+/// declaration shadows an import there (#897). Only the colliding names move;
+/// an exported one stays bare.
+export fn namespace_entry_import_shadows(path: String, stmts: Array[Stmt]) -> Array[Stmt] {
+  let imported = import_value_local_names(stmts)
+  if Array::length(imported) == 0 {
+    stmts
+  } else {
+    let exported = collect_exported_value_names(stmts)
+    let renames = empty_aliases()
+    for rename in collect_private_value_renames(path, stmts, [""], exported) {
+      let (name, _) = rename
+      if import_alias_rewrite_string_array_contains(imported, name) {
+        Array::push(renames, rename)
+      } else {
+        ()
+      }
+    }
+    if Array::length(renames) == 0 {
+      stmts
+    } else {
+      let ram = aliasidx_build(renames)
+      for stmt in stmts {
+        namespace_private_stmt(stmt, ram)
+      }
+    }
+  }
+}
+
+/// The local names `stmts`' top-level imports bind: an item's alias, or its
+/// own name.
+fn import_value_local_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = empty_strings()
+  for stmt in stmts {
+    match stmt {
+      SImport(_, items) => for item in items {
+        Array::push(out, match item.alias {
+          Some(a) => a,
+          None => item.name
+        })
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
 /// The statement as `apply_export_renames_stmts` leaves its head: the
 /// definition name or export items renamed, the body shared.
 export fn export_renamed_head(stmt: Stmt, exports: AliasIdx) -> Stmt {
