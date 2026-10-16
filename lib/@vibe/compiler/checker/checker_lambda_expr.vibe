@@ -164,6 +164,7 @@ import ./checker_region_retention.vibe {
   retention_active_region_names,
   retention_bind_param_callee,
   retention_bind_param_carry,
+  retention_local_callback_unresolved,
   retention_local_closure_literal,
   retention_note_result,
   retention_region_listed,
@@ -534,15 +535,23 @@ fn lapw_callback_literal(arg: Expr, env: TypeEnv) -> Option[(Expr, TypeEnv)] {
   }
 }
 
-/// A callback held in a `let mut` can be reassigned, so which closure reaches
-/// the call is not known here; at a parameter whose type carries an active
-/// region it is refused with the edit rather than passed unchecked (Codex on
-/// #3461).
+/// A callback whose closure this check cannot trace -- one held in a `let mut`,
+/// which can be reassigned, an alias of one, or any other local name the
+/// region-retention markers do not reach (Codex on #3461) -- is refused with
+/// the edit at a parameter whose type carries an active region, rather than
+/// passed unchecked.
 fn lapw_refuse_mut_callback(arg: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
   match arg {
-    EIdent(n, _) => match env_mut_escape(env, n) {
-      Some(_) => lapw_report(String::concat("bind `", String::concat(n, "` with `let`, or write the closure at the call: a callback held in a `let mut` cannot be checked here for storing a value of the active region outside it")), arg, errors),
-      None => ()
+    EIdent(n, _) => {
+      let untraced = match env_mut_escape(env, n) {
+        Some(_) => true,
+        None => retention_local_callback_unresolved(env, n)
+      }
+      if untraced {
+        lapw_report(String::concat("bind `", String::concat(n, "` to the closure with `let`, or write the closure at the call: a callback this check cannot trace to its closure (a `let mut`, or an alias of one) cannot be checked here for storing a value of the active region outside it")), arg, errors)
+      } else {
+        ()
+      }
     },
     _ => ()
   }

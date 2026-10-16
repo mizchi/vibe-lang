@@ -122,3 +122,12 @@ test "a let mut callback over region-free values, and a region-local named write
   assert(check_source_ok("fn build() -> Int {\n  let sink: Array[Int] = []\n  let mut add = (n) -> {\n    Array::push(sink, n)\n    0\n  }\n  region r {\n    let _ = Array::map([1, 2], add)\n  }\n  Array::length(sink)\n}"))
   assert(check_source_ok("fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let local: Array[MutList[Int]] = []\n    let keep = (c) -> {\n      Array::push(local, c)\n      0\n    }\n    let _ = Array::map(cells, keep)\n    Array::length(local)\n  }\n}"))
 }
+
+// Codex on #3461: an immutable alias of a `let mut` callback is still
+// untraced, and a module-level `let` closure is rechecked like a local one.
+test "an alias of a mutable callback, and a module-level closure, do not pass the recheck" {
+  let alias_of_mut = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let mut stash = (c) -> {\n      Array::push(sink, c)\n      0\n    }\n    let again = stash\n    let _ = Array::map(cells, again)\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(alias_of_mut), "cannot be checked here"))
+  let top_src = "let outer: Array[MutList[Int]] = []\nlet stash = (c) -> {\n  Array::push(outer, c)\n  0\n}\nfn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, stash)\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(top_src), "region escapes its scope"))
+}
