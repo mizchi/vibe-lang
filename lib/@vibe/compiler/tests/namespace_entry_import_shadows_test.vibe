@@ -1,0 +1,46 @@
+import @vibe/compiler/core {
+  namespace_entry_import_shadows
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_program
+}
+
+// #3444: the entry module keeps its names bare, so a private top-level value
+// sharing a name with one of its imports is namespaced the way a dependency's
+// privates are. Only that name moves.
+
+fn entry(source: String) -> String with Exception {
+  one_line(print_program(namespace_entry_import_shadows("main.vibe", parse_program(lex(source)))))
+}
+
+// The printed program on one line, so a snapshot reads as a row.
+fn one_line(s: String) -> String {
+  let parts = String::split(s, "\n")
+  let mut acc = ""
+  let mut i = 0
+  while i < Array::length(parts) {
+    if Array::get(parts, i) != "" {
+      acc = String::concat(String::concat(acc, Array::get(parts, i)), " | ")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  acc
+}
+
+test "a private fn sharing a name with an import is namespaced, with its uses" {
+  let out = entry("import ./dep.vibe { g, h }\nfn g(n: Int) -> Int {\n  n + 100\n}\nfn other() -> Int {\n  g(1)\n}\ntest \"t\" {\n  inspect(g(2), content = \"102\")\n}\n")
+  inspect(out, content = "import ./dep.vibe { g, h } | let rec g_dep_main_vibe = (n: Int) -> Int { (n + 100) } | let rec other = () -> Int { g_dep_main_vibe(1) } | test \"t\" { inspect(g_dep_main_vibe(2), content=\"102\") } | ")
+}
+
+test "an entry with no colliding name is unchanged" {
+  let source = "import ./dep.vibe { g }\nfn other() -> Int {\n  1\n}\n"
+  inspect(entry(source) == one_line(print_program(parse_program(lex(source)))), content = "true")
+}
+
+test "an exported declaration keeps its name" {
+  let out = entry("import ./dep.vibe { g }\nexport fn g(n: Int) -> Int {\n  n\n}\n")
+  inspect(String::contains(out, "g_dep_main_vibe"), content = "false")
+}
