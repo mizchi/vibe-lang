@@ -791,15 +791,24 @@ fn reexported_type_aliases_into(paths: Array[String], stmts_list: Array[Array[St
   let mut fi = 0
   while fi < Array::length(stmts_list) {
     let path = Array::get(paths, fi)
-    for stmt in Array::get(stmts_list, fi) {
-      match stmt {
-        SReExport(raw_path, items) => {
-          let provider = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
-          for item in items {
-            let exported = match item.alias {
-              Some(a) => a,
-              None => item.name
-            }
+    let stmts = Array::get(stmts_list, fi)
+    // The two-step form, `import ./a.vibe { N }` then `export { N }`,
+    // re-exports the imported alias too (Codex on #3467).
+    let listed = collect_exported_value_names(stmts)
+    for stmt in stmts {
+      let (raw_path, items, all_items) = match stmt {
+        SReExport(rp, its) => (rp, its, true),
+        SImport(rp, its) => (rp, its, false),
+        _ => ("", [], false)
+      }
+      if raw_path != "" {
+        let provider = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
+        for item in items {
+          let exported = match item.alias {
+            Some(a) => a,
+            None => item.name
+          }
+          if all_items || import_alias_rewrite_string_array_contains(listed, exported) {
             for al in shared {
               let (from, an, ap, target) = al
               if an == item.name && from == provider {
@@ -807,8 +816,7 @@ fn reexported_type_aliases_into(paths: Array[String], stmts_list: Array[Array[St
               }
             }
           }
-        },
-        _ => ()
+        }
       }
     }
     fi = fi + 1
