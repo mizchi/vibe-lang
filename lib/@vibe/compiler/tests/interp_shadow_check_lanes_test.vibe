@@ -105,3 +105,27 @@ test "#3456: a shadow typed as nothing a row spells is not read as the outer typ
   inspect(fs_check("/tmp/vibe_interp_shadow_empty_over_raw.vibe", source), content = "")
   inspect(single_file(source), content = "")
 }
+
+test "#3456: any prelude refusal in the entry is located when a dependency is merged before it" {
+  // Not only the culprit and missing-Show classes: every `[@off=]` the prelude
+  // throws indexes the merge, and is read against its own file (Codex on
+  // #3458).
+  let base_dir = "/tmp/vibe_interp_shadow_generic_enum_after_dep"
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(String::concat(base_dir, "/dep.vibe"), string_to_bytes("export fn twice(n: Int) -> Int {\n  let pad = \"padding padding padding padding padding padding padding\"\n  n * 2\n}\n"))
+  let source = String::concat("import ./dep.vibe { twice }\n\nenum G[T] {\n  GA(T);\n  GB\n} derive (Show)\n\nfn show_it[T](g: G[T]) -> String {\n  ", String::concat(interp_of("g"), "\n}\n"))
+  let msg = fs_check(String::concat(base_dir, "/main.vibe"), source)
+  inspect(String::contains(msg, "its type arguments are not known here"), content = "true")
+  inspect(String::contains(msg, "line 9:4"), content = "true")
+  inspect(String::contains(msg, "[@off="), content = "false")
+}
+
+test "#3456: a prelude refusal in a dependency is named by the dependency's path" {
+  let base_dir = "/tmp/vibe_interp_shadow_generic_enum_in_dep"
+  Fs::mkdir_p(base_dir)
+  let dep = String::concat("enum G[T] {\n  GA(T);\n  GB\n} derive (Show)\n\nexport fn show_it[T](g: G[T]) -> String {\n  ", String::concat(interp_of("g"), "\n}\n"))
+  Fs::write_bytes(String::concat(base_dir, "/dep.vibe"), string_to_bytes(dep))
+  let msg = fs_check(String::concat(base_dir, "/main.vibe"), "import ./dep.vibe { show_it }\n\nexport fn main() -> Int {\n  0\n}\n")
+  inspect(String::contains(msg, "/tmp/vibe_interp_shadow_generic_enum_in_dep/dep.vibe: line 7:4: cannot interpolate this `G` value"), content = "true")
+  inspect(String::contains(msg, "[@off="), content = "false")
+}
