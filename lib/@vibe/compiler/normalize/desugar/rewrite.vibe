@@ -766,14 +766,18 @@ fn render_classify_var_types(var_types: Array[(String, String)], arg: Expr) -> A
   }
 }
 
-/// #3456: a name `render_classify_var_types` reads through its row (masked, or
-/// with no entry) whose row says the runtime renderer cannot print its type.
-/// Nothing in this pass renders it, so the build refuses it in codegen (#2987),
-/// which no check lane runs. Refused here with the same message, so `vibe
-/// check` answers what the build does (Codex on #3458).
+/// #3456: an untyped shadowing `let` (a masked name) whose row says the runtime
+/// renderer cannot print its type. `render_classify_var_types` reads it as a
+/// fresh name, and nothing in this pass renders that, so the build refuses it
+/// in codegen (#2987), which no check lane runs. Refused here with the same
+/// message, so `vibe check` answers what the build does (Codex on #3458).
+///
+/// Only a masked name: an entry-less one may be a constructor the pass renders
+/// itself (`"\{None}"` is typed `Option[t]`, which the renderer cannot print,
+/// and renders as `None`).
 fn refuse_unrenderable_render_row(var_types: Array[(String, String)], arg: Expr) -> Unit with Exception {
   match arg {
-    EIdent(n, off) => if off >= 0 && (render_masked(var_types, n) || !has_var_entry(var_types, n)) {
+    EIdent(n, off) => if off >= 0 && render_masked(var_types, n) {
       match dtd_typed_render_row_arg(arg) {
         Some(ty) => if dtd_typed_render_row_is_unrenderable(ty) {
           throw(unrenderable_render_message(arg))
