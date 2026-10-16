@@ -676,6 +676,26 @@ check runs only inside a region and only for such a call; its diagnostics,
 types and substitution are discarded, and the per-run tables it touches are
 restored (`lib/@vibe/compiler/checker/checker_region_retention.vibe`).
 
+A closure handed to a function is checked before the call has fixed its
+parameter's type, so its writes of that parameter are checked again once the
+call has (#3360). The element-callback builtins (`Array::map`, `fold`,
+`filter`, `any`, `all`, `find`) use the element type, and a call through the
+ordinary path uses the callee's own parameter type: `Array::map(hs, (h) -> {
+Array::push(outer, h); 0 })` is refused like `for h in hs`, and so is a
+generic `each_of[T](xs: Array[T], f: (T) -> Int)`. A callee in the same module
+that spells the parameter's type itself, `fn apply(xs: Array[TaskHandle[Int]],
+f: (TaskHandle[Int]) -> Int)`, is checked again where the token reaches it,
+with `f` bound to the closure passed, so its `Array::map(xs, f)` is refused
+too. A callback bound by `let` and passed by name (`let stash = (c) -> {
+Array::push(sink, c); 0 }; Array::map(cells, stash)`) is checked as the
+literal it binds, found through the binding marker the region-retention pass
+keeps (`retention_local_closure_literal`), and its body is read where it was
+written. A callback name that marker cannot trace to its closure -- a `let
+mut`, an alias of one, a closure a call produced, local or module-level -- is
+refused at a slot whose type carries the region, with the edit. Pinned by the
+`taskgroup_escape_hof_*_reject` rows and
+`lib/@vibe/compiler/tests/region_write_gate_test.vibe`.
+
 After the body is checked, the call is also refused when:
 
 - **the returned value mentions the region** -- the body returns a task
@@ -1086,24 +1106,9 @@ nursery scope`).
   `Sender::send(tx, v)`); the standard library's own retaining operations are
   listed by name and checked like `Array::push`. Closing it needs a summary of
   which arguments a function keeps, published in the module's interface.
-- **A closure handed to a function that names its parameter's type.** A
-  closure literal is checked before the call it is passed to has fixed its
-  parameter's type, so its writes of that parameter are checked again once the
-  call has (#3360). The element-callback builtins (`Array::map`, `fold`,
-  `filter`, `any`, `all`, `find`) use the element type, and a call through the
-  ordinary path uses the callee's own parameter type: `Array::map(hs, (h) -> {
-  Array::push(outer, h); 0 })` is refused like `for h in hs`, and so is a
-  generic `each_of[T](xs: Array[T], f: (T) -> Int)`. A callee that spells the
-  parameter's type itself, `f: (TaskHandle[Int]) -> Int`, erases the region in
-  that annotation, so the same write through it still compiles and runs
-  (measured). A callback bound by `let` and passed by name (`let stash = (c)
-  -> { Array::push(sink, c); 0 }; Array::map(cells, stash)`) is checked as the
-  literal it binds, found through the binding marker the region-retention
-  pass keeps (`retention_local_closure_literal`), and its body is read where
-  it was written. A callback held in a `let mut` is refused at such a slot
-  with the edit, because which closure reaches the call is not known. Joining the escaped handle after the group returns the task's
-  value (measured), so no program is answered wrongly, but nothing enforces
-  that the handle stays in its group.
+  Joining the escaped handle after the group returns the task's value
+  (measured), so no program is answered wrongly, but nothing enforces that the
+  handle stays in its group.
 - **Mid-run cancellation.** A cancel request is observed at dispatch and at a
   parked task only. A running task, and a suspendable task that is running
   when the request arrives, are not interrupted.

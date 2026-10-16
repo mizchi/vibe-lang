@@ -157,3 +157,15 @@ test "an alias of a mutable callback, and a module-level closure, do not pass th
   let top_src = "let outer: Array[MutList[Int]] = []\nlet stash = (c) -> {\n  Array::push(outer, c)\n  0\n}\nfn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, stash)\n  }\n  0\n}"
   assert(String::contains(check_source_error_message(top_src), "region escapes its scope"))
 }
+
+// Codex on #3461: a module-level name the markers cannot trace is refused like
+// a local one -- the end of a chain longer than the resolver follows, or a
+// closure a call produced. A short chain to a closure that keeps its element
+// still resolves and compiles.
+test "an untraced module-level callback does not pass the recheck" {
+  let chain_src = "let outer: Array[MutList[Int]] = []\nlet a0 = (c) -> {\n  Array::push(outer, c)\n  0\n}\nlet a1 = a0\nlet a2 = a1\nlet a3 = a2\nlet a4 = a3\nlet a5 = a4\nlet a6 = a5\nlet a7 = a6\nlet a8 = a7\nlet a9 = a8\nfn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, a9)\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(chain_src), "cannot be checked here"))
+  let made_src = "let outer: Array[MutList[Int]] = []\nfn make() -> (MutList[Int]) -> Int {\n  (c) -> {\n    Array::push(outer, c)\n    0\n  }\n}\nlet made = make()\nfn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, made)\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(made_src), "cannot be checked here"))
+  assert(check_source_ok("let a0 = (c) -> {\n  let mine = [c]\n  Array::length(mine)\n}\nlet a1 = a0\nlet a2 = a1\nfn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, a2)\n  }\n  0\n}"))
+}

@@ -1,0 +1,24 @@
+// #3360: a callee that spells its callback's parameter type itself
+// (`f: (TaskHandle[Int]) -> Int`) and hands the callback to `Array::map`.
+// The closure stores each task handle of the group into an outer array. The
+// callee's body is checked again where the token reaches it, and its
+// parameter `f` is bound to the closure passed, so the write is refused as
+// it is when the closure is written at `Array::map` itself.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+fn apply(xs: Array[TaskHandle[Int]], f: (TaskHandle[Int]) -> Int) -> Int {
+  Array::length(Array::map(xs, f))
+}
+
+fn main() -> Unit allows Exception + Console {
+  let outer: Array[TaskHandle[Int]] = []
+  let r = TaskGroup::run((n) -> {
+    let hs = [TaskGroup::spawn(n, () -> { 41 })]
+    let _ = apply(hs, (h) -> {
+      Array::push(outer, h)
+      0
+    })
+    1
+  })
+  println("r=\{r} after=\{Array::length(outer)}")
+}
