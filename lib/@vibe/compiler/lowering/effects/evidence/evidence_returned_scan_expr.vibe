@@ -1,0 +1,225 @@
+// lib/@vibe/compiler/lowering/effects/evidence -- the read-only scans the
+// returned-closure stamp (#3435) asks of a function body: how many tail
+// positions and `return`s hand back a name, whether a name is assigned, and
+// whether a row names an alias parameter.
+
+import @vibe/compiler/core {
+  Expr, Pat, expr_children
+}
+
+import @vibe/compiler/lowering/effects/queries {
+  edp_str_array_contains
+}
+
+import ./evidence_scan_view_expr.vibe {
+  edp_pat_names
+}
+
+/// How many tail positions of `e` are the bare name `n`, reading tails as
+/// `edp_stamp_tail` does and stopping where a binder rebinds `n`.
+export fn edp_tail_name_count(e: Expr, n: String) -> Int {
+  match e {
+    EIdent(x, _) => if x == n {
+      1
+    } else {
+      0
+    },
+    ESeq(_, b) => edp_tail_name_count(b, n),
+    ELet(m, _, b, _) => if m == n {
+      0
+    } else {
+      edp_tail_name_count(b, n)
+    },
+    ELetMut(m, _, b, _) => if m == n {
+      0
+    } else {
+      edp_tail_name_count(b, n)
+    },
+    ELetRec(m, _, b) => if m == n {
+      0
+    } else {
+      edp_tail_name_count(b, n)
+    },
+    EIf(_, t, el) => edp_tail_name_count(t, n) + edp_tail_name_count(el, n),
+    EAssign(_, _, c, _) => edp_tail_name_count(c, n),
+    EAssignOp(_, _, _, c, _) => edp_tail_name_count(c, n),
+    EHandle(bd, arms) => edp_tail_name_count(bd, n) + edp_tail_name_count_arms(arms, n),
+    EMatch(_, arms) => edp_tail_name_count_arms(arms, n),
+    _ => 0
+  }
+}
+
+/// How many `return`s in `e` hand back the bare name `n`, walking as
+/// `edp_stamp_returns` does and stopping where a binder rebinds `n`.
+export fn edp_return_name_count(e: Expr, n: String) -> Int {
+  match e {
+    EReturn(x) => edp_tail_name_count(x, n) + edp_return_name_count(x, n),
+    ESeq(a, b) => edp_return_name_count(a, n) + edp_return_name_count(b, n),
+    ELet(m, v, b, _) => edp_return_name_count(v, n) + if m == n {
+      0
+    } else {
+      edp_return_name_count(b, n)
+    },
+    ELetMut(m, v, b, _) => edp_return_name_count(v, n) + if m == n {
+      0
+    } else {
+      edp_return_name_count(b, n)
+    },
+    ELetRec(m, _, b) => if m == n {
+      0
+    } else {
+      edp_return_name_count(b, n)
+    },
+    EIf(c, t, el) => edp_return_name_count(c, n) + edp_return_name_count(t, n) + edp_return_name_count(el, n),
+    EWhile(c, b) => edp_return_name_count(c, n) + edp_return_name_count(b, n),
+    EAssign(_, v, c, _) => edp_return_name_count(v, n) + edp_return_name_count(c, n),
+    EAssignOp(_, _, v, c, _) => edp_return_name_count(v, n) + edp_return_name_count(c, n),
+    EMatch(sc, arms) => edp_return_name_count(sc, n) + edp_return_name_count_arms(arms, n),
+    EHandle(bd, arms) => edp_return_name_count(bd, n) + edp_return_name_count_arms(arms, n),
+    EForIn(m, ix, it, b) => edp_return_name_count(it, n) + if m == n || ix == Some(n) {
+      0
+    } else {
+      edp_return_name_count(b, n)
+    },
+    ELoop(pairs, b) => {
+      let mut total = 0
+      let mut shadows = false
+      for pr in pairs {
+        total = total + edp_return_name_count(pr.1, n)
+        if pr.0 == n {
+          shadows = true
+        } else {
+          ()
+        }
+      }
+      if shadows {
+        total
+      } else {
+        total + edp_return_name_count(b, n)
+      }
+    },
+    // A nested lambda's `return` is its own. Every other form binds nothing,
+    // so its children are counted as they are.
+    EFn(_, _, _, _, _, _) => 0,
+    _ => {
+      let mut total = 0
+      for c in expr_children(e) {
+        total = total + edp_return_name_count(c, n)
+      }
+      total
+    }
+  }
+}
+
+fn edp_return_name_count_arms(arms: Array[(Pat, Expr)], n: String) -> Int {
+  let mut total = 0
+  for a in arms {
+    if !edp_str_array_contains(edp_pat_names(a.0), n) {
+      total = total + edp_return_name_count(a.1, n)
+    } else {
+      ()
+    }
+  }
+  total
+}
+
+fn edp_tail_name_count_arms(arms: Array[(Pat, Expr)], n: String) -> Int {
+  let mut total = 0
+  for a in arms {
+    if !edp_str_array_contains(edp_pat_names(a.0), n) {
+      total = total + edp_tail_name_count(a.1, n)
+    } else {
+      ()
+    }
+  }
+  total
+}
+
+/// Is any assignment to `marker` in `e`, a nested lambda's included, left
+/// without a row?
+export fn edp_has_unstamped_assign(e: Expr, marker: String) -> Bool {
+  let mut found = false
+  let stack: Array[Expr] = [e]
+  while !found && Array::length(stack) > 0 {
+    let k = Array::length(stack)
+    let cur = Array::get(stack, k - 1)
+    Array::truncate(stack, k - 1)
+    match cur {
+      EAssign(m, v, _, _) => if m == marker {
+        match v {
+          EFn(_, _, _, _, Some(_), _) => (),
+          _ => {
+            found = true
+          }
+        }
+      } else {
+        ()
+      },
+      EAssignOp(m, _, _, _, _) => if m == marker {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    for c in expr_children(cur) {
+      Array::push(stack, c)
+    }
+  }
+  found
+}
+
+/// Does `e` assign the name `n` anywhere? Unscoped: `edp_assigns_free` asks
+/// it of a marker no binder spells.
+export fn edp_assigns_name(e: Expr, n: String) -> Bool {
+  let mut found = false
+  let stack: Array[Expr] = [e]
+  while !found && Array::length(stack) > 0 {
+    let k = Array::length(stack)
+    let cur = Array::get(stack, k - 1)
+    Array::truncate(stack, k - 1)
+    match cur {
+      EAssign(m, _, _, _) => if m == n {
+        found = true
+      } else {
+        ()
+      },
+      EAssignOp(m, _, _, _, _) => if m == n {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    for c in expr_children(cur) {
+      Array::push(stack, c)
+    }
+  }
+  found
+}
+
+/// Does `row` spell any of `names` as a whole token?
+export fn edp_row_mentions_any(row: String, names: Array[String]) -> Bool {
+  let mut found = false
+  let mut start = 0
+  let mut i = 0
+  let len = String::length(row)
+  while i <= len {
+    let boundary = i == len || {
+      let c = String::byte_at(row, i)
+      !(c >= 97 && c <= 122 || c >= 65 && c <= 90 || c >= 48 && c <= 57 || c == 95)
+    }
+    if boundary {
+      if i > start && edp_str_array_contains(names, String::substring(row, start, i)) {
+        found = true
+      } else {
+        ()
+      }
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
