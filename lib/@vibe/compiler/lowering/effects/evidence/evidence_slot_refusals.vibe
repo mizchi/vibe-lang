@@ -529,44 +529,49 @@ export fn edp_fn_result_has_row(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, B
 /// surely as `-> (() -> Int)` does). The step bound stops a cycle.
 fn edp_declared_result(stmts: Array[Stmt], idx: Int) -> Option[TypeExpr] {
   match Array::get(stmts, idx) {
-    SLet(_, _, _, _, EFn(_, _, _, Some(ret), _, _)) => {
-      let mut cur = ret
-      let mut steps = 0
-      let mut done = false
-      while !done && steps < 32 {
-        // An applied alias (`Thunk[Int]` of `type Thunk[T] = () -> T`) is
-        // followed by its head (Codex on #3467): whether the function type
-        // it names carries a row does not depend on its arguments.
-        let (alias, applied, targs) = match cur {
-          TyName(a) => (a, false, array_empty()),
-          TyApp(a, xs) => (a, true, xs),
-          _ => ("", false, array_empty())
-        }
-        if alias == "" {
-          done = true
-        } else {
-          let mut next: Option[TypeExpr] = None
-          for st in stmts {
-            match st {
-              STypeAlias(_, n, tparams, body) => if n == alias && (applied || Array::length(tparams) == 0) {
-                // The alias's arguments are substituted into its body
-                // (Codex on #3467: `type Id[T] = T; fn mk() -> Id[() -> Int]`
-                // declares the function type its argument names).
-                next = Some(edp_alias_subst(body, tparams, targs))
-              },
-              _ => ()
-            }
-          }
-          match next {
-            Some(t) => cur = t,
-            None => done = true
-          }
-        }
-        steps = steps + 1
-      }
-      Some(cur)
-    },
+    SLet(_, _, _, _, EFn(_, _, _, Some(ret), _, _)) => Some(edp_expand_result(stmts, ret, 0)),
     _ => None
+  }
+}
+
+/// `ty` with its transparent aliases followed. An applied alias (`Thunk[Int]`
+/// of `type Thunk[T] = () -> T`) has its arguments substituted into its body
+/// (Codex on #3467: `type Id[T] = T; fn mk() -> Id[() -> Int]` declares the
+/// function type its argument names). The merged program can hold two
+/// aliases of one name from two modules, and this pass cannot tell which
+/// module's the function read (Codex on #3467), so when either expansion
+/// is a row-free function type that is the answer: refusing is the safe
+/// side. The depth bound stops a cycle.
+fn edp_expand_result(stmts: Array[Stmt], ty: TypeExpr, depth: Int) -> TypeExpr {
+  let (alias, applied, targs) = match ty {
+    TyName(a) => (a, false, array_empty()),
+    TyApp(a, xs) => (a, true, xs),
+    _ => ("", false, array_empty())
+  }
+  if alias == "" || depth >= 32 {
+    ty
+  } else {
+    let candidates: Array[TypeExpr] = []
+    for st in stmts {
+      match st {
+        STypeAlias(_, n, tparams, body) => if n == alias && (applied || Array::length(tparams) == 0) {
+          Array::push(candidates, edp_expand_result(stmts, edp_alias_subst(body, tparams, targs), depth + 1))
+        },
+        _ => ()
+      }
+    }
+    if Array::length(candidates) == 0 {
+      ty
+    } else {
+      let mut out = Array::get(candidates, 0)
+      for c in candidates {
+        match c {
+          TyFn(_, _, None) => out = c,
+          _ => ()
+        }
+      }
+      out
+    }
   }
 }
 
