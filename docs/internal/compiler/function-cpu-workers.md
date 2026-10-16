@@ -98,8 +98,8 @@ early experiments by approximately doubling its compile time.
 
 `pkf run test-taskgroup-functions` builds images and exercises the real public
 CLI at 1/2/4 workers. It compares complete Wasm and executes subtraction,
-builtin shadowing, division, nested closures, exceptions and a large Unicode
-literal. Refused settings, trace aliases, changed images, stale callback ABI,
+builtin shadowing, division, nested closures, exceptions, long unpooled
+identifiers and a large Unicode literal. Refused settings, trace aliases, changed images, stale callback ABI,
 invalid source and a receipt-bound trapping native worker preserve previous
 output. Compiler tests compare snapshot/range replay in both target RC modes,
 run under shadow RC, and reject malformed jobs/products before mutation.

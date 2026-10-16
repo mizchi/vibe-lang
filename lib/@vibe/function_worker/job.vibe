@@ -19,8 +19,8 @@ import @vibe/compiler/cache {
 import @vibe/compiler/core {
   Expr, TypeExpr
 }
-import @vibe/compiler/codegen/common_base {
-  str_table_index_of
+import @vibe/core {
+  struct MutMap
 }
 import @vibe/lowering_worker/linear {
   linear_string_reader
@@ -39,7 +39,14 @@ export fn write_function_job_into(b: Bytes, ctx: FunctionContext, digest: String
   ast_binary_write_varint(b, lo)
   ast_binary_write_varint(b, hi)
   let pool = FrozenArray::from_array(ctx.input.str_strs)
-  ast_binary_with_indexed_string_pool(pool, (value) -> str_table_index_of(ctx.input.str_table_shared, value), () -> Bytes with Exception {
+  // AST names are not necessarily runtime literals. A pool miss keeps the
+  // ordinary inline bytes instead of applying the literal-only lookup contract.
+  ast_binary_with_indexed_string_pool(pool, (value) -> {
+    match MutMap::get(ctx.input.str_table_shared.index, value) {
+      Some(index) => index,
+      None => -1
+    }
+  }, () -> Bytes with Exception {
     let mut i = lo
     while i < hi {
       ast_binary_write_expr(b, Array::get(ctx.plan.bodies, i))

@@ -24,7 +24,9 @@ def main():
                VIBE_CHECKED_MODULE_CACHE="off", VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="1")
     with tempfile.TemporaryDirectory(prefix="vibe function CPU test ") as directory:
         project = Path(directory)
+        long_name = "worker_identifier_" + "q" * 300
         cases = [
+            ("long-identifier", f"fn {long_name}(a: Int) -> Int {{ a - 3 }}\nfn main() -> Int {{ {long_name}(11) }}", "8"),
             ("subtract", "fn sub(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int { sub(43, 4) }", "39"),
             ("builtin-shadow", "fn compiler_lowering_run(n: Int) -> Int { n - 3 }\nfn main() -> Int { compiler_lowering_run(11) }", "8"),
             ("division", "fn quotient(a: Int, b: Int) -> Int { a / b }\nfn main() -> Int { quotient(43, 4) }", "10"),
