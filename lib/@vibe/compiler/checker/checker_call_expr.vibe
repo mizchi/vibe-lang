@@ -2005,10 +2005,18 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 // `xs.length()` (EDot), which types such calls CtUnknown. A
                 // non-user receiver (Int/String/...) keeps the strict path so a
                 // typo'd `foo(42)` still reports `unknown name`.
+                // #3476: a `CtNamed` receiver the module has no declaration
+                // for (`TaskHandle`, an opaque contract type) has no method a
+                // later pass could resolve the call to, so it keeps the strict
+                // path too. Retried as a method, `no_such_fn(h)` was typed
+                // without a body and the program called through a null slot.
                 let user_recv = match recv_ty {
                   CtEnum(_) => true,
                   CtStruct(_) => true,
-                  CtNamed(_, _) => true,
+                  CtNamed(tn, _) => match find_typedef(defs, tn) {
+                    Some(_) => true,
+                    None => false
+                  },
                   _ => false
                 }
                 if has_qual || user_recv {
