@@ -760,10 +760,60 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
       Array::push(resolved, (from, name, params, next))
       ai = ai + 1
     }
+    // A facade that re-exports an alias (`export ./a.vibe { N }`) provides it
+    // too, under the name it exports (Codex on #3467): an importer of the
+    // facade reads the declaring file's `N`. Each round follows one more
+    // facade.
+    reexported_type_aliases_into(paths, stmts_list, cur, resolved)
+    if Array::length(resolved) != Array::length(cur) {
+      changed = true
+    } else {
+      let mut ri = Array::length(all)
+      while ri < Array::length(resolved) {
+        let (rf, rn, _, rt) = Array::get(resolved, ri)
+        let (pf, pn, _, pt) = Array::get(cur, ri)
+        if rf != pf || rn != pn || !type_exprs_equivalent(rt, [], pt, []) {
+          changed = true
+        }
+        ri = ri + 1
+      }
+    }
     cur = resolved
     rounds = rounds + 1
   }
   cur
+}
+
+/// The aliases each file re-exports, read from `shared` (`(provider, name,
+/// parameters, target)`) and appended to `out` keyed by the re-exporting
+/// file and the name it exports.
+fn reexported_type_aliases_into(paths: Array[String], stmts_list: Array[Array[Stmt]], shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, String, Array[String], TypeExpr)]) -> Unit {
+  let mut fi = 0
+  while fi < Array::length(stmts_list) {
+    let path = Array::get(paths, fi)
+    for stmt in Array::get(stmts_list, fi) {
+      match stmt {
+        SReExport(raw_path, items) => {
+          let provider = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
+          for item in items {
+            let exported = match item.alias {
+              Some(a) => a,
+              None => item.name
+            }
+            for al in shared {
+              let (from, an, ap, target) = al
+              if an == item.name && from == provider {
+                Array::push(out, (path, exported, ap, target))
+              }
+            }
+          }
+        },
+        _ => ()
+      }
+    }
+    fi = fi + 1
+  }
+  ()
 }
 
 /// `t` with the file's aliases expanded, as the checker reads them (Codex on
