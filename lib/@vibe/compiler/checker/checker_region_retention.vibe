@@ -123,17 +123,15 @@ import ./checker_region_retention_summary.vibe {
   is_retention_summary_marker,
   retention_any_nursery,
   retention_call_message,
-  retention_fn_param_types,
   retention_opaque_message,
   retention_regions_mentioned,
+  retention_summaries_bind,
   retention_summaries_enabled,
-  retention_summarize,
-  retention_summary_budget,
-  retention_summary_candidate,
   retention_summary_index,
   retention_summary_marker,
   retention_summary_refuses,
-  retention_summary_region
+  retention_summary_region,
+  retention_summary_result_from
 }
 
 export ./checker_region_retention_types.vibe {
@@ -2908,7 +2906,7 @@ export fn retention_named_run_body(body: Expr, env: TypeEnv, defs: Array[TypeDef
         // published (#3360), whose one argument is the group.
         RetentionSummary(summary) => (retention_summary_refuses(summary, [
           [rname]
-        ], [array_empty()]), false),
+        ], [array_empty()]), retention_summary_result_from(summary, 0)),
         RetentionTrusted => (0, false),
         // Codex on #3359: a `let mut` closure, a value no closure literal is
         // bound to, a parameter -- checked where it was written, outside
@@ -2941,57 +2939,24 @@ export fn retention_named_run_body_message(body_name: String, kind: Int) -> Stri
 
 //# What an exported function keeps
 
-/// #3360: `env` with the summary of what each function this module exports
-/// keeps of its arguments (`checker_region_retention_summary.vibe`), each
-/// found by re-checking the function's literal as a call made in a region
-/// would. Only a module checked for publication is summarized, and only one
-/// within `retention_summary_budget`.
+/// #3360: `env` with the summary of what each function this module publishes
+/// keeps of its arguments (`retention_summaries_bind`), each found by
+/// re-checking the function's literal as a call made in a region would. Only
+/// a module checked for publication is summarized.
 export fn retention_bind_module_summaries(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> TypeEnv {
   if !retention_summaries_enabled() {
     env
   } else {
-    let candidates: Array[(String, Expr, Array[Type])] = []
-    for stmt in stmts {
-      match stmt {
-        SLet(exported, _, fname, _, value) => if exported {
-          match (let_rhs_closure_literal(value), env_lookup(env, fname)) {
-            (Some(lit), Some(fty)) => match retention_fn_param_types(fty) {
-              Some(params) => if retention_summary_candidate(params, defs) {
-                Array::push(candidates, (fname, lit, params))
-              } else {
-                ()
-              },
-              None => ()
-            },
-            _ => ()
-          }
-        } else {
-          ()
-        },
-        _ => ()
-      }
-    }
-    if Array::length(candidates) > retention_summary_budget() {
-      env
-    } else {
-      let scope = env_bind(env, "#interp.top.fn", CtBool)
-      let regions = [(retention_summary_region(), false)]
-      let base = c + retention_counter_gap()
-      let mut out = env
-      for cand in candidates {
-        let (fname, lit, params) = cand
-        let summary = retention_summarize(params, defs, (k) -> CtVar(base + k), (overrides, key) -> {
-          let (kind, _) = retention_recheck(lit, scope, regions, overrides, String::concat("summary|", String::concat(fname, String::concat("|", key))), defs, s, base + Array::length(params), check_child)
-          kind
-        })
-        if summary != "" {
-          out = env_bind(out, retention_summary_marker(fname), CtNamed(summary, [
-          ]))
-        } else {
-          ()
-        }
-      }
-      out
-    }
+    let scope = env_bind(env, "#interp.top.fn", CtBool)
+    let base = c + retention_counter_gap()
+    let regions = [(retention_summary_region(), false)]
+    retention_summaries_bind(stmts, env, defs, (name) -> match retention_top_level_callee(name, 0) {
+      RetentionVisible(lit, _, _) => (1, lit),
+      RetentionOpaque => (2, EUnit),
+      _ => (0, EUnit)
+    }, (k) -> CtVar(base + k), (lit, overrides, key) -> {
+      let (kind, result) = retention_recheck(lit, scope, regions, overrides, key, defs, s, base + 4096, check_child)
+      (kind, retention_string_has(result, retention_summary_region()))
+    })
   }
 }

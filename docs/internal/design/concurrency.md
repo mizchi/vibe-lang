@@ -710,6 +710,15 @@ under a synthetic region it carries, and the summary records where it goes:
   array: a call is refused whenever argument `i` carries an active region;
 - `i>f`, on to a function the callee cannot see into, such as a function
   parameter: refused the same way, with the message for a value passed on.
+- `i>r`, into the function's result: read where a `TaskGroup::run` body is
+  named, so a body declared `-> TaskHandle[Int]` that returns a handle it
+  spawned is judged as returning the group's token. Any other call's result
+  already carries what its arguments carry.
+
+Every function the module publishes is summarized: one declared `export`,
+one an `export { .. }` lists, and one published as an alias of either. A
+published function value whose body cannot be traced, a closure a call
+produced, keeps each argument where no call can see (`i>f`).
 
 The summary is bound in the published environment beside the function
 (`#retains:<name>`), carried under the name an importer binds and through a

@@ -17,7 +17,16 @@
 //#     binding), so a call is refused whenever argument `i` carries an active
 //#     region;
 //#   - `i>f` -- it may be handed to a function the body cannot see into (a
-//#     function parameter, a closure a call produced), refused the same way.
+//#     function parameter, a closure a call produced), refused the same way;
+//#   - `i>r` -- it may reach the result, which a `TaskGroup::run` body's call
+//#     reads (Codex on #3473: a body returning a handle it spawned). A call's
+//#     result is otherwise taken to carry what its arguments carry.
+//#
+//# Every function the module publishes is summarized: one declared `export`,
+//# one an `export { .. }` names, and one bound as an alias of either (Codex
+//# on #3473). A published function value whose body cannot be traced (a
+//# closure a call produced) keeps each argument where no call can see
+//# (`i>f`).
 //#
 //# Each row comes from the same re-check a local callee gets, run under a
 //# synthetic region with argument `i` carrying it. A function whose re-checks
@@ -28,7 +37,7 @@
 //# retaining operations are listed by name and checked like `Array::push`.
 
 import @vibe/compiler/core {
-  Type, TypeDef, TypeEnv
+  Expr, Stmt, Type, TypeDef, TypeEnv, env_bind, env_lookup
 }
 
 import @vibe/core {
@@ -243,14 +252,15 @@ fn retention_summary_fn_param(t: Type) -> Bool {
 /// when it keeps nothing. `recheck(overrides, key)` re-checks the function's
 /// literal with one override per parameter -- `(type, predates, callee,
 /// carried)`, as a call's re-check builds them -- and answers what keeps the
-/// region: 0 nothing, 1 a write, 2 a call of a function it cannot see.
+/// region (0 nothing, 1 a write, 2 a call of a function it cannot see) and
+/// whether the function's result carries it.
 ///
 /// One re-check per argument that may carry a region, with every other
 /// argument a location declared before it, answers "keeps nothing" for the
 /// common function. Only an argument that is kept costs more: once with no
 /// argument declared before the region, which finds a store a call cannot
 /// avoid (`i>g`), and otherwise once per other argument (`i>j`).
-export fn retention_summarize(params: Array[Type], defs: Array[TypeDef], fresh: (Int) -> Type, recheck: (Array[(Type, Array[String], String, Array[String])], String) -> Int) -> String {
+export fn retention_summarize(params: Array[Type], defs: Array[TypeDef], fresh: (Int) -> Type, recheck: (Array[(Type, Array[String], String, Array[String])], String) -> (Int, Bool)) -> String {
   let summary_region = retention_summary_region()
   let n = Array::length(params)
   let rows: Array[String] = []
@@ -289,8 +299,14 @@ export fn retention_summarize(params: Array[Type], defs: Array[TypeDef], fresh: 
         }
         recheck(overrides, String::concat(__to_string(i), tag))
       }
-      if run(-1, "*") > 0 {
-        let unavoidable = run(-2, "g")
+      let (kept, to_result) = run(-1, "*")
+      if to_result {
+        Array::push(rows, String::concat(__to_string(i), ">r"))
+      } else {
+        ()
+      }
+      if kept > 0 {
+        let (unavoidable, _) = run(-2, "g")
         if unavoidable == 1 {
           Array::push(rows, String::concat(__to_string(i), ">g"))
         } else if unavoidable > 1 {
@@ -298,7 +314,7 @@ export fn retention_summarize(params: Array[Type], defs: Array[TypeDef], fresh: 
         } else {
           let mut j = 0
           while j < n {
-            if j != i && run(j, String::concat(">", __to_string(j))) > 0 {
+            if j != i && run(j, String::concat(">", __to_string(j))).0 > 0 {
               Array::push(rows, String::concat(__to_string(i), String::concat(">", __to_string(j))))
             } else {
               ()
@@ -315,6 +331,111 @@ export fn retention_summarize(params: Array[Type], defs: Array[TypeDef], fresh: 
     i = i + 1
   }
   String::join(rows, ",")
+}
+
+/// Whether, by `summary`, argument `i` may reach the function's result.
+export fn retention_summary_result_from(summary: String, i: Int) -> Bool {
+  let wanted = String::concat(__to_string(i), ">r")
+  let mut found = false
+  for row in String::split(summary, ",") {
+    found = found || row == wanted
+  }
+  found
+}
+
+/// The summary of a published function value whose body cannot be traced:
+/// each argument that may carry a region is handed where no call can see.
+fn retention_summary_opaque(params: Array[Type], defs: Array[TypeDef]) -> String {
+  let rows: Array[String] = []
+  let mut i = 0
+  while i < Array::length(params) {
+    if retention_summary_source(Array::get(params, i), defs) {
+      Array::push(rows, String::concat(__to_string(i), ">f"))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  String::join(rows, ",")
+}
+
+/// The names `stmts` publish as values: each `export` declaration and each
+/// name an `export { .. }` lists, once.
+fn retention_published_names(stmts: Array[Stmt]) -> Array[String] {
+  let names: Array[String] = []
+  let add = (n: String) -> {
+    let mut seen = false
+    for m in names {
+      seen = seen || m == n
+    }
+    if !seen {
+      Array::push(names, n)
+    } else {
+      ()
+    }
+  }
+  for stmt in stmts {
+    match stmt {
+      SLet(exported, _, fname, _, _) => if exported {
+        add(fname)
+      } else {
+        ()
+      },
+      SExport(items) => for n in items {
+        add(n)
+      },
+      _ => ()
+    }
+  }
+  names
+}
+
+/// `env` with the summary of each function `stmts` publish, unless more
+/// than `retention_summary_budget` of them take an argument that may carry a
+/// region. `resolve(name)` answers what a published name is: `(1, literal)`
+/// for a closure literal (an alias of one followed), `(2, _)` for a function
+/// value whose body cannot be traced, `(0, _)` for one that is not this
+/// module's (a re-export carries its own summary). `recheck(literal,
+/// overrides, key)` is `retention_summarize`'s re-check of that literal.
+export fn retention_summaries_bind(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], resolve: (String) -> (Int, Expr), fresh: (Int) -> Type, recheck: (Expr, Array[(Type, Array[String], String, Array[String])], String) -> (Int, Bool)) -> TypeEnv {
+  let candidates: Array[(String, Int, Expr, Array[Type])] = []
+  for name in retention_published_names(stmts) {
+    match env_lookup(env, name) {
+      Some(fty) => match retention_fn_param_types(fty) {
+        Some(params) => if retention_summary_candidate(params, defs) {
+          let (kind, lit) = resolve(name)
+          if kind > 0 {
+            Array::push(candidates, (name, kind, lit, params))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        },
+        None => ()
+      },
+      None => ()
+    }
+  }
+  if Array::length(candidates) > retention_summary_budget() {
+    env
+  } else {
+    let mut out = env
+    for cand in candidates {
+      let (name, kind, lit, params) = cand
+      let summary = if kind == 1 {
+        retention_summarize(params, defs, fresh, (overrides, key) -> recheck(lit, overrides, String::concat("summary|", String::concat(name, String::concat("|", key)))))
+      } else {
+        retention_summary_opaque(params, defs)
+      }
+      if summary != "" {
+        out = env_bind(out, retention_summary_marker(name), CtNamed(summary, []))
+      } else {
+        ()
+      }
+    }
+    out
+  }
 }
 
 /// How a call `summary` describes keeps a region: 0 it does not, 1 a write,
