@@ -588,16 +588,18 @@ export fn retention_body_may_store(body: Expr, keepers: Array[String]) -> Bool {
   retention_walk_store(body, array_empty(), keepers, array_empty(), array_empty(), false)
 }
 
-/// A value that is a new container no one else holds: a literal, a
-/// constructor call (`MutMap::new()`, `Array::make(n, x)`, `array_empty()`),
-/// or one of these under a `let` annotation's ascription wrapper.
+/// A value that is a new container no one else holds: a literal, a builtin
+/// allocator (`MutMap::new()`, `Array::make(n, x)`, `array_empty()`), or one
+/// of these under a `let` annotation's ascription wrapper.
 fn retention_is_fresh_value(v: Expr) -> Bool {
   match v {
     EArray(_) => true,
     ERecord(_, _, _) => true,
     EMap(_) => true,
     ECall(EFn(_, _, _, _, _, EIdent("__asc", _)), args, _, _) => Array::length(args) == 1 && retention_is_fresh_value(Array::get(args, 0)),
-    ECall(EIdent(name, _), _, _, _) => name == "array_empty" || String::ends_with(name, "::new") || String::ends_with(name, "::new_string") || String::ends_with(name, "::new_int") || String::ends_with(name, "::make") || String::ends_with(name, "::with_capacity"),
+    // Codex on #3467: only the builtin allocators. A program's own
+    // `Cache::new()` may hand back a container it also keeps.
+    ECall(EIdent(name, _), _, _, _) => name == "array_empty" || name == "Array::make" || name == "Array::new" || name == "MutMap::new" || name == "MutMap::new_string" || name == "MutMap::new_int" || name == "MutMap::with_capacity" || name == "MutSet::new" || name == "MutSet::new_string" || name == "MutSet::new_int" || name == "MutSet::with_capacity" || name == "MutList::new" || name == "ArrayBuilder::new" || name == "ArrayBuilder::with_capacity" || name == "Bytes::new" || name == "MutBytes::new",
     _ => false
   }
 }

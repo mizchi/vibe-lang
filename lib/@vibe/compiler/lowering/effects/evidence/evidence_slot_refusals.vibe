@@ -5,7 +5,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/core {
-  struct MutMap, struct MutSet
+  array_empty, struct MutMap, struct MutSet
 }
 
 import ./evidence_scan_view_expr.vibe {
@@ -319,25 +319,35 @@ export fn edp_expr_passes_value_to_slot(e: Expr, slot_callees: MutSet[String]) -
       let n = Array::length(stack)
       let cur = Array::get(stack, n - 1)
       Array::truncate(stack, n - 1)
-      match cur {
+      let slot_args = match cur {
         ECall(EIdent(cn, _), args, _, _) => if MutSet::has(slot_callees, cn) {
-          let mut ai = 0
-          while ai < Array::length(args) {
-            match Array::get(args, ai) {
-              EIdent(_, _) => {
-                found = true
-              },
-              ECall(EIdent(_, _), _, _, _) => {
-                found = true
-              },
-              _ => ()
-            }
-            ai = ai + 1
-          }
+          args
         } else {
-          ()
+          array_empty()
         },
-        _ => ()
+        // Codex on #3467: a method-style call (`runner.run(h)`) to the one
+        // function spelled `T::run` that takes a row-typed slot.
+        ECall(EDot(_, m, _, _), args, _, _) => if edp_unique_method_in(slot_callees, m) != "" {
+          args
+        } else {
+          array_empty()
+        },
+        _ => array_empty()
+      }
+      for a in slot_args {
+        match a {
+          EIdent(_, _) => {
+            found = true
+          },
+          ECall(EIdent(_, _), _, _, _) => {
+            found = true
+          },
+          // A method-call result (`run(maker.mk())`) too (Codex on #3467).
+          ECall(EDot(_, _, _, _), _, _, _) => {
+            found = true
+          },
+          _ => ()
+        }
       }
       for child in expr_children(cur) {
         Array::push(stack, child)
@@ -579,5 +589,66 @@ export fn edp_refuse_rowless_method_result(stmts: Array[Stmt], fn_defs: Array[(I
   }
   if seen > 0 && rowless > 0 {
     edp_refuse_rowless_result(stmts, fn_defs, first, callee, row)
+  }
+}
+
+/// The one name in `names` spelled `T::m`, or "" when there is none or more
+/// than one: a method-style call names its method without the type, and
+/// this pass has no receiver types.
+export fn edp_unique_method_in(names: MutSet[String], m: String) -> String {
+  let suffix = String::concat("::", m)
+  let mut found = ""
+  let mut count = 0
+  for n in MutSet::to_array(names) {
+    if String::ends_with(n, suffix) {
+      found = n
+      count = count + 1
+    }
+  }
+  if count == 1 {
+    found
+  } else {
+    ""
+  }
+}
+
+/// Whether a call's arguments include a row-free literal or a row-free
+/// top-level function's name, which the stamp may give a row.
+export fn edp_args_pass_literal(args: Array[Expr], pure_names: MutSet[String]) -> Bool {
+  let mut found = false
+  for a in args {
+    match a {
+      EFn(_, _, _, _, None, _) => {
+        found = true
+      },
+      EIdent(an, _) => if MutSet::has(pure_names, an) {
+        found = true
+      },
+      ELabeledArg(_, _, EFn(_, _, _, _, None, _)) => {
+        found = true
+      },
+      ELabeledArg(_, _, EIdent(an, _)) => if MutSet::has(pure_names, an) {
+        found = true
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+/// The slot-taking function a method name resolves to in this pass, or ""
+/// (`edp_unique_method_in`), taken once per stamp pass.
+let edp_slot_methods: Array[MutSet[String]] = []
+
+export fn edp_note_slot_methods(slot_callees: MutSet[String]) -> Unit {
+  Array::truncate(edp_slot_methods, 0)
+  Array::push(edp_slot_methods, slot_callees)
+}
+
+export fn edp_slot_method(m: String) -> String {
+  if Array::length(edp_slot_methods) == 0 {
+    ""
+  } else {
+    edp_unique_method_in(Array::get(edp_slot_methods, 0), m)
   }
 }

@@ -44,11 +44,13 @@ import ./evidence_scan_view_expr.vibe {
 import ./evidence_slot_refusals.vibe {
   edp_alias_fn_row,
   edp_alias_fn_type,
+  edp_args_pass_literal,
   edp_callee_param_used,
   edp_drop_params_from,
   edp_expr_passes_value_to_slot,
   edp_fn_result_has_row,
   edp_note_params,
+  edp_note_slot_methods,
   edp_refuse_assigned_calls,
   edp_refuse_rowless_method_result,
   edp_refuse_rowless_param,
@@ -57,6 +59,7 @@ import ./evidence_slot_refusals.vibe {
   edp_refuse_uncopied_literal,
   edp_set_slot_callee,
   edp_slot_callee_names,
+  edp_slot_method,
   edp_slot_refusals_reset,
   edp_slot_row_stampable,
   edp_take_slot_callee
@@ -211,6 +214,7 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
   edp_note_program_aliases(stmts)
   edp_slot_refusals_reset()
   let slot_callees = edp_slot_callee_names(stmts, fn_defs)
+  edp_note_slot_methods(slot_callees)
   // This walk replaces statement bodies in place; the lookup reads live params.
   let fn_index = edp_fn_statement_index(fn_defs)
   let mut i = 0
@@ -862,26 +866,12 @@ fn edp_expr_passes_literal_arg(e: Expr, pure_names: MutSet[String]) -> Bool {
     let cur = Array::get(stack, n - 1)
     Array::truncate(stack, n - 1)
     match cur {
-      ECall(EIdent(_, _), args, _, _) => for a in args {
-        match a {
-          EFn(_, _, _, _, None, _) => {
-            found = true
-          },
-          EIdent(an, _) => if MutSet::has(pure_names, an) {
-            found = true
-          } else {
-            ()
-          },
-          ELabeledArg(_, _, EFn(_, _, _, _, None, _)) => {
-            found = true
-          },
-          ELabeledArg(_, _, EIdent(an, _)) => if MutSet::has(pure_names, an) {
-            found = true
-          } else {
-            ()
-          },
-          _ => ()
-        }
+      ECall(EIdent(_, _), args, _, _) => if edp_args_pass_literal(args, pure_names) {
+        found = true
+      },
+      // Codex on #3467: a method-style call too (`runner.run(() -> ..)`).
+      ECall(EDot(_, _, _, _), args, _, _) => if edp_args_pass_literal(args, pure_names) {
+        found = true
       },
       ECall(EFn(_, _, _, _, _, _), cargs, _, _) => if Array::length(cargs) == 1 {
         match Array::get(cargs, 0) {
@@ -1794,13 +1784,17 @@ fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], st
   }
   // A callee a binding in scope shadows is not the top-level function; a
   // local lambda's own parameters are read instead (#3416).
-  let named = match callee {
+  // Codex on #3467: a method-style call (`runner.run(h)`) whose method only
+  // one slot-taking `T::run` spells is that function, its receiver the
+  // first argument.
+  let (named, shift) = match callee {
     EIdent(cn, _) => if edp_scope_has(scope, cn) {
-      ""
+      ("", 0)
     } else {
-      cn
+      (cn, 0)
     },
-    _ => ""
+    EDot(_, m, _, _) => (edp_slot_method(m), 1),
+    _ => ("", 0)
   }
   let local_callee = match callee {
     EIdent(cn, _) => if edp_scope_has(scope, cn) {
@@ -1826,8 +1820,8 @@ fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], st
         a2
       },
       other => if String::length(named) > 0 && !labeled {
-        edp_set_slot_callee(named, edp_callee_param_used(stmts, fn_index, named, ai))
-        edp_stamp_slot_arg(other, stmts, fn_index, scope, pure_names, named, ai)
+        edp_set_slot_callee(named, edp_callee_param_used(stmts, fn_index, named, ai + shift))
+        edp_stamp_slot_arg(other, stmts, fn_index, scope, pure_names, named, ai + shift)
       } else if String::length(local_callee) > 0 && !labeled {
         edp_set_slot_callee(local_callee, true)
         edp_stamp_slot_arg_at(other, scope, pure_names, edp_local_slot_fn_type(local_callee, scope, ai))
