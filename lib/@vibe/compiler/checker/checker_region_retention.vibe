@@ -2103,16 +2103,46 @@ fn decimal_text(text: String) -> Int {
 /// #3360: the closure literal a local `let` binds `name` to, where `env` can
 /// still see that binding -- through the marker `retention_bind_let` lays in
 /// front of it, so a later binding of the spelling hides it, and through an
-/// alias of such a binding. A name bound any other way answers `None`.
-export fn retention_local_closure_literal(env: TypeEnv, name: String) -> Option[Expr] {
+/// alias of such a binding -- with the environment its body is to be read in.
+/// That is the closure's own definition scope, not the call's (Codex on
+/// #3461: a region-local `let sink` at the call must not stand for the outer
+/// `sink` the body captured), with each region active at the call and not
+/// yet open where the closure was written laid on top, so a binding the body
+/// captured reads as declared before that region. A name bound any other way
+/// answers `None`.
+export fn retention_local_closure_literal(env: TypeEnv, name: String) -> Option[(Expr, TypeEnv)] {
   match retention_named_callee(env, name) {
-    RetentionVisible(lit, _, key) => if String::starts_with(key, "c:") {
-      Some(lit)
+    RetentionVisible(lit, scope, key) => if String::starts_with(key, "c:") {
+      Some((lit, retention_with_call_regions(scope, env)))
     } else {
       None
     },
     _ => None
   }
+}
+
+/// `def` with the regions active in `call` that `def` does not have open,
+/// outermost first, so the innermost is nearest.
+fn retention_with_call_regions(def: TypeEnv, call: TypeEnv) -> TypeEnv {
+  let opened = retention_active_region_names(def)
+  let regions = retention_active_regions(call)
+  let mut out = def
+  let mut i = Array::length(regions) - 1
+  while i >= 0 {
+    let (rname, nursery) = Array::get(regions, i)
+    if !retention_region_listed(opened, rname) {
+      out = env_bind(out, "#active_region", CtNamed(rname, []))
+      if nursery {
+        out = env_bind(out, "#active_nursery", CtNamed(rname, []))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  out
 }
 
 fn retention_named_callee(env: TypeEnv, name: String) -> RetentionCallee {

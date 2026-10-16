@@ -1099,7 +1099,9 @@ nursery scope`).
   (measured). A callback bound by `let` and passed by name (`let stash = (c)
   -> { Array::push(sink, c); 0 }; Array::map(cells, stash)`) is checked as the
   literal it binds, found through the binding marker the region-retention
-  pass keeps (`retention_local_closure_literal`). Joining the escaped handle after the group returns the task's
+  pass keeps (`retention_local_closure_literal`), and its body is read where
+  it was written. A callback held in a `let mut` is refused at such a slot
+  with the edit, because which closure reaches the call is not known. Joining the escaped handle after the group returns the task's
   value (measured), so no program is answered wrongly, but nothing enforces
   that the handle stays in its group.
 - **Mid-run cancellation.** A cancel request is observed at dispatch and at a

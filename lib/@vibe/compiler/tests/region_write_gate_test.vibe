@@ -104,3 +104,21 @@ test "a callback passed by the name a let binds it to is rechecked" {
 test "a named callback that keeps its element in its own binding is fine" {
   assert(check_source_ok("fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let keep = (c) -> {\n      let mine = [c]\n      Array::length(mine)\n    }\n    let _ = Array::map(cells, keep)\n  }\n  0\n}"))
 }
+
+// Codex on #3461: a callback held in a `let mut` is refused with the edit at a
+// region-carrying slot, since which closure reaches the call is not known; a
+// named callback's body is read where it was written, so a binding the call
+// site shadows is not taken for the one the body captured.
+test "a mutable or shadowed named callback does not pass the recheck" {
+  let mut_src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let mut stash = (c) -> {\n      Array::push(sink, c)\n      0\n    }\n    let _ = Array::map(cells, stash)\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(mut_src), "cannot be checked here"))
+  let alias_src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let stash = (c) -> {\n      Array::push(sink, c)\n      0\n    }\n    let mut again = stash\n    let _ = Array::map(cells, again)\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(alias_src), "cannot be checked here"))
+  let shadow_src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  let stash = (c) -> {\n    Array::push(sink, c)\n    0\n  }\n  region r {\n    let cells = [MutList::empty(r)]\n    let sink: Array[MutList[Int]] = []\n    let _ = Array::map(cells, stash)\n    let _ = Array::length(sink)\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(shadow_src), "region escapes its scope"))
+}
+
+test "a let mut callback over region-free values, and a region-local named write, are fine" {
+  assert(check_source_ok("fn build() -> Int {\n  let sink: Array[Int] = []\n  let mut add = (n) -> {\n    Array::push(sink, n)\n    0\n  }\n  region r {\n    let _ = Array::map([1, 2], add)\n  }\n  Array::length(sink)\n}"))
+  assert(check_source_ok("fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let local: Array[MutList[Int]] = []\n    let keep = (c) -> {\n      Array::push(local, c)\n      0\n    }\n    let _ = Array::map(cells, keep)\n    Array::length(local)\n  }\n}"))
+}

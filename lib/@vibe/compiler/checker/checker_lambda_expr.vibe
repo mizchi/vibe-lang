@@ -38,6 +38,7 @@ import @vibe/compiler/core {
   env_bind_mut,
   env_has_reexport_surface_binding,
   env_lookup,
+  env_mut_escape,
   expr_children,
   find_typedef,
   fresh_var,
@@ -438,9 +439,9 @@ export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type]
   if env_has_active_region(env) {
     let mut ai = 0
     while ai < Array::length(args) && ai < Array::length(param_tys) {
-      match lapw_callback_literal(Array::get(args, ai), env) {
-        Some(EFn(_, _, ps, _, _, body)) => match subst_apply(s, Array::get(param_tys, ai)) {
-          CtFn(ptys, _, _) => {
+      match subst_apply(s, Array::get(param_tys, ai)) {
+        CtFn(ptys, _, _) => match lapw_callback_literal(Array::get(args, ai), env) {
+          Some((EFn(_, _, ps, _, _, body), scan_env)) => {
             let mut pi = 0
             while pi < Array::length(ps) && pi < Array::length(ptys) {
               let (pn, pann) = Array::get(ps, pi)
@@ -448,7 +449,7 @@ export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type]
               let pty = subst_apply(s, Array::get(ptys, pi))
               match pann {
                 None => if type_mentions_active_region(pty, env) {
-                  lapw_scan(body, pname, pty, [], env, errors)
+                  lapw_scan(body, pname, pty, [], scan_env, errors)
                 } else {
                   ()
                 },
@@ -457,7 +458,21 @@ export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type]
               pi = pi + 1
             }
           },
-          _ => ()
+          _ => {
+            let mut carries = false
+            for pt in ptys {
+              if type_mentions_active_region(subst_apply(s, pt), env) {
+                carries = true
+              } else {
+                ()
+              }
+            }
+            if carries {
+              lapw_refuse_mut_callback(Array::get(args, ai), env, errors)
+            } else {
+              ()
+            }
+          }
         },
         _ => ()
       }
@@ -476,23 +491,29 @@ export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type]
 export fn lambda_arg_elem_write_check(arg: Expr, recv_ty: Type, pidx: Int, s: Subst, env: TypeEnv, errors: Array[String]) -> Unit {
   if env_has_active_region(env) {
     match subst_apply(s, recv_ty) {
-      CtArray(elem) => match lapw_callback_literal(arg, env) {
-        Some(EFn(_, _, ps, _, _, body)) => if pidx < Array::length(ps) {
-          let (pn, pann) = Array::get(ps, pidx)
-          let pname = lapw_base_name(pn)
-          let ety = subst_apply(s, elem)
-          match pann {
-            None => if type_mentions_active_region(ety, env) {
-              lapw_scan(body, pname, ety, [], env, errors)
-            } else {
-              ()
-            },
-            Some(_) => ()
+      CtArray(elem) => {
+        let ety = subst_apply(s, elem)
+        match lapw_callback_literal(arg, env) {
+          Some((EFn(_, _, ps, _, _, body), scan_env)) => if pidx < Array::length(ps) {
+            let (pn, pann) = Array::get(ps, pidx)
+            let pname = lapw_base_name(pn)
+            match pann {
+              None => if type_mentions_active_region(ety, env) {
+                lapw_scan(body, pname, ety, [], scan_env, errors)
+              } else {
+                ()
+              },
+              Some(_) => ()
+            }
+          } else {
+            ()
+          },
+          _ => if type_mentions_active_region(ety, env) {
+            lapw_refuse_mut_callback(arg, env, errors)
+          } else {
+            ()
           }
-        } else {
-          ()
-        },
-        _ => ()
+        }
       },
       _ => ()
     }
@@ -501,14 +522,29 @@ export fn lambda_arg_elem_write_check(arg: Expr, recv_ty: Type, pidx: Int, s: Su
   }
 }
 
-/// The closure literal a callback argument is: the literal written at the call,
-/// or the one a local `let` binds the name passed (#3360: `let stash = (c) ->
-/// { .. }; Array::map(cells, stash)` was not rechecked).
-fn lapw_callback_literal(arg: Expr, env: TypeEnv) -> Option[Expr] {
+/// The closure literal a callback argument is, with the environment its body is
+/// read in: the literal written at the call, read at the call, or the one a
+/// local `let` binds the name passed, read where it was written (#3360: `let
+/// stash = (c) -> { .. }; Array::map(cells, stash)` was not rechecked).
+fn lapw_callback_literal(arg: Expr, env: TypeEnv) -> Option[(Expr, TypeEnv)] {
   match arg {
-    EFn(_, _, _, _, _, _) => Some(arg),
+    EFn(_, _, _, _, _, _) => Some((arg, env)),
     EIdent(n, _) => retention_local_closure_literal(env, n),
     _ => None
+  }
+}
+
+/// A callback held in a `let mut` can be reassigned, so which closure reaches
+/// the call is not known here; at a parameter whose type carries an active
+/// region it is refused with the edit rather than passed unchecked (Codex on
+/// #3461).
+fn lapw_refuse_mut_callback(arg: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
+  match arg {
+    EIdent(n, _) => match env_mut_escape(env, n) {
+      Some(_) => lapw_report(String::concat("bind `", String::concat(n, "` with `let`, or write the closure at the call: a callback held in a `let mut` cannot be checked here for storing a value of the active region outside it")), arg, errors),
+      None => ()
+    },
+    _ => ()
   }
 }
 
