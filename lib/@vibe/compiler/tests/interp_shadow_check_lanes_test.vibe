@@ -129,3 +129,14 @@ test "#3456: a prelude refusal in a dependency is named by the dependency's path
   inspect(String::contains(msg, "/tmp/vibe_interp_shadow_generic_enum_in_dep/dep.vibe: line 7:4: cannot interpolate this `G` value"), content = "true")
   inspect(String::contains(msg, "[@off="), content = "false")
 }
+
+test "#3456: a culprit range in a dependency is located in that dependency" {
+  // The merge's record names the owner, so only that file is read: the entry
+  // is not probed first (Codex on #3458).
+  let base_dir = "/tmp/vibe_interp_shadow_culprit_in_dep"
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(String::concat(base_dir, "/dep.vibe"), string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run_it() -> Int {\n  let bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
+  let msg = fs_check(String::concat(base_dir, "/main.vibe"), "import ./dep.vibe { run_it }\n\nexport fn main() -> Int {\n  run_it()\n}\n")
+  inspect(String::contains(msg, "/tmp/vibe_interp_shadow_culprit_in_dep/dep.vibe: line 5:12-16"), content = "true")
+  inspect(String::contains(msg, "[@off="), content = "false")
+}

@@ -928,9 +928,7 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
     // drops the potentially false entry location.
     Exception::Throw(msg) => {
       if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
-        let msg = marker_in_file_space(msg)
-        let (snapshot_entry_source, verified) = verify_culprit_off_marker_snapshot(input_path, source_groups, msg)
-        throw(locate_type_error(snapshot_entry_source, verified))
+        throw(locate_merged_marker(input_path, entry_source, source_groups, msg, true))
       } else {
         // #2198: the missing-Show interpolation throw escapes the desugar
         // (reached via check_file_fs_mode's effect_lowering_prelude) with no
@@ -1022,7 +1020,7 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
             }
           }
           if String::contains(msg, " [@off=") && !starts_with_known_path(msg, known_paths) {
-            throw(locate_merged_marker(input_path, entry_source, msg))
+            throw(locate_merged_marker(input_path, entry_source, source_groups, msg, false))
           } else {
             throw(String::join(locate_type_error_lines_except_paths(entry_source, msg, known_paths), "\n"))
           }
@@ -1125,10 +1123,15 @@ fn starts_with_known_path(msg: String, paths: Array[String]) -> Bool {
 /// its `[@off=]` marker. The prelude runs on the merged program, so the marker
 /// indexes the merged offset space; read against the entry's own text, an
 /// entry that follows a dependency lost its location or named a wrong line.
-/// The entry is located as before; a dependency is named by its path; an
-/// offset past every recorded file (an alias-collision clone) keeps only the
-/// message.
-fn locate_merged_marker(input_path: String, entry_source: String, msg: String) -> String with Env + Exception + Fs {
+///
+/// The owner comes from the merge's record, so it is one file, and only that
+/// file is read: the entry is located as before, a dependency is named by its
+/// path. A culprit-call refusal (`culprit`) must also spell the culprit at its
+/// span in that file (`verify_culprit_off_marker`), or it keeps only the
+/// name. Fails closed to the bare message for an offset past every recorded
+/// file (an alias-collision clone) and for a dependency whose text the loader
+/// synthesized, where a parsed offset is not one in the file on disk.
+fn locate_merged_marker(input_path: String, entry_source: String, source_groups: Array[(String, Array[(String, String)])], msg: String, culprit: Bool) -> String with Env + Exception + Fs {
   let marker = " [@off="
   let mi = String::index_of(msg, marker)
   let rest = String::substring(msg, mi + String::length(marker), String::length(msg))
@@ -1142,20 +1145,37 @@ fn locate_merged_marker(input_path: String, entry_source: String, msg: String) -
     Some((path, source, _)) => {
       let local = marker_in_file_space(msg)
       if path == input_path {
-        locate_type_error(entry_source, local)
+        locate_type_error(entry_source, if culprit {
+          verify_culprit_off_marker(entry_source, local)
+        } else {
+          local
+        })
+      } else if String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker) {
+        locate_type_error("", verify_culprit_off_marker("", local))
       } else {
-        match owner_locating_source(path, source) {
-          Some(located) => String::concat(path, String::concat(": ", locate_type_error(located, local))),
-          None => locate_type_error("", local)
+        let verified = if culprit {
+          verify_culprit_off_marker(source, local)
+        } else {
+          local
+        }
+        if String::contains(verified, marker) {
+          String::concat(path, String::concat(": ", locate_type_error(source, verified)))
+        } else {
+          locate_type_error("", verified)
         }
       }
     },
     // No merge recorded (the first file's base is 0, so `owner(0)` is Some
-    // whenever one is): the offsets are still the entry's own.
+    // whenever one is): the offsets are still each file's own.
     None => if merged_offset_owner(0) is None {
-      locate_type_error(entry_source, msg)
+      if culprit {
+        let (snapshot_entry_source, verified) = verify_culprit_off_marker_snapshot(input_path, source_groups, msg)
+        locate_type_error(snapshot_entry_source, verified)
+      } else {
+        locate_type_error(entry_source, msg)
+      }
     } else {
-      locate_type_error("", msg)
+      locate_type_error("", verify_culprit_off_marker("", msg))
     }
   }
 }
