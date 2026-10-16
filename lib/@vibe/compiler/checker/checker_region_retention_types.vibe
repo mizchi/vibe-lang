@@ -585,52 +585,7 @@ fn retention_subst_if(t: Type, tparams: Array[String], args: Array[Type]) -> Typ
 /// nothing, so it is not checked again; this is what keeps the probes
 /// affordable.
 export fn retention_body_may_store(body: Expr, keepers: Array[String]) -> Bool {
-  let mut_locals: Array[String] = []
-  let fresh: Array[String] = []
-  let other: Array[String] = []
-  retention_collect_locals(body, mut_locals, fresh, other)
-  // A name also bound some other way (a parameter, a `let` of a value from
-  // outside) may be that other binding at the write, so only a name every
-  // binder of which is fresh counts as fresh.
-  let only_fresh: Array[String] = []
-  for n in fresh {
-    if !retention_string_has(other, n) {
-      Array::push(only_fresh, n)
-    }
-  }
-  retention_scan_store(body, mut_locals, only_fresh, keepers)
-}
-
-fn retention_collect_locals(e: Expr, mut_locals: Array[String], fresh: Array[String], other: Array[String]) -> Unit {
-  match e {
-    ELet(name, v, _, _) => if retention_is_fresh_value(v) {
-      Array::push(fresh, name)
-    } else {
-      Array::push(other, name)
-    },
-    ELetMut(name, v, _, _) => {
-      Array::push(mut_locals, name)
-      if retention_is_fresh_value(v) {
-        Array::push(fresh, name)
-      } else {
-        Array::push(other, name)
-      }
-    },
-    EForIn(name, _, _, _) => Array::push(other, name),
-    EFn(_, _, params, _, _, _) => for p in params {
-      let (pn, _) = p
-      Array::push(other, pn)
-    },
-    _ => ()
-  }
-  let mark = expr_children_push(e)
-  let top = expr_children_top()
-  let mut i = mark
-  while i < top {
-    retention_collect_locals(expr_child_at(i), mut_locals, fresh, other)
-    i = i + 1
-  }
-  expr_children_pop(mark)
+  retention_walk_store(body, array_empty(), keepers, array_empty(), array_empty(), false)
 }
 
 /// A value that is a new container no one else holds: a literal, a
@@ -647,51 +602,181 @@ fn retention_is_fresh_value(v: Expr) -> Bool {
   }
 }
 
-fn retention_scan_store(e: Expr, locals: Array[String], fresh: Array[String], keepers: Array[String]) -> Bool {
-  let here = match e {
-    EAssign(name, _, _, _) => !retention_string_has(locals, name),
-    EAssignOp(name, _, _, _, _) => !retention_string_has(locals, name),
-    ECall(EIdent(name, _), args, _, _) => if retention_string_has(keepers, name) {
+/// What `scope` binds `name` to, innermost first: 0 a binding of another kind
+/// (a parameter, a pattern, a `let` of an outside value), 1 a `let mut`, 2 a
+/// fresh `let`, 3 a fresh `let mut`; -1 when the body does not bind it.
+/// Codex on #3467: a nested closure's `let mut x` used to be collected for
+/// the whole function, so an outer `x = ..` to a module binding read as local.
+fn retention_scope_kind(scope: Array[(String, Int)], name: String) -> Int {
+  let mut kind = 0 - 1
+  let mut i = Array::length(scope) - 1
+  while i >= 0 && kind < 0 {
+    let (n, k) = Array::get(scope, i)
+    if n == name {
+      kind = k
+    }
+    i = i - 1
+  }
+  kind
+}
+
+fn retention_scope_is_mut(scope: Array[(String, Int)], name: String) -> Bool {
+  let k = retention_scope_kind(scope, name)
+  k == 1 || k == 3
+}
+
+fn retention_scope_is_fresh(scope: Array[(String, Int)], name: String) -> Bool {
+  let k = retention_scope_kind(scope, name)
+  k == 2 || k == 3
+}
+
+/// Whether a retaining operation writes into a fresh local: its target, the
+/// first argument, names one directly.
+fn retention_targets_fresh(args: Array[Expr], scope: Array[(String, Int)]) -> Bool {
+  if Array::length(args) == 0 {
+    false
+  } else {
+    match Array::get(args, 0) {
+      EIdent(n, _) => retention_scope_is_fresh(scope, n),
+      _ => false
+    }
+  }
+}
+
+fn retention_pat_scope_into(p: Pat, scope: Array[(String, Int)]) -> Unit {
+  match p {
+    PBind(n) => Array::push(scope, (n, 0)),
+    PCtor(_, ps) => for q in ps {
+      retention_pat_scope_into(q, scope)
+    },
+    PTuple(ps) => for q in ps {
+      retention_pat_scope_into(q, scope)
+    },
+    POr(a, b) => {
+      retention_pat_scope_into(a, scope)
+      retention_pat_scope_into(b, scope)
+    },
+    PStruct(_, fs) => for f in fs {
+      let (_, q) = f
+      retention_pat_scope_into(q, scope)
+    },
+    _ => ()
+  }
+  ()
+}
+
+/// The store scan, walked with the body's own bindings in scope. With
+/// `taint` off it answers whether the body can store anything at all
+/// (`retention_body_may_store`); with it on, whether a value that mentions a
+/// `tainted` name reaches a store (`retention_param_may_reach_store`), a call
+/// through one of `callables` (the function's parameters) counting as a
+/// hand-off out of sight.
+fn retention_walk_store(e: Expr, scope: Array[(String, Int)], keepers: Array[String], tainted: Array[String], callables: Array[String], taint: Bool) -> Bool {
+  let base = Array::length(scope)
+  let found = match e {
+    ELet(n, v, body, _) => if retention_walk_store(v, scope, keepers, tainted, callables, taint) {
       true
+    } else {
+      Array::push(scope, (n, if retention_is_fresh_value(v) {
+        2
+      } else {
+        0
+      }))
+      retention_walk_store(body, scope, keepers, tainted, callables, taint)
+    },
+    ELetMut(n, v, body, _) => if retention_walk_store(v, scope, keepers, tainted, callables, taint) {
+      true
+    } else {
+      Array::push(scope, (n, if retention_is_fresh_value(v) {
+        3
+      } else {
+        1
+      }))
+      retention_walk_store(body, scope, keepers, tainted, callables, taint)
+    },
+    ELetRec(n, v, body) => {
+      Array::push(scope, (n, 0))
+      retention_walk_store(v, scope, keepers, tainted, callables, taint) || retention_walk_store(body, scope, keepers, tainted, callables, taint)
+    },
+    EFn(_, _, params, _, _, body) => {
+      for p in params {
+        let (pn, _) = p
+        Array::push(scope, (pn, 0))
+      }
+      retention_walk_store(body, scope, keepers, tainted, callables, taint)
+    },
+    EForIn(n, idx, it, body) => if retention_walk_store(it, scope, keepers, tainted, callables, taint) {
+      true
+    } else {
+      Array::push(scope, (n, 0))
+      match idx {
+        Some(i) => Array::push(scope, (i, 0)),
+        None => ()
+      }
+      retention_walk_store(body, scope, keepers, tainted, callables, taint)
+    },
+    EMatch(sc, arms) => retention_walk_store(sc, scope, keepers, tainted, callables, taint) || retention_walk_arms(arms, scope, keepers, tainted, callables, taint),
+    EHandle(bd, arms) => retention_walk_store(bd, scope, keepers, tainted, callables, taint) || retention_walk_arms(arms, scope, keepers, tainted, callables, taint),
+    _ => if retention_store_here(e, scope, keepers, tainted, callables, taint) {
+      true
+    } else {
+      let mark = expr_children_push(e)
+      let top = expr_children_top()
+      let mut hit = false
+      let mut i = mark
+      while i < top && !hit {
+        hit = retention_walk_store(expr_child_at(i), scope, keepers, tainted, callables, taint)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      hit
+    }
+  }
+  Array::truncate(scope, base)
+  found
+}
+
+fn retention_walk_arms(arms: Array[(Pat, Expr)], scope: Array[(String, Int)], keepers: Array[String], tainted: Array[String], callables: Array[String], taint: Bool) -> Bool {
+  let mut hit = false
+  for arm in arms {
+    if !hit {
+      let base = Array::length(scope)
+      let (pat, body) = arm
+      retention_pat_scope_into(pat, scope)
+      hit = retention_walk_store(body, scope, keepers, tainted, callables, taint)
+      Array::truncate(scope, base)
+    }
+  }
+  hit
+}
+
+/// Whether the node `e` itself stores (see `retention_walk_store`).
+fn retention_store_here(e: Expr, scope: Array[(String, Int)], keepers: Array[String], tainted: Array[String], callables: Array[String], taint: Bool) -> Bool {
+  match e {
+    EAssign(name, v, _, _) => !retention_scope_is_mut(scope, name) && (!taint || retention_mentions_any(v, tainted)),
+    EAssignOp(name, _, v, _, _) => !retention_scope_is_mut(scope, name) && (!taint || retention_mentions_any(v, tainted)),
+    ECall(EIdent(name, _), args, _, _) => if retention_string_has(keepers, name) {
+      !taint || retention_args_mention(args, tainted)
+    } else if taint && (retention_string_has(callables, name) || retention_string_has(tainted, name)) {
+      retention_args_mention(args, tainted)
     } else if retention_is_store_op(name) {
-      !retention_targets_fresh(args, fresh)
+      !retention_targets_fresh(args, scope) && (!taint || retention_args_mention(args, tainted))
     } else {
       false
     },
     // Codex on #3467: a method-style call (`cell.stash(x)`) names its method
     // without the type; it counts when a retaining operation or a function
-    // that stores is spelled with that method name.
-    ECall(EDot(recv, m, _, _), _, _, _) => retention_method_may_store(m, keepers) && !retention_targets_fresh([
-      recv
-    ], fresh),
+    // that stores is spelled with that method name. With `taint` on, any
+    // other method call handing the value over is a function value out of
+    // sight.
+    ECall(EDot(recv, m, _, _), args, _, _) => if retention_method_may_store(m, keepers) {
+      !retention_targets_fresh([recv], scope) && (!taint || retention_mentions_any(recv, tainted) || retention_args_mention(args, tainted))
+    } else {
+      taint && retention_args_mention(args, tainted)
+    },
+    ECall(EIdent(_, _), _, _, _) => false,
+    ECall(_, args, _, _) => taint && retention_args_mention(args, tainted),
     _ => false
-  }
-  if here {
-    true
-  } else {
-    let mark = expr_children_push(e)
-    let top = expr_children_top()
-    let mut found = false
-    let mut i = mark
-    while i < top && !found {
-      found = retention_scan_store(expr_child_at(i), locals, fresh, keepers)
-      i = i + 1
-    }
-    expr_children_pop(mark)
-    found
-  }
-}
-
-/// Whether a retaining operation writes into a fresh local: its target, the
-/// first argument, names one directly.
-fn retention_targets_fresh(args: Array[Expr], fresh: Array[String]) -> Bool {
-  if Array::length(args) == 0 {
-    false
-  } else {
-    match Array::get(args, 0) {
-      EIdent(n, _) => retention_string_has(fresh, n),
-      _ => false
-    }
   }
 }
 
@@ -711,16 +796,6 @@ export fn retention_param_may_reach_store(lit: Expr, pname: String, keepers: Arr
     retention_taint_bindings(lit, tainted)
     grew = Array::length(tainted) > before
   }
-  let mut_locals: Array[String] = []
-  let fresh: Array[String] = []
-  let other: Array[String] = []
-  retention_collect_locals(lit, mut_locals, fresh, other)
-  let only_fresh: Array[String] = []
-  for n in fresh {
-    if !retention_string_has(other, n) {
-      Array::push(only_fresh, n)
-    }
-  }
   let callables: Array[String] = []
   match lit {
     EFn(_, _, params, _, _, _) => for p in params {
@@ -729,7 +804,7 @@ export fn retention_param_may_reach_store(lit: Expr, pname: String, keepers: Arr
     },
     _ => ()
   }
-  retention_tainted_store(lit, tainted, mut_locals, only_fresh, keepers, callables)
+  retention_walk_store(lit, array_empty(), keepers, tainted, callables, true)
 }
 
 fn retention_taint_bindings(e: Expr, tainted: Array[String]) -> Unit {
@@ -809,44 +884,6 @@ fn retention_args_mention(args: Array[Expr], names: Array[String]) -> Bool {
     found = found || retention_mentions_any(a, names)
   }
   found
-}
-
-fn retention_tainted_store(e: Expr, tainted: Array[String], locals: Array[String], fresh: Array[String], keepers: Array[String], callables: Array[String]) -> Bool {
-  let here = match e {
-    EAssign(name, v, _, _) => !retention_string_has(locals, name) && retention_mentions_any(v, tainted),
-    EAssignOp(name, _, v, _, _) => !retention_string_has(locals, name) && retention_mentions_any(v, tainted),
-    ECall(EIdent(name, _), args, _, _) => if retention_string_has(keepers, name) || retention_string_has(callables, name) || retention_string_has(tainted, name) {
-      retention_args_mention(args, tainted)
-    } else if retention_is_store_op(name) {
-      !retention_targets_fresh(args, fresh) && retention_args_mention(args, tainted)
-    } else {
-      false
-    },
-    ECall(EIdent(_, _), _, _, _) => false,
-    ECall(EDot(recv, m, _, _), args, _, _) => if retention_method_may_store(m, keepers) {
-      retention_mentions_any(recv, tainted) || retention_args_mention(args, tainted)
-    } else {
-      // A field holding a function value, called with the value: out of
-      // sight, as a call through a parameter is.
-      retention_args_mention(args, tainted)
-    },
-    ECall(_, args, _, _) => retention_args_mention(args, tainted),
-    _ => false
-  }
-  if here {
-    true
-  } else {
-    let mark = expr_children_push(e)
-    let top = expr_children_top()
-    let mut found = false
-    let mut i = mark
-    while i < top && !found {
-      found = retention_tainted_store(expr_child_at(i), tainted, locals, fresh, keepers, callables)
-      i = i + 1
-    }
-    expr_children_pop(mark)
-    found
-  }
 }
 
 /// Whether a method-style call to `m` may store: a retaining operation of

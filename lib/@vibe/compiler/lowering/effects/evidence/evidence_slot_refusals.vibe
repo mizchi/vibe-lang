@@ -265,8 +265,8 @@ export fn edp_refuse_rowless_result(stmts: Array[Stmt], fn_defs: Array[(Int, Boo
     let (idx, _, _, dname, _, _) = Array::get(fn_defs, i)
     if dname == fname {
       done = true
-      match Array::get(stmts, idx) {
-        SLet(_, _, _, _, EFn(_, _, _, Some(TyFn(_, _, None)), _, _)) => edp_push_refusal(row, String::concat("declare the effect row on the function type `", String::concat(fname, String::concat("` returns: `-> ((..) -> T with ", String::concat(row, String::concat(")`. The closure it returns is ", String::concat(edp_result_site(callee), String::concat(". ", edp_slot_consequence(callee))))))))),
+      match edp_declared_result(stmts, idx) {
+        Some(TyFn(_, _, None)) => edp_push_refusal(row, String::concat("declare the effect row on the function type `", String::concat(fname, String::concat("` returns: `-> ((..) -> T with ", String::concat(row, String::concat(")`. The closure it returns is ", String::concat(edp_result_site(callee), String::concat(". ", edp_slot_consequence(callee))))))))),
         _ => ()
       }
     } else {
@@ -497,11 +497,48 @@ export fn edp_fn_result_has_row(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, B
   for d in fn_defs {
     let (idx, _, _, dname, _, _) = d
     if dname == fname {
-      match Array::get(stmts, idx) {
-        SLet(_, _, _, _, EFn(_, _, _, Some(TyFn(_, _, Some(r))), _, _)) => found = found || String::length(String::trim(r)) > 0,
+      match edp_declared_result(stmts, idx) {
+        Some(TyFn(_, _, Some(r))) => found = found || String::length(String::trim(r)) > 0,
         _ => ()
       }
     }
   }
   found
+}
+
+/// The result type the top-level function at `idx` declares, with
+/// non-generic transparent aliases followed (Codex on #3467: `type Thunk =
+/// () -> Int; fn mk() -> Thunk` declares a row-free function result as
+/// surely as `-> (() -> Int)` does). The step bound stops a cycle.
+fn edp_declared_result(stmts: Array[Stmt], idx: Int) -> Option[TypeExpr] {
+  match Array::get(stmts, idx) {
+    SLet(_, _, _, _, EFn(_, _, _, Some(ret), _, _)) => {
+      let mut cur = ret
+      let mut steps = 0
+      let mut done = false
+      while !done && steps < 32 {
+        match cur {
+          TyName(alias) => {
+            let mut next: Option[TypeExpr] = None
+            for st in stmts {
+              match st {
+                STypeAlias(_, n, tparams, body) => if n == alias && Array::length(tparams) == 0 {
+                  next = Some(body)
+                },
+                _ => ()
+              }
+            }
+            match next {
+              Some(t) => cur = t,
+              None => done = true
+            }
+          },
+          _ => done = true
+        }
+        steps = steps + 1
+      }
+      Some(cur)
+    },
+    _ => None
+  }
 }
