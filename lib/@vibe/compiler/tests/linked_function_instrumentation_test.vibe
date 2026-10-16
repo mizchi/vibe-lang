@@ -1,0 +1,139 @@
+import @vibe/compiler/codegen/common_base {
+  CovState, LineMapState, cov_emit_branch, linemap_flush_fn_into
+}
+import @vibe/compiler/codegen/wasi {
+  lc_commit_function_cov, lc_function_cov_new, lc_function_linemap_begin, lc_function_linemap_new
+}
+
+fn cov_error(src: CovState, dst: CovState, start: Int, owner: Int) -> String {
+  handle {
+    lc_commit_function_cov(src, dst, start, owner)
+    "accepted"
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn add_row(lm: LineMapState, offset: Int, line: Int) -> Unit {
+  Array::push(lm.funcs, Array::get(lm.cur_fn, 0))
+  Array::push(lm.offsets, offset)
+  Array::push(lm.file_ids, 1)
+  Array::push(lm.lines, line)
+}
+
+fn byte_codes(b: Bytes) -> Array[Int] {
+  let values: Array[Int] = []
+  let mut i = 0
+  while i < Bytes::length(b) {
+    Array::push(values, Bytes::get(b, i))
+    i = i + 1
+  }
+  values
+}
+
+test "coverage output is private until canonical publication" {
+  let dst = lc_function_cov_new(1024, 4, 0, 0)
+  let first = lc_function_cov_new(1024, 4, 0, 3)
+  let code = Bytes::new()
+  cov_emit_branch(code, first)
+  cov_emit_branch(code, first)
+  assert_eq(Array::get(dst.next, 0), 0)
+  assert_eq(Array::length(dst.owners), 0)
+  lc_commit_function_cov(first, dst, 0, 3)
+  assert_eq(Array::get(dst.next, 0), 2)
+  let owners: Array[Int] = dst.owners
+  inspect(owners, "[3, 3]")
+  // Direct emission and publication assign exactly the same addresses.
+  let direct = lc_function_cov_new(1024, 4, 0, 3)
+  let expected = Bytes::new()
+  cov_emit_branch(expected, direct)
+  cov_emit_branch(expected, direct)
+  assert(byte_codes(code) == byte_codes(expected))
+}
+
+test "coverage cap saturates across function boundaries" {
+  let dst = lc_function_cov_new(1024, 2, 0, 0)
+  let first = lc_function_cov_new(1024, 2, 0, 1)
+  cov_emit_branch(Bytes::new(), first)
+  lc_commit_function_cov(first, dst, 0, 1)
+  let second = lc_function_cov_new(1024, 2, 1, 2)
+  let b = Bytes::new()
+  cov_emit_branch(b, second)
+  let before = Bytes::length(b)
+  cov_emit_branch(b, second)
+  assert_eq(Bytes::length(b), before)
+  lc_commit_function_cov(second, dst, 1, 2)
+  let full = lc_function_cov_new(1024, 2, 2, 3)
+  cov_emit_branch(b, full)
+  lc_commit_function_cov(full, dst, 2, 3)
+  assert_eq(Array::get(dst.next, 0), 2)
+  let owners: Array[Int] = dst.owners
+  inspect(owners, "[1, 2]")
+}
+
+test "coverage rejects a stale range and incomplete log without publication" {
+  let dst = lc_function_cov_new(1024, 4, 0, 0)
+  let stale = lc_function_cov_new(1024, 4, 1, 2)
+  cov_emit_branch(Bytes::new(), stale)
+  inspect(cov_error(stale, dst, 1, 2), "function coverage: range or owner log does not match publication order")
+  let broken = lc_function_cov_new(1024, 4, 0, 1)
+  cov_emit_branch(Bytes::new(), broken)
+  Array::truncate(broken.owners, 0)
+  inspect(cov_error(broken, dst, 0, 1), "function coverage: range or owner log does not match publication order")
+  assert_eq(Array::get(dst.next, 0), 0)
+  assert_eq(Array::length(dst.owners), 0)
+}
+
+test "coverage validates all owners before publishing a valid prefix" {
+  let dst = lc_function_cov_new(1024, 4, 0, 0)
+  let src = lc_function_cov_new(1024, 4, 0, 3)
+  cov_emit_branch(Bytes::new(), src)
+  cov_emit_branch(Bytes::new(), src)
+  Array::set(src.owners, 1, 7)
+  inspect(cov_error(src, dst, 0, 3), "function coverage: branch belongs to a different function")
+  assert_eq(Array::get(dst.next, 0), 0)
+  assert_eq(Array::length(dst.owners), 0)
+}
+
+test "line maps completed in reverse order publish canonical encoded groups" {
+  let dst = lc_function_linemap_new(true)
+  let second = lc_function_linemap_new(true)
+  lc_function_linemap_begin(second, 9)
+  add_row(second, 3, 21)
+  let first = lc_function_linemap_new(true)
+  lc_function_linemap_begin(first, 2)
+  add_row(first, 4, 9)
+  add_row(first, 12, 11)
+  assert_eq(Array::length(dst.grp_fn), 0)
+  linemap_flush_fn_into(first, dst)
+  linemap_flush_fn_into(second, dst)
+  let grp_fn: Array[Int] = dst.grp_fn
+  inspect(grp_fn, "[2, 9]")
+  let grp_first_off: Array[Int] = dst.grp_first_off
+  inspect(grp_first_off, "[4, 3]")
+  let grp_start: Array[Int] = dst.grp_start
+  inspect(grp_start, "[0, 6]")
+  inspect(byte_codes(dst.stream), "[1, 9, 0, 8, 1, 11, 1, 21]")
+  assert_eq(Array::length(dst.offsets), 0)
+  assert_eq(Array::length(first.offsets), 0)
+  assert_eq(Bytes::length(first.stream), 0)
+}
+
+test "reusing line scratch resets its owner and enclosing source site" {
+  let dst = lc_function_linemap_new(true)
+  let scratch = lc_function_linemap_new(true)
+  lc_function_linemap_begin(scratch, 2)
+  Array::set(scratch.site, 0, 999)
+  add_row(scratch, 1, 10)
+  let error = handle {
+    lc_function_linemap_begin(scratch, 3)
+    "accepted"
+  } with { Exception::Throw(msg) => msg }
+  inspect(error, "function linemap: previous rows have not been published")
+  linemap_flush_fn_into(scratch, dst)
+  lc_function_linemap_begin(scratch, 3)
+  assert_eq(Array::get(scratch.site, 0), 0)
+  add_row(scratch, 7, 20)
+  linemap_flush_fn_into(scratch, dst)
+  let grp_fn: Array[Int] = dst.grp_fn
+  inspect(grp_fn, "[2, 3]")
+  inspect(byte_codes(dst.stream), "[1, 10, 1, 20]")
+}
