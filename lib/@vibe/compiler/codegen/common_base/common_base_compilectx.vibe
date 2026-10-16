@@ -147,6 +147,8 @@ export fn str_table_index_of(st: StrTable, s: String) -> Int with Exception {
 }
 
 export struct LambdaTable {
+  // Absolute index of bodies[0]. Whole-module and GC tables start at zero.
+  base: Int;
   bodies: Array[Bytes];
   param_counts: Array[Int];
   captures: Array[Array[String]];
@@ -732,28 +734,13 @@ export struct CompileCtx {
   // value ever carries can never reach call_indirect, so it stays ref.null.
   // Slot NUMBERING and the declared table size are unchanged. Shared BY
   // REFERENCE into per-lambda derived ctxs (like the other append-only logs
-  // above) so nested-lambda recordings land in the module-level array.
+  // above) so nested-lambda recordings land in the same function output.
   table_slots_used: Array[Int];
-  // #1259 step 7 groundwork: the lambda index this function's NEXT lambda
-  // must receive, preassigned before any body is emitted.
-  //
-  // compile_lambda takes a lambda's function index from the live length of
-  // the shared LambdaTable, and emits it into the body as a table_slot
-  // immediate -- so a function's output bytes depend on how many lambdas
-  // every function compiled before it produced. That is what stops a worker
-  // from ever compiling a body on its own, and it is the thing a frozen
-  // WholeProgramPlan has to remove (docs/internal/design/compiler-parallelism.md).
-  //
-  // A one-element mutable cell, shared BY REFERENCE into per-lambda derived
-  // ctxs exactly like table_slots_used above, so a nested lambda advances the
-  // same counter its enclosing function does. Seeded per user function from
-  // the counting pass (plan_lambda_bases) and checked against the live length
-  // at every allocation: while the two agree, the plan is a faithful
-  // prediction of what the sequential walk does, which is what makes flipping
-  // compile_lambda over to it a no-op on the emitted bytes.
-  //
-  // Empty disables the check entirely (the gc lane and any ctx built outside
-  // the planned body loop).
+  // The next absolute lambda index, preassigned by the function plan.
+  // A function owns its cursor and a table starting at its planned base;
+  // nested lambdas share those two local outputs. At each allocation the
+  // cursor must equal table.base + table.bodies.length. An empty cursor
+  // selects the unplanned module-expression path, whose table starts at zero.
   lambda_plan_next: Array[Int];
   // #644: static (wasm code offset -> source file/line) recorder for the
   // `vibe.linemap` custom section. Shared by reference across every
@@ -785,9 +772,9 @@ export struct CompileCtx {
   // `blind_reloc_owner_cell` is a one-element cell naming the body being
   // filled, and an EMPTY one disables recording entirely -- the same
   // convention `lambda_plan_next` uses for "this ctx was built outside the
-  // planned body loop". The three payload arrays are shared BY REFERENCE into
+  // planned body loop". The payload arrays are shared BY REFERENCE into
   // per-lambda derived ctxs, like table_slots_used, so a nested lambda's
-  // records land in the module-level arrays; only the cell is per-body.
+  // records land in the same function output; only the owner cell is per-body.
   blind_reloc_owner_cell: Array[Int];
   blind_reloc_owners: Array[Int];
   blind_reloc_offsets: Array[Int];

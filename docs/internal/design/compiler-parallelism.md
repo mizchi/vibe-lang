@@ -590,14 +590,18 @@ at 4-way for per-file discovery, against 0.8 s for the single plan call, on a
 end-to-end measurement of the pre-warm after that change is recorded; measure
 before wiring it into a command again.
 
-### Phase 3: immutable whole-program plan -- partial, not scheduled
+### Phase 3: immutable whole-program plan -- output isolation in progress
 
 - Split global discovery and index allocation from body emission: the lambda
   index plan and slice compilation exist ([Codegen split](#codegen-split)).
 - Preassign every function, lambda, coverage and debug range.
 - Red: shuffling body completion order must not change any Wasm byte.
 
-Parallel body codegen is not planned at the measured body share.
+The lambda cursor/table and funcref relocation logs now belong to one function
+emission, then publish in canonical order. Coverage/line-map state and compiler
+globals still need isolation before fan-out; the defaults remain serial. The
+[function-emission feedback](#function-emission-dogfood-feedback-2026-10-16)
+records the language/library gaps and remaining steps.
 
 ### Phase 4: backend differential -- not scheduled
 
@@ -695,11 +699,81 @@ What would have to change:
   of events seen by one coordinator; concurrent shared writes need a
   happens-before check.
 
-A narrower middle path is likely to come first: share only data published
-once and read-only afterwards -- an interned symbol table, or a checked
-module's `TypeEnv` -- by reference, after it is frozen. It needs no allocator
-change beyond "this region is never freed", no collector, no `Sync` beyond
-"an immutable value is trivially `Sync`", and no race-freedom proof beyond
-"written once before any reader saw it". It fits the job/outcome publish step
-the pre-warm already uses: hand out a reference to the frozen environment
-instead of copying its text.
+A narrower middle path would share only data published once and read-only
+afterwards, such as an interned symbol table or checked module interface.
+Freezing must exclude mutable aliases throughout the reachable graph, and the
+owner must outlive every reader. Publication, reclamation and reference-count
+operations still need a runtime contract; a read-only API alone does not prove
+that a value is safe to share. This is a proposal, not a capability of the
+current isolated-instance worker transport.
+
+## Function-emission dogfood feedback (2026-10-16)
+
+The first output-isolation slice gives each compiled function its own lambda
+table, lambda cursor, funcref slots and blind-reference logs. A table records
+the absolute index of its first lambda, so nested lambdas retain the canonical
+IDs without depending on previously emitted functions. The serial publisher
+checks the planned range and aligned metadata before appending those outputs.
+Body-cache harvest and replay still use the canonical aggregate and unchanged
+persistent formats. Sliced output tables retain their positional padding.
+
+This does **not** enable parallel function emission. Coverage IDs and line-map
+state still need isolation/planning, body-cache publication belongs to the
+coordinator, and compiler globals need an audit before concurrent entry. The
+output record still contains mutable arrays and Bytes: it is not `Send`.
+`TaskGroup::spawn` on the current cooperative backend cannot turn this CPU
+work into parallel execution. A native multi-worker backend must own isolated
+stores/heaps and preserve the existing task-group lifetime and failure rules.
+
+The [measurement report](../../../bench/perf/analysis/function-local-emission-2026-10-16.json)
+retains the cold/warm samples, compiler receipts and language probes. Walltime
+medians differ by less than 0.7%, with overlapping ranges; median RSS grows
+1.1–1.9 MiB. This is an output-isolation step, with no speedup claim.
+
+### Language and library proposals, not implemented surfaces
+
+The compiler now supplies concrete requirements for three additions. The
+suggested names below are descriptive, not accepted API spellings.
+
+1. **An immutable, Send-eligible byte buffer.** Function output is arbitrary
+   binary data. A task returning `Bytes::from_array([1, 2, 3])` is currently
+   refused with `no impl Send for Bytes`; a String result is accepted. A frozen
+   byte type should carry binary results without a String encoding or UTF-8
+   pass. A safe copy conversion is useful first. A zero-copy conversion would
+   additionally need an ownership-transfer proof: a retained mutable Bytes
+   alias must not modify the published result, and cancellation must release
+   the correct owner. Transport between isolated Wasm memories may still copy;
+   `Send` alone is not a promise of zero-copy transport.
+2. **A deeply read-only snapshot/view for compiler inputs.** `FrozenArray`
+   already exists, but `FrozenArray[Array[Int]]` is not Send. An outer freeze
+   does not make an AST containing arrays and mutable indexes transferable.
+   The useful feature is a transitive immutable view or owned snapshot, with
+   explicit copy/transfer costs and a lifetime covering all scoped readers.
+   Acceptance must reject every retained mutable alias, including nested
+   arrays/maps and captures. This is a larger ownership/type-system project;
+   adding a cast or changing Array's Send judgement would be unsound.
+3. **A bounded ordered parallel combinator with a consuming sink.** The
+   current `Parallel::map` spawns one task per input before joining in input
+   order. A compiler needs bounded in-flight jobs **and bytes**, canonical
+   publication and release of consumed results. Limiting active workers alone
+   leaves an unbounded queue or result array. A library combinator should keep
+   worker computation and coordinator publication separate, cancel/reap all
+   children on failure, and bound out-of-order completed outputs when an early
+   job is slow. Check the same observations on the cooperative reference and
+   the native parallel backend; do not make thread IDs or host intrinsics
+   public language values.
+
+The separate spawn/spawn_suspend surface and inline-only suspendable callback
+restriction are already tracked by [#3200](https://github.com/mizchi/vibe-lang/issues/3200).
+Unifying that entry and letting `TaskGroup::run` drive suspension would improve
+the compiler's coordinator too. It does not itself supply CPU parallelism.
+An ordinary typed spawn-shaped wrapper is already accepted by the checker;
+the dogfood probes do not establish that such wrappers need a new language
+feature. Flat `FrozenArray[Int]` captures and String results are positive
+controls for the rejected nested-array and binary-result cases.
+
+The immediate compiler sequence is output isolation, coverage/line-map and
+global-state isolation, then a bounded native backend experiment. Measure
+whole-build walltime and memory against the ordinary serial build, including
+snapshot construction, transfer and ordered publication. Keep defaults serial
+until the complete path wins; a faster isolated emitter is insufficient.

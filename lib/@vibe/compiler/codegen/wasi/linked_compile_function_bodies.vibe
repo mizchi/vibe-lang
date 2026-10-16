@@ -223,6 +223,10 @@ import ./linked_compile_lc_rename_sleep_calls.vibe {
   lc_has_nonloop_consume
 }
 
+import ./linked_function_effects.vibe {
+  lc_commit_function_effects, lc_function_effects_new
+}
+
 import ./linked_function_plan.vibe {
   LinkedFunctionPlan, lc_prepare_function_plan
 }
@@ -663,20 +667,8 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   // instead of once per compile -- hoist it out, same fix shape as
   // capture_name_index_shared above.
   let thunk_names_sorted_shared = sorted_names_of(thunk_names_list)
-  // #1259 step 7 groundwork: the lambda index plan.
-  //
-  // count_lambda_sites_expr predicts how many table entries a function's body
-  // will allocate WITHOUT compiling the functions before it -- which is the
-  // whole point, since compile_lambda currently takes that index from the live
-  // length of a shared growing table and emits it into the body. The running
-  // total below is that prediction's prefix sum: function bi's range starts
-  // where bi-1's ended.
-  //
-  // Seeded into the ctx and checked at every allocation (compile_lambda), not
-  // used: while plan and walk agree, swapping compile_lambda over to the
-  // planned value cannot change a byte. This is the evidence for that swap.
-  let lambda_plan_cell = lc_fresh_int_array()
-  Array::push(lambda_plan_cell, 0)
+  // Canonical ranges were planned before emission. Each function starts a
+  // private table and cursor at its range base, including when emitted alone.
   let planned_bodies = function_plan.bodies
   let lambda_bases = function_plan.lambda_bases
   let lambda_base_acc = function_plan.lambda_count
@@ -862,21 +854,9 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   let (body_cache_names_sorted, body_cache_names_pos) = codegen_body_cache_name_index(body_cache_use)
   let mut bi = 0
   while bi < num_user_funcs {
-    // #1259 step 8: outside this worker's slice, produce nothing but keep every
-    // index aligned.
-    //
-    // A worker compiles [slice_lo, slice_hi) and throws the assembled module
-    // away; only its harvest is wanted. But `bodies` / `meta_i32` / `meta_i64`
-    // are positional, and -- the part that bites -- compile_lambda asserts the
-    // planned lambda index equals the LIVE length of the lambda table. Let a
-    // skipped function contribute nothing and the live length falls behind the
-    // plan, so the first lambda in the next in-slice function trips that
-    // assertion. Padding the table by the count the plan already reserved for
-    // the skipped function keeps the assertion meaningful instead of having to
-    // weaken it for sliced runs.
-    //
-    // The padding is never read: the module is discarded, and the coordinator
-    // takes lambdas from the harvest, not from a worker's table.
+    // Keep positional output/harvest tables aligned outside this slice.
+    // Lambda emission itself uses a private table with an absolute base and
+    // does not depend on this padding or on earlier functions having run.
     let __slice_end = if slice_hi < 0 {
       num_user_funcs
     } else {
@@ -1353,7 +1333,8 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
         }
         // #1259 step 7: this function's preassigned range, straight out of the
         // frozen plan -- no counting happens here any more.
-        Array::set(lambda_plan_cell, 0, Array::get(lambda_bases, bi))
+        let function_effects = lc_function_effects_new(Array::get(lambda_bases, bi))
+        let lambda_plan_cell = function_effects.lambda_next
         let lambda_planned_end = if bi + 1 < num_user_funcs {
           Array::get(lambda_bases, bi + 1)
         } else {
@@ -1370,7 +1351,7 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
             names_sorted_pos: all_fn_names_sorted_pos
           },
           str_table: str_table_shared,
-          lambda_table: lt_w,
+          lambda_table: function_effects.lambdas,
           num_user_funcs: num_user_funcs,
           lambda_slot_base: lambda_slot_base,
           func_offset: func_offset,
@@ -1500,17 +1481,17 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
           borrow_view_ret: lc_borrow_view_ret,
           scalar_ret_names: lc_scalar_ret_names,
           pending_letrec_self_name: lc_fresh_string_array(),
-          table_slots_used: table_slots_used,
+          table_slots_used: function_effects.slots,
           lambda_plan_next: lambda_plan_cell,
           linemap: fn_linemap,
           // #2669 slice 2: this body is user function `bi`. The cell is fresh
-          // per body (it names the owner); the payload arrays are the
-          // module-wide ones.
+          // per body (it names the owner); payload arrays belong to
+          // this function output, shared only with its nested lambdas.
           blind_reloc_owner_cell: [bi],
-          blind_reloc_owners: blind_owners,
-          blind_reloc_offsets: blind_offsets,
-          blind_reloc_kinds: blind_kinds,
-          blind_reloc_syms: blind_syms
+          blind_reloc_owners: function_effects.blind_owners,
+          blind_reloc_offsets: function_effects.blind_offsets,
+          blind_reloc_kinds: function_effects.blind_kinds,
+          blind_reloc_syms: function_effects.blind_syms
         }
         if is_efn(__bi_expr) {
           // #715: `lc_norm_params` (built above from `get_efn_params(__bi_expr)`)
@@ -1978,44 +1959,10 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
           Array::push(meta_i64, extra)
           Array::push(meta_v128, 0)
         }
-        // #1259 step 7: harvest this function's codegen output as a VALUE.
-        //
-        // Everything the whole-program assembly needs from compiling function `bi`
-        // is now in hand: its encoded body, its two meta entries, and the lambdas
-        // it produced -- which sit at their PLANNED indices (#1275/#1277), so the
-        // table_slot immediates already baked into the body refer to the slots a
-        // full assembly will install them at. That is what makes a body compiled
-        // in isolation reusable, and it is why the lambda plan had to be frozen
-        // first.
-        //
-        // Harvest is unconditional and cheap (it copies references into parallel
-        // arrays, it does not re-encode). The cache is only READ when a caller
-        // supplies one.
-        // #2669 slice 2: the blind-reference log and the funcref-slot log must
-        // grow BY THE SAME AMOUNT over this function's compile.
-        //
-        // This is what keeps the recording COMPLETE rather than merely
-        // believed complete. A function value is emitted at exactly the points
-        // that append to `table_slots_used` -- compile_expr's
-        // named-function-as-value branch and compile_lambda's single
-        // `table_slot` computation, which feeds both the captureless
-        // `i64.const` and the capturing closure header's `i32.const`. Each
-        // appends one slot and records one reference. So a new emission site
-        // that forgot to record, or a record without an emission, shows up
-        // here as a count that does not match, on every compile, instead of as
-        // a cached body that relocates one reference short.
-        //
-        // #2669 slice 3: the replay path above now asserts the same pairing,
-        // because the cache carries the references alongside the slots. The
-        // two checks together say the log is complete however the body got
-        // here.
-        let __blind_grew = Array::length(blind_owners) - __blind_lo
-        let __slots_grew = Array::length(table_slots_used) - __slot_lo
-        if __blind_grew != __slots_grew {
-          throw(String::concat("blind reloc: function ", String::concat(__to_string(bi), String::concat(" appended ", String::concat(__to_string(__slots_grew), String::concat(" funcref slots but ", String::concat(__to_string(__blind_grew), " blind references -- a function-value emission site records one or the other, never just one")))))))
-        } else {
-          ()
-        }
+        // Publish only after the function has completed and its private output
+        // agrees with the planned range. Cache harvest still reads the canonical
+        // aggregate, so replay and persistent formats remain unchanged.
+        lc_commit_function_effects(function_effects, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms, lambda_planned_end)
         codegen_body_cache_record(body_cache_out, bi, Array::get(fn_names_list, bi), lc_fn_origin_lookup(lc_fn_file_of, Array::get(fn_names_list, bi)), lc_fn_origin_lookup(lc_fn_stmt_of, Array::get(fn_names_list, bi)), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used), blind_owners, blind_offsets, blind_kinds, blind_syms, __blind_lo, Array::length(blind_owners), linemap_state, __lm_lo)
       }
     }

@@ -1,0 +1,115 @@
+import @vibe/compiler/codegen/wasi {
+  LinkedFunctionEffects, lc_commit_function_effects, lc_function_effects_new
+}
+
+fn add_lambda(out: LinkedFunctionEffects, byte: Int) -> Unit {
+  Array::push(out.lambdas.bodies, Bytes::from_array([byte]))
+  Array::push(out.lambdas.param_counts, 1)
+  Array::push(out.lambdas.captures, ["capture"])
+  Array::push(out.lambdas.meta_i32, 2)
+  Array::push(out.lambdas.meta_i64, 3)
+  Array::set(out.lambda_next, 0, Array::get(out.lambda_next, 0) + 1)
+}
+
+fn add_ref(out: LinkedFunctionEffects, owner: Int, slot: Int) -> Unit {
+  Array::push(out.slots, slot)
+  Array::push(out.blind_owners, owner)
+  Array::push(out.blind_offsets, 7)
+  Array::push(out.blind_kinds, 1)
+  Array::push(out.blind_syms, slot)
+}
+
+fn publish(src: LinkedFunctionEffects, dst: LinkedFunctionEffects, end: Int) -> Unit with Exception {
+  lc_commit_function_effects(src, dst.lambdas, dst.slots, dst.blind_owners, dst.blind_offsets, dst.blind_kinds, dst.blind_syms, end)
+}
+
+fn publication_error(src: LinkedFunctionEffects, dst: LinkedFunctionEffects, end: Int) -> String {
+  handle {
+    publish(src, dst, end)
+    "accepted"
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn assert_empty(dst: LinkedFunctionEffects) -> Unit with Exception {
+  assert(Array::length(dst.lambdas.bodies) == 0)
+  assert(Array::length(dst.lambdas.param_counts) == 0)
+  assert(Array::length(dst.lambdas.captures) == 0)
+  assert(Array::length(dst.lambdas.meta_i32) == 0)
+  assert(Array::length(dst.lambdas.meta_i64) == 0)
+  assert(Array::length(dst.slots) == 0)
+  assert(Array::length(dst.blind_owners) == 0)
+  assert(Array::length(dst.blind_offsets) == 0)
+  assert(Array::length(dst.blind_kinds) == 0)
+  assert(Array::length(dst.blind_syms) == 0)
+}
+
+test "independent functions own their tables and cursor" {
+  let a = lc_function_effects_new(0)
+  let b = lc_function_effects_new(5)
+  add_lambda(b, 22)
+  add_ref(b, 3, 100)
+  assert_empty(a)
+  inspect(Array::get(a.lambda_next, 0), "0")
+  inspect(Array::get(b.lambda_next, 0), "6")
+}
+
+test "completion order does not change canonical publication order" {
+  let second = lc_function_effects_new(1)
+  add_lambda(second, 22)
+  add_ref(second, 2, 102)
+  let first = lc_function_effects_new(0)
+  add_lambda(first, 11)
+  add_ref(first, 1, 101)
+  let dst = lc_function_effects_new(0)
+  publish(first, dst, 1)
+  publish(second, dst, 2)
+  inspect(Bytes::get(Array::get(dst.lambdas.bodies, 0), 0), "11")
+  inspect(Bytes::get(Array::get(dst.lambdas.bodies, 1), 0), "22")
+  inspect(Array::get(dst.slots, 0), "101")
+  inspect(Array::get(dst.slots, 1), "102")
+  inspect(Array::get(dst.blind_owners, 1), "2")
+  inspect(Array::get(Array::get(dst.lambdas.captures, 1), 0), "capture")
+  inspect(Array::get(dst.lambdas.meta_i64, 1), "3")
+}
+
+test "an out-of-order range is refused without publishing any rows" {
+  let src = lc_function_effects_new(1)
+  add_lambda(src, 22)
+  add_ref(src, 2, 102)
+  let dst = lc_function_effects_new(0)
+  inspect(publication_error(src, dst, 2), "function effects: lambda range does not match canonical publication order")
+  assert_empty(dst)
+}
+
+test "missing lambda metadata or an unfinished cursor cannot publish" {
+  let src = lc_function_effects_new(0)
+  add_lambda(src, 11)
+  let dst = lc_function_effects_new(0)
+  Array::set(src.lambda_next, 0, 0)
+  inspect(publication_error(src, dst, 1), "function effects: lambda cursor did not reach the planned end")
+  assert_empty(dst)
+  Array::set(src.lambda_next, 0, 1)
+  Array::truncate(src.lambdas.meta_i64, 0)
+  inspect(publication_error(src, dst, 1), "function effects: lambda metadata arrays are not aligned")
+  assert_empty(dst)
+}
+
+test "missing blind references cannot publish even the valid lambda prefix" {
+  let src = lc_function_effects_new(0)
+  add_lambda(src, 11)
+  add_ref(src, 1, 101)
+  Array::truncate(src.blind_syms, 0)
+  let dst = lc_function_effects_new(0)
+  inspect(publication_error(src, dst, 1), "function effects: funcref slots and blind references are not aligned")
+  assert_empty(dst)
+}
+
+test "functions without lambdas still publish their function references" {
+  let src = lc_function_effects_new(0)
+  add_ref(src, 4, 104)
+  let dst = lc_function_effects_new(0)
+  publish(src, dst, 0)
+  inspect(Array::length(dst.lambdas.bodies), "0")
+  inspect(Array::get(dst.slots, 0), "104")
+  inspect(Array::get(dst.blind_syms, 0), "104")
+}
