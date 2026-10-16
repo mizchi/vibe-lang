@@ -6,11 +6,14 @@
 // same-type shadow renders as that type. Seeding it as a fresh name sent the
 // shapes below to `__to_string` -- a `Char` as its code point, an `Option` as
 // an address -- and let a struct with no Show past the missing-Show refusal.
-// The lanes users reach hand the rows over (`vibe check` since #3456); what is
-// left without them is `vibe build --debug` and the unlocated test lanes.
+// The lanes users reach hand the rows over (`vibe check` since #3456). The
+// unlocated BUILD lanes (`compile_file_wasi_only`, `compile_file_wasi_library`,
+// `compile_file_wasi_linked_artifacts`) run `desugar_trait_dicts_rowless_build`,
+// which refuses an interpolated untyped shadow with the edit instead: there,
+// a shadow that changes the type rendered as the outer type.
 
 import @vibe/compiler/normalize {
-  desugar_trait_dicts
+  desugar_trait_dicts, desugar_trait_dicts_rowless_build
 }
 
 import @vibe/compiler/syntax {
@@ -37,6 +40,14 @@ fn refused_located(source: String) -> Bool {
     let _ = desugared_located(source)
     false
   } with { Exception::Throw(_) => true }
+}
+
+fn rowless_build_refusal(source: String) -> String {
+  handle {
+    let stmts = parse_program(lex(source))
+    desugar_trait_dicts_rowless_build(stmts)
+    "clean"
+  } with { Exception::Throw(msg) => msg }
 }
 
 fn shadowed(param_type: String) -> String {
@@ -66,4 +77,25 @@ test "#3434: a located same-type shadow with no typed rows renders as the outer 
 test "#3434: a located same-type shadow of a struct with no Show is refused with no typed rows" {
   let src = String::concat("struct Raw {\n  n: Int\n}\n\n", shadowed("Raw"))
   inspect(refused_located(src), content = "true")
+}
+
+test "#3456: the rowless build lane refuses a type-changing untyped shadow with the edit" {
+  let src = "fn f(b: Option[Int], c: Bool) -> String {\n  let b = if c {\n    5\n  } else {\n    6\n  }\n  \"\\{b}\"\n}\n"
+  let msg = rowless_build_refusal(src)
+  inspect(String::starts_with(msg, "annotate the `let` that rebinds `b` with its type"), content = "true")
+}
+
+test "#3456: the rowless build lane refuses a same-type shadow it cannot type too" {
+  let src = "fn f(o: Option[Int]) -> String {\n  let o = match o {\n    Some(v) => Some(v),\n    None => None\n  }\n  \"\\{o}\"\n}\n"
+  inspect(String::starts_with(rowless_build_refusal(src), "annotate the `let` that rebinds `o`"), content = "true")
+  // A rebinding the pass types itself (both arms are `c`) is no shadow it
+  // has to guess at, and renders.
+  inspect(rowless_build_refusal(shadowed("Char")), content = "clean")
+}
+
+test "#3456: the rowless build lane renders an annotated shadow and a plain name" {
+  let annotated = "fn f(b: Option[Int], c: Bool) -> String {\n  let b: Int = if c {\n    5\n  } else {\n    6\n  }\n  \"\\{b}\"\n}\n"
+  inspect(rowless_build_refusal(annotated), content = "clean")
+  let plain = "fn f(b: Option[Int]) -> String {\n  \"\\{b}\"\n}\n"
+  inspect(rowless_build_refusal(plain), content = "clean")
 }

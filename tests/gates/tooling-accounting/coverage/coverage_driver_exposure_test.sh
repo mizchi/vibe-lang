@@ -50,8 +50,7 @@ VEOF
 emit_driver() { # driver output entry [compiler-entry]
   local driver="$1" output="$2" entry="$3" compiler_entry="${4:-$TMP/root.vibe}"
   rm -f "$output" "$output.diag"
-  # #3331: the lowered form, for the pinned seed (see scripts/generate_bundle.sh).
-  VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1 VIBE_MERGED_SOURCE_LOWER_TRAIT_DICTS=1 \
+  VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1 \
     VIBE_COVERAGE_DRIVER_PATH="$driver" \
     VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$TOOL" \

@@ -2197,6 +2197,25 @@ The *same* definition reached through re-export paths is not a conflict, and
 two different traits forced onto one local name via explicit aliases is the
 separate `ambiguous trait import alias` error.
 
+### Same-named types from two modules are rejected (#3448)
+
+A compiled program holds one type per name: a dependency's exported `struct`,
+`enum` or `suberror`, and every type the entry file declares, keep their bare
+names. When two modules the program uses both declare one (`depa.vibe` and
+`depb.vibe` each `export struct Box`, or the entry declares `enum Hue` and
+imports from a module that exports another `Hue`), the build is refused with
+``rename one of the structs named `Box`: ...`` rather than running one module's
+fields and methods for the other's type. Rename one of them. A package member
+the program never imports from does not count: a local `enum Attempt` beside
+`import @vibe/core { str_lt }` is fine.
+
+### A local binding shadows an import; the last re-export wins (#3444, #3445)
+
+A top-level `fn` or `let` named like an import shadows it in that file: its
+calls are typed AND run against the local. When a facade re-exports two
+bindings under one name, the later re-export is the one an importer sees, both
+in the checker and at run time.
+
 ### Qualified names
 
 どの記号が識別子の一部になるかは文脈で決まる。

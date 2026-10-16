@@ -583,6 +583,170 @@ fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], e
   origin
 }
 
+/// #3448: the struct, enum or error type `stmt` publishes into the merged
+/// program, as `(name, kind)`, or `("", "")`. A dependency's EXPORTED type
+/// keeps its bare name (a private one is namespaced by its path), and every
+/// type of the entry file keeps its bare name, so two such declarations of one
+/// name collide. A package contract restates its implementation's types, so
+/// it publishes none of its own.
+fn published_type_of(stmt: Stmt, path: String, is_entry: Bool, exported_names: Array[String]) -> (String, String) {
+  let (declared, name, kind) = match stmt {
+    SStruct(exported, name, _, _, _, _) => (exported, name, "structs"),
+    SEnum(exported, name, _, _, _) => (exported, name, "enums"),
+    SSuberror(exported, name, _) => (exported, name, "error types"),
+    _ => (false, "", "")
+  }
+  if name == "" || is_contract_ext(path) || !(is_entry || declared || import_alias_rewrite_string_array_contains(exported_names, name)) {
+    ("", "")
+  } else {
+    (name, kind)
+  }
+}
+
+/// The top-level name `stmt` declares, for import reachability, or "".
+fn top_level_decl_name(stmt: Stmt) -> String {
+  match stmt {
+    SLet(_, _, name, _, _) => name,
+    SLetMut(name, _, _) => name,
+    SFnDecl(_, name, _, _, _) => name,
+    SStruct(_, name, _, _, _, _) => name,
+    SEnum(_, name, _, _, _) => name,
+    SSuberror(_, name, _) => name,
+    STypeAlias(_, name, _, _) => name,
+    STrait(_, name, _, _, _, _) => name,
+    SEffectDef(_, name, _, _) => name,
+    _ => ""
+  }
+}
+
+/// #3448: the refusals for type names two REACHED source files both publish.
+///
+/// A package is merged whole -- importing one name from `@vibe/core` brings
+/// every member file -- so a publication counts only when its file is reached
+/// from the entry through import items: an item reaches the file that
+/// declares it, following re-export edges (the last one, as the checker
+/// binds), and a reached file's own imports reach further. A local
+/// `enum Attempt` beside core's unimported `attempt.vibe` is therefore not a
+/// collision, while two modules the program actually uses that both publish
+/// `Box` are: the program held two `struct Box` and two `Box::plain`, and ran
+/// one module's for the other's type.
+fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]], entry_path: String, edge_tpath: Array[String], edge_tname: Array[String], edge_last_idx: MutMap[String, Int]) -> Array[String] {
+  let file_count = Array::length(paths)
+  let decls: MutMap[String, Bool] = MutMap::new_string()
+  let path_idx: MutMap[String, Int] = MutMap::new_string()
+  let mut fi = 0
+  while fi < file_count {
+    let path = Array::get(paths, fi)
+    if !MutMap::has(path_idx, path) {
+      MutMap::set(path_idx, path, fi)
+    } else {
+      ()
+    }
+    let fstmts = Array::get(stmts_list, fi)
+    let mut di = 0
+    while di < Array::length(fstmts) {
+      let dn = top_level_decl_name(Array::get(fstmts, di))
+      if dn != "" {
+        MutMap::set(decls, plan_rename_key(path, dn), true)
+      } else {
+        ()
+      }
+      di = di + 1
+    }
+    fi = fi + 1
+  }
+  let reached: MutMap[String, Bool] = MutMap::new_string()
+  let seen_items: MutMap[String, Bool] = MutMap::new_string()
+  let work_paths: Array[String] = []
+  let work_names: Array[String] = []
+  let reach_file: (String) -> Unit = (path) -> {
+    if !MutMap::has(reached, path) {
+      MutMap::set(reached, path, true)
+      match MutMap::get(path_idx, path) {
+        Some(idx) => {
+          let stmts = Array::get(stmts_list, idx)
+          let mut si = 0
+          while si < Array::length(stmts) {
+            match Array::get(stmts, si) {
+              SImport(raw_path, items) => {
+                let target = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
+                let mut ii = 0
+                while ii < Array::length(items) {
+                  Array::push(work_paths, target)
+                  Array::push(work_names, Array::get(items, ii).name)
+                  ii = ii + 1
+                }
+              },
+              _ => ()
+            }
+            si = si + 1
+          }
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+  }
+  reach_file(entry_path)
+  let mut wi = 0
+  while wi < Array::length(work_paths) {
+    let wp = Array::get(work_paths, wi)
+    let wn = Array::get(work_names, wi)
+    let key = plan_rename_key(wp, wn)
+    if !MutMap::has(seen_items, key) {
+      MutMap::set(seen_items, key, true)
+      if MutMap::has(decls, key) {
+        reach_file(wp)
+      } else {
+        match MutMap::get(edge_last_idx, key) {
+          Some(ei) => {
+            Array::push(work_paths, Array::get(edge_tpath, ei))
+            Array::push(work_names, Array::get(edge_tname, ei))
+          },
+          // Neither declared nor re-exported here (a builtin, an aggregate
+          // import): the file itself is what the item reaches.
+          None => reach_file(wp)
+        }
+      }
+    } else {
+      ()
+    }
+    wi = wi + 1
+  }
+  let first_path: MutMap[String, String] = MutMap::new_string()
+  let errors: Array[String] = []
+  let mut ci = 0
+  while ci < file_count {
+    let path = Array::get(paths, ci)
+    if MutMap::has(reached, path) {
+      let stmts = Array::get(stmts_list, ci)
+      let exported_names = collect_exported_value_names(stmts)
+      let mut pi = 0
+      while pi < Array::length(stmts) {
+        let (name, kind) = published_type_of(Array::get(stmts, pi), path, path == entry_path, exported_names)
+        if name != "" {
+          match MutMap::get(first_path, name) {
+            // "\n" marks a name already refused: it is never a path.
+            Some(prior) => if prior != path && prior != "\n" {
+              Array::push(errors, String::concat("rename one of the ", String::concat(kind, String::concat(" named `", String::concat(name, String::concat("`: `", String::concat(prior, String::concat("` and `", String::concat(path, "` both declare it for this program, and a program holds one type per name, so code compiled against one would run with the other's fields and methods")))))))))
+              MutMap::set(first_path, name, "\n")
+            },
+            None => MutMap::set(first_path, name, path)
+          }
+        } else {
+          ()
+        }
+        pi = pi + 1
+      }
+    } else {
+      ()
+    }
+    ci = ci + 1
+  }
+  errors
+}
+
 export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array[Stmt]], entry_path: String) -> ExportRenamePlan {
   let file_count = Array::length(paths)
   let def_names_list = array_empty()
@@ -721,6 +885,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
     MutMap::set(edge_last_idx, plan_rename_key(Array::get(edge_from, eli), Array::get(edge_pub, eli)), eli)
     eli = eli + 1
   }
+  let type_collision_errors = reached_type_collisions(paths, stmts_list, entry_path, edge_tpath, edge_tname, edge_last_idx)
   let enum_alias_idx: MutMap[String, String] = MutMap::new_string()
   let enum_alias_private_ctors: MutMap[String, Array[(String, String)]] = MutMap::new_string()
   let enum_alias_paths = empty_strings()
@@ -895,7 +1060,15 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
     while ci < Array::length(edge_from) {
       let from = Array::get(edge_from, ci)
       let pub_name = Array::get(edge_pub, ci)
-      if from == entry_path {
+      // #3445: two re-exports of one name in one facade -- the checker binds
+      // the LATER one (its import environment is later-binding-wins), so
+      // only that edge may publish a rename. Following the first one ran
+      // the earlier definition under the later one's type.
+      let is_last_edge = match MutMap::get(edge_last_idx, plan_rename_key(from, pub_name)) {
+        Some(last) => last == ci,
+        None => true
+      }
+      if from == entry_path || !is_last_edge {
         ()
       } else {
         match MutMap::get(rename_idx, plan_rename_key(Array::get(edge_tpath, ci), Array::get(edge_tname, ci))) {
@@ -990,7 +1163,8 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
     enum_alias_origins: enum_alias_origins,
     enum_origin_ambiguous: enum_origin_ambiguous,
     enum_origin_ambiguous_names: enum_origin_ambiguous_names,
-    enum_alias_count: enum_alias_count
+    enum_alias_count: enum_alias_count,
+    type_collision_errors: type_collision_errors
   }
 }
 
@@ -1194,6 +1368,9 @@ fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Ar
 /// kinded enum alias imported through a facade. Aliased re-exports remain
 /// publication-only in their own source unit and contribute no local rewrite.
 export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stmts: Array[Stmt]) -> Array[(String, String)] with Exception {
+  if Array::length(plan.type_collision_errors) > 0 {
+    throw(Array::get(plan.type_collision_errors, 0))
+  }
   let out = empty_aliases()
   let locals_seen = empty_strings()
   let rename_paths = plan.rename_paths
@@ -1222,7 +1399,10 @@ export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stm
         SFnDecl(_, name, _, _, _) => name,
         _ => ""
       }
-      if String::index_of(local_name, "::") > 0 && !import_alias_rewrite_string_array_contains(locals_seen, local_name) {
+      // #3444: a bare top-level `fn` / `let` shadows an import of the same
+      // spelling too. The checker types its uses against the local, so the
+      // import must not rewrite them to the imported definition.
+      if local_name != "" && !import_alias_rewrite_string_array_contains(locals_seen, local_name) {
         Array::push(locals_seen, local_name)
       } else {
         ()

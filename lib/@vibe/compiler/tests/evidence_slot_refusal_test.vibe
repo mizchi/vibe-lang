@@ -1,0 +1,61 @@
+import @vibe/compiler/lowering/effects/evidence {
+  evidence_dict_pass
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+// #3424: a function value passed at a parameter whose function type carries a
+// row is called with that row's dict. The four shapes below were compiled
+// without the parameter that receives it and trapped (`indirect call type
+// mismatch`); each is refused with the edit that compiles, and the controls
+// keep compiling. A refusal needs the effect to be performed somewhere: with
+// nothing performing it, no dict is passed and the value runs as written. The
+// runtime answers for the edits are in
+// `fixtures/callback_row_slot_edits_test.vibe`.
+
+fn refusals(decls: String) -> String with Exception {
+  let head = "effect Box[T] {\n  Put(T) -> Int\n}\nfn run_str(f: () -> Int with Box[String]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\nfn put_abc() -> Int with Box[String] {\n  perform Box::Put(\"abc\")\n}\nfn main() -> Int {\n  go() + run_str(() -> put_abc())\n}\n"
+  let stmts = parse_program(lex(String::concat(head, decls)))
+  let errs = evidence_dict_pass(stmts, "main")
+  if Array::length(errs) == 0 {
+    "clean"
+  } else {
+    Array::get(errs, 0)
+  }
+}
+
+test "a call result whose declared type has no row is refused with the row to declare" {
+  let msg = refusals("fn mk() -> (() -> Int) {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(mk())\n}\n")
+  inspect(String::starts_with(msg, "declare the effect row on the function type `mk` returns: `-> ((..) -> T with Box[String])`"), "true")
+  inspect(refusals("fn mk() -> (() -> Int with Box[String]) {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(mk())\n}\n"), "clean")
+}
+
+test "a parameter with no row passed on is refused with the annotation" {
+  let msg = refusals("fn go2(h: () -> Int) -> Int {\n  run_str(h)\n}\nfn go() -> Int {\n  go2(() -> 6)\n}\n")
+  inspect(String::starts_with(msg, "annotate the parameter `h` with the effect row: `h: (..) -> T with Box[String]`"), "true")
+  inspect(String::contains(msg, "`run_str` calls it with one"), "true")
+  inspect(refusals("fn go2(h: () -> Int with Box[String]) -> Int {\n  run_str(h)\n}\nfn go() -> Int {\n  go2(() -> 6)\n}\n"), "clean")
+}
+
+test "a closure calling a local it cannot copy is refused with the edit for that local" {
+  // A helper that calls another local closure: the row on the closure works.
+  let nested = refusals("fn go() -> Int {\n  let inner = () -> 3\n  let helper = () -> inner() + 1\n  run_str(() -> helper())\n}\n")
+  inspect(String::starts_with(nested, "write the effect row on the function value passed to `run_str`: `(..) -> T with Box[String] { .. }`"), "true")
+  // A parameter or a `let mut` called inside: the call moves out.
+  let param = refusals("fn go2(h: () -> Int) -> Int {\n  run_str(() -> h() + 1)\n}\nfn go() -> Int {\n  go2(() -> 6)\n}\n")
+  inspect(String::starts_with(param, "call `h` outside the function value passed to `run_str` and use its result there"), "true")
+  let mutable = refusals("fn go() -> Int {\n  let mut helper = () -> 3\n  helper = () -> 4\n  run_str(() -> helper())\n}\n")
+  inspect(String::starts_with(mutable, "call `helper` outside"), "true")
+}
+
+test "the shapes the stamp handles stay clean" {
+  inspect(refusals("fn go() -> Int {\n  let helper = () -> 3\n  run_str(() -> helper())\n}\n"), "clean")
+  inspect(refusals("fn three() -> Int {\n  3\n}\nfn go() -> Int {\n  run_str(three)\n}\n"), "clean")
+  inspect(refusals("fn go2(h: () -> Int) -> Int {\n  let v = h()\n  run_str(() -> v + 1)\n}\nfn go() -> Int {\n  go2(() -> 6)\n}\n"), "clean")
+}
+
+test "with nothing performing the effect, no dict is passed and nothing is refused" {
+  let stmts = parse_program(lex("effect Box[T] {\n  Put(T) -> Int\n}\nfn run_str(f: () -> Int with Box[String]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\nfn mk() -> (() -> Int) {\n  () -> 9\n}\nfn main() -> Int {\n  run_str(mk())\n}\n"))
+  inspect(Array::length(evidence_dict_pass(stmts, "main")), "0")
+}

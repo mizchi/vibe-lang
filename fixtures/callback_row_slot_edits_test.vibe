@@ -1,0 +1,55 @@
+// #3424: the edits the build names when a function value at a row-typed
+// parameter cannot be given the row's dict
+// (lib/@vibe/compiler/tests/evidence_slot_refusal_test.vibe). Each shape below
+// is one of those edits applied; before them the value was compiled without
+// the dict parameter and the call trapped (`indirect call type mismatch`).
+effect Box[T] {
+  Put(T) -> Int
+}
+
+fn run_str(f: () -> Int with Box[String]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(s) => resume(String::length(s))
+  }
+}
+
+fn put_abc() -> Int with Box[String] {
+  perform Box::Put("abc")
+}
+
+// The row declared on the result type.
+fn mk() -> (() -> Int with Box[String]) {
+  () -> 9
+}
+
+fn via_call() -> Int {
+  run_str(mk())
+}
+
+// The row annotated on the parameter.
+fn via_param(h: () -> Int with Box[String]) -> Int {
+  run_str(h)
+}
+
+// The row written on a closure whose helper calls another local closure.
+fn via_nested() -> Int {
+  let inner = () -> 3
+  let helper = () -> inner() + 1
+  run_str(() -> Int with Box[String] { helper() })
+}
+
+// A parameter called outside the closure, its result used inside.
+fn via_value(h: () -> Int) -> Int {
+  let v = h()
+  run_str(() -> v + 1)
+}
+
+test "the named edits compile and answer" {
+  inspect(via_call(), "9")
+  inspect(via_param(() -> 6), "6")
+  inspect(via_param(() -> put_abc()), "3")
+  inspect(via_nested(), "4")
+  inspect(via_value(() -> 6), "7")
+}

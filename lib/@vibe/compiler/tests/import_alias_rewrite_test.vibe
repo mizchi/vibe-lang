@@ -881,3 +881,76 @@ test "#2348 merge: a parameter named like the callee does not block the rename" 
   // ... while the parameter read keeps its own spelling.
   assert(String::contains(printed, "local.get $helper)"))
 }
+
+fn plan_refusal(paths: Array[String], stmts_list: Array[Array[Stmt]], entry: String, entry_stmts: Array[Stmt]) -> String {
+  handle {
+    let plan = build_export_rename_plan(paths, stmts_list, entry)
+    let _ = collect_import_value_renames(plan, entry, entry_stmts)
+    "clean"
+  } with { Exception::Throw(msg) => msg }
+}
+
+test "#3444: a top-level fn or let shadowing an import keeps its own name" {
+  let dep = parse_program(lex("export fn g(name: String) -> String { name }\nexport fn h(n: Int) -> Int { n }\nexport fn k(n: Int) -> Int { n }"))
+  let entry = parse_program(lex("import ./dep.vibe { g, h, k }\nfn g(n: Int) -> Int { n + 100 }\nlet h = (n: Int) -> n + 1\nlet answer = k(g(1))"))
+  let paths = ["/virtual/dep.vibe", "/virtual/entry.vibe"]
+  let plan = build_export_rename_plan(paths, [dep, entry], "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  // Only `k` reaches the import; the local `g` and `h` are not rewritten.
+  inspect(Array::length(renames), "1")
+  inspect(Array::get(renames, 0).0, "k")
+}
+
+test "#3445: an import through a facade follows the later of two re-exports" {
+  let a = parse_program(lex("export fn f(x: Int) -> Int { x }"))
+  let b = parse_program(lex("export fn foo(x: Option[Int]) -> Int { 0 }"))
+  let facade = parse_program(lex("export ./a.vibe { f as foo }\nexport ./b.vibe { foo }"))
+  let entry = parse_program(lex("import ./facade.vibe { foo }\nlet answer = foo(None)"))
+  let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/facade.vibe", "/virtual/entry.vibe"]
+  let plan = build_export_rename_plan(paths, [a, b, facade, entry], "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  inspect(Array::length(renames), "1")
+  let b_foo = Array::get(export_plan_renames_for(plan, "/virtual/b.vibe"), 0).1
+  inspect(Array::get(renames, 0).1 == b_foo, "true")
+}
+
+test "#3448: two modules exporting a struct of one name are refused with the rename" {
+  let depa = parse_program(lex("export struct Box { n: Int }\nfn Box::plain(x: Int) -> Box { Box::{ n: x } }"))
+  let depb = parse_program(lex("export struct Box { m: Int }\nfn Box::plain(x: Int) -> Box { Box::{ m: x * 100 } }"))
+  let entry = parse_program(lex("import ./depa.vibe { Box as A }\nimport ./depb.vibe { Box }\nlet answer = Box::plain(3).m"))
+  let paths = ["/virtual/depa.vibe", "/virtual/depb.vibe", "/virtual/entry.vibe"]
+  let msg = plan_refusal(paths, [depa, depb, entry], "/virtual/entry.vibe", entry)
+  inspect(String::starts_with(msg, "rename one of the structs named `Box`: `/virtual/depa.vibe` and `/virtual/depb.vibe` both declare it"), "true")
+}
+
+test "#3448: an entry type colliding with a dependency's exported one is refused" {
+  let dep = parse_program(lex("export enum Hue { Red; Blue }"))
+  let entry = parse_program(lex("import ./dep.vibe { Hue as Shade }\nenum Hue { Green }\nlet answer = 1"))
+  let paths = ["/virtual/dep.vibe", "/virtual/entry.vibe"]
+  let msg = plan_refusal(paths, [dep, entry], "/virtual/entry.vibe", entry)
+  inspect(String::starts_with(msg, "rename one of the enums named `Hue`"), "true")
+}
+
+test "#3448: a private type of the same name in a dependency is not a collision" {
+  let depa = parse_program(lex("struct Box { n: Int }\nexport fn make() -> Int { Box::{ n: 1 }.n }"))
+  let depb = parse_program(lex("export struct Box { m: Int }"))
+  let entry = parse_program(lex("import ./depa.vibe { make }\nimport ./depb.vibe { Box }\nlet answer = make()"))
+  let paths = ["/virtual/depa.vibe", "/virtual/depb.vibe", "/virtual/entry.vibe"]
+  inspect(plan_refusal(paths, [depa, depb, entry], "/virtual/entry.vibe", entry), "clean")
+}
+
+test "#3448: a package member the program never reaches does not collide with an entry type" {
+  // As `import @vibe/core { str_lt }` merges every member of the package, the
+  // facade's other member is in the program without being used.
+  let used = parse_program(lex("export fn str_lt(a: Int, b: Int) -> Bool { a < b }"))
+  let unused = parse_program(lex("export enum Attempt { Good; Bad }\nexport fn attempt_good() -> Attempt { Good }"))
+  let facade = parse_program(lex("export ./used.vibe { str_lt }\nexport ./unused.vibe { Attempt, attempt_good }"))
+  let entry = parse_program(lex("import ./facade.vibe { str_lt }\nenum Attempt { Mine }\nlet answer = str_lt(1, 2)"))
+  let paths = ["/virtual/used.vibe", "/virtual/unused.vibe", "/virtual/facade.vibe", "/virtual/entry.vibe"]
+  inspect(plan_refusal(paths, [used, unused, facade, entry], "/virtual/entry.vibe", entry), "clean")
+  // Importing the member's function through the facade reaches it, and then
+  // its `Attempt` and the entry's are two types in one program.
+  let entry2 = parse_program(lex("import ./facade.vibe { attempt_good }\nenum Attempt { Mine }\nlet answer = 1"))
+  let msg = plan_refusal(paths, [used, unused, facade, entry2], "/virtual/entry.vibe", entry2)
+  inspect(String::starts_with(msg, "rename one of the enums named `Attempt`"), "true")
+}

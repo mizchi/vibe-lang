@@ -40,6 +40,10 @@ import @vibe/compiler/lowering/effects/queries {
   edp_user_perform_effect_of
 }
 
+import ./evidence_slot_refusals.vibe {
+  edp_slot_refusals_for
+}
+
 import ./evidence_ecall_arg_idents_expr.vibe {
   edp_any_row_typed_param,
   edp_etawrap_stmts_with_rebuild,
@@ -641,6 +645,16 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   edp_stamp_slot_rows(stmts, fn_defs)
   let keep = dce_keep_flags(stmts, roots)
   let plans = edp_plan_migrations(stmts, effect_defs, fn_defs, keep, errs, fn_row_labels)
+  // #3424: a function value at such a parameter that the stamp could not
+  // give the row is called with a dict it has no parameter for -- when the
+  // row's effect is migrated, so the call passes one.
+  let planned: Array[String] = []
+  for plan in plans {
+    Array::push(planned, plan.0)
+  }
+  for refusal in edp_slot_refusals_for(planned) {
+    Array::push(errs, refusal)
+  }
   let mut pi = 0
   while pi < Array::length(plans) {
     let (ename, ops, needing, handle_sites) = Array::get(plans, pi)

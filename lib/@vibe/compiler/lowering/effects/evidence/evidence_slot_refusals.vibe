@@ -1,0 +1,255 @@
+// lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — callback slot refusals.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, expr_children
+}
+
+import @vibe/core {
+  struct MutSet
+}
+
+/// #3424: a function value passed at a parameter whose function type carries
+/// a row is called by its callee WITH that row's evidence dict. The stamp
+/// (`edp_stamp_slot_arg_at`) gives a closure literal, a row-free top-level
+/// function and a copied local helper the parameter that receives it. A value
+/// it cannot give one is compiled without it, and the call traps (`indirect
+/// call type mismatch`). These are those values, refused with the edit that
+/// gives them the row -- each edit was measured to compile and answer.
+let edp_slot_refusal_msgs: Array[String] = []
+
+/// The row each refusal in `edp_slot_refusal_msgs` was made for, by index.
+/// A call through the parameter passes a dict only for an effect the pass
+/// migrates, so a refusal stands only when its row names one
+/// (`edp_slot_refusals_for`): with nothing performing the effect, no dict is
+/// passed and the value runs as written.
+let edp_slot_refusal_rows: Array[String] = []
+
+/// The callee whose argument is being stamped, set right before the stamp and
+/// consumed by it, so a refusal can name the call. Empty when the slot is a
+/// function's declared result (the closure it returns).
+let edp_slot_callee_cell: Array[String] = [""]
+
+/// The parameters of the lambdas around the stamp walk: the `scope` index of
+/// each, and its annotation.
+let edp_param_ty_slots: Array[Int] = []
+let edp_param_ty_vals: Array[Option[TypeExpr]] = []
+
+/// Start a stamp walk with no refusals and no parameters in scope.
+export fn edp_slot_refusals_reset() -> Unit {
+  Array::truncate(edp_slot_refusal_msgs, 0)
+  Array::truncate(edp_slot_refusal_rows, 0)
+  Array::set(edp_slot_callee_cell, 0, "")
+  Array::truncate(edp_param_ty_slots, 0)
+  Array::truncate(edp_param_ty_vals, 0)
+}
+
+/// The refusals the last stamp walk collected whose row names one of the
+/// migrated effects `enames`.
+export fn edp_slot_refusals_for(enames: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(edp_slot_refusal_msgs) {
+    let mut hit = false
+    for label in String::split(Array::get(edp_slot_refusal_rows, i), ",") {
+      let t = String::trim(label)
+      let k = String::index_of(t, "[")
+      let head = if k > 0 {
+        String::substring(t, 0, k)
+      } else {
+        t
+      }
+      for en in enames {
+        if en == head {
+          hit = true
+        }
+      }
+    }
+    if hit {
+      Array::push(out, Array::get(edp_slot_refusal_msgs, i))
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn edp_push_refusal(row: String, msg: String) -> Unit {
+  Array::push(edp_slot_refusal_rows, row)
+  Array::push(edp_slot_refusal_msgs, msg)
+}
+
+/// Name the callee whose argument the next stamp reads.
+export fn edp_set_slot_callee(callee: String) -> Unit {
+  Array::set(edp_slot_callee_cell, 0, callee)
+}
+
+/// Read and clear the callee the stamp is reading an argument of.
+export fn edp_take_slot_callee() -> String {
+  let callee = Array::get(edp_slot_callee_cell, 0)
+  Array::set(edp_slot_callee_cell, 0, "")
+  callee
+}
+
+/// Record the parameters of a lambda whose first parameter sits at `base` in
+/// the walk's scope.
+export fn edp_note_params(base: Int, params: Array[(String, Option[TypeExpr])]) -> Unit {
+  let mut k = 0
+  while k < Array::length(params) {
+    Array::push(edp_param_ty_slots, base + k)
+    Array::push(edp_param_ty_vals, Array::get(params, k).1)
+    k = k + 1
+  }
+}
+
+/// Forget the parameters recorded at scope index `base` or later.
+export fn edp_drop_params_from(base: Int) -> Unit {
+  let mut n = Array::length(edp_param_ty_slots)
+  while n > 0 && Array::get(edp_param_ty_slots, n - 1) >= base {
+    n = n - 1
+  }
+  Array::truncate(edp_param_ty_slots, n)
+  Array::truncate(edp_param_ty_vals, n)
+}
+
+fn edp_slot_site(callee: String) -> String {
+  if callee == "" {
+    "the closure this function returns"
+  } else {
+    String::concat("the function value passed to `", String::concat(callee, "`"))
+  }
+}
+
+fn edp_slot_consequence(callee: String) -> String {
+  if callee == "" {
+    "Without the row it takes no handler argument, and its caller passes one, so the call traps"
+  } else {
+    String::concat("Without the row it takes no handler argument, and `", String::concat(callee, "` calls it with one, so the call traps"))
+  }
+}
+
+/// A closure literal whose local helpers could not be copied into it.
+/// `opaque` is a local it calls that is not a `let`-bound closure literal (a
+/// parameter, a `let mut`): no row written anywhere lets the handler through
+/// such a call, so the edit is to make it outside the closure. Otherwise the
+/// helpers are literals, and writing the row on them and on the closure works.
+export fn edp_refuse_uncopied_literal(callee: String, row: String, opaque: String) -> Unit {
+  if opaque == "" {
+    edp_push_refusal(row, String::concat("write the effect row on ", String::concat(edp_slot_site(callee), String::concat(": `(..) -> T with ", String::concat(row, String::concat(" { .. }`, and give the local closures it calls the same row. It calls a local closure the compiler cannot thread that handler through. ", edp_slot_consequence(callee)))))))
+  } else {
+    edp_push_refusal(row, String::concat("call `", String::concat(opaque, String::concat("` outside ", String::concat(edp_slot_site(callee), String::concat(" and use its result there (`let v = ", String::concat(opaque, String::concat("(..)`). `", String::concat(opaque, String::concat("` is a function value the compiler cannot thread that handler through, with or without a row on the closure. ", edp_slot_consequence(callee)))))))))))
+  }
+}
+
+/// A parameter whose annotation is a function type with no row, passed on.
+/// Only a parameter is judged: a `let`-bound name is left to the stamp's own
+/// rules, which can see its literal.
+export fn edp_refuse_rowless_param(name: String, slot: Int, callee: String, row: String) -> Unit {
+  let mut i = Array::length(edp_param_ty_slots)
+  let mut found = false
+  while !found && i > 0 {
+    i = i - 1
+    if Array::get(edp_param_ty_slots, i) == slot {
+      found = true
+    } else {
+      ()
+    }
+  }
+  if found {
+    match Array::get(edp_param_ty_vals, i) {
+      Some(TyFn(_, _, None)) => edp_push_refusal(row, String::concat("annotate the parameter `", String::concat(name, String::concat("` with the effect row: `", String::concat(name, String::concat(": (..) -> T with ", String::concat(row, String::concat("`. It is passed on as ", String::concat(edp_slot_site(callee), String::concat(". ", edp_slot_consequence(callee))))))))))),
+      _ => ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// A call to the top-level function `fname` whose declared result is a
+/// function type with no row.
+export fn edp_refuse_rowless_result(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], fname: String, callee: String, row: String) -> Unit {
+  let mut i = 0
+  let mut done = false
+  while !done && i < Array::length(fn_defs) {
+    let (idx, _, _, dname, _, _) = Array::get(fn_defs, i)
+    if dname == fname {
+      done = true
+      match Array::get(stmts, idx) {
+        SLet(_, _, _, _, EFn(_, _, _, Some(TyFn(_, _, None)), _, _)) => edp_push_refusal(row, String::concat("declare the effect row on the function type `", String::concat(fname, String::concat("` returns: `-> ((..) -> T with ", String::concat(row, String::concat(")`. The closure it returns is ", String::concat(edp_slot_site(callee), String::concat(". ", edp_slot_consequence(callee))))))))),
+        _ => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// The top-level functions with a parameter whose function type carries a
+/// row: the callees whose arguments the stamp has to read.
+export fn edp_slot_callee_names(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> MutSet[String] {
+  let out = MutSet::new_string()
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (idx, _, _, dname, _, _) = Array::get(fn_defs, i)
+    match Array::get(stmts, idx) {
+      SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => {
+        let mut k = 0
+        while k < Array::length(params) {
+          match Array::get(params, k).1 {
+            Some(TyFn(_, _, Some(row))) => if String::length(String::trim(row)) > 0 {
+              MutSet::insert(out, dname)
+            } else {
+              ()
+            },
+            _ => ()
+          }
+          k = k + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Does `e` pass a name or a call result to one of `slot_callees`? Such an
+/// argument may be a function value the stamp cannot give the row
+/// (`edp_refuse_rowless_param`, `edp_refuse_rowless_result`), so the body is
+/// walked even when it passes no literal.
+export fn edp_expr_passes_value_to_slot(e: Expr, slot_callees: MutSet[String]) -> Bool {
+  if MutSet::size(slot_callees) == 0 {
+    false
+  } else {
+    let mut found = false
+    let stack: Array[Expr] = [e]
+    while !found && Array::length(stack) > 0 {
+      let n = Array::length(stack)
+      let cur = Array::get(stack, n - 1)
+      Array::truncate(stack, n - 1)
+      match cur {
+        ECall(EIdent(cn, _), args, _, _) => if MutSet::has(slot_callees, cn) {
+          let mut ai = 0
+          while ai < Array::length(args) {
+            match Array::get(args, ai) {
+              EIdent(_, _) => {
+                found = true
+              },
+              ECall(EIdent(_, _), _, _, _) => {
+                found = true
+              },
+              _ => ()
+            }
+            ai = ai + 1
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      for child in expr_children(cur) {
+        Array::push(stack, child)
+      }
+    }
+    found
+  }
+}
