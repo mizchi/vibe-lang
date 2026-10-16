@@ -18,6 +18,7 @@ import @vibe/compiler/core {
   expr_children_top,
   leb128_encode_s64,
   leb128_encode_u32,
+  registry_builtin_arity,
   sorted_names_of
 }
 
@@ -1122,7 +1123,19 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
       emit_i64_and(lam_buf)
     }
     emit_local_set(lam_buf, cap_local)
-    Array::push(lam_locals, cap_name)
+    // #3476: a bare free name that the enclosing scope does not bind and no
+    // builtin spells is stored as 0 at creation, so the body must not resolve
+    // it to this slot. A call through the name, or a read of it, then reaches
+    // `resolve_local` and is refused, as it is outside a lambda; it used to
+    // call through 0 and trap at run time (`no_such_fn(h)` inside a
+    // `TaskGroup::run` body). A builtin keeps its slot, because a call the
+    // checker resolved never asks for it (`__slice`, `MutList::empty`), and
+    // so does the let-rec self slot, which the binder patches after creation.
+    if cap_name == self_name || array_contains_str(local_names, cap_name) || String::index_of(cap_name, "::") >= 0 || registry_builtin_arity(cap_name) >= 0 {
+      Array::push(lam_locals, cap_name)
+    } else {
+      Array::push(lam_locals, String::concat("#unbound_capture:", cap_name))
+    }
     if array_contains_str(ctx.ref_cell_names, cap_name) {
       Array::push(lam_ref_cells, cap_name)
     } else {
