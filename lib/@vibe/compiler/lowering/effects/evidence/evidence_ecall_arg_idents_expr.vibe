@@ -454,12 +454,15 @@ fn edp_stamp_returned_mut(n: String, v: Expr, b: Expr, slot: (Int, String), scop
 /// own? It is read through its tail positions as `edp_stamp_tail` stamps them.
 /// A literal that calls a local closure cannot be stamped in place, and a
 /// local binding's name is a closure nothing here stamps. A top-level name is
-/// wrapped or already takes the dict; any other value is the closure its own
-/// producer returned.
+/// wrapped or already takes the dict, and a `return` hands back no value
+/// here. Any other value, a call's result among them, is a closure
+/// `edp_stamp_tail` cannot adapt (Codex on #3466: `f = pure_factory()`).
 fn edp_mut_value_stampable(val: Expr, scope: Array[String]) -> Bool {
   match val {
     EFn(_, _, _, _, None, lb) => !edp_literal_calls_local(val, lb, scope),
+    EFn(_, _, _, _, Some(_), _) => true,
     EIdent(x, _) => !edp_scope_has(scope, x),
+    EReturn(_) => true,
     ESeq(_, b) => edp_mut_value_stampable(b, scope),
     EIf(_, t, el) => edp_mut_value_stampable(t, scope) && edp_mut_value_stampable(el, scope),
     EAssign(_, _, c, _) => edp_mut_value_stampable(c, scope),
@@ -468,7 +471,7 @@ fn edp_mut_value_stampable(val: Expr, scope: Array[String]) -> Bool {
     ELetRec(x, _, b) => edp_mut_value_stampable_in(b, [x], scope),
     EMatch(_, arms) => edp_mut_arms_stampable(arms, scope),
     EHandle(bd, arms) => edp_mut_value_stampable(bd, scope) && edp_mut_arms_stampable(arms, scope),
-    _ => true
+    _ => false
   }
 }
 
