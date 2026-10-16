@@ -32,13 +32,13 @@ async function refuseTraceAlias(trace, destination, label = "build output") {
   }
 }
 
-async function refuseUnrelatedTrace(trace) {
+async function refuseUnrelatedTrace(trace, kind) {
   let text;
   try { text = await readFile(trace, "utf8"); }
   catch (e) { if (e.code === "ENOENT") return; throw e; }
   let previous;
   try { previous = JSON.parse(text); } catch { /* Existing source or other data. */ }
-  if (previous?.kind !== "vibe-taskgroup-lowering" || previous.version !== 1) {
+  if (previous?.kind !== kind || previous.version !== 1) {
     throw new Error("lowering trace already exists and is not a lowering report; choose a new trace path");
   }
 }
@@ -68,27 +68,35 @@ function run(runner, image, cwd, env) {
   });
 }
 
-export async function buildTaskGroupLowering({ compiler, input, output, entry, jobs, root, artifacts, runner }) {
+export async function buildTaskGroupLowering({ compiler, input, output, entry, jobs, root, artifacts, runner, phase = "lowering" }) {
+  if (!["lowering", "functions"].includes(phase)) throw new Error("unknown TaskGroup compiler phase");
+  const kind = `vibe-taskgroup-${phase}`;
+  const traceSetting = process.env[phase === "functions" ? "VIBE_FUNCTION_TRACE_OUT" : "VIBE_LOWERING_TRACE_OUT"];
   if (![1, 2, 4].includes(jobs)) throw new Error("lowering jobs must be 1, 2 or 4");
   root = resolve(root); artifacts = resolve(artifacts); runner = resolve(runner);
   const destination = resolve(root, output);
-  const trace = process.env.VIBE_LOWERING_TRACE_OUT ? resolve(root, process.env.VIBE_LOWERING_TRACE_OUT) : null;
+  const trace = traceSetting ? resolve(root, traceSetting) : null;
   if (trace) {
     await refuseTraceAlias(trace, destination);
     await refuseTraceAlias(trace, resolve(root, input), "source entry");
-    await refuseUnrelatedTrace(trace);
+    await refuseUnrelatedTrace(trace, kind);
     await rm(trace, { force: true });
   }
   const digest = async p => createHash("sha256").update(await readFile(p)).digest("hex");
   const receipt = JSON.parse(await readFile(join(artifacts, "build.json"), "utf8"));
-  if (receipt.version !== 1 || receipt.compiler_sha256 !== await digest(resolve(compiler)) ||
+  if ((receipt.kind ?? "vibe-taskgroup-lowering") !== kind || receipt.version !== 1 || receipt.compiler_sha256 !== await digest(resolve(compiler)) ||
       receipt.runner_sha256 !== await digest(runner)) throw new Error("rebuild lowering images for this compiler and runner");
+  if (phase === "functions" && (receipt.function_abi !== "bump-core-tagged-callbacks-1" ||
+      receipt.context_format !== 3 || receipt.job_format !== 2 || receipt.compile_engine_rc !== 0 || receipt.worker_engine_rc !== 0 || receipt.coordinator_engine_rc !== 1)) {
+    throw new Error("rebuild function images for the supported native callback ABI");
+  }
   for (const name of ["worker.wasm", "compile.wasm", "coordinator.component.wasm"]) {
     if (receipt.artifacts[name] !== await digest(join(artifacts, name))) throw new Error(`lowering image changed: ${name}`);
   }
   const work = await mkdtemp(join(tmpdir(), "vibe-lowering-")), started = performance.now();
   const base = { VIBE_LOWERING_INPUT: input, VIBE_LOWERING_ENTRY: entry,
-    VIBE_LOWERING_DIRECTORY: work, VIBE_PREOPEN_DIR: root, VIBE_IMPORT_ABI: "raw" };
+    VIBE_LOWERING_DIRECTORY: work, VIBE_FUNCTION_JOBS: String(jobs), VIBE_PREOPEN_DIR: root, VIBE_IMPORT_ABI: "raw" };
+  if (phase === "functions") base.VIBE_RC = "1";
   try {
     const privateOutput = join(work, "result.wasm");
     const service = join(work, "service.json");
@@ -120,12 +128,23 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
     try {
       await writeFile(staging, result, { flag: "wx" });
       const finished = performance.now();
-      const report = { ...serviceReport, version: 1, kind: "vibe-taskgroup-lowering",
+      let phaseReport = serviceReport;
+      if (phase === "functions") {
+        const plan = JSON.parse(await readFile(join(work, "function-plan.json"), "utf8"));
+        if (!Number.isSafeInteger(plan.functions) || plan.functions <= 0 || !Number.isSafeInteger(plan.lambdas) || plan.lambdas < 0) {
+          throw new Error("functions: invalid plan report");
+        }
+        const { modules: rangeJobs, ...timings } = serviceReport;
+        delete timings.replay_ms;
+        phaseReport = { ...timings, range_jobs: rangeJobs, ...plan,
+          phase_scope: "prepare: whole-program lowering and canonical function planning; worker: context encoding, isolated TaskGroup CPU processes, product decoding and validation; finalize: canonical replay, module assembly, source verification and private output write" };
+      }
+      const report = { ...phaseReport, version: 1, kind,
         total_ms: finished - started };
       if (trace) {
         await refuseTraceAlias(trace, destination);
         await refuseTraceAlias(trace, resolve(root, input), "source entry");
-        await refuseUnrelatedTrace(trace);
+        await refuseUnrelatedTrace(trace, kind);
         traceStaging = await mkdtemp(join(dirname(trace), ".vibe-lowering-trace-"));
         const stagedReport = join(traceStaging, "report.json");
         await writeFile(stagedReport, JSON.stringify(report), { flag: "wx" });

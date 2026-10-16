@@ -1,0 +1,138 @@
+import @vibe/codegen/transport {
+  CodegenBodyCache
+}
+import ./common_base_compilectx.vibe {
+  LambdaTable, LineMapState
+}
+import ./common_base_codegen_body_cache_from_bytes.vibe {
+  codegen_body_cache_replay
+}
+
+struct CacheOwnerRows { starts: Array[Int]; rows: Array[Int] }
+
+/// One immutable cache's auxiliary rows, grouped by function owner. Construct
+/// after filtering and keep the cache unchanged throughout the replay phase.
+export struct BodyCacheReplayIndex {
+  cache: CodegenBodyCache;
+  key_count: Int;
+  lambda_rows: CacheOwnerRows;
+  slot_rows: CacheOwnerRows;
+  blind_rows: CacheOwnerRows;
+  line_rows: CacheOwnerRows
+}
+
+fn replay_zeroes(n: Int) -> Array[Int] {
+  let xs: Array[Int] = Array::with_capacity(n)
+  let mut i = 0
+  while i < n {
+    Array::push(xs, 0); i = i + 1
+  }
+  xs
+}
+
+// Stable counting partition: each owner's row order remains the original
+// scan order, including interleaved, sparse or reversed slice contributions.
+fn replay_owner_rows(owners: Array[Int], count: Int) -> CacheOwnerRows {
+  let starts = replay_zeroes(count + 1)
+  for owner in owners {
+    if owner >= 0 && owner < count {
+      Array::set(starts, owner + 1, Array::get(starts, owner + 1) + 1)
+    } else ()
+  }
+  let mut i = 1
+  while i <= count {
+    Array::set(starts, i, Array::get(starts, i) + Array::get(starts, i - 1)); i = i + 1
+  }
+  let positions = Array::slice(starts, 0, count)
+  let rows = replay_zeroes(Array::get(starts, count))
+  i = 0
+  while i < Array::length(owners) {
+    let owner = Array::get(owners, i)
+    if owner >= 0 && owner < count {
+      let at = Array::get(positions, owner)
+      Array::set(rows, at, i)
+      Array::set(positions, owner, at + 1)
+    } else ()
+    i = i + 1
+  }
+  CacheOwnerRows::{ starts: starts, rows: rows }
+}
+
+export fn codegen_body_cache_replay_index(cache: CodegenBodyCache, key_count: Int) -> BodyCacheReplayIndex {
+  let count = if key_count < 0 {
+    0
+  } else {
+    key_count
+  }
+  let lambdas = replay_owner_rows(cache.lam_owner, count)
+  let slots = replay_owner_rows(cache.slot_owner, count)
+  let blind = replay_owner_rows(cache.blind_fn, count)
+  let lines = replay_owner_rows(cache.lm_owner, count)
+  BodyCacheReplayIndex::{
+    cache: cache,
+    key_count: count,
+    lambda_rows: lambdas,
+    slot_rows: slots,
+    blind_rows: blind,
+    line_rows: lines
+  }
+}
+
+/// Replay only this owner's rows instead of rescanning all auxiliary arrays
+/// for every function. Total work is linear in functions plus metadata rows.
+/// The legacy scan remains the oracle and fallback for owners outside the index.
+export fn codegen_body_cache_replay_indexed(index: BodyCacheReplayIndex, at: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], meta_v128: Array[Int], lt: LambdaTable, slots: Array[Int], blind_bodies: Array[Int], blind_offsets: Array[Int], blind_kinds: Array[Int], blind_syms: Array[Int], lm: LineMapState, replay_bi: Int) -> Unit {
+  let cache = index.cache
+  let owner = Array::get(cache.fn_indices, at)
+  if owner < 0 || owner >= index.key_count {
+    codegen_body_cache_replay(cache, at, bodies, meta_i32, meta_i64, meta_v128, lt, slots, blind_bodies, blind_offsets, blind_kinds, blind_syms, lm, replay_bi)
+    return ()
+  } else ()
+  Array::push(bodies, Array::get(cache.fn_bodies, at))
+  Array::push(meta_i32, Array::get(cache.fn_meta_i32, at))
+  Array::push(meta_i64, Array::get(cache.fn_meta_i64, at))
+  Array::push(meta_v128, Array::get(cache.fn_meta_v128, at))
+  let lambdas = index.lambda_rows
+  let mut p = Array::get(lambdas.starts, owner)
+  let lambda_end = Array::get(lambdas.starts, owner + 1)
+  while p < lambda_end {
+    let i = Array::get(lambdas.rows, p)
+    Array::push(lt.bodies, Array::get(cache.lam_bodies, i))
+    Array::push(lt.param_counts, Array::get(cache.lam_param_counts, i))
+    Array::push(lt.captures, Array::get(cache.lam_captures, i))
+    Array::push(lt.meta_i32, Array::get(cache.lam_meta_i32, i))
+    Array::push(lt.meta_i64, Array::get(cache.lam_meta_i64, i))
+    p = p + 1
+  }
+  let slot_rows = index.slot_rows
+  p = Array::get(slot_rows.starts, owner)
+  let slot_end = Array::get(slot_rows.starts, owner + 1)
+  while p < slot_end {
+    Array::push(slots, Array::get(cache.slot_values, Array::get(slot_rows.rows, p)))
+    p = p + 1
+  }
+  let blind = index.blind_rows
+  p = Array::get(blind.starts, owner)
+  let blind_end = Array::get(blind.starts, owner + 1)
+  while p < blind_end {
+    let i = Array::get(blind.rows, p)
+    Array::push(blind_bodies, Array::get(cache.blind_body, i))
+    Array::push(blind_offsets, Array::get(cache.blind_offsets, i))
+    Array::push(blind_kinds, Array::get(cache.blind_kinds, i))
+    Array::push(blind_syms, Array::get(cache.blind_syms, i))
+    p = p + 1
+  }
+  if lm.enabled {
+    let lines = index.line_rows
+    p = Array::get(lines.starts, owner)
+    let line_end = Array::get(lines.starts, owner + 1)
+    while p < line_end {
+      let i = Array::get(lines.rows, p)
+      Array::push(lm.funcs, replay_bi)
+      Array::push(lm.offsets, Array::get(cache.lm_offsets, i))
+      Array::push(lm.file_ids, Array::get(cache.lm_file_ids, i))
+      Array::push(lm.lines, Array::get(cache.lm_lines, i))
+      p = p + 1
+    }
+  } else ()
+}

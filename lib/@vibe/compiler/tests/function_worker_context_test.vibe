@@ -1,0 +1,171 @@
+import @vibe/compiler/core {
+  merged_offset_space_add, merged_offset_space_reset
+}
+import @vibe/function_worker {
+  FunctionContext, function_context_new, read_function_context
+}
+import @vibe/compiler/codegen/wasi {
+  compile_wasi_module_linked_impl, function_with_executor
+}
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache,
+  DbgProv,
+  codegen_body_cache_discard,
+  codegen_body_cache_from_bytes,
+  codegen_body_cache_merge,
+  codegen_body_cache_to_bytes
+}
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+
+fn same_bytes(a: Bytes, b: Bytes) -> Bool {
+  let mut same = Bytes::length(a) == Bytes::length(b)
+  let mut i = 0
+  while same && i < Bytes::length(a) {
+    same = Bytes::get(a, i) == Bytes::get(b, i); i = i + 1
+  }
+  same
+}
+
+fn compile_source(source: String, rc: Bool) -> Bytes with Exception {
+  merged_offset_space_reset()
+  merged_offset_space_add("input.vibe", source, 0)
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
+  let ids: Array[Int] = []
+  for stmt in stmts {
+    Array::push(ids, 0)
+  }
+  let nls: Array[Int] = []
+  let mut i = 0
+  while i < String::length(source) {
+    if String::char_code_at(source, i) == 10 {
+      Array::push(nls, i)
+    } else ()
+    i = i + 1
+  }
+  let prov = DbgProv::{
+    files: ["input.vibe"],
+    stmt_file_id: ids,
+    file_nls: [nls]
+  }
+  compile_wasi_module_linked_impl(stmts, "main", [("input.vibe", source)], [], false, rc, false, false, false, false, false, prov, codegen_body_cache_discard(), codegen_body_cache_discard(), 0, -1)
+}
+
+fn clone_product(c: CodegenBodyCache) -> CodegenBodyCache with Exception {
+  match codegen_body_cache_from_bytes(codegen_body_cache_to_bytes(c)) {
+    Some(copy) => copy,
+    None => throw("test product clone failed")
+  }
+}
+fn refuse_product(ctx: FunctionContext, c: CodegenBodyCache) -> Unit with Exception {
+  let before = [
+    Array::length(ctx.input.lt_w.bodies),
+    Array::length(ctx.input.table_slots_used),
+    Array::length(ctx.input.blind_owners),
+    Bytes::length(ctx.input.linemap_state.stream),
+    Array::length(ctx.input.body_cache_out.fn_indices)
+  ]
+  let error = handle {
+    FunctionContext::replay_function_products(ctx, c); "accepted"
+  } with { Exception::Throw(msg) => msg }
+  assert(String::starts_with(error, "function product:"))
+  let after = [
+    Array::length(ctx.input.lt_w.bodies),
+    Array::length(ctx.input.table_slots_used),
+    Array::length(ctx.input.blind_owners),
+    Bytes::length(ctx.input.linemap_state.stream),
+    Array::length(ctx.input.body_cache_out.fn_indices)
+  ]
+  assert(before == after)
+}
+
+fn assert_snapshot_parity(source: String, rc: Bool) -> Unit with Env + Exception + Fs {
+  let expected = compile_source(source, rc)
+  let calls = [0]
+  let actual = function_with_executor((plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow) -> {
+    assert(!coverage)
+    Array::set(calls, 0, Array::get(calls, 0) + 1)
+    let context = function_context_new(plan, input, debug_break, debug_trace, enable_rc, rc_shadow)
+    let encoded = FunctionContext::write_function_context(context)
+    let restored = read_function_context(encoded)
+    assert(restored.input.has_exceptions == context.input.has_exceptions)
+    assert_eq(Array::length(restored.input.stmts), 0)
+    let n = input.num_user_funcs
+    assert(n >= 2)
+    // Simulate a fresh worker instance with no parent source-location cells.
+    merged_offset_space_reset()
+    let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    let first_job = FunctionContext::write_function_job(context, digest, 0, n / 2)
+    let wrong_context = handle {
+      FunctionContext::read_function_job(restored, first_job, "wrong"); "accepted"
+    } with { Exception::Throw(msg) => msg }
+    assert(wrong_context != "accepted")
+    let truncated = Bytes::slice(first_job, 0, Bytes::length(first_job) - 1)
+    let bad = handle {
+      FunctionContext::read_function_job(restored, truncated, digest); "accepted"
+    } with { Exception::Throw(msg) => msg }
+    assert(bad != "accepted")
+    let trailing = Bytes::slice(first_job, 0, Bytes::length(first_job))
+    Bytes::push(trailing, 0)
+    let extra = handle {
+      FunctionContext::read_function_job(restored, trailing, digest); "accepted"
+    } with { Exception::Throw(msg) => msg }
+    assert(extra != "accepted")
+    assert_eq(restored.loaded_lo, 0)
+    assert_eq(restored.loaded_hi, 0)
+    let unloaded = handle {
+      FunctionContext::run_function_range(restored, 0, n / 2); "accepted"
+    } with { Exception::Throw(msg) => msg }
+    assert(unloaded != "accepted")
+    FunctionContext::read_function_job(restored, first_job, digest)
+    let first = FunctionContext::run_function_range(restored, 0, n / 2)
+    FunctionContext::read_function_job(restored, FunctionContext::write_function_job(context, digest, n / 2, n), digest)
+    let second = FunctionContext::run_function_range(restored, n / 2, n)
+    assert_eq(Array::length(first.fn_indices) + Array::length(second.fn_indices), n)
+    let merged = codegen_body_cache_merge(second, first)
+    let malformed = clone_product(merged)
+    Array::truncate(malformed.fn_meta_i64, 0)
+    refuse_product(context, malformed)
+    let duplicate = clone_product(merged)
+    Array::set(duplicate.fn_indices, 0, Array::get(duplicate.fn_indices, 1))
+    refuse_product(context, duplicate)
+    let renamed = clone_product(merged)
+    Array::set(renamed.fn_names, 0, "another-function")
+    refuse_product(context, renamed)
+    let filtered = clone_product(merged)
+    Array::push(filtered.consumer_src_limit, 0)
+    refuse_product(context, filtered)
+    if Array::length(merged.lam_owner) > 0 {
+      let wrong_lambda = clone_product(merged)
+      Array::set(wrong_lambda.lam_owner, 0, n)
+      refuse_product(context, wrong_lambda)
+    } else ()
+    if Array::length(merged.blind_offsets) > 0 {
+      let wrong_reference = clone_product(merged)
+      Array::set(wrong_reference.blind_offsets, 0, 100000000)
+      refuse_product(context, wrong_reference)
+    } else ()
+    if Array::length(merged.lm_file_ids) > 0 {
+      let wrong_file = clone_product(merged)
+      Array::set(wrong_file.lm_file_ids, 0, 100000000)
+      refuse_product(context, wrong_file)
+    } else ()
+    FunctionContext::replay_function_products(context, merged)
+  }, () -> Bytes with Env + Exception + Fs {
+    compile_source(source, rc)
+  })
+  assert_eq(Array::get(calls, 0), 1)
+  assert(same_bytes(expected, actual))
+  assert(same_bytes(expected, compile_source(source, rc)))
+  assert_eq(Array::get(calls, 0), 1)
+}
+
+test "function snapshots: disjoint ranges replay identically in both RC modes" {
+  for rc in [false, true] {
+    assert_snapshot_parity("fn div(a: Int, b: Int) -> Int { a / b }\nfn main() -> Int { div(43, 4) }", rc)
+    assert_snapshot_parity("fn sub(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int { sub(13, 4) }", rc)
+    assert_snapshot_parity("fn make(n: Int) -> (Int) -> Int { (x) -> { let inner = (y) -> y - n; inner(x) } }\nlet xs: Array[Int] = [9, 4]\nfn main() -> Int { let f = make(2); f(Array::get(xs, 0)) }", rc)
+  }
+}

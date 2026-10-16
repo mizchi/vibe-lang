@@ -1,0 +1,119 @@
+import ./context.vibe {
+  FunctionContext
+}
+import @vibe/compiler/cache {
+  ast_binary_read_bool_checked,
+  ast_binary_read_expr,
+  ast_binary_read_string_checked,
+  ast_binary_read_type_expr,
+  ast_binary_read_varint_checked,
+  ast_binary_reader_remaining,
+  ast_binary_reader_with_string_pool,
+  ast_binary_with_indexed_string_pool,
+  ast_binary_write_bool,
+  ast_binary_write_expr,
+  ast_binary_write_string,
+  ast_binary_write_type_expr,
+  ast_binary_write_varint
+}
+import @vibe/compiler/core {
+  Expr, TypeExpr
+}
+import @vibe/compiler/codegen/common_base {
+  str_table_index_of
+}
+import @vibe/lowering_worker/linear {
+  linear_string_reader
+}
+
+export struct FunctionRange { lo: Int; hi: Int }
+
+/// Only this range's normalized AST and source hints cross the job boundary.
+/// Shared names, string pool, lambda ranges and diagnostic locations are sent once.
+export fn write_function_job_into(b: Bytes, ctx: FunctionContext, digest: String, lo: Int, hi: Int) -> Bytes with Exception {
+  if Bytes::length(b) != 0 || String::length(digest) != 64 || lo < ctx.loaded_lo || hi > ctx.loaded_hi || lo < 0 || hi < lo || hi > ctx.input.num_user_funcs {
+    throw("function job: invalid buffer, context digest or loaded range")
+  } else ()
+  ast_binary_write_string(b, "vibe-function-job-2")
+  ast_binary_write_string(b, digest)
+  ast_binary_write_varint(b, lo)
+  ast_binary_write_varint(b, hi)
+  let pool = FrozenArray::from_array(ctx.input.str_strs)
+  ast_binary_with_indexed_string_pool(pool, (value) -> str_table_index_of(ctx.input.str_table_shared, value), () -> Bytes with Exception {
+    let mut i = lo
+    while i < hi {
+      ast_binary_write_expr(b, Array::get(ctx.plan.bodies, i))
+      match Array::get(ctx.plan.source_types, i) {
+        None => ast_binary_write_bool(b, false),
+        Some(t) => {
+          ast_binary_write_bool(b, true); ast_binary_write_type_expr(b, t)
+        }
+      }
+      i = i + 1
+    }
+    if Bytes::length(b) > 64 * 1024 * 1024 {
+      throw("function job: exceeds 64 MiB")
+    } else ()
+    b
+  })
+}
+
+export fn write_function_job(ctx: FunctionContext, digest: String, lo: Int, hi: Int) -> Bytes with Exception {
+  write_function_job_into(Bytes::new(), ctx, digest, lo, hi)
+}
+
+/// Decode into private temporary arrays, validate the entire job, then replace
+/// the previous loaded range. A malformed job never publishes a partial plan.
+export fn read_function_job(ctx: FunctionContext, bytes: Bytes, digest: String) -> FunctionRange with Exception {
+  if Bytes::length(bytes) > 64 * 1024 * 1024 {
+    throw("function job: exceeds 64 MiB")
+  } else ()
+  let prefix = linear_string_reader(bytes)
+  if ast_binary_read_string_checked(prefix) != "vibe-function-job-2" || ast_binary_read_string_checked(prefix) != digest {
+    throw("function job: context or format differs")
+  } else ()
+  let lo = ast_binary_read_varint_checked(prefix)
+  let hi = ast_binary_read_varint_checked(prefix)
+  if lo < 0 || hi < lo || hi > ctx.input.num_user_funcs {
+    throw("function job: invalid range")
+  } else ()
+  let r = ast_binary_reader_with_string_pool(prefix, FrozenArray::from_array(ctx.input.str_strs))
+  let bodies: Array[Expr] = []
+  let hints: Array[Option[TypeExpr]] = []
+  let mut i = lo
+  while i < hi {
+    Array::push(bodies, ast_binary_read_expr(r))
+    Array::push(hints, if ast_binary_read_bool_checked(r) {
+      Some(ast_binary_read_type_expr(r))
+    } else {
+      None
+    })
+    i = i + 1
+  }
+  if ast_binary_reader_remaining(r) != 0 {
+    throw("function job: trailing bytes")
+  } else ()
+  i = ctx.loaded_lo
+  while i < ctx.loaded_hi {
+    Array::set(ctx.plan.bodies, i, EUnit)
+    Array::set(ctx.plan.source_types, i, None)
+    i = i + 1
+  }
+  i = lo
+  while i < hi {
+    Array::set(ctx.plan.bodies, i, Array::get(bodies, i - lo))
+    Array::set(ctx.plan.source_types, i, Array::get(hints, i - lo))
+    i = i + 1
+  }
+  ctx.loaded_lo = lo
+  ctx.loaded_hi = hi
+  FunctionRange::{ lo: lo, hi: hi }
+}
+
+export fn FunctionContext::write_function_job(recv: FunctionContext, digest: String, lo: Int, hi: Int) -> Bytes with Exception {
+  write_function_job(recv, digest, lo, hi)
+}
+
+export fn FunctionContext::read_function_job(recv: FunctionContext, bytes: Bytes, digest: String) -> FunctionRange with Exception {
+  read_function_job(recv, bytes, digest)
+}
