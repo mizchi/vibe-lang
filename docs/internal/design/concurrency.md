@@ -718,10 +718,14 @@ under a synthetic region it carries, and the summary records where it goes:
 Every top-level function of the module is summarized, and publication keeps
 the summaries of the ones it publishes: one declared `export`, one an
 `export { .. }` lists, a companion an exported type publishes (`fn Box::put`,
-or a function returning `Box`, carried to an importer of `Box` with the
-type), and an alias of any of them. A
+or a function returning an enum `Box`, carried to an importer of `Box` with
+the type), and an alias of any of them. A
 published function value whose body cannot be traced, a closure a call
-produced, keeps each argument where no call can see (`i>f`).
+produced, keeps each argument where no call can see (`i>f`). A callee that
+nothing in the module binds is treated the same way: a bare call whose first
+argument has an imported type is retried as a method of that type and typed
+without a body (#736), yet it runs whatever function of that name the
+program links, so passing it a region's value is refused.
 
 The summary is bound in the published environment beside the function
 (`#retains:<name>`), carried under the name an importer binds and through a
