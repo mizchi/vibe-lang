@@ -1089,3 +1089,32 @@ test "#3448: a package member the program never reaches does not collide" {
   let msg = plan_refusal(paths, [used, unused, facade, other, entry2], "/virtual/entry.vibe", entry2)
   inspect(String::starts_with(msg, "rename one of the enums named `Attempt`"), "true")
 }
+
+test "#3448: a file reached through a facade's own re-export collides" {
+  // Codex on #3467: `wrapper` calls `f`, which the facade binds by
+  // re-exporting it, so `p.vibe` is in the program and its `Box` meets the
+  // other module's.
+  let p = parse_program(lex("export struct Box {\n  value: Int\n}\nexport fn f() -> Int {\n  1\n}"))
+  let facade = parse_program(lex("export ./p.vibe { f }\nexport fn wrapper() -> Int {\n  f()\n}"))
+  let other = parse_program(lex("export struct Box {\n  value: String\n}\nexport fn mine() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./facade.vibe { wrapper }\nimport ./other.vibe { mine }\nlet answer = wrapper() + mine()"))
+  let paths = [
+    "/virtual/p.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/other.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(String::starts_with(plan_refusal(paths, [p, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+}
+
+test "#3448: an alias's constructor parameter in head position takes its argument" {
+  // Codex on #3467: `Apply[Option, Int]` and `Apply[Array, Int]` both read as
+  // `F[Int]`, and the two `Box` were taken for one type.
+  let a = parse_program(lex("type Apply[F[_], A] = F[A]\nexport struct Box {\n  value: Apply[Option, Int]\n}\nexport fn box_a() -> Int {\n  1\n}"))
+  let b = parse_program(lex("type Apply[F[_], A] = F[A]\nexport struct Box {\n  value: Apply[Array, Int]\n}\nexport fn box_b() -> Int {\n  1\n}"))
+  let same = parse_program(lex("type Apply[F[_], A] = F[A]\nexport struct Box {\n  value: Option[Int]\n}\nexport fn box_b() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { box_a }\nimport ./b.vibe { box_b }\nlet answer = box_a() + box_b()"))
+  let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
+  inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(plan_refusal(paths, [a, same, entry], "/virtual/entry.vibe", entry), "clean")
+}

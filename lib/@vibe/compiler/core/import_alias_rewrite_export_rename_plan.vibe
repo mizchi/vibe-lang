@@ -892,9 +892,27 @@ fn substitute_type_params(t: TypeExpr, params: Array[String], args: Array[TypeEx
       }
       out
     },
-    TyApp(x, xs) => TyApp(x, for a in xs {
-      substitute_type_params(a, params, args)
-    }),
+    TyApp(x, xs) => {
+      let sub_args = for a in xs {
+        substitute_type_params(a, params, args)
+      }
+      // A constructor parameter in head position (`F[A]` of `type Apply[F[_],
+      // A] = F[A]`) takes the constructor it is given (Codex on #3467):
+      // `Apply[Option, Int]` is `Option[Int]`, not `F[Int]`.
+      let mut head = x
+      let mut i = 0
+      while i < Array::length(params) && i < Array::length(args) {
+        if type_param_name(Array::get(params, i)) == x {
+          head = match Array::get(args, i) {
+            TyName(h) => h,
+            TyApp(h, _) => h,
+            _ => head
+          }
+        }
+        i = i + 1
+      }
+      TyApp(head, sub_args)
+    },
     TyFn(ps, r, row) => TyFn(for p in ps {
       substitute_type_params(p, params, args)
     }, substitute_type_params(r, params, args), row),
@@ -1078,17 +1096,27 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
           let stmts = Array::get(stmts_list, idx)
           let mut si = 0
           while si < Array::length(stmts) {
-            match Array::get(stmts, si) {
-              SImport(raw_path, items) => {
-                let target = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
-                let mut ii = 0
-                while ii < Array::length(items) {
-                  Array::push(work_paths, target)
-                  Array::push(work_names, Array::get(items, ii).name)
-                  ii = ii + 1
-                }
+            // A re-export binds its names in the facade too, so the
+            // facade's own code may call them (Codex on #3467): its items
+            // reach their provider like an import's. A package contract
+            // holds no code, so its re-exports are only its surface.
+            let (raw_path, items) = match Array::get(stmts, si) {
+              SImport(rp, its) => (rp, its),
+              SReExport(rp, its) => if is_contract_ext(path) {
+                ("", [])
+              } else {
+                (rp, its)
               },
-              _ => ()
+              _ => ("", [])
+            }
+            if raw_path != "" {
+              let target = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
+              let mut ii = 0
+              while ii < Array::length(items) {
+                Array::push(work_paths, target)
+                Array::push(work_names, Array::get(items, ii).name)
+                ii = ii + 1
+              }
             }
             si = si + 1
           }
