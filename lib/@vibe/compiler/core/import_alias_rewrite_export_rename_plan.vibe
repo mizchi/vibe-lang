@@ -717,12 +717,24 @@ fn import_items_aliases_into(raw_path: String, items: Array[ImportItem], path: S
       Some(a) => a,
       None => item.name
     }
+    // A kind-qualified item binds only that namespace (Codex on #3492):
+    // `{ type Caps }` is the alias, never an effectset of the same name, and
+    // no qualifier selects an effectset.
+    let binds_alias = match item.kind {
+      Some(ImportType) => true,
+      Some(_) => false,
+      None => true
+    }
+    let binds_effectset = match item.kind {
+      Some(_) => false,
+      None => true
+    }
     for al in shared {
       let (from, an, ap, target) = al
       if from == provider {
-        if an == item.name {
+        if binds_alias && an == item.name {
           Array::push(out, (local, ap, target))
-        } else if an == effectset_alias_key(item.name) {
+        } else if binds_effectset && an == effectset_alias_key(item.name) {
           Array::push(out, (effectset_alias_key(local), ap, target))
         }
       }
@@ -984,6 +996,21 @@ fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], Ty
   for label in labels {
     let mut members: Option[Array[String]] = None
     let mut found = false
+    // Past the depth bound a label that still names an effectset is not
+    // read to its end, so it is made unique and its row never compares
+    // equal (Codex on #3492: a chain of 17 sets).
+    if depth >= 16 {
+      let key = effectset_alias_key(label)
+      for al in aliases {
+        if !found && al.0 == key {
+          found = true
+          Array::set(row_label_unread_count, 0, Array::get(row_label_unread_count, 0) + 1)
+          members = Some([
+            String::concat(String::concat(label, " #unread"), Int::to_string(Array::get(row_label_unread_count, 0)))
+          ])
+        }
+      }
+    }
     if depth < 16 {
       let key = effectset_alias_key(label)
       for al in aliases {
@@ -1018,6 +1045,8 @@ fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], Ty
   }
   String::join(out, " + ")
 }
+
+let row_label_unread_count: Array[Int] = [0]
 
 /// A row label with its type arguments read through aliases (Codex on
 /// #3492): `State[Payload]` is `State[Int]` in a module with `type Payload =
