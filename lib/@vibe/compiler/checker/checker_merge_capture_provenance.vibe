@@ -1339,11 +1339,13 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
 
 /// The values `e` hands out through `return` from a position that is not
 /// the function's tail (`if c { return p }`, a loop body), read through the
-/// `let` aliases in scope. A nested closure's `return` is its own. The walk
-/// follows the statement skeleton -- blocks, branches, arms, loop and
-/// handler bodies, assignment continuations -- and not operands or call
-/// arguments: every function is summarized, so a whole-tree walk here cost
-/// ~14 MB of the self-compile.
+/// `let` aliases in scope. A nested closure's `return` is its own.
+///
+/// `deep` (a call inside a region, read once) follows every subexpression,
+/// so no form can hide a `return` from it (Codex on #3492: `sink({ return c
+/// })`, a `for` iterator). The eager summaries, which read every function,
+/// follow only the statement skeleton (`collect_skeleton_returns`): a
+/// whole-tree walk there cost ~14 MB of the self-compile.
 fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int], deep: Bool) -> Unit {
   match e {
     EReturn(value) => collect_result_params(value, params, alias_names, alias_indices, found, deep),
@@ -1365,58 +1367,68 @@ fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr]
       Array::truncate(alias_names, alias_mark)
       Array::truncate(alias_indices, alias_mark)
     },
-    ELetMut(_, value, rest, _) => {
-      collect_return_param_indices(value, params, alias_names, alias_indices, found, deep)
-      collect_return_param_indices(rest, params, alias_names, alias_indices, found, deep)
-    },
-    ELetRec(_, _, rest) => collect_return_param_indices(rest, params, alias_names, alias_indices, found, deep),
-    ESeq(left, right) => {
-      collect_return_param_indices(left, params, alias_names, alias_indices, found, deep)
-      collect_return_param_indices(right, params, alias_names, alias_indices, found, deep)
-    },
-    // A condition or scrutinee is evaluated too (Codex on #3492:
-    // `if { return c; true } { .. }`).
-    EIf(cond, then_expr, else_expr) => {
-      collect_return_param_indices(cond, params, alias_names, alias_indices, found, deep)
-      collect_return_param_indices(then_expr, params, alias_names, alias_indices, found, deep)
-      collect_return_param_indices(else_expr, params, alias_names, alias_indices, found, deep)
-    },
-    EMatch(scrut, arms) => {
-      collect_return_param_indices(scrut, params, alias_names, alias_indices, found, deep)
-      for arm in arms {
-        collect_return_param_indices(arm.1, params, alias_names, alias_indices, found, deep)
-      }
-      ()
-    },
-    EHandle(handled, arms) => {
-      collect_return_param_indices(handled, params, alias_names, alias_indices, found, deep)
-      for arm in arms {
-        collect_return_param_indices(arm.1, params, alias_names, alias_indices, found, deep)
-      }
-      ()
-    },
-    EWhile(cond, loop_body) => {
-      collect_return_param_indices(cond, params, alias_names, alias_indices, found, deep)
-      collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, deep)
-    },
-    EForIn(_, _, _, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, deep),
-    ELoop(_, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, deep),
-    EAssign(_, value, rest, _) => {
-      collect_return_param_indices(value, params, alias_names, alias_indices, found, deep)
-      collect_return_param_indices(rest, params, alias_names, alias_indices, found, deep)
-    },
-    EAssignOp(_, _, _, rest, _) => collect_return_param_indices(rest, params, alias_names, alias_indices, found, deep),
-    // `deep` (a call inside a region, read once) follows every operand too:
-    // `sink({ return c })` (Codex on #3492). The eager summaries stay on the
-    // skeleton above.
     _ => if deep {
       for child in expr_children(e) {
         collect_return_param_indices(child, params, alias_names, alias_indices, found, deep)
       }
       ()
     } else {
-      ()
+      collect_skeleton_returns(e, params, alias_names, alias_indices, found)
     }
+  }
+}
+
+/// `collect_return_param_indices` for the eager summaries: blocks, branches,
+/// arms, loop and handler bodies, assignment continuations, and the
+/// conditions, scrutinees and iterators evaluated on the way, but not other
+/// operands or call arguments.
+fn collect_skeleton_returns(e: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
+  match e {
+    ELetMut(_, value, rest, _) => {
+      collect_return_param_indices(value, params, alias_names, alias_indices, found, false)
+      collect_return_param_indices(rest, params, alias_names, alias_indices, found, false)
+    },
+    ELetRec(_, _, rest) => collect_return_param_indices(rest, params, alias_names, alias_indices, found, false),
+    ESeq(left, right) => {
+      collect_return_param_indices(left, params, alias_names, alias_indices, found, false)
+      collect_return_param_indices(right, params, alias_names, alias_indices, found, false)
+    },
+    // A condition or scrutinee is evaluated too (Codex on #3492:
+    // `if { return c; true } { .. }`).
+    EIf(cond, then_expr, else_expr) => {
+      collect_return_param_indices(cond, params, alias_names, alias_indices, found, false)
+      collect_return_param_indices(then_expr, params, alias_names, alias_indices, found, false)
+      collect_return_param_indices(else_expr, params, alias_names, alias_indices, found, false)
+    },
+    EMatch(scrut, arms) => {
+      collect_return_param_indices(scrut, params, alias_names, alias_indices, found, false)
+      for arm in arms {
+        collect_return_param_indices(arm.1, params, alias_names, alias_indices, found, false)
+      }
+      ()
+    },
+    EHandle(handled, arms) => {
+      collect_return_param_indices(handled, params, alias_names, alias_indices, found, false)
+      for arm in arms {
+        collect_return_param_indices(arm.1, params, alias_names, alias_indices, found, false)
+      }
+      ()
+    },
+    EWhile(cond, loop_body) => {
+      collect_return_param_indices(cond, params, alias_names, alias_indices, found, false)
+      collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, false)
+    },
+    EForIn(_, _, iter, loop_body) => {
+      collect_return_param_indices(iter, params, alias_names, alias_indices, found, false)
+      collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, false)
+    },
+    ELoop(_, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, false),
+    EAssign(_, value, rest, _) => {
+      collect_return_param_indices(value, params, alias_names, alias_indices, found, false)
+      collect_return_param_indices(rest, params, alias_names, alias_indices, found, false)
+    },
+    EAssignOp(_, _, _, rest, _) => collect_return_param_indices(rest, params, alias_names, alias_indices, found, false),
+    _ => ()
   }
 }
 
