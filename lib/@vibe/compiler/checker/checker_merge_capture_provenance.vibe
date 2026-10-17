@@ -30,7 +30,6 @@ import @vibe/compiler/core {
   env_name_index_length,
   env_type_defs,
   exception_kind_resolutions_clear,
-  expr_children,
   find_typedef,
   instantiate,
   is_builtin_type_name,
@@ -1171,7 +1170,11 @@ export fn collect_result_param_indices(body: Expr, params: Array[(String, Option
 
 /// The values `e` hands out through `return` from a position that is not
 /// the function's tail (`if c { return p }`, a loop body), read through the
-/// `let` aliases in scope. A nested closure's `return` is its own.
+/// `let` aliases in scope. A nested closure's `return` is its own. The walk
+/// follows the statement skeleton -- blocks, branches, arms, loop and
+/// handler bodies, assignment continuations -- and not operands or call
+/// arguments: every function is summarized, so a whole-tree walk here cost
+/// ~14 MB of the self-compile.
 fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
   match e {
     EReturn(value) => collect_result_param_indices(value, params, alias_names, alias_indices, found),
@@ -1189,12 +1192,38 @@ fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr]
       Array::truncate(alias_names, alias_mark)
       Array::truncate(alias_indices, alias_mark)
     },
-    _ => {
-      for child in expr_children(e) {
-        collect_return_param_indices(child, params, alias_names, alias_indices, found)
+    ELetMut(_, value, rest, _) => {
+      collect_return_param_indices(value, params, alias_names, alias_indices, found)
+      collect_return_param_indices(rest, params, alias_names, alias_indices, found)
+    },
+    ELetRec(_, _, rest) => collect_return_param_indices(rest, params, alias_names, alias_indices, found),
+    ESeq(left, right) => {
+      collect_return_param_indices(left, params, alias_names, alias_indices, found)
+      collect_return_param_indices(right, params, alias_names, alias_indices, found)
+    },
+    EIf(_, then_expr, else_expr) => {
+      collect_return_param_indices(then_expr, params, alias_names, alias_indices, found)
+      collect_return_param_indices(else_expr, params, alias_names, alias_indices, found)
+    },
+    EMatch(_, arms) => {
+      for arm in arms {
+        collect_return_param_indices(arm.1, params, alias_names, alias_indices, found)
       }
       ()
-    }
+    },
+    EHandle(handled, arms) => {
+      collect_return_param_indices(handled, params, alias_names, alias_indices, found)
+      for arm in arms {
+        collect_return_param_indices(arm.1, params, alias_names, alias_indices, found)
+      }
+      ()
+    },
+    EWhile(_, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found),
+    EForIn(_, _, _, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found),
+    ELoop(_, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found),
+    EAssign(_, _, rest, _) => collect_return_param_indices(rest, params, alias_names, alias_indices, found),
+    EAssignOp(_, _, _, rest, _) => collect_return_param_indices(rest, params, alias_names, alias_indices, found),
+    _ => ()
   }
 }
 
