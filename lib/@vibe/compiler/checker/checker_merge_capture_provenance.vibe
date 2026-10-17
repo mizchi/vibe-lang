@@ -1164,7 +1164,24 @@ export fn collect_result_param_indices(body: Expr, params: Array[(String, Option
       }
       ()
     },
-    _ => collect_return_param_indices(body, params, alias_names, alias_indices, found)
+    // A constructor's or literal's value holds its parts (Codex on #3492:
+    // `fn wrap(c: Cell) -> Wrap { Wrap::{ cell: c } }`), as the other
+    // provenance walks read them (`retention_result_items`).
+    ECall(EIdent(callee, _), args, _, _) => if callee_is_ctor_name(callee) {
+      for arg in args {
+        collect_result_param_indices(arg, params, alias_names, alias_indices, found)
+      }
+      ()
+    } else {
+      collect_return_param_indices(body, params, alias_names, alias_indices, found)
+    },
+    _ => {
+      collect_return_param_indices(body, params, alias_names, alias_indices, found)
+      for part in retention_result_items(body) {
+        collect_result_param_indices(part, params, alias_names, alias_indices, found)
+      }
+      ()
+    }
   }
 }
 
@@ -1221,7 +1238,10 @@ fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr]
     EWhile(_, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found),
     EForIn(_, _, _, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found),
     ELoop(_, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found),
-    EAssign(_, _, rest, _) => collect_return_param_indices(rest, params, alias_names, alias_indices, found),
+    EAssign(_, value, rest, _) => {
+      collect_return_param_indices(value, params, alias_names, alias_indices, found)
+      collect_return_param_indices(rest, params, alias_names, alias_indices, found)
+    },
     EAssignOp(_, _, _, rest, _) => collect_return_param_indices(rest, params, alias_names, alias_indices, found),
     _ => ()
   }
