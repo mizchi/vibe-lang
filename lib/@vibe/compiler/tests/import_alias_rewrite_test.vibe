@@ -1138,3 +1138,38 @@ test "#3448: a provider's own alias does not capture a kinded formal of the same
   ]
   inspect(String::starts_with(plan_refusal(paths, [provider, a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
 }
+
+test "#3448: a facade re-exporting one alias name twice provides the later one" {
+  // Codex on #3467: both rows were kept and the first was read.
+  let ai = parse_program(lex("export type N = Int"))
+  let astr = parse_program(lex("export type N = String"))
+  let facade = parse_program(lex("export ./ai.vibe { N }\nexport ./astr.vibe { N }"))
+  let a = parse_program(lex("import ./facade.vibe { N }\nexport struct Box {\n  value: N\n}\nexport fn box_a() -> Int {\n  1\n}"))
+  let b = parse_program(lex("export struct Box {\n  value: Int\n}\nexport fn box_b() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { box_a }\nimport ./b.vibe { box_b }\nlet answer = box_a() + box_b()"))
+  let paths = [
+    "/virtual/ai.vibe",
+    "/virtual/astr.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(String::starts_with(plan_refusal(paths, [ai, astr, facade, a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+}
+
+test "#3448: a file's own applied alias wins over an imported one of its name" {
+  // Codex on #3467: the imported `N[T] = String` was read for the local
+  // `N[T] = Option[T]`.
+  let provider = parse_program(lex("export type N[T] = String"))
+  let a = parse_program(lex("import ./aliases.vibe { N }\ntype N[T] = Option[T]\nexport struct Box {\n  value: N[Int]\n}\nexport fn box_a() -> Int {\n  1\n}"))
+  let b = parse_program(lex("export struct Box {\n  value: String\n}\nexport fn box_b() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { box_a }\nimport ./b.vibe { box_b }\nlet answer = box_a() + box_b()"))
+  let paths = [
+    "/virtual/aliases.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(String::starts_with(plan_refusal(paths, [provider, a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+}

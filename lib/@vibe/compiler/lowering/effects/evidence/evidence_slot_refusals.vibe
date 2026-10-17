@@ -415,38 +415,45 @@ export fn edp_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr
   let mut steps = 0
   let mut done = false
   while !done && steps < 32 {
-    match cur {
-      TyName(alias) => {
-        let mut next: Option[TypeExpr] = None
-        for st in stmts {
-          match st {
-            STypeAlias(_, n, tparams, body) => if n == alias && Array::length(tparams) == 0 {
-              next = Some(body)
-            } else {
-              ()
-            },
-            _ => ()
-          }
-        }
-        match next {
-          Some(TyFn(ps, r, Some(row))) => {
-            if edp_slot_row_stampable(row) {
-              out = Some(TyFn(ps, r, Some(row)))
-            } else {
-              ()
-            }
-            done = true
+    // An applied alias (`Gen[Unit]` of `type Gen[T] = () -> Int with Box[Int]`)
+    // is followed with its arguments substituted (Codex on #3467).
+    let (alias, targs) = match cur {
+      TyName(a) => (a, array_empty()),
+      TyApp(a, xs) => (a, xs),
+      _ => ("", array_empty())
+    }
+    if alias == "" {
+      done = true
+    } else {
+      let mut next: Option[TypeExpr] = None
+      for st in stmts {
+        match st {
+          STypeAlias(_, n, tparams, body) => if n == alias && Array::length(tparams) == Array::length(targs) {
+            next = Some(edp_alias_subst(body, tparams, targs))
+          } else {
+            ()
           },
-          Some(TyName(n2)) => {
-            cur = TyName(n2)
-          },
-          _ => {
-            done = true
-          }
+          _ => ()
         }
-      },
-      _ => {
-        done = true
+      }
+      match next {
+        Some(TyFn(ps, r, Some(row))) => {
+          if edp_slot_row_stampable(row) {
+            out = Some(TyFn(ps, r, Some(row)))
+          } else {
+            ()
+          }
+          done = true
+        },
+        Some(TyName(n2)) => {
+          cur = TyName(n2)
+        },
+        Some(TyApp(n2, xs2)) => {
+          cur = TyApp(n2, xs2)
+        },
+        _ => {
+          done = true
+        }
       }
     }
     steps = steps + 1
