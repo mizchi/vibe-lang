@@ -64,7 +64,7 @@ import @vibe/compiler/checker/patterns {
 }
 
 import ./checker_region_retention_arms.vibe {
-  retention_arms_bind, retention_decl_value, retention_result_items
+  retention_arms_bind, retention_decl_value, retention_pat_names_into, retention_result_items
 }
 
 import ./checker_resolve.vibe {
@@ -1186,8 +1186,31 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
     EReturn(value) => collect_result_params(value, params, alias_names, alias_indices, found, deep),
     EMatch(scrut, arms) => {
       collect_return_param_indices(scrut, params, alias_names, alias_indices, found, deep)
+      // `deep`: an arm's binders hold what the scrutinee holds (Codex on
+      // #3492: `match Some(c) { Some(x) => Wrap::{ cell: x }, .. }`).
+      let held = array_empty()
+      if deep {
+        collect_result_params(scrut, params, alias_names, alias_indices, held, deep)
+      } else {
+        ()
+      }
       for arm in arms {
+        let alias_mark = Array::length(alias_names)
+        if Array::length(held) > 0 {
+          let bound: Array[String] = []
+          retention_pat_names_into(arm.0, bound)
+          for name in bound {
+            for index in held {
+              Array::push(alias_names, name)
+              Array::push(alias_indices, index)
+            }
+          }
+        } else {
+          ()
+        }
         collect_result_params(arm.1, params, alias_names, alias_indices, found, deep)
+        Array::truncate(alias_names, alias_mark)
+        Array::truncate(alias_indices, alias_mark)
       }
       ()
     },
