@@ -1937,7 +1937,12 @@ REPL_HELP
       local have path="$1"
       # `./x_test.vibe` (what find(1) prints for `.`) is passed on without
       # its `./`: the test verb cannot make a build path from that spelling.
-      while [ "${path#./}" != "$path" ]; do path="${path#./}"; done
+      # `.//x` is still `x`: after each `./`, the slashes that follow go too
+      # (removing only `./` would leave an absolute `/x`).
+      while [ "${path#./}" != "$path" ]; do
+        path="${path#./}"
+        while [ "${path#/}" != "$path" ] && [ -n "${path#/}" ]; do path="${path#/}"; done
+      done
       for have in ${mtests[@]+"${mtests[@]}"}; do
         [ "$have" -ef "$path" ] && return 0
       done
@@ -2061,13 +2066,20 @@ REPL_HELP
         cat "$mwork/deps.err" >&2
         die "vibe mutate: cannot resolve the imports of $1"
       }
+      local hit=1 dp
       while IFS= read -r dep; do
         case "$dep" in
-          /*) [ "$dep" -ef "$mabs" ] && return 0 ;;
-          *) { [ "$INVOKE_DIR/$dep" -ef "$mabs" ] || [ "$PROJECT_ROOT/$dep" -ef "$mabs" ]; } && return 0 ;;
+          /*) dp="$dep" ;;
+          *) if [ -f "$INVOKE_DIR/$dep" ]; then dp="$INVOKE_DIR/$dep"; else dp="$PROJECT_ROOT/$dep"; fi ;;
         esac
+        if [ "$dp" -ef "$mabs" ]; then
+          hit=0
+        else
+          printf '%s\n' "$dp" >> "$mwork/inputs.list"
+        fi
       done < "$mwork/deps.out"
-      return 1
+      [ "$hit" = 0 ] && printf '%s\n' "$1" >> "$mwork/inputs.list"
+      return "$hit"
     }
     mrel=()
     for mt in "${mtests[@]}"; do
@@ -2079,6 +2091,20 @@ REPL_HELP
       fi
     done
     [ "${#mrel[@]}" -gt 0 ] || die "vibe mutate: no test file imports $mtarget"
+    # Every other input the tests compile from -- the test files and their
+    # import closures, the target aside (it is overlaid) -- is fingerprinted
+    # now and checked again at the end: an edit mid-run would make later
+    # mutants compile against tests the baseline never ran, so the run is
+    # refused rather than reported. Build products are not inputs.
+    mutate_inputs_sum() {
+      local f
+      LC_ALL=C sort -u "$mwork/inputs.list" 2>/dev/null | while IFS= read -r f; do
+        case "$f" in *"/.vibe/build/"*|".vibe/build/"*) continue ;; esac
+        [ -f "$f" ] && printf '%s %s\n' "$(cksum < "$f")" "$f"
+      done
+    }
+    : >> "$mwork/inputs.list"
+    mutate_inputs_sum > "$mwork/inputs.sum"
     mutate_compile "$mwork/base.plan" "${mrel[@]}" || { cat "$mwork/compile.log" >&2; die "vibe mutate: the tests did not compile"; }
     # Baseline: every block must pass against the original, or a kill would
     # mean nothing. Test rows are numbered in file order.
@@ -2149,6 +2175,8 @@ REPL_HELP
       rm -f "$mfile"
     done < "$mwork/sites.txt"
     cmp -s "$mabs" "$msnap" || die "vibe mutate: $mtarget changed during the run; run again"
+    mutate_inputs_sum | cmp -s - "$mwork/inputs.sum" \
+      || die "vibe mutate: a test file or one of its imports changed during the run; run again"
     mrc=0; invoke_cli mutate-report "$mresults" || mrc=$?
     # Keep the matrix with the snapshot it describes; the target row points
     # at the kept copy. The copy is named by its content, so two runs that
@@ -2157,12 +2185,16 @@ REPL_HELP
     # cksum is a 32-bit CRC, so a name is reused only when the file already
     # under it holds the same bytes; a different text under the same CRC
     # takes the next free suffix instead.
+    # A name is CLAIMED with ln(1), which creates it only if it does not
+    # exist -- atomic across processes -- so two runs can never both think a
+    # name is theirs; one that finds the name taken by other bytes moves on.
     msum="$(cksum < "$msnap" | awk '{ print $1 "-" $2 }')"
+    cp "$msnap" "$BUILD_DIR/mutate/claim.$$"
     mn=0; mkept="$BUILD_DIR/mutate/target.$msum.vibe"
-    while [ -f "$mkept" ] && ! cmp -s "$mkept" "$msnap"; do
+    until ln "$BUILD_DIR/mutate/claim.$$" "$mkept" 2>/dev/null || cmp -s "$mkept" "$msnap"; do
       mn=$((mn + 1)); mkept="$BUILD_DIR/mutate/target.$msum.$mn.vibe"
     done
-    [ -f "$mkept" ] || { cp "$msnap" "$mkept.$$" && mv "$mkept.$$" "$mkept"; }
+    rm -f "$BUILD_DIR/mutate/claim.$$"
     awk -F'\t' -v OFS='\t' -v snap="$mkept" 'NR == 1 && $1 == "target" { $3 = snap } { print }' \
       "$mresults" > "$BUILD_DIR/mutate/results.tsv.$$" && mv "$BUILD_DIR/mutate/results.tsv.$$" "$BUILD_DIR/mutate/results.tsv"
     exit "$mrc"

@@ -205,12 +205,12 @@ test "inc" {
 }
 EOF
 out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
-  bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe lib_test.vibe inc_test.vibe ./inc_test.vibe . 2>>"$WORK/err")"
+  bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe lib_test.vibe inc_test.vibe ./inc_test.vibe .//inc_test.vibe . 2>>"$WORK/err")"
 status=$?
 [ "$status" = 0 ] && note "  ok   exit 0 without survivors" || { note "  FAIL exit $status, expected 0"; fail=1; }
 expect_line "score: 7/7 killed (100.0%)"
 expect_line 'TEST kills=2 unique=2 inc_test.vibe "inc"'
-# inc_test.vibe was named three ways (and `.` adds every *_test.vibe, the
+# inc_test.vibe was named four ways (and `.` adds every *_test.vibe, the
 # refused ones below included only after this run): one file, one test.
 if [ "$(printf '%s\n' "$out" | grep -c '^TEST .*inc_test.vibe "inc"$')" = 1 ]; then
   note "  ok   a file named twice is one file"
@@ -384,6 +384,36 @@ if [ "$bad_status" != 0 ] && printf '%s' "$bad_out" | grep -q 'cannot resolve th
   note "  ok   refused, naming the file"
 else
   note "  FAIL expected a refusal naming bad_test.vibe (exit $bad_status)"; printf '%s\n' "$bad_out" | tail -4; fail=1
+fi
+
+note "=== a test import edited during the run: refused, not reported ==="
+# The test appends to an import of its own each time it runs, so every
+# compile after the baseline reads a file the baseline never compiled.
+cat > "$WORK/helper.vibe" <<'EOF'
+export fn two() -> Int {
+  2
+}
+EOF
+cat > "$WORK/edit_test.vibe" <<'EOF'
+import ./lib.vibe {
+  double
+}
+import ./helper.vibe {
+  two
+}
+
+test "edits" allows Process {
+  let _ = sh_lines("echo '// touched' >> helper.vibe")
+  assert(double(two()) == 4)
+}
+EOF
+edit_out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
+  bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe edit_test.vibe 2>&1)"
+edit_status=$?
+if [ "$edit_status" != 0 ] && printf '%s' "$edit_out" | grep -q 'a test file or one of its imports changed during the run'; then
+  note "  ok   refused, naming the cause"
+else
+  note "  FAIL expected a refusal for the edited import (exit $edit_status)"; printf '%s\n' "$edit_out" | tail -4; fail=1
 fi
 
 if [ "$fail" != 0 ]; then
