@@ -684,7 +684,7 @@ export fn gen_rc_dup_body(rc_shadow: Bool, uaf_abort_idx: Int, prefix_fat: Int) 
   b
 }
 
-export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_abort_idx: Int, prefix_fat: Int, map_arms: Bool) -> Bytes {
+export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_abort_idx: Int, prefix_fat: Int, map_arms: Bool, closure_arms: Bool, array_arm: Bool) -> Bytes {
   let b = bytebuf_new()
   // not a heap pointer (even) → nothing to do
   emit_local_get(b, 0)
@@ -809,79 +809,88 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_a
   emit_end(b)
   emit_end(b)
   emit_end(b)
-  // array (class 5): for idx in 0..length: rc_drop(load_i64(data_ptr+idx*8))
-  emit_local_get(b, 2)
-  emit_i32_const(b, 5)
-  emit_i32_eq(b)
-  emit_if_void(b)
-  emit_local_get(b, 1)
-  emit_i32_load(b, 2, 4)
-  emit_local_set(b, 3)
-  emit_local_get(b, 1)
-  emit_i32_load(b, 2, 8)
-  emit_local_set(b, 5)
-  emit_i32_const(b, 0)
-  emit_local_set(b, 4)
-  emit_block_void(b)
-  emit_loop_void(b)
-  emit_local_get(b, 4)
-  emit_local_get(b, 3)
-  emit_i32_ge_u(b)
-  emit_br_if(b, 1)
-  emit_local_get(b, 5)
-  emit_local_get(b, 4)
-  emit_i32_const(b, 8)
-  emit_i32_mul(b)
-  emit_i32_add(b)
-  emit_i64_load(b, 3, 0)
-  emit_local_set(b, 6)
-  emit_local_get(b, 6)
-  emit_call(b, self_idx)
-  emit_local_get(b, 4)
-  emit_i32_const(b, 1)
-  emit_i32_add(b)
-  emit_local_set(b, 4)
-  emit_br(b, 0)
-  emit_end(b)
-  emit_end(b)
-  // ADR-0055 Stage 4: free a grown (separate) data buffer. An inline buffer sits
-  // at value+12 (vptr+12) and is freed with the block; a buffer grown by
-  // Array::push is a headered block of its own (data_ptr = its value pointer, so
-  // size@data_ptr-8, next@data_ptr-4) — push onto the free-list head when
-  // data_ptr != vptr+12. Elements were already dropped by the loop above.
-  emit_local_get(b, 5)
-  emit_local_get(b, 1)
-  emit_i32_const(b, 12)
-  emit_i32_add(b)
-  emit_i32_ne(b)
-  emit_if_void(b)
-  // #715 recurrence guard (VIBE_RC=shadow): double-free check for the
-  // grown buffer -- a second free-list push of the same buffer makes two
-  // later allocations return overlapping memory (type confusion), which
-  // plain marking cannot catch.
-  if rc_shadow {
-    emit_local_get(b, 5)
-    emit_shadow_slot_from_vptr(b)
-    emit_i32_load(b, 2, 0)
+  // The array arm (class 5, with its grown-buffer release) is emitted
+  // unless the caller proved no array block can exist: no array literal in
+  // the program and none of the three helpers that make one (`arr_new`,
+  // `Array::slice`, `Array::with_capacity`) reachable from it
+  // (lc_emit_module_sections decides, from the final bodies).
+  if array_arm {
+    // array (class 5): for idx in 0..length: rc_drop(load_i64(data_ptr+idx*8))
+    emit_local_get(b, 2)
+    emit_i32_const(b, 5)
+    emit_i32_eq(b)
     emit_if_void(b)
-    emit_shadow_uaf_trap(b, () -> {
+    emit_local_get(b, 1)
+    emit_i32_load(b, 2, 4)
+    emit_local_set(b, 3)
+    emit_local_get(b, 1)
+    emit_i32_load(b, 2, 8)
+    emit_local_set(b, 5)
+    emit_i32_const(b, 0)
+    emit_local_set(b, 4)
+    emit_block_void(b)
+    emit_loop_void(b)
+    emit_local_get(b, 4)
+    emit_local_get(b, 3)
+    emit_i32_ge_u(b)
+    emit_br_if(b, 1)
+    emit_local_get(b, 5)
+    emit_local_get(b, 4)
+    emit_i32_const(b, 8)
+    emit_i32_mul(b)
+    emit_i32_add(b)
+    emit_i64_load(b, 3, 0)
+    emit_local_set(b, 6)
+    emit_local_get(b, 6)
+    emit_call(b, self_idx)
+    emit_local_get(b, 4)
+    emit_i32_const(b, 1)
+    emit_i32_add(b)
+    emit_local_set(b, 4)
+    emit_br(b, 0)
+    emit_end(b)
+    emit_end(b)
+    // ADR-0055 Stage 4: free a grown (separate) data buffer. An inline buffer sits
+    // at value+12 (vptr+12) and is freed with the block; a buffer grown by
+    // Array::push is a headered block of its own (data_ptr = its value pointer, so
+    // size@data_ptr-8, next@data_ptr-4) — push onto the free-list head when
+    // data_ptr != vptr+12. Elements were already dropped by the loop above.
+    emit_local_get(b, 5)
+    emit_local_get(b, 1)
+    emit_i32_const(b, 12)
+    emit_i32_add(b)
+    emit_i32_ne(b)
+    emit_if_void(b)
+    // #715 recurrence guard (VIBE_RC=shadow): double-free check for the
+    // grown buffer -- a second free-list push of the same buffer makes two
+    // later allocations return overlapping memory (type confusion), which
+    // plain marking cannot catch.
+    if rc_shadow {
       emit_local_get(b, 5)
-    }, uaf_abort_idx, prefix_fat)
+      emit_shadow_slot_from_vptr(b)
+      emit_i32_load(b, 2, 0)
+      emit_if_void(b)
+      emit_shadow_uaf_trap(b, () -> {
+        emit_local_get(b, 5)
+      }, uaf_abort_idx, prefix_fat)
+      emit_end(b)
+    } else {
+      ()
+    }
+    // #715 / #1987: mark the grown buffer freed and stamp the freeing seq.
+    if rc_shadow {
+      emit_shadow_mark_freed(b, () -> {
+        emit_local_get(b, 5)
+      })
+    } else {
+      ()
+    }
+    emit_rc_free_push(b, 5, bins_base)
+    emit_end(b)
     emit_end(b)
   } else {
     ()
   }
-  // #715 / #1987: mark the grown buffer freed and stamp the freeing seq.
-  if rc_shadow {
-    emit_shadow_mark_freed(b, () -> {
-      emit_local_get(b, 5)
-    })
-  } else {
-    ()
-  }
-  emit_rc_free_push(b, 5, bins_base)
-  emit_end(b)
-  emit_end(b)
   // The two map arms are emitted only for a program that can make a
   // map block at all (`map_arms`, decided by the caller from the program's
   // syntax and names). A class-6/9 block is only ever made by a map literal,
@@ -1022,71 +1031,79 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_a
   } else {
     ()
   }
-  // #699 ref cell (class 8): a heap-boxed `let mut` holds a single value at
-  // vptr+0. Drop it recursively (scalar payloads are a no-op via the odd-check),
-  // then fall through to the common free.
-  emit_local_get(b, 2)
-  emit_i32_const(b, 8)
-  emit_i32_eq(b)
-  emit_if_void(b)
-  emit_local_get(b, 1)
-  emit_i64_load(b, 3, 0)
-  emit_local_set(b, 6)
-  emit_local_get(b, 6)
-  emit_call(b, self_idx)
-  emit_end(b)
-  // closure (class 7): the env at vptr+8 holds `count`(@vptr+4) captures.
-  // owned-captures ABI (ADR-0076 追記31 Vertical A): every capture is OWNED —
-  // compile_lambda dups plain heap captures at creation and #699 ref cells
-  // keep their odd-tagged unguarded inc — so drop each slot recursively,
-  // exactly like the class-1 field-vector loop (the recursive call's own
-  // entry checks skip scalars and string/bytes fat pointers, which received
-  // no dup; that includes the old #769 hazard, since the probe that trapped
-  // on odd-length captured strings is gone). The ONE exception is the
-  // let-rec SELF capture: the binder patches the closure into its own env
-  // without a dup (a dup would make the self-cycle unreclaimable), so skip
-  // any slot whose untagged pointer is this block's own vptr. Then fall
-  // through to the common free.
-  emit_local_get(b, 2)
-  emit_i32_const(b, 7)
-  emit_i32_eq(b)
-  emit_if_void(b)
-  emit_local_get(b, 1)
-  emit_i32_load(b, 2, 4)
-  emit_local_set(b, 3)
-  emit_i32_const(b, 0)
-  emit_local_set(b, 4)
-  emit_block_void(b)
-  emit_loop_void(b)
-  emit_local_get(b, 4)
-  emit_local_get(b, 3)
-  emit_i32_ge_u(b)
-  emit_br_if(b, 1)
-  emit_local_get(b, 1)
-  emit_local_get(b, 4)
-  emit_i32_const(b, 8)
-  emit_i32_mul(b)
-  emit_i32_add(b)
-  emit_i64_load(b, 3, 8)
-  emit_local_set(b, 6)
-  emit_local_get(b, 6)
-  emit_i64_const(b, -2)
-  emit_i64_and(b)
-  emit_i32_wrap_i64(b)
-  emit_local_get(b, 1)
-  emit_i32_ne(b)
-  emit_if_void(b)
-  emit_local_get(b, 6)
-  emit_call(b, self_idx)
-  emit_end(b)
-  emit_local_get(b, 4)
-  emit_i32_const(b, 1)
-  emit_i32_add(b)
-  emit_local_set(b, 4)
-  emit_br(b, 0)
-  emit_end(b)
-  emit_end(b)
-  emit_end(b)
+  // The ref-cell (class 8) and closure (class 7) arms are emitted only for
+  // a program with a lambda nested in an expression (`closure_arms`). A
+  // closure block is made only by compile_lambda for such a lambda with
+  // captures, and a ref cell only boxes a `let mut` one of them captures.
+  if closure_arms {
+    // #699 ref cell (class 8): a heap-boxed `let mut` holds a single value at
+    // vptr+0. Drop it recursively (scalar payloads are a no-op via the odd-check),
+    // then fall through to the common free.
+    emit_local_get(b, 2)
+    emit_i32_const(b, 8)
+    emit_i32_eq(b)
+    emit_if_void(b)
+    emit_local_get(b, 1)
+    emit_i64_load(b, 3, 0)
+    emit_local_set(b, 6)
+    emit_local_get(b, 6)
+    emit_call(b, self_idx)
+    emit_end(b)
+    // closure (class 7): the env at vptr+8 holds `count`(@vptr+4) captures.
+    // owned-captures ABI (ADR-0076 追記31 Vertical A): every capture is OWNED —
+    // compile_lambda dups plain heap captures at creation and #699 ref cells
+    // keep their odd-tagged unguarded inc — so drop each slot recursively,
+    // exactly like the class-1 field-vector loop (the recursive call's own
+    // entry checks skip scalars and string/bytes fat pointers, which received
+    // no dup; that includes the old #769 hazard, since the probe that trapped
+    // on odd-length captured strings is gone). The ONE exception is the
+    // let-rec SELF capture: the binder patches the closure into its own env
+    // without a dup (a dup would make the self-cycle unreclaimable), so skip
+    // any slot whose untagged pointer is this block's own vptr. Then fall
+    // through to the common free.
+    emit_local_get(b, 2)
+    emit_i32_const(b, 7)
+    emit_i32_eq(b)
+    emit_if_void(b)
+    emit_local_get(b, 1)
+    emit_i32_load(b, 2, 4)
+    emit_local_set(b, 3)
+    emit_i32_const(b, 0)
+    emit_local_set(b, 4)
+    emit_block_void(b)
+    emit_loop_void(b)
+    emit_local_get(b, 4)
+    emit_local_get(b, 3)
+    emit_i32_ge_u(b)
+    emit_br_if(b, 1)
+    emit_local_get(b, 1)
+    emit_local_get(b, 4)
+    emit_i32_const(b, 8)
+    emit_i32_mul(b)
+    emit_i32_add(b)
+    emit_i64_load(b, 3, 8)
+    emit_local_set(b, 6)
+    emit_local_get(b, 6)
+    emit_i64_const(b, -2)
+    emit_i64_and(b)
+    emit_i32_wrap_i64(b)
+    emit_local_get(b, 1)
+    emit_i32_ne(b)
+    emit_if_void(b)
+    emit_local_get(b, 6)
+    emit_call(b, self_idx)
+    emit_end(b)
+    emit_local_get(b, 4)
+    emit_i32_const(b, 1)
+    emit_i32_add(b)
+    emit_local_set(b, 4)
+    emit_br(b, 0)
+    emit_end(b)
+    emit_end(b)
+    emit_end(b)
+  } else {
+    ()
+  }
   // #715 / #1987: mark this block freed and stamp the freeing seq so a later
   // dup-of-freed or drop-of-freed can name both ends.
   if rc_shadow {

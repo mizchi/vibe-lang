@@ -98,14 +98,22 @@ test "print_i64_raw drops exactly the newline emission" {
 test "shadow UAF abort form is strictly larger than a bare unreachable" {
   // #1987: naming the freeing seq adds the abort call in place of `unreachable`.
   assert(Bytes::length(gen_rc_dup_body(true, 7, 4242)) > Bytes::length(gen_rc_dup_body(true, 0 - 1, 0)))
-  assert(Bytes::length(gen_rc_drop_body(3, true, 0, 7, 4242, true)) > Bytes::length(gen_rc_drop_body(3, true, 0, 0 - 1, 0, true)))
+  assert(Bytes::length(gen_rc_drop_body(3, true, 0, 7, 4242, true, true, true)) > Bytes::length(gen_rc_drop_body(3, true, 0, 0 - 1, 0, true, true, true)))
 }
 
-test "rc_drop without the map arms is smaller, on both lanes of the shadow switch" {
+test "each rc_drop arm a program cannot use makes the body smaller" {
   // A program that makes no map block gets rc_drop without its class-6 and
-  // class-9 arms; everything else in the body is shared.
-  assert(Bytes::length(gen_rc_drop_body(3, false, 0, 0 - 1, 0, false)) < Bytes::length(gen_rc_drop_body(3, false, 0, 0 - 1, 0, true)))
-  assert(Bytes::length(gen_rc_drop_body(3, true, 0, 7, 4242, false)) < Bytes::length(gen_rc_drop_body(3, true, 0, 7, 4242, true)))
+  // class-9 arms, one with no nested lambda without the class-7 / class-8
+  // arms, and one that makes no array without the class-5 arm; everything
+  // else in the body is shared. Checked on both sides of the shadow switch.
+  let full = Bytes::length(gen_rc_drop_body(3, false, 0, 0 - 1, 0, true, true, true))
+  assert(Bytes::length(gen_rc_drop_body(3, false, 0, 0 - 1, 0, false, true, true)) < full)
+  assert(Bytes::length(gen_rc_drop_body(3, false, 0, 0 - 1, 0, true, false, true)) < full)
+  assert(Bytes::length(gen_rc_drop_body(3, false, 0, 0 - 1, 0, true, true, false)) < full)
+  let shadow_full = Bytes::length(gen_rc_drop_body(3, true, 0, 7, 4242, true, true, true))
+  assert(Bytes::length(gen_rc_drop_body(3, true, 0, 7, 4242, false, true, true)) < shadow_full)
+  assert(Bytes::length(gen_rc_drop_body(3, true, 0, 7, 4242, true, false, true)) < shadow_full)
+  assert(Bytes::length(gen_rc_drop_body(3, true, 0, 7, 4242, true, true, false)) < shadow_full)
 }
 
 test "oob_abort body is nonempty and grows with larger fragment constants" {

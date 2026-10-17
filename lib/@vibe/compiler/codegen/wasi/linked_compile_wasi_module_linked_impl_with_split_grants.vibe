@@ -103,7 +103,7 @@ import ./linked_diagnostics.vibe {
 }
 
 import ./linked_helpers.vibe {
-  collect_used_builtin_names, program_makes_map_blocks
+  collect_used_builtin_names, program_has_array_literal, program_makes_closure_blocks, program_makes_map_blocks
 }
 
 import ./linked_compile_function_bodies.vibe {
@@ -1831,6 +1831,22 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   let blind_offsets = lc_fresh_int_array()
   let blind_kinds = lc_fresh_int_array()
   let blind_syms = lc_fresh_int_array()
+  // rc_drop's per-class arms, narrowed to the blocks this program can make
+  // (gen_rc_drop_body). A separately compiled module (library mode, a linked
+  // import) can hand this one a block it made, and the shadow lane is a
+  // debugging aid: those keep every arm.
+  let rc_keep_all_arms = library_mode || rc_shadow || Array::length(linked_imports) > 0
+  let rc_map_arms = rc_keep_all_arms || program_makes_map_blocks(stmts, used_builtin_names)
+  let rc_closure_arms = rc_keep_all_arms || program_makes_closure_blocks(stmts)
+  // The array arm needs the FINAL bodies (whether an array helper is
+  // reachable), so lc_emit_module_sections makes that call; it gets the
+  // array-less body to swap in, or nothing when the source alone already
+  // says arrays can exist.
+  let rc_drop_body_without_array_arm = if enable_rc && !rc_keep_all_arms && !program_has_array_literal(stmts) {
+    gen_rc_drop_body(rc_drop_idx, false, rc_bins_base, 0 - 1, 0, rc_map_arms, rc_closure_arms, false)
+  } else {
+    Bytes::new(0)
+  }
   let linked_function_bodies = lc_build_function_bodies(LinkedBodyInputs::{
     has_exceptions: stmts_contain_exceptions(stmts),
     all_fn_indices_list: all_fn_indices_list,
@@ -1939,10 +1955,8 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     prov: prov,
     rc_alloc_idx: rc_alloc_idx,
     rc_bins_base: rc_bins_base,
-    // A separately compiled module (library mode, a linked import) can hand
-    // this one a map it made, and the shadow lane is a debugging aid: both
-    // keep every arm.
-    rc_map_arms: library_mode || rc_shadow || Array::length(linked_imports) > 0 || program_makes_map_blocks(stmts, used_builtin_names),
+    rc_closure_arms: rc_closure_arms,
+    rc_map_arms: rc_map_arms,
     rc_drop_idx: rc_drop_idx,
     rc_dup_idx: rc_dup_idx,
     region_arr_new_idx: region_arr_new_idx,
@@ -2137,6 +2151,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     prov: prov,
     rc_alloc_idx: rc_alloc_idx,
     rc_bins_reserve: rc_bins_reserve,
+    rc_drop_body_without_array_arm: rc_drop_body_without_array_arm,
     rc_drop_idx: rc_drop_idx,
     rc_dup_idx: rc_dup_idx,
     region_reserve: region_reserve,

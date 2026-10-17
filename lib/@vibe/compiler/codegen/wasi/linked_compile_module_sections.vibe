@@ -274,6 +274,7 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
   let rc_alloc_idx = input.rc_alloc_idx
   let rc_bins_reserve = input.rc_bins_reserve
   let rc_drop_idx = input.rc_drop_idx
+  let rc_drop_body_without_array_arm = input.rc_drop_body_without_array_arm
   let rc_dup_idx = input.rc_dup_idx
   let region_reserve = input.region_reserve
   let resolve_path_import_idx = input.resolve_path_import_idx
@@ -1895,6 +1896,18 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
         }
         sb_p = sb_p + 1
       }
+    }
+    // rc_drop's array arm is dead when nothing reachable can make an array
+    // block: the source has no array literal (else this body is empty) and
+    // none of the three helpers that allocate one is called. The scan above
+    // can only over-report a helper, so a miss here keeps the arm.
+    let lc_helper_used = (idx: Int) -> Bool {
+      idx >= num_imported_funcs && idx < func_offset && Array::get(builtin_used, idx - num_imported_funcs)
+    }
+    if Bytes::length(rc_drop_body_without_array_arm) > 0 && lc_helper_used(rc_drop_idx) && !lc_helper_used(arr_new_idx) && !lc_helper_used(arr_slice_idx) && !lc_helper_used(array_capacity_idx) {
+      Array::set(bodies, rc_drop_idx - num_imported_funcs, rc_drop_body_without_array_arm)
+    } else {
+      ()
     }
     let mut sb_k = 0
     while sb_k < num_generated {
