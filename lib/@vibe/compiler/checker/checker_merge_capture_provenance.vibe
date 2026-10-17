@@ -28,7 +28,9 @@ import @vibe/compiler/core {
   env_lookup,
   env_name_index_at,
   env_name_index_length,
+  env_type_defs,
   exception_kind_resolutions_clear,
+  expr_children,
   find_typedef,
   instantiate,
   is_builtin_type_name,
@@ -43,7 +45,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  trait_ref_name
+  trait_ref_name, type_param_name
 }
 
 import @vibe/parser {
@@ -60,6 +62,10 @@ import @vibe/core {
 
 import @vibe/compiler/checker/patterns {
   check_pattern, match_nonexhaustive_witness
+}
+
+import ./checker_region_retention_arms.vibe {
+  retention_arms_bind, retention_assigned_values_into, retention_decl_value, retention_pat_names_into, retention_result_items
 }
 
 import ./checker_resolve.vibe {
@@ -777,16 +783,20 @@ fn push_unique_dependency_index(out: Array[Int], index: Int) -> Unit {
   }
 }
 
+/// Whether a call's result reaches an outer binding through an argument the
+/// callee returns (`#aliasparam[i]`) or keeps in the value it builds, as an
+/// enum constructor keeps its payload (`#fieldparam[i]`, #3488, Codex on
+/// #3492): `Held(c)` holds `c`.
 fn alias_result_reaches_outer_binding(ty: Type, args: Array[Expr], env: TypeEnv) -> Bool {
   match ty {
     CtForAll(_, _, body) => alias_result_reaches_outer_binding(body, args, env),
     CtFn(_, _, effect) => match effect {
-      Some(row) => if String::contains(row, "#aliasparam[") {
+      Some(row) => if String::contains(row, "#aliasparam[") || String::contains(row, "#fieldparam[") {
         let mut found = false
         for raw in String::split(row, ",") {
           if !found {
             let label = String::trim(raw)
-            if String::starts_with(label, "#aliasparam[") {
+            if String::starts_with(label, "#aliasparam[") || String::starts_with(label, "#fieldparam[") {
               let close = String::index_of(label, "]")
               let mut id = 0
               let mut p = 12
@@ -820,6 +830,18 @@ export fn decimal_index(text: String) -> Int {
   out
 }
 
+/// A constructor's last segment is capitalized (`Some`, `Maybe::Some`); a
+/// function's is not (`TaskHandle::join`, `MutList::empty`).
+export fn callee_is_ctor_name(name: String) -> Bool {
+  let cut = String::last_index_of(name, "::")
+  let last = if cut >= 0 {
+    String::substring(name, cut + 2, String::length(name))
+  } else {
+    name
+  }
+  String::length(last) > 0 && String::byte_at(last, 0) >= 65 && String::byte_at(last, 0) <= 90
+}
+
 export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
   match expr {
     EIdent(name, _) => binding_predates_active_region(name, env) || match env_lookup(env, String::concat("__region_outer_alias__", name)) {
@@ -841,28 +863,305 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
         if !found && alias_result_reaches_outer_binding(callee_ty, args, env) {
           found = true
         }
+        // A result built over a parameter (`Wrap::{ cell: c }`) holds it too
+        // (Codex on #3492). Read from the declaration only here, where a
+        // region is active: every function's eager summary reading it cost
+        // ~27 MB of the self-compile.
+        if !found {
+          match retention_decl_value(callee) {
+            Some(EFn(_, _, params, _, _, body)) => {
+              for index in held_result_param_indices(body, params) {
+                if !found && index >= 0 && index < Array::length(args) && expression_aliases_outer_binding(Array::get(args, index), env) {
+                  found = true
+                }
+              }
+              ()
+            },
+            _ => ()
+          }
+        }
         found
       },
-      None => false
+      // #3488: a constructor (`Some(c)`) has no binding, and its value holds
+      // its arguments (Codex on #3492). #3495: so may an unbound builtin's
+      // result -- `Map::get(m, k)` (which `m[k]` lowers to) hands back a value
+      // `m` holds -- unless its signature returns a scalar. A region token
+      // (`MutList::empty(r)`) is not a location.
+      None => if callee_is_ctor_name(callee) || !builtin_result_is_scalar(callee) {
+        let mut found = false
+        for a in args {
+          found = found || (!literal_item_is_inert(a, env) && !arg_is_region_token(a, env) && expression_aliases_outer_binding(a, env))
+        }
+        found
+      } else {
+        false
+      }
     },
+    // An immediately invoked closure is read deep, as a named callee is
+    // (Codex on #3492: `((c: Cell) -> Wrap { Wrap::{ cell: c } })(outer)`).
     ECall(EFn(_, _, params, _, _, body), args, _, _) => {
       let mut found = false
-      for index in direct_result_param_indices(body, params) {
+      for index in held_result_param_indices(body, params) {
         if index >= 0 && index < Array::length(args) && expression_aliases_outer_binding(Array::get(args, index), env) {
           found = true
         }
       }
       found
     },
+    // Any other callee (`(if flag { wrap1 } else { wrap2 })(outer)`) is not
+    // read: its result aliases what its arguments do (Codex on #3492).
+    ECall(_, args, _, _) => {
+      let mut found = false
+      for a in args {
+        found = found || (!literal_item_is_inert(a, env) && !arg_is_region_token(a, env) && expression_aliases_outer_binding(a, env))
+      }
+      found
+    },
+    // #3488: a literal built over an outer location reaches it through its
+    // field or element (`Wrap::{ cell: c }`, then `w.cell.v = x`).
+    ERecord(_, fields, _) => {
+      let mut found = false
+      for f in fields {
+        let (_, fv) = f
+        found = found || (!literal_item_is_scalar(fv, env) && expression_aliases_outer_binding(fv, env))
+      }
+      found
+    },
+    ETuple(items) => {
+      let mut found = false
+      for item in items {
+        found = found || (!literal_item_is_scalar(item, env) && expression_aliases_outer_binding(item, env))
+      }
+      found
+    },
+    EArray(items) => {
+      let mut found = false
+      for item in items {
+        found = found || (!literal_item_is_scalar(item, env) && expression_aliases_outer_binding(item, env))
+      }
+      found
+    },
+    // A conditional aliases what any of its branches does (Codex on #3492).
+    EIf(_, a, b) => expression_aliases_outer_binding(a, env) || expression_aliases_outer_binding(b, env),
+    // A block is its tail; a `let` may hand its value on (Codex on #3492).
+    ESeq(_, b) => expression_aliases_outer_binding(b, env),
+    ESpread(inner) => expression_aliases_outer_binding(inner, env),
+    ELet(_, v, b, _) => expression_aliases_outer_binding(v, env) || expression_aliases_outer_binding(b, env),
+    ELetMut(_, v, b, _) => expression_aliases_outer_binding(v, env) || expression_aliases_outer_binding(b, env),
+    // An arm that binds names may hand back the scrutinee (Codex on #3492).
+    EMatch(scrut, arms) => {
+      let mut found = retention_arms_bind(arms) && expression_aliases_outer_binding(scrut, env)
+      for arm in arms {
+        found = found || expression_aliases_outer_binding(arm.1, env)
+      }
+      found
+    },
+    // Any other form aliases what its value can come from (Codex on #3492);
+    // `retention_result_items` lists those parts and fails closed.
+    _ => {
+      let mut found = false
+      for part in retention_result_items(expr) {
+        found = found || (!literal_item_is_inert(part, env) && expression_aliases_outer_binding(part, env))
+      }
+      found
+    }
+  }
+}
+
+/// #3488 (Codex on #3492): whether a literal's field or element is a scalar
+/// read from a binding: the binding itself (`tag: outer_int`) or a field of
+/// one (`tag: holder.tag`), typed by the struct's declaration. A scalar is
+/// copied into the literal, so an outer one does not make the literal an
+/// outer location: `Wrap::{ cell: fresh, tag: outer_int }` is as fresh as its
+/// cell. Anything whose type is not known here still counts.
+export fn literal_item_is_scalar(item: Expr, env: TypeEnv) -> Bool {
+  match literal_item_type(item, env) {
+    Some(t) => literal_type_is_scalar(t),
+    None => false
+  }
+}
+
+/// #3488: whether a literal's item carries no location of its own: a scalar
+/// (above), or a name with no binding, such as a constructor (`None`) or a
+/// top-level function. A record literal `Cell::{ v: None }` is fresh.
+export fn literal_item_is_inert(item: Expr, env: TypeEnv) -> Bool {
+  literal_item_is_scalar(item, env) || match item {
+    EIdent(name, _) => match env_lookup(env, name) {
+      Some(_) => false,
+      None => true
+    },
     _ => false
   }
 }
 
+/// #3495: whether a builtin's declared result is a scalar, so its value
+/// cannot be a location any argument holds.
+fn builtin_result_is_scalar(name: String) -> Bool {
+  match lookup_builtin(name) {
+    Some(CtFn(_, ret, _)) => literal_type_is_scalar(ret),
+    _ => false
+  }
+}
+
+/// A region's token (`r` of `region r { .. }`) names the region, not a
+/// location in it.
+fn arg_is_region_token(arg: Expr, env: TypeEnv) -> Bool {
+  match arg {
+    EIdent(name, _) => match env_lookup(env, name) {
+      Some(CtNamed(tname, targs)) => Array::length(targs) == 0 && String::starts_with(tname, "#region_"),
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn literal_type_is_scalar(t: Type) -> Bool {
+  match t {
+    CtInt => true,
+    CtDouble => true,
+    CtBool => true,
+    CtString => true,
+    CtChar => true,
+    CtUnit => true,
+    CtBytes => true,
+    _ => false
+  }
+}
+
+fn struct_field_type(env: TypeEnv, sname: String, args: Array[Type], field: String) -> Option[Type] {
+  match find_typedef(env_type_defs(env), sname) {
+    Some(TDStruct(_, fields, _, params)) => {
+      let mut out: Option[Type] = None
+      for f in fields {
+        let (fname, fty) = f
+        if fname == field {
+          out = Some(fty)
+        }
+      }
+      // The struct's parameters read as its arguments, through the whole
+      // field type (Codex on #3492): `Holder[Int]`'s `inner: Inner[T]` is an
+      // `Inner[Int]`. A parameter with no argument stays a name, which no
+      // scalar test accepts.
+      match out {
+        Some(t) => Some(subst_struct_params(t, params, args)),
+        None => None
+      }
+    },
+    _ => None
+  }
+}
+
+fn subst_struct_params(t: Type, params: Array[String], args: Array[Type]) -> Type {
+  match t {
+    CtNamed(n, xs) => if Array::length(xs) == 0 {
+      let mut out = t
+      let mut i = 0
+      while i < Array::length(params) && i < Array::length(args) {
+        if type_param_name(Array::get(params, i)) == n {
+          out = Array::get(args, i)
+        }
+        i = i + 1
+      }
+      out
+    } else {
+      CtNamed(n, for x in xs {
+        subst_struct_params(x, params, args)
+      })
+    },
+    CtArray(e) => CtArray(subst_struct_params(e, params, args)),
+    CtOption(e) => CtOption(subst_struct_params(e, params, args)),
+    CtTuple(items) => CtTuple(for x in items {
+      subst_struct_params(x, params, args)
+    }),
+    _ => t
+  }
+}
+
+fn literal_item_type(item: Expr, env: TypeEnv) -> Option[Type] {
+  match item {
+    EIdent(name, _) => env_lookup(env, name),
+    EInt(_) => Some(CtInt),
+    EFloat(_) => Some(CtDouble),
+    EBool(_) => Some(CtBool),
+    EString(_, _) => Some(CtString),
+    EStringInterp(_) => Some(CtString),
+    EUnit => Some(CtUnit),
+    // So is a `match` whose arms all are (Codex on #3492).
+    EMatch(_, arms) => {
+      let mut out: Option[Type] = None
+      let mut all = Array::length(arms) > 0
+      for arm in arms {
+        match literal_item_type(arm.1, env) {
+          Some(t) => if literal_type_is_scalar(t) {
+            out = Some(t)
+          } else {
+            all = false
+          },
+          None => all = false
+        }
+      }
+      if all {
+        out
+      } else {
+        None
+      }
+    },
+    // A conditional is a scalar when every branch is one (Codex on #3492):
+    // `tag: if flag { outer_int } else { 0 }` copies an `Int`.
+    EIf(_, a, b) => match (literal_item_type(a, env), literal_item_type(b, env)) {
+      (Some(ta), Some(tb)) => if literal_type_is_scalar(ta) && literal_type_is_scalar(tb) {
+        Some(ta)
+      } else {
+        None
+      },
+      _ => None
+    },
+    // A call to a named function is its declared result (Codex on #3492):
+    // `tag: count(outer)` with `fn count(..) -> Int` copies an `Int`.
+    ECall(EIdent(fname, _), _, _, _) => match env_lookup(env, fname) {
+      Some(CtFn(_, ret, _)) => Some(ret),
+      _ => None
+    },
+    EDot(obj, field, _, _) => match literal_item_type(obj, env) {
+      Some(CtStruct(sname)) => struct_field_type(env, sname, [], field),
+      // A generic struct's field reads at the instantiation's arguments
+      // (Codex on #3492): `Holder[Int]`'s `tag: T` is an `Int`.
+      Some(CtNamed(sname, args)) => struct_field_type(env, sname, args, field),
+      _ => None
+    },
+    _ => None
+  }
+}
+
 export fn collect_result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
+  collect_result_params(body, params, alias_names, alias_indices, found, false)
+}
+
+/// `deep` also reads a constructor's arguments and the parts of any other
+/// form (`retention_result_items`), so a helper returning `Wrap::{ cell: c
+/// }` hands `c` back (Codex on #3492). Only the per-function alias contract
+/// asks for that: every lambda's provenance row reading it too cost ~27 MB
+/// of the self-compile, over the heap gate.
+fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int], deep: Bool) -> Unit {
   match body {
     EIdent(name, _) => {
+      let mut known = false
+      let mut alias_i = 0
+      while alias_i < Array::length(alias_names) {
+        if name == Array::get(alias_names, alias_i) {
+          known = true
+          // -1 marks a binder known to hold no parameter.
+          if Array::get(alias_indices, alias_i) >= 0 {
+            push_unique_dependency_index(found, Array::get(alias_indices, alias_i))
+          }
+        }
+        alias_i = alias_i + 1
+      }
+      // A local of the name shadows the parameter (Codex on #3492: `let c =
+      // fresh; Wrap::{ cell: c }`).
+      let shadowed = known
       let mut i = 0
-      while i < Array::length(params) {
+      while !shadowed && i < Array::length(params) {
         let (raw_name, _) = Array::get(params, i)
         let nlen = String::length(raw_name)
         let param_name = if nlen > 0 {
@@ -872,39 +1171,390 @@ export fn collect_result_param_indices(body: Expr, params: Array[(String, Option
           } else raw_name
         } else raw_name
         if name == param_name {
+          known = true
           push_unique_dependency_index(found, i)
         }
         i = i + 1
       }
-      let mut alias_i = 0
-      while alias_i < Array::length(alias_names) {
-        if name == Array::get(alias_names, alias_i) {
-          push_unique_dependency_index(found, Array::get(alias_indices, alias_i))
+      // `deep`: a name this reading cannot account for -- a binder of a
+      // form it does not track (a `for` element, a handler arm's payload, a
+      // lambda's parameter) -- may hold any parameter (Codex on #3492). A
+      // constructor or a declaration of the module is not one, unless a
+      // binder of the body shadows it.
+      if deep && !known && !callee_is_ctor_name(name) {
+        let declared = match retention_decl_value(name) {
+          Some(_) => !checker_string_array_has(held_result_binders, name),
+          None => false
         }
-        alias_i = alias_i + 1
+        if !declared {
+          let mut p = 0
+          while p < Array::length(params) {
+            push_unique_dependency_index(found, p)
+            p = p + 1
+          }
+        }
       }
     },
     ELet(name, value, rest, _) => {
       let found_mark = Array::length(found)
       let alias_mark = Array::length(alias_names)
-      collect_result_param_indices(value, params, alias_names, alias_indices, found)
+      collect_result_params(value, params, alias_names, alias_indices, found, deep)
       let mut i = found_mark
       while i < Array::length(found) {
         Array::push(alias_names, name)
         Array::push(alias_indices, Array::get(found, i))
         i = i + 1
       }
+      if deep && Array::length(found) == found_mark {
+        Array::push(alias_names, name)
+        Array::push(alias_indices, -1)
+      }
       Array::truncate(found, found_mark)
-      collect_result_param_indices(rest, params, alias_names, alias_indices, found)
+      collect_return_param_indices(value, params, alias_names, alias_indices, found, deep)
+      collect_result_params(rest, params, alias_names, alias_indices, found, deep)
       Array::truncate(alias_names, alias_mark)
       Array::truncate(alias_indices, alias_mark)
     },
-    ESeq(_, right) => collect_result_param_indices(right, params, alias_names, alias_indices, found),
-    EIf(_, then_expr, else_expr) => {
-      collect_result_param_indices(then_expr, params, alias_names, alias_indices, found)
-      collect_result_param_indices(else_expr, params, alias_names, alias_indices, found)
+    ESeq(left, right) => {
+      collect_return_param_indices(left, params, alias_names, alias_indices, found, deep)
+      collect_result_params(right, params, alias_names, alias_indices, found, deep)
     },
+    // `deep`: a `let mut` holds its value and every value assigned to it.
+    ELetMut(name, value, rest, _) => if deep {
+      let alias_mark = Array::length(alias_names)
+      let held = array_empty()
+      collect_result_params(value, params, alias_names, alias_indices, held, deep)
+      let assigned = array_empty()
+      retention_assigned_values_into(rest, name, assigned)
+      for v in assigned {
+        collect_result_params(v, params, alias_names, alias_indices, held, deep)
+      }
+      if Array::length(held) == 0 {
+        Array::push(alias_names, name)
+        Array::push(alias_indices, -1)
+      }
+      for index in held {
+        Array::push(alias_names, name)
+        Array::push(alias_indices, index)
+      }
+      collect_return_param_indices(value, params, alias_names, alias_indices, found, deep)
+      collect_result_params(rest, params, alias_names, alias_indices, found, deep)
+      Array::truncate(alias_names, alias_mark)
+      Array::truncate(alias_indices, alias_mark)
+    } else {
+      // The eager summaries read only returns here, as the default arm does.
+      collect_return_param_indices(body, params, alias_names, alias_indices, found, deep)
+    },
+    EIf(cond, then_expr, else_expr) => {
+      collect_return_param_indices(cond, params, alias_names, alias_indices, found, deep)
+      collect_result_params(then_expr, params, alias_names, alias_indices, found, deep)
+      collect_result_params(else_expr, params, alias_names, alias_indices, found, deep)
+    },
+    // A `return` hands its value out as the tail does, and so does every
+    // `match` arm (Codex on #3492: `fn same(c: Cell) -> Cell { return c }`).
+    EReturn(value) => collect_result_params(value, params, alias_names, alias_indices, found, deep),
+    EMatch(scrut, arms) => {
+      collect_return_param_indices(scrut, params, alias_names, alias_indices, found, deep)
+      // `deep`: an arm's binders hold what the scrutinee holds (Codex on
+      // #3492: `match Some(c) { Some(x) => Wrap::{ cell: x }, .. }`).
+      let held = array_empty()
+      if deep {
+        collect_result_params(scrut, params, alias_names, alias_indices, held, deep)
+      } else {
+        ()
+      }
+      for arm in arms {
+        let alias_mark = Array::length(alias_names)
+        if deep {
+          let bound: Array[String] = []
+          retention_pat_names_into(arm.0, bound)
+          for name in bound {
+            if Array::length(held) == 0 {
+              Array::push(alias_names, name)
+              Array::push(alias_indices, -1)
+            }
+            for index in held {
+              Array::push(alias_names, name)
+              Array::push(alias_indices, index)
+            }
+          }
+          ()
+        } else {
+          ()
+        }
+        collect_result_params(arm.1, params, alias_names, alias_indices, found, deep)
+        Array::truncate(alias_names, alias_mark)
+        Array::truncate(alias_indices, alias_mark)
+      }
+      ()
+    },
+    // A constructor's or literal's value holds its parts (Codex on #3492:
+    // `fn wrap(c: Cell) -> Wrap { Wrap::{ cell: c } }`), as the other
+    // provenance walks read them (`retention_result_items`).
+    ECall(EIdent(callee, _), args, _, _) => if deep && callee_is_ctor_name(callee) {
+      for arg in args {
+        collect_result_params(arg, params, alias_names, alias_indices, found, deep)
+      }
+      ()
+    } else if deep {
+      // Another helper hands back the arguments its own result holds
+      // (Codex on #3492: `Wrap::{ cell: same(c) }`).
+      collect_return_param_indices(body, params, alias_names, alias_indices, found, deep)
+      collect_held_call_args(callee, args, params, alias_names, alias_indices, found)
+    } else {
+      collect_return_param_indices(body, params, alias_names, alias_indices, found, deep)
+    },
+    // `deep`: a call through a lambda hands back what its body holds; one
+    // through any other callee (`(if f { same1 } else { same2 })(c)`) is not
+    // read, so all its arguments count as held (Codex on #3492).
+    ECall(callee, args, _, _) => {
+      collect_return_param_indices(body, params, alias_names, alias_indices, found, deep)
+      if deep {
+        match callee {
+          EFn(_, _, lambda_params, _, _, lambda_body) => for index in held_result_param_indices(lambda_body, lambda_params) {
+            if index >= 0 && index < Array::length(args) {
+              collect_result_params(Array::get(args, index), params, alias_names, alias_indices, found, deep)
+            }
+          },
+          _ => for arg in args {
+            collect_result_params(arg, params, alias_names, alias_indices, found, deep)
+          }
+        }
+        ()
+      } else {
+        ()
+      }
+    },
+    _ => {
+      collect_return_param_indices(body, params, alias_names, alias_indices, found, deep)
+      let parts = if deep {
+        retention_result_items(body)
+      } else {
+        []
+      }
+      for part in parts {
+        collect_result_params(part, params, alias_names, alias_indices, found, deep)
+      }
+      ()
+    }
+  }
+}
+
+/// The values `e` hands out through `return` from a position that is not
+/// the function's tail (`if c { return p }`, a loop body), read through the
+/// `let` aliases in scope. A nested closure's `return` is its own.
+///
+/// `deep` (a call inside a region, read once) follows every subexpression,
+/// so no form can hide a `return` from it (Codex on #3492: `sink({ return c
+/// })`, a `for` iterator). The eager summaries, which read every function,
+/// follow only the statement skeleton (`collect_skeleton_returns`): a
+/// whole-tree walk there cost ~14 MB of the self-compile.
+fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int], deep: Bool) -> Unit {
+  match e {
+    EReturn(value) => collect_result_params(value, params, alias_names, alias_indices, found, deep),
+    EFn(_, _, _, _, _, _) => (),
+    ELet(name, value, rest, _) => {
+      collect_return_param_indices(value, params, alias_names, alias_indices, found, deep)
+      let alias_mark = Array::length(alias_names)
+      let held = array_empty()
+      collect_result_params(value, params, alias_names, alias_indices, held, deep)
+      if deep && Array::length(held) == 0 {
+        Array::push(alias_names, name)
+        Array::push(alias_indices, -1)
+      }
+      for index in held {
+        Array::push(alias_names, name)
+        Array::push(alias_indices, index)
+      }
+      collect_return_param_indices(rest, params, alias_names, alias_indices, found, deep)
+      Array::truncate(alias_names, alias_mark)
+      Array::truncate(alias_indices, alias_mark)
+    },
+    _ => if deep {
+      for child in expr_children(e) {
+        collect_return_param_indices(child, params, alias_names, alias_indices, found, deep)
+      }
+      ()
+    } else {
+      collect_skeleton_returns(e, params, alias_names, alias_indices, found)
+    }
+  }
+}
+
+/// `collect_return_param_indices` for the eager summaries: blocks, branches,
+/// arms, loop and handler bodies, assignment continuations, and the
+/// conditions, scrutinees and iterators evaluated on the way, but not other
+/// operands or call arguments.
+fn collect_skeleton_returns(e: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
+  match e {
+    ELetMut(_, value, rest, _) => {
+      collect_return_param_indices(value, params, alias_names, alias_indices, found, false)
+      collect_return_param_indices(rest, params, alias_names, alias_indices, found, false)
+    },
+    ELetRec(_, _, rest) => collect_return_param_indices(rest, params, alias_names, alias_indices, found, false),
+    ESeq(left, right) => {
+      collect_return_param_indices(left, params, alias_names, alias_indices, found, false)
+      collect_return_param_indices(right, params, alias_names, alias_indices, found, false)
+    },
+    // A condition or scrutinee is evaluated too (Codex on #3492:
+    // `if { return c; true } { .. }`).
+    EIf(cond, then_expr, else_expr) => {
+      collect_return_param_indices(cond, params, alias_names, alias_indices, found, false)
+      collect_return_param_indices(then_expr, params, alias_names, alias_indices, found, false)
+      collect_return_param_indices(else_expr, params, alias_names, alias_indices, found, false)
+    },
+    EMatch(scrut, arms) => {
+      collect_return_param_indices(scrut, params, alias_names, alias_indices, found, false)
+      for arm in arms {
+        collect_return_param_indices(arm.1, params, alias_names, alias_indices, found, false)
+      }
+      ()
+    },
+    EHandle(handled, arms) => {
+      collect_return_param_indices(handled, params, alias_names, alias_indices, found, false)
+      for arm in arms {
+        collect_return_param_indices(arm.1, params, alias_names, alias_indices, found, false)
+      }
+      ()
+    },
+    EWhile(cond, loop_body) => {
+      collect_return_param_indices(cond, params, alias_names, alias_indices, found, false)
+      collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, false)
+    },
+    EForIn(_, _, iter, loop_body) => {
+      collect_return_param_indices(iter, params, alias_names, alias_indices, found, false)
+      collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, false)
+    },
+    ELoop(_, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, false),
+    EAssign(_, value, rest, _) => {
+      collect_return_param_indices(value, params, alias_names, alias_indices, found, false)
+      collect_return_param_indices(rest, params, alias_names, alias_indices, found, false)
+    },
+    EAssignOp(_, _, _, rest, _) => collect_return_param_indices(rest, params, alias_names, alias_indices, found, false),
     _ => ()
+  }
+}
+
+/// The helpers `collect_held_call_args` is reading, so a recursive helper
+/// does not loop.
+let held_result_stack: Array[String] = []
+
+fn collect_held_call_args(callee: String, args: Array[Expr], params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
+  if Array::length(held_result_stack) >= 64 {
+    // A chain this long is not read to its end: its arguments count as held
+    // rather than as fresh (Codex on #3492).
+    for arg in args {
+      collect_result_params(arg, params, alias_names, alias_indices, found, true)
+    }
+    ()
+  } else if !checker_string_array_has(held_result_stack, callee) {
+    // A local binder spelled like a declaration is not that declaration.
+    let decl = if checker_string_array_has(held_result_binders, callee) {
+      None
+    } else {
+      retention_decl_value(callee)
+    }
+    match decl {
+      Some(EFn(_, _, callee_params, _, _, callee_body)) => {
+        Array::push(held_result_stack, callee)
+        let held = held_result_param_indices(callee_body, callee_params)
+        Array::truncate(held_result_stack, Array::length(held_result_stack) - 1)
+        for index in held {
+          if index >= 0 && index < Array::length(args) {
+            collect_result_params(Array::get(args, index), params, alias_names, alias_indices, found, true)
+          }
+        }
+        ()
+      },
+      // A callee this reading cannot open -- a local closure, a value that is
+      // not a lambda, a builtin -- hands back what its arguments hold, as the
+      // call-site rule reads an unbound callee, unless it returns a scalar
+      // (Codex on #3492).
+      _ => if !builtin_result_is_scalar(callee) {
+        for arg in args {
+          collect_result_params(arg, params, alias_names, alias_indices, found, true)
+        }
+        ()
+      } else {
+        ()
+      }
+    }
+  } else {
+    // A cycle is not unfolded again: its arguments count as held, as a
+    // chain past the depth cap's do (Codex on #3492: a helper that permutes
+    // its parameters on each recursive call).
+    for arg in args {
+      collect_result_params(arg, params, alias_names, alias_indices, found, true)
+    }
+    ()
+  }
+}
+
+/// The parameters a function's result may hold, reading constructor
+/// arguments and literal parts too (`deep`). Asked lazily, by a call inside
+/// a region, of the callee's declaration.
+fn held_result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Array[Int] {
+  let found = array_empty()
+  let mark = Array::length(held_result_binders)
+  push_body_binders(body)
+  collect_result_params(body, params, array_empty(), array_empty(), found, true)
+  Array::truncate(held_result_binders, mark)
+  found
+}
+
+/// Every name a binder inside the bodies being read deeply introduces, so a
+/// local spelled like a module declaration is not taken for it (Codex on
+/// #3492). A name bound anywhere in the body counts, whatever its scope:
+/// that can only make the reading hold more.
+let held_result_binders: Array[String] = []
+
+fn push_body_binders(e: Expr) -> Unit {
+  let stack: Array[Expr] = [e]
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      ELet(x, _, _, _) => Array::push(held_result_binders, x),
+      ELetRec(x, _, _) => Array::push(held_result_binders, x),
+      ELetMut(x, _, _, _) => Array::push(held_result_binders, x),
+      EMatch(_, arms) => {
+        for arm in arms {
+          retention_pat_names_into(arm.0, held_result_binders)
+        }
+        ()
+      },
+      EHandle(_, arms) => {
+        for arm in arms {
+          retention_pat_names_into(arm.0, held_result_binders)
+        }
+        ()
+      },
+      ELoop(vars, _) => {
+        for v in vars {
+          Array::push(held_result_binders, v.0)
+        }
+        ()
+      },
+      EForIn(x, index, _, _) => {
+        Array::push(held_result_binders, x)
+        match index {
+          Some(i) => Array::push(held_result_binders, i),
+          None => ()
+        }
+      },
+      EFn(_, _, ps, _, _, _) => {
+        for p in ps {
+          Array::push(held_result_binders, p.0)
+        }
+        ()
+      },
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+    ()
   }
 }
 
@@ -1154,6 +1804,28 @@ export let deferred_field_reads: Array[(Int, String, Int, Int, String, Int)] = [
 /// each generalization; a row whose type has resolved is dropped there. Reset
 /// with the other per-run tables.
 export let deferred_eq_sites: Array[(Int, Type, String)] = []
+
+/// Provisional value inference returns type constraints, not discharged
+/// diagnostics or hover observations. An earlier statement's deferred checks
+/// must survive a scratch diagnostic lane; the real component check records
+/// its own sites again. Other per-run type facts remain valid for the result.
+export fn with_provisional_value_inference[T](probe: () -> T) -> T {
+  let saved_fields = Array::slice(deferred_field_reads, 0, Array::length(deferred_field_reads))
+  let saved_eq = Array::slice(deferred_eq_sites, 0, Array::length(deferred_eq_sites))
+  let was_recording = Array::get(local_let_type_recording, 0)
+  Array::set(local_let_type_recording, 0, false)
+  let result = probe()
+  Array::truncate(deferred_field_reads, 0)
+  for row in saved_fields {
+    Array::push(deferred_field_reads, row)
+  }
+  Array::truncate(deferred_eq_sites, 0)
+  for row in saved_eq {
+    Array::push(deferred_eq_sites, row)
+  }
+  Array::set(local_let_type_recording, 0, was_recording)
+  result
+}
 
 /// #3297 (Codex P2 on #3324): the declared types whose `::equals` the
 /// program writes itself, filled by `note_source_comparator_heads` from each

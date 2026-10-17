@@ -106,11 +106,16 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   callee_inst_types_cell, env_has_active_region
 }
 
+import ./checker_region_retention_arms.vibe {
+  retention_decls, retention_result_items
+}
+
 import ./checker_merge_capture_provenance.vibe {
   deferred_eq_sites,
   deferred_field_reads,
   efn_substituted_formals,
   expression_aliases_outer_binding,
+  literal_item_is_inert,
   throw_payload_sites,
   type_mentions_named
 }
@@ -142,11 +147,6 @@ import ./checker_region_retention_types.vibe {
 }
 
 //# Per-module tables
-
-/// The value of every top-level `let` / `fn` of the module being checked, by
-/// name, so a call can find the body of a function it names wherever the
-/// declaration sits in the file.
-let retention_decls: Array[(String, Expr)] = []
 
 /// Every `let`-bound closure literal of the module being checked, as
 /// `(literal, name, bound by let rec)`. A binding's marker holds its index.
@@ -2386,8 +2386,23 @@ fn retention_arg_predates(arg: Expr, env: TypeEnv) -> Array[String] {
     } else {
       array_empty()
     },
-    _ => array_empty()
+    // #3488: a literal, conditional or block names what its parts do.
+    _ => retention_args_predate(retention_result_items(arg), env)
   }
+}
+
+fn retention_args_predate(items: Array[Expr], env: TypeEnv) -> Array[String] {
+  let out: Array[String] = []
+  for item in items {
+    if !literal_item_is_inert(item, env) {
+      for r in retention_arg_predates(item, env) {
+        if !retention_string_has(out, r) {
+          Array::push(out, r)
+        }
+      }
+    }
+  }
+  out
 }
 
 //# The re-check

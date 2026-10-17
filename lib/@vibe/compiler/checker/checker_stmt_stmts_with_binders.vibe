@@ -40,6 +40,7 @@ import @vibe/compiler/core {
   env_lookup,
   env_with_reexport_surface_blockers,
   find_typedef,
+  generalize_except,
   instantiate,
   overlapping_impl_target_for,
   prelude_ordering_stmt,
@@ -111,6 +112,14 @@ import @vibe/ast {
 
 import ./checked_expression_structure_core.vibe {
   checked_expression_structure_rows
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  escape_tvars_into, with_provisional_value_inference
+}
+
+import ./checker_lambda_expr.vibe {
+  resolve_deferred_field_reads
 }
 
 import ./checker_resolve.vibe {
@@ -804,8 +813,413 @@ fn next_type_def_binder_id(type_def_binders: Array[Array[Int]], floor: Int) -> I
   next
 }
 
+// #3493: declaration checking may precede runtime initialization, but a use
+// must never be checked against a wildcard that a later binding merely shadows.
+// Schedule value inference by lexical dependencies, retaining source coordinates
+// separately. This changes neither the retained AST nor evaluation order.
+fn forward_type_needs_inference(ty: Type) -> Bool {
+  match ty {
+    CtUnknown => true,
+    CtTuple(items) => {
+      let mut unknown = false
+      for item in items {
+        unknown = unknown || forward_type_needs_inference(item)
+      }
+      unknown
+    },
+    CtArray(item) => forward_type_needs_inference(item),
+    CtOption(item) => forward_type_needs_inference(item),
+    CtFn(params, ret, _) => {
+      let mut unknown = forward_type_needs_inference(ret)
+      for param in params {
+        unknown = unknown || forward_type_needs_inference(param)
+      }
+      unknown
+    },
+    CtNamed(_, args) => {
+      let mut unknown = false
+      for arg in args {
+        unknown = unknown || forward_type_needs_inference(arg)
+      }
+      unknown
+    },
+    CtForAll(_, _, body) => forward_type_needs_inference(body),
+    CtApplied(head, args) => {
+      let mut unknown = forward_type_needs_inference(head)
+      for arg in args {
+        unknown = unknown || forward_type_needs_inference(arg)
+      }
+      unknown
+    },
+    CtRecord(fields) => {
+      let mut unknown = false
+      for field in fields {
+        let (_, ty) = field
+        unknown = unknown || forward_type_needs_inference(ty)
+      }
+      unknown
+    },
+    _ => false
+  }
+}
+
+// Value publication refines a bare generic annotation from its initializer.
+// A function's declared parameter/return slots keep their declared abstraction;
+// they are not value initializers and must not introduce spurious recursion.
+fn forward_header_needs_inference(ty: Type, defs: Array[TypeDef]) -> Bool {
+  if forward_type_needs_inference(ty) {
+    true
+  } else {
+    match ty {
+      CtStruct(name) => match find_typedef(defs, name) {
+        Some(TDStruct(_, _, _, params)) => Array::length(params) > 0,
+        _ => false
+      },
+      CtEnum(name) => match find_typedef(defs, name) {
+        Some(TDEnum(_, params, _)) => Array::length(params) > 0,
+        _ => false
+      },
+      CtNamed(name, args) => if Array::length(args) == 0 {
+        match find_typedef(defs, name) {
+          Some(TDStruct(_, _, _, params)) => Array::length(params) > 0,
+          Some(TDEnum(_, params, _)) => Array::length(params) > 0,
+          Some(TDAlias(_, params, _)) => Array::length(params) > 0,
+          _ => false
+        }
+      } else {
+        false
+      },
+      _ => false
+    }
+  }
+}
+
+fn forward_pattern_names(pat: Pat, names: Array[String]) -> Unit {
+  match pat {
+    PBind(name) => Array::push(names, name),
+    PTuple(items) => for item in items {
+      forward_pattern_names(item, names)
+    },
+    PCtor(_, items) => for item in items {
+      forward_pattern_names(item, names)
+    },
+    PStruct(_, fields) => for field in fields {
+      let (_, item) = field
+      forward_pattern_names(item, names)
+    },
+    POr(a, b) => {
+      forward_pattern_names(a, names)
+      forward_pattern_names(b, names)
+    },
+    _ => ()
+  }
+}
+
+fn forward_statement_body(stmt: Stmt) -> Option[Expr] {
+  match stmt {
+    SLet(_, _, _, _, body) => Some(body),
+    SLetPat(_, body) => Some(body),
+    STest(_, body) => Some(body),
+    SBench(_, body) => Some(body),
+    SExpr(body) => Some(body),
+    _ => None
+  }
+}
+
+// Tarjan components: infer mutually dependent values together, before any
+// member is generalized. Distinct components retain ordinary let polymorphism.
+fn schedule_forward_component(stmts: Array[Stmt], at: Int, pending: MutMap[String, Int], limit: Int, errors: Array[String], discovery: Array[Int], low: Array[Int], active: Array[Bool], stack: Array[Int], clock: Array[Int], groups: Array[Array[Int]], recursive: Array[Bool]) -> Unit {
+  if Array::get(discovery, at) < 0 {
+    let stamp = Array::get(clock, 0)
+    Array::set(clock, 0, stamp + 1)
+    Array::set(discovery, at, stamp)
+    Array::set(low, at, stamp)
+    Array::set(active, at, true)
+    Array::push(stack, at)
+    let mut self_used = false
+    match forward_statement_body(Array::get(stmts, at)) {
+      Some(body) => {
+        let names = closure_free_names(body, array_empty())
+        for name in closure_bare_callee_names(body) {
+          Array::push(names, name)
+        }
+        for name in names {
+          match MutMap::get(pending, name) {
+            Some(dep) => if dep >= limit {
+              Array::push(errors, String::concat("move `", String::concat(name, String::concat("` above its first use or add a type annotation to the binding; its type is not available across this declaration boundary", off_marker(top_stmt_expr_off(body))))))
+            } else {
+              if dep == at {
+                self_used = true
+              } else {
+                ()
+              }
+              if Array::get(discovery, dep) < 0 {
+                schedule_forward_component(stmts, dep, pending, limit, errors, discovery, low, active, stack, clock, groups, recursive)
+                if Array::get(low, dep) < Array::get(low, at) {
+                  Array::set(low, at, Array::get(low, dep))
+                } else {
+                  ()
+                }
+              } else if Array::get(active, dep) && Array::get(discovery, dep) < Array::get(low, at) {
+                Array::set(low, at, Array::get(discovery, dep))
+              } else {
+                ()
+              }
+            },
+            None => ()
+          }
+        }
+      },
+      None => ()
+    }
+    if Array::get(low, at) == stamp {
+      let members = array_empty()
+      let mut done = false
+      while !done && Array::length(stack) > 0 {
+        let member = Array::get(stack, Array::length(stack) - 1)
+        Array::truncate(stack, Array::length(stack) - 1)
+        Array::set(active, member, false)
+        Array::push(members, member)
+        done = member == at
+      }
+      Array::push(groups, members)
+      Array::push(recursive, self_used || Array::length(members) > 1)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+fn forward_statement_schedulable(stmt: Stmt, imports_projected: Bool) -> Bool {
+  match stmt {
+    SImport(_, _) => imports_projected,
+    SReExport(_, _) => imports_projected,
+    _ => forward_statement_body(stmt) != None
+  }
+}
+
+fn forward_statement_groups(stmts: Array[Stmt], start: Int, headers: Array[Option[Type]], defs: Array[TypeDef], imports_projected: Bool, errors: Array[String]) -> (Array[Array[Int]], Array[Bool]) {
+  let groups = array_empty()
+  let recursive = array_empty()
+  let discovery = array_empty()
+  let low = array_empty()
+  let active = array_empty()
+  let stack = array_empty()
+  let clock = [0]
+  let mut si = 0
+  while si < Array::length(stmts) {
+    Array::push(discovery, 0 - 1)
+    Array::push(low, 0 - 1)
+    Array::push(active, false)
+    if si < start {
+      Array::push(groups, [si])
+      Array::push(recursive, false)
+    } else {
+      ()
+    }
+    si = si + 1
+  }
+  let mut begin = start
+  let mut chunk_end = start
+  let mut last_pending = 0 - 1
+  let mut pending: MutMap[String, Int] = MutMap::new_string()
+  while begin < Array::length(stmts) {
+    if begin >= chunk_end {
+      // A merged file's private bindings belong to its own source chunk.
+      pending = MutMap::new_string()
+      last_pending = 0 - 1
+      chunk_end = begin
+      while chunk_end < Array::length(stmts) && !(Array::get(stmts, chunk_end) is SReExportSourceBoundary(_, _)) {
+        match Array::get(stmts, chunk_end) {
+          SLet(_, _, name, _, _) => match Array::get(headers, chunk_end) {
+            Some(ty) => if forward_header_needs_inference(ty, defs) {
+              MutMap::set(pending, name, chunk_end)
+              last_pending = chunk_end
+            } else {
+              ()
+            },
+            None => ()
+          },
+          SLetPat(pat, _) => {
+            let names = array_empty()
+            forward_pattern_names(pat, names)
+            for name in names {
+              MutMap::set(pending, name, chunk_end)
+            }
+            if Array::length(names) > 0 {
+              last_pending = chunk_end
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        }
+        chunk_end = chunk_end + 1
+      }
+    } else {
+      ()
+    }
+    let mut end = begin
+    while end < chunk_end && forward_statement_schedulable(Array::get(stmts, end), imports_projected) {
+      end = end + 1
+    }
+    if end == begin {
+      Array::push(groups, [begin])
+      Array::push(recursive, false)
+      begin = begin + 1
+    } else {
+      let mut at = begin
+      while at < end {
+        if Array::get(discovery, at) < 0 {
+          if at > last_pending {
+            // All incomplete headers have already been inferred. In
+            // particular, do not rescan every later compiler function body.
+            Array::set(discovery, at, Array::get(clock, 0))
+            Array::push(groups, [at])
+            Array::push(recursive, false)
+          } else {
+            schedule_forward_component(stmts, at, pending, end, errors, discovery, low, active, stack, clock, groups, recursive)
+          }
+        } else {
+          ()
+        }
+        at = at + 1
+      }
+      begin = end
+    }
+  }
+  (groups, recursive)
+}
+
+// Infer a recursive component monomorphically before checking its bodies at
+// their retained source coordinates. Unlike an ordinary forward hoist, these
+// slots are linked to the values that actually initialize them. Discard the
+// provisional diagnostics; the authoritative check below runs with those types.
+fn prepare_recursive_values(stmts: Array[Stmt], start: Int, end: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String]) -> (TypeEnv, Subst, Int) {
+  with_provisional_value_inference(() -> infer_recursive_values(stmts, start, end, env, defs, s, c, errors))
+}
+
+fn infer_recursive_values(stmts: Array[Stmt], start: Int, end: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String]) -> (TypeEnv, Subst, Int) {
+  let mut out = env
+  let mut cur_s = s
+  let mut next = c
+  let mut at = start
+  while at < end {
+    match Array::get(stmts, at) {
+      SLet(_, _, name, _, _) => {
+        out = env_bind(out, name, CtVar(next))
+        next = next + 1
+      },
+      _ => ()
+    }
+    at = at + 1
+  }
+  let mut rounds = 0
+  let mut incomplete = true
+  while incomplete && rounds <= end - start {
+    let scratch_errors = array_empty()
+    let scratch_types = array_empty()
+    at = start
+    while at < end {
+      match Array::get(stmts, at) {
+        SLet(_, _, name, ann, value) => {
+          let (vt, ns, nc) = check_expr_capture(value, out, defs, cur_s, next, scratch_errors, scratch_types, None, "Primary")
+          next = nc
+          cur_s = match env_lookup(out, name) {
+            Some(slot) => match unify(slot, vt, ns) {
+              Some(linked) => linked,
+              None => ns
+            },
+            None => ns
+          }
+          let ty = match ann {
+            Some(te) => preserve_generic_instantiation(resolve_type_expr(te, defs), subst_apply(cur_s, vt)),
+            None => vt
+          }
+          out = env_bind(out, name, ty)
+        },
+        _ => ()
+      }
+      at = at + 1
+    }
+    cur_s = resolve_deferred_field_reads(cur_s, defs, scratch_errors, true)
+    incomplete = false
+    at = start
+    while at < end {
+      match Array::get(stmts, at) {
+        SLet(_, _, name, _, _) => match env_lookup(out, name) {
+          Some(ty) => incomplete = incomplete || forward_type_needs_inference(subst_apply(cur_s, ty)),
+          None => ()
+        },
+        _ => ()
+      }
+      at = at + 1
+    }
+    rounds = rounds + 1
+  }
+  if incomplete {
+    Array::push(errors, "annotate the function parameters and return types in this recursive value group; its initializers do not determine the types of their forward references")
+  } else {
+    ()
+  }
+  (out, cur_s, next)
+}
+
+fn forward_path_before(left: Array[Int], right: Array[Int]) -> Bool {
+  let mut at = 0
+  let mut decided = false
+  let mut before = false
+  while at < Array::length(left) && at < Array::length(right) && !decided {
+    let l = Array::get(left, at)
+    let r = Array::get(right, at)
+    if l != r {
+      decided = true
+      before = l < r
+    } else {
+      ()
+    }
+    at = at + 1
+  }
+  if decided {
+    before
+  } else {
+    Array::length(left) < Array::length(right)
+  }
+}
+
+// Root observations promise source order even when checking needs a different
+// schedule. Other occurrence channels deliberately retain their capture order.
+fn forward_restore_root_order(capture: Option[CheckerStatementCapture], start: Int) -> Unit {
+  match capture {
+    Some(StatementRootTypes(entries)) => {
+      let mut at = start + 1
+      while at < Array::length(entries) {
+        let row = Array::get(entries, at)
+        let (path, _, _) = row
+        let mut slot = at
+        let mut moving = true
+        while slot > start && moving {
+          let previous = Array::get(entries, slot - 1)
+          let (previous_path, _, _) = previous
+          if forward_path_before(path, previous_path) {
+            Array::set(entries, slot, previous)
+            slot = slot - 1
+          } else {
+            moving = false
+          }
+        }
+        Array::set(entries, slot, row)
+        at = at + 1
+      }
+    },
+    _ => ()
+  }
+}
+
 export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool, validate_completed_decls: Bool) -> (TypeEnv, Subst, Int) {
-  let stmts = reorder_type_decls_first(raw_stmts, i)
+  let mut stmts = reorder_type_decls_first(raw_stmts, i)
   // #3343: the root list's declarations, so a call inside a region can find
   // the body of the function it names wherever that function is declared.
   let retention_saved = if validate_completed_decls {
@@ -815,9 +1229,13 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   }
   let completed_decl_error_insert_at = Array::length(errors)
   let observation_checkpoint = checker_observation_checkpoint(capture, role_lane_capture, tytab)
+  let root_capture_start = match capture {
+    Some(StatementRootTypes(entries)) => Array::length(entries),
+    _ => 0
+  }
   // Retained coordinates exist solely for the opt-in observation. Keep the
   // ordinary checker path free of its position-map allocation.
-  let retained_positions = match capture {
+  let mut retained_positions = match capture {
     Some(_) => Some(reordered_type_decl_positions(raw_stmts, i)),
     None => match role_lane_capture {
       Some(_) => Some(reordered_type_decl_positions(raw_stmts, i)),
@@ -853,16 +1271,23 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   // "unknown name" and aborted the whole compile with an opaque trap.
   // check_stmts is only used for program / module statement lists — local
   // `let`s are ELet expressions checked in check_expr — so this does not affect
-  // block scoping. An annotated binding hoists its declared type; an
-  // un-annotated one hoists as CtUnknown (its precise type is filled in when its
-  // own statement is reached, which shadows this pre-binding). Pre-binding only
-  // adds names, and a later real binding shadows it, so ordered
-  // (backward-reference) code is checked exactly as before.
+  // block scoping. An annotated binding hoists its declared type. Incomplete
+  // headers are inference dependencies: below, consumers wait for the actual
+  // binding type, and recursive components infer together before publication.
+  // A use across a declaration boundary needs an annotation or a source edit;
+  // it must never be accepted merely because this initial header is unknown.
+  let original_headers = array_empty()
+  let mut header_prefix = 0
+  while header_prefix < idx {
+    Array::push(original_headers, None)
+    header_prefix = header_prefix + 1
+  }
   let mut hoist_i = idx
   while hoist_i < Array::length(stmts) {
     match Array::get(stmts, hoist_i) {
       SLet(_, _, hname, hann, hval) => {
         let (ht, hnc) = hoisted_value_type(hann, hval, defs, cur_c)
+        Array::push(original_headers, Some(ht))
         cur_c = hnc
         cur_env = env_bind(cur_env, hname, ht)
         note_toplevel_generic_binding(hname, hval, Some(ht), cur_env)
@@ -882,7 +1307,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           _ => ()
         }
       },
-      _ => ()
+      _ => Array::push(original_headers, None)
     }
     hoist_i = hoist_i + 1
   }
@@ -977,11 +1402,53 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     }
     rst_i = rst_i + 1
   }
+  let (inference_groups, recursive_groups) = forward_statement_groups(stmts, i, original_headers, defs, imports_already_projected, errors)
+  let scheduled_stmts = array_empty()
+  let scheduled_positions = array_empty()
+  let scheduled_headers = array_empty()
+  let recursive_ends = array_empty()
+  let mut group_i = 0
+  while group_i < Array::length(inference_groups) {
+    let group = Array::get(inference_groups, group_i)
+    let group_end = Array::length(scheduled_stmts) + Array::length(group)
+    for at in group {
+      Array::push(scheduled_stmts, Array::get(stmts, at))
+      Array::push(scheduled_headers, Array::get(original_headers, at))
+      Array::push(recursive_ends, if Array::get(recursive_groups, group_i) {
+        group_end
+      } else {
+        0
+      })
+      match retained_positions {
+        Some(positions) => Array::push(scheduled_positions, Array::get(positions, at)),
+        None => ()
+      }
+    }
+    group_i = group_i + 1
+  }
+  stmts = scheduled_stmts
+  retained_positions = match retained_positions {
+    Some(_) => Some(scheduled_positions),
+    None => None
+  }
+  let mut recursive_env: Option[TypeEnv] = None
+  let mut recursive_start = i
   // Large merged programs otherwise probe thousands of hoisted/checked
   // bindings per call. Rebuild from canonical rows every 512 statements;
   // ordinary small module lists keep the existing head-cache layout.
   let index_large_env = Array::length(stmts) - i >= 256
   while idx < Array::length(stmts) {
+    let recursive_end = Array::get(recursive_ends, idx)
+    if recursive_end > 0 && recursive_env == None {
+      recursive_env = Some(cur_env)
+      recursive_start = idx
+      let (prepared_env, prepared_s, prepared_c) = prepare_recursive_values(stmts, idx, recursive_end, cur_env, defs, cur_s, cur_c, errors)
+      cur_env = prepared_env
+      cur_s = prepared_s
+      cur_c = prepared_c
+    } else {
+      ()
+    }
     if index_large_env && (idx - i) % 512 == 0 {
       cur_env = env_cache_complete(cur_env)
     }
@@ -1059,10 +1526,24 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           _ => CtUnit
         })
         let head_bound_mark = efn_head_bound_mark()
-        let (vt, ns0, nc) = if is_rec {
+        let (vt, checked_s, nc) = if is_rec && recursive_end == 0 {
           check_expr_capture(val, env_bind(val_env, name, CtUnknown), defs, s, c, errors, tytab, role_lane_capture, "Primary")
         } else {
           check_expr_capture(val, val_env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        }
+        let ns0 = if recursive_end > 0 {
+          match env_lookup(env, name) {
+            Some(slot) => match unify(slot, vt, checked_s) {
+              Some(linked) => resolve_deferred_field_reads(linked, defs, errors, true),
+              None => {
+                Array::push(errors, String::concat("recursive binding type mismatch for `", String::concat(name, "`; annotate the value's function parameters and return type")))
+                checked_s
+              }
+            },
+            None => checked_s
+          }
+        } else {
+          checked_s
         }
         // #3149: an exported declaration may be called through a contract,
         // and a forward-referenced one was called against its hoisted
@@ -1074,7 +1555,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // what the body assumes -- `add_one("abc")` above `fn add_one[T](x:
         // T) -> Int { x + 1 }` compiled and added 1 to a pointer.
         if Array::length(errors) == err_before && string_array_has(generic_forward_used, name) {
-          match env_lookup(env, name) {
+          match Array::get(scheduled_headers, idx) {
             Some(hoisted) => forward_generic_narrowing_errors(name, val, hoisted, subst_apply(ns0, vt), ns0, nc, errors),
             None => ()
           }
@@ -1149,7 +1630,11 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
             // quantified below; resolve its field reads against the impl's
             // recorded target first (provenance from the env, not the name).
             let ns_self = resolve_impl_self_field_reads(name, val, vt, ns0, env, defs, errors)
-            let gen = let_generalize(val, vt, env, defs, ns_self, None)
+            let gen = if recursive_end > 0 {
+              subst_apply(ns_self, vt)
+            } else {
+              let_generalize(val, vt, env, defs, ns_self, None)
+            }
             // #2848: see the ELet arm in checker.vibe.
             refuse_generalized_field_reads(gen, ns_self, errors)
             // #3297: see the ELet arm in checker.vibe.
@@ -1964,6 +2449,77 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     cur_env = new_env
     cur_s = s1
     cur_c = c1
+    if recursive_end == idx + 1 {
+      // Every member has constrained the shared slots. Only now may callers
+      // instantiate independent schemes for the completed recursive group.
+      cur_s = resolve_deferred_field_reads(cur_s, defs, errors, true)
+      match recursive_env {
+        Some(outer_env) => {
+          // A shared array/cell keeps its variables monomorphic throughout the
+          // component, including in a sibling's callable type. Pure recursive
+          // functions can still generalize their independent variables.
+          let weak_vars = array_empty()
+          let mut weak_at = recursive_start
+          while weak_at < recursive_end {
+            match Array::get(stmts, weak_at) {
+              SLet(_, _, name, ann, value) => match env_lookup(cur_env, name) {
+                Some(ty) => {
+                  let provisional = match ann {
+                    None => let_generalize(value, ty, outer_env, defs, cur_s, None),
+                    Some(_) => ty
+                  }
+                  let free = array_empty()
+                  escape_tvars_into(provisional, free)
+                  for id in free {
+                    escape_tvars_into(subst_apply(cur_s, CtVar(id)), weak_vars)
+                  }
+                },
+                None => ()
+              },
+              _ => ()
+            }
+            weak_at = weak_at + 1
+          }
+          let mut member = recursive_start
+          while member < recursive_end {
+            match Array::get(stmts, member) {
+              SLet(exported, _, name, None, value) => match env_lookup(cur_env, name) {
+                Some(ty) => {
+                  let gen = generalize_except(cur_s, ty, weak_vars)
+                  refuse_generalized_field_reads(gen, cur_s, errors)
+                  refuse_generalized_eq_sites(value, ty, gen, cur_s, defs, errors)
+                  let clean = strip_effect_inst_labels(gen, cur_s, defs)
+                  let alias = match value {
+                    EIdent(_, _) => true,
+                    _ => false
+                  }
+                  let published = if exported || alias {
+                    publish_row_nominals(publish_row_formals(type_exception_rows_resolved(clean), value, outer_env, defs, cur_s), defs)
+                  } else {
+                    type_exception_rows_resolved(clean)
+                  }
+                  if exported {
+                    refuse_unpublishable_exception_row(gen, name, name, defs, errors)
+                  } else {
+                    ()
+                  }
+                  cur_env = bind_function_dependency_contracts(env_bind(cur_env, name, published), name, value)
+                  cur_env = bind_value_or_annotation_return(cur_env, name, value, None, defs)
+                  note_toplevel_generic_binding(name, value, Some(published), outer_env)
+                },
+                None => ()
+              },
+              _ => ()
+            }
+            member = member + 1
+          }
+        },
+        None => ()
+      }
+      recursive_env = None
+    } else {
+      ()
+    }
     // #2290: the stable partition puts every type declaration first. Validate
     // alias bodies at that phase boundary: `defs` is now complete for this
     // statement list, while no value/signature use-site diagnostic has run
@@ -2061,5 +2617,6 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     },
     None => cur_env
   }
+  forward_restore_root_order(capture, root_capture_start)
   (final_env, cur_s, cur_c)
 }

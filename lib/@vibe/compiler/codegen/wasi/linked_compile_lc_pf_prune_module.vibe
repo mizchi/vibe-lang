@@ -394,14 +394,51 @@ fn lc_pf_skip_leb(b: Bytes, p: Int) -> Int {
   q
 }
 
-/// Skip a blocktype: `0x40` (empty), a single-byte value type, or a negative
-/// LEB type index.
+/// Skip a value type. Every numeric type and every abstract-heap reference
+/// shorthand (`funcref`, `anyref`, ...) is one byte; a typed reference --
+/// `(ref $t)` 0x64 or `(ref null $t)` 0x63, which the wasm-gc lane declares
+/// for its struct and array locals -- carries a heap type after it as an s33
+/// LEB.
+fn lc_pf_skip_valtype(b: Bytes, p: Int) -> Int {
+  let t = Bytes::get(b, p)
+  if t == 99 || t == 100 {
+    lc_pf_skip_leb(b, p + 1)
+  } else {
+    p + 1
+  }
+}
+
+/// Skip a blocktype: `0x40` (empty), a value type, or a negative LEB type
+/// index.
 fn lc_pf_skip_blocktype(b: Bytes, p: Int) -> Int {
   let t = Bytes::get(b, p)
   if t == 64 || t == 127 || t == 126 || t == 125 || t == 124 || t == 123 || t == 112 || t == 111 {
     p + 1
+  } else if t == 99 || t == 100 {
+    lc_pf_skip_valtype(b, p)
   } else {
     lc_pf_skip_leb(b, p)
+  }
+}
+
+/// Skip the immediates of one `0xFB` (wasm-gc) instruction whose sub-opcode
+/// `sub` was just read; returns the position after them, or -1 for a
+/// sub-opcode this table does not know (the caller refuses the module).
+/// Immediates per the GC proposal's binary format: type, field, data and
+/// elem indices and heap types are all LEBs; `br_on_cast[_fail]` leads with
+/// a one-byte flags field.
+fn lc_pf_skip_gc_op(b: Bytes, p: Int, sub: Int) -> Int {
+  if sub == 15 || (sub >= 26 && sub <= 30) {
+    // array.len, any.convert_extern, extern.convert_any, ref.i31, i31.get_s/u
+    p
+  } else if sub == 0 || sub == 1 || sub == 6 || sub == 7 || sub == 11 || sub == 12 || sub == 13 || sub == 14 || sub == 16 || (sub >= 20 && sub <= 23) {
+    lc_pf_skip_leb(b, p)
+  } else if (sub >= 2 && sub <= 5) || (sub >= 8 && sub <= 10) || (sub >= 17 && sub <= 19) {
+    lc_pf_skip_leb(b, lc_pf_skip_leb(b, p))
+  } else if sub == 24 || sub == 25 {
+    lc_pf_skip_leb(b, lc_pf_skip_leb(b, lc_pf_skip_leb(b, p + 1)))
+  } else {
+    0 - 1
   }
 }
 
@@ -462,9 +499,29 @@ fn lc_pf_decode_body(b: Bytes, instr_start: Int, body_end: Int, cell: Array[Int]
     } else if op == 28 {
       // select with an explicit result-type vector.
       let n = lc_pf_leb(b, p, cell)
-      p = Array::get(cell, 0) + n
-    } else if op == 12 || op == 13 || op == 7 || op == 8 || op == 9 || op == 24 || op == 32 || op == 33 || op == 34 || op == 35 || op == 36 || op == 37 || op == 38 || op == 63 || op == 64 || op == 208 {
+      p = Array::get(cell, 0)
+      let mut ti = 0
+      while ti < n && p < body_end {
+        p = lc_pf_skip_valtype(b, p)
+        ti = ti + 1
+      }
+    } else if op == 12 || op == 13 || op == 7 || op == 8 || op == 9 || op == 24 || op == 32 || op == 33 || op == 34 || op == 35 || op == 36 || op == 37 || op == 38 || op == 63 || op == 64 || op == 208 || op == 213 || op == 214 {
+      // ... ref.null (heap type), br_on_null / br_on_non_null (label)
       p = lc_pf_skip_leb(b, p)
+    } else if op == 20 || op == 21 {
+      // call_ref / return_call_ref: a TYPE index. The callee is a value on
+      // the stack, and every function a value can name was rooted where
+      // that value was made (a `ref.func` site or a table entry).
+      p = lc_pf_skip_leb(b, p)
+    } else if op == 251 {
+      // wasm-gc prefix (struct / array / i31 / casts).
+      let sub = lc_pf_leb(b, p, cell)
+      p = lc_pf_skip_gc_op(b, Array::get(cell, 0), sub)
+      if p < 0 {
+        ok = false
+      } else {
+        ()
+      }
     } else if op == 17 || op == 19 {
       // call_indirect / return_call_indirect: type index then table index.
       // The callee is dynamic, so the funcref table's own entries are roots.
@@ -509,7 +566,8 @@ fn lc_pf_decode_body(b: Bytes, instr_start: Int, body_end: Int, cell: Array[Int]
       } else {
         ()
       }
-    } else if op == 0 || op == 1 || op == 5 || op == 11 || op == 15 || op == 25 || op == 26 || op == 27 || op == 209 {
+    } else if op == 0 || op == 1 || op == 5 || op == 10 || op == 11 || op == 15 || op == 25 || op == 26 || op == 27 || op == 209 || op == 211 || op == 212 {
+      // ... throw_ref, ref.is_null, ref.eq, ref.as_non_null: no immediate
       ()
     } else if op >= 69 && op <= 196 {
       ()
@@ -937,7 +995,7 @@ export fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_strip
               q = lc_pf_skip_leb(mod_bytes, q)
               num_imported = num_imported + 1
             } else if kind == 1 {
-              q = q + 1
+              q = lc_pf_skip_valtype(mod_bytes, q)
               let lim = Bytes::get(mod_bytes, q)
               q = lc_pf_skip_leb(mod_bytes, q + 1)
               if lim == 1 {
@@ -953,8 +1011,12 @@ export fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_strip
               } else {
                 ()
               }
+            } else if kind == 3 {
+              // global: value type, then mutability
+              q = lc_pf_skip_valtype(mod_bytes, q) + 1
             } else {
-              q = q + 2
+              // tag: attribute byte, then type index
+              q = lc_pf_skip_leb(mod_bytes, q + 1)
             }
             ii = ii + 1
           }
@@ -981,7 +1043,7 @@ export fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_strip
           let mut gk = 0
           while gk < gcount && !Array::get(failed, 0) {
             // valtype, mutability, then one constant instruction and `end`.
-            gq = gq + 2
+            gq = lc_pf_skip_valtype(mod_bytes, gq) + 1
             if gq >= send {
               lc_pf_refuse(failed, 4828)
             } else {
@@ -994,7 +1056,7 @@ export fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_strip
               } else if iop == 68 {
                 gq = gq + 8
               } else if iop == 208 {
-                gq = gq + 1
+                gq = lc_pf_skip_leb(mod_bytes, gq)
               } else {
                 lc_pf_refuse(failed, 4842)
               }
@@ -1084,7 +1146,7 @@ export fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_strip
             let mut li = 0
             while li < nl {
               r = lc_pf_skip_leb(mod_bytes, r)
-              r = r + 1
+              r = lc_pf_skip_valtype(mod_bytes, r)
               li = li + 1
             }
             Array::push(body_start, bstart)

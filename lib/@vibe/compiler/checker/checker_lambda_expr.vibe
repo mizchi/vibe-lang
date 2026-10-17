@@ -138,6 +138,7 @@ import ./checker_infer_binop_type.vibe {
 }
 
 import ./checker_merge_capture_provenance.vibe {
+  callee_is_ctor_name,
   checker_string_array_has,
   decimal_index,
   deferred_field_reads,
@@ -761,7 +762,7 @@ fn lapw_stores_param(value: Expr, pname: String) -> Bool {
     // (Codex on #3452: `let mut alias = 0; alias = c; alias`).
     EAssign(m, v, c, _) => lapw_stores_param(c, pname) || m != pname && lapw_stores_param(c, m) && lapw_stores_param(v, pname),
     EAssignOp(_, _, _, c, _) => lapw_stores_param(c, pname),
-    ECall(EIdent(ctor, _), cargs, _, _) => lapw_is_ctor_name(ctor) && lapw_any_stores(cargs, pname),
+    ECall(EIdent(ctor, _), cargs, _, _) => callee_is_ctor_name(ctor) && lapw_any_stores(cargs, pname),
     ETuple(items) => lapw_any_stores(items, pname),
     EArray(items) => lapw_any_stores(items, pname),
     ERecord(_, fields, _) => lapw_fields_store(fields, pname),
@@ -850,18 +851,6 @@ fn lapw_fields_store(fields: Array[(String, Expr)], pname: String) -> Bool {
     }
   }
   found
-}
-
-/// A constructor's last segment is capitalized (`Some`, `Maybe::Some`); a
-/// function's is not (`TaskHandle::join`).
-fn lapw_is_ctor_name(name: String) -> Bool {
-  let cut = String::last_index_of(name, "::")
-  let last = if cut >= 0 {
-    String::substring(name, cut + 2, String::length(name))
-  } else {
-    name
-  }
-  String::length(last) > 0 && String::byte_at(last, 0) >= 65 && String::byte_at(last, 0) <= 90
 }
 
 fn lapw_any_stores(items: Array[Expr], pname: String) -> Bool {

@@ -1,0 +1,311 @@
+// lib/@vibe/compiler/core/import_alias_rewrite.vibe — type equivalence for
+// the #3448 collision check.
+
+import ./ast.vibe {
+  TypeExpr
+}
+
+import @vibe/ast {
+  impl_target_key, type_param_arity, type_param_name
+}
+
+import ./types_env_cache.vibe {
+  Type
+}
+
+import ./types_types_equal.vibe {
+  resolve_builtin
+}
+
+import ./import_alias_rewrite_pat_binds_shadowing_name.vibe {
+  import_alias_rewrite_string_array_contains
+}
+
+/// Each type parameter's name mapped to its position, so `Box[T]` and
+/// `Box[U]` compare equal.
+export fn type_param_renames(params: Array[String]) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  let mut i = 0
+  while i < Array::length(params) {
+    Array::push(out, (type_param_name(Array::get(params, i)), String::concat("#", Int::to_string(i))))
+    i = i + 1
+  }
+  out
+}
+
+export fn type_param_arities_match(a: Array[String], b: Array[String]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while ok && i < Array::length(a) {
+    ok = type_param_arity(Array::get(a, i)) == type_param_arity(Array::get(b, i))
+    i = i + 1
+  }
+  ok
+}
+
+export fn renamed_type_name(renames: Array[(String, String)], name: String) -> String {
+  let mut out = name
+  for r in renames {
+    if r.0 == name {
+      out = r.1
+    }
+  }
+  out
+}
+
+export fn type_expr_lists_equivalent(a: Array[TypeExpr], ar: Array[(String, String)], b: Array[TypeExpr], br: Array[(String, String)]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while ok && i < Array::length(a) {
+    ok = type_exprs_equivalent(Array::get(a, i), ar, Array::get(b, i), br)
+    i = i + 1
+  }
+  ok
+}
+
+export fn type_exprs_equivalent(a: TypeExpr, ar: Array[(String, String)], b: TypeExpr, br: Array[(String, String)]) -> Bool {
+  match (builtin_spelling(a, ar), builtin_spelling(b, br)) {
+    (TyName(x), TyName(y)) => renamed_type_name(ar, x) == renamed_type_name(br, y),
+    (TyApp(x, xs), TyApp(y, ys)) => renamed_type_name(ar, x) == renamed_type_name(br, y) && type_expr_lists_equivalent(xs, ar, ys, br),
+    (TyFn(xps, xr, xrow), TyFn(yps, yr, yrow)) => type_expr_lists_equivalent(xps, ar, yps, br) && type_exprs_equivalent(xr, ar, yr, br) && row_label_sets_equal(row_labels_renamed(xrow, ar), row_labels_renamed(yrow, br)),
+    (TyTuple(xs), TyTuple(ys)) => type_expr_lists_equivalent(xs, ar, ys, br),
+    (TyUnit, TyUnit) => true,
+    _ => false
+  }
+}
+
+/// A row's labels with the type parameters renamed, split at the top-level
+/// `+` and `,` separators. `Fs + Env` and `Env + Fs + Env` give one set.
+export fn row_labels_renamed(row: Option[String], renames: Array[(String, String)]) -> Array[String] {
+  let out: Array[String] = []
+  match row {
+    Some(text) => {
+      let mut label = ""
+      let mut word = ""
+      // A word after `::` is an operation (`Console::T`), never a parameter
+      // or a builtin spelling (Codex on #3492).
+      let mut qualified = false
+      let mut depth = 0
+      let mut i = 0
+      let n = String::length(text)
+      while i <= n {
+        let c = if i < n {
+          String::byte_at(text, i)
+        } else {
+          0
+        }
+        let is_word = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+        if is_word {
+          if word == "" {
+            qualified = i >= 2 && String::byte_at(text, i - 1) == ':' && String::byte_at(text, i - 2) == ':'
+          }
+          word = String::concat(word, String::substring(text, i, i + 1))
+        } else {
+          // A word at depth 0 is a row head: an effect name, which may be
+          // called `Float` or share a type parameter's spelling (`Box[Read]`
+          // with `with Read`), so it is neither a builtin spelling nor a
+          // parameter. Only a lowercase head is a row variable and renamed
+          // (Codex on #3492); a type argument inside brackets is both.
+          label = String::concat(label, if qualified {
+            word
+          } else if depth > 0 {
+            builtin_word(renamed_type_name(renames, word), renames, word)
+          } else if String::length(word) > 0 && String::byte_at(word, 0) >= 'a' && String::byte_at(word, 0) <= 'z' {
+            renamed_type_name(renames, word)
+          } else {
+            word
+          })
+          word = ""
+          if c == '[' {
+            depth = depth + 1
+          } else if c == ']' {
+            depth = depth - 1
+          }
+          if c == 0 || (depth == 0 && (c == '+' || c == ',')) {
+            let t = String::trim(label)
+            if t != "" && !import_alias_rewrite_string_array_contains(out, t) {
+              Array::push(out, t)
+            }
+            label = ""
+          } else if c != ' ' {
+            label = String::concat(label, String::substring(text, i, i + 1))
+          }
+        }
+        i = i + 1
+      }
+    },
+    None => ()
+  }
+  out
+}
+
+export fn row_label_sets_equal(a: Array[String], b: Array[String]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  for x in a {
+    if !import_alias_rewrite_string_array_contains(b, x) {
+      ok = false
+    }
+  }
+  ok
+}
+
+/// `t` with a builtin's alternate spelling replaced by the one the checker
+/// resolves it to (Codex on #3467): `()` and `Unit` are one type, as are
+/// `i32` and `Int`, and `f64` / `Float` / `f32` and `Double`. A type
+/// parameter (renamed in `renames`) is never a builtin.
+fn builtin_spelling(t: TypeExpr, renames: Array[(String, String)]) -> TypeExpr {
+  match t {
+    TyName(x) => if renamed_type_name(renames, x) != x {
+      t
+    } else {
+      match resolve_builtin(x) {
+        Some(CtUnit) => TyUnit,
+        Some(CtInt) => TyName("Int"),
+        Some(CtDouble) => TyName("Double"),
+        _ => t
+      }
+    },
+    _ => t
+  }
+}
+
+/// A row word as the checker resolves a builtin spelling (Codex on #3492):
+/// `Box[i32]` and `Box[Int]` are one row label. A renamed type parameter is
+/// left as renamed.
+fn builtin_word(renamed: String, renames: Array[(String, String)], word: String) -> String {
+  if renamed != word || word == "" {
+    renamed
+  } else {
+    match builtin_spelling(TyName(word), renames) {
+      TyName(canonical) => canonical,
+      TyUnit => "Unit",
+      _ => renamed
+    }
+  }
+}
+
+/// The types written inside a row label's brackets (`State[Payload[Int],
+/// (Int, String)]`), read back into `TypeExpr`s so aliases in them can be
+/// expanded (Codex on #3492): names (`A::B` included), applications, tuples
+/// and `()`. None for anything else, which the caller leaves as written.
+export fn row_type_args_parse(text: String) -> Option[Array[TypeExpr]] {
+  let pos = [0]
+  let args = row_type_list(text, pos, 0)
+  row_type_skip(text, pos)
+  match args {
+    Some(items) => if Array::get(pos, 0) == String::length(text) {
+      Some(items)
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+/// A type as `row_type_args_parse` reads it, written back canonically.
+export fn row_type_text(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => n,
+    TyApp(h, args) => String::concat(String::concat(String::concat(h, "["), String::join(for a in args {
+      row_type_text(a)
+    }, ", ")), "]"),
+    TyTuple(items) => String::concat(String::concat("(", String::join(for a in items {
+      row_type_text(a)
+    }, ", ")), ")"),
+    TyUnit => "()",
+    TyFn(_, _, _) => impl_target_key(t)
+  }
+}
+
+fn row_type_name_byte(c: Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == ':'
+}
+
+fn row_type_skip(text: String, pos: Array[Int]) -> Unit {
+  while Array::get(pos, 0) < String::length(text) && String::byte_at(text, Array::get(pos, 0)) == ' ' {
+    Array::set(pos, 0, Array::get(pos, 0) + 1)
+  }
+}
+
+fn row_type_list(text: String, pos: Array[Int], depth: Int) -> Option[Array[TypeExpr]] {
+  let out: Array[TypeExpr] = []
+  let mut ok = true
+  let mut more = true
+  while ok && more {
+    match row_type_one(text, pos, depth) {
+      Some(t) => {
+        Array::push(out, t)
+        row_type_skip(text, pos)
+        let i = Array::get(pos, 0)
+        if i < String::length(text) && String::byte_at(text, i) == ',' {
+          Array::set(pos, 0, i + 1)
+        } else {
+          more = false
+        }
+      },
+      None => ok = false
+    }
+  }
+  if ok {
+    Some(out)
+  } else {
+    None
+  }
+}
+
+fn row_type_one(text: String, pos: Array[Int], depth: Int) -> Option[TypeExpr] {
+  row_type_skip(text, pos)
+  let n = String::length(text)
+  let start = Array::get(pos, 0)
+  if depth > 16 || start >= n {
+    None
+  } else if String::byte_at(text, start) == '(' {
+    Array::set(pos, 0, start + 1)
+    row_type_skip(text, pos)
+    if Array::get(pos, 0) < n && String::byte_at(text, Array::get(pos, 0)) == ')' {
+      Array::set(pos, 0, Array::get(pos, 0) + 1)
+      Some(TyUnit)
+    } else {
+      match row_type_list(text, pos, depth + 1) {
+        Some(items) => {
+          row_type_skip(text, pos)
+          if Array::get(pos, 0) < n && String::byte_at(text, Array::get(pos, 0)) == ')' {
+            Array::set(pos, 0, Array::get(pos, 0) + 1)
+            Some(TyTuple(items))
+          } else {
+            None
+          }
+        },
+        None => None
+      }
+    }
+  } else {
+    let mut i = start
+    while i < n && row_type_name_byte(String::byte_at(text, i)) {
+      i = i + 1
+    }
+    if i == start {
+      None
+    } else {
+      let name = String::substring(text, start, i)
+      Array::set(pos, 0, i)
+      if i < n && String::byte_at(text, i) == '[' {
+        Array::set(pos, 0, i + 1)
+        match row_type_list(text, pos, depth + 1) {
+          Some(args) => {
+            row_type_skip(text, pos)
+            if Array::get(pos, 0) < n && String::byte_at(text, Array::get(pos, 0)) == ']' {
+              Array::set(pos, 0, Array::get(pos, 0) + 1)
+              Some(TyApp(name, args))
+            } else {
+              None
+            }
+          },
+          None => None
+        }
+      } else {
+        Some(TyName(name))
+      }
+    }
+  }
+}

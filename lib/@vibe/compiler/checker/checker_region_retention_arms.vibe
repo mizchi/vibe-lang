@@ -1,0 +1,219 @@
+// lib/@vibe/compiler/checker/checker_region_retention.vibe — the parts an
+// expression's value can come from, for the retention and provenance checks.
+
+import @vibe/compiler/core {
+  Expr, Pat, expr_children
+}
+
+/// The value of every top-level `let` / `fn` of the module being checked, by
+/// name, so a call can find the body of a function it names wherever the
+/// declaration sits in the file. Filled by `retention_begin_module`.
+export let retention_decls: Array[(String, Expr)] = []
+
+/// The value a top-level declaration of the module being checked binds.
+export fn retention_decl_value(name: String) -> Option[Expr] {
+  let mut out: Option[Expr] = None
+  for d in retention_decls {
+    match out {
+      None => if d.0 == name {
+        out = Some(d.1)
+      },
+      Some(_) => ()
+    }
+  }
+  out
+}
+
+/// #3488: the subexpressions `e`'s value may be, or hold: a literal's fields
+/// or elements, either branch of an `if`, each `match` arm (and the
+/// scrutinee, when an arm hands it back), a block's tail, and a `let`'s
+/// value and body, and a spread's operand (Codex on #3492: `{ 0; c }`,
+/// `{ let y = c; y }`, `[...cells]`).
+///
+/// The list fails closed (Codex on #3492, which found `y = c; y`,
+/// `Map::from_pairs([("k", c)])` and `handle { c } with ..` one at a time): a
+/// form not listed here yields every subexpression its value can come from,
+/// and only a form whose value is fresh by construction -- a literal, an
+/// operator's result, a closure, a `while` (`()`), a jump -- has no parts.
+export fn retention_result_items(e: Expr) -> Array[Expr] {
+  match e {
+    ERecord(_, fields, _) => for f in fields {
+      f.1
+    },
+    ETuple(items) => items,
+    EArray(items) => items,
+    EIf(_, a, b) => [a, b],
+    EMatch(scrut, arms) => {
+      let items = for arm in arms {
+        arm.1
+      }
+      if retention_arms_bind(arms) {
+        Array::push(items, scrut)
+      }
+      items
+    },
+    ESeq(_, b) => [b],
+    // A spread copies its operand's elements (`[...outer_cells]`).
+    ESpread(inner) => [inner],
+    ELet(_, v, b, _) => [v, b],
+    // A `let mut` also holds every value later assigned to it, wherever the
+    // assignment sits (`while c { y = outer }; y`).
+    ELetMut(name, v, b, _) => {
+      let items = [v, b]
+      retention_assigned_values_into(b, name, items)
+      items
+    },
+    ELetRec(_, v, b) => [v, b],
+    // The assigned value may be read back through the binding.
+    EAssign(_, v, b, _) => [v, b],
+    EAssignOp(_, _, _, b, _) => [b],
+    EHandle(body, arms) => {
+      let items = for arm in arms {
+        arm.1
+      }
+      Array::push(items, body)
+      items
+    },
+    EMap(entries) => for entry in entries {
+      entry.1
+    },
+    // A `for` collects its body's values, which may read the element.
+    EForIn(_, _, iter, body) => [iter, body],
+    ELoop(inits, body) => {
+      let items = for init in inits {
+        init.1
+      }
+      retention_break_values_into(body, items)
+      items
+    },
+    EBreak(Some(v)) => [v],
+    EDot(obj, _, _, _) => [obj],
+    ELabeledArg(_, _, v) => [v],
+    _ => []
+  }
+}
+
+/// The values assigned to `name` anywhere in `e`, stopping where a binder
+/// of the same name hides it.
+export fn retention_assigned_values_into(e: Expr, name: String, out: Array[Expr]) -> Unit {
+  let stack: Array[Expr] = [e]
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    let hidden = match cur {
+      ELet(x, v, _, _) => if x == name {
+        Array::push(stack, v)
+        true
+      } else {
+        false
+      },
+      ELetMut(x, v, _, _) => if x == name {
+        Array::push(stack, v)
+        true
+      } else {
+        false
+      },
+      _ => false
+    }
+    if !hidden {
+      match cur {
+        EAssign(x, v, _, _) => if x == name {
+          Array::push(out, v)
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      for child in expr_children(cur) {
+        Array::push(stack, child)
+      }
+    } else {
+      ()
+    }
+  }
+  ()
+}
+
+/// The values a `loop` body hands out through `break`, not counting a nested
+/// loop's own.
+fn retention_break_values_into(e: Expr, out: Array[Expr]) -> Unit {
+  let stack: Array[Expr] = [e]
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      EBreak(Some(v)) => Array::push(out, v),
+      ELoop(_, _) => (),
+      EWhile(_, _) => (),
+      EForIn(_, _, _, _) => (),
+      EFn(_, _, _, _, _, _) => (),
+      _ => for child in expr_children(cur) {
+        Array::push(stack, child)
+      }
+    }
+  }
+  ()
+}
+
+/// Whether some arm's body names a binder its own pattern binds: such an arm
+/// may hand back the scrutinee's value under a name the outer environment
+/// does not know (#3488, Codex on #3492). `Some(x) => x` does; `Some(x) =>
+/// fresh` and `None => fresh` do not.
+export fn retention_arms_bind(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut any = false
+  for arm in arms {
+    if !any {
+      let names: Array[String] = []
+      retention_pat_names_into(arm.0, names)
+      any = Array::length(names) > 0 && retention_expr_names_any(arm.1, names)
+    }
+  }
+  any
+}
+
+export fn retention_pat_names_into(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, ps) => retention_pats_names_into(ps, out),
+    PTuple(ps) => retention_pats_names_into(ps, out),
+    POr(a, _) => retention_pat_names_into(a, out),
+    PStruct(_, fields) => retention_pats_names_into(for f in fields {
+      f.1
+    }, out),
+    _ => ()
+  }
+}
+
+fn retention_pats_names_into(ps: Array[Pat], out: Array[String]) -> Unit {
+  for q in ps {
+    retention_pat_names_into(q, out)
+  }
+  ()
+}
+
+fn retention_expr_names_any(e: Expr, names: Array[String]) -> Bool {
+  let stack: Array[Expr] = [e]
+  let mut hit = false
+  while !hit && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      EIdent(x, _) => {
+        for name in names {
+          if name == x {
+            hit = true
+          }
+        }
+        ()
+      },
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+  }
+  hit
+}

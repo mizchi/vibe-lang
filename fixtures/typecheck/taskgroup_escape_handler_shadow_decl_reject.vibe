@@ -1,0 +1,35 @@
+// #3488 (Codex on #3492): a helper's handler arm binder is the payload the
+// handled body threw, even when it is spelled like a top-level value of the
+// module, so a result built from it hands the parameter back.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Cell {
+  mut v: Option[TaskHandle[Int]]
+}
+
+struct Wrap {
+  cell: Cell
+}
+
+fn put(w: Wrap, x: TaskHandle[Int]) -> Unit {
+  w.cell.v = Some(x)
+}
+
+let x = Cell::{ v: None }
+
+fn wrap(c: Cell) -> Wrap {
+  handle {
+    throw(c)
+  } with {
+    Exception::Throw(x) => Wrap::{ cell: x }
+  }
+}
+
+fn main() -> Unit allows Exception + Console {
+  let outer = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    put(wrap(outer), TaskGroup::spawn(n, () -> { 41 }))
+    1
+  })
+  println("r=\{r}")
+}

@@ -1,0 +1,42 @@
+// #3488 (Codex on #3492): a computed call inside a helper's result hands
+// back what its arguments do.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Cell {
+  mut v: Option[TaskHandle[Int]]
+}
+
+struct Wrap {
+  cell: Cell
+}
+
+fn put(w: Wrap, x: TaskHandle[Int]) -> Unit {
+  w.cell.v = Some(x)
+}
+
+fn same1(c: Cell) -> Cell {
+  c
+}
+
+fn same2(c: Cell) -> Cell {
+  c
+}
+
+fn wrap(c: Cell, flag: Bool) -> Wrap {
+  Wrap::{
+    cell: (if flag {
+      same1
+    } else {
+      same2
+    })(c)
+  }
+}
+
+fn main() -> Unit allows Exception + Console {
+  let outer = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    put(wrap(outer, true), TaskGroup::spawn(n, () -> { 41 }))
+    1
+  })
+  println("r=\{r}")
+}

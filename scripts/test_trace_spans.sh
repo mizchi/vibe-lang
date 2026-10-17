@@ -62,6 +62,43 @@ rep="$(node scripts/trace_report.mjs "$T" 2>&1)"
 grep -q "critical path" <<<"$rep" || bad "report has no critical path section"
 grep -q "slow" <<<"$rep" || bad "report does not mention the slow span"
 
+# 6. Measurement mode uses a monotonic clock even when date goes backwards.
+# Only the tracer's timestamp call is poisoned; unrelated date uses keep their
+# ordinary behavior. Removing the monotonic branch must redden this probe.
+mkdir "$work/bin"
+real_date="$(command -v date)"
+cat > "$work/bin/date" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = '+%s%N' ]; then
+  if [ -f "$TRACE_DATE_SEEN" ]; then echo 100; else echo 200; fi
+  : > "$TRACE_DATE_SEEN"
+else
+  exec "$TRACE_REAL_DATE" "$@"
+fi
+SH
+chmod +x "$work/bin/date"
+T="$work/monotonic.ndjson"
+PATH="$work/bin:$PATH" TRACE_REAL_DATE="$real_date" TRACE_DATE_SEEN="$work/date-seen" \
+  VIBE_TRACE_MONOTONIC=1 VIBE_TRACE_OUT="$T" \
+  bash scripts/trace_span.sh measured sleep 0.05 || bad "monotonic run failed"
+[ ! -f "$work/date-seen" ] || bad "monotonic tracing consulted realtime date"
+python3 - "$T" <<'PY' || bad "monotonic span was not labelled or bounded"
+import json, sys
+r = json.loads(open(sys.argv[1]).read())
+assert r['clock'] == 'monotonic'
+assert 0.04 <= (r['t1'] - r['t0']) / 1e9 < 10
+PY
+
+# 7. A tree with incompatible clock origins has no honest duration report.
+cat > "$work/mixed.ndjson" <<'JSON'
+{"tid":"x","sid":"a","pid":"","name":"outer","t0":100000000000,"t1":110000000000,"rc":0}
+{"tid":"x","sid":"b","pid":"a","name":"inner","t0":1000,"t1":2000,"rc":0,"clock":"monotonic"}
+JSON
+if node scripts/trace_report.mjs "$work/mixed.ndjson" >"$work/mixed.out" 2>&1; then
+  bad "a report with mixed clocks was accepted"
+fi
+grep -q 'incompatible clocks' "$work/mixed.out" || bad "mixed-clock refusal did not explain the cause"
+
 if [ "$fails" -gt 0 ]; then
   echo "[trace-spans] $fails check(s) failed" >&2
   exit 1

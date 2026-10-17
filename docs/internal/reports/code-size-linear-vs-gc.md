@@ -1,14 +1,15 @@
 # Generated code size: linear backend vs wasm-gc backend
 
-Measured: 2026-08-16 (conclusion rewritten) / 2026-08-15 (synthetic benches)
+Measured: 2026-10-17 (small programs and synthetic benches, after the wasm-gc
+lane started pruning unreachable functions) / 2026-08-16 (application scale)
 
 Reproduce:
 
 ```bash
-# Synthetic benches (the scaled* / fixture-sized table below)
+# Synthetic benches (the small-program and scaled* table below)
 bash scripts/measure_backend_code_size.sh
 
-# Real application scale (the conclusion table) -- compile the compiler itself on both lanes
+# Real application scale (the application table) -- compile the compiler itself on both lanes
 bash scripts/test_gc_selfbuild.sh          # produces bundle_gc.wasm on the gc side
 node scripts/wasm_section_sizes.mjs \
   _build/gc_selfbuild/bundle_gc.wasm \
@@ -20,10 +21,34 @@ Related: [gc-value-abi.md](../compiler/gc-value-abi.md) (#1331), [feature-levels
 
 ## Conclusion
 
-**wasm-gc is larger. On small programs, and at real application scale.**
+**Neither lane has a fixed runtime cost any more; what differs is which
+helpers a program pulls in, and how dense each lane's function bodies are.**
 
-The largest real program we can measure — the compiler itself (a flat bundle, 5.1 MB of source) —
-compiled from the same source on both lanes:
+- **Small programs that allocate are smaller on wasm-gc.** A struct, an
+  array, an enum or a closure costs the gc lane nothing beyond `struct.new` /
+  `array.new`, while the linear RC lane links its allocator and its drop
+  (`__rt_rc_alloc` 319 B + `__rt_rc_drop` 571 B) the moment one heap value
+  exists. `closure_indirect` is 809 B on gc against 1,822 B on linear;
+  `variant_float` 1,299 B against 3,051 B.
+- **Programs that only print are smaller on linear.** Linear lowers
+  `println("...")` of a literal to a static write; the gc lane routes it
+  through a general string helper (302 B), so `hello_world` is 1,102 B on gc
+  against 691 B on linear.
+- **Per byte of user code, the two are about even** (gc = 102.7% of linear on
+  the synthetic slope), and at real application scale **gc is +37% larger**
+  (the table below). That gap is function-body density, not a fixed cost, so
+  it is unchanged by the pruning that removed the fixed cost.
+
+The gc lane used to carry 57 runtime helper bodies whether a program called
+them or not (~5.9 KB: the empty program was 6,395 B). It now runs the linear
+lane's #2359 pass on its finished module (`gc_prune_unreachable_functions`,
+`codegen/gc/backend_body_gc_unresolved_import_message.vibe`), which keeps only
+what the exports and the table can reach. The empty program is 527 B.
+
+### Application scale (2026-08-16, not remeasured)
+
+The largest real program we can measure -- the compiler itself (a flat bundle,
+5.1 MB of source) -- compiled from the same source on both lanes:
 
 | | linear | wasm-gc | Δ |
 |---|---:|---:|---:|
@@ -34,7 +59,9 @@ compiled from the same source on both lanes:
 
 **99.9% of the gap is the code section.** Type metadata (type section +915 B) is noise.
 Function count and stub count are almost the same, so **gc is emitting more bytes for the
-same functions**. The largest function goes 64,921 → 119,372 B (1.84×).
+same functions**. The largest function goes 64,921 → 119,372 B (1.84×). The
+helper pruning above removes at most the ~6 KB of unreachable helpers here,
+0.2% of the module.
 
 > **These numbers are after #1985 (sibling-branch local-slot reuse).** Before that the
 > gc module was 3,086,780 B (+39.0%): the gc lane assigned each arm slots above its
@@ -42,21 +69,13 @@ same functions**. The largest function goes 64,921 → 119,372 B (1.84×).
 > declared locals across the module from 92,071 → 53,280 slots (**−42%**), and the
 > largest function from 2,651 → 1,986, but **size only fell 35 KB (1.1%)**. A local
 > declaration is 2–3 B per slot, so this was never the main driver of the gap. The
-> remaining +37% is the "bytes per function" density below.
+> remaining +37% is the "bytes per function" density.
 
-> **This section was rewritten on 2026-08-16.** It used to say "the crossover is about
-> 35 KB, and past that gc is a few percent smaller." That does not hold at real
-> application scale. Extrapolating the synthetic benches (`scaled*`, up to 71 KB)
-> did not represent real code. The synthetic source is N copies of
-> "struct + projection + array loop + string build" with shallow branches and
-> matches. On code like the real compiler — lots of matches, deep branches, and
-> locals — gc's value-representation traffic makes code density worse.
 > **Do not extrapolate a slope measured on synthetic scaling onto a
-> different kind of code** — the slope below (gc = 94.2% of linear) is a number
-> for that shape of code only.
-
-"Switch to wasm-gc and the build gets smaller" **does not hold**. There is currently
-no size-based reason to pick the gc lane.
+> different kind of code.** The synthetic source is N copies of "struct +
+> projection + array loop + string build" with shallow branches and matches.
+> On code like the real compiler -- lots of matches, deep branches, and
+> locals -- gc's value-representation traffic makes code density worse.
 
 ## Measurements
 
@@ -68,16 +87,16 @@ comparison too (a broken wasm is naturally small, so always read size next to th
 
 | program | dominant shape | linear | wasm-gc | Δ | result |
 |---|---|---:|---:|---:|---:|
-| `empty` | `() -> 0` (fixed-cost control) | 742 | 4,831 | +551.1% | 0 |
-| `hello_world` | single `println` | 831 | 4,877 | +486.9% | 0 |
-| `fib` | recursive calls | 795 | 4,875 | +513.2% | 6765 |
-| `fizzbuzz` | loop + branches | 1,384 | 5,008 | +261.8% | 0 |
-| `closure_indirect` | higher-order / indirect call | 2,456 | 5,095 | +107.5% | 31 |
-| `variant_float` | algebraic match + floats | 4,459 | 5,743 | +28.8% | 31 |
-| `scaled10` | synthetic ×10 | 7,154 | 8,821 | +23.3% | 105 |
-| `scaled40` | synthetic ×40 | 19,949 | 20,699 | +3.8% | 255 |
-| `scaled80` | synthetic ×80 | 37,084 | 36,595 | **−1.3%** | 455 |
-| `scaled160` | synthetic ×160 | 71,324 | 69,238 | **−2.9%** | 855 |
+| `empty` | `() -> 0` (fixed-cost control) | 602 | 527 | −12.5% | 0 |
+| `hello_world` | single `println` | 691 | 1,102 | +59.5% | 0 |
+| `fib` | recursive calls | 655 | 589 | −10.1% | 6765 |
+| `fizzbuzz` | loop + branches + printing | 1,211 | 1,490 | +23.0% | 0 |
+| `closure_indirect` | higher-order / indirect call | 1,822 | 809 | −55.6% | 31 |
+| `variant_float` | algebraic match + floats | 3,051 | 1,299 | −57.4% | 31 |
+| `scaled10` | synthetic ×10 | 6,133 | 4,969 | −19.0% | 105 |
+| `scaled40` | synthetic ×40 | 16,897 | 15,908 | −5.9% | 255 |
+| `scaled80` | synthetic ×80 | 31,354 | 30,605 | −2.4% | 455 |
+| `scaled160` | synthetic ×160 | 60,381 | 60,688 | +0.5% | 855 |
 
 `empty` is generated by the measurement script, not the existing case set —
 even the smallest `hello_world` calls `println`, so you cannot read the fixed
@@ -85,96 +104,53 @@ cost itself unless you keep a "program that uses nothing" on the side.
 
 `scaledN` is N copies of one set: struct definition + projection + array-alloc
 loop + string build. The existing case set is fixed-size, so it cannot give a
-slope; the crossover (the original headline of this measurement) can only come
-from here.
+slope; only these rows can.
 
 ```
-slope:     linear 427.8 B/copy, wasm-gc 402.8 B/copy (gc = 94.2% of linear)
-intercept: linear 2876 B, wasm-gc 4793 B (fitted, NOT the empty-program size)
-residual:  max 421 B off the fitted line (0.6% of the largest point)
-crossover: 77 copies == 34.8 KB of linear output
+slope:     linear 361.7 B/copy, wasm-gc 371.5 B/copy (gc = 102.7% of linear)
+intercept: linear 2516 B, wasm-gc 1254 B (fitted, NOT the empty-program size)
+residual:  max 366 B off the fitted line (0.6% of the largest point)
+crossover: none -- wasm-gc grows at least as fast as linear
 ```
 
-Residual 0.6%, so a linear fit is reasonable inside this range.
-
-> **The fitted intercept is not the empty-program size.** The line intercepts
-> (2,876 / 4,793) do not match the measured `empty` (742 / 4,831). The synthetic
-> source uses `ArrayBuilder` / `StringBuilder` from copy 1, so the linear side
-> folds "helpers that appear only when used" into the intercept, while the gc
-> side already emitted all of them and does not grow. Do not subtract one from
-> the other — **the measured fixed cost is the `empty` row, the slope is the
-> `scaled*` rows**, and the intercept is only an intermediate used to compute
-> the crossover.
+So on this workload gc starts ~1.3 KB smaller (the helpers each lane links for
+"struct + array + string build") and linear catches up by ~10 B per copy; the
+two meet around `scaled160`.
 
 ## Why it looks like this
 
-Breaking it down by section and by function leaves one cause
-(`node scripts/wasm_section_sizes.mjs <file.wasm>`).
+Breaking it down by section and by function
+(`node scripts/wasm_section_sizes.mjs <file.wasm>`):
 
 | | `empty` linear | `empty` gc | `closure_indirect` linear | `closure_indirect` gc |
 |---|---:|---:|---:|---:|
-| code section | 428 | 4,577 | 2,116 | 4,815 |
-| type section | 54 | 76 | 67 | 89 |
-| func section | 66 | 49 | 69 | 52 |
-| function count | 65 | 48 | 68 | 51 |
-| stubs whose body is ≤ 4 B | **61** | 2 | **54** | 1 |
-| functions with a real body | 4 | **46** | 14 | **50** |
+| total | 602 | 527 | 1,822 | 809 |
+| code section | 177 | 185 | 1,367 | 441 |
+| data section | 171 | 106 | 171 | 106 |
+| function count | 3 | 3 | 9 | 6 |
+| largest bodies | 154, 10, 8 | 154, 22, 4 | 571, 319, 154, 140, 74 | 163, 154, 57, 23 |
 
-**The gc lane emits 200–313 B runtime helpers unconditionally, used or not.**
-The evidence is that the top function sizes on the gc side of `empty` and
-`closure_indirect` are an identical sequence
-(313, 302, 236, 236, 216, 207, 205, 199, …) — the same bodies land no matter
-what the program does. Only 1–2 of the 48 functions are stubs.
+**Both lanes now emit a helper only when something reachable calls it.**
+`empty` keeps the same three functions on both lanes (the integer printer
+`_start` uses for `main`'s result, `main`, `_start`).
 
-**The linear lane keeps the same slots but fills in a body only when it is
-used.** On an empty program 61 of 65 functions are ≤ 4 B stubs and the whole
-code section is 428 B. The moment you use an indirect call, 7 stubs become
-real (646 / 285 / 214 / 207 B …), and together with 3 user functions the
-count of functions with a body goes 4 → 14 and the code grows to 2,116 B.
+**The allocation runtime is where they part.** On linear, the first heap value
+links `__rt_rc_alloc` (319 B: a size-segregated bin pop, then a bounded
+free-list walk, then the bump) and `__rt_rc_drop` (571 B: the recursive
+per-class release; 870 B for a program that can make a map, whose two arms
+are emitted only then). `closure_indirect` carries both, plus `__rt_rc_dup`.
+On gc a struct, enum or closure is a `struct.new` the engine collects, so the
+same program carries none of it -- the 571 + 319 + 74 B are the bulk of its
+1,013 B gap.
 
-So **linear does not pay until it must / gc pays everything up front**. That is
-the +4,089 B gc fixed cost on an empty program.
+On `scaled160`:
 
-The denominator (the slope gap) is much smaller. On `scaled160`:
-
-- code section: linear 70,183 → gc 66,393 B (**−5.4%**)
+- code section: linear 59,284 → gc 58,068 B (**−2.1%**)
 - type section: linear 67 → gc 1,050 B (declaring nominal struct types in the type section)
-- func section: linear 868 → gc 1,653 B (more type indices, longer LEBs)
+- func section: linear 659 → gc 1,295 B (more type indices, longer LEBs)
 
-gc wins on the function bodies, then gives some of that back as type metadata.
-Net it only earns **25 B** per copy (427.8 − 402.8).
-
-### The amount to amortize is not 4,089 B
-
-Do **not** divide +4,089 B by 25 B/copy (that would be 164 copies, which does
-not match the measured crossover of 77). 4,089 B is the gap when linear emits
-**no** helpers at all, and a real workload is not that.
-
-`scaled*` uses `ArrayBuilder` / `StringBuilder` from copy 1, so **linear pays
-that later too**. The fitted intercept tells you how much:
-
-| | empty program | scaled fitted intercept | delta |
-|---|---:|---:|---:|
-| linear | 742 | 2,876 | **+2,134** (helpers emitted on demand) |
-| wasm-gc | 4,831 | 4,793 | −38 (already emitted everything, so no growth) |
-| gc − linear | **4,089** | **1,917** | |
-
-So of the 4,089 B gc paid up front, 2,134 B is something linear eventually
-pays on this workload too. **The net gap to amortize is 1,917 B**
-(= 4,089 − 2,134 − 38); divide by 25 B/copy and you get 77 copies ≈ 35 KB.
-That is why the script uses the fitted intercept for the crossover.
-
-**The crossover is therefore workload-dependent, not a universal constant**,
-and it sits in this range:
-
-- **Earlier when more builtins are used** — linear's later bill grows and the
-  net gap shrinks
-- **Upper bound 4,089 / 25 ≈ 164 copies** — the limit where the program is
-  pure arithmetic and linear emits not a single helper. gc then has to
-  amortize the whole fixed cost itself
-
-35 KB is the value for "code that uses ArrayBuilder and StringBuilder and a
-struct, roughly," and should be read as an order-of-magnitude guide.
+gc wins slightly on the function bodies, then gives that back as type
+metadata.
 
 ## How to measure, and the pitfalls
 
@@ -199,7 +175,7 @@ The committed cases remain import-free on purpose: they isolate the per-copy
 codegen slope and keep the historical series comparable, rather than reflecting
 a compiler limit.
 If the two artifacts match byte-for-byte, backend selection did not take
-effect; a valid gc artifact includes a distinct gc prelude.
+effect; a gc artifact differs at least in its type and data sections.
 
 **2. The entry name must be `main`.** The `__no_entry__` sentinel that
 doctests use works on linear and fails on gc with
@@ -212,18 +188,22 @@ reports COMPILE FAILED. The correct invocation is the same as
 
 ## How to use these numbers
 
-- **There is no size reason to pick the gc lane.** The reason to pick it is
-  the representation in [gc-value-abi.md](../compiler/gc-value-abi.md) (native
-  references, collecting cyclic structure, dropping RC). Size is not even a
-  side effect of that.
-- **What P5 (size reduction) should cut is bytes per function, not the fixed
-  cost.** 4 KB of fixed cost is 0.1% of a 3 MB artifact; almost all of the
-  actual +866 KB gap is function bodies. Putting linear's "keep the slot,
-  fill the body only when used" mechanism into gc would change how small
-  programs look and barely move real application scale. **First pin down, per
-  function, why one function becomes 1.4×** — that is uninvestigated today,
-  and `wasm_section_sizes.mjs` only reports sizes (artifacts have the name
-  section stripped, so you need a function-index-to-source map).
+- **Size is a reason to pick the gc lane only for small programs that
+  allocate.** The general reason to pick it is the representation in
+  [gc-value-abi.md](../compiler/gc-value-abi.md) (native references,
+  collecting cyclic structure, dropping RC). At application scale it is
+  larger.
+- **What P5 (size reduction) should cut on gc is bytes per function.** The
+  fixed cost is gone; almost all of the +866 KB application-scale gap is
+  function bodies. **First pin down, per function, why one function becomes
+  1.4×** -- that is uninvestigated today, and `wasm_section_sizes.mjs` only
+  reports sizes (artifacts have the name section stripped, so you need a
+  function-index-to-source map).
+- **On linear, the allocation runtime is the floor for any program that
+  allocates** (~1 KB: `__rt_rc_alloc` + `__rt_rc_drop` + `__rt_rc_dup`).
+  `__rt_rc_drop` still carries its array, closure, field-vector and ref-cell
+  arms whenever it is linked; narrowing those needs the same "can this
+  program make that block" evidence the map arms use.
 - **Local-slot count is no longer the main driver (confirmed in #1985).**
   Cutting declared locals 42% moved total size only 1.1%.
   `node scripts/wasm_local_counts.mjs <file.wasm>` reports slots per body, so
@@ -231,6 +211,6 @@ reports COMPILE FAILED. The correct invocation is the same as
   there first. The remaining ceiling is 45,937 slots (the cap if sibling
   reuse is enabled unconditionally; linear is 41,953), and packing that far
   would buy about another 20 KB.
-- **Watch size regressions on the linear side.** On small programs gc's fixed
-  cost dominates, so user-code growth barely shows up (`closure_indirect` is
-  +1,714 B on linear and +264 B on gc). As a regression detector it is dull.
+- **Watch size regressions on both lanes now.** With no fixed prelude, user-code
+  growth shows up on gc too; `scripts/size_ratchet.sh` still gates only the
+  linear lane.
