@@ -865,12 +865,14 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
         found
       },
       // #3488: a constructor (`Some(c)`) has no binding, and its value holds
-      // its arguments (Codex on #3492). An unbound builtin function
-      // (`MutList::empty(r)`) is not one: its result is fresh.
-      None => if callee_is_ctor_name(callee) {
+      // its arguments (Codex on #3492). #3495: so may an unbound builtin's
+      // result -- `Map::get(m, k)` (which `m[k]` lowers to) hands back a value
+      // `m` holds -- unless its signature returns a scalar. A region token
+      // (`MutList::empty(r)`) is not a location.
+      None => if callee_is_ctor_name(callee) || !builtin_result_is_scalar(callee) {
         let mut found = false
         for a in args {
-          found = found || (!literal_item_is_inert(a, env) && expression_aliases_outer_binding(a, env))
+          found = found || (!literal_item_is_inert(a, env) && !arg_is_region_token(a, env) && expression_aliases_outer_binding(a, env))
         }
         found
       } else {
@@ -958,6 +960,27 @@ export fn literal_item_is_inert(item: Expr, env: TypeEnv) -> Bool {
     EIdent(name, _) => match env_lookup(env, name) {
       Some(_) => false,
       None => true
+    },
+    _ => false
+  }
+}
+
+/// #3495: whether a builtin's declared result is a scalar, so its value
+/// cannot be a location any argument holds.
+fn builtin_result_is_scalar(name: String) -> Bool {
+  match lookup_builtin(name) {
+    Some(CtFn(_, ret, _)) => literal_type_is_scalar(ret),
+    _ => false
+  }
+}
+
+/// A region's token (`r` of `region r { .. }`) names the region, not a
+/// location in it.
+fn arg_is_region_token(arg: Expr, env: TypeEnv) -> Bool {
+  match arg {
+    EIdent(name, _) => match env_lookup(env, name) {
+      Some(CtNamed(tname, targs)) => Array::length(targs) == 0 && String::starts_with(tname, "#region_"),
+      _ => false
     },
     _ => false
   }
