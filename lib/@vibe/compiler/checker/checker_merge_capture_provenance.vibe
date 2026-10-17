@@ -63,6 +63,10 @@ import @vibe/compiler/checker/patterns {
   check_pattern, match_nonexhaustive_witness
 }
 
+import ./checker_region_retention_arms.vibe {
+  retention_arms_bind
+}
+
 import ./checker_resolve.vibe {
   resolve_type_expr_shadowed
 }
@@ -881,8 +885,9 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
     },
     // A conditional aliases what any of its branches does (Codex on #3492).
     EIf(_, a, b) => expression_aliases_outer_binding(a, env) || expression_aliases_outer_binding(b, env),
-    EMatch(_, arms) => {
-      let mut found = false
+    // An arm that binds names may hand back the scrutinee (Codex on #3492).
+    EMatch(scrut, arms) => {
+      let mut found = retention_arms_bind(arms) && expression_aliases_outer_binding(scrut, env)
       for arm in arms {
         found = found || expression_aliases_outer_binding(arm.1, env)
       }

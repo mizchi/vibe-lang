@@ -106,6 +106,10 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   callee_inst_types_cell, env_has_active_region
 }
 
+import ./checker_region_retention_arms.vibe {
+  retention_arms_bind
+}
+
 import ./checker_merge_capture_provenance.vibe {
   deferred_eq_sites,
   deferred_field_reads,
@@ -2393,12 +2397,18 @@ fn retention_arg_predates(arg: Expr, env: TypeEnv) -> Array[String] {
     }, env),
     ETuple(items) => retention_args_predate(items, env),
     EArray(items) => retention_args_predate(items, env),
-    // A conditional names what any of its branches does (Codex on #3492):
-    // `if flag { outer } else { fresh }` may be `outer`.
+    // A conditional names what any of its branches does (Codex on #3492).
     EIf(_, a, b) => retention_args_predate([a, b], env),
-    EMatch(_, arms) => retention_args_predate(for arm in arms {
-      arm.1
-    }, env),
+    // An arm that binds names may hand back the scrutinee (`Some(x) => x`).
+    EMatch(scrut, arms) => {
+      let items = for arm in arms {
+        arm.1
+      }
+      if retention_arms_bind(arms) {
+        Array::push(items, scrut)
+      }
+      retention_args_predate(items, env)
+    },
     _ => array_empty()
   }
 }

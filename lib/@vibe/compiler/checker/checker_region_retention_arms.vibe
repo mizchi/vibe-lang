@@ -1,0 +1,46 @@
+// lib/@vibe/compiler/checker/checker_region_retention.vibe — which match
+// arms bind names, for the retention and provenance checks.
+
+import @vibe/compiler/core {
+  Expr, Pat
+}
+
+/// Whether any arm's pattern binds a name: such an arm may hand back the
+/// scrutinee's value under a name the outer environment does not know
+/// (#3488, Codex on #3492).
+export fn retention_arms_bind(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut any = false
+  for arm in arms {
+    any = any || retention_pat_binds(arm.0)
+  }
+  any
+}
+
+fn retention_pat_binds(p: Pat) -> Bool {
+  match p {
+    PBind(_) => true,
+    PCtor(_, ps) => {
+      let mut any = false
+      for q in ps {
+        any = any || retention_pat_binds(q)
+      }
+      any
+    },
+    PTuple(ps) => {
+      let mut any = false
+      for q in ps {
+        any = any || retention_pat_binds(q)
+      }
+      any
+    },
+    POr(a, b) => retention_pat_binds(a) || retention_pat_binds(b),
+    PStruct(_, fields) => {
+      let mut any = false
+      for f in fields {
+        any = any || retention_pat_binds(f.1)
+      }
+      any
+    },
+    _ => false
+  }
+}
