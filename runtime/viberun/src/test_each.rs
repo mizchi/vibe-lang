@@ -147,6 +147,17 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
     let mut out = io::stdout().lock();
     for full in &names {
         let name = escape_field(full.strip_prefix("__test_").unwrap_or(full));
+        // Two blocks with one title share one export, so only one of them is
+        // callable: running it twice would report the other block's verdict
+        // without ever running it. Each copy fails instead, saying why.
+        if names.iter().filter(|n| *n == full).count() > 1 {
+            all_ok = false;
+            writeln!(
+                out,
+                "vibe::test\tfail\t{name}\tduplicate test title: rename one of the blocks, only one of them can be run on its own"
+            )?;
+            continue;
+        }
         let mut state = HostState::new(
             vec!["viberun".to_string()],
             MemLimiter::new(store_mem_limits()),

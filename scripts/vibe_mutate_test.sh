@@ -115,7 +115,10 @@ expect_line() {
 }
 
 before="$(cksum < "$WORK/lib.vibe")"
-out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
+# VIBE_TEST_BACKEND=gc is inherited on purpose: mutation runs are linear
+# (the per-block runner and the authoritative test list are linear
+# artifacts), so the setting must not leak into them.
+out="$(cd "$WORK" && VIBE_TEST_BACKEND=gc VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
   bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe lib_test.vibe 2>"$WORK/err")"
 status=$?
 
@@ -178,6 +181,33 @@ status=$?
 [ "$status" = 0 ] && note "  ok   exit 0 without survivors" || { note "  FAIL exit $status, expected 0"; fail=1; }
 expect_line "score: 7/7 killed (100.0%)"
 expect_line 'TEST kills=2 unique=2 inc_test.vibe "inc"'
+
+note "=== two blocks with one title: refused, not half-measured ==="
+# Only one of two same-titled blocks is callable on its own; measuring it
+# twice would credit the other block with kills it never made.
+cat > "$WORK/dup_test.vibe" <<'EOF'
+import ./lib.vibe {
+  double
+}
+
+test "same" {
+  assert(double(2) == 4)
+}
+
+test "same" {
+  assert(double(3) == 6)
+}
+EOF
+dup_out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
+  bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe dup_test.vibe 2>&1)"
+dup_status=$?
+if [ "$dup_status" != 0 ] && printf '%s' "$dup_out" | grep -q 'duplicate test title'; then
+  note "  ok   refused with the duplicate title named"
+else
+  note "  FAIL expected a refusal naming the duplicate title (exit $dup_status)"
+  printf '%s\n' "$dup_out" | tail -5
+  fail=1
+fi
 
 if [ "$fail" != 0 ]; then
   note "--- stdout of the last run ---"; printf '%s\n' "$out"

@@ -1974,7 +1974,10 @@ REPL_HELP
       local plan="$1"; shift
       rm -f "$plan"
       # shellcheck disable=SC2086
-      ( cd "$PROJECT_ROOT" && env $ADAPTER_MODE_CLEARS VIBE_HOST_ACTION_OUT="$plan" \
+      # Always the linear backend: the per-block runner and the authoritative
+      # test list (`vibe_tests`) are linear artifacts, so an inherited
+      # VIBE_TEST_BACKEND=gc must not select the gc lane here.
+      ( cd "$PROJECT_ROOT" && env $ADAPTER_MODE_CLEARS -u VIBE_TEST_BACKEND -u VIBE_BACKEND VIBE_HOST_ACTION_OUT="$plan" \
           VIBE_BUILD_DIR="$mwork/build" VIBE_INVOKE_DIR="$INVOKE_DIR" \
           "$RUNNER" "$mcli" test "$@" ) >/dev/null 2>>"$mwork/compile.log" || true
       [ -s "$plan" ] && [ "$(sed -n '2p' "$plan")" = run-tests ]
@@ -1988,11 +1991,15 @@ REPL_HELP
     # another name still counts as importing the target (viberun's overlay
     # matches the same way).
     mutate_imports_target() {
-      local dep dp
+      local dep
       [ "$1" -ef "$mabs" ] && return 0
+      # A relative row may be spelled from the invoke dir or from the
+      # project root; either naming the target's file is a hit.
       while IFS= read -r dep; do
-        case "$dep" in /*) dp="$dep" ;; *) dp="$INVOKE_DIR/$dep" ;; esac
-        [ "$dp" -ef "$mabs" ] && return 0
+        case "$dep" in
+          /*) [ "$dep" -ef "$mabs" ] && return 0 ;;
+          *) { [ "$INVOKE_DIR/$dep" -ef "$mabs" ] || [ "$PROJECT_ROOT/$dep" -ef "$mabs" ]; } && return 0 ;;
+        esac
       done < <(invoke_cli deps "$1" 2>/dev/null)
       return 1
     }
@@ -2018,13 +2025,13 @@ REPL_HELP
       [ -n "$mwasm" ] || { cat "$mwork/compile.log" >&2; die "vibe mutate: $msrc did not compile"; }
       cp "$mwasm" "$mwork/base/$mfi.wasm"
       "$RUNNER" --test-each "$mwork/base/$mfi.wasm" > "$mwork/base/$mfi.out" || true
-      while IFS="$(printf '\t')" read -r _ mverdict mname _; do
+      while IFS="$(printf '\t')" read -r _ mverdict mname mreason; do
         if [ "$mverdict" = ok ]; then
           printf 'test\t%s\t%s\t%s\n' "$mtid" "$msrc" "$mname" >> "$mresults"
           printf '%s\t%s\t%s\n' "$mfi" "$mname" "$mtid" >> "$mwork/tests.tsv"
           mtid=$((mtid + 1))
         else
-          echo "[vibe-mutate] $msrc \"$mname\" does not pass without a mutant ($mverdict); fix it first" >&2
+          echo "[vibe-mutate] $msrc \"$mname\" does not pass without a mutant ($mverdict${mreason:+: $mreason}); fix it first" >&2
           mbase_ok=0
         fi
       done < <(grep '^vibe::test	' "$mwork/base/$mfi.out")
