@@ -433,9 +433,11 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
   assertNoneWrapper(parserSource, "parse_stmt_preserving", "parse_stmt_preserving_with_binder_context(tokens, starts, pos, None)");
   assertContextual(parserSource, "parse_stmt_with_binder_context", ["parse_stmt_preserving_with_binder_context(tokens, starts, pos, context)"], ["parse_stmt_preserving(tokens,"]);
 
+  // The tooling parse (a context) hands the method bodies the token offsets;
+  // a compile parse hands them none, so its AST is unchanged.
   assertContextual(parserSource, "parse_impl_methods", [
-    "parse_impl_with_binder_context(tokens, [",
-    "], p + 1, 0, context)",
+    "Some(_) => starts,",
+    "parse_impl_with_binder_context(tokens, method_starts, p + 1, 0, context)",
   ], [
     "parse_expr(tokens,",
     "parse_impl(tokens,",
@@ -443,29 +445,29 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
   // #2948: the located preserving parse splits its loop into two helpers --
   // the `#cfg` directive and the top-level statement -- and both are ordinary
   // entries too.
-  assertBody(parserSource, "preserving_cfg_directive", ["parse_impl_methods(tokens, hp_d, simpl_d, None)"], ["parse_impl_methods(tokens, hp_d, simpl_d, context)"]);
-  assertBody(parserSource, "parse_preserving_top_stmt", ["parse_impl_methods(tokens, hp, simpl, None)"], ["parse_impl_methods(tokens, hp, simpl, context)"]);
+  assertBody(parserSource, "preserving_cfg_directive", ["parse_impl_methods(tokens, [], hp_d, simpl_d, None)"], ["parse_impl_methods(tokens, [], hp_d, simpl_d, context)"]);
+  assertBody(parserSource, "parse_preserving_top_stmt", ["parse_impl_methods(tokens, [], hp, simpl, None)"], ["parse_impl_methods(tokens, [], hp, simpl, context)"]);
   for (const ordinaryProgram of ["parse_program_preserving", "parse_program_recovering"]) {
     assertBody(parserSource, ordinaryProgram, [
-      "parse_impl_methods(tokens, hp_d, simpl_d, None)",
-      "parse_impl_methods(tokens, hp, simpl, None)",
+      "parse_impl_methods(tokens, [], hp_d, simpl_d, None)",
+      "parse_impl_methods(tokens, [], hp, simpl, None)",
     ], [
-      "parse_impl_methods(tokens, hp_d, simpl_d, context)",
-      "parse_impl_methods(tokens, hp, simpl, context)",
+      "parse_impl_methods(tokens, [], hp_d, simpl_d, context)",
+      "parse_impl_methods(tokens, [], hp, simpl, context)",
     ]);
   }
 
   assertContextual(parserSource, "parse_program_located_with_context_impl", [
     "parse_impl_stmt_dispatch_with_binder_context(tokens, dnext + 1, context)",
-    "parse_impl_methods(tokens, hp_d, simpl_d, context)",
+    "parse_impl_methods(tokens, starts, hp_d, simpl_d, context)",
     "parse_impl_stmt_dispatch_with_binder_context(tokens, pos + 1, context)",
-    "parse_impl_methods(tokens, hp, simpl, context)",
+    "parse_impl_methods(tokens, starts, hp, simpl, context)",
     "parse_stmt_with_binder_context(tokens, starts, dnext, context)",
     "parse_stmt_with_binder_context(tokens, starts, pos, context)",
   ], [
     "parse_impl_stmt_dispatch(tokens,",
-    "parse_impl_methods(tokens, hp_d, simpl_d)",
-    "parse_impl_methods(tokens, hp, simpl)",
+    "parse_impl_methods(tokens, starts, hp_d, simpl_d)",
+    "parse_impl_methods(tokens, starts, hp, simpl)",
     "parse_stmt(tokens,",
   ]);
 
@@ -756,7 +758,7 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
   ], ["lower_fn_decl_stmt(stmt)"]);
   assertContextual(parserSource, "parse_program_located_with_context_impl", [
     "expand_top_level_pattern_lets_with_binder_context(ArrayBuilder::freeze(b), context)",
-    "parse_impl_methods(tokens, hp, simpl, context)",
+    "parse_impl_methods(tokens, starts, hp, simpl, context)",
   ], ["expand_top_level_pattern_lets(ArrayBuilder::freeze(b))"]);
 
   assertContextual(coreSource, "wrap_placeholder_arg", ['String::concat("__ph", __to_string(pc))']);
