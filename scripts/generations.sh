@@ -51,6 +51,7 @@ DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_GENERATION_DISABLE_PERSISTENT_ARTIFACT
 SKIP_RUN_INIT="${VIBE_GENERATION_SKIP_RUN_INIT:-1}"
 GENERATION_INVOKE_MODE=""
 GENERATION_ENTRY=""
+GENERATION_VALIDATION_SOURCE=""
 
 usage() {
   cat >&2 <<'USAGE'
@@ -316,6 +317,23 @@ run_cli_compile() {
     fi
   fi
   mkdir -p "$(dirname "$out")"
+  if [ "$label" = "stage0(seed) -> stage1" ] && [ -n "$GENERATION_VALIDATION_SOURCE" ]; then
+    if (
+      cd "$PROJECT_ROOT"
+      VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI="$import_abi" \
+        VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-$WASM_PRE_GROW_PAGES}" \
+        VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-$DISABLE_PERSISTENT_ARTIFACT_CACHE}" \
+        VIBE_SKIP_RUN_INIT="$skip_run_init" VIBE_NODE_WASM_FLAGS="$node_flags" \
+        python3 "$SCRIPT_DIR/seed_validation_receipt.py" consume \
+          --root "$PROJECT_ROOT" --scripts "$SCRIPT_DIR" --source "$entry" \
+          --seed "$compiler" --runner "$RUNNER_SCRIPT" --entry "$compile_entry_name" \
+          --receipt-source "$GENERATION_VALIDATION_SOURCE" --destination "$out"
+    ); then
+      rm -f "$out.diag"
+      return 0
+    fi
+    echo "[selfhost-gen] no matching validation product; compile stage1" >&2
+  fi
   echo "[selfhost-gen] $label (invoke cli_main)"
   # Delete the previous artifact before compiling, and check the compile's exit
   # status explicitly rather than inferring success from the artifact existing
@@ -423,6 +441,7 @@ prepare_flat_cli_source() {
     VIBE_ADAPTER_BUNDLE_OUT="$bundle_tmp/cli_adapter_bundle.vibe" \
     VIBE_RUNTIME_ENTRY_BUNDLE_OUT="$bundle_tmp/selfbuild_runtime_entry_bundle.vibe" \
     VIBE_ADAPTER_MODULE_SOURCE_OUT="$out" \
+    VIBE_MODULE_SOURCE_ENTRY_NAME="${GENERATION_COMPILE_ENTRY_NAME:-$SEED_ENTRY_NAME}" \
     bash "$generator" >"$bundle_log" 2>&1; then
     trace_end "$prep_tok" 1
     cat "$bundle_log" >&2
@@ -441,6 +460,7 @@ select_generation_entry() {
     GENERATION_INVOKE_MODE="cli"
     if use_flat_cli_source "$entry"; then
       GENERATION_ENTRY="$(prepare_flat_cli_source "$out_dir")"
+      GENERATION_VALIDATION_SOURCE="${VIBE_PREBUILT_MODULE_SOURCE:-$GENERATION_ENTRY}"
     else
       GENERATION_ENTRY="$entry"
     fi
@@ -786,6 +806,7 @@ command_build() {
     [ "$SEED_ENTRY" = "lib/@vibe/compiler/cli_support.vibe" ]; then
     die "split CLI generation requires a bootstrap bump first; current fixed seed uses legacy cli_support.vibe"
   fi
+  GENERATION_COMPILE_ENTRY_NAME="${entry_name:-$SEED_ENTRY_NAME}"
   select_generation_entry "$out_dir" "$requested_entry"
   entry="$GENERATION_ENTRY"
   # Codex review on #1225: run_selfbuild_compile has no entry_name parameter

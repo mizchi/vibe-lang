@@ -66,14 +66,16 @@ jobs:
         run: |
           python3 scripts/bundle_source_functions_test.py
           node --test --test-name-pattern='trusted policy package' scripts/selfcompile_heap_policy_container.test.mjs
-      - name: Measurement receipt and trace-clock regressions
+      - name: Bootstrap validation, measurement and trace-clock regressions
         run: |
           python3 -m unittest discover -s bench/perf -p 'test_selfbuild*.py'
+          python3 -m unittest discover -s scripts -p 'seed_validation_*test.py'
           bash scripts/test_trace_spans.sh
       - name: Generated compiler artifacts (fingerprint)
         id: genfp
         run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
       - name: Cache generated compiler artifacts
+        id: gen-cache
         uses: actions/cache@v4
         with:
           path: |
@@ -81,6 +83,7 @@ jobs:
             lib/@vibe/compiler/cli_adapter_bundle.vibe
             lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
             lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe.seed-validation.*
             lib/@vibe/compiler/cache/codegen_fingerprint.vibe
             lib/@vibe/compiler/.generated.stamp
             lib/@vibe/compiler/.generated.inputs
@@ -96,8 +99,16 @@ jobs:
       - name: Build stage2 from committed flat module source
         if: steps.stage2-cache.outputs.cache-hit != 'true'
         run: |
+          set -euo pipefail
+          mkdir -p _build
           VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
-            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen \
+              2>&1 | tee _build/compiler-build-stage2.log
+          # A fresh validation in this job must supply stage1. A restored
+          # receipt may legitimately miss after a Node/toolchain change.
+          if [ "${{ steps.gen-cache.outputs.cache-hit }}" != true ]; then
+            grep -Fq '[selfhost-gen] reuse verified seed validation as stage1' _build/compiler-build-stage2.log
+          fi
       - name: Assert stage2 exists
         # A missing stage2 has to fail HERE, named, rather than downstream in
         # every consumer at once with the producer reported green.
@@ -132,6 +143,7 @@ jobs:
             lib/@vibe/compiler/cli_adapter_bundle.vibe
             lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
             lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe.seed-validation.*
             lib/@vibe/compiler/cache/codegen_fingerprint.vibe
             lib/@vibe/compiler/.generated.stamp
             lib/@vibe/compiler/.generated.inputs
@@ -165,6 +177,7 @@ jobs:
             lib/@vibe/compiler/cli_adapter_bundle.vibe
             lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
             lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe.seed-validation.*
             lib/@vibe/compiler/cache/codegen_fingerprint.vibe
             lib/@vibe/compiler/.generated.stamp
             lib/@vibe/compiler/.generated.inputs
@@ -205,6 +218,7 @@ jobs:
             lib/@vibe/compiler/cli_adapter_bundle.vibe
             lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
             lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe.seed-validation.*
             lib/@vibe/compiler/cache/codegen_fingerprint.vibe
             lib/@vibe/compiler/.generated.stamp
             lib/@vibe/compiler/.generated.inputs
@@ -907,6 +921,7 @@ jobs:
             lib/@vibe/compiler/cli_adapter_bundle.vibe
             lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
             lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe.seed-validation.*
             lib/@vibe/compiler/cache/codegen_fingerprint.vibe
             lib/@vibe/compiler/.generated.stamp
             lib/@vibe/compiler/.generated.inputs
@@ -1027,6 +1042,7 @@ jobs:
             lib/@vibe/compiler/cli_adapter_bundle.vibe
             lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
             lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe.seed-validation.*
             lib/@vibe/compiler/cache/codegen_fingerprint.vibe
             lib/@vibe/compiler/.generated.stamp
             lib/@vibe/compiler/.generated.inputs

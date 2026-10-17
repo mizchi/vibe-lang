@@ -166,6 +166,7 @@ Not normative.
 | [internal/reports/cloudflare-workers-fit-2026-09-04.md](internal/reports/cloudflare-workers-fit-2026-09-04.md) | |
 | [internal/reports/compiler-cache-streaming-2026-10-01.md](internal/reports/compiler-cache-streaming-2026-10-01.md) | Recursive cache encoder byte contracts and controlled allocation measurements |
 | [internal/reports/selfbuild-critical-path-2026-10-17.md](internal/reports/selfbuild-critical-path-2026-10-17.md) | Whole-bootstrap critical path, CPU and snapshot attribution, worker costs and promotion budgets |
+| [internal/reports/seed-validation-reuse-2026-10-17.md](internal/reports/seed-validation-reuse-2026-10-17.md) | Receipt-bound stage1 reuse, whole-build cold/warm timings, stage fixpoints and memory budgets |
 | [internal/reports/compiler-data-reservation-2026-09-16.md](internal/reports/compiler-data-reservation-2026-09-16.md) | Wasm data buffer reservation: paired microbenchmarks and cold/warm compiler timings |
 | [internal/reports/compiler-data-reservation-2026-09-16.json](internal/reports/compiler-data-reservation-2026-09-16.json) | Raw samples and artifact provenance for the data buffer reservation measurements |
 | [internal/reports/compiler-file-split-memory-2026-10-01.md](internal/reports/compiler-file-split-memory-2026-10-01.md) | Source-split allocation attribution, local fixes and measured optimization follow-ups |
