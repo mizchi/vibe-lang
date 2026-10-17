@@ -1930,6 +1930,19 @@ REPL_HELP
     # survive lowering). Otherwise every block that does not pass -- a failed
     # assertion, a trap, or VIBE_TEST_TIMEOUT_MS running out -- kills it.
     mtarget=""; mtests=(); mprev=""
+    # One entry per FILE: `dir dir/x_test.vibe` names x_test.vibe twice, and
+    # a second copy would get test ids of its own and read as another test
+    # with identical kills (so the real one would be called redundant).
+    mutate_add_test() {
+      local have path="$1"
+      # `./x_test.vibe` (what find(1) prints for `.`) is passed on without
+      # its `./`: the test verb cannot make a build path from that spelling.
+      while [ "${path#./}" != "$path" ]; do path="${path#./}"; done
+      for have in ${mtests[@]+"${mtests[@]}"}; do
+        [ "$have" -ef "$path" ] && return 0
+      done
+      mtests+=("$path")
+    }
     for marg in "$@"; do
       if [ "$mprev" = "--timeout-ms" ]; then export VIBE_TEST_TIMEOUT_MS="$marg"; mprev=""; continue; fi
       case "$marg" in
@@ -1947,10 +1960,10 @@ REPL_HELP
             mtarget="$marg"
           elif [ -d "$marg" ]; then
             mfound=0
-            while IFS= read -r mfile; do mtests+=("$mfile"); mfound=1; done < <(find "$marg" -type f -name '*_test.vibe' | LC_ALL=C sort)
+            while IFS= read -r mfile; do mutate_add_test "$mfile"; mfound=1; done < <(find "$marg" -type f -name '*_test.vibe' | LC_ALL=C sort)
             [ "$mfound" = 1 ] || die "vibe mutate: no test files found under $marg"
           else
-            mtests+=("$marg")
+            mutate_add_test "$marg"
           fi ;;
       esac
     done

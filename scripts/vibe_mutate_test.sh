@@ -188,11 +188,18 @@ test "inc" {
 }
 EOF
 out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
-  bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe lib_test.vibe inc_test.vibe 2>>"$WORK/err")"
+  bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe lib_test.vibe inc_test.vibe ./inc_test.vibe . 2>>"$WORK/err")"
 status=$?
 [ "$status" = 0 ] && note "  ok   exit 0 without survivors" || { note "  FAIL exit $status, expected 0"; fail=1; }
 expect_line "score: 7/7 killed (100.0%)"
 expect_line 'TEST kills=2 unique=2 inc_test.vibe "inc"'
+# inc_test.vibe was named three ways (and `.` adds every *_test.vibe, the
+# refused ones below included only after this run): one file, one test.
+if [ "$(printf '%s\n' "$out" | grep -c '^TEST .*inc_test.vibe "inc"$')" = 1 ]; then
+  note "  ok   a file named twice is one file"
+else
+  note "  FAIL inc_test.vibe was counted more than once"; fail=1
+fi
 
 note "=== two blocks with one title: refused, not half-measured ==="
 # Only one of two same-titled blocks is callable on its own; measuring it
@@ -273,6 +280,31 @@ if printf '%s\n' "$nul_out" | grep -qxF 'TEST kills=2 unique=2 nul_test.vibe "nu
   note "  ok   ran as one block and killed both double mutants"
 else
   note "  FAIL expected one block \"nul\\0title\" killing 2"; printf '%s\n' "$nul_out" | head -8; fail=1
+fi
+
+note "=== a program function spelled like a test's export: refused ==="
+# `fn __test_coll` and `test "coll"` share one export name, so the per-block
+# runner cannot tell which one it would call.
+cat > "$WORK/coll_test.vibe" <<'EOF'
+import ./lib.vibe {
+  double
+}
+
+export fn __test_coll() -> Int {
+  1
+}
+
+test "coll" {
+  assert(double(2) == 4)
+}
+EOF
+coll_out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
+  bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe coll_test.vibe 2>&1)"
+coll_status=$?
+if [ "$coll_status" != 0 ] && printf '%s' "$coll_out" | grep -q 'shares this test.s export name'; then
+  note "  ok   refused, naming the clash"
+else
+  note "  FAIL expected a refusal naming the export-name clash (exit $coll_status)"; printf '%s\n' "$coll_out" | tail -4; fail=1
 fi
 
 note "=== a test file whose imports do not resolve is refused, not skipped ==="

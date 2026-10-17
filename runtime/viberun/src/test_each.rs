@@ -48,10 +48,12 @@ fn escape_field(s: &str) -> String {
     out
 }
 
-/// The names in the `vibe_tests` custom section, or None when the module has
-/// none. A plain section walk: magic + version, then `id, size, payload`
-/// records; a custom section's payload starts with its name.
-fn declared_tests(bytes: &[u8]) -> Option<Vec<String>> {
+/// The entries of the `vibe_tests` custom section as (export name, callable),
+/// or None when the module has none. `callable` is false when another
+/// function shares the export name, so the export may not be the block. A
+/// plain section walk: magic + version, then `id, size, payload` records; a
+/// custom section's payload starts with its name.
+fn declared_tests(bytes: &[u8]) -> Option<Vec<(String, bool)>> {
     fn leb(bytes: &[u8], pos: &mut usize) -> Option<usize> {
         let mut value: usize = 0;
         let mut shift = 0;
@@ -85,17 +87,18 @@ fn declared_tests(bytes: &[u8]) -> Option<Vec<String>> {
             let name_len = leb(bytes, &mut p)?;
             let name_end = p.checked_add(name_len)?;
             if name_end <= end && &bytes[p..name_end] == b"vibe_tests" {
-                // Each name is a LEB128 byte length, then its bytes.
+                // Each entry: a LEB128 byte length, the name's bytes, a flag.
                 let mut names = Vec::new();
                 let mut q = name_end;
                 while q < end {
                     let len = leb(bytes, &mut q)?;
                     let stop = q.checked_add(len)?;
-                    if stop > end {
+                    if stop >= end {
                         return None;
                     }
-                    names.push(String::from_utf8_lossy(&bytes[q..stop]).into_owned());
-                    q = stop;
+                    let name = String::from_utf8_lossy(&bytes[q..stop]).into_owned();
+                    names.push((name, bytes[stop] == 1));
+                    q = stop + 1;
                 }
                 return Some(names);
             }
@@ -137,14 +140,16 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
     register_imports(&mut linker)?;
     withhold_capability_imports(&mut linker, &module)?;
 
-    let names: Vec<String> = match declared_tests(&std::fs::read(wasm_path)?) {
+    let declared: Vec<(String, bool)> = match declared_tests(&std::fs::read(wasm_path)?) {
         Some(declared) => declared,
         None => module
             .exports()
             .filter(|e| e.name().starts_with("__test_"))
-            .map(|e| e.name().to_string())
+            .map(|e| (e.name().to_string(), true))
             .collect(),
     };
+    let callable: Vec<bool> = declared.iter().map(|(_, c)| *c).collect();
+    let names: Vec<String> = declared.into_iter().map(|(n, _)| n).collect();
 
     // One tick per millisecond; a block's deadline is `timeout_ms` ticks
     // after its own start.
@@ -215,6 +220,17 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
             all_ok = false;
             emit(format!(
                 "vibe::test\tfail\t{name}\tduplicate test title: rename one of the blocks, only one of them can be run on its own"
+            ))?;
+            continue;
+        }
+        // Another function shares this block's export name (a program
+        // `fn {full}`): the export may be that function, so calling it would
+        // report its verdict as this block's.
+        if !callable[index] {
+            all_ok = false;
+            emit(format!(
+                "vibe::test\tfail\t{name}\ta function named `{}` shares this test's export name: rename the function or the test",
+                escape_field(full)
             ))?;
             continue;
         }
