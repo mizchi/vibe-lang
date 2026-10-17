@@ -64,7 +64,7 @@ import @vibe/compiler/checker/patterns {
 }
 
 import ./checker_region_retention_arms.vibe {
-  retention_arms_bind, retention_result_items
+  retention_arms_bind, retention_decl_value, retention_result_items
 }
 
 import ./checker_resolve.vibe {
@@ -862,6 +862,23 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
         if !found && alias_result_reaches_outer_binding(callee_ty, args, env) {
           found = true
         }
+        // A result built over a parameter (`Wrap::{ cell: c }`) holds it too
+        // (Codex on #3492). Read from the declaration only here, where a
+        // region is active: every function's eager summary reading it cost
+        // ~27 MB of the self-compile.
+        if !found {
+          match retention_decl_value(callee) {
+            Some(EFn(_, _, params, _, _, body)) => {
+              for index in held_result_param_indices(body, params) {
+                if !found && index >= 0 && index < Array::length(args) && expression_aliases_outer_binding(Array::get(args, index), env) {
+                  found = true
+                }
+              }
+              ()
+            },
+            _ => ()
+          }
+        }
         found
       },
       // #3488: a constructor (`Some(c)`) has no binding, and its value holds
@@ -1261,6 +1278,15 @@ fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr]
   }
 }
 
+/// The parameters a function's result may hold, reading constructor
+/// arguments and literal parts too (`deep`). Asked lazily, by a call inside
+/// a region, of the callee's declaration.
+fn held_result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Array[Int] {
+  let found = array_empty()
+  collect_result_params(body, params, array_empty(), array_empty(), found, true)
+  found
+}
+
 export fn direct_result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Array[Int] {
   let found = array_empty()
   collect_result_param_indices(body, params, array_empty(), array_empty(), found)
@@ -1268,8 +1294,7 @@ export fn direct_result_param_indices(body: Expr, params: Array[(String, Option[
 }
 
 export fn direct_result_param_index(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Option[Int] {
-  let indices = array_empty()
-  collect_result_params(body, params, array_empty(), array_empty(), indices, true)
+  let indices = direct_result_param_indices(body, params)
   if Array::length(indices) > 0 {
     Some(Array::get(indices, 0))
   } else {
