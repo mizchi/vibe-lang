@@ -30,10 +30,12 @@ helpers a program pulls in, and how dense each lane's function bodies are.**
   (`__rt_rc_alloc` 319 B + `__rt_rc_drop` 571 B) the moment one heap value
   exists. `closure_indirect` is 809 B on gc against 1,822 B on linear;
   `variant_float` 1,299 B against 3,051 B.
-- **Programs that only print are smaller on linear.** Linear lowers
-  `println("...")` of a literal to a static write; the gc lane routes it
-  through a general string helper (302 B), so `hello_world` is 1,102 B on gc
-  against 691 B on linear.
+- **Printing a non-literal string still costs gc a renderer.** Both lanes
+  write a literal `println("...")` directly (`hello_world` is 615 B on gc,
+  691 B on linear). For any other argument the gc lane calls `__to_string`
+  (302 B) before writing, because its backend probes print unchecked values;
+  linear passes the string straight to the host. So `fizzbuzz`, which prints
+  the result of a call, is 1,310 B on gc against 1,211 B on linear.
 - **Per byte of user code, the two are about even** (gc = 102.7% of linear on
   the synthetic slope), and at real application scale **gc is +37% larger**
   (the table below). That gap is function-body density, not a fixed cost, so
@@ -88,9 +90,9 @@ comparison too (a broken wasm is naturally small, so always read size next to th
 | program | dominant shape | linear | wasm-gc | Δ | result |
 |---|---|---:|---:|---:|---:|
 | `empty` | `() -> 0` (fixed-cost control) | 602 | 527 | −12.5% | 0 |
-| `hello_world` | single `println` | 691 | 1,102 | +59.5% | 0 |
+| `hello_world` | single `println` | 691 | 615 | −11.0% | 0 |
 | `fib` | recursive calls | 655 | 589 | −10.1% | 6765 |
-| `fizzbuzz` | loop + branches + printing | 1,211 | 1,490 | +23.0% | 0 |
+| `fizzbuzz` | loop + branches + printing | 1,211 | 1,310 | +8.2% | 0 |
 | `closure_indirect` | higher-order / indirect call | 1,822 | 809 | −55.6% | 31 |
 | `variant_float` | algebraic match + floats | 3,051 | 1,299 | −57.4% | 31 |
 | `scaled10` | synthetic ×10 | 6,133 | 4,969 | −19.0% | 105 |
