@@ -1280,6 +1280,37 @@ test "#3448: a re-export named only in a generic bound reaches its provider" {
   inspect(String::starts_with(plan_refusal(paths, [k, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
 }
 
+test "#3448: a bound's trait head is not hidden by a type parameter of its name" {
+  // Codex on #3492: in `[Key, T: Key]` the bound still names the trait.
+  let k = parse_program(lex("export trait Key {\n  key(Self) -> Int\n}\nexport struct Box {\n  value: Int\n}"))
+  let facade = parse_program(lex("export ./k.vibe { Key }\nexport fn use_key[Key, T: Key](x: T) -> Int {\n  1\n}"))
+  let other = parse_program(lex("export struct Box {\n  value: String\n}\nexport fn mine() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./facade.vibe { use_key }\nimport ./other.vibe { mine }\nlet answer = mine()"))
+  let paths = [
+    "/virtual/k.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/other.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(String::starts_with(plan_refusal(paths, [k, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+}
+
+test "#3448: an applied trait in an impl reaches its provider" {
+  // Codex on #3492: `impl Key[Int] for Local` names `Key` through its
+  // encoded trait reference.
+  let k = parse_program(lex("export trait Key[A] {\n  key(Self) -> A\n}\nexport struct Box {\n  value: Int\n}"))
+  let facade = parse_program(lex("export ./k.vibe { Key }\nstruct Local {\n  n: Int\n}\nimpl Key[Int] for Local {\n  key(self: Local) -> Int {\n    self.n\n  }\n}\nexport fn read() -> Int {\n  1\n}"))
+  let other = parse_program(lex("export struct Box {\n  value: String\n}\nexport fn mine() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./facade.vibe { read }\nimport ./other.vibe { mine }\nlet answer = mine()"))
+  let paths = [
+    "/virtual/k.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/other.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(String::starts_with(plan_refusal(paths, [k, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+}
+
 test "#3448: builtin spellings inside a row compare alike" {
   // Codex on #3492: `Probe[i32]` and `Probe[Int]` are one row label.
   let a = parse_program(lex("effect Probe[T] {\n  Take() -> T\n}\nexport struct Job {\n  run: () -> Int with Probe[i32]\n}\nexport fn ja() -> Int {\n  1\n}"))

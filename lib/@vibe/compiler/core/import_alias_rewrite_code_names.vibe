@@ -10,7 +10,7 @@ import ./expr_children.vibe {
 }
 
 import @vibe/ast {
-  type_param_name
+  trait_ref_args, trait_ref_name, type_param_name
 }
 
 /// Whether `stmts`' declarations name `name`: a call or value `name`, a
@@ -81,9 +81,9 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
       STypeAlias(_, _, tparams, target) => Array::push(w.types, (target, local || binds_type_param(tparams, name))),
       SImpl(tparams, bounds, tr, target) => {
         let hidden = local || binds_type_param(tparams, name)
-        Array::push(w.types, (TyName(tr), local))
+        push_trait_ref(w, tr, local, hidden)
         Array::push(w.types, (target, hidden))
-        push_bounds(w, bounds, hidden)
+        push_bounds(w, bounds, local, hidden)
       },
       STrait(_, _, supers, sigs, method_gens, tparams) => {
         let hidden = local || binds_type_param(tparams, name)
@@ -102,7 +102,7 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
           // ... and its bounds name their traits (`project[T: Key]`).
           for mg in method_gens {
             if mg.0 == sg.0 {
-              push_bounds(w, mg.2, sig_hidden)
+              push_bounds(w, mg.2, local, sig_hidden)
             }
           }
           push_types(w, sg.1, sig_hidden)
@@ -164,7 +164,7 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
         hidden = hidden || binds_type_param(tparams, name)
         // A bound names its trait (`[T: Key]`), as an annotation names a type
         // (Codex on #3492).
-        push_bounds(w, bounds, hidden)
+        push_bounds(w, bounds, local, hidden)
         for p in params {
           push_type_opt(w, p.1, hidden)
         }
@@ -265,13 +265,30 @@ fn binds_type_param(tparams: Array[String], name: String) -> Bool {
 
 /// Each bound's trait references, read like row text: the trait head and
 /// any applied arguments.
-fn push_bounds(w: CodeNamesWalk, bounds: Array[(String, Array[String])], hidden: Bool) -> Unit {
+/// A bound's trait head lives in the trait namespace, so only the file's
+/// own declaration of the name (`local`) hides it; a type parameter of the
+/// same spelling hides only the bound's arguments (Codex on #3492:
+/// `fn use[Key, T: Key](x: T)` still names the trait `Key`).
+fn push_bounds(w: CodeNamesWalk, bounds: Array[(String, Array[String])], local: Bool, hidden: Bool) -> Unit {
   for b in bounds {
     for r in b.1 {
-      Array::push(w.rows, (r, hidden))
+      push_trait_ref(w, r, local, hidden)
     }
   }
   ()
+}
+
+/// A trait reference as `trait_ref_key` spells it: a bare name, or an
+/// applied one (`Key[Int]`, encoded) whose head and type arguments are
+/// decoded so the walk sees both (Codex on #3492: `impl Key[Int] for Local`).
+fn push_trait_ref(w: CodeNamesWalk, key: String, local: Bool, hidden: Bool) -> Unit {
+  let head = trait_ref_name(key)
+  if head != "" {
+    Array::push(w.types, (TyName(head), local))
+  } else {
+    Array::push(w.rows, (key, hidden))
+  }
+  push_types(w, trait_ref_args(key), hidden)
 }
 
 fn push_types(w: CodeNamesWalk, ts: Array[TypeExpr], hidden: Bool) -> Unit {
