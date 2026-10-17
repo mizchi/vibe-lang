@@ -900,17 +900,21 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
 /// cell. Anything whose type is not known here still counts.
 export fn literal_item_is_scalar(item: Expr, env: TypeEnv) -> Bool {
   match literal_item_type(item, env) {
-    Some(t) => match t {
-      CtInt => true,
-      CtDouble => true,
-      CtBool => true,
-      CtString => true,
-      CtChar => true,
-      CtUnit => true,
-      CtBytes => true,
-      _ => false
-    },
+    Some(t) => literal_type_is_scalar(t),
     None => false
+  }
+}
+
+fn literal_type_is_scalar(t: Type) -> Bool {
+  match t {
+    CtInt => true,
+    CtDouble => true,
+    CtBool => true,
+    CtString => true,
+    CtChar => true,
+    CtUnit => true,
+    CtBytes => true,
+    _ => false
   }
 }
 
@@ -966,6 +970,22 @@ fn subst_struct_params(t: Type, params: Array[String], args: Array[Type]) -> Typ
 fn literal_item_type(item: Expr, env: TypeEnv) -> Option[Type] {
   match item {
     EIdent(name, _) => env_lookup(env, name),
+    EInt(_) => Some(CtInt),
+    EFloat(_) => Some(CtDouble),
+    EBool(_) => Some(CtBool),
+    EString(_, _) => Some(CtString),
+    EStringInterp(_) => Some(CtString),
+    EUnit => Some(CtUnit),
+    // A conditional is a scalar when every branch is one (Codex on #3492):
+    // `tag: if flag { outer_int } else { 0 }` copies an `Int`.
+    EIf(_, a, b) => match (literal_item_type(a, env), literal_item_type(b, env)) {
+      (Some(ta), Some(tb)) => if literal_type_is_scalar(ta) && literal_type_is_scalar(tb) {
+        Some(ta)
+      } else {
+        None
+      },
+      _ => None
+    },
     // A call to a named function is its declared result (Codex on #3492):
     // `tag: count(outer)` with `fn count(..) -> Int` copies an `Int`.
     ECall(EIdent(fname, _), _, _, _) => match env_lookup(env, fname) {
