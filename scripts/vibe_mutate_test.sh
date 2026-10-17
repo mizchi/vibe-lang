@@ -209,7 +209,7 @@ else
   fail=1
 fi
 
-note "=== a mutant that blocks in a host call is a timeout kill, not a hang ==="
+note "=== a mutant that blocks in a host call is killed at its deadline, not a hang ==="
 # The epoch deadline cannot interrupt a host import; the runner's watchdog
 # must. Baseline: double(2) == 4, so no shell call. Under `*` -> `/` and
 # 2 -> 3 the block blocks in `sleep 30` far past --timeout-ms 300. Without
@@ -225,15 +225,22 @@ test "hang" allows Process {
     let _ = sh_lines("sleep 30")
   }
 }
+
+test "after" {
+  assert(true)
+}
 EOF
 hang_start="$(date +%s)"
 hang_out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
   bash "$ROOT_DIR/runtime/vibe" mutate --timeout-ms 300 lib.vibe hang_test.vibe 2>/dev/null)"
 hang_secs=$(( $(date +%s) - hang_start ))
-if printf '%s\n' "$hang_out" | grep -qxF 'TEST kills=2 unique=2 hang_test.vibe "hang"' && [ "$hang_secs" -lt 45 ]; then
+# "after" runs behind the stuck block. The watchdog's stop leaves it not run,
+# so it is run again rather than credited with a kill it never made.
+if printf '%s\n' "$hang_out" | grep -qxF 'TEST kills=2 unique=2 hang_test.vibe "hang"' \
+  && printf '%s\n' "$hang_out" | grep -qxF 'NOKILL hang_test.vibe "after"' && [ "$hang_secs" -lt 45 ]; then
   note "  ok   both blocking mutants killed (${hang_secs}s)"
 else
-  note "  FAIL expected both blocking mutants killed well under 2 x 30 s (took ${hang_secs}s)"; printf '%s\n' "$hang_out" | head -8; fail=1
+  note "  FAIL expected both blocking mutants killed by \"hang\" alone (\"after\" uncredited) well under 2 x 30 s (took ${hang_secs}s)"; printf '%s\n' "$hang_out" | head -8; fail=1
 fi
 
 note "=== a title holding a NUL is still one callable block ==="

@@ -1982,6 +1982,24 @@ REPL_HELP
           "$RUNNER" "$mcli" test "$@" ) >/dev/null 2>>"$mwork/compile.log" </dev/null || true
       [ -s "$plan" ] && [ "$(sed -n '2p' "$plan")" = run-tests ]
     }
+    # Every block's verdict, resuming after a watchdog stop: a block stuck in a
+    # host call ends that runner process, and the blocks after it come back as
+    # `skip` (not run), so they are run again from the first of them instead
+    # of being given a verdict they never earned. Each pass completes at least
+    # the stuck block, so the loop ends. stdin is the site list's loop, never
+    # a test's to read.
+    mutate_run_each() {
+      local wasm="$1" out="$2" from=0 nrows nskip
+      : > "$out"
+      while :; do
+        VIBE_TEST_EACH_FROM="$from" "$RUNNER" --test-each "$wasm" > "$mwork/each.part" 2>/dev/null </dev/null || true
+        nrows="$(grep -c '^vibe::test	' "$mwork/each.part" || true)"
+        nskip="$(grep -c '^vibe::test	skip	' "$mwork/each.part" || true)"
+        grep '^vibe::test	' "$mwork/each.part" | grep -v '^vibe::test	skip	' >> "$out" || true
+        [ "${nskip:-0}" -gt 0 ] || break
+        from=$((from + nrows - nskip))
+      done
+    }
     mutate_wasm_path() {
       case "$1" in /*) printf '%s' "$1" ;; '') ;; *) printf '%s' "$PROJECT_ROOT/$1" ;; esac
     }
@@ -2030,8 +2048,7 @@ REPL_HELP
       mwasm="$(mutate_wasm_path "$mwasm")"
       [ -n "$mwasm" ] || { cat "$mwork/compile.log" >&2; die "vibe mutate: $msrc did not compile"; }
       cp "$mwasm" "$mwork/base/$mfi.wasm"
-      # stdin is the site list's loop below, never a test's to read.
-      "$RUNNER" --test-each "$mwork/base/$mfi.wasm" > "$mwork/base/$mfi.out" </dev/null || true
+      mutate_run_each "$mwork/base/$mfi.wasm" "$mwork/base/$mfi.out"
       while IFS="$(printf '\t')" read -r _ mverdict mname mreason; do
         if [ "$mverdict" = ok ]; then
           printf 'test\t%s\t%s\t%s\n' "$mtid" "$msrc" "$mname" >> "$mresults"
@@ -2066,8 +2083,8 @@ REPL_HELP
               mdiffer=1
               # A block kills the mutant unless it reports `ok`: a failure, a
               # timeout, and a row that never came (the runner died) alike.
-              "$RUNNER" --test-each "$mwasm" 2>/dev/null </dev/null \
-                | awk -F'\t' '$1 == "vibe::test" && $2 == "ok" { print $3 }' > "$mwork/ok.txt" || true
+              mutate_run_each "$mwasm" "$mwork/each.out"
+              awk -F'\t' '$1 == "vibe::test" && $2 == "ok" { print $3 }' "$mwork/each.out" > "$mwork/ok.txt"
               while IFS= read -r mt_id; do
                 mkillers="${mkillers:+$mkillers,}$mt_id"
               done < <(awk -F'\t' -v f="$mfi" -v okf="$mwork/ok.txt" 'FILENAME == okf { ok[$0] = 1; next } $1 == f && !($2 in ok) { print $3 }' "$mwork/ok.txt" "$mwork/tests.tsv")

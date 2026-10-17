@@ -17,6 +17,10 @@
 //!   vibe::test<TAB>ok<TAB><name>
 //!   vibe::test<TAB>fail<TAB><name><TAB><reason>
 //!   vibe::test<TAB>timeout<TAB><name>
+//!   vibe::test<TAB>skip<TAB><name>
+//! `skip` means NOT RUN: the watchdog ended the process at an earlier block.
+//! It is not a verdict about the block; re-run from it with
+//! `VIBE_TEST_EACH_FROM=<index of its block>` (rows come in block order).
 //! The blocks are the names in the module's `vibe_tests` custom section, which
 //! the compiler writes for every test build: a program may export its own
 //! `__test_helper`, so the prefix is not authoritative. A module without the
@@ -156,8 +160,9 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
     // would hold the run for as long as the import blocks. A watchdog thread
     // owns that case. Every row is written under `watch`, so when a block
     // overruns its deadline by WATCHDOG_GRACE the watchdog reports it as a
-    // timeout, reports every block after it as not run, and ends the process
-    // -- the report stays complete, one row per block, either way.
+    // timeout, reports every block after it as `skip` (not run), and ends the
+    // process -- one row per block either way, and the caller resumes at the
+    // first `skip` (VIBE_TEST_EACH_FROM).
     const WATCHDOG_GRACE: Duration = Duration::from_millis(2_000);
     let names = Arc::new(names);
     let watch: Arc<Mutex<Option<(usize, Instant)>>> = Arc::new(Mutex::new(None));
@@ -176,11 +181,7 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
                         let row = |n: &String| escape_field(n.strip_prefix("__test_").unwrap_or(n));
                         let _ = writeln!(out, "vibe::test\ttimeout\t{}", row(&names[i]));
                         for rest in &names[i + 1..] {
-                            let _ = writeln!(
-                                out,
-                                "vibe::test\tfail\t{}\tnot run: an earlier block blocked in a host call past its deadline",
-                                row(rest)
-                            );
+                            let _ = writeln!(out, "vibe::test\tskip\t{}", row(rest));
                         }
                         let _ = out.flush();
                         std::process::exit(1);
@@ -198,8 +199,14 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
         Ok(())
     };
 
+    // VIBE_TEST_EACH_FROM resumes after a watchdog stop: the caller re-runs
+    // from the first `skip` row, so every block still gets its own verdict.
+    let from: usize = std::env::var("VIBE_TEST_EACH_FROM")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
     let mut all_ok = true;
-    for (index, full) in names.iter().enumerate() {
+    for (index, full) in names.iter().enumerate().skip(from) {
         let name = escape_field(full.strip_prefix("__test_").unwrap_or(full));
         // Two blocks with one title share one export, so only one of them is
         // callable: running it twice would report the other block's verdict

@@ -169,6 +169,14 @@ fn mut_walk_children(out: Array[(Int, Int, String, String, String)], source: Str
   }
 }
 
+fn mut_walk_list(out: Array[(Int, Int, String, String, String)], source: String, items: Array[Expr]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    mut_walk_expr(out, source, Array::get(items, i))
+    i = i + 1
+  }
+}
+
 fn mut_walk_stmts(out: Array[(Int, Int, String, String, String)], source: String, stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
@@ -177,7 +185,13 @@ fn mut_walk_stmts(out: Array[(Int, Int, String, String, String)], source: String
       SLetMut(_, _, body) => mut_walk_expr(out, source, body),
       SLetPat(_, body) => mut_walk_expr(out, source, body),
       SExpr(body) => mut_walk_expr(out, source, body),
-      SFnDecl(_, _, body, _, _) => mut_walk_expr(out, source, body),
+      // A `where { requires: .., ensures: .. }` contract runs as always-on
+      // asserts, so its conditions are code under test too.
+      SFnDecl(_, _, body, requires, ensures) => {
+        mut_walk_expr(out, source, body)
+        mut_walk_list(out, source, requires)
+        mut_walk_list(out, source, ensures)
+      },
       SModule(_, _, body) => mut_walk_stmts(out, source, body),
       // The oracle is never mutated.
       STest(_, _) => (),

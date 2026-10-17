@@ -306,7 +306,9 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
     "parse_fn_name(tokens, pos, context)",
     "parse_value_bracket_header(tokens, name_next, context)",
     "parse_fn_param_list_with_defaults(tokens, starts, lp, context)",
-    "parse_impl_with_binder_context(tokens, [",
+    // Contract conditions get the token offsets only under a context.
+    "Some(_) => starts,",
+    "parse_impl_with_binder_context(tokens, cond_starts, cp, 0, context)",
   ], [
     "parse_fn_name_with_binder_context",
     "parse_param_list(tokens,",
