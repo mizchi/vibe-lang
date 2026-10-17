@@ -1176,7 +1176,8 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
       collect_return_param_indices(left, params, alias_names, alias_indices, found, deep)
       collect_result_params(right, params, alias_names, alias_indices, found, deep)
     },
-    EIf(_, then_expr, else_expr) => {
+    EIf(cond, then_expr, else_expr) => {
+      collect_return_param_indices(cond, params, alias_names, alias_indices, found, deep)
       collect_result_params(then_expr, params, alias_names, alias_indices, found, deep)
       collect_result_params(else_expr, params, alias_names, alias_indices, found, deep)
     },
@@ -1198,6 +1199,10 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
         collect_result_params(arg, params, alias_names, alias_indices, found, deep)
       }
       ()
+    } else if deep {
+      // Another helper hands back the arguments its own result holds
+      // (Codex on #3492: `Wrap::{ cell: same(c) }`).
+      collect_held_call_args(callee, args, params, alias_names, alias_indices, found)
     } else {
       collect_return_param_indices(body, params, alias_names, alias_indices, found, deep)
     },
@@ -1249,11 +1254,15 @@ fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr]
       collect_return_param_indices(left, params, alias_names, alias_indices, found, deep)
       collect_return_param_indices(right, params, alias_names, alias_indices, found, deep)
     },
-    EIf(_, then_expr, else_expr) => {
+    // A condition or scrutinee is evaluated too (Codex on #3492:
+    // `if { return c; true } { .. }`).
+    EIf(cond, then_expr, else_expr) => {
+      collect_return_param_indices(cond, params, alias_names, alias_indices, found, deep)
       collect_return_param_indices(then_expr, params, alias_names, alias_indices, found, deep)
       collect_return_param_indices(else_expr, params, alias_names, alias_indices, found, deep)
     },
-    EMatch(_, arms) => {
+    EMatch(scrut, arms) => {
+      collect_return_param_indices(scrut, params, alias_names, alias_indices, found, deep)
       for arm in arms {
         collect_return_param_indices(arm.1, params, alias_names, alias_indices, found, deep)
       }
@@ -1266,7 +1275,10 @@ fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr]
       }
       ()
     },
-    EWhile(_, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, deep),
+    EWhile(cond, loop_body) => {
+      collect_return_param_indices(cond, params, alias_names, alias_indices, found, deep)
+      collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, deep)
+    },
     EForIn(_, _, _, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, deep),
     ELoop(_, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, deep),
     EAssign(_, value, rest, _) => {
@@ -1275,6 +1287,31 @@ fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr]
     },
     EAssignOp(_, _, _, rest, _) => collect_return_param_indices(rest, params, alias_names, alias_indices, found, deep),
     _ => ()
+  }
+}
+
+/// The helpers `collect_held_call_args` is reading, so a recursive helper
+/// does not loop.
+let held_result_stack: Array[String] = []
+
+fn collect_held_call_args(callee: String, args: Array[Expr], params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
+  if !checker_string_array_has(held_result_stack, callee) && Array::length(held_result_stack) < 8 {
+    match retention_decl_value(callee) {
+      Some(EFn(_, _, callee_params, _, _, callee_body)) => {
+        Array::push(held_result_stack, callee)
+        let held = held_result_param_indices(callee_body, callee_params)
+        Array::truncate(held_result_stack, Array::length(held_result_stack) - 1)
+        for index in held {
+          if index >= 0 && index < Array::length(args) {
+            collect_result_params(Array::get(args, index), params, alias_names, alias_indices, found, true)
+          }
+        }
+        ()
+      },
+      _ => ()
+    }
+  } else {
+    ()
   }
 }
 

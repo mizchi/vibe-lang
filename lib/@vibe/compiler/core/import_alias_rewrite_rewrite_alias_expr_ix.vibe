@@ -1222,9 +1222,28 @@ export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], alia
     }
     bi = bi + 1
   }
-  let am = aliasidx_with_pattern_ctors(aliasidx_build(namespace_aliases_without_top_level_values(combined, stmts)), pattern_ctors)
+  let binders = top_level_value_binders(stmts)
+  let am = aliasidx_with_pattern_ctors(aliasidx_build(namespace_aliases_without_names(combined, binders)), pattern_ctors)
   let imported = for stmt in stmts {
-    rewrite_alias_stmt_ix(rewrite_impl_method_binding(stmt, owner_aliases), am)
+    let own = value_initializer_binders(stmt)
+    let mut rebinds = false
+    for entry in combined {
+      if !rebinds && alias_namespace_rebound(entry.0, own) {
+        rebinds = true
+      }
+    }
+    let stmt_am = if rebinds {
+      let others = empty_strings()
+      for b in binders {
+        if !import_alias_rewrite_string_array_contains(own, b) {
+          Array::push(others, b)
+        }
+      }
+      aliasidx_with_pattern_ctors(aliasidx_build(namespace_aliases_without_names(combined, others)), pattern_ctors)
+    } else {
+      am
+    }
+    rewrite_alias_stmt_ix(rewrite_impl_method_binding(stmt, owner_aliases), stmt_am)
   }
   let local_aliases = collect_local_type_aliases(imported)
   let local_owner_aliases = collect_local_impl_method_owner_aliases(imported, local_aliases)
@@ -1239,7 +1258,7 @@ export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], alia
 /// value's field, as it does under a local `helper` (#897), so the program
 /// must not call the import. A plain alias is not touched: a top-level
 /// declaration sharing an import's own name is renamed instead (#3444).
-fn namespace_aliases_without_top_level_values(aliases: Array[(String, String)], stmts: Array[Stmt]) -> Array[(String, String)] {
+fn top_level_value_binders(stmts: Array[Stmt]) -> Array[String] {
   let names = empty_strings()
   for stmt in stmts {
     match stmt {
@@ -1252,6 +1271,10 @@ fn namespace_aliases_without_top_level_values(aliases: Array[(String, String)], 
       _ => ()
     }
   }
+  names
+}
+
+fn namespace_aliases_without_names(aliases: Array[(String, String)], names: Array[String]) -> Array[(String, String)] {
   let mut any = false
   for entry in aliases {
     if !any && alias_namespace_rebound(entry.0, names) {
@@ -1269,6 +1292,24 @@ fn namespace_aliases_without_top_level_values(aliases: Array[(String, String)], 
     }
     out
   }
+}
+
+/// The names a value declaration's own initializer is checked without:
+/// `let helper = helper.greet("x")` and `let (helper, n) = (helper.greet("x"),
+/// 1)` read the import there, so its namespace stays (Codex on #3492). A
+/// function's own name inside its body is the function, so `fn` is not one.
+fn value_initializer_binders(stmt: Stmt) -> Array[String] {
+  let names = empty_strings()
+  match stmt {
+    SLet(_, _, name, _, value) => match value {
+      EFn(_, _, _, _, _, _) => (),
+      _ => Array::push(names, name)
+    },
+    SLetMut(name, _, _) => Array::push(names, name),
+    SLetPat(pat, _) => pat_bound_names_into(pat, names),
+    _ => ()
+  }
+  names
 }
 
 fn pat_bound_names_into(pat: Pat, out: Array[String]) -> Unit {
