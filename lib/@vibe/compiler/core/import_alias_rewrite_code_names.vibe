@@ -1,0 +1,218 @@
+// lib/@vibe/compiler/core/import_alias_rewrite.vibe — which re-exports a
+// facade's own code names, for the #3448 collision check.
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./expr_children.vibe {
+  expr_children
+}
+
+/// Whether `stmts`' declarations name `name`: a call or value `name`, a
+/// qualified `name::..`, a `name::{ .. }` literal or pattern, a constructor
+/// pattern, or a type (Codex on #3467): a parameter, result, annotation,
+/// field, payload or alias target, and a row label. `fn read(b: Box) { b.x }`
+/// names `Box` through its parameter alone.
+export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
+  let qual = String::concat(name, "::")
+  let stack: Array[Expr] = []
+  let types: Array[TypeExpr] = []
+  let rows: Array[String] = []
+  for st in stmts {
+    match st {
+      SLet(_, _, _, ann, e) => {
+        push_type_opt(types, ann)
+        Array::push(stack, e)
+      },
+      SLetMut(_, ann, e) => {
+        push_type_opt(types, ann)
+        Array::push(stack, e)
+      },
+      SFnDecl(_, _, e, _, _) => Array::push(stack, e),
+      SExpr(e) => Array::push(stack, e),
+      SStruct(_, _, fields, _, _, _) => {
+        for f in fields {
+          Array::push(types, f.1)
+        }
+        ()
+      },
+      SEnum(_, _, _, variants, _) => {
+        for v in variants {
+          push_types(types, v.1)
+        }
+        ()
+      },
+      SSuberror(_, _, variants) => {
+        for v in variants {
+          push_types(types, v.1)
+        }
+        ()
+      },
+      STypeAlias(_, _, _, target) => Array::push(types, target),
+      SImpl(_, _, tr, target) => {
+        Array::push(types, TyName(tr))
+        Array::push(types, target)
+      },
+      STrait(_, _, _, sigs, _, _) => {
+        for sg in sigs {
+          push_types(types, sg.1)
+          Array::push(types, sg.2)
+        }
+        ()
+      },
+      SEffectDef(_, _, _, ops) => {
+        for op in ops {
+          push_types(types, op.1)
+          Array::push(types, op.2)
+        }
+        ()
+      },
+      SExternLet(_, t) => Array::push(types, t),
+      SEffectSet(_, _, members) => {
+        for m in members {
+          Array::push(rows, m)
+        }
+        ()
+      },
+      _ => ()
+    }
+  }
+  let mut found = false
+  while !found && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      EIdent(x, _) => found = x == name || String::starts_with(x, qual),
+      ERecord(x, _, targs) => {
+        found = x == name || String::starts_with(x, qual)
+        push_types(types, targs)
+      },
+      EFn(_, _, params, ret, row, _) => {
+        for p in params {
+          push_type_opt(types, p.1)
+        }
+        push_type_opt(types, ret)
+        match row {
+          Some(text) => Array::push(rows, text),
+          None => ()
+        }
+      },
+      EMatch(_, arms) => {
+        for arm in arms {
+          if pat_names(arm.0, name, qual) {
+            found = true
+          }
+        }
+        ()
+      },
+      EHandle(_, arms) => {
+        for arm in arms {
+          if pat_names(arm.0, name, qual) {
+            found = true
+          }
+        }
+        ()
+      },
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+  }
+  while !found && Array::length(types) > 0 {
+    let n = Array::length(types)
+    let cur = Array::get(types, n - 1)
+    Array::truncate(types, n - 1)
+    match cur {
+      TyName(x) => found = x == name || String::starts_with(x, qual),
+      TyApp(x, args) => {
+        found = x == name || String::starts_with(x, qual)
+        push_types(types, args)
+      },
+      TyFn(ps, r, row) => {
+        push_types(types, ps)
+        Array::push(types, r)
+        match row {
+          Some(text) => Array::push(rows, text),
+          None => ()
+        }
+      },
+      TyTuple(items) => push_types(types, items),
+      TyUnit => ()
+    }
+  }
+  for text in rows {
+    if !found && row_text_names(text, name) {
+      found = true
+    }
+  }
+  found
+}
+
+fn push_types(out: Array[TypeExpr], ts: Array[TypeExpr]) -> Unit {
+  for t in ts {
+    Array::push(out, t)
+  }
+  ()
+}
+
+fn push_type_opt(out: Array[TypeExpr], t: Option[TypeExpr]) -> Unit {
+  match t {
+    Some(x) => Array::push(out, x),
+    None => ()
+  }
+}
+
+fn pat_names(p: Pat, name: String, qual: String) -> Bool {
+  match p {
+    PCtor(x, ps) => x == name || String::starts_with(x, qual) || pats_name(ps, name, qual),
+    PStruct(x, fields) => {
+      let mut hit = x == name || String::starts_with(x, qual)
+      for f in fields {
+        if !hit && pat_names(f.1, name, qual) {
+          hit = true
+        }
+      }
+      hit
+    },
+    PTuple(ps) => pats_name(ps, name, qual),
+    POr(a, b) => pat_names(a, name, qual) || pat_names(b, name, qual),
+    _ => false
+  }
+}
+
+fn pats_name(ps: Array[Pat], name: String, qual: String) -> Bool {
+  let mut hit = false
+  for p in ps {
+    if !hit && pat_names(p, name, qual) {
+      hit = true
+    }
+  }
+  hit
+}
+
+/// Whether a row's text (`Ask + Box[Int]`, `{ Ask, Tell }`) has a word
+/// spelled `name`.
+fn row_text_names(text: String, name: String) -> Bool {
+  let mut hit = false
+  let mut word = ""
+  let n = String::length(text)
+  let mut i = 0
+  while !hit && i <= n {
+    let c = if i < n {
+      String::byte_at(text, i)
+    } else {
+      0
+    }
+    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+      word = String::concat(word, String::substring(text, i, i + 1))
+    } else {
+      hit = word == name
+      word = ""
+    }
+    i = i + 1
+  }
+  hit
+}

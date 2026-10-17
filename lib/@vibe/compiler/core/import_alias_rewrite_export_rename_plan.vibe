@@ -9,11 +9,15 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  index_site_key, type_param_arity, type_param_name
+  index_site_key, type_param_name
 }
 
-import ./expr_children.vibe {
-  expr_children
+import ./import_alias_rewrite_code_names.vibe {
+  stmts_code_names
+}
+
+import ./import_alias_rewrite_type_equivalence.vibe {
+  renamed_type_name, type_expr_lists_equivalent, type_exprs_equivalent, type_param_arities_match, type_param_renames
 }
 
 import ./module_graph_path.vibe {
@@ -1053,115 +1057,6 @@ fn substitute_type_params(t: TypeExpr, params: Array[String], args: Array[TypeEx
   }
 }
 
-/// Each type parameter's name mapped to its position, so `Box[T]` and
-/// `Box[U]` compare equal.
-fn type_param_renames(params: Array[String]) -> Array[(String, String)] {
-  let out: Array[(String, String)] = []
-  let mut i = 0
-  while i < Array::length(params) {
-    Array::push(out, (type_param_name(Array::get(params, i)), String::concat("#", Int::to_string(i))))
-    i = i + 1
-  }
-  out
-}
-
-fn type_param_arities_match(a: Array[String], b: Array[String]) -> Bool {
-  let mut ok = Array::length(a) == Array::length(b)
-  let mut i = 0
-  while ok && i < Array::length(a) {
-    ok = type_param_arity(Array::get(a, i)) == type_param_arity(Array::get(b, i))
-    i = i + 1
-  }
-  ok
-}
-
-fn renamed_type_name(renames: Array[(String, String)], name: String) -> String {
-  let mut out = name
-  for r in renames {
-    if r.0 == name {
-      out = r.1
-    }
-  }
-  out
-}
-
-fn type_expr_lists_equivalent(a: Array[TypeExpr], ar: Array[(String, String)], b: Array[TypeExpr], br: Array[(String, String)]) -> Bool {
-  let mut ok = Array::length(a) == Array::length(b)
-  let mut i = 0
-  while ok && i < Array::length(a) {
-    ok = type_exprs_equivalent(Array::get(a, i), ar, Array::get(b, i), br)
-    i = i + 1
-  }
-  ok
-}
-
-fn type_exprs_equivalent(a: TypeExpr, ar: Array[(String, String)], b: TypeExpr, br: Array[(String, String)]) -> Bool {
-  match (a, b) {
-    (TyName(x), TyName(y)) => renamed_type_name(ar, x) == renamed_type_name(br, y),
-    (TyApp(x, xs), TyApp(y, ys)) => renamed_type_name(ar, x) == renamed_type_name(br, y) && type_expr_lists_equivalent(xs, ar, ys, br),
-    (TyFn(xps, xr, xrow), TyFn(yps, yr, yrow)) => type_expr_lists_equivalent(xps, ar, yps, br) && type_exprs_equivalent(xr, ar, yr, br) && row_label_sets_equal(row_labels_renamed(xrow, ar), row_labels_renamed(yrow, br)),
-    (TyTuple(xs), TyTuple(ys)) => type_expr_lists_equivalent(xs, ar, ys, br),
-    (TyUnit, TyUnit) => true,
-    _ => false
-  }
-}
-
-/// A row's labels with the type parameters renamed, split at the top-level
-/// `+` and `,` separators. `Fs + Env` and `Env + Fs + Env` give one set.
-fn row_labels_renamed(row: Option[String], renames: Array[(String, String)]) -> Array[String] {
-  let out: Array[String] = []
-  match row {
-    Some(text) => {
-      let mut label = ""
-      let mut word = ""
-      let mut depth = 0
-      let mut i = 0
-      let n = String::length(text)
-      while i <= n {
-        let c = if i < n {
-          String::byte_at(text, i)
-        } else {
-          0
-        }
-        let is_word = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
-        if is_word {
-          word = String::concat(word, String::substring(text, i, i + 1))
-        } else {
-          label = String::concat(label, renamed_type_name(renames, word))
-          word = ""
-          if c == '[' {
-            depth = depth + 1
-          } else if c == ']' {
-            depth = depth - 1
-          }
-          if c == 0 || (depth == 0 && (c == '+' || c == ',')) {
-            let t = String::trim(label)
-            if t != "" && !import_alias_rewrite_string_array_contains(out, t) {
-              Array::push(out, t)
-            }
-            label = ""
-          } else if c != ' ' {
-            label = String::concat(label, String::substring(text, i, i + 1))
-          }
-        }
-        i = i + 1
-      }
-    },
-    None => ()
-  }
-  out
-}
-
-fn row_label_sets_equal(a: Array[String], b: Array[String]) -> Bool {
-  let mut ok = Array::length(a) == Array::length(b)
-  for x in a {
-    if !import_alias_rewrite_string_array_contains(b, x) {
-      ok = false
-    }
-  }
-  ok
-}
-
 /// The top-level name `stmt` declares, for import reachability, or "".
 fn top_level_decl_name(stmt: Stmt) -> String {
   match stmt {
@@ -1176,36 +1071,6 @@ fn top_level_decl_name(stmt: Stmt) -> String {
     SEffectDef(_, name, _, _) => name,
     _ => ""
   }
-}
-
-/// Whether an expression in `stmts`' declarations names `name`: a call or
-/// value `name`, a qualified `name::..`, or a `name::{ .. }` literal.
-fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
-  let qual = String::concat(name, "::")
-  let stack: Array[Expr] = []
-  for st in stmts {
-    match st {
-      SLet(_, _, _, _, e) => Array::push(stack, e),
-      SFnDecl(_, _, e, _, _) => Array::push(stack, e),
-      SExpr(e) => Array::push(stack, e),
-      _ => ()
-    }
-  }
-  let mut found = false
-  while !found && Array::length(stack) > 0 {
-    let n = Array::length(stack)
-    let cur = Array::get(stack, n - 1)
-    Array::truncate(stack, n - 1)
-    match cur {
-      EIdent(x, _) => found = x == name || String::starts_with(x, qual),
-      ERecord(x, _, _) => found = x == name,
-      _ => ()
-    }
-    for child in expr_children(cur) {
-      Array::push(stack, child)
-    }
-  }
-  found
 }
 
 /// #3448: the refusals for type names two REACHED source files both publish./// #3448: the refusals for type names two REACHED source files both publish.

@@ -1201,3 +1201,36 @@ test "#3489: a row spelled through an effectset is the row of its members" {
   let wide = parse_program(lex("effect Ask {\n  Get() -> Int\n}\neffect Tell {\n  Put(Int) -> Unit\n}\neffectset All = { Ask, Tell }\nexport struct Job {\n  run: () -> Int with All\n}\nexport fn ja() -> Int {\n  1\n}"))
   inspect(String::starts_with(plan_refusal(paths, [wide, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Job`"), "true")
 }
+
+test "#3448: a re-export a facade names only in a type reaches its provider" {
+  // Codex on #3467: `read`'s parameter is the only place `Box` is spelled,
+  // so a walk of expressions alone missed `p.vibe`.
+  let p = parse_program(lex("export struct Box {\n  value: Int\n}"))
+  let facade = parse_program(lex("export ./p.vibe { Box }\nexport fn read(b: Box) -> Int {\n  b.value\n}"))
+  let other = parse_program(lex("export struct Box {\n  value: String\n}\nexport fn mine() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./facade.vibe { read }\nimport ./other.vibe { mine }\nlet answer = mine()"))
+  let paths = [
+    "/virtual/p.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/other.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(String::starts_with(plan_refusal(paths, [p, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  // A result type and a field each name it too.
+  let by_result = parse_program(lex("export ./p.vibe { Box }\nexport fn make() -> Option[Box] {\n  None\n}"))
+  inspect(String::starts_with(plan_refusal(paths, [p, by_result, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  let by_field = parse_program(lex("export ./p.vibe { Box }\nexport struct Holder {\n  b: Box\n}\nexport fn read() -> Int {\n  1\n}"))
+  inspect(String::starts_with(plan_refusal(paths, [p, by_field, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+}
+
+test "#3448: builtin spellings the checker resolves alike are one type" {
+  // Codex on #3467: `()` and `Unit`, `i32` and `Int`, `f64` and `Double`.
+  let a = parse_program(lex("export struct Box {\n  u: Unit,\n  n: i32,\n  d: f64\n}\nexport fn ja() -> Int {\n  1\n}"))
+  let b = parse_program(lex("export struct Box {\n  u: (),\n  n: Int,\n  d: Double\n}\nexport fn jb() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
+  let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
+  inspect(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "clean")
+  // A spelling the checker keeps apart stays apart.
+  let c = parse_program(lex("export struct Box {\n  u: Unit,\n  n: i64,\n  d: Double\n}\nexport fn jb() -> Int {\n  1\n}"))
+  inspect(String::starts_with(plan_refusal(paths, [a, c, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+}
