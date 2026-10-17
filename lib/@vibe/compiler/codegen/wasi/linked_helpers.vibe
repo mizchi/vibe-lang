@@ -128,22 +128,100 @@ fn expr_is_map_literal(e: Expr) -> Bool {
   }
 }
 
-fn stmts_have_map_literal(stmts: Array[Stmt]) -> Bool {
+fn expr_is_array_literal(e: Expr) -> Bool {
+  match e {
+    EArray(_) => true,
+    _ => false
+  }
+}
+
+fn expr_is_lambda(e: Expr) -> Bool {
+  match e {
+    EFn(_, _, _, _, _, _) => true,
+    _ => false
+  }
+}
+
+fn top_value_any_node(expr: Expr, pred: (Expr) -> Bool, skip_top_fn: Bool) -> Bool {
+  match expr {
+    EFn(_, _, _, _, _, body) => if skip_top_fn {
+      expr_any_node(body, pred)
+    } else {
+      expr_any_node(expr, pred)
+    },
+    _ => expr_any_node(expr, pred)
+  }
+}
+
+fn exprs_any_node(exprs: Array[Expr], pred: (Expr) -> Bool) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(exprs) && !found {
+    found = expr_any_node(Array::get(exprs, i), pred)
+    i = i + 1
+  }
+  found
+}
+
+/// Does any node of any expression the statements carry satisfy `pred`?
+/// With `skip_top_fn`, a top-level `let f = (..) -> body` is searched from
+/// its BODY: that lambda becomes a function, not a value an expression
+/// builds. The match names every `Stmt` variant and has no `_` arm, so a
+/// variant added later stops this file compiling until it is classified: a
+/// skipped expression would answer "no" and drop an rc_drop arm the program
+/// needs.
+fn stmts_any_node(stmts: Array[Stmt], pred: (Expr) -> Bool, skip_top_fn: Bool) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(stmts) && !found {
     found = match Array::get(stmts, i) {
-      SLet(_, _, _, _, expr) => expr_any_node(expr, expr_is_map_literal),
-      SLetMut(_, _, expr) => expr_any_node(expr, expr_is_map_literal),
-      STest(_, expr) => expr_any_node(expr, expr_is_map_literal),
-      SBench(_, expr) => expr_any_node(expr, expr_is_map_literal),
-      SExpr(expr) => expr_any_node(expr, expr_is_map_literal),
-      SModule(_, _, inner) => stmts_have_map_literal(inner),
-      _ => false
+      SLet(_, _, _, _, expr) => top_value_any_node(expr, pred, skip_top_fn),
+      SFnDecl(_, _, expr, attrs, extra) => top_value_any_node(expr, pred, skip_top_fn) || exprs_any_node(attrs, pred) || exprs_any_node(extra, pred),
+      SLetMut(_, _, expr) => expr_any_node(expr, pred),
+      SLetPat(_, expr) => expr_any_node(expr, pred),
+      STest(_, expr) => expr_any_node(expr, pred),
+      SBench(_, expr) => expr_any_node(expr, pred),
+      SExample(_, expr) => expr_any_node(expr, pred),
+      SExpr(expr) => expr_any_node(expr, pred),
+      SModule(_, _, inner) => stmts_any_node(inner, pred, skip_top_fn),
+      SEnum(_, _, _, _, _) => false,
+      SSuberror(_, _, _) => false,
+      SStruct(_, _, _, _, _, _) => false,
+      STypeAlias(_, _, _, _) => false,
+      STrait(_, _, _, _, _, _) => false,
+      SImpl(_, _, _, _) => false,
+      SExternLet(_, _) => false,
+      SImport(_, _) => false,
+      SExport(_) => false,
+      SReExport(_, _) => false,
+      SAliasDecl(_, _) => false,
+      SReExportSourceBoundary(_, _) => false,
+      SQualifiedPatternRefs(_) => false,
+      STestEffectRows(_) => false,
+      SEffectDef(_, _, _, _) => false,
+      SEffectSet(_, _, _) => false,
+      SResource(_, _) => false
     }
     i = i + 1
   }
   found
+}
+
+/// Can this program make a closure block (rc class 7) or a ref cell (class
+/// 8)? compile_lambda makes the first, for a lambda compiled as a value that
+/// captures something, and a ref cell only boxes a `let mut` such a lambda
+/// captures. Both need a lambda nested in an expression; a top-level
+/// function definition is not one.
+export fn program_makes_closure_blocks(stmts: Array[Stmt]) -> Bool {
+  stmts_any_node(stmts, expr_is_lambda, true)
+}
+
+/// Does the program write an array literal? On the RC lane a literal
+/// allocates its array block (rc class 5) inline; every other array is made
+/// by the `arr_new` / `Array::slice` / `Array::with_capacity` helpers, whose
+/// reachability lc_emit_module_sections reads off the final bodies.
+export fn program_has_array_literal(stmts: Array[Stmt]) -> Bool {
+  stmts_any_node(stmts, expr_is_array_literal, false)
 }
 
 /// Can this program make a map block (rc class 6, or the class-9
@@ -163,5 +241,5 @@ export fn program_makes_map_blocks(stmts: Array[Stmt], used: Map[String, Bool]) 
     found = String::starts_with(n, "Map::") || String::starts_with(n, "MapBuilder::")
     i = i + 1
   }
-  found || stmts_have_map_literal(stmts)
+  found || stmts_any_node(stmts, expr_is_map_literal, false)
 }

@@ -27,13 +27,15 @@ helpers a program pulls in, and how dense each lane's function bodies are.**
 - **Small programs that allocate are smaller on wasm-gc.** A struct, an
   array, an enum or a closure costs the gc lane nothing beyond `struct.new` /
   `array.new`, while the linear RC lane links its allocator and its drop
-  (`__rt_rc_alloc` 319 B + `__rt_rc_drop` 571 B) the moment one heap value
-  exists. `closure_indirect` is 809 B on gc against 1,822 B on linear;
-  `variant_float` 1,299 B against 3,051 B.
-- **Programs that only print are smaller on linear.** Linear lowers
-  `println("...")` of a literal to a static write; the gc lane routes it
-  through a general string helper (302 B), so `hello_world` is 1,102 B on gc
-  against 691 B on linear.
+  (`__rt_rc_alloc` 319 B + `__rt_rc_drop` 285 B and up) the moment one heap
+  value exists. `closure_indirect` is 809 B on gc against 1,625 B on linear;
+  `variant_float` 1,299 B against 2,962 B.
+- **Printing a non-literal string still costs gc a renderer.** Both lanes
+  write a literal `println("...")` directly (`hello_world` is 615 B on gc,
+  691 B on linear). For any other argument the gc lane calls `__to_string`
+  (302 B) before writing, because its backend probes print unchecked values;
+  linear passes the string straight to the host. So `fizzbuzz`, which prints
+  the result of a call, is 1,310 B on gc against 1,211 B on linear.
 - **Per byte of user code, the two are about even** (gc = 102.7% of linear on
   the synthetic slope), and at real application scale **gc is +37% larger**
   (the table below). That gap is function-body density, not a fixed cost, so
@@ -88,11 +90,11 @@ comparison too (a broken wasm is naturally small, so always read size next to th
 | program | dominant shape | linear | wasm-gc | Δ | result |
 |---|---|---:|---:|---:|---:|
 | `empty` | `() -> 0` (fixed-cost control) | 602 | 527 | −12.5% | 0 |
-| `hello_world` | single `println` | 691 | 1,102 | +59.5% | 0 |
+| `hello_world` | single `println` | 691 | 615 | −11.0% | 0 |
 | `fib` | recursive calls | 655 | 589 | −10.1% | 6765 |
-| `fizzbuzz` | loop + branches + printing | 1,211 | 1,490 | +23.0% | 0 |
-| `closure_indirect` | higher-order / indirect call | 1,822 | 809 | −55.6% | 31 |
-| `variant_float` | algebraic match + floats | 3,051 | 1,299 | −57.4% | 31 |
+| `fizzbuzz` | loop + branches + printing | 1,211 | 1,310 | +8.2% | 0 |
+| `closure_indirect` | higher-order / indirect call | 1,625 | 809 | −50.2% | 31 |
+| `variant_float` | algebraic match + floats | 2,962 | 1,299 | −56.1% | 31 |
 | `scaled10` | synthetic ×10 | 6,133 | 4,969 | −19.0% | 105 |
 | `scaled40` | synthetic ×40 | 16,897 | 15,908 | −5.9% | 255 |
 | `scaled80` | synthetic ×80 | 31,354 | 30,605 | −2.4% | 455 |
@@ -124,11 +126,11 @@ Breaking it down by section and by function
 
 | | `empty` linear | `empty` gc | `closure_indirect` linear | `closure_indirect` gc |
 |---|---:|---:|---:|---:|
-| total | 602 | 527 | 1,822 | 809 |
-| code section | 177 | 185 | 1,367 | 441 |
+| total | 602 | 527 | 1,625 | 809 |
+| code section | 177 | 185 | 1,170 | 441 |
 | data section | 171 | 106 | 171 | 106 |
 | function count | 3 | 3 | 9 | 6 |
-| largest bodies | 154, 10, 8 | 154, 22, 4 | 571, 319, 154, 140, 74 | 163, 154, 57, 23 |
+| largest bodies | 154, 10, 8 | 154, 22, 4 | 374, 319, 154, 140, 74 | 163, 154, 57, 23 |
 
 **Both lanes now emit a helper only when something reachable calls it.**
 `empty` keeps the same three functions on both lanes (the integer printer
@@ -136,12 +138,15 @@ Breaking it down by section and by function
 
 **The allocation runtime is where they part.** On linear, the first heap value
 links `__rt_rc_alloc` (319 B: a size-segregated bin pop, then a bounded
-free-list walk, then the bump) and `__rt_rc_drop` (571 B: the recursive
-per-class release; 870 B for a program that can make a map, whose two arms
-are emitted only then). `closure_indirect` carries both, plus `__rt_rc_dup`.
-On gc a struct, enum or closure is a `struct.new` the engine collects, so the
-same program carries none of it -- the 571 + 319 + 74 B are the bulk of its
-1,013 B gap.
+free-list walk, then the bump) and `__rt_rc_drop`, the recursive per-class
+release. `__rt_rc_drop` carries only the arms for blocks the program can
+make: 285 B with structs and enums alone, +89 B for closures and ref cells
+(a lambda nested in an expression), +197 B for arrays (an array literal, or
+a reachable `arr_new` / `Array::slice` / `Array::with_capacity`), +299 B for
+maps -- 870 B with all of them. `closure_indirect` carries rc_drop at 374 B,
+`__rt_rc_alloc`, and `__rt_rc_dup`. On gc a struct, enum or closure is a
+`struct.new` the engine collects, so the same program carries none of it --
+the 374 + 319 + 74 B are the bulk of its 816 B gap.
 
 On `scaled160`:
 
@@ -200,10 +205,11 @@ reports COMPILE FAILED. The correct invocation is the same as
   reports sizes (artifacts have the name section stripped, so you need a
   function-index-to-source map).
 - **On linear, the allocation runtime is the floor for any program that
-  allocates** (~1 KB: `__rt_rc_alloc` + `__rt_rc_drop` + `__rt_rc_dup`).
-  `__rt_rc_drop` still carries its array, closure, field-vector and ref-cell
-  arms whenever it is linked; narrowing those needs the same "can this
-  program make that block" evidence the map arms use.
+  allocates** (`__rt_rc_alloc` 319 B + `__rt_rc_drop` 285–870 B, plus
+  `__rt_rc_dup` where a value is shared). What remains in the smallest
+  rc_drop is the field-vector arm and the free path every block needs; the
+  next cut would be the allocator's bounded free-list walk, which every
+  freed block outside the size bins (16..264 B, 8-aligned) feeds.
 - **Local-slot count is no longer the main driver (confirmed in #1985).**
   Cutting declared locals 42% moved total size only 1.1%.
   `node scripts/wasm_local_counts.mjs <file.wasm>` reports slots per body, so
