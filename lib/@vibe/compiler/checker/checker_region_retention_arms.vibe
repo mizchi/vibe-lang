@@ -1,8 +1,37 @@
-// lib/@vibe/compiler/checker/checker_region_retention.vibe — which match
-// arms hand back their scrutinee, for the retention and provenance checks.
+// lib/@vibe/compiler/checker/checker_region_retention.vibe — the parts an
+// expression's value can come from, for the retention and provenance checks.
 
 import @vibe/compiler/core {
   Expr, Pat, expr_children
+}
+
+/// #3488: the subexpressions `e`'s value may be, or hold: a literal's fields
+/// or elements, either branch of an `if`, each `match` arm (and the
+/// scrutinee, when an arm hands it back), a block's tail, and a `let`'s
+/// value and body (Codex on #3492: `{ 0; c }`, `{ let y = c; y }`).
+/// Anything else is a leaf, with no parts.
+export fn retention_result_items(e: Expr) -> Array[Expr] {
+  match e {
+    ERecord(_, fields, _) => for f in fields {
+      f.1
+    },
+    ETuple(items) => items,
+    EArray(items) => items,
+    EIf(_, a, b) => [a, b],
+    EMatch(scrut, arms) => {
+      let items = for arm in arms {
+        arm.1
+      }
+      if retention_arms_bind(arms) {
+        Array::push(items, scrut)
+      }
+      items
+    },
+    ESeq(_, b) => [b],
+    ELet(_, v, b, _) => [v, b],
+    ELetMut(_, v, b, _) => [v, b],
+    _ => []
+  }
 }
 
 /// Whether some arm's body names a binder its own pattern binds: such an arm
