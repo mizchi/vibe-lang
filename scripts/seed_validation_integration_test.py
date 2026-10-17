@@ -83,7 +83,9 @@ fi
 
     def test_prebuilt_receipt_hit_and_mutated_product_fallback(self):
         self.env |= {'GITHUB_JOB': 'compiler-build', 'GITHUB_WORKFLOW': 'CI',
-                     'RUNNER_NAME': 'producer', 'RUNNER_TRACKING_ID': 'producer-id'}
+                     'RUNNER_NAME': 'producer', 'RUNNER_TRACKING_ID': 'producer-id',
+                     'GITHUB_ARTIFACTS': '/producer/artifacts',
+                     'GITHUB_ARTIFACTS_LIST': '/producer/artifact-list'}
         result = self.build()
         self.assertEqual(result.returncode, 0, result.stderr)
         # Use a separate destination, as ensure_generated -> bootstrap does.
@@ -92,7 +94,9 @@ fi
             prebuilt.with_name(prebuilt.name + suffix).write_bytes(
                 Path(str(self.root / 'out/cli_adapter_module_source.vibe') + suffix).read_bytes())
         self.env |= {'GITHUB_JOB': 'compiler-gate', 'GITHUB_WORKFLOW': 'Flaker CI',
-                     'RUNNER_NAME': 'consumer', 'RUNNER_TRACKING_ID': 'consumer-id'}
+                     'RUNNER_NAME': 'consumer', 'RUNNER_TRACKING_ID': 'consumer-id',
+                     'GITHUB_ARTIFACTS': '/consumer/artifacts',
+                     'GITHUB_ARTIFACTS_LIST': '/consumer/artifact-list'}
         (self.root / 'invocations.log').write_text('')
         result = self.build(prebuilt=prebuilt)
         self.assertEqual(result.returncode, 0, result.stderr)

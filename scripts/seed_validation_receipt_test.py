@@ -143,6 +143,8 @@ class ReceiptTests(unittest.TestCase):
         self.env |= {'GITHUB_JOB': 'compiler-build', 'GITHUB_WORKFLOW': 'CI',
             'GITHUB_WORKFLOW_REF': 'mizchi/vibe-lang/.github/workflows/ci.yml@main',
             'GITHUB_WORKFLOW_SHA': 'workflow-a', 'GITHUB_RUN_ID': '100',
+            'GITHUB_SHA': 'commit-a', 'GITHUB_REF': 'refs/heads/main',
+            'GITHUB_EVENT_NAME': 'push', 'GITHUB_HEAD_REF': '',
             'GITHUB_RUN_NUMBER': '10', 'GITHUB_RUN_ATTEMPT': '1',
             'GITHUB_ACTOR': 'builder', 'GITHUB_ACTOR_ID': '1',
             'GITHUB_TRIGGERING_ACTOR': 'builder', 'GITHUB_EVENT_PATH': '/event/a.json',
@@ -152,6 +154,8 @@ class ReceiptTests(unittest.TestCase):
         self.env |= {'GITHUB_JOB': 'compiler-gate', 'GITHUB_WORKFLOW': 'Flaker CI',
             'GITHUB_WORKFLOW_REF': 'mizchi/vibe-lang/.github/workflows/flaker-ci.yml@main',
             'GITHUB_WORKFLOW_SHA': 'workflow-b', 'GITHUB_RUN_ID': '200',
+            'GITHUB_SHA': 'commit-b', 'GITHUB_REF': 'refs/pull/1/merge',
+            'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_HEAD_REF': 'feature',
             'GITHUB_RUN_NUMBER': '20', 'GITHUB_RUN_ATTEMPT': '2',
             'GITHUB_ACTOR': 'tester', 'GITHUB_ACTOR_ID': '2',
             'GITHUB_TRIGGERING_ACTOR': 'tester', 'GITHUB_EVENT_PATH': '/event/b.json',
@@ -168,6 +172,16 @@ class ReceiptTests(unittest.TestCase):
                 self.out.write_bytes(b'previous-complete-output')
                 self.assertNotEqual(self.consume(env=changed).returncode, 0)
                 self.assertEqual(self.out.read_bytes(), b'previous-complete-output')
+
+    def test_ci_step_file_commands_do_not_invalidate_the_validated_product(self):
+        names = ['GITHUB_ENV', 'GITHUB_OUTPUT', 'GITHUB_PATH', 'GITHUB_STATE',
+                 'GITHUB_STEP_SUMMARY', 'GITHUB_ARTIFACTS', 'GITHUB_ARTIFACTS_LIST']
+        self.env |= {name: '/runner/producer/' + name for name in names}
+        self.publish()
+        self.env |= {name: '/runner/consumer/' + name for name in names}
+        result = self.consume()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.out.read_bytes(), self.product.read_bytes())
 
 
 if __name__ == '__main__':

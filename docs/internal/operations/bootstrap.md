@@ -86,7 +86,11 @@ fresh source generation and `VIBE_PREBUILT_MODULE_SOURCE`; optional sidecars
 travel with the generated-source CI cache. Different hosts or environments may
 conservatively miss the receipt. Known CI job/run identity is orchestration
 metadata; restoring a cache in another job does not by itself invalidate it.
-Compiler options, unknown settings, roots and actual tool hashes remain bound.
+Step-local Actions file-command paths and Git ref metadata are also
+orchestration; actual source/seed hashes bind the compiled inputs. Compiler
+options, unknown settings, roots and actual tool hashes remain bound.
+CI checks that a fresh validation in the compiler-build job supplies stage1;
+a restored receipt may still miss after an actual toolchain change.
 
 A missing, stale, unsupported or damaged receipt follows the ordinary verified
 stage0-to-stage1 compile. Filesystem/emission/source-map requests and immutable

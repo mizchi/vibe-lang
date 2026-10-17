@@ -78,6 +78,13 @@ digest and compile inputs. None of the newly excluded variables was present
 in that measured environment. The raw record retains both helper hashes and
 this proof; the timings above remain those of the original overlay.
 
+The first updated CI build still missed the receipt across steps. A follow-up
+normalizes known Actions file-command paths and Git ref/context metadata,
+with a second retained-request equivalence proof. CI now asserts reuse when
+source validation was fresh in that job; restored receipts may still miss
+after an actual toolchain change. These changes have separate hashes in the
+raw record and introduce no new timing samples.
+
 [Raw samples, phase medians, paired deltas and hashes](../../../bench/perf/analysis/seed-validation-reuse-2026-10-17.json).
 
 ## Remaining work
