@@ -1155,6 +1155,28 @@ export let deferred_field_reads: Array[(Int, String, Int, Int, String, Int)] = [
 /// with the other per-run tables.
 export let deferred_eq_sites: Array[(Int, Type, String)] = []
 
+/// Provisional value inference returns type constraints, not discharged
+/// diagnostics or hover observations. An earlier statement's deferred checks
+/// must survive a scratch diagnostic lane; the real component check records
+/// its own sites again. Other per-run type facts remain valid for the result.
+export fn with_provisional_value_inference[T](probe: () -> T) -> T {
+  let saved_fields = Array::slice(deferred_field_reads, 0, Array::length(deferred_field_reads))
+  let saved_eq = Array::slice(deferred_eq_sites, 0, Array::length(deferred_eq_sites))
+  let was_recording = Array::get(local_let_type_recording, 0)
+  Array::set(local_let_type_recording, 0, false)
+  let result = probe()
+  Array::truncate(deferred_field_reads, 0)
+  for row in saved_fields {
+    Array::push(deferred_field_reads, row)
+  }
+  Array::truncate(deferred_eq_sites, 0)
+  for row in saved_eq {
+    Array::push(deferred_eq_sites, row)
+  }
+  Array::set(local_let_type_recording, 0, was_recording)
+  result
+}
+
 /// #3297 (Codex P2 on #3324): the declared types whose `::equals` the
 /// program writes itself, filled by `note_source_comparator_heads` from each
 /// statement list the checker walks. Reset with the other per-run tables.

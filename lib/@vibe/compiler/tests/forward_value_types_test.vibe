@@ -1,0 +1,272 @@
+// #3493: forward values are checked using inferred declaration types.
+import @vibe/compiler/checker {
+  check_program, check_program_statement_root_type_observation, check_program_type_table, local_let_types
+}
+import @vibe/compiler/checker/artifacts {
+  checked_statement_root_type_observation_row_count,
+  checked_statement_root_type_observation_statement_path_at,
+  checked_statement_root_type_observation_type_at
+}
+
+import @vibe/compiler/core {
+  Stmt
+}
+import @vibe/compiler/syntax {
+  lex, lex_with_offsets, parse_program, parse_program_located
+}
+
+fn forward_value_error(source: String) -> String with Exception {
+  // Parser failures must fail the test, never count as a checker refusal.
+  let stmts = parse_program(lex(source))
+  handle {
+    let _ = check_program(stmts)
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+test "#3493: array-element-wrong" {
+  let message = forward_value_error("fn early() -> String { Array::get(xs, 0) }\nlet xs = [1, 2]\nfn main() -> Int { String::length(early()) }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: builtin-arg-wrong" {
+  let message = forward_value_error("struct LocalHelper { greet: (String) -> Int }\nfn early() -> Int { String::length(helper.greet(\"x\")) }\nlet helper = LocalHelper::{ greet: (name) -> 5 }\nfn main() -> Int { early() }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: call-result-wrong" {
+  let message = forward_value_error("struct LocalHelper { greet: (String) -> Int }\nfn make_helper() -> LocalHelper { LocalHelper::{ greet: (name) -> 5 } }\nfn early() -> String { helper.greet(\"x\") }\nlet helper = make_helper()\nfn main() -> Int { String::length(early()) }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: declared-let-wrong" {
+  let message = forward_value_error("struct LocalHelper { greet: (String) -> Int }\nfn early() -> String { helper.greet(\"x\") }\nlet helper: LocalHelper = LocalHelper::{ greet: (name) -> 5 }\nfn main() -> Int { String::length(early()) }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: destructuring-ok" {
+  let message = forward_value_error("struct LocalHelper { greet: (String) -> Int }\nfn early() -> Int { helper.greet(\"x\") }\nlet (helper, n) = (LocalHelper::{ greet: (name) -> 5 }, 3)\nfn main() -> Int { early() + n }\n")
+  inspect(message, content = "")
+}
+
+test "#3493: destructuring-wrong" {
+  let message = forward_value_error("struct LocalHelper { greet: (String) -> Int }\nfn early() -> String { helper.greet(\"x\") }\nlet (helper, n) = (LocalHelper::{ greet: (name) -> 5 }, 3)\nfn main() -> Int { String::length(early()) }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: direct-field-wrong" {
+  let message = forward_value_error("struct DirectHelper { n: Int }\nfn early() -> String { helper.n }\nlet helper = DirectHelper::{ n: 5 }\nfn main() -> Int { String::length(early()) }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: lexical-shadow-ok" {
+  let message = forward_value_error("fn early(helper: String) -> Int { String::length(helper) }\nstruct Helper { n: Int }\nlet helper = Helper::{ n: 5 }\n")
+  inspect(message, content = "")
+}
+
+test "#3493: nested-destructure-wrong" {
+  let message = forward_value_error("struct Helper { n: Int }\nfn early() -> String { helper.n }\nlet ((helper, n), label) = ((Helper::{ n: 5 }, 3), \"ok\")\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: own-initializer-ok" {
+  let message = forward_value_error("struct LocalHelper { greet: (String) -> Int }\nstruct Later { eval: () -> Int }\nlet (helper, later) = (LocalHelper::{ greet: (name) -> 5 }, Later::{ eval: () -> { helper.greet(\"x\") } })\nfn main() -> Int { later.eval() }\n")
+  inspect(message, content = "")
+}
+
+test "#3493: own-initializer-wrong" {
+  let message = forward_value_error("struct LocalHelper { greet: (String) -> Int }\nstruct Later { eval: () -> String }\nlet (helper, later) = (LocalHelper::{ greet: (name) -> 5 }, Later::{ eval: () -> { helper.greet(\"x\") } })\nfn main() -> Int { String::length(later.eval()) }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: own-struct-destructure-ok" {
+  let message = forward_value_error("struct Helper { n: Int }\nstruct Wrap { helper: Helper; eval: () -> Int }\nlet Wrap::{ helper, eval } = Wrap::{ helper: Helper::{ n: 5 }, eval: () -> helper.n }\n")
+  inspect(message, content = "")
+}
+
+test "#3493: own-struct-destructure-wrong" {
+  let message = forward_value_error("struct Helper { n: Int }\nstruct Wrap { helper: Helper; eval: () -> String }\nlet Wrap::{ helper, eval } = Wrap::{ helper: Helper::{ n: 5 }, eval: () -> helper.n }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: plain-ok" {
+  let message = forward_value_error("struct LocalHelper { greet: (String) -> Int }\nfn early() -> Int { helper.greet(\"x\") }\nlet helper = LocalHelper::{ greet: (name) -> 5 }\nfn main() -> Int { early() }\n")
+  inspect(message, content = "")
+}
+
+test "#3493: plain-wrong" {
+  let message = forward_value_error("struct LocalHelper { greet: (String) -> Int }\nfn early() -> String { helper.greet(\"x\") }\nlet helper = LocalHelper::{ greet: (name) -> 5 }\nfn main() -> Int { String::length(early()) }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: polymorphic-alias-ok" {
+  let message = forward_value_error("let identity = (x) -> x\nfn use_int() -> Int { alias(7) }\nfn use_string() -> String { alias(\"ok\") }\nlet alias = identity\nfn main() -> Int { use_int() + String::length(use_string()) }\n")
+  inspect(message, content = "")
+}
+
+test "#3493: recursive-group-polymorphism-ok" {
+  let message = forward_value_error("let (identity, apply) = ((x) -> x, (x) -> identity(x))\nfn int_value() -> Int { apply(7) }\nfn string_value() -> String { apply(\"ok\") }\n")
+  inspect(message, content = "")
+}
+
+test "#3493: self-recursive-function-ok" {
+  let message = forward_value_error("let rec size = (n) -> { if n == 0 { 0 } else { size(n - 1) + 1 } }\nfn main() -> Int { size(3) }\n")
+  inspect(message, content = "")
+}
+
+test "#3493: struct-destructure-wrong" {
+  let message = forward_value_error("struct Helper { n: Int }\nstruct Wrap { helper: Helper }\nfn early() -> String { helper.n }\nlet Wrap::{ helper } = Wrap::{ helper: Helper::{ n: 5 } }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: transitive-call-ok" {
+  let message = forward_value_error("struct Helper { n: Int }\nfn early() -> Int { alias.n }\nlet alias = make()\nlet make = () -> original\nlet original = Helper::{ n: 5 }\n")
+  inspect(message, content = "")
+}
+
+test "#3493: transitive-call-wrong" {
+  let message = forward_value_error("struct Helper { n: Int }\nfn early() -> String { alias.n }\nlet alias = make()\nlet make = () -> original\nlet original = Helper::{ n: 5 }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: transitive-polymorphic-alias-ok" {
+  let message = forward_value_error("fn int_value() -> Int { a(7) }\nfn string_value() -> String { a(\"ok\") }\nlet a = b\nlet b = identity\nlet identity = (x) -> x\n")
+  inspect(message, content = "")
+}
+
+test "#3493: wrong-after-let" {
+  let message = forward_value_error("struct LocalHelper { greet: (String) -> Int }\nlet helper = LocalHelper::{ greet: (name) -> 5 }\nfn early() -> String { helper.greet(\"x\") }\nfn main() -> Int { String::length(early()) }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: an unresolved value across a module boundary is not a wildcard" {
+  let parsed = parse_program(lex("struct Helper { n: Int }\nfn early() -> String { helper.n }\nlet helper = Helper::{ n: 5 }\n"))
+  let stmts = [
+    Array::get(parsed, 0),
+    Array::get(parsed, 1),
+    SModule(false, "Gap", []),
+    Array::get(parsed, 2)
+  ]
+  let message = handle {
+    let _ = check_program(stmts)
+    ""
+  } with { Exception::Throw(msg) => msg }
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: a complete annotated value remains usable across a module boundary" {
+  let parsed = parse_program(lex("struct Helper { n: Int }\nfn early() -> Int { helper.n }\nlet helper: Helper = Helper::{ n: 5 }\n"))
+  let stmts = [
+    Array::get(parsed, 0),
+    Array::get(parsed, 1),
+    SModule(false, "Gap", []),
+    Array::get(parsed, 2)
+  ]
+  let message = handle {
+    let _ = check_program(stmts)
+    ""
+  } with { Exception::Throw(msg) => msg }
+  inspect(message, content = "")
+}
+
+test "#3493: reordered inference retains complete source coordinates" {
+  let stmts = parse_program(lex("let before = later\nlet later = 7\n"))
+  match check_program_statement_root_type_observation(stmts) {
+    Some(observation) => {
+      inspect(checked_statement_root_type_observation_row_count(observation), content = "2")
+      inspect(checked_statement_root_type_observation_statement_path_at(observation, 0), content = "Some([0])")
+      inspect(checked_statement_root_type_observation_statement_path_at(observation, 1), content = "Some([1])")
+      inspect(checked_statement_root_type_observation_type_at(observation, 0), content = "Some(I0)")
+    },
+    None => assert(false)
+  }
+  match Array::get(stmts, 0) {
+    SLet(_, _, name, _, _) => inspect(name, content = "before"),
+    _ => assert(false)
+  }
+}
+
+test "#3493: provisional recursive inference adds no observation rows" {
+  let stmts = parse_program(lex("let (identity, apply) = ((x) -> x, (x) -> identity(x))\n"))
+  match check_program_statement_root_type_observation(stmts) {
+    Some(observation) => inspect(checked_statement_root_type_observation_row_count(observation), content = "3"),
+    None => assert(false)
+  }
+}
+
+test "#3493: group-recursive-array-mixed-wrong" {
+  let message = forward_value_error("let (xs, put) = ([], (v) -> Unit { Array::push(xs, v)\nif false { put(v) } else { () } })\nfn main() -> Int { put(1)\nput(\"bad\")\nArray::get(xs, 1) + 1 }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: group-recursive-array-single-wrong" {
+  let message = forward_value_error("let (xs, put) = ([], (v) -> Unit { Array::push(xs, v)\nif false { put(v) } else { () } })\nfn main() -> Int { put(\"bad\")\nArray::get(xs, 0) }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: group-recursive-array-int-ok" {
+  let message = forward_value_error("let (xs, put) = ([], (v) -> Unit { Array::push(xs, v)\nif false { put(v) } else { () } })\nfn main() -> Int { put(1)\nput(2)\nArray::get(xs, 1) + 1 }\n")
+  inspect(message, content = "")
+}
+
+test "#3493: generic-bare-ann-wrong" {
+  let message = forward_value_error("struct Box[T] { value: T }\nfn early() -> String { box.value }\nlet box: Box = Box::{ value: 5 }\n")
+  inspect(String::length(message) > 0, content = "true")
+}
+
+test "#3493: generic-bare-ann-ok" {
+  let message = forward_value_error("struct Box[T] { value: T }\nfn early() -> Int { box.value }\nlet box: Box = Box::{ value: 5 }\n")
+  inspect(message, content = "")
+}
+
+test "#3493: three thousand inferred forward function dependencies" {
+  let source = StringBuilder::new()
+  let mut i = 0
+  while i < 3000 {
+    StringBuilder::push(source, "let f")
+    StringBuilder::push(source, __to_string(i))
+    StringBuilder::push(source, " = () -> ")
+    if i + 1 < 3000 {
+      StringBuilder::push(source, "f")
+      StringBuilder::push(source, __to_string(i + 1))
+      StringBuilder::push(source, "()")
+    } else {
+      StringBuilder::push(source, "7")
+    }
+    StringBuilder::push(source, "\n")
+    i = i + 1
+  }
+  StringBuilder::push(source, "fn main() -> Int { f0() }\n")
+  inspect(forward_value_error(StringBuilder::freeze(source)), content = "")
+}
+
+test "#3493: a declared function parameter remains an abstract generic head" {
+  inspect(forward_value_error("struct Box[T] { value: T }\nfn go(box: Box, n: Int) -> Int { if n == 0 { 0 } else { go(box, n - 1) } }\nfn main() -> Int { go(Box::{ value: 5 }, 2) }\n"), content = "")
+}
+
+test "#3493: provisional inference does not record local binder observations" {
+  let source = "let rec f = (x) -> Int { let n = 1\nif false { f(x) } else { n } }\n"
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let _ = check_program_type_table(parse_program_located(tokens, starts, source))
+  inspect(Array::length(local_let_types()), content = "1")
+}
+
+test "#3493: earlier-deferred-field-wrong" {
+  let message = forward_value_error("struct Holder { payload: String }\nlet xs = []\nfn read() -> Int { Array::get(xs, 0).payload }\nlet rec touch = (v) -> Unit { Array::push(xs, Holder::{ payload: \"bad\" })\nif false { touch(v) } else { () } }\nfn main() -> Int { touch(0)\nread() }\n")
+  inspect(String::contains(message, "once its receiver is known"), content = "true")
+}
+
+test "#3493: earlier-deferred-field-ok" {
+  let message = forward_value_error("struct Holder { payload: Int }\nlet xs = []\nfn read() -> Int { Array::get(xs, 0).payload }\nlet rec touch = (v) -> Unit { Array::push(xs, Holder::{ payload: 5 })\nif false { touch(v) } else { () } }\nfn main() -> Int { touch(0)\nread() }\n")
+  inspect(message, content = "")
+}
+
+test "#3493: an unresolved recursive return needs an annotation" {
+  let message = forward_value_error("let recurse = [T](x: T) { recurse(x) }\nfn main() -> Unit { let _ = recurse(42) }\n")
+  inspect(String::contains(message, "annotate the function parameters and return types in this recursive value group"), content = "true")
+}
+
+test "#3493: an annotated recursive generic stays polymorphic" {
+  let message = forward_value_error("let recurse = [T](x: T, depth: Int) -> T { if depth == 0 { x } else { recurse(x, depth - 1) } }\nfn main() -> Int { let label: String = recurse(\"ok\", 2)\nrecurse(5, 3) + String::length(label) }\n")
+  inspect(message, content = "")
+}
