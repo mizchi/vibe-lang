@@ -12,6 +12,10 @@ import @vibe/ast {
   index_site_key, type_param_arity, type_param_name
 }
 
+import ./expr_children.vibe {
+  expr_children
+}
+
 import ./module_graph_path.vibe {
   dir_of_path, is_contract_ext
 }
@@ -1048,7 +1052,36 @@ fn top_level_decl_name(stmt: Stmt) -> String {
   }
 }
 
-/// #3448: the refusals for type names two REACHED source files both publish.
+/// Whether an expression in `stmts`' declarations names `name`: a call or
+/// value `name`, a qualified `name::..`, or a `name::{ .. }` literal.
+fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
+  let qual = String::concat(name, "::")
+  let stack: Array[Expr] = []
+  for st in stmts {
+    match st {
+      SLet(_, _, _, _, e) => Array::push(stack, e),
+      SExpr(e) => Array::push(stack, e),
+      _ => ()
+    }
+  }
+  let mut found = false
+  while !found && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      EIdent(x, _) => found = x == name || String::starts_with(x, qual),
+      ERecord(x, _, _) => found = x == name,
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+  }
+  found
+}
+
+/// #3448: the refusals for type names two REACHED source files both publish./// #3448: the refusals for type names two REACHED source files both publish.
 ///
 /// A package is merged whole -- importing one name from `@vibe/core` brings
 /// every member file -- so a publication counts only when its file is reached
@@ -1097,15 +1130,27 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
           let mut si = 0
           while si < Array::length(stmts) {
             // A re-export binds its names in the facade too, so the
-            // facade's own code may call them (Codex on #3467): its items
-            // reach their provider like an import's. A package contract
-            // holds no code, so its re-exports are only its surface.
+            // facade's own code may call them (Codex on #3467): an item that
+            // code names reaches its provider like an import's. One it only
+            // passes on reaches nothing until an importer names it (the
+            // #3036 control `dup_type_formal_marker_ok`), and a package
+            // contract holds no code at all.
             let (raw_path, items) = match Array::get(stmts, si) {
               SImport(rp, its) => (rp, its),
               SReExport(rp, its) => if is_contract_ext(path) {
                 ("", [])
               } else {
-                (rp, its)
+                let used: Array[ImportItem] = []
+                for it in its {
+                  let local = match it.alias {
+                    Some(a) => a,
+                    None => it.name
+                  }
+                  if stmts_code_names(stmts, local) {
+                    Array::push(used, it)
+                  }
+                }
+                (rp, used)
               },
               _ => ("", [])
             }
