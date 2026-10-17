@@ -1105,6 +1105,15 @@ fn literal_item_type(item: Expr, env: TypeEnv) -> Option[Type] {
 }
 
 export fn collect_result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
+  collect_result_params(body, params, alias_names, alias_indices, found, false)
+}
+
+/// `deep` also reads a constructor's arguments and the parts of any other
+/// form (`retention_result_items`), so a helper returning `Wrap::{ cell: c
+/// }` hands `c` back (Codex on #3492). Only the per-function alias contract
+/// asks for that: every lambda's provenance row reading it too cost ~27 MB
+/// of the self-compile, over the heap gate.
+fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int], deep: Bool) -> Unit {
   match body {
     EIdent(name, _) => {
       let mut i = 0
@@ -1133,7 +1142,7 @@ export fn collect_result_param_indices(body: Expr, params: Array[(String, Option
     ELet(name, value, rest, _) => {
       let found_mark = Array::length(found)
       let alias_mark = Array::length(alias_names)
-      collect_result_param_indices(value, params, alias_names, alias_indices, found)
+      collect_result_params(value, params, alias_names, alias_indices, found, deep)
       let mut i = found_mark
       while i < Array::length(found) {
         Array::push(alias_names, name)
@@ -1141,44 +1150,49 @@ export fn collect_result_param_indices(body: Expr, params: Array[(String, Option
         i = i + 1
       }
       Array::truncate(found, found_mark)
-      collect_return_param_indices(value, params, alias_names, alias_indices, found)
-      collect_result_param_indices(rest, params, alias_names, alias_indices, found)
+      collect_return_param_indices(value, params, alias_names, alias_indices, found, deep)
+      collect_result_params(rest, params, alias_names, alias_indices, found, deep)
       Array::truncate(alias_names, alias_mark)
       Array::truncate(alias_indices, alias_mark)
     },
     ESeq(left, right) => {
-      collect_return_param_indices(left, params, alias_names, alias_indices, found)
-      collect_result_param_indices(right, params, alias_names, alias_indices, found)
+      collect_return_param_indices(left, params, alias_names, alias_indices, found, deep)
+      collect_result_params(right, params, alias_names, alias_indices, found, deep)
     },
     EIf(_, then_expr, else_expr) => {
-      collect_result_param_indices(then_expr, params, alias_names, alias_indices, found)
-      collect_result_param_indices(else_expr, params, alias_names, alias_indices, found)
+      collect_result_params(then_expr, params, alias_names, alias_indices, found, deep)
+      collect_result_params(else_expr, params, alias_names, alias_indices, found, deep)
     },
     // A `return` hands its value out as the tail does, and so does every
     // `match` arm (Codex on #3492: `fn same(c: Cell) -> Cell { return c }`).
-    EReturn(value) => collect_result_param_indices(value, params, alias_names, alias_indices, found),
+    EReturn(value) => collect_result_params(value, params, alias_names, alias_indices, found, deep),
     EMatch(scrut, arms) => {
-      collect_return_param_indices(scrut, params, alias_names, alias_indices, found)
+      collect_return_param_indices(scrut, params, alias_names, alias_indices, found, deep)
       for arm in arms {
-        collect_result_param_indices(arm.1, params, alias_names, alias_indices, found)
+        collect_result_params(arm.1, params, alias_names, alias_indices, found, deep)
       }
       ()
     },
     // A constructor's or literal's value holds its parts (Codex on #3492:
     // `fn wrap(c: Cell) -> Wrap { Wrap::{ cell: c } }`), as the other
     // provenance walks read them (`retention_result_items`).
-    ECall(EIdent(callee, _), args, _, _) => if callee_is_ctor_name(callee) {
+    ECall(EIdent(callee, _), args, _, _) => if deep && callee_is_ctor_name(callee) {
       for arg in args {
-        collect_result_param_indices(arg, params, alias_names, alias_indices, found)
+        collect_result_params(arg, params, alias_names, alias_indices, found, deep)
       }
       ()
     } else {
-      collect_return_param_indices(body, params, alias_names, alias_indices, found)
+      collect_return_param_indices(body, params, alias_names, alias_indices, found, deep)
     },
     _ => {
-      collect_return_param_indices(body, params, alias_names, alias_indices, found)
-      for part in retention_result_items(body) {
-        collect_result_param_indices(part, params, alias_names, alias_indices, found)
+      collect_return_param_indices(body, params, alias_names, alias_indices, found, deep)
+      let parts = if deep {
+        retention_result_items(body)
+      } else {
+        []
+      }
+      for part in parts {
+        collect_result_params(part, params, alias_names, alias_indices, found, deep)
       }
       ()
     }
@@ -1192,57 +1206,57 @@ export fn collect_result_param_indices(body: Expr, params: Array[(String, Option
 /// handler bodies, assignment continuations -- and not operands or call
 /// arguments: every function is summarized, so a whole-tree walk here cost
 /// ~14 MB of the self-compile.
-fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
+fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int], deep: Bool) -> Unit {
   match e {
-    EReturn(value) => collect_result_param_indices(value, params, alias_names, alias_indices, found),
+    EReturn(value) => collect_result_params(value, params, alias_names, alias_indices, found, deep),
     EFn(_, _, _, _, _, _) => (),
     ELet(name, value, rest, _) => {
-      collect_return_param_indices(value, params, alias_names, alias_indices, found)
+      collect_return_param_indices(value, params, alias_names, alias_indices, found, deep)
       let alias_mark = Array::length(alias_names)
       let held = array_empty()
-      collect_result_param_indices(value, params, alias_names, alias_indices, held)
+      collect_result_params(value, params, alias_names, alias_indices, held, deep)
       for index in held {
         Array::push(alias_names, name)
         Array::push(alias_indices, index)
       }
-      collect_return_param_indices(rest, params, alias_names, alias_indices, found)
+      collect_return_param_indices(rest, params, alias_names, alias_indices, found, deep)
       Array::truncate(alias_names, alias_mark)
       Array::truncate(alias_indices, alias_mark)
     },
     ELetMut(_, value, rest, _) => {
-      collect_return_param_indices(value, params, alias_names, alias_indices, found)
-      collect_return_param_indices(rest, params, alias_names, alias_indices, found)
+      collect_return_param_indices(value, params, alias_names, alias_indices, found, deep)
+      collect_return_param_indices(rest, params, alias_names, alias_indices, found, deep)
     },
-    ELetRec(_, _, rest) => collect_return_param_indices(rest, params, alias_names, alias_indices, found),
+    ELetRec(_, _, rest) => collect_return_param_indices(rest, params, alias_names, alias_indices, found, deep),
     ESeq(left, right) => {
-      collect_return_param_indices(left, params, alias_names, alias_indices, found)
-      collect_return_param_indices(right, params, alias_names, alias_indices, found)
+      collect_return_param_indices(left, params, alias_names, alias_indices, found, deep)
+      collect_return_param_indices(right, params, alias_names, alias_indices, found, deep)
     },
     EIf(_, then_expr, else_expr) => {
-      collect_return_param_indices(then_expr, params, alias_names, alias_indices, found)
-      collect_return_param_indices(else_expr, params, alias_names, alias_indices, found)
+      collect_return_param_indices(then_expr, params, alias_names, alias_indices, found, deep)
+      collect_return_param_indices(else_expr, params, alias_names, alias_indices, found, deep)
     },
     EMatch(_, arms) => {
       for arm in arms {
-        collect_return_param_indices(arm.1, params, alias_names, alias_indices, found)
+        collect_return_param_indices(arm.1, params, alias_names, alias_indices, found, deep)
       }
       ()
     },
     EHandle(handled, arms) => {
-      collect_return_param_indices(handled, params, alias_names, alias_indices, found)
+      collect_return_param_indices(handled, params, alias_names, alias_indices, found, deep)
       for arm in arms {
-        collect_return_param_indices(arm.1, params, alias_names, alias_indices, found)
+        collect_return_param_indices(arm.1, params, alias_names, alias_indices, found, deep)
       }
       ()
     },
-    EWhile(_, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found),
-    EForIn(_, _, _, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found),
-    ELoop(_, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found),
+    EWhile(_, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, deep),
+    EForIn(_, _, _, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, deep),
+    ELoop(_, loop_body) => collect_return_param_indices(loop_body, params, alias_names, alias_indices, found, deep),
     EAssign(_, value, rest, _) => {
-      collect_return_param_indices(value, params, alias_names, alias_indices, found)
-      collect_return_param_indices(rest, params, alias_names, alias_indices, found)
+      collect_return_param_indices(value, params, alias_names, alias_indices, found, deep)
+      collect_return_param_indices(rest, params, alias_names, alias_indices, found, deep)
     },
-    EAssignOp(_, _, _, rest, _) => collect_return_param_indices(rest, params, alias_names, alias_indices, found),
+    EAssignOp(_, _, _, rest, _) => collect_return_param_indices(rest, params, alias_names, alias_indices, found, deep),
     _ => ()
   }
 }
@@ -1254,7 +1268,8 @@ export fn direct_result_param_indices(body: Expr, params: Array[(String, Option[
 }
 
 export fn direct_result_param_index(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Option[Int] {
-  let indices = direct_result_param_indices(body, params)
+  let indices = array_empty()
+  collect_result_params(body, params, array_empty(), array_empty(), indices, true)
   if Array::length(indices) > 0 {
     Some(Array::get(indices, 0))
   } else {
