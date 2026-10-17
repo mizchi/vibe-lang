@@ -33,6 +33,7 @@ import ./labeled_args.vibe {
   collect_fn_param_labels,
   collect_optional_param_fns,
   label_matches_position,
+  labeled_call_target,
   labeled_reorder_candidate,
   labeled_source_index,
   local_fn_tbl_lookup,
@@ -50,6 +51,10 @@ import ./labeled_args.vibe {
   relabel_expr,
   relabel_stmt,
   strip_label_tilde
+}
+
+import ./labeled_args_pass.vibe {
+  desugar_labeled_args
 }
 
 import ./renderer_scope.vibe {
@@ -372,6 +377,7 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
         relabel_expr_paired(arg, tbl, shadows, child, poisoned)
       }
       let rcallee = relabel_expr_paired_child(callee, tbl, shadows, node, 0, poisoned)
+      let target = labeled_call_target(callee, tbl, shadows)
       let mut any_labeled = false
       let mut li = 0
       while li < Array::length(rargs) {
@@ -384,7 +390,7 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
         li = li + 1
       }
       let resolved = if any_labeled {
-        match callee {
+        match target {
           EIdent(fname, _) => {
             // Must agree with relabel_expr's ECall arm exactly: the two lanes
             // relabel the same programs, and a disagreement is a difference in
@@ -444,7 +450,7 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
       } else {
         rargs
       }
-      let final_args = match callee {
+      let final_args = match target {
         EIdent(fname, _) => match optional_flags_for_call(fname, shadows) {
           Some(flags) => optional_fill_args_paired(resolved, flags, poisoned),
           None => resolved
@@ -883,6 +889,16 @@ export fn normalize_labeled_args_with_binder_authority(source: LocatedProgramBin
   let roots = located_program_binder_authority_nodes(source)
   let poisoned = [false]
   desugar_labeled_args_paired(program, roots, poisoned)
+  // Losing source authority must not change the normalized program. In
+  // particular, partial labels need ordinary omission-aware placement; use a
+  // fresh parser-owned copy rather than the paired walk's partial rewrite.
+  let final_program = if Array::get(poisoned, 0) {
+    let ordinary = located_program_binder_authority_program(source)
+    desugar_labeled_args(ordinary)
+    ordinary
+  } else {
+    program
+  }
   let normalized = if Array::get(poisoned, 0) {
     None
   } else {
@@ -891,6 +907,6 @@ export fn normalize_labeled_args_with_binder_authority(source: LocatedProgramBin
     })
   }
   LabeledArgBinderAuthorityNormalization::{
-    stored: StoredLabeledArgBinderAuthorityNormalizationValue(program, normalized)
+    stored: StoredLabeledArgBinderAuthorityNormalizationValue(final_program, normalized)
   }
 }
