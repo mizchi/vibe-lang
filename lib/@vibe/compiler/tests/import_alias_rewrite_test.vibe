@@ -881,3 +881,302 @@ test "#2348 merge: a parameter named like the callee does not block the rename" 
   // ... while the parameter read keeps its own spelling.
   assert(String::contains(printed, "local.get $helper)"))
 }
+
+fn plan_refusal(paths: Array[String], stmts_list: Array[Array[Stmt]], entry: String, entry_stmts: Array[Stmt]) -> String {
+  handle {
+    let plan = build_export_rename_plan(paths, stmts_list, entry)
+    let _ = collect_import_value_renames(plan, entry, entry_stmts)
+    "clean"
+  } with { Exception::Throw(msg) => msg }
+}
+
+test "#3445: an import through a facade follows the later of two re-exports" {
+  let a = parse_program(lex("export fn f(x: Int) -> Int { x }"))
+  let b = parse_program(lex("export fn foo(x: Option[Int]) -> Int { 0 }"))
+  let facade = parse_program(lex("export ./a.vibe { f as foo }\nexport ./b.vibe { foo }"))
+  let entry = parse_program(lex("import ./facade.vibe { foo }\nlet answer = foo(None)"))
+  let paths = [
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [a, b, facade, entry], "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  inspect(Array::length(renames), "1")
+  let b_foo = Array::get(export_plan_renames_for(plan, "/virtual/b.vibe"), 0).1
+  inspect(Array::get(renames, 0).1 == b_foo, "true")
+}
+
+test "#3448: two modules exporting a struct of one name are refused with the rename" {
+  let depa = parse_program(lex("export struct Box { n: Int }\nfn Box::plain(x: Int) -> Box { Box::{ n: x } }"))
+  let depb = parse_program(lex("export struct Box { m: Int }\nfn Box::plain(x: Int) -> Box { Box::{ m: x * 100 } }"))
+  let entry = parse_program(lex("import ./depa.vibe { Box as A }\nimport ./depb.vibe { Box }\nlet answer = Box::plain(3).m"))
+  let paths = [
+    "/virtual/depa.vibe",
+    "/virtual/depb.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let msg = plan_refusal(paths, [depa, depb, entry], "/virtual/entry.vibe", entry)
+  inspect(String::starts_with(msg, "rename one of the structs named `Box`: `/virtual/depa.vibe` and `/virtual/depb.vibe` both declare it"), "true")
+}
+
+test "#3448: the entry's own type is its own and is not judged here" {
+  // #3343: a program's own type is its own; a clash the entry sees through an
+  // import is the checker's to refuse (#3035).
+  let dep = parse_program(lex("export enum Hue {\n  Red;\n  Blue\n}\nexport fn red() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./dep.vibe { red }\nenum Hue {\n  Green\n}\nlet answer = red()"))
+  let paths = ["/virtual/dep.vibe", "/virtual/entry.vibe"]
+  inspect(plan_refusal(paths, [dep, entry], "/virtual/entry.vibe", entry), "clean")
+}
+
+test "#3448: two dependencies publishing one definition are one type (#3036)" {
+  let a = parse_program(lex("export struct Box[T] {\n  value: T\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: n }\n}"))
+  let b = parse_program(lex("export struct Box[U] {\n  value: U\n}\nexport fn unbox(b: Box[Int]) -> Int {\n  b.value\n}"))
+  let entry = parse_program(lex("import ./a.vibe { box_of }\nimport ./b.vibe { unbox }\nlet answer = unbox(box_of(1))"))
+  let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
+  inspect(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "clean")
+  let ja = parse_program(lex("export struct Job {\n  run: () -> Unit with Fs + Env\n}\nexport fn ta(j: Job) -> Int {\n  1\n}"))
+  let jb = parse_program(lex("export struct Job {\n  run: () -> Unit with Env + Fs + Env\n}\nexport fn tb(j: Job) -> Int {\n  1\n}"))
+  let jentry = parse_program(lex("import ./a.vibe { ta }\nimport ./b.vibe { tb }\nlet answer = 1"))
+  inspect(plan_refusal(paths, [ja, jb, jentry], "/virtual/entry.vibe", jentry), "clean")
+  // A field spelled through the module's own transparent alias is that type
+  // (Codex on #3467).
+  let na = parse_program(lex("type N = Int\nexport struct Box[T] {\n  value: N\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: n }\n}"))
+  let nb = parse_program(lex("type Ints[X] = Array[X]\nexport struct Box[U] {\n  value: Int\n}\nexport fn unbox(b: Box[Int]) -> Int {\n  b.value\n}"))
+  inspect(plan_refusal(paths, [na, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  // So is one spelled through an alias the module imports (Codex on #3467).
+  let shared = parse_program(lex("export type N = Int"))
+  let ia = parse_program(lex("import ./aliases.vibe { N }\nexport struct Box[T] {\n  value: N\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: n }\n}"))
+  let ipaths = [
+    "/virtual/aliases.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(plan_refusal(ipaths, [shared, ia, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  // An alias published through an export list is read the same way (Codex
+  // on #3467).
+  let listed = parse_program(lex("type N = Int\nexport { N }"))
+  inspect(plan_refusal(ipaths, [listed, ia, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  // And through a facade that only re-exports it (Codex on #3467).
+  let facade = parse_program(lex("export ./aliases.vibe { N }"))
+  let via_facade = parse_program(lex("import ./facade.vibe { N }\nexport struct Box[T] {\n  value: N\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: n }\n}"))
+  let fpaths = [
+    "/virtual/aliases.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(plan_refusal(fpaths, [shared, facade, via_facade, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  // The two-step form re-exports it as well (Codex on #3467).
+  let listed_facade = parse_program(lex("import ./aliases.vibe { N }\nexport { N }"))
+  inspect(plan_refusal(fpaths, [shared, listed_facade, via_facade, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  // A file that does not import the alias reads its own `N`, a struct, so
+  // the types stay apart (Codex on #3467).
+  let own_n = parse_program(lex("struct N {\n  v: String\n}\nexport struct Box[T] {\n  value: N\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: N::{ v: \"\" } }\n}"))
+  inspect(String::starts_with(plan_refusal(ipaths, [shared, own_n, nb, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  // An alias read through its provider's own private alias is the same
+  // type (Codex on #3467).
+  let layered = parse_program(lex("type Hidden = Int\nexport type N = Hidden"))
+  inspect(plan_refusal(ipaths, [layered, ia, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  // So is one spelled through an alias its provider imports.
+  let base_alias = parse_program(lex("export type N = Int"))
+  let relay_alias = parse_program(lex("import ./base.vibe { N }\nexport type M = N"))
+  let im = parse_program(lex("import ./aliases.vibe { M }\nexport struct Box[T] {\n  value: M\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: n }\n}"))
+  let rpaths = [
+    "/virtual/base.vibe",
+    "/virtual/aliases.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(plan_refusal(rpaths, [base_alias, relay_alias, im, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  // And through a chain of such imports, however many deep (Codex on #3467).
+  let relay2_alias = parse_program(lex("import ./aliases.vibe { M }\nexport type K = M"))
+  let ik = parse_program(lex("import ./aliases2.vibe { K }\nexport struct Box[T] {\n  value: K\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: n }\n}"))
+  let kpaths = [
+    "/virtual/base.vibe",
+    "/virtual/aliases.vibe",
+    "/virtual/aliases2.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(plan_refusal(kpaths, [
+    base_alias,
+    relay_alias,
+    relay2_alias,
+    ik,
+    nb,
+    entry
+  ], "/virtual/entry.vibe", entry), "clean")
+  // An `N` imported from another module is that module's, not the alias of
+  // the same name (Codex on #3467).
+  let nominal = parse_program(lex("export struct N {\n  v: String\n}"))
+  let other_import = parse_program(lex("import ./nominal.vibe { N }\nexport struct Box[T] {\n  value: N\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: N::{ v: \"\" } }\n}"))
+  let npaths = [
+    "/virtual/aliases.vibe",
+    "/virtual/nominal.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(String::starts_with(plan_refusal(npaths, [
+    shared,
+    nominal,
+    other_import,
+    nb,
+    entry
+  ], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  // Another file exporting an `N` of its own does not change which one the
+  // import reads: aliases are keyed by provider (Codex on #3467).
+  let other_n = parse_program(lex("export type N = String"))
+  let apaths = [
+    "/virtual/aliases.vibe",
+    "/virtual/aliases2.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(plan_refusal(apaths, [shared, other_n, ia, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  // Imported from the provider whose `N` is `String`, it is another type.
+  let ia2 = parse_program(lex("import ./aliases2.vibe { N }\nexport struct Box[T] {\n  value: N\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: \"\" }\n}"))
+  inspect(String::starts_with(plan_refusal(apaths, [
+    shared,
+    other_n,
+    ia2,
+    nb,
+    entry
+  ], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  // A field of another type is another type.
+  let c = parse_program(lex("export struct Box[U] {\n  value: Option[U]\n}\nexport fn unbox(b: Box[Int]) -> Int {\n  0\n}"))
+  inspect(String::starts_with(plan_refusal(paths, [a, c, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+}
+
+test "#3448: a private type of the same name in a dependency is not a collision" {
+  let depa = parse_program(lex("struct Box { n: Int }\nexport fn make() -> Int { Box::{ n: 1 }.n }"))
+  let depb = parse_program(lex("export struct Box { m: Int }"))
+  let entry = parse_program(lex("import ./depa.vibe { make }\nimport ./depb.vibe { Box }\nlet answer = make()"))
+  let paths = [
+    "/virtual/depa.vibe",
+    "/virtual/depb.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(plan_refusal(paths, [depa, depb, entry], "/virtual/entry.vibe", entry), "clean")
+}
+
+test "#3448: a package member the program never reaches does not collide" {
+  // As `import @vibe/core { str_lt }` merges every member of the package, the
+  // facade's other member is in the program without being used.
+  let used = parse_program(lex("export fn str_lt(a: Int, b: Int) -> Bool {\n  a < b\n}"))
+  let unused = parse_program(lex("export enum Attempt {\n  Good;\n  Bad\n}\nexport fn attempt_good() -> Attempt {\n  Good\n}"))
+  let facade = parse_program(lex("export ./used.vibe { str_lt }\nexport ./unused.vibe { Attempt, attempt_good }"))
+  let other = parse_program(lex("export enum Attempt {\n  Mine\n}\nexport fn mine() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./facade.vibe { str_lt }\nimport ./other.vibe { mine }\nlet answer = str_lt(1, mine())"))
+  let paths = [
+    "/virtual/used.vibe",
+    "/virtual/unused.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/other.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(plan_refusal(paths, [used, unused, facade, other, entry], "/virtual/entry.vibe", entry), "clean")
+  // Importing the member's function through the facade reaches it, and then
+  // its `Attempt` and the other module's are two types in one program.
+  let entry2 = parse_program(lex("import ./facade.vibe { attempt_good }\nimport ./other.vibe { mine }\nlet answer = mine()"))
+  let msg = plan_refusal(paths, [used, unused, facade, other, entry2], "/virtual/entry.vibe", entry2)
+  inspect(String::starts_with(msg, "rename one of the enums named `Attempt`"), "true")
+}
+
+test "#3448: a file reached through a facade's own re-export collides" {
+  // Codex on #3467: `wrapper` calls `f`, which the facade binds by
+  // re-exporting it, so `p.vibe` is in the program and its `Box` meets the
+  // other module's.
+  let p = parse_program(lex("export struct Box {\n  value: Int\n}\nexport fn f() -> Int {\n  1\n}"))
+  let facade = parse_program(lex("export ./p.vibe { f }\nexport fn wrapper() -> Int {\n  f()\n}"))
+  let other = parse_program(lex("export struct Box {\n  value: String\n}\nexport fn mine() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./facade.vibe { wrapper }\nimport ./other.vibe { mine }\nlet answer = wrapper() + mine()"))
+  let paths = [
+    "/virtual/p.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/other.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(String::starts_with(plan_refusal(paths, [p, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  // A re-export the facade's own code never names reaches nothing (the #3036
+  // control `dup_type_formal_marker_ok`).
+  let pass_on = parse_program(lex("export ./p.vibe { Box }\nexport fn wrapper() -> Int {\n  1\n}"))
+  inspect(plan_refusal(paths, [p, pass_on, other, entry], "/virtual/entry.vibe", entry), "clean")
+}
+
+test "#3448: an alias's constructor parameter in head position takes its argument" {
+  // Codex on #3467: `Apply[Option, Int]` and `Apply[Array, Int]` both read as
+  // `F[Int]`, and the two `Box` were taken for one type.
+  let a = parse_program(lex("type Apply[F[_], A] = F[A]\nexport struct Box {\n  value: Apply[Option, Int]\n}\nexport fn box_a() -> Int {\n  1\n}"))
+  let b = parse_program(lex("type Apply[F[_], A] = F[A]\nexport struct Box {\n  value: Apply[Array, Int]\n}\nexport fn box_b() -> Int {\n  1\n}"))
+  let same = parse_program(lex("type Apply[F[_], A] = F[A]\nexport struct Box {\n  value: Option[Int]\n}\nexport fn box_b() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { box_a }\nimport ./b.vibe { box_b }\nlet answer = box_a() + box_b()"))
+  let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
+  inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(plan_refusal(paths, [a, same, entry], "/virtual/entry.vibe", entry), "clean")
+}
+
+test "#3448: a provider's own alias does not capture a kinded formal of the same name" {
+  // Codex on #3467: `F` of `Apply[F[_], A]` was read as the provider's
+  // `type F[T] = Option[T]`, so `Apply[Array, Int]` became `Option[Int]`.
+  let provider = parse_program(lex("type F[T] = Option[T]\nexport type Apply[F[_], A] = F[A]"))
+  let a = parse_program(lex("import ./aliases.vibe { Apply }\nexport struct Box {\n  value: Apply[Array, Int]\n}\nexport fn box_a() -> Int {\n  1\n}"))
+  let b = parse_program(lex("export struct Box {\n  value: Option[Int]\n}\nexport fn box_b() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { box_a }\nimport ./b.vibe { box_b }\nlet answer = box_a() + box_b()"))
+  let paths = [
+    "/virtual/aliases.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(String::starts_with(plan_refusal(paths, [provider, a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+}
+
+test "#3448: a facade re-exporting one alias name twice provides the later one" {
+  // Codex on #3467: both rows were kept and the first was read.
+  let ai = parse_program(lex("export type N = Int"))
+  let astr = parse_program(lex("export type N = String"))
+  let facade = parse_program(lex("export ./ai.vibe { N }\nexport ./astr.vibe { N }"))
+  let a = parse_program(lex("import ./facade.vibe { N }\nexport struct Box {\n  value: N\n}\nexport fn box_a() -> Int {\n  1\n}"))
+  let b = parse_program(lex("export struct Box {\n  value: Int\n}\nexport fn box_b() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { box_a }\nimport ./b.vibe { box_b }\nlet answer = box_a() + box_b()"))
+  let paths = [
+    "/virtual/ai.vibe",
+    "/virtual/astr.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(String::starts_with(plan_refusal(paths, [
+    ai,
+    astr,
+    facade,
+    a,
+    b,
+    entry
+  ], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+}
+
+test "#3448: a file's own applied alias wins over an imported one of its name" {
+  // Codex on #3467: the imported `N[T] = String` was read for the local
+  // `N[T] = Option[T]`.
+  let provider = parse_program(lex("export type N[T] = String"))
+  let a = parse_program(lex("import ./aliases.vibe { N }\ntype N[T] = Option[T]\nexport struct Box {\n  value: N[Int]\n}\nexport fn box_a() -> Int {\n  1\n}"))
+  let b = parse_program(lex("export struct Box {\n  value: String\n}\nexport fn box_b() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { box_a }\nimport ./b.vibe { box_b }\nlet answer = box_a() + box_b()"))
+  let paths = [
+    "/virtual/aliases.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(String::starts_with(plan_refusal(paths, [provider, a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+}

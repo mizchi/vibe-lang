@@ -1,0 +1,147 @@
+// #3424: the edits the build names when a function value at a row-typed
+// parameter cannot be given the row's dict
+// (lib/@vibe/compiler/tests/evidence_slot_refusal_test.vibe). Each shape below
+// is one of those edits applied; before them the value was compiled without
+// the dict parameter and the call trapped (`indirect call type mismatch`).
+effect Box[T] {
+  Put(T) -> Int
+}
+
+fn run_str(f: () -> Int with Box[String]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(s) => resume(String::length(s))
+  }
+}
+
+fn put_abc() -> Int with Box[String] {
+  perform Box::Put("abc")
+}
+
+// The row declared on the result type.
+fn mk() -> (() -> Int with Box[String]) {
+  () -> 9
+}
+
+fn via_call() -> Int {
+  run_str(mk())
+}
+
+// The row annotated on the parameter.
+fn via_param(h: () -> Int with Box[String]) -> Int {
+  run_str(h)
+}
+
+// The row written on a closure whose helper calls another local closure.
+fn via_nested() -> Int {
+  let inner = () -> 3
+  let helper = () -> inner() + 1
+  run_str(() -> Int with Box[String] { helper() })
+}
+
+// The helpers moved to top-level functions, one of them generic in its
+// payload.
+fn inner_top() -> Int {
+  3
+}
+
+fn helper_top() -> Int {
+  inner_top() + 1
+}
+
+fn put_any[T](x: T) -> Int with Box[T] {
+  perform Box::Put(x)
+}
+
+fn via_top() -> Int {
+  run_str(() -> helper_top())
+}
+
+fn via_generic_top() -> Int {
+  run_str(() -> put_any("abcd"))
+}
+
+// A parameter called outside the closure, its result used inside.
+fn via_value(h: () -> Int) -> Int {
+  let v = h()
+  run_str(() -> v + 1)
+}
+
+// #3472: a function returning a call's closure at a declared row; the edit
+// declares the row on the callee's result too.
+fn mk_returned() -> (() -> Int with Box[String]) {
+  mk()
+}
+
+fn mk_returned_by_name() -> (() -> Int with Box[String]) {
+  let f = mk()
+  f
+}
+
+// A returned `let mut` that may hold such a call's closure beside a literal:
+// with the row on `mk`'s result, the literal assigned later takes it too.
+fn mk_returned_mut(c: Bool) -> (() -> Int with Box[String]) {
+  let mut f = mk()
+  if c {
+    ()
+  } else {
+    f = () -> put_abc()
+  }
+  f
+}
+
+fn via_returned() -> Int {
+  run_str(mk_returned()) + run_str(mk_returned_by_name())
+}
+
+fn via_returned_mut() -> Int {
+  run_str(mk_returned_mut(true)) * 10 + run_str(mk_returned_mut(false))
+}
+
+// Codex on #3467: a callback slot reached through a method-style call
+// (`runner.run(..)`) takes the dict as a direct call's does.
+struct Runner {
+  k: Int
+}
+
+fn Runner::run(r: Runner, f: () -> Int with Box[String]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(s) => resume(String::length(s) + r.k)
+  }
+}
+
+fn three() -> Int {
+  3
+}
+
+fn via_method() -> Int {
+  let r = Runner::{ k: 10 }
+  r.run(three) * 100 + r.run(() -> 7)
+}
+
+// Codex on #3467: a closure annotated with an applied alias of a function
+// type that carries the row is called with the dict, so it takes one. The
+// alias was followed only bare, and the module failed to compile.
+type GenStr[T] = () -> Int with Box[String]
+
+fn via_applied_alias() -> Int {
+  let f: GenStr[Unit] = () -> put_abc()
+  run_str(f)
+}
+
+test "the named edits compile and answer" {
+  inspect(via_call(), "9")
+  inspect(via_param(() -> 6), "6")
+  inspect(via_param(() -> put_abc()), "3")
+  inspect(via_nested(), "4")
+  inspect(via_top(), "4")
+  inspect(via_generic_top(), "4")
+  inspect(via_value(() -> 6), "7")
+  inspect(via_returned(), "18")
+  inspect(via_returned_mut(), "93")
+  inspect(via_method(), "307")
+  inspect(via_applied_alias(), "3")
+}
