@@ -1371,6 +1371,19 @@ test "#3448: a generic alias inside a row argument is read through" {
   inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Job`"), "true")
 }
 
+test "#3448: a type parameter in a row argument shadows an alias of its spelling" {
+  // Codex on #3492: in `struct Box[T]` beside `type T = Int`, `State[T]` is the
+  // parameter, so it differs from `State[Int]` in another module's `Box[U]`
+  // and matches `State[U]`.
+  let a = parse_program(lex("effect State[S] {\n  Get() -> S\n}\ntype T = Int\nexport struct Box[T] {\n  f: () -> Unit with State[T]\n}\nexport fn ja() -> Int {\n  1\n}"))
+  let b = parse_program(lex("effect State[S] {\n  Get() -> S\n}\nexport struct Box[U] {\n  f: () -> Unit with State[Int]\n}\nexport fn jb() -> Int {\n  1\n}"))
+  let same = parse_program(lex("effect State[S] {\n  Get() -> S\n}\nexport struct Box[U] {\n  f: () -> Unit with State[U]\n}\nexport fn jb() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
+  let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
+  inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(plan_refusal(paths, [a, same, entry], "/virtual/entry.vibe", entry), "clean")
+}
+
 test "#3448: a row head is not renamed as a type parameter of its spelling" {
   // Codex on #3492: in `Box[Read]` with `with Read`, the row head is the
   // effect `Read`, not the parameter, so `Box[Write]` with `with Write` differs.

@@ -937,7 +937,7 @@ fn expand_type_aliases(t: TypeExpr, aliases: Array[(String, Array[String], TypeE
       TyFn(ps, r, row) => TyFn(for p in ps {
         expand_type_aliases(p, aliases, renames, depth + 1)
       }, expand_type_aliases(r, aliases, renames, depth + 1), match row {
-        Some(text) => Some(expand_row_effectsets(text, aliases, 0)),
+        Some(text) => Some(expand_row_effectsets(text, aliases, renames, 0)),
         None => None
       }),
       TyTuple(items) => TyTuple(for item in items {
@@ -952,7 +952,7 @@ fn expand_type_aliases(t: TypeExpr, aliases: Array[(String, Array[String], TypeE
 /// replaced by its members, as the checker reads the row: `with All` of
 /// `effectset All = { Ask }` is `with Ask`. Labels split at the top-level
 /// `+` and `,`; the depth bounds a cycle.
-fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], TypeExpr)], depth: Int) -> String {
+fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], TypeExpr)], renames: Array[(String, String)], depth: Int) -> String {
   let labels: Array[String] = []
   let mut cur = ""
   let mut nest = 0
@@ -993,7 +993,9 @@ fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], Ty
           members = match target {
             TyTuple(items) => Some(for it in items {
               match it {
-                TyName(m) => expand_row_effectsets(m, aliases, depth + 1),
+                // A member is read where the effectset is declared, outside
+                // the enclosing declaration's type parameters.
+                TyName(m) => expand_row_effectsets(m, aliases, [], depth + 1),
                 _ => ""
               }
             }),
@@ -1011,7 +1013,7 @@ fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], Ty
         }
         ()
       },
-      None => Array::push(out, expand_row_label_args(label, aliases))
+      None => Array::push(out, expand_row_label_args(label, aliases, renames))
     }
   }
   String::join(out, " + ")
@@ -1020,9 +1022,11 @@ fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], Ty
 /// A row label with its type arguments read through aliases (Codex on
 /// #3492): `State[Payload]` is `State[Int]` in a module with `type Payload =
 /// Int` and `State[String]` in one with `type Payload = String`, and
-/// `State[Payload[Int]]` expands a generic alias the same way. Arguments
-/// `row_type_args_parse` does not read are left as written.
-fn expand_row_label_args(label: String, aliases: Array[(String, Array[String], TypeExpr)]) -> String {
+/// `State[Payload[Int]]` expands a generic alias the same way. A type
+/// parameter of the enclosing declaration (in `renames`) shadows an alias of
+/// its spelling. Arguments `row_type_args_parse` does not read are left as
+/// written.
+fn expand_row_label_args(label: String, aliases: Array[(String, Array[String], TypeExpr)], renames: Array[(String, String)]) -> String {
   let bracket = String::index_of(label, "[")
   let n = String::length(label)
   if bracket < 0 || n == 0 || String::byte_at(label, n - 1) != ']' {
@@ -1030,7 +1034,7 @@ fn expand_row_label_args(label: String, aliases: Array[(String, Array[String], T
   } else {
     match row_type_args_parse(String::substring(label, bracket + 1, n - 1)) {
       Some(args) => String::concat(String::concat(String::concat(String::substring(label, 0, bracket), "["), String::join(for a in args {
-        row_type_text(expand_type_aliases(a, aliases, [], 0))
+        row_type_text(expand_type_aliases(a, aliases, renames, 0))
       }, ", ")), "]"),
       None => label
     }
@@ -1046,7 +1050,7 @@ fn flatten_effectset_target(target: TypeExpr, aliases: Array[(String, Array[Stri
       for item in items {
         match item {
           TyName(m) => {
-            for part in String::split(expand_row_effectsets(m, aliases, 0), " + ") {
+            for part in String::split(expand_row_effectsets(m, aliases, [], 0), " + ") {
               if part != "" {
                 Array::push(out, TyName(part))
               }

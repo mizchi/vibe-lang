@@ -1433,7 +1433,13 @@ fn collect_held_call_args(callee: String, args: Array[Expr], params: Array[(Stri
     }
     ()
   } else if !checker_string_array_has(held_result_stack, callee) {
-    match retention_decl_value(callee) {
+    // A local binder spelled like a declaration is not that declaration.
+    let decl = if checker_string_array_has(held_result_binders, callee) {
+      None
+    } else {
+      retention_decl_value(callee)
+    }
+    match decl {
       Some(EFn(_, _, callee_params, _, _, callee_body)) => {
         Array::push(held_result_stack, callee)
         let held = held_result_param_indices(callee_body, callee_params)
@@ -1445,7 +1451,18 @@ fn collect_held_call_args(callee: String, args: Array[Expr], params: Array[(Stri
         }
         ()
       },
-      _ => ()
+      // A callee this reading cannot open -- a local closure, a value that is
+      // not a lambda, a builtin -- hands back what its arguments hold, as the
+      // call-site rule reads an unbound callee, unless it returns a scalar
+      // (Codex on #3492).
+      _ => if !builtin_result_is_scalar(callee) {
+        for arg in args {
+          collect_result_params(arg, params, alias_names, alias_indices, found, true)
+        }
+        ()
+      } else {
+        ()
+      }
     }
   } else {
     ()
