@@ -51,6 +51,7 @@ def freeze(workspace, ref):
             subprocess.run(["git", "archive", ref], cwd=REPO, stdout=output, check=True)
         with tarfile.open(workspace / "source.tar") as archive:
             archive.extractall(corpus, filter="data")
+        (corpus / "bootstrap/seed").mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO / "bootstrap/seed/compiler.wasm", corpus / "bootstrap/seed/compiler.wasm")
     if (workspace / "workspace.json").exists():
         raise ValueError("workspace already prepared; retain its measurements")

@@ -1135,6 +1135,8 @@ build_exact_adapter_merged_source() {
 # check is skipped -- same "trust the pinned artifact" fallback
 # the retired check_module_source_sync.sh used -- so this adds no new
 # dependency, only a safety gate where the seed is present.
+VALIDATED_MODULE_WASM=""
+VALIDATED_MODULE_REQUEST=""
 validate_module_source_compiles() {
   local candidate="$1"
   local seed_wasm
@@ -1146,6 +1148,8 @@ validate_module_source_compiles() {
   local check_wasm
   check_wasm="$(mktemp "$PROJECT_ROOT/_build/module_source_validate.XXXXXX.wasm")"
   local check_log="$check_wasm.log"
+  local check_request="$check_wasm.request.json"
+  local validation_entry="${VIBE_MODULE_SOURCE_ENTRY_NAME:-cli_main}"
   rm -f "$check_wasm"
   local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}"
   local ok=0
@@ -1157,9 +1161,16 @@ validate_module_source_compiles() {
   local vtok="$TRACE_TOKEN"
   if (cd "$PROJECT_ROOT" && \
     export VIBE_RC=0 VIBE_MEM=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
-      VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" VIBE_NODE_WASM_FLAGS="$tool_node_flags" && \
+      VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
+      VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-${VIBE_GENERATION_WASM_PRE_GROW_PAGES:-0}}" \
+      VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-${VIBE_GENERATION_DISABLE_PERSISTENT_ARTIFACT_CACHE:-1}}" \
+      VIBE_SKIP_RUN_INIT="${VIBE_SKIP_RUN_INIT:-${VIBE_GENERATION_SKIP_RUN_INIT:-1}}" && \
+    { python3 "$SCRIPT_DIR/seed_validation_receipt.py" request \
+        --root "$PROJECT_ROOT" --scripts "$SCRIPT_DIR" --source "$candidate" \
+        --seed "$seed_wasm" --runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+        --entry "$validation_entry" >"$check_request" 2>/dev/null || rm -f "$check_request"; } && \
     run_bundle_runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$seed_wasm" \
-      "$candidate" "$check_wasm" cli_main >"$check_log" 2>&1); then
+      "$candidate" "$check_wasm" "$validation_entry" >"$check_log" 2>&1); then
     if [ -s "$check_wasm" ]; then
       ok=1
     fi
@@ -1172,7 +1183,13 @@ validate_module_source_compiles() {
     echo "--- runner output ---" >&2
     tail -40 "$check_log" >&2 2>/dev/null || true
   fi
-  rm -f "$check_wasm" "$check_wasm.diag" "$check_log"
+  if [ "$ok" = "1" ] && [ -s "$check_request" ]; then
+    VALIDATED_MODULE_WASM="$check_wasm"
+    VALIDATED_MODULE_REQUEST="$check_request"
+  else
+    rm -f "$check_wasm" "$check_request"
+  fi
+  rm -f "$check_wasm.diag" "$check_log"
   [ "$ok" = "1" ]
 }
 
@@ -1193,9 +1210,34 @@ if [ -n "$ADAPTER_MODULE_SOURCE_OUT" ]; then
     exit 1
   fi
   mkdir -p "$(dirname "$ADAPTER_MODULE_SOURCE_OUT")"
-  ADAPTER_MODULE_SOURCE_OUT_TMP="$(mktemp "$(dirname "$ADAPTER_MODULE_SOURCE_OUT")/.$(basename "$ADAPTER_MODULE_SOURCE_OUT").XXXXXX")"
-  cp "$ADAPTER_MODULE_SOURCE_FILE" "$ADAPTER_MODULE_SOURCE_OUT_TMP"
-  mv "$ADAPTER_MODULE_SOURCE_OUT_TMP" "$ADAPTER_MODULE_SOURCE_OUT"
+  if [ -n "$VALIDATED_MODULE_WASM" ]; then
+    # Recheck the complete request before publishing source/product/receipt.
+    # A failed validation never replaces the previous complete source (#979).
+    # Keep caller-relative output paths while matching the validation cwd.
+    # Python launchers such as pyenv derive inherited settings from cwd.
+    ADAPTER_MODULE_SOURCE_PUBLISH_OUT="$(cd "$(dirname "$ADAPTER_MODULE_SOURCE_OUT")" && pwd)/$(basename "$ADAPTER_MODULE_SOURCE_OUT")"
+    (
+      cd "$PROJECT_ROOT"
+      VIBE_RC=0 VIBE_MEM=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+        VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
+        VIBE_NODE_WASM_FLAGS="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}" \
+        VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-${VIBE_GENERATION_WASM_PRE_GROW_PAGES:-0}}" \
+        VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-${VIBE_GENERATION_DISABLE_PERSISTENT_ARTIFACT_CACHE:-1}}" \
+        VIBE_SKIP_RUN_INIT="${VIBE_SKIP_RUN_INIT:-${VIBE_GENERATION_SKIP_RUN_INIT:-1}}" \
+        python3 "$SCRIPT_DIR/seed_validation_receipt.py" publish \
+          --root "$PROJECT_ROOT" --scripts "$SCRIPT_DIR" --source "$ADAPTER_MODULE_SOURCE_FILE" \
+          --seed "$(bundle_seed_wasm "$PROJECT_ROOT/bootstrap/seed/compiler.wasm")" \
+          --runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+          --entry "${VIBE_MODULE_SOURCE_ENTRY_NAME:-cli_main}" \
+          --request "$VALIDATED_MODULE_REQUEST" --product "$VALIDATED_MODULE_WASM" \
+          --destination "$ADAPTER_MODULE_SOURCE_PUBLISH_OUT"
+    )
+    rm -f "$VALIDATED_MODULE_WASM" "$VALIDATED_MODULE_REQUEST"
+  else
+    ADAPTER_MODULE_SOURCE_OUT_TMP="$(mktemp "$(dirname "$ADAPTER_MODULE_SOURCE_OUT")/.$(basename "$ADAPTER_MODULE_SOURCE_OUT").XXXXXX")"
+    cp "$ADAPTER_MODULE_SOURCE_FILE" "$ADAPTER_MODULE_SOURCE_OUT_TMP"
+    mv "$ADAPTER_MODULE_SOURCE_OUT_TMP" "$ADAPTER_MODULE_SOURCE_OUT"
+  fi
 fi
 # #2497: the compile-only artifact is the SAME merged program DCE-rooted at
 # `main_compile_only` (cli_adapter.vibe) instead of `main`. Its lane tables
