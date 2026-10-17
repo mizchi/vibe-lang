@@ -1237,9 +1237,31 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
     } else if deep {
       // Another helper hands back the arguments its own result holds
       // (Codex on #3492: `Wrap::{ cell: same(c) }`).
+      collect_return_param_indices(body, params, alias_names, alias_indices, found, deep)
       collect_held_call_args(callee, args, params, alias_names, alias_indices, found)
     } else {
       collect_return_param_indices(body, params, alias_names, alias_indices, found, deep)
+    },
+    // `deep`: a call through a lambda hands back what its body holds; one
+    // through any other callee (`(if f { same1 } else { same2 })(c)`) is not
+    // read, so all its arguments count as held (Codex on #3492).
+    ECall(callee, args, _, _) => {
+      collect_return_param_indices(body, params, alias_names, alias_indices, found, deep)
+      if deep {
+        match callee {
+          EFn(_, _, lambda_params, _, _, lambda_body) => for index in held_result_param_indices(lambda_body, lambda_params) {
+            if index >= 0 && index < Array::length(args) {
+              collect_result_params(Array::get(args, index), params, alias_names, alias_indices, found, deep)
+            }
+          },
+          _ => for arg in args {
+            collect_result_params(arg, params, alias_names, alias_indices, found, deep)
+          }
+        }
+        ()
+      } else {
+        ()
+      }
     },
     _ => {
       collect_return_param_indices(body, params, alias_names, alias_indices, found, deep)
@@ -1340,7 +1362,14 @@ fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr]
 let held_result_stack: Array[String] = []
 
 fn collect_held_call_args(callee: String, args: Array[Expr], params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
-  if !checker_string_array_has(held_result_stack, callee) && Array::length(held_result_stack) < 8 {
+  if Array::length(held_result_stack) >= 64 {
+    // A chain this long is not read to its end: its arguments count as held
+    // rather than as fresh (Codex on #3492).
+    for arg in args {
+      collect_result_params(arg, params, alias_names, alias_indices, found, true)
+    }
+    ()
+  } else if !checker_string_array_has(held_result_stack, callee) {
     match retention_decl_value(callee) {
       Some(EFn(_, _, callee_params, _, _, callee_body)) => {
         Array::push(held_result_stack, callee)
