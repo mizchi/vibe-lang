@@ -663,10 +663,24 @@ fn file_type_aliases(stmts: Array[Stmt]) -> Array[(String, Array[String], TypeEx
   for stmt in stmts {
     match stmt {
       STypeAlias(_, name, params, target) => Array::push(out, (name, params, target)),
+      SEffectSet(_, name, members) => Array::push(out, effectset_alias_row(name, members)),
       _ => ()
     }
   }
   out
+}
+
+/// #3489: an `effectset` travels with the type aliases, under a name no type
+/// can spell, so a row is read through it wherever an alias would be: the
+/// file's own, imported from its provider, re-exported, through any chain.
+fn effectset_alias_key(name: String) -> String {
+  String::concat("effectset ", name)
+}
+
+fn effectset_alias_row(name: String, members: Array[String]) -> (String, Array[String], TypeExpr) {
+  (effectset_alias_key(name), [], TyTuple(for m in members {
+    TyName(m)
+  }))
 }
 
 /// The shared aliases a file imports by name, each under the name its import
@@ -685,8 +699,12 @@ fn imported_type_aliases_into(stmts: Array[Stmt], path: String, paths: Array[Str
           }
           for al in shared {
             let (from, an, ap, target) = al
-            if an == item.name && from == provider {
-              Array::push(out, (local, ap, target))
+            if from == provider {
+              if an == item.name {
+                Array::push(out, (local, ap, target))
+              } else if an == effectset_alias_key(item.name) {
+                Array::push(out, (effectset_alias_key(local), ap, target))
+              }
             }
           }
         }
@@ -718,6 +736,12 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
             (type_param_name(p), String::concat("#param:", type_param_name(p)))
           }
           Array::push(all, (Array::get(paths, fi), name, params, expand_type_aliases(target, own, renames, 0)))
+        } else {
+          ()
+        },
+        SEffectSet(exported, name, members) => if exported || import_alias_rewrite_string_array_contains(listed, name) {
+          let (key, ps, target) = effectset_alias_row(name, members)
+          Array::push(all, (Array::get(paths, fi), key, ps, target))
         } else {
           ()
         },
@@ -818,18 +842,26 @@ fn reexported_type_aliases_into(paths: Array[String], stmts_list: Array[Array[St
           if all_items || import_alias_rewrite_string_array_contains(listed, exported) {
             for al in shared {
               let (from, an, ap, target) = al
-              if an == item.name && from == provider {
+              // An `effectset` re-exports under its own key (#3489).
+              let row_name = if an == item.name {
+                exported
+              } else if an == effectset_alias_key(item.name) {
+                effectset_alias_key(exported)
+              } else {
+                ""
+              }
+              if row_name != "" && from == provider {
                 let mut ri = 0
                 let mut replaced = false
                 while ri < Array::length(rows) {
-                  if Array::get(rows, ri).0 == exported {
-                    Array::set(rows, ri, (exported, ap, target))
+                  if Array::get(rows, ri).0 == row_name {
+                    Array::set(rows, ri, (row_name, ap, target))
                     replaced = true
                   }
                   ri = ri + 1
                 }
                 if !replaced {
-                  Array::push(rows, (exported, ap, target))
+                  Array::push(rows, (row_name, ap, target))
                 }
               }
             }
@@ -879,13 +911,85 @@ fn expand_type_aliases(t: TypeExpr, aliases: Array[(String, Array[String], TypeE
       },
       TyFn(ps, r, row) => TyFn(for p in ps {
         expand_type_aliases(p, aliases, renames, depth + 1)
-      }, expand_type_aliases(r, aliases, renames, depth + 1), row),
+      }, expand_type_aliases(r, aliases, renames, depth + 1), match row {
+        Some(text) => Some(expand_row_effectsets(text, aliases, 0)),
+        None => None
+      }),
       TyTuple(items) => TyTuple(for item in items {
         expand_type_aliases(item, aliases, renames, depth + 1)
       }),
       TyUnit => t
     }
   }
+}
+
+/// #3489: `text` with each label that names an `effectset` in `aliases`
+/// replaced by its members, as the checker reads the row: `with All` of
+/// `effectset All = { Ask }` is `with Ask`. Labels split at the top-level
+/// `+` and `,`; the depth bounds a cycle.
+fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], TypeExpr)], depth: Int) -> String {
+  let labels: Array[String] = []
+  let mut cur = ""
+  let mut nest = 0
+  let mut i = 0
+  let n = String::length(text)
+  while i <= n {
+    let c = if i < n {
+      String::byte_at(text, i)
+    } else {
+      0
+    }
+    if c == '[' {
+      nest = nest + 1
+    } else if c == ']' {
+      nest = nest - 1
+    }
+    if c == 0 || (nest == 0 && (c == '+' || c == ',')) {
+      let t = String::trim(cur)
+      if t != "" {
+        Array::push(labels, t)
+      }
+      cur = ""
+    } else {
+      cur = String::concat(cur, String::substring(text, i, i + 1))
+    }
+    i = i + 1
+  }
+  let out: Array[String] = []
+  for label in labels {
+    let mut members: Option[Array[String]] = None
+    let mut found = false
+    if depth < 16 {
+      let key = effectset_alias_key(label)
+      for al in aliases {
+        let (an, _, target) = al
+        if !found && an == key {
+          found = true
+          members = match target {
+            TyTuple(items) => Some(for it in items {
+              match it {
+                TyName(m) => expand_row_effectsets(m, aliases, depth + 1),
+                _ => ""
+              }
+            }),
+            _ => None
+          }
+        }
+      }
+    }
+    match members {
+      Some(ms) => {
+        for m in ms {
+          if m != "" {
+            Array::push(out, m)
+          }
+        }
+        ()
+      },
+      None => Array::push(out, label)
+    }
+  }
+  String::join(out, " + ")
 }
 
 fn find_type_alias(aliases: Array[(String, Array[String], TypeExpr)], renames: Array[(String, String)], name: String, arity: Int) -> Option[TypeExpr] {

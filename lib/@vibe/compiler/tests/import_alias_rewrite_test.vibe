@@ -1180,3 +1180,24 @@ test "#3448: a file's own applied alias wins over an imported one of its name" {
   ]
   inspect(String::starts_with(plan_refusal(paths, [provider, a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
 }
+
+test "#3489: a row spelled through an effectset is the row of its members" {
+  let a = parse_program(lex("effect Ask {\n  Get() -> Int\n}\neffectset All = { Ask }\nexport struct Job {\n  run: () -> Int with All\n}\nexport fn ja() -> Int {\n  1\n}"))
+  let b = parse_program(lex("effect Ask {\n  Get() -> Int\n}\nexport struct Job {\n  run: () -> Int with Ask\n}\nexport fn jb() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
+  let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
+  inspect(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "clean")
+  // Imported from the module that declares it.
+  let sets = parse_program(lex("effect Ask {\n  Get() -> Int\n}\nexport effectset All = { Ask }"))
+  let ia = parse_program(lex("import ./sets.vibe { All }\nexport struct Job {\n  run: () -> Int with All\n}\nexport fn ja() -> Int {\n  1\n}"))
+  let ipaths = [
+    "/virtual/sets.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(plan_refusal(ipaths, [sets, ia, b, entry], "/virtual/entry.vibe", entry), "clean")
+  // A set with another member is another row.
+  let wide = parse_program(lex("effect Ask {\n  Get() -> Int\n}\neffect Tell {\n  Put(Int) -> Unit\n}\neffectset All = { Ask, Tell }\nexport struct Job {\n  run: () -> Int with All\n}\nexport fn ja() -> Int {\n  1\n}"))
+  inspect(String::starts_with(plan_refusal(paths, [wide, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Job`"), "true")
+}
