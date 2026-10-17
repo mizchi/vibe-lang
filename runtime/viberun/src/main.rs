@@ -175,6 +175,10 @@ struct HostState {
     // don't get interleaved with the daemon's own protocol traffic.
     capture_stdout: bool,
     captured_stdout: Vec<u8>,
+    // `--test-each`: guest stdout is dropped on every path (no buffer, so a
+    // mutant that prints in an endless loop cannot grow memory, and nothing
+    // the guest writes can land in the runner's own row stream).
+    discard_stdout: bool,
     start_instant: Instant,
     // Profiling tier 3 (heap sampling over time). When `__heap_ptr` sampling is
     // on, the epoch-deadline callback reads this global on each epoch tick and
@@ -371,6 +375,7 @@ impl HostState {
             mem,
             capture_stdout: false,
             captured_stdout: Vec::new(),
+            discard_stdout: false,
             start_instant: Instant::now(),
             sample_global: None,
             sample_start: Instant::now(),
@@ -1894,10 +1899,13 @@ fn daemon(args: Vec<String>) -> Result<i32> {
 mod component_runtime;
 mod diagnostics;
 mod host_imports;
+mod source_overlay;
+mod test_each;
 
 use component_runtime::*;
 use diagnostics::*;
 use host_imports::*;
+use source_overlay::*;
 
 fn main() {
     // Re-launch onto a worker thread whose native stack comfortably exceeds
@@ -2237,6 +2245,16 @@ fn real_main() {
             Err(e) => {
                 eprintln!("viberun: daemon failed: {e:?}");
                 std::process::exit(1);
+            }
+        }
+    }
+    if args.first().map(|s| s.as_str()) == Some("--test-each") {
+        let rest: Vec<String> = args.iter().skip(1).cloned().collect();
+        match test_each::test_each(rest) {
+            Ok(code) => std::process::exit(code),
+            Err(e) => {
+                eprintln!("viberun: {e}");
+                std::process::exit(2);
             }
         }
     }

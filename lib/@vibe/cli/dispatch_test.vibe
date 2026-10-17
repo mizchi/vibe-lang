@@ -997,11 +997,16 @@ test "user dispatch recognizes launcher verbs" {
   assert(user_dispatch_is_verb("lsp"))
   assert(user_dispatch_is_verb("hash"))
   assert(user_dispatch_is_verb("inspect-update"))
+  assert(user_dispatch_is_verb("mutants"))
+  assert(user_dispatch_is_verb("mutate-report"))
   assert(user_dispatch_is_verb("help"))
   assert(user_dispatch_is_verb("--help"))
   assert(user_dispatch_is_verb("-h"))
   assert(!user_dispatch_is_verb("compile-lite"))
   assert(!user_dispatch_is_verb("new"))
+  // `vibe mutate` runs tests, so the launcher owns it; the compiler's halves
+  // are `mutants` and `mutate-report`.
+  assert(!user_dispatch_is_verb("mutate"))
   assert(!user_dispatch_is_verb(""))
 }
 
@@ -1116,6 +1121,17 @@ test "user dispatch inspect-update patches a stale inspect content literal" {
   let status = selfhost_cli_user_dispatch_args(["inspect-update", src, cap])
   assert(status == 0)
   assert(Fs::read_file(src) == "test {\n  inspect(1, \"1\")\n}\n")
+}
+
+test "user dispatch mutate-report exits 1 exactly when a mutant survived" {
+  let target = "/tmp/vibe_user_dispatch_mutate_target.vibe"
+  let rows = "/tmp/vibe_user_dispatch_mutate_results.tsv"
+  Fs::write_bytes(target, string_to_bytes("fn f(x: Int) -> Bool {\n  x < 10\n}\n"))
+  let head = String::concat("target\t", String::concat(target, "\ntest\t0\tf_test.vibe\tt\n"))
+  Fs::write_bytes(rows, string_to_bytes(String::concat(head, "mutant\t1\t27\t28\tboundary\t<\t<=\tkilled\t0\n")))
+  assert(selfhost_cli_user_dispatch_args(["mutate-report", rows]) == 0)
+  Fs::write_bytes(rows, string_to_bytes(String::concat(head, "mutant\t1\t27\t28\tboundary\t<\t<=\tsurvived\t\n")))
+  assert(selfhost_cli_user_dispatch_args(["mutate-report", rows]) == 1)
 }
 
 test "user test plan expands a directory to *_test.vibe files" {

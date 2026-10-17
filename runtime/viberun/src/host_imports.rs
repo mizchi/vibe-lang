@@ -86,8 +86,83 @@ pub(super) fn read_wasi_u32(
     Ok(u32::from_le_bytes(buf))
 }
 
+/// Process groups of shell commands a `--test-each` block has running. The
+/// watchdog ends the runner when a block is stuck in a host call -- often
+/// exactly such a command -- and a child left behind would keep running (and
+/// keep acting) past the block's deadline; `kill_child_groups` ends them.
+static CHILD_GROUPS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// Run `/bin/bash -c cmd`, its output captured or inherited. With `isolate`
+/// (`--test-each`) the child leads a process group of its own, recorded while
+/// it runs; otherwise it is spawned exactly as before, so an interactive
+/// program's Ctrl-C still reaches its commands.
+fn run_shell(cmd: &str, capture: bool, isolate: bool) -> io::Result<std::process::Output> {
+    let mut command = std::process::Command::new("/bin/bash");
+    command.arg("-c").arg(cmd);
+    if capture {
+        command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+    }
+    #[cfg(unix)]
+    if isolate {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn()?;
+    let pid = child.id();
+    if isolate {
+        CHILD_GROUPS.lock().unwrap().push(pid);
+    }
+    let output = if isolate && capture {
+        // A mutant can turn a quiet command into an endless writer (`yes`);
+        // keep at most CAPTURE_CAP bytes of each stream and drain the rest,
+        // so the deadline -- not memory -- ends the block.
+        const CAPTURE_CAP: usize = 16 * 1024 * 1024;
+        fn capped(mut r: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+            std::thread::spawn(move || {
+                let mut kept = Vec::new();
+                let mut buf = [0u8; 64 * 1024];
+                while let Ok(n) = r.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    let room = CAPTURE_CAP.saturating_sub(kept.len());
+                    kept.extend_from_slice(&buf[..n.min(room)]);
+                }
+                kept
+            })
+        }
+        let out = child.stdout.take().map(capped);
+        let err = child.stderr.take().map(capped);
+        child.wait().map(|status| std::process::Output {
+            status,
+            stdout: out.and_then(|h| h.join().ok()).unwrap_or_default(),
+            stderr: err.and_then(|h| h.join().ok()).unwrap_or_default(),
+        })
+    } else {
+        child.wait_with_output()
+    };
+    if isolate {
+        CHILD_GROUPS.lock().unwrap().retain(|p| *p != pid);
+    }
+    output
+}
+
+/// Kill every recorded shell process group (SIGKILL, the whole group).
+pub(super) fn kill_child_groups() {
+    for pgid in CHILD_GROUPS.lock().unwrap().iter() {
+        let _ = std::process::Command::new("kill")
+            .args(["-s", "KILL", "--", &format!("-{pgid}")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 pub(super) fn write_wasi_fd(host: &mut HostState, fd: i32, bytes: &[u8]) -> io::Result<()> {
     match fd {
+        1 if host.discard_stdout => Ok(()),
         1 if host.capture_stdout => {
             host.captured_stdout.extend_from_slice(bytes);
             Ok(())
@@ -755,7 +830,7 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.read_file_calls += 1;
             }
-            let content = match fs::read(&path) {
+            let content = match source_overlay_read(&path) {
                 Ok(c) => c,
                 Err(e) => {
                     return Err(vibe_host_error(
@@ -800,7 +875,9 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
             if let Some(inputs) = caller.data_mut().lowering_inputs.as_mut() {
                 inputs.stat_file(&path);
             }
-            Ok(vibe_stat_token(&path))
+            Ok(vibe_stat_token(
+                &source_overlay_resolve(&path).to_string_lossy(),
+            ))
         },
     )?;
     // #901: Fs::remove/is_dir/is_file -- like Stdout/Stderr/Process above,
@@ -1065,7 +1142,7 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.read_bytes_calls += 1;
             }
-            let data = match fs::read(&path) {
+            let data = match source_overlay_read(&path) {
                 Ok(d) => d,
                 Err(e) => {
                     return Err(vibe_host_error(
@@ -1134,6 +1211,9 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         "stdout_write_stream",
         |mut caller: Caller<'_, HostState>, s: i64| -> Result<()> {
             let s = vibe_read_packed_str(&mut caller, s)?;
+            if caller.data().discard_stdout {
+                return Ok(());
+            }
             let stdout = io::stdout();
             let mut h = stdout.lock();
             h.write_all(s.as_bytes())
@@ -1142,16 +1222,23 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
             Ok(())
         },
     )?;
-    linker.func_wrap("vibe", "stdout_write_char", |code: i64| -> Result<()> {
-        let cu = (code as u32 & 0xffff) as u16;
-        let s = String::from_utf16_lossy(&[cu]);
-        let stdout = io::stdout();
-        let mut h = stdout.lock();
-        h.write_all(s.as_bytes())
-            .map_err(|e| format_err!("vibe stdout_write_char: {e}"))?;
-        h.flush().ok();
-        Ok(())
-    })?;
+    linker.func_wrap(
+        "vibe",
+        "stdout_write_char",
+        |caller: Caller<'_, HostState>, code: i64| -> Result<()> {
+            if caller.data().discard_stdout {
+                return Ok(());
+            }
+            let cu = (code as u32 & 0xffff) as u16;
+            let s = String::from_utf16_lossy(&[cu]);
+            let stdout = io::stdout();
+            let mut h = stdout.lock();
+            h.write_all(s.as_bytes())
+                .map_err(|e| format_err!("vibe stdout_write_char: {e}"))?;
+            h.flush().ok();
+            Ok(())
+        },
+    )?;
     linker.func_wrap(
         "vibe",
         "stderr_write_stream",
@@ -1327,11 +1414,10 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         "sh",
         |mut caller: Caller<'_, HostState>, cmd: i64| -> Result<i64> {
             let cmd = vibe_read_packed_str(&mut caller, cmd)?;
-            let status = std::process::Command::new("/bin/bash")
-                .arg("-c")
-                .arg(&cmd)
-                .status()
-                .map_err(|e| format_err!("vibe sh '{cmd}': {e}"))?;
+            let isolate = caller.data().discard_stdout;
+            let status = run_shell(&cmd, false, isolate)
+                .map_err(|e| format_err!("vibe sh '{cmd}': {e}"))?
+                .status;
             if !status.success() {
                 bail!("vibe sh '{cmd}': exited with {status}");
             }
@@ -1349,10 +1435,8 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         "sh_lines",
         |mut caller: Caller<'_, HostState>, cmd: i64| -> Result<i64> {
             let cmd = vibe_read_packed_str(&mut caller, cmd)?;
-            let output = std::process::Command::new("/bin/bash")
-                .arg("-c")
-                .arg(&cmd)
-                .output()
+            let isolate = caller.data().discard_stdout;
+            let output = run_shell(&cmd, true, isolate)
                 .map_err(|e| format_err!("vibe sh_lines '{cmd}': {e}"))?;
             let result = if output.status.success() {
                 String::from_utf8_lossy(&output.stdout)
@@ -1381,10 +1465,8 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         "sh_capture",
         |mut caller: Caller<'_, HostState>, cmd: i64| -> Result<i64> {
             let cmd = vibe_read_packed_str(&mut caller, cmd)?;
-            let output = std::process::Command::new("/bin/bash")
-                .arg("-c")
-                .arg(&cmd)
-                .output()
+            let isolate = caller.data().discard_stdout;
+            let output = run_shell(&cmd, true, isolate)
                 .map_err(|e| format_err!("vibe sh_capture '{cmd}': {e}"))?;
             // On Unix a signal-killed child has no exit code; fall back to
             // 128 (the shell convention), matching wasm_vibe_host_runner.js's

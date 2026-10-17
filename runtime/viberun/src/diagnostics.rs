@@ -456,6 +456,9 @@ pub(super) fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "print_char",
         |mut caller: Caller<'_, HostState>, ch: i32| {
             let host = caller.data_mut();
+            if host.discard_stdout {
+                return;
+            }
             let cu = (ch as u32 & 0xFFFF) as u16;
             host.print_buf.push(cu);
             if cu == 0x0A {
