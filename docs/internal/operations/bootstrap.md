@@ -89,8 +89,12 @@ metadata; restoring a cache in another job does not by itself invalidate it.
 Step-local Actions file-command paths and Git ref metadata are also
 orchestration; actual source/seed hashes bind the compiled inputs. Compiler
 options, unknown settings, roots and actual tool hashes remain bound.
-CI checks that a fresh validation in the compiler-build job supplies stage1;
-a restored receipt may still miss after an actual toolchain change.
+CI checks that a fresh validation in both compiler-build and compiler-gate
+supplies stage1. Tool setup precedes validation; gate scheduling controls are
+orchestration metadata. A restored receipt may still miss after an actual
+toolchain change. Validation and publication run from the same project
+directory, including when generation is invoked from another directory;
+relative output paths still resolve from the caller's directory.
 
 A missing, stale, unsupported or damaged receipt follows the ordinary verified
 stage0-to-stage1 compile. Filesystem/emission/source-map requests and immutable

@@ -85,6 +85,16 @@ source validation was fresh in that job; restored receipts may still miss
 after an actual toolchain change. These changes have separate hashes in the
 raw record and introduce no new timing samples.
 
+A later review fixes publication from a different caller directory: validation
+and receipt publication now use the same project directory, while relative
+output paths retain their caller-relative meaning. The measured invocations
+already ran from the project directory. The compiler-gate workflow also
+finalizes tool setup before validation and normalizes its three scheduling
+controls; PATH and actual tool hashes remain bound. Both build jobs require
+fresh validation reuse. The raw record separately identifies these changes
+and their regression checks. These are the original overlay's timing samples,
+not a new measurement of the final review-fix revision.
+
 [Raw samples, phase medians, paired deltas and hashes](../../../bench/perf/analysis/seed-validation-reuse-2026-10-17.json).
 
 ## Remaining work

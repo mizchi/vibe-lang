@@ -1213,19 +1213,25 @@ if [ -n "$ADAPTER_MODULE_SOURCE_OUT" ]; then
   if [ -n "$VALIDATED_MODULE_WASM" ]; then
     # Recheck the complete request before publishing source/product/receipt.
     # A failed validation never replaces the previous complete source (#979).
-    VIBE_RC=0 VIBE_MEM=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
-      VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
-      VIBE_NODE_WASM_FLAGS="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}" \
-      VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-${VIBE_GENERATION_WASM_PRE_GROW_PAGES:-0}}" \
-      VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-${VIBE_GENERATION_DISABLE_PERSISTENT_ARTIFACT_CACHE:-1}}" \
-      VIBE_SKIP_RUN_INIT="${VIBE_SKIP_RUN_INIT:-${VIBE_GENERATION_SKIP_RUN_INIT:-1}}" \
-      python3 "$SCRIPT_DIR/seed_validation_receipt.py" publish \
-        --root "$PROJECT_ROOT" --scripts "$SCRIPT_DIR" --source "$ADAPTER_MODULE_SOURCE_FILE" \
-        --seed "$(bundle_seed_wasm "$PROJECT_ROOT/bootstrap/seed/compiler.wasm")" \
-        --runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
-        --entry "${VIBE_MODULE_SOURCE_ENTRY_NAME:-cli_main}" \
-        --request "$VALIDATED_MODULE_REQUEST" --product "$VALIDATED_MODULE_WASM" \
-        --destination "$ADAPTER_MODULE_SOURCE_OUT"
+    # Keep caller-relative output paths while matching the validation cwd.
+    # Python launchers such as pyenv derive inherited settings from cwd.
+    ADAPTER_MODULE_SOURCE_PUBLISH_OUT="$(cd "$(dirname "$ADAPTER_MODULE_SOURCE_OUT")" && pwd)/$(basename "$ADAPTER_MODULE_SOURCE_OUT")"
+    (
+      cd "$PROJECT_ROOT"
+      VIBE_RC=0 VIBE_MEM=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+        VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
+        VIBE_NODE_WASM_FLAGS="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}" \
+        VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-${VIBE_GENERATION_WASM_PRE_GROW_PAGES:-0}}" \
+        VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-${VIBE_GENERATION_DISABLE_PERSISTENT_ARTIFACT_CACHE:-1}}" \
+        VIBE_SKIP_RUN_INIT="${VIBE_SKIP_RUN_INIT:-${VIBE_GENERATION_SKIP_RUN_INIT:-1}}" \
+        python3 "$SCRIPT_DIR/seed_validation_receipt.py" publish \
+          --root "$PROJECT_ROOT" --scripts "$SCRIPT_DIR" --source "$ADAPTER_MODULE_SOURCE_FILE" \
+          --seed "$(bundle_seed_wasm "$PROJECT_ROOT/bootstrap/seed/compiler.wasm")" \
+          --runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+          --entry "${VIBE_MODULE_SOURCE_ENTRY_NAME:-cli_main}" \
+          --request "$VALIDATED_MODULE_REQUEST" --product "$VALIDATED_MODULE_WASM" \
+          --destination "$ADAPTER_MODULE_SOURCE_PUBLISH_OUT"
+    )
     rm -f "$VALIDATED_MODULE_WASM" "$VALIDATED_MODULE_REQUEST"
   else
     ADAPTER_MODULE_SOURCE_OUT_TMP="$(mktemp "$(dirname "$ADAPTER_MODULE_SOURCE_OUT")/.$(basename "$ADAPTER_MODULE_SOURCE_OUT").XXXXXX")"

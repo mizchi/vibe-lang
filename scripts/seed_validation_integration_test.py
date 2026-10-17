@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import subprocess
 import shutil
+import shlex
+import sys
 import tempfile
 import unittest
 
@@ -96,7 +98,10 @@ fi
         self.env |= {'GITHUB_JOB': 'compiler-gate', 'GITHUB_WORKFLOW': 'Flaker CI',
                      'RUNNER_NAME': 'consumer', 'RUNNER_TRACKING_ID': 'consumer-id',
                      'GITHUB_ARTIFACTS': '/consumer/artifacts',
-                     'GITHUB_ARTIFACTS_LIST': '/consumer/artifact-list'}
+                     'GITHUB_ARTIFACTS_LIST': '/consumer/artifact-list',
+                     'COMPILER_GATE_LANE': 'bootstrap',
+                     'COMPILER_GATE_SKIP_PREFLIGHT': '1',
+                     'COMPILER_GATE_SKIP_STAGE2_ORACLES': '1'}
         (self.root / 'invocations.log').write_text('')
         result = self.build(prebuilt=prebuilt)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -131,6 +136,27 @@ fi
         self.assertIn('#979 sticky-failure guard', result.stderr)
         for suffix, content in old.items():
             self.assertEqual(Path(str(source) + suffix).read_bytes(), content)
+
+    def test_cwd_sensitive_python_keeps_caller_relative_publication(self):
+        caller = self.root / 'caller'
+        caller.mkdir()
+        wrappers = self.root / 'python-shims'
+        wrappers.mkdir()
+        shim = wrappers / 'python3'
+        shim.write_text('#!/usr/bin/env bash\nexport PYENV_DIR="$PWD"\nexec ' +
+                        shlex.quote(sys.executable) + ' "$@"\n')
+        shim.chmod(0o755)
+        env = self.env | {'PATH': str(wrappers) + os.pathsep + self.env.get('PATH', ''),
+                         'VIBE_ADAPTER_MODULE_SOURCE_OUT': 'published.vibe'}
+        result = subprocess.run(['bash', str(self.root / 'scripts/generate_bundle.sh')],
+                                cwd=caller, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        destination = caller / 'published.vibe'
+        self.assertTrue(destination.is_file())
+        receipt = json.loads(Path(str(destination) + '.seed-validation.json').read_text())
+        self.assertEqual(receipt['request']['source_sha256'], hashlib.sha256(destination.read_bytes()).hexdigest())
+        self.assertEqual(Path(str(destination) + '.seed-validation.wasm').read_text(), 'wasm entry=cli_main\n')
+        self.assertFalse((self.root / 'published.vibe').exists())
 
 
 if __name__ == '__main__':

@@ -160,12 +160,14 @@ class ReceiptTests(unittest.TestCase):
             'GITHUB_ACTOR': 'tester', 'GITHUB_ACTOR_ID': '2',
             'GITHUB_TRIGGERING_ACTOR': 'tester', 'GITHUB_EVENT_PATH': '/event/b.json',
             'RUNNER_NAME': 'runner-b', 'RUNNER_TRACKING_ID': 'tracking-b',
-            'RUNNER_TEMP': '/runner/b/temp'}
+            'RUNNER_TEMP': '/runner/b/temp', 'COMPILER_GATE_LANE': 'bootstrap',
+            'COMPILER_GATE_SKIP_PREFLIGHT': '1', 'COMPILER_GATE_SKIP_STAGE2_ORACLES': '1'}
         result = self.consume()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.out.read_bytes(), self.product.read_bytes())
         for changed in [{'VIBE_RC': '1'}, {'VIBE_IMPORT_ABI': 'tagged'},
                         {'VIBE_NODE_WASM_FLAGS': '--stack-size=4096'},
+                        {'PATH': str(self.root / 'unused-bin') + os.pathsep + self.env.get('PATH', '')},
                         {'VIBE_NEW_COMPILER_OPTION': '1'},
                         {'GITHUB_UNKNOWN_COMPILER_OPTION': '1'}]:
             with self.subTest(changed=changed):
