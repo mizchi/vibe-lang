@@ -117,6 +117,76 @@ transport, worker setup and coordinator costs exceed the saved emission time.
 The report's `finalize_ms` includes canonical replay and module assembly;
 external walltime also includes frontend verification and publication.
 
+## Reproduce the selfbuild baseline
+
+The `compiler` bootstrap workload runs `scripts/generations.sh build --stage3`,
+including source generation and validation. The `portable-cli` workload runs
+`scripts/build_cli_wasm.sh` with its artifact cache disabled: it rebuilds the
+flat adapter with entry `main` through stage2. Their dependency stages remain
+serial. The function-worker matrix separately compiles a compiler-sized test
+closure and `lib/@vibe/cli/entry.vibe` through the filesystem compiler.
+
+The current bootstrap invokes the low-level `cli_main` directly. The function
+executor is installed by the separate `@vibe/function_build` parent image.
+Worker selection therefore needs the integration tracked by #3485 before it
+can change the bootstrap critical path.
+
+Default bootstrap stages emit a bump target (`VIBE_RC=0`); the current native
+function frontend, parent executor and service accept target RC1. Integration
+also needs validated support for the bootstrap's emitted target. Compiler-engine
+allocation and emitted-target allocation are separate decisions, so changing
+the target merely to enter the experimental route would change the workload.
+
+On Linux with Python 3.12+, Node and the pinned Rust toolchain, prepare a current
+runner first, then run these commands sequentially on an idle host:
+
+```sh
+bash scripts/ensure_seed.sh
+bash scripts/ensure_viberun.sh
+baseline_workspace=_build/selfbuild-baseline
+python3 bench/perf/selfbuild_baseline.py prepare "$baseline_workspace" --ref HEAD
+python3 bench/perf/selfbuild_baseline.py clock "$baseline_workspace"
+python3 bench/perf/selfbuild_baseline.py bootstrap "$baseline_workspace"
+python3 bench/perf/selfbuild_baseline.py images "$baseline_workspace"
+python3 bench/perf/selfbuild_baseline.py matrix "$baseline_workspace"
+python3 bench/perf/selfbuild_profiles.py named "$baseline_workspace"
+python3 bench/perf/selfbuild_profiles.py ordinary "$baseline_workspace"
+python3 bench/perf/selfbuild_profiles.py parents "$baseline_workspace"
+python3 bench/perf/selfbuild_profiles.py workers "$baseline_workspace"
+python3 bench/perf/selfbuild_profiles.py memory "$baseline_workspace"
+python3 bench/perf/selfbuild_profiles.py startup "$baseline_workspace"
+python3 bench/perf/selfbuild_profiles.py validation "$baseline_workspace"
+python3 bench/perf/selfbuild_profiles.py summarize "$baseline_workspace"
+```
+
+Use a fresh workspace for a new experiment. The drivers retain raw logs,
+source/seed/image receipts, stage fixed points, process samples and profiles;
+existing measurement directories are preserved. Bootstrap cold samples start
+with an absent merge-tool image and a fresh guest cache. Warm samples retain
+both while regenerating every stage output. The matrix primes native machine
+code with another input and isolates each parsed-source cold/warm pair;
+checked-module, body and final-artifact caches are off. Each configuration has
+at least three samples with alternating order.
+
+Walltime uses a monotonic clock. `VIBE_TRACE_MONOTONIC=1` gives the same clock
+to host spans across processes; the recorded host-only instrumentation patch
+allows an older archived source to use this clock too. Realtime clock steps
+under WSL can corrupt a duration even when both timestamps look valid.
+`trace_report.mjs` refuses a tree with mixed clock origins. CPU profiles and
+captured worker replays run after the timed matrix. Their timings describe
+instrumented diagnostics and do not enter the walltime budget.
+
+The small-input startup controls use empty guest caches on both sides while
+comparing cold and reused native machine code. They report the net cache/JIT
+effect for the complete driver. The validation probe separately checks whether
+a seed compile of the same flat source reproduces the measured stage1 bytes;
+any reuse implementation still needs source, option and publication receipts.
+
+`pkf run test-selfbuild-measurement` tests receipt refusals, exact capture,
+profile attribution and clock behavior. It is part of `release-check`; CI also
+runs these tests before building the compiler. This task does not run the
+long measurement itself.
+
 ## Feedback to the language and libraries
 
 These are proposals, not existing language guarantees:
