@@ -85,14 +85,22 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
         Array::push(w.types, (target, hidden))
         push_bounds(w, bounds, hidden)
       },
-      STrait(_, _, supers, sigs, _, tparams) => {
+      STrait(_, _, supers, sigs, method_gens, tparams) => {
         let hidden = local || binds_type_param(tparams, name)
         for sup in supers {
           Array::push(w.rows, (sup, hidden))
         }
         for sg in sigs {
-          push_types(w, sg.1, hidden)
-          Array::push(w.types, (sg.2, hidden))
+          // A method's own type parameters hide the name in its signature
+          // (Codex on #3492): `project[Box](x: Box) -> Box`.
+          let mut sig_hidden = hidden
+          for mg in method_gens {
+            if mg.0 == sg.0 && binds_type_param(mg.1, name) {
+              sig_hidden = true
+            }
+          }
+          push_types(w, sg.1, sig_hidden)
+          Array::push(w.types, (sg.2, sig_hidden))
         }
         ()
       },

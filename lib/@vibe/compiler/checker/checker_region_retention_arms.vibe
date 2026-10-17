@@ -1,46 +1,67 @@
 // lib/@vibe/compiler/checker/checker_region_retention.vibe — which match
-// arms bind names, for the retention and provenance checks.
+// arms hand back their scrutinee, for the retention and provenance checks.
 
 import @vibe/compiler/core {
-  Expr, Pat
+  Expr, Pat, expr_children
 }
 
-/// Whether any arm's pattern binds a name: such an arm may hand back the
-/// scrutinee's value under a name the outer environment does not know
-/// (#3488, Codex on #3492).
+/// Whether some arm's body names a binder its own pattern binds: such an arm
+/// may hand back the scrutinee's value under a name the outer environment
+/// does not know (#3488, Codex on #3492). `Some(x) => x` does; `Some(x) =>
+/// fresh` and `None => fresh` do not.
 export fn retention_arms_bind(arms: Array[(Pat, Expr)]) -> Bool {
   let mut any = false
   for arm in arms {
-    any = any || retention_pat_binds(arm.0)
+    if !any {
+      let names: Array[String] = []
+      retention_pat_names_into(arm.0, names)
+      any = Array::length(names) > 0 && retention_expr_names_any(arm.1, names)
+    }
   }
   any
 }
 
-fn retention_pat_binds(p: Pat) -> Bool {
+fn retention_pat_names_into(p: Pat, out: Array[String]) -> Unit {
   match p {
-    PBind(_) => true,
-    PCtor(_, ps) => {
-      let mut any = false
-      for q in ps {
-        any = any || retention_pat_binds(q)
-      }
-      any
-    },
-    PTuple(ps) => {
-      let mut any = false
-      for q in ps {
-        any = any || retention_pat_binds(q)
-      }
-      any
-    },
-    POr(a, b) => retention_pat_binds(a) || retention_pat_binds(b),
-    PStruct(_, fields) => {
-      let mut any = false
-      for f in fields {
-        any = any || retention_pat_binds(f.1)
-      }
-      any
-    },
-    _ => false
+    PBind(n) => Array::push(out, n),
+    PCtor(_, ps) => retention_pats_names_into(ps, out),
+    PTuple(ps) => retention_pats_names_into(ps, out),
+    POr(a, _) => retention_pat_names_into(a, out),
+    PStruct(_, fields) => retention_pats_names_into(for f in fields {
+      f.1
+    }, out),
+    _ => ()
   }
+}
+
+fn retention_pats_names_into(ps: Array[Pat], out: Array[String]) -> Unit {
+  for q in ps {
+    retention_pat_names_into(q, out)
+  }
+  ()
+}
+
+fn retention_expr_names_any(e: Expr, names: Array[String]) -> Bool {
+  let stack: Array[Expr] = [e]
+  let mut hit = false
+  while !hit && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      EIdent(x, _) => {
+        for name in names {
+          if name == x {
+            hit = true
+          }
+        }
+        ()
+      },
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+  }
+  hit
 }
