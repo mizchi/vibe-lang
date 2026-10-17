@@ -25,6 +25,7 @@ import @vibe/ast {
 export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
   let w = CodeNamesWalk::{ stack: [], types: [], rows: [] }
   let local = stmts_declare_type_head(stmts, name)
+  let mut pattern_hit = false
   for st in stmts {
     match st {
       SLet(_, _, _, ann, e) => {
@@ -37,6 +38,14 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
       },
       SFnDecl(_, _, e, _, _) => Array::push(w.stack, (e, local)),
       SExpr(e) => Array::push(w.stack, (e, local)),
+      // A top-level destructuring `let` names its pattern's heads and its
+      // initializer's (Codex on #3492): `let Box::{ value: x } = make()`.
+      SLetPat(pat, e) => {
+        if pat_names(pat, name, String::concat(name, "::"), local) {
+          pattern_hit = true
+        }
+        Array::push(w.stack, (e, local))
+      },
       SStruct(_, _, fields, _, _, tparams) => {
         let hidden = local || binds_type_param(tparams, name)
         push_types(w, for f in fields {
@@ -56,7 +65,7 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
         }
         ()
       },
-      STypeAlias(_, _, tparams, target) => Array::push(w.types, (target, binds_type_param(tparams, name))),
+      STypeAlias(_, _, tparams, target) => Array::push(w.types, (target, local || binds_type_param(tparams, name))),
       SImpl(tparams, bounds, tr, target) => {
         let hidden = local || binds_type_param(tparams, name)
         Array::push(w.types, (TyName(tr), local))
@@ -66,7 +75,7 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
       STrait(_, _, tparams, sigs, _, supers) => {
         let hidden = local || binds_type_param(tparams, name)
         for sup in supers {
-          Array::push(w.rows, (sup, local))
+          Array::push(w.rows, (sup, hidden))
         }
         for sg in sigs {
           push_types(w, sg.1, hidden)
@@ -93,7 +102,7 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
     }
   }
   let qual = String::concat(name, "::")
-  let mut found = false
+  let mut found = pattern_hit
   while !found && Array::length(w.stack) > 0 {
     let n = Array::length(w.stack)
     let (cur, outer_hidden) = Array::get(w.stack, n - 1)

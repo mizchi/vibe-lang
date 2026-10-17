@@ -1288,3 +1288,39 @@ test "#3448: builtin spellings inside a row compare alike" {
   let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
   inspect(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "clean")
 }
+
+test "#3448: declarations a facade reads its re-exports through (Codex on #3492)" {
+  let p = parse_program(lex("export struct Box {\n  value: Int\n}\nexport fn make() -> Box {\n  Box::{ value: 1 }\n}"))
+  let other = parse_program(lex("export struct Box {\n  value: String\n}\nexport fn mine() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./facade.vibe { read }\nimport ./other.vibe { mine }\nlet answer = mine()"))
+  let paths = [
+    "/virtual/p.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/other.vibe",
+    "/virtual/entry.vibe"
+  ]
+  // A top-level destructuring `let` names its pattern's head.
+  let by_let_pat = parse_program(lex("export ./p.vibe { Box, make }\nlet Box::{ value: x } = make()\nexport fn read() -> Int {\n  x\n}"))
+  inspect(String::starts_with(plan_refusal(paths, [p, by_let_pat, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  // A facade's own `Box` is the one its alias target names.
+  let own_alias = parse_program(lex("export ./p.vibe { Box }\nstruct Box {\n  n: Int\n}\ntype Local = Box\nexport fn read() -> Int {\n  1\n}"))
+  inspect(plan_refusal(paths, [p, own_alias, other, entry], "/virtual/entry.vibe", entry), "clean")
+  // A trait parameter spelled `Box` is the parameter in its supertraits.
+  let super_param = parse_program(lex("export ./p.vibe { Box }\ntrait Key[T] {\n  key(Self) -> Int\n}\ntrait Uses[Box]: Key[Box] {\n  uses(Self) -> Int\n}\nexport fn read() -> Int {\n  1\n}"))
+  inspect(plan_refusal(paths, [p, super_param, other, entry], "/virtual/entry.vibe", entry), "clean")
+}
+
+test "#3489: an effectset a facade re-exports is read in the facade's own rows" {
+  // Codex on #3492: `export ./sets.vibe { All }` beside `with All`.
+  let sets = parse_program(lex("effect Ask {\n  Get() -> Int\n}\nexport effectset All = { Ask }"))
+  let facade = parse_program(lex("export ./sets.vibe { All }\nexport struct Job {\n  run: () -> Int with All\n}\nexport fn ja() -> Int {\n  1\n}"))
+  let b = parse_program(lex("effect Ask {\n  Get() -> Int\n}\nexport struct Job {\n  run: () -> Int with Ask\n}\nexport fn jb() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
+  let paths = [
+    "/virtual/sets.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(plan_refusal(paths, [sets, facade, b, entry], "/virtual/entry.vibe", entry), "clean")
+}

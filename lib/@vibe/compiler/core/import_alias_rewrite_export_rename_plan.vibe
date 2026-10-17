@@ -694,26 +694,32 @@ fn effectset_alias_row(name: String, members: Array[String]) -> (String, Array[S
 fn imported_type_aliases_into(stmts: Array[Stmt], path: String, paths: Array[String], shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, Array[String], TypeExpr)]) -> Unit {
   for stmt in stmts {
     match stmt {
-      SImport(raw_path, items) => {
-        let provider = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
-        for item in items {
-          let local = match item.alias {
-            Some(a) => a,
-            None => item.name
-          }
-          for al in shared {
-            let (from, an, ap, target) = al
-            if from == provider {
-              if an == item.name {
-                Array::push(out, (local, ap, target))
-              } else if an == effectset_alias_key(item.name) {
-                Array::push(out, (effectset_alias_key(local), ap, target))
-              }
-            }
-          }
-        }
-      },
+      SImport(raw_path, items) => import_items_aliases_into(raw_path, items, path, paths, shared, out),
+      // A direct re-export binds its names in the facade too (Codex on
+      // #3492): `export ./sets.vibe { All }` beside `with All`.
+      SReExport(raw_path, items) => import_items_aliases_into(raw_path, items, path, paths, shared, out),
       _ => ()
+    }
+  }
+  ()
+}
+
+fn import_items_aliases_into(raw_path: String, items: Array[ImportItem], path: String, paths: Array[String], shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, Array[String], TypeExpr)]) -> Unit {
+  let provider = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
+  for item in items {
+    let local = match item.alias {
+      Some(a) => a,
+      None => item.name
+    }
+    for al in shared {
+      let (from, an, ap, target) = al
+      if from == provider {
+        if an == item.name {
+          Array::push(out, (local, ap, target))
+        } else if an == effectset_alias_key(item.name) {
+          Array::push(out, (effectset_alias_key(local), ap, target))
+        }
+      }
     }
   }
   ()
