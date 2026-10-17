@@ -9,11 +9,21 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  index_site_key, type_param_arity, type_param_name
+  index_site_key, type_param_name
 }
 
-import ./expr_children.vibe {
-  expr_children
+import ./import_alias_rewrite_code_names.vibe {
+  stmts_code_names
+}
+
+import ./import_alias_rewrite_type_equivalence.vibe {
+  renamed_type_name,
+  row_type_args_parse,
+  row_type_text,
+  type_expr_lists_equivalent,
+  type_exprs_equivalent,
+  type_param_arities_match,
+  type_param_renames
 }
 
 import ./module_graph_path.vibe {
@@ -663,10 +673,24 @@ fn file_type_aliases(stmts: Array[Stmt]) -> Array[(String, Array[String], TypeEx
   for stmt in stmts {
     match stmt {
       STypeAlias(_, name, params, target) => Array::push(out, (name, params, target)),
+      SEffectSet(_, name, members) => Array::push(out, effectset_alias_row(name, members)),
       _ => ()
     }
   }
   out
+}
+
+/// #3489: an `effectset` travels with the type aliases, under a name no type
+/// can spell, so a row is read through it wherever an alias would be: the
+/// file's own, imported from its provider, re-exported, through any chain.
+fn effectset_alias_key(name: String) -> String {
+  String::concat("effectset ", name)
+}
+
+fn effectset_alias_row(name: String, members: Array[String]) -> (String, Array[String], TypeExpr) {
+  (effectset_alias_key(name), [], TyTuple(for m in members {
+    TyName(m)
+  }))
 }
 
 /// The shared aliases a file imports by name, each under the name its import
@@ -676,22 +700,32 @@ fn file_type_aliases(stmts: Array[Stmt]) -> Array[(String, Array[String], TypeEx
 fn imported_type_aliases_into(stmts: Array[Stmt], path: String, paths: Array[String], shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, Array[String], TypeExpr)]) -> Unit {
   for stmt in stmts {
     match stmt {
-      SImport(raw_path, items) => {
-        let provider = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
-        for item in items {
-          let local = match item.alias {
-            Some(a) => a,
-            None => item.name
-          }
-          for al in shared {
-            let (from, an, ap, target) = al
-            if an == item.name && from == provider {
-              Array::push(out, (local, ap, target))
-            }
-          }
-        }
-      },
+      SImport(raw_path, items) => import_items_aliases_into(raw_path, items, path, paths, shared, out),
+      // A direct re-export binds its names in the facade too (Codex on
+      // #3492): `export ./sets.vibe { All }` beside `with All`.
+      SReExport(raw_path, items) => import_items_aliases_into(raw_path, items, path, paths, shared, out),
       _ => ()
+    }
+  }
+  ()
+}
+
+fn import_items_aliases_into(raw_path: String, items: Array[ImportItem], path: String, paths: Array[String], shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, Array[String], TypeExpr)]) -> Unit {
+  let provider = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
+  for item in items {
+    let local = match item.alias {
+      Some(a) => a,
+      None => item.name
+    }
+    for al in shared {
+      let (from, an, ap, target) = al
+      if from == provider {
+        if an == item.name {
+          Array::push(out, (local, ap, target))
+        } else if an == effectset_alias_key(item.name) {
+          Array::push(out, (effectset_alias_key(local), ap, target))
+        }
+      }
     }
   }
   ()
@@ -718,6 +752,14 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
             (type_param_name(p), String::concat("#param:", type_param_name(p)))
           }
           Array::push(all, (Array::get(paths, fi), name, params, expand_type_aliases(target, own, renames, 0)))
+        } else {
+          ()
+        },
+        SEffectSet(exported, name, members) => if exported || import_alias_rewrite_string_array_contains(listed, name) {
+          let (key, ps, target) = effectset_alias_row(name, members)
+          // Read in the provider too (Codex on #3492): `All = { Base }` over
+          // its own `Base = { Ask }` publishes `Ask`.
+          Array::push(all, (Array::get(paths, fi), key, ps, flatten_effectset_target(target, own)))
         } else {
           ()
         },
@@ -757,7 +799,14 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
       let renames = for p in params {
         (type_param_name(p), String::concat("#param:", type_param_name(p)))
       }
-      let next = expand_type_aliases(target, env, renames, 0)
+      let next = if String::starts_with(name, "effectset ") {
+        // From the provider's own spelling each round (Codex on #3492), as
+        // an alias is: a chain `C = { B }`, `B = { A }` reads `B`'s current
+        // members, not a half-expanded `C` against `C`'s own imports.
+        flatten_effectset_target(target, env)
+      } else {
+        expand_type_aliases(target, env, renames, 0)
+      }
       if !type_exprs_equivalent(next, renames, prev, renames) {
         changed = true
       }
@@ -818,18 +867,26 @@ fn reexported_type_aliases_into(paths: Array[String], stmts_list: Array[Array[St
           if all_items || import_alias_rewrite_string_array_contains(listed, exported) {
             for al in shared {
               let (from, an, ap, target) = al
-              if an == item.name && from == provider {
+              // An `effectset` re-exports under its own key (#3489).
+              let row_name = if an == item.name {
+                exported
+              } else if an == effectset_alias_key(item.name) {
+                effectset_alias_key(exported)
+              } else {
+                ""
+              }
+              if row_name != "" && from == provider {
                 let mut ri = 0
                 let mut replaced = false
                 while ri < Array::length(rows) {
-                  if Array::get(rows, ri).0 == exported {
-                    Array::set(rows, ri, (exported, ap, target))
+                  if Array::get(rows, ri).0 == row_name {
+                    Array::set(rows, ri, (row_name, ap, target))
                     replaced = true
                   }
                   ri = ri + 1
                 }
                 if !replaced {
-                  Array::push(rows, (exported, ap, target))
+                  Array::push(rows, (row_name, ap, target))
                 }
               }
             }
@@ -879,12 +936,133 @@ fn expand_type_aliases(t: TypeExpr, aliases: Array[(String, Array[String], TypeE
       },
       TyFn(ps, r, row) => TyFn(for p in ps {
         expand_type_aliases(p, aliases, renames, depth + 1)
-      }, expand_type_aliases(r, aliases, renames, depth + 1), row),
+      }, expand_type_aliases(r, aliases, renames, depth + 1), match row {
+        Some(text) => Some(expand_row_effectsets(text, aliases, renames, 0)),
+        None => None
+      }),
       TyTuple(items) => TyTuple(for item in items {
         expand_type_aliases(item, aliases, renames, depth + 1)
       }),
       TyUnit => t
     }
+  }
+}
+
+/// #3489: `text` with each label that names an `effectset` in `aliases`
+/// replaced by its members, as the checker reads the row: `with All` of
+/// `effectset All = { Ask }` is `with Ask`. Labels split at the top-level
+/// `+` and `,`; the depth bounds a cycle.
+fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], TypeExpr)], renames: Array[(String, String)], depth: Int) -> String {
+  let labels: Array[String] = []
+  let mut cur = ""
+  let mut nest = 0
+  let mut i = 0
+  let n = String::length(text)
+  while i <= n {
+    let c = if i < n {
+      String::byte_at(text, i)
+    } else {
+      0
+    }
+    if c == '[' {
+      nest = nest + 1
+    } else if c == ']' {
+      nest = nest - 1
+    }
+    if c == 0 || (nest == 0 && (c == '+' || c == ',')) {
+      let t = String::trim(cur)
+      if t != "" {
+        Array::push(labels, t)
+      }
+      cur = ""
+    } else {
+      cur = String::concat(cur, String::substring(text, i, i + 1))
+    }
+    i = i + 1
+  }
+  let out: Array[String] = []
+  for label in labels {
+    let mut members: Option[Array[String]] = None
+    let mut found = false
+    if depth < 16 {
+      let key = effectset_alias_key(label)
+      for al in aliases {
+        let (an, _, target) = al
+        if !found && an == key {
+          found = true
+          members = match target {
+            TyTuple(items) => Some(for it in items {
+              match it {
+                // A member is read where the effectset is declared, outside
+                // the enclosing declaration's type parameters.
+                TyName(m) => expand_row_effectsets(m, aliases, [], depth + 1),
+                _ => ""
+              }
+            }),
+            _ => None
+          }
+        }
+      }
+    }
+    match members {
+      Some(ms) => {
+        for m in ms {
+          if m != "" {
+            Array::push(out, m)
+          }
+        }
+        ()
+      },
+      None => Array::push(out, expand_row_label_args(label, aliases, renames))
+    }
+  }
+  String::join(out, " + ")
+}
+
+/// A row label with its type arguments read through aliases (Codex on
+/// #3492): `State[Payload]` is `State[Int]` in a module with `type Payload =
+/// Int` and `State[String]` in one with `type Payload = String`, and
+/// `State[Payload[Int]]` expands a generic alias the same way. A type
+/// parameter of the enclosing declaration (in `renames`) shadows an alias of
+/// its spelling. Arguments `row_type_args_parse` does not read are left as
+/// written.
+fn expand_row_label_args(label: String, aliases: Array[(String, Array[String], TypeExpr)], renames: Array[(String, String)]) -> String {
+  let bracket = String::index_of(label, "[")
+  let n = String::length(label)
+  if bracket < 0 || n == 0 || String::byte_at(label, n - 1) != ']' {
+    label
+  } else {
+    match row_type_args_parse(String::substring(label, bracket + 1, n - 1)) {
+      Some(args) => String::concat(String::concat(String::concat(String::substring(label, 0, bracket), "["), String::join(for a in args {
+        row_type_text(expand_type_aliases(a, aliases, renames, 0))
+      }, ", ")), "]"),
+      None => label
+    }
+  }
+}
+
+/// An `effectset`'s members with each one that names an effectset in
+/// `aliases` replaced by its own members.
+fn flatten_effectset_target(target: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)]) -> TypeExpr {
+  match target {
+    TyTuple(items) => {
+      let out: Array[TypeExpr] = []
+      for item in items {
+        match item {
+          TyName(m) => {
+            for part in String::split(expand_row_effectsets(m, aliases, [], 0), " + ") {
+              if part != "" {
+                Array::push(out, TyName(part))
+              }
+            }
+            ()
+          },
+          _ => Array::push(out, item)
+        }
+      }
+      TyTuple(out)
+    },
+    _ => target
   }
 }
 
@@ -949,115 +1127,6 @@ fn substitute_type_params(t: TypeExpr, params: Array[String], args: Array[TypeEx
   }
 }
 
-/// Each type parameter's name mapped to its position, so `Box[T]` and
-/// `Box[U]` compare equal.
-fn type_param_renames(params: Array[String]) -> Array[(String, String)] {
-  let out: Array[(String, String)] = []
-  let mut i = 0
-  while i < Array::length(params) {
-    Array::push(out, (type_param_name(Array::get(params, i)), String::concat("#", Int::to_string(i))))
-    i = i + 1
-  }
-  out
-}
-
-fn type_param_arities_match(a: Array[String], b: Array[String]) -> Bool {
-  let mut ok = Array::length(a) == Array::length(b)
-  let mut i = 0
-  while ok && i < Array::length(a) {
-    ok = type_param_arity(Array::get(a, i)) == type_param_arity(Array::get(b, i))
-    i = i + 1
-  }
-  ok
-}
-
-fn renamed_type_name(renames: Array[(String, String)], name: String) -> String {
-  let mut out = name
-  for r in renames {
-    if r.0 == name {
-      out = r.1
-    }
-  }
-  out
-}
-
-fn type_expr_lists_equivalent(a: Array[TypeExpr], ar: Array[(String, String)], b: Array[TypeExpr], br: Array[(String, String)]) -> Bool {
-  let mut ok = Array::length(a) == Array::length(b)
-  let mut i = 0
-  while ok && i < Array::length(a) {
-    ok = type_exprs_equivalent(Array::get(a, i), ar, Array::get(b, i), br)
-    i = i + 1
-  }
-  ok
-}
-
-fn type_exprs_equivalent(a: TypeExpr, ar: Array[(String, String)], b: TypeExpr, br: Array[(String, String)]) -> Bool {
-  match (a, b) {
-    (TyName(x), TyName(y)) => renamed_type_name(ar, x) == renamed_type_name(br, y),
-    (TyApp(x, xs), TyApp(y, ys)) => renamed_type_name(ar, x) == renamed_type_name(br, y) && type_expr_lists_equivalent(xs, ar, ys, br),
-    (TyFn(xps, xr, xrow), TyFn(yps, yr, yrow)) => type_expr_lists_equivalent(xps, ar, yps, br) && type_exprs_equivalent(xr, ar, yr, br) && row_label_sets_equal(row_labels_renamed(xrow, ar), row_labels_renamed(yrow, br)),
-    (TyTuple(xs), TyTuple(ys)) => type_expr_lists_equivalent(xs, ar, ys, br),
-    (TyUnit, TyUnit) => true,
-    _ => false
-  }
-}
-
-/// A row's labels with the type parameters renamed, split at the top-level
-/// `+` and `,` separators. `Fs + Env` and `Env + Fs + Env` give one set.
-fn row_labels_renamed(row: Option[String], renames: Array[(String, String)]) -> Array[String] {
-  let out: Array[String] = []
-  match row {
-    Some(text) => {
-      let mut label = ""
-      let mut word = ""
-      let mut depth = 0
-      let mut i = 0
-      let n = String::length(text)
-      while i <= n {
-        let c = if i < n {
-          String::byte_at(text, i)
-        } else {
-          0
-        }
-        let is_word = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
-        if is_word {
-          word = String::concat(word, String::substring(text, i, i + 1))
-        } else {
-          label = String::concat(label, renamed_type_name(renames, word))
-          word = ""
-          if c == '[' {
-            depth = depth + 1
-          } else if c == ']' {
-            depth = depth - 1
-          }
-          if c == 0 || (depth == 0 && (c == '+' || c == ',')) {
-            let t = String::trim(label)
-            if t != "" && !import_alias_rewrite_string_array_contains(out, t) {
-              Array::push(out, t)
-            }
-            label = ""
-          } else if c != ' ' {
-            label = String::concat(label, String::substring(text, i, i + 1))
-          }
-        }
-        i = i + 1
-      }
-    },
-    None => ()
-  }
-  out
-}
-
-fn row_label_sets_equal(a: Array[String], b: Array[String]) -> Bool {
-  let mut ok = Array::length(a) == Array::length(b)
-  for x in a {
-    if !import_alias_rewrite_string_array_contains(b, x) {
-      ok = false
-    }
-  }
-  ok
-}
-
 /// The top-level name `stmt` declares, for import reachability, or "".
 fn top_level_decl_name(stmt: Stmt) -> String {
   match stmt {
@@ -1072,36 +1141,6 @@ fn top_level_decl_name(stmt: Stmt) -> String {
     SEffectDef(_, name, _, _) => name,
     _ => ""
   }
-}
-
-/// Whether an expression in `stmts`' declarations names `name`: a call or
-/// value `name`, a qualified `name::..`, or a `name::{ .. }` literal.
-fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
-  let qual = String::concat(name, "::")
-  let stack: Array[Expr] = []
-  for st in stmts {
-    match st {
-      SLet(_, _, _, _, e) => Array::push(stack, e),
-      SFnDecl(_, _, e, _, _) => Array::push(stack, e),
-      SExpr(e) => Array::push(stack, e),
-      _ => ()
-    }
-  }
-  let mut found = false
-  while !found && Array::length(stack) > 0 {
-    let n = Array::length(stack)
-    let cur = Array::get(stack, n - 1)
-    Array::truncate(stack, n - 1)
-    match cur {
-      EIdent(x, _) => found = x == name || String::starts_with(x, qual),
-      ERecord(x, _, _) => found = x == name,
-      _ => ()
-    }
-    for child in expr_children(cur) {
-      Array::push(stack, child)
-    }
-  }
-  found
 }
 
 /// #3448: the refusals for type names two REACHED source files both publish./// #3448: the refusals for type names two REACHED source files both publish.

@@ -1127,6 +1127,29 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
       0
     },
     ELabeledArg(_, _, arg_expr) => collect_free_vars_expr_sc(arg_expr, bound, fn_names, encl, skip_inlined, out),
+    // #3495: a map literal's values, a spread's operand and a `loop`'s
+    // initializers are read where the literal is built. Without these arms a
+    // closure never captured them: `Map::from_pairs([("k", outer)])` inside
+    // a lambda stopped with "`outer` reached code generation unresolved".
+    EMap(fields) => {
+      for field in fields {
+        collect_free_vars_expr_sc(field.1, bound, fn_names, encl, skip_inlined, out)
+      }
+      0
+    },
+    ESpread(inner) => collect_free_vars_expr_sc(inner, bound, fn_names, encl, skip_inlined, out),
+    ELoop(inits, body) => {
+      for init in inits {
+        collect_free_vars_expr_sc(init.1, bound, fn_names, encl, skip_inlined, out)
+      }
+      let saved = Array::length(bound)
+      for init in inits {
+        Array::push(bound, init.0)
+      }
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
+      Array::truncate(bound, saved)
+      0
+    },
     _ => 0
   }
 }

@@ -1164,36 +1164,6 @@ export fn rewrite_import_alias_stmts(stmts: Array[Stmt], aliases: Array[(String,
   rewrite_import_alias_stmts_with_pattern_ctors(stmts, aliases, [])
 }
 
-/// Module-level values shadow a qualified import namespace in every body,
-/// just as local binders do. Only dotted keys are removed: ordinary and trait
-/// aliases (including the self-mappings below) retain their existing rules.
-/// Share the input array unless a qualified key is actually masked.
-fn without_top_level_namespace_aliases(stmts: Array[Stmt], aliases: Array[(String, String)]) -> Array[(String, String)] {
-  let mut out = aliases
-  let mut copied = false
-  let mut i = 0
-  while i < Array::length(aliases) {
-    let row = Array::get(aliases, i)
-    let (key, _) = row
-    let dot = String::index_of(key, ".")
-    let masked = dot > 0 && import_alias_rewrite_string_array_contains(top_level_value_names(stmts), key[0: dot])
-    if masked {
-      if !copied {
-        out = Array::slice(aliases, 0, i)
-        copied = true
-      } else {
-        ()
-      }
-    } else if copied {
-      Array::push(out, row)
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  out
-}
-
 export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], aliases: Array[(String, String)], pattern_ctors: Array[(String, String)]) -> Array[Stmt] {
   let owner_aliases = collect_impl_method_owner_aliases(stmts, aliases)
   let combined = empty_aliases()
@@ -1252,7 +1222,7 @@ export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], alia
     }
     bi = bi + 1
   }
-  let am = aliasidx_with_pattern_ctors(aliasidx_build(without_top_level_namespace_aliases(stmts, combined)), pattern_ctors)
+  let am = aliasidx_with_pattern_ctors(aliasidx_build(namespace_aliases_without_top_level_values(combined, stmts)), pattern_ctors)
   let imported = for stmt in stmts {
     rewrite_alias_stmt_ix(rewrite_impl_method_binding(stmt, owner_aliases), am)
   }
@@ -1261,6 +1231,69 @@ export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], alia
   for stmt in imported {
     rewrite_local_alias_impl_stmt(stmt, local_aliases, local_owner_aliases)
   }
+}
+
+/// #3490: `aliases` without the qualified-import members (`helper.greet` of
+/// `import ./dep.vibe as helper only { greet }`) whose namespace a top-level
+/// value of `stmts` rebinds. The checker reads `helper.greet` there as the
+/// value's field, as it does under a local `helper` (#897), so the program
+/// must not call the import. A plain alias is not touched: a top-level
+/// declaration sharing an import's own name is renamed instead (#3444).
+fn namespace_aliases_without_top_level_values(aliases: Array[(String, String)], stmts: Array[Stmt]) -> Array[(String, String)] {
+  let names = empty_strings()
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, _) => Array::push(names, name),
+      SLetMut(name, _, _) => Array::push(names, name),
+      SExternLet(name, _) => Array::push(names, name),
+      SFnDecl(_, name, _, _, _) => Array::push(names, name),
+      // `let (helper, n) = ..` binds `helper` too (Codex on #3492).
+      SLetPat(pat, _) => pat_bound_names_into(pat, names),
+      _ => ()
+    }
+  }
+  let mut any = false
+  for entry in aliases {
+    if !any && alias_namespace_rebound(entry.0, names) {
+      any = true
+    }
+  }
+  if !any {
+    aliases
+  } else {
+    let out = empty_aliases()
+    for entry in aliases {
+      if !alias_namespace_rebound(entry.0, names) {
+        Array::push(out, entry)
+      }
+    }
+    out
+  }
+}
+
+fn pat_bound_names_into(pat: Pat, out: Array[String]) -> Unit {
+  match pat {
+    PBind(name) => Array::push(out, name),
+    PCtor(_, pats) => pats_bound_names_into(pats, out),
+    PTuple(pats) => pats_bound_names_into(pats, out),
+    POr(left, _) => pat_bound_names_into(left, out),
+    PStruct(_, fields) => pats_bound_names_into(for f in fields {
+      f.1
+    }, out),
+    _ => ()
+  }
+}
+
+fn pats_bound_names_into(pats: Array[Pat], out: Array[String]) -> Unit {
+  for p in pats {
+    pat_bound_names_into(p, out)
+  }
+  ()
+}
+
+fn alias_namespace_rebound(alias: String, names: Array[String]) -> Bool {
+  let dot = String::index_of(alias, ".")
+  dot > 0 && import_alias_rewrite_string_array_contains(names, String::substring(alias, 0, dot))
 }
 
 fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
