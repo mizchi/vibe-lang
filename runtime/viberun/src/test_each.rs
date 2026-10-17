@@ -22,7 +22,7 @@
 //! `__test_helper`, so the prefix is not authoritative. A module without the
 //! section (an older compiler) falls back to every `__test_*` export.
 //!
-//! `<name>` and `<reason>` escape `\` `\t` `\n` `\r` as two-character
+//! `<name>` and `<reason>` escape `\` `\t` `\n` `\r` `\0` as two-character
 //! sequences so every row splits into the same fields. The block's own stdout
 //! is discarded on every path, unbuffered. Exit status: 0 when every block passed, 1 when
 //! any did not, 2 on a usage or load error.
@@ -37,6 +37,7 @@ fn escape_field(s: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
             _ => out.push(c),
         }
     }
@@ -80,14 +81,19 @@ fn declared_tests(bytes: &[u8]) -> Option<Vec<String>> {
             let name_len = leb(bytes, &mut p)?;
             let name_end = p.checked_add(name_len)?;
             if name_end <= end && &bytes[p..name_end] == b"vibe_tests" {
-                let payload = &bytes[name_end..end];
-                return Some(
-                    payload
-                        .split(|b| *b == 0)
-                        .filter(|n| !n.is_empty())
-                        .map(|n| String::from_utf8_lossy(n).into_owned())
-                        .collect(),
-                );
+                // Each name is a LEB128 byte length, then its bytes.
+                let mut names = Vec::new();
+                let mut q = name_end;
+                while q < end {
+                    let len = leb(bytes, &mut q)?;
+                    let stop = q.checked_add(len)?;
+                    if stop > end {
+                        return None;
+                    }
+                    names.push(String::from_utf8_lossy(&bytes[q..stop]).into_owned());
+                    q = stop;
+                }
+                return Some(names);
             }
         }
         pos = end;

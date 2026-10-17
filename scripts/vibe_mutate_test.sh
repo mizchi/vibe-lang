@@ -236,6 +236,26 @@ else
   note "  FAIL expected both blocking mutants killed well under 2 x 30 s (took ${hang_secs}s)"; printf '%s\n' "$hang_out" | head -8; fail=1
 fi
 
+note "=== a title holding a NUL is still one callable block ==="
+# The test list is length-prefixed, not NUL-separated: a separator byte
+# would split this title in two and neither half would be callable.
+cat > "$WORK/nul_test.vibe" <<'EOF'
+import ./lib.vibe {
+  double
+}
+
+test "nul\0title" {
+  assert(double(3) == 6)
+}
+EOF
+nul_out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
+  bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe nul_test.vibe 2>/dev/null)"
+if printf '%s\n' "$nul_out" | grep -qxF 'TEST kills=2 unique=2 nul_test.vibe "nul\0title"'; then
+  note "  ok   ran as one block and killed both double mutants"
+else
+  note "  FAIL expected one block \"nul\\0title\" killing 2"; printf '%s\n' "$nul_out" | head -8; fail=1
+fi
+
 note "=== a test file whose imports do not resolve is refused, not skipped ==="
 cat > "$WORK/bad_test.vibe" <<'EOF'
 import ./missing.vibe {
