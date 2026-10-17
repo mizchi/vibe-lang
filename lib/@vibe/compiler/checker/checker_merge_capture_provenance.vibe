@@ -1146,8 +1146,22 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
   match body {
     EIdent(name, _) => {
       let mut known = false
+      let mut alias_i = 0
+      while alias_i < Array::length(alias_names) {
+        if name == Array::get(alias_names, alias_i) {
+          known = true
+          // -1 marks a binder known to hold no parameter.
+          if Array::get(alias_indices, alias_i) >= 0 {
+            push_unique_dependency_index(found, Array::get(alias_indices, alias_i))
+          }
+        }
+        alias_i = alias_i + 1
+      }
+      // A local of the name shadows the parameter (Codex on #3492: `let c =
+      // fresh; Wrap::{ cell: c }`).
+      let shadowed = known
       let mut i = 0
-      while i < Array::length(params) {
+      while !shadowed && i < Array::length(params) {
         let (raw_name, _) = Array::get(params, i)
         let nlen = String::length(raw_name)
         let param_name = if nlen > 0 {
@@ -1161,17 +1175,6 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
           push_unique_dependency_index(found, i)
         }
         i = i + 1
-      }
-      let mut alias_i = 0
-      while alias_i < Array::length(alias_names) {
-        if name == Array::get(alias_names, alias_i) {
-          known = true
-          // -1 marks a binder known to hold no parameter.
-          if Array::get(alias_indices, alias_i) >= 0 {
-            push_unique_dependency_index(found, Array::get(alias_indices, alias_i))
-          }
-        }
-        alias_i = alias_i + 1
       }
       // `deep`: a name this reading cannot account for -- a binder of a
       // form it does not track (a `for` element, a handler arm's payload, a
@@ -1477,6 +1480,12 @@ fn collect_held_call_args(callee: String, args: Array[Expr], params: Array[(Stri
       }
     }
   } else {
+    // A cycle is not unfolded again: its arguments count as held, as a
+    // chain past the depth cap's do (Codex on #3492: a helper that permutes
+    // its parameters on each recursive call).
+    for arg in args {
+      collect_result_params(arg, params, alias_names, alias_indices, found, true)
+    }
     ()
   }
 }
