@@ -829,6 +829,18 @@ export fn decimal_index(text: String) -> Int {
   out
 }
 
+/// A constructor's last segment is capitalized (`Some`, `Maybe::Some`); a
+/// function's is not (`TaskHandle::join`, `MutList::empty`).
+export fn callee_is_ctor_name(name: String) -> Bool {
+  let cut = String::last_index_of(name, "::")
+  let last = if cut >= 0 {
+    String::substring(name, cut + 2, String::length(name))
+  } else {
+    name
+  }
+  String::length(last) > 0 && String::byte_at(last, 0) >= 65 && String::byte_at(last, 0) <= 90
+}
+
 export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
   match expr {
     EIdent(name, _) => binding_predates_active_region(name, env) || match env_lookup(env, String::concat("__region_outer_alias__", name)) {
@@ -852,14 +864,17 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
         }
         found
       },
-      // #3488: a callee with no binding is a constructor (`Some(c)`), whose
-      // value holds its arguments (Codex on #3492).
-      None => {
+      // #3488: a constructor (`Some(c)`) has no binding, and its value holds
+      // its arguments (Codex on #3492). An unbound builtin function
+      // (`MutList::empty(r)`) is not one: its result is fresh.
+      None => if callee_is_ctor_name(callee) {
         let mut found = false
         for a in args {
           found = found || (!literal_item_is_inert(a, env) && expression_aliases_outer_binding(a, env))
         }
         found
+      } else {
+        false
       }
     },
     ECall(EFn(_, _, params, _, _, body), args, _, _) => {
