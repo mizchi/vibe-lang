@@ -228,6 +228,7 @@ import ./state.vibe {
   dtd_eq_known_types,
   dtd_generic_show_shims,
   dtd_interp_site_off,
+  dtd_rowless_build,
   dtd_scope_formals,
   dtd_show_generic_enum_stack,
   dtd_show_self_fn,
@@ -793,6 +794,27 @@ fn refuse_unrenderable_render_row(var_types: Array[(String, String)], arg: Expr)
   }
 }
 
+/// #3456: on a build lane with no checker rows (`dtd_rowless_build`), a
+/// masked name -- an untyped `let` that shadows a typed one -- has only the
+/// outer binding's type to render through, which is wrong whenever the shadow
+/// changes the type (`let b = if c { 5 } else { 6 }` over `b: Option[Int]`
+/// printed as an `Option`). Refused with the edit instead of answered.
+fn refuse_rowless_masked_render(var_types: Array[(String, String)], arg: Expr) -> Unit with Exception {
+  match arg {
+    EIdent(n, off) => if Array::get(dtd_rowless_build, 0) && render_masked(var_types, n) {
+      let at = if off >= 0 {
+        String::concat(" [@off=", String::concat(Int::to_string(off), "]"))
+      } else {
+        ""
+      }
+      throw(String::concat("annotate the `let` that rebinds `", String::concat(n, String::concat("` with its type (`let ", String::concat(n, String::concat(": T = ...`): this build has no type for an unannotated `let` that shadows a typed name, so it cannot tell how to render `\\{", String::concat(n, String::concat("}`", at))))))))
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
 fn has_var_entry(var_types: Array[(String, String)], n: String) -> Bool {
   match lookup_var_type(var_types, n) {
     Some(_) => true,
@@ -811,6 +833,7 @@ fn fresh_render_row_needs_seeding(ty: TypeExpr) -> Bool {
 }
 
 fn interp_expand_checked(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
+  refuse_rowless_masked_render(var_types, arg)
   refuse_unrenderable_render_row(var_types, arg)
   // #3434: a masked name is read as the binding in scope, not through the
   // stale entries of an outer one it shadows (`render_classify_var_types`).

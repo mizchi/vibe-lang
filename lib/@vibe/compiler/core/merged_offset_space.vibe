@@ -29,6 +29,87 @@ let merged_offset_nls: Array[Array[Int]] = []
 
 let merged_offset_nls_built: Array[Bool] = []
 
+/// Compact runtime-diagnostic locations. Worker instances need the same
+/// division-by-zero locations without copying every source file a second time.
+/// This is an owned instance-local value, not a Send/shared-memory capability.
+export struct MergedOffsetLocations {
+  paths: Array[String];
+  bases: Array[Int];
+  lengths: Array[Int];
+  newlines: Array[Array[Int]];
+  placed: Array[Bool]
+}
+
+let merged_location_scopes: Array[MergedOffsetLocations] = []
+
+export fn merged_offset_locations_snapshot() -> MergedOffsetLocations {
+  if Array::length(merged_location_scopes) > 0 {
+    Array::get(merged_location_scopes, Array::length(merged_location_scopes) - 1)
+  } else {
+    let paths: Array[String] = []
+    let bases: Array[Int] = []
+    let lengths: Array[Int] = []
+    let newlines: Array[Array[Int]] = []
+    let placed: Array[Bool] = []
+    let mut i = 0
+    while i < Array::length(merged_offset_paths) {
+      let source = Array::get(merged_offset_sources, i)
+      let real = !merged_offset_is_synthesized(source)
+      Array::push(paths, Array::get(merged_offset_paths, i))
+      Array::push(bases, Array::get(merged_offset_bases, i))
+      Array::push(lengths, String::length(source))
+      Array::push(placed, real)
+      Array::push(newlines, if real {
+        merged_offset_newlines(i)
+      } else {
+        []
+      })
+      i = i + 1
+    }
+    MergedOffsetLocations::{
+      paths: paths,
+      bases: bases,
+      lengths: lengths,
+      newlines: newlines,
+      placed: placed
+    }
+  }
+}
+
+/// Override only location lookup during an isolated body job. Source-owner
+/// queries retain their original contract; no synthetic source text is made.
+/// Validation and exception-safe restoration precede and surround every job.
+export fn with_merged_offset_locations[T](locations: MergedOffsetLocations, action: () -> T with Exception) -> T with Exception {
+  let n = Array::length(locations.paths)
+  if Array::length(locations.bases) != n || Array::length(locations.lengths) != n || Array::length(locations.newlines) != n || Array::length(locations.placed) != n {
+    throw("merged locations: columns differ")
+  } else ()
+  let mut i = 0
+  while i < n {
+    if Array::get(locations.bases, i) < 0 || Array::get(locations.lengths, i) < 0 {
+      throw("merged locations: negative source range")
+    } else ()
+    let mut previous = -1
+    for off in Array::get(locations.newlines, i) {
+      if off <= previous || off >= Array::get(locations.lengths, i) {
+        throw("merged locations: invalid newline offsets")
+      } else ()
+      previous = off
+    }
+    i = i + 1
+  }
+  let depth = Array::length(merged_location_scopes)
+  Array::push(merged_location_scopes, locations)
+  handle {
+    let result = action()
+    Array::truncate(merged_location_scopes, depth)
+    result
+  } with { Exception::Throw(message) => {
+    Array::truncate(merged_location_scopes, depth)
+    throw(message)
+  } }
+}
+
 /// Forget the recorded merge. Called by every merge before it records, and by
 /// the CLI before each compile.
 export fn merged_offset_space_reset() -> Unit {
@@ -84,6 +165,38 @@ export fn merged_offset_owner(off: Int) -> Option[(String, String, Int)] {
 /// Called once per division site by the string-pool pass and again by
 /// codegen, so each file's newline table is built once and searched.
 export fn merged_offset_line_col(off: Int) -> (String, Int, Int) {
+  if Array::length(merged_location_scopes) > 0 {
+    let locations = Array::get(merged_location_scopes, Array::length(merged_location_scopes) - 1)
+    let mut i = 0
+    while off >= 0 && i < Array::length(locations.paths) {
+      let base = Array::get(locations.bases, i)
+      if off >= base && off - base <= Array::get(locations.lengths, i) {
+        if !Array::get(locations.placed, i) {
+          return ("", 0, 0)
+        } else ()
+        let local = off - base
+        let nls = Array::get(locations.newlines, i)
+        let mut lo = 0
+        let mut hi = Array::length(nls)
+        while lo < hi {
+          let mid = (lo + hi) / 2
+          if Array::get(nls, mid) < local {
+            lo = mid + 1
+          } else {
+            hi = mid
+          }
+        }
+        let col = if lo == 0 {
+          local + 1
+        } else {
+          local - Array::get(nls, lo - 1)
+        }
+        return (Array::get(locations.paths, i), lo + 1, col)
+      } else ()
+      i = i + 1
+    }
+    return ("", 0, 0)
+  } else ()
   let n = Array::length(merged_offset_paths)
   let mut file = 0 - 1
   let mut i = 0

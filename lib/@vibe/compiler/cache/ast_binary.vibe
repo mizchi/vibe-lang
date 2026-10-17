@@ -120,8 +120,86 @@ export fn ast_binary_write_bool(buf: Bytes, b: Bool) -> Unit {
 //# implementation reading them would have got the wrong string. A round trip
 //# through one implementation cannot see a transformation its own inverse
 //# undoes; that is what made 44 passing tests miss this.
+// Only the private function-worker envelope opts into string references.
+// Ordinary v4 AST cache bytes and readers keep their existing grammar.
+struct AstBinaryWritePool {
+  strings: FrozenArray[String];
+  large: Array[Int];
+  lookup: Option[(String) -> Int]
+}
+
+let ast_binary_write_pools: Array[AstBinaryWritePool] = []
+
+/// Scope immutable large-string references to one synchronous encoder. The
+/// enclosing transport must write the pool first and declare its own format;
+/// these are not ordinary v4 cache bytes. Restore the default on either exit.
+export fn ast_binary_with_string_pool(strings: FrozenArray[String], action: () -> Bytes with Exception) -> Bytes with Exception {
+  ast_binary_pool_scope(strings, None, action)
+}
+
+/// Reuse an existing content index for medium and large literals. Validate
+/// every proposed index against the immutable pool; a stale lookup falls back
+/// to ordinary bytes and can never refer to a different string.
+export fn ast_binary_with_indexed_string_pool(strings: FrozenArray[String], lookup: (String) -> Int, action: () -> Bytes with Exception) -> Bytes with Exception {
+  ast_binary_pool_scope(strings, Some(lookup), action)
+}
+
+fn ast_binary_pool_scope(strings: FrozenArray[String], lookup: Option[(String) -> Int], action: () -> Bytes with Exception) -> Bytes with Exception {
+  if Array::length(ast_binary_write_pools) != 0 {
+    throw("ast_binary: string-pool encoder scopes cannot nest")
+  } else ()
+  let large: Array[Int] = ArrayBuilder::freeze(ArrayBuilder::new())
+  let mut i = 0
+  let scan = match lookup {
+    None => true,
+    Some(_) => false
+  }
+  while scan && i < FrozenArray::length(strings) {
+    if String::length(FrozenArray::get(strings, i)) >= 65536 {
+      Array::push(large, i)
+    } else ()
+    i = i + 1
+  }
+  Array::push(ast_binary_write_pools, AstBinaryWritePool::{
+    strings: strings,
+    large: large,
+    lookup: lookup
+  })
+  handle {
+    let result = action()
+    Array::truncate(ast_binary_write_pools, 0)
+    result
+  } with { Exception::Throw(message) => {
+    Array::truncate(ast_binary_write_pools, 0)
+    throw(message)
+  } }
+}
+
 export fn ast_binary_write_string(buf: Bytes, s: String) -> Unit {
   let len = String::length(s)
+  if len >= 256 && Array::length(ast_binary_write_pools) != 0 {
+    let pool = Array::get(ast_binary_write_pools, 0)
+    let mut at = 0
+    let mut found = match pool.lookup {
+      None => -1,
+      Some(lookup) => lookup(s)
+    }
+    if found >= 0 && (found >= FrozenArray::length(pool.strings) || !String::equals(s, FrozenArray::get(pool.strings, found))) {
+      found = -1
+    } else ()
+    while len >= 65536 && found < 0 && at < Array::length(pool.large) {
+      let index = Array::get(pool.large, at)
+      if String::equals(s, FrozenArray::get(pool.strings, index)) {
+        found = index
+      } else ()
+      at = at + 1
+    }
+    if found >= 0 {
+      ast_binary_write_varint(buf, 1152921504606846976)
+      ast_binary_write_varint(buf, found)
+      return ()
+    } else ()
+  } else ()
   ast_binary_write_varint(buf, len)
   let mut i = 0
   while i < len {
@@ -165,7 +243,8 @@ export struct AstBinaryReader {
   bytes: Bytes;
   mut pos: Int;
   end: Int;
-  string_copy: Option[(Bytes, Int, Int) -> String]
+  string_copy: Option[(Bytes, Int, Int) -> String];
+  string_pool: Option[FrozenArray[String]]
 }
 
 export fn ast_binary_reader_new(bytes: Bytes) -> AstBinaryReader {
@@ -173,7 +252,8 @@ export fn ast_binary_reader_new(bytes: Bytes) -> AstBinaryReader {
     bytes: bytes,
     pos: 0,
     end: Bytes::length(bytes),
-    string_copy: None
+    string_copy: None,
+    string_pool: None
   }
 }
 
@@ -184,7 +264,22 @@ export fn ast_binary_reader_with_string_copy(bytes: Bytes, copy: (Bytes, Int, In
     bytes: bytes,
     pos: 0,
     end: Bytes::length(bytes),
-    string_copy: Some(copy)
+    string_copy: Some(copy),
+    string_pool: None
+  }
+}
+
+/// Configure a private transport cursor with an immutable, already UTF-8
+/// validated pool. The envelope decoder must read pool entries through the
+/// ordinary checked reader first. Like string_copy, this is a trusted input;
+/// reference varints and indices are still checked before use.
+export fn ast_binary_reader_with_string_pool(r: AstBinaryReader, strings: FrozenArray[String]) -> AstBinaryReader {
+  AstBinaryReader::{
+    bytes: r.bytes,
+    pos: r.pos,
+    end: r.end,
+    string_copy: r.string_copy,
+    string_pool: Some(strings)
   }
 }
 
@@ -204,7 +299,8 @@ export fn ast_binary_reader_take(r: AstBinaryReader, length: Int) -> AstBinaryRe
     bytes: r.bytes,
     pos: start,
     end: r.pos,
-    string_copy: r.string_copy
+    string_copy: r.string_copy,
+    string_pool: r.string_pool
   }
 }
 
@@ -291,6 +387,12 @@ let ast_binary_byte_strings: Array[String] = []
 
 export fn ast_binary_read_string(r: AstBinaryReader) -> String {
   let byte_len = ast_binary_read_varint(r)
+  if byte_len == 1152921504606846976 {
+    match r.string_pool {
+      Some(strings) => return FrozenArray::get(strings, ast_binary_read_varint(r)),
+      None => ()
+    }
+  } else ()
   match r.string_copy {
     Some(copy) => {
       let length = if byte_len < 0 {
@@ -566,6 +668,18 @@ fn ast_binary_utf8_span_ok(b: Bytes, at: Int, len: Int) -> Bool {
 export fn ast_binary_read_string_checked(r: AstBinaryReader) -> String with Exception {
   let start = r.pos
   let byte_len = ast_binary_read_varint_checked(r)
+  if byte_len == 1152921504606846976 {
+    match r.string_pool {
+      Some(strings) => {
+        let index = ast_binary_read_varint_checked(r)
+        if index < 0 || index >= FrozenArray::length(strings) {
+          throw("ast_binary: string reference is outside the immutable pool")
+        } else ()
+        return FrozenArray::get(strings, index)
+      },
+      None => throw("ast_binary: string reference requires a transport pool")
+    }
+  } else ()
   if byte_len < 0 || ast_binary_reader_remaining(r) < byte_len {
     throw("ast_binary: string length exceeds remaining input")
   }

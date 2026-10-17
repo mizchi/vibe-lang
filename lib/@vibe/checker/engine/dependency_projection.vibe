@@ -36,7 +36,14 @@ import @vibe/compiler/cache {
   compact_source_fingerprint_memo, typing_module_fingerprint
 }
 import @vibe/compiler/checker {
-  env_param_name_rows, import_item_kind_errors, param_name_rows_have, param_names_marker
+  env_param_name_rows,
+  import_item_kind_errors,
+  is_retention_summary_marker,
+  param_name_rows_have,
+  param_names_marker,
+  retention_summary_marker,
+  retention_summary_marker_target,
+  retention_summary_skips_path
 }
 import @vibe/compiler/contract {
   vpkg_path_escape_one_line, vpkg_types_contract_of_source, vpkg_types_decl_pos_for_line
@@ -1718,6 +1725,22 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
   let dep_param_rows = env_flat_param_rows(dep_bindings)
   // The markers earlier imports of this module already bound.
   let acc_param_rows = env_param_name_rows(acc)
+  // #3360: what the dependency's functions keep of their arguments, read
+  // once. The standard library's are never read: its retaining operations
+  // are checked by name.
+  let dep_retention_rows: Array[(String, Type)] = []
+  if !retention_summary_skips_path(resolved) && !retention_summary_skips_path(raw_path) {
+    for entry in dep_bindings {
+      let (bname, bty) = entry
+      if is_retention_summary_marker(bname) {
+        Array::push(dep_retention_rows, (retention_summary_marker_target(bname), bty))
+      } else {
+        ()
+      }
+    }
+  } else {
+    ()
+  }
   engine_builtin_shadow_diagnostics_into(dep_bindings, resolved, unresolved)
   let dep_traits = view.traits
   let dep_upper_slots = view.upper_slots
@@ -1851,7 +1874,18 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
           with_companions
         }
       }
-      bind_names(j + 1, with_params)
+      // #3360: what the function keeps of its arguments, under the name this
+      // module calls it by. A companion a type brings in carries its own,
+      // bound with it (`engine_bind_enum_constructor_companions`).
+      let with_retention = if Array::length(dep_retention_rows) == 0 {
+        with_params
+      } else {
+        match env_lookup_flat(dep_retention_rows, name) {
+          Some(t) => env_bind(with_params, retention_summary_marker(bound_name), t),
+          None => with_params
+        }
+      }
+      bind_names(j + 1, with_retention)
     }
   }
   for item in declaration_names {

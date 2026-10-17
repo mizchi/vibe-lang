@@ -1,5 +1,5 @@
 import ./string_reader.vibe {
-  linear_string_reader
+  linear_string_reader, linear_write_string
 }
 import @vibe/compiler/cache {
   ast_binary_read_byte,
@@ -8,7 +8,54 @@ import @vibe/compiler/cache {
   ast_binary_reader_new,
   ast_binary_reader_remaining,
   ast_binary_reader_take,
+  ast_binary_write_string,
   ast_binary_write_varint
+}
+
+test "linear string writer: byte-identical UTF-8 and NUL framing" {
+  for size in [0, 1, 126, 127, 128, 16383, 16384, 65536] {
+    let chunks: Array[String] = []
+    let mut i = 0
+    while i < size {
+      Array::push(chunks, "x"); i = i + 1
+    }
+    let value = String::concat(String::join(chunks, ""), String::concat("é🍣", String::from_byte(0)))
+    let ordinary = Bytes::new()
+    ast_binary_write_string(ordinary, value)
+    let bytes = Bytes::with_capacity(String::length(value) + 16)
+    linear_write_string(bytes, value)
+    assert_eq(Bytes::length(bytes), Bytes::length(ordinary))
+    let mut j = 0
+    while j < Bytes::length(bytes) {
+      assert_eq(Bytes::get(bytes, j), Bytes::get(ordinary, j)); j = j + 1
+    }
+    let reader = linear_string_reader(bytes)
+    assert(ast_binary_read_string_checked(reader) == value)
+    assert_eq(ast_binary_reader_remaining(reader), 0)
+  }
+}
+
+test "linear string writer: insufficient capacity preserves the complete prefix" {
+  let bytes = Bytes::with_capacity(128)
+  linear_write_string(bytes, "first")
+  let before = Bytes::slice(bytes, 0, Bytes::length(bytes))
+  let mut value = "x"
+  while String::length(value) < 256 {
+    value = String::concat(value, value)
+  }
+  let error = handle {
+    linear_write_string(bytes, value); "accepted"
+  } with { Exception::Throw(msg) => msg }
+  inspect(error, "linear string writer: insufficient reserved capacity")
+  assert_eq(Bytes::length(bytes), Bytes::length(before))
+  let mut i = 0
+  while i < Bytes::length(before) {
+    assert_eq(Bytes::get(bytes, i), Bytes::get(before, i)); i = i + 1
+  }
+  linear_write_string(bytes, "second")
+  let reader = linear_string_reader(bytes)
+  assert(ast_binary_read_string_checked(reader) == "first")
+  assert(ast_binary_read_string_checked(reader) == "second")
 }
 
 test "linear string reader: owned UTF-8 and NUL survive input reuse" {

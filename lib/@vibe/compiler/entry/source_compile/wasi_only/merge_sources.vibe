@@ -13,7 +13,7 @@ import @vibe/compiler/codegen/wasi {
 }
 
 import @vibe/compiler/normalize {
-  desugar_inspect_calls, desugar_trait_dicts, validate_serializable_reexport_references
+  desugar_inspect_calls, desugar_trait_dicts_rowless_build, validate_serializable_reexport_references
 }
 
 import @vibe/compiler/syntax {
@@ -60,7 +60,7 @@ import ./path_utils.vibe {
 }
 
 import ./preprocess.vibe {
-  expand_interp_only, expand_interp_stmts, strip_generic_type_params
+  expand_interp_only, strip_generic_type_params
 }
 
 import @vibe/compiler/loader {
@@ -755,14 +755,7 @@ fn append_coverage_driver_stmts(entry_path: String, driver_path: String, driver_
 /// operation `Trait::op` (a reserved name), and a `<Trait>Dict` struct whose
 /// fields mention `Self`. Compiler source could not use a trait-bounded
 /// generic at all.
-///
-/// `lower_trait_dicts` prints the desugared program instead. It exists for one
-/// reader: a pinned seed from before #3331, whose single-source lane desugars
-/// BEFORE it checks and so refuses any method-bearing trait it is handed as
-/// source (``no impl `Hash` for `Self` `` on `@vibe/core`'s own `trait Hash`).
-/// The bootstrap scripts ask for it with `VIBE_MERGED_SOURCE_LOWER_TRAIT_DICTS=1`
-/// until the seed is bumped past this change (docs/internal/operations/bootstrap.md).
-fn print_merged_program(stmts: Array[Stmt], lower_trait_dicts: Bool) -> String with Exception {
+fn print_merged_program(stmts: Array[Stmt]) -> String with Exception {
   // Complete source-scoped special-call rewrites while the in-memory boundary
   // metadata still exists. The printed program carries a parseable internal
   // sentinel so the trusted single-source bundle lane can preserve Iterator
@@ -770,11 +763,7 @@ fn print_merged_program(stmts: Array[Stmt], lower_trait_dicts: Bool) -> String w
   // source file cannot prove from its own bytes that the compiler produced it.
   validate_serializable_reexport_references(stmts)
   desugar_inspect_calls(stmts)
-  if lower_trait_dicts {
-    expand_interp_stmts(stmts)
-  } else {
-    expand_interp_only(stmts)
-  }
+  expand_interp_only(stmts)
   serialize_builtin_iterator_boundaries(stmts)
   print_program(stmts)
 }
@@ -784,8 +773,8 @@ fn print_merged_program(stmts: Array[Stmt], lower_trait_dicts: Bool) -> String w
 /// top-level immutable values. Their references are rewritten to the exact
 /// names produced by the ordinary export/private namespacing pipeline; no
 /// guessed mangling or visibility broadening is involved. The pinned seed
-/// compiles the result, so `lower_trait_dicts` is `print_merged_program`'s.
-export fn coverage_driver_program_source_fs(entry_path: String, driver_path: String, lower_trait_dicts: Bool) -> String with Env + Exception + Fs {
+/// compiles the result.
+export fn coverage_driver_program_source_fs(entry_path: String, driver_path: String) -> String with Env + Exception + Fs {
   let file_paths = array_empty()
   let file_stmts = array_empty()
   let visited = path_set_new()
@@ -798,7 +787,7 @@ export fn coverage_driver_program_source_fs(entry_path: String, driver_path: Str
   // it, so source-scoped builtin classification must start a fresh range.
   Array::push(merged, SReExportSourceBoundary(builtin_iterator_namespace_markers(driver_stmts), array_empty()))
   append_coverage_driver_stmts(entry_path, driver_path, driver_stmts, file_paths, file_stmts, plan, merged)
-  print_merged_program(merged, lower_trait_dicts)
+  print_merged_program(merged)
 }
 
 /// #726: the merged whole program AS SOURCE TEXT. Resolves imports from the
@@ -813,18 +802,12 @@ export fn coverage_driver_program_source_fs(entry_path: String, driver_path: Str
 /// output) — acceptable for a generated bundle artifact. Trait dictionaries
 /// are left to the compile that reads the text back (#3331).
 export fn merged_program_source_fs(entry_path: String) -> String with Env + Exception + Fs {
-  merged_program_source_with_fs(entry_path, false)
-}
-
-/// `merged_program_source_fs`, choosing the trait-dictionary form: see
-/// `print_merged_program` for when `lower_trait_dicts` is wanted.
-export fn merged_program_source_with_fs(entry_path: String, lower_trait_dicts: Bool) -> String with Env + Exception + Fs {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let stmts = empty_stmt_array()
   let visited = path_set_new()
   collect_merged_stmts_recursive(entry_path, stmts, visited)
-  print_merged_program(stmts, lower_trait_dicts)
+  print_merged_program(stmts)
 }
 
 export fn compile_file_wasi_only(entry_path: String, entry_name: String) -> Bytes with Env + Exception + Fs {
@@ -843,8 +826,9 @@ export fn compile_file_wasi_only(entry_path: String, entry_name: String) -> Byte
   // for monomorphic codegen.
   let _ = check_program(stmts)
   // Unlocated parse: the checker has no site to key a typed row on, so this
-  // is the no-row entry and the desugar keeps its untyped answers.
-  desugar_trait_dicts(stmts)
+  // is the no-row entry. An interpolated untyped shadow it cannot type is
+  // refused with the edit rather than rendered through the outer type (#3456).
+  desugar_trait_dicts_rowless_build(stmts)
   strip_generic_type_params(stmts)
   compile_wasi_module_impl(stmts, entry_name)
 }

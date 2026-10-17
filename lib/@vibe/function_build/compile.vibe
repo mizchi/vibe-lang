@@ -1,0 +1,177 @@
+import @vibe/compiler {
+  configure_cfg_flags, executable_exports_stripped, strip_executable_wasm_env
+}
+import @vibe/compiler/checker {
+  set_error_row_checked
+}
+import @vibe/compiler/core {
+  set_executable_exports_stripped
+}
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_body_cached
+}
+import @vibe/compiler/codegen/wasi {
+  LinkedBodyInputs, LinkedBodyPlan, LinkedFunctionPlan, function_with_executor
+}
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache, codegen_body_cache_from_bytes, codegen_body_cache_merge
+}
+import @vibe/function_worker {
+  FunctionContext,
+  function_context_new,
+  replay_function_products,
+  validate_function_product,
+  write_function_context,
+  write_function_job_into
+}
+import @vibe/blake3/simd {
+  blake3_bytes_simd
+}
+
+let contexts: Array[FunctionContext] = []
+let products: Array[CodegenBodyCache] = []
+let context_digest: Array[String] = [""]
+let input_digests: Array[String] = []
+let input_buffer: Array[Bytes] = [Bytes::new()]
+let product_buffer: Array[Bytes] = [Bytes::new()]
+let product_capacity: Array[Int] = [0]
+let cursor: Array[Int] = [0]
+let selected_jobs: Array[Int] = [0]
+let plan_counts: Array[Int] = [0, 0]
+
+fn clear_bytes(bytes: Bytes) -> Int = wasm
+"local.get $bytes i32.wrap_i64 i32.const 0 i32.store offset=4 i64.const 0"
+
+// The core compiler follows the ordinary bootstrap bump policy. The native
+// callback ABI always supplies tagged Ints, so decode that boundary explicitly.
+fn callback_int(encoded: Int) -> Int = wasm
+"local.get $encoded i64.const 1 i64.shr_s"
+
+// The existing native bridge transports opaque CPU jobs. Its callback names
+// are an internal ABI shared with lowering; these payloads contain functions.
+export fn lowering_shared_context() -> Bytes with Exception {
+  let bytes = write_function_context(Array::get(contexts, 0))
+  Array::set(input_buffer, 0, bytes)
+  Array::set(context_digest, 0, blake3_bytes_simd(bytes))
+  bytes
+}
+
+export fn lowering_job_input(encoded_index: Int) -> Bytes with Exception {
+  let index = callback_int(encoded_index)
+  let jobs = Array::get(selected_jobs, 0)
+  let total = Array::get(plan_counts, 0)
+  if index < 0 || index >= jobs {
+    throw("functions: invalid job index")
+  } else ()
+  let bytes = write_function_job_into(Array::get(input_buffer, 0), Array::get(contexts, 0), Array::get(context_digest, 0), total * index / jobs, total * (index + 1) / jobs)
+  Array::set(input_buffer, 0, bytes)
+  Array::set(input_digests, index, blake3_bytes_simd(bytes))
+  bytes
+}
+
+export fn lowering_input_release() -> Unit {
+  clear_bytes(Array::get(input_buffer, 0))
+  ()
+}
+
+export fn lowering_product_allocate(encoded_index: Int, encoded_length: Int) -> Bytes with Exception {
+  let index = callback_int(encoded_index)
+  let length = callback_int(encoded_length)
+  if index != Array::get(cursor, 0) || length <= 0 || length > 256 * 1024 * 1024 {
+    throw("functions: invalid product allocation order or length")
+  } else ()
+  if length > Array::get(product_capacity, 0) {
+    Array::set(product_buffer, 0, Bytes::with_capacity(length))
+    Array::set(product_capacity, 0, length)
+  } else ()
+  let buffer = Array::get(product_buffer, 0)
+  clear_bytes(buffer)
+  buffer
+}
+
+export fn lowering_product_consume(encoded_index: Int, input_digest: String, product_digest: String) -> Unit with Exception {
+  let index = callback_int(encoded_index)
+  if index != Array::get(cursor, 0) || index >= Array::length(input_digests) {
+    throw("functions: product count or order differs")
+  } else ()
+  let bytes = Array::get(product_buffer, 0)
+  if input_digest != Array::get(input_digests, index) || product_digest != blake3_bytes_simd(bytes) {
+    throw("functions: product receipt differs from its assigned input")
+  } else ()
+  let product = match codegen_body_cache_from_bytes(bytes) {
+    Some(cache) => cache,
+    None => throw("functions: invalid product encoding")
+  }
+  let context = Array::get(contexts, 0)
+  let total = context.input.num_user_funcs
+  let jobs = Array::get(selected_jobs, 0)
+  validate_function_product(context.plan, context.input, product, total * index / jobs, total * (index + 1) / jobs)
+  Array::push(products, product)
+  clear_bytes(bytes)
+  Array::set(cursor, 0, index + 1)
+}
+
+fn execute_functions(plan: LinkedFunctionPlan, input: LinkedBodyInputs, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool) -> LinkedBodyPlan with Exception {
+  if coverage || debug_break || debug_trace || !enable_rc || rc_shadow {
+    throw("functions: this experiment requires uninstrumented RC code generation")
+  } else ()
+  let context = function_context_new(plan, input, debug_break, debug_trace, enable_rc, rc_shadow)
+  Array::push(contexts, context)
+  Array::set(plan_counts, 0, input.num_user_funcs)
+  Array::set(plan_counts, 1, plan.lambda_count)
+  let jobs = Array::get(selected_jobs, 0)
+  let mut i = 0
+  while i < jobs {
+    Array::push(input_digests, ""); i = i + 1
+  }
+  let completed = compiler_lowering_run(jobs)
+  if completed != jobs || Array::get(cursor, 0) != jobs || Array::length(products) != jobs {
+    throw("functions: incomplete CPU worker wave")
+  } else ()
+  let mut merged = Array::get(products, 0)
+  i = 1
+  while i < jobs {
+    merged = codegen_body_cache_merge(merged, Array::get(products, i)); i = i + 1
+  }
+  let result = replay_function_products(context, merged)
+  Array::truncate(contexts, 0)
+  Array::truncate(products, 0)
+  Array::truncate(input_digests, 0)
+  Array::set(product_buffer, 0, Bytes::new())
+  Array::set(product_capacity, 0, 0)
+  result
+}
+
+fn compile_input() -> Bytes with Env + Exception + Fs {
+  // Keep the ordinary whole-program lowering path; split lowering remains a
+  // separate experiment and would confound function-emission measurements.
+  compile_file_fs_mode_rc_body_cached(Env::get("VIBE_LOWERING_INPUT"), Env::get("VIBE_LOWERING_ENTRY"), "off")
+}
+
+fn main() -> Unit allows Env + Exception + Fs {
+  configure_cfg_flags()
+  set_executable_exports_stripped(executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")))
+  set_error_row_checked(Env::get("VIBE_CHECK_ERROR_ROW") != "0")
+  let mode = Env::get("VIBE_LOWERING_MODE")
+  let bytes = if mode == "serial" {
+    compile_input()
+  } else if mode == "single" {
+    let jobs = match Int::parse(Env::get("VIBE_FUNCTION_JOBS")) {
+      Some(n) => n,
+      None => 0
+    }
+    if jobs != 1 && jobs != 2 && jobs != 4 {
+      throw("functions: jobs must be 1, 2 or 4")
+    } else ()
+    Array::set(selected_jobs, 0, jobs)
+    let output = function_with_executor(execute_functions, compile_input)
+    if Array::get(cursor, 0) != jobs {
+      throw("functions: body executor was not invoked")
+    } else ()
+    Fs::write_file(Env::get("VIBE_LOWERING_DIRECTORY") + "/function-plan.json", "{\"functions\":" + Int::to_string(Array::get(plan_counts, 0)) + ",\"lambdas\":" + Int::to_string(Array::get(plan_counts, 1)) + "}")
+    output
+  } else {
+    throw("functions: expected serial or single mode")
+  }
+  Fs::write_bytes(Env::get("VIBE_LOWERING_OUTPUT"), strip_executable_wasm_env(bytes, Env::get("VIBE_LOWERING_ENTRY")))
+}
