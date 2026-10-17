@@ -32,6 +32,7 @@ program; `scripts/test_vibe_install_hello.sh` checks they still agree.
 vibe run hello.vibex       # compile & execute
 vibe shell                 # interactive shell
 vibe test file.vibe        # run tests
+vibe mutate lib.vibe lib_test.vibe  # mutation testing: survivors + redundant tests
 vibe check file.vibe       # type check only
 vibe fmt file.vibe         # format in place (--check / --stdout)
 vibe build --release app.vibe  # standalone .wasm

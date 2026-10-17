@@ -1,6 +1,7 @@
 //! Synchronous CPU service: preserve the parent Store and pull/consume one
 //! module at a time. Vibe TaskGroup still owns each bounded worker wave.
 use super::host_imports::{vibe_alloc_packed_str, vibe_memory, vibe_read_packed_bytes};
+use super::source_overlay::source_overlay_read;
 use super::HostState;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -83,7 +84,7 @@ impl InputSnapshot {
         if !cache_path(&absolute) {
             self.record_kind(&absolute);
             if Path::new(path).is_file() {
-                if let Ok(bytes) = std::fs::read(path) {
+                if let Ok(bytes) = source_overlay_read(path) {
                     self.file(path, &bytes);
                 }
             }
@@ -149,7 +150,8 @@ impl InputSnapshot {
             }
         }
         for (path, expected) in &self.files {
-            let bytes = std::fs::read(path).map_err(|_| changed())?;
+            let bytes =
+                source_overlay_read(&path.to_string_lossy()).map_err(|_| changed())?;
             let actual: [u8; 32] = Sha256::digest(&bytes).into();
             if actual != *expected {
                 return Err(changed());

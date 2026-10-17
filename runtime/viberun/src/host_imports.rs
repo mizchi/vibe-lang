@@ -755,7 +755,7 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.read_file_calls += 1;
             }
-            let content = match fs::read(&path) {
+            let content = match source_overlay_read(&path) {
                 Ok(c) => c,
                 Err(e) => {
                     return Err(vibe_host_error(
@@ -800,7 +800,9 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
             if let Some(inputs) = caller.data_mut().lowering_inputs.as_mut() {
                 inputs.stat_file(&path);
             }
-            Ok(vibe_stat_token(&path))
+            Ok(vibe_stat_token(
+                &source_overlay_resolve(&path).to_string_lossy(),
+            ))
         },
     )?;
     // #901: Fs::remove/is_dir/is_file -- like Stdout/Stderr/Process above,
@@ -1065,7 +1067,7 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.read_bytes_calls += 1;
             }
-            let data = match fs::read(&path) {
+            let data = match source_overlay_read(&path) {
                 Ok(d) => d,
                 Err(e) => {
                     return Err(vibe_host_error(

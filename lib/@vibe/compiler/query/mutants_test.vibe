@@ -1,0 +1,77 @@
+//# `mutation_sites`: the edits `vibe mutate` applies, and the ones it must not.
+//#
+//# Every row is `START-END KIND ORIGINAL->REPLACEMENT`, rendered from the real
+//# sites so a wrong offset shows up as a wrong number, not as a passing count.
+
+//# Imports
+
+import ./mutants.vibe {
+  mutation_apply, mutation_sites
+}
+
+//# Functions
+
+fn mt_render(source: String) -> String with Exception {
+  let sites = mutation_sites(source)
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(sites) {
+    let (start, end, kind, original, replacement) = Array::get(sites, i)
+    Array::push(out, "\{start}-\{end} \{kind} \{original}->\{replacement}")
+    i = i + 1
+  }
+  String::join(out, "\n")
+}
+
+/// Each site, applied, as the edited source's text at the site.
+fn mt_applied(source: String) -> String with Exception {
+  let sites = mutation_sites(source)
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(sites) {
+    let (start, end, _, _, replacement) = Array::get(sites, i)
+    Array::push(out, mutation_apply(source, start, end, replacement))
+    i = i + 1
+  }
+  String::join(out, "\n")
+}
+
+//# Tests
+
+test "operators get boundary, negation and swap sites at the operator token" {
+  let src = "fn f(x: Int, y: Int) -> Bool { x < y && x + 1 != y }\n"
+  inspect(mt_render(src), "33-34 boundary <-><=\n33-34 negate <->>=\n37-39 logic &&->||\n42-43 arith +->-\n44-45 const 1->0\n46-48 negate !=->==")
+}
+
+test "the replacement lands exactly on the original text" {
+  inspect(mt_applied("fn f(a: Int) -> Int { a * 2 }\n"), "fn f(a: Int) -> Int { a / 2 }\n\nfn f(a: Int) -> Int { a * 3 }\n")
+}
+
+test "literals: bools flip, 0 and 1 swap, other integers move by one" {
+  let src = "fn f() -> (Bool, Int, Int, Int) { (false, 0, 1, 41) }\n"
+  inspect(mt_render(src), "35-40 bool false->true\n42-43 const 0->1\n45-46 const 1->0\n48-50 const 41->42")
+}
+
+test "a `!` is deleted, and a unary minus is not an arithmetic site" {
+  let src = "fn f(b: Bool, n: Int) -> Bool { !b && -n > 0 }\n"
+  inspect(mt_render(src), "32-33 not !->\n35-37 logic &&->||\n41-42 boundary >->>=\n41-42 negate >-><=\n43-44 const 0->1")
+}
+
+test "test, bench and example blocks are the oracle and are never mutated" {
+  let src = "fn id(x: Int) -> Int { x }\ntest \"t\" { assert(id(1) < 2) }\nbench \"b\" { let _ = id(3) + 4 }\n"
+  inspect(mt_render(src), "")
+}
+
+test "a hex literal reads back as another spelling and is left alone" {
+  inspect(mt_render("fn f() -> Int { 0xFF }\n"), "")
+}
+
+test "top-level lets, impl methods and nested lambdas are all code under test" {
+  let src = "let k = 2\nstruct P { x: Int }\ntrait Twice {\n  twice(Self) -> Int\n}\nimpl Twice for P {\n  twice(p: P) -> Int { p.x * k }\n}\nfn g() -> (Int) -> Bool { (v) -> v == 3 }\n"
+  inspect(mt_render(src), "8-9 const 2->3\n113-114 arith *->/\n156-158 negate ==->!=\n159-160 const 3->4")
+}
+
+test "sites come back in source order with no duplicates" {
+  let src = "fn f(a: Int, b: Int) -> Int { (a + b) - (a - b) }\n"
+  inspect(mt_render(src), "33-34 arith +->-\n38-39 arith -->+\n43-44 arith -->+")
+}

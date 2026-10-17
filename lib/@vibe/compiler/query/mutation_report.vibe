@@ -1,0 +1,414 @@
+//# `vibe mutate-report` — what a mutation run says about the tests.
+//#
+//# The launcher (`vibe mutate`) applies every site `mutation_sites` finds,
+//# runs each test block against each mutant, and writes the kill matrix as
+//# rows. This module reads those rows back and answers two questions:
+//#
+//#   * which mutants SURVIVED -- behaviour no test pins;
+//#   * which tests are REDUNDANT -- every mutant they kill is also killed by
+//#     tests that stay. That is the question the feature exists for: a large
+//#     suite is slimmed by deleting tests, and a kill matrix is the evidence
+//#     that a deletion loses nothing the suite could detect.
+//#
+//# Redundancy is decided by a greedy set cover (most new kills first, the
+//# earlier test on a tie): the tests it picks kill every killed mutant, and
+//# every other test is redundant BY THIS MEASURE. The measure is against one
+//# target's mutants only, and the report says so, because a test that guards
+//# other code is not redundant just because it kills nothing here.
+//#
+//# Input rows (tab separated, written by the launcher):
+//#   target  <display path> <path to read the source from>
+//#   test    <index> <file> <name>
+//#   mutant  <id> <start> <end> <kind> <original> <replacement> <status> <killers>
+//# where <status> is killed / survived / unviable (no test file compiled with
+//# it) / identical (every test binary was byte-identical to the original's,
+//# so no test could observe it), and <killers> is a comma-separated list of
+//# test indices ("" for none).
+//#
+//# Output: one finding per line, each led by a fixed word so it can be
+//# grepped -- SURVIVED / TEST / REDUNDANT / NOKILL -- after a summary.
+
+//# Imports
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/syntax {
+  offset_to_line_col
+}
+
+//# Functions
+
+fn mr_int(text: String) -> Int with Exception {
+  match Int::parse(text) {
+    Some(n) => n,
+    None => throw(String::concat("mutate-report: expected an integer, got: ", text))
+  }
+}
+
+fn mr_field(fields: Array[String], i: Int) -> String with Exception {
+  if i < Array::length(fields) {
+    Array::get(fields, i)
+  } else {
+    throw("mutate-report: a results row has too few fields")
+  }
+}
+
+fn mr_empty_strings() -> Array[String] {
+  array_empty()
+}
+
+fn mr_empty_ints() -> Array[Int] {
+  array_empty()
+}
+
+fn mr_falses(n: Int) -> Array[Bool] {
+  let out: Array[Bool] = []
+  let mut i = 0
+  while i < n {
+    Array::push(out, false)
+    i = i + 1
+  }
+  out
+}
+
+fn mr_zeros(n: Int) -> Array[Int] {
+  let out = mr_empty_ints()
+  let mut i = 0
+  while i < n {
+    Array::push(out, 0)
+    i = i + 1
+  }
+  out
+}
+
+/// The source line holding `offset`, without its indentation, cut at 80 bytes.
+fn mr_source_line(source: String, offset: Int) -> String {
+  let len = String::length(source)
+  let at = if offset > len {
+    len
+  } else {
+    offset
+  }
+  let mut lo = at
+  while lo > 0 && String::char_code_at(source, lo - 1) != 10 {
+    lo = lo - 1
+  }
+  let mut hi = at
+  while hi < len && String::char_code_at(source, hi) != 10 {
+    hi = hi + 1
+  }
+  let line = String::trim(String::substring(source, lo, hi))
+  if String::length(line) > 80 {
+    String::concat(String::substring(line, 0, 77), "...")
+  } else {
+    line
+  }
+}
+
+/// `n / d` as a percentage with one decimal, rounded down (`84.2%`).
+fn mr_percent(n: Int, d: Int) -> String {
+  if d == 0 {
+    "n/a"
+  } else {
+    let tenths = n * 1000 / d
+    "\{tenths / 10}.\{tenths % 10}%"
+  }
+}
+
+fn mr_quote_test(files: Array[String], names: Array[String], t: Int) -> String {
+  "\{Array::get(files, t)} \"\{Array::get(names, t)}\""
+}
+
+/// The path the target's source is read from: the third field of the
+/// `target` row (the launcher writes an absolute one), else its display path.
+export fn mutation_report_target_path(results: String) -> String with Exception {
+  let rows = String::split(results, "\n")
+  let mut found = ""
+  let mut r = 0
+  while r < Array::length(rows) && found == "" {
+    let fields = String::split(Array::get(rows, r), "\t")
+    if Array::get(fields, 0) == "target" {
+      found = if Array::length(fields) > 2 {
+        Array::get(fields, 2)
+      } else {
+        mr_field(fields, 1)
+      }
+    } else {
+      ()
+    }
+    r = r + 1
+  }
+  if found == "" {
+    throw("mutate-report: the results have no target row")
+  } else {
+    found
+  }
+}
+
+/// The report for one run. `results` is the launcher's rows, `target_source`
+/// the target's text (for line:col and the source line of a survivor).
+export fn mutation_report(results: String, target_source: String) -> String with Exception {
+  let mut target = ""
+  let test_files = mr_empty_strings()
+  let test_names = mr_empty_strings()
+  // Per mutant: status, and its row (rendered for survivors).
+  let m_status = mr_empty_strings()
+  let m_start = mr_empty_ints()
+  let m_kind = mr_empty_strings()
+  let m_orig = mr_empty_strings()
+  let m_repl = mr_empty_strings()
+  let m_killers: Array[Array[Int]] = []
+  let rows = String::split(results, "\n")
+  let mut r = 0
+  while r < Array::length(rows) {
+    let row = Array::get(rows, r)
+    if String::length(row) > 0 {
+      let fields = String::split(row, "\t")
+      let tag = Array::get(fields, 0)
+      if tag == "target" {
+        target = mr_field(fields, 1)
+      } else if tag == "test" {
+        let idx = mr_int(mr_field(fields, 1))
+        if idx != Array::length(test_files) {
+          throw("mutate-report: test rows must be numbered 0, 1, 2, ... in order")
+        } else {
+          ()
+        }
+        Array::push(test_files, mr_field(fields, 2))
+        Array::push(test_names, mr_field(fields, 3))
+      } else if tag == "mutant" {
+        Array::push(m_start, mr_int(mr_field(fields, 2)))
+        Array::push(m_kind, mr_field(fields, 4))
+        Array::push(m_orig, mr_field(fields, 5))
+        Array::push(m_repl, mr_field(fields, 6))
+        Array::push(m_status, mr_field(fields, 7))
+        let killers = mr_empty_ints()
+        let csv = if Array::length(fields) > 8 {
+          Array::get(fields, 8)
+        } else {
+          ""
+        }
+        if String::length(csv) > 0 {
+          let parts = String::split(csv, ",")
+          let mut k = 0
+          while k < Array::length(parts) {
+            let t = mr_int(Array::get(parts, k))
+            if t < 0 || t >= Array::length(test_files) {
+              throw(String::concat("mutate-report: a mutant names an unknown test index: ", Array::get(parts, k)))
+            } else {
+              Array::push(killers, t)
+            }
+            k = k + 1
+          }
+        } else {
+          ()
+        }
+        Array::push(m_killers, killers)
+      } else {
+        throw(String::concat("mutate-report: unknown row: ", tag))
+      }
+    } else {
+      ()
+    }
+    r = r + 1
+  }
+  let n_mut = Array::length(m_status)
+  let n_test = Array::length(test_files)
+  let mut killed = 0
+  let mut survived = 0
+  let mut unviable = 0
+  let mut identical = 0
+  let mut i = 0
+  while i < n_mut {
+    let st = Array::get(m_status, i)
+    if st == "killed" {
+      killed = killed + 1
+    } else if st == "survived" {
+      survived = survived + 1
+    } else if st == "unviable" {
+      unviable = unviable + 1
+    } else if st == "identical" {
+      identical = identical + 1
+    } else {
+      throw(String::concat("mutate-report: unknown mutant status: ", st))
+    }
+    i = i + 1
+  }
+  let out = mr_empty_strings()
+  Array::push(out, "target: \{target}")
+  Array::push(out, "mutants: \{n_mut} sites, \{killed} killed, \{survived} survived, \{unviable} unviable, \{identical} identical-binary")
+  Array::push(out, "score: \{killed}/\{killed + survived} killed (\{mr_percent(killed, killed + survived)})")
+  i = 0
+  while i < n_mut {
+    if Array::get(m_status, i) == "survived" {
+      let start = Array::get(m_start, i)
+      let (line, col) = offset_to_line_col(target_source, start)
+      Array::push(out, "SURVIVED \{target}:\{line}:\{col} \{Array::get(m_kind, i)} `\{Array::get(m_orig, i)}` -> `\{Array::get(m_repl, i)}` | \{mr_source_line(target_source, start)}")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // kills[t][m]: does test t kill mutant m.
+  let kills: Array[Array[Bool]] = []
+  let kill_count = mr_empty_ints()
+  let mut t = 0
+  while t < n_test {
+    Array::push(kills, mr_falses(n_mut))
+    Array::push(kill_count, 0)
+    t = t + 1
+  }
+  i = 0
+  while i < n_mut {
+    let ks = Array::get(m_killers, i)
+    let mut k = 0
+    while k < Array::length(ks) {
+      let kt = Array::get(ks, k)
+      let row = Array::get(kills, kt)
+      if !Array::get(row, i) {
+        Array::set(row, i, true)
+        Array::set(kill_count, kt, Array::get(kill_count, kt) + 1)
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    i = i + 1
+  }
+  // unique[t]: mutants only t kills.
+  let unique = mr_zeros(n_test)
+  i = 0
+  while i < n_mut {
+    let ks = Array::get(m_killers, i)
+    if Array::length(ks) == 1 {
+      let only = Array::get(ks, 0)
+      Array::set(unique, only, Array::get(unique, only) + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Greedy cover.
+  let covered = mr_falses(n_mut)
+  let in_cover = mr_falses(n_test)
+  let mut cover_size = 0
+  let mut picking = true
+  while picking {
+    let mut best = 0 - 1
+    let mut best_gain = 0
+    t = 0
+    while t < n_test {
+      if !Array::get(in_cover, t) {
+        let row = Array::get(kills, t)
+        let mut gain = 0
+        i = 0
+        while i < n_mut {
+          if Array::get(row, i) && !Array::get(covered, i) {
+            gain = gain + 1
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        if gain > best_gain {
+          best = t
+          best_gain = gain
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      t = t + 1
+    }
+    if best < 0 {
+      picking = false
+    } else {
+      Array::set(in_cover, best, true)
+      cover_size = cover_size + 1
+      let row = Array::get(kills, best)
+      i = 0
+      while i < n_mut {
+        if Array::get(row, i) {
+          Array::set(covered, i, true)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    }
+  }
+  // Tests, most kills first; equal counts keep input order.
+  let order = mr_empty_ints()
+  t = 0
+  while t < n_test {
+    let mut j = Array::length(order)
+    Array::push(order, t)
+    while j > 0 && Array::get(kill_count, Array::get(order, j - 1)) < Array::get(kill_count, t) {
+      Array::set(order, j, Array::get(order, j - 1))
+      j = j - 1
+    }
+    Array::set(order, j, t)
+    t = t + 1
+  }
+  let mut o = 0
+  while o < n_test {
+    let tt = Array::get(order, o)
+    Array::push(out, "TEST kills=\{Array::get(kill_count, tt)} unique=\{Array::get(unique, tt)} \{mr_quote_test(test_files, test_names, tt)}")
+    o = o + 1
+  }
+  t = 0
+  while t < n_test {
+    if !Array::get(in_cover, t) {
+      if Array::get(kill_count, t) == 0 {
+        Array::push(out, "NOKILL \{mr_quote_test(test_files, test_names, t)}")
+      } else {
+        // A single test whose kills include all of t's -- the most
+        // convincing reason to delete t. Prefer one the cover keeps.
+        let row = Array::get(kills, t)
+        let mut sub = 0 - 1
+        let mut b = 0
+        while b < n_test {
+          if b != t && (sub < 0 || (Array::get(in_cover, b) && !Array::get(in_cover, sub))) {
+            let brow = Array::get(kills, b)
+            let mut all = true
+            i = 0
+            while i < n_mut && all {
+              if Array::get(row, i) && !Array::get(brow, i) {
+                all = false
+              } else {
+                ()
+              }
+              i = i + 1
+            }
+            if all {
+              sub = b
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          b = b + 1
+        }
+        if sub >= 0 {
+          Array::push(out, "REDUNDANT kills=\{Array::get(kill_count, t)} \{mr_quote_test(test_files, test_names, t)} subsumed-by \{mr_quote_test(test_files, test_names, sub)}")
+        } else {
+          Array::push(out, "REDUNDANT kills=\{Array::get(kill_count, t)} \{mr_quote_test(test_files, test_names, t)} covered-by-others")
+        }
+      }
+    } else {
+      ()
+    }
+    t = t + 1
+  }
+  Array::push(out, "minimal: \{cover_size} of \{n_test} tests kill every killed mutant")
+  if n_test > 0 {
+    Array::push(out, "note: kills are measured against mutants of \{target} only; a test that guards other code is not redundant by this measure alone")
+  } else {
+    ()
+  }
+  String::join(out, "\n")
+}

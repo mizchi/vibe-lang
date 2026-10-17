@@ -112,6 +112,14 @@
 #                                         content) snapshots to the actual
 #                                         value on a failing run, then
 #                                         recompile+rerun (#1061)
+#   vibe mutate  [--timeout-ms N] <target.vibe> <file_test.vibe|dir>...
+#                                         mutation testing: apply every site
+#                                         `vibe mutants` lists, run each test
+#                                         block against each mutant; report
+#                                         survivors and REDUNDANT / NOKILL tests
+#                                         (exit 1 when a mutant survived)
+#   vibe mutants <file.vibe>              list mutation sites (ID START END
+#                                         LINE:COL KIND ORIGINAL REPLACEMENT)
 #   vibe bench   <file.vibe> [--iters N] [--warmup N] [--guest-profile DIR]
 #                                         run bench {} blocks; report ns/op
 #                                         (min/p50/p95/mean), ops/sec, bytes/op
@@ -1904,6 +1912,164 @@ REPL_HELP
       exit "$tstatus"
     fi
     invoke_cli test ${tflags[@]+"${tflags[@]}"} ${tjobflag[@]+"${tjobflag[@]}"} ${tfiles[@]+"${tfiles[@]}"} ${ttrail[@]+"${ttrail[@]}"}
+    ;;
+  mutate)
+    # Mutation testing. The compiler lists the sites (`vibe mutants`) and
+    # judges the outcome (`vibe mutate-report`); this case does the part only
+    # a host can: compile the tests against each mutant and run every test
+    # block on its own (`viberun --test-each`).
+    #
+    # A mutant is never written over the target. Each compile runs with
+    # VIBE_SOURCE_OVERLAY naming the target and VIBE_SOURCE_OVERLAY_WITH the
+    # mutant's text, and viberun answers the target's reads and stat token
+    # from that file -- so an interrupted run leaves the tree as it was, and a
+    # concurrent `vibe test` never sees a mutant.
+    #
+    # Per mutant: a test file that fails to compile cannot observe it; a test
+    # binary byte-identical to the original's cannot either (the edit did not
+    # survive lowering). Otherwise every block that does not pass -- a failed
+    # assertion, a trap, or VIBE_TEST_TIMEOUT_MS running out -- kills it.
+    mtarget=""; mtests=(); mprev=""
+    for marg in "$@"; do
+      if [ "$mprev" = "--timeout-ms" ]; then export VIBE_TEST_TIMEOUT_MS="$marg"; mprev=""; continue; fi
+      case "$marg" in
+        --timeout-ms) mprev="$marg" ;;
+        -h|--help)
+          echo "usage: vibe mutate [--timeout-ms N] <target.vibe> <file_test.vibe|dir>..."
+          echo "  Applies every mutation site of <target.vibe> (see 'vibe mutants'), runs each"
+          echo "  test block against each mutant, and reports surviving mutants and tests that"
+          echo "  kill nothing another test does not (REDUNDANT / NOKILL). Exit 1 when a"
+          echo "  mutant survived. --timeout-ms bounds each test block (default 10000)."
+          exit 0 ;;
+        -*) die "vibe mutate: unknown flag: $marg" ;;
+        *)
+          if [ -z "$mtarget" ]; then
+            mtarget="$marg"
+          elif [ -d "$marg" ]; then
+            mfound=0
+            while IFS= read -r mfile; do mtests+=("$mfile"); mfound=1; done < <(find "$marg" -type f -name '*_test.vibe' | LC_ALL=C sort)
+            [ "$mfound" = 1 ] || die "vibe mutate: no test files found under $marg"
+          else
+            mtests+=("$marg")
+          fi ;;
+      esac
+    done
+    [ -z "$mprev" ] || die "vibe mutate: missing value after $mprev"
+    [ -n "$mtarget" ] && [ "${#mtests[@]}" -gt 0 ] || die "usage: vibe mutate [--timeout-ms N] <target.vibe> <file_test.vibe|dir>..."
+    [ -f "$mtarget" ] || die "vibe mutate: not found: $mtarget"
+    mabs="$(cd "$(dirname "$mtarget")" && pwd -P)/$(basename "$mtarget")"
+    # Each run owns its work directory AND its build directory, so two runs
+    # never share a binary, and a concurrent `vibe test` never runs a mutant
+    # out of .vibe/build/test. The kill matrix outlives the run as
+    # .vibe/build/mutate/results.tsv (`vibe mutate-report` re-reads it).
+    mkdir -p "$BUILD_DIR/mutate"
+    mwork="$(mktemp -d "$BUILD_DIR/mutate/run.XXXXXX")"
+    trap 'rm -rf "$mwork"' EXIT
+    mkdir -p "$mwork/base"
+    mcli="$(pick_cli)"
+    # Compile test files into a test plan WITHOUT running it; the plan's
+    # records (line 6 on) are `src<TAB>wasm`, an empty wasm being a compile
+    # failure. Extra environment (the overlay) comes from the caller.
+    mutate_compile() {
+      local plan="$1"; shift
+      rm -f "$plan"
+      # shellcheck disable=SC2086
+      ( cd "$PROJECT_ROOT" && env $ADAPTER_MODE_CLEARS VIBE_HOST_ACTION_OUT="$plan" \
+          VIBE_BUILD_DIR="$mwork/build" VIBE_INVOKE_DIR="$INVOKE_DIR" \
+          "$RUNNER" "$mcli" test "$@" ) >/dev/null 2>>"$mwork/compile.log" || true
+      [ -s "$plan" ] && [ "$(sed -n '2p' "$plan")" = run-tests ]
+    }
+    mutate_wasm_path() {
+      case "$1" in /*) printf '%s' "$1" ;; '') ;; *) printf '%s' "$PROJECT_ROOT/$1" ;; esac
+    }
+    # Only test files whose import closure reaches the target can observe a
+    # mutant; the rest are not compiled once per mutant.
+    mutate_imports_target() {
+      local dep dp
+      [ "$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")" = "$mabs" ] && return 0
+      while IFS= read -r dep; do
+        case "$dep" in /*) dp="$dep" ;; *) dp="$INVOKE_DIR/$dep" ;; esac
+        [ -f "$dp" ] || continue
+        [ "$(cd "$(dirname "$dp")" && pwd -P)/$(basename "$dp")" = "$mabs" ] && return 0
+      done < <(invoke_cli deps "$1" 2>/dev/null)
+      return 1
+    }
+    mrel=()
+    for mt in "${mtests[@]}"; do
+      [ -f "$mt" ] || die "vibe mutate: not found: $mt"
+      if mutate_imports_target "$mt"; then
+        mrel+=("$mt")
+      else
+        echo "[vibe-mutate] skip $mt: it does not import $mtarget" >&2
+      fi
+    done
+    [ "${#mrel[@]}" -gt 0 ] || die "vibe mutate: no test file imports $mtarget"
+    mutate_compile "$mwork/base.plan" "${mrel[@]}" || { cat "$mwork/compile.log" >&2; die "vibe mutate: the tests did not compile"; }
+    # Baseline: every block must pass against the original, or a kill would
+    # mean nothing. Test rows are numbered in file order.
+    mresults="$mwork/results.tsv"
+    printf 'target\t%s\t%s\n' "$mtarget" "$mabs" > "$mresults"
+    mfi=0; mtid=0; mbase_ok=1
+    : > "$mwork/tests.tsv"
+    while IFS="$(printf '\t')" read -r msrc mwasm; do
+      mwasm="$(mutate_wasm_path "$mwasm")"
+      [ -n "$mwasm" ] || { cat "$mwork/compile.log" >&2; die "vibe mutate: $msrc did not compile"; }
+      cp "$mwasm" "$mwork/base/$mfi.wasm"
+      "$RUNNER" --test-each "$mwork/base/$mfi.wasm" > "$mwork/base/$mfi.out" || true
+      while IFS="$(printf '\t')" read -r _ mverdict mname _; do
+        if [ "$mverdict" = ok ]; then
+          printf 'test\t%s\t%s\t%s\n' "$mtid" "$msrc" "$mname" >> "$mresults"
+          printf '%s\t%s\t%s\n' "$mfi" "$mname" "$mtid" >> "$mwork/tests.tsv"
+          mtid=$((mtid + 1))
+        else
+          echo "[vibe-mutate] $msrc \"$mname\" does not pass without a mutant ($mverdict); fix it first" >&2
+          mbase_ok=0
+        fi
+      done < <(grep '^vibe::test	' "$mwork/base/$mfi.out")
+      mfi=$((mfi + 1))
+    done < <(sed -n '6,$p' "$mwork/base.plan")
+    [ "$mbase_ok" = 1 ] || die "vibe mutate: the suite must pass before it can be mutated"
+    [ "$mtid" -gt 0 ] || die "vibe mutate: the test files contain no test blocks"
+    invoke_cli mutants "$mtarget" > "$mwork/sites.txt" || die "vibe mutate: could not list the mutation sites of $mtarget"
+    mtotal="$(grep -c . "$mwork/sites.txt" || true)"
+    echo "[vibe-mutate] $mtotal mutants of $mtarget x $mtid tests in ${#mrel[@]} file(s)" >&2
+    mn=0
+    while read -r mid mstart mend mpos mkind morig mrepl; do
+      mn=$((mn + 1))
+      [ "$mrepl" = '""' ] && mrepl=""
+      mfile="$mwork/mutant_$mid.vibe"
+      { head -c "$mstart" "$mabs"; printf '%s' "$mrepl"; tail -c "+$((mend + 1))" "$mabs"; } > "$mfile"
+      mkillers=""; mcompiled=0; mdiffer=0
+      if VIBE_SOURCE_OVERLAY="$mabs" VIBE_SOURCE_OVERLAY_WITH="$mfile" mutate_compile "$mwork/m.plan" "${mrel[@]}"; then
+        mfi=0
+        while IFS="$(printf '\t')" read -r _ mwasm; do
+          mwasm="$(mutate_wasm_path "$mwasm")"
+          if [ -n "$mwasm" ]; then
+            mcompiled=1
+            if ! cmp -s "$mwasm" "$mwork/base/$mfi.wasm"; then
+              mdiffer=1
+              while IFS="$(printf '\t')" read -r _ mverdict mname _; do
+                [ "$mverdict" = ok ] && continue
+                mt_id="$(awk -F'\t' -v f="$mfi" -v n="$mname" '$1 == f && $2 == n { print $3; exit }' "$mwork/tests.tsv")"
+                [ -n "$mt_id" ] && mkillers="${mkillers:+$mkillers,}$mt_id"
+              done < <("$RUNNER" --test-each "$mwasm" 2>/dev/null | grep '^vibe::test	')
+            fi
+          fi
+          mfi=$((mfi + 1))
+        done < <(sed -n '6,$p' "$mwork/m.plan")
+      fi
+      if [ -n "$mkillers" ]; then mstatus=killed
+      elif [ "$mcompiled" = 0 ]; then mstatus=unviable
+      elif [ "$mdiffer" = 0 ]; then mstatus=identical
+      else mstatus=survived
+      fi
+      printf 'mutant\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$mid" "$mstart" "$mend" "$mkind" "$morig" "$mrepl" "$mstatus" "$mkillers" >> "$mresults"
+      echo "[vibe-mutate] $mn/$mtotal $mtarget:$mpos $mkind $morig -> ${mrepl:-(deleted)}: $mstatus" >&2
+      rm -f "$mfile"
+    done < "$mwork/sites.txt"
+    mrc=0; invoke_cli mutate-report "$mresults" || mrc=$?
+    cp "$mresults" "$BUILD_DIR/mutate/results.tsv.$$" && mv "$BUILD_DIR/mutate/results.tsv.$$" "$BUILD_DIR/mutate/results.tsv"
+    exit "$mrc"
     ;;
   lsp)
     # The node server (clients/js/lsp_server.js) stays the default: it carries

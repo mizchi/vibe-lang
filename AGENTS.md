@@ -1110,6 +1110,72 @@ pkf run test-local -- --profile scheduled   # 全テスト (データ蓄積用)
 `pkf run test` は operation gate (`scripts/compiler_gate.sh`)。全 `*_test.vibe` を
 回すのは `pkf run test-unit`。
 
+### Mutation testing — which tests earn their keep (`vibe mutate`)
+
+The suite is large, and a test that only re-checks what another test already
+checks costs a run on every change without detecting anything more.
+`vibe mutate` measures this instead of leaving it to judgement.
+
+```bash
+vibe mutate lib/@vibe/core/array.vibe lib/@vibe/core/   # target, then tests (files or dirs)
+vibe mutants lib/@vibe/core/array.vibe                  # just list the sites
+```
+
+`vibe mutants` lists every mutation site outside test / bench blocks, one per
+line: `ID START END LINE:COL KIND ORIGINAL REPLACEMENT`. The kinds are:
+
+- `boundary`: `<` → `<=`;
+- `negate`: `<` → `>=`, `==` → `!=`;
+- `arith`: `+` ↔ `-`, `*` ↔ `/`;
+- `logic`: `&&` ↔ `||`;
+- `bitwise`;
+- `bool`: flip the literal;
+- `const`: `0` ↔ `1`, `n` → `n+1`;
+- `not`: delete a `!`.
+
+The sites come from the AST, and a binary `-` is never confused with a unary
+one.
+
+`vibe mutate` does the following:
+
+1. It compiles every given test file whose import closure reaches the target.
+2. It checks that each block passes against the original.
+3. For each site, it recompiles those files with the mutant applied and runs
+   every test block on its own (`viberun --test-each`, a fresh instance per
+   block, bounded by `--timeout-ms`, default 10000).
+
+The mutant is never written to disk. viberun answers the target's reads from
+the mutant through `VIBE_SOURCE_OVERLAY` and `VIBE_SOURCE_OVERLAY_WITH`, so an
+interrupted run leaves the tree as it was.
+
+Each mutant gets one status:
+
+- `killed`: a block failed or timed out;
+- `survived`: every block passed;
+- `unviable`: no test file compiled;
+- `identical`: every test binary was byte-identical to the original's.
+
+The report (`vibe mutate-report`, exit 1 when a mutant survived) is
+line-oriented. Each line starts with a keyword:
+
+- `SURVIVED`: behaviour no test pins.
+- `TEST kills=K unique=U`: kills per test, and how many of them only that test
+  makes.
+- `REDUNDANT ... subsumed-by <test>`: another single test kills everything this
+  one kills.
+- `REDUNDANT ... covered-by-others`: only several tests together cover it.
+- `NOKILL`: kills nothing.
+- `minimal: M of T`: the size of a greedy cover that keeps every kill.
+
+**Redundancy is measured against one target's mutants.** A test listed as
+REDUNDANT for `array.vibe` may be the only guard of some other module. Run the
+targets a test file exercises before you delete from it.
+
+Running `vibe mutate` on a COMPILER source needs a stage2. Use the
+compiler-change protocol below (`VIBE_CLI_WASM=<stage2>
+VIBE_RUNNER=runtime/viberun/target/release/viberun bash runtime/vibe mutate
+...`).
+
 ### Which compiler answered? — `vibe test` runs on the seed by default
 
 `scripts/vibe_test.sh` compiles with the **committed seed**

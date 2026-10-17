@@ -1894,10 +1894,13 @@ fn daemon(args: Vec<String>) -> Result<i32> {
 mod component_runtime;
 mod diagnostics;
 mod host_imports;
+mod source_overlay;
+mod test_each;
 
 use component_runtime::*;
 use diagnostics::*;
 use host_imports::*;
+use source_overlay::*;
 
 fn main() {
     // Re-launch onto a worker thread whose native stack comfortably exceeds
@@ -2237,6 +2240,16 @@ fn real_main() {
             Err(e) => {
                 eprintln!("viberun: daemon failed: {e:?}");
                 std::process::exit(1);
+            }
+        }
+    }
+    if args.first().map(|s| s.as_str()) == Some("--test-each") {
+        let rest: Vec<String> = args.iter().skip(1).cloned().collect();
+        match test_each::test_each(rest) {
+            Ok(code) => std::process::exit(code),
+            Err(e) => {
+                eprintln!("viberun: {e}");
+                std::process::exit(2);
             }
         }
     }

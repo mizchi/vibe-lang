@@ -689,7 +689,15 @@ export fn parse_stmt_with_binder_context(tokens: Array[Token], starts: Array[Int
 /// methods become ordinary qualified free functions resolved by name. `pos` is
 /// at the body `{` (or the next token for a body-less impl). Needs `parse_expr`,
 /// which is why this lives here rather than in parser_base.
-fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
+// `starts` are the token offsets. Only the tooling parse (a binder context)
+// reads them here: it records each method body's source ranges, which `vibe
+// mutants` and the span queries need. A compile parse keeps passing none, so
+// the AST it hands the checker and codegen is unchanged.
+fn parse_impl_methods(tokens: Array[Token], starts: Array[Int], pos: Int, simpl: Stmt, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
+  let method_starts = match context {
+    Some(_) => starts,
+    None => []
+  }
   let out = ArrayBuilder::new()
   ArrayBuilder::push(out, simpl)
   match peek(tokens, pos) {
@@ -724,7 +732,7 @@ fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt, context: Opti
             done = true
           },
           TIdent(mname) => {
-            let (efn, p2) = parse_impl_with_binder_context(tokens, [], p + 1, 0, context)
+            let (efn, p2) = parse_impl_with_binder_context(tokens, method_starts, p + 1, 0, context)
             let efn2 = if Array::length(impl_tparams) > 0 {
               match source_expr(efn) {
                 EFn(mtp, mtb, mparams, mret, meff, mbody) => source_rewrap_expr(efn, EFn(Array::concat(impl_tparams, mtp), Array::concat(impl_tbounds, mtb), mparams, mret, meff, mbody)),
@@ -974,7 +982,7 @@ fn parse_preserving_top_stmt(tokens: Array[Token], starts: Array[Int], pos: Int)
   match peek(tokens, pos) {
     TImpl => {
       let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
-      parse_impl_methods(tokens, hp, simpl, None)
+      parse_impl_methods(tokens, [], hp, simpl, None)
     },
     _ => {
       let (stmt, n) = parse_stmt_preserving(tokens, starts, pos)
@@ -1026,7 +1034,7 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
           match peek(tokens, dnext) {
             TImpl => {
               let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
-              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
+              let (_dropped, dn) = parse_impl_methods(tokens, [], hp_d, simpl_d, None)
               pos = dn
             },
             _ => {
@@ -1039,7 +1047,7 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
       },
       TImpl => {
         let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
-        let (impl_stmts, next) = parse_impl_methods(tokens, hp, simpl, None)
+        let (impl_stmts, next) = parse_impl_methods(tokens, [], hp, simpl, None)
         let mut ii = 0
         while ii < Array::length(impl_stmts) {
           ArrayBuilder::push(b, Array::get(impl_stmts, ii))
@@ -1093,7 +1101,7 @@ fn preserving_cfg_directive(tokens: Array[Token], starts: Array[Int], pos: Int, 
     let dn = match peek(tokens, dnext) {
       TImpl => {
         let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
-        let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
+        let (_dropped, dn) = parse_impl_methods(tokens, [], hp_d, simpl_d, None)
         dn
       },
       _ => {
@@ -1165,7 +1173,7 @@ fn parse_program_preserving_impl(tokens: Array[Token], starts: Array[Int], sourc
         match peek(tokens, pos) {
           TImpl => {
             let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
-            let (impl_stmts, next) = parse_impl_methods(tokens, hp, simpl, None)
+            let (impl_stmts, next) = parse_impl_methods(tokens, [], hp, simpl, None)
             let mut ii = 0
             while ii < Array::length(impl_stmts) {
               ArrayBuilder::push(b, Array::get(impl_stmts, ii))
@@ -1360,7 +1368,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
             let dn = match peek(tokens, dnext) {
               TImpl => {
                 let (simpl_d, hp_d) = parse_impl_stmt_dispatch_with_binder_context(tokens, dnext + 1, context)
-                let (_dropped, dn_impl) = parse_impl_methods(tokens, hp_d, simpl_d, context)
+                let (_dropped, dn_impl) = parse_impl_methods(tokens, starts, hp_d, simpl_d, context)
                 dn_impl
               },
               _ => {
@@ -1384,7 +1392,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
             TImpl => {
               binder_capture_mark_ineligible(context)
               let (simpl, hp) = parse_impl_stmt_dispatch_with_binder_context(tokens, pos + 1, context)
-              parse_impl_methods(tokens, hp, simpl, context)
+              parse_impl_methods(tokens, starts, hp, simpl, context)
             },
             _ => {
               let (stmt, n) = parse_stmt_with_binder_context(tokens, starts, pos, context)
@@ -1542,7 +1550,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
             let dn = match peek(tokens, dnext) {
               TImpl => {
                 let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
-                let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
+                let (_dropped, dn) = parse_impl_methods(tokens, [], hp_d, simpl_d, None)
                 dn
               },
               _ => {
@@ -1577,7 +1585,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
           let (stmts, next) = match peek(tokens, pos) {
             TImpl => {
               let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
-              parse_impl_methods(tokens, hp, simpl, None)
+              parse_impl_methods(tokens, [], hp, simpl, None)
             },
             _ => {
               let (stmt, n) = parse_stmt(tokens, starts, pos)
@@ -1733,7 +1741,7 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
           (0, 0)
         }
         let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
-        let (_impl_stmts, next) = parse_impl_methods(tokens, hp, simpl, None)
+        let (_impl_stmts, next) = parse_impl_methods(tokens, [], hp, simpl, None)
         if drop_next {
           restore_pattern_refs(ref_mark)
           drop_next = false
