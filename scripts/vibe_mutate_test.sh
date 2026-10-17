@@ -352,6 +352,21 @@ else
   note "  FAIL expected a refusal for the incomplete report (exit $short_status)"; printf '%s\n' "$short_out" | tail -4; fail=1
 fi
 
+note "=== a malformed --timeout-ms is refused, not replaced by the default ==="
+bad_to=0
+for to in 0 -5 300ms 1.5; do
+  # Captured first: with pipefail, `grep -q` closing the pipe early would
+  # fail the writer and read as "not refused".
+  to_out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 60 \
+    bash "$ROOT_DIR/runtime/vibe" mutate --timeout-ms "$to" lib.vibe inc_test.vibe 2>&1)"
+  if printf '%s' "$to_out" | grep -q 'positive whole number'; then
+    :
+  else
+    note "  FAIL --timeout-ms $to was not refused"; bad_to=1; fail=1
+  fi
+done
+[ "$bad_to" = 0 ] && note "  ok   0, -5, 300ms and 1.5 are refused"
+
 note "=== a test file whose imports do not resolve is refused, not skipped ==="
 cat > "$WORK/bad_test.vibe" <<'EOF'
 import ./missing.vibe {

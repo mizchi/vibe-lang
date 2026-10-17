@@ -109,12 +109,40 @@ fn run_shell(cmd: &str, capture: bool, isolate: bool) -> io::Result<std::process
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let child = command.spawn()?;
+    let mut child = command.spawn()?;
     let pid = child.id();
     if isolate {
         CHILD_GROUPS.lock().unwrap().push(pid);
     }
-    let output = child.wait_with_output();
+    let output = if isolate && capture {
+        // A mutant can turn a quiet command into an endless writer (`yes`);
+        // keep at most CAPTURE_CAP bytes of each stream and drain the rest,
+        // so the deadline -- not memory -- ends the block.
+        const CAPTURE_CAP: usize = 16 * 1024 * 1024;
+        fn capped(mut r: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+            std::thread::spawn(move || {
+                let mut kept = Vec::new();
+                let mut buf = [0u8; 64 * 1024];
+                while let Ok(n) = r.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    let room = CAPTURE_CAP.saturating_sub(kept.len());
+                    kept.extend_from_slice(&buf[..n.min(room)]);
+                }
+                kept
+            })
+        }
+        let out = child.stdout.take().map(capped);
+        let err = child.stderr.take().map(capped);
+        child.wait().map(|status| std::process::Output {
+            status,
+            stdout: out.and_then(|h| h.join().ok()).unwrap_or_default(),
+            stderr: err.and_then(|h| h.join().ok()).unwrap_or_default(),
+        })
+    } else {
+        child.wait_with_output()
+    };
     if isolate {
         CHILD_GROUPS.lock().unwrap().retain(|p| *p != pid);
     }

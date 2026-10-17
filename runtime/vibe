@@ -1944,7 +1944,12 @@ REPL_HELP
       mtests+=("$path")
     }
     for marg in "$@"; do
-      if [ "$mprev" = "--timeout-ms" ]; then export VIBE_TEST_TIMEOUT_MS="$marg"; mprev=""; continue; fi
+      if [ "$mprev" = "--timeout-ms" ]; then
+        case "$marg" in
+          ''|*[!0-9]*|0*) die "vibe mutate: --timeout-ms takes a positive whole number of milliseconds, not '$marg'" ;;
+        esac
+        export VIBE_TEST_TIMEOUT_MS="$marg"; mprev=""; continue
+      fi
       case "$marg" in
         --timeout-ms) mprev="$marg" ;;
         -h|--help)
@@ -2149,8 +2154,14 @@ REPL_HELP
     # at the kept copy. The copy is named by its content, so two runs that
     # publish at once can never leave one run's matrix pointing at the other
     # run's source: a name only ever holds the text that names it.
+    # cksum is a 32-bit CRC, so a name is reused only when the file already
+    # under it holds the same bytes; a different text under the same CRC
+    # takes the next free suffix instead.
     msum="$(cksum < "$msnap" | awk '{ print $1 "-" $2 }')"
-    mkept="$BUILD_DIR/mutate/target.$msum.vibe"
+    mn=0; mkept="$BUILD_DIR/mutate/target.$msum.vibe"
+    while [ -f "$mkept" ] && ! cmp -s "$mkept" "$msnap"; do
+      mn=$((mn + 1)); mkept="$BUILD_DIR/mutate/target.$msum.$mn.vibe"
+    done
     [ -f "$mkept" ] || { cp "$msnap" "$mkept.$$" && mv "$mkept.$$" "$mkept"; }
     awk -F'\t' -v OFS='\t' -v snap="$mkept" 'NR == 1 && $1 == "target" { $3 = snap } { print }' \
       "$mresults" > "$BUILD_DIR/mutate/results.tsv.$$" && mv "$BUILD_DIR/mutate/results.tsv.$$" "$BUILD_DIR/mutate/results.tsv"
