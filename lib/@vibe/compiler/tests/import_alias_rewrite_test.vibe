@@ -1330,3 +1330,37 @@ test "#3489: an effectset a facade re-exports is read in the facade's own rows" 
   ]
   inspect(plan_refusal(paths, [sets, facade, b, entry], "/virtual/entry.vibe", entry), "clean")
 }
+
+test "#3448: a facade's own constructor pattern is its own (Codex on #3492)" {
+  let p = parse_program(lex("export enum Box {\n  Full(Int);\n  Empty\n}"))
+  let facade = parse_program(lex("export ./p.vibe { Box }\nenum Box {\n  Box(Int)\n}\nexport fn read(b: Int) -> Int {\n  match Box(b) {\n    Box(n) => n\n  }\n}"))
+  let other = parse_program(lex("export struct Box {\n  value: String\n}\nexport fn mine() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./facade.vibe { read }\nimport ./other.vibe { mine }\nlet answer = mine()"))
+  let paths = [
+    "/virtual/p.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/other.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(plan_refusal(paths, [p, facade, other, entry], "/virtual/entry.vibe", entry), "clean")
+}
+
+test "#3489: an effectset chain across three modules is read to its members" {
+  // Codex on #3492: `A = { Ask }`, `B = { A }`, `C = { B }`, each in its own
+  // module.
+  let ma = parse_program(lex("effect Ask {\n  Get() -> Int\n}\nexport effectset A = { Ask }"))
+  let mb = parse_program(lex("import ./ma.vibe { A }\nexport effectset B = { A }"))
+  let mc = parse_program(lex("import ./mb.vibe { B }\nexport effectset C = { B }"))
+  let a = parse_program(lex("import ./mc.vibe { C }\nexport struct Job {\n  run: () -> Int with C\n}\nexport fn ja() -> Int {\n  1\n}"))
+  let b = parse_program(lex("effect Ask {\n  Get() -> Int\n}\nexport struct Job {\n  run: () -> Int with Ask\n}\nexport fn jb() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
+  let paths = [
+    "/virtual/ma.vibe",
+    "/virtual/mb.vibe",
+    "/virtual/mc.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(plan_refusal(paths, [ma, mb, mc, a, b, entry], "/virtual/entry.vibe", entry), "clean")
+}

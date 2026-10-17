@@ -122,7 +122,9 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
     Array::truncate(w.stack, n - 1)
     let mut hidden = outer_hidden
     match cur {
-      EIdent(x, _) => found = x == name || (!hidden && String::starts_with(x, qual)),
+      // A file's own type of the name owns its constructors too: `Box(b)`
+      // beside a local `enum Box` is that enum's (Codex on #3492).
+      EIdent(x, _) => found = (!local && x == name) || (!hidden && String::starts_with(x, qual)),
       ERecord(x, _, targs) => {
         found = !hidden && (x == name || String::starts_with(x, qual))
         push_types(w, targs, hidden)
@@ -143,7 +145,7 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
       },
       EMatch(_, arms) => {
         for arm in arms {
-          if pat_names(arm.0, name, qual, hidden) {
+          if pat_names(arm.0, name, qual, local) {
             found = true
           }
         }
@@ -151,7 +153,7 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
       },
       EHandle(_, arms) => {
         for arm in arms {
-          if pat_names(arm.0, name, qual, hidden) {
+          if pat_names(arm.0, name, qual, local) {
             found = true
           }
         }
@@ -257,7 +259,7 @@ fn push_type_opt(w: CodeNamesWalk, t: Option[TypeExpr], hidden: Bool) -> Unit {
 
 fn pat_names(p: Pat, name: String, qual: String, hidden: Bool) -> Bool {
   match p {
-    PCtor(x, ps) => x == name || (!hidden && String::starts_with(x, qual)) || pats_name(ps, name, qual, hidden),
+    PCtor(x, ps) => (!hidden && (x == name || String::starts_with(x, qual))) || pats_name(ps, name, qual, hidden),
     PStruct(x, fields) => {
       let mut hit = !hidden && (x == name || String::starts_with(x, qual))
       for f in fields {
