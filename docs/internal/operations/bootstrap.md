@@ -70,6 +70,30 @@ to follow a stage0 -> stage1 -> stage2 -> bootstrap bump.
 `bootstrap/seed.json`: the artifact sha256 always, and the name, tag and source
 commit when given. A bootstrap bump commits that manifest change on its own.
 
+### Reuse of a validated stage1 product
+
+Source generation already compiles its candidate flat source with the pinned
+seed before publishing it (the #979 sticky-failure guard). It retains that
+successful product in `<module-source>.seed-validation.wasm`, together with a
+`<module-source>.seed-validation.json` receipt. Validation uses `cli_main` for
+the compiler and `main` when generating the portable CLI.
+
+The first stage may consume that product only when source bytes, seed bytes,
+entry, runner/host implementation, Node/bash tools and the normalized compile
+environment match the receipt. The product digest is checked again before an
+atomic stage1 write. The log explicitly records a reuse. This works both for
+fresh source generation and `VIBE_PREBUILT_MODULE_SOURCE`; optional sidecars
+travel with the generated-source CI cache. Different hosts or environments may
+conservatively miss the receipt.
+
+A missing, stale, unsupported or damaged receipt follows the ordinary verified
+stage0-to-stage1 compile. Filesystem/emission/source-map requests and immutable
+heap-policy evaluation do not reuse a product. Receipt publication follows
+successful source validation, with the receipt written last: interruption can
+cause a miss but cannot make a partial product valid. An unsuccessful validation
+still fails without replacing the previous complete flat source. Stage1 sample
+validation and stage1-to-stage2-to-stage3 checks remain in place.
+
 ### Rust-style staged build
 
 - **stage0**: the pinned seed. Used only to build the new compiler source.
