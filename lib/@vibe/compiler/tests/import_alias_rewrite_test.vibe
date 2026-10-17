@@ -1346,6 +1346,26 @@ test "#3448: a private alias inside a row argument is read through" {
   inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Job`"), "true")
 }
 
+test "#3448: a generic alias inside a row argument is read through" {
+  // Codex on #3492: `State[Payload[Int]]` is `State[Int]` under `Payload[T] =
+  // T` and `State[Array[Int]]` under `Payload[T] = Array[T]`.
+  let a = parse_program(lex("effect State[T] {\n  Get() -> T\n}\ntype Payload[T] = T\nexport struct Job {\n  run: () -> Int with State[Payload[Int]]\n}\nexport fn ja() -> Int {\n  1\n}"))
+  let b = parse_program(lex("effect State[T] {\n  Get() -> T\n}\ntype Payload[T] = Array[T]\nexport struct Job {\n  run: () -> Int with State[Payload[Int]]\n}\nexport fn jb() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
+  let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
+  inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Job`"), "true")
+}
+
+test "#3448: a row head is not renamed as a type parameter of its spelling" {
+  // Codex on #3492: in `Box[Read]` with `with Read`, the row head is the
+  // effect `Read`, not the parameter, so `Box[Write]` with `with Write` differs.
+  let a = parse_program(lex("effect Read {\n  Get() -> Int\n}\nexport struct Box[Read] {\n  run: () -> Int with Read\n}\nexport fn ja() -> Int {\n  1\n}"))
+  let b = parse_program(lex("effect Write {\n  Put() -> Int\n}\nexport struct Box[Write] {\n  run: () -> Int with Write\n}\nexport fn jb() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
+  let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
+  inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+}
+
 test "#3448: builtin spellings inside a row compare alike" {
   // Codex on #3492: `Probe[i32]` and `Probe[Int]` are one row label.
   let a = parse_program(lex("effect Probe[T] {\n  Take() -> T\n}\nexport struct Job {\n  run: () -> Int with Probe[i32]\n}\nexport fn ja() -> Int {\n  1\n}"))

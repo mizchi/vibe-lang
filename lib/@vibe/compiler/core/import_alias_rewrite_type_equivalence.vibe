@@ -6,7 +6,7 @@ import ./ast.vibe {
 }
 
 import @vibe/ast {
-  type_param_arity, type_param_name
+  impl_target_key, type_param_arity, type_param_name
 }
 
 import ./types_env_cache.vibe {
@@ -101,15 +101,19 @@ export fn row_labels_renamed(row: Option[String], renames: Array[(String, String
           }
           word = String::concat(word, String::substring(text, i, i + 1))
         } else {
-          // A word at depth 0 is a row head, an effect name: an effect may
-          // be called `Float`, so only a type argument inside brackets is
-          // read as a builtin spelling (Codex on #3492).
+          // A word at depth 0 is a row head: an effect name, which may be
+          // called `Float` or share a type parameter's spelling (`Box[Read]`
+          // with `with Read`), so it is neither a builtin spelling nor a
+          // parameter. Only a lowercase head is a row variable and renamed
+          // (Codex on #3492); a type argument inside brackets is both.
           label = String::concat(label, if qualified {
             word
           } else if depth > 0 {
             builtin_word(renamed_type_name(renames, word), renames, word)
-          } else {
+          } else if String::length(word) > 0 && String::byte_at(word, 0) >= 'a' && String::byte_at(word, 0) <= 'z' {
             renamed_type_name(renames, word)
+          } else {
+            word
           })
           word = ""
           if c == '[' {
@@ -176,6 +180,132 @@ fn builtin_word(renamed: String, renames: Array[(String, String)], word: String)
       TyName(canonical) => canonical,
       TyUnit => "Unit",
       _ => renamed
+    }
+  }
+}
+
+/// The types written inside a row label's brackets (`State[Payload[Int],
+/// (Int, String)]`), read back into `TypeExpr`s so aliases in them can be
+/// expanded (Codex on #3492): names (`A::B` included), applications, tuples
+/// and `()`. None for anything else, which the caller leaves as written.
+export fn row_type_args_parse(text: String) -> Option[Array[TypeExpr]] {
+  let pos = [0]
+  let args = row_type_list(text, pos, 0)
+  row_type_skip(text, pos)
+  match args {
+    Some(items) => if Array::get(pos, 0) == String::length(text) {
+      Some(items)
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+/// A type as `row_type_args_parse` reads it, written back canonically.
+export fn row_type_text(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => n,
+    TyApp(h, args) => String::concat(String::concat(String::concat(h, "["), String::join(for a in args {
+      row_type_text(a)
+    }, ", ")), "]"),
+    TyTuple(items) => String::concat(String::concat("(", String::join(for a in items {
+      row_type_text(a)
+    }, ", ")), ")"),
+    TyUnit => "()",
+    TyFn(_, _, _) => impl_target_key(t)
+  }
+}
+
+fn row_type_name_byte(c: Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == ':'
+}
+
+fn row_type_skip(text: String, pos: Array[Int]) -> Unit {
+  while Array::get(pos, 0) < String::length(text) && String::byte_at(text, Array::get(pos, 0)) == ' ' {
+    Array::set(pos, 0, Array::get(pos, 0) + 1)
+  }
+}
+
+fn row_type_list(text: String, pos: Array[Int], depth: Int) -> Option[Array[TypeExpr]] {
+  let out: Array[TypeExpr] = []
+  let mut ok = true
+  let mut more = true
+  while ok && more {
+    match row_type_one(text, pos, depth) {
+      Some(t) => {
+        Array::push(out, t)
+        row_type_skip(text, pos)
+        let i = Array::get(pos, 0)
+        if i < String::length(text) && String::byte_at(text, i) == ',' {
+          Array::set(pos, 0, i + 1)
+        } else {
+          more = false
+        }
+      },
+      None => ok = false
+    }
+  }
+  if ok {
+    Some(out)
+  } else {
+    None
+  }
+}
+
+fn row_type_one(text: String, pos: Array[Int], depth: Int) -> Option[TypeExpr] {
+  row_type_skip(text, pos)
+  let n = String::length(text)
+  let start = Array::get(pos, 0)
+  if depth > 16 || start >= n {
+    None
+  } else if String::byte_at(text, start) == '(' {
+    Array::set(pos, 0, start + 1)
+    row_type_skip(text, pos)
+    if Array::get(pos, 0) < n && String::byte_at(text, Array::get(pos, 0)) == ')' {
+      Array::set(pos, 0, Array::get(pos, 0) + 1)
+      Some(TyUnit)
+    } else {
+      match row_type_list(text, pos, depth + 1) {
+        Some(items) => {
+          row_type_skip(text, pos)
+          if Array::get(pos, 0) < n && String::byte_at(text, Array::get(pos, 0)) == ')' {
+            Array::set(pos, 0, Array::get(pos, 0) + 1)
+            Some(TyTuple(items))
+          } else {
+            None
+          }
+        },
+        None => None
+      }
+    }
+  } else {
+    let mut i = start
+    while i < n && row_type_name_byte(String::byte_at(text, i)) {
+      i = i + 1
+    }
+    if i == start {
+      None
+    } else {
+      let name = String::substring(text, start, i)
+      Array::set(pos, 0, i)
+      if i < n && String::byte_at(text, i) == '[' {
+        Array::set(pos, 0, i + 1)
+        match row_type_list(text, pos, depth + 1) {
+          Some(args) => {
+            row_type_skip(text, pos)
+            if Array::get(pos, 0) < n && String::byte_at(text, Array::get(pos, 0)) == ']' {
+              Array::set(pos, 0, Array::get(pos, 0) + 1)
+              Some(TyApp(name, args))
+            } else {
+              None
+            }
+          },
+          None => None
+        }
+      } else {
+        Some(TyName(name))
+      }
     }
   }
 }
