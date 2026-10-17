@@ -1247,6 +1247,8 @@ fn namespace_aliases_without_top_level_values(aliases: Array[(String, String)], 
       SLetMut(name, _, _) => Array::push(names, name),
       SExternLet(name, _) => Array::push(names, name),
       SFnDecl(_, name, _, _, _) => Array::push(names, name),
+      // `let (helper, n) = ..` binds `helper` too (Codex on #3492).
+      SLetPat(pat, _) => pat_bound_names_into(pat, names),
       _ => ()
     }
   }
@@ -1267,6 +1269,26 @@ fn namespace_aliases_without_top_level_values(aliases: Array[(String, String)], 
     }
     out
   }
+}
+
+fn pat_bound_names_into(pat: Pat, out: Array[String]) -> Unit {
+  match pat {
+    PBind(name) => Array::push(out, name),
+    PCtor(_, pats) => pats_bound_names_into(pats, out),
+    PTuple(pats) => pats_bound_names_into(pats, out),
+    POr(left, _) => pat_bound_names_into(left, out),
+    PStruct(_, fields) => pats_bound_names_into(for f in fields {
+      f.1
+    }, out),
+    _ => ()
+  }
+}
+
+fn pats_bound_names_into(pats: Array[Pat], out: Array[String]) -> Unit {
+  for p in pats {
+    pat_bound_names_into(p, out)
+  }
+  ()
 }
 
 fn alias_namespace_rebound(alias: String, names: Array[String]) -> Bool {

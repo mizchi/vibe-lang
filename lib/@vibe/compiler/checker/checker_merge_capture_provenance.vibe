@@ -860,23 +860,46 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
       let mut found = false
       for f in fields {
         let (_, fv) = f
-        found = found || expression_aliases_outer_binding(fv, env)
+        found = found || (!literal_item_is_scalar_binding(fv, env) && expression_aliases_outer_binding(fv, env))
       }
       found
     },
     ETuple(items) => {
       let mut found = false
       for item in items {
-        found = found || expression_aliases_outer_binding(item, env)
+        found = found || (!literal_item_is_scalar_binding(item, env) && expression_aliases_outer_binding(item, env))
       }
       found
     },
     EArray(items) => {
       let mut found = false
       for item in items {
-        found = found || expression_aliases_outer_binding(item, env)
+        found = found || (!literal_item_is_scalar_binding(item, env) && expression_aliases_outer_binding(item, env))
       }
       found
+    },
+    _ => false
+  }
+}
+
+/// #3488 (Codex on #3492): whether a literal's field or element is a binding
+/// of a scalar type. A scalar is copied into the literal, so an outer one
+/// does not make the literal an outer location: `Wrap::{ cell: fresh, tag:
+/// outer_int }` is as fresh as its cell.
+export fn literal_item_is_scalar_binding(item: Expr, env: TypeEnv) -> Bool {
+  match item {
+    EIdent(name, _) => match env_lookup(env, name) {
+      Some(t) => match t {
+        CtInt => true,
+        CtDouble => true,
+        CtBool => true,
+        CtString => true,
+        CtChar => true,
+        CtUnit => true,
+        CtBytes => true,
+        _ => false
+      },
+      None => false
     },
     _ => false
   }

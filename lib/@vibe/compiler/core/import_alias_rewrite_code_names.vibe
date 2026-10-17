@@ -9,99 +9,110 @@ import ./expr_children.vibe {
   expr_children
 }
 
+import @vibe/ast {
+  type_param_name
+}
+
 /// Whether `stmts`' declarations name `name`: a call or value `name`, a
 /// qualified `name::..`, a `name::{ .. }` literal or pattern, a constructor
 /// pattern, or a type (Codex on #3467): a parameter, result, annotation,
 /// field, payload or alias target, and a row label. `fn read(b: Box) { b.x }`
-/// names `Box` through its parameter alone.
+/// names `Box` through its parameter alone. Inside a declaration or lambda
+/// that binds a type parameter spelled `name` (`fn id[Box](x: Box)`), a type
+/// or qualified spelling is that parameter, not the re-export (Codex on
+/// #3492).
 export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
-  let qual = String::concat(name, "::")
-  let stack: Array[Expr] = []
-  let types: Array[TypeExpr] = []
-  let rows: Array[String] = []
+  let w = CodeNamesWalk::{ stack: [], types: [], rows: [] }
   for st in stmts {
     match st {
       SLet(_, _, _, ann, e) => {
-        push_type_opt(types, ann)
-        Array::push(stack, e)
+        push_type_opt(w, ann, false)
+        Array::push(w.stack, (e, false))
       },
       SLetMut(_, ann, e) => {
-        push_type_opt(types, ann)
-        Array::push(stack, e)
+        push_type_opt(w, ann, false)
+        Array::push(w.stack, (e, false))
       },
-      SFnDecl(_, _, e, _, _) => Array::push(stack, e),
-      SExpr(e) => Array::push(stack, e),
-      SStruct(_, _, fields, _, _, _) => {
-        for f in fields {
-          Array::push(types, f.1)
-        }
-        ()
+      SFnDecl(_, _, e, _, _) => Array::push(w.stack, (e, false)),
+      SExpr(e) => Array::push(w.stack, (e, false)),
+      SStruct(_, _, fields, _, _, tparams) => {
+        let hidden = binds_type_param(tparams, name)
+        push_types(w, for f in fields {
+          f.1
+        }, hidden)
       },
-      SEnum(_, _, _, variants, _) => {
+      SEnum(_, _, tparams, variants, _) => {
+        let hidden = binds_type_param(tparams, name)
         for v in variants {
-          push_types(types, v.1)
+          push_types(w, v.1, hidden)
         }
         ()
       },
       SSuberror(_, _, variants) => {
         for v in variants {
-          push_types(types, v.1)
+          push_types(w, v.1, false)
         }
         ()
       },
-      STypeAlias(_, _, _, target) => Array::push(types, target),
-      SImpl(_, _, tr, target) => {
-        Array::push(types, TyName(tr))
-        Array::push(types, target)
+      STypeAlias(_, _, tparams, target) => Array::push(w.types, (target, binds_type_param(tparams, name))),
+      SImpl(tparams, _, tr, target) => {
+        let hidden = binds_type_param(tparams, name)
+        Array::push(w.types, (TyName(tr), false))
+        Array::push(w.types, (target, hidden))
       },
-      STrait(_, _, _, sigs, _, _) => {
+      STrait(_, _, tparams, sigs, _, _) => {
+        let hidden = binds_type_param(tparams, name)
         for sg in sigs {
-          push_types(types, sg.1)
-          Array::push(types, sg.2)
+          push_types(w, sg.1, hidden)
+          Array::push(w.types, (sg.2, hidden))
         }
         ()
       },
-      SEffectDef(_, _, _, ops) => {
+      SEffectDef(_, _, tparams, ops) => {
+        let hidden = binds_type_param(tparams, name)
         for op in ops {
-          push_types(types, op.1)
-          Array::push(types, op.2)
+          push_types(w, op.1, hidden)
+          Array::push(w.types, (op.2, hidden))
         }
         ()
       },
-      SExternLet(_, t) => Array::push(types, t),
+      SExternLet(_, t) => Array::push(w.types, (t, false)),
       SEffectSet(_, _, members) => {
         for m in members {
-          Array::push(rows, m)
+          Array::push(w.rows, (m, false))
         }
         ()
       },
       _ => ()
     }
   }
+  let qual = String::concat(name, "::")
   let mut found = false
-  while !found && Array::length(stack) > 0 {
-    let n = Array::length(stack)
-    let cur = Array::get(stack, n - 1)
-    Array::truncate(stack, n - 1)
+  while !found && Array::length(w.stack) > 0 {
+    let n = Array::length(w.stack)
+    let (cur, outer_hidden) = Array::get(w.stack, n - 1)
+    Array::truncate(w.stack, n - 1)
+    let mut hidden = outer_hidden
     match cur {
-      EIdent(x, _) => found = x == name || String::starts_with(x, qual),
+      EIdent(x, _) => found = x == name || (!hidden && String::starts_with(x, qual)),
       ERecord(x, _, targs) => {
-        found = x == name || String::starts_with(x, qual)
-        push_types(types, targs)
+        found = !hidden && (x == name || String::starts_with(x, qual))
+        push_types(w, targs, hidden)
       },
-      EFn(_, _, params, ret, row, _) => {
+      EFn(tparams, _, params, ret, row, _) => {
+        hidden = hidden || binds_type_param(tparams, name)
         for p in params {
-          push_type_opt(types, p.1)
+          push_type_opt(w, p.1, hidden)
         }
-        push_type_opt(types, ret)
+        push_type_opt(w, ret, hidden)
         match row {
-          Some(text) => Array::push(rows, text),
+          Some(text) => Array::push(w.rows, (text, hidden)),
           None => ()
         }
       },
       EMatch(_, arms) => {
         for arm in arms {
-          if pat_names(arm.0, name, qual) {
+          if pat_names(arm.0, name, qual, hidden) {
             found = true
           }
         }
@@ -109,7 +120,7 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
       },
       EHandle(_, arms) => {
         for arm in arms {
-          if pat_names(arm.0, name, qual) {
+          if pat_names(arm.0, name, qual, hidden) {
             found = true
           }
         }
@@ -118,75 +129,94 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
       _ => ()
     }
     for child in expr_children(cur) {
-      Array::push(stack, child)
+      Array::push(w.stack, (child, hidden))
     }
   }
-  while !found && Array::length(types) > 0 {
-    let n = Array::length(types)
-    let cur = Array::get(types, n - 1)
-    Array::truncate(types, n - 1)
+  while !found && Array::length(w.types) > 0 {
+    let n = Array::length(w.types)
+    let (cur, hidden) = Array::get(w.types, n - 1)
+    Array::truncate(w.types, n - 1)
     match cur {
-      TyName(x) => found = x == name || String::starts_with(x, qual),
+      TyName(x) => found = !hidden && (x == name || String::starts_with(x, qual)),
       TyApp(x, args) => {
-        found = x == name || String::starts_with(x, qual)
-        push_types(types, args)
+        found = !hidden && (x == name || String::starts_with(x, qual))
+        push_types(w, args, hidden)
       },
       TyFn(ps, r, row) => {
-        push_types(types, ps)
-        Array::push(types, r)
+        push_types(w, ps, hidden)
+        Array::push(w.types, (r, hidden))
         match row {
-          Some(text) => Array::push(rows, text),
+          Some(text) => Array::push(w.rows, (text, hidden)),
           None => ()
         }
       },
-      TyTuple(items) => push_types(types, items),
+      TyTuple(items) => push_types(w, items, hidden),
       TyUnit => ()
     }
   }
-  for text in rows {
-    if !found && row_text_names(text, name) {
+  for row in w.rows {
+    let (text, hidden) = row
+    if !found && !hidden && row_text_names(text, name) {
       found = true
     }
   }
   found
 }
 
-fn push_types(out: Array[TypeExpr], ts: Array[TypeExpr]) -> Unit {
+/// The walk's pending work, each item with whether a type parameter spelled
+/// like the name hides it there.
+struct CodeNamesWalk {
+  stack: Array[(Expr, Bool)];
+  types: Array[(TypeExpr, Bool)];
+  rows: Array[(String, Bool)]
+}
+
+fn binds_type_param(tparams: Array[String], name: String) -> Bool {
+  let mut hit = false
+  for tp in tparams {
+    if type_param_name(tp) == name {
+      hit = true
+    }
+  }
+  hit
+}
+
+fn push_types(w: CodeNamesWalk, ts: Array[TypeExpr], hidden: Bool) -> Unit {
   for t in ts {
-    Array::push(out, t)
+    Array::push(w.types, (t, hidden))
   }
   ()
 }
 
-fn push_type_opt(out: Array[TypeExpr], t: Option[TypeExpr]) -> Unit {
+fn push_type_opt(w: CodeNamesWalk, t: Option[TypeExpr], hidden: Bool) -> Unit {
   match t {
-    Some(x) => Array::push(out, x),
+    Some(x) => Array::push(w.types, (x, hidden)),
     None => ()
   }
 }
 
-fn pat_names(p: Pat, name: String, qual: String) -> Bool {
+fn pat_names(p: Pat, name: String, qual: String, hidden: Bool) -> Bool {
   match p {
-    PCtor(x, ps) => x == name || String::starts_with(x, qual) || pats_name(ps, name, qual),
+    PCtor(x, ps) => x == name || (!hidden && String::starts_with(x, qual)) || pats_name(ps, name, qual, hidden),
     PStruct(x, fields) => {
-      let mut hit = x == name || String::starts_with(x, qual)
+      let mut hit = !hidden && (x == name || String::starts_with(x, qual))
       for f in fields {
-        if !hit && pat_names(f.1, name, qual) {
+        if !hit && pat_names(f.1, name, qual, hidden) {
           hit = true
         }
       }
       hit
     },
-    PTuple(ps) => pats_name(ps, name, qual),
-    POr(a, b) => pat_names(a, name, qual) || pat_names(b, name, qual),
+    PTuple(ps) => pats_name(ps, name, qual, hidden),
+    POr(a, b) => pat_names(a, name, qual, hidden) || pat_names(b, name, qual, hidden),
     _ => false
   }
 }
 
-fn pats_name(ps: Array[Pat], name: String, qual: String) -> Bool {
+fn pats_name(ps: Array[Pat], name: String, qual: String, hidden: Bool) -> Bool {
   let mut hit = false
   for p in ps {
-    if !hit && pat_names(p, name, qual) {
+    if !hit && pat_names(p, name, qual, hidden) {
       hit = true
     }
   }

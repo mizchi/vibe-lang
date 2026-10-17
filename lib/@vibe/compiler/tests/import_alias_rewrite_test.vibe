@@ -1221,16 +1221,22 @@ test "#3448: a re-export a facade names only in a type reaches its provider" {
   inspect(String::starts_with(plan_refusal(paths, [p, by_result, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
   let by_field = parse_program(lex("export ./p.vibe { Box }\nexport struct Holder {\n  b: Box\n}\nexport fn read() -> Int {\n  1\n}"))
   inspect(String::starts_with(plan_refusal(paths, [p, by_field, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  // A type parameter spelled `Box` is that parameter, not the re-export
+  // (Codex on #3492).
+  let by_param = parse_program(lex("export ./p.vibe { Box }\nexport fn read[Box](x: Box) -> Box {\n  x\n}"))
+  inspect(plan_refusal(paths, [p, by_param, other, entry], "/virtual/entry.vibe", entry), "clean")
+  let by_struct_param = parse_program(lex("export ./p.vibe { Box }\nexport struct Holder[Box] {\n  b: Box\n}\nexport fn read() -> Int {\n  1\n}"))
+  inspect(plan_refusal(paths, [p, by_struct_param, other, entry], "/virtual/entry.vibe", entry), "clean")
 }
 
 test "#3448: builtin spellings the checker resolves alike are one type" {
   // Codex on #3467: `()` and `Unit`, `i32` and `Int`, `f64` and `Double`.
-  let a = parse_program(lex("export struct Box {\n  u: Unit,\n  n: i32,\n  d: f64\n}\nexport fn ja() -> Int {\n  1\n}"))
-  let b = parse_program(lex("export struct Box {\n  u: (),\n  n: Int,\n  d: Double\n}\nexport fn jb() -> Int {\n  1\n}"))
+  let a = parse_program(lex("export struct Box {\n  u: Unit;\n  n: i32;\n  d: f64\n}\nexport fn ja() -> Int {\n  1\n}"))
+  let b = parse_program(lex("export struct Box {\n  u: ();\n  n: Int;\n  d: Double\n}\nexport fn jb() -> Int {\n  1\n}"))
   let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
   let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
   inspect(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "clean")
   // A spelling the checker keeps apart stays apart.
-  let c = parse_program(lex("export struct Box {\n  u: Unit,\n  n: i64,\n  d: Double\n}\nexport fn jb() -> Int {\n  1\n}"))
+  let c = parse_program(lex("export struct Box {\n  u: Unit;\n  n: i64;\n  d: Double\n}\nexport fn jb() -> Int {\n  1\n}"))
   inspect(String::starts_with(plan_refusal(paths, [a, c, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
 }
