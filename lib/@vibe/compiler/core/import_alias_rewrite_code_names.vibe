@@ -57,13 +57,17 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
         ()
       },
       STypeAlias(_, _, tparams, target) => Array::push(w.types, (target, binds_type_param(tparams, name))),
-      SImpl(tparams, _, tr, target) => {
+      SImpl(tparams, bounds, tr, target) => {
         let hidden = local || binds_type_param(tparams, name)
         Array::push(w.types, (TyName(tr), local))
         Array::push(w.types, (target, hidden))
+        push_bounds(w, bounds, hidden)
       },
-      STrait(_, _, tparams, sigs, _, _) => {
+      STrait(_, _, tparams, sigs, _, supers) => {
         let hidden = local || binds_type_param(tparams, name)
+        for sup in supers {
+          Array::push(w.rows, (sup, local))
+        }
         for sg in sigs {
           push_types(w, sg.1, hidden)
           Array::push(w.types, (sg.2, hidden))
@@ -101,8 +105,11 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
         found = !hidden && (x == name || String::starts_with(x, qual))
         push_types(w, targs, hidden)
       },
-      EFn(tparams, _, params, ret, row, _) => {
+      EFn(tparams, bounds, params, ret, row, _) => {
         hidden = hidden || binds_type_param(tparams, name)
+        // A bound names its trait (`[T: Key]`), as an annotation names a type
+        // (Codex on #3492).
+        push_bounds(w, bounds, hidden)
         for p in params {
           push_type_opt(w, p.1, hidden)
         }
@@ -199,6 +206,17 @@ fn binds_type_param(tparams: Array[String], name: String) -> Bool {
     }
   }
   hit
+}
+
+/// Each bound's trait references, read like row text: the trait head and
+/// any applied arguments.
+fn push_bounds(w: CodeNamesWalk, bounds: Array[(String, Array[String])], hidden: Bool) -> Unit {
+  for b in bounds {
+    for r in b.1 {
+      Array::push(w.rows, (r, hidden))
+    }
+  }
+  ()
 }
 
 fn push_types(w: CodeNamesWalk, ts: Array[TypeExpr], hidden: Bool) -> Unit {
