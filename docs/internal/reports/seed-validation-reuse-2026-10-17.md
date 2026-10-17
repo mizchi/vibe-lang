@@ -94,6 +94,13 @@ controls; PATH and actual tool hashes remain bound. Both build jobs require
 fresh validation reuse. The raw record separately identifies these changes
 and their regression checks. These are the original overlay's timing samples,
 not a new measurement of the final review-fix revision.
+The two manual flaker workflows also complete Node, wasmtime PATH and flaker
+setup before generation; this later workflow-only reorder has separate
+provenance and does not change the recorded local timing samples.
+The compiler-gate producer also sources the same gate helpers as its consumer:
+those helpers export three shell functions, which remain part of request
+identity. A controlled pipeline reproduces the CI miss before this change and
+reuses the product afterward; hosted fresh reuse still requires verification.
 
 [Raw samples, phase medians, paired deltas and hashes](../../../bench/perf/analysis/seed-validation-reuse-2026-10-17.json).
 
