@@ -30,6 +30,7 @@ import @vibe/compiler/core {
   env_name_index_length,
   env_type_defs,
   exception_kind_resolutions_clear,
+  expr_children,
   find_typedef,
   instantiate,
   is_builtin_type_name,
@@ -1141,16 +1142,59 @@ export fn collect_result_param_indices(body: Expr, params: Array[(String, Option
         i = i + 1
       }
       Array::truncate(found, found_mark)
+      collect_return_param_indices(value, params, alias_names, alias_indices, found)
       collect_result_param_indices(rest, params, alias_names, alias_indices, found)
       Array::truncate(alias_names, alias_mark)
       Array::truncate(alias_indices, alias_mark)
     },
-    ESeq(_, right) => collect_result_param_indices(right, params, alias_names, alias_indices, found),
+    ESeq(left, right) => {
+      collect_return_param_indices(left, params, alias_names, alias_indices, found)
+      collect_result_param_indices(right, params, alias_names, alias_indices, found)
+    },
     EIf(_, then_expr, else_expr) => {
       collect_result_param_indices(then_expr, params, alias_names, alias_indices, found)
       collect_result_param_indices(else_expr, params, alias_names, alias_indices, found)
     },
-    _ => ()
+    // A `return` hands its value out as the tail does, and so does every
+    // `match` arm (Codex on #3492: `fn same(c: Cell) -> Cell { return c }`).
+    EReturn(value) => collect_result_param_indices(value, params, alias_names, alias_indices, found),
+    EMatch(scrut, arms) => {
+      collect_return_param_indices(scrut, params, alias_names, alias_indices, found)
+      for arm in arms {
+        collect_result_param_indices(arm.1, params, alias_names, alias_indices, found)
+      }
+      ()
+    },
+    _ => collect_return_param_indices(body, params, alias_names, alias_indices, found)
+  }
+}
+
+/// The values `e` hands out through `return` from a position that is not
+/// the function's tail (`if c { return p }`, a loop body), read through the
+/// `let` aliases in scope. A nested closure's `return` is its own.
+fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
+  match e {
+    EReturn(value) => collect_result_param_indices(value, params, alias_names, alias_indices, found),
+    EFn(_, _, _, _, _, _) => (),
+    ELet(name, value, rest, _) => {
+      collect_return_param_indices(value, params, alias_names, alias_indices, found)
+      let alias_mark = Array::length(alias_names)
+      let held = array_empty()
+      collect_result_param_indices(value, params, alias_names, alias_indices, held)
+      for index in held {
+        Array::push(alias_names, name)
+        Array::push(alias_indices, index)
+      }
+      collect_return_param_indices(rest, params, alias_names, alias_indices, found)
+      Array::truncate(alias_names, alias_mark)
+      Array::truncate(alias_indices, alias_mark)
+    },
+    _ => {
+      for child in expr_children(e) {
+        collect_return_param_indices(child, params, alias_names, alias_indices, found)
+      }
+      ()
+    }
   }
 }
 
