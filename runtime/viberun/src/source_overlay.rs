@@ -14,18 +14,30 @@
 //! mutant behind in the user's tree, and a concurrent `vibe test` in the same
 //! checkout never observes one.
 //!
-//! Paths are compared after canonicalisation, so `lib/x.vibe`,
-//! `./lib/x.vibe` and the absolute spelling all name the target. A path that
-//! does not exist cannot be the target (the target must exist for the overlay
-//! to be armed), so a failed canonicalisation is simply "not overlaid".
+//! Paths are compared by file identity (device and inode; canonical path off
+//! unix), so `lib/x.vibe`, `./lib/x.vibe`, the absolute spelling and a symlink
+//! of another name all name the target. A path that does not exist cannot be
+//! the target (the target must exist for the overlay to be armed), so a failed
+//! stat is simply "not overlaid".
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 struct Overlay {
+    #[cfg(not(unix))]
     target: PathBuf,
-    file_name: std::ffi::OsString,
+    /// (device, inode) of the target on unix: one `stat` per read decides
+    /// whether a path names it, under ANY spelling -- a symlink whose basename
+    /// differs from the target's included.
+    #[cfg(unix)]
+    identity: (u64, u64),
     replacement: PathBuf,
+}
+
+#[cfg(unix)]
+fn file_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
 }
 
 fn overlay() -> Option<&'static Overlay> {
@@ -53,10 +65,11 @@ fn overlay() -> Option<&'static Overlay> {
                 );
                 std::process::exit(2);
             }
-            let file_name = target.file_name()?.to_os_string();
             Some(Overlay {
+                #[cfg(unix)]
+                identity: file_identity(&target)?,
+                #[cfg(not(unix))]
                 target,
-                file_name,
                 replacement,
             })
         })
@@ -68,14 +81,12 @@ fn overlay() -> Option<&'static Overlay> {
 pub(super) fn source_overlay_resolve(path: &str) -> PathBuf {
     if let Some(ov) = overlay() {
         let p = Path::new(path);
-        // Cheap reject first: canonicalising every path the compiler reads
-        // would cost a syscall chain per read.
-        if p.file_name() == Some(ov.file_name.as_os_str()) {
-            if let Ok(canon) = std::fs::canonicalize(p) {
-                if canon == ov.target {
-                    return ov.replacement.clone();
-                }
-            }
+        #[cfg(unix)]
+        let hit = file_identity(p) == Some(ov.identity);
+        #[cfg(not(unix))]
+        let hit = std::fs::canonicalize(p).is_ok_and(|canon| canon == ov.target);
+        if hit {
+            return ov.replacement.clone();
         }
     }
     PathBuf::from(path)

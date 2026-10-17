@@ -15,9 +15,14 @@
 //!   vibe::test<TAB>ok<TAB><name>
 //!   vibe::test<TAB>fail<TAB><name><TAB><reason>
 //!   vibe::test<TAB>timeout<TAB><name>
+//! The blocks are the names in the module's `vibe_tests` custom section, which
+//! the compiler writes for every test build: a program may export its own
+//! `__test_helper`, so the prefix is not authoritative. A module without the
+//! section (an older compiler) falls back to every `__test_*` export.
+//!
 //! `<name>` and `<reason>` escape `\` `\t` `\n` `\r` as two-character
 //! sequences so every row splits into the same fields. The block's own stdout
-//! is captured and dropped. Exit status: 0 when every block passed, 1 when
+//! is discarded on every path, unbuffered. Exit status: 0 when every block passed, 1 when
 //! any did not, 2 on a usage or load error.
 
 use super::*;
@@ -34,6 +39,58 @@ fn escape_field(s: &str) -> String {
         }
     }
     out
+}
+
+/// The names in the `vibe_tests` custom section, or None when the module has
+/// none. A plain section walk: magic + version, then `id, size, payload`
+/// records; a custom section's payload starts with its name.
+fn declared_tests(bytes: &[u8]) -> Option<Vec<String>> {
+    fn leb(bytes: &[u8], pos: &mut usize) -> Option<usize> {
+        let mut value: usize = 0;
+        let mut shift = 0;
+        loop {
+            let b = *bytes.get(*pos)?;
+            *pos += 1;
+            value |= ((b & 0x7f) as usize) << shift;
+            if b & 0x80 == 0 {
+                return Some(value);
+            }
+            shift += 7;
+            if shift > 35 {
+                return None;
+            }
+        }
+    }
+    if bytes.len() < 8 || &bytes[0..4] != b"\0asm" {
+        return None;
+    }
+    let mut pos = 8;
+    while pos < bytes.len() {
+        let id = bytes[pos];
+        pos += 1;
+        let size = leb(bytes, &mut pos)?;
+        let end = pos.checked_add(size)?;
+        if end > bytes.len() {
+            return None;
+        }
+        if id == 0 {
+            let mut p = pos;
+            let name_len = leb(bytes, &mut p)?;
+            let name_end = p.checked_add(name_len)?;
+            if name_end <= end && &bytes[p..name_end] == b"vibe_tests" {
+                let payload = &bytes[name_end..end];
+                return Some(
+                    payload
+                        .split(|b| *b == 0)
+                        .filter(|n| !n.is_empty())
+                        .map(|n| String::from_utf8_lossy(n).into_owned())
+                        .collect(),
+                );
+            }
+        }
+        pos = end;
+    }
+    None
 }
 
 /// The first line of an error, which is the trap message; the backtrace
@@ -68,11 +125,14 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
     register_imports(&mut linker)?;
     withhold_capability_imports(&mut linker, &module)?;
 
-    let names: Vec<String> = module
-        .exports()
-        .filter(|e| e.name().starts_with("__test_"))
-        .map(|e| e.name().to_string())
-        .collect();
+    let names: Vec<String> = match declared_tests(&std::fs::read(wasm_path)?) {
+        Some(declared) => declared,
+        None => module
+            .exports()
+            .filter(|e| e.name().starts_with("__test_"))
+            .map(|e| e.name().to_string())
+            .collect(),
+    };
 
     // One tick per millisecond; a block's deadline is `timeout_ms` ticks
     // after its own start.
@@ -91,7 +151,7 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
             vec!["viberun".to_string()],
             MemLimiter::new(store_mem_limits()),
         );
-        state.capture_stdout = true;
+        state.discard_stdout = true;
         let mut store = Store::new(&engine, state);
         store.limiter(|s| &mut s.mem);
         store.set_epoch_deadline(timeout_ms);

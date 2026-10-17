@@ -642,6 +642,45 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
   } else {
     ()
   }
+  // `vibe_tests`: the export names of the synthesized `test` blocks, NUL
+  // separated, in declaration order. The `__test_` prefix alone is not
+  // authoritative -- a program may export its own `__test_helper` -- so a
+  // per-block runner (`viberun --test-each`, used by `vibe mutate`) reads this
+  // list instead of guessing from export names. Only test builds carry it, so
+  // every other build is byte-identical.
+  let tests_content = bytebuf_new()
+  let mut tests_any = false
+  let mut tni = 0
+  while tni < Array::length(test_fn_names) {
+    let tnm = Array::get(test_fn_names, tni)
+    if String::starts_with(tnm, "__test_") {
+      if !tests_any {
+        let tests_name = "vibe_tests"
+        leb128_encode_u32(tests_content, String::length(tests_name))
+        let mut tsi = 0
+        while tsi < String::length(tests_name) {
+          bytebuf_push(tests_content, String::char_code_at(tests_name, tsi))
+          tsi = tsi + 1
+        }
+        tests_any = true
+      } else {
+        bytebuf_push(tests_content, 0)
+      }
+      let mut tci = 0
+      while tci < String::length(tnm) {
+        bytebuf_push(tests_content, String::char_code_at(tnm, tci))
+        tci = tci + 1
+      }
+    } else {
+      ()
+    }
+    tni = tni + 1
+  }
+  if tests_any {
+    bytebuf_push_section(out, 0, tests_content)
+  } else {
+    ()
+  }
   // debugger trace (DAP P1 groundwork): emit a `vibe.trace` custom section
   // describing the in-memory trace log. Payload layout: i32 LE counter_addr,
   // i32 LE log_base, i32 LE cap, then the user-function names (one per line, in

@@ -88,6 +88,7 @@ pub(super) fn read_wasi_u32(
 
 pub(super) fn write_wasi_fd(host: &mut HostState, fd: i32, bytes: &[u8]) -> io::Result<()> {
     match fd {
+        1 if host.discard_stdout => Ok(()),
         1 if host.capture_stdout => {
             host.captured_stdout.extend_from_slice(bytes);
             Ok(())
@@ -1136,6 +1137,9 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         "stdout_write_stream",
         |mut caller: Caller<'_, HostState>, s: i64| -> Result<()> {
             let s = vibe_read_packed_str(&mut caller, s)?;
+            if caller.data().discard_stdout {
+                return Ok(());
+            }
             let stdout = io::stdout();
             let mut h = stdout.lock();
             h.write_all(s.as_bytes())
@@ -1144,16 +1148,23 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
             Ok(())
         },
     )?;
-    linker.func_wrap("vibe", "stdout_write_char", |code: i64| -> Result<()> {
-        let cu = (code as u32 & 0xffff) as u16;
-        let s = String::from_utf16_lossy(&[cu]);
-        let stdout = io::stdout();
-        let mut h = stdout.lock();
-        h.write_all(s.as_bytes())
-            .map_err(|e| format_err!("vibe stdout_write_char: {e}"))?;
-        h.flush().ok();
-        Ok(())
-    })?;
+    linker.func_wrap(
+        "vibe",
+        "stdout_write_char",
+        |caller: Caller<'_, HostState>, code: i64| -> Result<()> {
+            if caller.data().discard_stdout {
+                return Ok(());
+            }
+            let cu = (code as u32 & 0xffff) as u16;
+            let s = String::from_utf16_lossy(&[cu]);
+            let stdout = io::stdout();
+            let mut h = stdout.lock();
+            h.write_all(s.as_bytes())
+                .map_err(|e| format_err!("vibe stdout_write_char: {e}"))?;
+            h.flush().ok();
+            Ok(())
+        },
+    )?;
     linker.func_wrap(
         "vibe",
         "stderr_write_stream",

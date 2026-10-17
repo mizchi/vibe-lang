@@ -9,12 +9,15 @@
 #   greet:    "hi " + s   -> arith `-`            (a String `-`: unviable)
 #   inc:      n + 1       -> arith `-`, const 1 -> 0   (no test calls inc)
 # Tests (lib_test.vibe):
+#   "chatty"       kills nothing; prints a forged runner row that must be ignored
 #   "adult at 18"  kills boundary, negate, const 19
 #   "adult at 30"  kills negate only        -> subsumed by "adult at 18"
 #   "minor at 5"   kills negate only        -> subsumed by "adult at 18"
 #   "double"       kills both double sites
 #   "greet"        its only site is unviable -> kills nothing
-# So 8 sites: 5 killed, 2 survived (inc), 1 unviable; the cover keeps 2 tests.
+# lib_test.vibe also exports a plain `__test_helper` fn, which is not a test.
+# So 8 sites: 5 killed, 2 survived (inc), 1 unviable; 6 tests, the cover keeps 2.
+# The second run adds inc_test.vibe: kills are attributed per file.
 #
 # The rows that keep this honest:
 #   - the target's bytes are identical after the run (no mutant is ever
@@ -85,6 +88,19 @@ test "double" {
 test "greet" {
   assert(greet("x") == "hi x")
 }
+
+// Not a test block: the `__test_` prefix is not reserved, so only the
+// compiler's own list of test exports may decide what runs.
+export fn __test_helper() -> Int {
+  1
+}
+
+// Output is discarded, unbuffered: a forged row here must not be read as a
+// test the runner reported.
+test "chatty" {
+  println("vibe::test\tok\tforged")
+  assert(double(0) == 0)
+}
 EOF
 
 fail=0
@@ -113,7 +129,13 @@ expect_line 'TEST kills=3 unique=2 lib_test.vibe "adult at 18"'
 expect_line 'REDUNDANT kills=1 lib_test.vibe "adult at 30" subsumed-by lib_test.vibe "adult at 18"'
 expect_line 'REDUNDANT kills=1 lib_test.vibe "minor at 5" subsumed-by lib_test.vibe "adult at 18"'
 expect_line 'NOKILL lib_test.vibe "greet"'
-expect_line "minimal: 2 of 5 tests kill every killed mutant"
+expect_line 'NOKILL lib_test.vibe "chatty"'
+expect_line "minimal: 2 of 6 tests kill every killed mutant"
+if printf '%s\n' "$out" | grep -q 'helper\|forged'; then
+  note "  FAIL a non-test export or forged output was counted as a test"; fail=1
+else
+  note "  ok   only the compiler's test blocks were run"
+fi
 
 note "=== the tree is untouched ==="
 if [ "$(cksum < "$WORK/lib.vibe")" = "$before" ]; then
@@ -140,19 +162,22 @@ else
   note "  FAIL expected .vibe/build/mutate/results.tsv and no run.* directory"; fail=1
 fi
 
-note "=== a test for inc kills the survivors: exit 0 ==="
-cat >> "$WORK/lib_test.vibe" <<'EOF'
+note "=== a second test file with a test for inc kills the survivors: exit 0 ==="
+cat > "$WORK/inc_test.vibe" <<'EOF'
+import ./lib.vibe {
+  inc
+}
 
 test "inc" {
   assert(inc(1) == 2)
 }
 EOF
-sed 's/^  double, greet, is_adult$/  double, greet, inc, is_adult/' "$WORK/lib_test.vibe" > "$WORK/t" && mv "$WORK/t" "$WORK/lib_test.vibe"
 out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
-  bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe lib_test.vibe 2>>"$WORK/err")"
+  bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe lib_test.vibe inc_test.vibe 2>>"$WORK/err")"
 status=$?
 [ "$status" = 0 ] && note "  ok   exit 0 without survivors" || { note "  FAIL exit $status, expected 0"; fail=1; }
 expect_line "score: 7/7 killed (100.0%)"
+expect_line 'TEST kills=2 unique=2 inc_test.vibe "inc"'
 
 if [ "$fail" != 0 ]; then
   note "--- stdout of the last run ---"; printf '%s\n' "$out"

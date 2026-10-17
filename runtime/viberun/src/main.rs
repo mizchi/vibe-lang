@@ -175,6 +175,10 @@ struct HostState {
     // don't get interleaved with the daemon's own protocol traffic.
     capture_stdout: bool,
     captured_stdout: Vec<u8>,
+    // `--test-each`: guest stdout is dropped on every path (no buffer, so a
+    // mutant that prints in an endless loop cannot grow memory, and nothing
+    // the guest writes can land in the runner's own row stream).
+    discard_stdout: bool,
     start_instant: Instant,
     // Profiling tier 3 (heap sampling over time). When `__heap_ptr` sampling is
     // on, the epoch-deadline callback reads this global on each epoch tick and
@@ -371,6 +375,7 @@ impl HostState {
             mem,
             capture_stdout: false,
             captured_stdout: Vec::new(),
+            discard_stdout: false,
             start_instant: Instant::now(),
             sample_global: None,
             sample_start: Instant::now(),
