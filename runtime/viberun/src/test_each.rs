@@ -13,7 +13,9 @@
 //! blocking host import, which an epoch cannot interrupt -- by a watchdog
 //! that reports it and ends the run with a row for every block.
 //!
-//! Output: first `vibe::tests<TAB><count>`, the number of blocks the module
+//! Output -- to the file VIBE_TEST_EACH_OUT names, else stdout (a caller that
+//! parses the rows must name a file: a child process a block spawns shares
+//! stdout): first `vibe::tests<TAB><count>`, the number of blocks the module
 //! declares (whatever VIBE_TEST_EACH_FROM says), then one line per block on
 //! stdout, tab separated:
 //!   vibe::test<TAB>ok<TAB><name>
@@ -171,12 +173,22 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
     // process -- one row per block either way, and the caller resumes at the
     // first `skip` (VIBE_TEST_EACH_FROM).
     const WATCHDOG_GRACE: Duration = Duration::from_millis(2_000);
+    // The rows go to VIBE_TEST_EACH_OUT when it is set, so nothing a block
+    // makes write to stdout -- its own output is discarded, but a child it
+    // spawns (`sh`) inherits the runner's stdout -- can forge a verdict.
+    let rows: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(
+        match std::env::var_os("VIBE_TEST_EACH_OUT").filter(|p| !p.is_empty()) {
+            Some(path) => Box::new(std::fs::File::create(&path)?),
+            None => Box::new(io::stdout()),
+        },
+    ));
     let names = Arc::new(names);
     let watch: Arc<Mutex<Option<(usize, Instant)>>> = Arc::new(Mutex::new(None));
     let watchdog = {
         let names = names.clone();
         let watch = watch.clone();
         let stop = stop.clone();
+        let rows = rows.clone();
         let limit = Duration::from_millis(timeout_ms) + WATCHDOG_GRACE;
         std::thread::spawn(move || {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
@@ -184,7 +196,7 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
                 let running = watch.lock().unwrap();
                 if let Some((i, started)) = *running {
                     if started.elapsed() > limit {
-                        let mut out = io::stdout().lock();
+                        let mut out = rows.lock().unwrap();
                         let row = |n: &String| escape_field(n.strip_prefix("__test_").unwrap_or(n));
                         let _ = writeln!(out, "vibe::test\ttimeout\t{}", row(&names[i]));
                         for rest in &names[i + 1..] {
@@ -200,7 +212,7 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
     let emit = |line: String| -> Result<()> {
         let mut running = watch.lock().unwrap();
         *running = None;
-        let mut out = io::stdout().lock();
+        let mut out = rows.lock().unwrap();
         writeln!(out, "{line}")?;
         out.flush()?;
         Ok(())

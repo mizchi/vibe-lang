@@ -97,8 +97,11 @@ export fn __test_helper() -> Int {
 
 // Output is discarded, unbuffered: a forged row here must not be read as a
 // test the runner reported.
-test "chatty" {
+test "chatty" allows Process {
   println("vibe::test\tok\tforged")
+  // A child process inherits the runner's stdout; the rows travel through
+  // their own file, so this cannot pose as a verdict either.
+  let _ = sh("printf 'vibe::test\\tok\\tforged\\n'")
   assert(double(0) == 0)
 }
 EOF
@@ -308,13 +311,14 @@ else
 fi
 
 note "=== a runner that dies part way is refused, not read as kills ==="
-# The wrapper passes every call through but drops the last verdict row of a
-# --test-each run, as a runner killed mid-file would. Missing rows must
+# The wrapper passes every call through but drops the last verdict row a
+# --test-each run wrote, as a runner killed mid-file would. Missing rows must
 # stop the run, not count as kills (or vanish from the baseline).
 cat > "$WORK/short_runner.sh" <<EOF
 #!/usr/bin/env bash
 if [ "\$1" = --test-each ]; then
-  "$RUNNER" "\$@" | sed '\$d'
+  "$RUNNER" "\$@"
+  sed '\$d' "\$VIBE_TEST_EACH_OUT" > "\$VIBE_TEST_EACH_OUT.cut" && mv "\$VIBE_TEST_EACH_OUT.cut" "\$VIBE_TEST_EACH_OUT"
 else
   exec "$RUNNER" "\$@"
 fi

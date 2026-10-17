@@ -2015,7 +2015,12 @@ REPL_HELP
       local wasm="$1" out="$2" from=0 nrows nskip total=""
       : > "$out"
       while :; do
-        VIBE_TEST_EACH_FROM="$from" "$RUNNER" --test-each "$wasm" > "$mwork/each.part" 2>/dev/null </dev/null || true
+        # Rows come back through their own file: whatever a block's child
+        # processes print on stdout cannot pose as a verdict.
+        rm -f "$mwork/each.part"
+        VIBE_TEST_EACH_FROM="$from" VIBE_TEST_EACH_OUT="$mwork/each.part" \
+          "$RUNNER" --test-each "$wasm" >/dev/null 2>&1 </dev/null || true
+        [ -f "$mwork/each.part" ] || : > "$mwork/each.part"
         [ -n "$total" ] || total="$(sed -n 's/^vibe::tests	\([0-9][0-9]*\)$/\1/p' "$mwork/each.part" | sed -n '1p')"
         nrows="$(grep -c '^vibe::test	' "$mwork/each.part" || true)"
         nskip="$(grep -c '^vibe::test	skip	' "$mwork/each.part" || true)"
