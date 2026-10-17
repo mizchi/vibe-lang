@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, sorted_names_of
+  Expr, Stmt, expr_any_node, sorted_names_of
 }
 
 import @vibe/compiler/codegen/common_analysis {
@@ -119,4 +119,49 @@ export fn collect_used_builtin_names(stmts: Array[Stmt], fn_names: Array[String]
     k = k + 1
   }
   MapBuilder::freeze(set_b)
+}
+
+fn expr_is_map_literal(e: Expr) -> Bool {
+  match e {
+    EMap(_) => true,
+    _ => false
+  }
+}
+
+fn stmts_have_map_literal(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    found = match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => expr_any_node(expr, expr_is_map_literal),
+      SLetMut(_, _, expr) => expr_any_node(expr, expr_is_map_literal),
+      STest(_, expr) => expr_any_node(expr, expr_is_map_literal),
+      SBench(_, expr) => expr_any_node(expr, expr_is_map_literal),
+      SExpr(expr) => expr_any_node(expr, expr_is_map_literal),
+      SModule(_, _, inner) => stmts_have_map_literal(inner),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Can this program make a map block (rc class 6, or the class-9
+/// `MapBuilder` handle)? Codegen makes one in exactly five places -- a map
+/// literal (`Map::new()` and `Map::from_pairs(..)` parse to one), `Map::set`,
+/// `Map::delete`, `MapBuilder::new` and `MapBuilder::freeze` -- so the answer
+/// is "the program has a map literal, or names anything under `Map::` /
+/// `MapBuilder::`". The name test is deliberately wider than the five: a
+/// `Map::get` with no creator anywhere is not a case worth a narrower rule.
+/// `used` is `collect_used_builtin_names` over the same statements.
+export fn program_makes_map_blocks(stmts: Array[Stmt], used: Map[String, Bool]) -> Bool {
+  let names = Map::keys(used)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    let n = Array::get(names, i)
+    found = String::starts_with(n, "Map::") || String::starts_with(n, "MapBuilder::")
+    i = i + 1
+  }
+  found || stmts_have_map_literal(stmts)
 }
