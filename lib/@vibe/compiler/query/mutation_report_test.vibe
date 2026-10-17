@@ -40,7 +40,7 @@ fn mrt_results() -> String {
 //# Tests
 
 test "the full report: score, survivors, per-test kills, redundancy" {
-  inspect(mutation_report(mrt_results(), mrt_source()), "target: src/f.vibe\nmutants: 6 sites, 3 killed, 1 survived, 1 unviable, 1 identical-binary\nscore: 3/4 killed (75.0%)\nSURVIVED src/f.vibe:2:7 const `10` -> `11` | x < 10\nTEST kills=2 unique=1 src/f_test.vibe \"small\"\nTEST kills=2 unique=0 src/g_test.vibe \"both\"\nTEST kills=1 unique=0 src/f_test.vibe \"small again\"\nTEST kills=1 unique=0 src/f_test.vibe \"large\"\nTEST kills=0 unique=0 src/g_test.vibe \"unrelated\"\nREDUNDANT kills=1 src/f_test.vibe \"small again\" subsumed-by src/f_test.vibe \"small\"\nNOKILL src/g_test.vibe \"unrelated\"\nREDUNDANT kills=2 src/g_test.vibe \"both\" covered-by-others\nminimal: 2 of 5 tests kill every killed mutant\nnote: kills are measured against mutants of src/f.vibe only; a test that guards other code is not redundant by this measure alone")
+  inspect(mutation_report(mrt_results(), mrt_source()), "target: src/f.vibe\nmutants: 6 sites, 3 killed, 1 survived, 1 unviable, 1 identical-binary\nscore: 3/4 killed (75.0%)\nSURVIVED src/f.vibe:2:7 const `10` -> `11` | x < 10\nTEST kills=2 unique=1 src/f_test.vibe \"small\"\nTEST kills=2 unique=0 src/g_test.vibe \"both\"\nTEST kills=1 unique=0 src/f_test.vibe \"small again\"\nTEST kills=1 unique=0 src/f_test.vibe \"large\"\nTEST kills=0 unique=0 src/g_test.vibe \"unrelated\"\nREDUNDANT kills=1 src/f_test.vibe \"small again\" subsumed-by src/f_test.vibe \"small\"\nNOKILL src/g_test.vibe \"unrelated\"\nREDUNDANT kills=2 src/g_test.vibe \"both\" covered-by-others\ncover: 2 of 5 tests kill every killed mutant (greedy, so a smaller set may exist)\nnote: kills are measured against mutants of src/f.vibe only; a test that guards other code is not redundant by this measure alone")
 }
 
 test "the target row's read path is its third field, else its display path" {
@@ -50,7 +50,7 @@ test "the target row's read path is its third field, else its display path" {
 
 test "no mutant survived: no SURVIVED row, a full score" {
   let rows = "target\tf.vibe\ntest\t0\tf_test.vibe\tt\nmutant\t1\t27\t28\tboundary\t<\t<=\tkilled\t0\n"
-  inspect(mutation_report(rows, mrt_source()), "target: f.vibe\nmutants: 1 sites, 1 killed, 0 survived, 0 unviable, 0 identical-binary\nscore: 1/1 killed (100.0%)\nTEST kills=1 unique=1 f_test.vibe \"t\"\nminimal: 1 of 1 tests kill every killed mutant\nnote: kills are measured against mutants of f.vibe only; a test that guards other code is not redundant by this measure alone")
+  inspect(mutation_report(rows, mrt_source()), "target: f.vibe\nmutants: 1 sites, 1 killed, 0 survived, 0 unviable, 0 identical-binary\nscore: 1/1 killed (100.0%)\nTEST kills=1 unique=1 f_test.vibe \"t\"\ncover: 1 of 1 tests kill every killed mutant (greedy, so a smaller set may exist)\nnote: kills are measured against mutants of f.vibe only; a test that guards other code is not redundant by this measure alone")
 }
 
 test "a malformed matrix is refused, not half-read" {
@@ -59,4 +59,24 @@ test "a malformed matrix is refused, not half-read" {
     ""
   } with { Exception::Throw(msg) => msg }
   inspect(r, "mutate-report: a mutant names an unknown test index: 7")
+}
+
+test "the cover is greedy: it can keep more tests than the smallest set needs" {
+  // A kills 1-4, B kills 1 2 5, C kills 3 4 6. Greedy takes A first, then
+  // still needs B and C; B and C alone would do. The line says so.
+  let rows = String::join([
+    "target\tf.vibe",
+    "test\t0\tf_test.vibe\tA",
+    "test\t1\tf_test.vibe\tB",
+    "test\t2\tf_test.vibe\tC",
+    "mutant\t1\t27\t28\tconst\t1\t2\tkilled\t0,1",
+    "mutant\t2\t27\t28\tconst\t1\t2\tkilled\t0,1",
+    "mutant\t3\t27\t28\tconst\t1\t2\tkilled\t0,2",
+    "mutant\t4\t27\t28\tconst\t1\t2\tkilled\t0,2",
+    "mutant\t5\t27\t28\tconst\t1\t2\tkilled\t1",
+    "mutant\t6\t27\t28\tconst\t1\t2\tkilled\t2",
+    ""
+  ], "\n")
+  let report = mutation_report(rows, mrt_source())
+  assert(String::contains(report, "\ncover: 3 of 3 tests kill every killed mutant (greedy, so a smaller set may exist)"))
 }

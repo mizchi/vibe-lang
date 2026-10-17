@@ -145,7 +145,7 @@ expect_line 'REDUNDANT kills=1 lib_test.vibe "adult at 30" subsumed-by lib_test.
 expect_line 'REDUNDANT kills=1 lib_test.vibe "minor at 5" subsumed-by lib_test.vibe "adult at 18"'
 expect_line 'NOKILL lib_test.vibe "greet"'
 expect_line 'NOKILL lib_test.vibe "chatty"'
-expect_line "minimal: 2 of 6 tests kill every killed mutant"
+expect_line "cover: 2 of 6 tests kill every killed mutant (greedy, so a smaller set may exist)"
 if printf '%s\n' "$out" | grep -q 'helper\|forged'; then
   note "  FAIL a non-test export or forged output was counted as a test"; fail=1
 else

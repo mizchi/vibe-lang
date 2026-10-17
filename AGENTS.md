@@ -1165,7 +1165,8 @@ line-oriented. Each line starts with a keyword:
   one kills.
 - `REDUNDANT ... covered-by-others`: only several tests together cover it.
 - `NOKILL`: kills nothing.
-- `minimal: M of T`: the size of a greedy cover that keeps every kill.
+- `cover: M of T`: the size of a greedy cover that keeps every kill. It is
+  not guaranteed to be the smallest such set.
 
 **Redundancy is measured against one target's mutants.** A test listed as
 REDUNDANT for `array.vibe` may be the only guard of some other module. Run the
