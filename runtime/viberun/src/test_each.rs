@@ -13,7 +13,9 @@
 //! blocking host import, which an epoch cannot interrupt -- by a watchdog
 //! that reports it and ends the run with a row for every block.
 //!
-//! Output, one line per block on stdout, tab separated:
+//! Output: first `vibe::tests<TAB><count>`, the number of blocks the module
+//! declares (whatever VIBE_TEST_EACH_FROM says), then one line per block on
+//! stdout, tab separated:
 //!   vibe::test<TAB>ok<TAB><name>
 //!   vibe::test<TAB>fail<TAB><name><TAB><reason>
 //!   vibe::test<TAB>timeout<TAB><name>
@@ -210,6 +212,9 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
+    // The block count comes first, so a caller can tell a complete report
+    // from a runner that died part way (a host panic, an OOM kill).
+    emit(format!("vibe::tests\t{}", names.len()))?;
     let mut all_ok = true;
     for (index, full) in names.iter().enumerate().skip(from) {
         let name = escape_field(full.strip_prefix("__test_").unwrap_or(full));

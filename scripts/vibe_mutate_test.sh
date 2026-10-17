@@ -307,6 +307,28 @@ else
   note "  FAIL expected a refusal naming the export-name clash (exit $coll_status)"; printf '%s\n' "$coll_out" | tail -4; fail=1
 fi
 
+note "=== a runner that dies part way is refused, not read as kills ==="
+# The wrapper passes every call through but drops the last verdict row of a
+# --test-each run, as a runner killed mid-file would. Missing rows must
+# stop the run, not count as kills (or vanish from the baseline).
+cat > "$WORK/short_runner.sh" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = --test-each ]; then
+  "$RUNNER" "\$@" | sed '\$d'
+else
+  exec "$RUNNER" "\$@"
+fi
+EOF
+chmod +x "$WORK/short_runner.sh"
+short_out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$WORK/short_runner.sh" run_bounded 900 \
+  bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe inc_test.vibe 2>&1)"
+short_status=$?
+if [ "$short_status" != 0 ] && printf '%s' "$short_out" | grep -q 'did not report every block of inc_test.vibe'; then
+  note "  ok   refused, naming the file"
+else
+  note "  FAIL expected a refusal for the incomplete report (exit $short_status)"; printf '%s\n' "$short_out" | tail -4; fail=1
+fi
+
 note "=== a test file whose imports do not resolve is refused, not skipped ==="
 cat > "$WORK/bad_test.vibe" <<'EOF'
 import ./missing.vibe {

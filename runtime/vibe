@@ -1959,8 +1959,14 @@ REPL_HELP
           if [ -z "$mtarget" ]; then
             mtarget="$marg"
           elif [ -d "$marg" ]; then
+            # find's own status is checked: a directory that could not be
+            # walked completely must not quietly contribute half its tests.
+            mlist="$(mktemp -t vibe-mutate-find-XXXXXX)"
+            find "$marg" -type f -name '*_test.vibe' > "$mlist" \
+              || { rm -f "$mlist"; die "vibe mutate: could not list every test file under $marg"; }
             mfound=0
-            while IFS= read -r mfile; do mutate_add_test "$mfile"; mfound=1; done < <(find "$marg" -type f -name '*_test.vibe' | LC_ALL=C sort)
+            while IFS= read -r mfile; do mutate_add_test "$mfile"; mfound=1; done < <(LC_ALL=C sort "$mlist")
+            rm -f "$mlist"
             [ "$mfound" = 1 ] || die "vibe mutate: no test files found under $marg"
           else
             mutate_add_test "$marg"
@@ -2001,17 +2007,23 @@ REPL_HELP
     # of being given a verdict they never earned. Each pass completes at least
     # the stuck block, so the loop ends. stdin is the site list's loop, never
     # a test's to read.
+    # Fails (status 1) unless every declared block got a verdict: the runner
+    # states the count first (`vibe::tests N`), and a runner that died part
+    # way -- a load error, a host panic, an OOM kill -- leaves blocks with no
+    # row, which must not be read as kills or as passes.
     mutate_run_each() {
-      local wasm="$1" out="$2" from=0 nrows nskip
+      local wasm="$1" out="$2" from=0 nrows nskip total=""
       : > "$out"
       while :; do
         VIBE_TEST_EACH_FROM="$from" "$RUNNER" --test-each "$wasm" > "$mwork/each.part" 2>/dev/null </dev/null || true
+        [ -n "$total" ] || total="$(sed -n 's/^vibe::tests	\([0-9][0-9]*\)$/\1/p' "$mwork/each.part" | sed -n '1p')"
         nrows="$(grep -c '^vibe::test	' "$mwork/each.part" || true)"
         nskip="$(grep -c '^vibe::test	skip	' "$mwork/each.part" || true)"
         grep '^vibe::test	' "$mwork/each.part" | grep -v '^vibe::test	skip	' >> "$out" || true
         [ "${nskip:-0}" -gt 0 ] || break
         from=$((from + nrows - nskip))
       done
+      [ -n "$total" ] && [ "$(grep -c . "$out" || true)" = "$total" ]
     }
     mutate_wasm_path() {
       case "$1" in /*) printf '%s' "$1" ;; '') ;; *) printf '%s' "$PROJECT_ROOT/$1" ;; esac
@@ -2061,7 +2073,9 @@ REPL_HELP
       mwasm="$(mutate_wasm_path "$mwasm")"
       [ -n "$mwasm" ] || { cat "$mwork/compile.log" >&2; die "vibe mutate: $msrc did not compile"; }
       cp "$mwasm" "$mwork/base/$mfi.wasm"
-      mutate_run_each "$mwork/base/$mfi.wasm" "$mwork/base/$mfi.out"
+      printf '%s\n' "$msrc" >> "$mwork/tests.files"
+      mutate_run_each "$mwork/base/$mfi.wasm" "$mwork/base/$mfi.out" \
+        || die "vibe mutate: the test runner did not report every block of $msrc"
       while IFS="$(printf '\t')" read -r _ mverdict mname mreason; do
         if [ "$mverdict" = ok ]; then
           printf 'test\t%s\t%s\t%s\n' "$mtid" "$msrc" "$mname" >> "$mresults"
@@ -2096,7 +2110,8 @@ REPL_HELP
               mdiffer=1
               # A block kills the mutant unless it reports `ok`: a failure, a
               # timeout, and a row that never came (the runner died) alike.
-              mutate_run_each "$mwasm" "$mwork/each.out"
+              mutate_run_each "$mwasm" "$mwork/each.out" \
+                || die "vibe mutate: the test runner did not report every block of $(sed -n "$((mfi + 1))p" "$mwork/tests.files") under mutant $mid ($mtarget:$mpos $mkind $morig -> ${mrepl:-(deleted)})"
               awk -F'\t' '$1 == "vibe::test" && $2 == "ok" { print $3 }' "$mwork/each.out" > "$mwork/ok.txt"
               while IFS= read -r mt_id; do
                 mkillers="${mkillers:+$mkillers,}$mt_id"
