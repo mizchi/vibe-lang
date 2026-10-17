@@ -670,41 +670,11 @@ Any other -- a parameter of the function that minted the region
 group), a value a call returned, a `let mut` closure, a function stored in a
 field -- is refused when it is handed the token, since nothing about what it
 keeps is known (`this call passes this TaskGroup::run call's own ... token to
-`cb`, a function whose body the checker cannot see`). The second check runs
-only inside a region and only for such a call; its diagnostics, types and
-substitution are discarded, and the per-run tables it touches are restored
-(`lib/@vibe/compiler/checker/checker_region_retention.vibe`).
-
-A function imported from another module has no body in sight, so its module
-answers the same question once, when it is checked, and publishes the answer
-in its interface (#3360). Each published function is checked again under a
-probe region carried by one parameter, with the others' locations predating
-it; a parameter the function stores where it outlives the call -- a module
-binding, another parameter, a function whose body is out of sight -- is
-recorded as kept, and where. A call in a region body that hands the token to
-a kept position is refused with the message a function of the same module
-gets (`this call to `put` stores ... in a binding declared outside the
-body`); a position kept into another parameter is refused only when that
-argument predates the region, so `put(inner, h)` with `inner` declared in the
-body is accepted. Only a function whose body can store anything is probed
--- a field or element write, a retaining operation (`Array::push`,
-`Sender::send`, ...), an assignment to a binding it did not declare, or a
-call to a function that does one of these -- and only its parameters whose
-type is a region head, a type variable, a type holding one, or a declaration
-with a task group's token in a field, and from which a value reaches such a
-store; a parameter the first probe finds kept pays for
-the probes that say where. The module's storing functions are probed callees
-first, and a probe reads a callee's summary instead of checking its body
-again, which keeps the compiler's own self-compile within about 4% of its
-heap without the check. The summary travels like the parameter names of #3432: through a
-re-export, with a type's companions (`Cell::stash`), and hidden by a later
-binding of the name that keeps nothing; an exported alias of a function
-(`export let put_alias = put`) publishes what that function keeps. The standard library's own retaining
-operations remain listed by name and checked like `Array::push`, so
-`@vibe/concurrent` itself -- recognized by the directory the package resolves
-to, not by the names it declares -- publishes no summary: its region types'
-methods hand tokens to the scheduler by design (`TaskHandle::join` passes
-`h.group` on).
+`cb`, a function whose body the checker cannot see`). A function imported from
+another module is judged by the summary its module published (below). The second
+check runs only inside a region and only for such a call; its diagnostics,
+types and substitution are discarded, and the per-run tables it touches are
+restored (`lib/@vibe/compiler/checker/checker_region_retention.vibe`).
 
 A closure handed to a function is checked before the call has fixed its
 parameter's type, so its writes of that parameter are checked again once the
@@ -725,6 +695,47 @@ mut`, an alias of one, a closure a call produced, local or module-level -- is
 refused at a slot whose type carries the region, with the edit. Pinned by the
 `taskgroup_escape_hof_*_reject` rows and
 `lib/@vibe/compiler/tests/region_write_gate_test.vibe`.
+
+A function imported from another module has no body in its importer: the
+importer sees the interface the dependency published. So the dependency
+answers once, when it is checked, what each function it exports keeps of its
+arguments (#3360, `checker_region_retention_summary.vibe`). Each argument that
+may carry a region -- one whose type may hide it, or one a caller
+instantiates (`v: T`) -- is re-checked as a call made in a region would be,
+under a synthetic region it carries, and the summary records where it goes:
+
+- `i>j`, into argument `j`: a call is refused when argument `j` is a location
+  declared before a region argument `i` carries (`put(outer, handle)`);
+- `i>g`, somewhere no argument reaches, such as the module's own top-level
+  array: a call is refused whenever argument `i` carries an active region;
+- `i>f`, on to a function the callee cannot see into, such as a function
+  parameter: refused the same way, with the message for a value passed on.
+- `i>r`, into the function's result: read where a `TaskGroup::run` body is
+  named, so a body declared `-> TaskHandle[Int]` that returns a handle it
+  spawned is judged as returning the group's token. Any other call's result
+  already carries what its arguments carry.
+
+Every top-level function of the module is summarized, and publication keeps
+the summaries of the ones it publishes: one declared `export`, one an
+`export { .. }` lists, a companion an exported type publishes (`fn Box::put`,
+or a function returning an enum `Box`, carried to an importer of `Box` with
+the type), and an alias of any of them. A
+published function value whose body cannot be traced, a closure a call
+produced, keeps each argument where no call can see (`i>f`). A callee that
+nothing in the module binds is treated the same way: a bare call whose first
+argument has an imported type is retried as a method of that type and typed
+without a body (#736), yet it runs whatever function of that name the
+program links, so passing it a region's value is refused.
+
+The summary is bound in the published environment beside the function
+(`#retains:<name>`), carried under the name an importer binds and through a
+re-export, and read by the same call check a local callee gets, so a helper
+that keeps only a joined value, reads its argument, or stores it into a
+location the body declares stays accepted. The standard library is neither
+summarized nor read through a summary: its retaining operations are listed by
+name, as above, and a summary of `TaskHandle::join` would see the scheduler's
+own state. Pinned by the `taskgroup_escape_import_*` rows and
+`taskgroup_import_keep_local_ok`.
 
 After the body is checked, the call is also refused when:
 
@@ -1126,15 +1137,19 @@ nursery scope`).
 
 ## Known gaps
 
-- **Closures handed to an imported function.** What a function keeps is
-  published for parameters typed by a region head, a type variable, a type
-  holding one, or a declaration with a task group's token in a field. An
-  imported function that stores a closure parameter, or a declaration that
-  hides the token only in a closure field, is still trusted: probing every
-  closure-typed parameter re-checks most of the compiler's own checker and
-  exceeds the self-compile heap. Joining an escaped handle after its group
-  returns the task's value (measured), so no program is answered wrongly, but
-  nothing enforces that such a handle stays in its group.
+- **What an imported function's summary does not cover.** A module with
+  more than 4096 top-level statements publishes no summaries
+  (`retention_summary_budget`), since each function costs at least one
+  re-check of its body; its functions are trusted. That keeps a whole program
+  flattened into one source out of the pass.
+  An imported function passed on as a callback (`Array::map(hs, stash)` with
+  `stash` imported) is not followed into; a body named at `TaskGroup::run`
+  is judged by its summary.
+  A helper that keeps an argument by handing it to a callback is refused even
+  when the callback keeps nothing, since which function it will be is not
+  known where the helper is checked. Joining an escaped handle after the
+  group returns the task's value (measured), so no program is answered
+  wrongly, but nothing enforces that the handle stays in its group.
 - **Mid-run cancellation.** A cancel request is observed at dispatch and at a
   parked task only. A running task, and a suspendable task that is running
   when the request arrives, are not interrupted.

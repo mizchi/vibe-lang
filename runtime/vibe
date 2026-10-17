@@ -774,6 +774,25 @@ execute_host_action() {
       local output entry jobs images frontend compiler
       src="$(sed -n '3p' "$plan")"; output="$(sed -n '4p' "$plan")"
       entry="$(sed -n '5p' "$plan")"; jobs="$(sed -n '6p' "$plan")"
+      if [ "${VIBE_TASKGROUP_FUNCTIONS:-0}" = 1 ]; then
+        local function_setting
+        for function_setting in VIBE_COVERAGE VIBE_DEBUG VIBE_DEBUG_BREAK; do
+          case "${!function_setting:-0}" in
+            0|"") ;;
+            *) echo "build --jobs functions does not support $function_setting" >&2; return 1 ;;
+          esac
+        done
+        case "$src" in *.vibe) ;; *) echo "build --jobs functions requires a .vibe entry" >&2; return 1 ;; esac
+        [ "$(sed -n '7p' "$plan")" != 1 ] || { echo "build --jobs functions does not yet support --minify" >&2; return 1; }
+        images="${VIBE_FUNCTION_ARTIFACT_DIR:-$SELF/../_build/taskgroup-functions}"
+        frontend="$SELF/../scripts/taskgroup_functions_frontend.mjs"
+        [ -f "$frontend" ] && [ -s "$images/build.json" ] || { echo "build --jobs function images are missing; use scripts/build_taskgroup_functions.sh" >&2; return 1; }
+        compiler="${VIBE_CLI_WASM:-$CLI_WASM}"
+        ( cd "$PROJECT_ROOT" && env $ADAPTER_MODE_CLEARS \
+          VIBE_PREOPEN_DIR="$PROJECT_ROOT" node "$frontend" "$compiler" "$src" "$output" "$entry" "$jobs" \
+          "$PROJECT_ROOT" "$images" "$RUNNER" )
+        return $?
+      fi
       if [ "${VIBE_TASKGROUP_LOWERING:-0}" = 1 ]; then
         [ "${VIBE_UNSTABLE:-0}" = 1 ] || { echo "build --jobs lowering requires VIBE_UNSTABLE=1" >&2; return 1; }
         case "${VIBE_RC:-1}" in 1|"") ;; *) echo "build --jobs lowering currently requires the RC backend" >&2; return 1 ;; esac

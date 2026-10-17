@@ -79,6 +79,13 @@ vibe compile --entry <name> <file.vibe>          # entry other than `main` (not 
   enables experimental reuse of successful worker results. Source, dependency
   environments, compiler/worker images and execution environment must match;
   changes trigger fresh checks, and diagnosed modules are checked again.
+  A checkout can instead experiment with CPU function generation using
+  `VIBE_UNSTABLE=1 VIBE_TASKGROUP_FUNCTIONS=1 vibe build --jobs 4 ...` after
+  `bash scripts/build_taskgroup_functions.sh <compiler.wasm>`. This keeps
+  whole-program lowering and emits function ranges in isolated CPU processes.
+  It requires target RC and body-cache-off, and refuses debug, coverage,
+  wasm-gc and minification. It remains opt-in until complete-build measurements
+  justify enabling it. See [function workers](../../internal/compiler/function-cpu-workers.md).
 - **Any other option is refused** with `unknown option: <flag>`. That includes
   the retired MoonBit host's flags (`--no-dce`, `-O<level>`, `--wasm-gc`,
   `--wac`, `--library`, ...). The wasm-gc backend is reached through

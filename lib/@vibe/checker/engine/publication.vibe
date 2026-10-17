@@ -40,15 +40,15 @@ import @vibe/compiler/cache {
 import @vibe/compiler/checker {
   aggregate_export_names,
   collect_builtin_shadowing_names,
-  env_keeps_rows,
   env_param_name_rows,
+  env_retention_summary_rows,
   export_local_nonvalue_kind,
   irc_show_wrapper_facts,
   is_explicit_builtin_declaration,
   param_names_marker,
   publish_type_constructor_binding_rows,
   publish_type_def_row_nominals,
-  retention_keeps_marker,
+  retention_summary_marker,
   unresolved_aggregate_export_name,
   unresolved_export_message
 }
@@ -724,26 +724,9 @@ fn engine_append_env_tail(head: TypeEnv, tail: TypeEnv) -> TypeEnv {
 /// from publishing `TaskGroup::spawn_suspend` through `TaskGroup`. An ordinary
 /// module keeps the older companion rule.
 export fn engine_checked_module_public_env_for_path(path: String, stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv) -> TypeEnv with Exception {
-  engine_checked_module_public_env_with_keeps(stmts, full_checked_env, reexport_declarations, is_contract_ext(path), !engine_is_region_runtime_path(path))
+  engine_checked_module_public_env_publishing(stmts, full_checked_env, reexport_declarations, is_contract_ext(path))
 }
-
-/// #3360 (Codex on #3467): is `path` a file of `@vibe/concurrent`, the
-/// runtime the regions are made of? Its region types' methods hand tokens to
-/// the scheduler's own state by design (`TaskHandle::join` passes `h.group`
-/// on), and those that retain are listed by name and checked at the call like
-/// `Array::push`, so it publishes no keeps summary. The package is identified
-/// by the directory `@vibe/concurrent` resolves to (`lib/` or
-/// `.vibe/store/`), not by the names it declares, which any module can
-/// declare too.
-fn engine_is_region_runtime_path(path: String) -> Bool {
-  String::starts_with(path, "@vibe/concurrent/") || String::contains(path, "/@vibe/concurrent/")
-}
-
 export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv, strict: Bool) -> TypeEnv with Exception {
-  engine_checked_module_public_env_with_keeps(stmts, full_checked_env, reexport_declarations, strict, true)
-}
-
-fn engine_checked_module_public_env_with_keeps(stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv, strict: Bool, keeps: Bool) -> TypeEnv with Exception {
   // Local declarations stay ahead of the publication-only projection, which
   // preserves lexical shadowing when both select the same public spelling.
   let publication_env = engine_bind_type_member_markers(engine_append_env_tail(full_checked_env, reexport_declarations), engine_local_type_member_markers(stmts, full_checked_env))
@@ -786,13 +769,23 @@ fn engine_checked_module_public_env_with_keeps(stmts: Array[Stmt], full_checked_
       ()
     }
   }
-  let with_params = engine_bind_param_name_markers(stmts, publication_env, published_env)
-  let with_keeps = if keeps {
-    engine_bind_keeps_markers(publication_env, with_params)
-  } else {
-    with_params
+  env_with_show_wrapper_facts(engine_bind_retention_summary_markers(publication_env, engine_bind_param_name_markers(stmts, publication_env, published_env)), exported_wrappers, exported_unknown)
+}
+/// #3360: the summary of what each published function keeps of its
+/// arguments, for an importer that calls it inside a region. A function of
+/// this module carries the one its check found; a re-exported one carries the
+/// one its own import brought in, so both are read off the same chain.
+fn engine_bind_retention_summary_markers(publication_env: TypeEnv, published: TypeEnv) -> TypeEnv {
+  let mut acc = published
+  for row in env_retention_summary_rows(publication_env) {
+    let (fname, ty) = row
+    if engine_env_has_value(published, fname) {
+      acc = env_bind(acc, retention_summary_marker(fname), ty)
+    } else {
+      ()
+    }
   }
-  env_with_show_wrapper_facts(with_keeps, exported_wrappers, exported_unknown)
+  acc
 }
 /// #3432: one `param_names_marker` per published function with an optional
 /// (`x?`) parameter, so an importer can omit it or pass it by label the way
@@ -838,26 +831,6 @@ fn engine_bind_param_name_markers(stmts: Array[Stmt], publication_env: TypeEnv, 
   acc
 }
 
-/// #3360: the `retention_keeps_marker` of every published function that
-/// keeps a parameter, own or re-exported, so a region body in an importer is
-/// refused when it hands the function its token. The checker binds a module's
-/// own markers at the end of the module, over any imported marker of the same
-/// name, so the nearest row is the published binding's. A module with no
-/// marker in sight allocates nothing.
-fn engine_bind_keeps_markers(publication_env: TypeEnv, published: TypeEnv) -> TypeEnv {
-  let mut acc = published
-  for row in env_keeps_rows(publication_env) {
-    let (fname, ty) = row
-    match ty {
-      CtRecord(_) => if engine_env_has_value(published, fname) {
-        acc = env_bind(acc, retention_keeps_marker(fname), ty)
-      },
-      _ => ()
-    }
-  }
-  acc
-}
-
 fn engine_params_have_optional(params: Array[(String, Option[TypeExpr])]) -> Bool {
   let mut found = false
   for param in params {
@@ -886,12 +859,10 @@ fn engine_stmts_bind_top_level(stmts: Array[Stmt], name: String) -> Bool {
   found
 }
 
-/// Whether `env` publishes a value named `name`. An aliased re-export
-/// (`export ./a.vibe { greet as hi }`) publishes `hi` as a surface-only
-/// binding, which `env_lookup` deliberately does not resolve; counting only
-/// what it resolves dropped the markers of every aliased re-export, so an
-/// importer of `hi` could not omit its optional argument.
 fn engine_env_has_value(env: TypeEnv, name: String) -> Bool {
+  // An aliased re-export (`export ./lib.vibe { greet as salute }`) is bound
+  // surface-only, which `env_lookup` does not resolve: its markers were
+  // dropped, so an importer of `salute` could not omit its optional argument.
   match env_lookup_binding_including_surface(env, name) {
     Some(_) => true,
     None => false
