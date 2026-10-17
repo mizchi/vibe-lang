@@ -124,7 +124,7 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
       // A `test .. allows Ask` row lives only in this marker (Codex on #3492).
       STestEffectRows(rows) => {
         for row in rows {
-          Array::push(w.rows, (row.1, local))
+          Array::push(w.rows, (row.1, local, local))
         }
         ()
       },
@@ -140,7 +140,7 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
       },
       SEffectSet(_, _, members) => {
         for m in members {
-          Array::push(w.rows, (m, local))
+          Array::push(w.rows, (m, local, local))
         }
         ()
       },
@@ -172,7 +172,7 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
         }
         push_type_opt(w, ret, hidden)
         match row {
-          Some(text) => Array::push(w.rows, (text, hidden)),
+          Some(text) => Array::push(w.rows, (text, local, hidden)),
           None => ()
         }
       },
@@ -212,7 +212,7 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
         push_types(w, ps, hidden)
         Array::push(w.types, (r, hidden))
         match row {
-          Some(text) => Array::push(w.rows, (text, hidden)),
+          Some(text) => Array::push(w.rows, (text, local, hidden)),
           None => ()
         }
       },
@@ -221,8 +221,8 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
     }
   }
   for row in w.rows {
-    let (text, hidden) = row
-    if !found && !hidden && row_text_names(text, name) {
+    let (text, row_local, hidden) = row
+    if !found && row_text_names(text, name, row_local, hidden) {
       found = true
     }
   }
@@ -252,7 +252,7 @@ fn stmts_declare_type_head(stmts: Array[Stmt], name: String) -> Bool {
 struct CodeNamesWalk {
   stack: Array[(Expr, Bool)];
   types: Array[(TypeExpr, Bool)];
-  rows: Array[(String, Bool)]
+  rows: Array[(String, Bool, Bool)]
 }
 
 fn binds_type_param(tparams: Array[String], name: String) -> Bool {
@@ -288,7 +288,7 @@ fn push_trait_ref(w: CodeNamesWalk, key: String, local: Bool, hidden: Bool) -> U
   if head != "" {
     Array::push(w.types, (TyName(head), local))
   } else {
-    Array::push(w.rows, (key, hidden))
+    Array::push(w.rows, (key, local, hidden))
   }
   push_types(w, trait_ref_args(key), hidden)
 }
@@ -337,11 +337,16 @@ fn pats_name(ps: Array[Pat], name: String, qual: String, hidden: Bool) -> Bool {
 
 /// Whether a row's text (`Ask + Box[Int]`, `{ Ask, Tell }`) has a word
 /// spelled `name`. A word after `::` is an operation of the effect before
-/// it (`Console::Get`), not a head (Codex on #3492).
-fn row_text_names(text: String, name: String) -> Bool {
+/// it (`Console::Get`), not a head (Codex on #3492). A CamelCase word at
+/// the row's top level is an effect head, hidden only by the file's own declaration
+/// (`local`): `fn read[Ask]() -> Int with Ask` still names the effect `Ask`
+/// (Codex on #3492). A type argument inside brackets, or a lowercase row
+/// variable, is hidden by a binder of its spelling too (`hidden`).
+fn row_text_names(text: String, name: String, local: Bool, hidden: Bool) -> Bool {
   let mut hit = false
   let mut word = ""
   let mut qualified = false
+  let mut depth = 0
   let n = String::length(text)
   let mut i = 0
   while !hit && i <= n {
@@ -356,8 +361,19 @@ fn row_text_names(text: String, name: String) -> Bool {
       }
       word = String::concat(word, String::substring(text, i, i + 1))
     } else {
-      hit = !qualified && word == name
+      let head = depth == 0 && String::length(word) > 0 && String::byte_at(word, 0) >= 'A' && String::byte_at(word, 0) <= 'Z'
+      let shadowed = if head {
+        local
+      } else {
+        hidden
+      }
+      hit = !qualified && !shadowed && word == name
       word = ""
+      if c == '[' {
+        depth = depth + 1
+      } else if c == ']' {
+        depth = depth - 1
+      }
     }
     i = i + 1
   }
