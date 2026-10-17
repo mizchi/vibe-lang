@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  index_site_key, type_param_name
+  impl_target_key, index_site_key, type_param_name
 }
 
 import ./import_alias_rewrite_code_names.vibe {
@@ -1005,10 +1005,72 @@ fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], Ty
         }
         ()
       },
-      None => Array::push(out, label)
+      None => Array::push(out, expand_row_label_args(label, aliases))
     }
   }
   String::join(out, " + ")
+}
+
+/// A row label with each type argument that names a plain alias replaced by
+/// its target (Codex on #3492): `State[Payload]` reads as `State[Int]` in a
+/// module with `type Payload = Int` and as `State[String]` in one with
+/// `type Payload = String`. A word after `::` is an operation, not a type.
+fn expand_row_label_args(label: String, aliases: Array[(String, Array[String], TypeExpr)]) -> String {
+  if String::index_of(label, "[") < 0 {
+    label
+  } else {
+    let mut out = ""
+    let mut word = ""
+    let mut depth = 0
+    let n = String::length(label)
+    let mut i = 0
+    while i <= n {
+      let c = if i < n {
+        String::byte_at(label, i)
+      } else {
+        0
+      }
+      let is_word = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+      if is_word {
+        word = String::concat(word, String::substring(label, i, i + 1))
+      } else {
+        let start = i - String::length(word)
+        let qualified = start >= 2 && String::byte_at(label, start - 1) == ':' && String::byte_at(label, start - 2) == ':'
+        out = String::concat(out, if depth > 0 && !qualified {
+          row_alias_word(word, aliases)
+        } else {
+          word
+        })
+        word = ""
+        if c == '[' {
+          depth = depth + 1
+        } else if c == ']' {
+          depth = depth - 1
+        }
+        if c != 0 {
+          out = String::concat(out, String::substring(label, i, i + 1))
+        }
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+fn row_alias_word(word: String, aliases: Array[(String, Array[String], TypeExpr)]) -> String {
+  let mut out = word
+  let mut found = false
+  for al in aliases {
+    let (an, ap, target) = al
+    if !found && word != "" && an == word && Array::length(ap) == 0 {
+      found = true
+      out = match expand_type_aliases(target, aliases, [], 0) {
+        TyName(name) => name,
+        expanded => impl_target_key(expanded)
+      }
+    }
+  }
+  out
 }
 
 /// An `effectset`'s members with each one that names an effectset in

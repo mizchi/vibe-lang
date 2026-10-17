@@ -30,6 +30,7 @@ import @vibe/compiler/core {
   env_name_index_length,
   env_type_defs,
   exception_kind_resolutions_clear,
+  expr_children,
   find_typedef,
   instantiate,
   is_builtin_type_name,
@@ -896,9 +897,11 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
         false
       }
     },
+    // An immediately invoked closure is read deep, as a named callee is
+    // (Codex on #3492: `((c: Cell) -> Wrap { Wrap::{ cell: c } })(outer)`).
     ECall(EFn(_, _, params, _, _, body), args, _, _) => {
       let mut found = false
-      for index in direct_result_param_indices(body, params) {
+      for index in held_result_param_indices(body, params) {
         if index >= 0 && index < Array::length(args) && expression_aliases_outer_binding(Array::get(args, index), env) {
           found = true
         }
@@ -1309,7 +1312,17 @@ fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr]
       collect_return_param_indices(rest, params, alias_names, alias_indices, found, deep)
     },
     EAssignOp(_, _, _, rest, _) => collect_return_param_indices(rest, params, alias_names, alias_indices, found, deep),
-    _ => ()
+    // `deep` (a call inside a region, read once) follows every operand too:
+    // `sink({ return c })` (Codex on #3492). The eager summaries stay on the
+    // skeleton above.
+    _ => if deep {
+      for child in expr_children(e) {
+        collect_return_param_indices(child, params, alias_names, alias_indices, found, deep)
+      }
+      ()
+    } else {
+      ()
+    }
   }
 }
 
