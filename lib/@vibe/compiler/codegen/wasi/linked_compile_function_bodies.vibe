@@ -126,7 +126,7 @@ import @vibe/compiler/codegen/reloc {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  bmask_has, compute_borrow_param_user_fns, scope_tail_proj_root, stmts_contain_exceptions
+  bmask_has, compute_borrow_param_user_fns, scope_tail_proj_root
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -153,6 +153,8 @@ import @vibe/compiler/codegen/common_base {
   codegen_body_cache_name_index,
   codegen_body_cache_record,
   codegen_body_cache_replay,
+  codegen_body_cache_replay_index,
+  codegen_body_cache_replay_indexed,
   codegen_body_cache_slot_index,
   cov_disabled,
   emit_i32_eqz,
@@ -240,11 +242,36 @@ import ./linked_compile_linkedhostplan.vibe {
   LinkedBodyInputs, LinkedBodyPlan
 }
 
+let function_executors: Array[(LinkedFunctionPlan, LinkedBodyInputs, Bool, Bool, Bool, Bool, Bool) -> LinkedBodyPlan with Exception] = [
+]
+
+/// Scope one native transport adapter to a single compile. Workers use emit
+/// directly; the ordinary compiler never installs an adapter or serializes IR.
+/// Reentry is refused and the default is restored after success or Exception.
+export fn function_with_executor(executor: (LinkedFunctionPlan, LinkedBodyInputs, Bool, Bool, Bool, Bool, Bool) -> LinkedBodyPlan with Exception, action: () -> Bytes with Env + Exception + Fs) -> Bytes with Env + Exception + Fs {
+  if Array::length(function_executors) != 0 {
+    throw("function workers: an executor is already active")
+  } else ()
+  Array::push(function_executors, executor)
+  handle {
+    let result = action()
+    Array::truncate(function_executors, 0)
+    result
+  } with { Exception::Throw(message) => {
+    Array::truncate(function_executors, 0)
+    throw(message)
+  } }
+}
+
 // Compile generated and user bodies into the existing shared tables.
 // Keep lane flags explicit so constant-parameter folding can remove disabled code.
 export fn lc_build_function_bodies(input: LinkedBodyInputs, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool) -> LinkedBodyPlan with Exception {
   let plan = lc_prepare_function_plan(input.stmts, input.fn_stmt_indices, input.fn_names_list, input.num_user_funcs, input.const_int_names_list, input.ctor_names_list, enable_rc)
-  LinkedFunctionPlan::emit(plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+  if Array::length(function_executors) == 0 {
+    LinkedFunctionPlan::emit(plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+  } else {
+    Array::get(function_executors, 0)(plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+  }
 }
 
 // Reuse one canonical plan across emission slices. Other shared codegen tables
@@ -375,7 +402,7 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   let slice_hi = input.slice_hi
   let slice_lo = input.slice_lo
   let src_str_base = input.src_str_base
-  let stmts = input.stmts
+  let has_exceptions = input.has_exceptions
   let str_char_code_at_idx = input.str_char_code_at_idx
   let str_concat_idx = input.str_concat_idx
   let str_eq_idx = input.str_eq_idx
@@ -783,7 +810,7 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
     bcc_layout_fp_strings(guard_layout_now, effect_names_list)
     bcc_layout_fp_strings(guard_layout_now, effect_op_keys_list)
     bcc_layout_fp_ints(guard_layout_now, effect_op_arities_list)
-    bcc_layout_fp_bools(guard_layout_now, [stmts_contain_exceptions(stmts)])
+    bcc_layout_fp_bools(guard_layout_now, [has_exceptions])
     // Whole-program return classifications: they decide a call site's shape.
     bcc_layout_fp_strings(guard_layout_now, lc_agg_ret_names)
     bcc_layout_fp_ints(guard_layout_now, lc_agg_ret_infos)
@@ -857,6 +884,11 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   // probe counted the bodies), paid on the lane that exists to make a warm
   // compile cheap.
   let body_cache_slot_index = codegen_body_cache_slot_index(body_cache_use, num_user_funcs)
+  let body_cache_rows = if body_cache_in_ok && Array::length(body_cache_use.fn_indices) > 0 {
+    Some(codegen_body_cache_replay_index(body_cache_use, num_user_funcs))
+  } else {
+    None
+  }
   // #2669 step 2a: the same table, keyed on the function's NAME. Built once
   // beside the index one and checked against it per function below; nothing
   // reads it as the answer yet.
@@ -967,7 +999,10 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
       if __cache_hit >= 0 {
         let __r_slot_lo = Array::length(table_slots_used)
         let __r_blind_lo = Array::length(blind_owners)
-        codegen_body_cache_replay(body_cache_use, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms, fn_linemap, bi)
+        match body_cache_rows {
+          Some(index) => codegen_body_cache_replay_indexed(index, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms, fn_linemap, bi),
+          None => codegen_body_cache_replay(body_cache_use, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms, fn_linemap, bi)
+        }
         // #2669 slice 3: the SAME pairing the compiled path asserts below.
         // A replayed function re-pushes both logs from the cache instead of
         // running the emission, so this says the cache carried a complete
@@ -1412,7 +1447,7 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
           region_ptr_addr: region_ptr_addr,
           region_arr_new_func_idx: region_arr_new_idx,
           region_bytes_new_func_idx: region_bytes_new_idx,
-          region_exn_tag: if Array::length(effect_names_list) > 0 || stmts_contain_exceptions(stmts) {
+          region_exn_tag: if Array::length(effect_names_list) > 0 || has_exceptions {
             region_exn_tag_linear()
           } else {
             -1

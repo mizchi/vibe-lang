@@ -671,7 +671,7 @@ group), a value a call returned, a `let mut` closure, a function stored in a
 field -- is refused when it is handed the token, since nothing about what it
 keeps is known (`this call passes this TaskGroup::run call's own ... token to
 `cb`, a function whose body the checker cannot see`). A function imported from
-another module is not checked again; see [Known gaps](#known-gaps). The second
+another module is judged by the summary its module published (below). The second
 check runs only inside a region and only for such a call; its diagnostics,
 types and substitution are discarded, and the per-run tables it touches are
 restored (`lib/@vibe/compiler/checker/checker_region_retention.vibe`).
@@ -695,6 +695,47 @@ mut`, an alias of one, a closure a call produced, local or module-level -- is
 refused at a slot whose type carries the region, with the edit. Pinned by the
 `taskgroup_escape_hof_*_reject` rows and
 `lib/@vibe/compiler/tests/region_write_gate_test.vibe`.
+
+A function imported from another module has no body in its importer: the
+importer sees the interface the dependency published. So the dependency
+answers once, when it is checked, what each function it exports keeps of its
+arguments (#3360, `checker_region_retention_summary.vibe`). Each argument that
+may carry a region -- one whose type may hide it, or one a caller
+instantiates (`v: T`) -- is re-checked as a call made in a region would be,
+under a synthetic region it carries, and the summary records where it goes:
+
+- `i>j`, into argument `j`: a call is refused when argument `j` is a location
+  declared before a region argument `i` carries (`put(outer, handle)`);
+- `i>g`, somewhere no argument reaches, such as the module's own top-level
+  array: a call is refused whenever argument `i` carries an active region;
+- `i>f`, on to a function the callee cannot see into, such as a function
+  parameter: refused the same way, with the message for a value passed on.
+- `i>r`, into the function's result: read where a `TaskGroup::run` body is
+  named, so a body declared `-> TaskHandle[Int]` that returns a handle it
+  spawned is judged as returning the group's token. Any other call's result
+  already carries what its arguments carry.
+
+Every top-level function of the module is summarized, and publication keeps
+the summaries of the ones it publishes: one declared `export`, one an
+`export { .. }` lists, a companion an exported type publishes (`fn Box::put`,
+or a function returning an enum `Box`, carried to an importer of `Box` with
+the type), and an alias of any of them. A
+published function value whose body cannot be traced, a closure a call
+produced, keeps each argument where no call can see (`i>f`). A callee that
+nothing in the module binds is treated the same way: a bare call whose first
+argument has an imported type is retried as a method of that type and typed
+without a body (#736), yet it runs whatever function of that name the
+program links, so passing it a region's value is refused.
+
+The summary is bound in the published environment beside the function
+(`#retains:<name>`), carried under the name an importer binds and through a
+re-export, and read by the same call check a local callee gets, so a helper
+that keeps only a joined value, reads its argument, or stores it into a
+location the body declares stays accepted. The standard library is neither
+summarized nor read through a summary: its retaining operations are listed by
+name, as above, and a summary of `TaskHandle::join` would see the scheduler's
+own state. Pinned by the `taskgroup_escape_import_*` rows and
+`taskgroup_import_keep_local_ok`.
 
 After the body is checked, the call is also refused when:
 
@@ -1096,19 +1137,19 @@ nursery scope`).
 
 ## Known gaps
 
-- **Functions imported from another module.** Code written outside a body is
-  checked again where the token reaches it, which needs the callee's body; a
-  module's interface carries only types. A helper imported from another module
-  that stores its argument (`put(c, handle)` with `put` exported by
-  `./cells.vibe`) is trusted, so it still keeps the handle past its group, and
-  the program compiles and runs (measured). Refusing every imported callee
-  instead would refuse the library itself (`TaskHandle::join(h)`,
-  `Sender::send(tx, v)`); the standard library's own retaining operations are
-  listed by name and checked like `Array::push`. Closing it needs a summary of
-  which arguments a function keeps, published in the module's interface.
-  Joining the escaped handle after the group returns the task's value
-  (measured), so no program is answered wrongly, but nothing enforces that the
-  handle stays in its group.
+- **What an imported function's summary does not cover.** A module with
+  more than 4096 top-level statements publishes no summaries
+  (`retention_summary_budget`), since each function costs at least one
+  re-check of its body; its functions are trusted. That keeps a whole program
+  flattened into one source out of the pass.
+  An imported function passed on as a callback (`Array::map(hs, stash)` with
+  `stash` imported) is not followed into; a body named at `TaskGroup::run`
+  is judged by its summary.
+  A helper that keeps an argument by handing it to a callback is refused even
+  when the callback keeps nothing, since which function it will be is not
+  known where the helper is checked. Joining an escaped handle after the
+  group returns the task's value (measured), so no program is answered
+  wrongly, but nothing enforces that the handle stays in its group.
 - **Mid-run cancellation.** A cancel request is observed at dispatch and at a
   parked task only. A running task, and a suspendable task that is running
   when the request arrives, are not interrupted.

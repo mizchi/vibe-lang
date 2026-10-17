@@ -119,6 +119,7 @@ import ./state.vibe {
   dtd_index_refusals,
   dtd_own_growth,
   dtd_own_limit,
+  dtd_rowless_build,
   dtd_synth_dict_fields,
   dtd_typed_eq_keys,
   dtd_typed_eq_offs,
@@ -174,6 +175,22 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
 }
 
 export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {
+  dtd_whole_program(stmts, typed_eq_offsets, typed_eq_keys, false)
+}
+
+/// #3456: the whole-program entry for a BUILD lane whose parse carries no
+/// offsets (`compile_file_wasi_only`, `compile_file_wasi_library`,
+/// `compile_file_wasi_linked_artifacts`). No checker row can be keyed on such
+/// a program, so an interpolated untyped `let` that shadows a typed name has
+/// no type here but the OUTER binding's, which renders the value as the wrong
+/// type when the shadow changes it. Such a site is refused with the edit
+/// (annotate the shadowing `let`) rather than answered.
+export fn desugar_trait_dicts_rowless_build(stmts: Array[Stmt]) -> Unit with Exception {
+  dtd_whole_program(stmts, array_empty(), array_empty(), true)
+}
+
+fn dtd_whole_program(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], rowless_build: Bool) -> Unit with Exception {
+  Array::set(dtd_rowless_build, 0, rowless_build)
   // #3132: this pass synthesizes `Array::get` / `Array::length` / ... calls
   // (interpolation, structural `==`, iteration), which must reach the
   // builtin. Every entry pipeline reaches here before its first such
@@ -237,6 +254,7 @@ export fn desugar_trait_dicts_module(own: Array[Stmt], ctx: Array[Stmt], module_
 /// above passes none, which is right for a MEASUREMENT and wrong for a
 /// production driver -- a caller that means to compile passes real ones.
 export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], facts: ModuleTraitFacts) -> Array[Stmt] with Exception {
+  Array::set(dtd_rowless_build, 0, false)
   dtd_facts_set(facts)
   let stmts: Array[Stmt] = []
   let mut i = 0

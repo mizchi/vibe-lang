@@ -759,6 +759,20 @@ instance. The native experiment must use a separate Store, Instance and heap
 per worker, sequential jobs within each worker, and copied job/result values.
 This boundary does not authorize shared-memory threads.
 
+### Native function CPU route
+
+The opt-in [function-worker implementation](../compiler/function-cpu-workers.md)
+now connects the canonical plan to isolated native CPU processes owned by Vibe
+`TaskGroup`. Shared tables travel once; each job carries only its assigned AST
+range. Compact scoped source locations preserve division diagnostics, and a
+stable owner index removes repeated metadata scans during canonical replay.
+Whole-program lowering remains on the ordinary path. Target coverage and
+persistent body-cache modes are not enabled on this experimental route.
+Complete cold/warm walltime and process-tree RSS determine promotion; a faster
+worker interval alone is insufficient. The implementation document also records
+the resulting proposals for CPU task execution, wire codecs, UTF-8 appends and
+explicit task-local context.
+
 The [instrumentation measurement](../../../bench/perf/analysis/function-instrumentation-2026-10-16.json)
 records four interleaved cold/warm A/B pairs per subject and three separate
 warm CPU profiles. Wall medians change -0.63% to +1.29%, with overlapping

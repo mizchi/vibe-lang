@@ -2005,11 +2005,26 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 // `xs.length()` (EDot), which types such calls CtUnknown. A
                 // non-user receiver (Int/String/...) keeps the strict path so a
                 // typo'd `foo(42)` still reports `unknown name`.
+                // #3476: a `CtNamed` receiver the module has no declaration
+                // for (`TaskHandle`, an opaque contract type) has no method a
+                // later pass could resolve the call to, so it keeps the strict
+                // path too. Retried as a method, `no_such_fn(h)` was typed
+                // without a body and the program called through a null slot.
                 let user_recv = match recv_ty {
                   CtEnum(_) => true,
                   CtStruct(_) => true,
-                  CtNamed(_, _) => true,
+                  CtNamed(tn, _) => match find_typedef(defs, tn) {
+                    Some(_) => true,
+                    None => false
+                  },
                   _ => false
+                }
+                // #3360: with no method visible the call is typed without a
+                // body, yet it runs whatever function of that name the
+                // program links, so a region's value passed to it may be
+                // kept (`CellOf(h)` with only `Cell` imported, Codex on #3473).
+                if !has_qual && user_recv {
+                  retention_expr_callee_region_check(EIdent(name, callee_off), name, callee_off, args, env, defs, s, c, errors, check_child)
                 }
                 if has_qual || user_recv {
                   Some(check_child(ECall(EDot(Array::get(args, 0), name, callee_off, callee_off), Array::slice(args, 1, Array::length(args)), call_off, callee_resolution), env, defs, sa, ca, errors, tytab, capture, "SyntheticRewrite"))

@@ -1,0 +1,144 @@
+import @vibe/compiler/codegen/common_base {
+  BodyCacheReplayIndex,
+  CodegenBodyCache,
+  LambdaTable,
+  codegen_body_cache_new,
+  codegen_body_cache_replay,
+  codegen_body_cache_replay_index,
+  codegen_body_cache_replay_indexed
+}
+import @vibe/compiler/codegen/wasi {
+  lc_function_linemap_new
+}
+import @vibe/compiler/cache {
+  ast_binary_write_string, ast_binary_write_svarint, ast_binary_write_varint
+}
+
+fn interleaved_cache() -> CodegenBodyCache {
+  let c = codegen_body_cache_new()
+  let mut i = 0
+  for owner in [4, 0, 2, 99] {
+    Array::push(c.fn_indices, owner)
+    Array::push(c.fn_bodies, Bytes::from_array([owner, i]))
+    Array::push(c.fn_meta_i32, i + 1)
+    Array::push(c.fn_meta_i64, i + 2)
+    Array::push(c.fn_meta_v128, i + 3)
+    i = i + 1
+  }
+  i = 0
+  for owner in [4, 0, 2, 4, 99, 2, 0] {
+    Array::push(c.lam_owner, owner)
+    Array::push(c.lam_bodies, Bytes::from_array([i, owner]))
+    Array::push(c.lam_param_counts, i + 1)
+    Array::push(c.lam_captures, ["capture", Int::to_string(i)])
+    Array::push(c.lam_meta_i32, i + 2)
+    Array::push(c.lam_meta_i64, i + 3)
+    i = i + 1
+  }
+  i = 0
+  for owner in [2, 4, 99, 0, 2, 0] {
+    Array::push(c.slot_owner, owner); Array::push(c.slot_values, i + 100); i = i + 1
+  }
+  i = 0
+  for owner in [99, 0, 4, 2, 4] {
+    Array::push(c.blind_fn, owner)
+    Array::push(c.blind_body, -2 - i)
+    Array::push(c.blind_offsets, i * 3)
+    Array::push(c.blind_kinds, 101 + i % 2)
+    Array::push(c.blind_syms, i + 200)
+    i = i + 1
+  }
+  i = 0
+  for owner in [0, 4, 2, 0, 99, 4] {
+    Array::push(c.lm_owner, owner)
+    Array::push(c.lm_offsets, i * 5)
+    Array::push(c.lm_file_ids, i % 3)
+    Array::push(c.lm_lines, i + 1)
+    i = i + 1
+  }
+  c
+}
+
+fn capture_replay(c: CodegenBodyCache, indexed: Option[BodyCacheReplayIndex], at: Int, lines: Bool) -> Bytes {
+  let bodies: Array[Bytes] = [Bytes::from_array([254])]
+  let m32: Array[Int] = [31]
+  let m64: Array[Int] = [32]
+  let m128: Array[Int] = [33]
+  let lt = LambdaTable::{
+    base: 0,
+    bodies: [],
+    param_counts: [],
+    captures: [],
+    meta_i32: [],
+    meta_i64: []
+  }
+  let slots: Array[Int] = [34]
+  let owners: Array[Int] = [35]
+  let offsets: Array[Int] = [36]
+  let kinds: Array[Int] = [37]
+  let symbols: Array[Int] = [38]
+  let lm = lc_function_linemap_new(lines)
+  match indexed {
+    None => codegen_body_cache_replay(c, at, bodies, m32, m64, m128, lt, slots, owners, offsets, kinds, symbols, lm, 777 + at),
+    Some(index) => codegen_body_cache_replay_indexed(index, at, bodies, m32, m64, m128, lt, slots, owners, offsets, kinds, symbols, lm, 777 + at)
+  }
+  // Observe every destination column, including pre-existing prefix values.
+  let bytes = Bytes::new()
+  for group in [bodies, lt.bodies] {
+    ast_binary_write_varint(bytes, Array::length(group))
+    for body in group {
+      ast_binary_write_varint(bytes, Bytes::length(body))
+      Bytes::blit(bytes, body, 0, Bytes::length(body))
+    }
+  }
+  for column in [
+    m32,
+    m64,
+    m128,
+    lt.param_counts,
+    lt.meta_i32,
+    lt.meta_i64,
+    slots,
+    owners,
+    offsets,
+    kinds,
+    symbols,
+    lm.funcs,
+    lm.offsets,
+    lm.file_ids,
+    lm.lines
+  ] {
+    ast_binary_write_varint(bytes, Array::length(column))
+    for value in column {
+      ast_binary_write_svarint(bytes, value)
+    }
+  }
+  ast_binary_write_varint(bytes, Array::length(lt.captures))
+  for row in lt.captures {
+    ast_binary_write_varint(bytes, Array::length(row))
+    for value in row {
+      ast_binary_write_string(bytes, value)
+    }
+  }
+  bytes
+}
+
+test "indexed replay matches the scan for interleaved owners, sparse keys and disabled maps" {
+  let c = interleaved_cache()
+  for key_count in [0, 6, 128] {
+    let index = codegen_body_cache_replay_index(c, key_count)
+    for enabled in [false, true] {
+      let mut at = 0
+      while at < Array::length(c.fn_indices) {
+        let expected = capture_replay(c, None, at, enabled)
+        let actual = capture_replay(c, Some(index), at, enabled)
+        assert_eq(Bytes::length(actual), Bytes::length(expected))
+        let mut i = 0
+        while i < Bytes::length(expected) {
+          assert_eq(Bytes::get(actual, i), Bytes::get(expected, i)); i = i + 1
+        }
+        at = at + 1
+      }
+    }
+  }
+}

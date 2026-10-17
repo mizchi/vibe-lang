@@ -45,7 +45,7 @@ import ./checker_resolve.vibe {
 }
 
 import @vibe/compiler/normalize {
-  derive_trait_namespace_operations, desugar_labeled_args
+  derive_trait_namespace_operations, desugar_labeled_args, labeled_call_target
 }
 
 import @vibe/parser {
@@ -458,8 +458,8 @@ export fn hoist_te_applies_formal(te: TypeExpr, tparams: Array[String]) -> Bool 
 /// user meant to be caught). This walk runs AFTER desugar_labeled_args (see
 /// check_program) and rejects both shapes with a located error. Resolution
 /// scope deliberately mirrors collect_fn_param_labels / relabel_expr in
-/// desugar_trait_dict.vibe: only calls whose callee is an EIdent naming a
-/// top-level `let`-bound function are validated — builtins with decorative
+/// desugar_trait_dict.vibe: named functions and qualified imports with published
+/// parameter names are validated — builtins with decorative
 /// flag labels (`sh_lines("ls", a = true)`), local closures, and method calls
 /// are left untouched, exactly like the reorder pass leaves them untouched.
 export fn labeled_name_marker(off: Int, len: Int) -> String {
@@ -851,7 +851,7 @@ export fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], 
         labeled_name_check_expr(Array::get(args, i), tbl, shadows, errors, pre_desugar)
         i = i + 1
       }
-      match callee {
+      match labeled_call_target(callee, tbl, shadows) {
         EIdent(fname, fname_off) => {
           if pre_desugar && !labeled_walk_shadowed(shadows, fname) {
             match lookup_labeled_check_fn(tbl, fname) {

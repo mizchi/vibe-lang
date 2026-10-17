@@ -9,7 +9,11 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  index_site_key
+  index_site_key, type_param_arity, type_param_name
+}
+
+import ./expr_children.vibe {
+  expr_children
 }
 
 import ./module_graph_path.vibe {
@@ -583,6 +587,694 @@ fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], e
   origin
 }
 
+/// #3448: the struct, enum or error type a dependency's `stmt` publishes into
+/// the merged program, as `(name, kind)`, or `("", "")`. A dependency's
+/// EXPORTED type keeps its bare name (a private one is namespaced by its
+/// path), so two such declarations of one name collide. The entry's own types
+/// are its own (#3343), and a clash the entry can see through an import is the
+/// checker's to refuse (#3035), so the entry publishes none here. A package
+/// contract restates its implementation's types, so it publishes none either.
+fn published_type_of(stmt: Stmt, path: String, is_entry: Bool, exported_names: Array[String]) -> (String, String) {
+  let (declared, name, kind) = match stmt {
+    SStruct(exported, name, _, _, _, _) => (exported, name, "structs"),
+    SEnum(exported, name, _, _, _) => (exported, name, "enums"),
+    SSuberror(exported, name, _) => (exported, name, "error types"),
+    _ => (false, "", "")
+  }
+  if name == "" || is_entry || is_contract_ext(path) || !(declared || import_alias_rewrite_string_array_contains(exported_names, name)) {
+    ("", "")
+  } else {
+    (name, kind)
+  }
+}
+
+/// #3448: are two published declarations of one name the same type? The
+/// checker reads them as one when they are the same definition (#3036): the
+/// same fields or constructors in the same order, their types equal up to a
+/// renaming of the type parameters, and a row read as a set of labels. Such a
+/// pair has one layout and one meaning in the merged program.
+fn published_types_equivalent(a: Stmt, aa: Array[(String, Array[String], TypeExpr)], b: Stmt, ba: Array[(String, Array[String], TypeExpr)]) -> Bool {
+  match (a, b) {
+    (SStruct(_, _, af, _, am, ap), SStruct(_, _, bf, _, bm, bp)) => {
+      let ar = type_param_renames(ap)
+      let br = type_param_renames(bp)
+      let mut ok = Array::length(af) == Array::length(bf) && Array::length(am) == Array::length(bm) && type_param_arities_match(ap, bp)
+      let mut i = 0
+      while ok && i < Array::length(af) {
+        let (an, aty) = Array::get(af, i)
+        let (bn, bty) = Array::get(bf, i)
+        ok = an == bn && type_exprs_equivalent(expand_type_aliases(aty, aa, ar, 0), ar, expand_type_aliases(bty, ba, br, 0), br)
+        i = i + 1
+      }
+      let mut j = 0
+      while ok && j < Array::length(am) {
+        ok = import_alias_rewrite_string_array_contains(bm, Array::get(am, j))
+        j = j + 1
+      }
+      ok
+    },
+    (SEnum(_, _, ap, actors, _), SEnum(_, _, bp, bctors, _)) => type_param_arities_match(ap, bp) && ctors_equivalent(actors, aa, type_param_renames(ap), bctors, ba, type_param_renames(bp)),
+    (SSuberror(_, _, actors), SSuberror(_, _, bctors)) => ctors_equivalent(actors, aa, [
+    ], bctors, ba, []),
+    _ => false
+  }
+}
+
+fn ctors_equivalent(a: Array[(String, Array[TypeExpr])], aa: Array[(String, Array[String], TypeExpr)], ar: Array[(String, String)], b: Array[(String, Array[TypeExpr])], ba: Array[(String, Array[String], TypeExpr)], br: Array[(String, String)]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while ok && i < Array::length(a) {
+    let (an, ats) = Array::get(a, i)
+    let (bn, bts) = Array::get(b, i)
+    ok = an == bn && type_expr_lists_equivalent(for t in ats {
+      expand_type_aliases(t, aa, ar, 0)
+    }, ar, for t in bts {
+      expand_type_aliases(t, ba, br, 0)
+    }, br)
+    i = i + 1
+  }
+  ok
+}
+
+/// The transparent `type` aliases a source file declares, as
+/// `(name, parameters, target)`.
+fn file_type_aliases(stmts: Array[Stmt]) -> Array[(String, Array[String], TypeExpr)] {
+  let out: Array[(String, Array[String], TypeExpr)] = []
+  for stmt in stmts {
+    match stmt {
+      STypeAlias(_, name, params, target) => Array::push(out, (name, params, target)),
+      _ => ()
+    }
+  }
+  out
+}
+
+/// The shared aliases a file imports by name, each under the name its import
+/// binds (`import ./a.vibe { N as M }` reads `N`'s target as `M`). An alias
+/// is read only from an import that resolves to the file declaring it (Codex
+/// on #3467): a nominal `N` imported from another module is that module's.
+fn imported_type_aliases_into(stmts: Array[Stmt], path: String, paths: Array[String], shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, Array[String], TypeExpr)]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SImport(raw_path, items) => {
+        let provider = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
+        for item in items {
+          let local = match item.alias {
+            Some(a) => a,
+            None => item.name
+          }
+          for al in shared {
+            let (from, an, ap, target) = al
+            if an == item.name && from == provider {
+              Array::push(out, (local, ap, target))
+            }
+          }
+        }
+      },
+      _ => ()
+    }
+  }
+  ()
+}
+
+/// The exported transparent aliases of the program, with the file that
+/// declares each.
+fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[Stmt]]) -> Array[(String, String, Array[String], TypeExpr)] {
+  let all: Array[(String, String, Array[String], TypeExpr)] = []
+  let mut fi = 0
+  while fi < Array::length(stmts_list) {
+    let stmts = Array::get(stmts_list, fi)
+    let own = file_type_aliases(stmts)
+    // An alias published through an export list (`type N = Int; export {
+    // N }`) is exported as surely as `export type N` (Codex on #3467).
+    let listed = collect_exported_value_names(stmts)
+    for stmt in stmts {
+      match stmt {
+        // Codex on #3467: the target is read in its provider, whose own
+        // aliases (`type Hidden = Int; export type N = Hidden`) the importer
+        // cannot see. A parameter of the alias is never one of them.
+        STypeAlias(exported, name, params, target) => if exported || import_alias_rewrite_string_array_contains(listed, name) {
+          let renames = for p in params {
+            (type_param_name(p), String::concat("#param:", type_param_name(p)))
+          }
+          Array::push(all, (Array::get(paths, fi), name, params, expand_type_aliases(target, own, renames, 0)))
+        } else {
+          ()
+        },
+        _ => ()
+      }
+    }
+    fi = fi + 1
+  }
+  // Each alias is keyed by its provider as well as its name (Codex on
+  // #3467): an import reads only the provider's own, so two modules
+  // exporting `N` do not cancel each other.
+  // Codex on #3467: an exported alias spelled through an alias its provider
+  // imports (`import ./n.vibe { N }; export type M = N`) is read through
+  // that import too. Each round reads one more import deep, until a round
+  // changes nothing; the round bound stops a cycle, and a chain longer than
+  // it stays unexpanded, which can only keep two types apart.
+  let mut cur = all
+  let mut changed = true
+  let mut rounds = 0
+  while changed && rounds < 16 {
+    changed = false
+    let resolved: Array[(String, String, Array[String], TypeExpr)] = []
+    let mut ai = 0
+    while ai < Array::length(all) {
+      // The provider's own spelling is re-read each round: a target already
+      // rewritten names the imported provider's aliases, not this one's.
+      let (from, name, params, target) = Array::get(all, ai)
+      let (_, _, _, prev) = Array::get(cur, ai)
+      let mut fi = 0
+      let env: Array[(String, Array[String], TypeExpr)] = []
+      while fi < Array::length(paths) {
+        if Array::get(paths, fi) == from {
+          imported_type_aliases_into(Array::get(stmts_list, fi), from, paths, cur, env)
+        }
+        fi = fi + 1
+      }
+      let renames = for p in params {
+        (type_param_name(p), String::concat("#param:", type_param_name(p)))
+      }
+      let next = expand_type_aliases(target, env, renames, 0)
+      if !type_exprs_equivalent(next, renames, prev, renames) {
+        changed = true
+      }
+      Array::push(resolved, (from, name, params, next))
+      ai = ai + 1
+    }
+    // A facade that re-exports an alias (`export ./a.vibe { N }`) provides it
+    // too, under the name it exports (Codex on #3467): an importer of the
+    // facade reads the declaring file's `N`. Each round follows one more
+    // facade.
+    reexported_type_aliases_into(paths, stmts_list, cur, resolved)
+    if Array::length(resolved) != Array::length(cur) {
+      changed = true
+    } else {
+      let mut ri = Array::length(all)
+      while ri < Array::length(resolved) {
+        let (rf, rn, _, rt) = Array::get(resolved, ri)
+        let (pf, pn, _, pt) = Array::get(cur, ri)
+        if rf != pf || rn != pn || !type_exprs_equivalent(rt, [], pt, []) {
+          changed = true
+        }
+        ri = ri + 1
+      }
+    }
+    cur = resolved
+    rounds = rounds + 1
+  }
+  cur
+}
+
+/// The aliases each file re-exports, read from `shared` (`(provider, name,
+/// parameters, target)`) and appended to `out` keyed by the re-exporting
+/// file and the name it exports.
+fn reexported_type_aliases_into(paths: Array[String], stmts_list: Array[Array[Stmt]], shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, String, Array[String], TypeExpr)]) -> Unit {
+  let mut fi = 0
+  while fi < Array::length(stmts_list) {
+    let path = Array::get(paths, fi)
+    let stmts = Array::get(stmts_list, fi)
+    // The two-step form, `import ./a.vibe { N }` then `export { N }`,
+    // re-exports the imported alias too (Codex on #3467).
+    let listed = collect_exported_value_names(stmts)
+    // A name re-exported twice is the later binding (Codex on #3467), as
+    // the facade closure reads it (`edge_last_idx`).
+    let rows: Array[(String, Array[String], TypeExpr)] = []
+    for stmt in stmts {
+      let (raw_path, items, all_items) = match stmt {
+        SReExport(rp, its) => (rp, its, true),
+        SImport(rp, its) => (rp, its, false),
+        _ => ("", [], false)
+      }
+      if raw_path != "" {
+        let provider = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
+        for item in items {
+          let exported = match item.alias {
+            Some(a) => a,
+            None => item.name
+          }
+          if all_items || import_alias_rewrite_string_array_contains(listed, exported) {
+            for al in shared {
+              let (from, an, ap, target) = al
+              if an == item.name && from == provider {
+                let mut ri = 0
+                let mut replaced = false
+                while ri < Array::length(rows) {
+                  if Array::get(rows, ri).0 == exported {
+                    Array::set(rows, ri, (exported, ap, target))
+                    replaced = true
+                  }
+                  ri = ri + 1
+                }
+                if !replaced {
+                  Array::push(rows, (exported, ap, target))
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    for r in rows {
+      let (rn, rp, rt) = r
+      Array::push(out, (path, rn, rp, rt))
+    }
+    fi = fi + 1
+  }
+  ()
+}
+
+/// `t` with the file's aliases expanded, as the checker reads them (Codex on
+/// #3467): `type N = Int; struct Box { n: N }` is the `Box { n: Int }` of
+/// another module. A type parameter (renamed in `renames`) is never an
+/// alias, an alias applied to the wrong number of arguments (a constructor
+/// argument, `Holder[Inner]`) stays as written, and the depth bounds a cycle.
+fn expand_type_aliases(t: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)], renames: Array[(String, String)], depth: Int) -> TypeExpr {
+  if depth > 16 || Array::length(aliases) == 0 {
+    t
+  } else {
+    match t {
+      TyName(x) => match find_type_alias(aliases, renames, x, 0) {
+        Some(target) => expand_type_aliases(target, aliases, renames, depth + 1),
+        None => t
+      },
+      TyApp(x, args) => {
+        let expanded = for arg in args {
+          expand_type_aliases(arg, aliases, renames, depth + 1)
+        }
+        let mut out = TyApp(x, expanded)
+        // The first match, as `find_type_alias` reads a bare one: a file's
+        // own alias comes before an imported one it shadows (Codex on #3467).
+        let mut matched = false
+        for al in aliases {
+          let (an, ap, target) = al
+          if !matched && an == x && renamed_type_name(renames, x) == x && Array::length(ap) == Array::length(expanded) && Array::length(ap) > 0 {
+            out = expand_type_aliases(substitute_type_params(target, ap, expanded), aliases, renames, depth + 1)
+            matched = true
+          }
+        }
+        out
+      },
+      TyFn(ps, r, row) => TyFn(for p in ps {
+        expand_type_aliases(p, aliases, renames, depth + 1)
+      }, expand_type_aliases(r, aliases, renames, depth + 1), row),
+      TyTuple(items) => TyTuple(for item in items {
+        expand_type_aliases(item, aliases, renames, depth + 1)
+      }),
+      TyUnit => t
+    }
+  }
+}
+
+fn find_type_alias(aliases: Array[(String, Array[String], TypeExpr)], renames: Array[(String, String)], name: String, arity: Int) -> Option[TypeExpr] {
+  let mut out: Option[TypeExpr] = None
+  if renamed_type_name(renames, name) == name {
+    // The first match: a file's own aliases come before the program's.
+    for al in aliases {
+      let (an, ap, target) = al
+      match out {
+        None => if an == name && Array::length(ap) == arity {
+          out = Some(target)
+        },
+        Some(_) => ()
+      }
+    }
+  }
+  out
+}
+
+fn substitute_type_params(t: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+  match t {
+    TyName(x) => {
+      let mut out = t
+      let mut i = 0
+      while i < Array::length(params) {
+        if type_param_name(Array::get(params, i)) == x {
+          out = Array::get(args, i)
+        }
+        i = i + 1
+      }
+      out
+    },
+    TyApp(x, xs) => {
+      let sub_args = for a in xs {
+        substitute_type_params(a, params, args)
+      }
+      // A constructor parameter in head position (`F[A]` of `type Apply[F[_],
+      // A] = F[A]`) takes the constructor it is given (Codex on #3467):
+      // `Apply[Option, Int]` is `Option[Int]`, not `F[Int]`.
+      let mut head = x
+      let mut i = 0
+      while i < Array::length(params) && i < Array::length(args) {
+        if type_param_name(Array::get(params, i)) == x {
+          head = match Array::get(args, i) {
+            TyName(h) => h,
+            TyApp(h, _) => h,
+            _ => head
+          }
+        }
+        i = i + 1
+      }
+      TyApp(head, sub_args)
+    },
+    TyFn(ps, r, row) => TyFn(for p in ps {
+      substitute_type_params(p, params, args)
+    }, substitute_type_params(r, params, args), row),
+    TyTuple(items) => TyTuple(for item in items {
+      substitute_type_params(item, params, args)
+    }),
+    TyUnit => t
+  }
+}
+
+/// Each type parameter's name mapped to its position, so `Box[T]` and
+/// `Box[U]` compare equal.
+fn type_param_renames(params: Array[String]) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  let mut i = 0
+  while i < Array::length(params) {
+    Array::push(out, (type_param_name(Array::get(params, i)), String::concat("#", Int::to_string(i))))
+    i = i + 1
+  }
+  out
+}
+
+fn type_param_arities_match(a: Array[String], b: Array[String]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while ok && i < Array::length(a) {
+    ok = type_param_arity(Array::get(a, i)) == type_param_arity(Array::get(b, i))
+    i = i + 1
+  }
+  ok
+}
+
+fn renamed_type_name(renames: Array[(String, String)], name: String) -> String {
+  let mut out = name
+  for r in renames {
+    if r.0 == name {
+      out = r.1
+    }
+  }
+  out
+}
+
+fn type_expr_lists_equivalent(a: Array[TypeExpr], ar: Array[(String, String)], b: Array[TypeExpr], br: Array[(String, String)]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while ok && i < Array::length(a) {
+    ok = type_exprs_equivalent(Array::get(a, i), ar, Array::get(b, i), br)
+    i = i + 1
+  }
+  ok
+}
+
+fn type_exprs_equivalent(a: TypeExpr, ar: Array[(String, String)], b: TypeExpr, br: Array[(String, String)]) -> Bool {
+  match (a, b) {
+    (TyName(x), TyName(y)) => renamed_type_name(ar, x) == renamed_type_name(br, y),
+    (TyApp(x, xs), TyApp(y, ys)) => renamed_type_name(ar, x) == renamed_type_name(br, y) && type_expr_lists_equivalent(xs, ar, ys, br),
+    (TyFn(xps, xr, xrow), TyFn(yps, yr, yrow)) => type_expr_lists_equivalent(xps, ar, yps, br) && type_exprs_equivalent(xr, ar, yr, br) && row_label_sets_equal(row_labels_renamed(xrow, ar), row_labels_renamed(yrow, br)),
+    (TyTuple(xs), TyTuple(ys)) => type_expr_lists_equivalent(xs, ar, ys, br),
+    (TyUnit, TyUnit) => true,
+    _ => false
+  }
+}
+
+/// A row's labels with the type parameters renamed, split at the top-level
+/// `+` and `,` separators. `Fs + Env` and `Env + Fs + Env` give one set.
+fn row_labels_renamed(row: Option[String], renames: Array[(String, String)]) -> Array[String] {
+  let out: Array[String] = []
+  match row {
+    Some(text) => {
+      let mut label = ""
+      let mut word = ""
+      let mut depth = 0
+      let mut i = 0
+      let n = String::length(text)
+      while i <= n {
+        let c = if i < n {
+          String::byte_at(text, i)
+        } else {
+          0
+        }
+        let is_word = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+        if is_word {
+          word = String::concat(word, String::substring(text, i, i + 1))
+        } else {
+          label = String::concat(label, renamed_type_name(renames, word))
+          word = ""
+          if c == '[' {
+            depth = depth + 1
+          } else if c == ']' {
+            depth = depth - 1
+          }
+          if c == 0 || (depth == 0 && (c == '+' || c == ',')) {
+            let t = String::trim(label)
+            if t != "" && !import_alias_rewrite_string_array_contains(out, t) {
+              Array::push(out, t)
+            }
+            label = ""
+          } else if c != ' ' {
+            label = String::concat(label, String::substring(text, i, i + 1))
+          }
+        }
+        i = i + 1
+      }
+    },
+    None => ()
+  }
+  out
+}
+
+fn row_label_sets_equal(a: Array[String], b: Array[String]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  for x in a {
+    if !import_alias_rewrite_string_array_contains(b, x) {
+      ok = false
+    }
+  }
+  ok
+}
+
+/// The top-level name `stmt` declares, for import reachability, or "".
+fn top_level_decl_name(stmt: Stmt) -> String {
+  match stmt {
+    SLet(_, _, name, _, _) => name,
+    SLetMut(name, _, _) => name,
+    SFnDecl(_, name, _, _, _) => name,
+    SStruct(_, name, _, _, _, _) => name,
+    SEnum(_, name, _, _, _) => name,
+    SSuberror(_, name, _) => name,
+    STypeAlias(_, name, _, _) => name,
+    STrait(_, name, _, _, _, _) => name,
+    SEffectDef(_, name, _, _) => name,
+    _ => ""
+  }
+}
+
+/// Whether an expression in `stmts`' declarations names `name`: a call or
+/// value `name`, a qualified `name::..`, or a `name::{ .. }` literal.
+fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
+  let qual = String::concat(name, "::")
+  let stack: Array[Expr] = []
+  for st in stmts {
+    match st {
+      SLet(_, _, _, _, e) => Array::push(stack, e),
+      SFnDecl(_, _, e, _, _) => Array::push(stack, e),
+      SExpr(e) => Array::push(stack, e),
+      _ => ()
+    }
+  }
+  let mut found = false
+  while !found && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      EIdent(x, _) => found = x == name || String::starts_with(x, qual),
+      ERecord(x, _, _) => found = x == name,
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+  }
+  found
+}
+
+/// #3448: the refusals for type names two REACHED source files both publish./// #3448: the refusals for type names two REACHED source files both publish.
+///
+/// A package is merged whole -- importing one name from `@vibe/core` brings
+/// every member file -- so a publication counts only when its file is reached
+/// from the entry through import items: an item reaches the file that
+/// declares it, following re-export edges (the last one, as the checker
+/// binds), and a reached file's own imports reach further. A local
+/// `enum Attempt` beside core's unimported `attempt.vibe` is therefore not a
+/// collision, while two modules the program actually uses that both publish
+/// `Box` are: the program held two `struct Box` and two `Box::plain`, and ran
+/// one module's for the other's type.
+fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]], entry_path: String, edge_tpath: Array[String], edge_tname: Array[String], edge_last_idx: MutMap[String, Int]) -> Array[String] {
+  let file_count = Array::length(paths)
+  let decls: MutMap[String, Bool] = MutMap::new_string()
+  let path_idx: MutMap[String, Int] = MutMap::new_string()
+  let mut fi = 0
+  while fi < file_count {
+    let path = Array::get(paths, fi)
+    if !MutMap::has(path_idx, path) {
+      MutMap::set(path_idx, path, fi)
+    } else {
+      ()
+    }
+    let fstmts = Array::get(stmts_list, fi)
+    let mut di = 0
+    while di < Array::length(fstmts) {
+      let dn = top_level_decl_name(Array::get(fstmts, di))
+      if dn != "" {
+        MutMap::set(decls, plan_rename_key(path, dn), true)
+      } else {
+        ()
+      }
+      di = di + 1
+    }
+    fi = fi + 1
+  }
+  let reached: MutMap[String, Bool] = MutMap::new_string()
+  let seen_items: MutMap[String, Bool] = MutMap::new_string()
+  let work_paths: Array[String] = []
+  let work_names: Array[String] = []
+  let reach_file: (String) -> Unit = (path) -> {
+    if !MutMap::has(reached, path) {
+      MutMap::set(reached, path, true)
+      match MutMap::get(path_idx, path) {
+        Some(idx) => {
+          let stmts = Array::get(stmts_list, idx)
+          let mut si = 0
+          while si < Array::length(stmts) {
+            // A re-export binds its names in the facade too, so the
+            // facade's own code may call them (Codex on #3467): an item that
+            // code names reaches its provider like an import's. One it only
+            // passes on reaches nothing until an importer names it (the
+            // #3036 control `dup_type_formal_marker_ok`), and a package
+            // contract holds no code at all.
+            let (raw_path, items) = match Array::get(stmts, si) {
+              SImport(rp, its) => (rp, its),
+              SReExport(rp, its) => if is_contract_ext(path) {
+                ("", [])
+              } else {
+                let used: Array[ImportItem] = []
+                for it in its {
+                  let local = match it.alias {
+                    Some(a) => a,
+                    None => it.name
+                  }
+                  if stmts_code_names(stmts, local) {
+                    Array::push(used, it)
+                  }
+                }
+                (rp, used)
+              },
+              _ => ("", [])
+            }
+            if raw_path != "" {
+              let target = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
+              let mut ii = 0
+              while ii < Array::length(items) {
+                Array::push(work_paths, target)
+                Array::push(work_names, Array::get(items, ii).name)
+                ii = ii + 1
+              }
+            }
+            si = si + 1
+          }
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+  }
+  reach_file(entry_path)
+  let mut wi = 0
+  while wi < Array::length(work_paths) {
+    let wp = Array::get(work_paths, wi)
+    let wn = Array::get(work_names, wi)
+    let key = plan_rename_key(wp, wn)
+    if !MutMap::has(seen_items, key) {
+      MutMap::set(seen_items, key, true)
+      if MutMap::has(decls, key) {
+        reach_file(wp)
+      } else {
+        match MutMap::get(edge_last_idx, key) {
+          Some(ei) => {
+            Array::push(work_paths, Array::get(edge_tpath, ei))
+            Array::push(work_names, Array::get(edge_tname, ei))
+          },
+          // Neither declared nor re-exported here (a builtin, an aggregate
+          // import): the file itself is what the item reaches.
+          None => reach_file(wp)
+        }
+      }
+    } else {
+      ()
+    }
+    wi = wi + 1
+  }
+  let first_path: MutMap[String, String] = MutMap::new_string()
+  let first_decl: MutMap[String, Stmt] = MutMap::new_string()
+  let first_aliases: MutMap[String, Array[(String, Array[String], TypeExpr)]] = MutMap::new_string()
+  let errors: Array[String] = []
+  // Codex on #3467: a field may spell an alias the file imports
+  // (`import ./aliases.vibe { N }`). An exported alias exactly one file of
+  // the program declares is that one, so a file's import of the name reads
+  // it, under the name the import binds; a name two files export, or one the
+  // file does not import (its own private `struct N`), stays unexpanded,
+  // which can only keep two types apart, never join two that differ.
+  let shared_aliases = unique_exported_type_aliases(paths, stmts_list)
+  let mut ci = 0
+  while ci < file_count {
+    let path = Array::get(paths, ci)
+    if MutMap::has(reached, path) {
+      let stmts = Array::get(stmts_list, ci)
+      let exported_names = collect_exported_value_names(stmts)
+      let aliases = file_type_aliases(stmts)
+      imported_type_aliases_into(stmts, path, paths, shared_aliases, aliases)
+      let mut pi = 0
+      while pi < Array::length(stmts) {
+        let stmt = Array::get(stmts, pi)
+        let (name, kind) = published_type_of(stmt, path, path == entry_path, exported_names)
+        if name != "" {
+          let same = match (MutMap::get(first_decl, name), MutMap::get(first_aliases, name)) {
+            (Some(prior_decl), Some(prior_aliases)) => published_types_equivalent(prior_decl, prior_aliases, stmt, aliases),
+            _ => false
+          }
+          match MutMap::get(first_path, name) {
+            // "\n" marks a name already refused: it is never a path. Two
+            // equivalent declarations are one type (#3036).
+            Some(prior) => if prior != path && prior != "\n" && !same {
+              Array::push(errors, String::concat("rename one of the ", String::concat(kind, String::concat(" named `", String::concat(name, String::concat("`: `", String::concat(prior, String::concat("` and `", String::concat(path, "` both declare it for this program, and a program holds one type per name, so code compiled against one would run with the other's fields and methods")))))))))
+              MutMap::set(first_path, name, "\n")
+            },
+            None => {
+              MutMap::set(first_path, name, path)
+              MutMap::set(first_decl, name, stmt)
+              MutMap::set(first_aliases, name, aliases)
+            }
+          }
+        } else {
+          ()
+        }
+        pi = pi + 1
+      }
+    } else {
+      ()
+    }
+    ci = ci + 1
+  }
+  errors
+}
+
 export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array[Stmt]], entry_path: String) -> ExportRenamePlan {
   let file_count = Array::length(paths)
   let def_names_list = array_empty()
@@ -721,6 +1413,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
     MutMap::set(edge_last_idx, plan_rename_key(Array::get(edge_from, eli), Array::get(edge_pub, eli)), eli)
     eli = eli + 1
   }
+  let type_collision_errors = reached_type_collisions(paths, stmts_list, entry_path, edge_tpath, edge_tname, edge_last_idx)
   let enum_alias_idx: MutMap[String, String] = MutMap::new_string()
   let enum_alias_private_ctors: MutMap[String, Array[(String, String)]] = MutMap::new_string()
   let enum_alias_paths = empty_strings()
@@ -895,7 +1588,15 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
     while ci < Array::length(edge_from) {
       let from = Array::get(edge_from, ci)
       let pub_name = Array::get(edge_pub, ci)
-      if from == entry_path {
+      // #3445: two re-exports of one name in one facade -- the checker binds
+      // the LATER one (its import environment is later-binding-wins), so
+      // only that edge may publish a rename. Following the first one ran
+      // the earlier definition under the later one's type.
+      let is_last_edge = match MutMap::get(edge_last_idx, plan_rename_key(from, pub_name)) {
+        Some(last) => last == ci,
+        None => true
+      }
+      if from == entry_path || !is_last_edge {
         ()
       } else {
         match MutMap::get(rename_idx, plan_rename_key(Array::get(edge_tpath, ci), Array::get(edge_tname, ci))) {
@@ -990,7 +1691,8 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
     enum_alias_origins: enum_alias_origins,
     enum_origin_ambiguous: enum_origin_ambiguous,
     enum_origin_ambiguous_names: enum_origin_ambiguous_names,
-    enum_alias_count: enum_alias_count
+    enum_alias_count: enum_alias_count,
+    type_collision_errors: type_collision_errors
   }
 }
 
@@ -1194,6 +1896,9 @@ fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Ar
 /// kinded enum alias imported through a facade. Aliased re-exports remain
 /// publication-only in their own source unit and contribute no local rewrite.
 export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stmts: Array[Stmt]) -> Array[(String, String)] with Exception {
+  if Array::length(plan.type_collision_errors) > 0 {
+    throw(Array::get(plan.type_collision_errors, 0))
+  }
   let out = empty_aliases()
   let locals_seen = empty_strings()
   let rename_paths = plan.rename_paths

@@ -1,0 +1,34 @@
+import @vibe/compiler/core {
+  rewrite_import_alias_stmts
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_program
+}
+
+fn rewritten(source: String) -> String with Exception {
+  print_program(rewrite_import_alias_stmts(parse_program(lex(source)), [
+    ("helper.pick", "imported_pick"),
+    ("other.pick", "other_pick"),
+    ("plain", "plain_target")
+  ]))
+}
+
+test "a top-level namespace value shadows the qualified alias in every body" {
+  let out = rewritten("let helper = 1\nfn main() -> Int { helper.pick(10) }\n")
+  assert(String::contains(out, "helper.pick(10)"))
+  assert(!String::contains(out, "imported_pick"))
+}
+
+test "mutable and exported namespace values also shadow qualified aliases" {
+  assert(String::contains(rewritten("let mut helper = 1\nfn main() -> Int { helper.pick(10) }\n"), "helper.pick(10)"))
+  assert(String::contains(rewritten("export let helper = 1\nfn main() -> Int { helper.pick(10) }\n"), "helper.pick(10)"))
+}
+
+test "unshadowed namespaces and ordinary aliases are still rewritten" {
+  let out = rewritten("let helper = 1\nfn main() -> Int { helper.pick(10) + other.pick(3) + plain(2) }\n")
+  assert(String::contains(out, "helper.pick(10)"))
+  assert(String::contains(out, "other_pick(3)"))
+  assert(String::contains(out, "plain_target(2)"))
+  assert(String::contains(rewritten("fn main() -> Int { helper.pick(10) }\n"), "imported_pick(10)"))
+}

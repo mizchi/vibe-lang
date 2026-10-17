@@ -1,0 +1,73 @@
+import @vibe/compiler/core {
+  MergedOffsetLocations,
+  merged_offset_line_col,
+  merged_offset_locations_snapshot,
+  merged_offset_space_add,
+  merged_offset_space_reset,
+  with_merged_offset_locations
+}
+
+test "compact locations survive source reset and restore nested scopes on throw" {
+  merged_offset_space_reset()
+  merged_offset_space_add("first.vibe", "éx\nabc", 100)
+  merged_offset_space_add("synthetic.vibe", "// vibe: vpkg contract types module (#1840)\nabc", 200)
+  let first = merged_offset_locations_snapshot()
+  assert(merged_offset_line_col(105) == ("first.vibe", 2, 2))
+  merged_offset_space_reset()
+  merged_offset_space_add("second.vibe", "xyz", 1000)
+  let second = merged_offset_locations_snapshot()
+  let actual = with_merged_offset_locations(first, () -> (String, Int, Int) with Exception {
+    assert(merged_offset_line_col(-1) == ("", 0, 0))
+    assert(merged_offset_line_col(210) == ("", 0, 0))
+    assert(merged_offset_line_col(999) == ("", 0, 0))
+    let error = handle {
+      with_merged_offset_locations(second, () -> Int with Exception {
+        assert(merged_offset_line_col(1001) == ("second.vibe", 1, 2))
+        throw("restore outer scope")
+      })
+      "accepted"
+    } with { Exception::Throw(message) => message }
+    assert(error == "restore outer scope")
+    merged_offset_line_col(105)
+  })
+  assert(actual == ("first.vibe", 2, 2))
+  assert(merged_offset_line_col(105) == ("", 0, 0))
+  assert(merged_offset_line_col(1001) == ("second.vibe", 1, 2))
+  merged_offset_space_reset()
+}
+
+test "invalid compact location columns and newline ranges refuse before action" {
+  let called = [0]
+  for locations in [
+    MergedOffsetLocations::{
+      paths: ["bad"],
+      bases: [],
+      lengths: [3],
+      newlines: [[]],
+      placed: [true]
+    },
+    MergedOffsetLocations::{
+      paths: ["bad"],
+      bases: [0],
+      lengths: [3],
+      newlines: [[3]],
+      placed: [true]
+    },
+    MergedOffsetLocations::{
+      paths: ["bad"],
+      bases: [0],
+      lengths: [3],
+      newlines: [[1, 1]],
+      placed: [true]
+    }
+  ] {
+    let error = handle {
+      with_merged_offset_locations(locations, () -> Int with Exception {
+        Array::set(called, 0, 1); 0
+      })
+      "accepted"
+    } with { Exception::Throw(message) => message }
+    assert(error != "accepted")
+  }
+  assert_eq(Array::get(called, 0), 0)
+}

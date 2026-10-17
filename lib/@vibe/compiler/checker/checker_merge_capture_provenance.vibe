@@ -315,6 +315,22 @@ export fn merge_capture_provenance(expected: Type, actual: Type) -> Type {
 /// Value-producing alternatives retain every possible effect payload, even
 /// when ordinary function-row compatibility compares only the effect base.
 /// No carrier-bearing type means no substitution walk or aggregate rebuild.
+/// #3455: a char literal lexes as an `Int`, and `Int` unifies with `Char`, so
+/// a branch join anchored on a literal arm (`match c { 'a' => 'b', _ => c }`)
+/// typed the whole expression `Int` and its value rendered as a code point.
+/// When the anchor resolved to `Int` and another branch is a `Char`, the
+/// expression is a `Char`: the two are one representation, and only `Char`
+/// says how to render it.
+export fn join_char_branch(joined: Type, other: Type, s: Subst) -> Type {
+  match subst_apply(s, joined) {
+    CtInt => match subst_apply(s, other) {
+      CtChar => CtChar,
+      _ => joined
+    },
+    _ => joined
+  }
+}
+
 export fn merge_value_effect_provenance(expected: Type, actual: Type, s: Subst) -> Type {
   if type_has_effect_payload(actual, s) {
     merge_capture_provenance_at(subst_apply(s, expected), subst_apply(s, actual), true)

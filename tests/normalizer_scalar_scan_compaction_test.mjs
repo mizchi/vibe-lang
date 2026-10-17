@@ -257,7 +257,7 @@ const modeArms = [
   // optional leaves no syntactic trace at the call site, but the callee's name
   // is one, so this reads the same table the walk reads.
   { mode: 6, arms: [
-    { role: "top-level-optional-callee", pattern: "ECall(callee, _, _, _)", body: `match callee { EIdent(n, _) => match optional_param_flags(n) { Some(_) => true, None => false }, _ => false }` },
+    { role: "top-level-optional-callee", pattern: "ECall(callee, _, _, _)", body: `match callee { EIdent(n, _) => match optional_param_flags(n) { Some(_) => true, None => false }, EDot(EIdent(ns, _), field, _, _) => match optional_param_flags(String::concat(ns, String::concat(".", field))) { Some(_) => true, None => false }, _ => false }` },
     { role: "optional-call-default", pattern: "_", body: "false" }
   ] },
   // The `else`, i.e. mode 5.

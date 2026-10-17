@@ -1,0 +1,36 @@
+import ./context.vibe {
+  read_function_context, run_function_range
+}
+import ./job.vibe {
+  read_function_job
+}
+import ./product.vibe {
+  validate_function_product
+}
+import @vibe/blake3/simd {
+  blake3_bytes_simd
+}
+import @vibe/compiler/codegen/common_base {
+  codegen_body_cache_to_bytes
+}
+
+// One process/Store/Instance/heap per CPU worker. Jobs within it are serial;
+// compiler scratch is never entered concurrently in a shared instance.
+fn main() -> Unit allows Env + Exception + Fs {
+  let bytes = Fs::read_bytes(Env::get("VIBE_LOWERING_SHARED_CONTEXT"))
+  let digest = blake3_bytes_simd(bytes)
+  let context = read_function_context(bytes)
+  let list = Fs::read_file(Env::get("VIBE_LOWERING_WORKER_LIST"))
+  for path in String::split(list, "\n") {
+    if path != "" {
+      let input = Fs::read_bytes(path)
+      let job = read_function_job(context, input, digest)
+      let product = run_function_range(context, job.lo, job.hi)
+      validate_function_product(context.plan, context.input, product, job.lo, job.hi)
+      let output = codegen_body_cache_to_bytes(product)
+      Fs::write_bytes(path + ".product", output)
+      Fs::write_file(path + ".product.receipt", blake3_bytes_simd(input) + "\t" + blake3_bytes_simd(output))
+    } else ()
+  }
+  ()
+}
