@@ -86,6 +86,52 @@ pub(super) fn read_wasi_u32(
     Ok(u32::from_le_bytes(buf))
 }
 
+/// Process groups of shell commands a `--test-each` block has running. The
+/// watchdog ends the runner when a block is stuck in a host call -- often
+/// exactly such a command -- and a child left behind would keep running (and
+/// keep acting) past the block's deadline; `kill_child_groups` ends them.
+static CHILD_GROUPS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// Run `/bin/bash -c cmd`, its output captured or inherited. With `isolate`
+/// (`--test-each`) the child leads a process group of its own, recorded while
+/// it runs; otherwise it is spawned exactly as before, so an interactive
+/// program's Ctrl-C still reaches its commands.
+fn run_shell(cmd: &str, capture: bool, isolate: bool) -> io::Result<std::process::Output> {
+    let mut command = std::process::Command::new("/bin/bash");
+    command.arg("-c").arg(cmd);
+    if capture {
+        command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+    }
+    #[cfg(unix)]
+    if isolate {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let child = command.spawn()?;
+    let pid = child.id();
+    if isolate {
+        CHILD_GROUPS.lock().unwrap().push(pid);
+    }
+    let output = child.wait_with_output();
+    if isolate {
+        CHILD_GROUPS.lock().unwrap().retain(|p| *p != pid);
+    }
+    output
+}
+
+/// Kill every recorded shell process group (SIGKILL, the whole group).
+pub(super) fn kill_child_groups() {
+    for pgid in CHILD_GROUPS.lock().unwrap().iter() {
+        let _ = std::process::Command::new("kill")
+            .args(["-s", "KILL", "--", &format!("-{pgid}")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 pub(super) fn write_wasi_fd(host: &mut HostState, fd: i32, bytes: &[u8]) -> io::Result<()> {
     match fd {
         1 if host.discard_stdout => Ok(()),
@@ -1340,11 +1386,10 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         "sh",
         |mut caller: Caller<'_, HostState>, cmd: i64| -> Result<i64> {
             let cmd = vibe_read_packed_str(&mut caller, cmd)?;
-            let status = std::process::Command::new("/bin/bash")
-                .arg("-c")
-                .arg(&cmd)
-                .status()
-                .map_err(|e| format_err!("vibe sh '{cmd}': {e}"))?;
+            let isolate = caller.data().discard_stdout;
+            let status = run_shell(&cmd, false, isolate)
+                .map_err(|e| format_err!("vibe sh '{cmd}': {e}"))?
+                .status;
             if !status.success() {
                 bail!("vibe sh '{cmd}': exited with {status}");
             }
@@ -1362,10 +1407,8 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         "sh_lines",
         |mut caller: Caller<'_, HostState>, cmd: i64| -> Result<i64> {
             let cmd = vibe_read_packed_str(&mut caller, cmd)?;
-            let output = std::process::Command::new("/bin/bash")
-                .arg("-c")
-                .arg(&cmd)
-                .output()
+            let isolate = caller.data().discard_stdout;
+            let output = run_shell(&cmd, true, isolate)
                 .map_err(|e| format_err!("vibe sh_lines '{cmd}': {e}"))?;
             let result = if output.status.success() {
                 String::from_utf8_lossy(&output.stdout)
@@ -1394,10 +1437,8 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         "sh_capture",
         |mut caller: Caller<'_, HostState>, cmd: i64| -> Result<i64> {
             let cmd = vibe_read_packed_str(&mut caller, cmd)?;
-            let output = std::process::Command::new("/bin/bash")
-                .arg("-c")
-                .arg(&cmd)
-                .output()
+            let isolate = caller.data().discard_stdout;
+            let output = run_shell(&cmd, true, isolate)
                 .map_err(|e| format_err!("vibe sh_capture '{cmd}': {e}"))?;
             // On Unix a signal-killed child has no exit code; fall back to
             // 128 (the shell convention), matching wasm_vibe_host_runner.js's

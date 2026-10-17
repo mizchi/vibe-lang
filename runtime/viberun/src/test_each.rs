@@ -203,6 +203,9 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
                             let _ = writeln!(out, "vibe::test\tskip\t{}", row(rest));
                         }
                         let _ = out.flush();
+                        // The stuck call is usually a shell command; it and
+                        // its children must not outlive the runner.
+                        kill_child_groups();
                         std::process::exit(1);
                     }
                 }

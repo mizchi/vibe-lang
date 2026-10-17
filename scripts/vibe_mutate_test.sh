@@ -180,6 +180,20 @@ else
   note "  FAIL expected .vibe/build/mutate/results.tsv and no run.* directory"; fail=1
 fi
 
+note "=== a replayed report reads the snapshot it measured ==="
+# Edit the target after the run: a line inserted above the survivors. The
+# replay must still point at line 14, the line that was measured.
+cp "$WORK/lib.vibe" "$WORK/lib.vibe.orig"
+{ printf '// a comment added after the run\n'; cat "$WORK/lib.vibe.orig"; } > "$WORK/lib.vibe"
+replay="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 300 \
+  bash "$ROOT_DIR/runtime/vibe" mutate-report .vibe/build/mutate/results.tsv 2>&1)"
+mv "$WORK/lib.vibe.orig" "$WORK/lib.vibe"
+if printf '%s\n' "$replay" | grep -qxF 'SURVIVED lib.vibe:14:5 arith `+` -> `-` | n + 1'; then
+  note "  ok   the survivor keeps its measured line"
+else
+  note "  FAIL the replay read the edited target"; printf '%s\n' "$replay" | grep SURVIVED; fail=1
+fi
+
 note "=== a second test file with a test for inc kills the survivors: exit 0 ==="
 cat > "$WORK/inc_test.vibe" <<'EOF'
 import ./lib.vibe {
@@ -234,8 +248,8 @@ fi
 note "=== a mutant that blocks in a host call is killed at its deadline, not a hang ==="
 # The epoch deadline cannot interrupt a host import; the runner's watchdog
 # must. Baseline: double(2) == 4, so no shell call. Under `*` -> `/` and
-# 2 -> 3 the block blocks in `sleep 30` far past --timeout-ms 300. Without
-# the watchdog each would wait the full 30 s (the epoch deadline fires only
+# 2 -> 3 the block blocks in `sleep 29.5` far past --timeout-ms 300. Without
+# the watchdog each would wait the full 29.5 s (the epoch deadline fires only
 # once the host call returns), so the run's wall time is the evidence.
 cat > "$WORK/hang_test.vibe" <<'EOF'
 import ./lib.vibe {
@@ -244,7 +258,7 @@ import ./lib.vibe {
 
 test "hang" allows Process {
   if double(2) != 4 {
-    let _ = sh_lines("sleep 30")
+    let _ = sh_lines("sleep 29.5")
   }
 }
 
@@ -256,13 +270,18 @@ hang_start="$(date +%s)"
 hang_out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
   bash "$ROOT_DIR/runtime/vibe" mutate --timeout-ms 300 lib.vibe hang_test.vibe 2>/dev/null)"
 hang_secs=$(( $(date +%s) - hang_start ))
+# The stuck `sleep` is killed with its process group, not left running past
+# the block's deadline. (`ps -A -o args` is POSIX; the odd duration keeps the
+# match to this case.)
+hang_orphans="$(ps -A -o args= | grep -c '^sleep 29\.5$' || true)"
 # "after" runs behind the stuck block. The watchdog's stop leaves it not run,
 # so it is run again rather than credited with a kill it never made.
 if printf '%s\n' "$hang_out" | grep -qxF 'TEST kills=2 unique=2 hang_test.vibe "hang"' \
-  && printf '%s\n' "$hang_out" | grep -qxF 'NOKILL hang_test.vibe "after"' && [ "$hang_secs" -lt 45 ]; then
+  && printf '%s\n' "$hang_out" | grep -qxF 'NOKILL hang_test.vibe "after"' && [ "$hang_secs" -lt 45 ] \
+  && [ "$hang_orphans" = 0 ]; then
   note "  ok   both blocking mutants killed (${hang_secs}s)"
 else
-  note "  FAIL expected both blocking mutants killed by \"hang\" alone (\"after\" uncredited) well under 2 x 30 s (took ${hang_secs}s)"; printf '%s\n' "$hang_out" | head -8; fail=1
+  note "  FAIL expected both blocking mutants killed by \"hang\" alone (\"after\" uncredited) well under 2 x 30 s, no orphaned sleep (took ${hang_secs}s, ${hang_orphans} left)"; printf '%s\n' "$hang_out" | head -8; fail=1
 fi
 
 note "=== a title holding a NUL is still one callable block ==="
