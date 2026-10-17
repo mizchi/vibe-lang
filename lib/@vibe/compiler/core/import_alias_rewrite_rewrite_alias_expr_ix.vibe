@@ -1222,7 +1222,7 @@ export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], alia
     }
     bi = bi + 1
   }
-  let am = aliasidx_with_pattern_ctors(aliasidx_build(combined), pattern_ctors)
+  let am = aliasidx_with_pattern_ctors(aliasidx_build(namespace_aliases_without_top_level_values(combined, stmts)), pattern_ctors)
   let imported = for stmt in stmts {
     rewrite_alias_stmt_ix(rewrite_impl_method_binding(stmt, owner_aliases), am)
   }
@@ -1231,6 +1231,47 @@ export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], alia
   for stmt in imported {
     rewrite_local_alias_impl_stmt(stmt, local_aliases, local_owner_aliases)
   }
+}
+
+/// #3490: `aliases` without the qualified-import members (`helper.greet` of
+/// `import ./dep.vibe as helper only { greet }`) whose namespace a top-level
+/// value of `stmts` rebinds. The checker reads `helper.greet` there as the
+/// value's field, as it does under a local `helper` (#897), so the program
+/// must not call the import. A plain alias is not touched: a top-level
+/// declaration sharing an import's own name is renamed instead (#3444).
+fn namespace_aliases_without_top_level_values(aliases: Array[(String, String)], stmts: Array[Stmt]) -> Array[(String, String)] {
+  let names = empty_strings()
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, _) => Array::push(names, name),
+      SLetMut(name, _, _) => Array::push(names, name),
+      SExternLet(name, _) => Array::push(names, name),
+      SFnDecl(_, name, _, _, _) => Array::push(names, name),
+      _ => ()
+    }
+  }
+  let mut any = false
+  for entry in aliases {
+    if !any && alias_namespace_rebound(entry.0, names) {
+      any = true
+    }
+  }
+  if !any {
+    aliases
+  } else {
+    let out = empty_aliases()
+    for entry in aliases {
+      if !alias_namespace_rebound(entry.0, names) {
+        Array::push(out, entry)
+      }
+    }
+    out
+  }
+}
+
+fn alias_namespace_rebound(alias: String, names: Array[String]) -> Bool {
+  let dot = String::index_of(alias, ".")
+  dot > 0 && import_alias_rewrite_string_array_contains(names, String::substring(alias, 0, dot))
 }
 
 fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
