@@ -28,9 +28,10 @@ self-build. RC's status and residual limits are in
 > case set measured across *backends* — linear vs `VIBE_BACKEND=gc`, and where
 > the two cross over — see
 > [`docs/internal/reports/code-size-linear-vs-gc.md`](../reports/code-size-linear-vs-gc.md)
-> (`scripts/measure_backend_code_size.sh`). Short version: wasm-gc pays a fixed
-> ~4 KB runtime prelude to save ~6% per byte of user code, so it only comes out
-> smaller above ~35 KB of linear output.
+> (`scripts/measure_backend_code_size.sh`). Short version: neither lane has a
+> fixed prelude; wasm-gc is smaller for small programs that allocate (it links
+> no allocator or drop), about even per byte of synthetic user code, and +37%
+> at the compiler's own scale.
 
 ### Measured 2026-07-25 (post-#1107 Phase 4 funcref-table minimization)
 

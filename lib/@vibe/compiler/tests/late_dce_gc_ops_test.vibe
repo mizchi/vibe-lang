@@ -1,0 +1,205 @@
+import @vibe/compiler/codegen/wasi {
+  late_dce_prune_module, late_dce_prune_refusal
+}
+
+//# Functions
+
+fn leb_at(b: Bytes, p: Int) -> (Int, Int) {
+  let mut r = 0
+  let mut shift = 0
+  let mut q = p
+  let mut done = false
+  while !done {
+    let x = Bytes::get(b, q)
+    q = q + 1
+    r = r|((x&127)<<shift)
+    shift = shift + 7
+    if x < 128 {
+      done = true
+    } else {
+      ()
+    }
+  }
+  (r, q)
+}
+
+/// Entry count of the function section (id 3), or -1 without one.
+fn function_count(m: Bytes) -> Int {
+  let mut p = 8
+  let mut found = 0 - 1
+  while found < 0 && p < Bytes::length(m) {
+    let sid = Bytes::get(m, p)
+    let (n, body) = leb_at(m, p + 1)
+    if sid == 3 {
+      let (c, _) = leb_at(m, body)
+      found = c
+    } else {
+      ()
+    }
+    p = body + n
+  }
+  found
+}
+
+// The pruner runs on the wasm-gc lane's output too, so it has to decode that
+// lane's encodings. A hand-built module (it validates under a wasm-gc engine):
+// one struct type, function 0 exported and calling function 2, function 1
+// unreachable. Function 0 declares a `(ref null $s)` local -- a TWO-byte
+// value type, which the local-declaration walk used to read as one byte --
+// opens a `block (result (ref null $s))` and uses `struct.new_default`,
+// `ref.as_non_null` and `struct.get`. Before the decoder knew these, the walk
+// desynchronised and the module was returned unpruned with three functions.
+test "the late-DCE pruner decodes wasm-gc locals, block types and 0xFB instructions" {
+  let wasm = Bytes::from_array([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    8,
+    2,
+    95,
+    1,
+    126,
+    1,
+    96,
+    0,
+    0,
+    3,
+    4,
+    3,
+    1,
+    1,
+    1,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    32,
+    3,
+    24,
+    1,
+    1,
+    99,
+    0,
+    2,
+    99,
+    0,
+    251,
+    1,
+    0,
+    11,
+    33,
+    0,
+    32,
+    0,
+    212,
+    251,
+    2,
+    0,
+    0,
+    26,
+    16,
+    2,
+    11,
+    2,
+    0,
+    11,
+    2,
+    0,
+    11
+  ])
+  inspect(function_count(wasm), content = "3")
+  let pruned = late_dce_prune_module(wasm)
+  inspect(late_dce_prune_refusal(), content = "0")
+  inspect(function_count(pruned), content = "2")
+}
+
+test "an unknown 0xFB sub-opcode still refuses the whole module" {
+  // Same module with `struct.get` replaced by sub-opcode 31, which the GC
+  // proposal does not define: the pass must not guess its immediates.
+  let wasm = Bytes::from_array([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    8,
+    2,
+    95,
+    1,
+    126,
+    1,
+    96,
+    0,
+    0,
+    3,
+    4,
+    3,
+    1,
+    1,
+    1,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    32,
+    3,
+    24,
+    1,
+    1,
+    99,
+    0,
+    2,
+    99,
+    0,
+    251,
+    1,
+    0,
+    11,
+    33,
+    0,
+    32,
+    0,
+    212,
+    251,
+    31,
+    0,
+    0,
+    26,
+    16,
+    2,
+    11,
+    2,
+    0,
+    11,
+    2,
+    0,
+    11
+  ])
+  let pruned = late_dce_prune_module(wasm)
+  assert(late_dce_prune_refusal() > 0)
+  inspect(function_count(pruned), content = "3")
+}
