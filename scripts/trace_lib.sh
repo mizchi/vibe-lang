@@ -26,6 +26,12 @@ trace_rand_hex() {
 }
 
 trace_now_ns() {
+  # Realtime can step backwards under WSL host synchronization. Opt-in build
+  # measurements use one host's monotonic clock across all child processes.
+  if [ "${VIBE_TRACE_MONOTONIC:-0}" = "1" ]; then
+    python3 -c 'import time; print(time.monotonic_ns())'
+    return
+  fi
   # date +%s%N is GNU; macOS date lacks %N and echoes a literal N.
   local t
   t="$(date +%s%N 2>/dev/null || true)"
@@ -39,7 +45,7 @@ trace_json_escape() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
-# Sets TRACE_TOKEN to "<trace_id> <span_id> <parent_span_id|.> <t0> <saved_traceparent|.> <name>"
+# Sets TRACE_TOKEN to "<trace_id> <span_id> <parent_span_id|.> <t0> <saved_traceparent|.> <clock> <name>"
 # and exports VIBE_TRACEPARENT for children. Assigns rather than echoing on
 # purpose: `tok=$(trace_begin ...)` would run the export inside a subshell, so
 # the child process would inherit the PARENT's traceparent and the tree would
@@ -63,23 +69,29 @@ trace_begin() {
   local span_id
   span_id="$(trace_rand_hex 16)"
   local saved="${VIBE_TRACEPARENT:-}"
+  local clock="realtime"
+  [ "${VIBE_TRACE_MONOTONIC:-0}" != "1" ] || clock="monotonic"
   export VIBE_TRACEPARENT="00-${trace_id}-${span_id}-01"
-  TRACE_TOKEN="$trace_id $span_id ${parent_sid:-.} $(trace_now_ns) ${saved:-.} $name"
+  TRACE_TOKEN="$trace_id $span_id ${parent_sid:-.} $(trace_now_ns) ${saved:-.} $clock $name"
 }
 
 trace_end() {
   local token="$1"
   local rc="${2:-0}"
   [ -n "$token" ] || return 0
-  local trace_id span_id parent_sid t0 saved name
-  read -r trace_id span_id parent_sid t0 saved name <<< "$token"
+  local trace_id span_id parent_sid t0 saved clock name
+  read -r trace_id span_id parent_sid t0 saved clock name <<< "$token"
   [ "$parent_sid" = "." ] && parent_sid=""
   if [ "$saved" = "." ]; then
     unset VIBE_TRACEPARENT
   else
     export VIBE_TRACEPARENT="$saved"
   fi
-  printf '{"tid":"%s","sid":"%s","pid":"%s","name":"%s","t0":%s,"t1":%s,"rc":%s}\n' \
-    "$trace_id" "$span_id" "$parent_sid" "$(trace_json_escape "$name")" "$t0" "$(trace_now_ns)" "$rc" \
+  local monotonic=0
+  [ "$clock" != "monotonic" ] || monotonic=1
+  local t1
+  t1="$(VIBE_TRACE_MONOTONIC="$monotonic" trace_now_ns)"
+  printf '{"tid":"%s","sid":"%s","pid":"%s","name":"%s","t0":%s,"t1":%s,"rc":%s,"clock":"%s"}\n' \
+    "$trace_id" "$span_id" "$parent_sid" "$(trace_json_escape "$name")" "$t0" "$t1" "$rc" "$clock" \
     >> "$VIBE_TRACE_OUT"
 }
