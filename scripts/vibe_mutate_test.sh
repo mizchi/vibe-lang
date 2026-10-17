@@ -115,11 +115,23 @@ expect_line() {
 }
 
 before="$(cksum < "$WORK/lib.vibe")"
+# A test file with no test blocks still carries the (empty) authoritative
+# list, so its exported `__test_helper2` is not run by prefix either.
+cat > "$WORK/helper_only_test.vibe" <<'EOF'
+import ./lib.vibe {
+  double
+}
+
+export fn __test_helper2() -> Int {
+  double(1)
+}
+EOF
+
 # VIBE_TEST_BACKEND=gc is inherited on purpose: mutation runs are linear
 # (the per-block runner and the authoritative test list are linear
 # artifacts), so the setting must not leak into them.
 out="$(cd "$WORK" && VIBE_TEST_BACKEND=gc VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
-  bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe lib_test.vibe 2>"$WORK/err")"
+  bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe lib_test.vibe helper_only_test.vibe 2>"$WORK/err")"
 status=$?
 
 note "=== the report ==="
