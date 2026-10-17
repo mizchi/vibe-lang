@@ -1176,16 +1176,18 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
       // `deep`: a name this reading cannot account for -- a binder of a
       // form it does not track (a `for` element, a handler arm's payload, a
       // lambda's parameter) -- may hold any parameter (Codex on #3492). A
-      // constructor or a declaration of the module is not one.
+      // constructor or a declaration of the module is not one, unless a
+      // binder of the body shadows it.
       if deep && !known && !callee_is_ctor_name(name) {
-        match retention_decl_value(name) {
-          Some(_) => (),
-          None => {
-            let mut p = 0
-            while p < Array::length(params) {
-              push_unique_dependency_index(found, p)
-              p = p + 1
-            }
+        let declared = match retention_decl_value(name) {
+          Some(_) => !checker_string_array_has(held_result_binders, name),
+          None => false
+        }
+        if !declared {
+          let mut p = 0
+          while p < Array::length(params) {
+            push_unique_dependency_index(found, p)
+            p = p + 1
           }
         }
       }
@@ -1455,8 +1457,67 @@ fn collect_held_call_args(callee: String, args: Array[Expr], params: Array[(Stri
 /// a region, of the callee's declaration.
 fn held_result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Array[Int] {
   let found = array_empty()
+  let mark = Array::length(held_result_binders)
+  push_body_binders(body)
   collect_result_params(body, params, array_empty(), array_empty(), found, true)
+  Array::truncate(held_result_binders, mark)
   found
+}
+
+/// Every name a binder inside the bodies being read deeply introduces, so a
+/// local spelled like a module declaration is not taken for it (Codex on
+/// #3492). A name bound anywhere in the body counts, whatever its scope:
+/// that can only make the reading hold more.
+let held_result_binders: Array[String] = []
+
+fn push_body_binders(e: Expr) -> Unit {
+  let stack: Array[Expr] = [e]
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      ELet(x, _, _, _) => Array::push(held_result_binders, x),
+      ELetRec(x, _, _) => Array::push(held_result_binders, x),
+      ELetMut(x, _, _, _) => Array::push(held_result_binders, x),
+      EMatch(_, arms) => {
+        for arm in arms {
+          retention_pat_names_into(arm.0, held_result_binders)
+        }
+        ()
+      },
+      EHandle(_, arms) => {
+        for arm in arms {
+          retention_pat_names_into(arm.0, held_result_binders)
+        }
+        ()
+      },
+      ELoop(vars, _) => {
+        for v in vars {
+          Array::push(held_result_binders, v.0)
+        }
+        ()
+      },
+      EForIn(x, index, _, _) => {
+        Array::push(held_result_binders, x)
+        match index {
+          Some(i) => Array::push(held_result_binders, i),
+          None => ()
+        }
+      },
+      EFn(_, _, ps, _, _, _) => {
+        for p in ps {
+          Array::push(held_result_binders, p.0)
+        }
+        ()
+      },
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+    ()
+  }
 }
 
 export fn direct_result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Array[Int] {
