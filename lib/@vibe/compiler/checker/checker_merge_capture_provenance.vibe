@@ -915,30 +915,42 @@ fn struct_field_type(env: TypeEnv, sname: String, args: Array[Type], field: Stri
           out = Some(fty)
         }
       }
+      // The struct's parameters read as its arguments, through the whole
+      // field type (Codex on #3492): `Holder[Int]`'s `inner: Inner[T]` is an
+      // `Inner[Int]`. A parameter with no argument stays a name, which no
+      // scalar test accepts.
       match out {
-        // A parameter reads as its argument; an uninstantiated one is not
-        // known here.
-        Some(CtNamed(pn, pargs)) => if Array::length(pargs) == 0 {
-          let mut sub: Option[Type] = Some(CtNamed(pn, pargs))
-          let mut i = 0
-          while i < Array::length(params) {
-            if type_param_name(Array::get(params, i)) == pn {
-              sub = if i < Array::length(args) {
-                Some(Array::get(args, i))
-              } else {
-                None
-              }
-            }
-            i = i + 1
-          }
-          sub
-        } else {
-          out
-        },
-        _ => out
+        Some(t) => Some(subst_struct_params(t, params, args)),
+        None => None
       }
     },
     _ => None
+  }
+}
+
+fn subst_struct_params(t: Type, params: Array[String], args: Array[Type]) -> Type {
+  match t {
+    CtNamed(n, xs) => if Array::length(xs) == 0 {
+      let mut out = t
+      let mut i = 0
+      while i < Array::length(params) && i < Array::length(args) {
+        if type_param_name(Array::get(params, i)) == n {
+          out = Array::get(args, i)
+        }
+        i = i + 1
+      }
+      out
+    } else {
+      CtNamed(n, for x in xs {
+        subst_struct_params(x, params, args)
+      })
+    },
+    CtArray(e) => CtArray(subst_struct_params(e, params, args)),
+    CtOption(e) => CtOption(subst_struct_params(e, params, args)),
+    CtTuple(items) => CtTuple(for x in items {
+      subst_struct_params(x, params, args)
+    }),
+    _ => t
   }
 }
 

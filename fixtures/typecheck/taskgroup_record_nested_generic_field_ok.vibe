@@ -1,0 +1,35 @@
+// #3488 control (Codex on #3492): a scalar read through nested generic
+// fields (`Holder[Int]`'s `inner: Inner[T]`, then `tag: T`) is the scalar the
+// outer instantiation gives it.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Cell {
+  mut v: Option[TaskHandle[Int]]
+}
+
+struct Wrap {
+  cell: Cell;
+  tag: Int
+}
+
+struct Inner[T] {
+  tag: T
+}
+
+struct Holder[T] {
+  inner: Inner[T]
+}
+
+fn put(w: Wrap, x: TaskHandle[Int]) -> Unit {
+  w.cell.v = Some(x)
+}
+
+fn main() -> Unit allows Exception + Console {
+  let holder: Holder[Int] = Holder::{ inner: Inner::{ tag: 7 } }
+  let r = TaskGroup::run((n) -> {
+    let w = Wrap::{ cell: Cell::{ v: None }, tag: holder.inner.tag }
+    put(w, TaskGroup::spawn(n, () -> { 41 }))
+    1
+  })
+  println("r=\{r}")
+}
