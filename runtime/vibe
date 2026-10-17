@@ -1979,7 +1979,7 @@ REPL_HELP
       # VIBE_TEST_BACKEND=gc must not select the gc lane here.
       ( cd "$PROJECT_ROOT" && env $ADAPTER_MODE_CLEARS -u VIBE_TEST_BACKEND -u VIBE_BACKEND VIBE_HOST_ACTION_OUT="$plan" \
           VIBE_BUILD_DIR="$mwork/build" VIBE_INVOKE_DIR="$INVOKE_DIR" \
-          "$RUNNER" "$mcli" test "$@" ) >/dev/null 2>>"$mwork/compile.log" || true
+          "$RUNNER" "$mcli" test "$@" ) >/dev/null 2>>"$mwork/compile.log" </dev/null || true
       [ -s "$plan" ] && [ "$(sed -n '2p' "$plan")" = run-tests ]
     }
     mutate_wasm_path() {
@@ -1995,12 +1995,18 @@ REPL_HELP
       [ "$1" -ef "$mabs" ] && return 0
       # A relative row may be spelled from the invoke dir or from the
       # project root; either naming the target's file is a hit.
+      # A file whose imports do not resolve is an error, not "does not import
+      # the target": skipping it would mutate a smaller suite than was asked.
+      invoke_cli deps "$1" > "$mwork/deps.out" 2> "$mwork/deps.err" < /dev/null || {
+        cat "$mwork/deps.err" >&2
+        die "vibe mutate: cannot resolve the imports of $1"
+      }
       while IFS= read -r dep; do
         case "$dep" in
           /*) [ "$dep" -ef "$mabs" ] && return 0 ;;
           *) { [ "$INVOKE_DIR/$dep" -ef "$mabs" ] || [ "$PROJECT_ROOT/$dep" -ef "$mabs" ]; } && return 0 ;;
         esac
-      done < <(invoke_cli deps "$1" 2>/dev/null)
+      done < "$mwork/deps.out"
       return 1
     }
     mrel=()
@@ -2024,7 +2030,8 @@ REPL_HELP
       mwasm="$(mutate_wasm_path "$mwasm")"
       [ -n "$mwasm" ] || { cat "$mwork/compile.log" >&2; die "vibe mutate: $msrc did not compile"; }
       cp "$mwasm" "$mwork/base/$mfi.wasm"
-      "$RUNNER" --test-each "$mwork/base/$mfi.wasm" > "$mwork/base/$mfi.out" || true
+      # stdin is the site list's loop below, never a test's to read.
+      "$RUNNER" --test-each "$mwork/base/$mfi.wasm" > "$mwork/base/$mfi.out" </dev/null || true
       while IFS="$(printf '\t')" read -r _ mverdict mname mreason; do
         if [ "$mverdict" = ok ]; then
           printf 'test\t%s\t%s\t%s\n' "$mtid" "$msrc" "$mname" >> "$mresults"
@@ -2057,11 +2064,13 @@ REPL_HELP
             mcompiled=1
             if ! cmp -s "$mwasm" "$mwork/base/$mfi.wasm"; then
               mdiffer=1
-              while IFS="$(printf '\t')" read -r _ mverdict mname _; do
-                [ "$mverdict" = ok ] && continue
-                mt_id="$(awk -F'\t' -v f="$mfi" -v n="$mname" '$1 == f && $2 == n { print $3; exit }' "$mwork/tests.tsv")"
-                [ -n "$mt_id" ] && mkillers="${mkillers:+$mkillers,}$mt_id"
-              done < <("$RUNNER" --test-each "$mwasm" 2>/dev/null | grep '^vibe::test	')
+              # A block kills the mutant unless it reports `ok`: a failure, a
+              # timeout, and a row that never came (the runner died) alike.
+              "$RUNNER" --test-each "$mwasm" 2>/dev/null </dev/null \
+                | awk -F'\t' '$1 == "vibe::test" && $2 == "ok" { print $3 }' > "$mwork/ok.txt" || true
+              while IFS= read -r mt_id; do
+                mkillers="${mkillers:+$mkillers,}$mt_id"
+              done < <(awk -F'\t' -v f="$mfi" -v okf="$mwork/ok.txt" 'FILENAME == okf { ok[$0] = 1; next } $1 == f && !($2 in ok) { print $3 }' "$mwork/ok.txt" "$mwork/tests.tsv")
             fi
           fi
           mfi=$((mfi + 1))

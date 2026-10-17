@@ -9,7 +9,9 @@
 //!
 //! A mutant can turn a terminating loop into an infinite one, so every block
 //! runs under a wall-clock deadline (`VIBE_TEST_TIMEOUT_MS`, default 10000)
-//! enforced with epoch interruption.
+//! enforced with epoch interruption, and -- for a block stuck inside a
+//! blocking host import, which an epoch cannot interrupt -- by a watchdog
+//! that reports it and ends the run with a row for every block.
 //!
 //! Output, one line per block on stdout, tab separated:
 //!   vibe::test<TAB>ok<TAB><name>
@@ -143,19 +145,64 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
         std::thread::spawn(move || run_epoch_ticker(engine, stop, Duration::from_millis(1)))
     };
 
+    // The epoch deadline interrupts guest code, not a host import: a mutant
+    // that blocks in one (a `sleep` a flipped branch now reaches, a read)
+    // would hold the run for as long as the import blocks. A watchdog thread
+    // owns that case. Every row is written under `watch`, so when a block
+    // overruns its deadline by WATCHDOG_GRACE the watchdog reports it as a
+    // timeout, reports every block after it as not run, and ends the process
+    // -- the report stays complete, one row per block, either way.
+    const WATCHDOG_GRACE: Duration = Duration::from_millis(2_000);
+    let names = Arc::new(names);
+    let watch: Arc<Mutex<Option<(usize, Instant)>>> = Arc::new(Mutex::new(None));
+    let watchdog = {
+        let names = names.clone();
+        let watch = watch.clone();
+        let stop = stop.clone();
+        let limit = Duration::from_millis(timeout_ms) + WATCHDOG_GRACE;
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(20));
+                let running = watch.lock().unwrap();
+                if let Some((i, started)) = *running {
+                    if started.elapsed() > limit {
+                        let mut out = io::stdout().lock();
+                        let row = |n: &String| escape_field(n.strip_prefix("__test_").unwrap_or(n));
+                        let _ = writeln!(out, "vibe::test\ttimeout\t{}", row(&names[i]));
+                        for rest in &names[i + 1..] {
+                            let _ = writeln!(
+                                out,
+                                "vibe::test\tfail\t{}\tnot run: an earlier block blocked in a host call past its deadline",
+                                row(rest)
+                            );
+                        }
+                        let _ = out.flush();
+                        std::process::exit(1);
+                    }
+                }
+            }
+        })
+    };
+    let emit = |line: String| -> Result<()> {
+        let mut running = watch.lock().unwrap();
+        *running = None;
+        let mut out = io::stdout().lock();
+        writeln!(out, "{line}")?;
+        out.flush()?;
+        Ok(())
+    };
+
     let mut all_ok = true;
-    let mut out = io::stdout().lock();
-    for full in &names {
+    for (index, full) in names.iter().enumerate() {
         let name = escape_field(full.strip_prefix("__test_").unwrap_or(full));
         // Two blocks with one title share one export, so only one of them is
         // callable: running it twice would report the other block's verdict
         // without ever running it. Each copy fails instead, saying why.
         if names.iter().filter(|n| *n == full).count() > 1 {
             all_ok = false;
-            writeln!(
-                out,
+            emit(format!(
                 "vibe::test\tfail\t{name}\tduplicate test title: rename one of the blocks, only one of them can be run on its own"
-            )?;
+            ))?;
             continue;
         }
         let mut state = HostState::new(
@@ -166,6 +213,7 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
         let mut store = Store::new(&engine, state);
         store.limiter(|s| &mut s.mem);
         store.set_epoch_deadline(timeout_ms);
+        *watch.lock().unwrap() = Some((index, Instant::now()));
         let verdict: std::result::Result<(), (bool, String)> = (|| {
             let instance = linker
                 .instantiate(&mut store, &module)
@@ -194,19 +242,19 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
             }
         })();
         match verdict {
-            Ok(()) => writeln!(out, "vibe::test\tok\t{name}")?,
+            Ok(()) => emit(format!("vibe::test\tok\t{name}"))?,
             Err((true, _)) => {
                 all_ok = false;
-                writeln!(out, "vibe::test\ttimeout\t{name}")?
+                emit(format!("vibe::test\ttimeout\t{name}"))?
             }
             Err((false, reason)) => {
                 all_ok = false;
-                writeln!(out, "vibe::test\tfail\t{name}\t{}", escape_field(&reason))?
+                emit(format!("vibe::test\tfail\t{name}\t{}", escape_field(&reason)))?
             }
         }
-        out.flush()?;
     }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = ticker.join();
+    let _ = watchdog.join();
     Ok(if all_ok { 0 } else { 1 })
 }

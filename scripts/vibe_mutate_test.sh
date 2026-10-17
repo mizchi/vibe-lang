@@ -209,6 +209,52 @@ else
   fail=1
 fi
 
+note "=== a mutant that blocks in a host call is a timeout kill, not a hang ==="
+# The epoch deadline cannot interrupt a host import; the runner's watchdog
+# must. Baseline: double(2) == 4, so no shell call. Under `*` -> `/` and
+# 2 -> 3 the block blocks in `sleep 30` far past --timeout-ms 300. Without
+# the watchdog each would wait the full 30 s (the epoch deadline fires only
+# once the host call returns), so the run's wall time is the evidence.
+cat > "$WORK/hang_test.vibe" <<'EOF'
+import ./lib.vibe {
+  double
+}
+
+test "hang" allows Process {
+  if double(2) != 4 {
+    let _ = sh_lines("sleep 30")
+  }
+}
+EOF
+hang_start="$(date +%s)"
+hang_out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
+  bash "$ROOT_DIR/runtime/vibe" mutate --timeout-ms 300 lib.vibe hang_test.vibe 2>/dev/null)"
+hang_secs=$(( $(date +%s) - hang_start ))
+if printf '%s\n' "$hang_out" | grep -qxF 'TEST kills=2 unique=2 hang_test.vibe "hang"' && [ "$hang_secs" -lt 45 ]; then
+  note "  ok   both blocking mutants killed (${hang_secs}s)"
+else
+  note "  FAIL expected both blocking mutants killed well under 2 x 30 s (took ${hang_secs}s)"; printf '%s\n' "$hang_out" | head -8; fail=1
+fi
+
+note "=== a test file whose imports do not resolve is refused, not skipped ==="
+cat > "$WORK/bad_test.vibe" <<'EOF'
+import ./missing.vibe {
+  nothing
+}
+
+test "t" {
+  assert(nothing() == 1)
+}
+EOF
+bad_out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
+  bash "$ROOT_DIR/runtime/vibe" mutate lib.vibe lib_test.vibe bad_test.vibe 2>&1)"
+bad_status=$?
+if [ "$bad_status" != 0 ] && printf '%s' "$bad_out" | grep -q 'cannot resolve the imports of bad_test.vibe'; then
+  note "  ok   refused, naming the file"
+else
+  note "  FAIL expected a refusal naming bad_test.vibe (exit $bad_status)"; printf '%s\n' "$bad_out" | tail -4; fail=1
+fi
+
 if [ "$fail" != 0 ]; then
   note "--- stdout of the last run ---"; printf '%s\n' "$out"
   note "--- stderr ---"; cat "$WORK/err"
