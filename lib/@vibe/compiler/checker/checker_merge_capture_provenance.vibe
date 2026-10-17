@@ -44,7 +44,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  trait_ref_name
+  trait_ref_name, type_param_name
 }
 
 import @vibe/parser {
@@ -905,23 +905,51 @@ export fn literal_item_is_scalar(item: Expr, env: TypeEnv) -> Bool {
   }
 }
 
+fn struct_field_type(env: TypeEnv, sname: String, args: Array[Type], field: String) -> Option[Type] {
+  match find_typedef(env_type_defs(env), sname) {
+    Some(TDStruct(_, fields, _, params)) => {
+      let mut out: Option[Type] = None
+      for f in fields {
+        let (fname, fty) = f
+        if fname == field {
+          out = Some(fty)
+        }
+      }
+      match out {
+        // A parameter reads as its argument; an uninstantiated one is not
+        // known here.
+        Some(CtNamed(pn, pargs)) => if Array::length(pargs) == 0 {
+          let mut sub: Option[Type] = Some(CtNamed(pn, pargs))
+          let mut i = 0
+          while i < Array::length(params) {
+            if type_param_name(Array::get(params, i)) == pn {
+              sub = if i < Array::length(args) {
+                Some(Array::get(args, i))
+              } else {
+                None
+              }
+            }
+            i = i + 1
+          }
+          sub
+        } else {
+          out
+        },
+        _ => out
+      }
+    },
+    _ => None
+  }
+}
+
 fn literal_item_type(item: Expr, env: TypeEnv) -> Option[Type] {
   match item {
     EIdent(name, _) => env_lookup(env, name),
     EDot(obj, field, _, _) => match literal_item_type(obj, env) {
-      Some(CtStruct(sname)) => match find_typedef(env_type_defs(env), sname) {
-        Some(TDStruct(_, fields, _, _)) => {
-          let mut out: Option[Type] = None
-          for f in fields {
-            let (fname, fty) = f
-            if fname == field {
-              out = Some(fty)
-            }
-          }
-          out
-        },
-        _ => None
-      },
+      Some(CtStruct(sname)) => struct_field_type(env, sname, [], field),
+      // A generic struct's field reads at the instantiation's arguments
+      // (Codex on #3492): `Holder[Int]`'s `tag: T` is an `Int`.
+      Some(CtNamed(sname, args)) => struct_field_type(env, sname, args, field),
       _ => None
     },
     _ => None

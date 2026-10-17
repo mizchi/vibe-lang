@@ -20,29 +20,31 @@ import @vibe/ast {
 /// names `Box` through its parameter alone. Inside a declaration or lambda
 /// that binds a type parameter spelled `name` (`fn id[Box](x: Box)`), a type
 /// or qualified spelling is that parameter, not the re-export (Codex on
-/// #3492).
+/// #3492). A file that declares a type, effect or trait of the name itself
+/// means its own wherever it spells one (Codex on #3492).
 export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
   let w = CodeNamesWalk::{ stack: [], types: [], rows: [] }
+  let local = stmts_declare_type_head(stmts, name)
   for st in stmts {
     match st {
       SLet(_, _, _, ann, e) => {
-        push_type_opt(w, ann, false)
-        Array::push(w.stack, (e, false))
+        push_type_opt(w, ann, local)
+        Array::push(w.stack, (e, local))
       },
       SLetMut(_, ann, e) => {
-        push_type_opt(w, ann, false)
-        Array::push(w.stack, (e, false))
+        push_type_opt(w, ann, local)
+        Array::push(w.stack, (e, local))
       },
-      SFnDecl(_, _, e, _, _) => Array::push(w.stack, (e, false)),
-      SExpr(e) => Array::push(w.stack, (e, false)),
+      SFnDecl(_, _, e, _, _) => Array::push(w.stack, (e, local)),
+      SExpr(e) => Array::push(w.stack, (e, local)),
       SStruct(_, _, fields, _, _, tparams) => {
-        let hidden = binds_type_param(tparams, name)
+        let hidden = local || binds_type_param(tparams, name)
         push_types(w, for f in fields {
           f.1
         }, hidden)
       },
       SEnum(_, _, tparams, variants, _) => {
-        let hidden = binds_type_param(tparams, name)
+        let hidden = local || binds_type_param(tparams, name)
         for v in variants {
           push_types(w, v.1, hidden)
         }
@@ -50,18 +52,18 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
       },
       SSuberror(_, _, variants) => {
         for v in variants {
-          push_types(w, v.1, false)
+          push_types(w, v.1, local)
         }
         ()
       },
       STypeAlias(_, _, tparams, target) => Array::push(w.types, (target, binds_type_param(tparams, name))),
       SImpl(tparams, _, tr, target) => {
-        let hidden = binds_type_param(tparams, name)
-        Array::push(w.types, (TyName(tr), false))
+        let hidden = local || binds_type_param(tparams, name)
+        Array::push(w.types, (TyName(tr), local))
         Array::push(w.types, (target, hidden))
       },
       STrait(_, _, tparams, sigs, _, _) => {
-        let hidden = binds_type_param(tparams, name)
+        let hidden = local || binds_type_param(tparams, name)
         for sg in sigs {
           push_types(w, sg.1, hidden)
           Array::push(w.types, (sg.2, hidden))
@@ -69,17 +71,17 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
         ()
       },
       SEffectDef(_, _, tparams, ops) => {
-        let hidden = binds_type_param(tparams, name)
+        let hidden = local || binds_type_param(tparams, name)
         for op in ops {
           push_types(w, op.1, hidden)
           Array::push(w.types, (op.2, hidden))
         }
         ()
       },
-      SExternLet(_, t) => Array::push(w.types, (t, false)),
+      SExternLet(_, t) => Array::push(w.types, (t, local)),
       SEffectSet(_, _, members) => {
         for m in members {
-          Array::push(w.rows, (m, false))
+          Array::push(w.rows, (m, local))
         }
         ()
       },
@@ -161,6 +163,24 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
     }
   }
   found
+}
+
+fn stmts_declare_type_head(stmts: Array[Stmt], name: String) -> Bool {
+  let mut hit = false
+  for st in stmts {
+    let declared = match st {
+      SStruct(_, n, _, _, _, _) => n == name,
+      SEnum(_, n, _, _, _) => n == name,
+      SSuberror(_, n, _) => n == name,
+      STypeAlias(_, n, _, _) => n == name,
+      STrait(_, n, _, _, _, _) => n == name,
+      SEffectDef(_, n, _, _) => n == name,
+      SEffectSet(_, n, _) => n == name,
+      _ => false
+    }
+    hit = hit || declared
+  }
+  hit
 }
 
 /// The walk's pending work, each item with whether a type parameter spelled
