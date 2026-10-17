@@ -84,7 +84,9 @@ environment match the receipt. The product digest is checked again before an
 atomic stage1 write. The log explicitly records a reuse. This works both for
 fresh source generation and `VIBE_PREBUILT_MODULE_SOURCE`; optional sidecars
 travel with the generated-source CI cache. Different hosts or environments may
-conservatively miss the receipt.
+conservatively miss the receipt. Known CI job/run identity is orchestration
+metadata; restoring a cache in another job does not by itself invalidate it.
+Compiler options, unknown settings, roots and actual tool hashes remain bound.
 
 A missing, stale, unsupported or damaged receipt follows the ordinary verified
 stage0-to-stage1 compile. Filesystem/emission/source-map requests and immutable

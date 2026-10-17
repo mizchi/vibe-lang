@@ -139,6 +139,36 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(json.loads(first.stdout), json.loads(second.stdout))
 
+    def test_restored_ci_product_survives_job_identity_but_not_compile_changes(self):
+        self.env |= {'GITHUB_JOB': 'compiler-build', 'GITHUB_WORKFLOW': 'CI',
+            'GITHUB_WORKFLOW_REF': 'mizchi/vibe-lang/.github/workflows/ci.yml@main',
+            'GITHUB_WORKFLOW_SHA': 'workflow-a', 'GITHUB_RUN_ID': '100',
+            'GITHUB_RUN_NUMBER': '10', 'GITHUB_RUN_ATTEMPT': '1',
+            'GITHUB_ACTOR': 'builder', 'GITHUB_ACTOR_ID': '1',
+            'GITHUB_TRIGGERING_ACTOR': 'builder', 'GITHUB_EVENT_PATH': '/event/a.json',
+            'RUNNER_NAME': 'runner-a', 'RUNNER_TRACKING_ID': 'tracking-a',
+            'RUNNER_TEMP': '/runner/a/temp'}
+        self.publish()
+        self.env |= {'GITHUB_JOB': 'compiler-gate', 'GITHUB_WORKFLOW': 'Flaker CI',
+            'GITHUB_WORKFLOW_REF': 'mizchi/vibe-lang/.github/workflows/flaker-ci.yml@main',
+            'GITHUB_WORKFLOW_SHA': 'workflow-b', 'GITHUB_RUN_ID': '200',
+            'GITHUB_RUN_NUMBER': '20', 'GITHUB_RUN_ATTEMPT': '2',
+            'GITHUB_ACTOR': 'tester', 'GITHUB_ACTOR_ID': '2',
+            'GITHUB_TRIGGERING_ACTOR': 'tester', 'GITHUB_EVENT_PATH': '/event/b.json',
+            'RUNNER_NAME': 'runner-b', 'RUNNER_TRACKING_ID': 'tracking-b',
+            'RUNNER_TEMP': '/runner/b/temp'}
+        result = self.consume()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.out.read_bytes(), self.product.read_bytes())
+        for changed in [{'VIBE_RC': '1'}, {'VIBE_IMPORT_ABI': 'tagged'},
+                        {'VIBE_NODE_WASM_FLAGS': '--stack-size=4096'},
+                        {'VIBE_NEW_COMPILER_OPTION': '1'},
+                        {'GITHUB_UNKNOWN_COMPILER_OPTION': '1'}]:
+            with self.subTest(changed=changed):
+                self.out.write_bytes(b'previous-complete-output')
+                self.assertNotEqual(self.consume(env=changed).returncode, 0)
+                self.assertEqual(self.out.read_bytes(), b'previous-complete-output')
+
 
 if __name__ == '__main__':
     unittest.main()

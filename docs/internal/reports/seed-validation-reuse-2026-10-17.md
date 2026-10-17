@@ -70,6 +70,14 @@ Subsequent CI and documentation-index edits wire the receipt tests into
 compiler-build and register this report. Their before/after hashes are recorded
 separately; no measured builder code changed.
 
+A subsequent review fix excludes an explicit list of CI job/run identity
+variables so another job can consume a restored receipt. The retained final
+validation request was reconstructed exactly; comparing the old and fixed
+helpers changes only the helper revision hash, with the same environment
+digest and compile inputs. None of the newly excluded variables was present
+in that measured environment. The raw record retains both helper hashes and
+this proof; the timings above remain those of the original overlay.
+
 [Raw samples, phase medians, paired deltas and hashes](../../../bench/perf/analysis/seed-validation-reuse-2026-10-17.json).
 
 ## Remaining work

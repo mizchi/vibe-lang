@@ -82,6 +82,8 @@ fi
                 self.assertEqual((self.root / 'out/stage2.wasm').read_bytes(), (self.root / 'out/stage3.wasm').read_bytes())
 
     def test_prebuilt_receipt_hit_and_mutated_product_fallback(self):
+        self.env |= {'GITHUB_JOB': 'compiler-build', 'GITHUB_WORKFLOW': 'CI',
+                     'RUNNER_NAME': 'producer', 'RUNNER_TRACKING_ID': 'producer-id'}
         result = self.build()
         self.assertEqual(result.returncode, 0, result.stderr)
         # Use a separate destination, as ensure_generated -> bootstrap does.
@@ -89,6 +91,8 @@ fi
         for suffix in ['', '.seed-validation.wasm', '.seed-validation.json']:
             prebuilt.with_name(prebuilt.name + suffix).write_bytes(
                 Path(str(self.root / 'out/cli_adapter_module_source.vibe') + suffix).read_bytes())
+        self.env |= {'GITHUB_JOB': 'compiler-gate', 'GITHUB_WORKFLOW': 'Flaker CI',
+                     'RUNNER_NAME': 'consumer', 'RUNNER_TRACKING_ID': 'consumer-id'}
         (self.root / 'invocations.log').write_text('')
         result = self.build(prebuilt=prebuilt)
         self.assertEqual(result.returncode, 0, result.stderr)
