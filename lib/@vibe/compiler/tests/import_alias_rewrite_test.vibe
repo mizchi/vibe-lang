@@ -1264,6 +1264,35 @@ test "#3489: an exported effectset over another is read in its provider" {
   inspect(plan_refusal(paths, [sets, a, b, entry], "/virtual/entry.vibe", entry), "clean")
 }
 
+test "#3489: a kind-qualified import binds only its namespace" {
+  // Codex on #3492: `{ type Caps }` is the provider's alias, not its effectset
+  // `Caps`, so the file's own `effect Caps` row is not read as `Ask`.
+  let sets = parse_program(lex("effect Ask {\n  Get() -> Int\n}\nexport type Caps = Int\nexport effectset Caps = { Ask }"))
+  let a = parse_program(lex("import ./sets.vibe { type Caps }\neffect Caps {\n  Peek() -> Int\n}\nexport struct Job {\n  run: () -> Int with Caps\n}\nexport fn ja() -> Int {\n  1\n}"))
+  let unqualified = parse_program(lex("import ./sets.vibe { Caps }\nexport struct Job {\n  run: () -> Int with Caps\n}\nexport fn ja() -> Int {\n  1\n}"))
+  let b = parse_program(lex("effect Ask {\n  Get() -> Int\n}\nexport struct Job {\n  run: () -> Int with Ask\n}\nexport fn jb() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
+  let paths = [
+    "/virtual/sets.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(String::starts_with(plan_refusal(paths, [sets, a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Job`"), "true")
+  // Unqualified, the item still reads the effectset.
+  inspect(plan_refusal(paths, [sets, unqualified, b, entry], "/virtual/entry.vibe", entry), "clean")
+}
+
+test "#3489: an effectset chain past the depth bound never compares equal" {
+  // Codex on #3492: two 17-set chains spelled alike that end in different
+  // effects.
+  let a = parse_program(lex("effect Ask {\n  Get() -> Int\n}\neffectset S0 = { S1 }\neffectset S1 = { S2 }\neffectset S2 = { S3 }\neffectset S3 = { S4 }\neffectset S4 = { S5 }\neffectset S5 = { S6 }\neffectset S6 = { S7 }\neffectset S7 = { S8 }\neffectset S8 = { S9 }\neffectset S9 = { S10 }\neffectset S10 = { S11 }\neffectset S11 = { S12 }\neffectset S12 = { S13 }\neffectset S13 = { S14 }\neffectset S14 = { S15 }\neffectset S15 = { S16 }\neffectset S16 = { Ask }\nexport struct Job {\n  run: () -> Int with S0\n}\nexport fn ja() -> Int {\n  1\n}"))
+  let b = parse_program(lex("effect Tell {\n  Put(Int) -> Unit\n}\neffectset S0 = { S1 }\neffectset S1 = { S2 }\neffectset S2 = { S3 }\neffectset S3 = { S4 }\neffectset S4 = { S5 }\neffectset S5 = { S6 }\neffectset S6 = { S7 }\neffectset S7 = { S8 }\neffectset S8 = { S9 }\neffectset S9 = { S10 }\neffectset S10 = { S11 }\neffectset S11 = { S12 }\neffectset S12 = { S13 }\neffectset S13 = { S14 }\neffectset S14 = { S15 }\neffectset S15 = { S16 }\neffectset S16 = { Tell }\nexport struct Job {\n  run: () -> Int with S0\n}\nexport fn jb() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
+  let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
+  inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Job`"), "true")
+}
+
 test "#3448: a re-export named only in a generic bound reaches its provider" {
   // Codex on #3492: `[T: Key]` names `Key`, so `k.vibe` is in the program and
   // its `Box` meets the other module's.

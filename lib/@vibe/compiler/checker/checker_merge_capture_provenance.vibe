@@ -787,6 +787,39 @@ fn push_unique_dependency_index(out: Array[Int], index: Int) -> Unit {
 /// callee returns (`#aliasparam[i]`) or keeps in the value it builds, as an
 /// enum constructor keeps its payload (`#fieldparam[i]`, #3488, Codex on
 /// #3492): `Held(c)` holds `c`.
+/// Scalar / unit types cannot later mention a region, so a function that
+/// merely returns such a parameter must stay a pure `None` row. Attaching
+/// `#aliasparam` there made identity `(x: Int) -> x` look effectful and
+/// then fail #939 drop-checks (`inc` into a `with Logger` slot, Parallel::map).
+export fn type_can_carry_region(ty: Type) -> Bool {
+  match ty {
+    CtFn(_, _, _) => true,
+    CtArray(_) => true,
+    CtOption(_) => true,
+    CtTuple(_) => true,
+    CtRecord(_) => true,
+    CtNamed(_, _) => true,
+    CtApplied(_, _) => true,
+    CtStruct(_) => true,
+    CtEnum(_) => true,
+    CtVar(_) => true,
+    CtUnknown => true,
+    CtForAll(_, _, _) => true,
+    _ => false
+  }
+}
+
+/// A function type whose result may hold a region's value. A type that is
+/// not a function is read the same way, since what calling it returns is
+/// unknown.
+fn callee_result_can_carry_region(ty: Type) -> Bool {
+  match ty {
+    CtForAll(_, _, body) => callee_result_can_carry_region(body),
+    CtFn(_, ret, _) => type_can_carry_region(ret),
+    _ => true
+  }
+}
+
 fn alias_result_reaches_outer_binding(ty: Type, args: Array[Expr], env: TypeEnv) -> Bool {
   match ty {
     CtForAll(_, _, body) => alias_result_reaches_outer_binding(body, args, env),
@@ -877,7 +910,18 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
               }
               ()
             },
-            _ => ()
+            // #3498: a callee with no declaration here to read -- an imported
+            // function, a local closure -- may hand back any argument its
+            // result type could hold. Its row carries only the direct
+            // summary (`#aliasparam`), not a value built over a parameter.
+            _ => if callee_result_can_carry_region(callee_ty) {
+              for a in args {
+                found = found || (!literal_item_is_inert(a, env) && !arg_is_region_token(a, env) && expression_aliases_outer_binding(a, env))
+              }
+              ()
+            } else {
+              ()
+            }
           }
         }
         found
