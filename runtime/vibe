@@ -2146,9 +2146,13 @@ REPL_HELP
     cmp -s "$mabs" "$msnap" || die "vibe mutate: $mtarget changed during the run; run again"
     mrc=0; invoke_cli mutate-report "$mresults" || mrc=$?
     # Keep the matrix with the snapshot it describes; the target row points
-    # at the kept copy.
-    cp "$msnap" "$BUILD_DIR/mutate/target.vibe.$$" && mv "$BUILD_DIR/mutate/target.vibe.$$" "$BUILD_DIR/mutate/target.vibe"
-    awk -F'\t' -v OFS='\t' -v snap="$BUILD_DIR/mutate/target.vibe" 'NR == 1 && $1 == "target" { $3 = snap } { print }' \
+    # at the kept copy. The copy is named by its content, so two runs that
+    # publish at once can never leave one run's matrix pointing at the other
+    # run's source: a name only ever holds the text that names it.
+    msum="$(cksum < "$msnap" | awk '{ print $1 "-" $2 }')"
+    mkept="$BUILD_DIR/mutate/target.$msum.vibe"
+    [ -f "$mkept" ] || { cp "$msnap" "$mkept.$$" && mv "$mkept.$$" "$mkept"; }
+    awk -F'\t' -v OFS='\t' -v snap="$mkept" 'NR == 1 && $1 == "target" { $3 = snap } { print }' \
       "$mresults" > "$BUILD_DIR/mutate/results.tsv.$$" && mv "$BUILD_DIR/mutate/results.tsv.$$" "$BUILD_DIR/mutate/results.tsv"
     exit "$mrc"
     ;;

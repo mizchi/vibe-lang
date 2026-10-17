@@ -1146,7 +1146,10 @@ one.
 
 The mutant is never written to disk. viberun answers the target's reads from
 the mutant through `VIBE_SOURCE_OVERLAY` and `VIBE_SOURCE_OVERLAY_WITH`, so an
-interrupted run leaves the tree as it was.
+interrupted run leaves the tree as it was. The run measures one snapshot of the target; the
+kept matrix (`.vibe/build/mutate/results.tsv`) points at a copy of it named by
+its checksum, so `vibe mutate-report` on that file replays exactly what was
+measured even after the target is edited.
 
 Each mutant gets one status:
 
