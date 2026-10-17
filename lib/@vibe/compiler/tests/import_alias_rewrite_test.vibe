@@ -1240,3 +1240,18 @@ test "#3448: builtin spellings the checker resolves alike are one type" {
   let c = parse_program(lex("export struct Box {\n  u: Unit;\n  n: i64;\n  d: Double\n}\nexport fn jb() -> Int {\n  1\n}"))
   inspect(String::starts_with(plan_refusal(paths, [a, c, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
 }
+
+test "#3489: an exported effectset over another is read in its provider" {
+  // Codex on #3492: `All = { Base }` over a private `Base = { Ask }`.
+  let sets = parse_program(lex("effect Ask {\n  Get() -> Int\n}\neffectset Base = { Ask }\nexport effectset All = { Base }"))
+  let a = parse_program(lex("import ./sets.vibe { All }\nexport struct Job {\n  run: () -> Int with All\n}\nexport fn ja() -> Int {\n  1\n}"))
+  let b = parse_program(lex("effect Ask {\n  Get() -> Int\n}\nexport struct Job {\n  run: () -> Int with Ask\n}\nexport fn jb() -> Int {\n  1\n}"))
+  let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
+  let paths = [
+    "/virtual/sets.vibe",
+    "/virtual/a.vibe",
+    "/virtual/b.vibe",
+    "/virtual/entry.vibe"
+  ]
+  inspect(plan_refusal(paths, [sets, a, b, entry], "/virtual/entry.vibe", entry), "clean")
+}

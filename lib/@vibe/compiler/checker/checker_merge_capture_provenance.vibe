@@ -28,6 +28,7 @@ import @vibe/compiler/core {
   env_lookup,
   env_name_index_at,
   env_name_index_length,
+  env_type_defs,
   exception_kind_resolutions_clear,
   find_typedef,
   instantiate,
@@ -860,21 +861,21 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
       let mut found = false
       for f in fields {
         let (_, fv) = f
-        found = found || (!literal_item_is_scalar_binding(fv, env) && expression_aliases_outer_binding(fv, env))
+        found = found || (!literal_item_is_scalar(fv, env) && expression_aliases_outer_binding(fv, env))
       }
       found
     },
     ETuple(items) => {
       let mut found = false
       for item in items {
-        found = found || (!literal_item_is_scalar_binding(item, env) && expression_aliases_outer_binding(item, env))
+        found = found || (!literal_item_is_scalar(item, env) && expression_aliases_outer_binding(item, env))
       }
       found
     },
     EArray(items) => {
       let mut found = false
       for item in items {
-        found = found || (!literal_item_is_scalar_binding(item, env) && expression_aliases_outer_binding(item, env))
+        found = found || (!literal_item_is_scalar(item, env) && expression_aliases_outer_binding(item, env))
       }
       found
     },
@@ -882,26 +883,48 @@ export fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
   }
 }
 
-/// #3488 (Codex on #3492): whether a literal's field or element is a binding
-/// of a scalar type. A scalar is copied into the literal, so an outer one
-/// does not make the literal an outer location: `Wrap::{ cell: fresh, tag:
-/// outer_int }` is as fresh as its cell.
-export fn literal_item_is_scalar_binding(item: Expr, env: TypeEnv) -> Bool {
-  match item {
-    EIdent(name, _) => match env_lookup(env, name) {
-      Some(t) => match t {
-        CtInt => true,
-        CtDouble => true,
-        CtBool => true,
-        CtString => true,
-        CtChar => true,
-        CtUnit => true,
-        CtBytes => true,
-        _ => false
-      },
-      None => false
+/// #3488 (Codex on #3492): whether a literal's field or element is a scalar
+/// read from a binding: the binding itself (`tag: outer_int`) or a field of
+/// one (`tag: holder.tag`), typed by the struct's declaration. A scalar is
+/// copied into the literal, so an outer one does not make the literal an
+/// outer location: `Wrap::{ cell: fresh, tag: outer_int }` is as fresh as its
+/// cell. Anything whose type is not known here still counts.
+export fn literal_item_is_scalar(item: Expr, env: TypeEnv) -> Bool {
+  match literal_item_type(item, env) {
+    Some(t) => match t {
+      CtInt => true,
+      CtDouble => true,
+      CtBool => true,
+      CtString => true,
+      CtChar => true,
+      CtUnit => true,
+      CtBytes => true,
+      _ => false
     },
-    _ => false
+    None => false
+  }
+}
+
+fn literal_item_type(item: Expr, env: TypeEnv) -> Option[Type] {
+  match item {
+    EIdent(name, _) => env_lookup(env, name),
+    EDot(obj, field, _, _) => match literal_item_type(obj, env) {
+      Some(CtStruct(sname)) => match find_typedef(env_type_defs(env), sname) {
+        Some(TDStruct(_, fields, _, _)) => {
+          let mut out: Option[Type] = None
+          for f in fields {
+            let (fname, fty) = f
+            if fname == field {
+              out = Some(fty)
+            }
+          }
+          out
+        },
+        _ => None
+      },
+      _ => None
+    },
+    _ => None
   }
 }
 

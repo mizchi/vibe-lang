@@ -745,7 +745,9 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
         },
         SEffectSet(exported, name, members) => if exported || import_alias_rewrite_string_array_contains(listed, name) {
           let (key, ps, target) = effectset_alias_row(name, members)
-          Array::push(all, (Array::get(paths, fi), key, ps, target))
+          // Read in the provider too (Codex on #3492): `All = { Base }` over
+          // its own `Base = { Ask }` publishes `Ask`.
+          Array::push(all, (Array::get(paths, fi), key, ps, flatten_effectset_target(target, own)))
         } else {
           ()
         },
@@ -785,7 +787,11 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
       let renames = for p in params {
         (type_param_name(p), String::concat("#param:", type_param_name(p)))
       }
-      let next = expand_type_aliases(target, env, renames, 0)
+      let next = if String::starts_with(name, "effectset ") {
+        flatten_effectset_target(prev, env)
+      } else {
+        expand_type_aliases(target, env, renames, 0)
+      }
       if !type_exprs_equivalent(next, renames, prev, renames) {
         changed = true
       }
@@ -994,6 +1000,31 @@ fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], Ty
     }
   }
   String::join(out, " + ")
+}
+
+/// An `effectset`'s members with each one that names an effectset in
+/// `aliases` replaced by its own members.
+fn flatten_effectset_target(target: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)]) -> TypeExpr {
+  match target {
+    TyTuple(items) => {
+      let out: Array[TypeExpr] = []
+      for item in items {
+        match item {
+          TyName(m) => {
+            for part in String::split(expand_row_effectsets(m, aliases, 0), " + ") {
+              if part != "" {
+                Array::push(out, TyName(part))
+              }
+            }
+            ()
+          },
+          _ => Array::push(out, item)
+        }
+      }
+      TyTuple(out)
+    },
+    _ => target
+  }
 }
 
 fn find_type_alias(aliases: Array[(String, Array[String], TypeExpr)], renames: Array[(String, String)], name: String, arity: Int) -> Option[TypeExpr] {
