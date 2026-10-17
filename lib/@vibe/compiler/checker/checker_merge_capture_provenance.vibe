@@ -65,7 +65,7 @@ import @vibe/compiler/checker/patterns {
 }
 
 import ./checker_region_retention_arms.vibe {
-  retention_arms_bind, retention_decl_value, retention_pat_names_into, retention_result_items
+  retention_arms_bind, retention_assigned_values_into, retention_decl_value, retention_pat_names_into, retention_result_items
 }
 
 import ./checker_resolve.vibe {
@@ -1145,6 +1145,7 @@ export fn collect_result_param_indices(body: Expr, params: Array[(String, Option
 fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int], deep: Bool) -> Unit {
   match body {
     EIdent(name, _) => {
+      let mut known = false
       let mut i = 0
       while i < Array::length(params) {
         let (raw_name, _) = Array::get(params, i)
@@ -1156,6 +1157,7 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
           } else raw_name
         } else raw_name
         if name == param_name {
+          known = true
           push_unique_dependency_index(found, i)
         }
         i = i + 1
@@ -1163,9 +1165,29 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
       let mut alias_i = 0
       while alias_i < Array::length(alias_names) {
         if name == Array::get(alias_names, alias_i) {
-          push_unique_dependency_index(found, Array::get(alias_indices, alias_i))
+          known = true
+          // -1 marks a binder known to hold no parameter.
+          if Array::get(alias_indices, alias_i) >= 0 {
+            push_unique_dependency_index(found, Array::get(alias_indices, alias_i))
+          }
         }
         alias_i = alias_i + 1
+      }
+      // `deep`: a name this reading cannot account for -- a binder of a
+      // form it does not track (a `for` element, a handler arm's payload, a
+      // lambda's parameter) -- may hold any parameter (Codex on #3492). A
+      // constructor or a declaration of the module is not one.
+      if deep && !known && !callee_is_ctor_name(name) {
+        match retention_decl_value(name) {
+          Some(_) => (),
+          None => {
+            let mut p = 0
+            while p < Array::length(params) {
+              push_unique_dependency_index(found, p)
+              p = p + 1
+            }
+          }
+        }
       }
     },
     ELet(name, value, rest, _) => {
@@ -1178,6 +1200,10 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
         Array::push(alias_indices, Array::get(found, i))
         i = i + 1
       }
+      if deep && Array::length(found) == found_mark {
+        Array::push(alias_names, name)
+        Array::push(alias_indices, -1)
+      }
       Array::truncate(found, found_mark)
       collect_return_param_indices(value, params, alias_names, alias_indices, found, deep)
       collect_result_params(rest, params, alias_names, alias_indices, found, deep)
@@ -1187,6 +1213,35 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
     ESeq(left, right) => {
       collect_return_param_indices(left, params, alias_names, alias_indices, found, deep)
       collect_result_params(right, params, alias_names, alias_indices, found, deep)
+    },
+    // `deep`: a `let mut` holds its value and every value assigned to it.
+    ELetMut(name, value, rest, _) => if deep {
+      let alias_mark = Array::length(alias_names)
+      let held = array_empty()
+      collect_result_params(value, params, alias_names, alias_indices, held, deep)
+      let assigned = array_empty()
+      retention_assigned_values_into(rest, name, assigned)
+      for v in assigned {
+        collect_result_params(v, params, alias_names, alias_indices, held, deep)
+      }
+      if Array::length(held) == 0 {
+        Array::push(alias_names, name)
+        Array::push(alias_indices, -1)
+      }
+      for index in held {
+        Array::push(alias_names, name)
+        Array::push(alias_indices, index)
+      }
+      collect_return_param_indices(value, params, alias_names, alias_indices, found, deep)
+      collect_result_params(rest, params, alias_names, alias_indices, found, deep)
+      Array::truncate(alias_names, alias_mark)
+      Array::truncate(alias_indices, alias_mark)
+    } else {
+      collect_return_param_indices(body, params, alias_names, alias_indices, found, deep)
+      for part in retention_result_items(body) {
+        collect_result_params(part, params, alias_names, alias_indices, found, deep)
+      }
+      ()
     },
     EIf(cond, then_expr, else_expr) => {
       collect_return_param_indices(cond, params, alias_names, alias_indices, found, deep)
@@ -1208,15 +1263,20 @@ fn collect_result_params(body: Expr, params: Array[(String, Option[TypeExpr])], 
       }
       for arm in arms {
         let alias_mark = Array::length(alias_names)
-        if Array::length(held) > 0 {
+        if deep {
           let bound: Array[String] = []
           retention_pat_names_into(arm.0, bound)
           for name in bound {
+            if Array::length(held) == 0 {
+              Array::push(alias_names, name)
+              Array::push(alias_indices, -1)
+            }
             for index in held {
               Array::push(alias_names, name)
               Array::push(alias_indices, index)
             }
           }
+          ()
         } else {
           ()
         }
@@ -1294,6 +1354,10 @@ fn collect_return_param_indices(e: Expr, params: Array[(String, Option[TypeExpr]
       let alias_mark = Array::length(alias_names)
       let held = array_empty()
       collect_result_params(value, params, alias_names, alias_indices, held, deep)
+      if deep && Array::length(held) == 0 {
+        Array::push(alias_names, name)
+        Array::push(alias_indices, -1)
+      }
       for index in held {
         Array::push(alias_names, name)
         Array::push(alias_indices, index)
