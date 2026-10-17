@@ -1595,10 +1595,10 @@ export fn builtin_param_head(name: String, i: Int) -> Int {
 ///
 /// Call it with the receiver type ALREADY substituted, right after the arm
 /// binds it.
-export fn check_builtin_arg_head(name: String, i: Int, arg_ty: Type, errors: Array[String], callee_off: Int) -> Unit {
+export fn check_builtin_arg_head(name: String, i: Int, arg_ty: Type, defs: Array[TypeDef], errors: Array[String], callee_off: Int) -> Unit {
   let want_head = builtin_param_head(name, i)
   if want_head != 0 {
-    let got_head = head_fold_char(head_kind(arg_ty))
+    let got_head = receiver_head_kind(defs, arg_ty)
     if got_head != 0 && got_head != want_head {
       // Same two wordings the general arm produces, so a diagnostic does not
       // depend on which path happened to check the call.
@@ -1658,6 +1658,33 @@ export fn bind_builtin_arg_var(arg_ty: Type, want: Int, s: Subst, c: Int) -> (Su
       }
     },
     _ => (s, c)
+  }
+}
+
+/// #3475: the head a builtin's receiver check compares, with `Char` folded
+/// into `Int`. `head_kind` leaves every `CtNamed` it does not own in the
+/// tolerated bucket, because a bare one may be a type formal. An APPLIED one
+/// never is (a formal with arity is `CtApplied`), so a declared struct or
+/// enum answers for it. Before this, `String::length(q)` with `q: Q[Int]`
+/// checked clean and printed a number read from the struct's pointer, while
+/// a non-generic struct was refused. A type alias keeps the tolerance.
+export fn receiver_head_kind(defs: Array[TypeDef], t: Type) -> Int {
+  let h = head_fold_char(head_kind(t))
+  if h != 0 {
+    h
+  } else {
+    match t {
+      CtNamed(name, nargs) => if Array::length(nargs) > 0 {
+        match find_typedef(defs, name) {
+          Some(TDStruct(_, _, _, _)) => head_kind(CtStruct(name)),
+          Some(TDEnum(_, _, _)) => head_kind(CtEnum(name)),
+          _ => 0
+        }
+      } else {
+        0
+      },
+      _ => 0
+    }
   }
 }
 
