@@ -57,6 +57,11 @@ function unionNs(intervals) {
 
 for (const tid of [...new Set(ok.map((s) => s.tid))]) {
   const rows = ok.filter((s) => s.tid === tid);
+  const clocks = new Set(rows.map(s => s.clock ?? "realtime"));
+  if (clocks.size !== 1 || !["realtime", "monotonic"].includes([...clocks][0])) {
+    console.error(`trace ${tid}: incompatible clocks; collect every span with the same clock`);
+    process.exit(1);
+  }
   const byId = new Map(rows.map((s) => [s.sid, s]));
   const kids = new Map(rows.map((s) => [s.sid, []]));
   const roots = [];
@@ -69,7 +74,7 @@ for (const tid of [...new Set(ok.map((s) => s.tid))]) {
 
   const self = (s) => (s.t1 - s.t0) - unionNs(kids.get(s.sid).map((c) => [c.t0, c.t1]));
 
-  console.log(`trace ${tid}  (${rows.length} spans)`);
+  console.log(`trace ${tid}  (${rows.length} spans, ${[...clocks][0]})`);
   console.log("     wall       self  name");
   const walk = (s, depth) => {
     const flag = s.rc === 0 ? "" : `  rc=${s.rc}`;

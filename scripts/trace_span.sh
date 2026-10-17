@@ -16,6 +16,8 @@
 #
 # Env:
 #   VIBE_TRACE_OUT     NDJSON sink. Unset (or empty) disables tracing entirely.
+#   VIBE_TRACE_MONOTONIC=1  use Python's monotonic_ns for same-host measurements;
+#                          every process in a trace must use the same clock.
 #   VIBE_TRACEPARENT   W3C traceparent of the PARENT span, if any:
 #                      00-<32hex trace_id>-<16hex span_id>-<2hex flags>.
 #                      Absent at the root, where a fresh trace_id is minted.
