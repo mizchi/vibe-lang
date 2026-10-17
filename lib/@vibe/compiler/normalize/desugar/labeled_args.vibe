@@ -804,6 +804,24 @@ export fn lookup_param_labels(tbl: Array[(String, Array[String])], fname: String
   found
 }
 
+/// Resolve only a qualified import with published parameter names. Keep the
+/// original callee in the AST; this view supplies the same table key to the
+/// ordinary/authority walks and the validator. A real value named `ns` wins.
+export fn labeled_call_target(callee: Expr, tbl: Array[(String, Array[String])], shadows: Array[String]) -> Expr {
+  match callee {
+    EDot(EIdent(ns, off), field, _, _) => if str_array_contains(shadows, ns) {
+      callee
+    } else {
+      let key = String::concat(ns, String::concat(".", field))
+      match lookup_param_labels(tbl, key) {
+        Some(_) => EIdent(key, off),
+        None => callee
+      }
+    },
+    _ => callee
+  }
+}
+
 export fn labeled_reorder_candidate(args: Array[Expr], param_labels: Array[String]) -> Bool {
   if Array::length(args) != Array::length(param_labels) {
     false
@@ -945,6 +963,7 @@ export fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows:
         relabel_expr(a, tbl, shadows)
       }
       let rcallee = relabel_expr(callee, tbl, shadows)
+      let target = labeled_call_target(callee, tbl, shadows)
       let mut any_labeled_arg = false
       let mut la_i = 0
       while la_i < Array::length(rargs) {
@@ -957,7 +976,7 @@ export fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows:
         la_i = la_i + 1
       }
       let final_args = if any_labeled_arg {
-        match callee {
+        match target {
           EIdent(fname, foff) => {
             // Where the labels come from is the ONLY thing shadowing changes
             // (#1899). A locally bound callee must not take the top-level
@@ -1001,7 +1020,7 @@ export fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows:
       } else {
         rargs
       }
-      let opt_args = match callee {
+      let opt_args = match target {
         EIdent(fname, _) => match optional_flags_for_call(fname, shadows) {
           Some(flags) => optional_fill_args(final_args, flags),
           None => final_args

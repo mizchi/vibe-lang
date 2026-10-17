@@ -1164,6 +1164,36 @@ export fn rewrite_import_alias_stmts(stmts: Array[Stmt], aliases: Array[(String,
   rewrite_import_alias_stmts_with_pattern_ctors(stmts, aliases, [])
 }
 
+/// Module-level values shadow a qualified import namespace in every body,
+/// just as local binders do. Only dotted keys are removed: ordinary and trait
+/// aliases (including the self-mappings below) retain their existing rules.
+/// Share the input array unless a qualified key is actually masked.
+fn without_top_level_namespace_aliases(stmts: Array[Stmt], aliases: Array[(String, String)]) -> Array[(String, String)] {
+  let mut out = aliases
+  let mut copied = false
+  let mut i = 0
+  while i < Array::length(aliases) {
+    let row = Array::get(aliases, i)
+    let (key, _) = row
+    let dot = String::index_of(key, ".")
+    let masked = dot > 0 && import_alias_rewrite_string_array_contains(top_level_value_names(stmts), key[0: dot])
+    if masked {
+      if !copied {
+        out = Array::slice(aliases, 0, i)
+        copied = true
+      } else {
+        ()
+      }
+    } else if copied {
+      Array::push(out, row)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], aliases: Array[(String, String)], pattern_ctors: Array[(String, String)]) -> Array[Stmt] {
   let owner_aliases = collect_impl_method_owner_aliases(stmts, aliases)
   let combined = empty_aliases()
@@ -1222,7 +1252,7 @@ export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], alia
     }
     bi = bi + 1
   }
-  let am = aliasidx_with_pattern_ctors(aliasidx_build(combined), pattern_ctors)
+  let am = aliasidx_with_pattern_ctors(aliasidx_build(without_top_level_namespace_aliases(stmts, combined)), pattern_ctors)
   let imported = for stmt in stmts {
     rewrite_alias_stmt_ix(rewrite_impl_method_binding(stmt, owner_aliases), am)
   }

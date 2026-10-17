@@ -1,0 +1,138 @@
+import @vibe/compiler/normalize {
+  desugar_labeled_args,
+  imported_params_set,
+  labeled_arg_binder_authority_normalization_authority,
+  labeled_arg_binder_authority_normalization_program,
+  normalize_labeled_args_with_binder_authority
+}
+
+import @vibe/compiler/checker {
+  check_labeled_arg_names_stmts_with_imports
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_program
+}
+
+import @vibe/parser {
+  parse_source_located_with_binder_authority
+}
+
+fn imported_rows() -> Array[(String, Array[String])] {
+  [("helper.pick", ["x", "ignored?"]), ("helper.digits", ["a?", "b?", "c?"])]
+}
+
+fn expect_normalized(source: String, expected: String) -> Unit with Exception {
+  let stmts = parse_program(lex(source))
+  imported_params_set(imported_rows())
+  desugar_labeled_args(stmts)
+  imported_params_set([])
+  assert(print_program(stmts) == print_program(parse_program(lex(expected))))
+}
+
+test "the statement scan includes qualified optional calls with no labels" {
+  expect_normalized("fn main() -> Int { helper.pick(10) }", "fn main() -> Int { helper.pick(10, None) }")
+  expect_normalized("fn main() -> Int { helper.digits() }", "fn main() -> Int { helper.digits(None, None, None) }")
+  expect_normalized("fn main() -> Int { helper.pick(10, 3) }", "fn main() -> Int { helper.pick(10, Some(3)) }")
+}
+
+test "qualified labels fill by name and preserve explicit Option arguments" {
+  expect_normalized("fn main() -> Int { helper.digits(b = 4, a = 5) }", "fn main() -> Int { helper.digits(Some(5), Some(4), None) }")
+  expect_normalized("fn main() -> Int { helper.pick(ignored = 3, x = 10) }", "fn main() -> Int { helper.pick(10, Some(3)) }")
+  expect_normalized("fn main() -> Int { helper.pick(10, None) }", "fn main() -> Int { helper.pick(10, None) }")
+  expect_normalized("fn main() -> Int { helper.pick(10, Some(3)) }", "fn main() -> Int { helper.pick(10, Some(3)) }")
+}
+
+test "an unknown dot call and a shadowed namespace keep their own arguments" {
+  let unknown = "fn main() -> Int { other.pick(10) }"
+  expect_normalized(unknown, unknown)
+  let param = "fn main(helper: Int) -> Int { helper.pick(10) }"
+  expect_normalized(param, param)
+  let local = "fn main() -> Int { let helper = 1; helper.pick(10) }"
+  expect_normalized(local, local)
+  let pattern = "fn main() -> Int { match Some(1) { Some(helper) => helper.pick(10), None => 0 } }"
+  expect_normalized(pattern, pattern)
+}
+
+fn label_errors(source: String, pre: Bool) -> Array[String] with Exception {
+  let errors: Array[String] = []
+  check_labeled_arg_names_stmts_with_imports(parse_program(lex(source)), errors, pre, imported_rows())
+  errors
+}
+
+test "qualified unknown and repeated labels are diagnosed before codegen" {
+  let unknown = label_errors("fn main() -> Int { helper.pick(typo = 10) }", false)
+  assert(Array::length(unknown) == 1)
+  assert(String::contains(Array::get(unknown, 0), "unknown labeled argument `typo` for helper.pick"))
+  let repeated = label_errors("fn main() -> Int { helper.pick(x = 10, x = 3) }", false)
+  assert(Array::length(repeated) == 1)
+  assert(String::contains(Array::get(repeated, 0), "out of declared parameter order"))
+}
+
+test "qualified mixed modes are diagnosed while local fields stay outside the import table" {
+  let mixed = label_errors("fn main() -> Int { helper.pick(10, ignored = 3) }", true)
+  assert(Array::length(mixed) == 1)
+  assert(String::contains(Array::get(mixed, 0), "mixes positional and labeled arguments"))
+  assert(Array::length(label_errors("fn main(helper: Int) -> Int { helper.pick(typo = 10) }", false)) == 0)
+}
+
+test "paired normalization agrees and refuses authority for synthesized arguments" {
+  let source = "fn main() -> Int { helper.pick(10) }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(parsed) => {
+      imported_params_set(imported_rows())
+      let result = normalize_labeled_args_with_binder_authority(parsed)
+      imported_params_set([])
+      let expected = print_program(parse_program(lex("fn main() -> Int { helper.pick(10, None) }")))
+      assert(print_program(labeled_arg_binder_authority_normalization_program(result)) == expected)
+      match labeled_arg_binder_authority_normalization_authority(result) {
+        None => (),
+        Some(_) => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "paired qualified reordering preserves authority when no arguments are synthesized" {
+  let source = "fn main() -> Int { helper.pick(ignored = Some(3), x = 10) }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(parsed) => {
+      imported_params_set(imported_rows())
+      let result = normalize_labeled_args_with_binder_authority(parsed)
+      imported_params_set([])
+      let expected = print_program(parse_program(lex("fn main() -> Int { helper.pick(10, Some(3)) }")))
+      assert(print_program(labeled_arg_binder_authority_normalization_program(result)) == expected)
+      match labeled_arg_binder_authority_normalization_authority(result) {
+        Some(_) => (),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+fn expect_paired_without_authority(source: String, expected: String) -> Unit with Exception {
+  match parse_source_located_with_binder_authority(source) {
+    Some(parsed) => {
+      imported_params_set(imported_rows())
+      let result = normalize_labeled_args_with_binder_authority(parsed)
+      imported_params_set([])
+      assert(print_program(labeled_arg_binder_authority_normalization_program(result)) == print_program(parse_program(lex(expected))))
+      match labeled_arg_binder_authority_normalization_authority(result) {
+        None => (),
+        Some(_) => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "paired partial labels agree with ordinary normalization after authority is refused" {
+  expect_paired_without_authority("fn main() -> Int { helper.digits(b = 4, a = 5) }", "fn main() -> Int { helper.digits(Some(5), Some(4), None) }")
+  expect_paired_without_authority("fn digits(a?: Int, b?: Int, c?: Int) -> Int { 0 }\nfn main() -> Int { digits(b = 4, a = 5) }", "fn digits(a?: Int, b?: Int, c?: Int) -> Int { 0 }\nfn main() -> Int { digits(Some(5), Some(4), None) }")
+}
+
+test "paired normalization preserves an unknown optional label for validation" {
+  expect_paired_without_authority("fn main() -> Int { helper.digits(typo = 4) }", "fn main() -> Int { helper.digits(typo = 4, None, None) }")
+}
