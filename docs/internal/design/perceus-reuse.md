@@ -141,6 +141,12 @@ bind.
   released at arm end, so a read sequenced after a consume never sees a freed
   child.
 
+Consumes are counted by `md_view_consume_count_pre`, the count for a bind
+nothing else releases: a projection off the bind (`c.x`) reads the field in
+place, as the Perceus plan counts it, so it is not a consume and a bind used
+only through projections is borrow-only. The ordinary pattern bind
+(`bind_match_pat`) dups by the same count.
+
 The narrow tier admits raw transfers only; the wide tier admits all three. A
 scalar payload needs no special case: a tagged scalar moves like a pointer and
 the shared-path dup of an even value is a no-op.
@@ -228,6 +234,17 @@ path parks such a temporary (`cc_is_owned_temp`: a call to a callee that
 returns no view, or an array / tuple / record / map literal) and releases it
 after the call, unless the callee may return a view of that argument, in which
 case the leak is the safe side.
+
+A projection off such a temporary (`mk(i).y`, `pair(i).0`) is the same gap:
+the plan sees no binding, so nothing released the block the field was read
+from. The `EDot` lowering parks an owned temporary in a local across the field
+load, retains the field, and drops the temporary. Downstream, a projection is
+a borrowed view (an owning consumer retains it, a borrowing one releases
+nothing), so the retain is what keeps a heap field alive once its source is
+gone; for a scalar field it is a no-op. A heap field therefore still keeps the
+one reference the leaked temporary used to hold: making the projection an
+owned value would need every consumer of a projection to tell the two kinds
+apart.
 
 ### Unannotated lambda parameters (#2681)
 

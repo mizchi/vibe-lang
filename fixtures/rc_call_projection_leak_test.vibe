@@ -1,0 +1,112 @@
+// RC leak guard: a projection off a fresh call result releases the result.
+//
+// `mk(i).y` reads one field of a value nothing else holds. The Perceus plan
+// tracks named bindings only, so the temporary had no owner to release it and
+// every evaluation leaked the whole block. Codegen now keeps an owned
+// temporary (`cc_is_owned_temp`) in a local across the field load, retains the
+// field, and drops the temporary (compile_expr_tail4's EDot arm). Measured at
+// N=20000 on the compiler before that change:
+//
+//   | shape                                          | before      | after |
+//   |------------------------------------------------|------------:|------:|
+//   | user fn result, `mk(i).y`                      |   640,000 B |  32 B |
+//   | closure call result, `get(1).x`                |   640,024 B |  56 B |
+//   | higher-order call results, `apply_p(f, 1).y`   | 1,280,024 B |  56 B |
+//   | tuple results, `pair(i).0 + pair(i).1`         | 1,280,000 B |  32 B |
+//   | field at different slots, `mk(i).y + mkb(i).y` | 1,280,000 B |  32 B |
+//   | this fixture, all of them plus the controls    | 5,121,220 B | 964 B |
+//
+// The controls read a HEAP field off a fresh result and hand it to an owning
+// consumer (a binding, a record field) that outlives the temporary, so the
+// retain before the drop is what keeps it alive: without it VIBE_RC=shadow
+// traps. They run a few times only -- the field they read keeps the reference
+// the temporary used to hold, which leaks exactly as it did before.
+//
+// The gate compiles this under VIBE_RC=1 and bounds __heap_ptr growth, and
+// runs it under VIBE_RC=shadow
+// (tests/gates/mid/retired_v128_intrinsics_stay_retired.sh, 40e5). `main`
+// returns 0: every shape adds 0, so the answer cannot drift with the
+// allocation behaviour being measured.
+struct P {
+  x: Int;
+  y: Int
+}
+
+struct B {
+  y: Int;
+  z: Int
+}
+
+struct Q {
+  a: Array[Int];
+  n: Int
+}
+
+struct H {
+  inner: Array[Int]
+}
+
+fn mk(i: Int) -> P {
+  P::{ x: i, y: 1 }
+}
+
+fn mkb(i: Int) -> B {
+  B::{ y: i, z: 2 }
+}
+
+fn mkq(i: Int) -> Q {
+  Q::{ a: [i, i + 1, i + 2], n: i }
+}
+
+fn pair(i: Int) -> (Int, Int) {
+  (i, 1)
+}
+
+fn apply_p(f: (Int) -> P, v: Int) -> P {
+  f(v)
+}
+
+fn user_call(i: Int) -> Int {
+  (mk(i).y - 1) * 0
+}
+
+fn closure_call(i: Int) -> Int {
+  let get = (k: Int) -> P { P::{ x: k, y: i } }
+  get(1).x * 0
+}
+
+fn higher_order_call(i: Int) -> Int {
+  let f = (k: Int) -> P { P::{ x: k, y: i } }
+  (apply_p(f, 1).y + apply_p(f, 2).x) * 0
+}
+
+fn tuple_call(i: Int) -> Int {
+  (pair(i).0 + pair(i).1) * 0
+}
+
+fn dispatched_slot(i: Int) -> Int {
+  (mk(i).y + mkb(i).y) * 0
+}
+
+// Controls: the heap field outlives the temporary it was read from.
+fn heap_field_bound(i: Int) -> Int {
+  let v = mkq(i).a
+  let h = H::{ inner: mkq(i).a }
+  let w = mkq(i + 1)
+  (Array::get(v, 1) + Array::get(h.inner, 2) + Array::length(mkq(i).a) - (i + 1) - (i + 2) - 3 + w.n - (i + 1)) * 0
+}
+
+fn main() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 20000 {
+    acc = acc + user_call(i) + closure_call(i) + higher_order_call(i) + tuple_call(i) + dispatched_slot(i)
+    i = i + 1
+  }
+  let mut j = 0
+  while j < 3 {
+    acc = acc + heap_field_bound(j)
+    j = j + 1
+  }
+  acc
+}

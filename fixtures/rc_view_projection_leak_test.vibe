@@ -1,0 +1,105 @@
+// RC leak guard: a projection off a borrowed VIEW is a read, not a consume.
+//
+// A closure capture and a match payload bind are views nothing in the body
+// releases, so codegen dups them once per consume the body performs
+// (compile_lambda's prologue, bind_match_pat, the reuse tiers). Those dups
+// were counted by md_consume_count_pre, which calls `p.y` a consume of `p`
+// -- but codegen reads the field in place, and so does the Perceus plan
+// (pc_emit's EDot arm). Every dup for a projection was a reference nothing
+// released, so the view's block leaked on each call. Measured at N=20000 on
+// the compiler before md_view_consume_count_pre:
+//
+//   | shape                                   | heap_used   |
+//   |-----------------------------------------|------------:|
+//   | closure capture, `p.y`, through apply   |   640,024 B |
+//   | closure capture, called directly        |   640,024 B |
+//   | closure capture, nested `q.p.y`         | 1,280,024 B |
+//   | match payload bind, `q.y`               |   640,024 B |
+//   | all of them after the fix               |      ~56 B  |
+//
+// The controls stand next to the leaks so one count cannot be fixed by
+// breaking another: a capture the body really consumes (stored into a
+// returned struct) and a payload bind the arm consumes must keep their dup,
+// or the view is freed under the owner (VIBE_RC=shadow traps on that).
+//
+// The gate compiles this under VIBE_RC=1 and bounds __heap_ptr growth
+// (tests/gates/mid/retired_v128_intrinsics_stay_retired.sh, 40e4). `main`
+// returns 0: every shape adds 0, so the answer cannot drift with the
+// allocation behaviour being measured.
+struct P {
+  x: Int;
+  y: Int
+}
+
+struct Q {
+  p: P;
+  n: Int
+}
+
+enum W {
+  Wrap(P);
+  Pair(P, P)
+}
+
+fn apply(f: (Int) -> Int, v: Int) -> Int {
+  f(v)
+}
+
+fn apply_q(f: (Int) -> Q, v: Int) -> Q {
+  f(v)
+}
+
+fn capture_projected(i: Int) -> Int {
+  let p = P::{ x: i, y: 1 }
+  let add = (d: Int) -> Int { d + p.y }
+  (apply(add, 1) + p.x) * 0
+}
+
+fn capture_called_directly(i: Int) -> Int {
+  let p = P::{ x: i, y: 1 }
+  let add = (d: Int) -> Int { d + p.y + p.x }
+  add(1) * 0
+}
+
+fn capture_nested_projection(i: Int) -> Int {
+  let q = Q::{ p: P::{ x: i, y: 1 }, n: 2 }
+  let add = (d: Int) -> Int { d + q.p.y }
+  apply(add, 1) * 0
+}
+
+fn bind_projected(i: Int) -> Int {
+  let w = Wrap(P::{ x: i, y: 1 })
+  let v = match w {
+    Wrap(c) => c.y,
+    Pair(a, b) => a.x + b.y
+  }
+  v * 0
+}
+
+// Controls: the view is CONSUMED (moved into a returned value), so its dup
+// must stay.
+fn capture_consumed(i: Int) -> Int {
+  let p = P::{ x: i, y: 1 }
+  let f = (d: Int) -> Q { Q::{ p: p, n: p.y + d } }
+  let r = apply_q(f, 1)
+  (r.p.x + r.n + p.y) * 0
+}
+
+fn bind_consumed(i: Int) -> Int {
+  let w = Wrap(P::{ x: i, y: 1 })
+  let r = match w {
+    Wrap(c) => Q::{ p: c, n: c.x },
+    Pair(a, b) => Q::{ p: b, n: a.y }
+  }
+  (r.n + r.p.y) * 0
+}
+
+fn main() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 20000 {
+    acc = acc + capture_projected(i) + capture_called_directly(i) + capture_nested_projection(i) + bind_projected(i) + capture_consumed(i) + bind_consumed(i)
+    i = i + 1
+  }
+  acc
+}

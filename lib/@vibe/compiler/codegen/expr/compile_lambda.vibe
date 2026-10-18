@@ -57,8 +57,8 @@ import @vibe/compiler/codegen/common_analysis {
   emit_closure_resolve,
   emit_i64_extend_i32_u,
   is_mut_captured_in,
-  md_consume_count_pre,
-  md_shadow_zeroed_bmasks
+  md_shadow_zeroed_bmasks,
+  md_view_consume_count_pre
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -1152,8 +1152,10 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     // closure consuming the capture each call stays balanced (defining scope
     // still drops it exactly once). Ref-cell captures (#699) own their cell via
     // the env store and are reclaimed by the closure's class-7 drop; skip them.
+    // A projection (`p.y`) is a read, not a consume: counting it dup'd the
+    // capture on every call with nothing to release it.
     if ctx.enable_rc && !array_contains_str(ctx.ref_cell_names, cap_name) {
-      let cap_consumes = md_consume_count_pre(fn_body, cap_name, ctx.borrow_param_user, cl_md_bmasks)
+      let cap_consumes = md_view_consume_count_pre(fn_body, cap_name, ctx.borrow_param_user, cl_md_bmasks)
       let mut cdup = 0
       while cdup < cap_consumes {
         emit_rc_dup_guarded(lam_buf, cap_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
