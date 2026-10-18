@@ -1,0 +1,182 @@
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache,
+  DbgProv,
+  codegen_body_cache_discard,
+  codegen_body_cache_from_bytes,
+  codegen_body_cache_merge,
+  codegen_body_cache_to_bytes
+}
+import @vibe/compiler/codegen/wasi {
+  compile_wasi_module_linked_impl, function_with_executor
+}
+import @vibe/compiler/core {
+  merged_offset_space_add, merged_offset_space_reset
+}
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+import @vibe/function_worker {
+  FunctionContext, function_context_new, read_function_context
+}
+
+fn same_bytes(a: Bytes, b: Bytes) -> Bool {
+  let mut same = Bytes::length(a) == Bytes::length(b)
+  let mut i = 0
+  while same && i < Bytes::length(a) {
+    same = Bytes::get(a, i) == Bytes::get(b, i)
+    i = i + 1
+  }
+  same
+}
+
+fn compile_source(source: String, rc: Bool) -> Bytes with Exception {
+  merged_offset_space_reset()
+  merged_offset_space_add("input.vibe", source, 0)
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
+  let ids: Array[Int] = []
+  for stmt in stmts {
+    Array::push(ids, 0)
+  }
+  let nls: Array[Int] = []
+  let mut i = 0
+  while i < String::length(source) {
+    if String::char_code_at(source, i) == 10 {
+      Array::push(nls, i)
+    } else ()
+    i = i + 1
+  }
+  let prov = DbgProv::{
+    files: ["input.vibe"],
+    stmt_file_id: ids,
+    file_nls: [nls]
+  }
+  compile_wasi_module_linked_impl(stmts, "main", [("input.vibe", source)], [], false, rc, false, false, false, false, false, prov, codegen_body_cache_discard(), codegen_body_cache_discard(), 0, -1)
+}
+
+fn swap_lambda_rows(c: CodegenBodyCache, a: Int, b: Int) -> Unit {
+  let index = Array::get(c.lam_indices, a)
+  Array::set(c.lam_indices, a, Array::get(c.lam_indices, b))
+  Array::set(c.lam_indices, b, index)
+  let owner = Array::get(c.lam_owner, a)
+  Array::set(c.lam_owner, a, Array::get(c.lam_owner, b))
+  Array::set(c.lam_owner, b, owner)
+  let body = Array::get(c.lam_bodies, a)
+  Array::set(c.lam_bodies, a, Array::get(c.lam_bodies, b))
+  Array::set(c.lam_bodies, b, body)
+  let params = Array::get(c.lam_param_counts, a)
+  Array::set(c.lam_param_counts, a, Array::get(c.lam_param_counts, b))
+  Array::set(c.lam_param_counts, b, params)
+  let captures = Array::get(c.lam_captures, a)
+  Array::set(c.lam_captures, a, Array::get(c.lam_captures, b))
+  Array::set(c.lam_captures, b, captures)
+  let m32 = Array::get(c.lam_meta_i32, a)
+  Array::set(c.lam_meta_i32, a, Array::get(c.lam_meta_i32, b))
+  Array::set(c.lam_meta_i32, b, m32)
+  let m64 = Array::get(c.lam_meta_i64, a)
+  Array::set(c.lam_meta_i64, a, Array::get(c.lam_meta_i64, b))
+  Array::set(c.lam_meta_i64, b, m64)
+}
+
+fn output_state(ctx: FunctionContext) -> Array[Int] {
+  [
+    Array::length(ctx.input.lt_w.bodies),
+    Array::length(ctx.input.lt_w.param_counts),
+    Array::length(ctx.input.lt_w.captures),
+    Array::length(ctx.input.lt_w.meta_i32),
+    Array::length(ctx.input.lt_w.meta_i64),
+    Array::length(ctx.input.table_slots_used),
+    Array::length(ctx.input.blind_owners),
+    Array::length(ctx.input.blind_offsets),
+    Array::length(ctx.input.blind_kinds),
+    Array::length(ctx.input.blind_syms),
+    Array::length(ctx.input.linemap_state.funcs),
+    Array::length(ctx.input.linemap_state.offsets),
+    Array::length(ctx.input.linemap_state.file_ids),
+    Array::length(ctx.input.linemap_state.lines),
+    Bytes::length(ctx.input.linemap_state.stream),
+    Array::length(ctx.input.linemap_state.grp_fn),
+    Array::length(ctx.input.linemap_state.grp_first_off),
+    Array::length(ctx.input.linemap_state.grp_start),
+    Array::get(ctx.input.linemap_state.cur_fn, 0),
+    Array::get(ctx.input.linemap_state.site, 0),
+    Array::length(ctx.input.body_cache_out.fn_indices),
+    Array::length(ctx.input.body_cache_out.guard_layout)
+  ]
+}
+
+fn check_order(source: String, rc: Bool, interleave: Bool) -> Unit with Env + Exception + Fs {
+  let expected = compile_source(source, rc)
+  let calls = [0]
+  let actual = function_with_executor((plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow) -> {
+    Array::set(calls, 0, Array::get(calls, 0) + 1)
+    let ctx = function_context_new(plan, input, debug_break, debug_trace, enable_rc, rc_shadow)
+    let worker = read_function_context(FunctionContext::write_function_context(ctx))
+    let n = input.num_user_funcs
+    assert(n >= 2)
+    let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    FunctionContext::read_function_job(worker, FunctionContext::write_function_job(ctx, digest, 0, n / 2), digest)
+    let first = FunctionContext::run_function_range(worker, 0, n / 2)
+    FunctionContext::read_function_job(worker, FunctionContext::write_function_job(ctx, digest, n / 2, n), digest)
+    let second = FunctionContext::run_function_range(worker, n / 2, n)
+    let valid = codegen_body_cache_merge(second, first)
+    assert(Array::get(valid.fn_indices, 0) >= n / 2)
+    if interleave {
+      assert(Array::length(valid.lam_indices) == 4)
+      assert(Array::get(valid.lam_owner, 0) == Array::get(valid.lam_owner, 1))
+      assert(Array::get(valid.lam_owner, 2) == Array::get(valid.lam_owner, 3))
+      assert(Array::get(valid.lam_owner, 0) != Array::get(valid.lam_owner, 2))
+      swap_lambda_rows(valid, 1, 2)
+      assert(Array::get(valid.lam_owner, 0) == Array::get(valid.lam_owner, 2))
+      assert(Array::get(valid.lam_owner, 1) == Array::get(valid.lam_owner, 3))
+    } else ()
+    let malformed = match codegen_body_cache_from_bytes(codegen_body_cache_to_bytes(valid)) {
+      Some(copy) => copy,
+      None => throw("test product clone failed")
+    }
+    let mut a = -1
+    let mut b = -1
+    let mut i = 0
+    while i < Array::length(malformed.lam_indices) && b < 0 {
+      let mut j = i + 1
+      while j < Array::length(malformed.lam_indices) && b < 0 {
+        if Array::get(malformed.lam_owner, i) == Array::get(malformed.lam_owner, j) {
+          a = i; b = j
+        } else ()
+        j = j + 1
+      }
+      i = i + 1
+    }
+    assert(a >= 0 && b > a)
+    assert(Array::get(malformed.lam_indices, a) < Array::get(malformed.lam_indices, b))
+    assert(Array::get(malformed.lam_param_counts, a) == Array::get(malformed.lam_param_counts, b))
+    assert(!same_bytes(Array::get(malformed.lam_bodies, a), Array::get(malformed.lam_bodies, b)))
+    swap_lambda_rows(malformed, a, b)
+    let before = output_state(ctx)
+    let refused = handle {
+      FunctionContext::replay_function_products(ctx, malformed); "accepted"
+    } with { Exception::Throw(message) => message }
+    if refused != "function product: lambda rows are not in planned order" {
+      throw("lambda order regression: expected early refusal; got " + refused)
+    } else ()
+    assert(before == output_state(ctx))
+    FunctionContext::replay_function_products(ctx, valid)
+  }, () -> Bytes with Env + Exception + Fs {
+    compile_source(source, rc)
+  })
+  assert(Array::get(calls, 0) == 1)
+  assert(same_bytes(actual, expected))
+}
+
+test "function products reject per-owner lambda disorder before mutation" {
+  let outcome = handle {
+    for rc in [false, true] {
+      let choose = "fn choose(n: Int) -> (Int) -> Int { if n > 0 { (x) -> x - 2 } else { (x) -> x + 100 } }\n"
+      check_order(choose + "fn main() -> Int { let f = choose(1); f(9) }", rc, false)
+      let other = "fn other(n: Int) -> (Int) -> Int { if n > 0 { (x) -> x * 3 } else { (x) -> 20 - x } }\n"
+      check_order(choose + other + "fn main() -> Int { let f = choose(1); let g = other(0); f(9) - g(4) }", rc, true)
+    }
+    "accepted"
+  } with { Exception::Throw(message) => message }
+  inspect(outcome, content = "accepted")
+}
