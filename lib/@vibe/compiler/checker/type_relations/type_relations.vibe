@@ -121,69 +121,125 @@ fn strip_effects(ty: Type) -> Type {
 /// it binds holds a stripped type -- `T := () -> Int` for an actual
 /// `() -> Int with Log` -- and a later use of `T` would refuse the row the
 /// value really has. Bind each variable the retry bound (`su`) from the
-/// UNSTRIPPED actual at the same position instead. A variable the walk cannot
-/// reach stays unbound, as it was before the retry kept any binding.
+/// UNSTRIPPED actual at the same position instead.
+///
+/// A variable met more than once (`(T, T)` against a pure and a `Log`
+/// function) takes the occurrence every other one fits into without dropping
+/// a row -- the widest -- so the answer does not depend on which was walked
+/// first. When no occurrence covers the others, it keeps the retry's own
+/// binding. A variable the walk cannot reach stays unbound, as it was before
+/// the retry kept any binding.
 fn retry_bind_unstripped(expected: Type, actual: Type, s: Subst, su: Subst) -> Subst {
+  let occ: Array[(Int, Type)] = array_empty()
+  retry_collect_occurrences(expected, actual, s, su, occ)
+  let mut out = s
+  let mut i = 0
+  while i < Array::length(occ) {
+    let (id, _) = Array::get(occ, i)
+    match subst_lookup(out, id) {
+      Some(_) => (),
+      None => match retry_widest_occurrence(occ, id) {
+        Some(t) => if occurs_in(id, t) {
+          ()
+        } else {
+          out = subst_bind_value(id, t, out)
+        },
+        None => match subst_lookup(su, id) {
+          Some(t) => out = subst_bind_value(id, subst_apply(su, t), out),
+          None => ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn retry_widest_occurrence(occ: Array[(Int, Type)], id: Int) -> Option[Type] {
+  let mut found = None
+  let mut done = false
+  let mut i = 0
+  while i < Array::length(occ) && !done {
+    let (cid, cand) = Array::get(occ, i)
+    if cid == id {
+      let mut covers = true
+      let mut j = 0
+      while j < Array::length(occ) && covers {
+        let (oid, other) = Array::get(occ, j)
+        if oid == id {
+          covers = match effect_row_dropped(cand, other) {
+            Some(_) => false,
+            None => true
+          }
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      if covers {
+        found = Some(cand)
+        done = true
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn retry_collect_occurrences(expected: Type, actual: Type, s: Subst, su: Subst, occ: Array[(Int, Type)]) -> Unit {
   let e = subst_apply(s, expected)
   let a = subst_apply(s, actual)
   match e {
     CtVar(id) => match subst_lookup(su, id) {
-      Some(_) => if occurs_in(id, a) {
-        s
-      } else {
-        subst_bind_value(id, a, s)
-      },
-      None => s
+      Some(_) => Array::push(occ, (id, a)),
+      None => ()
     },
     CtFn(eps, er, _) => match a {
       CtFn(aps, ar, _) => if Array::length(eps) == Array::length(aps) {
-        let mut out = s
-        let mut i = 0
-        while i < Array::length(eps) {
-          out = retry_bind_unstripped(Array::get(eps, i), Array::get(aps, i), out, su)
-          i = i + 1
-        }
-        retry_bind_unstripped(er, ar, out, su)
+        retry_collect_all(eps, aps, s, su, occ)
+        retry_collect_occurrences(er, ar, s, su, occ)
       } else {
-        s
+        ()
       },
-      _ => s
+      _ => ()
     },
     CtArray(ee) => match a {
-      CtArray(ae) => retry_bind_unstripped(ee, ae, s, su),
-      _ => s
+      CtArray(ae) => retry_collect_occurrences(ee, ae, s, su, occ),
+      _ => ()
     },
     CtOption(ee) => match a {
-      CtOption(ae) => retry_bind_unstripped(ee, ae, s, su),
-      _ => s
+      CtOption(ae) => retry_collect_occurrences(ee, ae, s, su, occ),
+      _ => ()
     },
     CtTuple(ees) => match a {
-      CtTuple(aes) => retry_bind_unstripped_all(ees, aes, s, su),
-      _ => s
+      CtTuple(aes) => retry_collect_all(ees, aes, s, su, occ),
+      _ => ()
     },
     CtNamed(en, eas) => match a {
       CtNamed(an, aas) => if en == an {
-        retry_bind_unstripped_all(eas, aas, s, su)
+        retry_collect_all(eas, aas, s, su, occ)
       } else {
-        s
+        ()
       },
-      _ => s
+      _ => ()
     },
-    _ => s
+    _ => ()
   }
 }
 
-fn retry_bind_unstripped_all(es: Array[Type], as_: Array[Type], s: Subst, su: Subst) -> Subst {
-  if Array::length(es) != Array::length(as_) {
-    s
-  } else {
-    let mut out = s
+fn retry_collect_all(es: Array[Type], as_: Array[Type], s: Subst, su: Subst, occ: Array[(Int, Type)]) -> Unit {
+  if Array::length(es) == Array::length(as_) {
     let mut i = 0
     while i < Array::length(es) {
-      out = retry_bind_unstripped(Array::get(es, i), Array::get(as_, i), out, su)
+      retry_collect_occurrences(Array::get(es, i), Array::get(as_, i), s, su, occ)
       i = i + 1
     }
-    out
+  } else {
+    ()
   }
 }
 
