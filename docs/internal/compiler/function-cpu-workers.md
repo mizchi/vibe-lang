@@ -140,6 +140,8 @@ Context size and worker allocations fall; whole-wall changes remain below the
 record separates retained wire buffers, owned decoded strings, reserved pages
 and simultaneous RSS, including the parent floor after workers exit.
 
+The [bounded context-verification report](../reports/function-context-verification-2026-10-18.md) records 132 further controlled builds on the same fixed corpus, with matching receipts for the differing native runners. Post-wave SHA-256 verification now uses a fixed 64 KiB scratch buffer before product reads; same-length edits, truncation and extra bytes preserve old output on refusal. All outputs and A/A controls agree, but whole-build walltime and peak RSS show no improvement. Parent preparation, transfer and replay costs remain blockers.
+
 ## Reproduce the selfbuild baseline
 
 The `compiler` bootstrap workload runs `scripts/generations.sh build --stage3`,

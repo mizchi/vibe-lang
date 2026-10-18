@@ -49,7 +49,7 @@ sys.exit(code)
 
 
 def assert_packet_integrity(repo, artifacts, runner, env, project):
-    """Change real job/product bytes in the region the old bump hash missed."""
+    """Mutate real packets and verify context refusal precedes product reads."""
     root = project / "packet-integrity"
     root.mkdir()
     names = [f"receipt_worker_function_{i}" for i in range(96)]
@@ -71,7 +71,8 @@ kind = os.environ["FUNCTION_PACKET_KIND"]
 def mutate():
     plan = json.loads(Path(plan_path).read_text())
     job = next(Path(p) for queue in plan["queues"] for p in queue)
-    path = Path(str(job) + ".product") if kind == "product" else job
+    path = (Path(plan["context"]) if kind.startswith("context") else
+            Path(str(job) + ".product") if kind == "product" else job)
     data = path.read_bytes()
     assert len(data) >= 1024, "packet must include the old unread byte range"
     before = hashlib.sha256(data).hexdigest()
@@ -82,21 +83,31 @@ def mutate():
     # Old bump compression read the lower half plus each chunk's last block.
     assert offset > len(data) // 2 + 64
     assert offset % 1024 < 960 and offset < (len(data) - 1) // 64 * 64
-    changed[offset] ^= 1
+    if kind == "context-short":
+        del changed[-1]
+    elif kind == "context-extra":
+        changed.append(0)
+    else:
+        changed[offset] ^= 1
     path.write_bytes(changed)
+    if kind.startswith("context"):
+        # If the host starts reading products before checking the context,
+        # the missing product diagnostic replaces the required context refusal.
+        Path(str(job) + ".product").unlink()
     after = hashlib.sha256(path.read_bytes()).hexdigest()
     assert before != after
     Path(os.environ["FUNCTION_PACKET_RECORD"]).write_text(json.dumps({
-        "kind": kind, "offset": offset, "length": len(data), "before": before, "after": after}))
+        "kind": kind, "offset": offset, "length": len(data), "changed_length": len(changed),
+        "before": before, "after": after}))
 if plan_path and kind == "job":
     mutate()
 code = subprocess.call([os.environ["FUNCTION_PACKET_RUNNER"], *sys.argv[1:]])
-if code == 0 and plan_path and kind == "product":
+if code == 0 and plan_path and (kind == "product" or kind.startswith("context")):
     mutate()
 sys.exit(code)
 ''')
     wrapper.chmod(0o755)
-    for kind in ("control", "job", "product"):
+    for kind in ("control", "job", "product", "context", "context-short", "context-extra"):
         private = root / kind
         private.mkdir()
         output = private / "out.wasm"
@@ -124,12 +135,16 @@ sys.exit(code)
             assert changed["offset"] < (changed["length"] - 1) // 64 * 64
             assert changed["before"] != changed["after"] and changed["length"] >= 1024
             assert result.returncode != 0 and output.read_bytes() == b"previous build", result
-            if kind == "product":
+            if kind.startswith("context"):
+                delta = {"context": 0, "context-short": -1, "context-extra": 1}[kind]
+                assert changed["changed_length"] == changed["length"] + delta
+                assert "shared context changed after preparation" in result.stderr, result
+            elif kind == "product":
                 assert "functions: product receipt differs" in result.stderr, result
             else:
                 assert any(s in result.stderr for s in
                            ("coordinator exited", "functions: product receipt differs")), result
-    print("changed middle bytes in real native jobs/products preserve previous output", flush=True)
+    print("changed jobs/products and changed/short/extra context preserve previous output", flush=True)
 
 
 def main():

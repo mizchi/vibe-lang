@@ -13,6 +13,37 @@ use wasmtime::{bail, format_err, Caller, Result, Val, ValType};
 const INPUT_LIMIT: usize = 64 * 1024 * 1024;
 const PRODUCT_LIMIT: usize = 256 * 1024 * 1024;
 const SLOT_JOBS: usize = 16;
+const CONTEXT_VERIFY_CHUNK: usize = 64 * 1024;
+
+// Verification finishes before product callbacks and retains no context-sized
+// host allocation while the parent decodes and merges the worker products.
+fn verify_shared_context(
+    reader: impl Read,
+    expected_bytes: usize,
+    expected_hash: [u8; 32],
+) -> Result<()> {
+    if expected_bytes == 0 || expected_bytes > INPUT_LIMIT {
+        bail!("lowering: shared context changed after preparation");
+    }
+    let mut reader = reader.take(INPUT_LIMIT as u64 + 1);
+    let mut buffer = [0_u8; CONTEXT_VERIFY_CHUNK];
+    let mut hash = Sha256::new();
+    let mut bytes = 0;
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        };
+        hash.update(&buffer[..count]);
+        bytes += count;
+    }
+    if bytes != expected_bytes || <[u8; 32]>::from(hash.finalize()) != expected_hash {
+        bail!("lowering: shared context changed after preparation");
+    }
+    Ok(())
+}
 
 #[derive(Default)]
 pub(super) struct InputSnapshot {
@@ -363,15 +394,11 @@ pub(super) fn run(caller: &mut Caller<'_, HostState>, count: i64) -> Result<i64>
             .as_ref()
             .ok_or_else(|| format_err!("lowering: missing input snapshot"))?
             .verify()?;
-        let mut context = Vec::new();
-        std::fs::File::open(&context_path)?
-            .take(INPUT_LIMIT as u64 + 1)
-            .read_to_end(&mut context)?;
-        if context.len() != context_bytes
-            || <[u8; 32]>::from(Sha256::digest(&context)) != context_hash
-        {
-            bail!("lowering: shared context changed after preparation");
-        }
+        verify_shared_context(
+            std::fs::File::open(&context_path)?,
+            context_bytes,
+            context_hash,
+        )?;
         for index in &indices {
             let job = directory.join(format!("{index}.job"));
             let product = read_product(&directory.join(format!("{index}.job.product")))?;
@@ -425,6 +452,127 @@ pub(super) fn run(caller: &mut Caller<'_, HostState>, count: i64) -> Result<i64>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_verification_checks_all_raw_bytes_and_length() {
+        let bytes: Vec<u8> = (0..CONTEXT_VERIFY_CHUNK * 3 + 17)
+            .map(|i| (i % 256) as u8)
+            .collect();
+        let expected = Sha256::digest(&bytes).into();
+        verify_shared_context(bytes.as_slice(), bytes.len(), expected).unwrap();
+        for position in [0, CONTEXT_VERIFY_CHUNK, bytes.len() - 1] {
+            let mut changed = bytes.clone();
+            changed[position] ^= 1;
+            let error =
+                verify_shared_context(changed.as_slice(), bytes.len(), expected).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "lowering: shared context changed after preparation"
+            );
+        }
+        assert!(verify_shared_context(&bytes[..bytes.len() - 1], bytes.len(), expected).is_err());
+        let mut extra = bytes.clone();
+        extra.push(0);
+        assert!(verify_shared_context(extra.as_slice(), bytes.len(), expected).is_err());
+        assert!(verify_shared_context(bytes.as_slice(), 0, expected).is_err());
+        assert!(verify_shared_context(bytes.as_slice(), INPUT_LIMIT + 1, expected).is_err());
+    }
+
+    // A generated stream checks actual Read requests and the total input bound
+    // independently of the verifier's hash loop. read_to_end grows its request
+    // beyond this budget and must fail this test, even if it drops its Vec early.
+    struct ContextReader {
+        remaining: usize,
+        read_bytes: usize,
+        largest_request: usize,
+        short_read: usize,
+        interrupt_next: bool,
+        fail_after: Option<usize>,
+    }
+
+    impl ContextReader {
+        fn new(bytes: usize) -> Self {
+            Self {
+                remaining: bytes,
+                read_bytes: 0,
+                largest_request: 0,
+                short_read: usize::MAX,
+                interrupt_next: false,
+                fail_after: None,
+            }
+        }
+    }
+
+    impl Read for ContextReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.largest_request = self.largest_request.max(buffer.len());
+            if buffer.len() > CONTEXT_VERIFY_CHUNK {
+                return Err(std::io::Error::other("context read request exceeds 64 KiB"));
+            }
+            if self.interrupt_next {
+                self.interrupt_next = false;
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            if self.fail_after.is_some_and(|end| self.read_bytes >= end) {
+                return Err(std::io::Error::other("injected context read failure"));
+            }
+            let count = self.remaining.min(buffer.len()).min(self.short_read);
+            buffer[..count].fill(0xa5);
+            self.remaining -= count;
+            self.read_bytes += count;
+            if self.short_read != usize::MAX && count != 0 {
+                self.interrupt_next = true;
+            }
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn context_verification_has_bounded_read_requests() {
+        let bytes = vec![0xa5; CONTEXT_VERIFY_CHUNK * 4 + 19];
+        let mut reader = ContextReader::new(bytes.len());
+        verify_shared_context(&mut reader, bytes.len(), Sha256::digest(&bytes).into()).unwrap();
+        assert_eq!(reader.read_bytes, bytes.len());
+        assert!(reader.largest_request <= CONTEXT_VERIFY_CHUNK);
+    }
+
+    #[test]
+    fn context_verification_retries_interrupted_and_short_reads() {
+        let bytes = vec![0xa5; CONTEXT_VERIFY_CHUNK + 11];
+        let mut reader = ContextReader::new(bytes.len());
+        reader.short_read = 7;
+        reader.interrupt_next = true;
+        verify_shared_context(&mut reader, bytes.len(), Sha256::digest(&bytes).into()).unwrap();
+        assert_eq!(reader.read_bytes, bytes.len());
+    }
+
+    #[test]
+    fn context_verification_propagates_partial_io_failure() {
+        let mut reader = ContextReader::new(CONTEXT_VERIFY_CHUNK * 4);
+        reader.fail_after = Some(CONTEXT_VERIFY_CHUNK);
+        let error =
+            verify_shared_context(&mut reader, CONTEXT_VERIFY_CHUNK * 4, [0; 32]).unwrap_err();
+        assert_eq!(error.to_string(), "injected context read failure");
+        assert_eq!(reader.read_bytes, CONTEXT_VERIFY_CHUNK);
+    }
+
+    #[test]
+    fn context_verification_bounds_untrusted_input() {
+        let mut hash = Sha256::new();
+        for _ in 0..INPUT_LIMIT / 1024 {
+            hash.update([0xa5; 1024]);
+        }
+        let mut exact = ContextReader::new(INPUT_LIMIT);
+        verify_shared_context(&mut exact, INPUT_LIMIT, hash.finalize().into()).unwrap();
+        assert_eq!(exact.read_bytes, INPUT_LIMIT);
+        let mut reader = ContextReader::new(INPUT_LIMIT * 2);
+        assert!(verify_shared_context(&mut reader, INPUT_LIMIT, [0; 32]).is_err());
+        assert_eq!(reader.read_bytes, INPUT_LIMIT + 1);
+        assert!(reader.largest_request <= CONTEXT_VERIFY_CHUNK);
+        let mut reader = ContextReader::new(INPUT_LIMIT + 1);
+        assert!(verify_shared_context(&mut reader, INPUT_LIMIT + 1, [0; 32]).is_err());
+        assert_eq!(reader.read_bytes, 0);
+    }
 
     #[test]
     fn empty_cache_setting_uses_default_namespace() {
