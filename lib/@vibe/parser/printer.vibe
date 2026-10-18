@@ -354,75 +354,27 @@ export fn print_pat(p: Pat) -> String {
   }
 }
 
-fn handle_effect_name_from_ctor(name: String) -> Option[String] {
-  let idx = String::last_index_of(name, "::")
-  if idx < 0 {
-    None
-  } else {
-    Some(name[0: idx])
-  }
-}
-
-fn infer_handle_effect_name_from_pat(pat: Pat) -> Option[String] {
-  match source_pat(pat) {
-    PCtor(name, _) => handle_effect_name_from_ctor(name),
-    POr(left, right) => match infer_handle_effect_name_from_pat(left) {
-      Some(name) => Some(name),
-      None => infer_handle_effect_name_from_pat(right)
-    },
-    _ => None
-  }
-}
-
-/// The effect a `handle` block names, recovered from its arm patterns. The
-/// fallback is the erased exception effect: an arm spelled `Throw(m) => ..`
-/// carries no effect name, and that shape only ever means the abortive
-/// exception handler. #1461 moved the fallback spelling from `Error` to the
-/// canonical `Exception`.
-fn infer_handle_effect_name(arms: Array[(Pat, Expr)]) -> String {
-  let mut i = 0
-  let mut effect_name = "Exception"
-  let mut found = false
-  while i < Array::length(arms) && !found {
-    let (pat, _) = Array::get(arms, i)
-    match infer_handle_effect_name_from_pat(pat) {
-      Some(name) => {
-        effect_name = name
-        found = true
-      },
-      None => {
-        i = i + 1
-      }
-    }
-  }
-  effect_name
-}
-
-fn strip_handle_effect_ctor(effect_name: String, ctor_name: String) -> String {
-  let prefix = String::concat(effect_name, "::")
-  if String::starts_with(ctor_name, prefix) {
-    let prefix_len = String::length(prefix)
-    let ctor_len = String::length(ctor_name)
-    ctor_name[prefix_len: ctor_len]
-  } else {
-    ctor_name
-  }
-}
-
-fn print_handle_pat(effect_name: String, pat: Pat) -> String {
+/// A handler arm, printed qualified: the handler set names the effect on
+/// every arm (#3530). An arm spelled `Throw(m) => ..` carries no effect name,
+/// and that shape only ever means the abortive exception handler.
+fn print_handle_pat(pat: Pat) -> String {
   match source_pat(pat) {
     PCtor(name, args) => {
-      let short_name = strip_handle_effect_ctor(effect_name, name)
+      let qualified = if String::contains(name, "::") {
+        name
+      } else {
+        String::concat("Exception::", name)
+      }
       if Array::length(args) == 0 {
-        short_name
+        qualified
       } else {
         let parts = for arg in args {
           print_pat(arg)
         }
-        String::concat(short_name, String::concat("(", String::concat(join(parts, ", "), ")")))
+        String::concat(qualified, String::concat("(", String::concat(join(parts, ", "), ")")))
       }
     },
-    POr(left, right) => String::concat(print_handle_pat(effect_name, left), String::concat(" | ", print_handle_pat(effect_name, right))),
+    POr(left, right) => String::concat(print_handle_pat(left), String::concat(" | ", print_handle_pat(right))),
     _ => print_pat(pat)
   }
 }
@@ -560,12 +512,11 @@ export fn print_expr(e: Expr) -> String {
       // Preserve printer/parser round-tripping by emitting their equivalent body.
       print_expr(body)
     } else {
-      let effect_name = infer_handle_effect_name(arms)
       let parts = for arm in arms {
         let (pat, expr) = arm
-        String::concat(print_handle_pat(effect_name, pat), String::concat(" => ", print_expr(expr)))
+        String::concat(print_handle_pat(pat), String::concat(" => ", print_expr(expr)))
       }
-      String::concat("handle { ", String::concat(print_expr(body), String::concat(" } with ", String::concat(effect_name, String::concat(" { ", String::concat(join(parts, "; "), " }"))))))
+      String::concat("handle { ", String::concat(print_expr(body), String::concat(" } with { ", String::concat(join(parts, "; "), " }"))))
     },
     EWhile(cond, body) => String::concat("while ", String::concat(print_expr(cond), String::concat(" { ", String::concat(print_expr(body), " }")))),
     ELoop(params, body) => {
