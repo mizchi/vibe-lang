@@ -290,20 +290,48 @@ enum BlockStep {
 /// guard's Bool-check and codegen come for free via `EIf`. `scrut` must be a
 /// re-evaluable reference (the caller binds the scrutinee to a temp), so the
 /// nested match never re-runs a side-effecting scrutinee.
+///
+/// `prior` holds the UNGUARDED arms before `i`. The fallthrough match is only
+/// reached by a value that matched `pat`, so a value that an earlier unguarded
+/// arm takes never gets there -- but the checker judges the fallthrough match
+/// on its own, as a match over the whole scrutinee type. Without the earlier
+/// arms, `Circle(r) => .., Rect(w, h) if w == h => .., Rect(w, h) => .., Empty
+/// => ..` was refused with "variant `Circle` ... is not handled". So when the
+/// remaining arms have no catch-all, the earlier unguarded arms are appended
+/// to the fallthrough (they are dead there, and well-typed, being the arms as
+/// written). An earlier GUARDED arm is not appended: its guard may fail too,
+/// so it does not cover anything, and a pattern only guarded arms reach is
+/// still reported as not handled.
 fn desugar_guarded(arms: Array[(Pat, Expr, Expr)], i: Int, scrut: Expr, context: Option[ParserBinderContext]) -> Array[(Pat, Expr)] {
+  desugar_guarded_from(arms, i, scrut, empty_arms(), context)
+}
+
+fn desugar_guarded_from(arms: Array[(Pat, Expr, Expr)], i: Int, scrut: Expr, prior: Array[(Pat, Expr)], context: Option[ParserBinderContext]) -> Array[(Pat, Expr)] {
   if i >= Array::length(arms) {
     empty_arms()
   } else {
     let (pat, arm_guard, body) = Array::get(arms, i)
-    let rest = desugar_guarded(arms, i + 1, scrut, context)
     let no_guard = match arm_guard {
       EBool(bv) => bv,
       _ => false
     }
+    let next_prior = if no_guard {
+      let pb = ArrayBuilder::new()
+      let mut q = 0
+      while q < Array::length(prior) {
+        ArrayBuilder::push(pb, Array::get(prior, q))
+        q = q + 1
+      }
+      ArrayBuilder::push(pb, (pat, body))
+      ArrayBuilder::freeze(pb)
+    } else {
+      prior
+    }
+    let rest = desugar_guarded_from(arms, i + 1, scrut, next_prior, context)
     let arm_body = if no_guard {
       body
     } else {
-      EIf(arm_guard, body, EMatch(scrut, rest))
+      EIf(arm_guard, body, EMatch(scrut, guard_fallthrough_arms(rest, prior)))
     }
     let out = ArrayBuilder::new()
     ArrayBuilder::push(out, (pat, arm_body))
@@ -313,6 +341,48 @@ fn desugar_guarded(arms: Array[(Pat, Expr, Expr)], i: Int, scrut: Expr, context:
       j = j + 1
     }
     ArrayBuilder::freeze(out)
+  }
+}
+
+/// The arms of a failed guard's fallthrough match: the remaining arms, then
+/// -- only when none of those is a catch-all -- the earlier unguarded arms
+/// (see desugar_guarded). With a catch-all among the remaining arms the
+/// result is exactly the remaining arms, so a match that already compiled
+/// lowers to the same code as before.
+fn guard_fallthrough_arms(rest: Array[(Pat, Expr)], prior: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+  let mut has_catchall = false
+  let mut k = 0
+  while k < Array::length(rest) {
+    let (rp, _) = Array::get(rest, k)
+    if guard_pat_is_catchall(rp) {
+      has_catchall = true
+    }
+    k = k + 1
+  }
+  if has_catchall || Array::length(prior) == 0 {
+    rest
+  } else {
+    let out = ArrayBuilder::new()
+    let mut j = 0
+    while j < Array::length(rest) {
+      ArrayBuilder::push(out, Array::get(rest, j))
+      j = j + 1
+    }
+    let mut p = 0
+    while p < Array::length(prior) {
+      ArrayBuilder::push(out, Array::get(prior, p))
+      p = p + 1
+    }
+    ArrayBuilder::freeze(out)
+  }
+}
+
+fn guard_pat_is_catchall(pat: Pat) -> Bool {
+  match pat {
+    PWild => true,
+    PBind(_) => true,
+    POr(l, r) => guard_pat_is_catchall(l) || guard_pat_is_catchall(r),
+    _ => false
   }
 }
 
