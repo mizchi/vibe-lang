@@ -854,10 +854,7 @@ Rules:
   nothing after the parser could tell them apart -- and is now rejected by
   name. The parser had to take both for the length of the migration because
   the bootstrap rule ([bootstrap.md](../../internal/operations/bootstrap.md)) requires the seed to
-  understand a spelling before the compiler's own source may use it. `vibe
-  fmt` still rewrites it: the formatter normalizes rows at the TOKEN level, so
-  it converts source the compiler no longer accepts, which makes it the
-  migration path for code outside this repository.
+  understand a spelling before the compiler's own source may use it.
 
   `effectset` keeps its braced member list (`effectset FsAll = { Fs::read_file,
   Fs::write_file }`) -- that `{ .. }` is a set literal on the right of `=`, not
@@ -868,8 +865,6 @@ Rules:
   name appears: a row item (`-> T with Error`), the handled effect
   (`handle { .. } with Error { .. }`), and a qualified handler arm
   (`with { Error::Throw(_) => .. }` or the suffix `with Error::Throw(_) => ..`).
-  `vibe fmt` rewrites all three, on the same token-level argument as the braced
-  row above.
 
   `perform Error::Throw(x)` is unaffected and stays legal. An operation
   qualifier on a `perform` is not a row item or a handled effect: it names the

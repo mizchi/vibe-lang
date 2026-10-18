@@ -349,9 +349,7 @@ fn hello() -> Unit with Console { println("hi") }
 // #1429: the effect row has exactly one spelling, plus one for the empty row.
 //   with A + B      the row
 //   with ()         the explicitly empty row
-// The braced `with { A, B }` was accepted through the migration and is now a
-// named parse error. `vibe fmt` rewrites it for you (the formatter is a
-// token-level pass, so it converts source the compiler no longer accepts).
+// The braced `with { A, B }` is a named parse error.
 // (`effectset X = { A, B }` keeps its braces — that is a set literal on the
 // right of `=`, not a row.)
 // `+` rather than `,` because once the braces are gone a comma cannot be told
@@ -397,9 +395,6 @@ let rec fact: (Int) -> Int = (n) -> {     // recursive
 let identity: [T](T) -> T = (x) -> { x }  // generic
 let show: [T: Eq + Ord](T) -> T = (x) -> { x } // trait bounds
 ```
-
-> **Deprecated**: `let f = (x: Int) -> Int { ... }` (inline param types)
-> is deprecated. Use `vibe fmt` to auto-convert.
 
 ### Labeled arguments
 
@@ -1732,9 +1727,6 @@ fn f() -> Int with Error { .. }              // row item        -> parse error
 handle { .. } with Error { Throw(_) => .. }  // handled effect  -> parse error
 handle { .. } with { Error::Throw(_) => .. } // qualified arm   -> parse error
 ```
-
-`vibe fmt` rewrites all three to `Exception` (token-level, so it can convert
-sources the parser no longer accepts).
 
 **`perform Error::Throw(x)` is still accepted.** That qualifier does not spell
 a row or a handled effect; it names the operation the runtime dispatches.
