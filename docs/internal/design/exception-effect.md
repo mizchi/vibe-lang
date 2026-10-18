@@ -176,9 +176,7 @@ declare the erased `with Exception`.
 
 `Error` was the effect's earlier name. As a row item and as a handled-effect
 name it is a parse error (#1461, #1501) — `` `Error` was retired as an effect
-spelling in #1461 `` (`lib/@vibe/parser/parser_smoke_test.vibe`) — and
-`vibe fmt` rewrites both places to `Exception`, token by token, so it converts
-source the parser no longer accepts. The operation qualifier
+spelling in #1461 `` (`lib/@vibe/parser/parser_smoke_test.vibe`). The operation qualifier
 `perform Error::Throw(x)` is still accepted: it names an operation the runtime
 dispatches, not a row (measured: a function declared `with Exception` whose
 body is `perform Error::Throw("x")` checks clean on the committed seed). Inside
