@@ -49,3 +49,48 @@ test "blake3 simd and scalar agree on odd sizes" {
   }
   assert(blake3_bytes_simd(pattern_bytes(2049)) == blake3_bytes(pattern_bytes(2049)))
 }
+
+test "blake3 simd hashes every byte across chunks" {
+  for len in [1024, 3073] {
+    let original = pattern_bytes(len)
+    let expected = blake3_bytes(original)
+    assert(blake3_bytes_simd(original) == expected)
+    for at in [
+      0,
+      31,
+      32,
+      63,
+      64,
+      65,
+      511,
+      512,
+      700,
+      959,
+      960,
+      1023,
+      1024,
+      1088,
+      1535,
+      1536,
+      1700,
+      1983,
+      1984,
+      2047,
+      2048,
+      2560,
+      3008,
+      3072
+    ] {
+      if at < len {
+        let changed = Bytes::slice(original, 0, Bytes::length(original))
+        Bytes::set(changed, at, (Bytes::get(changed, at) + 1) % 251)
+        assert(Bytes::get(changed, at) != Bytes::get(original, at))
+        let changed_expected = blake3_bytes(changed)
+        assert(changed_expected != expected)
+        let actual = blake3_bytes_simd(changed)
+        assert(actual == changed_expected)
+        assert(actual != expected)
+      } else ()
+    }
+  }
+}
