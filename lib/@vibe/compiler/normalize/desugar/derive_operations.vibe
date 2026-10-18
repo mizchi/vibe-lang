@@ -669,12 +669,35 @@ export fn collect_show_array_elems(ty: TypeExpr, acc: Array[TypeExpr], keys: Arr
   }
 }
 
+/// A field or payload binder in a generated `compare` is a bare name whose
+/// type does not reach the `<` lowering, so a raw `<` on a boxed `Double` or a
+/// `String` compared the two references: equal values answered `Less` and the
+/// order of unequal ones followed allocation order. Mark the operand the way
+/// typed equality does (`Double::to_float` makes it floatish), and give a
+/// `String` an operand the lowering classifies as a string. The checker
+/// refuses `derive (Ord)` over every other non-nominal field type
+/// (`collect_derive_field_errors`), so no other shape reaches the operator.
+fn ord_operand(fty: TypeExpr, e: Expr) -> Expr {
+  match fty {
+    TyName(n) => if n == "Double" || n == "Float" {
+      ECall(builtin_ref("Double::to_float"), [e], -1, [])
+    } else if n == "String" {
+      ECall(builtin_ref("String::concat"), [e, EString("", -1)], -1, [])
+    } else {
+      e
+    },
+    _ => e
+  }
+}
+
 /// Compare two operands of declared type `fty` and answer `rest` when they are
 /// `Equal`, otherwise their `Ordering` (#3042). Aggregate (declared
 /// struct/enum) operands recurse through `T::compare`; scalars and type
 /// parameters use the runtime structural `<` / `>` (codegen handles them).
 fn compare_then_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, rest: Expr, known_types: Array[String]) -> Expr {
-  let by_operator = EIf(EBinOp("<", lhs, rhs, -1), ordering_ctor("Less"), EIf(EBinOp(">", lhs, rhs, -1), ordering_ctor("Greater"), rest))
+  let l = ord_operand(fty, lhs)
+  let r = ord_operand(fty, rhs)
+  let by_operator = EIf(EBinOp("<", l, r, -1), ordering_ctor("Less"), EIf(EBinOp(">", l, r, -1), ordering_ctor("Greater"), rest))
   match fty {
     TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
       let arms = array_empty()

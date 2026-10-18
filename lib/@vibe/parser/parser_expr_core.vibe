@@ -457,7 +457,26 @@ fn map_from_pairs_fields(args: Array[Expr], pos: Int) -> Array[(String, Expr)] w
         match source_expr(Array::get(elems, i)) {
           ETuple(kv) => if Array::length(kv) == 2 {
             match source_expr(Array::get(kv, 0)) {
-              EString(k, _) => ArrayBuilder::push(b, (k, Array::get(kv, 1))),
+              EString(k, _) => {
+                // A repeated key built a map holding the key twice: `size`
+                // counted both, `m["a"]` answered the first and `keys` listed
+                // it twice, while `MapBuilder` and `Map::set` keep one entry.
+                // The keys are literals, so the repeat is visible here.
+                let mut j = 0
+                while j < i {
+                  match source_expr(Array::get(elems, j)) {
+                    ETuple(prev) => match source_expr(Array::get(prev, 0)) {
+                      EString(pk, _) => if pk == k {
+                        throw("Map::from_pairs lists the key \"\{k}\" twice: a map holds each key once, so remove one of the pairs at #\{pos}")
+                      },
+                      _ => ()
+                    },
+                    _ => ()
+                  }
+                  j = j + 1
+                }
+                ArrayBuilder::push(b, (k, Array::get(kv, 1)))
+              },
               _ => throw("Map::from_pairs requires an array literal of (string literal, value) pairs for now (#960): pair key is not a string literal at #\{pos}")
             }
           } else {

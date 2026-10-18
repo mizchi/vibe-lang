@@ -999,6 +999,9 @@ fn dfe_push_imported(declared: Array[String], declared_derives: Array[Array[Stri
 }
 
 fn dfe_check(owner: String, derives: Array[String], tparams: Array[String], what: String, fty: TypeExpr, declared: Array[String], declared_derives: Array[Array[String]], defined: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
+  if struct_derives_has(derives, "Ord") && !dfe_ord_field_ok(owner, tparams, fty, declared) {
+    Array::push(errors, "write `\{owner}::compare` yourself, or give its \{what} a type `derive (Ord)` can order: it orders `Int`, `Char`, `Bool`, `String`, `Double`, `Float` and declared types field by field, and compared a \{dfe_ord_kind(fty, tparams)} by its address, so equal values answered `Less` [@fn=\{owner}]")
+  }
   let head = match fty {
     TyName(n) => n,
     TyApp(n, _) => n,
@@ -1023,6 +1026,35 @@ fn dfe_check(owner: String, derives: Array[String], tparams: Array[String], what
     } else {
       ()
     }
+  }
+}
+
+/// Can the generated `compare` order this field? A scalar it compares by
+/// value, a declared nominal through that type's own `compare` (whose
+/// existence dfe_check_trait checks). A container, a tuple, a function or a
+/// type parameter reached a raw `<` on references (#3042's generator has no
+/// typed arm for them), so `derive (Ord)` over one is refused rather than
+/// answering by address. An unknown name (an alias, an imported nominal) is
+/// left alone: no false refusal.
+fn dfe_ord_field_ok(owner: String, tparams: Array[String], fty: TypeExpr, declared: Array[String]) -> Bool {
+  match fty {
+    TyName(n) => !str_array_has(tparams, n) && n != "Bytes",
+    TyApp(n, _) => n == owner || str_array_has(declared, n),
+    TyUnit => true,
+    _ => false
+  }
+}
+
+fn dfe_ord_kind(fty: TypeExpr, tparams: Array[String]) -> String {
+  match fty {
+    TyName(n) => if str_array_has(tparams, n) {
+      "type parameter `\{n}`"
+    } else {
+      "`\{n}`"
+    },
+    TyApp(n, _) => "`\{n}[..]`",
+    TyTuple(_) => "tuple",
+    _ => "function"
   }
 }
 
