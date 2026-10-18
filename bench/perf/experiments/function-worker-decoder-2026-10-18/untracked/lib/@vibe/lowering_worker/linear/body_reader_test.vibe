@@ -1,0 +1,129 @@
+import ./string_reader.vibe {
+  linear_body_cache_from_bytes
+}
+import @vibe/codegen/transport {
+  CodegenBodyCache, codegen_body_cache_from_bytes, codegen_body_cache_new, codegen_body_cache_to_bytes
+}
+
+fn string_cache(value: String) -> CodegenBodyCache {
+  let c = codegen_body_cache_new()
+  Array::push(c.fn_indices, 0)
+  Array::push(c.fn_names, value)
+  Array::push(c.fn_files, 0)
+  Array::push(c.fn_src_stmts, 0)
+  Array::push(c.fn_bodies, Bytes::from_array([0, 127, 255]))
+  Array::push(c.fn_meta_i32, 0)
+  Array::push(c.fn_meta_i64, 0)
+  Array::push(c.fn_meta_v128, 0)
+  Array::push(c.lam_owner, 0)
+  Array::push(c.lam_indices, 1)
+  Array::push(c.lam_bodies, Bytes::from_array([255, 0]))
+  Array::push(c.lam_param_counts, 0)
+  Array::push(c.lam_captures, [value, ""])
+  Array::push(c.lam_meta_i32, 0)
+  Array::push(c.lam_meta_i64, 0)
+  Array::push(c.guard_synth_names, value)
+  Array::push(c.guard_synth_stmts, 0)
+  Array::push(c.guard_import_names, value)
+  Array::push(c.guard_borrow_names, value)
+  Array::push(c.guard_borrow_masks, 1)
+  Array::push(c.guard_unmangled_names, value)
+  c
+}
+
+fn assert_same_bytes(a: Bytes, b: Bytes) -> Unit with Console {
+  assert_eq(Bytes::length(a), Bytes::length(b))
+  let mut i = 0
+  while i < Bytes::length(a) {
+    assert_eq(Bytes::get(a, i), Bytes::get(b, i))
+    i = i + 1
+  }
+}
+
+test "body strings: bulk reads preserve every raw byte and own their storage" {
+  let raw = String::from_byte(128) + String::from_byte(255) + String::from_byte(192)
+  let mut long = "x"
+  while String::length(long) < 8192 {
+    long = String::concat(long, long)
+  }
+  for value in ["", "é🍣" + String::from_byte(0), raw, long] {
+    let wire = codegen_body_cache_to_bytes(string_cache(value))
+    let reference = match codegen_body_cache_from_bytes(wire) {
+      Some(c) => c,
+      None => throw("reference rejected valid strings")
+    }
+    let actual = match linear_body_cache_from_bytes(wire) {
+      Some(c) => c,
+      None => throw("bulk reader rejected valid strings")
+    }
+    // Compare every field, not just the function name. Reuse the input before
+    // encoding either result, so borrowed strings/bodies fail this oracle.
+    Bytes::fill(wire, 0, Bytes::length(wire))
+    assert_same_bytes(codegen_body_cache_to_bytes(actual), codegen_body_cache_to_bytes(reference))
+    assert(Array::get(actual.fn_names, 0) == value)
+    assert(Array::get(Array::get(actual.lam_captures, 0), 0) == value)
+  }
+}
+
+test "body strings: truncated frames and invalid lengths match the portable reader" {
+  let wire = codegen_body_cache_to_bytes(string_cache("é🍣"))
+  let mut n = 0
+  while n < Bytes::length(wire) {
+    let cut = Bytes::slice(wire, 0, n)
+    assert(match codegen_body_cache_from_bytes(cut) {
+      None => true,
+      Some(_) => false
+    })
+    assert(match linear_body_cache_from_bytes(cut) {
+      None => true,
+      Some(_) => false
+    })
+    n = n + 1
+  }
+  // Function count/index/name count occupy bytes 4/5/6. The first string
+  // length is value+1 at byte 7; neither -1 nor an out-of-frame span is valid.
+  for length in [0, 127] {
+    let bad = Bytes::slice(wire, 0, Bytes::length(wire))
+    Bytes::set(bad, 7, length)
+    assert(match linear_body_cache_from_bytes(bad) {
+      None => true,
+      Some(_) => false
+    })
+    assert(match codegen_body_cache_from_bytes(bad) {
+      None => true,
+      Some(_) => false
+    })
+  }
+  // Preserve the existing codec's acceptance of a trailing byte.
+  Bytes::push(wire, 255)
+  let reference = match codegen_body_cache_from_bytes(wire) {
+    Some(c) => c,
+    None => throw("reference rejected trailing byte")
+  }
+  let actual = match linear_body_cache_from_bytes(wire) {
+    Some(c) => c,
+    None => throw("bulk reader changed trailing-byte behavior")
+  }
+  assert_same_bytes(codegen_body_cache_to_bytes(actual), codegen_body_cache_to_bytes(reference))
+}
+
+test "body strings: long names have bounded copy allocation" {
+  let mut value = "x"
+  while String::length(value) < 8192 {
+    value = String::concat(value, value)
+  }
+  let cache = codegen_body_cache_new()
+  Array::push(cache.guard_import_names, value)
+  let wire = codegen_body_cache_to_bytes(cache)
+  let before = Profiler::heap_bytes()
+  let decoded = linear_body_cache_from_bytes(wire)
+  let allocated = Profiler::heap_bytes() - before
+  let actual = match decoded {
+    Some(c) => c,
+    None => throw("allocation probe rejected valid cache")
+  }
+  assert(Array::get(actual.guard_import_names, 0) == value)
+  // Includes the empty product's arrays and owned name; rejects the former
+  // one-String-per-byte plus parts-array allocation on the bump lane.
+  assert(allocated < 2 * String::length(value) + 32768)
+}
