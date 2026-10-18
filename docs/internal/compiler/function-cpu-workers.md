@@ -22,7 +22,9 @@ VIBE_CLI_WASM=/absolute/path/to/stage2.wasm \
 `VIBE_FUNCTION_ARTIFACT_DIR` selects another image directory.
 `VIBE_FUNCTION_TRACE_OUT` writes a diagnostic timing report. Images are bound
 to compiler and runner hashes, individual artifact hashes, payload versions
-and the callback ABI. Rebuild them after selecting another compiler. The
+and the callback ABI. Callback ABI 2 requires allocator-correct SIMD BLAKE3;
+rebuild ABI 1 images even when compiler and runner hashes are unchanged.
+Rebuild them after selecting another compiler. The
 ordinary command and the existing checker-worker route retain their defaults.
 This experiment accepts `.vibe` core builds, target RC, and 1/2/4 workers.
 Coverage, debug instrumentation, wasm-gc, persistent body-cache replay,

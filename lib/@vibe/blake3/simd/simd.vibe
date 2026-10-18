@@ -28,20 +28,24 @@ let s_chunk_len: Int = 1024
 /// One full 7-round BLAKE3 compression. `io` holds the input chaining value
 /// in its first 32 bytes and receives the full 64-byte output state; `msg`
 /// + `off` locate the 64-byte message block (byte offset into msg's data).
-/// counter/blen/flags are tagged Ints (untagged inside). Returns 0.
-fn b3_compress_kernel(io: Bytes, msg: Bytes, off: Int, counter: Int, blen: Int, flags: Int) -> Int = wasm
-"(local $p i32) (local $q i32) (local $r0 v128) (local $r1 v128)"
-"(local $r2 v128) (local $r3 v128) (local $m0 v128) (local $m1 v128)"
-"(local $m2 v128) (local $m3 v128) (local $x v128) (local $y v128)"
+/// Int operands are raw on bump and tagged on RC. `one` is the caller's
+/// representation of Int 1, giving a tag shift of zero or one. Returns 0.
+fn b3_compress_kernel(io: Bytes, msg: Bytes, off: Int, counter: Int, blen: Int, flags: Int, one: Int) -> Int = wasm
+"(local $p i32) (local $q i32) (local $tag_shift i64)"
+"(local $r0 v128) (local $r1 v128) (local $r2 v128) (local $r3 v128)"
+"(local $m0 v128) (local $m1 v128) (local $m2 v128) (local $m3 v128)"
+"(local $x v128) (local $y v128)"
+"local.get $one i64.const 1 i64.shr_u local.set $tag_shift"
 "local.get $io i32.wrap_i64 i32.load offset=8 local.set $q"
-"local.get $msg i32.wrap_i64 i32.load offset=8 local.get $off i64.const 1 i64.shr_s i32.wrap_i64"
+"local.get $msg i32.wrap_i64 i32.load offset=8 local.get $off local.get $tag_shift i64.shr_u i32.wrap_i64"
 "i32.add local.set $p"
 "local.get $q v128.load align=1 local.set $r0"
 "local.get $q v128.load offset=16 align=1 local.set $r1"
 "v128.const i32x4 1779033703 3144134277 1013904242 2773480762 local.set $r2"
-"local.get $counter i64.const 1 i64.shr_s i32.wrap_i64 i32x4.splat local.get $counter"
-"i64.const 33 i64.shr_s i32.wrap_i64 i32x4.replace_lane 1 local.get $blen i64.const 1"
-"i64.shr_s i32.wrap_i64 i32x4.replace_lane 2 local.get $flags i64.const 1 i64.shr_s i32.wrap_i64"
+"local.get $counter local.get $tag_shift i64.shr_u i32.wrap_i64 i32x4.splat local.get $counter"
+"i64.const 32 local.get $tag_shift i64.add i64.shr_u i32.wrap_i64 i32x4.replace_lane 1"
+"local.get $blen local.get $tag_shift i64.shr_u i32.wrap_i64 i32x4.replace_lane 2"
+"local.get $flags local.get $tag_shift i64.shr_u i32.wrap_i64"
 "i32x4.replace_lane 3 local.set $r3"
 "local.get $p v128.load align=1 local.set $m0"
 "local.get $p v128.load offset=16 align=1 local.set $m1"
@@ -385,7 +389,7 @@ fn chunk_output_s(data: Bytes, start: Int, len: Int, counter: Int) -> SimdOutput
     } else {
       0
     }
-    let _ = b3_compress_kernel(io, data, start + b * 64, counter, 64, flags)
+    let _ = b3_compress_kernel(io, data, start + b * 64, counter, 64, flags, 1)
     b = b + 1
   }
   let cv = Bytes::new()
@@ -412,7 +416,7 @@ fn chunk_output_s(data: Bytes, start: Int, len: Int, counter: Int) -> SimdOutput
 
 fn chaining_value_s(o: SimdOutput) -> Bytes {
   let io = new_io_with_cv(o.cv)
-  let _ = b3_compress_kernel(io, o.block, 0, o.counter, o.blen, o.flags)
+  let _ = b3_compress_kernel(io, o.block, 0, o.counter, o.blen, o.flags, 1)
   let cv = Bytes::new()
   Bytes::blit(cv, io, 0, 32)
   cv
@@ -459,7 +463,7 @@ fn s_hex_digit(d: Int) -> Int {
 
 fn root_hex_s(o: SimdOutput) -> String {
   let io = new_io_with_cv(o.cv)
-  let _ = b3_compress_kernel(io, o.block, 0, 0, o.blen, o.flags|s_flag_root)
+  let _ = b3_compress_kernel(io, o.block, 0, 0, o.blen, o.flags|s_flag_root, 1)
   let sb = StringBuilder::new()
   let mut i = 0
   while i < 32 {

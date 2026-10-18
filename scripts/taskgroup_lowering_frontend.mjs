@@ -86,7 +86,8 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
   const receipt = JSON.parse(await readFile(join(artifacts, "build.json"), "utf8"));
   if ((receipt.kind ?? "vibe-taskgroup-lowering") !== kind || receipt.version !== 1 || receipt.compiler_sha256 !== await digest(resolve(compiler)) ||
       receipt.runner_sha256 !== await digest(runner)) throw new Error("rebuild lowering images for this compiler and runner");
-  if (phase === "functions" && (receipt.function_abi !== "bump-core-tagged-callbacks-1" ||
+  // ABI 2 requires canonical BLAKE3 digests on bump, even with the same compiler hash.
+  if (phase === "functions" && (receipt.function_abi !== "bump-core-tagged-callbacks-2" ||
       receipt.context_format !== 6 || receipt.job_format !== 2 || receipt.compile_engine_rc !== 0 || receipt.worker_engine_rc !== 0 || receipt.coordinator_engine_rc !== 1)) {
     throw new Error("rebuild function images for the supported native callback ABI");
   }

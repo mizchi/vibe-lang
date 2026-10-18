@@ -48,6 +48,90 @@ sys.exit(code)
     assert observed.read_text() == f"vibe-function-context-{receipt['context_format']}", "context wire/receipt mismatch"
 
 
+def assert_packet_integrity(repo, artifacts, runner, env, project):
+    """Change real job/product bytes in the region the old bump hash missed."""
+    root = project / "packet-integrity"
+    root.mkdir()
+    names = [f"receipt_worker_function_{i}" for i in range(96)]
+    functions = [f"fn {names[0]}(n: Int) -> Int {{ n + 1 }}"]
+    functions += [f"fn {name}(n: Int) -> Int {{ {names[i - 1]}(n) + 1 }}"
+                  for i, name in enumerate(names) if i]
+    (root / "main.vibe").write_text("\n".join(functions)
+                                    + f"\nfn main() -> Int {{ {names[-1]}(1) }}\n")
+    ordinary = root / "ordinary.wasm"
+    subprocess.run(["bash", str(repo / "runtime/vibe"), "build", "main.vibe", "-o", str(ordinary)],
+                   cwd=root, env=dict(env, VIBE_BUILD_CACHE_DIR=str(root / "ordinary-cache")),
+                   capture_output=True, text=True, check=True, timeout=180)
+    wrapper = root / "tamper-runner.py"
+    wrapper.write_text('''#!/usr/bin/env python3
+import hashlib, json, os, subprocess, sys
+from pathlib import Path
+plan_path = os.environ.get("VIBE_LOWERING_WORKERS")
+kind = os.environ["FUNCTION_PACKET_KIND"]
+def mutate():
+    plan = json.loads(Path(plan_path).read_text())
+    job = next(Path(p) for queue in plan["queues"] for p in queue)
+    path = Path(str(job) + ".product") if kind == "product" else job
+    data = path.read_bytes()
+    assert len(data) >= 1024, "packet must include the old unread byte range"
+    before = hashlib.sha256(data).hexdigest()
+    changed = bytearray(data)
+    offset = len(data) * 3 // 4
+    if offset % 1024 >= 960:
+        offset -= 64
+    # Old bump compression read the lower half plus each chunk's last block.
+    assert offset > len(data) // 2 + 64
+    assert offset % 1024 < 960 and offset < (len(data) - 1) // 64 * 64
+    changed[offset] ^= 1
+    path.write_bytes(changed)
+    after = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert before != after
+    Path(os.environ["FUNCTION_PACKET_RECORD"]).write_text(json.dumps({
+        "kind": kind, "offset": offset, "length": len(data), "before": before, "after": after}))
+if plan_path and kind == "job":
+    mutate()
+code = subprocess.call([os.environ["FUNCTION_PACKET_RUNNER"], *sys.argv[1:]])
+if code == 0 and plan_path and kind == "product":
+    mutate()
+sys.exit(code)
+''')
+    wrapper.chmod(0o755)
+    for kind in ("control", "job", "product"):
+        private = root / kind
+        private.mkdir()
+        output = private / "out.wasm"
+        output.write_bytes(b"previous build")
+        config = private / "service.json"
+        config.write_text(json.dumps({"version": 1, "worker": str(artifacts / "worker.wasm"),
+            "coordinator": str(artifacts / "coordinator.component.wasm"), "runner": str(wrapper),
+            "cwd": str(root), "directory": str(private), "jobs": 2}))
+        record = private / "changed.json"
+        selected = dict(env, VIBE_LOWERING_INPUT="main.vibe", VIBE_LOWERING_OUTPUT=str(output),
+            VIBE_BUILD_CACHE_DIR=str(private / "cache"), VIBE_LOWERING_ENTRY="main",
+            VIBE_LOWERING_MODE="single", VIBE_FUNCTION_JOBS="2",
+            VIBE_LOWERING_DIRECTORY=str(private), VIBE_LOWERING_SERVICE_CONFIG=str(config),
+            FUNCTION_PACKET_RUNNER=str(runner), FUNCTION_PACKET_KIND=kind,
+            FUNCTION_PACKET_RECORD=str(record))
+        result = subprocess.run([str(runner), str(artifacts / "compile.wasm")], cwd=root,
+                                env=selected, capture_output=True, text=True, timeout=180)
+        if kind == "control":
+            assert result.returncode == 0, (result.stdout, result.stderr)
+            assert output.read_bytes() == ordinary.read_bytes(), "packet control differs"
+        else:
+            changed = json.loads(record.read_text())
+            assert changed["kind"] == kind and changed["offset"] > changed["length"] // 2 + 64
+            assert changed["offset"] % 1024 < 960
+            assert changed["offset"] < (changed["length"] - 1) // 64 * 64
+            assert changed["before"] != changed["after"] and changed["length"] >= 1024
+            assert result.returncode != 0 and output.read_bytes() == b"previous build", result
+            if kind == "product":
+                assert "functions: product receipt differs" in result.stderr, result
+            else:
+                assert any(s in result.stderr for s in
+                           ("coordinator exited", "functions: product receipt differs")), result
+    print("changed middle bytes in real native jobs/products preserve previous output", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("compiler", type=Path)
@@ -110,6 +194,7 @@ def main():
         # Catch the original wire4/receipt3 drift using actual guest bytes.
         # Updating both publisher and frontend constants cannot hide a drift.
         assert_context_receipt_format(artifacts, runner, env, project, "wire-format", control)
+        assert_packet_integrity(repo, artifacts, runner, env, project)
 
         # A refused setting or changed image must leave a previous build intact.
         for label, extra in [
@@ -164,6 +249,11 @@ def main():
             output.write_bytes(b"previous build")
             _, _, result = build(label, 2, {"VIBE_FUNCTION_ARTIFACT_DIR": str(changed)}, expected=1)
             assert "callback ABI" in result.stderr and output.read_bytes() == b"previous build", result
+        receipt_path.write_text(json.dumps(dict(receipt, function_abi="bump-core-tagged-callbacks-1")))
+        output = project / "legacy-digests.wasm"
+        output.write_bytes(b"previous build")
+        _, _, result = build("legacy-digests", 2, {"VIBE_FUNCTION_ARTIFACT_DIR": str(changed)}, expected=1)
+        assert "callback ABI" in result.stderr and output.read_bytes() == b"previous build", result
         receipt["compile_engine_rc"] = 1
         receipt_path.write_text(json.dumps(receipt))
         output = project / "abi.wasm"
