@@ -1,5 +1,50 @@
 import @vibe/compiler/codegen/common_base {
-  bcc_layout_fp_strings, bcc_layout_fp_strings_upto
+  bcc_int_lists_equal, bcc_layout_fp_strings, bcc_layout_fp_strings_upto
+}
+
+// Independent persisted encoding: one modulus operation after EVERY byte.
+// Include the signed count and separators, not just the string payload.
+fn layout_reference_byte(fp: Array[Int], byte: Int) -> Unit {
+  Array::set(fp, 0, (Array::get(fp, 0) * 131 + byte) % 2147483647)
+  Array::set(fp, 1, (Array::get(fp, 1) * 137 + byte) % 2147483629)
+}
+
+fn layout_reference(xs: Array[String], upto: Int) -> Array[Int] {
+  let n = if upto < Array::length(xs) {
+    upto
+  } else {
+    Array::length(xs)
+  }
+  let fp = [17, 29]
+  layout_reference_byte(fp, if n < 0 {
+    1
+  } else {
+    0
+  })
+  let mut magnitude = if n < 0 {
+    0 - (n + 1)
+  } else {
+    n
+  }
+  let mut k = 0
+  while k < 9 {
+    layout_reference_byte(fp, magnitude&255)
+    magnitude = magnitude / 256
+    k = k + 1
+  }
+  layout_reference_byte(fp, 255)
+  let mut i = 0
+  while i < n {
+    let value = Array::get(xs, i)
+    k = 0
+    while k < String::length(value) {
+      layout_reference_byte(fp, String::char_code_at(value, k))
+      k = k + 1
+    }
+    layout_reference_byte(fp, 255)
+    i = i + 1
+  }
+  fp
 }
 
 test "string layout fingerprints retain their persisted byte encoding" {
@@ -12,4 +57,54 @@ test "string layout fingerprints retain their persisted byte encoding" {
   bcc_layout_fp_strings_upto(out, xs, 99)
   bcc_layout_fp_strings_upto(out, xs, 0 - 1)
   inspect(out, content = "[1678490403, 1822939064, 1521793104, 1626202253, 1678490403, 1822939064, 604242, 1371892997, 1521793104, 1626202253, 698556690, 2034200467]")
+}
+
+test "string layout batches preserve every byte, offset and tail" {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < 272 {
+    StringBuilder::push(sb, String::from_byte((i * 197 + 131)&255))
+    i = i + 1
+  }
+  let source = StringBuilder::freeze(sb)
+  let mut offset = 0
+  while offset < 8 {
+    let mut len = 0
+    while len <= 260 {
+      let value = String::substring(source, offset, offset + len)
+      let xs = ["prefix", value, "", "é 東京 🍣", value, "suffix"]
+      // Batch state must carry across strings and an unaligned substring.
+      let actual: Array[Int] = []
+      bcc_layout_fp_strings(actual, xs)
+      assert(bcc_int_lists_equal(actual, layout_reference(xs, Array::length(xs))))
+      len = len + 1
+    }
+    offset = offset + 1
+  }
+}
+
+test "string layout batches retain prefix limits and large accumulated states" {
+  let mut long = String::concat(String::from_byte(0), String::concat(String::from_byte(255), "é 東京 🍣"))
+  let mut i = 0
+  while i < 12 {
+    long = String::concat(long, long)
+    i = i + 1
+  }
+  let xs = ["", long, "a", "bc", "ab", "c", ""]
+  for upto in [0 - 1, 0, 1, 2, 6, 7, 99] {
+    let actual: Array[Int] = []
+    bcc_layout_fp_strings_upto(actual, xs, upto)
+    assert(bcc_int_lists_equal(actual, layout_reference(xs, upto)))
+  }
+  let together: Array[Int] = []
+  bcc_layout_fp_strings(together, xs)
+  bcc_layout_fp_strings(together, [long, long])
+  let first = layout_reference(xs, Array::length(xs))
+  let second = layout_reference([long, long], 2)
+  assert(bcc_int_lists_equal(together, [
+    Array::get(first, 0),
+    Array::get(first, 1),
+    Array::get(second, 0),
+    Array::get(second, 1)
+  ]))
 }
