@@ -689,6 +689,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // Share one scope-aware scan across conditional bodies and host imports.
   let used_builtins = collect_used_builtin_names(stmts, fn_names_list)
   let need_array_capacity = Map::has_key(used_builtins, "Array::with_capacity")
+  let need_bytes_capacity = Map::has_key(used_builtins, "Bytes::with_capacity")
   let str_strs = collect_strings_stmts(stmts)
   // #538: StringBuilder::freeze joins with "" and println appends "\n"; both
   // must exist in the string table even when the program has no such literal.
@@ -698,13 +699,19 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   if !array_contains_str(str_strs, "\n") {
     Array::push(str_strs, "\n")
   }
-  // Keep the optional allocator's diagnostic out of unrelated modules too.
+  // Keep the optional allocators' diagnostics out of unrelated modules too.
+  // `Bytes::with_capacity`'s body is pushed unconditionally (its index is
+  // fixed) but only that name reaches it, so a program that never spells it
+  // carries neither the message nor -- once pruned -- the body. The linear
+  // lane gates the same message the same way.
   let array_capacity_error_slot = Array::length(str_strs)
   if need_array_capacity {
     Array::push(str_strs, array_capacity_error_message())
   }
   let capacity_error_slot = Array::length(str_strs)
-  Array::push(str_strs, bytes_capacity_error_message())
+  if need_bytes_capacity {
+    Array::push(str_strs, bytes_capacity_error_message())
+  }
   // #3126: the division-by-zero line's fragments and each site's whole
   // `path:line:col` (this lane has no integer printer to assemble one), only
   // when the program has a guarded `/` or `%`. `collect_strings_stmts`
@@ -1406,7 +1413,11 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   push_gc_builtin(gen_bytes_count_byte_body(false), 1, 4, 4)
   push_gc_builtin(gen_bytes_last_index_of_byte_body(false), 1, 3, 4)
   push_gc_builtin(gen_bytes_compare_body(false), 2, 4, 4)
-  push_gc_builtin(gen_bytes_with_capacity_body(false, hbo + 2, (Array::get(str_offsets, capacity_error_slot)<<32)|Array::get(str_lengths, capacity_error_slot)), 2, 0, 3)
+  push_gc_builtin(gen_bytes_with_capacity_body(false, hbo + 2, if need_bytes_capacity {
+    (Array::get(str_offsets, capacity_error_slot)<<32)|Array::get(str_lengths, capacity_error_slot)
+  } else {
+    0
+  }), 2, 0, 3)
   if need_array_capacity {
     push_gc_builtin(gen_arr_with_capacity_body(false, -1, hbo + 2, (Array::get(str_offsets, array_capacity_error_slot)<<32)|Array::get(str_lengths, array_capacity_error_slot)), 3, 0, 3)
   }
@@ -2412,11 +2423,22 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     let data_bufs = fresh_bytes_array()
     let mut di = 0
     while di < num_strings {
-      Array::push(data_offsets, Array::get(str_offsets, di))
-      Array::push(data_bufs, string_to_data(Array::get(str_strs, di)))
+      // An empty string writes no bytes, so it gets no segment; its address
+      // is still reserved like every other string's.
+      let ds = Array::get(str_strs, di)
+      if String::length(ds) > 0 {
+        Array::push(data_offsets, Array::get(str_offsets, di))
+        Array::push(data_bufs, string_to_data(ds))
+      } else {
+        ()
+      }
       di = di + 1
     }
-    emit_data_section_multi(out, data_offsets, data_bufs)
+    if Array::length(data_offsets) > 0 {
+      emit_data_section_multi(out, data_offsets, data_bufs)
+    } else {
+      ()
+    }
   }
   bytebuf_to_bytes(out)
 }

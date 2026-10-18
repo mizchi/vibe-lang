@@ -1,8 +1,9 @@
 //# Runtime pieces a small module no longer carries
 //
 // `__rt_oob_abort`'s message fragments get a data segment only while the
-// abort is reachable, and `_start` prints `main`'s result through the
-// do-while `__rt_print_i64`. Each case pins the bytes a program writes, so a
+// abort is reachable, the wasm-gc lane writes `Bytes::with_capacity`'s
+// message only for a program that names it, and `_start` prints `main`'s
+// result through the do-while `__rt_print_i64` on both lanes. Each case pins the bytes a program writes, so a
 // segment dropped while still read, or a digit loop that mishandles zero or
 // a sign, fails here rather than in a size table.
 
@@ -10,6 +11,10 @@
 
 import @vibe/compiler/entry/source_compile {
   compile_source_wasi
+}
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
 }
 
 //# Helpers
@@ -73,6 +78,26 @@ test "main's result prints in decimal, zero and signs included" {
     let v = Array::get(cases, i)
     let src = "let main = () -> Int {\n  \{v}\n}\n"
     let out = capture_run("_build/vibe_test/runtime_trim_ret.wasm", compile_source_wasi(src, "main"))
+    assert_eq(out, String::concat(v, "\n"))
+    i = i + 1
+  }
+}
+
+test "the gc lane writes the capacity message only for a program that names it" {
+  let plain = compile_source_gc_only("let main = () -> Int {\n  1 + 2\n}\n", "main")
+  inspect(bytes_contains(plain, "Bytes::with_capacity: "), content = "false")
+  let src = "let main = () -> Int {\n  let b = Bytes::with_capacity(0 - 5)\n  Bytes::length(b)\n}\n"
+  let out = capture_run("_build/vibe_test/runtime_trim_gc_cap.wasm", compile_source_gc_only(src, "main"))
+  inspect(String::starts_with(out, "Bytes::with_capacity: use a capacity between 0 and "), content = "true")
+}
+
+test "the gc lane prints main's result through the shared printer" {
+  let cases = ["0", "-7", "4611686018427387903"]
+  let mut i = 0
+  while i < Array::length(cases) {
+    let v = Array::get(cases, i)
+    let src = "let main = () -> Int {\n  \{v}\n}\n"
+    let out = capture_run("_build/vibe_test/runtime_trim_gc_ret.wasm", compile_source_gc_only(src, "main"))
     assert_eq(out, String::concat(v, "\n"))
     i = i + 1
   }
