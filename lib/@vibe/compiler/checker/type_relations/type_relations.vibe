@@ -13,7 +13,10 @@ import @vibe/compiler/core {
   is_exception_label,
   is_hkt_app,
   is_runtime_scheduled_effect,
+  occurs_in,
   subst_apply,
+  subst_bind_value,
+  subst_lookup,
   type_to_string,
   unify
 }
@@ -111,6 +114,76 @@ fn strip_effects(ty: Type) -> Type {
       CtNamed(name, out)
     },
     _ => ty
+  }
+}
+
+/// #3518: the structural retry unifies effect-STRIPPED types, so a variable
+/// it binds holds a stripped type -- `T := () -> Int` for an actual
+/// `() -> Int with Log` -- and a later use of `T` would refuse the row the
+/// value really has. Bind each variable the retry bound (`su`) from the
+/// UNSTRIPPED actual at the same position instead. A variable the walk cannot
+/// reach stays unbound, as it was before the retry kept any binding.
+fn retry_bind_unstripped(expected: Type, actual: Type, s: Subst, su: Subst) -> Subst {
+  let e = subst_apply(s, expected)
+  let a = subst_apply(s, actual)
+  match e {
+    CtVar(id) => match subst_lookup(su, id) {
+      Some(_) => if occurs_in(id, a) {
+        s
+      } else {
+        subst_bind_value(id, a, s)
+      },
+      None => s
+    },
+    CtFn(eps, er, _) => match a {
+      CtFn(aps, ar, _) => if Array::length(eps) == Array::length(aps) {
+        let mut out = s
+        let mut i = 0
+        while i < Array::length(eps) {
+          out = retry_bind_unstripped(Array::get(eps, i), Array::get(aps, i), out, su)
+          i = i + 1
+        }
+        retry_bind_unstripped(er, ar, out, su)
+      } else {
+        s
+      },
+      _ => s
+    },
+    CtArray(ee) => match a {
+      CtArray(ae) => retry_bind_unstripped(ee, ae, s, su),
+      _ => s
+    },
+    CtOption(ee) => match a {
+      CtOption(ae) => retry_bind_unstripped(ee, ae, s, su),
+      _ => s
+    },
+    CtTuple(ees) => match a {
+      CtTuple(aes) => retry_bind_unstripped_all(ees, aes, s, su),
+      _ => s
+    },
+    CtNamed(en, eas) => match a {
+      CtNamed(an, aas) => if en == an {
+        retry_bind_unstripped_all(eas, aas, s, su)
+      } else {
+        s
+      },
+      _ => s
+    },
+    _ => s
+  }
+}
+
+fn retry_bind_unstripped_all(es: Array[Type], as_: Array[Type], s: Subst, su: Subst) -> Subst {
+  if Array::length(es) != Array::length(as_) {
+    s
+  } else {
+    let mut out = s
+    let mut i = 0
+    while i < Array::length(es) {
+      out = retry_bind_unstripped(Array::get(es, i), Array::get(as_, i), out, su)
+      i = i + 1
+    }
+    out
   }
 }
 
@@ -854,7 +927,7 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
             s
           },
           None => match structural_s {
-            Some(su) => su,
+            Some(su) => retry_bind_unstripped(expected, actual, s, su),
             None => s
           }
         }
