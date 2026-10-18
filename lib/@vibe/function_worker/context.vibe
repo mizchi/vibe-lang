@@ -10,6 +10,7 @@ import @vibe/compiler/cache {
   ast_binary_read_svarint_checked,
   ast_binary_read_varint_checked,
   ast_binary_reader_remaining,
+  ast_binary_reader_with_string_pool,
   ast_binary_write_bool,
   ast_binary_write_svarint,
   ast_binary_write_varint
@@ -34,7 +35,7 @@ import @vibe/core {
   struct MutMap
 }
 import @vibe/lowering_worker/linear {
-  linear_string_reader, linear_write_string
+  linear_string_reader, linear_write_string, linear_write_string_index
 }
 
 /// One decoded worker's private copy of the canonical input. This record is
@@ -91,6 +92,26 @@ fn fw_put_strings(b: Bytes, xs: Array[String]) -> Unit with Exception {
   }
   ()
 }
+// Only metadata after all_fn_names_list can refer to this pool. Runtime
+// literal slots remain unchanged for the independent per-range AST codec.
+fn fw_put_name(b: Bytes, value: String, names: MutMap[String, Int]) -> Unit with Exception {
+  if String::length(value) >= 16 {
+    match MutMap::get(names, value) {
+      Some(index) => {
+        linear_write_string_index(b, index); return ()
+      },
+      None => ()
+    }
+  } else ()
+  linear_write_string(b, value)
+}
+fn fw_put_names(b: Bytes, xs: Array[String], names: MutMap[String, Int]) -> Unit with Exception {
+  ast_binary_write_varint(b, Array::length(xs))
+  for value in xs {
+    fw_put_name(b, value, names)
+  }
+  ()
+}
 fn fw_get_strings(r: AstBinaryReader) -> Array[String] with Exception {
   let xs: Array[String] = []
   let n = ast_binary_read_count_checked(r)
@@ -116,10 +137,10 @@ fn fw_get_matrix(r: AstBinaryReader) -> Array[Array[String]] with Exception {
   }
   xs
 }
-fn fw_put_pairs(b: Bytes, xs: Array[(String, Int)]) -> Unit with Exception {
+fn fw_put_pairs(b: Bytes, xs: Array[(String, Int)], names: MutMap[String, Int]) -> Unit with Exception {
   ast_binary_write_varint(b, Array::length(xs))
   for x in xs {
-    linear_write_string(b, x.0); ast_binary_write_svarint(b, x.1)
+    fw_put_name(b, x.0, names); ast_binary_write_svarint(b, x.1)
   }
   ()
 }
@@ -134,10 +155,10 @@ fn fw_get_pairs(r: AstBinaryReader) -> Array[(String, Int)] with Exception {
   }
   xs
 }
-fn fw_put_triples(b: Bytes, xs: Array[(String, Int, Int)]) -> Unit with Exception {
+fn fw_put_triples(b: Bytes, xs: Array[(String, Int, Int)], names: MutMap[String, Int]) -> Unit with Exception {
   ast_binary_write_varint(b, Array::length(xs))
   for x in xs {
-    linear_write_string(b, x.0); ast_binary_write_svarint(b, x.1); ast_binary_write_svarint(b, x.2)
+    fw_put_name(b, x.0, names); ast_binary_write_svarint(b, x.1); ast_binary_write_svarint(b, x.2)
   }
   ()
 }
@@ -153,11 +174,11 @@ fn fw_get_triples(r: AstBinaryReader) -> Array[(String, Int, Int)] with Exceptio
   }
   xs
 }
-fn fw_put_map(b: Bytes, m: MutMap[String, Int]) -> Unit with Exception {
+fn fw_put_map(b: Bytes, m: MutMap[String, Int], names: MutMap[String, Int]) -> Unit with Exception {
   let keys = sorted_names_of(MutMap::keys(m))
   ast_binary_write_varint(b, Array::length(keys))
   for key in keys {
-    linear_write_string(b, key)
+    fw_put_name(b, key, names)
     match MutMap::get(m, key) {
       Some(value) => ast_binary_write_svarint(b, value),
       None => throw("function context: map changed during snapshot")
@@ -240,7 +261,7 @@ export fn function_context_new(plan: LinkedFunctionPlan, input: LinkedBodyInputs
 /// Encode bounded shared tables once. Per-range AST is carried by each job.
 export fn write_function_context(ctx: FunctionContext) -> Bytes with Exception {
   let b = Bytes::with_capacity(64 * 1024 * 1024)
-  linear_write_string(b, "vibe-function-context-4")
+  linear_write_string(b, "vibe-function-context-6")
   fw_put_strings(b, ctx.input.str_strs)
   ast_binary_write_bool(b, ctx.debug_break)
   ast_binary_write_bool(b, ctx.debug_trace)
@@ -249,7 +270,13 @@ export fn write_function_context(ctx: FunctionContext) -> Bytes with Exception {
   ast_binary_write_bool(b, ctx.input.has_exceptions)
   fw_put_ints(b, ctx.input.all_fn_indices_list)
   fw_put_strings(b, ctx.input.all_fn_names_list)
-  fw_put_strings(b, ctx.input.all_fn_names_sorted)
+  let names: MutMap[String, Int] = MutMap::with_capacity_string(Array::length(ctx.input.all_fn_names_list) * 2 + 16)
+  let mut name_i = Array::length(ctx.input.all_fn_names_list)
+  while name_i > 0 {
+    name_i = name_i - 1
+    MutMap::set(names, Array::get(ctx.input.all_fn_names_list, name_i), name_i)
+  }
+  fw_put_names(b, ctx.input.all_fn_names_sorted, names)
   fw_put_ints(b, ctx.input.all_fn_names_sorted_pos)
   fw_put_bools(b, ctx.input.all_fn_needs_env_list)
   fw_put_ints(b, ctx.input.all_fn_param_counts)
@@ -276,8 +303,8 @@ export fn write_function_context(ctx: FunctionContext) -> Bytes with Exception {
   ast_binary_write_svarint(b, ctx.input.dbg_break_import_idx)
   ast_binary_write_svarint(b, ctx.input.dbg_line_import_idx)
   ast_binary_write_bool(b, ctx.input.dbg_line_on)
-  fw_put_map(b, ctx.input.dbg_name_file)
-  fw_put_map(b, ctx.input.dbg_owner_file)
+  fw_put_map(b, ctx.input.dbg_name_file, names)
+  fw_put_map(b, ctx.input.dbg_owner_file, names)
   ast_binary_write_svarint(b, ctx.input.dbgargs_base)
   ast_binary_write_svarint(b, ctx.input.dbgargs_cap)
   ast_binary_write_svarint(b, ctx.input.dbgargs_count_addr)
@@ -289,34 +316,34 @@ export fn write_function_context(ctx: FunctionContext) -> Bytes with Exception {
   ast_binary_write_svarint(b, ctx.input.eq_idx)
   ast_binary_write_svarint(b, ctx.input.fi)
   fw_put_ints(b, ctx.input.float_call_offsets)
-  fw_put_strings(b, ctx.input.float_ret_fn_names)
-  fw_put_strings(b, ctx.input.fn_names_list)
+  fw_put_names(b, ctx.input.float_ret_fn_names, names)
+  fw_put_names(b, ctx.input.fn_names_list, names)
   ast_binary_write_svarint(b, ctx.input.func_offset)
   ast_binary_write_svarint(b, ctx.input.heap_grow_check_idx)
   fw_put_ints(b, ctx.input.int_render_offsets)
-  fw_put_triples(b, ctx.input.iw_callees)
-  fw_put_strings(b, ctx.input.iw_names)
+  fw_put_triples(b, ctx.input.iw_callees, names)
+  fw_put_names(b, ctx.input.iw_names, names)
   fw_put_strings(b, ctx.input.iw_wats)
   ast_binary_write_svarint(b, ctx.input.lambda_slot_base)
   ast_binary_write_bool(b, ctx.input.late_dce_rewrote_bodies)
   fw_put_ints(b, ctx.input.lc_agg_ret_infos)
-  fw_put_strings(b, ctx.input.lc_agg_ret_names)
-  fw_put_strings(b, ctx.input.lc_agg_ret_names_sorted)
+  fw_put_names(b, ctx.input.lc_agg_ret_names, names)
+  fw_put_names(b, ctx.input.lc_agg_ret_names_sorted, names)
   fw_put_ints(b, ctx.input.lc_agg_ret_names_sorted_pos)
   fw_put_ints(b, ctx.input.lc_borrow_param_mask)
   fw_put_strings(b, ctx.input.lc_borrow_param_user_srt)
-  fw_put_strings(b, ctx.input.lc_borrow_ret_names)
+  fw_put_names(b, ctx.input.lc_borrow_ret_names, names)
   fw_put_strings(b, ctx.input.lc_borrow_view_ret)
   fw_put_strings(b, ctx.input.lc_ctor_names_sorted)
   fw_put_ints(b, ctx.input.lc_ctor_names_sorted_pos)
-  fw_put_map(b, ctx.input.lc_fn_file_of)
-  fw_put_map(b, ctx.input.lc_fn_stmt_of)
-  fw_put_strings(b, ctx.input.lc_heap_ret_names)
+  fw_put_map(b, ctx.input.lc_fn_file_of, names)
+  fw_put_map(b, ctx.input.lc_fn_stmt_of, names)
+  fw_put_names(b, ctx.input.lc_heap_ret_names, names)
   fw_put_ints(b, ctx.input.lc_name_unique)
-  fw_put_strings(b, ctx.input.lc_owned_return_names)
-  fw_put_pairs(b, ctx.input.lc_passthrough_ret_params)
+  fw_put_names(b, ctx.input.lc_owned_return_names, names)
+  fw_put_pairs(b, ctx.input.lc_passthrough_ret_params, names)
   ast_binary_write_svarint(b, ctx.input.lc_perceus_pin)
-  fw_put_strings(b, ctx.input.lc_scalar_ret_names)
+  fw_put_names(b, ctx.input.lc_scalar_ret_names, names)
   fw_put_strings(b, ctx.input.lc_struct_names_sorted)
   fw_put_ints(b, ctx.input.lc_struct_names_sorted_pos)
   fw_put_strings(b, ctx.input.lc_type_names_sorted)
@@ -363,7 +390,7 @@ export fn write_function_context(ctx: FunctionContext) -> Bytes with Exception {
   ast_binary_write_svarint(b, ctx.input.string_index_of_idx)
   fw_put_matrix(b, ctx.input.struct_field_names)
   fw_put_strings(b, ctx.input.struct_names)
-  fw_put_strings(b, ctx.input.thunk_names_list)
+  fw_put_names(b, ctx.input.thunk_names_list, names)
   ast_binary_write_svarint(b, ctx.input.trace_cap)
   ast_binary_write_svarint(b, ctx.input.trace_counter_addr)
   ast_binary_write_svarint(b, ctx.input.trace_log_base)
@@ -395,7 +422,7 @@ export fn read_function_context(bytes: Bytes) -> FunctionContext with Exception 
     throw("function context: exceeds 64 MiB")
   } else ()
   let prefix = linear_string_reader(bytes)
-  if ast_binary_read_string_checked(prefix) != "vibe-function-context-4" {
+  if ast_binary_read_string_checked(prefix) != "vibe-function-context-6" {
     throw("function context: unsupported format")
   } else ()
   let str_strs = fw_get_strings(prefix)
@@ -407,6 +434,7 @@ export fn read_function_context(bytes: Bytes) -> FunctionContext with Exception 
   let has_exceptions = ast_binary_read_bool_checked(r)
   let all_fn_indices_list = fw_get_ints(r)
   let all_fn_names_list = fw_get_strings(r)
+  let r = ast_binary_reader_with_string_pool(r, FrozenArray::from_array(all_fn_names_list))
   let all_fn_names_sorted = fw_get_strings(r)
   let all_fn_names_sorted_pos = fw_get_ints(r)
   let all_fn_needs_env_list = fw_get_bools(r)

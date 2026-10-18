@@ -9,6 +9,45 @@ import subprocess
 import tempfile
 
 
+def assert_context_receipt_format(artifacts, runner, env, project, label, expected):
+    """Observe a real producer's envelope independently of receipt metadata."""
+    private = project / label
+    private.mkdir()
+    observed = private / "context-magic.txt"
+    wrapper = private / "capture-runner.py"
+    wrapper.write_text('''#!/usr/bin/env python3
+import json, os, subprocess, sys
+from pathlib import Path
+code = subprocess.call([os.environ["FUNCTION_PROTOCOL_REAL_RUNNER"], *sys.argv[1:]])
+if code == 0 and os.environ.get("VIBE_LOWERING_WORKERS"):
+    plan = json.loads(Path(os.environ["VIBE_LOWERING_WORKERS"]).read_text())
+    with Path(plan["context"]).open("rb") as stream:
+        size = stream.read(1)
+        assert len(size) == 1 and 0 < size[0] < 128
+        magic = stream.read(size[0])
+        assert len(magic) == size[0]
+    Path(os.environ["FUNCTION_PROTOCOL_MAGIC_OUT"]).write_text(magic.decode("ascii"))
+sys.exit(code)
+''')
+    wrapper.chmod(0o755)
+    config = private / "service.json"
+    config.write_text(json.dumps({"version": 1, "worker": str(artifacts / "worker.wasm"),
+        "coordinator": str(artifacts / "coordinator.component.wasm"), "runner": str(wrapper),
+        "cwd": str(project), "directory": str(private), "jobs": 2}))
+    output = private / "out.wasm"
+    selected = dict(env, VIBE_LOWERING_INPUT="main.vibe", VIBE_LOWERING_OUTPUT=str(output),
+        VIBE_BUILD_CACHE_DIR=str(private / "cache"),
+        VIBE_LOWERING_ENTRY="main", VIBE_LOWERING_MODE="single", VIBE_FUNCTION_JOBS="2",
+        VIBE_LOWERING_DIRECTORY=str(private), VIBE_LOWERING_SERVICE_CONFIG=str(config),
+        FUNCTION_PROTOCOL_REAL_RUNNER=str(runner), FUNCTION_PROTOCOL_MAGIC_OUT=str(observed))
+    result = subprocess.run([str(runner), str(artifacts / "compile.wasm")], cwd=project,
+                            env=selected, capture_output=True, text=True, timeout=180)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert output.read_bytes() == expected.read_bytes(), "protocol probe output differs"
+    receipt = json.loads((artifacts / "build.json").read_text())
+    assert observed.read_text() == f"vibe-function-context-{receipt['context_format']}", "context wire/receipt mismatch"
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("compiler", type=Path)
@@ -68,6 +107,10 @@ def main():
                 assert result.returncode == 0 and result.stdout.strip() == answer, (case, jobs, result)
             print(f"{case}: ordinary == 1/2/4 CPU workers; execution correct", flush=True)
 
+        # Catch the original wire4/receipt3 drift using actual guest bytes.
+        # Updating both publisher and frontend constants cannot hide a drift.
+        assert_context_receipt_format(artifacts, runner, env, project, "wire-format", control)
+
         # A refused setting or changed image must leave a previous build intact.
         for label, extra in [
             ("coverage", {"VIBE_COVERAGE": "1"}),
@@ -105,6 +148,22 @@ def main():
         worker.write_bytes((artifacts / "worker.wasm").read_bytes())
         receipt_path = changed / "build.json"
         receipt = json.loads(receipt_path.read_text())
+        stale = dict(receipt, context_format=3)
+        receipt_path.write_text(json.dumps(stale))
+        try:
+            assert_context_receipt_format(changed, runner, env, project, "wire-format-stale", control)
+        except AssertionError as error:
+            assert str(error) == "context wire/receipt mismatch", error
+        else:
+            raise AssertionError("the real wire/receipt drift must be detected")
+        for version in (3, 4, 5, 7):
+            stale = dict(receipt, context_format=version)
+            receipt_path.write_text(json.dumps(stale))
+            label = f"context-format-{version}"
+            output = project / f"{label}.wasm"
+            output.write_bytes(b"previous build")
+            _, _, result = build(label, 2, {"VIBE_FUNCTION_ARTIFACT_DIR": str(changed)}, expected=1)
+            assert "callback ABI" in result.stderr and output.read_bytes() == b"previous build", result
         receipt["compile_engine_rc"] = 1
         receipt_path.write_text(json.dumps(receipt))
         output = project / "abi.wasm"

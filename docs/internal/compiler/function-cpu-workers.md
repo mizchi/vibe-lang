@@ -58,6 +58,19 @@ grammar; only versioned private worker envelopes opt into references.
 String appends currently use a bounded byte-wise reference writer, not a
 bulk-copy String ABI.
 
+Context format 6 also interns repeated function identities in metadata. The
+literal pool and `all_fn_names_list` are written as ordinary checked strings
+first. Subsequent name arrays and map keys can reference that function-name
+pool; names shorter than 16 bytes and names absent from it stay inline.
+References keep the canonical array positions and first-occurrence behavior.
+The decoder owns the initial UTF-8 strings, checks every reference index, and
+shares only those immutable strings within its private heap. Per-job literal
+references still use the original runtime-literal pool, independently of this
+metadata pool. Source locations and product validation are unchanged.
+The build receipt and frontend require context format 6; older images must be
+rebuilt. This transport change does not enable native threads or select workers
+for the bootstrap.
+
 Source locations are another input, independent of function ASTs. Division
 guards consult the merged-source location table, so omitting it changes the
 generated guard instructions and their line maps. The compact snapshot carries
@@ -116,6 +129,13 @@ timings alone are not a whole-build speedup. The route remains opt-in while
 transport, worker setup and coordinator costs exceed the saved emission time.
 The report's `finalize_ms` includes canonical replay and module assembly;
 external walltime also includes frontend verification and publication.
+
+The [2026-10-18 transfer report](../reports/function-worker-transfer-2026-10-18.md)
+records 120 alternating before/after complete builds for metadata interning.
+Context size and worker allocations fall; whole-wall changes remain below the
+5% threshold and the parallelism memory/overhead gates still fail. Its raw
+record separates retained wire buffers, owned decoded strings, reserved pages
+and simultaneous RSS, including the parent floor after workers exit.
 
 ## Reproduce the selfbuild baseline
 

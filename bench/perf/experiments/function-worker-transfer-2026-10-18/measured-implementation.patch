@@ -1,0 +1,585 @@
+diff --git c/bench/perf/selfbuild_profiles.py w/bench/perf/selfbuild_profiles.py
+index af9034743..5b8bf5738 100644
+--- c/bench/perf/selfbuild_profiles.py
++++ w/bench/perf/selfbuild_profiles.py
+@@ -274,7 +274,7 @@ def validation(workspace):
+ 
+ 
+ def context_pool(data):
+-    """Read only the documented context-v3 prefix; never expose literal text."""
++    """Read the shared v3/v4/v6 string-pool prefix; never expose literal text."""
+     position = 0
+     def integer():
+         nonlocal position
+@@ -296,7 +296,9 @@ def context_pool(data):
+         result = data[position:position + length]
+         position += length
+         return result
+-    if string() != b"vibe-function-context-3":
++    formats = {b"vibe-function-context-3": 3, b"vibe-function-context-4": 4, b"vibe-function-context-6": 6}
++    version = formats.get(string())
++    if version is None:
+         raise ValueError("unsupported context prefix")
+     start = position
+     count = integer()
+@@ -306,7 +308,7 @@ def context_pool(data):
+     for index in range(count):
+         value = string()
+         lengths.append({"index": index, "bytes": len(value), "sha256": hashlib.sha256(value).hexdigest()})
+-    return {"context_bytes": len(data), "pool_entries": count, "pool_wire_bytes": position - start,
++    return {"context_format": version, "context_bytes": len(data), "pool_entries": count, "pool_wire_bytes": position - start,
+             "pool_payload_bytes": sum(row["bytes"] for row in lengths),
+             "largest_literals": sorted(lengths, key=lambda row: row["bytes"], reverse=True)[:10]}
+ 
+diff --git c/bench/perf/test_selfbuild_profiles.py w/bench/perf/test_selfbuild_profiles.py
+index 592032e1a..7f83b8eac 100644
+--- c/bench/perf/test_selfbuild_profiles.py
++++ w/bench/perf/test_selfbuild_profiles.py
+@@ -48,16 +48,24 @@ class ProfileIntegrityTests(unittest.TestCase):
+                         self.assertEqual([row["requires_entry_plumbing"] for row in result["entries"]], [False, True])
+ 
+     def test_context_pool_counts_wire_and_payload_without_literal_text(self):
+-        magic = b"vibe-function-context-3"
+-        data = bytes([len(magic)]) + magic + b"\x02\x03abc\x02xy\x00"
+-        result = profiles.context_pool(data)
+-        self.assertEqual(result["pool_entries"], 2)
+-        self.assertEqual(result["pool_payload_bytes"], 5)
+-        self.assertEqual(result["pool_wire_bytes"], 8)
+-        self.assertEqual(result["context_bytes"], len(data))
+-        self.assertNotIn("abc", json.dumps(result))
+-        with self.assertRaisesRegex(ValueError, "truncated"):
+-            profiles.context_pool(data[:-3])
++        for version in [3, 4, 6]:
++            with self.subTest(version=version):
++                magic = f"vibe-function-context-{version}".encode()
++                data = bytes([len(magic)]) + magic + b"\x02\x03abc\x02xy\x00"
++                result = profiles.context_pool(data)
++                self.assertEqual(result["context_format"], version)
++                self.assertEqual(result["pool_entries"], 2)
++                self.assertEqual(result["pool_payload_bytes"], 5)
++                self.assertEqual(result["pool_wire_bytes"], 8)
++                self.assertEqual(result["context_bytes"], len(data))
++                self.assertNotIn("abc", json.dumps(result))
++                with self.assertRaisesRegex(ValueError, "truncated"):
++                    profiles.context_pool(data[:-3])
++
++    def test_context_pool_refuses_unknown_versions(self):
++        magic = b"vibe-function-context-999"
++        with self.assertRaisesRegex(ValueError, "unsupported context prefix"):
++            profiles.context_pool(bytes([len(magic)]) + magic + b"\x00")
+ 
+     def test_removes_only_name_sections(self):
+         header = b"\0asm\x01\0\0\0"
+diff --git c/docs/internal/compiler/function-cpu-workers.md w/docs/internal/compiler/function-cpu-workers.md
+index ba02869f9..64ada34d1 100644
+--- c/docs/internal/compiler/function-cpu-workers.md
++++ w/docs/internal/compiler/function-cpu-workers.md
+@@ -58,6 +58,19 @@ grammar; only versioned private worker envelopes opt into references.
+ String appends currently use a bounded byte-wise reference writer, not a
+ bulk-copy String ABI.
+ 
++Context format 6 also interns repeated function identities in metadata. The
++literal pool and `all_fn_names_list` are written as ordinary checked strings
++first. Subsequent name arrays and map keys can reference that function-name
++pool; names shorter than 16 bytes and names absent from it stay inline.
++References keep the canonical array positions and first-occurrence behavior.
++The decoder owns the initial UTF-8 strings, checks every reference index, and
++shares only those immutable strings within its private heap. Per-job literal
++references still use the original runtime-literal pool, independently of this
++metadata pool. Source locations and product validation are unchanged.
++The build receipt and frontend require context format 6; older images must be
++rebuilt. This transport change does not enable native threads or select workers
++for the bootstrap.
++
+ Source locations are another input, independent of function ASTs. Division
+ guards consult the merged-source location table, so omitting it changes the
+ generated guard instructions and their line maps. The compact snapshot carries
+diff --git c/lib/@vibe/compiler/tests/function_worker_context_test.vibe w/lib/@vibe/compiler/tests/function_worker_context_test.vibe
+index e44acc0ae..5d5e7596d 100644
+--- c/lib/@vibe/compiler/tests/function_worker_context_test.vibe
++++ w/lib/@vibe/compiler/tests/function_worker_context_test.vibe
+@@ -18,6 +18,60 @@ import @vibe/compiler/codegen/common_base {
+ import @vibe/compiler/syntax {
+   lex_with_offsets, parse_program_located
+ }
++import @vibe/compiler/cache {
++  ast_binary_reader_new, ast_binary_read_string_checked,
++  ast_binary_read_varint_checked, ast_binary_read_svarint_checked,
++  ast_binary_read_bool_checked, ast_binary_write_varint
++}
++
++// Inspect the independent wire boundary, not a decoded round trip: the first
++// sorted-name reference must require the already decoded function-name pool.
++fn check_metadata_references(encoded: Bytes) -> Unit with Exception {
++  let stale = Bytes::slice(encoded, 0, Bytes::length(encoded))
++  Bytes::set(stale, String::length("vibe-function-context-6"), 52)
++  let unsupported = handle {
++    read_function_context(stale); "accepted"
++  } with { Exception::Throw(msg) => msg }
++  assert(unsupported == "function context: unsupported format")
++  let r = ast_binary_reader_new(encoded)
++  ast_binary_read_string_checked(r)
++  let literals = ast_binary_read_varint_checked(r)
++  let mut i = 0
++  while i < literals { ast_binary_read_string_checked(r); i = i + 1 }
++  i = 0
++  while i < 5 { ast_binary_read_bool_checked(r); i = i + 1 }
++  let indices = ast_binary_read_varint_checked(r)
++  i = 0
++  while i < indices { ast_binary_read_svarint_checked(r); i = i + 1 }
++  let names = ast_binary_read_varint_checked(r)
++  i = 0
++  while i < names { ast_binary_read_string_checked(r); i = i + 1 }
++  let sorted = ast_binary_read_varint_checked(r)
++  i = 0
++  let mut found = false
++  while !found && i < sorted {
++    let start = r.pos
++    let length = ast_binary_read_varint_checked(r)
++    if length == 1152921504606846976 {
++      let index = ast_binary_read_varint_checked(r)
++      assert(index >= 0 && index < names)
++      let corrupt = Bytes::slice(encoded, 0, start)
++      ast_binary_write_varint(corrupt, length)
++      ast_binary_write_varint(corrupt, names)
++      Bytes::blit(corrupt, encoded, r.pos, Bytes::length(encoded) - r.pos)
++      let invalid = handle {
++        read_function_context(corrupt); "accepted"
++      } with { Exception::Throw(msg) => msg }
++      assert(invalid == "ast_binary: string reference is outside the immutable pool")
++      found = true
++    } else {
++      r.pos = start
++      ast_binary_read_string_checked(r)
++    }
++    i = i + 1
++  }
++  assert(found)
++}
+ 
+ fn same_bytes(a: Bytes, b: Bytes) -> Bool {
+   let mut same = Bytes::length(a) == Bytes::length(b)
+@@ -81,7 +135,7 @@ fn refuse_product(ctx: FunctionContext, c: CodegenBodyCache) -> Unit with Except
+   assert(before == after)
+ }
+ 
+-fn assert_snapshot_parity(source: String, rc: Bool) -> Unit with Env + Exception + Fs {
++fn assert_snapshot_parity(source: String, rc: Bool, require_pool: Bool) -> Unit with Env + Exception + Fs {
+   let expected = compile_source(source, rc)
+   let calls = [0]
+   let actual = function_with_executor((plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow) -> {
+@@ -89,7 +143,10 @@ fn assert_snapshot_parity(source: String, rc: Bool) -> Unit with Env + Exception
+     Array::set(calls, 0, Array::get(calls, 0) + 1)
+     let context = function_context_new(plan, input, debug_break, debug_trace, enable_rc, rc_shadow)
+     let encoded = FunctionContext::write_function_context(context)
++    if require_pool { check_metadata_references(encoded) } else ()
+     let restored = read_function_context(encoded)
++    assert(restored.input.all_fn_names_sorted == input.all_fn_names_sorted)
++    assert(restored.input.fn_names_list == input.fn_names_list)
+     assert(restored.input.has_exceptions == context.input.has_exceptions)
+     assert_eq(Array::length(restored.input.stmts), 0)
+     let n = input.num_user_funcs
+@@ -165,9 +222,9 @@ fn assert_snapshot_parity(source: String, rc: Bool) -> Unit with Env + Exception
+ test "function snapshots: disjoint ranges replay identically in both RC modes" {
+   for rc in [false, true] {
+     let long_name = "worker_identifier_qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+-    assert_snapshot_parity("fn " + long_name + "(a: Int) -> Int { a - 3 }\nfn main() -> Int { " + long_name + "(11) }", rc)
+-    assert_snapshot_parity("fn div(a: Int, b: Int) -> Int { a / b }\nfn main() -> Int { div(43, 4) }", rc)
+-    assert_snapshot_parity("fn sub(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int { sub(13, 4) }", rc)
+-    assert_snapshot_parity("fn make(n: Int) -> (Int) -> Int { (x) -> { let inner = (y) -> y - n; inner(x) } }\nlet xs: Array[Int] = [9, 4]\nfn main() -> Int { let f = make(2); f(Array::get(xs, 0)) }", rc)
++    assert_snapshot_parity("fn " + long_name + "(a: Int) -> Int { a - 3 }\nfn main() -> Int { " + long_name + "(11) }", rc, true)
++    assert_snapshot_parity("fn div(a: Int, b: Int) -> Int { a / b }\nfn main() -> Int { div(43, 4) }", rc, false)
++    assert_snapshot_parity("fn sub(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int { sub(13, 4) }", rc, false)
++    assert_snapshot_parity("fn make(n: Int) -> (Int) -> Int { (x) -> { let inner = (y) -> y - n; inner(x) } }\nlet xs: Array[Int] = [9, 4]\nfn main() -> Int { let f = make(2); f(Array::get(xs, 0)) }", rc, false)
+   }
+ }
+diff --git c/lib/@vibe/function_worker/context.vibe w/lib/@vibe/function_worker/context.vibe
+index 10a72a63f..d936354c6 100644
+--- c/lib/@vibe/function_worker/context.vibe
++++ w/lib/@vibe/function_worker/context.vibe
+@@ -10,6 +10,7 @@ import @vibe/compiler/cache {
+   ast_binary_read_svarint_checked,
+   ast_binary_read_varint_checked,
+   ast_binary_reader_remaining,
++  ast_binary_reader_with_string_pool,
+   ast_binary_write_bool,
+   ast_binary_write_svarint,
+   ast_binary_write_varint
+@@ -34,7 +35,7 @@ import @vibe/core {
+   struct MutMap
+ }
+ import @vibe/lowering_worker/linear {
+-  linear_string_reader, linear_write_string
++  linear_string_reader, linear_write_string, linear_write_string_index
+ }
+ 
+ /// One decoded worker's private copy of the canonical input. This record is
+@@ -91,6 +92,22 @@ fn fw_put_strings(b: Bytes, xs: Array[String]) -> Unit with Exception {
+   }
+   ()
+ }
++// Only metadata after all_fn_names_list can refer to this pool. Runtime
++// literal slots remain unchanged for the independent per-range AST codec.
++fn fw_put_name(b: Bytes, value: String, names: MutMap[String, Int]) -> Unit with Exception {
++  if String::length(value) >= 16 {
++    match MutMap::get(names, value) {
++      Some(index) => { linear_write_string_index(b, index); return () },
++      None => ()
++    }
++  } else ()
++  linear_write_string(b, value)
++}
++fn fw_put_names(b: Bytes, xs: Array[String], names: MutMap[String, Int]) -> Unit with Exception {
++  ast_binary_write_varint(b, Array::length(xs))
++  for value in xs { fw_put_name(b, value, names) }
++  ()
++}
+ fn fw_get_strings(r: AstBinaryReader) -> Array[String] with Exception {
+   let xs: Array[String] = []
+   let n = ast_binary_read_count_checked(r)
+@@ -116,10 +133,10 @@ fn fw_get_matrix(r: AstBinaryReader) -> Array[Array[String]] with Exception {
+   }
+   xs
+ }
+-fn fw_put_pairs(b: Bytes, xs: Array[(String, Int)]) -> Unit with Exception {
++fn fw_put_pairs(b: Bytes, xs: Array[(String, Int)], names: MutMap[String, Int]) -> Unit with Exception {
+   ast_binary_write_varint(b, Array::length(xs))
+   for x in xs {
+-    linear_write_string(b, x.0); ast_binary_write_svarint(b, x.1)
++    fw_put_name(b, x.0, names); ast_binary_write_svarint(b, x.1)
+   }
+   ()
+ }
+@@ -134,10 +151,10 @@ fn fw_get_pairs(r: AstBinaryReader) -> Array[(String, Int)] with Exception {
+   }
+   xs
+ }
+-fn fw_put_triples(b: Bytes, xs: Array[(String, Int, Int)]) -> Unit with Exception {
++fn fw_put_triples(b: Bytes, xs: Array[(String, Int, Int)], names: MutMap[String, Int]) -> Unit with Exception {
+   ast_binary_write_varint(b, Array::length(xs))
+   for x in xs {
+-    linear_write_string(b, x.0); ast_binary_write_svarint(b, x.1); ast_binary_write_svarint(b, x.2)
++    fw_put_name(b, x.0, names); ast_binary_write_svarint(b, x.1); ast_binary_write_svarint(b, x.2)
+   }
+   ()
+ }
+@@ -153,11 +170,11 @@ fn fw_get_triples(r: AstBinaryReader) -> Array[(String, Int, Int)] with Exceptio
+   }
+   xs
+ }
+-fn fw_put_map(b: Bytes, m: MutMap[String, Int]) -> Unit with Exception {
++fn fw_put_map(b: Bytes, m: MutMap[String, Int], names: MutMap[String, Int]) -> Unit with Exception {
+   let keys = sorted_names_of(MutMap::keys(m))
+   ast_binary_write_varint(b, Array::length(keys))
+   for key in keys {
+-    linear_write_string(b, key)
++    fw_put_name(b, key, names)
+     match MutMap::get(m, key) {
+       Some(value) => ast_binary_write_svarint(b, value),
+       None => throw("function context: map changed during snapshot")
+@@ -240,7 +257,7 @@ export fn function_context_new(plan: LinkedFunctionPlan, input: LinkedBodyInputs
+ /// Encode bounded shared tables once. Per-range AST is carried by each job.
+ export fn write_function_context(ctx: FunctionContext) -> Bytes with Exception {
+   let b = Bytes::with_capacity(64 * 1024 * 1024)
+-  linear_write_string(b, "vibe-function-context-4")
++  linear_write_string(b, "vibe-function-context-6")
+   fw_put_strings(b, ctx.input.str_strs)
+   ast_binary_write_bool(b, ctx.debug_break)
+   ast_binary_write_bool(b, ctx.debug_trace)
+@@ -249,7 +266,13 @@ export fn write_function_context(ctx: FunctionContext) -> Bytes with Exception {
+   ast_binary_write_bool(b, ctx.input.has_exceptions)
+   fw_put_ints(b, ctx.input.all_fn_indices_list)
+   fw_put_strings(b, ctx.input.all_fn_names_list)
+-  fw_put_strings(b, ctx.input.all_fn_names_sorted)
++  let names: MutMap[String, Int] = MutMap::with_capacity_string(Array::length(ctx.input.all_fn_names_list) * 2 + 16)
++  let mut name_i = Array::length(ctx.input.all_fn_names_list)
++  while name_i > 0 {
++    name_i = name_i - 1
++    MutMap::set(names, Array::get(ctx.input.all_fn_names_list, name_i), name_i)
++  }
++  fw_put_names(b, ctx.input.all_fn_names_sorted, names)
+   fw_put_ints(b, ctx.input.all_fn_names_sorted_pos)
+   fw_put_bools(b, ctx.input.all_fn_needs_env_list)
+   fw_put_ints(b, ctx.input.all_fn_param_counts)
+@@ -276,8 +299,8 @@ export fn write_function_context(ctx: FunctionContext) -> Bytes with Exception {
+   ast_binary_write_svarint(b, ctx.input.dbg_break_import_idx)
+   ast_binary_write_svarint(b, ctx.input.dbg_line_import_idx)
+   ast_binary_write_bool(b, ctx.input.dbg_line_on)
+-  fw_put_map(b, ctx.input.dbg_name_file)
+-  fw_put_map(b, ctx.input.dbg_owner_file)
++  fw_put_map(b, ctx.input.dbg_name_file, names)
++  fw_put_map(b, ctx.input.dbg_owner_file, names)
+   ast_binary_write_svarint(b, ctx.input.dbgargs_base)
+   ast_binary_write_svarint(b, ctx.input.dbgargs_cap)
+   ast_binary_write_svarint(b, ctx.input.dbgargs_count_addr)
+@@ -289,34 +312,34 @@ export fn write_function_context(ctx: FunctionContext) -> Bytes with Exception {
+   ast_binary_write_svarint(b, ctx.input.eq_idx)
+   ast_binary_write_svarint(b, ctx.input.fi)
+   fw_put_ints(b, ctx.input.float_call_offsets)
+-  fw_put_strings(b, ctx.input.float_ret_fn_names)
+-  fw_put_strings(b, ctx.input.fn_names_list)
++  fw_put_names(b, ctx.input.float_ret_fn_names, names)
++  fw_put_names(b, ctx.input.fn_names_list, names)
+   ast_binary_write_svarint(b, ctx.input.func_offset)
+   ast_binary_write_svarint(b, ctx.input.heap_grow_check_idx)
+   fw_put_ints(b, ctx.input.int_render_offsets)
+-  fw_put_triples(b, ctx.input.iw_callees)
+-  fw_put_strings(b, ctx.input.iw_names)
++  fw_put_triples(b, ctx.input.iw_callees, names)
++  fw_put_names(b, ctx.input.iw_names, names)
+   fw_put_strings(b, ctx.input.iw_wats)
+   ast_binary_write_svarint(b, ctx.input.lambda_slot_base)
+   ast_binary_write_bool(b, ctx.input.late_dce_rewrote_bodies)
+   fw_put_ints(b, ctx.input.lc_agg_ret_infos)
+-  fw_put_strings(b, ctx.input.lc_agg_ret_names)
+-  fw_put_strings(b, ctx.input.lc_agg_ret_names_sorted)
++  fw_put_names(b, ctx.input.lc_agg_ret_names, names)
++  fw_put_names(b, ctx.input.lc_agg_ret_names_sorted, names)
+   fw_put_ints(b, ctx.input.lc_agg_ret_names_sorted_pos)
+   fw_put_ints(b, ctx.input.lc_borrow_param_mask)
+   fw_put_strings(b, ctx.input.lc_borrow_param_user_srt)
+-  fw_put_strings(b, ctx.input.lc_borrow_ret_names)
++  fw_put_names(b, ctx.input.lc_borrow_ret_names, names)
+   fw_put_strings(b, ctx.input.lc_borrow_view_ret)
+   fw_put_strings(b, ctx.input.lc_ctor_names_sorted)
+   fw_put_ints(b, ctx.input.lc_ctor_names_sorted_pos)
+-  fw_put_map(b, ctx.input.lc_fn_file_of)
+-  fw_put_map(b, ctx.input.lc_fn_stmt_of)
+-  fw_put_strings(b, ctx.input.lc_heap_ret_names)
++  fw_put_map(b, ctx.input.lc_fn_file_of, names)
++  fw_put_map(b, ctx.input.lc_fn_stmt_of, names)
++  fw_put_names(b, ctx.input.lc_heap_ret_names, names)
+   fw_put_ints(b, ctx.input.lc_name_unique)
+-  fw_put_strings(b, ctx.input.lc_owned_return_names)
+-  fw_put_pairs(b, ctx.input.lc_passthrough_ret_params)
++  fw_put_names(b, ctx.input.lc_owned_return_names, names)
++  fw_put_pairs(b, ctx.input.lc_passthrough_ret_params, names)
+   ast_binary_write_svarint(b, ctx.input.lc_perceus_pin)
+-  fw_put_strings(b, ctx.input.lc_scalar_ret_names)
++  fw_put_names(b, ctx.input.lc_scalar_ret_names, names)
+   fw_put_strings(b, ctx.input.lc_struct_names_sorted)
+   fw_put_ints(b, ctx.input.lc_struct_names_sorted_pos)
+   fw_put_strings(b, ctx.input.lc_type_names_sorted)
+@@ -363,7 +386,7 @@ export fn write_function_context(ctx: FunctionContext) -> Bytes with Exception {
+   ast_binary_write_svarint(b, ctx.input.string_index_of_idx)
+   fw_put_matrix(b, ctx.input.struct_field_names)
+   fw_put_strings(b, ctx.input.struct_names)
+-  fw_put_strings(b, ctx.input.thunk_names_list)
++  fw_put_names(b, ctx.input.thunk_names_list, names)
+   ast_binary_write_svarint(b, ctx.input.trace_cap)
+   ast_binary_write_svarint(b, ctx.input.trace_counter_addr)
+   ast_binary_write_svarint(b, ctx.input.trace_log_base)
+@@ -395,7 +418,7 @@ export fn read_function_context(bytes: Bytes) -> FunctionContext with Exception
+     throw("function context: exceeds 64 MiB")
+   } else ()
+   let prefix = linear_string_reader(bytes)
+-  if ast_binary_read_string_checked(prefix) != "vibe-function-context-4" {
++  if ast_binary_read_string_checked(prefix) != "vibe-function-context-6" {
+     throw("function context: unsupported format")
+   } else ()
+   let str_strs = fw_get_strings(prefix)
+@@ -407,6 +430,7 @@ export fn read_function_context(bytes: Bytes) -> FunctionContext with Exception
+   let has_exceptions = ast_binary_read_bool_checked(r)
+   let all_fn_indices_list = fw_get_ints(r)
+   let all_fn_names_list = fw_get_strings(r)
++  let r = ast_binary_reader_with_string_pool(r, FrozenArray::from_array(all_fn_names_list))
+   let all_fn_names_sorted = fw_get_strings(r)
+   let all_fn_names_sorted_pos = fw_get_ints(r)
+   let all_fn_needs_env_list = fw_get_bools(r)
+diff --git c/lib/@vibe/lowering_worker/linear/index.vpkg w/lib/@vibe/lowering_worker/linear/index.vpkg
+index c5fa040f1..24ac1c7eb 100644
+--- c/lib/@vibe/lowering_worker/linear/index.vpkg
++++ w/lib/@vibe/lowering_worker/linear/index.vpkg
+@@ -10,3 +10,4 @@ generated_hash =
+ 
+ fn linear_string_reader(bytes: Bytes) -> AstBinaryReader
+ fn linear_write_string(bytes: Bytes, value: String) -> Unit with Exception
++fn linear_write_string_index(bytes: Bytes, index: Int) -> Unit with Exception
+diff --git c/lib/@vibe/lowering_worker/linear/string_reader.vibe w/lib/@vibe/lowering_worker/linear/string_reader.vibe
+index 4cfd722b5..44ca8f1c0 100644
+--- c/lib/@vibe/lowering_worker/linear/string_reader.vibe
++++ w/lib/@vibe/lowering_worker/linear/string_reader.vibe
+@@ -18,16 +18,18 @@ export fn linear_string_reader(bytes: Bytes) -> AstBinaryReader {
+   ast_binary_reader_with_string_copy(bytes, copy_string_span)
+ }
+ 
+-// Owned Bytes use a negative capacity. Return the remaining capacity as a
+-// tagged Int; malformed or read-only buffers have no writable capacity.
+-fn string_write_spare(bytes: Bytes) -> Int = wasm
++// Inline wasm returns a raw i64. The caller supplies its representation of
++// Int 1 (raw on bump, shifted on RC), so multiplying by it encodes the spare
++// capacity correctly on either lane. Unconditionally shifting doubled the
++// apparent writable space on bump. Malformed/read-only buffers have none.
++fn string_write_spare(bytes: Bytes, one: Int) -> Int = wasm
+ "(local $cap i32) (local $len i32)"
+ "(local.set $cap (i32.load (i32.wrap_i64 (local.get $bytes))))"
+ "(if (result i64) (i32.lt_s (local.get $cap) (i32.const 0))"
+ "(then (local.set $cap (i32.sub (i32.const 0) (local.get $cap)))"
+ "(local.set $len (i32.load offset=4 (i32.wrap_i64 (local.get $bytes))))"
+ "(if (result i64) (i32.le_u (local.get $len) (local.get $cap))"
+-"(then (i64.shl (i64.extend_i32_u (i32.sub (local.get $cap) (local.get $len))) (i64.const 1)))"
++"(then (i64.mul (i64.extend_i32_u (i32.sub (local.get $cap) (local.get $len))) (local.get $one)))"
+ "(else (i64.const 0)))) (else (i64.const 0)))"
+ 
+ /// Append an ordinary AST length-prefixed string within reserved capacity.
+@@ -41,7 +43,7 @@ export fn linear_write_string(bytes: Bytes, value: String) -> Unit with Exceptio
+     prefix = prefix + 1
+     size = size>>7
+   }
+-  if string_write_spare(bytes) < n + prefix {
++  if string_write_spare(bytes, 1) < n + prefix {
+     throw("linear string writer: insufficient reserved capacity")
+   } else ()
+   ast_binary_write_varint(bytes, n)
+@@ -51,3 +53,24 @@ export fn linear_write_string(bytes: Bytes, value: String) -> Unit with Exceptio
+     i = i + 1
+   }
+ }
++
++/// The function-envelope string-reference escape, followed by a pool index.
++/// The envelope owns the pool and the checked decoder verifies the index.
++/// Refuse before either varint changes a buffer with insufficient capacity.
++export fn linear_write_string_index(bytes: Bytes, index: Int) -> Unit with Exception {
++  if index < 0 {
++    throw("linear string writer: invalid pool index")
++  } else ()
++  let mut value = index
++  let mut size = 1
++  while value >= 128 {
++    size = size + 1
++    value = value>>7
++  }
++  // 2^60 occupies nine unsigned LEB128 bytes.
++  if string_write_spare(bytes, 1) < 9 + size {
++    throw("linear string writer: insufficient reserved capacity")
++  } else ()
++  ast_binary_write_varint(bytes, 1152921504606846976)
++  ast_binary_write_varint(bytes, index)
++}
+diff --git c/lib/@vibe/lowering_worker/linear/string_reader_test.vibe w/lib/@vibe/lowering_worker/linear/string_reader_test.vibe
+index 43a582ac5..02645f1c0 100644
+--- c/lib/@vibe/lowering_worker/linear/string_reader_test.vibe
++++ w/lib/@vibe/lowering_worker/linear/string_reader_test.vibe
+@@ -1,5 +1,5 @@
+ import ./string_reader.vibe {
+-  linear_string_reader, linear_write_string
++  linear_string_reader, linear_write_string, linear_write_string_index
+ }
+ import @vibe/compiler/cache {
+   ast_binary_read_byte,
+@@ -8,10 +8,70 @@ import @vibe/compiler/cache {
+   ast_binary_reader_new,
+   ast_binary_reader_remaining,
+   ast_binary_reader_take,
++  ast_binary_reader_with_string_pool,
+   ast_binary_write_string,
+   ast_binary_write_varint
+ }
+ 
++test "linear string reference: exact capacity, checked pool and unchanged refusal" {
++  let value = "pooled é🍣" + String::from_byte(0)
++  let bytes = Bytes::with_capacity(64)
++  let mut padding = 0
++  while padding < 54 { Bytes::push(bytes, 127); padding = padding + 1 }
++  linear_write_string_index(bytes, 0)
++  assert_eq(Bytes::length(bytes), 64)
++  let reader = ast_binary_reader_with_string_pool(linear_string_reader(bytes), FrozenArray::from_array([value]))
++  reader.pos = 54
++  assert(ast_binary_read_string_checked(reader) == value)
++  assert_eq(ast_binary_reader_remaining(reader), 0)
++  let short = Bytes::with_capacity(64)
++  padding = 0
++  while padding < 55 { Bytes::push(short, 127); padding = padding + 1 }
++  let error = handle {
++    linear_write_string_index(short, 0); "accepted"
++  } with { Exception::Throw(msg) => msg }
++  inspect(error, "linear string writer: insufficient reserved capacity")
++  assert_eq(Bytes::length(short), 55)
++  assert_eq(Bytes::get(short, 54), 127)
++  let invalid = handle {
++    linear_write_string_index(short, -1); "accepted"
++  } with { Exception::Throw(msg) => msg }
++  inspect(invalid, "linear string writer: invalid pool index")
++  assert_eq(Bytes::length(short), 55)
++  let absent = handle {
++    let missing = ast_binary_reader_with_string_pool(linear_string_reader(bytes), FrozenArray::from_array([]))
++    missing.pos = 54
++    ast_binary_read_string_checked(missing); "accepted"
++  } with { Exception::Throw(msg) => msg }
++  inspect(absent, "ast_binary: string reference is outside the immutable pool")
++}
++
++test "linear string writes: capacity boundary is identical on bump and RC" {
++  let full = Bytes::with_capacity(64)
++  let mut i = 0
++  while i < 62 { Bytes::push(full, 127); i = i + 1 }
++  linear_write_string(full, "a")
++  assert_eq(Bytes::length(full), 64)
++  let error = handle {
++    linear_write_string(full, ""); "accepted"
++  } with { Exception::Throw(msg) => msg }
++  inspect(error, "linear string writer: insufficient reserved capacity")
++  assert_eq(Bytes::length(full), 64)
++  assert_eq(Bytes::get(full, 63), 97)
++  for index in [0, 127, 128, 16383, 16384, 1152921504606846976] {
++    let ordinary = Bytes::new()
++    ast_binary_write_varint(ordinary, 1152921504606846976)
++    ast_binary_write_varint(ordinary, index)
++    let encoded = Bytes::with_capacity(64)
++    linear_write_string_index(encoded, index)
++    assert_eq(Bytes::length(encoded), Bytes::length(ordinary))
++    i = 0
++    while i < Bytes::length(ordinary) {
++      assert_eq(Bytes::get(encoded, i), Bytes::get(ordinary, i)); i = i + 1
++    }
++  }
++}
++
+ test "linear string writer: byte-identical UTF-8 and NUL framing" {
+   for size in [0, 1, 126, 127, 128, 16383, 16384, 65536] {
+     let chunks: Array[String] = []
+diff --git c/scripts/build_taskgroup_functions.sh w/scripts/build_taskgroup_functions.sh
+index 4c5d9af77..9661efd28 100755
+--- c/scripts/build_taskgroup_functions.sh
++++ w/scripts/build_taskgroup_functions.sh
+@@ -31,7 +31,7 @@ from pathlib import Path
+ compiler, out, runner = map(Path, sys.argv[1:])
+ files = [out/'worker.wasm', out/'compile.wasm', out/'coordinator.component.wasm']
+ receipt = {'version': 1, 'kind': 'vibe-taskgroup-functions', 'function_abi': 'bump-core-tagged-callbacks-1',
+-           'context_format': 3, 'job_format': 2, 'compile_engine_rc': 0, 'worker_engine_rc': 0, 'coordinator_engine_rc': 1, 'compiler_sha256': hashlib.sha256(compiler.read_bytes()).hexdigest(),
++           'context_format': 6, 'job_format': 2, 'compile_engine_rc': 0, 'worker_engine_rc': 0, 'coordinator_engine_rc': 1, 'compiler_sha256': hashlib.sha256(compiler.read_bytes()).hexdigest(),
+            'runner_sha256': hashlib.sha256(runner.read_bytes()).hexdigest(),
+            'artifacts': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}}
+ (out/'build.json').write_text(json.dumps(receipt, indent=2)+'\n')
+diff --git c/scripts/taskgroup_lowering_frontend.mjs w/scripts/taskgroup_lowering_frontend.mjs
+index 5869a8274..092859e34 100644
+--- c/scripts/taskgroup_lowering_frontend.mjs
++++ w/scripts/taskgroup_lowering_frontend.mjs
+@@ -87,7 +87,7 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
+   if ((receipt.kind ?? "vibe-taskgroup-lowering") !== kind || receipt.version !== 1 || receipt.compiler_sha256 !== await digest(resolve(compiler)) ||
+       receipt.runner_sha256 !== await digest(runner)) throw new Error("rebuild lowering images for this compiler and runner");
+   if (phase === "functions" && (receipt.function_abi !== "bump-core-tagged-callbacks-1" ||
+-      receipt.context_format !== 3 || receipt.job_format !== 2 || receipt.compile_engine_rc !== 0 || receipt.worker_engine_rc !== 0 || receipt.coordinator_engine_rc !== 1)) {
++      receipt.context_format !== 6 || receipt.job_format !== 2 || receipt.compile_engine_rc !== 0 || receipt.worker_engine_rc !== 0 || receipt.coordinator_engine_rc !== 1)) {
+     throw new Error("rebuild function images for the supported native callback ABI");
+   }
+   for (const name of ["worker.wasm", "compile.wasm", "coordinator.component.wasm"]) {
+diff --git c/scripts/test_taskgroup_functions.py w/scripts/test_taskgroup_functions.py
+index d472106b4..0e97d62c9 100644
+--- c/scripts/test_taskgroup_functions.py
++++ w/scripts/test_taskgroup_functions.py
+@@ -105,6 +105,14 @@ def main():
+         worker.write_bytes((artifacts / "worker.wasm").read_bytes())
+         receipt_path = changed / "build.json"
+         receipt = json.loads(receipt_path.read_text())
++        for version in (3, 4, 5, 7):
++            stale = dict(receipt, context_format=version)
++            receipt_path.write_text(json.dumps(stale))
++            label = f"context-format-{version}"
++            output = project / f"{label}.wasm"
++            output.write_bytes(b"previous build")
++            _, _, result = build(label, 2, {"VIBE_FUNCTION_ARTIFACT_DIR": str(changed)}, expected=1)
++            assert "callback ABI" in result.stderr and output.read_bytes() == b"previous build", result
+         receipt["compile_engine_rc"] = 1
+         receipt_path.write_text(json.dumps(receipt))
+         output = project / "abi.wasm"

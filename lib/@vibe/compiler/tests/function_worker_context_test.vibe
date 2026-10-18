@@ -18,6 +18,71 @@ import @vibe/compiler/codegen/common_base {
 import @vibe/compiler/syntax {
   lex_with_offsets, parse_program_located
 }
+import @vibe/compiler/cache {
+  ast_binary_read_bool_checked,
+  ast_binary_read_string_checked,
+  ast_binary_read_svarint_checked,
+  ast_binary_read_varint_checked,
+  ast_binary_reader_new,
+  ast_binary_write_varint
+}
+
+// Inspect the independent wire boundary, not a decoded round trip: the first
+// sorted-name reference must require the already decoded function-name pool.
+fn check_metadata_references(encoded: Bytes) -> Unit with Exception {
+  let stale = Bytes::slice(encoded, 0, Bytes::length(encoded))
+  Bytes::set(stale, String::length("vibe-function-context-6"), 52)
+  let unsupported = handle {
+    read_function_context(stale); "accepted"
+  } with { Exception::Throw(msg) => msg }
+  assert(unsupported == "function context: unsupported format")
+  let r = ast_binary_reader_new(encoded)
+  assert(ast_binary_read_string_checked(r) == "vibe-function-context-6")
+  let literals = ast_binary_read_varint_checked(r)
+  let mut i = 0
+  while i < literals {
+    ast_binary_read_string_checked(r); i = i + 1
+  }
+  i = 0
+  while i < 5 {
+    ast_binary_read_bool_checked(r); i = i + 1
+  }
+  let indices = ast_binary_read_varint_checked(r)
+  i = 0
+  while i < indices {
+    ast_binary_read_svarint_checked(r); i = i + 1
+  }
+  let names = ast_binary_read_varint_checked(r)
+  i = 0
+  while i < names {
+    ast_binary_read_string_checked(r); i = i + 1
+  }
+  let sorted = ast_binary_read_varint_checked(r)
+  i = 0
+  let mut found = false
+  while !found && i < sorted {
+    let start = r.pos
+    let length = ast_binary_read_varint_checked(r)
+    if length == 1152921504606846976 {
+      let index = ast_binary_read_varint_checked(r)
+      assert(index >= 0 && index < names)
+      let corrupt = Bytes::slice(encoded, 0, start)
+      ast_binary_write_varint(corrupt, length)
+      ast_binary_write_varint(corrupt, names)
+      Bytes::blit(corrupt, encoded, r.pos, Bytes::length(encoded) - r.pos)
+      let invalid = handle {
+        read_function_context(corrupt); "accepted"
+      } with { Exception::Throw(msg) => msg }
+      assert(invalid == "ast_binary: string reference is outside the immutable pool")
+      found = true
+    } else {
+      r.pos = start
+      ast_binary_read_string_checked(r)
+    }
+    i = i + 1
+  }
+  assert(found)
+}
 
 fn same_bytes(a: Bytes, b: Bytes) -> Bool {
   let mut same = Bytes::length(a) == Bytes::length(b)
@@ -81,7 +146,7 @@ fn refuse_product(ctx: FunctionContext, c: CodegenBodyCache) -> Unit with Except
   assert(before == after)
 }
 
-fn assert_snapshot_parity(source: String, rc: Bool) -> Unit with Env + Exception + Fs {
+fn assert_snapshot_parity(source: String, rc: Bool, require_pool: Bool) -> Unit with Env + Exception + Fs {
   let expected = compile_source(source, rc)
   let calls = [0]
   let actual = function_with_executor((plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow) -> {
@@ -89,7 +154,15 @@ fn assert_snapshot_parity(source: String, rc: Bool) -> Unit with Env + Exception
     Array::set(calls, 0, Array::get(calls, 0) + 1)
     let context = function_context_new(plan, input, debug_break, debug_trace, enable_rc, rc_shadow)
     let encoded = FunctionContext::write_function_context(context)
+    if require_pool {
+      check_metadata_references(encoded)
+    } else ()
     let restored = read_function_context(encoded)
+    // References share the owned name pool, never the mutable wire buffer.
+    Bytes::fill(encoded, 0, Bytes::length(encoded))
+    assert(restored.input.all_fn_names_sorted == input.all_fn_names_sorted)
+    assert(restored.input.fn_names_list == input.fn_names_list)
+    assert(restored.input.str_strs == input.str_strs)
     assert(restored.input.has_exceptions == context.input.has_exceptions)
     assert_eq(Array::length(restored.input.stmts), 0)
     let n = input.num_user_funcs
@@ -165,9 +238,9 @@ fn assert_snapshot_parity(source: String, rc: Bool) -> Unit with Env + Exception
 test "function snapshots: disjoint ranges replay identically in both RC modes" {
   for rc in [false, true] {
     let long_name = "worker_identifier_qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
-    assert_snapshot_parity("fn " + long_name + "(a: Int) -> Int { a - 3 }\nfn main() -> Int { " + long_name + "(11) }", rc)
-    assert_snapshot_parity("fn div(a: Int, b: Int) -> Int { a / b }\nfn main() -> Int { div(43, 4) }", rc)
-    assert_snapshot_parity("fn sub(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int { sub(13, 4) }", rc)
-    assert_snapshot_parity("fn make(n: Int) -> (Int) -> Int { (x) -> { let inner = (y) -> y - n; inner(x) } }\nlet xs: Array[Int] = [9, 4]\nfn main() -> Int { let f = make(2); f(Array::get(xs, 0)) }", rc)
+    assert_snapshot_parity("fn " + long_name + "(a: Int) -> Int { a - 3 }\nfn main() -> Int { " + long_name + "(11) }", rc, true)
+    assert_snapshot_parity("fn div(a: Int, b: Int) -> Int { a / b }\nfn main() -> Int { div(43, 4) }", rc, false)
+    assert_snapshot_parity("fn sub(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int { sub(13, 4) }", rc, false)
+    assert_snapshot_parity("fn make(n: Int) -> (Int) -> Int { (x) -> { let inner = (y) -> y - n; inner(x) } }\nlet xs: Array[Int] = [9, 4]\nfn main() -> Int { let f = make(2); f(Array::get(xs, 0)) }", rc, false)
   }
 }
