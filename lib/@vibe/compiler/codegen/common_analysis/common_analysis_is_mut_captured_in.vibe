@@ -653,7 +653,30 @@ export fn md_consume_count_pre(e: Expr, name: String, bfns: Array[String], bmask
 /// Count only consumes for which codegen has not already emitted a retain at
 /// the occurrence. A store-dup row is keyed by both name and source offset.
 export fn md_consume_count_pre_store(e: Expr, name: String, bfns: Array[String], bmasks_zeroed: Array[Int], store_names: Array[String], store_offs: Array[Int]) -> Int {
-  md_cc_go_store(e, name, bfns, bmasks_zeroed, store_names, store_offs)
+  md_cc_go_store(e, name, bfns, bmasks_zeroed, store_names, store_offs, false)
+}
+
+/// md_consume_count_pre for a name that is a borrowed VIEW nothing in the
+/// body releases: a closure capture (compile_lambda dups it once per consume
+/// in the prologue) or a match payload bind (bind_match_pat, the reuse
+/// tiers). Those callers emit one dup per counted consume, so the count must
+/// be exactly the consumes codegen performs -- and a projection off the bare
+/// name (`p.y`) performs none: it reads the field in place, which is how the
+/// Perceus plan counts it too. Counting it here dup'd the view once per call
+/// with nothing to release that reference, so a closure reading `p.y` leaked
+/// `p`'s block on every invocation, and `Wrap(q) => q.y` leaked `q`'s.
+///
+/// The owning count (md_consume_count_pre) is unchanged: its predicate
+/// callers -- param heap inference, the self-assignment release, slot
+/// retains -- read a projection as a use that keeps the name alive.
+export fn md_view_consume_count_pre(e: Expr, name: String, bfns: Array[String], bmasks_zeroed: Array[Int]) -> Int {
+  md_cc_go_store(e, name, bfns, bmasks_zeroed, [], [], true)
+}
+
+/// md_view_consume_count_pre that skips occurrences codegen already retained
+/// (the md_consume_count_pre_store rows).
+export fn md_view_consume_count_pre_store(e: Expr, name: String, bfns: Array[String], bmasks_zeroed: Array[Int], store_names: Array[String], store_offs: Array[Int]) -> Int {
+  md_cc_go_store(e, name, bfns, bmasks_zeroed, store_names, store_offs, true)
 }
 
 /// md_consume_count with the USER borrow-param set threaded through the
@@ -681,19 +704,19 @@ fn md_store_dup_occurrence(name: String, off: Int, store_names: Array[String], s
 }
 
 fn md_cc_go(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
-  md_cc_go_store(e, name, bfns, bmasks, [], [])
+  md_cc_go_store(e, name, bfns, bmasks, [], [], false)
 }
 
 /// An operator's operand: a bare name is read in place, anything else is
 /// walked for the consumes inside it.
-fn md_cc_operand_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int], store_names: Array[String], store_offs: Array[Int]) -> Int {
+fn md_cc_operand_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int], store_names: Array[String], store_offs: Array[Int], view: Bool) -> Int {
   match e {
     EIdent(_, _) => 0,
-    _ => md_cc_go_store(e, name, bfns, bmasks, store_names, store_offs)
+    _ => md_cc_go_store(e, name, bfns, bmasks, store_names, store_offs, view)
   }
 }
 
-fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int], store_names: Array[String], store_offs: Array[Int]) -> Int {
+fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int], store_names: Array[String], store_offs: Array[Int], view: Bool) -> Int {
   match e {
     EInt(_) => 0,
     EFloat(_) => 0,
@@ -710,7 +733,7 @@ fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]
       let mut acc = 0
       let mut i = 0
       while i < Array::length(items) {
-        acc = acc + md_cc_go_store(Array::get(items, i), name, bfns, bmasks, store_names, store_offs)
+        acc = acc + md_cc_go_store(Array::get(items, i), name, bfns, bmasks, store_names, store_offs, view)
         i = i + 1
       }
       acc
@@ -719,7 +742,7 @@ fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]
       let mut acc = 0
       let mut i = 0
       while i < Array::length(items) {
-        acc = acc + md_cc_go_store(Array::get(items, i), name, bfns, bmasks, store_names, store_offs)
+        acc = acc + md_cc_go_store(Array::get(items, i), name, bfns, bmasks, store_names, store_offs, view)
         i = i + 1
       }
       acc
@@ -729,7 +752,7 @@ fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        acc = acc + md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs)
+        acc = acc + md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs, view)
         i = i + 1
       }
       acc
@@ -739,25 +762,25 @@ fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        acc = acc + md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs)
+        acc = acc + md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs, view)
         i = i + 1
       }
       acc
     },
     EIf(c, t, el) =>
-    md_cc_go_store(c, name, bfns, bmasks, store_names, store_offs) + md_max(md_cc_go_store(t, name, bfns, bmasks, store_names, store_offs), md_cc_go_store(el, name, bfns, bmasks, store_names, store_offs)),
-    ELet(_, v, b, _) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
-    ELetRec(_, v, b) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
-    ELetMut(_, v, b, _) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
-    EAssign(_, v, b, _) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
-    EAssignOp(_, _, v, b, _) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
-    ESeq(a, b) => md_cc_go_store(a, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
+    md_cc_go_store(c, name, bfns, bmasks, store_names, store_offs, view) + md_max(md_cc_go_store(t, name, bfns, bmasks, store_names, store_offs, view), md_cc_go_store(el, name, bfns, bmasks, store_names, store_offs, view)),
+    ELet(_, v, b, _) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs, view) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs, view),
+    ELetRec(_, v, b) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs, view) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs, view),
+    ELetMut(_, v, b, _) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs, view) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs, view),
+    EAssign(_, v, b, _) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs, view) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs, view),
+    EAssignOp(_, _, v, b, _) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs, view) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs, view),
+    ESeq(a, b) => md_cc_go_store(a, name, bfns, bmasks, store_names, store_offs, view) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs, view),
     EMatch(s, arms) => {
       let mut mx = 0
       let mut i = 0
       while i < Array::length(arms) {
         let (_, v) = Array::get(arms, i)
-        mx = md_max(mx, md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs))
+        mx = md_max(mx, md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs, view))
         i = i + 1
       }
       // A bare `match name { .. }` BORROWS the scrutinee (its fields become
@@ -768,7 +791,7 @@ fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]
       // sub-expression, so recurse there.
       let scr = match s {
         EIdent(_, _) => 0,
-        _ => md_cc_go_store(s, name, bfns, bmasks, store_names, store_offs)
+        _ => md_cc_go_store(s, name, bfns, bmasks, store_names, store_offs, view)
       }
       scr + mx
     },
@@ -777,27 +800,27 @@ fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]
       let mut i = 0
       while i < Array::length(arms) {
         let (_, v) = Array::get(arms, i)
-        mx = md_max(mx, md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs))
+        mx = md_max(mx, md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs, view))
         i = i + 1
       }
       let scr = match s {
         EIdent(_, _) => 0,
-        _ => md_cc_go_store(s, name, bfns, bmasks, store_names, store_offs)
+        _ => md_cc_go_store(s, name, bfns, bmasks, store_names, store_offs, view)
       }
       scr + mx
     },
-    EWhile(c, b) => md_cc_go_store(c, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
+    EWhile(c, b) => md_cc_go_store(c, name, bfns, bmasks, store_names, store_offs, view) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs, view),
     ELoop(params, b) => {
-      let mut acc = md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs)
+      let mut acc = md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs, view)
       let mut i = 0
       while i < Array::length(params) {
         let (_, v) = Array::get(params, i)
-        acc = acc + md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs)
+        acc = acc + md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs, view)
         i = i + 1
       }
       acc
     },
-    EForIn(_, _, it, b) => md_cc_go_store(it, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
+    EForIn(_, _, it, b) => md_cc_go_store(it, name, bfns, bmasks, store_names, store_offs, view) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs, view),
     ECall(callee, args, _, _) => {
       let bmask = match callee {
         EIdent(f, _) => md_borrow_mask_of(f, bfns, bmasks),
@@ -811,7 +834,7 @@ fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]
       // in a sub-expression.
       let callee_c = match callee {
         EIdent(_, _) => 0,
-        _ => md_cc_go_store(callee, name, bfns, bmasks, store_names, store_offs)
+        _ => md_cc_go_store(callee, name, bfns, bmasks, store_names, store_offs, view)
       }
       let mut acc = callee_c
       let mut ri = 0
@@ -824,10 +847,10 @@ fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]
         acc = acc + (if bmask_has(bmask, ri) {
           match a {
             EIdent(_, _) => 0,
-            _ => md_cc_go_store(a, name, bfns, bmasks, store_names, store_offs)
+            _ => md_cc_go_store(a, name, bfns, bmasks, store_names, store_offs, view)
           }
         } else {
-          md_cc_go_store(a, name, bfns, bmasks, store_names, store_offs)
+          md_cc_go_store(a, name, bfns, bmasks, store_names, store_offs, view)
         })
         ri = ri + 1
       }
@@ -837,26 +860,36 @@ fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]
     // `Double` is unboxed, `==` compares where the value lies), so a bare
     // name there is read, not consumed -- the Perceus plan counts it as a
     // borrow too (`pc_operand_count`).
-    EBinOp(_, l, r, _) => md_cc_operand_store(l, name, bfns, bmasks, store_names, store_offs) + md_cc_operand_store(r, name, bfns, bmasks, store_names, store_offs),
-    EUnaryOp(_, x) => md_cc_operand_store(x, name, bfns, bmasks, store_names, store_offs),
-    EFn(_, _, _, _, _, body) => md_cc_go_store(body, name, bfns, bmasks, store_names, store_offs),
-    EDot(x, _, _, _) => md_cc_go_store(x, name, bfns, bmasks, store_names, store_offs),
-    ELabeledArg(_, _, v) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs),
-    EReturn(x) => md_cc_go_store(x, name, bfns, bmasks, store_names, store_offs),
+    EBinOp(_, l, r, _) => md_cc_operand_store(l, name, bfns, bmasks, store_names, store_offs, view) + md_cc_operand_store(r, name, bfns, bmasks, store_names, store_offs, view),
+    EUnaryOp(_, x) => md_cc_operand_store(x, name, bfns, bmasks, store_names, store_offs, view),
+    EFn(_, _, _, _, _, body) => md_cc_go_store(body, name, bfns, bmasks, store_names, store_offs, view),
+    // A projection off a VIEW (`view`, see md_view_consume_count_pre) reads
+    // the field in place and releases nothing, as the Perceus plan counts it
+    // (pc_emit's EDot arm). The owning count keeps calling it a consume.
+    EDot(x, _, _, _) => match x {
+      EIdent(_, _) => if view {
+        0
+      } else {
+        md_cc_go_store(x, name, bfns, bmasks, store_names, store_offs, view)
+      },
+      _ => md_cc_go_store(x, name, bfns, bmasks, store_names, store_offs, view)
+    },
+    ELabeledArg(_, _, v) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs, view),
+    EReturn(x) => md_cc_go_store(x, name, bfns, bmasks, store_names, store_offs, view),
     EBreak(opt) => match opt {
-      Some(v) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs),
+      Some(v) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs, view),
       None => 0
     },
     EContinue(args) => {
       let mut acc = 0
       let mut i = 0
       while i < Array::length(args) {
-        acc = acc + md_cc_go_store(Array::get(args, i), name, bfns, bmasks, store_names, store_offs)
+        acc = acc + md_cc_go_store(Array::get(args, i), name, bfns, bmasks, store_names, store_offs, view)
         i = i + 1
       }
       acc
     },
-    ESpread(x) => md_cc_go_store(x, name, bfns, bmasks, store_names, store_offs)
+    ESpread(x) => md_cc_go_store(x, name, bfns, bmasks, store_names, store_offs, view)
   }
 }
 

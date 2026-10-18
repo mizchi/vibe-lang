@@ -455,6 +455,39 @@ fi
 rm -rf "$pjdir"
 echo "[compiler-gate] RC mutable-initializer projection leak guard ok (heap_used=$pj_used B at N=20000)"
 
+# 40e4. A projection off a borrowed VIEW (a closure capture, a match payload
+# bind) is a read. Codegen dups a view once per consume its body performs, and
+# that count used to call `p.y` a consume, so every closure reading a captured
+# struct's field leaked the struct on each call (and `Wrap(c) => c.y` leaked
+# `c`). The fixture measured 4,480,056 B at N=20000 before
+# md_view_consume_count_pre and 88 B after; its controls keep the dup for a
+# view the body really consumes.
+echo "[compiler-gate] 40e4/40 RC view-projection leak guard"
+vpdir="_build/_gate_rc_view_proj_leak"
+rm -rf "$vpdir"; mkdir -p "$vpdir"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/rc_view_projection_leak_test.vibe" "$vpdir/rc.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$vpdir/rc.wasm" ]; then
+  echo "[compiler-gate] FAIL: rc_view_projection_leak fixture did not compile under VIBE_RC" >&2
+  cat "$vpdir/rc.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+vp_json="$(node scripts/measure_heap.mjs "$vpdir/rc.wasm" main 2>/dev/null)"
+vp_used="$(printf '%s' "$vp_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+vp_result="$(printf '%s' "$vp_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ -z "$vp_used" ]; then
+  echo "[compiler-gate] FAIL: could not measure rc_view_projection_leak heap ($vp_json)" >&2; exit 1
+fi
+if [ "$vp_result" != "0" ]; then
+  echo "[compiler-gate] FAIL: rc_view_projection_leak wrong result $vp_result (want 0)" >&2; exit 1
+fi
+if [ "$vp_used" -ge 2000 ]; then
+  echo "[compiler-gate] FAIL: rc_view_projection_leak heap_used=$vp_used >= 2000 (a projection off a closure capture or match bind is being dup'd again; measured 4480056 at N=20000 when it was)" >&2; exit 1
+fi
+rm -rf "$vpdir"
+echo "[compiler-gate] RC view-projection leak guard ok (heap_used=$vp_used B at N=20000)"
+
 # 40e2. #2760: the retain must NOT fire when the wrapper binds the borrow's own
 # source -- the inner ELet lowering already promoted it, and a second retain
 # leaks the element on every assignment. Found in review on #2783, not by a

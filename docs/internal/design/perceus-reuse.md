@@ -141,6 +141,12 @@ bind.
   released at arm end, so a read sequenced after a consume never sees a freed
   child.
 
+Consumes are counted by `md_view_consume_count_pre`, the count for a bind
+nothing else releases: a projection off the bind (`c.x`) reads the field in
+place, as the Perceus plan counts it, so it is not a consume and a bind used
+only through projections is borrow-only. The ordinary pattern bind
+(`bind_match_pat`) dups by the same count.
+
 The narrow tier admits raw transfers only; the wide tier admits all three. A
 scalar payload needs no special case: a tagged scalar moves like a pointer and
 the shared-path dup of an even value is a no-op.
