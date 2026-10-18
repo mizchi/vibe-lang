@@ -1731,7 +1731,38 @@ fn scps_names_top_level_fn(ctx: (Array[Stmt], Array[(String, Array[(String, Arra
 /// rewrites, impossible to compile ("cannot see through ... the call to
 /// 'println'"). A builtin taking a closure could run one that suspends, so it
 /// stays refused.
+///
+/// The exemption is for the BUILTIN, so it is decided by spelling only when no
+/// binding in the program has that spelling: a top-level
+/// `let println = make_async_printer()` or a local of that name may hold a
+/// closure that suspends (Codex on #3534).
 export fn scps_builtin_is_effect_free(name: String, eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+  let (stmts, _, _, _, _, _) = ctx
+  if edp_is_program_binder(name) || scps_top_level_binds(stmts, name) {
+    false
+  } else {
+    scps_registry_builtin_is_effect_free(name, eff, ctx)
+  }
+}
+
+fn scps_top_level_binds(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    found = match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => n == name,
+      SLetMut(n, _, _) => n == name,
+      SExternLet(n, _) => n == name,
+      SFnDecl(_, n, _, _, _) => n == name,
+      SLetPat(p, _) => scps_pat_binds_name(p, name),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn scps_registry_builtin_is_effect_free(name: String, eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
   match lookup_registry_builtin(name) {
     Some(CtFn(params, _, brow)) => {
       let row = match brow {
