@@ -1699,10 +1699,38 @@ export fn run_user_dispatch_args(args: Array[String]) -> Int with Fs + Env + Std
   } with { Exception::Throw(e) => {
     // #3520: a refusal thrown after the merge carries a ` [@off=N]` marker;
     // locate it against its own file, or strip it, the way `lib/@vibe/cli`'s
-    // entry does -- `vibe run` printed it raw.
-    Stderr::write_stream(line_terminated(format_check_report(finalize_thrown_diagnostic(e, args))))
+    // entry does -- `vibe run` printed it raw. A position located in the entry
+    // file is `line L:C: ..`, so it is prefixed with that file, as a checker
+    // error on this verb is.
+    let located = finalize_thrown_diagnostic(e, args)
+    let shown = if String::starts_with(located, "line ") {
+      let input = run_args_input_path(args)
+      if input == "" {
+        located
+      } else {
+        String::concat(input, String::concat(": ", located))
+      }
+    } else {
+      located
+    }
+    Stderr::write_stream(line_terminated(format_check_report(shown)))
     1
   } }
+}
+
+fn run_args_input_path(args: Array[String]) -> String {
+  let mut found = ""
+  let mut i = 0
+  while i < Array::length(args) && found == "" {
+    let a = Array::get(args, i)
+    if String::ends_with(a, ".vibex") || String::ends_with(a, ".vibe") {
+      found = a
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 export fn selfhost_cli_user_dispatch_args(args: Array[String]) -> Int with Exception + Fs + Env + Stdin + Console + Stderr + Profiler {

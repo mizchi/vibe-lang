@@ -742,10 +742,10 @@ After the body is checked, the call is also refused when:
 - **the returned value mentions the region** -- the body returns a task
   handle, an endpoint, or anything containing one, through its tail or an
   explicit `return`, a value whose type hides the region judged by what it
-  reads as above: "region escapes its nursery scope: the value returned from
-  this TaskGroup::run body still holds its own `TaskGroup`, `TaskHandle`,
-  `Sender` or `Receiver` -- join the task (or use the endpoint) inside the body
-  and return the result instead";
+  reads as above: "join the task (or use the endpoint) inside this
+  TaskGroup::run body and return its result instead: the value the body returns
+  still holds the group's own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver`
+  (region escapes its nursery scope)";
 - **a binding visible at the call now mentions the region**: "region escapes
   its nursery scope: an outer binding now depends on this TaskGroup::run
   call's own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver`". This scan sees a binding
