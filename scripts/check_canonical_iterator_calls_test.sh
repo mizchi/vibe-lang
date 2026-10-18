@@ -34,4 +34,10 @@ printf '%s\n' 'Iterator::fold(xs, 0, add)' > "$tmp_root/bench/exec/scenario.vibe
 VIBE_CANONICAL_ITERATOR_ROOT="$tmp_root" bash "$CHECK" > "$tmp_root/green.out"
 grep -q '^canonical Iterator calls: ok$' "$tmp_root/green.out"
 
+# The one-argument `Array::iter` enters AsyncIter and has no Iterator spelling:
+# an import, a pipe and a direct call of it are all accepted.
+printf '%s\n' 'import @vibe/builtin { Array::iter, AsyncIter::collect }' '[1, 2] |> Array::iter |> AsyncIter::collect' 'AsyncIter::collect(Array::iter(xs))' > "$tmp_root/book/en/chapter.vibe.md"
+VIBE_CANONICAL_ITERATOR_ROOT="$tmp_root" bash "$CHECK" > "$tmp_root/async.out"
+grep -q '^canonical Iterator calls: ok$' "$tmp_root/async.out"
+
 echo "canonical Iterator calls self-test: ok"

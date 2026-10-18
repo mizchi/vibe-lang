@@ -152,8 +152,10 @@ r = 0
 
 `TaskHandle::cancel(h)` asks a task to stop. A task that has not started yet
 never starts, and joining it throws `TaskError::Cancelled`; on a task that has
-already finished, `cancel` does nothing. Cancelling one task does not fail the
-group: its siblings keep running.
+already finished, `cancel` does nothing. A task that is already running is not
+interrupted: it runs to its end, and only a task that has not started, or a
+suspendable task parked at a wait, is stopped. Cancelling one task does not
+fail the group: its siblings keep running.
 
 ## Channels
 
@@ -199,8 +201,11 @@ fn main allows Console + Exception {
 sum = 6
 ```
 
-- `Sender::send` returns once the message is buffered or taken. When there is
-  no room, it runs the group's queued tasks until a receiver takes it.
+- `Sender::send` returns once the message is buffered, or handed to a
+  receiver that is already waiting for it further down the stack -- so the
+  sender can go on running before that receiver has resumed. When there is no
+  room and no receiver waiting, it runs the group's queued tasks until a
+  receiver takes it.
 - `Receiver::recv` returns `Some(v)`, or `None` once the channel is closed
   **and** drained: messages already buffered are still delivered.
 - A channel closes when its last sender is released. `Sender::clone` adds a

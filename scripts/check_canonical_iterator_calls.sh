@@ -21,7 +21,10 @@ sort -u "$files" -o "$files"
 while IFS= read -r file; do
   [ -n "$file" ] || continue
   relative="${file#"$PROJECT_ROOT"/}"
-  grep -nE 'Array::(iter|map|filter|flatmap|fold|find|any|all)([^A-Za-z0-9_]|$)' "$file" |
+  # `Array::iter` with one argument is the AsyncIter entry (ADR-0099) and has
+  # no `Iterator::*` spelling; only the legacy two-argument form -- the eager
+  # `Iterator::iter(xs, f)` -- is flagged.
+  grep -nE 'Array::(map|filter|flatmap|fold|find|any|all)([^A-Za-z0-9_]|$)|Array::iter\([^)]*,' "$file" |
     sed "s|^|$relative:|" >> "$findings" || true
 done < "$files"
 
