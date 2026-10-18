@@ -488,6 +488,46 @@ fi
 rm -rf "$vpdir"
 echo "[compiler-gate] RC view-projection leak guard ok (heap_used=$vp_used B at N=20000)"
 
+# 40e5. A projection off a FRESH call result (`mk(i).y`, `pair(i).0`) releases
+# the result. Nothing named owns that temporary, so the Perceus plan never
+# released it and every evaluation leaked the block. The fixture measured
+# 5,121,220 B at N=20000 before compile_expr_tail4's EDot arm dropped an owned
+# temporary after the field load. Its heap-field controls hand the field to a
+# binding and a record that outlive the temporary, so the shadow run is what
+# proves the retain before the drop is still there.
+echo "[compiler-gate] 40e5/40 RC call-projection leak guard"
+cpdir="_build/_gate_rc_call_proj_leak"
+rm -rf "$cpdir"; mkdir -p "$cpdir"
+for cp_mode in 1 shadow; do
+  VIBE_RC="$cp_mode" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/rc_call_projection_leak_test.vibe" "$cpdir/rc_$cp_mode.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$cpdir/rc_$cp_mode.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_call_projection_leak fixture did not compile under VIBE_RC=$cp_mode" >&2
+    cat "$cpdir/rc_$cp_mode.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+done
+cp_shadow_json="$(node scripts/measure_heap.mjs "$cpdir/rc_shadow.wasm" main 2>&1 || true)"
+cp_shadow_result="$(printf '%s' "$cp_shadow_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ "$cp_shadow_result" != "0" ]; then
+  echo "[compiler-gate] FAIL: rc_call_projection_leak under VIBE_RC=shadow did not return 0 (a field read off a dropped temporary was freed under its reader): $cp_shadow_json" >&2; exit 1
+fi
+cp_json="$(node scripts/measure_heap.mjs "$cpdir/rc_1.wasm" main 2>/dev/null)"
+cp_used="$(printf '%s' "$cp_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+cp_result="$(printf '%s' "$cp_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ -z "$cp_used" ]; then
+  echo "[compiler-gate] FAIL: could not measure rc_call_projection_leak heap ($cp_json)" >&2; exit 1
+fi
+if [ "$cp_result" != "0" ]; then
+  echo "[compiler-gate] FAIL: rc_call_projection_leak wrong result $cp_result (want 0)" >&2; exit 1
+fi
+if [ "$cp_used" -ge 2000 ]; then
+  echo "[compiler-gate] FAIL: rc_call_projection_leak heap_used=$cp_used >= 2000 (a projection off a fresh call result no longer releases the result; measured 5121220 at N=20000 when it did not)" >&2; exit 1
+fi
+rm -rf "$cpdir"
+echo "[compiler-gate] RC call-projection leak guard ok (heap_used=$cp_used B at N=20000)"
+
 # 40e2. #2760: the retain must NOT fire when the wrapper binds the borrow's own
 # source -- the inner ELet lowering already promoted it, and a second retain
 # leaks the element on every assignment. Found in review on #2783, not by a

@@ -235,6 +235,17 @@ returns no view, or an array / tuple / record / map literal) and releases it
 after the call, unless the callee may return a view of that argument, in which
 case the leak is the safe side.
 
+A projection off such a temporary (`mk(i).y`, `pair(i).0`) is the same gap:
+the plan sees no binding, so nothing released the block the field was read
+from. The `EDot` lowering parks an owned temporary in a local across the field
+load, retains the field, and drops the temporary. Downstream, a projection is
+a borrowed view (an owning consumer retains it, a borrowing one releases
+nothing), so the retain is what keeps a heap field alive once its source is
+gone; for a scalar field it is a no-op. A heap field therefore still keeps the
+one reference the leaked temporary used to hold: making the projection an
+owned value would need every consumer of a projection to tell the two kinds
+apart.
+
 ### Unannotated lambda parameters (#2681)
 
 Call-site heap inference fills unannotated parameters of local lambdas

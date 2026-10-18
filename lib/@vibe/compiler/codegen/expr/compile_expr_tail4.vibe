@@ -213,6 +213,10 @@ import ./compile_call.vibe {
   cc_is_borrow_ret_call, cc_is_loop_borrowed_ident, cc_map_alloc_rc, compile_call
 }
 
+import ./compile_call_cc_ladder_names.vibe {
+  cc_is_owned_temp
+}
+
 import ./compile_expr_tail5.vibe {
   compile_expr_tail5
 }
@@ -252,6 +256,49 @@ fn expr_is_projection(e: Expr) -> Bool {
   }
 }
 
+/// A projection off a FRESH owned value -- `mk(i).y`, `pair(a, b).0`, the
+/// result of a call no binding holds -- reads the field and then has nothing
+/// left that owns the source. The plan never sees the temporary (Perceus
+/// tracks named bindings only), so nothing released it and every evaluation
+/// leaked the whole block, 32 B for a two-field struct. When the object is
+/// such a temporary (`cc_is_owned_temp`, the classifier #2682 already trusts
+/// to release a temporary handed to a borrowed position), keep its value in a
+/// local so the field load can be followed by the release. Answers -1 and
+/// leaves the stack alone otherwise.
+fn cet4_hold_owned_temp(buf: Bytes, obj: Expr, local_names: Array[String], tmp_l: Int, ctx: CompileCtx) -> Int {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && cc_is_owned_temp(obj, ctx) {
+    Array::push(local_names, "__dot_tmp")
+    emit_local_tee(buf, tmp_l)
+    tmp_l
+  } else {
+    0 - 1
+  }
+}
+
+/// The other half of `cet4_hold_owned_temp`, with the field on the stack. A
+/// projection is a borrowed view everywhere downstream (an owning consumer
+/// retains it, a borrowing one does not release it), so the field is retained
+/// before the temporary is dropped: the drop releases the temporary's own
+/// reference to it, and the retain is what keeps a heap field alive for the
+/// consumer. A scalar field makes the retain a no-op. The cost of a heap field
+/// is that its retained reference is never released, which is the reference
+/// the leaked temporary used to hold, so the field leaks exactly as before and
+/// the block around it no longer does. Answers the next free local.
+fn cet4_release_owned_temp(buf: Bytes, local_names: Array[String], next_local: Int, tmp_l: Int, ctx: CompileCtx) -> Int {
+  if tmp_l < 0 {
+    next_local
+  } else {
+    let fld_l = next_local
+    Array::push(local_names, "__dot_fld")
+    emit_local_set(buf, fld_l)
+    emit_rc_dup_guarded(buf, fld_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+    emit_local_get(buf, tmp_l)
+    emit_call(buf, ctx.rc_drop_func_idx)
+    emit_local_get(buf, fld_l)
+    next_local + 1
+  }
+}
+
 export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   match expr {
     EDot(obj, field, _, _) => {
@@ -264,7 +311,13 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
           vi = vi * 10 + (String::char_code_at(field, vp) - 48)
           vp = vp + 1
         }
-        let nl1 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
+        let nl0 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
+        let tmp_l = cet4_hold_owned_temp(buf, obj, local_names, nl0, ctx)
+        let nl1 = if tmp_l >= 0 {
+          nl0 + 1
+        } else {
+          nl0
+        }
         // RC mode: the tuple value is an odd pointer (Stage 2); untag before use.
         if ctx.enable_rc {
           emit_i64_const(buf, -2)
@@ -278,7 +331,7 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
           vi * 8
         }
         emit_i64_load(buf, 3, toff)
-        nl1
+        cet4_release_owned_temp(buf, local_names, nl1, tmp_l, ctx)
       } else {
         // #722: name-based struct field access. The slot index depends on
         // WHICH struct the value is — a same-named field can live at a
@@ -293,13 +346,19 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
         }
         let (_, idx0) = Array::get(cands, 0)
         let dispatch = struct_field_dispatch_cases(cands)
-        let nl1 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
+        let nl0 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
+        let tmp_l = cet4_hold_owned_temp(buf, obj, local_names, nl0, ctx)
+        let nl1 = if tmp_l >= 0 {
+          nl0 + 1
+        } else {
+          nl0
+        }
         emit_i64_const(buf, -2)
         emit_i64_and(buf)
         if Array::length(dispatch) == 0 {
           emit_i32_wrap_i64(buf)
           emit_i64_load(buf, 3, 8 + idx0 * 8)
-          nl1
+          cet4_release_owned_temp(buf, local_names, nl1, tmp_l, ctx)
         } else {
           let obj_l = nl1
           Array::push(local_names, "__dot_obj")
@@ -327,7 +386,7 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
             emit_end(buf)
             de = de + 1
           }
-          nl1 + 1
+          cet4_release_owned_temp(buf, local_names, nl1 + 1, tmp_l, ctx)
         }
       }
     },
