@@ -274,7 +274,7 @@ def validation(workspace):
 
 
 def context_pool(data):
-    """Read only the documented context-v3 prefix; never expose literal text."""
+    """Read the shared v3/v4/v6 string-pool prefix; never expose literal text."""
     position = 0
     def integer():
         nonlocal position
@@ -296,7 +296,9 @@ def context_pool(data):
         result = data[position:position + length]
         position += length
         return result
-    if string() != b"vibe-function-context-3":
+    formats = {b"vibe-function-context-3": 3, b"vibe-function-context-4": 4, b"vibe-function-context-6": 6}
+    version = formats.get(string())
+    if version is None:
         raise ValueError("unsupported context prefix")
     start = position
     count = integer()
@@ -306,7 +308,7 @@ def context_pool(data):
     for index in range(count):
         value = string()
         lengths.append({"index": index, "bytes": len(value), "sha256": hashlib.sha256(value).hexdigest()})
-    return {"context_bytes": len(data), "pool_entries": count, "pool_wire_bytes": position - start,
+    return {"context_format": version, "context_bytes": len(data), "pool_entries": count, "pool_wire_bytes": position - start,
             "pool_payload_bytes": sum(row["bytes"] for row in lengths),
             "largest_literals": sorted(lengths, key=lambda row: row["bytes"], reverse=True)[:10]}
 

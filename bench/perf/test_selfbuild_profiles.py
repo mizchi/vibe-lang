@@ -48,16 +48,24 @@ class ProfileIntegrityTests(unittest.TestCase):
                         self.assertEqual([row["requires_entry_plumbing"] for row in result["entries"]], [False, True])
 
     def test_context_pool_counts_wire_and_payload_without_literal_text(self):
-        magic = b"vibe-function-context-3"
-        data = bytes([len(magic)]) + magic + b"\x02\x03abc\x02xy\x00"
-        result = profiles.context_pool(data)
-        self.assertEqual(result["pool_entries"], 2)
-        self.assertEqual(result["pool_payload_bytes"], 5)
-        self.assertEqual(result["pool_wire_bytes"], 8)
-        self.assertEqual(result["context_bytes"], len(data))
-        self.assertNotIn("abc", json.dumps(result))
-        with self.assertRaisesRegex(ValueError, "truncated"):
-            profiles.context_pool(data[:-3])
+        for version in [3, 4, 6]:
+            with self.subTest(version=version):
+                magic = f"vibe-function-context-{version}".encode()
+                data = bytes([len(magic)]) + magic + b"\x02\x03abc\x02xy\x00"
+                result = profiles.context_pool(data)
+                self.assertEqual(result["context_format"], version)
+                self.assertEqual(result["pool_entries"], 2)
+                self.assertEqual(result["pool_payload_bytes"], 5)
+                self.assertEqual(result["pool_wire_bytes"], 8)
+                self.assertEqual(result["context_bytes"], len(data))
+                self.assertNotIn("abc", json.dumps(result))
+                with self.assertRaisesRegex(ValueError, "truncated"):
+                    profiles.context_pool(data[:-3])
+
+    def test_context_pool_refuses_unknown_versions(self):
+        magic = b"vibe-function-context-999"
+        with self.assertRaisesRegex(ValueError, "unsupported context prefix"):
+            profiles.context_pool(bytes([len(magic)]) + magic + b"\x00")
 
     def test_removes_only_name_sections(self):
         header = b"\0asm\x01\0\0\0"
