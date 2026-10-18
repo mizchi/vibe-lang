@@ -107,7 +107,7 @@ let safe = () -> Int with Exception {
   0
 }
 export let _start: () -> Int = () -> {
-  handle { safe() } with Exception { Throw(msg) => String::length(msg) }
+  handle { safe() } with { Exception::Throw(msg) => String::length(msg) }
 }
 EOF
 cat > "$edir/via_throw.vibe" <<'EOF'
@@ -116,7 +116,7 @@ let safe = () -> Int with Exception {
   0
 }
 export let _start: () -> Int = () -> {
-  handle { safe() } with Exception { Throw(msg) => String::length(msg) }
+  handle { safe() } with { Exception::Throw(msg) => String::length(msg) }
 }
 EOF
 cat > "$edir/bad_resume_arm.vibe" <<'EOF'
@@ -125,7 +125,7 @@ let risky = () -> Int with Exception {
   0
 }
 export let _start: () -> Int = () -> {
-  handle { risky() } with Exception { Throw(_m) => resume(0) }
+  handle { risky() } with { Exception::Throw(_m) => resume(0) }
 }
 EOF
 # Codex P2 on #933: the rejection walk's catch-all used to end at EBreak /
@@ -137,7 +137,7 @@ let risky = () -> Int with Exception {
   0
 }
 export let _start: () -> Int = () -> {
-  handle { risky() } with Exception { Throw(_m) => loop { break resume(0) } }
+  handle { risky() } with { Exception::Throw(_m) => loop { break resume(0) } }
 }
 EOF
 for v in via_perform via_throw; do
@@ -1163,9 +1163,9 @@ export let _start: () -> Int = () -> {
     let a = perform Calc::Add(5)
     let b = perform Calc::Mul(3)
     a + b
-  } with Calc {
-    Add(n) => resume(match n { x if x > 3 => x * 10, _ => n });
-    Mul(n) => resume(n + 100)
+  } with {
+    Calc::Add(n) => resume(match n { x if x > 3 => x * 10, _ => n });
+    Calc::Mul(n) => resume(n + 100)
   }
 }
 EOF

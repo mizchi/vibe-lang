@@ -577,13 +577,13 @@ restore
 
 # --- case 33: a handler clause is not a declaration row ---------------------
 #
-# `handle { ... } with ReviewAsk { ... }` discharges an effect locally. Its
+# `handle { ... } with { ReviewAsk::Ask(..) => .. }` discharges an effect locally. Its
 # `with` is at paren depth 0, so it was read as a signature and reported
 # `effect: ReviewAsk` -- rejecting a helper that is pure BECAUSE it handles the
 # effect. A declaration's row sits before the body brace; a handler is inside
 # one, so brace depth tells them apart.
-printf '\nexport fn probe_handle() -> Unit with Exception {\n  handle {\n    ()\n  } with ReviewAsk {\n    ReviewAsk::Ask(_k) => ()\n  }\n}\n' >> "$impl"
-if grep -qF '} with ReviewAsk {' "$impl"; then
+printf '\nexport fn probe_handle() -> Unit with Exception {\n  handle {\n    ()\n  } with {\n    ReviewAsk::Ask(_k) => ()\n  }\n}\n' >> "$impl"
+if grep -qF 'ReviewAsk::Ask(_k) => ()' "$impl"; then
   if bash "$gate" >/dev/null 2>&1; then
     pass "case: a handler clause is not read as a declaration effect row"
   else

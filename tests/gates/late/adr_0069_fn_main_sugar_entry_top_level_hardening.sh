@@ -520,8 +520,8 @@ fn boom(x: Int) -> Int with Exception {
 export let main = () -> Int {
   handle {
     boom(1)
-  } with Exception {
-    Throw(_) => 0
+  } with {
+    Exception::Throw(_) => 0
   }
 }
 EOF
@@ -1948,8 +1948,8 @@ export let main = () -> Int {
   let n = req_id(make_req("hello", 40))
   let f = handle {
     fetch("http://127.0.0.1:1/x")
-  } with Net {
-    Request(_m, _u, _h, _b) => resume(2)
+  } with {
+    Net::Request(_m, _u, _h, _b) => resume(2)
   }
   n + f
 }
