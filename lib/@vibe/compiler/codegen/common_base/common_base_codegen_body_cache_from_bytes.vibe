@@ -543,6 +543,19 @@ fn bcc_fp_string(fp: Array[Int], sv: String) -> Unit {
   let mut h1 = Array::get(fp, 0)
   let mut h2 = Array::get(fp, 1)
   let mut k = 0
+  // Four Horner steps need only one reduction: even the larger dividend is
+  // below (2^31 * 137^4 + 2^30) < 2^60, within the tagged Int range. Reducing
+  // every fifth byte could overflow. This preserves the persisted hash,
+  // including arbitrary non-UTF-8 bytes; no snapshot/cache guard is skipped.
+  while k + 4 <= len {
+    let b0 = String::char_code_at(sv, k)
+    let b1 = String::char_code_at(sv, k + 1)
+    let b2 = String::char_code_at(sv, k + 2)
+    let b3 = String::char_code_at(sv, k + 3)
+    h1 = ((((h1 * 131 + b0) * 131 + b1) * 131 + b2) * 131 + b3) % 2147483647
+    h2 = ((((h2 * 137 + b0) * 137 + b1) * 137 + b2) * 137 + b3) % 2147483629
+    k = k + 4
+  }
   while k < len {
     let byte = String::char_code_at(sv, k)
     h1 = (h1 * 131 + byte) % 2147483647

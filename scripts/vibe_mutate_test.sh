@@ -34,15 +34,20 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-. "$(dirname "$0")/resolve_stage2.sh"
+. "$ROOT_DIR/scripts/resolve_stage2.sh"
 CLI="$(resolve_stage2 vibe-mutate "${VIBE_CLI_WASM:-}")" || exit 1
 [ -n "$CLI" ] && [ -f "$CLI" ] || {
   echo "vibe-mutate: no compiler to ask; set VIBE_CLI_WASM" >&2; exit 2; }
+# These files are consumed after entering each temporary test project.
+CLI_DIR="$(cd "$(dirname "$CLI")" && pwd)" || exit 2
+CLI="$CLI_DIR/$(basename "$CLI")"
 if [ -z "${VIBE_RUNNER:-}" ]; then
   bash scripts/ensure_viberun.sh >&2 || { echo "vibe-mutate: could not build runtime/viberun" >&2; exit 2; }
 fi
-RUNNER="${VIBE_RUNNER:-$ROOT_DIR/runtime/viberun/target/release/viberun}"
+RUNNER="${VIBE_RUNNER:-runtime/viberun/target/release/viberun}"
 [ -x "$RUNNER" ] || { echo "vibe-mutate: no runner at $RUNNER" >&2; exit 2; }
+RUNNER_DIR="$(cd "$(dirname "$RUNNER")" && pwd)" || exit 2
+RUNNER="$RUNNER_DIR/$(basename "$RUNNER")"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe-mutate.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
