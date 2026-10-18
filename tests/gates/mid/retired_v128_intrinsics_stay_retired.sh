@@ -493,10 +493,11 @@ echo "[compiler-gate] RC view-projection leak guard ok (heap_used=$vp_used B at 
 # released it and every evaluation leaked the block, 5,121,220 B at N=20000
 # before compile_expr_tail4's EDot arm dropped an owned temporary after the
 # field load. A HEAP field then stayed one reference over until consumers read
-# such a field as owned (cc_is_owned_projection): the fixture's heap-field
-# shapes measured 17,120,404 B on the compiler before that, 436 B after. Its
-# controls keep heap fields past the loop, so the shadow run is what proves no
-# read lost the reference it carries.
+# such a field as owned (cc_is_owned_projection): the fixture measured
+# 17,120,528 B on the compiler before that, 524 B after. Its controls keep
+# heap fields past the loop -- reads off fresh results and reads off a named
+# binding, which stay views -- so the shadow run is what proves no read lost a
+# reference in either direction.
 echo "[compiler-gate] 40e5/40 RC call-projection leak guard"
 cpdir="_build/_gate_rc_call_proj_leak"
 rm -rf "$cpdir"; mkdir -p "$cpdir"
@@ -525,7 +526,7 @@ if [ "$cp_result" != "0" ]; then
   echo "[compiler-gate] FAIL: rc_call_projection_leak wrong result $cp_result (want 0)" >&2; exit 1
 fi
 if [ "$cp_used" -ge 2000 ]; then
-  echo "[compiler-gate] FAIL: rc_call_projection_leak heap_used=$cp_used >= 2000 (a projection off a fresh call result no longer releases the result, or a consumer retains such a read again; measured 17120404 at N=20000 when the heap fields were over-retained)" >&2; exit 1
+  echo "[compiler-gate] FAIL: rc_call_projection_leak heap_used=$cp_used >= 2000 (a projection off a fresh call result no longer releases the result, or a consumer retains such a read again; measured 17120528 at N=20000 when the heap fields were over-retained)" >&2; exit 1
 fi
 rm -rf "$cpdir"
 echo "[compiler-gate] RC call-projection leak guard ok (heap_used=$cp_used B at N=20000)"

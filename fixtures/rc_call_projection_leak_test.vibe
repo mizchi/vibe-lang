@@ -31,11 +31,12 @@
 //   | returned, `fn geta(i) { mkq(i).a }`         | 1,760,116 B | 116 B |
 //   | nested, `mkq2(i).inner.a`                   | 4,800,116 B | 236 B |
 //   | assigned, `cur = mkq(i).a`                  | 1,760,116 B | 120 B |
-//   | this fixture, all of the above              | 17,120,404 B | 436 B |
+//   | this fixture, with its controls             | 17,120,528 B | 524 B |
 //
 // The controls keep heap fields past the loop -- through an owning call, a
 // push and a binding -- so a read whose reference went missing would be freed
-// under the array that keeps it: VIBE_RC=shadow traps on that.
+// under the array that keeps it: VIBE_RC=shadow traps on that. One of them
+// keeps reads off a NAMED binding, which are views and must stay retained.
 //
 // The gate compiles this under VIBE_RC=1 and bounds __heap_ptr growth, and
 // runs it under VIBE_RC=shadow
@@ -180,6 +181,19 @@ fn heap_field_kept(ks: Array[Array[Int]], i: Int) -> Int {
   (Array::get(Array::get(ks, n - 1), 0) + Array::get(Array::get(ks, n), 0) + Array::get(last, 0) - 3 * i - 3) * 0
 }
 
+// The other direction: a read off a NAMED binding is a view, and every owning
+// slot it reaches must still retain it. Were it taken for an owned read, `q`'s
+// drop would free the array these slots keep.
+fn borrowed_field_kept(ks: Array[Array[Int]], i: Int) -> Int {
+  let q = mkq(i)
+  let h = H::{ inner: q.a }
+  let t = (q.a, 1)
+  Array::push(ks, q.a)
+  let n = keep(ks, h.inner)
+  Array::push(ks, t.0)
+  (Array::get(Array::get(ks, n - 2), 0) + Array::get(Array::get(ks, n - 1), 1) + Array::get(Array::get(ks, n), 2) + q.n - 4 * i - 3) * 0
+}
+
 fn main() -> Int {
   let mut acc = 0
   let mut i = 0
@@ -189,5 +203,5 @@ fn main() -> Int {
     i = i + 1
   }
   let ks: Array[Array[Int]] = []
-  acc + heap_field_kept(ks, 7)
+  acc + heap_field_kept(ks, 7) + borrowed_field_kept(ks, 9)
 }
