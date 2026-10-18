@@ -540,7 +540,7 @@ TaskHandle[Int]` or `-> Box` are all refused when stored outside:
 
 ```text
 region escapes its nursery scope: this write stores this TaskGroup::run call's
-own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver` in a binding declared outside the body
 -- join the task (or use the endpoint) inside the body and store the result
 instead, or declare the binding inside the body
 ```
@@ -599,7 +599,7 @@ A write the second check refuses refuses the call, naming the callee:
 
 ```text
 region escapes its nursery scope: this call to `put` stores this
-TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding
+TaskGroup::run call's own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver` in a binding
 declared outside the body -- join the task (or use the endpoint) inside the
 body and pass the result instead, or declare the binding inside the body
 ```
@@ -614,7 +614,7 @@ carrying the region as a literal body's does:
 
 ```text
 region escapes its nursery scope: `body`, the body this TaskGroup::run call
-runs, stores the call's own Nursery/Task/Sender/Receiver token in a binding
+runs, stores the call's own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver` in a binding
 declared outside it -- join the task (or use the endpoint) inside the body and
 store the result instead, or declare the binding inside the body
 ```
@@ -742,12 +742,13 @@ After the body is checked, the call is also refused when:
 - **the returned value mentions the region** -- the body returns a task
   handle, an endpoint, or anything containing one, through its tail or an
   explicit `return`, a value whose type hides the region judged by what it
-  reads as above: `region escapes its nursery scope: the value returned from
-  this TaskGroup::run body still depends on its own
-  Nursery/Task/Sender/Receiver token`;
-- **a binding visible at the call now mentions the region**: `region escapes
+  reads as above: "region escapes its nursery scope: the value returned from
+  this TaskGroup::run body still holds its own `TaskGroup`, `TaskHandle`,
+  `Sender` or `Receiver` -- join the task (or use the endpoint) inside the body
+  and return the result instead";
+- **a binding visible at the call now mentions the region**: "region escapes
   its nursery scope: an outer binding now depends on this TaskGroup::run
-  call's own Nursery/Task/Sender/Receiver token`. This scan sees a binding
+  call's own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver`". This scan sees a binding
   only when every use of it shares one type instance (an array whose element
   type is still open, a `let mut` option), so it is a backstop behind the
   write check, which it does not repeat. The return check has no such limit.

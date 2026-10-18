@@ -61,7 +61,13 @@ import ./checker_effects_mutability_expr_into.vibe {
 }
 
 import ./checker_effects_throw_payload_kind.vibe {
-  effect_name_of_op, entry_block_display_name, entry_display_name, is_entry_point_name, is_program_entry_name, row_owner_display_name
+  closure_row_mismatch_marker,
+  effect_name_of_op,
+  entry_block_display_name,
+  entry_display_name,
+  is_entry_point_name,
+  is_program_entry_name,
+  row_owner_display_name
 }
 
 /// #2964: every missing label is the ERASED exception (`Exception` /
@@ -106,7 +112,26 @@ fn declared_is_kinded_exception(declared: String) -> Bool {
 
 export fn effect_error_to_string(err: EffectError) -> String {
   match err {
-    EEEffectfulCallOutsideEffect(name) => String::concat("effectful call outside effectful context: ", name),
+    // #3520: lead with the edit, which depends on where the call sits, and
+    // point at the callee.
+    EEEffectfulCallOutsideEffect(name, off, kind) => {
+      let shown = String::concat("`", String::concat(name, "`"))
+      let task_hint = "; in a `TaskGroup` task, start the task with `TaskGroup::spawn_suspend` (effectful call outside effectful context)"
+      let body = if kind == 1 {
+        String::concat("give this closure a row of its own (`() -> T with Async { .. }`), or move this call out of it: ", String::concat(shown, String::concat(" needs `Async`, and a closure with no row runs as a plain one", task_hint)))
+      } else if kind == 3 {
+        String::concat("move this call out of the closure: ", String::concat(shown, String::concat(" needs `Async`, and the closure is passed where no `Async` is expected, so it runs as a plain function", task_hint)))
+      } else if kind == 2 {
+        String::concat("add `Async` to this closure's row: ", String::concat(shown, " needs it (effectful call outside effectful context)"))
+      } else {
+        String::concat("add `Async` to this function's row (`with Async`; an entry writes `allows Async`): ", String::concat(shown, " needs it (effectful call outside effectful context)"))
+      }
+      if off >= 0 {
+        String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), String::concat(":", String::concat(__to_string(off + String::length(name)), "]")))))
+      } else {
+        body
+      }
+    },
     EEPerformUndeclaredEffect(op, eff) => String::concat("use of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with` row or wrap in a `handle`")))),
     // #639: expected-vs-actual effect rows as a set difference, then ONE
     // deterministic fix-it hint line targeting the enclosing declaration
@@ -141,7 +166,10 @@ export fn effect_error_to_string(err: EffectError) -> String {
       let declared = strip_published_row_marks(declared0)
       let required = strip_published_row_marks(required0)
       let block = entry_block_display_name(fname)
-      let head = if String::length(block) > 0 {
+      let closure_row = fname == closure_row_mismatch_marker()
+      let head = if closure_row {
+        "effect row mismatch for this closure literal's own row"
+      } else if String::length(block) > 0 {
         String::concat("effect row mismatch for ", block)
       } else if String::length(fname) > 0 {
         String::concat("effect row mismatch for '", String::concat(fname, "'"))
@@ -157,7 +185,13 @@ export fn effect_error_to_string(err: EffectError) -> String {
       // `example` block) GRANTS its row, so the edit it is told is `allows`;
       // a called function requires, so its edit stays `with`.
       let entry_block = entry_block_display_name(fname)
-      let hint = if String::contains(required, "[?]") {
+      let hint = if closure_row {
+        // #3520: the enclosing function has these effects; the closure's
+        // written row does not. Dropping the row lets the closure use the
+        // function's -- the one edit that also works for a
+        // `TaskGroup::spawn_suspend` task, whose row cannot name them.
+        String::concat("\nhint: drop this closure's row so it uses the enclosing function's effects, or write 'with ", String::concat(row_as_source(required), "' on the closure"))
+      } else if String::contains(required, "[?]") {
         // #3408 (Codex on #3409): a generic function passed by NAME to a
         // callee that runs it has no call here to fix its formals, so the
         // instantiation its row names is unknown (`Box[?]`) and no row
