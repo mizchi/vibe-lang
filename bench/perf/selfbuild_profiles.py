@@ -296,7 +296,7 @@ def context_pool(data):
         result = data[position:position + length]
         position += length
         return result
-    formats = {b"vibe-function-context-3": 3, b"vibe-function-context-4": 4, b"vibe-function-context-6": 6}
+    formats = {b"vibe-function-context-3": 3, b"vibe-function-context-4": 4, b"vibe-function-context-6": 6, b"vibe-function-context-7": 7}
     version = formats.get(string())
     if version is None:
         raise ValueError("unsupported context prefix")

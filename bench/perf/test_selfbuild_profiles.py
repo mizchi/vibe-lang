@@ -48,7 +48,7 @@ class ProfileIntegrityTests(unittest.TestCase):
                         self.assertEqual([row["requires_entry_plumbing"] for row in result["entries"]], [False, True])
 
     def test_context_pool_counts_wire_and_payload_without_literal_text(self):
-        for version in [3, 4, 6]:
+        for version in [3, 4, 6, 7]:
             with self.subTest(version=version):
                 magic = f"vibe-function-context-{version}".encode()
                 data = bytes([len(magic)]) + magic + b"\x02\x03abc\x02xy\x00"

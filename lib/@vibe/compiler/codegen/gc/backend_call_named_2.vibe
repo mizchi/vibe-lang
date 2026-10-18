@@ -1262,20 +1262,28 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     nl
   }
   else if (fname == "print" || fname == "println") && !gc_name_is_user_defined(ctx, local_names, fname) {
-    // print(x) = print_str(__to_string(x)); println appends "\n".
-    let ts_idx = gc_resolve_builtin_last(ctx.func_table, "__to_string")
+    // print(x) = print_str(__to_string(x)); println then writes "\n" with a
+    // second print_str -- the linear lane's shape (write_stream, then
+    // write_char 10). A string literal is printed as is: it needs no
+    // rendering, so a program that only prints literals links neither
+    // `__to_string` nor `String::concat` (302 + 177 B of helpers).
+    // `__to_string` stays for any other argument, because the backend
+    // probes compile `println` of unchecked values (codegen_gc_test_support).
     let (ps_idx, _, _) = resolve_func(ctx.func_table, "print_str")
-    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
-    emit_call_resolved(buf, ctx, ts_idx)
+    let arg = Array::get(args, 0)
+    let nl = ce(buf, arg, local_names, next_local, ld)
+    match arg {
+      EString(_, _) => (),
+      _ => emit_call_resolved(buf, ctx, gc_resolve_builtin_last(ctx.func_table, "__to_string"))
+    }
+    emit_call_resolved(buf, ctx, ps_idx)
     if fname == "println" {
       let nl_idx = str_table_index_of(ctx.str_table, "\n")
       emit_str_ref(buf, Array::get(ctx.str_table.offsets, nl_idx), Array::get(ctx.str_table.lengths, nl_idx))
-      let (cat_idx, _, _) = resolve_func(ctx.func_table, "String::concat")
-      emit_call_resolved(buf, ctx, cat_idx)
+      emit_call_resolved(buf, ctx, ps_idx)
     } else {
       ()
     }
-    emit_call_resolved(buf, ctx, ps_idx)
     emit_i64_const(buf, 0)
     nl
   }

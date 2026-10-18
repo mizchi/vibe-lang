@@ -69,9 +69,10 @@ The decoder owns the initial UTF-8 strings, checks every reference index, and
 shares only those immutable strings within its private heap. Per-job literal
 references still use the original runtime-literal pool, independently of this
 metadata pool. Source locations and product validation are unchanged.
-The build receipt and frontend require context format 6; older images must be
-rebuilt. This transport change does not enable native threads or select workers
-for the bootstrap.
+Context format 7 adds the closure / ref-cell flag that narrows `rc_drop`'s
+arms (`rc_closure_arms`, next to `rc_map_arms`). The build receipt and frontend
+require context format 7; older images must be rebuilt. This transport change
+does not enable native threads or select workers for the bootstrap.
 
 Source locations are another input, independent of function ASTs. Division
 guards consult the merged-source location table, so omitting it changes the

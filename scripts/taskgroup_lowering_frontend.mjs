@@ -88,7 +88,7 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
       receipt.runner_sha256 !== await digest(runner)) throw new Error("rebuild lowering images for this compiler and runner");
   // ABI 2 requires canonical BLAKE3 digests on bump, even with the same compiler hash.
   if (phase === "functions" && (receipt.function_abi !== "bump-core-tagged-callbacks-2" ||
-      receipt.context_format !== 6 || receipt.job_format !== 2 || receipt.compile_engine_rc !== 0 || receipt.worker_engine_rc !== 0 || receipt.coordinator_engine_rc !== 1)) {
+      receipt.context_format !== 7 || receipt.job_format !== 2 || receipt.compile_engine_rc !== 0 || receipt.worker_engine_rc !== 0 || receipt.coordinator_engine_rc !== 1)) {
     throw new Error("rebuild function images for the supported native callback ABI");
   }
   for (const name of ["worker.wasm", "compile.wasm", "coordinator.component.wasm"]) {

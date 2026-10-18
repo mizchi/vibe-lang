@@ -241,7 +241,7 @@ def main():
             assert str(error) == "context wire/receipt mismatch", error
         else:
             raise AssertionError("the real wire/receipt drift must be detected")
-        for version in (3, 4, 5, 7):
+        for version in (3, 4, 5, 6):
             stale = dict(receipt, context_format=version)
             receipt_path.write_text(json.dumps(stale))
             label = f"context-format-{version}"

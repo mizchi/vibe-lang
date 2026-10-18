@@ -1,0 +1,55 @@
+//# The source signals that narrow vibe_rc_drop's arms
+//
+// `program_makes_closure_blocks` keeps the closure / ref-cell arms and
+// `program_has_array_literal` keeps the array arm whatever the module's
+// reachability says. A "no" that should have been "yes" drops an arm the
+// program needs, so the cases below pin the shapes on both sides.
+
+//# Imports
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+
+import @vibe/compiler/codegen/wasi {
+  program_has_array_literal, program_makes_closure_blocks
+}
+
+//# Helpers
+
+fn parse(src: String) -> Array[Stmt] with Exception {
+  let (tokens, starts, _ends) = lex_with_offsets(src)
+  parse_program_located(tokens, starts, src)
+}
+
+//# Tests
+
+test "top-level functions alone make no closure block" {
+  let src = "fn add(a: Int, b: Int) -> Int {\n  a + b\n}\nlet twice = (x: Int) -> Int { add(x, x) }\nlet main = () -> Int {\n  twice(3)\n}\n"
+  inspect(program_makes_closure_blocks(parse(src)), content = "false")
+}
+
+test "a lambda nested in a function body can make a closure block" {
+  let src = "let main = () -> Int {\n  let k = 1\n  let f = (x: Int) -> Int { x + k }\n  f(2)\n}\n"
+  inspect(program_makes_closure_blocks(parse(src)), content = "true")
+}
+
+test "a lambda in a test body or a top-level value counts too" {
+  let in_test = "test \"t\" {\n  let f = (x: Int) -> Int { x }\n  assert(f(1) == 1)\n}\n"
+  let in_value = "let fs = [(x: Int) -> Int { x }]\n"
+  inspect(program_makes_closure_blocks(parse(in_test)), content = "true")
+  inspect(program_makes_closure_blocks(parse(in_value)), content = "true")
+}
+
+test "array literals are seen anywhere, empty ones included" {
+  let none = "let main = () -> Int {\n  let s = \"a\"\n  String::length(s)\n}\n"
+  let nested = "fn f() -> Int {\n  if true {\n    Array::length([1, 2])\n  } else {\n    0\n  }\n}\n"
+  let empty = "let main = () -> Int {\n  let xs: Array[Int] = []\n  Array::length(xs)\n}\n"
+  inspect(program_has_array_literal(parse(none)), content = "false")
+  inspect(program_has_array_literal(parse(nested)), content = "true")
+  inspect(program_has_array_literal(parse(empty)), content = "true")
+}

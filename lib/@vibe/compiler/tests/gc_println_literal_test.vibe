@@ -1,0 +1,74 @@
+//# wasm-gc `print` / `println` of a string literal
+//
+// The gc lane lowers `println(x)` to `print_str(__to_string(x))` followed by
+// a second `print_str` of "\n". A string literal skips `__to_string`, so a
+// program that only prints literals links neither the renderer nor
+// `String::concat`; the bytes written are the same either way.
+
+//# Imports
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+
+//# Helpers
+
+fn leb_at(b: Bytes, p: Int) -> (Int, Int) {
+  let mut r = 0
+  let mut shift = 0
+  let mut q = p
+  let mut done = false
+  while !done {
+    let x = Bytes::get(b, q)
+    q = q + 1
+    r = r|((x&127)<<shift)
+    shift = shift + 7
+    if x < 128 {
+      done = true
+    } else {
+      ()
+    }
+  }
+  (r, q)
+}
+
+/// Entry count of the function section (id 3), or -1 without one.
+fn function_count(m: Bytes) -> Int {
+  let mut p = 8
+  let mut found = 0 - 1
+  while found < 0 && p < Bytes::length(m) {
+    let sid = Bytes::get(m, p)
+    let (n, body) = leb_at(m, p + 1)
+    if sid == 3 {
+      let (c, _) = leb_at(m, body)
+      found = c
+    } else {
+      ()
+    }
+    p = body + n
+  }
+  found
+}
+
+fn capture_run(wasm_path: String, bytes: Bytes) -> String with Exception + Fs + Process {
+  Fs::write_bytes(wasm_path, bytes)
+  let _ = sh("bash -c 'scripts/run_wasm_vibe_host_runner.sh \{wasm_path} >\{wasm_path}.out 2>&1 || true'")
+  Fs::read_file(String::concat(wasm_path, ".out"))
+}
+
+//# Tests
+
+test "literal print and println write the same bytes as before" {
+  let src = "let main = () -> Int with Console {\n  print(\"a\")\n  println(\"b\")\n  println(\"\")\n  let s = \"c\"\n  println(s)\n  0\n}\n"
+  let out = capture_run("_build/vibe_test/gc_println_literal_probe.wasm", compile_source_gc_only(src, "main"))
+  inspect(String::starts_with(out, "ab\n\nc\n"), content = "true")
+}
+
+test "a program that prints only literals links fewer functions" {
+  let literal = "let main = () -> Int with Console {\n  println(\"hello\")\n  0\n}\n"
+  let named = "let main = () -> Int with Console {\n  let s = \"hello\"\n  println(s)\n  0\n}\n"
+  let literal_count = function_count(compile_source_gc_only(literal, "main"))
+  let named_count = function_count(compile_source_gc_only(named, "main"))
+  assert(literal_count > 0)
+  assert(literal_count < named_count)
+}
