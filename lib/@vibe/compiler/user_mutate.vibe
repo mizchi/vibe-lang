@@ -1,0 +1,70 @@
+//# `vibe mutants` / `vibe mutate-report` — the compiler half of mutation
+//# testing. The launcher's `vibe mutate` drives them: it lists the sites with
+//# `mutants`, compiles and runs the tests against each mutant (the compiler
+//# never runs a test; the host does), and hands the kill matrix to
+//# `mutate-report`. See query/mutants.vibe and query/mutation_report.vibe.
+
+//# Imports
+
+import @vibe/compiler/query {
+  mutation_report, mutation_report_target_path, mutation_sites
+}
+
+import @vibe/compiler/syntax {
+  offset_to_line_col
+}
+
+//# Functions
+
+/// `vibe mutants <file.vibe>`: one `ID START END LINE:COL KIND ORIGINAL
+/// REPLACEMENT` row per mutation site; an empty REPLACEMENT prints as `""`.
+export fn selfhost_cli_user_mutants_args(args: Array[String]) -> Int with Exception + Fs + Console {
+  let usage = "usage: vibe mutants <file.vibe>"
+  if Array::length(args) == 2 && (Array::get(args, 1) == "--help" || Array::get(args, 1) == "-h") {
+    println(usage)
+    println("Lists the mutation sites outside test / bench blocks: ID START END LINE:COL KIND ORIGINAL REPLACEMENT.")
+    0
+  } else if Array::length(args) != 2 || String::starts_with(Array::get(args, 1), "-") {
+    throw(usage)
+  } else {
+    let path = Array::get(args, 1)
+    if !Fs::exists(path) {
+      throw(String::concat("mutants: not found: ", path))
+    } else {
+      ()
+    }
+    let source = Fs::read_file(path)
+    let sites = mutation_sites(source)
+    let mut i = 0
+    while i < Array::length(sites) {
+      let (start, end, kind, original, replacement) = Array::get(sites, i)
+      let (line, col) = offset_to_line_col(source, start)
+      let rep = if String::length(replacement) == 0 {
+        "\"\""
+      } else {
+        replacement
+      }
+      println("\{i + 1} \{start} \{end} \{line}:\{col} \{kind} \{original} \{rep}")
+      i = i + 1
+    }
+    0
+  }
+}
+
+/// `vibe mutate-report <results.tsv>`: the report for a `vibe mutate` run.
+/// Exit 1 when a mutant survived, so the verdict is usable on its own.
+export fn selfhost_cli_user_mutate_report_args(args: Array[String]) -> Int with Exception + Fs + Console {
+  let usage = "usage: vibe mutate-report <results.tsv>"
+  if Array::length(args) != 2 || String::starts_with(Array::get(args, 1), "-") {
+    throw(usage)
+  } else {
+    let results = Fs::read_file(Array::get(args, 1))
+    let report = mutation_report(results, Fs::read_file(mutation_report_target_path(results)))
+    println(report)
+    if String::contains(report, "\nSURVIVED ") {
+      1
+    } else {
+      0
+    }
+  }
+}

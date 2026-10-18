@@ -1,0 +1,82 @@
+//# `mutation_report`: survivors and redundant tests from a kill matrix.
+
+//# Imports
+
+import ./mutation_report.vibe {
+  mutation_report, mutation_report_target_path
+}
+
+//# Functions
+
+fn mrt_source() -> String {
+  "fn f(x: Int) -> Bool {\n  x < 10\n}\n"
+}
+
+/// Five tests over six mutants:
+///   t0 kills m1 m2      -- kept by the cover
+///   t1 kills m1         -- every kill also t0's: subsumed
+///   t2 kills m3         -- kept by the cover
+///   t3 kills nothing
+///   t4 kills m1 m3      -- covered, but only by t0 and t2 together
+/// m4 survives, m5 does not compile, m6 compiles to the same binary.
+fn mrt_results() -> String {
+  String::join([
+    "target\tsrc/f.vibe\t/abs/src/f.vibe",
+    "test\t0\tsrc/f_test.vibe\tsmall",
+    "test\t1\tsrc/f_test.vibe\tsmall again",
+    "test\t2\tsrc/f_test.vibe\tlarge",
+    "test\t3\tsrc/g_test.vibe\tunrelated",
+    "test\t4\tsrc/g_test.vibe\tboth",
+    "mutant\t1\t27\t28\tboundary\t<\t<=\tkilled\t0,1,4",
+    "mutant\t2\t27\t28\tnegate\t<\t>=\tkilled\t0",
+    "mutant\t3\t29\t31\tconst\t10\t11\tkilled\t2,4",
+    "mutant\t4\t29\t31\tconst\t10\t11\tsurvived\t",
+    "mutant\t5\t27\t28\tarith\t<\t<<\tunviable\t",
+    "mutant\t6\t27\t28\tarith\t<\t<<\tidentical\t",
+    ""
+  ], "\n")
+}
+
+//# Tests
+
+test "the full report: score, survivors, per-test kills, redundancy" {
+  inspect(mutation_report(mrt_results(), mrt_source()), "target: src/f.vibe\nmutants: 6 sites, 3 killed, 1 survived, 1 unviable, 1 identical-binary\nscore: 3/4 killed (75.0%)\nSURVIVED src/f.vibe:2:7 const `10` -> `11` | x < 10\nTEST kills=2 unique=1 src/f_test.vibe \"small\"\nTEST kills=2 unique=0 src/g_test.vibe \"both\"\nTEST kills=1 unique=0 src/f_test.vibe \"small again\"\nTEST kills=1 unique=0 src/f_test.vibe \"large\"\nTEST kills=0 unique=0 src/g_test.vibe \"unrelated\"\nREDUNDANT kills=1 src/f_test.vibe \"small again\" subsumed-by src/f_test.vibe \"small\"\nNOKILL src/g_test.vibe \"unrelated\"\nREDUNDANT kills=2 src/g_test.vibe \"both\" covered-by-others\ncover: 2 of 5 tests kill every killed mutant (greedy, so a smaller set may exist)\nnote: kills are measured against mutants of src/f.vibe only; a test that guards other code is not redundant by this measure alone")
+}
+
+test "the target row's read path is its third field, else its display path" {
+  inspect(mutation_report_target_path(mrt_results()), "/abs/src/f.vibe")
+  inspect(mutation_report_target_path("target\tonly/display.vibe\n"), "only/display.vibe")
+}
+
+test "no mutant survived: no SURVIVED row, a full score" {
+  let rows = "target\tf.vibe\ntest\t0\tf_test.vibe\tt\nmutant\t1\t27\t28\tboundary\t<\t<=\tkilled\t0\n"
+  inspect(mutation_report(rows, mrt_source()), "target: f.vibe\nmutants: 1 sites, 1 killed, 0 survived, 0 unviable, 0 identical-binary\nscore: 1/1 killed (100.0%)\nTEST kills=1 unique=1 f_test.vibe \"t\"\ncover: 1 of 1 tests kill every killed mutant (greedy, so a smaller set may exist)\nnote: kills are measured against mutants of f.vibe only; a test that guards other code is not redundant by this measure alone")
+}
+
+test "a malformed matrix is refused, not half-read" {
+  let r = handle {
+    let _ = mutation_report("target\tf.vibe\ntest\t0\tf_test.vibe\tt\nmutant\t1\t27\t28\tboundary\t<\t<=\tkilled\t7\n", mrt_source())
+    ""
+  } with { Exception::Throw(msg) => msg }
+  inspect(r, "mutate-report: a mutant names an unknown test index: 7")
+}
+
+test "the cover is greedy: it can keep more tests than the smallest set needs" {
+  // A kills 1-4, B kills 1 2 5, C kills 3 4 6. Greedy takes A first, then
+  // still needs B and C; B and C alone would do. The line says so.
+  let rows = String::join([
+    "target\tf.vibe",
+    "test\t0\tf_test.vibe\tA",
+    "test\t1\tf_test.vibe\tB",
+    "test\t2\tf_test.vibe\tC",
+    "mutant\t1\t27\t28\tconst\t1\t2\tkilled\t0,1",
+    "mutant\t2\t27\t28\tconst\t1\t2\tkilled\t0,1",
+    "mutant\t3\t27\t28\tconst\t1\t2\tkilled\t0,2",
+    "mutant\t4\t27\t28\tconst\t1\t2\tkilled\t0,2",
+    "mutant\t5\t27\t28\tconst\t1\t2\tkilled\t1",
+    "mutant\t6\t27\t28\tconst\t1\t2\tkilled\t2",
+    ""
+  ], "\n")
+  let report = mutation_report(rows, mrt_source())
+  assert(String::contains(report, "\ncover: 3 of 3 tests kill every killed mutant (greedy, so a smaller set may exist)"))
+}

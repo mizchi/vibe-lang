@@ -1,0 +1,337 @@
+//# `vibe mutants` — the mutation sites of a source file.
+//#
+//# Mutation testing asks a question coverage cannot: when the code under test
+//# is changed, does some test notice? Each site below is one small edit to the
+//# source (a flipped comparison, a swapped operator, a changed literal); a test
+//# suite that still passes with the edit applied has not pinned that piece of
+//# behaviour. The launcher's `vibe mutate` applies each site, re-runs the tests
+//# against it, and hands the kill matrix to `mutation_report`
+//# (mutation_report.vibe) — which is where the answer the feature exists for,
+//# "which tests are redundant", comes from.
+//#
+//# The sites come from the tooling parse (`parse_source_with_ranges`), not from
+//# the token stream: a binary `-` and a unary one are the same token, a `true`
+//# in a test block and one in a function body are the same token, and only the
+//# AST tells them apart. Every site is re-checked against the source TEXT
+//# before it is reported (the operator / literal spelling must sit exactly at
+//# the recorded range), so a node the parser synthesized (`for` desugaring, a
+//# hex or char literal that reads back as a different spelling) is never
+//# offered as an edit that would not mean what it says.
+//#
+//# Test, bench and example blocks are never mutated: they are the oracle, not
+//# the code under test.
+//#
+//# Output (`vibe mutants`): one `ID START END LINE:COL KIND ORIGINAL REPLACEMENT`
+//# per site, START/END half-open byte offsets of the replaced text. An empty
+//# REPLACEMENT is printed as `""` (the `not` kind deletes a `!`). Empty output =
+//# the file has no mutable site outside its test blocks.
+
+//# Imports
+
+import @vibe/compiler/core {
+  Expr, Stmt, expr_children
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/parser {
+  interp_hole_end, parse_source_with_ranges, source_expr_range
+}
+
+//# Functions
+
+fn mut_empty_sites() -> Array[(Int, Int, String, String, String)] {
+  array_empty()
+}
+
+/// True when `source[start, start + len(text))` is exactly `text`.
+fn mut_text_at(source: String, start: Int, text: String) -> Bool {
+  let n = String::length(text)
+  start >= 0 && start + n <= String::length(source) && String::equals(String::substring(source, start, start + n), text)
+}
+
+/// The replacements an operator spelling admits, each as `(kind, replacement)`.
+/// A relational operator gets its boundary shift (`<` -> `<=`) and its negation
+/// (`<` -> `>=`); the two catch different gaps -- a missing edge-case test and a
+/// missing test of the condition at all.
+fn mut_binop_replacements(op: String) -> Array[(String, String)] {
+  match op {
+    "<" => [("boundary", "<="), ("negate", ">=")],
+    "<=" => [("boundary", "<"), ("negate", ">")],
+    ">" => [("boundary", ">="), ("negate", "<=")],
+    ">=" => [("boundary", ">"), ("negate", "<")],
+    "==" => [("negate", "!=")],
+    "!=" => [("negate", "==")],
+    "+" => [("arith", "-")],
+    "-" => [("arith", "+")],
+    "*" => [("arith", "/")],
+    "/" => [("arith", "*")],
+    "%" => [("arith", "*")],
+    "&&" => [("logic", "||")],
+    "||" => [("logic", "&&")],
+    "&" => [("bitwise", "|")],
+    "|" => [("bitwise", "&")],
+    "^" => [("bitwise", "&")],
+    "<<" => [("bitwise", ">>")],
+    ">>" => [("bitwise", "<<")],
+    _ => []
+  }
+}
+
+fn mut_push(out: Array[(Int, Int, String, String, String)], start: Int, end: Int, kind: String, original: String, replacement: String) -> Unit {
+  Array::push(out, (start, end, kind, original, replacement))
+}
+
+/// A node's own sites. `start`/`end` is the node's source range (-1 when the
+/// node carries no wrapper, i.e. it was synthesized).
+fn mut_node_sites(out: Array[(Int, Int, String, String, String)], source: String, node: Expr, start: Int, end: Int) -> Unit {
+  match node {
+    EBinOp(op, _, _, off) => if off >= 0 && mut_text_at(source, off, op) {
+      let reps = mut_binop_replacements(op)
+      let mut i = 0
+      while i < Array::length(reps) {
+        let (kind, rep) = Array::get(reps, i)
+        mut_push(out, off, off + String::length(op), kind, op, rep)
+        i = i + 1
+      }
+    } else {
+      ()
+    },
+    EBool(b) => {
+      let text = if b {
+        "true"
+      } else {
+        "false"
+      }
+      let flipped = if b {
+        "false"
+      } else {
+        "true"
+      }
+      if start >= 0 && end == start + String::length(text) && mut_text_at(source, start, text) {
+        mut_push(out, start, end, "bool", text, flipped)
+      } else {
+        ()
+      }
+    },
+    EInt(n) => {
+      let text = Int::to_string(n)
+      // `0` and `1` swap; any other literal moves by one. A literal whose
+      // spelling is not its decimal value (hex, a char literal) fails the
+      // text check and is left alone rather than rewritten in another base.
+      let rep = if n == 0 {
+        "1"
+      } else if n == 1 {
+        "0"
+      } else {
+        Int::to_string(n + 1)
+      }
+      if start >= 0 && end == start + String::length(text) && mut_text_at(source, start, text) {
+        mut_push(out, start, end, "const", text, rep)
+      } else {
+        ()
+      }
+    },
+    // An interpolation's holes are parsed later, from the literal's text, so
+    // the node has no child expressions: find the holes in the source.
+    EStringInterp(_) => if start >= 0 && end > start {
+      mut_interp_sites(out, source, start, end)
+    } else {
+      ()
+    },
+    EUnaryOp("!", _) => if start >= 0 && mut_text_at(source, start, "!") {
+      mut_push(out, start, start + 1, "not", "!", "")
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// The sites of one interpolation hole, `source[hs, he)`: the hole is parsed
+/// on its own as `let _h = <hole>` with ranges, walked, and every site shifted
+/// back into `source`'s coordinates. A hole that does not parse on its own
+/// offers no sites rather than failing the whole file.
+fn mut_hole_sites(out: Array[(Int, Int, String, String, String)], source: String, hs: Int, he: Int) -> Unit {
+  let prefix = "let _h = "
+  let mini = String::concat(prefix, String::substring(source, hs, he))
+  let found = mut_empty_sites()
+  handle {
+    mut_walk_stmts(found, mini, parse_source_with_ranges(mini))
+  } with { Exception::Throw(_) => () }
+  let shift = hs - String::length(prefix)
+  let mut i = 0
+  while i < Array::length(found) {
+    let (fs, fe, kind, original, replacement) = Array::get(found, i)
+    mut_push(out, fs + shift, fe + shift, kind, original, replacement)
+    i = i + 1
+  }
+}
+
+/// The holes of an interpolated literal at `source[start, end)`: each `\{`
+/// opens one, and the lexer's own `interp_hole_end` finds the `}` that closes
+/// it, so a string or char literal or a line comment inside the hole is read
+/// exactly as the compiler reads it. A hole the lexer cannot close offers no
+/// sites (the file would not compile anyway).
+fn mut_interp_sites(out: Array[(Int, Int, String, String, String)], source: String, start: Int, end: Int) -> Unit {
+  let mut i = start
+  while i < end {
+    let c = String::char_code_at(source, i)
+    if c == 92 && i + 1 < end {
+      if String::char_code_at(source, i + 1) == 123 {
+        let hs = i + 2
+        let he = handle {
+          interp_hole_end(source, end, hs)
+        } with { Exception::Throw(_) => 0 - 1 }
+        if he >= hs {
+          mut_hole_sites(out, source, hs, he)
+          i = he + 1
+        } else {
+          i = end
+        }
+      } else {
+        i = i + 2
+      }
+    } else {
+      i = i + 1
+    }
+  }
+}
+
+fn mut_walk_expr(out: Array[(Int, Int, String, String, String)], source: String, expr: Expr) -> Unit {
+  match expr {
+    // The tooling parse's wrapper: slot 0 is the node, the rest is range
+    // metadata (`EInt` end offsets among it) that must not be read as source.
+    ECall(EIdent("$source_span", _), args, _, _) => {
+      let (start, end) = source_expr_range(expr)
+      let node = Array::get(args, 0)
+      mut_node_sites(out, source, node, start, end)
+      mut_walk_children(out, source, node)
+    },
+    _ => {
+      mut_node_sites(out, source, expr, 0 - 1, 0 - 1)
+      mut_walk_children(out, source, expr)
+    }
+  }
+}
+
+fn mut_walk_children(out: Array[(Int, Int, String, String, String)], source: String, expr: Expr) -> Unit {
+  let children = expr_children(expr)
+  let mut i = 0
+  while i < Array::length(children) {
+    mut_walk_expr(out, source, Array::get(children, i))
+    i = i + 1
+  }
+}
+
+fn mut_walk_list(out: Array[(Int, Int, String, String, String)], source: String, items: Array[Expr]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    mut_walk_expr(out, source, Array::get(items, i))
+    i = i + 1
+  }
+}
+
+fn mut_walk_stmts(out: Array[(Int, Int, String, String, String)], source: String, stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => mut_walk_expr(out, source, body),
+      SLetMut(_, _, body) => mut_walk_expr(out, source, body),
+      SLetPat(_, body) => mut_walk_expr(out, source, body),
+      SExpr(body) => mut_walk_expr(out, source, body),
+      // A `where { requires: .., ensures: .. }` contract runs as always-on
+      // asserts, so its conditions are code under test too.
+      SFnDecl(_, _, body, requires, ensures) => {
+        mut_walk_expr(out, source, body)
+        mut_walk_list(out, source, requires)
+        mut_walk_list(out, source, ensures)
+      },
+      SModule(_, _, body) => mut_walk_stmts(out, source, body),
+      // The oracle is never mutated.
+      STest(_, _) => (),
+      SBench(_, _) => (),
+      SExample(_, _) => (),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Order sites by start offset; equal starts keep their emission order, so a
+/// relational operator's boundary site precedes its negation site. Insertion
+/// sort: a file has hundreds of sites, not millions.
+fn mut_sort_sites(sites: Array[(Int, Int, String, String, String)]) -> Unit {
+  let mut i = 1
+  while i < Array::length(sites) {
+    let cur = Array::get(sites, i)
+    let (cur_start, _, _, _, _) = cur
+    let mut j = i - 1
+    let mut moving = true
+    while j >= 0 && moving {
+      let (prev_start, _, _, _, _) = Array::get(sites, j)
+      if prev_start > cur_start {
+        Array::set(sites, j + 1, Array::get(sites, j))
+        j = j - 1
+      } else {
+        moving = false
+      }
+    }
+    Array::set(sites, j + 1, cur)
+    i = i + 1
+  }
+}
+
+fn mut_same_site(a: (Int, Int, String, String, String), b: (Int, Int, String, String, String)) -> Bool {
+  let (s1, e1, _, _, r1) = a
+  let (s2, e2, _, _, r2) = b
+  s1 == s2 && e1 == e2 && String::equals(r1, r2)
+}
+
+/// Every mutation site of `source` outside its test / bench / example blocks,
+/// as `(start, end, kind, original, replacement)`: replacing
+/// `source[start, end)` (which reads `original`) with `replacement` yields the
+/// mutant. Ordered by start offset, without duplicates. A file that does not
+/// parse throws the parser's diagnostic.
+export fn mutation_sites(source: String) -> Array[(Int, Int, String, String, String)] with Exception {
+  let raw = mut_empty_sites()
+  mut_walk_stmts(raw, source, parse_source_with_ranges(source))
+  mut_sort_sites(raw)
+  let out = mut_empty_sites()
+  let mut i = 0
+  while i < Array::length(raw) {
+    let site = Array::get(raw, i)
+    let mut dup = false
+    let mut j = Array::length(out) - 1
+    // Sorted by start, so a duplicate can only sit among the trailing sites
+    // that share this start.
+    let (start, _, _, _, _) = site
+    let mut scanning = true
+    while j >= 0 && scanning {
+      let prev = Array::get(out, j)
+      let (prev_start, _, _, _, _) = prev
+      if prev_start != start {
+        scanning = false
+      } else if mut_same_site(prev, site) {
+        dup = true
+        scanning = false
+      } else {
+        j = j - 1
+      }
+    }
+    if !dup {
+      Array::push(out, site)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// `source` with site `(start, end, _, _, replacement)` applied.
+export fn mutation_apply(source: String, start: Int, end: Int, replacement: String) -> String {
+  String::concat(String::substring(source, 0, start), String::concat(replacement, String::substring(source, end, String::length(source))))
+}

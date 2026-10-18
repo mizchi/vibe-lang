@@ -643,6 +643,81 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
   } else {
     ()
   }
+  // `vibe_tests`: the export names of the synthesized `test` blocks, each a
+  // LEB128 byte length, its bytes, then one flag byte, in declaration order
+  // (a title may contain a NUL, so no byte can serve as a separator). The
+  // flag is 1 when the name belongs to that block alone and 0 when another
+  // function shares it -- a second block with the same title, or a program
+  // function spelled `__test_<title>` -- because then the export under that
+  // name may not be this block, and a per-block runner must not call it. The `__test_` prefix alone is not
+  // authoritative -- a program may export its own `__test_helper` -- so a
+  // per-block runner (`viberun --test-each`, used by `vibe mutate`) reads this
+  // list instead of guessing from export names. Only test builds carry it, so
+  // every other build is byte-identical.
+  // A `__no_entry__` build is a test (or bench) build: it carries the list
+  // even when it is EMPTY, so a file with no test blocks but an exported
+  // `__test_helper` is not read as an older artifact and run by prefix.
+  let tests_content = bytebuf_new()
+  let mut tests_any = false
+  if entry_name_in == "__no_entry__" && !library_mode {
+    let tests_name = "vibe_tests"
+    leb128_encode_u32(tests_content, String::length(tests_name))
+    let mut tsi = 0
+    while tsi < String::length(tests_name) {
+      bytebuf_push(tests_content, String::char_code_at(tests_name, tsi))
+      tsi = tsi + 1
+    }
+    tests_any = true
+  } else {
+    ()
+  }
+  let mut tni = 0
+  while tni < Array::length(test_fn_names) {
+    let tnm = Array::get(test_fn_names, tni)
+    if String::starts_with(tnm, "__test_") {
+      if !tests_any {
+        let tests_name = "vibe_tests"
+        leb128_encode_u32(tests_content, String::length(tests_name))
+        let mut tsi = 0
+        while tsi < String::length(tests_name) {
+          bytebuf_push(tests_content, String::char_code_at(tests_name, tsi))
+          tsi = tsi + 1
+        }
+        tests_any = true
+      } else {
+        ()
+      }
+      leb128_encode_u32(tests_content, String::length(tnm))
+      let mut tci = 0
+      while tci < String::length(tnm) {
+        bytebuf_push(tests_content, String::char_code_at(tnm, tci))
+        tci = tci + 1
+      }
+      let mut tsame = 0
+      let mut tfi = 0
+      while tfi < Array::length(fn_names_list) {
+        if Array::get(fn_names_list, tfi) == tnm {
+          tsame = tsame + 1
+        } else {
+          ()
+        }
+        tfi = tfi + 1
+      }
+      bytebuf_push(tests_content, if tsame == 1 {
+        1
+      } else {
+        0
+      })
+    } else {
+      ()
+    }
+    tni = tni + 1
+  }
+  if tests_any {
+    bytebuf_push_section(out, 0, tests_content)
+  } else {
+    ()
+  }
   // debugger trace (DAP P1 groundwork): emit a `vibe.trace` custom section
   // describing the in-memory trace log. Payload layout: i32 LE counter_addr,
   // i32 LE log_base, i32 LE cap, then the user-function names (one per line, in
