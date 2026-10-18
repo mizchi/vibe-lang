@@ -6,31 +6,12 @@ import ./base64.vibe {
 
 //# Misc
 
-test "encode empty" {
-  assert(encode("") == "")
-}
-
-test "encode single char" {
-  assert(encode("A") == "QQ==")
-}
-
-test "encode two chars" {
-  assert(encode("AB") == "QUI=")
-}
-
-test "encode three chars" {
-  assert(encode("ABC") == "QUJD")
-}
-
-test "encode hello" {
-  assert(encode("Hello") == "SGVsbG8=")
-}
-
-test "encode hello world" {
-  assert(encode("Hello, World!") == "SGVsbG8sIFdvcmxkIQ==")
-}
+// RFC 4648 section 10 test vectors. The single-purpose encode/decode tests
+// this file used to carry (empty, "A", "AB", "ABC", "Hello", ...) killed no
+// mutant of base64.vibe that these vectors and the cases below do not.
 
 test "encode foobar incremental" {
+  assert(encode("") == "")
   assert(encode("f") == "Zg==")
   assert(encode("fo") == "Zm8=")
   assert(encode("foo") == "Zm9v")
@@ -39,19 +20,8 @@ test "encode foobar incremental" {
   assert(encode("foobar") == "Zm9vYmFy")
 }
 
-test "decode empty" {
-  assert(decode("") == "")
-}
-
-test "decode hello" {
-  assert(decode("SGVsbG8=") == "Hello")
-}
-
-test "decode hello world" {
-  assert(decode("SGVsbG8sIFdvcmxkIQ==") == "Hello, World!")
-}
-
 test "decode foobar incremental" {
+  assert(decode("") == "")
   assert(decode("Zg==") == "f")
   assert(decode("Zm8=") == "fo")
   assert(decode("Zm9v") == "foo")
@@ -65,16 +35,24 @@ test "roundtrip ascii" {
   assert(decode(encode(input)) == input)
 }
 
-test "roundtrip numbers" {
-  let input = "0123456789"
-  assert(decode(encode(input)) == input)
+test "encode_url_safe maps + and / and drops padding" {
+  // ">>>???" encodes to "Pj4+Pz8/" and "??" to "Pz8=": each URL-safe
+  // substitution, and the padding, is visible in the expected text.
+  assert(encode_url_safe(">>>???") == "Pj4-Pz8_")
+  assert(encode_url_safe("??") == "Pz8")
+  assert(encode_url_safe("Hello") == "SGVsbG8")
 }
 
-test "encode_url_safe" {
-  // Standard base64 uses + and /, URL-safe uses - and _
-  // Also strips padding =
-  let result = encode_url_safe("Hello, World!")
-  assert(not(String::contains(result, "+")))
-  assert(not(String::contains(result, "/")))
-  assert(not(String::contains(result, "=")))
+test "decode reaches every alphabet range and both symbols" {
+  // "YXA0" holds an `A` in the third place and a `0`; "YWFA" an `A` in the
+  // fourth; "Pj4+Pz8/" both symbols. A decoder off by one at a range edge
+  // or missing a symbol gets one of these wrong.
+  assert(decode("YXA0") == "ap4")
+  assert(decode("YWFA") == "aa@")
+  assert(decode("Pj4+Pz8/") == ">>>???")
+}
+
+test "decode accepts input with the padding left off" {
+  assert(decode("Zm8") == "fo")
+  assert(decode("Zg") == "f")
 }

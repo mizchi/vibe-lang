@@ -4,7 +4,7 @@ import ./hashmap.vibe {
   struct MutMap
 }
 import ./key.vibe {
-  hash_string
+  hash_int, hash_string
 }
 
 //# Helpers
@@ -311,4 +311,33 @@ test "fingerprint collision: identical hash for every key" {
   assert_eq(get_or(m, 138, -1), 1380)
   assert_eq(MutMap::size(m), 199)
   assert_eq(Array::length(MutMap::keys(m)), 199)
+}
+
+test "an insert probing past a tombstone in the last slot wraps to find the key" {
+  // Identity hash, 8 slots: 7 and 15 both home on slot 7, so 15 lands in
+  // slot 0. Deleting 7 leaves a tombstone in the last slot; setting 15 again
+  // must step past it and wrap to slot 0 to find the existing key, not insert
+  // a second 15 in the tombstone. Found by `vibe mutate`: no other test
+  // probes off the end of the table through a tombstone.
+  let m: MutMap[Int, String] = MutMap::with_capacity((k: Int) -> Int {
+    k
+  }, (a: Int, b: Int) -> Bool {
+    a == b
+  }, 8)
+  MutMap::set(m, 7, "seven")
+  MutMap::set(m, 15, "fifteen")
+  assert(MutMap::delete(m, 7))
+  MutMap::set(m, 15, "FIFTEEN")
+  assert_eq(MutMap::size(m), 1)
+  assert_eq(get_or(m, 15, "?"), "FIFTEEN")
+  assert_eq(MutMap::keys(m), [15])
+}
+
+test "the key hashes separate distinct keys" {
+  // A map stays correct when every key collides, so no other test notices a
+  // hash that collapsed to a constant -- only the probe lengths do.
+  assert(hash_string("a") != hash_string("b"))
+  assert(hash_string("") != hash_string("a"))
+  assert(hash_string("ab") != hash_string("ba"))
+  assert(hash_int(1) != hash_int(2))
 }

@@ -23,13 +23,14 @@
 //#
 //# Output (`vibe mutants`): one `ID START END LINE:COL KIND ORIGINAL REPLACEMENT`
 //# per site, START/END half-open byte offsets of the replaced text. An empty
-//# REPLACEMENT is printed as `""` (the `not` kind deletes a `!`). Empty output =
-//# the file has no mutable site outside its test blocks.
+//# REPLACEMENT is printed as `""` (the `not` kind deletes a `!`). A `cond` site's
+//# ORIGINAL is the whole condition, its whitespace escaped so the row keeps its
+//# fields. Empty output = the file has no mutable site outside its test blocks.
 
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, expr_children
+  Expr, Pat, Stmt, expr_children
 }
 
 import @vibe/core {
@@ -37,7 +38,7 @@ import @vibe/core {
 }
 
 import @vibe/parser {
-  interp_hole_end, parse_source_with_ranges, source_expr_range
+  interp_hole_end, parse_source_with_ranges, source_expr, source_expr_range, source_expr_syntax_range, source_pat_range
 }
 
 //# Functions
@@ -82,6 +83,93 @@ fn mut_binop_replacements(op: String) -> Array[(String, String)] {
 
 fn mut_push(out: Array[(Int, Int, String, String, String)], start: Int, end: Int, kind: String, original: String, replacement: String) -> Unit {
   Array::push(out, (start, end, kind, original, replacement))
+}
+
+/// `text` as one whitespace-free field, the way `vibe symbols` escapes a
+/// test label: a site row is split on spaces and the kill matrix on tabs.
+fn mut_one_field(text: String) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < String::length(text) {
+    let c = String::byte_at(text, i)
+    let piece = if c == 92 {
+      "\\\\"
+    } else if c == 32 {
+      "\\s"
+    } else if c == 9 {
+      "\\t"
+    } else if c == 10 {
+      "\\n"
+    } else if c == 13 {
+      "\\r"
+    } else {
+      String::substring(text, i, i + 1)
+    }
+    out = String::concat(out, piece)
+    i = i + 1
+  }
+  out
+}
+
+/// Whether `pat` introduces a name.
+fn mut_pat_binds(pat: Pat) -> Bool {
+  match pat {
+    PBind(_) => true,
+    PCtor("$source_span", args) => mut_pat_binds(Array::get(args, 0)),
+    PCtor(_, args) => mut_pats_bind(args),
+    PTuple(items) => mut_pats_bind(items),
+    POr(a, b) => mut_pat_binds(a) || mut_pat_binds(b),
+    PStruct(_, fields) => {
+      let mut any = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, p) = Array::get(fields, i)
+        if mut_pat_binds(p) {
+          any = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      any
+    },
+    _ => false
+  }
+}
+
+fn mut_pats_bind(pats: Array[Pat]) -> Bool {
+  let mut any = false
+  let mut i = 0
+  while i < Array::length(pats) {
+    if mut_pat_binds(Array::get(pats, i)) {
+      any = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  any
+}
+
+/// A branch or loop condition forced to each of `forced`. The condition must
+/// carry its own source range; a literal `true` / `false` is left to the
+/// `bool` kind.
+fn mut_cond_sites(out: Array[(Int, Int, String, String, String)], source: String, cond: Expr, forced: Array[String]) -> Unit {
+  let (cs, ce) = source_expr_range(cond)
+  let literal = match source_expr(cond) {
+    EBool(_) => true,
+    _ => false
+  }
+  if cs >= 0 && ce > cs && !literal {
+    let original = mut_one_field(String::substring(source, cs, ce))
+    let mut i = 0
+    while i < Array::length(forced) {
+      mut_push(out, cs, ce, "cond", original, Array::get(forced, i))
+      i = i + 1
+    }
+  } else {
+    ()
+  }
 }
 
 /// A node's own sites. `start`/`end` is the node's source range (-1 when the
@@ -146,6 +234,46 @@ fn mut_node_sites(out: Array[(Int, Int, String, String, String)], source: String
     } else {
       ()
     },
+    // A condition whose decision no test pins survives being forced either
+    // way, even when it holds no operator to mutate (`if BigInt::is_zero(d)`).
+    // A loop condition is only forced false: forced true, every mutant would
+    // spin until its deadline. The keyword check skips a loop or branch the
+    // parser synthesized (`for`, `guard`), whose condition is not written as
+    // such.
+    EIf(cond, _, _) => if start >= 0 && mut_text_at(source, start, "if") {
+      mut_cond_sites(out, source, cond, ["true", "false"])
+    } else {
+      ()
+    },
+    EWhile(cond, _) => if start >= 0 && mut_text_at(source, start, "while") {
+      mut_cond_sites(out, source, cond, ["false"])
+    } else {
+      ()
+    },
+    // `if x is P { .. } else { .. }` parses to a two-arm match. The decision
+    // `x is P` is forced only when `P` binds nothing: a branch that reads a
+    // binder of `P` would not compile without the match.
+    EMatch(scrutinee, arms) => if start >= 0 && mut_text_at(source, start, "if") && Array::length(arms) == 2 {
+      let (pat, _) = Array::get(arms, 0)
+      let (rest, _) = Array::get(arms, 1)
+      let wild_else = match rest {
+        PWild => true,
+        _ => false
+      }
+      // The syntax range, not the core one: `if (o) is None` replaces from
+      // the `(`, or the edit would leave it unbalanced.
+      let (ss, _) = source_expr_syntax_range(scrutinee)
+      let (_, pe) = source_pat_range(pat)
+      if wild_else && !mut_pat_binds(pat) && ss > start && pe > ss {
+        let original = mut_one_field(String::substring(source, ss, pe))
+        mut_push(out, ss, pe, "cond", original, "true")
+        mut_push(out, ss, pe, "cond", original, "false")
+      } else {
+        ()
+      }
+    } else {
+      ()
+    },
     _ => ()
   }
 }
@@ -178,9 +306,9 @@ fn mut_hole_sites(out: Array[(Int, Int, String, String, String)], source: String
 fn mut_interp_sites(out: Array[(Int, Int, String, String, String)], source: String, start: Int, end: Int) -> Unit {
   let mut i = start
   while i < end {
-    let c = String::char_code_at(source, i)
+    let c = String::byte_at(source, i)
     if c == 92 && i + 1 < end {
-      if String::char_code_at(source, i + 1) == 123 {
+      if String::byte_at(source, i + 1) == 123 {
         let hs = i + 2
         let he = handle {
           interp_hole_end(source, end, hs)

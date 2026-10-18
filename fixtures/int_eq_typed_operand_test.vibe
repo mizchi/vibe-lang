@@ -1,0 +1,46 @@
+// #3513: Int `==` / `!=` where an operand has no shape codegen can classify.
+// The generic `eq` fall-back reads each operand as a `(ptr << 32) | len`
+// string and compared only the low 32 bits, so two Ints differing above bit
+// 31 compared equal: `id(1) == id(1 + (1 << 33))` answered `true`. On the gc
+// lane two plain bindings did too. Every pair below differs only above bit 31
+// (or not at all, for the equal controls), and each shape is asserted both
+// ways so a fix that only flips the answer cannot pass.
+
+fn id(x: Int) -> Int {
+  x
+}
+
+fn fold(x: Int) -> Int {
+  x^(x>>33)
+}
+
+test "call results compare by full value" {
+  let big = 1 + (1 << 33)
+  assert(!(id(1) == id(big)))
+  assert(id(1) != id(big))
+  assert(id(big) == id(big))
+  assert(!(id(big) != id(big)))
+  assert(fold(1) != fold(1 << 33))
+}
+
+test "bindings of call results compare by full value" {
+  let big = 1 + (1 << 33)
+  let a = id(1)
+  let b = id(big)
+  let c: Int = id(big)
+  assert(!(a == b))
+  assert(a != b)
+  assert(b == c)
+}
+
+test "plain bindings compare by full value" {
+  let p = 1
+  let q = 1 + (1 << 33)
+  let r = 1 + (1 << 33)
+  assert(!(p == q))
+  assert(p != q)
+  assert(q == r)
+  // A call result against a plain binding.
+  assert(id(1) != q)
+  assert(id(q) == r)
+}

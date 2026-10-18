@@ -1,7 +1,7 @@
 //# Imports
 
 import ./math_double.vibe {
-  acos, asin, atan, atan2, cos, degrees, exp_double, hypot, ln, log10, pi, pow_double, radians, sin, sqrt, tan
+  acos, asin, atan, atan2, cos, degrees, exp_double, hypot, ln, log10, log2_double, pi, pow_double, radians, sin, sqrt, tan
 }
 
 //# Functions
@@ -265,3 +265,50 @@ test "asin/acos micro (#949)" {
   assert(micro_in(asin(0.9), 1119769))
   assert(micro_in(acos(0.9), 451026))
 }
+
+//# Cases `vibe mutate lib/@vibe/core/math_double.vibe` found unpinned
+
+test "ln below 0.5 normalizes the mantissa upward" {
+  // The mantissa loop that doubles m below 0.5 never ran for any other test.
+  assert(micro_in(ln(0.25), -1386294))
+  assert(micro_in(ln(0.001), -6907755))
+}
+
+test "ln of zero and of a negative is negative infinity" {
+  let z = ln(0.0) + 0.0
+  let n = ln(0.0 - 3.0) + 0.0
+  assert(z < 0.0 - pow10(300))
+  assert(n < 0.0 - pow10(300))
+}
+
+test "log2_double" {
+  assert(micro_in(log2_double(8.0), 3000000))
+  assert(micro_in(log2_double(10.0), 3321928))
+}
+
+test "sin and cos reduce arguments beyond pi" {
+  assert(micro_in(sin(10.0), -544021))
+  assert(micro_in(sin(0.0 - 10.0), 544021))
+  assert(micro_in(cos(10.0), -839071))
+}
+
+test "atan2 off the diagonal and on the negative x axis" {
+  // y / x != x * y here, so a swapped operator shows; (0, -1) is pi, not
+  // -pi; (0, 0) is 0.
+  assert(micro_in(atan2(1.0, 2.0), 463647))
+  assert(micro_in(atan2(1.0, 0.0 - 2.0), 2677945))
+  assert(micro_in(atan2(0.0 - 1.0, 0.0 - 2.0), -2677945))
+  assert(micro_in(atan2(0.0, 0.0 - 1.0), 3141592))
+  assert(micro_in(atan2(0.0, 0.0), 0))
+}
+
+test "exp overflows to infinity and keeps the subnormal tail" {
+  let big = exp_double(800.0) + 0.0
+  assert(big > pow10(300))
+  // exp(-720) = 2.03e-313 is subnormal, not 0: 1 / exp(720) would flush it.
+  let tiny = exp_double(0.0 - 720.0) + 0.0
+  assert(tiny > 0.0)
+  let scaled = tiny * pow10(300) + 0.0
+  assert(scaled < 1.0)
+}
+
