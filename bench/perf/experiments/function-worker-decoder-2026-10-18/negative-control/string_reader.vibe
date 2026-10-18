@@ -1,0 +1,85 @@
+import @vibe/codegen/transport {
+  CodegenBodyCache, codegen_body_cache_from_bytes, codegen_body_cache_from_bytes_with_string_copy
+}
+import @vibe/compiler/cache {
+  AstBinaryReader, ast_binary_reader_with_string_copy, ast_binary_write_varint
+}
+
+// A private borrowed view, valid only while bytes is alive and unchanged.
+// It never escapes copy_string_span: concat allocates the owned result using
+// the existing string allocator and memory-growth checks on either RC lane.
+fn bytes_string_view(bytes: Bytes) -> String = wasm
+"local.get $bytes i32.wrap_i64 i32.load offset=8 i64.extend_i32_u i64.const 32 i64.shl"
+"local.get $bytes i32.wrap_i64 i32.load offset=4 i64.extend_i32_u i64.or"
+
+fn copy_string_span(bytes: Bytes, at: Int, length: Int) -> String {
+  String::concat(String::substring(bytes_string_view(bytes), at, at + length), "")
+}
+
+/// Linear-only transport reader; all untrusted span and UTF-8 checks stay in cache.
+export fn linear_string_reader(bytes: Bytes) -> AstBinaryReader {
+  ast_binary_reader_with_string_copy(bytes, copy_string_span)
+}
+
+/// Linear-only VBC6 reader with owned bulk strings and unchanged wire checks.
+/// VBC6 preserves raw bytes; unlike the AST reader it does not validate UTF-8.
+export fn linear_body_cache_from_bytes(bytes: Bytes) -> Option[CodegenBodyCache] {
+  codegen_body_cache_from_bytes(bytes)
+}
+
+// Inline wasm returns a raw i64. The caller supplies its representation of
+// Int 1 (raw on bump, shifted on RC), so multiplying by it encodes the spare
+// capacity correctly on either lane. Unconditionally shifting doubled the
+// apparent writable space on bump. Malformed/read-only buffers have none.
+fn string_write_spare(bytes: Bytes, one: Int) -> Int = wasm
+"(local $cap i32) (local $len i32)"
+"(local.set $cap (i32.load (i32.wrap_i64 (local.get $bytes))))"
+"(if (result i64) (i32.lt_s (local.get $cap) (i32.const 0))"
+"(then (local.set $cap (i32.sub (i32.const 0) (local.get $cap)))"
+"(local.set $len (i32.load offset=4 (i32.wrap_i64 (local.get $bytes))))"
+"(if (result i64) (i32.le_u (local.get $len) (local.get $cap))"
+"(then (i64.mul (i64.extend_i32_u (i32.sub (local.get $cap) (local.get $len))) (local.get $one)))"
+"(else (i64.const 0)))) (else (i64.const 0)))"
+
+/// Append an ordinary AST length-prefixed string within reserved capacity.
+/// Insufficient capacity is refused before even the prefix changes the buffer.
+/// This reference writer preserves bytes; it does not promise a bulk-copy ABI.
+export fn linear_write_string(bytes: Bytes, value: String) -> Unit with Exception {
+  let n = String::length(value)
+  let mut size = n
+  let mut prefix = 1
+  while size >= 128 {
+    prefix = prefix + 1
+    size = size>>7
+  }
+  if string_write_spare(bytes, 1) < n + prefix {
+    throw("linear string writer: insufficient reserved capacity")
+  } else ()
+  ast_binary_write_varint(bytes, n)
+  let mut i = 0
+  while i < n {
+    Bytes::push(bytes, String::char_code_at(value, i))
+    i = i + 1
+  }
+}
+
+/// The function-envelope string-reference escape, followed by a pool index.
+/// The envelope owns the pool and the checked decoder verifies the index.
+/// Refuse before either varint changes a buffer with insufficient capacity.
+export fn linear_write_string_index(bytes: Bytes, index: Int) -> Unit with Exception {
+  if index < 0 {
+    throw("linear string writer: invalid pool index")
+  } else ()
+  let mut value = index
+  let mut size = 1
+  while value >= 128 {
+    size = size + 1
+    value = value>>7
+  }
+  // 2^60 occupies nine unsigned LEB128 bytes.
+  if string_write_spare(bytes, 1) < 9 + size {
+    throw("linear string writer: insufficient reserved capacity")
+  } else ()
+  ast_binary_write_varint(bytes, 1152921504606846976)
+  ast_binary_write_varint(bytes, index)
+}

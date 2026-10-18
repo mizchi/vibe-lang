@@ -2,6 +2,8 @@
 
 Function snapshots repeated the same long function identities in sorted vectors, return/capture summaries and origin maps. The candidate writes those names once, then references the checked immutable name pool within each private worker. Compiler context bytes fall **48.8%**, CLI context bytes **10.8%**. Four-worker peak RSS also falls, but whole-build wall changes remain below the prespecified 5% noise threshold. Keep the route opt-in; native threads and bootstrap integration remain incomplete.
 
+**Hash-correctness qualification:** the original native-worker observations predate [#3508](https://github.com/mizchi/vibe-lang/pull/3508) and used an incorrect bump SIMD BLAKE3 digest. Their source, workload and numbers are retained; they are not evidence for the corrected-hash lane. The [later decoder experiment](function-worker-decoder-2026-10-18.md) supplies a fresh ABI2/corrected-digest baseline and comparisons.
+
 The [raw record](../../../bench/perf/analysis/function-worker-transfer-2026-10-18.json) retains 204 unprofiled complete builds (12 actual bootstrap, 72 initial route controls, 120 alternating comparisons), exact input/image authority, guest counters, real I/O counts, 60 CPU-profile summaries and retained-file hashes. [Archived drivers and the measured overlay](../../../bench/perf/experiments/function-worker-transfer-2026-10-18/README.md) reproduce the experiment.
 
 ## Scope and authority
