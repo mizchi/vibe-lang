@@ -30,7 +30,7 @@ import hashlib, json, sys
 from pathlib import Path
 compiler, out, runner = map(Path, sys.argv[1:])
 files = [out/'worker.wasm', out/'compile.wasm', out/'coordinator.component.wasm']
-receipt = {'version': 1, 'kind': 'vibe-taskgroup-functions', 'function_abi': 'bump-core-tagged-callbacks-1',
+receipt = {'version': 1, 'kind': 'vibe-taskgroup-functions', 'function_abi': 'bump-core-tagged-callbacks-2',
            'context_format': 7, 'job_format': 2, 'compile_engine_rc': 0, 'worker_engine_rc': 0, 'coordinator_engine_rc': 1, 'compiler_sha256': hashlib.sha256(compiler.read_bytes()).hexdigest(),
            'runner_sha256': hashlib.sha256(runner.read_bytes()).hexdigest(),
            'artifacts': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}}
