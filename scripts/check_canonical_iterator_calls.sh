@@ -21,10 +21,11 @@ sort -u "$files" -o "$files"
 while IFS= read -r file; do
   [ -n "$file" ] || continue
   relative="${file#"$PROJECT_ROOT"/}"
-  # `Array::iter` with one argument is the AsyncIter entry (ADR-0099) and has
-  # no `Iterator::*` spelling; only the legacy two-argument form -- the eager
-  # `Iterator::iter(xs, f)` -- is flagged.
-  grep -nE 'Array::(map|filter|flatmap|fold|find|any|all)([^A-Za-z0-9_]|$)|Array::iter\([^)]*,' "$file" |
+  # `Array::iter` is not listed: its one signature, `(Array[T]) -> AsyncIter[T]`,
+  # is the AsyncIter entry (ADR-0099) and has no `Iterator::*` spelling, and the
+  # legacy two-argument form no longer type-checks, so the book's blocks reject
+  # it already. A line regex cannot tell the two apart (#3553 review).
+  grep -nE 'Array::(map|filter|flatmap|fold|find|any|all)([^A-Za-z0-9_]|$)' "$file" |
     sed "s|^|$relative:|" >> "$findings" || true
 done < "$files"
 

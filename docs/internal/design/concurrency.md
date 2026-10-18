@@ -400,7 +400,10 @@ one linearization, so the guarantees above hold across them.
 This section is the canonical statement of the `Send` allowlist. Other
 documents link here instead of copying it. Each row of the list below has a
 case in `lib/@vibe/compiler/tests/send_allowlist_test.vibe`, so a row cannot
-drift from the checker without a test failing. That test asks the bound
+drift from the checker without a test failing -- except "a type parameter with
+no `Send` bound", which is refused where a spawned closure captures it but
+not yet where it reaches a `Send` bound inside its generic body (#3554). That
+test asks the bound
 directly; the places the bound is required -- a task's result, a channel
 element, `Parallel::map` -- are pinned by
 `fixtures/typecheck/{spawn_result_closure,spawn_result_option_array,parallel_map_result}_not_send_reject.vibe`
@@ -440,7 +443,9 @@ Not Send:
 - closures;
 - a type with an unresolved type variable, even when every resolved part is
   `Send`: an unannotated `Result::Ok(1)` leaves `E` open and is refused;
-- a type parameter with no `Send` bound;
+- a type parameter with no `Send` bound -- refused today where a spawned
+  closure captures it; inside its generic body it still satisfies a `T: Send`
+  bound (`Channel::bounded` included), which #3554 tracks;
 - any named type with no visible declaration -- host resources, opaque
   handles, and the builtin `Map`.
 
