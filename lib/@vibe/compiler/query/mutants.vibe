@@ -30,7 +30,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, expr_children
+  Expr, Pat, Stmt, expr_children
 }
 
 import @vibe/core {
@@ -38,7 +38,7 @@ import @vibe/core {
 }
 
 import @vibe/parser {
-  interp_hole_end, parse_source_with_ranges, source_expr, source_expr_range
+  interp_hole_end, parse_source_with_ranges, source_expr, source_expr_range, source_pat_range
 }
 
 //# Functions
@@ -91,7 +91,7 @@ fn mut_one_field(text: String) -> String {
   let mut out = ""
   let mut i = 0
   while i < String::length(text) {
-    let c = String::char_code_at(text, i)
+    let c = String::byte_at(text, i)
     let piece = if c == 92 {
       "\\\\"
     } else if c == 32 {
@@ -109,6 +109,46 @@ fn mut_one_field(text: String) -> String {
     i = i + 1
   }
   out
+}
+
+/// Whether `pat` introduces a name.
+fn mut_pat_binds(pat: Pat) -> Bool {
+  match pat {
+    PBind(_) => true,
+    PCtor("$source_span", args) => mut_pat_binds(Array::get(args, 0)),
+    PCtor(_, args) => mut_pats_bind(args),
+    PTuple(items) => mut_pats_bind(items),
+    POr(a, b) => mut_pat_binds(a) || mut_pat_binds(b),
+    PStruct(_, fields) => {
+      let mut any = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, p) = Array::get(fields, i)
+        if mut_pat_binds(p) {
+          any = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      any
+    },
+    _ => false
+  }
+}
+
+fn mut_pats_bind(pats: Array[Pat]) -> Bool {
+  let mut any = false
+  let mut i = 0
+  while i < Array::length(pats) {
+    if mut_pat_binds(Array::get(pats, i)) {
+      any = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  any
 }
 
 /// A branch or loop condition forced to each of `forced`. The condition must
@@ -210,6 +250,28 @@ fn mut_node_sites(out: Array[(Int, Int, String, String, String)], source: String
     } else {
       ()
     },
+    // `if x is P { .. } else { .. }` parses to a two-arm match. The decision
+    // `x is P` is forced only when `P` binds nothing: a branch that reads a
+    // binder of `P` would not compile without the match.
+    EMatch(scrutinee, arms) => if start >= 0 && mut_text_at(source, start, "if") && Array::length(arms) == 2 {
+      let (pat, _) = Array::get(arms, 0)
+      let (rest, _) = Array::get(arms, 1)
+      let wild_else = match rest {
+        PWild => true,
+        _ => false
+      }
+      let (ss, _) = source_expr_range(scrutinee)
+      let (_, pe) = source_pat_range(pat)
+      if wild_else && !mut_pat_binds(pat) && ss > start && pe > ss {
+        let original = mut_one_field(String::substring(source, ss, pe))
+        mut_push(out, ss, pe, "cond", original, "true")
+        mut_push(out, ss, pe, "cond", original, "false")
+      } else {
+        ()
+      }
+    } else {
+      ()
+    },
     _ => ()
   }
 }
@@ -242,9 +304,9 @@ fn mut_hole_sites(out: Array[(Int, Int, String, String, String)], source: String
 fn mut_interp_sites(out: Array[(Int, Int, String, String, String)], source: String, start: Int, end: Int) -> Unit {
   let mut i = start
   while i < end {
-    let c = String::char_code_at(source, i)
+    let c = String::byte_at(source, i)
     if c == 92 && i + 1 < end {
-      if String::char_code_at(source, i + 1) == 123 {
+      if String::byte_at(source, i + 1) == 123 {
         let hs = i + 2
         let he = handle {
           interp_hole_end(source, end, hs)
