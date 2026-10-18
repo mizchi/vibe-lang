@@ -398,9 +398,13 @@ one linearization, so the guarantees above hold across them.
 ## `Send` and capture safety
 
 This section is the canonical statement of the `Send` allowlist. Other
-documents link here instead of copying it. The behaviour is pinned by
-`lib/@vibe/compiler/tests/send_allowlist_test.vibe`, so the list below cannot
-drift from the checker without a test failing.
+documents link here instead of copying it. Each row of the list below has a
+case in `lib/@vibe/compiler/tests/send_allowlist_test.vibe`, so a row cannot
+drift from the checker without a test failing. That test asks the bound
+directly; the places the bound is required -- a task's result, a channel
+element, `Parallel::map` -- are pinned by
+`fixtures/typecheck/{spawn_result_closure,spawn_result_option_array,parallel_map_result}_not_send_reject.vibe`
+(#3518: a task whose result is a closure used to be accepted).
 
 ### `Send`
 
@@ -921,12 +925,15 @@ stack-driving forms do not.
 
 | waits by | siblings | operations |
 |---|---|---|
-| blocking the instance | nothing runs | `sleep` outside a suspendable body |
+| blocking the instance | nothing runs | `sleep_blocking` |
 | driving on the caller's stack | ready siblings run to completion | `join`, `send`, `recv` |
-| suspending the task | siblings interleave with it | `sleep_wait`, `send_wait`, `recv_wait`, `result_wait`, `await` |
+| suspending the task | siblings interleave with it | `sleep`, `sleep_wait`, `send_wait`, `recv_wait`, `result_wait`, `await` |
 
-(When the entry's row carries `Async`, the compiler routes `sleep` everywhere
-through the entry's async boundary instead, ADR-0089.)
+An entry whose row carries `Async` is a place to suspend too: `sleep` and
+`await` in `main`, or in a function with `Async` in its row, suspend at the
+entry's async boundary (ADR-0089). A run-to-completion task and a
+`TaskGroup::run` body are not: `sleep` there is refused with the edit to move
+it into a suspendable task.
 
 - `Sender::send_wait` buffers when there is room. Otherwise it deposits the
   message (its linearization point) and suspends until that message is
