@@ -64,6 +64,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_gt_s,
   emit_i64_lt_s,
   emit_i64_mul,
+  emit_i64_ne,
   emit_i64_or,
   emit_i64_popcnt,
   emit_i64_reinterpret_f64,
@@ -89,107 +90,42 @@ import @vibe/compiler/codegen/wasm_emit {
 
 //# Functions
 
+/// `__rt_print_i64`: write the decimal form of param 0 and a newline to fd 1.
+/// Digits are built backwards into scratch memory ending at address 46 (the
+/// newline sits at 47), then one fd_write sends the run through the iov at
+/// address 0. Locals: 1 = negative?, 2 = position of the first written byte,
+/// 3 unused (kept so the local layout matches the raw variant's callers),
+/// 4 = the magnitude still to print.
 export fn gen_print_i64_body() -> Bytes {
-  let b = bytebuf_new()
-  emit_i32_const(b, 46)
-  emit_local_set(b, 2)
-  emit_i32_const(b, 47)
-  emit_i32_const(b, 10)
-  emit_i32_store8(b, 0, 0)
-  emit_local_get(b, 0)
-  emit_i64_const(b, 0)
-  emit_i64_lt_s(b)
-  emit_local_set(b, 1)
-  emit_local_get(b, 1)
-  emit_if_i64(b)
-  emit_i64_const(b, 0)
-  emit_local_get(b, 0)
-  emit_i64_sub(b)
-  emit_else(b)
-  emit_local_get(b, 0)
-  emit_end(b)
-  emit_local_set(b, 4)
-  emit_local_get(b, 4)
-  emit_i64_eqz(b)
-  emit_if_void(b)
-  emit_local_get(b, 2)
-  emit_i32_const(b, 48)
-  emit_i32_store8(b, 0, 0)
-  emit_local_get(b, 2)
-  emit_i32_const(b, 1)
-  emit_i32_sub(b)
-  emit_local_set(b, 2)
-  emit_end(b)
-  emit_block_void(b)
-  emit_loop_void(b)
-  emit_local_get(b, 4)
-  emit_i64_eqz(b)
-  emit_br_if(b, 1)
-  emit_local_get(b, 4)
-  emit_i64_const(b, 10)
-  emit_i64_rem_s(b)
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 3)
-  emit_local_get(b, 2)
-  emit_local_get(b, 3)
-  emit_i32_const(b, 48)
-  emit_i32_add(b)
-  emit_i32_store8(b, 0, 0)
-  emit_local_get(b, 2)
-  emit_i32_const(b, 1)
-  emit_i32_sub(b)
-  emit_local_set(b, 2)
-  emit_local_get(b, 4)
-  emit_i64_const(b, 10)
-  emit_i64_div_s(b)
-  emit_local_set(b, 4)
-  emit_br(b, 0)
-  emit_end(b)
-  emit_end(b)
-  emit_local_get(b, 1)
-  emit_if_void(b)
-  emit_local_get(b, 2)
-  emit_i32_const(b, 45)
-  emit_i32_store8(b, 0, 0)
-  emit_local_get(b, 2)
-  emit_i32_const(b, 1)
-  emit_i32_sub(b)
-  emit_local_set(b, 2)
-  emit_end(b)
-  emit_i32_const(b, 0)
-  emit_local_get(b, 2)
-  emit_i32_const(b, 1)
-  emit_i32_add(b)
-  emit_i32_store(b, 2, 0)
-  emit_i32_const(b, 4)
-  emit_i32_const(b, 47)
-  emit_local_get(b, 2)
-  emit_i32_sub(b)
-  emit_i32_store(b, 2, 0)
-  emit_i32_const(b, 1)
-  emit_i32_const(b, 0)
-  emit_i32_const(b, 1)
-  emit_i32_const(b, 8)
-  emit_call(b, 0)
-  emit_drop(b)
-  b
+  gen_print_i64_core(true)
 }
 
 /// #2199 ask 2: `__rt_print_i64_raw` -- gen_print_i64_body minus the trailing
 /// newline, so a decimal value can sit inside a larger line (the OOB abort
-/// message interleaves string fragments and numbers). Digits are built
-/// backwards from scratch address 46 exactly as in gen_print_i64_body; the
-/// only differences are that no byte 10 is stored at 47 and the iov length
-/// stops at 46 instead. Locals match print_i64 (3 x i32 + 1 x i64, type 1).
+/// message interleaves string fragments and numbers). Same scratch layout;
+/// no byte 10 is stored at 47 and the iov stops at 46. Locals match
+/// print_i64 (3 x i32 + 1 x i64, type 1).
 export fn gen_print_i64_raw_body() -> Bytes {
+  gen_print_i64_core(false)
+}
+
+fn gen_print_i64_core(newline: Bool) -> Bytes {
   let b = bytebuf_new()
-  emit_i32_const(b, 46)
+  // pos = 47: one past the last digit slot; each store pre-decrements.
+  emit_i32_const(b, 47)
   emit_local_set(b, 2)
+  if newline {
+    emit_i32_const(b, 47)
+    emit_i32_const(b, 10)
+    emit_i32_store8(b, 0, 0)
+  } else {
+    ()
+  }
+  // neg = x < 0; mag = neg ? -x : x
   emit_local_get(b, 0)
   emit_i64_const(b, 0)
   emit_i64_lt_s(b)
-  emit_local_set(b, 1)
-  emit_local_get(b, 1)
+  emit_local_tee(b, 1)
   emit_if_i64(b)
   emit_i64_const(b, 0)
   emit_local_get(b, 0)
@@ -198,60 +134,47 @@ export fn gen_print_i64_raw_body() -> Bytes {
   emit_local_get(b, 0)
   emit_end(b)
   emit_local_set(b, 4)
-  emit_local_get(b, 4)
-  emit_i64_eqz(b)
-  emit_if_void(b)
-  emit_local_get(b, 2)
-  emit_i32_const(b, 48)
-  emit_i32_store8(b, 0, 0)
+  // do { *--pos = '0' + mag % 10; mag /= 10 } while (mag != 0) -- a zero
+  // magnitude still writes its one digit.
+  emit_loop_void(b)
   emit_local_get(b, 2)
   emit_i32_const(b, 1)
   emit_i32_sub(b)
-  emit_local_set(b, 2)
-  emit_end(b)
-  emit_block_void(b)
-  emit_loop_void(b)
-  emit_local_get(b, 4)
-  emit_i64_eqz(b)
-  emit_br_if(b, 1)
+  emit_local_tee(b, 2)
   emit_local_get(b, 4)
   emit_i64_const(b, 10)
   emit_i64_rem_s(b)
   emit_i32_wrap_i64(b)
-  emit_local_set(b, 3)
-  emit_local_get(b, 2)
-  emit_local_get(b, 3)
   emit_i32_const(b, 48)
   emit_i32_add(b)
   emit_i32_store8(b, 0, 0)
-  emit_local_get(b, 2)
-  emit_i32_const(b, 1)
-  emit_i32_sub(b)
-  emit_local_set(b, 2)
   emit_local_get(b, 4)
   emit_i64_const(b, 10)
   emit_i64_div_s(b)
-  emit_local_set(b, 4)
-  emit_br(b, 0)
-  emit_end(b)
+  emit_local_tee(b, 4)
+  emit_i64_const(b, 0)
+  emit_i64_ne(b)
+  emit_br_if(b, 0)
   emit_end(b)
   emit_local_get(b, 1)
   emit_if_void(b)
   emit_local_get(b, 2)
-  emit_i32_const(b, 45)
-  emit_i32_store8(b, 0, 0)
-  emit_local_get(b, 2)
   emit_i32_const(b, 1)
   emit_i32_sub(b)
-  emit_local_set(b, 2)
+  emit_local_tee(b, 2)
+  emit_i32_const(b, 45)
+  emit_i32_store8(b, 0, 0)
   emit_end(b)
+  // iov { ptr = pos, len = end - pos }, end = 48 with the newline, else 47
   emit_i32_const(b, 0)
   emit_local_get(b, 2)
-  emit_i32_const(b, 1)
-  emit_i32_add(b)
   emit_i32_store(b, 2, 0)
   emit_i32_const(b, 4)
-  emit_i32_const(b, 46)
+  emit_i32_const(b, if newline {
+    48
+  } else {
+    47
+  })
   emit_local_get(b, 2)
   emit_i32_sub(b)
   emit_i32_store(b, 2, 0)

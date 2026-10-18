@@ -33,6 +33,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_add,
   emit_i64_and,
   emit_i64_const,
+  emit_i64_eq,
   emit_i64_eqz,
   emit_i64_or,
   emit_i64_shr_s,
@@ -1399,12 +1400,14 @@ fn emit_shadow_seq_plus_one(buf: Bytes) -> Unit {
 /// matching skip). `push_addr` emits the i32 address of the rc word; it is
 /// invoked up to three times, so it must be a pure push.
 export fn emit_rc_word_inc_saturating(buf: Bytes, push_addr: () -> Unit) -> Unit {
+  // The rc is the word's low 24 bits; `word << 8` keeps exactly those, so
+  // "not saturated" is one compare against 0xFFFFFF00.
   push_addr()
   emit_i32_load(buf, 2, 0)
-  emit_i32_const(buf, 16777215)
-  // i32.and (0x71) -- no emit_i32_and helper exists
-  bytebuf_push(buf, 113)
-  emit_i32_const(buf, 16777215)
+  emit_i32_const(buf, 8)
+  // i32.shl (0x74)
+  bytebuf_push(buf, 116)
+  emit_i32_const(buf, -256)
   emit_i32_ne(buf)
   emit_if_void(buf)
   push_addr()
@@ -1417,8 +1420,8 @@ export fn emit_rc_word_inc_saturating(buf: Bytes, push_addr: () -> Unit) -> Unit
 }
 
 /// ADR-0092 (#1262): the dup guard, OUT-OF-LINE -- `local.get v; call
-/// __rt_rc_dup`, ~5 B instead of the 72 B the inline form costs at every
-/// site. `dup_fn_idx < 0` falls back to the inline form, which is what the
+/// __rt_rc_dup`, ~5 B instead of the 55 B the inline form costs at every
+/// site (72 B before its two tag tests became one mask). `dup_fn_idx < 0` falls back to the inline form, which is what the
 /// runtime helper itself is built from (gen_rc_dup_body) and what any
 /// emitter without a function table in reach still uses.
 ///
@@ -1476,7 +1479,7 @@ fn emit_rc_dup_call(buf: Bytes, local_idx: Int, dup_fn_idx: Int) -> Unit {
 ///     local.get v; i64.const 1; i64.and; i32.wrap_i64
 ///     if (void)  local.get v; call __rt_rc_dup  end
 ///
-/// ~13 B per site against ~5 B for the bare call and 72 B for the full
+/// ~13 B per site against ~5 B for the bare call and 55 B for the full
 /// inline guard -- the third point between the two the size analysis above
 /// compares. The helper re-tests the tag on entry (it is built from
 /// `emit_rc_dup_inline`), so this is a pure fast-path skip: the emitted
@@ -1496,16 +1499,21 @@ fn emit_rc_dup_tagtest_call(buf: Bytes, local_idx: Int, dup_fn_idx: Int) -> Unit
 /// The guard expanded in place. Kept as the single definition of what a dup
 /// MEANS: gen_rc_dup_body builds the out-of-line helper by calling this with
 /// local 0, so the two forms cannot drift apart.
-export fn emit_rc_dup_inline(buf: Bytes, local_idx: Int, rc_shadow: Bool, uaf_abort_idx: Int, prefix_fat: Int) -> Unit {
+/// Push `v & 0xFFFFFFFF00000001` and `1` for the value in `local_idx`; the
+/// caller compares them. Equal exactly when `v` is an RC block pointer: odd
+/// (an int/bool is even) with the high 32 bits clear (a string/bytes fat
+/// pointer keeps its data offset, >= 64, up there). One mask instead of a
+/// test per property, shared by the dup guard and rc_drop's entry.
+export fn emit_rc_block_mask_test(buf: Bytes, local_idx: Int) -> Unit {
   emit_local_get(buf, local_idx)
-  emit_i64_const(buf, 1)
+  emit_i64_const(buf, -4294967295)
   emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_if_void(buf)
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, 32)
-  emit_i64_shr_s(buf)
-  emit_i64_eqz(buf)
+  emit_i64_const(buf, 1)
+}
+
+export fn emit_rc_dup_inline(buf: Bytes, local_idx: Int, rc_shadow: Bool, uaf_abort_idx: Int, prefix_fat: Int) -> Unit {
+  emit_rc_block_mask_test(buf, local_idx)
+  emit_i64_eq(buf)
   emit_if_void(buf)
   // #715 recurrence guard (VIBE_RC=shadow): trap if the shadow byte at
   // RC_SHADOW_BASE+vptr says this block was already freed -- a dup-of-freed
@@ -1530,15 +1538,14 @@ export fn emit_rc_dup_inline(buf: Bytes, local_idx: Int, rc_shadow: Bool, uaf_ab
   } else {
     ()
   }
+  // The rc word sits at vptr - 4 = (v - 1) - 4. The guard proved `v` odd
+  // with its high half clear, so that is the low word of `v` minus 5.
   emit_rc_word_inc_saturating(buf, () -> {
     emit_local_get(buf, local_idx)
-    emit_i64_const(buf, -2)
-    emit_i64_and(buf)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 4)
+    emit_i32_const(buf, 5)
     emit_i32_sub(buf)
   })
-  emit_end(buf)
   emit_end(buf)
 }
 

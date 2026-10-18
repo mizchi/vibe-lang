@@ -66,7 +66,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./linked_diagnostics.vibe {
-  seed_builtin_diagnostic_strings
+  oob_message_fragments, seed_builtin_diagnostic_strings
 }
 
 import ./linked_helpers.vibe {
@@ -1802,7 +1802,7 @@ export fn lc_late_dce_wat_roots(roots: Array[String], stmts: Array[Stmt], iw_nam
 
 // Build the complete pool outside the module emitter so loop temporaries and
 // the recursive map-key walk do not inflate that function's Wasm locals.
-export fn lc_build_string_pool(stmts: Array[Stmt], srcs: Array[(String, String)], need_array_capacity: Bool, need_bytes_capacity: Bool, rc_shadow: Bool) -> (StrTable, Int, Int, Bool) {
+export fn lc_build_string_pool(stmts: Array[Stmt], srcs: Array[(String, String)], need_array_capacity: Bool, need_bytes_capacity: Bool, rc_shadow: Bool) -> (StrTable, Int, Int, Bool, Array[Int]) {
   let str_collected = collect_strings_stmts(stmts)
   let str_strs = lc_fresh_string_array()
   Array::push(str_strs, "")
@@ -1887,7 +1887,22 @@ export fn lc_build_string_pool(stmts: Array[Stmt], srcs: Array[(String, String)]
   // fragments so the generated builtin bodies can reference them even when
   // the source never spells them: one prefix per operation, plus the shared
   // middle and the trailing newline (__rt_oob_abort assembles the line).
+  let diag_base = Array::length(str_strs)
   seed_builtin_diagnostic_strings(str_strs, need_array_capacity, need_bytes_capacity, rc_shadow)
+  // The OOB fragments the seed itself added. One the source already spelled
+  // sits below `diag_base` and is a literal the program reads, so only these
+  // may lose their data segment when no bounds-checked abort survives.
+  let oob_frag_slots: Array[Int] = []
+  let oob_frags = oob_message_fragments()
+  let mut __of = diag_base
+  while __of < Array::length(str_strs) {
+    if array_contains_str(oob_frags, Array::get(str_strs, __of)) {
+      Array::push(oob_frag_slots, __of)
+    } else {
+      ()
+    }
+    __of = __of + 1
+  }
   // #3126: an `Int` `/` or `%` whose divisor may be zero prints
   // `Int <op> by zero at <path>:<line>:<col>` before it traps. Seed the
   // fragments __rt_div_zero_abort assembles the line from, plus the PATH of
@@ -1958,5 +1973,5 @@ export fn lc_build_string_pool(stmts: Array[Stmt], srcs: Array[(String, String)]
   // #2386: the string table and its index, built once here after the last
   // push to str_strs and shared by every per-function CompileCtx below.
   let str_table_shared = str_table_new(str_strs, str_offsets, str_lengths)
-  (str_table_shared, src_str_base, heap_start, need_div_zero_abort)
+  (str_table_shared, src_str_base, heap_start, need_div_zero_abort, oob_frag_slots)
 }

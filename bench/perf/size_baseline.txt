@@ -260,8 +260,32 @@
 #   fib / fizzbuzz / hello_world unchanged (no rc_drop in their live sets)
 # Ratcheted DOWN per the header.
 
-closure_indirect 1625
-fib 655
-fizzbuzz 1211
-hello_world 691
-variant_float 2962
+# 2026-10-18 rebaseline: the runtime every module links got smaller.
+#   - __rt_oob_abort's six message fragments ("Array::get: index ", ...,
+#     " out of bounds for length ") keep a data segment only while the abort
+#     is reachable, and an empty string gets none (data section 174 -> 10 B
+#     in a module without a bounds check).
+#   - __rt_print_i64 is a do-while digit loop with pre-decrementing stores
+#     (154 -> 116 B); the static byte twin it replaced is gone.
+#   - vibe_rc_alloc / vibe_rc_drop test "is this a bin size" with one rotated
+#     compare, keep the bin address and the rc word in locals, and merge the
+#     two legacy free-list pushes; rc_alloc's memory grow reuses two dead
+#     locals (rc_alloc 319 -> 263, structs-only rc_drop 285 -> 208).
+#   - The dup guard and rc_drop's entry test "odd with a clear high half" as
+#     one mask, and the dup addresses the rc word as `wrap(v) - 5`
+#     (__rt_rc_dup 74 -> 57 B).
+# Measured A/B against a stage2 built from the commit before this one
+# (whose linear lane is main's): outputs byte-identical, heap high-water
+# unchanged on the loop probes.
+#   closure_indirect  1625 -> 1272
+#   fib                655 ->  452
+#   fizzbuzz          1211 ->  991
+#   hello_world        691 ->  488
+#   variant_float     2962 -> 2673  (keeps its OOB fragments: it indexes)
+# Ratcheted DOWN per the header.
+
+closure_indirect 1272
+fib 452
+fizzbuzz 991
+hello_world 488
+variant_float 2673

@@ -64,7 +64,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_str, get_efn_params
+  array_contains_int, array_contains_str, get_efn_params
 }
 
 import @vibe/compiler/codegen/expr {
@@ -264,6 +264,7 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
   let num_strings = input.num_strings
   let num_user_funcs = input.num_user_funcs
   let oob_abort_idx = input.oob_abort_idx
+  let oob_frag_slots = input.oob_frag_slots
   let print_i64_raw_idx = input.print_i64_raw_idx
   let print_int_idx = input.print_int_idx
   let print_str_idx = input.print_str_idx
@@ -1917,6 +1918,9 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
   // only FALSE-POSITIVE (keeps an unused helper) — never drops a used one,
   // since every real call's opcode byte is also visited. Skipped for
   // instrumentation builds so debug tooling sees unmodified bodies.
+  // Whether `__rt_oob_abort` survives; until the scan below says otherwise
+  // the message fragments it prints keep their data segments.
+  let mut oob_frags_live = true
   if !coverage && !debug_trace && !debug_break && !rc_shadow {
     let builtin_used = lc_fresh_bool_array()
     let mut sbu_i = 0
@@ -1979,6 +1983,7 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
     let lc_helper_used = (idx: Int) -> Bool {
       idx >= num_imported_funcs && idx < func_offset && Array::get(builtin_used, idx - num_imported_funcs)
     }
+    oob_frags_live = lc_helper_used(oob_abort_idx)
     if Bytes::length(rc_drop_body_without_array_arm) > 0 && lc_helper_used(rc_drop_idx) && !lc_helper_used(arr_new_idx) && !lc_helper_used(arr_slice_idx) && !lc_helper_used(array_capacity_idx) {
       Array::set(bodies, rc_drop_idx - num_imported_funcs, rc_drop_body_without_array_arm)
     } else {
@@ -2176,11 +2181,24 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
     let data_bufs = lc_fresh_bytes_array()
     let mut di = 0
     while di < num_strings {
-      Array::push(data_offsets, Array::get(str_offsets, di))
-      Array::push(data_bufs, string_to_data(Array::get(str_strs, di)))
+      // A segment is omitted only where nothing can read it: an empty string
+      // writes no bytes, and an OOB fragment the seed added is read only by
+      // `__rt_oob_abort`. Every other string keeps its address either way,
+      // so omitting one leaves a zeroed gap rather than moving anything.
+      let ds = Array::get(str_strs, di)
+      if String::length(ds) == 0 || (!oob_frags_live && array_contains_int(oob_frag_slots, di)) {
+        ()
+      } else {
+        Array::push(data_offsets, Array::get(str_offsets, di))
+        Array::push(data_bufs, string_to_data(ds))
+      }
       di = di + 1
     }
-    emit_data_section_multi(out, data_offsets, data_bufs)
+    if Array::length(data_offsets) > 0 {
+      emit_data_section_multi(out, data_offsets, data_bufs)
+    } else {
+      ()
+    }
   }
   // Name section (debugger P0 / ADR-0035): name the user functions so wasm
   // backtraces and tooling show `main` etc. instead of `<wasm function N>`.
