@@ -780,7 +780,15 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
   let result = match unify(expected, actual, s) {
     Some(su) => su,
     None => {
-      let structural = match unify(strip_effects(expected), strip_effects(actual), s) {
+      // #3518: the effect-stripped retry's substitution is the answer when it
+      // succeeds. Discarding it left every type variable that only this
+      // retry could bind -- `T` in `f: () -> T with Exception + e` given a
+      // closure whose row differs -- unbound: a `T: Send` bound was then
+      // skipped as an open variable (a closure crossed `TaskGroup::spawn`),
+      // and `let n: Int = give(() -> "hello")` checked clean and printed a
+      // pointer.
+      let structural_s = unify(strip_effects(expected), strip_effects(actual), s)
+      let structural = match structural_s {
         Some(_) => true,
         None => false
       }
@@ -845,7 +853,10 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
             Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": effect row mismatch: a value of type ", String::concat(type_to_string(subst_apply(s, actual)), String::concat(" cannot be used where ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(" is expected (the { ", String::concat(lbl, String::concat(" } effect would be dropped — no handler could ever run)", assignable_marker(off))))))))))
             s
           },
-          None => s
+          None => match structural_s {
+            Some(su) => su,
+            None => s
+          }
         }
       } else if !(reportable || head_differ) {
         // #981: a user generic type's ARGUMENTS were never compared here — a
