@@ -87,7 +87,7 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
   if ((receipt.kind ?? "vibe-taskgroup-lowering") !== kind || receipt.version !== 1 || receipt.compiler_sha256 !== await digest(resolve(compiler)) ||
       receipt.runner_sha256 !== await digest(runner)) throw new Error("rebuild lowering images for this compiler and runner");
   if (phase === "functions" && (receipt.function_abi !== "bump-core-tagged-callbacks-1" ||
-      receipt.context_format !== 3 || receipt.job_format !== 2 || receipt.compile_engine_rc !== 0 || receipt.worker_engine_rc !== 0 || receipt.coordinator_engine_rc !== 1)) {
+      receipt.context_format !== 7 || receipt.job_format !== 2 || receipt.compile_engine_rc !== 0 || receipt.worker_engine_rc !== 0 || receipt.coordinator_engine_rc !== 1)) {
     throw new Error("rebuild function images for the supported native callback ABI");
   }
   for (const name of ["worker.wasm", "compile.wasm", "coordinator.component.wasm"]) {

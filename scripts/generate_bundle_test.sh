@@ -6,7 +6,27 @@ BUNDLE_SCRIPT="$SCRIPT_DIR/generate_bundle.sh"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_bundle_test.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
-mkdir -p "$TMP_ROOT/lib/@vibe/compiler"
+mkdir -p "$TMP_ROOT/lib/@vibe/compiler" "$TMP_ROOT/scripts" "$TMP_ROOT/bootstrap/seed"
+# The generator bootstraps its flatten tool from the seed, including on tiny
+# fixture projects. Model those runner boundaries explicitly instead of relying
+# on the retired missing-seed/raw-concatenation path.
+printf 'fixture seed\n' > "$TMP_ROOT/bootstrap/seed/compiler.wasm"
+for helper in generate_bundle.sh trace_lib.sh bundle_source_functions.py seed_validation_receipt.py; do
+  cp "$SCRIPT_DIR/$helper" "$TMP_ROOT/scripts/$helper"
+done
+BUNDLE_SCRIPT="$TMP_ROOT/scripts/generate_bundle.sh"
+cat > "$TMP_ROOT/scripts/run_wasm_vibe_host_runner.sh" <<'RUNNER'
+#!/usr/bin/env bash
+set -euo pipefail
+input="$4"; output="$5"
+if [ "${VIBE_EMIT_MERGED_SOURCE:-0}" = 1 ]; then
+  sed '/^import /d' lib/@vibe/compiler/polyfill.vibe lib/@vibe/compiler/token.vibe lib/@vibe/compiler/cli_adapter.vibe > "$output"
+elif [ "${VIBE_EMIT_MODULE_SOURCE:-0}" = 1 ]; then
+  cp "$input" "$output"
+else
+  printf 'fixture compiled wasm\n' > "$output"
+fi
+RUNNER
 
 cat > "$TMP_ROOT/lib/@vibe/compiler/compiler_sources_manifest.tsv" <<'EOF'
 # group	path
@@ -138,20 +158,20 @@ if ! grep -qE '^export let cli_adapter_module_source' "$OUT_ADAPTER"; then
   exit 1
 fi
 
-if ! grep -qF 'push_grouped_source_pair(groups, "core", source_0)' "$OUT"; then
+if ! grep -qF 'push_grouped_source_pair(groups, "core", source_0())' "$OUT"; then
   echo "generate-bundle self-test: missing core group mapping" >&2
   cat "$OUT" >&2
   exit 1
 fi
 
-if ! grep -qF 'push_grouped_source_pair(groups, "syntax", source_1)' "$OUT"; then
+if ! grep -qF 'push_grouped_source_pair(groups, "syntax", source_1())' "$OUT"; then
   echo "generate-bundle self-test: missing syntax group mapping" >&2
   cat "$OUT" >&2
   exit 1
 fi
 
 # source_2 is cli_adapter.vibe (entry group)
-if ! grep -qF 'push_grouped_source_pair(groups, "entry", source_2)' "$OUT"; then
+if ! grep -qF 'push_grouped_source_pair(groups, "entry", source_2())' "$OUT"; then
   echo "generate-bundle self-test: missing entry group mapping" >&2
   cat "$OUT" >&2
   exit 1
@@ -160,16 +180,16 @@ fi
 adapter_sources_block="$(sed -n '/export let cli_adapter_sources/,/^}/p' "$OUT_ADAPTER")"
 adapter_merged_block="$(sed -n '/export let cli_adapter_merged_source/,/^}/p' "$OUT_ADAPTER")"
 adapter_module_block="$(sed -n '/export let cli_adapter_module_source/,/^}/p' "$OUT_ADAPTER")"
-adapter_merged_value_block="$(sed -n '/let cli_adapter_merged_source_value =/,/export let cli_adapter_merged_source/p' "$OUT_ADAPTER")"
-adapter_module_value_block="$(sed -n '/let cli_adapter_module_source_value =/,/export let cli_adapter_module_source/p' "$OUT_ADAPTER")"
+adapter_merged_value_block="$adapter_merged_block"
+adapter_module_value_block="$adapter_module_block"
 
-if ! printf '%s\n' "$adapter_sources_block" | grep -qF 'Array::push(sources, cli_adapter_source_1)'; then
+if ! printf '%s\n' "$adapter_sources_block" | grep -qF 'Array::push(sources, cli_adapter_source_1())'; then
   echo "generate-bundle self-test: adapter closure missing token source" >&2
   cat "$OUT_ADAPTER" >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$adapter_sources_block" | grep -qF 'Array::push(sources, cli_adapter_source_2)'; then
+if ! printf '%s\n' "$adapter_sources_block" | grep -qF 'Array::push(sources, cli_adapter_source_2())'; then
   echo "generate-bundle self-test: adapter closure missing adapter source" >&2
   cat "$OUT_ADAPTER" >&2
   exit 1
@@ -187,27 +207,10 @@ if printf '%s\n' "$adapter_merged_block" | grep -qF 'cli_adapter_ordered_sources
   exit 1
 fi
 
-if ! grep -qF 'let cli_adapter_merged_source_value =' "$OUT_ADAPTER"; then
-  echo "generate-bundle self-test: adapter merged source should be bound as a direct string value" >&2
-  cat "$OUT_ADAPTER" >&2
-  exit 1
-fi
-
-if ! grep -qF 'let cli_adapter_module_source_value =' "$OUT_ADAPTER"; then
-  echo "generate-bundle self-test: adapter module source should be bound as a direct string value" >&2
-  cat "$OUT_ADAPTER" >&2
-  exit 1
-fi
-
-if ! printf '%s\n' "$adapter_merged_block" | grep -qF 'cli_adapter_merged_source_value'; then
-  echo "generate-bundle self-test: adapter merged source should rebuild from the direct string binding" >&2
-  cat "$OUT_ADAPTER" >&2
-  exit 1
-fi
-
-if ! printf '%s\n' "$adapter_module_block" | grep -qF 'cli_adapter_module_source_value'; then
-  echo "generate-bundle self-test: adapter module source should rebuild from the direct string binding" >&2
-  cat "$OUT_ADAPTER" >&2
+# Large strings belong inside their producer function, so unrelated bundle
+# exports do not eagerly materialize both source strings at startup.
+if grep -qE '^let cli_adapter_(merged|module)_source_value =' "$OUT_ADAPTER"; then
+  echo "generate-bundle self-test: source text must be produced lazily" >&2
   exit 1
 fi
 

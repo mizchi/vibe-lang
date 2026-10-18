@@ -12,7 +12,7 @@ const SCRIPTS = [
   "selfcompile_heap_policy_container.mjs",
   "selfcompile_heap_policy_hostile_wasm.mjs",
   "selfcompile_heap_policy_policy_runner.sh",
-  "generations.sh", "generate_bundle.sh", "bundle_source_functions.py", "trace_lib.sh",
+  "generations.sh", "generate_bundle.sh", "bundle_source_functions.py", "seed_validation_receipt.py", "trace_lib.sh",
   "wasm_vibe_host_runner.js",
   "wasm_vibe_host_runtime.js",
   "wasm_vibe_host_runner_http_worker.js", "wasm_vibe_host_runner_tcp_worker.js",

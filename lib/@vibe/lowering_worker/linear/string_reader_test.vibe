@@ -1,5 +1,5 @@
 import ./string_reader.vibe {
-  linear_string_reader, linear_write_string
+  linear_string_reader, linear_write_string, linear_write_string_index
 }
 import @vibe/compiler/cache {
   ast_binary_read_byte,
@@ -8,8 +8,77 @@ import @vibe/compiler/cache {
   ast_binary_reader_new,
   ast_binary_reader_remaining,
   ast_binary_reader_take,
+  ast_binary_reader_with_string_pool,
   ast_binary_write_string,
   ast_binary_write_varint
+}
+
+test "linear string reference: exact capacity, checked pool and unchanged refusal" {
+  let value = "pooled é🍣" + String::from_byte(0)
+  let bytes = Bytes::with_capacity(64)
+  let mut padding = 0
+  while padding < 54 {
+    Bytes::push(bytes, 127); padding = padding + 1
+  }
+  linear_write_string_index(bytes, 0)
+  assert_eq(Bytes::length(bytes), 64)
+  let reader = ast_binary_reader_with_string_pool(linear_string_reader(bytes), FrozenArray::from_array([
+    value
+  ]))
+  reader.pos = 54
+  assert(ast_binary_read_string_checked(reader) == value)
+  assert_eq(ast_binary_reader_remaining(reader), 0)
+  let short = Bytes::with_capacity(64)
+  padding = 0
+  while padding < 55 {
+    Bytes::push(short, 127); padding = padding + 1
+  }
+  let error = handle {
+    linear_write_string_index(short, 0); "accepted"
+  } with { Exception::Throw(msg) => msg }
+  inspect(error, "linear string writer: insufficient reserved capacity")
+  assert_eq(Bytes::length(short), 55)
+  assert_eq(Bytes::get(short, 54), 127)
+  let invalid = handle {
+    linear_write_string_index(short, -1); "accepted"
+  } with { Exception::Throw(msg) => msg }
+  inspect(invalid, "linear string writer: invalid pool index")
+  assert_eq(Bytes::length(short), 55)
+  let absent = handle {
+    let missing = ast_binary_reader_with_string_pool(linear_string_reader(bytes), FrozenArray::from_array([
+    ]))
+    missing.pos = 54
+    ast_binary_read_string_checked(missing); "accepted"
+  } with { Exception::Throw(msg) => msg }
+  inspect(absent, "ast_binary: string reference is outside the immutable pool")
+}
+
+test "linear string writes: capacity boundary is identical on bump and RC" {
+  let full = Bytes::with_capacity(64)
+  let mut i = 0
+  while i < 62 {
+    Bytes::push(full, 127); i = i + 1
+  }
+  linear_write_string(full, "a")
+  assert_eq(Bytes::length(full), 64)
+  let error = handle {
+    linear_write_string(full, ""); "accepted"
+  } with { Exception::Throw(msg) => msg }
+  inspect(error, "linear string writer: insufficient reserved capacity")
+  assert_eq(Bytes::length(full), 64)
+  assert_eq(Bytes::get(full, 63), 97)
+  for index in [0, 127, 128, 16383, 16384, 1152921504606846976] {
+    let ordinary = Bytes::new()
+    ast_binary_write_varint(ordinary, 1152921504606846976)
+    ast_binary_write_varint(ordinary, index)
+    let encoded = Bytes::with_capacity(64)
+    linear_write_string_index(encoded, index)
+    assert_eq(Bytes::length(encoded), Bytes::length(ordinary))
+    i = 0
+    while i < Bytes::length(ordinary) {
+      assert_eq(Bytes::get(encoded, i), Bytes::get(ordinary, i)); i = i + 1
+    }
+  }
 }
 
 test "linear string writer: byte-identical UTF-8 and NUL framing" {
