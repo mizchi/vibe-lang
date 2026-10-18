@@ -5,7 +5,7 @@ import @vibe/ast {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, builtin_callee_resolution, expr_children, lookup_registry_builtin
+  Expr, Pat, Stmt, Type, TypeExpr, builtin_callee_resolution, expr_children, lookup_registry_builtin
 }
 
 import @vibe/core {
@@ -1718,6 +1718,41 @@ fn scps_rename_pat_idents(ps: Array[Pat], x: String, nx: String) -> Array[Pat] {
   out
 }
 
+fn scps_names_top_level_fn(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String) -> Bool {
+  let (is_fn, _) = scps_fn_row_of(ctx, name)
+  is_fn
+}
+
+/// #3523 / #3519: a host builtin whose row does not carry the handled effect
+/// and that takes no function argument -- `println`, `Fs::read_file` -- runs
+/// to completion where it is called and cannot reach the effect, so it is as
+/// see-through as a pure builtin. It used to be refused, which made a
+/// suspendable task that printed, and an `Async` entry the suspend lowering
+/// rewrites, impossible to compile ("cannot see through ... the call to
+/// 'println'"). A builtin taking a closure could run one that suspends, so it
+/// stays refused.
+export fn scps_builtin_is_effect_free(name: String, eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+  match lookup_registry_builtin(name) {
+    Some(CtFn(params, _, brow)) => {
+      let row = match brow {
+        Some(r) => r,
+        None => ""
+      }
+      let mut takes_fn = false
+      let mut i = 0
+      while i < Array::length(params) && !takes_fn {
+        takes_fn = match Array::get(params, i) {
+          CtFn(_, _, _) => true,
+          _ => false
+        }
+        i = i + 1
+      }
+      !takes_fn && !scps_row_contains(ctx, row, eff)
+    },
+    _ => false
+  }
+}
+
 /// True if `e` could reach a suspend of the effect under proof: ANY
 /// perform (per-effect matching is unreliable under alias spellings, so
 /// every perform taints), any reference to a needing name (call OR value
@@ -1751,6 +1786,9 @@ export fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals:
         // spelling would otherwise name (Codex on #3059).
         true
       } else if idp_is_pure_builtin_call(nm) || scps_is_safe_mut_builtin(nm) || scps_is_ctor_name(ctx, nm) {
+        scps_inert_taint_exprs(args, eff, needing, locals, ctx)
+      } else if !scps_names_top_level_fn(ctx, nm) && scps_builtin_is_effect_free(nm, eff, ctx) {
+        // #3523: a host builtin that cannot reach `eff` (`println`).
         scps_inert_taint_exprs(args, eff, needing, locals, ctx)
       } else {
         let (is_fn, row) = scps_fn_row_of(ctx, nm)

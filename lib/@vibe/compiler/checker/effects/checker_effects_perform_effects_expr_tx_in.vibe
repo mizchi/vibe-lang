@@ -10,6 +10,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   env_cache_read_snapshot,
+  env_lookup,
   expr_child_at,
   expr_children,
   expr_children_pop,
@@ -196,6 +197,37 @@ fn afe_contains_for(expr: Expr) -> Bool {
   }
 }
 
+/// #3519: the parameter types of a call's named callee, or none when it is a
+/// local binding or has no visible function type.
+fn afe_callee_param_types(callee: Expr, env: TypeEnv, locals: AfeLocals) -> Array[Type] {
+  match callee {
+    EIdent(name, _) => if afe_binds_local(locals, name) {
+      []
+    } else {
+      match env_lookup(env, name) {
+        Some(t) => afe_fn_param_types(t),
+        None => []
+      }
+    },
+    _ => []
+  }
+}
+
+fn afe_fn_param_types(t: Type) -> Array[Type] {
+  match t {
+    CtFn(params, _, _) => params,
+    CtForAll(_, _, body) => afe_fn_param_types(body),
+    _ => []
+  }
+}
+
+fn afe_type_is_async_fn(t: Type) -> Bool {
+  match t {
+    CtFn(_, _, row) => effect_opt_is_async(row),
+    _ => false
+  }
+}
+
 export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> Array[EffectError] {
   // #2386 review: the memos are cleared before ANYTHING of this entry asks
   // them -- `afe_set_field_types` below consults the `AsyncIter` provenance
@@ -307,6 +339,29 @@ fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, lo
       let rec_locals = afe_bind_value(locals, name, val, env)
       check_async_effects_expr_lo_into(val, env, in_async, rec_locals, out)
       check_async_effects_expr_lo_into(body, env, in_async, rec_locals, out)
+    },
+    // #3519: a closure literal with no row of its own, handed to a parameter
+    // whose function type names `Async` (`TaskGroup::spawn_suspend`'s task),
+    // runs where `Async` is handled, so its body is an `Async` context. Walked
+    // as a generic node it was not, and a plain `sleep` in a suspendable task
+    // was refused unless the task carried a row -- which then could not name
+    // `Console`.
+    ECall(callee, args, _, _) => {
+      check_async_effects_expr_lo_into(callee, env, in_async, locals, out)
+      let param_tys = afe_callee_param_types(callee, env, locals)
+      let mut ai = 0
+      while ai < Array::length(args) {
+        let arg = Array::get(args, ai)
+        match arg {
+          EFn(_, _, aparams, _, None, abody) => if ai < Array::length(param_tys) && afe_type_is_async_fn(Array::get(param_tys, ai)) {
+            check_async_effects_expr_lo_into(abody, env, true, afe_bind_params(locals, aparams, env), out)
+          } else {
+            check_async_effects_expr_lo_into(arg, env, in_async, locals, out)
+          },
+          _ => check_async_effects_expr_lo_into(arg, env, in_async, locals, out)
+        }
+        ai = ai + 1
+      }
     },
     EForIn(name, index_name, iter, body) => {
       check_async_effects_expr_lo_into(iter, env, in_async, locals, out)

@@ -891,11 +891,21 @@ fn main() -> Int allows Async + Exception {
 }
 ```
 
-A body that suspends carries its row on the literal, as above. Without it the
-suspension is charged to the enclosing function instead (measured: an
-unannotated `() -> { sleep_wait(5); 41 }` makes `main` fail with ``effect row
-mismatch for 'main': missing { Async }``). A body that never suspends needs no
-annotation: `TaskGroup::spawn_suspend(g, () -> 6 * 7)` settles at once.
+The body's row may be written on the literal, as above, or left off. Left off,
+the body's effects are the enclosing function's: its `Async` is discharged by
+`spawn_suspend` like a written one, and its other capabilities -- `println`'s
+`Console`, say -- are the enclosing function's own, so the entry must allow them
+(`fn main allows Console + Async`). A written row is the task's whole row,
+`Async + Exception`: a body that prints is written without one (#3519). A body
+that never suspends needs no annotation either:
+`TaskGroup::spawn_suspend(g, () -> 6 * 7)` settles at once.
+
+A host builtin that cannot reach `Async` and takes no closure (`println`,
+`Fs::read_file`) is see-through to the suspend lowering, so a suspendable task
+-- and an `Async` entry the lowering rewrites -- may call it (#3523; it used to
+be refused as "cannot see through ... the call to 'println'"). Pinned by
+`fixtures/suspend_task_prints_and_sleeps.vibe`, whose two tasks print and
+`sleep` and interleave `a1 b1 a2 b2`.
 
 Pinned by `fixtures/err_spawn_suspend_{alias,ascribed,rebound,wrapper,wrapper_rebound}_plain.vibe`
 and `fixtures/spawn_suspend_wrapper_inline.vibe`, whose gate rows in
@@ -934,6 +944,15 @@ through the entry's async boundary instead, ADR-0089.)
 - `await` on a builtin `Future[T]` parks the task until the future resolves.
   A task waiting on a future is woken by the resolve, not by polling.
 
+An `Async` entry that itself calls an `Async` function -- `sleep_wait`, or one
+of the program's own -- gets the suspend-class boundary even when the program
+calls no `sleep` and no host future (#3523). Without it a direct `sleep_wait`
+trapped, and an `Async` closure the entry called answered its step object (a
+heap pointer). An `Async` closure handed to a parameter that calls it plainly
+(`fn apply(f: () -> Int)`) cannot reach that boundary, and is refused at build
+time. Pinned by `fixtures/async_entry_calls_{async_closure,sleep_wait,async_fn_beside_group}.vibe`
+and `fixtures/err_async_entry_closure_to_plain_param.vibe`.
+
 A run-to-completion task cannot suspend. A `TaskGroup::spawn` or
 `Parallel::map` closure that uses `Async` -- a `_wait` operation, or any
 function whose row carries `Async`, even one that never suspends -- is refused
@@ -942,7 +961,10 @@ it compiled clean and `join` answered a heap pointer). The check reads the task
 closure's own body, so a plain task that opens a group of its own and starts a
 suspendable task there is accepted. Pinned by
 `fixtures/err_{spawn_task_wait,spawn_task_async_fn,spawn_task_named_closure,parallel_map_task_async_fn}_plain.vibe`
-and `fixtures/spawn_task_nested_suspend_group.vibe`.
+and `fixtures/spawn_task_nested_suspend_group.vibe`. A top-level `Async`
+function passed to the task by name is refused the same way
+(`fixtures/err_spawn_task_async_fn_by_name.vibe`): the scheduler calls its plain
+original, where a suspension reached no handler and trapped.
 
 A task blocked on a channel, a sibling or a future is woken by the event it
 waits for. A waiting task that nothing in the group can wake makes `pump_all`,

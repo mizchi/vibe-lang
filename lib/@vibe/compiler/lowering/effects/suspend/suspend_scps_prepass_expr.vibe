@@ -1776,6 +1776,16 @@ fn scps_arg_is_own_step_for(arg: Expr, eff: String, scope: Array[(String, Int)])
   }
 }
 
+/// #3523: a top-level function whose row carries the effect, passed by name.
+/// Its original is what the scheduler calls, on the plain convention, so a
+/// suspension in it reached no handler and trapped (Codex on #3524).
+fn scps_arg_names_needing_fn(arg: Expr, needing: Array[String], scope: Array[(String, Int)]) -> Bool {
+  match arg {
+    EIdent(name, _) => scps_local_class(scope, name) < 0 && edp_str_array_contains(needing, name),
+    _ => false
+  }
+}
+
 fn scps_task_cannot_suspend_msg(fname: String, eff: String) -> String {
   let head = String::concat(String::concat("`", fname), String::concat("` runs its task to completion, so the task cannot suspend, but this task closure uses `", String::concat(eff, "`")))
   if is_runtime_scheduled_effect(eff) {
@@ -1956,7 +1966,7 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
                   // clean and silently returned a heap pointer as an Int.
                   let mut ei0 = 0
                   while ei0 < Array::length(ecfgs) {
-                    let (ceff0, _, _) = Array::get(ecfgs, ei0)
+                    let (ceff0, _, cneeding0) = Array::get(ecfgs, ei0)
                     // A parameter whose row is a row VARIABLE is exempt: the
                     // variable can be instantiated to this effect at the call
                     // site, which is exactly what makes
@@ -1965,7 +1975,7 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
                     // does not carry the effect is a plain-convention parameter.
                     if !scps_row_has_var(prow) && !scps_row_contains(ctx, prow, ceff0) && scps_literal_is_step_for(Array::get(rargs, aj), ceff0) {
                       Array::push(scps_st_errs(st), String::concat(String::concat(String::concat("a closure literal that performs `", ceff0), "` (so it is compiled to return a step) is passed to a parameter of `"), String::concat(String::concat(fname, "` whose type does not declare that effect -- the callee would call it under the plain convention and hand the step object back as the value. Declare the parameter as `(..) -> .. with "), String::concat(ceff0, "`, or move the performing call out of the literal (#1707, ADR-0076 追記31 Vertical B)"))))
-                    } else if scps_row_has_var(prow) && !scps_row_contains(ctx, prow, ceff0) && scps_is_task_param(fparams, aj) && scps_arg_is_own_step_for(Array::get(rargs, aj), ceff0, scope) {
+                    } else if scps_row_has_var(prow) && !scps_row_contains(ctx, prow, ceff0) && scps_is_task_param(fparams, aj) && (scps_arg_is_own_step_for(Array::get(rargs, aj), ceff0, scope) || scps_arg_names_needing_fn(Array::get(rargs, aj), cneeding0, scope)) {
                       // #3517: the row-variable exemption above does not hold
                       // for a task parameter. A spawn-shaped callee (a
                       // `TaskGroup` first, the task closure last) stores the

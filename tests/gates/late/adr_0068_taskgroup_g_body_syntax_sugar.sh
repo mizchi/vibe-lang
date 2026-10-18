@@ -1438,6 +1438,56 @@ if [ "$ssl_nested_result" != "6" ]; then
   echo "[compiler-gate] FAIL: a plain task holding its own suspendable group returned '$ssl_nested_result' instead of 6 (#3517)" >&2
   exit 1
 fi
+# #3523: an `Async` entry that reaches an `Async` function of its own gets the
+# suspend-class boundary, so the call answers instead of handing a step object
+# (or an unhandled suspension) back. Each pair is fixture and wanted output.
+for async_entry_case in "async_entry_calls_async_closure:5" "async_entry_calls_sleep_wait:5" "async_entry_calls_async_fn_beside_group:47"; do
+  async_entry_fixture="${async_entry_case%%:*}"
+  async_entry_want="${async_entry_case#*:}"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/${async_entry_fixture}.vibe" "$ssldir/${async_entry_fixture}.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$ssldir/${async_entry_fixture}.wasm" ]; then
+    echo "[compiler-gate] FAIL: ${async_entry_fixture}.vibe did not compile (#3523)" >&2
+    cat "$ssldir/${async_entry_fixture}.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  async_entry_got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/${async_entry_fixture}.wasm" 2>/dev/null | tail -1)"
+  if [ "$async_entry_got" != "$async_entry_want" ]; then
+    echo "[compiler-gate] FAIL: ${async_entry_fixture}.vibe returned '$async_entry_got' instead of $async_entry_want (#3523)" >&2
+    exit 1
+  fi
+done
+# #3523 / #3519: a suspendable task that prints and sleeps; the two tasks
+# interleave at each `sleep`, and the whole output is the answer.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/suspend_task_prints_and_sleeps.vibe "$ssldir/prints_and_sleeps.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$ssldir/prints_and_sleeps.wasm" ]; then
+  echo "[compiler-gate] FAIL: suspend_task_prints_and_sleeps.vibe did not compile (#3523, #3519)" >&2
+  cat "$ssldir/prints_and_sleeps.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+ssl_interleave="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/prints_and_sleeps.wasm" 2>/dev/null | tr '\n' ' ')"
+if [ "$ssl_interleave" != "a1 b1 a2 b2 3 " ]; then
+  echo "[compiler-gate] FAIL: suspend_task_prints_and_sleeps.vibe printed '$ssl_interleave' instead of 'a1 b1 a2 b2 3 ' (#3523, #3519)" >&2
+  exit 1
+fi
+# #3523: the shapes that still cannot run are refused, not miscompiled: an
+# `Async` closure handed to a parameter that calls it plainly, and a top-level
+# `Async` function passed by name to a run-to-completion task.
+for async_refusal_case in "err_async_entry_closure_to_plain_param:cannot see through" "err_spawn_task_async_fn_by_name:runs its task to completion, so the task cannot suspend"; do
+  async_refusal_fixture="${async_refusal_case%%:*}"
+  async_refusal_needle="${async_refusal_case#*:}"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/${async_refusal_fixture}.vibe" "$ssldir/${async_refusal_fixture}.wasm" main >/dev/null 2>&1 || true
+  if [ -s "$ssldir/${async_refusal_fixture}.wasm" ] || ! grep -qF "$async_refusal_needle" "$ssldir/${async_refusal_fixture}.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: ${async_refusal_fixture}.vibe compiled or lacked '$async_refusal_needle' (#3523)" >&2
+    cat "$ssldir/${async_refusal_fixture}.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+done
 rm -rf "$ssldir"
 
 echo "[compiler-gate] 77/77 ADR-0089 D1 async sleep boundary (#1218)"
