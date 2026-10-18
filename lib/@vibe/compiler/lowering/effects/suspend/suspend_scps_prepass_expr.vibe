@@ -1749,6 +1749,53 @@ fn scps_prepass_bind_local(scope: Array[(String, Int)], name: String, value: Exp
   scps_scope_bind(scope, name, kind)
 }
 
+/// #3517: is parameter `aj` the task closure of a spawn-shaped callee -- the
+/// last parameter, after a `TaskGroup` first one (`TaskGroup::spawn`,
+/// `Parallel::map`, and a wrapper with their shape)?
+fn scps_is_task_param(fparams: Array[(String, Option[TypeExpr])], aj: Int) -> Bool {
+  if aj == 0 || aj != Array::length(fparams) - 1 {
+    false
+  } else {
+    let (_, first_ty) = Array::get(fparams, 0)
+    match first_ty {
+      Some(TyApp(head, _)) => head == "TaskGroup",
+      Some(TyName(head)) => head == "TaskGroup",
+      _ => false
+    }
+  }
+}
+
+/// #3517: an argument the prepass step-compiled for `eff` at its own level: a
+/// split closure literal, or a local bound to one (scope kind 2, which
+/// `scps_prepass_bind_local` reserves for an `Async` step literal).
+fn scps_arg_is_own_step_for(arg: Expr, eff: String, scope: Array[(String, Int)]) -> Bool {
+  match arg {
+    EFn(_, _, _, _, _, _) => scps_literal_is_own_step_for(arg, eff),
+    EIdent(name, _) => is_runtime_scheduled_effect(eff) && scps_local_class(scope, name) == 2,
+    _ => false
+  }
+}
+
+fn scps_task_cannot_suspend_msg(fname: String, eff: String) -> String {
+  let head = String::concat(String::concat("`", fname), String::concat("` runs its task to completion, so the task cannot suspend, but this task closure uses `", String::concat(eff, "`")))
+  if is_runtime_scheduled_effect(eff) {
+    String::concat(head, " (directly or through a function whose row carries it): start the task with `TaskGroup::spawn_suspend` from `@vibe/concurrent/experimental` instead, or move that call out of the task")
+  } else {
+    String::concat(head, String::concat(": handle `", String::concat(eff, "` inside the task, or move the performing call out of the task")))
+  }
+}
+
+fn scps_callee_marker(callee: Expr) -> String {
+  match callee {
+    EIdent(_, coff) => if coff >= 0 {
+      String::concat(" [@off=", String::concat(__to_string(coff), "]"))
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
 fn scps_prepass_callee_params(scope: Array[(String, Int)], name: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Option[Array[(String, Option[TypeExpr])]] {
   let local = scps_local_class(scope, name)
   if local >= 3 {
@@ -1918,6 +1965,15 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
                     // does not carry the effect is a plain-convention parameter.
                     if !scps_row_has_var(prow) && !scps_row_contains(ctx, prow, ceff0) && scps_literal_is_step_for(Array::get(rargs, aj), ceff0) {
                       Array::push(scps_st_errs(st), String::concat(String::concat(String::concat("a closure literal that performs `", ceff0), "` (so it is compiled to return a step) is passed to a parameter of `"), String::concat(String::concat(fname, "` whose type does not declare that effect -- the callee would call it under the plain convention and hand the step object back as the value. Declare the parameter as `(..) -> .. with "), String::concat(ceff0, "`, or move the performing call out of the literal (#1707, ADR-0076 追記31 Vertical B)"))))
+                    } else if scps_row_has_var(prow) && !scps_row_contains(ctx, prow, ceff0) && scps_is_task_param(fparams, aj) && scps_arg_is_own_step_for(Array::get(rargs, aj), ceff0, scope) {
+                      // #3517: the row-variable exemption above does not hold
+                      // for a task parameter. A spawn-shaped callee (a
+                      // `TaskGroup` first, the task closure last) stores the
+                      // closure and its scheduler calls it later under the plain
+                      // convention, so no clone of the callee can thread the
+                      // step through. `TaskGroup::spawn(g, () -> { sleep_wait(10)
+                      // 100 })` compiled clean and `join` answered 1604.
+                      Array::push(scps_st_errs(st), String::concat(scps_task_cannot_suspend_msg(fname, ceff0), scps_callee_marker(rcallee)))
                     } else {
                       ()
                     }

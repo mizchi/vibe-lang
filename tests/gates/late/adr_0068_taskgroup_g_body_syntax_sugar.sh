@@ -1410,6 +1410,34 @@ if [ "$ssl_user_result" != "5" ]; then
   echo "[compiler-gate] FAIL: user-defined spawn_suspend returned '$ssl_user_result' instead of 5 (#3194)" >&2
   exit 1
 fi
+# #3517: a run-to-completion task (`TaskGroup::spawn`, `Parallel::map`) whose
+# closure uses `Async` is refused with the `spawn_suspend` edit. Each of these
+# used to compile clean and answer a heap pointer from `join`.
+for plain_task_case in err_spawn_task_wait_plain err_spawn_task_async_fn_plain err_spawn_task_named_closure_plain err_parallel_map_task_async_fn_plain; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/${plain_task_case}.vibe" "$ssldir/${plain_task_case}.wasm" main >/dev/null 2>&1 || true
+  if [ -s "$ssldir/${plain_task_case}.wasm" ] || ! grep -qF 'runs its task to completion, so the task cannot suspend' "$ssldir/${plain_task_case}.wasm.diag" 2>/dev/null || ! grep -qF 'start the task with `TaskGroup::spawn_suspend`' "$ssldir/${plain_task_case}.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: an Async closure in a run-to-completion task compiled or lacked the spawn_suspend edit (#3517, $plain_task_case)" >&2
+    cat "$ssldir/${plain_task_case}.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+done
+# #3517 control: the refusal reads the task closure's own body, so a plain task
+# holding a suspendable group of its own still compiles and answers 6.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/spawn_task_nested_suspend_group.vibe "$ssldir/nested_group.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$ssldir/nested_group.wasm" ]; then
+  echo "[compiler-gate] FAIL: a plain task holding its own suspendable group was refused (#3517)" >&2
+  cat "$ssldir/nested_group.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+ssl_nested_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/nested_group.wasm" 2>/dev/null | tail -1)"
+if [ "$ssl_nested_result" != "6" ]; then
+  echo "[compiler-gate] FAIL: a plain task holding its own suspendable group returned '$ssl_nested_result' instead of 6 (#3517)" >&2
+  exit 1
+fi
 rm -rf "$ssldir"
 
 echo "[compiler-gate] 77/77 ADR-0089 D1 async sleep boundary (#1218)"
