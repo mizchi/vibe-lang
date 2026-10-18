@@ -388,13 +388,18 @@ fn lc_row_names_scheduled(eff: Option[String]) -> Bool {
   }
 }
 
-/// #3523: the parameters of the top-level function `name`, or None.
+/// #3523: the parameters of the top-level function `name` when it DISCHARGES
+/// what an `Async` parameter does -- its own row names no runtime-scheduled
+/// effect, as `TaskGroup::spawn_suspend`'s does not -- or None. A function
+/// whose row carries `Async` (`fn apply(f: () -> Int with Async) -> Int with
+/// Async`) propagates the closure's suspension to its caller, so its
+/// arguments are walked like any other (Codex on #3534).
 fn lc_top_level_fn_params(stmts: Array[Stmt], name: String) -> Option[Array[(String, Option[TypeExpr])]] {
   let mut out = None
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, nm, _, EFn(_, _, params, _, _, _)) => if nm == name {
+      SLet(_, _, nm, _, EFn(_, _, params, _, eff, _)) => if nm == name && !lc_row_names_scheduled(eff) {
         out = Some(params)
       } else {
         ()
@@ -724,7 +729,10 @@ export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String)
   // boundary too (lc_entry_calls_async_fn). Its arm settles a sleep debt by
   // blocking, resumes a yield, and traps on a poll-wait, as the sleep-only arm
   // below does; no `sleep` is retargeted, because none was called.
-  let entry_async_calls = entry_has_async && !user_defines_sleep && !sleep_machinery && !hf_machinery && !hs_machinery && lc_entry_calls_async_fn(stmts, boundary_name)
+  // A program's own `sleep` stands down only `sleep_machinery` (no call is
+  // retargeted); a suspension the entry reaches elsewhere still needs the
+  // boundary (Codex on #3534).
+  let entry_async_calls = entry_has_async && !sleep_machinery && !hf_machinery && !hs_machinery && lc_entry_calls_async_fn(stmts, boundary_name)
   // #2065 wall 2: a SLEEP-only boundary no longer refuses spawn_suspend. The
   // mismatch was only a spelling (the boundary arm is tail-resumptive because
   // it writes `resume(v)` in callee position); when the program spawns
