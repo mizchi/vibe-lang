@@ -5,6 +5,28 @@ import @vibe/compiler/codegen/common_extractors {
   array_contains_str
 }
 
+/// The pieces `__rt_oob_abort` assembles its message from: one
+/// `<operation>: index ` prefix per bounds-checked builtin, then the shared
+/// ` out of bounds for length `. Nothing else reads them -- each prefix is
+/// passed by a builtin that calls the abort, and the middle by the abort
+/// itself -- so a module whose abort is unreachable can omit their data
+/// segments (`lc_emit_module_sections`). The trailing "\n" is not one of
+/// them: `abort(msg)` and others write the pool's "\n" directly.
+///
+/// `String::byte_at` is the canonical user-facing spelling (ADR-0098;
+/// char_code_at is its deprecated alias, canonicalized before codegen), so
+/// the abort message names byte_at.
+export fn oob_message_fragments() -> Array[String] {
+  [
+    "Array::get: index ",
+    "Array::set: index ",
+    "Bytes::get: index ",
+    "Bytes::set: index ",
+    "String::byte_at: index ",
+    " out of bounds for length "
+  ]
+}
+
 // Keep string-pool setup out of the module emitter: its many locals and
 // branch states also cost memory when a Wasm runtime compiles the compiler.
 export fn seed_builtin_diagnostic_strings(strings: Array[String], array_capacity: Bool, bytes_capacity: Bool, rc_shadow: Bool) -> Unit {
@@ -16,26 +38,16 @@ export fn seed_builtin_diagnostic_strings(strings: Array[String], array_capacity
   } else {
     ()
   }
-  if !array_contains_str(strings, "Array::get: index ") {
-    Array::push(strings, "Array::get: index ")
-  }
-  if !array_contains_str(strings, "Array::set: index ") {
-    Array::push(strings, "Array::set: index ")
-  }
-  if !array_contains_str(strings, "Bytes::get: index ") {
-    Array::push(strings, "Bytes::get: index ")
-  }
-  if !array_contains_str(strings, "Bytes::set: index ") {
-    Array::push(strings, "Bytes::set: index ")
-  }
-  // `String::byte_at` is the canonical user-facing spelling (ADR-0098;
-  // char_code_at is its deprecated alias, canonicalized before codegen), so
-  // the abort message names byte_at.
-  if !array_contains_str(strings, "String::byte_at: index ") {
-    Array::push(strings, "String::byte_at: index ")
-  }
-  if !array_contains_str(strings, " out of bounds for length ") {
-    Array::push(strings, " out of bounds for length ")
+  // #2199: one prefix per bounds-checked operation, then the shared middle.
+  let frags = oob_message_fragments()
+  let mut fi = 0
+  while fi < Array::length(frags) {
+    if !array_contains_str(strings, Array::get(frags, fi)) {
+      Array::push(strings, Array::get(frags, fi))
+    } else {
+      ()
+    }
+    fi = fi + 1
   }
   if !array_contains_str(strings, "\n") {
     Array::push(strings, "\n")

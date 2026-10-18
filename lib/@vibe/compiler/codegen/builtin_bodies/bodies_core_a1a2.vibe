@@ -35,6 +35,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i32_sub,
   emit_i64_load,
   emit_i64_store,
+  emit_rc_block_mask_test,
   emit_rc_dup_inline,
   emit_shadow_bump_seq,
   emit_shadow_mark_freed,
@@ -162,6 +163,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_global_set,
   emit_header,
   emit_heap_memory_grow_check,
+  emit_heap_memory_grow_check_locals,
   emit_i32_add,
   emit_i32_const,
   emit_i32_load,
@@ -573,23 +575,29 @@ export fn gen_arr_set_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: 
   b
 }
 
-/// Push the bin-head address for `ptr_local`'s block size:
-/// bins_base + (((size - 16) >> 3) << 2). Pure push.
-fn emit_rc_bin_addr(b: Bytes, ptr_local: Int, bins_base: Int) -> Unit {
-  emit_local_get(b, ptr_local)
-  emit_i32_const(b, 8)
-  emit_i32_sub(b)
-  emit_i32_load(b, 2, 0)
+/// Push the bin index for a block of `size` bytes, rotated so ONE unsigned
+/// compare answers "is this a bin size": `rotr(size - 16, 3)` is
+/// `(size - 16) >> 3` when the low three bits are clear and at least 2^29
+/// when they are not, so `< 32` holds exactly for 16 <= size <= 264,
+/// 8-aligned -- the 32 bins at `bins_base`. Expects `size` on the stack.
+fn emit_rc_bin_index_rotated(b: Bytes) -> Unit {
   emit_i32_const(b, 16)
   emit_i32_sub(b)
   emit_i32_const(b, 3)
-  // i32.shr_u (0x76)
-  bytebuf_push(b, 118)
+  // i32.rotr (0x78)
+  bytebuf_push(b, 120)
+}
+
+/// Turn the bin index in `local` into its bin-head address, in place, and
+/// leave the address on the stack: bins_base + index * 4.
+fn emit_rc_bin_addr_tee(b: Bytes, local: Int, bins_base: Int) -> Unit {
+  emit_local_get(b, local)
   emit_i32_const(b, 2)
   // i32.shl (0x74)
   bytebuf_push(b, 116)
   emit_i32_const(b, bins_base)
   emit_i32_add(b)
+  emit_local_tee(b, local)
 }
 
 /// Legacy LIFO free push onto global 2, linking through the rc word.
@@ -608,27 +616,16 @@ fn emit_rc_legacy_free_push(b: Bytes, ptr_local: Int) -> Unit {
 /// when the block is small (size 16..264, 8-aligned -- 32 bins of 4 bytes
 /// at `bins_base`, bin index (size-16)>>3), else onto the legacy global-2
 /// list. The bin link reuses the rc word at ptr-4, same as the legacy list.
-/// Pure emission; recomputes size/bin address instead of taking a scratch
-/// local so callers' local layouts stay untouched.
-fn emit_rc_free_push(b: Bytes, ptr_local: Int, bins_base: Int) -> Unit {
-  // (size & 7) == 0 ?
+/// `scratch` is an i32 local the caller no longer needs: it holds the bin
+/// index, then the bin address, so neither is computed twice.
+fn emit_rc_free_push(b: Bytes, ptr_local: Int, scratch: Int, bins_base: Int) -> Unit {
   emit_local_get(b, ptr_local)
   emit_i32_const(b, 8)
   emit_i32_sub(b)
   emit_i32_load(b, 2, 0)
-  emit_i32_const(b, 7)
-  // i32.and (0x71)
-  bytebuf_push(b, 113)
-  emit_i32_eqz(b)
-  emit_if_void(b)
-  // (size - 16) <u 249 ?  [i.e. 16 <= size <= 264]
-  emit_local_get(b, ptr_local)
-  emit_i32_const(b, 8)
-  emit_i32_sub(b)
-  emit_i32_load(b, 2, 0)
-  emit_i32_const(b, 16)
-  emit_i32_sub(b)
-  emit_i32_const(b, 249)
+  emit_rc_bin_index_rotated(b)
+  emit_local_tee(b, scratch)
+  emit_i32_const(b, 32)
   // i32.lt_u (0x49)
   bytebuf_push(b, 73)
   emit_if_void(b)
@@ -636,15 +633,12 @@ fn emit_rc_free_push(b: Bytes, ptr_local: Int, bins_base: Int) -> Unit {
   emit_local_get(b, ptr_local)
   emit_i32_const(b, 4)
   emit_i32_sub(b)
-  emit_rc_bin_addr(b, ptr_local, bins_base)
+  emit_rc_bin_addr_tee(b, scratch, bins_base)
   emit_i32_load(b, 2, 0)
   emit_i32_store(b, 2, 0)
-  emit_rc_bin_addr(b, ptr_local, bins_base)
+  emit_local_get(b, scratch)
   emit_local_get(b, ptr_local)
   emit_i32_store(b, 2, 0)
-  emit_else(b)
-  emit_rc_legacy_free_push(b, ptr_local)
-  emit_end(b)
   emit_else(b)
   emit_rc_legacy_free_push(b, ptr_local)
   emit_end(b)
@@ -669,7 +663,8 @@ fn emit_rc_free_push(b: Bytes, ptr_local: Int, bins_base: Int) -> Unit {
 /// "Drop classes".
 ///
 /// Locals: 0 = i64 v (param); 1 vptr, 2 class, 3 cnt, 4 idx, 5 dptr (i32);
-/// 6 = i64 field value.
+/// 6 = i64 field value. Before the class walk 3 holds the rc word's address
+/// and 4 the word; each free push uses 3 as its scratch.
 /// ADR-0092 (#1262): the out-of-line dup helper (`__rt_rc_dup`). One param
 /// (local 0) = the tagged value; no extra locals; no result.
 ///
@@ -686,23 +681,13 @@ export fn gen_rc_dup_body(rc_shadow: Bool, uaf_abort_idx: Int, prefix_fat: Int) 
 
 export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_abort_idx: Int, prefix_fat: Int, map_arms: Bool, closure_arms: Bool, array_arm: Bool) -> Bytes {
   let b = bytebuf_new()
-  // not a heap pointer (even) → nothing to do
-  emit_local_get(b, 0)
-  emit_i64_const(b, 1)
-  emit_i64_and(b)
-  emit_i64_eqz(b)
-  emit_if_void(b)
-  emit_return(b)
-  emit_end(b)
-  // string/bytes fat pointer ((offset<<32)|length): the data offset (>= 64)
-  // lives in the high 32 bits, whereas every heap block address is < 2^32
-  // (high 32 bits == 0). So if (v >> 32) != 0 it is a leaf fat pointer, not an
-  // RC block → skip. (Values here are positive, so shr_s == shr_u.)
-  emit_local_get(b, 0)
-  emit_i64_const(b, 32)
-  emit_i64_shr_s(b)
-  emit_i64_eqz(b)
-  emit_i32_eqz(b)
+  // Only an RC block goes further: odd (a heap pointer; an int/bool is
+  // even) with the high 32 bits clear. A string/bytes fat pointer
+  // ((offset<<32)|length) keeps its data offset (>= 64) up there, whereas
+  // every heap block address is < 2^32. Both tests are one mask:
+  // (v & 0xFFFFFFFF00000001) == 1.
+  emit_rc_block_mask_test(b, 0)
+  emit_i64_ne(b)
   emit_if_void(b)
   emit_return(b)
   emit_end(b)
@@ -733,40 +718,35 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_a
   }
   // #720: a saturated rc (low 24 bits == 0xFFFFFF) marks an immortal block
   // (see emit_rc_word_inc_saturating) -- never decrement, never free.
+  // `word << 8` keeps exactly those 24 bits, so the test is one compare
+  // against 0xFFFFFF00.
   emit_local_get(b, 1)
   emit_i32_const(b, 4)
   emit_i32_sub(b)
+  emit_local_tee(b, 3)
   emit_i32_load(b, 2, 0)
-  emit_i32_const(b, 16777215)
-  bytebuf_push(b, 113)
-  emit_i32_const(b, 16777215)
+  emit_local_tee(b, 4)
+  emit_i32_const(b, 8)
+  bytebuf_push(b, 116)
+  emit_i32_const(b, -256)
   emit_i32_eq(b)
   emit_if_void(b)
   emit_return(b)
   emit_end(b)
-  // rc_count-- : store(vptr-4, load(vptr-4) - 1). The class byte is the high
-  // byte of the same word; subtracting 1 from a non-zero rc never borrows into
-  // it, so it is preserved.
-  emit_local_get(b, 1)
-  emit_i32_const(b, 4)
-  emit_i32_sub(b)
-  emit_local_get(b, 1)
-  emit_i32_const(b, 4)
-  emit_i32_sub(b)
-  emit_i32_load(b, 2, 0)
+  // rc_count-- : store(vptr-4, word - 1). The class byte is the high byte of
+  // the same word; subtracting 1 from a non-zero rc never borrows into it,
+  // so it is preserved.
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
   emit_i32_const(b, 1)
   emit_i32_sub(b)
+  emit_local_tee(b, 4)
   emit_i32_store(b, 2, 0)
-  // if rc (low 24 bits) != 0 → still referenced → return. `* 256` shifts the
+  // if rc (low 24 bits) != 0 → still referenced → return. `<< 8` shifts the
   // class byte out of the 32-bit word so only rc is tested.
-  emit_local_get(b, 1)
-  emit_i32_const(b, 4)
-  emit_i32_sub(b)
-  emit_i32_load(b, 2, 0)
-  emit_i32_const(b, 256)
-  emit_i32_mul(b)
-  emit_i32_eqz(b)
-  emit_i32_eqz(b)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 8)
+  bytebuf_push(b, 116)
   emit_if_void(b)
   emit_return(b)
   emit_end(b)
@@ -885,7 +865,7 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_a
     } else {
       ()
     }
-    emit_rc_free_push(b, 5, bins_base)
+    emit_rc_free_push(b, 5, 3, bins_base)
     emit_end(b)
     emit_end(b)
   } else {
@@ -970,7 +950,7 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_a
     } else {
       ()
     }
-    emit_rc_free_push(b, 5, bins_base)
+    emit_rc_free_push(b, 5, 3, bins_base)
     emit_end(b)
     emit_end(b)
     // #2683 MapBuilder handle (class 9): [count@vptr+0 (i32)][cap@+4 (i32)]
@@ -1115,7 +1095,7 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_a
   }
   // free: push the block onto its size bin (small) or the legacy global-2
   // list, reusing the rc slot (vptr-4) as the next pointer.
-  emit_rc_free_push(b, 1, bins_base)
+  emit_rc_free_push(b, 1, 3, bins_base)
   b
 }
 
@@ -1127,23 +1107,6 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_a
 /// allocating sizes A,B,A,B... while freeing them recursively (which reverses the
 /// order on the LIFO) bump-allocates every other block even though a perfectly
 /// sized free block exists deeper in the list (a fragmentation "leak"). This
-/// Push the bin-head address for the requested size in local 3:
-/// bins_base + (((sz - 16) >> 3) << 2). Pure push (alloc-side sibling of
-/// emit_rc_bin_addr, which reads the size from a block header instead).
-fn emit_rc_alloc_bin_addr(b: Bytes, bins_base: Int) -> Unit {
-  emit_local_get(b, 3)
-  emit_i32_const(b, 16)
-  emit_i32_sub(b)
-  emit_i32_const(b, 3)
-  // i32.shr_u (0x76)
-  bytebuf_push(b, 118)
-  emit_i32_const(b, 2)
-  // i32.shl (0x74)
-  bytebuf_push(b, 116)
-  emit_i32_const(b, bins_base)
-  emit_i32_add(b)
-}
-
 /// helper instead WALKS the list for an exact-fit block and unlinks it, falling
 /// back to a bump only when none exists. Exact-fit only (no splitting), so it is
 /// drop-in compatible with the recursive rc_drop free path.
@@ -1159,35 +1122,28 @@ fn emit_rc_alloc_bin_addr(b: Bytes, bins_base: Int) -> Unit {
 /// Locals: 0=size(i64 param) 1=cur 2=prev 3=sz(i32) 4=result 5=budget.
 export fn gen_rc_alloc_body(rc_shadow: Bool, bins_base: Int) -> Bytes {
   let b = bytebuf_new()
-  // sz = (i32) size
-  emit_local_get(b, 0)
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 3)
   // ADR-0092 (#1262) size-segregated bins: a small aligned size (16..264,
   // 8-aligned) checks its exact-size bin first -- O(1) exact fit for the
   // dominant ctor-block traffic (matching gen_rc_drop_body's bin push).
   // Bin miss falls through to the bounded legacy walk below (which still
   // recycles blocks freed by the array/bytes grow paths onto global 2).
-  emit_local_get(b, 3)
-  emit_i32_const(b, 7)
-  // i32.and (0x71)
-  bytebuf_push(b, 113)
-  emit_i32_eqz(b)
-  emit_if_void(b)
-  emit_local_get(b, 3)
-  emit_i32_const(b, 16)
-  emit_i32_sub(b)
-  emit_i32_const(b, 249)
+  // sz(3) = (i32) size; local 2 holds the bin index, then its address,
+  // until the walk claims it as `prev`.
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_local_tee(b, 3)
+  emit_rc_bin_index_rotated(b)
+  emit_local_tee(b, 2)
+  emit_i32_const(b, 32)
   // i32.lt_u (0x49)
   bytebuf_push(b, 73)
   emit_if_void(b)
   // result(4) = load(binaddr); if nonzero: unlink + return result-8
-  emit_rc_alloc_bin_addr(b, bins_base)
+  emit_rc_bin_addr_tee(b, 2, bins_base)
   emit_i32_load(b, 2, 0)
-  emit_local_set(b, 4)
-  emit_local_get(b, 4)
+  emit_local_tee(b, 4)
   emit_if_void(b)
-  emit_rc_alloc_bin_addr(b, bins_base)
+  emit_local_get(b, 2)
   emit_local_get(b, 4)
   emit_i32_const(b, 4)
   emit_i32_sub(b)
@@ -1206,7 +1162,6 @@ export fn gen_rc_alloc_body(rc_shadow: Bool, bins_base: Int) -> Bytes {
   emit_i32_sub(b)
   emit_i64_extend_i32_u(b)
   emit_return(b)
-  emit_end(b)
   emit_end(b)
   emit_end(b)
   // cur = free-list head (global 2); prev = 0; budget = 16
@@ -1238,16 +1193,9 @@ export fn gen_rc_alloc_body(rc_shadow: Bool, bins_base: Int) -> Bytes {
   emit_local_get(b, 3)
   emit_i32_eq(b)
   emit_if_void(b)
-  // unlink cur: prev == 0 ? global2 = load(cur-4) : store(prev-4, load(cur-4))
+  // unlink cur: prev != 0 ? store(prev-4, load(cur-4)) : global2 = load(cur-4)
   emit_local_get(b, 2)
-  emit_i32_eqz(b)
   emit_if_void(b)
-  emit_local_get(b, 1)
-  emit_i32_const(b, 4)
-  emit_i32_sub(b)
-  emit_i32_load(b, 2, 0)
-  emit_global_set(b, 2)
-  emit_else(b)
   emit_local_get(b, 2)
   emit_i32_const(b, 4)
   emit_i32_sub(b)
@@ -1256,6 +1204,12 @@ export fn gen_rc_alloc_body(rc_shadow: Bool, bins_base: Int) -> Bytes {
   emit_i32_sub(b)
   emit_i32_load(b, 2, 0)
   emit_i32_store(b, 2, 0)
+  emit_else(b)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 4)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_global_set(b, 2)
   emit_end(b)
   // #715 recurrence guard (VIBE_RC=shadow): the block is live again -- clear
   // its freed-marker byte so later dups/drops of the reused block are legal.
@@ -1319,7 +1273,8 @@ export fn gen_rc_alloc_body(rc_shadow: Bool, bins_base: Int) -> Bytes {
   emit_end(b)
   emit_local_get(b, 1)
   emit_global_set(b, 0)
-  emit_heap_memory_grow_check(b)
+  // prev(2) and budget(5) are dead on the bump path: scratch for the grow.
+  emit_heap_memory_grow_check_locals(b, 2, 5)
   emit_local_get(b, 4)
   emit_i64_extend_i32_u(b)
   b

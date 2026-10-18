@@ -1,0 +1,79 @@
+//# Runtime pieces a small module no longer carries
+//
+// `__rt_oob_abort`'s message fragments get a data segment only while the
+// abort is reachable, and `_start` prints `main`'s result through the
+// do-while `__rt_print_i64`. Each case pins the bytes a program writes, so a
+// segment dropped while still read, or a digit loop that mishandles zero or
+// a sign, fails here rather than in a size table.
+
+//# Imports
+
+import @vibe/compiler/entry/source_compile {
+  compile_source_wasi
+}
+
+//# Helpers
+
+fn bytes_contains(hay: Bytes, needle: String) -> Bool {
+  let nlen = String::length(needle)
+  let hlen = Bytes::length(hay)
+  let mut found = false
+  let mut i = 0
+  while i + nlen <= hlen && !found {
+    let mut ok = true
+    let mut j = 0
+    while j < nlen && ok {
+      ok = Bytes::get(hay, i + j) == String::char_code_at(needle, j)
+      j = j + 1
+    }
+    found = ok
+    i = i + 1
+  }
+  found
+}
+
+fn capture_run(wasm_path: String, bytes: Bytes) -> String with Exception + Fs + Process {
+  Fs::write_bytes(wasm_path, bytes)
+  let _ = sh("bash -c 'scripts/run_wasm_vibe_host_runner.sh \{wasm_path} >\{wasm_path}.out 2>&1 || true'")
+  Fs::read_file(String::concat(wasm_path, ".out"))
+}
+
+//# Tests
+
+test "a module with no bounds-checked operation carries no OOB message" {
+  let bytes = compile_source_wasi("let main = () -> Int {\n  1 + 2\n}\n", "main")
+  inspect(bytes_contains(bytes, " out of bounds for length "), content = "false")
+  inspect(bytes_contains(bytes, "Array::get: index "), content = "false")
+}
+
+test "a reachable bounds check keeps the message it prints" {
+  let src = "let main = () -> Int {\n  let xs = [1, 2, 3]\n  Array::get(xs, 5)\n}\n"
+  let out = capture_run("_build/vibe_test/runtime_trim_oob.wasm", compile_source_wasi(src, "main"))
+  inspect(String::starts_with(out, "Array::get: index 5 out of bounds for length 3\n"), content = "true")
+}
+
+test "a literal spelled like a fragment keeps its segment without an abort" {
+  let src = "let main = () -> Int with Console {\n  println(\"Array::get: index \")\n  println(\" out of bounds for length \")\n  0\n}\n"
+  let out = capture_run("_build/vibe_test/runtime_trim_literal.wasm", compile_source_wasi(src, "main"))
+  inspect(out, content = "Array::get: index \n out of bounds for length \n0\n")
+}
+
+test "main's result prints in decimal, zero and signs included" {
+  let cases = [
+    "0",
+    "7",
+    "-7",
+    "10",
+    "-100",
+    "4611686018427387903",
+    "-4611686018427387903"
+  ]
+  let mut i = 0
+  while i < Array::length(cases) {
+    let v = Array::get(cases, i)
+    let src = "let main = () -> Int {\n  \{v}\n}\n"
+    let out = capture_run("_build/vibe_test/runtime_trim_ret.wasm", compile_source_wasi(src, "main"))
+    assert_eq(out, String::concat(v, "\n"))
+    i = i + 1
+  }
+}

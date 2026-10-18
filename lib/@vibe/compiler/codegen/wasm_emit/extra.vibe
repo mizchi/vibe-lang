@@ -45,6 +45,12 @@ let op_i32_shr_u = 118
 
 let op_i32_gt_u = 75
 
+let op_i32_gt_s = 74
+
+let op_local_get = 32
+
+let op_local_tee = 34
+
 let op_memory_size = 63
 
 let op_memory_grow = 64
@@ -124,6 +130,39 @@ export fn emit_heap_memory_grow_check(buf: Bytes) -> Unit {
   bytebuf_push(buf, op_i32_eq)
   bytebuf_push2(buf, op_if, bt_void)
   emit_heap_page_deficit(buf)
+  bytebuf_push2(buf, op_memory_grow, 0)
+  bytebuf_push(buf, op_drop)
+  emit_end(buf)
+  emit_end(buf)
+}
+
+/// emit_heap_memory_grow_check for a body with two i32 locals it may
+/// clobber: the same test and the same growth policy, with the deficit
+/// computed once into `deficit_local` (and `memory_size / 2` into
+/// `half_local`) instead of re-derived for every use. The deficit is a
+/// signed page count, at most 65536 either way: heap_ptr never passes
+/// 2^32 - 65537 (the allocator traps first), so `heap_ptr + 65536` does not
+/// wrap, and "deficit > 0" is the unsigned `pages > memory_size` above.
+export fn emit_heap_memory_grow_check_locals(buf: Bytes, deficit_local: Int, half_local: Int) -> Unit {
+  emit_heap_page_deficit(buf)
+  bytebuf_push_opcode_u32(buf, op_local_tee, deficit_local)
+  emit_i32_const(buf, 0)
+  bytebuf_push(buf, op_i32_gt_s)
+  bytebuf_push2(buf, op_if, bt_void)
+  // grow_by = max(deficit, memory_size / 2)
+  bytebuf_push_opcode_u32(buf, op_local_get, deficit_local)
+  emit_heap_half_current(buf)
+  bytebuf_push_opcode_u32(buf, op_local_tee, half_local)
+  bytebuf_push_opcode_u32(buf, op_local_get, deficit_local)
+  bytebuf_push_opcode_u32(buf, op_local_get, half_local)
+  bytebuf_push(buf, op_i32_gt_u)
+  bytebuf_push(buf, op_select)
+  bytebuf_push2(buf, op_memory_grow, 0)
+  // -1 = the oversized request failed; retry with the exact deficit.
+  emit_i32_const(buf, -1)
+  bytebuf_push(buf, op_i32_eq)
+  bytebuf_push2(buf, op_if, bt_void)
+  bytebuf_push_opcode_u32(buf, op_local_get, deficit_local)
   bytebuf_push2(buf, op_memory_grow, 0)
   bytebuf_push(buf, op_drop)
   emit_end(buf)
