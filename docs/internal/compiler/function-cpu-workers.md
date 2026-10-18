@@ -91,6 +91,13 @@ after module validation and source freshness verification succeed. Coverage
 ranges remain unplanned, so coverage builds use the ordinary serial route;
 explicitly selecting this experiment with coverage is an error.
 
+Within each owning function, lambda rows must follow their increasing planned
+indices. Different owners may interleave, and complete function ranges may
+arrive in reverse order. Both replay implementations append an owner's rows
+rather than sorting them, so the validator checks that each nonfirst lambda's
+predecessor has already appeared before any coordinator table is changed.
+This enforces the existing replay contract without changing the wire format.
+
 ## Replay and engine policy
 
 Auxiliary cache rows previously required a full scan per replayed function.
