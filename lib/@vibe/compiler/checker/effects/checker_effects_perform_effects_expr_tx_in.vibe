@@ -217,7 +217,16 @@ fn afe_closure_kind() -> Int {
 fn afe_callee_param_types(callee: Expr, env: TypeEnv, locals: AfeLocals) -> Array[Type] {
   match callee {
     EIdent(name, _) => if afe_binds_local(locals, name) {
-      []
+      // A local `let spawn = TaskGroup::spawn_suspend` is read through to the
+      // function it names, while nothing has rebound `spawn` since (Codex on
+      // #3552).
+      match afe_current_alias(locals, name) {
+        Some(target) => match env_lookup(env, target) {
+          Some(t) => afe_fn_param_types(t),
+          None => []
+        },
+        None => []
+      }
     } else {
       match env_lookup(env, name) {
         Some(t) => afe_fn_param_types(t),
@@ -226,6 +235,60 @@ fn afe_callee_param_types(callee: Expr, env: TypeEnv, locals: AfeLocals) -> Arra
     },
     _ => []
   }
+}
+
+fn afe_alias_key(name: String) -> String {
+  String::concat("__fn_alias$", name)
+}
+
+/// Record that the local `name` is bound to the top-level function `val`
+/// names, or hide an outer record of it.
+fn afe_bind_alias(locals: AfeLocals, name: String, val: Expr, env: TypeEnv, outer: AfeLocals) -> AfeLocals {
+  let target = match val {
+    EIdent(t, _) => if afe_binds_local(outer, t) {
+      None
+    } else {
+      match env_lookup(env, t) {
+        Some(ty) => if Array::length(afe_fn_param_types(ty)) > 0 {
+          Some(t)
+        } else {
+          None
+        },
+        None => None
+      }
+    },
+    _ => None
+  }
+  afe_bind_local(locals, afe_alias_key(name), target)
+}
+
+/// The function a local alias names, when the alias record is newer than
+/// any other binding of `name` (a parameter or pattern that rebinds it hides
+/// the alias).
+fn afe_current_alias(locals: AfeLocals, name: String) -> Option[String] {
+  let key = afe_alias_key(name)
+  let mut cur = locals
+  let mut found = None
+  let mut go = true
+  while go {
+    match cur {
+      AlNil => go = false,
+      AlBind(n, h, rest) => if n == key {
+        found = Some(h)
+        go = false
+      } else if n == name {
+        go = false
+      } else {
+        cur = rest
+      },
+      AlMask(n, rest) => if n == key || n == name {
+        go = false
+      } else {
+        cur = rest
+      }
+    }
+  }
+  found
 }
 
 fn afe_fn_param_types(t: Type) -> Array[Type] {
@@ -351,7 +414,7 @@ fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, lo
     // itself, so both sides see it.
     ELet(name, val, body, _) => {
       check_async_effects_expr_lo_into(val, env, in_async, locals, out)
-      check_async_effects_expr_lo_into(body, env, in_async, afe_bind_value(locals, name, val, env), out)
+      check_async_effects_expr_lo_into(body, env, in_async, afe_bind_alias(afe_bind_value(locals, name, val, env), name, val, env, locals), out)
     },
     ELetMut(name, val, body, _) => {
       check_async_effects_expr_lo_into(val, env, in_async, locals, out)
