@@ -329,6 +329,10 @@ build needs `VIBE_UNSTABLE=1`), starts a task that can suspend. Inside it,
 runs parked tasks until none is left; a `join` on a parked task does the same
 for that task.
 
+Unlike `spawn`, `spawn_suspend` does not queue its task: it runs it at once, at
+the call, up to its first wait, and a task that never waits has finished by the
+time `spawn_suspend` returns. Only what follows a wait is left for later.
+
 ```vibe run
 import @vibe/concurrent/experimental {
   TaskGroup, TaskHandle, sleep_wait

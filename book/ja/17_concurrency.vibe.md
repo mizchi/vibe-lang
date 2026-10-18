@@ -324,6 +324,10 @@ spawn の検査は、クロージャが何を捕獲したかを見る必要が�
 無くなるまで走らせます。park したタスクへの `join` も、そのタスクについて
 同じことをします。
 
+`spawn` と違って、`spawn_suspend` はタスクをキューに積みません: 呼び出しの
+その場で最初の待ちまで走らせるので、一度も待たないタスクは `spawn_suspend`
+が返る時点で終わっています。後回しになるのは待ちより後ろだけです。
+
 ```vibe run
 import @vibe/concurrent/experimental {
   TaskGroup, TaskHandle, sleep_wait
