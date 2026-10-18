@@ -235,16 +235,29 @@ returns no view, or an array / tuple / record / map literal) and releases it
 after the call, unless the callee may return a view of that argument, in which
 case the leak is the safe side.
 
-A projection off such a temporary (`mk(i).y`, `pair(i).0`) is the same gap:
-the plan sees no binding, so nothing released the block the field was read
-from. The `EDot` lowering parks an owned temporary in a local across the field
-load, retains the field, and drops the temporary. Downstream, a projection is
-a borrowed view (an owning consumer retains it, a borrowing one releases
-nothing), so the retain is what keeps a heap field alive once its source is
-gone; for a scalar field it is a no-op. A heap field therefore still keeps the
-one reference the leaked temporary used to hold: making the projection an
-owned value would need every consumer of a projection to tell the two kinds
-apart.
+A projection off such a temporary (`mk(i).y`, `pair(i).0`, `mk(i).inner.a`)
+is the same gap: the plan sees no binding, so nothing released the block the
+field was read from. The `EDot` lowering parks an owned temporary in a local
+across the field load, retains the field, and drops the temporary, so the read
+answers with a reference of its own -- an owned value, where every other
+projection is a view into a source that keeps it alive.
+
+`cc_is_owned_projection` names those reads, using the lowering's own test
+(`cc_is_owned_temp` of the object), and the consumers treat them as owned:
+
+- `cc_is_owned_temp` answers yes for one, so a borrowed position releases it
+  after the call (#2682) and a projection off it is itself an owned read;
+- the sites that retain a projection to own it -- a `let`, an assignment, a
+  tuple / array / record / map literal, an owning call argument, a stored
+  field, a collected `for` body, a lambda's return -- retain only a
+  `cc_is_borrowed_projection`, so an owned read moves in.
+
+A spine that ends in one is still read as a view (`value_spine_borrowed`,
+`pv_spine_is_view`): `let v = if c { f().a } else { g().a }` keeps the
+binding borrow-bound and leaks the read's reference, the safe side, because
+the plan and codegen must agree on that answer. The drop-guided reuse path
+(`compile_match`) cannot import the predicate without a cycle and retains an
+owned read as well, which leaks it the same way.
 
 ### Unannotated lambda parameters (#2681)
 

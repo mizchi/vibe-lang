@@ -14,13 +14,28 @@
 //   | higher-order call results, `apply_p(f, 1).y`   | 1,280,024 B |  56 B |
 //   | tuple results, `pair(i).0 + pair(i).1`         | 1,280,000 B |  32 B |
 //   | field at different slots, `mk(i).y + mkb(i).y` | 1,280,000 B |  32 B |
-//   | this fixture, all of them plus the controls    | 5,121,220 B | 964 B |
 //
-// The controls read a HEAP field off a fresh result and hand it to an owning
-// consumer (a binding, a record field) that outlives the temporary, so the
-// retain before the drop is what keeps it alive: without it VIBE_RC=shadow
-// traps. They run a few times only -- the field they read keeps the reference
-// the temporary used to hold, which leaks exactly as it did before.
+// That retain left a HEAP field one reference over: every consumer still read
+// a projection as a borrowed view, so one that stores it retained it again and
+// one that borrows it released nothing. A read off an owned temporary is now
+// an owned value to them (cc_is_owned_projection). Measured at N=20000 on the
+// compiler before that change:
+//
+//   | shape                                       | before      | after |
+//   |---------------------------------------------|------------:|------:|
+//   | borrowed call argument, `length(mkq(i).a)`  | 1,760,116 B | 116 B |
+//   | `let v = mkq(i).a`                          | 1,760,116 B | 116 B |
+//   | record field, `H::{ inner: mkq(i).a }`      | 1,760,140 B | 140 B |
+//   | constructor argument, `Some(mkq(i).a)`      | 1,760,140 B | 140 B |
+//   | tuple element, `(mkq(i).a, 1)`              | 1,760,148 B | 148 B |
+//   | returned, `fn geta(i) { mkq(i).a }`         | 1,760,116 B | 116 B |
+//   | nested, `mkq2(i).inner.a`                   | 4,800,116 B | 236 B |
+//   | assigned, `cur = mkq(i).a`                  | 1,760,116 B | 120 B |
+//   | this fixture, all of the above              | 17,120,404 B | 436 B |
+//
+// The controls keep heap fields past the loop -- through an owning call, a
+// push and a binding -- so a read whose reference went missing would be freed
+// under the array that keeps it: VIBE_RC=shadow traps on that.
 //
 // The gate compiles this under VIBE_RC=1 and bounds __heap_ptr growth, and
 // runs it under VIBE_RC=shadow
@@ -46,6 +61,11 @@ struct H {
   inner: Array[Int]
 }
 
+struct Q2 {
+  inner: Q;
+  m: Int
+}
+
 fn mk(i: Int) -> P {
   P::{ x: i, y: 1 }
 }
@@ -56,6 +76,10 @@ fn mkb(i: Int) -> B {
 
 fn mkq(i: Int) -> Q {
   Q::{ a: [i, i + 1, i + 2], n: i }
+}
+
+fn mkq2(i: Int) -> Q2 {
+  Q2::{ inner: mkq(i), m: 1 }
 }
 
 fn pair(i: Int) -> (Int, Int) {
@@ -88,12 +112,72 @@ fn dispatched_slot(i: Int) -> Int {
   (mk(i).y + mkb(i).y) * 0
 }
 
-// Controls: the heap field outlives the temporary it was read from.
-fn heap_field_bound(i: Int) -> Int {
+// A HEAP field read off a fresh result is an owned value too: the read holds
+// the reference the lowering took before releasing the temporary, so a
+// consumer that stores it takes that reference instead of retaining another
+// (cc_is_owned_projection), and a borrowing one releases it.
+fn heap_borrowed_arg(i: Int) -> Int {
+  (Array::length(mkq(i).a) - 3) * 0
+}
+
+fn heap_let(i: Int) -> Int {
   let v = mkq(i).a
+  (Array::get(v, 1) - (i + 1)) * 0
+}
+
+fn heap_record_field(i: Int) -> Int {
   let h = H::{ inner: mkq(i).a }
-  let w = mkq(i + 1)
-  (Array::get(v, 1) + Array::get(h.inner, 2) + Array::length(mkq(i).a) - (i + 1) - (i + 2) - 3 + w.n - (i + 1)) * 0
+  (Array::get(h.inner, 2) - (i + 2)) * 0
+}
+
+fn heap_ctor_arg(i: Int) -> Int {
+  let o = Some(mkq(i).a)
+  match o {
+    Some(xs) => (Array::get(xs, 0) - i) * 0,
+    None => 1
+  }
+}
+
+fn heap_tuple_elem(i: Int) -> Int {
+  let t = (mkq(i).a, 1)
+  (Array::length(t.0) - 3) * 0
+}
+
+fn geta(i: Int) -> Array[Int] {
+  mkq(i).a
+}
+
+fn heap_returned(i: Int) -> Int {
+  (Array::length(geta(i)) - 3) * 0
+}
+
+fn heap_nested(i: Int) -> Int {
+  let v = mkq2(i).inner.a
+  (Array::length(mkq2(i).inner.a) + Array::get(v, 1) - 3 - (i + 1)) * 0
+}
+
+fn heap_assigned(i: Int) -> Int {
+  let mut cur: Array[Int] = []
+  cur = mkq(i).a
+  (Array::get(cur, 0) - i) * 0
+}
+
+// Controls: the heap field is kept past the loop, by an owning call, a push
+// and a binding, so a read that lost its reference would be freed under the
+// array that keeps it (VIBE_RC=shadow traps on that). Each run keeps three
+// arrays alive, which is what the gate's bound allows for.
+fn keep(ks: Array[Array[Int]], xs: Array[Int]) -> Int {
+  Array::push(ks, xs)
+  Array::length(ks)
+}
+
+fn heap_field_kept(ks: Array[Array[Int]], i: Int) -> Int {
+  let n = keep(ks, mkq(i).a)
+  Array::push(ks, mkq(i + 1).a)
+  let v = mkq(i + 2).a
+  Array::push(ks, v)
+  let last = Array::get(ks, n + 1)
+  (Array::get(Array::get(ks, n - 1), 0) + Array::get(Array::get(ks, n), 0) + Array::get(last, 0) - 3 * i - 3) * 0
 }
 
 fn main() -> Int {
@@ -101,12 +185,9 @@ fn main() -> Int {
   let mut i = 0
   while i < 20000 {
     acc = acc + user_call(i) + closure_call(i) + higher_order_call(i) + tuple_call(i) + dispatched_slot(i)
+    acc = acc + heap_borrowed_arg(i) + heap_let(i) + heap_record_field(i) + heap_ctor_arg(i) + heap_tuple_elem(i) + heap_returned(i) + heap_nested(i) + heap_assigned(i)
     i = i + 1
   }
-  let mut j = 0
-  while j < 3 {
-    acc = acc + heap_field_bound(j)
-    j = j + 1
-  }
-  acc
+  let ks: Array[Array[Int]] = []
+  acc + heap_field_kept(ks, 7)
 }

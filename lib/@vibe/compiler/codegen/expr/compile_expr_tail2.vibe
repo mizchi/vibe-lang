@@ -204,6 +204,10 @@ import @vibe/compiler/codegen/wasm_emit {
   string_to_data
 }
 
+import ./compile_call_cc_ladder_names.vibe {
+  cc_is_borrowed_projection
+}
+
 import ./compile_call.vibe {
   cc_is_borrow_ret_call, cc_is_loop_borrowed_ident, compile_call
 }
@@ -308,10 +312,7 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
         // at (checker.vibe's `(pt2, s1, c1)` in check_expr's EFn param loop
         // -- the `enum Shape { Circle }` / `(Int) -> Int` one-line repros'
         // confirmed UAF site).
-        let __tup_is_proj = match __tup_elem {
-          EDot(_, _, _, _) => true,
-          _ => false
-        }
+        let __tup_is_proj = cc_is_borrowed_projection(__tup_elem, ctx)
         if ctx.enable_rc && (__tup_is_proj || cet2_is_ref_cell_read(__tup_elem, ctx) || cc_is_borrow_ret_call(__tup_elem, ctx) || cc_is_loop_borrowed_ident(__tup_elem, ctx)) {
           emit_rc_dup_guarded(buf, __tup_val_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
         } else {
@@ -428,10 +429,7 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
         // (drop class 5 recurses), so retain it or the source's drop frees
         // the block this array still points at. Same gap/fix as the ETuple
         // case above (see its comment).
-        let __arr_is_proj = match __arr_elem {
-          EDot(_, _, _, _) => true,
-          _ => false
-        }
+        let __arr_is_proj = cc_is_borrowed_projection(__arr_elem, ctx)
         if __arr_is_proj || (ctx.enable_rc && cet2_is_ref_cell_read(__arr_elem, ctx)) || cc_is_borrow_ret_call(__arr_elem, ctx) || cc_is_loop_borrowed_ident(__arr_elem, ctx) {
           emit_rc_dup_guarded(buf, __arr_val_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
         } else {
@@ -673,10 +671,7 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
     // binding (and any projection or borrow-returning read of it) is a view
     // into the iterable, whose own scope-end drop still runs after the loop.
     // Match the ownership transfer at array-literal element stores above.
-    let body_is_proj = match body {
-      EDot(_, _, _, _) => true,
-      _ => false
-    }
+    let body_is_proj = cc_is_borrowed_projection(body, ctx)
     if ctx.enable_rc && (body_is_proj || cet2_is_ref_cell_read(body, ctx) || cc_is_borrow_ret_call(body, ctx) || cc_is_loop_borrowed_ident(body, ctx)) {
       emit_rc_dup_guarded(buf, body_val, ctx.rc_shadow, ctx.rc_dup_func_idx)
     } else {
