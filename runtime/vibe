@@ -2003,6 +2003,13 @@ REPL_HELP
     msnap="$mwork/target.vibe"
     cp "$mabs" "$msnap"
     mcli="$(pick_cli)"
+    # The compile cache is the run's own. Every mutant is a source no later
+    # compile asks for again, so what a mutant adds to a cache is dead weight
+    # that grows with the run: on the formatter's modules it filled the disk
+    # partway through. The baseline's entries are kept (each mutant reuses
+    # them for the modules it did not touch); anything newer than the mark is
+    # a mutant's and is deleted after it.
+    mkdir -p "$mwork/cache"
     # Compile test files into a test plan WITHOUT running it; the plan's
     # records (line 6 on) are `src<TAB>wasm`, an empty wasm being a compile
     # failure. Extra environment (the overlay) comes from the caller.
@@ -2014,7 +2021,7 @@ REPL_HELP
       # test list (`vibe_tests`) are linear artifacts, so an inherited
       # VIBE_TEST_BACKEND=gc must not select the gc lane here.
       ( cd "$PROJECT_ROOT" && env $ADAPTER_MODE_CLEARS -u VIBE_TEST_BACKEND -u VIBE_BACKEND VIBE_HOST_ACTION_OUT="$plan" \
-          VIBE_BUILD_DIR="$mwork/build" VIBE_INVOKE_DIR="$INVOKE_DIR" \
+          VIBE_BUILD_DIR="$mwork/build" VIBE_BUILD_CACHE_DIR="$mwork/cache" VIBE_INVOKE_DIR="$INVOKE_DIR" \
           "$RUNNER" "$mcli" test "$@" ) >/dev/null 2>>"$mwork/compile.log" </dev/null || true
       [ -s "$plan" ] && [ "$(sed -n '2p' "$plan")" = run-tests ]
     }
@@ -2035,7 +2042,10 @@ REPL_HELP
         # Rows come back through their own file: whatever a block's child
         # processes print on stdout cannot pose as a verdict.
         rm -f "$mwork/each.part"
-        VIBE_TEST_EACH_FROM="$from" VIBE_TEST_EACH_OUT="$mwork/each.part" \
+        # No native code cache: a mutant's binary is new and runs once, so
+        # caching its machine code only fills the disk (~4 MB a test file
+        # per mutant on a compiler module).
+        VIBE_NATIVE_CACHE=0 VIBE_TEST_EACH_FROM="$from" VIBE_TEST_EACH_OUT="$mwork/each.part" \
           "$RUNNER" --test-each "$wasm" >/dev/null 2>&1 </dev/null || true
         [ -f "$mwork/each.part" ] || : > "$mwork/each.part"
         [ -n "$total" ] || total="$(sed -n 's/^vibe::tests	\([0-9][0-9]*\)$/\1/p' "$mwork/each.part" | sed -n '1p')"
@@ -2135,6 +2145,7 @@ REPL_HELP
     [ "$mtid" -gt 0 ] || die "vibe mutate: the test files contain no test blocks"
     cmp -s "$mabs" "$msnap" || die "vibe mutate: $mtarget changed while the baseline ran; run again"
     invoke_cli mutants "$msnap" > "$mwork/sites.txt" || die "vibe mutate: could not list the mutation sites of $mtarget"
+    touch "$mwork/cache.mark"
     mtotal="$(grep -c . "$mwork/sites.txt" || true)"
     echo "[vibe-mutate] $mtotal mutants of $mtarget x $mtid tests in ${#mrel[@]} file(s)" >&2
     mn=0
@@ -2173,7 +2184,11 @@ REPL_HELP
       printf 'mutant\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$mid" "$mstart" "$mend" "$mkind" "$morig" "$mrepl" "$mstatus" "$mkillers" >> "$mresults"
       echo "[vibe-mutate] $mn/$mtotal $mtarget:$mpos $mkind $morig -> ${mrepl:-(deleted)}: $mstatus" >&2
       rm -f "$mfile"
+      find "$mwork/cache" -type f -newer "$mwork/cache.mark" -exec rm -f {} + 2>/dev/null || true
     done < "$mwork/sites.txt"
+    # The run's own cache must end where the baseline left it; say so, so the
+    # pruning above can be checked from outside the run.
+    echo "[vibe-mutate] run cache: $(find "$mwork/cache" -type f | wc -l | tr -d ' ') files after $mtotal mutants" >&2
     cmp -s "$mabs" "$msnap" || die "vibe mutate: $mtarget changed during the run; run again"
     mutate_inputs_sum | cmp -s - "$mwork/inputs.sum" \
       || die "vibe mutate: a test file or one of its imports changed during the run; run again"

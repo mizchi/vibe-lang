@@ -421,6 +421,45 @@ else
   note "  FAIL expected a refusal for the edited import (exit $edit_status)"; printf '%s\n' "$edit_out" | tail -4; fail=1
 fi
 
+note "=== a mutant leaves nothing behind in any cache ==="
+# Every mutant is a source and a binary no later run asks for again, so what
+# one adds to a cache only grows with the run (on the formatter's modules it
+# filled the disk). Measured relationally: a run with one mutant and a run
+# with eight must leave the same number of files in the caller's compile
+# cache, in the native code cache, and in the run's own compile cache just
+# before it is torn down (the run reports that count). Before the fix, the
+# caller's caches held 14 vs 46 and 7 vs 19.
+cat > "$WORK/one.vibe" <<'EOF'
+export fn one() -> Int {
+  1
+}
+EOF
+cat > "$WORK/one_test.vibe" <<'EOF'
+import ./one.vibe {
+  one
+}
+
+test "one" {
+  assert(one() == 1)
+}
+EOF
+cache_footprint() {
+  rm -rf "$WORK/caches"
+  (cd "$WORK" && VIBE_BUILD_CACHE_DIR="$WORK/caches/build" VIBE_NATIVE_CACHE_DIR="$WORK/caches/native" \
+    VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
+    bash "$ROOT_DIR/runtime/vibe" mutate "$1" "$2" >/dev/null 2>"$WORK/caches.err")
+  printf 'build=%s native=%s run=%s' "$(find "$WORK/caches/build" -type f 2>/dev/null | wc -l | tr -d ' ')" \
+    "$(find "$WORK/caches/native" -type f 2>/dev/null | wc -l | tr -d ' ')" \
+    "$(sed -n 's/^\[vibe-mutate\] run cache: \([0-9][0-9]*\) files after .*/\1/p' "$WORK/caches.err")"
+}
+one_fp="$(cache_footprint one.vibe one_test.vibe)"
+lib_fp="$(cache_footprint lib.vibe lib_test.vibe)"
+if [ "$one_fp" = "$lib_fp" ] && ! printf '%s' "$lib_fp" | grep -q 'run=$'; then
+  note "  ok   the same cache footprint for 1 and 8 mutants ($lib_fp)"
+else
+  note "  FAIL the caches grow with the mutants: 1 mutant $one_fp, 8 mutants $lib_fp"; fail=1
+fi
+
 if [ "$fail" != 0 ]; then
   note "--- stdout of the last run ---"; printf '%s\n' "$out"
   note "--- stderr ---"; cat "$WORK/err"
