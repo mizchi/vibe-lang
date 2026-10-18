@@ -1516,6 +1516,13 @@ if ! printf '%s' "$run_lane_out" | grep -qF 'run_lane_marker.vibex: line 6:11' |
   echo "[compiler-gate] FAIL: vibe run did not locate the refusal (want 'line 6:11', no '[@off='), got: $run_lane_out (#3520)" >&2
   exit 1
 fi
+# A guest argument after `--` that happens to contain `[@` is the program's,
+# not source text, so it must not turn the resolution off.
+run_lane_guest_out="$(VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" run "$ssldir/run_lane_marker.vibex" -- 'x[@y' 2>&1 || true)"
+if ! printf '%s' "$run_lane_guest_out" | grep -qF 'run_lane_marker.vibex: line 6:11' || printf '%s' "$run_lane_guest_out" | grep -qF '[@off='; then
+  echo "[compiler-gate] FAIL: a guest argument containing '[@' left the marker raw: $run_lane_guest_out (#3520)" >&2
+  exit 1
+fi
 rm -rf "$ssldir"
 
 echo "[compiler-gate] 77/77 ADR-0089 D1 async sleep boundary (#1218)"

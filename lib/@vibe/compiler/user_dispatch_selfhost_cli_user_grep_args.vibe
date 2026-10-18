@@ -1702,7 +1702,10 @@ export fn run_user_dispatch_args(args: Array[String]) -> Int with Fs + Env + Std
     // entry does -- `vibe run` printed it raw. A position located in the entry
     // file is `line L:C: ..`, so it is prefixed with that file, as a checker
     // error on this verb is.
-    let located = finalize_thrown_diagnostic(e, args)
+    // Only the compiler's own arguments say whether `[@` is source text: a
+    // guest argument after `--` (`vibe run p.vibex -- 'x[@y'`) must not turn
+    // marker resolution off (Codex on #3552).
+    let located = finalize_thrown_diagnostic(e, run_args_before_guest(args))
     let shown = if String::starts_with(located, "line ") {
       let input = run_args_input_path(args)
       if input == "" {
@@ -1716,6 +1719,22 @@ export fn run_user_dispatch_args(args: Array[String]) -> Int with Fs + Env + Std
     Stderr::write_stream(line_terminated(format_check_report(shown)))
     1
   } }
+}
+
+fn run_args_before_guest(args: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  let mut done = false
+  while i < Array::length(args) && !done {
+    let a = Array::get(args, i)
+    if a == "--" {
+      done = true
+    } else {
+      Array::push(out, a)
+    }
+    i = i + 1
+  }
+  out
 }
 
 fn run_args_input_path(args: Array[String]) -> String {
