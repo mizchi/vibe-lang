@@ -1,0 +1,27 @@
+// #3517 control: the refusal of an `Async` closure in a `TaskGroup::spawn`
+// task looks at the task closure's OWN body. A plain task that opens a group
+// of its own and starts a suspendable task in it does not suspend itself --
+// `TaskGroup::spawn_suspend` discharges the `Async` its task uses -- so it
+// stays accepted and answers 5 + 1 = 6. Executed by
+// tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+fn work() -> Int with Async {
+  5
+}
+
+fn main() -> Int allows Async + Exception {
+  TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn(g, () -> {
+      TaskGroup::run((g2) -> {
+        let k = TaskGroup::spawn_suspend(g2, () -> Int with Async + Exception {
+          work() + 1
+        })
+        TaskHandle::join(k)
+      })
+    })
+    TaskHandle::join(h)
+  })
+}
