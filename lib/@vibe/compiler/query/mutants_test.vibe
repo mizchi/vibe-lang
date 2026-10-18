@@ -94,3 +94,19 @@ test "an interpolation hole ends where the lexer ends it" {
   let src = "fn f(x: Int) -> String { \"\\{g('}', x // }\n - 3)}\" }\n"
   inspect(mt_render(src), "43-44 arith -->+\n45-46 const 3->4")
 }
+
+test "an if condition is forced each way, even with no operator in it" {
+  // `is_zero(d)` holds nothing the operator kinds rewrite; forcing it is
+  // what tells a test that pins the branch from one that never reaches it.
+  let src = "fn f(d: Int) -> Int { if is_zero(d) { 1 } else { 2 } }\n"
+  inspect(mt_render(src), "25-35 cond is_zero(d)->true\n25-35 cond is_zero(d)->false\n38-39 const 1->0\n49-50 const 2->3")
+}
+
+test "a while condition is only forced false, and a literal condition is left to the bool kind" {
+  let src = "fn g(n: Int) -> Int {\n  let mut i = 0\n  while i < n {\n    i = i + 1\n  }\n  if true { i } else { 0 }\n}\n"
+  inspect(mt_render(src), "36-37 const 0->1\n46-51 cond i\\s<\\sn->false\n48-49 boundary <-><=\n48-49 negate <->>=\n64-65 arith +->-\n66-67 const 1->0\n77-81 bool true->false\n95-96 const 0->1")
+}
+
+test "a condition with spaces is one field, escaped like a test label" {
+  inspect(mt_render("fn f(d: Int) -> Bool { if d == 0 { true } else { false } }\n"), "26-32 cond d\\s==\\s0->true\n26-32 cond d\\s==\\s0->false\n28-30 negate ==->!=\n31-32 const 0->1\n35-39 bool true->false\n49-54 bool false->true")
+}

@@ -1131,7 +1131,12 @@ line: `ID START END LINE:COL KIND ORIGINAL REPLACEMENT`. The kinds are:
 - `bitwise`;
 - `bool`: flip the literal;
 - `const`: `0` ↔ `1`, `n` → `n+1`;
-- `not`: delete a `!`.
+- `not`: delete a `!`;
+- `cond`: force an `if` condition to `true` and to `false`, and a `while`
+  condition to `false`. This is what reaches code that only delegates
+  (`if BigInt::is_zero(d)` holds no operator); without it, a test that pins
+  such a branch reads as NOKILL or REDUNDANT. ORIGINAL is the condition,
+  with whitespace escaped (`\s`, `\t`, `\n`) so the row keeps its fields.
 
 The sites come from the AST, and a binary `-` is never confused with a unary
 one.
