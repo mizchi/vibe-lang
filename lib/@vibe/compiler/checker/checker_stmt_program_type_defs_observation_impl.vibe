@@ -2022,6 +2022,22 @@ fn irc_collect_expr(e: Expr, out: Array[Int], want: Int, shims: Int) -> Unit {
   } else {
     ()
   }
+  // #3513: the operands of `==` / `!=` are `eq` arguments too -- the operator
+  // lowers to the same comparison -- so the checker's `Int` answer for them
+  // rides the same channel. Without it an operand codegen cannot classify by
+  // shape (a call result; on the gc lane any binding) took the generic `eq`,
+  // whose string fall-back compares the low 32 bits: `id(1) == id(1 + (1 <<
+  // 33))` answered `true`. Not for the Double walk (want 4), whose key and
+  // consumer differ.
+  match e {
+    EBinOp(op, l, r, _) => if want != 4 && (op == "==" || op == "!=") {
+      irc_push_arg_key(l, out, want)
+      irc_push_arg_key(r, out, want)
+    } else {
+      ()
+    },
+    _ => ()
+  }
   match e {
     ECall(callee, args, _, _) => match callee {
       EIdent(cn, _) => if irc_is_render_callee(cn, shims) {

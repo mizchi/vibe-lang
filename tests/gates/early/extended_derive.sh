@@ -953,6 +953,15 @@ run_test_block_fixtures "bit-not" fixtures/bit_not_test.vibe fixtures/bitwise_te
 run_test_block_fixtures_gc "bit-not (gc)" fixtures/bit_not_test.vibe fixtures/bitwise_test.vibe
 echo '[compiler-gate] bit-not ~ ok'
 
+# 15b-2b. Int `==` on operands no shape classifies (#3513): a call result on
+#         both lanes, a plain binding on gc. The generic `eq` fall-back compared
+#         the low 32 bits and answered `true` for Ints differing above bit 31.
+#         Both lanes, because the gc lane failed on shapes linear got right.
+echo '[compiler-gate] 15b-2b/15 Int == on checker-typed operands (#3513)'
+run_test_block_fixtures "int-eq-typed" fixtures/int_eq_typed_operand_test.vibe
+run_test_block_fixtures_gc "int-eq-typed (gc)" fixtures/int_eq_typed_operand_test.vibe
+echo '[compiler-gate] int-eq-typed ok'
+
 # 15b-3. gc-lane scalar parity (#2404 / #2405 / #2407). One fixture, run on
 #        BOTH lanes: every assertion in it held on linear and failed on gc --
 #        a labeled parameter reported an internal compiler error, a large Int
