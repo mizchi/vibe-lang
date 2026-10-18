@@ -424,20 +424,29 @@ fn lc_arg_is_suspendable_task(params: Option[Array[(String, Option[TypeExpr])]],
   }
 }
 
-/// #3523: does `e` call one of `async_fns`, outside an argument handed to a
-/// suspendable task parameter (`lc_arg_is_suspendable_task`)?
-fn lc_expr_calls_async_fn(e: Expr, async_fns: Array[String], stmts: Array[Stmt]) -> Bool {
+/// #3523: does `e` reach a suspension -- a raw `perform Async::Suspend(q)`
+/// that is not a poll-wait, or a call to one of `suspending` -- outside an
+/// argument handed to a suspendable task parameter
+/// (`lc_arg_is_suspendable_task`)? A poll-wait (`q` = 1: `await`, `recv_wait`)
+/// is left out: with nothing in the entry to wake it, the boundary could only
+/// trap on it, and an `Async` for-loop's poll would wrap the whole entry in a
+/// boundary its body is not eligible for (gate 19).
+fn lc_expr_reaches_suspend(e: Expr, suspending: Array[String], stmts: Array[Stmt]) -> Bool {
   match e {
     ECall(callee, args, _, _) => {
       let (hit, params) = match callee {
-        EIdent(fname, _) => (array_contains_str(async_fns, fname), lc_top_level_fn_params(stmts, fname)),
+        EIdent(fname, _) => if fname == "perform" {
+          (lc_is_non_poll_suspend(args), None)
+        } else {
+          (array_contains_str(suspending, fname), lc_top_level_fn_params(stmts, fname))
+        },
         _ => (false, None)
       }
-      let mut found = hit || lc_expr_calls_async_fn(callee, async_fns, stmts)
+      let mut found = hit || lc_expr_reaches_suspend(callee, suspending, stmts)
       let mut ai = 0
       while ai < Array::length(args) && !found {
         if !lc_arg_is_suspendable_task(params, ai) {
-          found = lc_expr_calls_async_fn(Array::get(args, ai), async_fns, stmts)
+          found = lc_expr_reaches_suspend(Array::get(args, ai), suspending, stmts)
         } else {
           ()
         }
@@ -450,7 +459,7 @@ fn lc_expr_calls_async_fn(e: Expr, async_fns: Array[String], stmts: Array[Stmt])
       let mut found = false
       let mut ki = 0
       while ki < Array::length(kids) && !found {
-        found = lc_expr_calls_async_fn(Array::get(kids, ki), async_fns, stmts)
+        found = lc_expr_reaches_suspend(Array::get(kids, ki), suspending, stmts)
         ki = ki + 1
       }
       found
@@ -458,33 +467,61 @@ fn lc_expr_calls_async_fn(e: Expr, async_fns: Array[String], stmts: Array[Stmt])
   }
 }
 
-/// #3523: does the entry itself reach an `Async` suspension -- a call, in its
-/// body or in a closure it runs, to a top-level function whose row carries
-/// `Async` (`sleep_wait`, or one of the program's own)? The entry is then the
-/// only handler that suspension can reach, so it needs the boundary even when
-/// the program calls no `sleep` and no host future. Without one a direct
-/// `sleep_wait` trapped on an unhandled perform, and a closure step-compiled
-/// for `Async` handed its step object back as the value (`r = 1044` for 5).
+/// `perform`'s arguments name a runtime-scheduled operation (`Async::Suspend`)
+/// whose payload is anything but the literal poll-wait `1`.
+fn lc_is_non_poll_suspend(perform_args: Array[Expr]) -> Bool {
+  if Array::length(perform_args) != 1 {
+    false
+  } else {
+    match Array::get(perform_args, 0) {
+      ECall(EIdent(op, _), op_args, _, _) => {
+        let sep = String::index_of(op, "::")
+        let scheduled = sep > 0 && is_runtime_scheduled_effect(String::substring(op, 0, sep))
+        let poll = Array::length(op_args) == 1 && match Array::get(op_args, 0) {
+          EInt(1) => true,
+          _ => false
+        }
+        scheduled && !poll
+      },
+      _ => false
+    }
+  }
+}
+
+/// #3523: does the entry itself reach an `Async` suspension -- in its body or
+/// in a closure it runs, outside a suspendable task? The top-level functions
+/// that suspend are found first, to a fixpoint: a body that reaches a
+/// suspension (`lc_expr_reaches_suspend`) makes its function one. The entry is
+/// then the only handler that suspension can reach, so it needs the boundary
+/// even when the program calls no `sleep` and no host future. Without one a
+/// direct `sleep_wait` trapped on an unhandled perform, and a closure
+/// step-compiled for `Async` handed its step object back as the value (`r =
+/// 1044` for 5). An `Async` function that never suspends gets none, as before.
 fn lc_entry_calls_async_fn(stmts: Array[Stmt], boundary_name: String) -> Bool {
-  let async_fns: Array[String] = []
+  let suspending: Array[String] = []
   let mut entry_body = EUnit
   let mut has_entry = false
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, nm, _, EFn(_, _, _, _, eff, body)) => if nm == boundary_name {
-        entry_body = body
-        has_entry = true
-      } else if lc_row_names_scheduled(eff) {
-        Array::push(async_fns, nm)
-      } else {
-        ()
-      },
-      _ => ()
+  let mut changed = true
+  while changed {
+    changed = false
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(_, _, nm, _, EFn(_, _, _, _, eff, body)) => if nm == boundary_name {
+          entry_body = body
+          has_entry = true
+        } else if lc_row_names_scheduled(eff) && !array_contains_str(suspending, nm) && lc_expr_reaches_suspend(body, suspending, stmts) {
+          Array::push(suspending, nm)
+          changed = true
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      i = i + 1
     }
-    i = i + 1
   }
-  has_entry && Array::length(async_fns) > 0 && lc_expr_calls_async_fn(entry_body, async_fns, stmts)
+  has_entry && lc_expr_reaches_suspend(entry_body, suspending, stmts)
 }
 
 export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> String {
