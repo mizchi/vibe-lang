@@ -80,11 +80,11 @@ compile-checks against the current compiler.
   63-bit two's complement — ADR-0006, #1877; a shift count of 63 or more, or a
   negative one, saturates: `<<` gives `0`, `>>` gives the sign; `Double::to_int`
   saturates to `Int::max_value` / `Int::min_value` and maps NaN to `0` — #2978),
-  `Float` (32-bit), `Double`
-  (64-bit), `String` (a **byte** string with byte-offset indexing, ADR-0098),
+  `Double` (64-bit), `String` (a **byte** string with byte-offset indexing, ADR-0098),
   `Char` (an `Int` alias), `Bool`, `Unit`.
-- Literals: integers (decimal / `0x` hex), floats (`1.5f` / `3.14`), strings
-  (interpolation `\{expr}`), chars `'A'`, `true`/`false`, `()`.
+- Literals: integers (decimal / `0x` hex), doubles (`3.14`), strings
+  (interpolation `\{expr}`), chars `'A'`, `true`/`false`, `()`. `Float` and
+  its `1.5f` literal are not frozen (§6.1).
 - Composite types: tuples `(A, B)`, `Array[T]`, `StringMap[V]` (the builtin
   map; `Map[K, V]`'s generality is not frozen — see §3), record, struct,
   enum, function types `(A) -> B`, effectful `(A) -> B with E`, generics `[T]`,
@@ -300,7 +300,9 @@ spelling at all — `Option::Some` reports `unknown name`, so write `Some`.
 - **Declaration members are separated by `;`**: `struct P { x: Int; y: Int }`,
   `enum E { A; B }`. A `,` there is a parse error naming the edit, and a bare
   newline is not a separator either (ADR-0107).
-- Traits are nominal. A trait may declare methods (`Iterator[T]`'s
+- Traits are nominal. Nested conditional impls, one impl declared in two
+  modules, and higher-kinded parameters are outside the freeze for
+  0.1.0 (§6.1). A trait may declare methods (`Iterator[T]`'s
   `iter_length` / `iter_get`; `Eq`'s `equals` since #2523) or be a marker
   (`Ord`). Supertraits `trait Ord: Eq`, conjunctive bounds `[T: A + B]`,
   conditional impls `impl [T: Eq] Eq for Array[T]`.
@@ -580,6 +582,72 @@ that.
   `scripts/builtin_parity_classification.tsv` and enforced at the gate.
 
 ---
+
+### 6.1 Moved out of the freeze by the pre-release bug hunt (#3535)
+
+The 2026-10-18 bug hunt ran programs against main's stage2 (`9273a30`). Each
+surface below gave a silently wrong answer, or failed to compile, in a way
+that could not be fixed safely before `0.1.0`, and none is needed to write an
+ordinary program. They stay usable but are **not frozen** for `0.1.0`.
+
+- **`Float`** (`1.5f` literals, `Float` annotations, `Double::to_float` /
+  `Float::to_double`). It is documented as 32-bit but computes as a 64-bit
+  double, so `16777217.0f == 16777216.0f` is `false`. A `Float` field in a
+  `derive (Show)` struct also renders as a number that is not its value
+  (#3543, #3542). Use `Double`.
+- **`derive (Hash)` and the `Map::*_by` operations keyed on it.** The derived
+  key is the unquoted `to_string`, so two different values can share a key.
+  It also does not follow `==` for `-0.0` (#3544). Key a map by a `String`
+  you build yourself.
+- **Trait impls beyond one module and one level of generics.** A conditional
+  impl (`impl [T: X] Y for Box[T]`) applied at a nested instantiation
+  (`Box[Box[Int]]`) emits invalid wasm (#3547). The same impl declared in two
+  modules is not detected as an overlap, so import order picks one (#3544).
+  The frozen subset is an impl in the module that declares the type, used at
+  one level of conditional impl. Even there, an impl's method signature is
+  not yet checked against its trait (#3538), so write it exactly as the
+  trait declares it.
+- **Higher-kinded type parameters (`F[_]`).** They work in the hunt's probes,
+  but they sit on the same unchecked impl machinery, and their diagnostics
+  have no position (#3548).
+- **Kinded exception arms (`Exception[K]::Throw(e)`) over a row-polymorphic
+  callee**, and a handler arm that performs another effect. Such an arm can
+  catch a kind it does not name, and the arm's own effects reach handlers
+  inside the handled body rather than outside it (#3540). The erased
+  `Exception::Throw(m)` arm, a kinded arm over a concrete body, and an arm
+  that only computes and resumes are unaffected.
+- **First-class `resume`** (`let k = resume`, a continuation stored and called
+  later) and the suspend-shaped handlers built on it. The hunt found no wrong
+  answer, but which bodies compile is decided by a lowering, not by the type
+  system (see the cheatsheet's "A `handle` that type-checks can still fail to
+  compile"). Its spelling is expected to change with native continuations.
+  Tail `resume(v)` is frozen.
+
+### 6.2 Known soundness gaps in the frozen core (0.1.0)
+
+The policy is that vibe is never silently wrong. These gaps break that inside
+the frozen surface, and `0.1.0` ships with them. They are listed so a reader
+can stay clear of them. Each one is an open P0 bug, and closing it can
+reject programs that compile today. Each is fixed as a compatible change,
+because those programs are already wrong.
+
+- **A generic function's type parameters are not rigid** (#3536).
+  `fn cast[T, U](x: T) -> U { x }` type-checks, and so does a bare `Array`
+  with no argument. Write the body so it only passes a `T` value along.
+- **A generic function returning a closure, or a generic struct literal over
+  an empty container, is generalized** (#3537). Annotate the binding:
+  `let f: (Int) -> Array[Int] = make()`, `let b: Bag[Int] = Bag::{ xs: [] }`.
+- **An effect row is not charged for a call through an expression** (#3539).
+  This covers `mk()()`, `(xs[0])()`, a closure out of a `match` or a `for`, and
+  converting a `with Exception` function to a row-less function type. Bind the
+  closure to an annotated parameter or name before calling it.
+- **A closure created inside a `handle` can outlive it with a pure type**
+  (#3540). Do not return or store a closure that performs the handled effect.
+- **The erased `Exception::Throw(m)` binder is untyped** (#3541). Use a kinded
+  arm (`Exception[K]::Throw(e)`) when the payload is used as a value.
+- **Some `Double` values interpolate as an address** (#3542). This hits a
+  `for` binder, an index expression, or a library result. Bind the value
+  first: `let x: Double = ds[0]`.
 
 ## 7. Operating the freeze
 

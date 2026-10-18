@@ -221,7 +221,16 @@ the edit that fixes them rather than an internal pass name.
   `--json` ([source-range-contract.md](../reference/source-range-contract.md)).
 - Everything in §6 of [stable-surface.md](../reference/stable-surface.md) is
   outside the SemVer promise, most notably the suspendable-task lane, the
-  capability authorization surface and the wasm-gc backend.
+  capability authorization surface and the wasm-gc backend. The pre-release
+  bug hunt (#3535) added `Float`, `derive (Hash)` keys, nested and duplicated
+  trait impls, higher-kinded parameters, kinded exception arms over
+  row-polymorphic callees, and first-class `resume` to that list (§6.1).
+- The same hunt found six soundness gaps inside the frozen core that 0.1.0
+  ships with: non-rigid type parameters, generalized closure-returning calls,
+  effect rows not charged through call expressions, closures escaping a
+  `handle`, the untyped erased `Throw` binder, and `Double` interpolation
+  through a `for` binder or an index. Each has a workaround in §6.2 of
+  [stable-surface.md](../reference/stable-surface.md) and an open P0 issue.
 
 ## Release verification
 
