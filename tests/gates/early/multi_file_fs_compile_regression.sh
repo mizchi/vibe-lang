@@ -417,6 +417,27 @@ oob_check "Bytes::get" "Bytes::get: index 9 out of bounds for length 3" "$oobdir
 oob_check "Bytes::set" "Bytes::set: index 9 out of bounds for length 3" "$oobdir/bytes_set.vibe:4" "$oob_bytes_set_out" "$oob_bytes_set_rc"
 oob_check "String::byte_at" "String::byte_at: index 5 out of bounds for length 3" "$oobdir/str_byte_at.vibe:4" "$oob_str_out" "$oob_str_rc"
 oob_check "Map::get" "Map::get: key not found" "$oobdir/map_get.vibe:4" "$oob_map_out" "$oob_map_rc"
+# #3547: the same miss on the wasm-gc lane (`vibe test`/`vibe run` with
+# VIBE_TEST_BACKEND=gc / --backend gc) trapped with only a backtrace after the
+# linear lane gained the message. That lane carries no production linemap, so
+# only the message is asserted. The selector is inline (#2248).
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$oobdir/map_get.vibe" "$oobdir/map_get_gc.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$oobdir/map_get_gc.wasm" ]; then
+  echo "[compiler-gate] FAIL: Map::get miss sample did not compile on the gc lane" >&2
+  cat "$oobdir/map_get_gc.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+set +e
+oob_map_gc_out="$(oob_run_one "$oobdir/map_get_gc.wasm")"
+oob_map_gc_rc=$?
+set -e
+if [ "$oob_map_gc_rc" -eq 0 ] || ! printf '%s\n' "$oob_map_gc_out" | grep -qF 'Map::get: key not found (check with `Map::has_key` first)'; then
+  echo "[compiler-gate] FAIL: Map::get miss on the gc lane did not trap with its message (#3547)" >&2
+  printf '%s\n' "$oob_map_gc_out" >&2
+  exit 1
+fi
 # Stripped mapping: OOB line and wasm frame remain; no fabricated path:line.
 node scripts/wasm_custom_section.js strip "$oobdir/arr_get.wasm" "$oobdir/arr_get.stripped.wasm" vibe.linemap vibe.dbgfiles
 set +e
