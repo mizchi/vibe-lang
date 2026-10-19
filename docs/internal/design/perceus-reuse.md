@@ -205,6 +205,45 @@ to be owed (`path_value_owned`, `compile_expr_tail_classify_let_value_heap.vibe`
 `scripts/path_release_census.sh` classifies every `PaPathDrop` row of a flat
 source by this rule.
 
+### Branch-dependent dups (#1980)
+
+The other shape a branch produces: every arm leaves the binding with uses
+still owed, so nothing spends the initial reference, but an arm consumes it
+through a planned dup. Codegen takes every planned dup of a `let` at the
+declaration site, on every path, so the budget is the SUM of the arms' dups
+where each path needs only its own arm's. `let v = mk(); if c { keep(v) };
+use(v)` leaked `v` whenever `c` was false, and a consume on both arms leaked
+one either way.
+
+`pe_note_dup_occurrence` records the occurrence each such dup was planned
+for, and at an `if` / `match` merge `pe_dup_merge` takes, per binding, each
+arm's live occurrences and their maximum `M`:
+
+- every arm but one maximal arm gives up its occurrences' rows (dropped by
+  `pe_apply_dup_splits` before the plan is indexed), so the budget is `M`;
+- when an arm has fewer than `M`, or an arm already holds a mark from an
+  inner merge, the occurrences in the maximal arms become `PaConsumeMark`
+  rows and the binding gets a `PaPathDrop`: the guarded drop above releases
+  one reference on a path that ran none of them.
+
+Neither can release a reference a path still needs: a path consumes at most
+its own arm's occurrences, and one that ran no mark consumed fewer than `M`.
+The inner-mark rule keeps that true across nesting. In `if a { keep(v) }
+else if b { keep(v) }` the outer merge is symmetric and drops the inner
+arm's row, so the outer `then` path spends its whole budget; without a mark
+of its own it ran no mark, and the inner merge's path drop released the
+reference `keep` stored (the checker's effect tables, found by the 40f2
+shadow smoke). A mark only withholds the drop, so an extra one costs a leak
+and a missing one a premature release.
+
+A merge declines (the binding keeps today's rows) when an arm took the
+initial reference (the split above owns that), when an occurrence has no
+source offset or sits in a loop the binding is declared outside of. The
+whole binding declines when it has an early-exit row, whose count reads the
+dup budget, and its marks are withheld when another binding of the plan has
+its name: codegen gives a `PaPathDrop` to every `let` of the row's name. A
+path short by two or more still leaks the rest.
+
 ## Ownership contracts of builtin lowerings
 
 ### Array higher-order builtins (#2671)
@@ -234,6 +273,12 @@ path parks such a temporary (`cc_is_owned_temp`: a call to a callee that
 returns no view, or an array / tuple / record / map literal) and releases it
 after the call, unless the callee may return a view of that argument, in which
 case the leak is the safe side.
+
+A `for` over such a temporary (`for k in [a, b]`, `for x in build()`) is the
+same gap at a loop: the iterable lives in a scratch local, and the element
+binding is a view into it that an owning use retains. `compile_forin_loop`
+releases the temporary after the loop, and the char-code array a `String`
+iterable is materialized into always.
 
 A projection off such a temporary (`mk(i).y`, `pair(i).0`, `mk(i).inner.a`)
 is the same gap: the plan sees no binding, so nothing released the block the

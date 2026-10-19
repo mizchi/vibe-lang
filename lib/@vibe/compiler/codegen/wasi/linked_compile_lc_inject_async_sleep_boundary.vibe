@@ -7,6 +7,7 @@ import @vibe/compiler/core {
   TypeExpr,
   apply_top_level_fn_alias_renames,
   builtin_callee_resolution,
+  expr_children,
   is_runtime_scheduled_effect,
   rewrite_top_level_fn_alias_refs,
   split_handler_or_arms
@@ -370,6 +371,264 @@ export fn lc_waiter_hooks_available(stmts: Array[Stmt], linked_imports: Array[(S
   has_wait && has_notify
 }
 
+/// #3523: does this row name the runtime-scheduled effect (`Async`)?
+fn lc_row_names_scheduled(eff: Option[String]) -> Bool {
+  match eff {
+    Some(row) => {
+      let parts = String::split(row, ",")
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(parts) && !found {
+        found = is_runtime_scheduled_effect(String::trim(Array::get(parts, i)))
+        i = i + 1
+      }
+      found
+    },
+    None => false
+  }
+}
+
+/// #3523: the parameters of the top-level function `name` when it DISCHARGES
+/// what an `Async` parameter does -- its own row names no runtime-scheduled
+/// effect, as `TaskGroup::spawn_suspend`'s does not -- or None. A function
+/// whose row carries `Async` (`fn apply(f: () -> Int with Async) -> Int with
+/// Async`) propagates the closure's suspension to its caller, so its
+/// arguments are walked like any other (Codex on #3534).
+fn lc_top_level_fn_params(stmts: Array[Stmt], name: String) -> Option[Array[(String, Option[TypeExpr])]] {
+  let mut out = None
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, nm, _, EFn(_, _, params, _, eff, _)) => if nm == name && !lc_row_names_scheduled(eff) {
+        out = Some(params)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #3523: is argument `ai` of a call to a function with `params` handed to a
+/// parameter whose own row names `Async`? That parameter is a suspendable
+/// task (`TaskGroup::spawn_suspend`), which discharges what its closure does.
+fn lc_arg_is_suspendable_task(params: Option[Array[(String, Option[TypeExpr])]], ai: Int) -> Bool {
+  match params {
+    Some(ps) => if ai < Array::length(ps) {
+      let (_, pty) = Array::get(ps, ai)
+      match pty {
+        Some(TyFn(_, _, prow)) => lc_row_names_scheduled(prow),
+        _ => false
+      }
+    } else {
+      false
+    },
+    None => false
+  }
+}
+
+/// #3523: does `e` reach a suspension -- a raw `perform Async::Suspend(q)`
+/// that is not a poll-wait, a call to one of `suspending`, or such a function
+/// taken as a VALUE (`let f = work`, a callback, an array element), which can
+/// be called later through a name the scan cannot follow -- outside an
+/// argument handed to a suspendable task parameter
+/// (`lc_arg_is_suspendable_task`)? A poll-wait (`q` = 1: `await`,
+/// `recv_wait`) is left out: with nothing in the entry to wake it, the
+/// boundary could only trap on it, and an `Async` for-loop's poll would wrap
+/// the whole entry in a boundary its body is not eligible for (gate 19).
+///
+/// `scope` holds the local binders in force at `e`. A name it holds is the
+/// local, not the top-level function of that spelling, from the binder
+/// onward and only there: `let n = tick(); let tick = () -> 0` still calls
+/// the top-level `tick`. A closure body is walked whether or not it is
+/// called, since its suspension can reach the entry through any name it is
+/// stored under; counting too much only injects a boundary, never drops one.
+fn lc_expr_reaches_suspend(e: Expr, suspending: Array[String], stmts: Array[Stmt], scope: Array[String]) -> Bool {
+  match e {
+    EIdent(n, _) => !array_contains_str(scope, n) && array_contains_str(suspending, n),
+    ECall(callee, args, _, _) => {
+      let (hit, params) = match callee {
+        EIdent(fname, _) => if fname == "perform" {
+          (lc_is_non_poll_suspend(args), None)
+        } else if array_contains_str(scope, fname) {
+          (false, None)
+        } else {
+          (array_contains_str(suspending, fname), lc_top_level_fn_params(stmts, fname))
+        },
+        _ => (lc_expr_reaches_suspend(callee, suspending, stmts, scope), None)
+      }
+      let mut found = hit
+      let mut ai = 0
+      while ai < Array::length(args) && !found {
+        if !lc_arg_is_suspendable_task(params, ai) {
+          found = lc_expr_reaches_suspend(Array::get(args, ai), suspending, stmts, scope)
+        } else {
+          ()
+        }
+        ai = ai + 1
+      }
+      found
+    },
+    ELet(n, v, body, _) => lc_expr_reaches_suspend(v, suspending, stmts, scope) || lc_expr_reaches_suspend(body, suspending, stmts, lc_scope_with(scope, [
+      n
+    ])),
+    ELetMut(n, v, body, _) => lc_expr_reaches_suspend(v, suspending, stmts, scope) || lc_expr_reaches_suspend(body, suspending, stmts, lc_scope_with(scope, [
+      n
+    ])),
+    ELetRec(n, v, body) => {
+      let inner = lc_scope_with(scope, [n])
+      lc_expr_reaches_suspend(v, suspending, stmts, inner) || lc_expr_reaches_suspend(body, suspending, stmts, inner)
+    },
+    EFn(_, _, ps, _, _, body) => {
+      let names: Array[String] = []
+      for pr in ps {
+        let (pn, _) = pr
+        Array::push(names, pn)
+      }
+      lc_expr_reaches_suspend(body, suspending, stmts, lc_scope_with(scope, names))
+    },
+    EForIn(n, idx, it, body) => {
+      let names = [n]
+      match idx {
+        Some(ix) => Array::push(names, ix),
+        None => ()
+      }
+      lc_expr_reaches_suspend(it, suspending, stmts, scope) || lc_expr_reaches_suspend(body, suspending, stmts, lc_scope_with(scope, names))
+    },
+    ELoop(binds, body) => {
+      let names: Array[String] = []
+      let mut found = false
+      for bd in binds {
+        let (bn, bv) = bd
+        if !found {
+          found = lc_expr_reaches_suspend(bv, suspending, stmts, scope)
+        } else {
+          ()
+        }
+        Array::push(names, bn)
+      }
+      found || lc_expr_reaches_suspend(body, suspending, stmts, lc_scope_with(scope, names))
+    },
+    EMatch(scrut, arms) => lc_expr_reaches_suspend(scrut, suspending, stmts, scope) || lc_arms_reach_suspend(arms, suspending, stmts, scope),
+    EHandle(body, arms) => lc_expr_reaches_suspend(body, suspending, stmts, scope) || lc_arms_reach_suspend(arms, suspending, stmts, scope),
+    _ => {
+      let kids = expr_children(e)
+      let mut found = false
+      let mut ki = 0
+      while ki < Array::length(kids) && !found {
+        found = lc_expr_reaches_suspend(Array::get(kids, ki), suspending, stmts, scope)
+        ki = ki + 1
+      }
+      found
+    }
+  }
+}
+
+fn lc_arms_reach_suspend(arms: Array[(Pat, Expr)], suspending: Array[String], stmts: Array[Stmt], scope: Array[String]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(arms) && !found {
+    let (p, body) = Array::get(arms, i)
+    let names: Array[String] = []
+    lc_pat_collect(p, names)
+    found = lc_expr_reaches_suspend(body, suspending, stmts, lc_scope_with(scope, names))
+    i = i + 1
+  }
+  found
+}
+
+fn lc_pat_collect(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, ps) => for q in ps {
+      lc_pat_collect(q, out)
+    },
+    PTuple(ps) => for q in ps {
+      lc_pat_collect(q, out)
+    },
+    POr(a, b) => {
+      lc_pat_collect(a, out)
+      lc_pat_collect(b, out)
+    },
+    PStruct(_, fields) => for fd in fields {
+      let (_, fp) = fd
+      lc_pat_collect(fp, out)
+    },
+    _ => ()
+  }
+}
+
+fn lc_scope_with(scope: Array[String], names: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  for n in scope {
+    Array::push(out, n)
+  }
+  for n in names {
+    Array::push(out, n)
+  }
+  out
+}
+
+/// `perform`'s arguments name a runtime-scheduled operation (`Async::Suspend`)
+/// whose payload is anything but the literal poll-wait `1`.
+fn lc_is_non_poll_suspend(perform_args: Array[Expr]) -> Bool {
+  if Array::length(perform_args) != 1 {
+    false
+  } else {
+    match Array::get(perform_args, 0) {
+      ECall(EIdent(op, _), op_args, _, _) => {
+        let sep = String::index_of(op, "::")
+        let scheduled = sep > 0 && is_runtime_scheduled_effect(String::substring(op, 0, sep))
+        let poll = Array::length(op_args) == 1 && match Array::get(op_args, 0) {
+          EInt(1) => true,
+          _ => false
+        }
+        scheduled && !poll
+      },
+      _ => false
+    }
+  }
+}
+
+/// #3523: does the entry itself reach an `Async` suspension -- in its body or
+/// in a closure it runs, outside a suspendable task? The top-level functions
+/// that suspend are found first, to a fixpoint: a body that reaches a
+/// suspension (`lc_expr_reaches_suspend`) makes its function one. The entry is
+/// then the only handler that suspension can reach, so it needs the boundary
+/// even when the program calls no `sleep` and no host future. Without one a
+/// direct `sleep_wait` trapped on an unhandled perform, and a closure
+/// step-compiled for `Async` handed its step object back as the value (`r =
+/// 1044` for 5). An `Async` function that never suspends gets none, as before.
+fn lc_entry_calls_async_fn(stmts: Array[Stmt], boundary_name: String) -> Bool {
+  let suspending: Array[String] = []
+  let mut entry_fn = EUnit
+  let mut has_entry = false
+  let mut changed = true
+  while changed {
+    changed = false
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(_, _, nm, _, EFn(tps, bounds, ps, ret, eff, body)) => if nm == boundary_name {
+          entry_fn = EFn(tps, bounds, ps, ret, eff, body)
+          has_entry = true
+        } else if lc_row_names_scheduled(eff) && !array_contains_str(suspending, nm) && lc_expr_reaches_suspend(EFn(tps, bounds, ps, ret, eff, body), suspending, stmts, [
+        ]) {
+          Array::push(suspending, nm)
+          changed = true
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+  }
+  has_entry && lc_expr_reaches_suspend(entry_fn, suspending, stmts, [])
+}
+
 export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> String {
   let boundary_name = lc_resolve_boundary_name(stmts, entry_name)
   let mut entry_has_async = false
@@ -566,6 +825,14 @@ export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String)
   let sleep_machinery = calls_sleep && !user_defines_sleep && (entry_has_async || has_async_handle)
   let hf_machinery = calls_host_future && !user_defines_host_future && entry_has_async
   let hs_machinery = calls_host_stream && !user_defines_host_stream && entry_has_async
+  // #3523: an entry that itself reaches an `Async` function needs the
+  // boundary too (lc_entry_calls_async_fn). Its arm settles a sleep debt by
+  // blocking, resumes a yield, and traps on a poll-wait, as the sleep-only arm
+  // below does; no `sleep` is retargeted, because none was called.
+  // A program's own `sleep` stands down only `sleep_machinery` (no call is
+  // retargeted); a suspension the entry reaches elsewhere still needs the
+  // boundary (Codex on #3534).
+  let entry_async_calls = entry_has_async && !sleep_machinery && !hf_machinery && !hs_machinery && lc_entry_calls_async_fn(stmts, boundary_name)
   // #2065 wall 2: a SLEEP-only boundary no longer refuses spawn_suspend. The
   // mismatch was only a spelling (the boundary arm is tail-resumptive because
   // it writes `resume(v)` in callee position); when the program spawns
@@ -614,7 +881,7 @@ export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String)
   // `handle ... with Async` the stream payload would reach a handler with
   // no read source, where the in-guest scheduler's poller arm turns it
   // into a deterministic deadlock trap, spec §3.13).
-  let decl_needed = !has_async_decl && (sleep_machinery || hf_machinery || hs_machinery || (has_aw_poll && has_async_handle))
+  let decl_needed = !has_async_decl && (sleep_machinery || hf_machinery || hs_machinery || entry_async_calls || (has_aw_poll && has_async_handle))
   if decl_needed {
     let ops: Array[(String, Array[TypeExpr], TypeExpr)] = [
       ("Suspend", [TyName("Int")], TyName("Int"))
@@ -878,8 +1145,13 @@ export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String)
   // tail-resumptive spelling cannot call, so the convention guard refused
   // exactly these programs. A program whose only `Async` handler would be
   // this boundary step-compiles nothing, so it keeps the tail-resumptive one.
-  let step_boundary = has_spawn_suspend || (entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) && suspend_prepass_splits(stmts, "Async"))
-  if entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) {
+  // #3523: an entry that reaches an `Async` function of its own takes the
+  // suspend-class spelling whether or not anything is step-compiled. The
+  // tail-resumptive one is lowered by the evidence pass, which cannot see
+  // through the concurrency package's higher-order functions, so a program
+  // that only imported `@vibe/concurrent` was refused.
+  let step_boundary = has_spawn_suspend || entry_async_calls || (entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) && suspend_prepass_splits(stmts, "Async"))
+  if entry_has_async && (sleep_machinery || hf_machinery || hs_machinery || entry_async_calls) {
     let req = EIdent("__entry_slp_req", -1)
     // ADR-0089 D2 (#1218): the boundary is tail-resumptive -- nothing
     // else can run between the perform and the resume -- so a POLL-WAIT

@@ -1481,8 +1481,9 @@ its declarations and `handle` expressions.
 **`Async` is charged like any other label** (#2967): a caller of a `with Async`
 function declares `Async` in its own row (`main` writes `allows Async`), and a
 `test` / `bench` block has it in its ambient row. It used to be decorative: a
-row-less caller was accepted. Builtins carrying `Async` stay exempt from the
-row check, because the runtime discharges them.
+row-less caller was accepted. The builtins that carry `Async` (`sleep`,
+`await`, `StdinStream::next`) are charged the same way: calling one from a row
+without `Async` is refused with the edit to add it.
 
 **Every row label must name an effect** (#2968): a declared or imported
 `effect`, an `effectset`, a standard provider, `Exception` / `Exception[K]`,

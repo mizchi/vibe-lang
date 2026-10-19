@@ -329,7 +329,15 @@ let eq_refusal_prefix: String = "structural `==` cannot be decided here: "
 /// checker diagnostic is.
 export fn verify_culprit_off_marker_fs_fail_closed(msg: String) -> String {
   if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
-    verify_culprit_off_marker("", msg)
+    // #3520: the merge's record owns the culprit's offset when it names a
+    // name in a recorded file, the same evidence an interpolation refusal is
+    // located by; only an offset nothing owns is stripped.
+    let located = locate_merged_interp_refusal(msg, 0)
+    if located != msg {
+      located
+    } else {
+      verify_culprit_off_marker("", msg)
+    }
   } else if String::starts_with(msg, "cannot interpolate ") && String::contains(msg, " [@off=") {
     locate_merged_interp_refusal(msg, 0)
   } else if String::starts_with(msg, index_refusal_prefix) && String::contains(msg, " [@off=") {
@@ -338,6 +346,12 @@ export fn verify_culprit_off_marker_fs_fail_closed(msg: String) -> String {
   } else if String::starts_with(msg, eq_refusal_prefix) && String::contains(msg, " [@off=") {
     // #3297: an equality refusal is keyed by its operator.
     locate_merged_interp_refusal(msg, 2)
+  } else if String::contains(msg, " [@off=") {
+    // #3520: any other refusal raised after the merge -- the suspend
+    // lowering's, a run-to-completion task's -- carries the merged offset of a
+    // name. Located when the record owns it; a marker left unresolved is
+    // stripped by the caller (strip_trailing_markers) rather than printed raw.
+    locate_merged_interp_refusal(msg, 0)
   } else {
     msg
   }

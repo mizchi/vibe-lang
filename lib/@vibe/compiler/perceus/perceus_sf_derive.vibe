@@ -65,6 +65,8 @@ import ./perceus_pctx.vibe {
   pa_is_trunc_release,
   pa_is_view_pin,
   pat_names,
+  pe_apply_dup_splits,
+  pe_dsplit_marks_ok,
   pe_emit_exit_rows,
   pe_flag_has,
   pe_flag_or,
@@ -1075,6 +1077,40 @@ fn pe_emit_path_release(ctx: PCtx) -> Unit {
     }
     mi = mi + 1
   }
+  // `pe_dup_merge`'s marks: the occurrences a dup was planned for on the
+  // larger arm of a merge. Never a #2389 split binding as well, nor a name
+  // two bindings share, nor a binding whose body may hand back a view into
+  // it (`pe_dsplit_marks_ok`). Asked once per binding, not once per mark.
+  let ok_ids: Array[Int] = []
+  let bad_ids: Array[Int] = []
+  let mut si = 0
+  while si < Array::length(ctx.dsplit_ids) {
+    let id = Array::get(ctx.dsplit_ids, si)
+    let ok = if pe_int_array_has(ok_ids, id) {
+      true
+    } else if pe_int_array_has(bad_ids, id) {
+      false
+    } else if pe_dsplit_marks_ok(ctx, id) {
+      Array::push(ok_ids, id)
+      true
+    } else {
+      Array::push(bad_ids, id)
+      false
+    }
+    if ok {
+      let nm = Array::get(ctx.dsplit_names, si)
+      let _ = pe_push_for(ctx, PaConsumeMark, nm, id, Array::get(ctx.dsplit_offs, si))
+      if pe_int_array_has(done, id) {
+        ()
+      } else {
+        Array::push(done, id)
+        Array::push(done_names, nm)
+      }
+    } else {
+      ()
+    }
+    si = si + 1
+  }
   let mut di = 0
   while di < Array::length(done) {
     let _ = pe_push_for(ctx, PaPathDrop, Array::get(done_names, di), Array::get(done, di), 0 - 1)
@@ -1107,6 +1143,9 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
     pj = pj + 1
   }
   pc_emit(ctx, scope2, body)
+  // Branch-dependent dups (`pe_dup_merge`): drop the redundant rows while
+  // nothing has indexed the plan yet.
+  pe_apply_dup_splits(ctx)
   // The parameters' own scope-end drops are pushed AFTER the whole body, so
   // they are a suffix of the plan. `out_param_drop_start` records where that
   // suffix begins, which is what lets the borrowed-param drop filter in

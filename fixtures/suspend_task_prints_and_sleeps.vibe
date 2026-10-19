@@ -1,0 +1,29 @@
+// #3523 / #3519: a suspendable task that prints and sleeps. `println` was
+// refused in any body the suspend lowering rewrites ("cannot see through ...
+// the call to 'println'"), so a suspendable task could not print, and a plain
+// `sleep` in one was refused through the entry that prints. A host builtin
+// whose row lacks `Async` and that takes no closure is now see-through. The
+// two tasks interleave at each `sleep`: a1 b1 a2 b2, then 3. Executed by
+// tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+fn main() -> Int allows Console + Async + Exception {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> {
+      println("a1")
+      sleep(10)
+      println("a2")
+      1
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> {
+      println("b1")
+      sleep(10)
+      println("b2")
+      2
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + TaskHandle::join(b)
+  })
+}

@@ -531,6 +531,50 @@ fi
 rm -rf "$cpdir"
 echo "[compiler-gate] RC call-projection leak guard ok (heap_used=$cp_used B at N=20000)"
 
+# 40e6. A dup the plan budgets for a consume on ONE branch is released on the
+# others, and a `for` releases the fresh array it iterates. Codegen takes
+# every planned dup of a `let` at its declaration site, so a branch consume
+# left its dup on the paths that never ran it, and consumes on several arms
+# summed their dups (pe_dup_merge in perceus_pctx). The `for` lowering kept
+# its iterable in a scratch local nothing released (compile_forin_loop). The
+# fixture measured 14,082,180 B at N=20000 before, 1,740 B after -- the
+# arrays its controls keep, which is why the bound is 4,000. The controls keep
+# branch-consumed values (a nested branch among them) and `for` elements past
+# the loop, so the shadow run is what proves no path released a value it
+# still held.
+echo "[compiler-gate] 40e6/40 RC branch-dup and for-iterable leak guard"
+bddir="_build/_gate_rc_branch_dup_leak"
+rm -rf "$bddir"; mkdir -p "$bddir"
+for bd_mode in 1 shadow; do
+  VIBE_RC="$bd_mode" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/rc_branch_dup_leak_test.vibe" "$bddir/rc_$bd_mode.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$bddir/rc_$bd_mode.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_branch_dup_leak fixture did not compile under VIBE_RC=$bd_mode" >&2
+    cat "$bddir/rc_$bd_mode.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+done
+bd_shadow_json="$(node scripts/measure_heap.mjs "$bddir/rc_shadow.wasm" main 2>&1 || true)"
+bd_shadow_result="$(printf '%s' "$bd_shadow_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ "$bd_shadow_result" != "0" ]; then
+  echo "[compiler-gate] FAIL: rc_branch_dup_leak under VIBE_RC=shadow did not return 0 (a branch or loop released a value a path still held): $bd_shadow_json" >&2; exit 1
+fi
+bd_json="$(node scripts/measure_heap.mjs "$bddir/rc_1.wasm" main 2>/dev/null)"
+bd_used="$(printf '%s' "$bd_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+bd_result="$(printf '%s' "$bd_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ -z "$bd_used" ]; then
+  echo "[compiler-gate] FAIL: could not measure rc_branch_dup_leak heap ($bd_json)" >&2; exit 1
+fi
+if [ "$bd_result" != "0" ]; then
+  echo "[compiler-gate] FAIL: rc_branch_dup_leak wrong result $bd_result (want 0)" >&2; exit 1
+fi
+if [ "$bd_used" -ge 4000 ]; then
+  echo "[compiler-gate] FAIL: rc_branch_dup_leak heap_used=$bd_used >= 4000 (a branch consume's dup is held on the paths that skip it, or a for loop leaks its iterable; measured 14082180 at N=20000 when both did)" >&2; exit 1
+fi
+rm -rf "$bddir"
+echo "[compiler-gate] RC branch-dup and for-iterable leak guard ok (heap_used=$bd_used B at N=20000)"
+
 # 40e2. #2760: the retain must NOT fire when the wrapper binds the borrow's own
 # source -- the inner ELet lowering already promoted it, and a second retain
 # leaks the element on every assignment. Found in review on #2783, not by a
