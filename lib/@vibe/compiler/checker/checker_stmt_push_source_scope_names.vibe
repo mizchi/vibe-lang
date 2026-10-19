@@ -35,6 +35,8 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  canonical_builtin_name,
+  collect_type_var_ids,
   compiler_owned_type_arity,
   env_flat_bindings,
   env_lookup_flat,
@@ -44,6 +46,7 @@ import @vibe/compiler/core {
   is_singleton_resource_kind,
   lookup_registry_builtin,
   predeclared_resources,
+  registry_builtin_scheme,
   reject_user_iterator_serialized_boundaries,
   resolve_builtin
 }
@@ -173,6 +176,37 @@ export fn export_local_nonvalue_kind(stmts: Array[Stmt], name: String) -> Option
 /// and the Double result interpolated as a box address.
 export fn import_keeps_builtin_signature(name: String) -> Bool {
   String::index_of(name, "::") > 0 && lookup_builtin(name) != None && is_explicit_builtin_declaration(name)
+}
+
+/// The type an ALIASED import of a builtin operation binds
+/// (`import @vibe/builtin { Double::floor as floor }`): the builtin's own
+/// signature, generalized over its variables so each use instantiates afresh.
+/// `None` for any other name. Under its own spelling the import binds nothing
+/// (`import_keeps_builtin_signature`); under an alias there is no builtin of
+/// the alias's name to fall back to, so binding the publication's `CtUnknown`
+/// marker left every call untyped and `let s: String = floor(2.5)` read a
+/// Double as a String.
+export fn aliased_builtin_import_type(name: String) -> Option[Type] {
+  if import_keeps_builtin_signature(name) {
+    match registry_builtin_scheme(canonical_builtin_name(name)) {
+      Some(scheme) => Some(scheme),
+      None => match lookup_builtin(name) {
+        Some(ty) => {
+          let vars: Array[Int] = []
+          collect_type_var_ids(ty, vars)
+          if Array::length(vars) == 0 {
+            Some(ty)
+          } else {
+            let no_bounds: Array[(Int, Array[String])] = []
+            Some(CtForAll(vars, no_bounds, ty))
+          }
+        },
+        None => None
+      }
+    }
+  } else {
+    None
+  }
 }
 
 /// #2762: which compiler-provided names a module may republish with an

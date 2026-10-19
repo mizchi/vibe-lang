@@ -36,6 +36,7 @@ import @vibe/compiler/cache {
   compact_source_fingerprint_memo, typing_module_fingerprint
 }
 import @vibe/compiler/checker {
+  aliased_builtin_import_type,
   env_param_name_rows,
   import_item_kind_errors,
   import_keeps_builtin_signature,
@@ -1842,6 +1843,15 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
           CtUnknown
         }
       }
+      // An ALIASED builtin operation (`Double::floor as floor`) has no builtin
+      // of the alias's spelling to fall back to, so the alias is bound to the
+      // builtin's own signature rather than to the publication's marker, which
+      // left every call untyped (`let s: String = floor(2.5)` checked clean).
+      let aliased_builtin = if alias == None || surface_only_item {
+        None
+      } else {
+        aliased_builtin_import_type(name)
+      }
       let with_name = match imported_ty {
         // #3542: a builtin operation the dependency publishes without a body
         // (`export { Double::floor }`) travels as a `CtUnknown` marker
@@ -1853,8 +1863,9 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
         // lookup to the builtin table, exactly as when it is not imported.
         Some(CtUnknown) => if alias == None && import_keeps_builtin_signature(name) {
           nacc
-        } else {
-          env_bind_with_origin(nacc, bound_name, ty, binding_origin)
+        } else match aliased_builtin {
+          Some(sig) => env_bind_with_origin(nacc, bound_name, sig, binding_origin),
+          None => env_bind_with_origin(nacc, bound_name, ty, binding_origin)
         },
         Some(_) => env_bind_with_origin(nacc, bound_name, ty, binding_origin),
         // The same when this lane holds no interface for the dependency (a
@@ -1862,6 +1873,11 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
         // below would shadow the builtin just the same.
         None => if alias == None && import_keeps_builtin_signature(name) {
           nacc
+        } else if aliased_builtin is Some {
+          match aliased_builtin {
+            Some(sig) => env_bind_with_origin(nacc, bound_name, sig, binding_origin),
+            None => nacc
+          }
         } else if contains_str(dep_selectable_type_defs, name) || engine_trait_in_list(dep_traits, name) {
           // Declaration aliases travel in the separate publication projection
           // below. Retain the declaration's origin on its existing unknown

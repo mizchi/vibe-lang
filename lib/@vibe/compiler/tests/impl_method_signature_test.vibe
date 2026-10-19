@@ -145,3 +145,58 @@ test "a qualified free function is not held to a trait" {
 test "an impl for a bare builtin generic head accepts its receiver" {
   assert(check_source_ok("trait Len2[T] { len2(Self) -> Int }\nstruct Box[T] { v: T }\nimpl Len2 for Box { len2(self) -> Int { 1 } }\nimpl [T] Len2 for Array { len2(self) -> Int { Array::length(self) } }\nlet total = [U: Len2](x: U) -> Int { U::len2(x) }\nfn main() -> Int { total([10, 20, 30, 40]) + total(Box::{ v: 99 }) }"))
 }
+
+/// A bodyless impl dispatches to `P::m` wherever it is declared; behind any
+/// other statement it used to escape the check, so its `String` reached a
+/// caller of the trait's `Int`.
+test "a bodyless impl's fallback behind another statement is held to the trait" {
+  let src = "trait Name { name(Self) -> Int }\nstruct P { x: Int }\nimpl Name for P\nfn helper() -> Int { 3 }\nfn P::name(self: P) -> String { \"hello\" }\nfn main() -> Int { Name::name(P::{ x: 1 }) + helper() }\n"
+  inspect(check_source_error_message(src), "change the return type of `P::name` to `Int`: trait `Name` declares `name(Self) -> Int` (`impl Name for P` has no body for `name`, so the trait dispatches to this function) [@fn=P::name]")
+}
+
+/// The fallback diagnostic is located on the function's own declaration.
+test "the fallback diagnostic is located on the function" {
+  let src = "trait Name { name(Self) -> Int }\nstruct P { x: Int }\nimpl Name for P\nfn helper() -> Int { 3 }\nfn P::name(self: P) -> String { \"hello\" }\nfn main() -> Int { Name::name(P::{ x: 1 }) + helper() }\n"
+  assert(check_source_located_err_contains(src, "line 5:4-11: change the return type of `P::name`"))
+}
+
+/// ... and so is one declared before the impl.
+test "a fallback declared before the impl is held to the trait" {
+  let src = "trait Name { name(Self) -> Int }\nstruct P { x: Int }\nfn P::name(self: P) -> String { \"hello\" }\nimpl Name for P\nfn main() -> Int { Name::name(P::{ x: 1 }) }\n"
+  inspect(check_source_error_message(src), "change the return type of `P::name` to `Int`: trait `Name` declares `name(Self) -> Int` (`impl Name for P` has no body for `name`, so the trait dispatches to this function) [@fn=P::name]")
+}
+
+/// A fallback that matches the trait is accepted.
+test "a matching fallback is accepted" {
+  let src = "trait Name { name(Self) -> Int }\nstruct P { x: Int }\nimpl Name for P\nfn helper() -> Int { 3 }\nfn P::name(self: P) -> Int { self.x }\nfn main() -> Int { Name::name(P::{ x: 1 }) + helper() }\n"
+  assert(check_source_ok(src))
+}
+
+/// A `P::m` the bodyless impl's trait does not declare is not its method, and
+/// is not refused as an undeclared one either.
+test "a free function beside a bodyless applied impl is not refused" {
+  let src = "trait Conv[A] { conv(Self) -> A }\nstruct P { x: Int }\nimpl Conv[Int] for P\nfn P::conv(self: P) -> Int { self.x }\nfn P::extra(self: P) -> String { \"x\" }\nfn main() -> Int { 0 }\n"
+  assert(check_source_ok(src))
+}
+
+/// An inherited method takes the applied subtrait's arguments by position,
+/// as a call through `[T: Child[Int]]` does.
+test "an inherited method is held to the applied subtrait's argument" {
+  let src = "trait Base[A] { get(Self) -> A }\ntrait Child[A]: Base {}\nstruct P { x: Int }\nimpl Child[Int] for P {\n  get(self) -> String { \"hello\" }\n}\nfn via[T: Child[Int]](v: T) -> Int { T::get(v) }\nfn main() -> Int { via(P::{ x: 1 }) }\n"
+  inspect(check_source_error_message(src), "change the return type of `P::get` to `Int`: trait `Child[Int]` declares `get(Self) -> A` [@impl-method=Child|P|get|ret|]")
+}
+
+/// Trait operation bindings synthesized after the impl marker (here
+/// `Base::get`, a supertrait's) do not end the impl block: an inherited
+/// method in a plain subtrait impl is held to its trait. It used to escape
+/// the check entirely.
+test "an inherited method in a plain subtrait impl is held to its trait" {
+  let src = "trait Base { get(Self) -> Int }\ntrait Child: Base { other(Self) -> Int }\nstruct P { x: Int }\nimpl Child for P {\n  get(self) -> String { \"hello\" }\n  other(self) -> Int { 1 }\n}\nfn main() -> Int { 0 }\n"
+  inspect(check_source_error_message(src), "change the return type of `P::get` to `Int`: trait `Child` declares `get(Self) -> Int` [@impl-method=Child|P|get|ret|]")
+}
+
+/// ... and an inherited method that agrees with it is accepted.
+test "an inherited method matching the applied subtrait is accepted" {
+  let src = "trait Base[A] { get(Self) -> A }\ntrait Child[A]: Base {}\nstruct P { x: Int }\nimpl Child[Int] for P {\n  get(self) -> Int { self.x }\n}\nfn via[T: Child[Int]](v: T) -> Int { T::get(v) }\nfn main() -> Int { via(P::{ x: 1 }) }\n"
+  assert(check_source_ok(src))
+}

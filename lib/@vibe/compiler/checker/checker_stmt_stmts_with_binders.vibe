@@ -54,7 +54,7 @@ import @vibe/compiler/core {
 }
 
 import ./checker_impl_method_signature.vibe {
-  check_impl_method_signature, collect_impl_method_origins, impl_method_origin
+  check_impl_method_signature, collect_impl_method_origins, impl_method_origins_of
 }
 
 import ./checker_closure_capture_row.vibe {
@@ -1229,7 +1229,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   let mut stmts = reorder_type_decls_first(raw_stmts, i)
   // #3538: impl methods are paired with their `SImpl` in PARSE order, which
   // the scheduling below does not keep.
-  let impl_origins = collect_impl_method_origins(raw_stmts, i)
+  let impl_origins = collect_impl_method_origins(raw_stmts, i, env)
   // #3343: the root list's declarations, so a call inside a region can find
   // the body of the function it names wherever that function is declared.
   let retention_saved = if validate_completed_decls {
@@ -1574,9 +1574,10 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         }
         // #3538: an impl method is called through its trait's signature, so it
         // must have that signature.
-        match impl_method_origin(impl_origins, name) {
-          Some(origin) => check_impl_method_signature(origin, name, val, vt, ns0, env, defs, errors),
-          None => ()
+        // A plain `P::m` is also the method of every impl of `P` whose block
+        // has no body for `m`, wherever it is declared.
+        for origin in impl_method_origins_of(impl_origins, name) {
+          check_impl_method_signature(origin, val, vt, ns0, env, defs, errors)
         }
         attach_unlocated_decl_name_marker(errors, err_before, name)
         // The value must be assignable to a declared annotation (previously

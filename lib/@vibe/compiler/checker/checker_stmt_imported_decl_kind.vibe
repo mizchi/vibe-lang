@@ -71,6 +71,7 @@ import @vibe/parser {
 }
 
 import ./checker_stmt_push_source_scope_names.vibe {
+  aliased_builtin_import_type,
   duplicate_import_value_note,
   duplicate_value_decl_note,
   es_append_imported_tables,
@@ -328,10 +329,21 @@ export fn bind_stmt_imports(env: TypeEnv, names: Array[ImportItem]) -> TypeEnv {
       CtUnknown => alias == None && import_keeps_builtin_signature(name),
       _ => false
     }
+    // Under an alias there is no builtin of that spelling to fall back to, so
+    // the alias is bound to the builtin's signature instead of the marker.
+    let bound_ty = match ty {
+      CtUnknown => if alias == None {
+        ty
+      } else match aliased_builtin_import_type(name) {
+        Some(sig) => sig,
+        None => ty
+      },
+      _ => ty
+    }
     let acc_with_name = if keeps_builtin {
       acc
     } else {
-      env_bind(acc, bound_name, ty)
+      env_bind(acc, bound_name, bound_ty)
     }
     acc = match env_lookup_flat(env_bindings, fn_return_env_name(name)) {
       Some(ret_ty) => env_bind(acc_with_name, fn_return_env_name(bound_name), ret_ty),

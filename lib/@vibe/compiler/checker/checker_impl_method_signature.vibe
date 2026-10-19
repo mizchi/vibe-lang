@@ -28,7 +28,7 @@ import @vibe/compiler/checker/type_relations {
 }
 
 import @vibe/ast {
-  impl_method_owner, impl_target_head, trait_ref_args, trait_ref_name, type_param_arity, type_param_name
+  impl_method_binding_name, impl_method_owner, impl_target_head, trait_ref_args, trait_ref_name, type_param_arity, type_param_name
 }
 
 import @vibe/parser {
@@ -46,16 +46,39 @@ import ./checker_throw_kind_of_type.vibe {
 //# Provenance
 
 /// Where an impl method came from: the impl's type parameters, its trait key,
-/// and its target, as the `SImpl` the parser emitted ahead of it.
+/// and its target, as the `SImpl` the parser emitted ahead of it; the trait
+/// method the binding implements; and whether it is a FALLBACK -- a
+/// `<Type>::<method>` function declared outside the impl block, which the
+/// impl's witness dictionary picks up because the block has no body for that
+/// method (`build_concrete_dict_for_target`).
 export struct ImplMethodOrigin {
   tparams: Array[String];
   trait_key: String;
-  target: TypeExpr
+  target: TypeExpr;
+  method: String;
+  fallback: Bool
 }
 
-/// Every impl method of one statement list, by binding name.
+/// Every impl method of one statement list, by binding name. A plain `P::m`
+/// can serve several impls of `P` at once (its own block's, and every impl
+/// whose block has no body for `m`), so a name maps to a list.
 export struct ImplMethodOrigins {
-  by_name: MutMap[String, ImplMethodOrigin]
+  by_name: MutMap[String, Array[ImplMethodOrigin]]
+}
+
+fn push_origin(out: MutMap[String, Array[ImplMethodOrigin]], name: String, origin: ImplMethodOrigin) -> Unit {
+  match MutMap::get(out, name) {
+    Some(list) => Array::push(list, origin),
+    None => MutMap::set(out, name, [origin])
+  }
+}
+
+/// One `SImpl` and the method bindings its block wrote.
+struct ImplBlock {
+  tparams: Array[String];
+  trait_key: String;
+  target: TypeExpr;
+  written: Array[String]
 }
 
 /// Index every impl method in `stmts` (from `from`) by its binding name.
@@ -63,33 +86,57 @@ export struct ImplMethodOrigins {
 /// `parse_impl_methods` lowers `impl Tr for T { m(..) { .. } }` to the
 /// `SImpl` marker followed by one `let <owner>::m = (..) -> ..` per method.
 /// The checker schedules statements in its own order, so the pairing is read
-/// here, from the list as parsed: a binding is an impl method only when it
+/// here, from the list as parsed: a binding is a block's method only when it
 /// directly follows its `SImpl` (or a sibling method, or one of the trait's
 /// operation bindings) and carries exactly the name `impl_method_binding_name`
-/// gives it. A qualified free function
-/// `fn P::m(..)` never qualifies, whatever its name.
-export fn collect_impl_method_origins(stmts: Array[Stmt], from: Int) -> ImplMethodOrigins {
-  let out: MutMap[String, ImplMethodOrigin] = MutMap::new_string()
+/// gives it. A qualified free function `fn P::m(..)` never qualifies as a
+/// block's method, whatever its name.
+///
+/// It may still BE the method, though: an impl whose block has no body for
+/// `m` (a bodyless `impl Tr for P`, or a block that omits `m`) dispatches to
+/// `P::m` wherever it is declared. Every such `P::m` -- before the impl, after
+/// it, or behind any other statement -- is recorded as a fallback origin of
+/// each impl of `P` that did not write `m` itself, so it is held to that
+/// impl's trait like a method in the block.
+export fn collect_impl_method_origins(stmts: Array[Stmt], from: Int, env: TypeEnv) -> ImplMethodOrigins {
+  let local_traits: Array[String] = []
+  for st in stmts {
+    match st {
+      STrait(_, tname, _, _, _, _) => Array::push(local_traits, tname),
+      _ => ()
+    }
+  }
+  let out: MutMap[String, Array[ImplMethodOrigin]] = MutMap::new_string()
+  let blocks: Array[ImplBlock] = []
+  let by_head: MutMap[String, Array[Int]] = MutMap::new_string()
   let mut k = from
   while k < Array::length(stmts) {
     match Array::get(stmts, k) {
       SImpl(tparams, _, trait_key, target) => {
         let prefix = String::concat(impl_method_owner(tparams, trait_key, target), "::")
-        // The trait's own operation bindings (`let Tr::m = ..`, synthesized
-        // ahead of checking) may sit between the marker and its methods.
-        let trait_prefix = String::concat(trait_ref_name(trait_key), "::")
+        // Trait operation bindings (`let Tr::m = ..`, synthesized ahead of
+        // checking) may sit between the marker and its methods -- not only
+        // this trait's: a supertrait's (`let Base::get` after `impl Child`)
+        // and those of a trait a method-level bound names land there too.
+        // Measured: before any trait's bindings were skipped, every method of
+        // `impl Child for P` (with `trait Child: Base`) and of an impl with a
+        // method-level generic escaped this check.
+        let written: Array[String] = []
         let mut j = k + 1
         let mut more = true
         while more && j < Array::length(stmts) {
           match Array::get(stmts, j) {
             SLet(_, _, qname, _, _) => if String::starts_with(qname, prefix) && String::length(qname) > String::length(prefix) {
-              MutMap::set(out, qname, ImplMethodOrigin::{
+              push_origin(out, qname, ImplMethodOrigin::{
                 tparams: tparams,
                 trait_key: trait_key,
-                target: target
+                target: target,
+                method: String::substring(qname, String::length(prefix), String::length(qname)),
+                fallback: false
               })
+              Array::push(written, qname)
               j = j + 1
-            } else if String::starts_with(qname, trait_prefix) {
+            } else if names_trait_operation(qname, local_traits, env) {
               j = j + 1
             } else {
               more = false
@@ -99,6 +146,18 @@ export fn collect_impl_method_origins(stmts: Array[Stmt], from: Int) -> ImplMeth
             }
           }
         }
+        let at = Array::length(blocks)
+        Array::push(blocks, ImplBlock::{
+          tparams: tparams,
+          trait_key: trait_key,
+          target: target,
+          written: written
+        })
+        let head = impl_target_head(target)
+        match MutMap::get(by_head, head) {
+          Some(list) => Array::push(list, at),
+          None => MutMap::set(by_head, head, [at])
+        }
         k = j
       },
       _ => {
@@ -106,12 +165,70 @@ export fn collect_impl_method_origins(stmts: Array[Stmt], from: Int) -> ImplMeth
       }
     }
   }
+  if Array::length(blocks) > 0 {
+    collect_fallback_origins(stmts, from, blocks, by_head, out)
+  } else {
+    ()
+  }
   ImplMethodOrigins::{ by_name: out }
 }
 
-/// The impl a method binding belongs to, or `None` for any other binding.
-export fn impl_method_origin(origins: ImplMethodOrigins, binding_name: String) -> Option[ImplMethodOrigin] {
-  MutMap::get(origins.by_name, binding_name)
+/// Is `qname` a trait operation binding (`Tr::m` for a trait declared in this
+/// list or visible in `env`)?
+fn names_trait_operation(qname: String, local_traits: Array[String], env: TypeEnv) -> Bool {
+  let sep = String::index_of(qname, "::")
+  if sep > 0 {
+    let head = String::substring(qname, 0, sep)
+    string_list_has(local_traits, head) || (trait_definition(env, head) is Some)
+  } else {
+    false
+  }
+}
+
+/// Record every `P::m` in `stmts` as a fallback origin of each impl of `P`
+/// whose block did not write `m` (see `collect_impl_method_origins`).
+fn collect_fallback_origins(stmts: Array[Stmt], from: Int, blocks: Array[ImplBlock], by_head: MutMap[String, Array[Int]], out: MutMap[String, Array[ImplMethodOrigin]]) -> Unit {
+  let mut i = from
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, qname, _, _) => {
+        let sep = String::index_of(qname, "::")
+        if sep > 0 && String::index_of(qname, "$impl$") < 0 {
+          let method = String::substring(qname, sep + 2, String::length(qname))
+          match MutMap::get(by_head, String::substring(qname, 0, sep)) {
+            Some(list) => for at in list {
+              let block = Array::get(blocks, at)
+              let own = impl_method_binding_name(block.tparams, block.trait_key, block.target, method)
+              if !string_list_has(block.written, own) {
+                push_origin(out, qname, ImplMethodOrigin::{
+                  tparams: block.tparams,
+                  trait_key: block.trait_key,
+                  target: block.target,
+                  method: method,
+                  fallback: true
+                })
+              } else {
+                ()
+              }
+            },
+            None => ()
+          }
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The impls a method binding belongs to (empty for any other binding).
+export fn impl_method_origins_of(origins: ImplMethodOrigins, binding_name: String) -> Array[ImplMethodOrigin] {
+  match MutMap::get(origins.by_name, binding_name) {
+    Some(list) => list,
+    None => []
+  }
 }
 
 //# Diagnostics
@@ -135,6 +252,31 @@ fn impl_method_marker(trait_head: String, owner: String, method: String, part: S
     param,
     "]"
   ], "")
+}
+
+/// The tail of a diagnostic about `origin`'s method. A method in the block
+/// gets the impl-block locator marker; a fallback function is not in the
+/// block, so it says why it is held to the trait and is located on its own
+/// declaration (`fn P::m`).
+fn origin_marker(origin: ImplMethodOrigin, trait_head: String, owner: String, trait_disp: String, method: String, part: String, param: String) -> String {
+  if origin.fallback {
+    String::join([
+      " (`impl ",
+      trait_disp,
+      " for ",
+      print_type_expr(origin.target),
+      "` has no body for `",
+      method,
+      "`, so the trait dispatches to this function)",
+      " [@fn=",
+      owner,
+      "::",
+      method,
+      "]"
+    ], "")
+  } else {
+    impl_method_marker(trait_head, owner, method, part, param)
+  }
 }
 
 /// A labeled (`x~`) or optional (`x?`) parameter keeps its marker on the
@@ -280,6 +422,32 @@ fn fill_expected(scope: ExpectedScope, ty: Type) -> Type {
   }
 }
 
+/// The impl method's own type with `Self` read as the impl's target. An impl
+/// method of a trait with a method-level generic is checked with its
+/// receiver typed `Self` (measured: `write_object(self, x: X)` under
+/// `impl Logger for B` has `self: Self`), which names the target, not a type
+/// of its own.
+fn self_as(ty: Type, self_ty: Type) -> Type {
+  match ty {
+    CtNamed(name, args) => if name == "Self" && Array::length(args) == 0 {
+      self_ty
+    } else {
+      CtNamed(name, for a in args {
+        self_as(a, self_ty)
+      })
+    },
+    CtArray(elem) => CtArray(self_as(elem, self_ty)),
+    CtOption(elem) => CtOption(self_as(elem, self_ty)),
+    CtTuple(items) => CtTuple(for item in items {
+      self_as(item, self_ty)
+    }),
+    CtFn(params, ret, eff) => CtFn(for p in params {
+      self_as(p, self_ty)
+    }, self_as(ret, self_ty), eff),
+    _ => ty
+  }
+}
+
 fn method_declared_here(methods: Array[(String, Array[TypeExpr], TypeExpr)], method: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -289,6 +457,44 @@ fn method_declared_here(methods: Array[(String, Array[TypeExpr], TypeExpr)], met
     i = i + 1
   }
   found
+}
+
+/// Does no parameter in `tparams` take arguments of its own (`F[_]`)?
+fn all_plain_params(tparams: Array[String]) -> Bool {
+  let mut plain = true
+  for tp in tparams {
+    if type_param_arity(tp) > 0 {
+      plain = false
+    } else {
+      ()
+    }
+  }
+  plain
+}
+
+/// The type parameters of the trait that DECLARES `method`, found the way
+/// `trait_method_sig_binders_deep` finds the signature: `trait_key` itself,
+/// then its supertraits in order.
+fn declaring_trait_params(env: TypeEnv, trait_key: String, method: String) -> Option[Array[String]] {
+  match trait_definition(env, trait_key) {
+    None => None,
+    Some(def) => {
+      let (supers, methods, tparams, _) = def
+      if method_declared_here(methods, method) {
+        Some(tparams)
+      } else {
+        let mut found: Option[Array[String]] = None
+        for sup in supers {
+          if found is None {
+            found = declaring_trait_params(env, sup, method)
+          } else {
+            ()
+          }
+        }
+        found
+      }
+    }
+  }
 }
 
 //# Check
@@ -309,6 +515,11 @@ fn method_declared_here(methods: Array[(String, Array[TypeExpr], TypeExpr)], met
 /// substituted) does not admit; and a `with` clause, because a trait method
 /// declares no effects, so a caller through the trait authorizes none.
 ///
+/// The same holds for a FALLBACK origin: a `P::m` declared outside the block
+/// of an impl that has no body for `m`, which the witness dispatches to just
+/// the same. There the impl's own formals are left open, since the function
+/// was not written against them.
+///
 /// What is NOT compared, and stays as it was: a position that mentions a trait
 /// parameter the impl head leaves unapplied (it is erased, and the impl may
 /// spell it as anything), a kinded parameter or a higher-kinded application,
@@ -319,9 +530,9 @@ fn method_declared_here(methods: Array[(String, Array[TypeExpr], TypeExpr)], met
 /// `vt` is the method's inferred type before generalization and `s` its
 /// substitution; the unification here is a probe and is discarded, so the
 /// method's own typing is unchanged.
-export fn check_impl_method_signature(origin: ImplMethodOrigin, binding_name: String, val: Expr, vt: Type, s: Subst, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> Unit {
+export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: Type, s: Subst, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> Unit {
   let owner_prefix = String::concat(impl_method_owner(origin.tparams, origin.trait_key, origin.target), "::")
-  let method = String::substring(binding_name, String::length(owner_prefix), String::length(binding_name))
+  let method = origin.method
   let owner = impl_target_head(origin.target)
   let trait_head = trait_ref_name(origin.trait_key)
   let trait_disp = trait_reference_display(origin.trait_key)
@@ -329,7 +540,7 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, binding_name: St
   match trait_definition(env, origin.trait_key) {
     None => (),
     Some(def) => {
-      let (_, own_methods, trait_tparams, _) = def
+      let (_, _, trait_tparams, _) = def
       match trait_method_sig_binders_deep(env, origin.trait_key, method) {
         // A method the trait does not declare. Refused only where the binding
         // name proves it was written inside the impl block: an applied impl's
@@ -338,7 +549,7 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, binding_name: St
         // to, and a free function right after the block would be refused with
         // it -- so that case stays accepted until the parser records which
         // bindings an impl block produced.
-        None => if String::contains(owner_prefix, "$impl$") {
+        None => if !origin.fallback && String::contains(owner_prefix, "$impl$") {
           Array::push(errors, String::join([
             "remove method `",
             method,
@@ -351,7 +562,7 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, binding_name: St
             "`: the trait declares no method `",
             method,
             "`, so nothing can call it through the trait",
-            impl_method_marker(trait_head, owner, method, "name", "")
+            origin_marker(origin, trait_head, owner, trait_disp, method, "name", "")
           ], ""))
         } else {
           ()
@@ -385,7 +596,7 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, binding_name: St
               declares,
               ", which takes ",
               plural_parameters(n_trait),
-              impl_method_marker(trait_head, owner, method, "param", extra)
+              origin_marker(origin, trait_head, owner, trait_disp, method, "param", extra)
             ], ""))
           } else if n_impl < n_trait {
             Array::push(errors, String::join([
@@ -396,7 +607,7 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, binding_name: St
               declares,
               ", which takes ",
               plural_parameters(n_trait),
-              impl_method_marker(trait_head, owner, method, "name", "")
+              origin_marker(origin, trait_head, owner, trait_disp, method, "name", "")
             ], ""))
           } else {
             // The row: a trait method declares no effects.
@@ -412,7 +623,7 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, binding_name: St
                 ", which performs no effects; a caller through the trait does not authorize `",
                 row,
                 "`",
-                impl_method_marker(trait_head, owner, method, "row", "")
+                origin_marker(origin, trait_head, owner, trait_disp, method, "row", "")
               ], ""))
             } else {
               ()
@@ -434,26 +645,30 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, binding_name: St
                 Array::push(impl_names, type_param_name(tp))
               }
               // Trait parameters the impl head applies are substituted when
-              // the method is declared by THIS trait (not inherited from a
-              // supertrait with formals of its own) and none is kinded.
+              // none is kinded. The signature names the formals of the trait
+              // that DECLARES the method; for an inherited one those are the
+              // supertrait's, and a call through a bound on this trait
+              // (`[T: Child[Int]]` calling `Base`'s `get`) gives them this
+              // trait's arguments by position (`resolve_trait_method_ident`),
+              // so they are mapped the same way here. A declaring formal past
+              // the applied arguments stays open.
               let applied_args = trait_ref_args(origin.trait_key)
+              let decl_tparams = match declaring_trait_params(env, origin.trait_key, method) {
+                Some(ps) => ps,
+                None => []
+              }
+              let n_applied = if Array::length(applied_args) < Array::length(decl_tparams) {
+                Array::length(applied_args)
+              } else {
+                Array::length(decl_tparams)
+              }
               let applied_names: Array[String] = []
               let applied_types: Array[Type] = []
-              let substitutable = Array::length(applied_args) > 0 && Array::length(applied_args) == Array::length(trait_tparams) && method_declared_here(own_methods, method) && {
-                let mut all_plain = true
-                for tp in trait_tparams {
-                  if type_param_arity(tp) > 0 {
-                    all_plain = false
-                  } else {
-                    ()
-                  }
-                }
-                all_plain
-              }
+              let substitutable = n_applied > 0 && Array::length(applied_args) == Array::length(trait_tparams) && all_plain_params(trait_tparams) && all_plain_params(decl_tparams)
               if substitutable {
                 let mut ai = 0
-                while ai < Array::length(applied_args) {
-                  Array::push(applied_names, type_param_name(Array::get(trait_tparams, ai)))
+                while ai < n_applied {
+                  Array::push(applied_names, type_param_name(Array::get(decl_tparams, ai)))
                   ai = ai + 1
                 }
               } else {
@@ -467,6 +682,16 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, binding_name: St
                 } else {
                   ()
                 }
+              }
+              // A fallback function is not written for this impl's formals:
+              // `fn Box::show(b: Box[Int])` may serve `impl [T] Show for
+              // Box[T]`. Only what holds at every instantiation is compared.
+              if origin.fallback {
+                for n in impl_names {
+                  Array::push(open_names, n)
+                }
+              } else {
+                ()
               }
               let shadow: Array[String] = ["Self"]
               for b in binders {
@@ -528,7 +753,7 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, binding_name: St
                   let mut pi = 0
                   while pi < n_trait {
                     let want = fill_expected(scope, resolve_type_expr_shadowed(Array::get(sparams, pi), defs, shadow))
-                    match unify(want, Array::get(aparams, pi), cur) {
+                    match unify(want, self_as(Array::get(aparams, pi), self_ty), cur) {
                       Some(next) => {
                         cur = next
                       },
@@ -544,14 +769,14 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, binding_name: St
                           type_to_string(want),
                           "`",
                           declares,
-                          impl_method_marker(trait_head, owner, method, "param", pname)
+                          origin_marker(origin, trait_head, owner, trait_disp, method, "param", pname)
                         ], ""))
                       }
                     }
                     pi = pi + 1
                   }
                   let want_ret = fill_expected(scope, resolve_type_expr_shadowed(sret, defs, shadow))
-                  match unify(want_ret, aret, cur) {
+                  match unify(want_ret, self_as(aret, self_ty), cur) {
                     Some(_) => (),
                     None => Array::push(errors, String::join([
                       "change the return type of ",
@@ -560,7 +785,7 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, binding_name: St
                       type_to_string(want_ret),
                       "`",
                       declares,
-                      impl_method_marker(trait_head, owner, method, "ret", "")
+                      origin_marker(origin, trait_head, owner, trait_disp, method, "ret", "")
                     ], ""))
                   }
                 } else {
