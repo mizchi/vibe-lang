@@ -1,0 +1,65 @@
+// #3537: a `let` bound to a call result or a struct literal is not
+// generalized (the ML value restriction). These are the issue's reproducers
+// in their annotated -- and their single-type unannotated -- spellings, which
+// must keep compiling and answer by the one element type the value has.
+// The two-type spellings are refused by the checker
+// (lib/@vibe/compiler/tests/expansive_let_value_restriction_test.vibe).
+
+fn make[T]() -> (T) -> Array[T] {
+  let a: Array[T] = []
+  (x) -> {
+    Array::push(a, x)
+    a
+  }
+}
+
+struct Bag[T] {
+  xs: Array[T]
+}
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+test "an annotated closure over one array" {
+  let f: (Int) -> Array[Int] = make()
+  let _ = f(4)
+  let r = f(5)
+  inspect(Array::get(r, 0) + Array::get(r, 1), content = "9")
+}
+
+test "an unannotated closure used at one type" {
+  let f = make()
+  let _ = f("a")
+  let r = f("b")
+  inspect(String::concat(Array::get(r, 0), Array::get(r, 1)), content = "ab")
+}
+
+test "an annotated struct literal over an empty array" {
+  let b: Bag[String] = Bag::{ xs: [] }
+  Array::push(b.xs, "hello")
+  inspect(Array::get(b.xs, 0), content = "hello")
+}
+
+test "an unannotated struct literal used at one type" {
+  let b = Bag::{ xs: [] }
+  Array::push(b.xs, 41)
+  inspect(Array::get(b.xs, 0) + 1, content = "42")
+}
+
+test "a mut Option field built from None" {
+  let c = Cell::{ v: None }
+  c.v = Some(7)
+  let n = match c.v {
+    Some(x) => x + 1,
+    None => 0
+  }
+  inspect(n, content = "8")
+}
+
+test "a let-bound lambda keeps two types" {
+  let id = (x) -> x
+  let a: Int = id(1)
+  let b: String = id("s")
+  inspect("\{a}\{b}", content = "1s")
+}

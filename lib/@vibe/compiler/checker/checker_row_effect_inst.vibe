@@ -2401,8 +2401,26 @@ fn value_effect_instantiations(env: TypeEnv, arg: Expr, arg_ty: Type, arow: Stri
       },
       _ => false
     }
+    // #3537: an effect the `#einst:` labels above already resolved is not
+    // read again from a MARKED text item (`Box[T$0]`). The markers index the
+    // quantifier list of the scheme the value was instantiated from, and a
+    // monomorphic binding (a call result is not generalized) or a call
+    // through one no longer has that scheme in hand, so the text would read
+    // the formal as a type of the same name and refuse it. The label is what
+    // fixes the payload (#3387); the text is kept beside it for readers that
+    // have the scheme.
+    let label_effects: Array[String] = []
+    for resolved in out {
+      let (eff, _) = resolved
+      Array::push(label_effects, eff)
+    }
     for raw in row_items_top_level(arow) {
-      let items = if lexical_row {
+      let item_text = String::trim(raw)
+      let bracket = String::index_of(item_text, "[")
+      let covered = bracket > 0 && String::contains(item_text, "$") && checker_string_array_has(label_effects, item_text[0: bracket])
+      let items = if covered {
+        array_empty()
+      } else if lexical_row {
         lexical_value_row_instantiations_at(String::trim(raw), env, defs, match arg {
           EFn(_, _, _, _, _, _) => true,
           _ => false

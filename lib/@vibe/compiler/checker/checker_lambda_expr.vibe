@@ -270,14 +270,16 @@ export fn tab_call_ty(tytab: Array[(Int, Type)], call_off: Int, ty: Type, captur
 /// perturbs the main type/subst flow — it only type-checks `obj` to learn its
 /// struct name, looks up that struct's `mut` field set, and pushes a single
 /// diagnostic to the real `errors` when the written field is not `mut`.
-export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
+export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> (Subst, Int) {
+  let mut out_s = s
+  let mut out_c = c
   if name == "__set_field" && Array::length(args) == 3 {
     // review-lint: allow-by-name-call-arm -- a `mut` check on the field-write sugar `obj.f = x`, which reaches here spelled `__set_field`; it types nothing, so it is not one of the #3179 call arms
     match Array::get(args, 1) {
       EString(field, _) => {
         let throwaway = array_empty()
         let throwtab = array_empty()
-        let (obj_ty, _, _) = ce(Array::get(args, 0), env, defs, s, c, throwaway, throwtab)
+        let (obj_ty, obj_s, obj_c) = ce(Array::get(args, 0), env, defs, s, c, throwaway, throwtab)
         // #829: also recognise an INSTANTIATED generic struct receiver
         // (`CtNamed(S, targs)`), so `mut`-field enforcement and the written-
         // value type check cover generic structs too.
@@ -323,13 +325,23 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
                   fi = fi + 1
                 }
                 if has_field {
-                  let (val_ty, val_s, _) = ce(Array::get(args, 2), env, defs, s, c, throwaway, throwtab)
+                  let (val_ty, val_s, val_c) = ce(Array::get(args, 2), env, defs, obj_s, obj_c, throwaway, throwtab)
                   // #829: instantiate a generic field's declared type from the
                   // receiver's type args so the written value is checked against
                   // the CONCRETE field type; a non-applied receiver keeps the
                   // raw (rigid) type, which check_assignable tolerates.
                   let inst_fty = inst_struct_field_ty(fty, s_tparams, recv_targs)
-                  let _ = check_assignable(subst_apply(s, inst_fty), subst_apply(s, val_ty), s, errors, String::concat("type mismatch writing field `", String::concat(field, "`")), tail_expr_off(Array::get(args, 2)))
+                  //
+                  // #3537: the write CONSTRAINS the receiver, so its
+                  // substitution is handed back to the call's own flow. A
+                  // receiver bound as a monotype (`let c = Cell::{ v: None }`,
+                  // not generalized) fixes its `T` at the first write; before,
+                  // this check's substitution was dropped, `c.v = Some("s")`
+                  // left `T` open, and a later read typed it `Int`. The two
+                  // throwaway checks thread their counter so no variable they
+                  // mint can collide with one the caller mints next.
+                  out_s = check_assignable(subst_apply(val_s, inst_fty), subst_apply(val_s, val_ty), val_s, errors, String::concat("type mismatch writing field `", String::concat(field, "`")), tail_expr_off(Array::get(args, 2)))
+                  out_c = val_c
                   // #3387 (Codex on #3407): a function written into a field is
                   // stored as the literal's is, so the generic effect it
                   // performs is compared with the field's row, or with the one
@@ -352,6 +364,7 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
   } else {
     ()
   }
+  (out_s, out_c)
 }
 
 /// Argument positions retained by a mutable operation, encoded as a two-bit

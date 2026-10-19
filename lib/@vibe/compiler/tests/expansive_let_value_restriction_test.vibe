@@ -1,0 +1,116 @@
+//# #3537: the ML value restriction. A `let` whose right-hand side is not a
+//# syntactic value -- a call, a struct literal -- generalizes nothing, because
+//# the value it computed may hold a container its type no longer shows.
+//# Before this, `let f = make()` over `fn make[T]() -> (T) -> Array[T]` and
+//# `let b = Bag::{ xs: [] }` were quantified, so one runtime array was used at
+//# two element types and a `String` was read back as an `Int`.
+
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_error_message, check_source_ok
+}
+//# Functions
+
+fn mentions(source: String, needle: String) -> Bool {
+  String::contains(check_source_error_message(source), needle)
+}
+
+let make_prelude: String = "fn make[T]() -> (T) -> Array[T] {\n  let a: Array[T] = []\n  (x) -> { Array::push(a, x); a }\n}\n"
+
+/// The issue's first reproducer: a closure a generic call returned shares one
+/// array across every call, so it has exactly one element type.
+test "a generic call result closing over an array is monomorphic" {
+  let src = String::concat(make_prelude, "fn main() -> Unit {\n  let f = make()\n  let _ = f(\"hello\")\n  let r: Array[Int] = f(5)\n  ()\n}\n")
+  inspect(check_source_error_message(src), content = "argument type mismatch for f: expected String, got Int")
+}
+
+/// The annotated form names the one type and checks clean.
+test "an annotated call result checks" {
+  let src = String::concat(make_prelude, "fn main() -> Unit {\n  let f: (Int) -> Array[Int] = make()\n  let _ = f(4)\n  let r: Array[Int] = f(5)\n  ()\n}\n")
+  inspect(check_source_ok(src), content = "true")
+}
+
+/// Used at ONE type the unannotated binding is still accepted: the variable
+/// stays open and the first use fixes it.
+test "a call result used at one type checks" {
+  let src = String::concat(make_prelude, "fn main() -> Unit {\n  let f = make()\n  let _ = f(4)\n  let r: Array[Int] = f(5)\n  ()\n}\n")
+  inspect(check_source_ok(src), content = "true")
+}
+
+/// The issue's second reproducer: a generic struct literal over an empty
+/// array is one struct holding one array.
+test "a generic struct literal over an empty array is monomorphic" {
+  let src = "struct Bag[T] { xs: Array[T] }\nfn main() -> Unit {\n  let b = Bag::{ xs: [] }\n  Array::push(b.xs, \"hello\")\n  let n: Int = Array::get(b.xs, 0)\n  ()\n}\n"
+  inspect(check_source_error_message(src), content = "binding type mismatch for a local let: expected Int, got String [@fn=n]")
+}
+
+/// A `mut` field of an open `Option[T]` is the same hole without an array.
+/// It needed a second half: the field WRITE's check dropped its
+/// substitution, so even a monomorphic `c` kept `T` open past
+/// `c.v = Some("hello")` and the read fixed it to `Int`.
+test "a struct literal with a mut field is monomorphic" {
+  let src = "struct Cell[T] { mut v: Option[T] }\nfn main() -> Unit {\n  let c = Cell::{ v: None }\n  c.v = Some(\"hello\")\n  let n: Option[Int] = c.v\n  ()\n}\n"
+  inspect(check_source_error_message(src), content = "binding type mismatch for a local let: expected Option[Int], got Option[String] [@fn=n]")
+}
+
+/// The write constrains the receiver even when the read goes through a match.
+test "a field write fixes the receiver's type argument" {
+  let src = "struct Cell[T] { mut v: Option[T] }\nfn main() -> Unit {\n  let c = Cell::{ v: None }\n  c.v = Some(\"hello\")\n  match c.v {\n    Some(x) => {\n      let n: Int = x\n      ()\n    },\n    None => ()\n  }\n}\n"
+  inspect(mentions(src, "expected Int, got String"), content = "true")
+}
+
+/// Writes of the one type the cell has keep checking.
+test "a field write at the cell's type checks" {
+  let src = "struct Cell[T] { mut v: Option[T] }\nfn main() -> Unit {\n  let c = Cell::{ v: None }\n  c.v = Some(1)\n  let n: Option[Int] = c.v\n  ()\n}\n"
+  inspect(check_source_ok(src), content = "true")
+}
+
+test "an annotated struct literal checks" {
+  let src = "struct Bag[T] { xs: Array[T] }\nfn main() -> Unit {\n  let b: Bag[String] = Bag::{ xs: [] }\n  Array::push(b.xs, \"hello\")\n  let s: String = Array::get(b.xs, 0)\n  ()\n}\n"
+  inspect(check_source_ok(src), content = "true")
+}
+
+/// A generic producer whose result is used at one type keeps checking.
+test "a list producer used at one type checks" {
+  let src = "fn make_list[T]() -> Array[T] { [] }\nfn main() -> Unit {\n  let xs = make_list()\n  Array::push(xs, 1)\n  Array::push(xs, 2)\n}\n"
+  inspect(check_source_ok(src), content = "true")
+}
+
+/// Control: a lambda is a syntactic value and stays polymorphic.
+test "a let-bound identity lambda is used at two types" {
+  let src = "fn main() -> Unit {\n  let id = (x) -> x\n  let a: Int = id(1)\n  let b: String = id(\"s\")\n  ()\n}\n"
+  inspect(check_source_ok(src), content = "true")
+}
+
+/// Control: a top-level generic `fn` stays polymorphic.
+test "a top-level generic fn is used at two types" {
+  let src = "fn ident[T](x: T) -> T { x }\nfn main() -> Unit {\n  let a: Int = ident(1)\n  let b: String = ident(\"s\")\n  ()\n}\n"
+  inspect(check_source_ok(src), content = "true")
+}
+
+/// Control: an alias of a generic function is a name, so it is a value.
+test "an alias of a generic fn is used at two types" {
+  let src = "fn ident[T](x: T) -> T { x }\nfn main() -> Unit {\n  let g = ident\n  let a: Int = g(1)\n  let b: String = g(\"s\")\n  ()\n}\n"
+  inspect(check_source_ok(src), content = "true")
+}
+
+/// Control: a constructor of immutable data applied to values is a value.
+test "a constructor value is used at two types" {
+  let src = "enum Wrap[T] { W(T); Empty }\nfn main() -> Unit {\n  let n = None\n  let a: Option[Int] = n\n  let b: Option[String] = n\n  let t = (None, Wrap::W(None))\n  let c: (Option[Int], Wrap[Option[Bool]]) = t\n  let d: (Option[String], Wrap[Option[Int]]) = t\n  ()\n}\n"
+  inspect(check_source_ok(src), content = "true")
+}
+
+/// A call result's PHANTOM parameter is still generalized: no value of
+/// `Marker[T]` holds a `T`, so two uses cannot disagree about one.
+test "a phantom parameter of a call result stays polymorphic" {
+  let src = "enum Marker[T] { Tag(Int) }\nfn mark[T]() -> Marker[T] { Marker::Tag(1) }\nfn main() -> Unit {\n  let m = mark()\n  let a: Marker[Int] = m\n  let b: Marker[String] = m\n  ()\n}\n"
+  inspect(check_source_ok(src), content = "true")
+}
+
+/// A struct that stores its parameter only through a phantom one does not
+/// hold it either.
+test "a parameter stored only behind a phantom one stays polymorphic" {
+  let src = "enum Marker[T] { Tag(Int) }\nstruct Tagged[T] { m: Marker[T]; n: Int }\nfn tagged[T]() -> Tagged[T] { Tagged::{ m: Marker::Tag(1), n: 2 } }\nfn main() -> Unit {\n  let t = tagged()\n  let a: Tagged[Int] = t\n  let b: Tagged[String] = t\n  ()\n}\n"
+  inspect(check_source_ok(src), content = "true")
+}
