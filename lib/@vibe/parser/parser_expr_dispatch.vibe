@@ -308,6 +308,58 @@ enum BlockStep {
 /// trapped with a bare `unreachable`. Binding its scrutinee to `__mg`, as a
 /// guarded match does, puts it under the checker's flat Option / Bool
 /// exhaustiveness check.
+/// The name a desugared `match` binds its scrutinee to: `__mg`, or `__mg_N`
+/// for the first N that no identifier in the arms (`tokens[from..to)`)
+/// spells. The binding scopes over the arms only, so a source name of the
+/// same spelling there -- a parameter or local read in an arm body, or a
+/// pattern binder that would shadow the fall-through `match __mg` -- would
+/// otherwise be captured: `fn f(__mg: Bool, b: Bool) { match b { true | false
+/// => __mg } }` answered `b`. An interpolation fragment is not tokenized
+/// yet, so a candidate occurring anywhere in its text counts as used. The
+/// checker recognizes the same spellings (`is_match_scrutinee_temp`).
+fn fresh_match_temp(tokens: Array[Token], from: Int, to: Int) -> String {
+  let mut cand = "__mg"
+  let mut n = 0
+  while match_temp_used(tokens, from, to, cand) {
+    n = n + 1
+    cand = String::concat("__mg_", __to_string(n))
+  }
+  cand
+}
+
+fn match_temp_used(tokens: Array[Token], from: Int, to: Int, cand: String) -> Bool {
+  let hi = if to < Array::length(tokens) {
+    to
+  } else {
+    Array::length(tokens)
+  }
+  let mut used = false
+  let mut i = if from < 0 {
+    0
+  } else {
+    from
+  }
+  while i < hi && !used {
+    match Array::get(tokens, i) {
+      TIdent(n) => if n == cand {
+        used = true
+      },
+      TStringInterp(parts, _) => {
+        let mut j = 0
+        while j < Array::length(parts) && !used {
+          if String::contains(Array::get(parts, j), cand) {
+            used = true
+          }
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  used
+}
+
 fn single_arm_needs_check(arms: Array[(Pat, Expr, Expr)]) -> Bool {
   let (p, _, _) = Array::get(arms, 0)
   refutable_option_or_bool_pat(p)
@@ -2005,26 +2057,33 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
           encoded_end
         }
         let arms3 = ArrayBuilder::freeze(ab)
+        let checked_single = !has_guard && Array::length(arms3) == 1 && single_arm_needs_check(arms3)
+        // Only a desugared match binds its scrutinee; a plain one is not
+        // scanned.
+        let mg = if has_guard || checked_single {
+          fresh_match_temp(tokens, br, endpos)
+        } else {
+          ""
+        }
         if has_guard {
           match row_b {
             Some(rows) => {
               let arm_rows = ArrayBuilder::freeze(rows)
-              binder_capture_insert_synthetic_at(context, match_mark, "__mg")
+              binder_capture_insert_synthetic_at(context, match_mark, mg)
               binder_capture_append(context, desugar_guarded_rows(arms3, arm_rows, 0))
             },
             None => ()
           }
-          let final_arms = desugar_guarded(arms3, 0, EIdent("__mg", 0 - 1), context)
-          (ELet("__mg", scrutinee, EMatch(EIdent("__mg", 0 - 1), final_arms), -1), endpos)
+          let final_arms = desugar_guarded(arms3, 0, EIdent(mg, 0 - 1), context)
+          (ELet(mg, scrutinee, EMatch(EIdent(mg, 0 - 1), final_arms), -1), endpos)
         } else {
           let arm_rows = match row_b {
             Some(rows) => Some(ArrayBuilder::freeze(rows)),
             None => None
           }
-          let checked_single = Array::length(arms3) == 1 && single_arm_needs_check(arms3)
           if checked_single {
             match row_b {
-              Some(_) => binder_capture_insert_synthetic_at(context, match_mark, "__mg"),
+              Some(_) => binder_capture_insert_synthetic_at(context, match_mark, mg),
               None => ()
             }
           } else {
@@ -2046,7 +2105,7 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
             k = k + 1
           }
           if checked_single {
-            (ELet("__mg", scrutinee, EMatch(EIdent("__mg", 0 - 1), ArrayBuilder::freeze(plain)), -1), endpos)
+            (ELet(mg, scrutinee, EMatch(EIdent(mg, 0 - 1), ArrayBuilder::freeze(plain)), -1), endpos)
           } else {
             (EMatch(scrutinee, ArrayBuilder::freeze(plain)), endpos)
           }

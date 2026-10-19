@@ -1369,6 +1369,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
               Some(param_effs) => {
                 // #639: aggregated exactly like the named-callee case above.
                 let missing = no_str_labels()
+                let mut alias_unresolved_row_var = false
                 let mut pi = 0
                 while pi < Array::length(param_effs) {
                   // #3053 (Codex on #3055): a local generic lambda, or an
@@ -1417,7 +1418,11 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                             ii = ii + 1
                           }
                         },
-                        None => ()
+                        // #3539 through an alias: the argument the syntax
+                        // cannot read (`g(fs[0])` with `let g = apply`) is
+                        // charged from the inferred type below, as the
+                        // direct call charges it.
+                        None => alias_unresolved_row_var = true
                       }
                     },
                     // #1343: same operation-awareness as the named-callee case
@@ -1432,6 +1437,13 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                   Array::set(requirement_marked_cell, 0, ("", ""))
                   Array::set(row_callback_scope_start_cell, 0, 1)
                   pi = pi + 1
+                }
+                // The alias's lexical row suppresses the generic fallback
+                // below, so the unresolved case is charged here: what the
+                // checker's instantiation at this call adds to the row as
+                // written.
+                if alias_unresolved_row_var {
+                  charge_typed_callee_row(call_callee_row_labels(call_off, name), param_effs, declared, in_handle, missing)
                 }
                 if Array::length(missing) > 0 {
                   Array::push(errors, make_contextual_row_error(fn_name, declared, missing, call_off))

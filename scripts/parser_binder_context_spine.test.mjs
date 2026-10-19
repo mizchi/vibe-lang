@@ -822,12 +822,12 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
     "push_pattern_let_step(tokens, steps, pat, val, next_pos)",
   ]);
   assertContextual(dispatchSource, "parse_impl_dispatch_with_binder_context", [
-    'desugar_guarded(arms3, 0, EIdent("__mg", 0 - 1), context)',
+    'desugar_guarded(arms3, 0, EIdent(mg, 0 - 1), context)',
     "parse_recur(tokens, arrow, 0, context)",
     "parse_recur(tokens, br, 20, context)",
     "(gname, None)",
     "(rname, None)",
   ], [
-    'desugar_guarded(arms3, 0, EIdent("__mg", 0 - 1))',
+    'desugar_guarded(arms3, 0, EIdent(mg, 0 - 1))',
   ]);
 });

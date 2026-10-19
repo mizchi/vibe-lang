@@ -1,0 +1,60 @@
+// A guarded `match`, and a single-arm Bool / Option `match`, bind their
+// scrutinee to a temporary the arms read. It was always spelled `__mg`, so a
+// source name `__mg` read in an arm, or bound by an arm's pattern, was
+// captured by it: `pick_bool(false, true)` answered `true` (the scrutinee)
+// and `pick_guarded(None, Some(1))` answered `Some(1)`. The parser now picks a
+// spelling no identifier in the arms uses.
+
+fn pick_bool(__mg: Bool, b: Bool) -> Bool {
+  match b {
+    true | false => __mg
+  }
+}
+
+fn pick_guarded(__mg: Option[Int], o: Option[Int]) -> Option[Int] {
+  match o {
+    Some(v) if v > 100 => Some(v),
+    _ => __mg
+  }
+}
+
+// `__mg` AND `__mg_1` are both taken, so the temporary is `__mg_2`.
+fn pick_both(__mg: Int, __mg_1: Int, o: Option[Int]) -> Int {
+  match o {
+    Some(v) if v > 100 => v,
+    Some(_) => __mg - __mg_1,
+    None => __mg_1 - __mg
+  }
+}
+
+// A pattern binder `__mg` used to shadow the temporary that the failed
+// guard's fall-through re-matches, so the fall-through matched the payload.
+fn guard_binder(o: Option[Option[Int]]) -> Int {
+  match o {
+    Some(__mg) if __mg == Some(5) => 5,
+    Some(Some(n)) => n,
+    Some(None) => 0 - 1,
+    None => 0 - 2
+  }
+}
+
+// Read inside an interpolation, which is lexed separately.
+fn interp(__mg: Int, b: Bool) -> String {
+  match b {
+    true | false => "v=\{__mg}"
+  }
+}
+
+test "a source name __mg is not captured by a desugared match" {
+  inspect(pick_bool(false, true), "false")
+  inspect(pick_bool(true, false), "true")
+  inspect(pick_guarded(None, Some(1)), "None")
+  inspect(pick_guarded(Some(7), Some(101)), "Some(101)")
+  inspect(pick_both(10, 3, Some(1)), "7")
+  inspect(pick_both(10, 3, None), "-7")
+  inspect(pick_both(10, 3, Some(200)), "200")
+  inspect(guard_binder(Some(Some(5))), "5")
+  inspect(guard_binder(Some(Some(9))), "9")
+  inspect(guard_binder(Some(None)), "-1")
+  inspect(interp(4, true), "v=4")
+}
