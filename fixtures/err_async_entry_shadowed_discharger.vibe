@@ -1,0 +1,26 @@
+// #3534 review (Codex): the entry-boundary scan reads a callee by name, so a
+// local `apply` borrowed the top-level `apply`'s exemption -- that one hands
+// its task to `TaskGroup::spawn_suspend`, which discharges what the task does.
+// The local one just calls its callback, so the closure's `sleep_wait`
+// suspends on behalf of the entry. With no boundary injected, the step object
+// came back as the value (`r = 1053` for 42). The scan now sees the local
+// binding, and the program is refused at build time like the same call
+// through an unshadowed name. Executed by
+// tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle, sleep_wait
+}
+
+fn apply(g: TaskGroup, task: () -> Int with Async) -> Int with Exception {
+  let h = TaskGroup::spawn_suspend(g, task)
+  TaskGroup::pump_all(g)
+  TaskHandle::join(h)
+}
+
+fn main() -> Int allows Async + Exception {
+  let apply = (n: Int, f: () -> Int) -> f() + n
+  apply(1, () -> {
+    sleep_wait(1)
+    41
+  })
+}
