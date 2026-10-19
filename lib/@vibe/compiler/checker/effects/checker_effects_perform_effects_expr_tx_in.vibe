@@ -15,6 +15,7 @@ import @vibe/compiler/core {
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  is_effect_inst_label,
   is_exception_effect_name,
   type_name_has_async_iterator_impl
 }
@@ -112,6 +113,7 @@ import ./checker_effects_mutability_expr_into.vibe {
   row_scope_decl_is_root,
   row_scope_pop_marker,
   row_scope_unknown,
+  str_labels_contain,
   struct_field_rows_for
 }
 
@@ -119,6 +121,8 @@ import ./checker_effects_throw_payload_kind.vibe {
   TkEnv,
   builtin_call_effect,
   builtin_call_op_label,
+  call_callee_row_labels,
+  call_callee_spelling,
   callee_has_marked_bindings,
   clear_checker_published_tables,
   collect_handle_effects,
@@ -812,6 +816,32 @@ fn pe_ctx(ctxs: Array[(Array[String], Bool, Array[String], Array[Array[String]],
   Array::length(ctxs) - 1
 }
 
+/// A row variable as the checker spells it: a source variable (`e`) or one
+/// `instantiate` minted (`$N`). Either is still open at this call.
+fn typed_label_is_row_var(l: String) -> Bool {
+  label_is_effect_var(l) || (String::length(l) >= 2 && String::char_code_at(l, 0) == 36)
+}
+
+/// #3539: charge the row of the callee's INFERRED function type
+/// (`call_callee_row_labels`) to this context, for a call whose callee the
+/// syntactic walk cannot name. The discipline is the named callee's: the
+/// exception row only where it is checked, an unresolved row variable
+/// imposes nothing, and a label the context authorizes -- or one already
+/// missing -- is not added again. `skip` holds labels already judged at this
+/// call (the callee's row as written), so only what the type adds is charged.
+fn charge_typed_callee_row(labels: Array[String], skip: Array[String], declared: Array[String], in_handle: Bool, missing: Array[String]) -> Unit {
+  if !in_handle {
+    let mut i = 0
+    while i < Array::length(labels) {
+      let l = Array::get(labels, i)
+      if String::length(l) > 0 && !typed_label_is_row_var(l) && !is_effect_inst_label(l) && (!is_exception_effect_name(l) || error_row_checked() || under_kinded_handle(declared)) && !str_labels_contain(skip, l) && !str_labels_contain(missing, l) && !decl_authorizes_op(declared, l) {
+        Array::push(missing, l)
+      }
+      i = i + 1
+    }
+  }
+}
+
 export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], root_kinds: TkEnv) -> Array[EffectError] {
   let errors = array_empty()
   let scope_depth = Array::length(row_formal_scope)
@@ -1015,6 +1045,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                 // set-difference diagnostic ("missing { Env, Fs }") instead of
                 // one error per label.
                 let missing = no_str_labels()
+                let mut unresolved_row_var = false
                 let mut ti = 0
                 while ti < Array::length(callee_effs) {
                   // #3053: the callee's row as THIS call instantiates it.
@@ -1064,7 +1095,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                           ii = ii + 1
                         }
                       },
-                      None => ()
+                      None => unresolved_row_var = true
                     }
                   } else if String::length(teff) > 0 && (!is_exception_effect_name(teff) || error_row_checked() || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(declared, teff) {
                     Array::push(missing, teff)
@@ -1073,6 +1104,14 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                   }
                   Array::set(requirement_marked_cell, 0, ("", ""))
                   ti = ti + 1
+                }
+                // #3539: an argument the syntax cannot read (`apply(xs[0])`,
+                // `apply(mk())`) left the row variable open, and the call
+                // charged nothing for it. The checker's instantiation of the
+                // callee at this call has the variable bound; what it adds to
+                // the row as written is charged.
+                if unresolved_row_var {
+                  charge_typed_callee_row(call_callee_row_labels(call_off, name), callee_effs, declared, in_handle, missing)
                 }
                 if Array::length(missing) > 0 {
                   Array::push(errors, make_contextual_row_error(fn_name, declared, missing, call_off))
@@ -1165,8 +1204,40 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
               },
               None => ()
             }
+            // #3539: a name the walk has no row for -- a `match` / `for` /
+            // destructuring binder, a `let` bound to a call result, a pure
+            // local the walk registered as row-less -- is charged the row of
+            // its inferred function type. A name the walk does know (a
+            // top-level function, a builtin, a callback parameter or local
+            // closure with a row) was judged above, by its own rules.
+            let named_row = name == "perform" || name == "perform?" || synthesized_builtin || match top_level_callee {
+              Some(_) => true,
+              None => false
+            } || match lexical_callee {
+              Some(labels) => Array::length(labels) > 0,
+              None => false
+            } || match builtin_call_effect(name) {
+              Some(_) => true,
+              None => false
+            }
+            if !named_row {
+              let typed_missing = no_str_labels()
+              charge_typed_callee_row(call_callee_row_labels(call_off, name), no_str_labels(), declared, in_handle, typed_missing)
+              if Array::length(typed_missing) > 0 {
+                Array::push(errors, make_contextual_row_error(fn_name, declared, typed_missing, call_off))
+              }
+            }
           },
-          _ => ()
+          // #3539: a callee that is not a name (`mk()()`, `(s.f)()`,
+          // `(xs[0])()`, a method `p.m()`) is charged the row of its inferred
+          // function type, which the walk cannot see from the syntax.
+          _ => {
+            let typed_missing = no_str_labels()
+            charge_typed_callee_row(call_callee_row_labels(call_off, call_callee_spelling(callee)), no_str_labels(), declared, in_handle, typed_missing)
+            if Array::length(typed_missing) > 0 {
+              Array::push(errors, make_contextual_row_error(fn_name, declared, typed_missing, call_off))
+            }
+          }
         }
         match callee {
           EIdent(cname, _) => if cname == "perform?" {

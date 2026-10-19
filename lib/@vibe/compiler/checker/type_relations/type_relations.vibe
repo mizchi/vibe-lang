@@ -3,13 +3,11 @@ import @vibe/compiler/core {
   Type,
   TypeDef,
   compiler_owned_type_arity,
-  exception_effect_kind,
   exception_effect_labels_equal,
   exception_label_kind,
   find_typedef,
   instantiate,
   is_effect_inst_label,
-  is_exception_effect_name,
   is_exception_label,
   is_hkt_app,
   is_runtime_scheduled_effect,
@@ -379,19 +377,21 @@ fn stdin_stream_nominal_conflict(expected: Type, actual: Type) -> Bool {
 /// `$N` fresh vars — not decidable without call-site row unification, #885).
 fn effect_label_is_exempt(lbl: String) -> Bool {
   let len = String::length(lbl)
-  // ADR-0085 (#1344): only the ERASED exception spellings keep the #640
-  // exemption. It exists because `Error` is pervasive and un-annotated, so
-  // laundering it away is not evidence of a bug; a KINDED `Exception[E]` is
-  // opt-in and carries real information, so dropping it through a pure-typed
-  // slot is exactly the #939 hole this check exists to catch. Nothing in the
-  // codebase writes a kinded label, so no existing program changes verdict.
+  // #3539: the ERASED exception label is no longer exempt. The #640
+  // exemption assumed an un-annotated, pervasive throw row, but a row on a
+  // function TYPE is always written: `fn thrower() -> Int with Exception`
+  // passed where `() -> Int` is expected let `call(thrower)` type a caller
+  // pure while the throw ran with no handler. `with Exception[K]` was already
+  // refused there (ADR-0085); the erased spelling now is too. Erased and
+  // kinded labels still match each other (`row_contains_label`), so a
+  // `with Exception` slot accepts a `with Exception[K]` value.
   if String::starts_with(lbl, "#region_") || String::starts_with(lbl, "#capture[") || String::starts_with(lbl, "#param[") || String::starts_with(lbl, "#aliasparam[") || String::starts_with(lbl, "#fieldparam[") || is_effect_inst_label(lbl) {
     true
     // #1963: `is_runtime_scheduled_effect`, not `lbl == "Async"`. Row labels
     // can arrive operation-qualified (`Async::Suspend`), and the literal
     // comparison denied the exemption to exactly those -- firing the #939
     // check on a label the policy calls composition-allowed.
-  } else if (is_exception_effect_name(lbl) && String::length(exception_effect_kind(lbl)) == 0) || is_runtime_scheduled_effect(lbl) {
+  } else if is_runtime_scheduled_effect(lbl) {
     true
   } else if len == 1 {
     String::char_code_at(lbl, 0) >= 97 && String::char_code_at(lbl, 0) <= 122

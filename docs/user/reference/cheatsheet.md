@@ -1449,6 +1449,18 @@ syntax — which is why they survived #1429 while the `hint:` line, being
 something you paste into your code, moved to the braceless spelling with
 everything else.
 
+**A call is charged the row of the function it calls, however the callee is
+spelled** (#3539): a top-level name, a callback parameter, or an expression --
+`mk()()`, `(s.f)()`, `(Array::get(fs, 0))()`, a `match` / `for` /
+destructuring binder, a method call `p.m()`. The row is read from the callee's
+inferred function type, so with `fn mk() -> (() -> Unit with Console)`, `fn
+pure_fn() -> Int { mk()(); 42 }` reports `missing { Console }`. A function
+value converts to a function type only when that type's row keeps every label
+the value carries: `with Console`, `with Exception` and `with Exception[K]`
+alike cannot go where `() -> Int` is expected (the message ends `effect would
+be dropped`), while a `with Exception` slot accepts a `with Exception[K]`
+value and a `with e` slot accepts any row.
+
 ### Standard provider and entry-execution policy (#1496)
 
 The compiler keeps independent private policy owners at

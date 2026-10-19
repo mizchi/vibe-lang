@@ -5,6 +5,7 @@ import @vibe/compiler/core {
   Expr,
   Pat,
   Stmt,
+  Subst,
   Type,
   TypeDef,
   TypeEnv,
@@ -19,7 +20,8 @@ import @vibe/compiler/core {
   is_entry_runtime_managed_effect,
   is_exception_label,
   is_exception_throw_operation,
-  is_legacy_console_provider
+  is_legacy_console_provider,
+  subst_apply
 }
 
 import @vibe/core {
@@ -914,6 +916,94 @@ export fn set_throw_site_kinds(sites: Array[(String, String)]) -> Unit {
   Array::set(throw_site_kind_cell, 0, m)
 }
 
+/// #3539: the type the checker inferred for the CALLEE of each call, keyed
+/// by the call's offset (`ECall`'s own offset) and the callee's spelling
+/// (`call_callee_spelling`). The effects walk is syntactic: it reads the row
+/// of a callee it can NAME -- a top-level function, a builtin, a callback
+/// parameter, a local closure literal or alias. A call through anything else
+/// (`mk()()`, `(s.f)()`, `xs[0]()`, a `match` / `for` / destructuring binder,
+/// `let g: T = mk()`, a method `p.m()`) used to charge nothing, so the row of
+/// the function actually called was dropped. This table hands the walk the
+/// callee's function type; its row is read under the program's final
+/// substitution (`set_call_callee_types`) only for a call the walk could not
+/// name. Unlocated calls (offset < 0) are never recorded.
+let call_callee_types_cell: Array[(MutMap[Int, Array[Int]], Array[(Int, String, Type)], Subst)] = [
+  (MutMap::new_int(), array_empty(), SubstEmpty)
+]
+
+export fn set_call_callee_types(rows: Array[(Int, String, Type)], s: Subst) -> Unit {
+  let index: MutMap[Int, Array[Int]] = MutMap::new_int()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (off, _, _) = Array::get(rows, i)
+    match MutMap::get(index, off) {
+      Some(at) => Array::push(at, i),
+      None => MutMap::set(index, off, [i])
+    }
+    i = i + 1
+  }
+  Array::set(call_callee_types_cell, 0, (index, rows, s))
+}
+
+export fn clear_call_callee_types() -> Unit {
+  Array::set(call_callee_types_cell, 0, (MutMap::new_int(), array_empty(), SubstEmpty))
+}
+
+/// The spelling a call's callee is recorded under: the name of a named
+/// callee, the field or method of a dotted one, and "" for anything else.
+/// A `$source_span` wrapper (a parenthesized callee) is looked through.
+export fn call_callee_spelling(callee: Expr) -> String {
+  match callee {
+    EIdent(n, _) => n,
+    EDot(_, m, _, _) => m,
+    ECall(EIdent(w, _), wargs, _, _) => if w == "$source_span" && Array::length(wargs) > 0 {
+      call_callee_spelling(Array::get(wargs, 0))
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
+/// The effect labels of the callee's inferred function type at the call at
+/// `off`, or an empty array when the checker recorded no function type
+/// there. Compiler-internal labels (`#...`) are left out; row variables are
+/// kept, for the caller to judge. When two recorded calls share the key, the
+/// union is answered: a collision can only add a requirement, never hide one.
+export fn call_callee_row_labels(off: Int, spelling: String) -> Array[String] {
+  let out = no_str_labels()
+  if off >= 0 {
+    let (index, rows, s) = Array::get(call_callee_types_cell, 0)
+    match MutMap::get(index, off) {
+      Some(at) => {
+        let mut i = 0
+        while i < Array::length(at) {
+          let (_, sp, ty) = Array::get(rows, Array::get(at, i))
+          if sp == spelling {
+            match subst_apply(s, ty) {
+              CtFn(_, _, row) => {
+                let labels = effect_row_labels(effect_row_parse(row))
+                let mut li = 0
+                while li < Array::length(labels) {
+                  let l = Array::get(labels, li)
+                  if !String::starts_with(l, "#") && !str_labels_contain(out, l) {
+                    Array::push(out, l)
+                  }
+                  li = li + 1
+                }
+              },
+              _ => ()
+            }
+          }
+          i = i + 1
+        }
+      },
+      None => ()
+    }
+  }
+  out
+}
+
 /// #3053: a generic callee's formal bindings at each call, keyed by the
 /// callee identifier's offset (`callee_formal_bindings`). Filled once per
 /// check before the effects walk. A key seen with two different bindings maps
@@ -1010,6 +1100,7 @@ export fn clear_checker_published_tables() -> Unit {
   set_shadowed_builtin_type_names([])
   set_row_nominal_types([])
   Array::set(call_formal_marked_bindings_cell, 0, MutMap::new_string())
+  clear_call_callee_types()
 }
 
 /// Test hook: a label as the call at `key` instantiates it.

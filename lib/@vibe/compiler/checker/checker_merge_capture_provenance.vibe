@@ -77,7 +77,7 @@ import @vibe/compiler/checker/traits {
 }
 
 import @vibe/compiler/checker/effects {
-  throw_payload_site_key
+  call_callee_spelling, clear_call_callee_types, throw_payload_site_key
 }
 
 import ./checker_escape.vibe {
@@ -1698,8 +1698,50 @@ export fn reset_return_provenance_index() -> Unit {
 /// `checker_stmt.vibe` before the effects pass reads it.
 export let throw_payload_sites: Array[(String, Type)] = []
 
+/// #3539: the callee's type at each call that may carry an effect row,
+/// keyed by the call's offset and the callee's spelling
+/// (`call_callee_spelling`). The effects pass charges the row it resolves to
+/// at a call whose callee it cannot name (see `call_callee_row_labels`).
+/// Reset with the throw sites; the types are raw, read under the final
+/// substitution.
+export let call_callee_sites: Array[(Int, String, Type)] = []
+
+/// Record `ty` as the callee type of the call at `call_off`. Only a function
+/// type whose row names a label a program can see, or a type still unsolved
+/// here, can resolve to a row, so nothing else is kept; neither is an
+/// unlocated call, whose offset no walk can find again.
+export fn record_call_callee_type(call_off: Int, callee: Expr, ty: Type) -> Unit {
+  if call_off >= 0 {
+    let keep = match ty {
+      CtFn(_, _, Some(row)) => row_names_visible_label(row),
+      CtVar(_) => true,
+      _ => false
+    }
+    if keep {
+      Array::push(call_callee_sites, (call_off, call_callee_spelling(callee), ty))
+    }
+  }
+}
+
+fn row_names_visible_label(row: String) -> Bool {
+  if !String::starts_with(String::trim(row), "#") {
+    true
+  } else {
+    let mut found = false
+    for raw in String::split(row, ",") {
+      let l = String::trim(raw)
+      if String::length(l) > 0 && !String::starts_with(l, "#") {
+        found = true
+      }
+    }
+    found
+  }
+}
+
 export fn reset_throw_payload_sites() -> Unit {
   Array::truncate(throw_payload_sites, 0)
+  Array::truncate(call_callee_sites, 0)
+  clear_call_callee_types()
   // #3033: a module's kind resolutions never answer for the next module.
   exception_kind_resolutions_clear()
 }

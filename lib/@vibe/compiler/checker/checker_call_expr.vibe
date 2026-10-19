@@ -196,6 +196,7 @@ import ./checker_merge_capture_provenance.vibe {
   collect_env_bindings,
   eq_formal_row_of,
   formal_shadow,
+  record_call_callee_type,
   resume_walk_param_base,
   throw_payload_sites,
   type_is_ground_except,
@@ -2086,6 +2087,12 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                       None => check_child(EIdent(name, callee_off), env, defs, s, c, errors, tytab, capture, lane)
                     }
                   }
+                  // #3539: the effects pass charges a call through a binder
+                  // it cannot name by this type's row.
+                  match callee_binding {
+                    Some(_) => record_call_callee_type(call_off, callee, ct),
+                    None => ()
+                  }
                   let inferred_param_tys = match ct {
                     CtFn(params, _, _) => params,
                     _ => array_empty()
@@ -2406,6 +2413,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               }
               match applied_method_ty {
                 CtFn(param_tys, ret, _) => {
+                  // #3539: a method call is charged its method's row.
+                  record_call_callee_type(call_off, callee, applied_method_ty)
                   let ret_box = Array::slice([ret], 0, 1)
                   let call_param_tys = param_tys
                   let plen = Array::length(param_tys)
@@ -2438,7 +2447,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   // `LazyIter[Int]` checks against the concrete field signature.
                   let field_fn = receiver_struct_field_type(defs, subst_apply(s3, obj_ty), method)
                   match field_fn {
-                    Some(CtFn(fpts, fret, _)) => {
+                    Some(CtFn(fpts, fret, frow)) => {
+                      // #3539: and its row is the field type's.
+                      record_call_callee_type(call_off, callee, CtFn(fpts, fret, frow))
                       // #3343: a function stored in a field has no body the
                       // checker can see.
                       retention_expr_callee_region_check(EUnit, method, qcall_field_off, Array::slice(all_args, 1, Array::length(all_args)), env, defs, s3, c3, errors, check_child)
@@ -2619,6 +2630,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 },
                 None => {
                   let (ct, s1, c1) = check_child(callee, env, defs, s, c, errors, tytab, capture, lane)
+                  // #3539: see the named-call path.
+                  record_call_callee_type(call_off, callee, ct)
                   let (callee_param_tys, callee_inst) = callee_callback_params(ct, s1)
                   let alen = Array::length(args)
                   let arg_tys = array_empty()
@@ -2709,6 +2722,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 },
                 _ => (opened_callee_ty, s1, c1)
               }
+              // #3539: a callee that is an expression (`mk()()`, `(s.f)()`,
+              // `(xs[0])()`) is charged the row of the function it evaluates to.
+              record_call_callee_type(call_off, callee, opened_callee_ty)
               let (callee_param_tys, callee_inst) = match (ct, opened_callee_ty) {
                 (CtForAll(_, _, _), CtFn(oparams, _, _)) => (oparams, Some((ct, opened_callee_ty))),
                 _ => callee_callback_params(ct, s1)
