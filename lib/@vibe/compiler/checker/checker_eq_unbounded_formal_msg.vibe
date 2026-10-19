@@ -167,7 +167,7 @@ export fn check_interp_formal(ty: Type, s: Subst, env: TypeEnv, errors: Array[St
   if interp_mentions_fn(subst_apply(s, ty), s, env) {
     Array::push(errors, String::concat("cannot interpolate a function value: a function has no text form, and rendering it would print a memory address -- interpolate what it returns (`f(x)`), or a description you write (#3075)", off_marker(off)))
   }
-  let opaque = interp_opaque_builtin(subst_apply(s, ty), env)
+  let opaque = interp_opaque_builtin(subst_apply(s, ty), s, env)
   if opaque != "" {
     Array::push(errors, String::concat("cannot interpolate a `\{opaque}` value: it has no text form, and rendering it printed a memory address -- bind what you read out of it and interpolate that (`let ks: Array[String] = Map::keys(m)`, a value you look up, a frozen array), or a description you write", off_marker(off)))
   }
@@ -175,15 +175,54 @@ export fn check_interp_formal(ty: Type, s: Subst, env: TypeEnv, errors: Array[St
 
 /// A builtin container the renderer has no arm for. `"\{m}"` on a
 /// `StringMap` or an `ArrayBuilder` printed the handle's address, with
-/// `vibe check` clean. Only the value itself is judged -- the renderer refuses
-/// these through the descending checks above when they sit inside an array,
-/// an option or a tuple. A program-declared type of the same name renders
-/// through its own `to_string`, so it is left alone.
-fn interp_opaque_builtin(ty: Type, env: TypeEnv) -> String {
-  let name = match ty {
-    CtNamed(n, _) => n,
+/// `vibe check` clean. The walk descends the same shapes the renderer does
+/// (array, option, tuple, applied head, and the type arguments a nominal's
+/// fields read), as the `Bytes` and function checks below do: `Some(m)` and
+/// `[m]` printed `Some(244)` and `[244]`. A program-declared type of the same
+/// name renders through its own `to_string`, so it is left alone. Answers the
+/// handle's name, or `""` when nothing opaque is rendered.
+fn interp_opaque_builtin(ty: Type, s: Subst, env: TypeEnv) -> String {
+  match ty {
+    CtVar(id) => match subst_apply(s, CtVar(id)) {
+      CtVar(_) => "",
+      other => interp_opaque_builtin(other, s, env)
+    },
+    CtArray(element) => interp_opaque_builtin(element, s, env),
+    CtOption(element) => interp_opaque_builtin(element, s, env),
+    CtTuple(items) => interp_opaque_builtin_any(items, s, env),
+    CtNamed(n, args) => {
+      let head = interp_opaque_head(n, env)
+      if head != "" {
+        head
+      } else {
+        interp_opaque_builtin_any(interp_rendered_args(env, n, args), s, env)
+      }
+    },
+    CtApplied(head, args) => {
+      let h = interp_opaque_builtin(head, s, env)
+      if h != "" {
+        h
+      } else {
+        interp_opaque_builtin_any(args, s, env)
+      }
+    },
     _ => ""
   }
+}
+
+/// The first opaque handle any of `items` renders, or `""`.
+fn interp_opaque_builtin_any(items: Array[Type], s: Subst, env: TypeEnv) -> String {
+  let mut found = ""
+  let mut i = 0
+  while i < Array::length(items) && found == "" {
+    found = interp_opaque_builtin(Array::get(items, i), s, env)
+    i = i + 1
+  }
+  found
+}
+
+/// The handle name a builtin head `name` renders as an address, or `""`.
+fn interp_opaque_head(name: String, env: TypeEnv) -> String {
   if name == "Map" || name == "StringMap" || name == "ArrayBuilder" || name == "MapBuilder" || name == "StringBuilder" {
     if interp_declared_type(env, name) {
       ""
