@@ -17,6 +17,7 @@ import @vibe/compiler/core {
   subst_apply,
   subst_bind_value,
   subst_lookup,
+  type_application_view,
   type_to_string,
   unify
 }
@@ -488,9 +489,10 @@ fn retry_collect_vars(t: Type, out: Array[Int]) -> Unit {
 
 /// Record `(id, other side)` wherever a variable the retry bound meets a
 /// type: a variable of `expected` against the actual, and one of `actual`
-/// against the expected. A higher-kinded application (`F[T]`, spelled as the
-/// `hkt_app_name()` head) is walked against the constructor it unified with,
-/// the way `unify_hkt_ctors` decomposes it.
+/// against the expected. A higher-kinded application (`F[T]`, spelled with
+/// the `hkt_app_name()` head or as `CtApplied`) is walked against the
+/// constructor it unified with, the way `unify_hkt_ctors` and
+/// `unify_type_applications` decompose it.
 fn retry_collect_occurrences(expected: Type, actual: Type, s: Subst, su: Subst, occ: Array[(Int, Type)]) -> Unit {
   let e = subst_apply(s, expected)
   let a = subst_apply(s, actual)
@@ -516,6 +518,19 @@ fn retry_collect_occurrences(expected: Type, actual: Type, s: Subst, su: Subst, 
     retry_collect_hkt(e, a, true, s, su, occ)
   } else if is_hkt_app(a) && !is_hkt_app(e) {
     retry_collect_hkt(a, e, false, s, su, occ)
+  } else if retry_is_applied(e) || retry_is_applied(a) {
+    // `F[T]` instantiated as `CtApplied`, met against `Option[..]` or another
+    // application: `unify` pairs them through `type_application_view`.
+    match type_application_view(e) {
+      Some((eh, eargs)) => match type_application_view(a) {
+        Some((ah, aargs)) => {
+          retry_collect_occurrences(eh, ah, s, su, occ)
+          retry_collect_all(eargs, aargs, s, su, occ)
+        },
+        None => ()
+      },
+      None => ()
+    }
   } else {
     match e {
       CtFn(eps, er, _) => match a {
@@ -549,6 +564,13 @@ fn retry_collect_occurrences(expected: Type, actual: Type, s: Subst, su: Subst, 
       },
       _ => ()
     }
+  }
+}
+
+fn retry_is_applied(t: Type) -> Bool {
+  match t {
+    CtApplied(_, _) => true,
+    _ => false
   }
 }
 
