@@ -1,0 +1,102 @@
+// #3538: a bodyless generic impl's fallback must hold for every
+// instantiation. These are the forms that do, and still answer through a
+// bound: a fallback generic over the impl's formal (under another spelling
+// too), and a concrete impl whose fallback takes that one target.
+
+trait Name {
+  name(Self) -> Int
+}
+
+// Generic over the impl's formal, spelled differently.
+struct Box[T] {
+  v: T
+}
+
+impl [T] Name for Box[T]
+
+fn Box::name[U](self: Box[U]) -> Int {
+  7
+}
+
+// Generic over the impl's formal, spelled the same.
+struct Pair[T] {
+  a: T;
+  b: T
+}
+
+impl [T] Name for Pair[T]
+
+fn Pair::name[T](self: Pair[T]) -> Int {
+  2
+}
+
+// A concrete impl: its fallback is written for exactly that target.
+struct Cell[T] {
+  c: T
+}
+
+impl Name for Cell[Int]
+
+fn Cell::name(self: Cell[Int]) -> Int {
+  self.c + 1
+}
+
+// A trait returning the impl's formal, and a fallback returning its own.
+trait Get[A] {
+  get(Self) -> A
+}
+
+struct Slot[T] {
+  s: T
+}
+
+impl [T] Get[T] for Slot[T]
+
+fn Slot::get[U](self: Slot[U]) -> U {
+  self.s
+}
+
+// A bounded impl formal: the fallback is still generic over its target.
+struct Tag[T] {
+  t: T
+}
+
+impl [T: Eq] Name for Tag[T]
+
+fn Tag::name[U](self: Tag[U]) -> Int {
+  5
+}
+
+fn via[T: Name](x: T) -> Int {
+  T::name(x)
+}
+
+fn got[T: Get[Int]](x: T) -> Int {
+  T::get(x)
+}
+
+test "a generic fallback answers at every instantiation" {
+  let i: Box[Int] = Box::{ v: 41 }
+  let s: Box[String] = Box::{ v: "hello" }
+  inspect(via(i) + via(s), "14")
+}
+
+test "a fallback spelled with the impl's formal answers" {
+  let p: Pair[String] = Pair::{ a: "x", b: "y" }
+  inspect(via(p), "2")
+}
+
+test "a fallback returning its own formal answers" {
+  let s: Slot[Int] = Slot::{ s: 40 }
+  inspect(got(s) + 2, "42")
+}
+
+test "a bounded generic fallback answers" {
+  let t: Tag[String] = Tag::{ t: "a" }
+  inspect(via(t), "5")
+}
+
+test "a concrete impl's fallback answers at its target" {
+  let c: Cell[Int] = Cell::{ c: 41 }
+  inspect(via(c), "42")
+}

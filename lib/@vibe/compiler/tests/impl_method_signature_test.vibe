@@ -200,3 +200,39 @@ test "an inherited method matching the applied subtrait is accepted" {
   let src = "trait Base[A] { get(Self) -> A }\ntrait Child[A]: Base {}\nstruct P { x: Int }\nimpl Child[Int] for P {\n  get(self) -> Int { self.x }\n}\nfn via[T: Child[Int]](v: T) -> Int { T::get(v) }\nfn main() -> Int { via(P::{ x: 1 }) }\n"
   assert(check_source_ok(src))
 }
+
+/// A bodyless GENERIC impl dispatches every instantiation to the one
+/// fallback, so a fallback written for `Box[Int]` is refused: the witness for
+/// `Box[String]` handed it a string, and `self.v + 1` read an address.
+test "a fallback for one instantiation of a generic impl is refused" {
+  let src = "trait Name { name(Self) -> Int }\nstruct Box[T] { v: T }\nimpl [T] Name for Box[T]\nfn Box::name(self: Box[Int]) -> Int { self.v + 1 }\nfn main() -> Int { 0 }\n"
+  inspect(check_source_error_message(src), "declare `Box::name` generic over the impl's type parameters (`fn Box::name[T]`, taking `self: Box[T]`), or narrow the impl to `impl Name for Box[Int]`: `impl [T] Name for Box[T]` has no body for `name`, so the trait calls this function at every instantiation, but it takes `self: Box[Int]`, not `self: Box[T]` [@fn=Box::name]")
+}
+
+/// The diagnostic is located on the fallback's own declaration.
+test "the generic-impl fallback diagnostic is located on the function" {
+  let src = "trait Name { name(Self) -> Int }\nstruct Box[T] { v: T }\nimpl [T] Name for Box[T]\nfn Box::name(self: Box[Int]) -> Int { self.v + 1 }\nfn main() -> Int { 0 }\n"
+  assert(check_source_located_err_contains(src, "line 4:4-13: declare `Box::name` generic"))
+}
+
+/// A return type fixed where the trait returns the impl's formal is refused
+/// the same way.
+test "a fallback returning one instantiation of the impl's formal is refused" {
+  let src = "trait Get[A] { get(Self) -> A }\nstruct Box[T] { v: T }\nimpl [T] Get[T] for Box[T]\nfn Box::get[U](self: Box[U]) -> Int { 1 }\nfn main() -> Int { 0 }\n"
+  inspect(check_source_error_message(src), "declare `Box::get` generic over the impl's type parameters (`fn Box::get[T]`, returning `T`), or narrow the impl to a concrete target: `impl [T] Get[T] for Box[T]` has no body for `get`, so the trait calls this function at every instantiation, but it returns `Int`, not `T` [@fn=Box::get]")
+}
+
+/// A fallback generic over the impl's formal, under any spelling, is accepted.
+test "a fallback generic over the impl's formal is accepted" {
+  assert(check_source_ok("trait Get[A] { get(Self) -> A }\nstruct Box[T] { v: T }\nimpl [T] Get[T] for Box[T]\nfn Box::get[U](self: Box[U]) -> U { self.v }\nfn main() -> Int { Get::get(Box::{ v: 3 }) }\n"))
+}
+
+/// ... with a bound on its own formal as on the impl's.
+test "a bounded generic fallback of a bounded generic impl is accepted" {
+  assert(check_source_ok("trait Name { name(Self) -> Int }\nstruct Tag[T] { t: T }\nimpl [T: Eq] Name for Tag[T]\nfn Tag::name[U: Eq](self: Tag[U]) -> Int { 5 }\nfn main() -> Int { 0 }\n"))
+}
+
+/// ... and so is a concrete impl whose fallback takes exactly its target.
+test "a concrete impl's fallback for its target is accepted" {
+  assert(check_source_ok("trait Name { name(Self) -> Int }\nstruct Box[T] { v: T }\nimpl Name for Box[Int]\nfn Box::name(self: Box[Int]) -> Int { self.v + 1 }\nfn main() -> Int { Name::name(Box::{ v: 3 }) }\n"))
+}

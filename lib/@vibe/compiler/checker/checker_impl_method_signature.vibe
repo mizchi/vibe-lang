@@ -279,6 +279,118 @@ fn origin_marker(origin: ImplMethodOrigin, trait_head: String, owner: String, tr
   }
 }
 
+/// Does `ty` mention one of `names` (an impl's formals, rigid here)?
+fn mentions_formal(ty: Type, names: Array[String]) -> Bool {
+  match ty {
+    CtNamed(name, args) => if Array::length(args) == 0 && string_list_has(names, name) {
+      true
+    } else {
+      let mut hit = false
+      for a in args {
+        if !hit && mentions_formal(a, names) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    CtArray(elem) => mentions_formal(elem, names),
+    CtOption(elem) => mentions_formal(elem, names),
+    CtTuple(items) => {
+      let mut hit = false
+      for item in items {
+        if !hit && mentions_formal(item, names) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    CtFn(params, ret, _) => {
+      let mut hit = mentions_formal(ret, names)
+      for p in params {
+        if !hit && mentions_formal(p, names) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+/// The diagnostic for a FALLBACK `P::m` that does not hold at every
+/// instantiation of a generic impl: `fn Box::name(self: Box[Int])` under a
+/// bodyless `impl [T] Name for Box[T]`. The witness for `Box[String]` would
+/// dispatch to it too, handing it a value of another representation. `param`
+/// names the offending parameter (empty for the return type), `has` is what
+/// the function declares there, and `narrow` is the concrete target the impl
+/// could be narrowed to (empty when the position is not the receiver).
+fn fallback_generic_message(origin: ImplMethodOrigin, owner: String, method: String, trait_disp: String, impl_names: Array[String], param: String, has: Type, want: Type, narrow: String) -> String {
+  let formals = String::join(impl_names, ", ")
+  let (wants, takes) = if String::length(param) > 0 {
+    (String::join(["taking `", param, ": ", type_to_string(want), "`"], ""), String::join([
+      "takes `",
+      param,
+      ": ",
+      type_to_string(has),
+      "`, not `",
+      param,
+      ": ",
+      type_to_string(want),
+      "`"
+    ], ""))
+  } else {
+    (String::join(["returning `", type_to_string(want), "`"], ""), String::join([
+      "returns `",
+      type_to_string(has),
+      "`, not `",
+      type_to_string(want),
+      "`"
+    ], ""))
+  }
+  let narrowed = if String::length(narrow) > 0 {
+    String::join(["`impl ", trait_disp, " for ", narrow, "`"], "")
+  } else {
+    "a concrete target"
+  }
+  String::join([
+    "declare `",
+    owner,
+    "::",
+    method,
+    "` generic over the impl's type parameters (`fn ",
+    owner,
+    "::",
+    method,
+    "[",
+    formals,
+    "]`, ",
+    wants,
+    "), or narrow the impl to ",
+    narrowed,
+    ": `impl [",
+    formals,
+    "] ",
+    trait_disp,
+    " for ",
+    print_type_expr(origin.target),
+    "` has no body for `",
+    method,
+    "`, so the trait calls this function at every instantiation, but it ",
+    takes,
+    " [@fn=",
+    owner,
+    "::",
+    method,
+    "]"
+  ], "")
+}
+
 /// A labeled (`x~`) or optional (`x?`) parameter keeps its marker on the
 /// name; the diagnostic names the bare parameter.
 fn param_base(raw_name: String) -> String {
@@ -517,8 +629,10 @@ fn declaring_trait_params(env: TypeEnv, trait_key: String, method: String) -> Op
 ///
 /// The same holds for a FALLBACK origin: a `P::m` declared outside the block
 /// of an impl that has no body for `m`, which the witness dispatches to just
-/// the same. There the impl's own formals are left open, since the function
-/// was not written against them.
+/// the same. The impl's own formals stay rigid there as well: every
+/// instantiation's witness dispatches to that one function, so a fallback
+/// for `impl [T] Tr for Box[T]` must be generic over `Box[T]` itself, not
+/// written for one `Box[Int]`.
 ///
 /// What is NOT compared, and stays as it was: a position that mentions a trait
 /// parameter the impl head leaves unapplied (it is erased, and the impl may
@@ -683,16 +797,15 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
                   ()
                 }
               }
-              // A fallback function is not written for this impl's formals:
-              // `fn Box::show(b: Box[Int])` may serve `impl [T] Show for
-              // Box[T]`. Only what holds at every instantiation is compared.
-              if origin.fallback {
-                for n in impl_names {
-                  Array::push(open_names, n)
-                }
-              } else {
-                ()
-              }
+              // The impl's formals stay RIGID for a fallback too. The witness
+              // of every instantiation dispatches to the one `P::m`
+              // (`build_concrete_dict_for_target`), so it must hold for all
+              // of them: `fn Box::name(self: Box[Int])` under a bodyless
+              // `impl [T] Name for Box[T]` was handed a `Box[String]` when
+              // they were left open (measured: `self.v + 1` answered
+              // `137438953475`). A fallback generic over its own formals
+              // (`fn Box::name[U](self: Box[U])`) has unification variables
+              // there, which meet the rigid `T`.
               let shadow: Array[String] = ["Self"]
               for b in binders {
                 Array::push(shadow, type_param_name(b))
@@ -760,17 +873,30 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
                       None => {
                         let (raw, _) = Array::get(params, pi)
                         let pname = param_base(raw)
-                        Array::push(errors, String::join([
-                          "change parameter `",
-                          pname,
-                          "` of ",
-                          shown,
-                          " to `",
-                          type_to_string(want),
-                          "`",
-                          declares,
-                          origin_marker(origin, trait_head, owner, trait_disp, method, "param", pname)
-                        ], ""))
+                        let has = self_as(subst_apply(cur, Array::get(aparams, pi)), self_ty)
+                        if origin.fallback && mentions_formal(want, impl_names) {
+                          let narrow = match Array::get(sparams, pi) {
+                            TyName(sn) => if sn == "Self" {
+                              type_to_string(has)
+                            } else {
+                              ""
+                            },
+                            _ => ""
+                          }
+                          Array::push(errors, fallback_generic_message(origin, owner, method, trait_disp, impl_names, pname, has, want, narrow))
+                        } else {
+                          Array::push(errors, String::join([
+                            "change parameter `",
+                            pname,
+                            "` of ",
+                            shown,
+                            " to `",
+                            type_to_string(want),
+                            "`",
+                            declares,
+                            origin_marker(origin, trait_head, owner, trait_disp, method, "param", pname)
+                          ], ""))
+                        }
                       }
                     }
                     pi = pi + 1
@@ -778,15 +904,20 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
                   let want_ret = fill_expected(scope, resolve_type_expr_shadowed(sret, defs, shadow))
                   match unify(want_ret, self_as(aret, self_ty), cur) {
                     Some(_) => (),
-                    None => Array::push(errors, String::join([
-                      "change the return type of ",
-                      shown,
-                      " to `",
-                      type_to_string(want_ret),
-                      "`",
-                      declares,
-                      origin_marker(origin, trait_head, owner, trait_disp, method, "ret", "")
-                    ], ""))
+                    None => if origin.fallback && mentions_formal(want_ret, impl_names) {
+                      let has_ret = self_as(subst_apply(cur, aret), self_ty)
+                      Array::push(errors, fallback_generic_message(origin, owner, method, trait_disp, impl_names, "", has_ret, want_ret, ""))
+                    } else {
+                      Array::push(errors, String::join([
+                        "change the return type of ",
+                        shown,
+                        " to `",
+                        type_to_string(want_ret),
+                        "`",
+                        declares,
+                        origin_marker(origin, trait_head, owner, trait_disp, method, "ret", "")
+                      ], ""))
+                    }
                   }
                 } else {
                   ()
