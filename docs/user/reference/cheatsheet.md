@@ -1119,6 +1119,8 @@ let ord_text = match ord {
 // struct derive(Show) -> Point::to_string(p) : String ("Point { x: 1, y: 2 }")
 // enum derive(Show) -> E::to_string(v) : String ("B(3)" / "A")
 // derive(Hash) -> T::hash_key(v) (構造キー、to_string も併せて生成)
+// The key follows `==`, except that a `Double` is keyed as `compare` orders
+// it: every NaN shares one key, so a NaN key can be read back from a Map.
 // derive(Default) -> T::default() + `impl Default for T` 登録 (#1847) —
 //   derive した型はそのまま `[T: Default]` bound を満たす
 // (Eq は marker: 構造的 `==` は T::equals として常に生成される)

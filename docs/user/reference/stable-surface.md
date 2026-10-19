@@ -595,7 +595,11 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   double, so `16777217.0f == 16777216.0f` is `false` (#3543). Use `Double`.
 - **`derive (Hash)` and the `Map::*_by` operations keyed on it.** The derived
   key is length-prefixed and tagged, so two different values no longer share
-  a key, and `-0.0` and `0.0` share one as `==` says they should (#3544). A
+  a key, and `-0.0` and `0.0` share one as `==` says they should (#3544).
+  The one exception is NaN: every NaN shares one key, because `==` calls a
+  NaN unequal even to itself and a key that followed it could never be read
+  back. A `Double` is keyed exactly as a derived `compare` orders it (two
+  NaNs are `Equal` there, and so are the zeros). A
   field the key cannot encode is refused at the derive, naming the edit: a
   declared type with no `hash_key` of its own, a type whose written
   `hash_key` is not `(T) -> String` with no effect row, a type parameter of a

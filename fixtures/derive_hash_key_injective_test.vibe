@@ -4,8 +4,13 @@
 // `S { a: "p", b: "q, b: r" }`) shared one key and one Map entry; and the two
 // zeros `==` equates (`0.0`, `-0.0`) rendered `0` / `-0` and landed in two.
 // `to_string` itself is unchanged.
+//
+// A `Double` is keyed as derived `compare` orders it, not as IEEE `==`: every
+// NaN shares ONE key (#3551 review). `==` calls a NaN unequal even to itself,
+// so a key that followed `==` could never be read back -- `set_by` under NaN
+// followed by `get_by` under the same value would miss.
 
-import @vibe/core { has_by, map_key_to_string, set_by }
+import @vibe/core { get_by, has_by, map_key_to_string, set_by }
 
 struct S {
   a: String;
@@ -14,7 +19,18 @@ struct S {
 
 struct D {
   v: Double
-} derive(Eq, Hash)
+} derive(Eq, Hash, Ord)
+
+fn nan() -> Double {
+  0.0 / 0.0
+}
+
+fn same_order(a: D, b: D) -> Bool {
+  match D::compare(a, b) {
+    Equal => true,
+    _ => false
+  }
+}
 
 struct Inner {
   s: String
@@ -55,6 +71,30 @@ test "signed zero shares a key" {
   inspect(map_key_to_string(0.0) == map_key_to_string(-0.0), content = "true")
   inspect(has_by(set_by(Map::new(), -0.0, 1), 0.0), content = "true")
   inspect(map_key_to_string(1.5) == map_key_to_string(2.5), content = "false")
+}
+
+test "every NaN shares one key, as compare calls them Equal" {
+  let a = D::{ v: nan() }
+  let b = D::{ v: -nan() }
+  // `==` is IEEE: a NaN equals nothing, itself included.
+  inspect(a == a, content = "false")
+  inspect(a == b, content = "false")
+  // The key follows `compare`, which keeps NaN reflexive.
+  inspect(same_order(a, b), content = "true")
+  inspect(D::hash_key(a) == D::hash_key(b), content = "true")
+  inspect(D::hash_key(a) == D::hash_key(D::{ v: 1.0 }), content = "false")
+  let m = set_by(set_by(Map::new(), a, 1), b, 2)
+  inspect(Map::size(m), content = "1")
+  inspect(has_by(m, a), content = "true")
+  let got = match get_by(m, a) {
+    Some(n) => n,
+    None => -1
+  }
+  inspect(got, content = "2")
+  // The zeros agree with `compare` too.
+  inspect(same_order(D::{ v: 0.0 }, D::{ v: -0.0 }), content = "true")
+  // A bare `Double` key behaves the same way.
+  inspect(map_key_to_string(nan()) == map_key_to_string(-nan()), content = "true")
 }
 
 test "nested shapes are injective" {
