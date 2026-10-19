@@ -108,7 +108,7 @@ import ./checked_expression_structure_core.vibe {
 }
 
 import ./checker_resolve.vibe {
-  resolve_type_expr
+  resolve_type_expr, resolve_type_expr_shadowed
 }
 
 import @vibe/compiler/normalize {
@@ -1022,7 +1022,16 @@ fn dfe_check(owner: String, derives: Array[String], tparams: Array[String], what
   if struct_derives_has(derives, "Ord") && !ord_written && !dfe_ord_field_ok(owner, tparams, ord_fty, declared, env) {
     Array::push(errors, "write `\{owner}::compare` yourself, or give its \{what} a type `derive (Ord)` can order: it orders `Int`, `Char`, `Bool`, `String`, `Double`, `Float` and declared structs and enums field by field, and compared a \{dfe_ord_kind(fty, tparams)} by its address, so equal values answered `Less` [@fn=\{owner}]")
   }
-  dfe_check_head(owner, derives, tparams, "Ord", "compare", what, ord_fty, declared, declared_derives, defined, env, errors)
+  // The comparator expands an imported alias too, so the `compare` it calls
+  // is the one of the alias's target head, not of the alias.
+  let ord_head_fty = match dfe_imported_alias_resolved(env, tparams, ord_fty) {
+    Some(t) => match dfe_resolved_head(t) {
+      Some(h) => TyName(h),
+      None => ord_fty
+    },
+    None => ord_fty
+  }
+  dfe_check_head(owner, derives, tparams, "Ord", "compare", what, ord_head_fty, declared, declared_derives, defined, env, errors)
   dfe_check_head(owner, derives, tparams, "Show", "to_string", what, fty, declared, declared_derives, defined, env, errors)
 }
 
@@ -1063,17 +1072,24 @@ fn dfe_check_head(owner: String, derives: Array[String], tparams: Array[String],
 /// `StringBuilder` or `Bytes`. So the set is an allow-list, and a name it
 /// does not know is refused rather than compared by address.
 fn dfe_ord_field_ok(owner: String, tparams: Array[String], fty: TypeExpr, declared: Array[String], env: TypeEnv) -> Bool {
-  match fty {
+  let local = match fty {
     TyName(n) => if str_array_has(tparams, n) {
-      false
+      Some(false)
     } else if dfe_ord_scalar(n) || n == owner || str_array_has(declared, n) {
-      true
-    } else {
-      dfe_imported_alias_ok(env, n, declared)
-    },
-    TyApp(n, _) => n == owner || str_array_has(declared, n),
-    TyUnit => true,
-    _ => false
+      Some(true)
+    } else None,
+    TyApp(n, _) => if n == owner || str_array_has(declared, n) {
+      Some(true)
+    } else None,
+    TyUnit => Some(true),
+    _ => Some(false)
+  }
+  match local {
+    Some(ok) => ok,
+    None => match dfe_imported_alias_resolved(env, tparams, fty) {
+      Some(t) => dfe_type_ord_ok(t, declared),
+      None => false
+    }
   }
 }
 
@@ -1084,24 +1100,49 @@ fn dfe_ord_scalar(n: String) -> Bool {
   n == "Int" || n == "i32" || n == "Char" || n == "Bool" || n == "String" || n == "Double" || n == "Float" || n == "f64" || n == "f32" || n == "Unit"
 }
 
-/// An imported alias reaches this check resolved (`TDAlias`); it is
-/// orderable when its target is a scalar or a declared nominal.
-fn dfe_imported_alias_ok(env: TypeEnv, n: String, declared: Array[String]) -> Bool {
-  let defs = env_type_defs(env)
-  let mut ok = false
-  let mut i = 0
-  while i < Array::length(defs) {
-    match Array::get(defs, i) {
-      TDAlias(an, params, target) => if an == n && Array::length(params) == 0 {
-        ok = dfe_type_ord_ok(target, declared)
-      } else {
-        ()
-      },
-      _ => ()
-    }
-    i = i + 1
+/// A field spelled through an alias another module exports, bare (`Score`)
+/// or applied (`Id[Int]`), resolved through that alias. `declared` and the
+/// local `aliases` hold only this module's declarations; the env carries the
+/// imported alias (`TDAlias`), and resolving the field substitutes its
+/// arguments the way the comparator's own alias expansion does, so
+/// `Id[Double]` is judged as `Double` and `Many[Int]` as `Array[Int]`.
+/// `None` when the head names no imported alias of that arity, or is one of
+/// the owner's type parameters (a formal shadows an alias).
+fn dfe_imported_alias_resolved(env: TypeEnv, tparams: Array[String], fty: TypeExpr) -> Option[Type] {
+  let (n, arity) = match fty {
+    TyName(n) => (n, 0),
+    TyApp(n, args) => (n, Array::length(args)),
+    _ => ("", 0 - 1)
   }
-  ok
+  if arity < 0 || str_array_has(tparams, n) {
+    None
+  } else {
+    let defs = env_type_defs(env)
+    let mut found = false
+    let mut i = 0
+    while i < Array::length(defs) && !found {
+      match Array::get(defs, i) {
+        TDAlias(an, params, _) => {
+          found = an == n && Array::length(params) == arity
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    if found {
+      Some(resolve_type_expr_shadowed(fty, defs, tparams))
+    } else None
+  }
+}
+
+/// The nominal at the head of a resolved type, if any.
+fn dfe_resolved_head(t: Type) -> Option[String] {
+  match t {
+    CtStruct(n) => Some(n),
+    CtEnum(n) => Some(n),
+    CtNamed(n, _) => Some(n),
+    _ => None
+  }
 }
 
 /// `dfe_ord_field_ok` over a resolved type (an imported alias's target).

@@ -104,3 +104,63 @@ test "a written compare replaces the derived one" {
   let small = Lengths::{ w: [1] }
   inspect(text(Lengths::compare(big, small)), "Greater")
 }
+
+// A NaN is neither `<` nor `>` anything, so the generated `compare` used to
+// fall through to the next field: `NaN` against `1.0` answered `Equal` in the
+// last field, and an earlier NaN field let a later one decide. The derived
+// order is total now: NaN sorts after every number (`Infinity` included) and
+// is `Equal` to another NaN; `0.0` and `-0.0` stay `Equal`, as under `==`.
+struct Reading {
+  v: Double
+} derive (Eq, Ord)
+
+struct Ranked {
+  score: Double;
+  id: Int
+} derive (Ord)
+
+enum Sample {
+  At(Double)
+} derive (Ord)
+
+fn quotient(a: Double, b: Double) -> Double {
+  a / b
+}
+
+test "a NaN field sorts after every number and equal to NaN" {
+  let nan = quotient(0.0, 0.0)
+  let inf = quotient(1.0, 0.0)
+  inspect(text(Reading::compare(Reading::{ v: nan }, Reading::{ v: 1.0 })), "Greater")
+  inspect(text(Reading::compare(Reading::{ v: 1.0 }, Reading::{ v: nan })), "Less")
+  inspect(text(Reading::compare(Reading::{ v: inf }, Reading::{ v: nan })), "Less")
+  inspect(text(Reading::compare(Reading::{ v: nan }, Reading::{ v: nan })), "Equal")
+  inspect(text(Reading::compare(Reading::{ v: 0.0 }, Reading::{
+    v: quotient(0.0, -1.0)
+  })), "Equal")
+  inspect(text(Sample::compare(At(nan), At(5.0))), "Greater")
+  inspect(text(Sample::compare(At(5.0), At(nan))), "Less")
+}
+
+test "a NaN field decides before a later field does" {
+  let nan = quotient(0.0, 0.0)
+  inspect(text(Ranked::compare(Ranked::{ score: nan, id: 1 }, Ranked::{
+    score: 1.0,
+    id: 2
+  })), "Greater")
+  inspect(text(Ranked::compare(Ranked::{ score: 1.0, id: 2 }, Ranked::{
+    score: nan,
+    id: 1
+  })), "Less")
+  inspect(text(Ranked::compare(Ranked::{ score: nan, id: 1 }, Ranked::{
+    score: nan,
+    id: 2
+  })), "Less")
+}
+
+// `compare` is a total order, so it can sort; derived `==` stays IEEE, where
+// NaN equals nothing, itself included.
+test "derived == on a NaN field is unchanged" {
+  let nan = quotient(0.0, 0.0)
+  inspect(Reading::{ v: nan } == Reading::{ v: nan }, "false")
+  inspect(Reading::{ v: 1.5 } == Reading::{ v: 1.5 }, "true")
+}

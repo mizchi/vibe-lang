@@ -1,0 +1,53 @@
+// `derive (Ord)` over a field spelled through a PARAMETERIZED alias another
+// module exports. The field check read only a nullary imported alias, so
+// `Id[Int]` was refused ("compared a `Id[..]` by its address") although the
+// comparator expands it and orders by value. Each comparison allocates the
+// larger operand first, so address order and content order disagree. The
+// refusal of an imported alias of a container is
+// `fixtures/typecheck/derive_ord_imported_alias_container_reject.vibe`.
+import ./modules/derive_ord_alias_owner.vibe {
+  Held, Holder, Id
+}
+
+struct ById {
+  n: Id[Int]
+} derive (Ord)
+
+struct ByDouble {
+  v: Id[Double]
+} derive (Ord)
+
+struct ByText {
+  s: Id[String]
+} derive (Ord)
+
+struct ByHeld {
+  h: Held[Int]
+} derive (Ord)
+
+fn text(o: Ordering) -> String {
+  match o {
+    Less => "Less",
+    Equal => "Equal",
+    Greater => "Greater"
+  }
+}
+
+test "an applied imported alias of a scalar orders by value" {
+  inspect(text(ById::compare(ById::{ n: 9 }, ById::{ n: 1 })), "Greater")
+  let big = ByDouble::{ v: 9.5 }
+  let small = ByDouble::{ v: 1.5 }
+  inspect(text(ByDouble::compare(big, small)), "Greater")
+  inspect(text(ByDouble::compare(ByDouble::{ v: 2.5 }, ByDouble::{ v: 2.5 })), "Equal")
+  let late = ByText::{ s: "zz" }
+  let early = ByText::{ s: "aa" }
+  inspect(text(ByText::compare(late, early)), "Greater")
+  inspect(text(ByText::compare(ByText::{ s: "q" }, ByText::{ s: "q" })), "Equal")
+}
+
+test "an applied imported alias of a declared type orders through its compare" {
+  let big = ByHeld::{ h: Holder::{ n: 9 } }
+  let small = ByHeld::{ h: Holder::{ n: 1 } }
+  inspect(text(ByHeld::compare(big, small)), "Greater")
+  inspect(text(ByHeld::compare(small, big)), "Less")
+}

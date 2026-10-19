@@ -1104,6 +1104,9 @@ let b2 = Box[Int]::{ v: 2 }               // explicit type args PIN the instanti
 // Bag[Int]::{ xs: [] })
 // struct derive(Ord) -> Point::compare(a, b) : Ordering   (lexicographic)
 // enum derive(Ord) -> E::compare(a, b) : Ordering   (variant order, then payload)
+// A `Double` field is ordered totally: NaN sorts after every number and is
+// `Equal` to another NaN, and `0.0` / `-0.0` are `Equal`. Derived `==` stays
+// IEEE (NaN equals nothing), so `compare` can sort what `==` cannot match.
 // `Ordering` is a prelude enum { Less; Equal; Greater } (#3042, ADR-0118):
 // no import, and a `match` on it must cover all three. `@vibe/builtin` adds
 // `Ordering::to_int` (-1 / 0 / 1) and `Ordering::reverse`.
