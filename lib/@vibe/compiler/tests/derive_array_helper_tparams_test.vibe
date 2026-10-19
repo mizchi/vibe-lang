@@ -226,8 +226,11 @@ test "2136: a generic struct's array-equality helper binds its element variable"
   inspect(generated_helper_sigs("struct Box[T] { xs: Array[T] } derive(Eq)\nlet main = () -> Unit { () }", "__arr_equals__"), content = "__arr_equals__N7___Vfp_T[__Vfp_T](Array[__Vfp_T],Array[__Vfp_T])")
 }
 
-test "2136: a generic struct's array-show helper binds its element variable" {
-  inspect(generated_helper_sigs("struct Box[T] { xs: Array[T] } derive(Show)\nlet main = () -> Unit { () }", "__arr_to_string__"), content = "__arr_to_string____Vfp_T[__Vfp_T](Array[__Vfp_T])")
+// #3547: `derive (Show)` over an `Array[T]` of the type's own parameter is
+// refused at the derive (the elements have no renderer in the one derived
+// `to_string`), so no generic array-show helper is generated to bind anything.
+test "3547: a generic struct's array-show helper is not generated" {
+  inspect(generated_helper_sigs("struct Box[T] { xs: Array[T] } derive(Show)\nlet main = () -> Unit { () }", "__arr_to_string__"), content = "")
 }
 
 test "2136: a concrete element type keeps the helper monomorphic" {
@@ -277,8 +280,9 @@ test "2136: the desugared nested-array program still checks clean" {
 
 test "2840: a generated show helper cannot render an erased element" {
   let message = desugared_check_message("struct Box[T] { xs: Array[T] } derive(Show)\nlet main = () -> Unit { () }")
-  assert(String::contains(message, "pass an explicit renderer"))
-  assert(String::contains(message, "is erased here and has no renderer witness"))
+  // #3547: refused at the derive, naming the type, the field and the edit.
+  assert(String::contains(message, "write `Box::to_string` yourself, or remove `Show` / `Hash`"))
+  assert(String::contains(message, "the elements of `xs: Array[T]`"))
 }
 
 test "kinded constructor Eq specializes Array fields" {
