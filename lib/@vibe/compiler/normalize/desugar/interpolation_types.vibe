@@ -45,7 +45,7 @@ import ./type_names.vibe {
 }
 
 import ./typed_rendering.vibe {
-  dtd_head_is_leaked_formal, dtd_typed_render_leaf_for
+  dtd_head_is_leaked_formal, dtd_typed_render_leaf_for, dtd_typed_render_row_arg
 }
 
 import ./utilities.vibe {
@@ -189,12 +189,31 @@ export fn interp_arg_is_bool(arg: Expr, struct_sets: Array[(String, Array[String
 /// see a local binding that shadows it (a local `let value = () -> Int` beside
 /// a top-level `fn value() -> Double` rendered `1` through the float path), and
 /// a literal or a projection is already answered by codegen's classifiers.
+///
+/// #3542: or any argument the checker's render row types as `Double`. The
+/// recorded binding types above miss every binder this pass never seeds -- a
+/// `for` binder, a lambda parameter, a tuple-destructured name, an imported
+/// `let` -- and a call result is out of their reach by the rule above, while
+/// codegen's floatish channel deliberately keys no bare name and loses a call
+/// whose callee shares its offset. Each of those printed the boxed Double's
+/// address on the RC lane and its raw bits on the bump lane. The row is the
+/// checker's type for this exact node, filed only when every typed
+/// occurrence at its offset agrees, so it is neither shadowed nor guessed.
 export fn interp_arg_is_double(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
   match arg {
     EIdent(n, _) => match lookup_var_type(var_types, n) {
-      Some(t) => t == "Double" || t == "Float",
-      None => false
+      Some(t) => t == "Double" || t == "Float" || interp_row_is_double(arg),
+      None => interp_row_is_double(arg)
     },
+    EFloat(_) => false,
+    _ => interp_row_is_double(arg)
+  }
+}
+
+/// #3542: the checker filed a render row typing `arg` as `Double`.
+fn interp_row_is_double(arg: Expr) -> Bool {
+  match dtd_typed_render_row_arg(arg) {
+    Some(TyName(n)) => n == "Double",
     _ => false
   }
 }

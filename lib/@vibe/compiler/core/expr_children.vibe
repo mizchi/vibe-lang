@@ -13,6 +13,10 @@ import ./ast.vibe {
   Expr, Pat
 }
 
+import @vibe/ast {
+  index_site_offset
+}
+
 /// #2424: the source offset that identifies an expression node to the
 /// typed-lowering channel -- the key the checker files a render / `eq`
 /// argument under and the key both codegen lanes look it up by. `-1` for a
@@ -40,6 +44,28 @@ export fn typed_lowering_arg_offset(expr: Expr) -> Int {
     ECall(_, _, off, _) => off,
     EDot(_, _, _, field_off) => field_off,
     _ => 0 - 1
+  }
+}
+
+/// #3542: the key a RENDER ROW (`typed_render_row_head`) is filed under and
+/// looked up by -- `typed_lowering_arg_offset`, plus an index `xs[i]`.
+///
+/// An index is `__index(xs, i)` with an UNLOCATED call node: its `[` offset
+/// rides the callee as an `index_site_key` (#3133), so the node answers `-1`
+/// above and no channel could say what `ds[0]` is. A Double element then
+/// interpolated as its box address. The `[` belongs to the index alone -- no
+/// name, call or field starts there -- so it keys the row without colliding,
+/// and the checker files the index result's type under it. Only the row
+/// channel reads this key: the codegen channels keep
+/// `typed_lowering_arg_offset`, whose answer for an index stays `-1`.
+export fn typed_render_row_offset(expr: Expr) -> Int {
+  match expr {
+    ECall(EIdent("__index", site), _, off, _) => if off >= 0 {
+      off
+    } else {
+      index_site_offset(site)
+    },
+    _ => typed_lowering_arg_offset(expr)
   }
 }
 

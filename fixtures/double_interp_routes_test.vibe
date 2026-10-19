@@ -1,0 +1,70 @@
+// #3542: a `Double` reached through a binder or call shape that neither the
+// interpolation pass's recorded binding types nor codegen's floatish channel
+// classified was rendered as the box address on the RC lane (`for: 316`) and
+// as raw bits or garbage bytes on the bump lane (`VIBE_RC=0`). Each test below
+// is one route; the expected text is what `Double::to_string` prints. The
+// last test is the control the issue reported as working.
+
+import @vibe/builtin {
+  Double::floor, trait Iterator
+}
+
+import @vibe/core {
+  pi
+}
+
+struct FloatBox {
+  f: Float
+} derive (Show)
+
+struct DoubleBox {
+  g: Double
+} derive (Show)
+
+test "a for binder" {
+  let ds = [0.5, -0.0]
+  let mut out = ""
+  for d in ds {
+    out = "\{out}[\{d}]"
+  }
+  inspect(out, content = "[0.5][-0]")
+}
+
+test "an index expression" {
+  let ds = [0.5, -0.0]
+  inspect("idx: \{ds[0]} \{ds[1]}", content = "idx: 0.5 -0")
+}
+
+test "a lambda parameter" {
+  let ds = [0.5, 2.25]
+  let ss: Array[String] = Iterator::map(ds, (d) -> "<\{d}>")
+  inspect(String::concat(Array::get(ss, 0), Array::get(ss, 1)), content = "<0.5><2.25>")
+}
+
+test "a tuple destructured from a for binder" {
+  let pairs = [(1.5, 2)]
+  let mut out = ""
+  for pair in pairs {
+    let (u, n) = pair
+    out = "tup: \{u} \{n}"
+  }
+  inspect(out, content = "tup: 1.5 2")
+}
+
+test "a library call result" {
+  inspect("floor: \{Double::floor(2.5)}", content = "floor: 2")
+}
+
+test "an imported let" {
+  inspect("pi: \{pi}", content = "pi: 3.141592653589793")
+}
+
+test "a Float field of a derive (Show) struct" {
+  inspect("\{FloatBox::{ f: 1.25 }}", content = "FloatBox { f: 1.25 }")
+}
+
+test "controls: a Double field, a bound call result" {
+  let ds = [0.5, -0.0]
+  let e = Array::get(ds, 0)
+  inspect("\{DoubleBox::{ g: 1.25 }} \{e}", content = "DoubleBox { g: 1.25 } 0.5")
+}

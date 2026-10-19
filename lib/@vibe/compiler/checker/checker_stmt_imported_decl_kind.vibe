@@ -77,6 +77,7 @@ import ./checker_stmt_push_source_scope_names.vibe {
   es_collect_tables,
   es_index_of,
   es_string_array_contains,
+  import_keeps_builtin_signature,
   top_stmt_expr_off
 }
 
@@ -321,7 +322,17 @@ export fn bind_stmt_imports(env: TypeEnv, names: Array[ImportItem]) -> TypeEnv {
         resolved
       }
     }
-    let acc_with_name = env_bind(acc, bound_name, ty)
+    // #3542: a builtin operation imported under its own spelling stays the
+    // builtin's -- binding its `CtUnknown` marker would hide the signature.
+    let keeps_builtin = match ty {
+      CtUnknown => alias == None && import_keeps_builtin_signature(name),
+      _ => false
+    }
+    let acc_with_name = if keeps_builtin {
+      acc
+    } else {
+      env_bind(acc, bound_name, ty)
+    }
     acc = match env_lookup_flat(env_bindings, fn_return_env_name(name)) {
       Some(ret_ty) => env_bind(acc_with_name, fn_return_env_name(bound_name), ret_ty),
       None => acc_with_name

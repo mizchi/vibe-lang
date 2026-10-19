@@ -38,6 +38,7 @@ import @vibe/compiler/cache {
 import @vibe/compiler/checker {
   env_param_name_rows,
   import_item_kind_errors,
+  import_keeps_builtin_signature,
   is_retention_summary_marker,
   param_name_rows_have,
   param_names_marker,
@@ -1842,8 +1843,26 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
         }
       }
       let with_name = match imported_ty {
+        // #3542: a builtin operation the dependency publishes without a body
+        // (`export { Double::floor }`) travels as a `CtUnknown` marker
+        // (`engine_prepend_explicit_builtin_value_markers`). Bound under its
+        // own spelling, that marker SHADOWED the builtin's signature: the call
+        // typed as unknown, so `let s: String = Double::floor(2.5)` checked
+        // clean and its Double result interpolated as a box address. Importing
+        // the builtin under its own name means the builtin, so leave its
+        // lookup to the builtin table, exactly as when it is not imported.
+        Some(CtUnknown) => if alias == None && import_keeps_builtin_signature(name) {
+          nacc
+        } else {
+          env_bind_with_origin(nacc, bound_name, ty, binding_origin)
+        },
         Some(_) => env_bind_with_origin(nacc, bound_name, ty, binding_origin),
-        None => if contains_str(dep_selectable_type_defs, name) || engine_trait_in_list(dep_traits, name) {
+        // The same when this lane holds no interface for the dependency (a
+        // program whose only import is `@vibe/builtin`): the `CtUnknown`
+        // below would shadow the builtin just the same.
+        None => if alias == None && import_keeps_builtin_signature(name) {
+          nacc
+        } else if contains_str(dep_selectable_type_defs, name) || engine_trait_in_list(dep_traits, name) {
           // Declaration aliases travel in the separate publication projection
           // below. Retain the declaration's origin on its existing unknown
           // value-space marker so semantic checks can distinguish a projected
