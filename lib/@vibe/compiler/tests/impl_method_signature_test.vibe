@@ -1,0 +1,141 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_error_message, check_source_located_err_contains, check_source_ok
+}
+
+//# Misc
+
+// #3538: an impl method is called through its trait's signature (`Name::name`
+// or `T::name` under a bound) and dispatched to the impl's function, so the
+// impl must have that signature. Before the check none of the refused rows
+// below was reported, and each misbehaved at run time.
+
+/// The parameter type the trait declares, refused with the edit.
+test "a parameter type the trait does not declare is refused" {
+  let src = "trait Name { name(Self, Int) -> Int }\nstruct P { x: Int }\nimpl Name for P { name(self, k: String) -> Int { String::length(k) } }\nfn main() -> Int { Name::name(P::{ x: 1 }, 12345) }\n"
+  inspect(check_source_error_message(src), "change parameter `k` of `P::name` to `Int`: trait `Name` declares `name(Self, Int) -> Int` [@impl-method=Name|P|name|param|k]")
+}
+
+/// The diagnostic is located on the offending parameter.
+test "the parameter diagnostic is located on the parameter" {
+  let src = "trait Name { name(Self, Int) -> Int }\nstruct P { x: Int }\nimpl Name for P { name(self, k: String) -> Int { String::length(k) } }\nfn main() -> Int { Name::name(P::{ x: 1 }, 12345) }\n"
+  assert(check_source_located_err_contains(src, "line 3:30-31: change parameter `k`"))
+}
+
+/// The return type the trait declares, refused with the edit.
+test "a return type the trait does not declare is refused" {
+  let src = "trait Name { name(Self) -> String }\nstruct P { x: Int }\nimpl Name for P { name(self) -> Int { 42 } }\nfn main() -> String { Name::name(P::{ x: 1 }) }\n"
+  inspect(check_source_error_message(src), "change the return type of `P::name` to `String`: trait `Name` declares `name(Self) -> String` [@impl-method=Name|P|name|ret|]")
+}
+
+/// An extra parameter, refused with the edit.
+test "an extra parameter is refused" {
+  let src = "trait Name { name(Self) -> Int }\nstruct P { x: Int }\nimpl Name for P { name(self, k: Int) -> Int { k + self.x } }\nfn main() -> Int { Name::name(P::{ x: 1 }) }\n"
+  inspect(check_source_error_message(src), "remove parameter `k` from `P::name`: trait `Name` declares `name(Self) -> Int`, which takes 1 parameter [@impl-method=Name|P|name|param|k]")
+}
+
+/// A missing parameter, refused with the edit.
+test "a missing parameter is refused" {
+  let src = "trait Name { name(Self, Int) -> Int }\nstruct P { x: Int }\nimpl Name for P { name(self) -> Int { self.x } }\nfn main() -> Int { Name::name(P::{ x: 1 }, 2) }\n"
+  inspect(check_source_error_message(src), "add 1 parameter to `P::name`: trait `Name` declares `name(Self, Int) -> Int`, which takes 2 parameters [@impl-method=Name|P|name|name|]")
+}
+
+/// A method the trait does not declare, refused with the edit where the
+/// binding name proves it was written in the impl block (an applied impl).
+test "a method the trait does not declare is refused" {
+  let src = "trait Conv[A] { conv(Self) -> A }\nstruct P { x: Int }\nimpl Conv[Int] for P {\n  conv(self) -> Int { self.x }\n  extra(self) -> Int { 7 }\n}\nfn main() -> Int { 0 }\n"
+  inspect(check_source_error_message(src), "remove method `extra` from `impl Conv[Int] for P`, or declare it in trait `Conv`: the trait declares no method `extra`, so nothing can call it through the trait [@impl-method=Conv|P|extra|name|]")
+}
+
+/// The undeclared-method diagnostic is located on the method name.
+test "the undeclared-method diagnostic is located on the method name" {
+  let src = "trait Conv[A] { conv(Self) -> A }\nstruct P { x: Int }\nimpl Conv[Int] for P {\n  conv(self) -> Int { self.x }\n  extra(self) -> Int { 7 }\n}\nfn main() -> Int { 0 }\n"
+  assert(check_source_located_err_contains(src, "line 5:3-8: remove method `extra`"))
+}
+
+/// A plain impl's method is the statement `fn P::m` also lowers to, so an
+/// undeclared one cannot be told from a free function after the block; both
+/// stay accepted.
+test "a function after a plain impl is not taken for an undeclared method" {
+  let src = "trait Name { name(Self) -> Int }\nstruct P { x: Int }\nimpl Name for P { name(self) -> Int { self.x } }\nfn P::make(x: Int) -> P { P::{ x: x } }\nfn main() -> Int { Name::name(P::make(1)) }\n"
+  assert(check_source_ok(src))
+}
+
+/// A `with` clause the trait method does not declare, refused with the edit.
+test "an impl method row wider than the trait's is refused" {
+  let src = "trait Speak { speak(Self) -> Int }\nimpl Speak for Int { speak(x: Int) -> Int with Console { println(\"side effect\"); x } }\nfn go[T: Speak](x: T) -> Int { T::speak(x) }\nfn main() -> Int { go(3) }\n"
+  inspect(check_source_error_message(src), "remove `with Console` from `Int::speak`: trait `Speak` declares `speak(Self) -> Int`, which performs no effects; a caller through the trait does not authorize `Console` [@impl-method=Speak|Int|speak|row|]")
+}
+
+/// The row diagnostic is located on the `with` clause.
+test "the row diagnostic is located on the with clause" {
+  let src = "trait Speak { speak(Self) -> Int }\nimpl Speak for Int { speak(x: Int) -> Int with Console { println(\"side effect\"); x } }\nfn main() -> Int { 0 }\n"
+  assert(check_source_located_err_contains(src, "line 2:43-55: remove `with Console`"))
+}
+
+/// A matching impl, with `self` unannotated, still checks clean.
+test "a matching impl is accepted" {
+  let src = "trait Name { name(Self, Int) -> Int }\nstruct P { x: Int }\nimpl Name for P { name(self, k: Int) -> Int { k + self.x } }\nfn main() -> Int { Name::name(P::{ x: 1 }, 2) }\n"
+  assert(check_source_ok(src))
+}
+
+/// `Self` is the impl's target, whichever way the impl spells it.
+test "Self spelled as the target type is accepted" {
+  let src = "trait Same { same(Self, Self) -> Bool }\nstruct P { x: Int }\nimpl Same for P { same(a: P, b: P) -> Bool { a.x == b.x } }\nfn main() -> Bool { Same::same(P::{ x: 1 }, P::{ x: 1 }) }\n"
+  assert(check_source_ok(src))
+}
+
+/// A parameter typed as another struct than `Self` is refused.
+test "a parameter that is not the target where the trait says Self is refused" {
+  let src = "trait Same { same(Self, Self) -> Bool }\nstruct P { x: Int }\nstruct Q { y: Int }\nimpl Same for P { same(a: P, b: Q) -> Bool { a.x == b.y } }\nfn main() -> Bool { true }\n"
+  inspect(check_source_error_message(src), "change parameter `b` of `P::same` to `P`: trait `Same` declares `same(Self, Self) -> Bool` [@impl-method=Same|P|same|param|b]")
+}
+
+/// A generic impl keeps compiling: its formals stand for themselves.
+test "a generic impl over Array[T] is accepted" {
+  let src = "trait Measured { size(Self) -> Int }\nimpl [T] Measured for Array[T] { size(self) -> Int { Array::length(self) } }\nfn main() -> Int { Measured::size([1, 2]) }\n"
+  assert(check_source_ok(src))
+}
+
+/// A trait parameter the impl head applies is substituted.
+test "an applied trait argument is substituted" {
+  let src = "trait Conv[A] { conv(Self) -> A }\nstruct P { x: Int }\nimpl Conv[Int] for P { conv(self) -> Int { self.x } }\nfn main() -> Int { 0 }\n"
+  assert(check_source_ok(src))
+}
+
+/// ... and holds the impl to it.
+test "an applied trait argument the impl contradicts is refused" {
+  let src = "trait Conv[A] { conv(Self) -> A }\nstruct P { x: Int }\nimpl Conv[Int] for P { conv(self) -> String { \"no\" } }\nfn main() -> Int { 0 }\n"
+  inspect(check_source_error_message(src), "change the return type of `P::conv` to `Int`: trait `Conv[Int]` declares `conv(Self) -> A` [@impl-method=Conv|P|conv|ret|]")
+}
+
+/// An unapplied trait parameter is erased; the impl may spell it as anything.
+test "an unapplied trait parameter is not compared" {
+  let src = "trait Gen[A] { make(Self) -> A }\nstruct P { x: Int }\nimpl Gen for P { make(self) -> Int { self.x } }\nfn main() -> Int { 0 }\n"
+  assert(check_source_ok(src))
+}
+
+/// A static method (no receiver) returning `Self`.
+test "a static method returning Self is accepted" {
+  let src = "trait Make { make() -> Self }\nstruct P { x: Int }\nimpl Make for P { make() -> P { P::{ x: 0 } } }\nfn main() -> Int { 0 }\n"
+  assert(check_source_ok(src))
+}
+
+/// A method-level generic is not compared.
+test "a method-level generic is accepted" {
+  let src = "trait Show { show(Self) -> String }\ntrait Logger { write_object: [X: Show](Self, X) -> String }\nimpl Show for Int { show(self) -> String { __to_string(self) } }\nstruct B { p: String }\nimpl Logger for B { write_object(self, x: X) -> String { String::concat(self.p, X::show(x)) } }\nfn main() -> Int { 0 }\n"
+  assert(check_source_ok(src))
+}
+
+/// A supertrait's method may be implemented under the subtrait.
+test "an inherited method is declared" {
+  let src = "trait Base { base(Self) -> Int }\ntrait Child: Base { child(Self) -> Int }\nstruct P { x: Int }\nimpl Child for P {\n  base(self) -> Int { self.x }\n  child(self) -> Int { self.x }\n}\nfn main() -> Int { 0 }\n"
+  assert(check_source_ok(src))
+}
+
+/// A qualified free function is not an impl method, whatever its name.
+test "a qualified free function is not held to a trait" {
+  let src = "trait Name { name(Self) -> Int }\nstruct P { x: Int }\nimpl Name for P { name(self) -> Int { self.x } }\nfn P::other(self: P, k: String) -> Int { String::length(k) }\nfn main() -> Int { 0 }\n"
+  assert(check_source_ok(src))
+}

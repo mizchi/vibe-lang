@@ -53,6 +53,10 @@ import @vibe/compiler/core {
   unify
 }
 
+import ./checker_impl_method_signature.vibe {
+  check_impl_method_signature, collect_impl_method_origins, impl_method_origin
+}
+
 import ./checker_closure_capture_row.vibe {
   tail_expr_off
 }
@@ -1220,6 +1224,9 @@ fn forward_restore_root_order(capture: Option[CheckerStatementCapture], start: I
 
 export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool, validate_completed_decls: Bool) -> (TypeEnv, Subst, Int) {
   let mut stmts = reorder_type_decls_first(raw_stmts, i)
+  // #3538: impl methods are paired with their `SImpl` in PARSE order, which
+  // the scheduling below does not keep.
+  let impl_origins = collect_impl_method_origins(raw_stmts, i)
   // #3343: the root list's declarations, so a call inside a region can find
   // the body of the function it names wherever that function is declared.
   let retention_saved = if validate_completed_decls {
@@ -1561,6 +1568,12 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           }
         } else {
           ()
+        }
+        // #3538: an impl method is called through its trait's signature, so it
+        // must have that signature.
+        match impl_method_origin(impl_origins, name) {
+          Some(origin) => check_impl_method_signature(origin, name, val, vt, ns0, env, defs, errors),
+          None => ()
         }
         attach_unlocated_decl_name_marker(errors, err_before, name)
         // The value must be assignable to a declared annotation (previously
