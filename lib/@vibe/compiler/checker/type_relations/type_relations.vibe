@@ -13,7 +13,11 @@ import @vibe/compiler/core {
   is_exception_label,
   is_hkt_app,
   is_runtime_scheduled_effect,
+  occurs_in,
   subst_apply,
+  subst_bind_value,
+  subst_lookup,
+  type_application_view,
   type_to_string,
   unify
 }
@@ -111,6 +115,569 @@ fn strip_effects(ty: Type) -> Type {
       CtNamed(name, out)
     },
     _ => ty
+  }
+}
+
+/// #3518: the structural retry unifies effect-STRIPPED types, so a variable
+/// it binds holds a stripped type -- `T := () -> Int` for an actual
+/// `() -> Int with Log` -- and a later use of `T` would refuse the row the
+/// value really has, or accept a slot that drops it. Bind each variable the
+/// retry bound (`su`) from the UNSTRIPPED type on the other side instead: a
+/// variable of `expected` from the actual, and one of `actual` (`?u` of an
+/// untyped `[]`) from the expected.
+///
+/// A variable met more than once must meet the SAME type at every
+/// occurrence, rows included, up to the open variables an occurrence still
+/// holds (`retry_merge`); those are then bound from the merge, unstripped.
+/// Rows that differ anywhere -- `(T, T)` given a pure and a `Log` function,
+/// or two callbacks under an `Array` -- are refused rather than reconciled:
+/// a union is wrong at a parameter, an intersection is wrong at a result,
+/// and a mutable or user-declared container is wrong under either, so no
+/// rule that picks one is sound everywhere. The edit is to write the
+/// function type the value should have. A variable the walk does not reach
+/// keeps the retry's own binding when that binding holds no function type,
+/// since stripping changes nothing else; left open, a `T: Send` bound would
+/// be skipped. One that holds a function is refused too.
+fn retry_bind_unstripped(expected: Type, actual: Type, s: Subst, su: Subst) -> Option[Subst] {
+  let occ: Array[(Int, Type)] = array_empty()
+  retry_collect_occurrences(expected, actual, s, su, occ)
+  let mut out = s
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(occ) && ok {
+    let (id, _) = Array::get(occ, i)
+    match subst_lookup(out, id) {
+      Some(_) => (),
+      None => match retry_merge_occurrences(occ, id) {
+        Some(t) => if occurs_in(id, t) {
+          ()
+        } else {
+          out = retry_unify_occurrences(occ, id, t, subst_bind_value(id, t, out))
+        },
+        None => ok = false
+      }
+    }
+    i = i + 1
+  }
+  let vars: Array[Int] = array_empty()
+  retry_collect_vars(subst_apply(s, expected), vars)
+  retry_collect_vars(subst_apply(s, actual), vars)
+  let mut vi = 0
+  while vi < Array::length(vars) && ok {
+    let id = Array::get(vars, vi)
+    match subst_lookup(out, id) {
+      Some(_) => (),
+      None => match subst_lookup(su, id) {
+        Some(t) => {
+          let bound = subst_apply(su, t)
+          if retry_type_has_fn(bound) {
+            ok = false
+          } else if occurs_in(id, bound) {
+            ()
+          } else {
+            out = subst_bind_value(id, bound, out)
+          }
+        },
+        None => ()
+      }
+    }
+    vi = vi + 1
+  }
+  if ok {
+    Some(out)
+  } else {
+    None
+  }
+}
+
+/// Bind the variables every other occurrence of `id` still holds -- `?u` of
+/// a `None` beside `Some(logged)` -- from the UNSTRIPPED merge at the same
+/// position (`retry_bind_from`), so they keep its rows; what that leaves is
+/// unified with rows set aside (the merge already matched them). An
+/// occurrence that does not unify is left alone.
+fn retry_unify_occurrences(occ: Array[(Int, Type)], id: Int, chosen: Type, s: Subst) -> Subst {
+  let mut out = s
+  let mut i = 0
+  while i < Array::length(occ) {
+    let (oid, other) = Array::get(occ, i)
+    if oid == id {
+      out = retry_bind_from(other, chosen, out)
+      match unify(strip_effects(subst_apply(out, chosen)), strip_effects(subst_apply(out, other)), out) {
+        Some(u) => out = u,
+        None => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Bind each open variable of `pattern` to the subtree of `source` at the
+/// same position, unstripped.
+fn retry_bind_from(pattern: Type, source: Type, s: Subst) -> Subst {
+  let p = subst_apply(s, pattern)
+  match p {
+    CtVar(id) => if occurs_in(id, source) {
+      s
+    } else {
+      subst_bind_value(id, source, s)
+    },
+    CtFn(pps, pr, _) => match source {
+      CtFn(sps, sr, _) => retry_bind_from(pr, sr, retry_bind_from_all(pps, sps, s)),
+      _ => s
+    },
+    CtArray(pe) => match source {
+      CtArray(se) => retry_bind_from(pe, se, s),
+      _ => s
+    },
+    CtOption(pe) => match source {
+      CtOption(se) => retry_bind_from(pe, se, s),
+      _ => s
+    },
+    CtTuple(pes) => match source {
+      CtTuple(ses) => retry_bind_from_all(pes, ses, s),
+      _ => s
+    },
+    CtNamed(pn, pas) => match source {
+      CtNamed(sn, sas) => if pn == sn {
+        retry_bind_from_all(pas, sas, s)
+      } else {
+        s
+      },
+      _ => s
+    },
+    CtRecord(pfs) => match source {
+      CtRecord(sfs) => match retry_record_pairs(pfs, sfs) {
+        Some((pts, sts)) => retry_bind_from_all(pts, sts, s),
+        None => s
+      },
+      _ => s
+    },
+    _ => s
+  }
+}
+
+fn retry_bind_from_all(ps: Array[Type], ss: Array[Type], s: Subst) -> Subst {
+  if Array::length(ps) == Array::length(ss) {
+    let mut out = s
+    let mut i = 0
+    while i < Array::length(ps) {
+      out = retry_bind_from(Array::get(ps, i), Array::get(ss, i), out)
+      i = i + 1
+    }
+    out
+  } else {
+    s
+  }
+}
+
+/// Every occurrence of `id` merged into one type, or None when two of them
+/// carry different rows.
+fn retry_merge_occurrences(occ: Array[(Int, Type)], id: Int) -> Option[Type] {
+  let mut acc = None
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(occ) && ok {
+    let (oid, t) = Array::get(occ, i)
+    if oid == id {
+      acc = match acc {
+        None => Some(t),
+        Some(a) => match retry_merge(a, t) {
+          Some(m) => Some(m),
+          None => {
+            ok = false
+            None
+          }
+        }
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if ok {
+    acc
+  } else {
+    None
+  }
+}
+
+/// `a` and `b` as one type, given that they already agree once rows are
+/// stripped: an open variable on either side gives way to the other, and
+/// every function row must name the same labels on both sides. None when
+/// one does not.
+fn retry_merge(a: Type, b: Type) -> Option[Type] {
+  match b {
+    CtVar(_) => Some(a),
+    _ => match a {
+      CtVar(_) => Some(b),
+      CtFn(aps, ar, arow) => match b {
+        CtFn(bps, br, brow) => if retry_same_row(arow, brow) {
+          match retry_merge_all(aps, bps) {
+            Some(ps) => match retry_merge(ar, br) {
+              Some(r) => Some(CtFn(ps, r, arow)),
+              None => None
+            },
+            None => None
+          }
+        } else {
+          None
+        },
+        _ => Some(a)
+      },
+      CtArray(ae) => match b {
+        CtArray(be) => match retry_merge(ae, be) {
+          Some(e) => Some(CtArray(e)),
+          None => None
+        },
+        _ => Some(a)
+      },
+      CtOption(ae) => match b {
+        CtOption(be) => match retry_merge(ae, be) {
+          Some(e) => Some(CtOption(e)),
+          None => None
+        },
+        _ => Some(a)
+      },
+      CtTuple(aes) => match b {
+        CtTuple(bes) => match retry_merge_all(aes, bes) {
+          Some(es) => Some(CtTuple(es)),
+          None => None
+        },
+        _ => Some(a)
+      },
+      CtNamed(an, aargs) => match b {
+        CtNamed(bn, bargs) => if an != bn {
+          Some(a)
+        } else {
+          match retry_merge_all(aargs, bargs) {
+            Some(args) => Some(CtNamed(an, args)),
+            None => None
+          }
+        },
+        _ => Some(a)
+      },
+      CtRecord(afs) => match b {
+        CtRecord(bfs) => match retry_record_pairs(afs, bfs) {
+          Some((ats, bts)) => match retry_merge_all(ats, bts) {
+            Some(ts) => {
+              let fields: Array[(String, Type)] = array_empty()
+              let mut i = 0
+              while i < Array::length(afs) {
+                let (n, _) = Array::get(afs, i)
+                Array::push(fields, (n, Array::get(ts, i)))
+                i = i + 1
+              }
+              Some(CtRecord(fields))
+            },
+            None => None
+          },
+          None => Some(a)
+        },
+        _ => Some(a)
+      },
+      _ => Some(a)
+    }
+  }
+}
+
+fn retry_merge_all(as_: Array[Type], bs: Array[Type]) -> Option[Array[Type]] {
+  if Array::length(as_) == Array::length(bs) {
+    let out = array_empty()
+    let mut ok = true
+    let mut i = 0
+    while i < Array::length(as_) && ok {
+      match retry_merge(Array::get(as_, i), Array::get(bs, i)) {
+        Some(t) => Array::push(out, t),
+        None => ok = false
+      }
+      i = i + 1
+    }
+    if ok {
+      Some(out)
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}
+
+/// Do two rows name the same labels, effect variables included, in any
+/// order? No exemption applies: this asks whether they are one row, not
+/// whether one may stand for the other.
+fn retry_same_row(a: Option[String], b: Option[String]) -> Bool {
+  let al = row_labels(a)
+  let bl = row_labels(b)
+  retry_labels_within(al, bl) && retry_labels_within(bl, al)
+}
+
+fn retry_labels_within(xs: Array[String], ys: Array[String]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(xs) && ok {
+    let x = Array::get(xs, i)
+    let mut seen = false
+    let mut k = 0
+    while k < Array::length(ys) && !seen {
+      seen = Array::get(ys, k) == x
+      k = k + 1
+    }
+    ok = seen
+    i = i + 1
+  }
+  ok
+}
+
+/// Does `t` hold a function type anywhere? Only there can stripping a
+/// binding lose a row.
+fn retry_type_has_fn(t: Type) -> Bool {
+  match t {
+    CtFn(_, _, _) => true,
+    CtArray(e) => retry_type_has_fn(e),
+    CtOption(e) => retry_type_has_fn(e),
+    CtTuple(es) => retry_any_has_fn(es),
+    CtNamed(_, args) => retry_any_has_fn(args),
+    CtApplied(head, args) => retry_type_has_fn(head) || retry_any_has_fn(args),
+    CtRecord(fields) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(fields) && !found {
+        let (_, ft) = Array::get(fields, i)
+        found = retry_type_has_fn(ft)
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn retry_any_has_fn(ts: Array[Type]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(ts) && !found {
+    found = retry_type_has_fn(Array::get(ts, i))
+    i = i + 1
+  }
+  found
+}
+
+fn retry_collect_vars(t: Type, out: Array[Int]) -> Unit {
+  match t {
+    CtVar(id) => Array::push(out, id),
+    CtFn(ps, r, _) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        retry_collect_vars(Array::get(ps, i), out)
+        i = i + 1
+      }
+      retry_collect_vars(r, out)
+    },
+    CtArray(e) => retry_collect_vars(e, out),
+    CtOption(e) => retry_collect_vars(e, out),
+    CtTuple(es) => {
+      let mut i = 0
+      while i < Array::length(es) {
+        retry_collect_vars(Array::get(es, i), out)
+        i = i + 1
+      }
+    },
+    CtNamed(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        retry_collect_vars(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    CtApplied(head, args) => {
+      retry_collect_vars(head, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        retry_collect_vars(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    CtRecord(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, ft) = Array::get(fields, i)
+        retry_collect_vars(ft, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// Record `(id, other side)` wherever a variable the retry bound meets a
+/// type: a variable of `expected` against the actual, and one of `actual`
+/// against the expected. A higher-kinded application (`F[T]`, spelled with
+/// the `hkt_app_name()` head or as `CtApplied`) is walked against the
+/// constructor it unified with, the way `unify_hkt_ctors` and
+/// `unify_type_applications` decompose it.
+fn retry_collect_occurrences(expected: Type, actual: Type, s: Subst, su: Subst, occ: Array[(Int, Type)]) -> Unit {
+  let e = subst_apply(s, expected)
+  let a = subst_apply(s, actual)
+  let e_var = match e {
+    CtVar(id) => match subst_lookup(su, id) {
+      Some(_) => id,
+      None => 0 - 1
+    },
+    _ => 0 - 1
+  }
+  let a_var = match a {
+    CtVar(id) => match subst_lookup(su, id) {
+      Some(_) => id,
+      None => 0 - 1
+    },
+    _ => 0 - 1
+  }
+  if e_var >= 0 {
+    Array::push(occ, (e_var, a))
+  } else if a_var >= 0 {
+    Array::push(occ, (a_var, e))
+  } else if is_hkt_app(e) && !is_hkt_app(a) {
+    retry_collect_hkt(e, a, true, s, su, occ)
+  } else if is_hkt_app(a) && !is_hkt_app(e) {
+    retry_collect_hkt(a, e, false, s, su, occ)
+  } else if retry_is_applied(e) || retry_is_applied(a) {
+    // `F[T]` instantiated as `CtApplied`, met against `Option[..]` or another
+    // application: `unify` pairs them through `type_application_view`.
+    match type_application_view(e) {
+      Some((eh, eargs)) => match type_application_view(a) {
+        Some((ah, aargs)) => {
+          retry_collect_occurrences(eh, ah, s, su, occ)
+          retry_collect_all(eargs, aargs, s, su, occ)
+        },
+        None => ()
+      },
+      None => ()
+    }
+  } else {
+    match e {
+      CtFn(eps, er, _) => match a {
+        CtFn(aps, ar, _) => if Array::length(eps) == Array::length(aps) {
+          retry_collect_all(eps, aps, s, su, occ)
+          retry_collect_occurrences(er, ar, s, su, occ)
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      CtArray(ee) => match a {
+        CtArray(ae) => retry_collect_occurrences(ee, ae, s, su, occ),
+        _ => ()
+      },
+      CtOption(ee) => match a {
+        CtOption(ae) => retry_collect_occurrences(ee, ae, s, su, occ),
+        _ => ()
+      },
+      CtTuple(ees) => match a {
+        CtTuple(aes) => retry_collect_all(ees, aes, s, su, occ),
+        _ => ()
+      },
+      CtNamed(en, eas) => match a {
+        CtNamed(an, aas) => if en == an {
+          retry_collect_all(eas, aas, s, su, occ)
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      CtRecord(efs) => match a {
+        CtRecord(afs) => match retry_record_pairs(efs, afs) {
+          Some((ets, ats)) => retry_collect_all(ets, ats, s, su, occ),
+          None => ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+  }
+}
+
+/// The field types of two records with the same field names, in `a`'s
+/// order, or None when the names differ.
+fn retry_record_pairs(a: Array[(String, Type)], b: Array[(String, Type)]) -> Option[(Array[Type], Array[Type])] {
+  if Array::length(a) != Array::length(b) {
+    None
+  } else {
+    let ats: Array[Type] = array_empty()
+    let bts: Array[Type] = array_empty()
+    let mut ok = true
+    let mut i = 0
+    while i < Array::length(a) && ok {
+      let (n, t) = Array::get(a, i)
+      let mut found = false
+      let mut k = 0
+      while k < Array::length(b) && !found {
+        let (bn, bt) = Array::get(b, k)
+        if bn == n {
+          Array::push(ats, t)
+          Array::push(bts, bt)
+          found = true
+        } else {
+          ()
+        }
+        k = k + 1
+      }
+      ok = found
+      i = i + 1
+    }
+    if ok {
+      Some((ats, bts))
+    } else {
+      None
+    }
+  }
+}
+
+fn retry_is_applied(t: Type) -> Bool {
+  match t {
+    CtApplied(_, _) => true,
+    _ => false
+  }
+}
+
+/// `app` is `F[args..]` (head first); `other` is the constructor it met. The
+/// head is not walked: it binds a constructor, which holds no row.
+fn retry_collect_hkt(app: Type, other: Type, app_is_expected: Bool, s: Subst, su: Subst, occ: Array[(Int, Type)]) -> Unit {
+  match app {
+    CtNamed(_, aa) => {
+      let rest = array_empty()
+      let mut i = 1
+      while i < Array::length(aa) {
+        Array::push(rest, Array::get(aa, i))
+        i = i + 1
+      }
+      let others = match other {
+        CtArray(x) => [x],
+        CtOption(x) => [x],
+        CtNamed(_, xs) => xs,
+        _ => array_empty()
+      }
+      if app_is_expected {
+        retry_collect_all(rest, others, s, su, occ)
+      } else {
+        retry_collect_all(others, rest, s, su, occ)
+      }
+    },
+    _ => ()
+  }
+}
+
+fn retry_collect_all(es: Array[Type], as_: Array[Type], s: Subst, su: Subst, occ: Array[(Int, Type)]) -> Unit {
+  if Array::length(es) == Array::length(as_) {
+    let mut i = 0
+    while i < Array::length(es) {
+      retry_collect_occurrences(Array::get(es, i), Array::get(as_, i), s, su, occ)
+      i = i + 1
+    }
+  } else {
+    ()
   }
 }
 
@@ -780,7 +1347,15 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
   let result = match unify(expected, actual, s) {
     Some(su) => su,
     None => {
-      let structural = match unify(strip_effects(expected), strip_effects(actual), s) {
+      // #3518: the effect-stripped retry's substitution is the answer when it
+      // succeeds. Discarding it left every type variable that only this
+      // retry could bind -- `T` in `f: () -> T with Exception + e` given a
+      // closure whose row differs -- unbound: a `T: Send` bound was then
+      // skipped as an open variable (a closure crossed `TaskGroup::spawn`),
+      // and `let n: Int = give(() -> "hello")` checked clean and printed a
+      // pointer.
+      let structural_s = unify(strip_effects(expected), strip_effects(actual), s)
+      let structural = match structural_s {
         Some(_) => true,
         None => false
       }
@@ -845,7 +1420,16 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
             Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": effect row mismatch: a value of type ", String::concat(type_to_string(subst_apply(s, actual)), String::concat(" cannot be used where ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(" is expected (the { ", String::concat(lbl, String::concat(" } effect would be dropped — no handler could ever run)", assignable_marker(off))))))))))
             s
           },
-          None => s
+          None => match structural_s {
+            Some(su) => match retry_bind_unstripped(expected, actual, s, su) {
+              Some(out) => out,
+              None => {
+                Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": annotate this value with the function type it should have: the function values in it carry effect rows that no single type covers (expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), String::concat(")", assignable_marker(off))))))))
+                s
+              }
+            },
+            None => s
+          }
         }
       } else if !(reportable || head_differ) {
         // #981: a user generic type's ARGUMENTS were never compared here — a
