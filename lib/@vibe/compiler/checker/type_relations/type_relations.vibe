@@ -134,9 +134,9 @@ fn strip_effects(ty: Type) -> Type {
 /// bound too. A variable the walk does not reach keeps the retry's own
 /// binding when that binding holds no function type, since stripping changes
 /// nothing else; left open, a `T: Send` bound would be skipped. Where neither
-/// answer is sound -- occurrences of different arity, or an unreached
-/// binding holding a function -- the result is None and the caller refuses
-/// the argument.
+/// answer is sound -- occurrences of different arity, rows that differ under
+/// an `Array` or a named type, or an unreached binding holding a function --
+/// the result is None and the caller refuses the argument.
 fn retry_bind_unstripped(expected: Type, actual: Type, s: Subst, su: Subst) -> Option[Subst] {
   let occ: Array[(Int, Type)] = array_empty()
   retry_collect_occurrences(expected, actual, s, su, occ)
@@ -316,10 +316,11 @@ fn retry_join_occurrences(occ: Array[(Int, Type)], id: Int) -> Option[Type] {
 
 /// The least type both `a` and `b` fit into, given that they already agree
 /// once rows are stripped: a function's own row and its result are joined
-/// (covariant, the same positions `effect_row_dropped` reads covariantly), a
-/// parameter takes the MEET of the two (`retry_meet`: contravariant, so the
-/// slot accepts only a callback both can handle), and a variable gives way
-/// to the other side. None only when the shapes disagree in arity.
+/// (covariant), as are `Option` and tuple elements; a parameter takes the
+/// MEET of the two (`retry_meet`: contravariant, so the slot accepts only a
+/// callback both can handle); an `Array` element or a named type's argument
+/// must carry the same rows on both sides (`retry_rows_equal`); and a
+/// variable gives way to the other side. None when no type covers both.
 fn retry_join(a: Type, b: Type) -> Option[Type] {
   match b {
     CtVar(_) => Some(a),
@@ -336,9 +337,13 @@ fn retry_join(a: Type, b: Type) -> Option[Type] {
         _ => Some(a)
       },
       CtArray(ae) => match b {
-        CtArray(be) => match retry_join(ae, be) {
-          Some(e) => Some(CtArray(e)),
-          None => None
+        CtArray(be) => if retry_rows_equal(ae, be) {
+          match retry_join(ae, be) {
+            Some(e) => Some(CtArray(e)),
+            None => None
+          }
+        } else {
+          None
         },
         _ => Some(a)
       },
@@ -357,19 +362,45 @@ fn retry_join(a: Type, b: Type) -> Option[Type] {
         _ => Some(a)
       },
       CtNamed(an, aargs) => match b {
-        CtNamed(bn, bargs) => if an == bn {
+        CtNamed(bn, bargs) => if an != bn {
+          Some(a)
+        } else if retry_rows_equal_all(aargs, bargs) {
           match retry_join_all(aargs, bargs) {
             Some(args) => Some(CtNamed(an, args)),
             None => None
           }
         } else {
-          Some(a)
+          None
         },
         _ => Some(a)
       },
       _ => Some(a)
     }
   }
+}
+
+/// Do `a` and `b` carry the same rows, read both ways? An `Array` element and
+/// a named type's argument are joined only then: an array is mutable and a
+/// declaration may use its parameter contravariantly, so a wider row there
+/// would let a value its holder cannot handle in.
+fn retry_rows_equal(a: Type, b: Type) -> Bool {
+  match effect_row_dropped(a, b) {
+    Some(_) => false,
+    None => match effect_row_dropped(b, a) {
+      Some(_) => false,
+      None => true
+    }
+  }
+}
+
+fn retry_rows_equal_all(as_: Array[Type], bs: Array[Type]) -> Bool {
+  let mut ok = Array::length(as_) == Array::length(bs)
+  let mut i = 0
+  while ok && i < Array::length(as_) {
+    ok = retry_rows_equal(Array::get(as_, i), Array::get(bs, i))
+    i = i + 1
+  }
+  ok
 }
 
 /// The dual of `retry_join`: the greatest type that fits into both. A
@@ -391,9 +422,13 @@ fn retry_meet(a: Type, b: Type) -> Option[Type] {
         _ => Some(a)
       },
       CtArray(ae) => match b {
-        CtArray(be) => match retry_meet(ae, be) {
-          Some(e) => Some(CtArray(e)),
-          None => None
+        CtArray(be) => if retry_rows_equal(ae, be) {
+          match retry_meet(ae, be) {
+            Some(e) => Some(CtArray(e)),
+            None => None
+          }
+        } else {
+          None
         },
         _ => Some(a)
       },
@@ -412,13 +447,15 @@ fn retry_meet(a: Type, b: Type) -> Option[Type] {
         _ => Some(a)
       },
       CtNamed(an, aargs) => match b {
-        CtNamed(bn, bargs) => if an == bn {
+        CtNamed(bn, bargs) => if an != bn {
+          Some(a)
+        } else if retry_rows_equal_all(aargs, bargs) {
           match retry_meet_all(aargs, bargs) {
             Some(args) => Some(CtNamed(an, args)),
             None => None
           }
         } else {
-          Some(a)
+          None
         },
         _ => Some(a)
       },
