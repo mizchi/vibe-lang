@@ -122,6 +122,7 @@ import ./checker_effects_throw_payload_kind.vibe {
   TkEnv,
   builtin_call_effect,
   builtin_call_op_label,
+  call_callee_recorded_row_vars,
   call_callee_row_labels,
   call_callee_spelling,
   callee_has_marked_bindings,
@@ -1073,6 +1074,45 @@ fn charge_typed_callee_row(labels: Array[String], skip: Array[String], declared:
   }
 }
 
+/// Does the enclosing signature own row variable `v` -- does a callback
+/// parameter or local closure in scope declare it (#885)? The overlay
+/// `lexical_row_var_args` reads, with the same exclusion: an alias of a
+/// top-level function carries the target's variables, not this signature's.
+fn overlay_owns_row_var(ov_names: Array[String], ov_effs: Array[Array[String]], v: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(ov_names) && i < Array::length(ov_effs) && !found {
+    let n = Array::get(ov_names, i)
+    if !String::starts_with(n, "#") && str_labels_contain(Array::get(ov_effs, i), v) {
+      match overlay_alias_target(ov_names, ov_effs, n) {
+        Some(_) => (),
+        None => found = true
+      }
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #3551 review: the row variables of the callee's type at this call that the
+/// enclosing signature owns, charged like the direct call of its callback.
+/// `charge_typed_callee_row` leaves every row variable open, which is right
+/// for a variable nothing here binds -- but a row-polymorphic function can
+/// RETURN the enclosing callback's row (`fn factory(f: () -> Int with e) ->
+/// () -> Int with e`), and then `factory(f)()`, `let g = factory(f); g()` and
+/// `apply(factory(f))` run `f` with its row still `e`. Before this, `fn wrap(f:
+/// () -> Int with e) -> Int { factory(f)() }` compiled and a pure `quiet() {
+/// wrap(noisy) }` printed.
+fn charge_typed_own_row_vars(call_off: Int, spelling: String, ov_names: Array[String], ov_effs: Array[Array[String]], declared: Array[String], in_handle: Bool, missing: Array[String]) -> Unit {
+  let own = no_str_labels()
+  for v in call_callee_recorded_row_vars(call_off, spelling) {
+    if overlay_owns_row_var(ov_names, ov_effs, v) {
+      Array::push(own, v)
+    }
+  }
+  charge_own_row_vars(own, declared, in_handle, missing)
+}
+
 export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], root_kinds: TkEnv) -> Array[EffectError] {
   let errors = array_empty()
   let scope_depth = Array::length(row_formal_scope)
@@ -1347,6 +1387,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                 // the row as written is charged.
                 if unresolved_row_var {
                   charge_typed_callee_row(call_callee_row_labels(call_off, name), callee_effs, declared, in_handle, missing)
+                  charge_typed_own_row_vars(call_off, name, ov_names, ov_effs, declared, in_handle, missing)
                 }
                 if Array::length(missing) > 0 {
                   Array::push(errors, make_contextual_row_error(fn_name, declared, missing, call_off))
@@ -1444,6 +1485,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                 // written.
                 if alias_unresolved_row_var {
                   charge_typed_callee_row(call_callee_row_labels(call_off, name), param_effs, declared, in_handle, missing)
+                  charge_typed_own_row_vars(call_off, name, ov_names, ov_effs, declared, in_handle, missing)
                 }
                 if Array::length(missing) > 0 {
                   Array::push(errors, make_contextual_row_error(fn_name, declared, missing, call_off))
@@ -1472,6 +1514,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
             if !named_row {
               let typed_missing = no_str_labels()
               charge_typed_callee_row(call_callee_row_labels(call_off, name), no_str_labels(), declared, in_handle, typed_missing)
+              charge_typed_own_row_vars(call_off, name, ov_names, ov_effs, declared, in_handle, typed_missing)
               if Array::length(typed_missing) > 0 {
                 Array::push(errors, make_contextual_row_error(fn_name, declared, typed_missing, call_off))
               }
@@ -1483,6 +1526,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
           _ => {
             let typed_missing = no_str_labels()
             charge_typed_callee_row(call_callee_row_labels(call_off, call_callee_spelling(callee)), no_str_labels(), declared, in_handle, typed_missing)
+            charge_typed_own_row_vars(call_off, call_callee_spelling(callee), ov_names, ov_effs, declared, in_handle, typed_missing)
             if Array::length(typed_missing) > 0 {
               Array::push(errors, make_contextual_row_error(fn_name, declared, typed_missing, call_off))
             }

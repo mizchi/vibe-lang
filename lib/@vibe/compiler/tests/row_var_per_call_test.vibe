@@ -88,3 +88,51 @@ test "a direct call of the callback is refused the same way (control)" {
   let src = program(plain(), "fn wrap(f: () -> Int with e) -> Int {\n  f()\n}\n")
   inspect(collect_all_diagnostics(src), "[line 15:3: effect row mismatch for 'wrap': missing { e } (no 'with' clause, requires { e })\nhint: declare 'fn wrap(...) -> T with e']")
 }
+
+// #3551 review: a row-polymorphic function can RETURN the callback's row.
+// Calling what it returns runs the callback, so the enclosing function must
+// declare that row exactly as for a direct `f()`. Each refused shape below
+// compiled before, and a pure caller of `wrap(noisy)` printed.
+fn factory() -> String {
+  "fn factory(f: () -> Int with e) -> () -> Int with e {\n  f\n}\n\n"
+}
+
+test "calling the callback a row-polymorphic factory returns requires its row" {
+  let src = program(plain(), String::concat(factory(), "fn wrap(f: () -> Int with e) -> Int {\n  factory(f)()\n}\n"))
+  inspect(collect_all_diagnostics(src), "[line 19:13: effect row mismatch for 'wrap': missing { e } (no 'with' clause, requires { e })\nhint: declare 'fn wrap(...) -> T with e']")
+}
+
+test "calling it parenthesized requires its row" {
+  let src = program(plain(), String::concat(factory(), "fn wrap(f: () -> Int with e) -> Int {\n  (factory(f))()\n}\n"))
+  inspect(collect_all_diagnostics(src), "[line 19:15: effect row mismatch for 'wrap': missing { e } (no 'with' clause, requires { e })\nhint: declare 'fn wrap(...) -> T with e']")
+}
+
+test "calling it through a local binding requires its row" {
+  let src = program(plain(), String::concat(factory(), "fn wrap(f: () -> Int with e) -> Int {\n  let g = factory(f)\n  g()\n}\n"))
+  inspect(collect_all_diagnostics(src), "[line 20:3: effect row mismatch for 'wrap': missing { e } (no 'with' clause, requires { e })\nhint: declare 'fn wrap(...) -> T with e']")
+}
+
+test "handing it to a row-polymorphic function requires its row" {
+  let src = program(plain(), String::concat(factory(), "fn wrap(f: () -> Int with e) -> Int {\n  apply(factory(f))\n}\n"))
+  inspect(collect_all_diagnostics(src), "[line 19:3: effect row mismatch for 'wrap': missing { e } (no 'with' clause, requires { e })\nhint: declare 'fn wrap(...) -> T with e']")
+}
+
+test "handing it on through a local binding requires its row" {
+  let src = program(plain(), String::concat(factory(), "fn wrap(f: () -> Int with e) -> Int {\n  let g = factory(f)\n  apply(g)\n}\n"))
+  inspect(collect_all_diagnostics(src), "[line 20:3: effect row mismatch for 'wrap': missing { e } (no 'with' clause, requires { e })\nhint: declare 'fn wrap(...) -> T with e']")
+}
+
+test "calling it out of an array requires its row" {
+  let src = program(plain(), String::concat(factory(), "fn wrap(f: () -> Int with e) -> Int {\n  let xs = [factory(f)]\n  xs[0]()\n}\n"))
+  inspect(collect_all_diagnostics(src), "[line 20:8: effect row mismatch for 'wrap': missing { e } (no 'with' clause, requires { e })\nhint: declare 'fn wrap(...) -> T with e']")
+}
+
+test "every shape is accepted where the row is declared" {
+  let src = program(plain(), String::concat(factory(), "fn wrap(f: () -> Int with e) -> Int with e {\n  let g = factory(f)\n  let xs = [factory(f)]\n  factory(f)() + (factory(f))() + g() + apply(factory(f)) + apply(g) + xs[0]()\n}\n\nfn main allows Console {\n  println(\"\\{wrap(noisy) + wrap(one)}\")\n}\n"))
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "a factory over a pure callback charges nothing (control)" {
+  let src = program(plain(), String::concat(factory(), "fn wrap(f: () -> Int) -> Int {\n  let g = factory(f)\n  factory(f)() + g() + apply(factory(f)) + apply(g)\n}\n\nfn main {\n  let _ = wrap(one)\n}\n"))
+  inspect(collect_all_diagnostics(src), "[]")
+}
