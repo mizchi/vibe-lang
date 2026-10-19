@@ -70,6 +70,10 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_local_tee
 }
 
+import ./compile_call_cc_ladder_names.vibe {
+  cc_is_owned_projection
+}
+
 import ./compile_call.vibe {
   cc_expr_is_stringish, compile_call, rc_exit_passthrough_rec_result
 }
@@ -626,7 +630,13 @@ export fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_i
     } else if is_edot(value) {
       rc_kind = 2
       Array::push(ctx.heap_binding_names, name)
-      emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      // A read off an owned temporary already holds its own reference
+      // (cc_is_owned_projection); the binding takes that one.
+      if cc_is_owned_projection(value, ctx) {
+        ()
+      } else {
+        emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      }
     } else if is_efn(value) {
       if efn_is_capturing(value, ctx) {
         rc_kind = 2
