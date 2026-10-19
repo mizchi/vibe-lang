@@ -86,7 +86,8 @@ The second layer is for values that arrive over time — a stream, a
 socket, a file read in pieces. There you are not holding a collection,
 so you pull: an iterator whose `next` may suspend. Suspension rides on
 the effect row rather than on a special loop keyword, which is why there
-is no separate `for await` form. See
-[Concurrency](17_concurrency.vibe.md).
+is no separate `for await` form. That layer — `Future`, `await`,
+`AsyncIter` and the `for` over an async iterator — is in
+[Futures and async iteration](17_concurrency.vibe.md#futures-and-async-iteration).
 
 Next: [Generics, traits, and derive](15_generics.vibe.md).

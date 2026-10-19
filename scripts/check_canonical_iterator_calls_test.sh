@@ -9,7 +9,7 @@ trap 'rm -rf "$tmp_root"' EXIT
 mkdir -p "$tmp_root/book/en" "$tmp_root/examples/wasm" "$tmp_root/bench/exec" "$tmp_root/fixtures"
 printf '%s\n' 'Array::map(xs, f)' > "$tmp_root/book/en/chapter.vibe.md"
 printf '%s\n' 'Array::filter(xs, pred)' > "$tmp_root/examples/example.vibe"
-printf '%s\n' 'Array::iter(xs, f)' > "$tmp_root/examples/wasm/nested.vibe"
+printf '%s\n' 'Array::find(xs, pred)' > "$tmp_root/examples/wasm/nested.vibe"
 printf '%s\n' 'Array::fold(xs, 0, add)' > "$tmp_root/bench/exec/scenario.vibe"
 printf '%s\n' 'Array::map(xs, f)' > "$tmp_root/fixtures/compatibility_test.vibe"
 
@@ -22,7 +22,7 @@ if [ "$red_status" -eq 0 ]; then
   exit 1
 fi
 if [ "$(grep -c 'Array::' "$tmp_root/red.out")" -ne 3 ]; then
-  echo "canonical Iterator calls self-test: expected all canonical calls, including nested iter, to be found" >&2
+  echo "canonical Iterator calls self-test: expected all canonical calls, including the nested example, to be found" >&2
   cat "$tmp_root/red.out" >&2
   exit 1
 fi
@@ -33,5 +33,11 @@ printf '%s\n' 'Iterator::iter(xs, f)' > "$tmp_root/examples/wasm/nested.vibe"
 printf '%s\n' 'Iterator::fold(xs, 0, add)' > "$tmp_root/bench/exec/scenario.vibe"
 VIBE_CANONICAL_ITERATOR_ROOT="$tmp_root" bash "$CHECK" > "$tmp_root/green.out"
 grep -q '^canonical Iterator calls: ok$' "$tmp_root/green.out"
+
+# The one-argument `Array::iter` enters AsyncIter and has no Iterator spelling:
+# an import, a pipe and a direct call of it are all accepted.
+printf '%s\n' 'import @vibe/builtin { Array::iter, AsyncIter::collect }' '[1, 2] |> Array::iter |> AsyncIter::collect' 'AsyncIter::collect(Array::iter([1, 2]))' > "$tmp_root/book/en/chapter.vibe.md"
+VIBE_CANONICAL_ITERATOR_ROOT="$tmp_root" bash "$CHECK" > "$tmp_root/async.out"
+grep -q '^canonical Iterator calls: ok$' "$tmp_root/async.out"
 
 echo "canonical Iterator calls self-test: ok"
