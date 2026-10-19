@@ -943,8 +943,9 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
               Array::push(rc_reuse_names, pa.name)
               Array::push(rc_reuse_arities, pa.extra)
             } else if pa_is_path_drop(pa) {
-              // #2389: these are `let` bindings only, so the borrowed-param
-              // drop filter above does not apply to them.
+              // #2389: a `let` binding's, or a parameter's (pe_dup_merge),
+              // which the epilogue honours for an owned heap parameter only,
+              // so the borrowed-param drop filter above does not apply.
               Array::push(rc_path_drops, pa.name)
             } else if pa_is_consume_mark(pa) {
               Array::push(rc_mark_names, pa.name)
@@ -1380,14 +1381,46 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
           } else {
             ()
           }
+          // A parameter consumed on some paths and not others (`pe_dup_merge`):
+          // its planned dups were taken at entry above, so a path that ran
+          // none of its marked consumes still holds one of them. A flag local
+          // the marks set stands the epilogue's guarded release down -- the
+          // `let` form's per-path release (compile_expr_tail), for the
+          // function's whole body. Only an owned heap parameter: a borrowed
+          // one's reference is the caller's, and a reuse-fused one already
+          // guards its epilogue drop on a flag of its own.
+          let ppd_params = lc_fresh_int_array()
+          let ppd_flags = lc_fresh_int_array()
+          let mut ppd_next = if pfuse {
+            param_count + 1
+          } else {
+            param_count
+          }
+          if enable_rc && rc_drop_idx >= 0 && iw_found < 0 && Array::length(rc_path_drops) > 0 {
+            let mut ppi = 0
+            while ppi < Array::length(lc_norm_params) {
+              let (ppn, _) = Array::get(lc_norm_params, ppi)
+              if array_contains_str(rc_path_drops, ppn) && Array::get(rc_exit_param_kinds, ppi) == 1 && !(pfuse && ppn == pfuse_name) && Array::length(local_names) == ppd_next {
+                Array::push(local_names, "__path_flag")
+                emit_i64_const(body_buf, 0)
+                emit_local_set(body_buf, ppd_next)
+                Array::push(compile_ctx.rc_path_flag_names, ppn)
+                Array::push(compile_ctx.rc_path_flag_locals, ppd_next)
+                Array::push(ppd_params, ppi)
+                Array::push(ppd_flags, ppd_next)
+                ppd_next = ppd_next + 1
+              } else {
+                ()
+              }
+              ppi = ppi + 1
+            }
+          } else {
+            ()
+          }
           let final_nl = if iw_found >= 0 {
             param_count
           } else {
-            compile_expr(body_buf, body, local_names, if pfuse {
-              param_count + 1
-            } else {
-              param_count
-            }, compile_ctx, -1)
+            compile_expr(body_buf, body, local_names, ppd_next, compile_ctx, -1)
           }
           if pfuse {
             Array::truncate(compile_ctx.reuse_scrutinee_names, Array::length(compile_ctx.reuse_scrutinee_names) - 1)
@@ -1503,6 +1536,16 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
                 ()
               }
               tdj = tdj + 1
+            }
+            let mut ppk = 0
+            while ppk < Array::length(ppd_params) {
+              emit_local_get(body_buf, Array::get(ppd_flags, ppk))
+              emit_i64_eqz(body_buf)
+              emit_if_void(body_buf)
+              emit_local_get(body_buf, Array::get(ppd_params, ppk))
+              emit_call(body_buf, rc_drop_idx)
+              emit_end(body_buf)
+              ppk = ppk + 1
             }
             if need_dup {
               emit_local_get(body_buf, rtemp)

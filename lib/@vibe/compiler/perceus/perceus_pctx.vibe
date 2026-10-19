@@ -316,6 +316,17 @@ export let pf_dsplit_bad: Int = 128
 
 export let pf_drm: Int = 256
 
+// A function parameter. Its planned dups are realized at the function's
+// entry, the way a plain `let`'s are at its declaration, so `pe_dup_merge`
+// treats it like one; codegen gives its path drop at the epilogue.
+export let pf_param: Int = 512
+
+/// Is `id` a binding whose planned dups codegen takes up front, on every path
+/// -- a plain `let`, or a parameter?
+fn pe_dup_upfront(ctx: PCtx, id: Int) -> Bool {
+  pe_flag_has(ctx, id, pf_let) || pe_flag_has(ctx, id, pf_param)
+}
+
 export fn pe_flag_or(ctx: PCtx, id: Int, bit: Int) -> Unit {
   if id >= 0 && id < Array::length(ctx.decl_flags) {
     Array::set(ctx.decl_flags, id, Array::get(ctx.decl_flags, id)|bit)
@@ -404,7 +415,7 @@ export fn pe_note_initial_ref_spent(ctx: PCtx, sid: Int, name: String, use_offse
 /// runs once per iteration against one planned dup), cannot be pinned and is
 /// not recorded -- which is what makes a merge over it decline.
 export fn pe_note_dup_occurrence(ctx: PCtx, id: Int, name: String, use_offset: Int) -> Unit {
-  if pe_flag_has(ctx, id, pf_let) && use_offset >= 0 && id >= ctx.loop_floor {
+  if pe_dup_upfront(ctx, id) && use_offset >= 0 && id >= ctx.loop_floor {
     Array::push(ctx.dmark_ids, id)
     Array::push(ctx.dmark_offs, use_offset)
     Array::push(ctx.dmark_names, name)
@@ -577,7 +588,7 @@ export fn pe_dup_merge_arms(ctx: PCtx, n: Int, bounds: Array[Int], owed: (Int) -
       }
       j = j + 1
     }
-    if first && id < n && pe_flag_has(ctx, id, pf_let) {
+    if first && id < n && pe_dup_upfront(ctx, id) {
       if owed(id) {
         pe_dup_merge(ctx, id, bounds)
       } else if pe_dmark_live(ctx, id, lo, hi) > 0 {
@@ -597,9 +608,11 @@ export fn pe_dup_merge_arms(ctx: PCtx, n: Int, bounds: Array[Int], owed: (Int) -
 /// May binding `id`'s `pe_dup_merge` decisions be applied? Not when any merge
 /// declined it, when the #2389 split already guards it (one flag cannot serve
 /// both), or when an early exit releases it: an exit row's count reads the
-/// dup budget these decisions change.
+/// dup budget these decisions change. A parameter is declined when the body
+/// has any exit at all: codegen releases parameters at an exit from its own
+/// table, which knows nothing of a path flag.
 export fn pe_dsplit_ok(ctx: PCtx, id: Int) -> Bool {
-  !pe_flag_has(ctx, id, pf_dsplit_bad) && !pe_flag_has(ctx, id, pf_split) && !pe_int_array_has(ctx.exit_ids, id)
+  !pe_flag_has(ctx, id, pf_dsplit_bad) && !pe_flag_has(ctx, id, pf_split) && !pe_int_array_has(ctx.exit_ids, id) && !(pe_flag_has(ctx, id, pf_param) && ctx.exit_ord > 0)
 }
 
 /// May binding `id` get a path drop of its own? Codegen gives a `PaPathDrop`

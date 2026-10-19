@@ -135,7 +135,6 @@ import ./compile_expr_tail_classify_let_value_heap.vibe {
   assign_retain_view_tails,
   assign_slot_short_after_store,
   assign_tails_retained,
-  branch_tail_calls_borrow,
   call_returns_borrow,
   cet_record_local_slot,
   cet_strip_owned_markers,
@@ -185,10 +184,13 @@ import ./compile_expr_tail_expr_is_floatish_syntactic.vibe {
 /// #3103: a branch tail that calls a borrow-returning function needs the
 /// retain whether or not a loop encloses the `let` -- nothing else gives the
 /// binding the reference its planned drop spends -- so such a tail triggers
-/// the rewrite outside a loop too. A value with no such tail keeps the
-/// loop-only gate, so its codegen is unchanged.
+/// the rewrite outside a loop too. So does a tail that projects a field
+/// (`if c { p.a } else { q.a }`): without a loop the rewrite used to be
+/// skipped for it, and the planned drop released `p.a` under `p`. Outside a
+/// loop the rewrite's ident arm wraps only borrow-bound names, so a value
+/// with neither kind of tail is returned unchanged.
 fn retain_wrap_let_value(value: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Expr with Exception {
-  if ctx.enable_rc && is_branching_value(value) && array_contains_str(ctx.rc_drop_names, name) && (Array::length(ctx.loop_borrowed_names) > 0 || branch_tail_calls_borrow(value, local_names, array_empty(), ctx)) {
+  if ctx.enable_rc && is_branching_value(value) && array_contains_str(ctx.rc_drop_names, name) {
     retain_wrap_branch_tails(value, local_names, array_empty(), ctx)
   } else {
     value
@@ -224,7 +226,8 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // retaining it would let a store of the binder (`cur = c`, which takes a
     // heap binding as owned) release the reference the plan left with `p`.
     let value_sd = let_retain_store_dup_tails(value, local_names, ctx)
-    let nl = compile_expr(buf, retain_wrap_let_value(value_sd, name, local_names, ctx), local_names, next_local + 1, ctx, ld)
+    let value_rw = retain_wrap_let_value(value_sd, name, local_names, ctx)
+    let nl = compile_expr(buf, value_rw, local_names, next_local + 1, ctx, ld)
     let seq_owned_return = seq_lambda_returns_owned(value, local_names, ctx)
     Array::set(local_names, local_idx, name)
     emit_local_set(buf, local_idx)
@@ -425,8 +428,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // (conditional) borrowed view too -- mark it borrow-bound for the body
     // scope so consuming calls dup it (see value_has_borrowed_branch_tail).
     // #3190: a tail the plan's store row retained holds a reference of its
-    // own, so it is read off `value_sd`, where it is no longer a bare name.
-    let value_borrow_like = ctx.enable_rc && is_branching_value(value) && value_has_borrowed_branch_tail(value_sd, local_names, array_empty(), ctx)
+    // own, so it is read off `value_sd`, where it is no longer a bare name --
+    // and so does a tail the branch-tail rewrite retained, so it is read off
+    // `value_rw`. When every view tail was retained, every path hands the
+    // binding a reference of its own and it is an owned binding: marking it
+    // borrow-bound made each owning use retain once more, which leaked.
+    let value_borrow_like = ctx.enable_rc && is_branching_value(value) && value_has_borrowed_branch_tail(value_rw, local_names, array_empty(), ctx)
     if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like || alias_borrow_like) {
       Array::push(ctx.loop_borrowed_names, name)
     } else {
@@ -512,7 +519,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     let path_value_ok = if pd_candidate {
       let pd_self = Array::get(local_names, local_idx)
       Array::set(local_names, local_idx, "")
-      let r = path_value_owned(value, local_names, array_empty(), ctx)
+      let r = path_value_owned(value_rw, local_names, array_empty(), ctx)
       Array::set(local_names, local_idx, pd_self)
       r
     } else {
