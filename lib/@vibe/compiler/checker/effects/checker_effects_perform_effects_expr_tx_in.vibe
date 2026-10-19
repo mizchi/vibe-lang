@@ -804,7 +804,22 @@ fn lexical_row_var_args(row_var: String, callee_param_effs: Array[Array[String]]
           },
           None => ()
         },
-        _ => ()
+        // A function literal written at the call (`apply(() -> Int with e {
+        // f() })`) declares its row the way a named local closure does, and
+        // its body is checked against that row rather than charged to the
+        // enclosing function. Read it like one: before this, its `e` reached
+        // `apply`'s `e` uncharged, and `wrap` ran `f`'s effects undeclared.
+        _ => match inline_closure_row(Array::get(args, i)) {
+          Some(labels) => {
+            for lbl in labels {
+              if label_is_effect_var(lbl) && !effect_row_has_label(Some(out), lbl) {
+                Array::push(out, lbl)
+              }
+            }
+            ()
+          },
+          None => ()
+        }
       }
     } else {
       ()
@@ -812,6 +827,16 @@ fn lexical_row_var_args(row_var: String, callee_param_effs: Array[Array[String]]
     i = i + 1
   }
   out
+}
+
+/// The row a function literal written in argument position declares: its
+/// own `with` clause, or the annotation a local ascription lowers it under
+/// (`((__asc: T) -> __asc)(literal)`).
+fn inline_closure_row(arg: Expr) -> Option[Array[String]] {
+  match arg {
+    EFn(_, _, _, _, eff, _) => Some(effect_row_labels(effect_row_parse(eff))),
+    _ => ascribed_closure_literal_row(arg)
+  }
 }
 
 /// #3561: charge each of `vars` the enclosing signature owns and does not

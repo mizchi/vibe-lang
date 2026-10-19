@@ -66,6 +66,19 @@ test "passing it through an alias of the function requires its row too" {
   inspect(collect_all_diagnostics(src), "[line 16:3: effect row mismatch for 'wrap': missing { e } (no 'with' clause, requires { e })\nhint: declare 'fn wrap(...) -> T with e']")
 }
 
+// A function literal written at the call declares its row like a named local
+// closure, and its body is checked against that row -- so its `e` reached
+// `apply`'s uncharged, and `wrap` ran `f`'s effects while declaring none.
+test "passing an inline function literal over the callback requires its row" {
+  let src = program(plain(), "fn wrap(f: () -> Int with e) -> Int {\n  apply(() -> Int with e { f() })\n}\n")
+  inspect(collect_all_diagnostics(src), "[line 15:3: effect row mismatch for 'wrap': missing { e } (no 'with' clause, requires { e })\nhint: declare 'fn wrap(...) -> T with e']")
+}
+
+test "an inline function literal is accepted where the row is declared" {
+  let src = program(plain(), "fn wrap(f: () -> Int with e) -> Int with e {\n  apply(() -> Int with e { f() })\n}\n\nfn main allows Console {\n  println(\"\\{wrap(noisy) + wrap(one)}\")\n}\n")
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
 test "a signature that declares the row may pass its callback on" {
   let src = program(plain(), "fn wrap(f: () -> Int with e) -> Int with e {\n  apply(f)\n}\n\nfn main allows Console {\n  println(\"\\{wrap(noisy) + wrap(one)}\")\n}\n")
   inspect(collect_all_diagnostics(src), "[]")
