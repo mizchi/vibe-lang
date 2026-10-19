@@ -421,6 +421,15 @@ ur_refused fixtures/err_derive_hash_show_only_field_refused.vibe 'keys field `i`
 ur_refused fixtures/err_derive_hash_show_only_field_refused.vibe 'keys field `i` by the key of `Inner`' 'add `Hash` to the `derive` of `Inner`' gc
 ur_refused fixtures/err_derive_hash_generic_array_field_refused.vibe 'field `xs` holds `T`' 'write `Box::hash_key` yourself'
 ur_refused fixtures/err_derive_hash_generic_array_field_refused.vibe 'field `xs` holds `T`' 'write `Box::hash_key` yourself' gc
+# #3551: a `Map` field, keyed by the map's address (two equal maps, two keys),
+# and a field whose type's written `hash_key` takes an `Int` -- imported from
+# another module -- which the generated key called with the value anyway. The
+# green side (an aliased field keyed by content, local and imported) rides the
+# unit lane: fixtures/derive_hash_alias_field_test.vibe.
+ur_refused fixtures/err_derive_hash_map_field_refused.vibe 'field `m` holds `Map[String, Int]`, which has no key' 'write `S::hash_key` yourself'
+ur_refused fixtures/err_derive_hash_map_field_refused.vibe 'field `m` holds `Map[String, Int]`, which has no key' 'write `S::hash_key` yourself' gc
+ur_refused fixtures/err_derive_hash_wrong_signature_refused.vibe 'but `Inner::hash_key` takes `Int`' 'write `Inner::hash_key` as `fn Inner::hash_key(x: Inner) -> String`'
+ur_refused fixtures/err_derive_hash_wrong_signature_refused.vibe 'but `Inner::hash_key` takes `Int`' 'write `Inner::hash_key` as `fn Inner::hash_key(x: Inner) -> String`' gc
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
 ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type' gc
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' gc 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'

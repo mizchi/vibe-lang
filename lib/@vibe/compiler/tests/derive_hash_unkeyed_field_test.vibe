@@ -9,11 +9,17 @@
 // shares, so it was keyed by its address: two equal `Box[Array[Int]]` values
 // got two keys -- also when a written `Box::to_string` had switched the
 // formal-array refusal off, although the key never calls it.
+//
+// Three more had no key either (#3551 review). A field spelled through an
+// alias (`type Values = Array[Int]`) and a `Map` field were rendered by
+// address. A written `hash_key` was called whatever its signature:
+// `fn Inner::hash_key(x: Int) -> String` received an `Inner` and keyed its
+// address. The alias is now expanded; the others are refused.
 
 //# Imports
 
 import @vibe/compiler/normalize {
-  desugar_trait_dicts
+  ModuleTraitFacts, collect_explicit_derived_op_names, desugar_trait_dicts, desugar_trait_dicts_module_with_facts
 }
 
 import @vibe/compiler/syntax {
@@ -60,6 +66,75 @@ test "a type-parameter field is refused" {
   inspect(String::contains(written, "field `xs` holds `T`"), content = "true")
 }
 
+/// A field spelled through an alias is judged as the type the alias names:
+/// an aliased array is keyed, an alias of a `Show`-only type is refused by
+/// that type's name.
+test "an aliased field is judged expanded" {
+  inspect(derive_verdict("type Values = Array[Int]\nstruct S { xs: Values; o: Opt[String] } derive(Hash)\ntype Opt[T] = Option[T]" + main_src), content = "ok")
+  let shown = derive_verdict("struct Inner { a: String } derive(Show)\ntype P = Inner\nstruct Outer { p: P } derive(Hash)" + main_src)
+  inspect(String::contains(shown, "keys field `p` by the key of `Inner`"), content = "true")
+}
+
+/// A field the key could only read by address -- a `Map`, a function -- is
+/// refused, naming the edit.
+test "a Map or function field is refused" {
+  inspect(derive_verdict("struct S { m: Map[String, Int] } derive(Hash)" + main_src), content = "write `S::hash_key` yourself, or remove `Hash` from the `derive` of `S`: field `m` holds `Map[String, Int]`, which has no key -- the derived key could only read it by its address, so two equal values would get different keys [@fn=S]")
+  let aliased = derive_verdict("type Counts = Map[String, Int]\nstruct S { n: Int; c: Option[Counts] } derive(Hash)" + main_src)
+  inspect(String::contains(aliased, "field `c` holds `Map[String, Int]`"), content = "true")
+  // With `to_string` written, no derived renderer refuses the function first.
+  let func = derive_verdict("enum E { F((Int) -> Int) } derive(Hash)\nfn E::to_string(e: E) -> String { \"e\" }" + main_src)
+  inspect(String::contains(func, "field `F.0` holds `(Int) -> Int`"), content = "true")
+}
+
+/// A written `hash_key` the derived key cannot call with the field's type is
+/// refused; the derived call is generated after the checker and nothing
+/// would check it.
+test "a written hash_key of another signature is refused" {
+  let inner = "struct Inner { a: Int } derive(Show)\n"
+  inspect(derive_verdict(inner + "fn Inner::hash_key(x: Int) -> String { \"k\" }\nstruct Outer { i: Inner } derive(Hash)" + main_src), content = "write `Inner::hash_key` as `fn Inner::hash_key(x: Inner) -> String`, or write `Outer::hash_key` yourself: the derived key of `Outer` calls `Inner::hash_key` with field `i`, but `Inner::hash_key` takes `Int` [@fn=Outer]")
+  let returns = derive_verdict(inner + "fn Inner::hash_key(x: Inner) -> Int { 1 }\nstruct Outer { i: Inner } derive(Hash)" + main_src)
+  inspect(String::contains(returns, "but `Inner::hash_key` returns `Int`"), content = "true")
+  let two = derive_verdict(inner + "fn Inner::hash_key(x: Inner, y: Int) -> String { \"k\" }\nstruct Outer { i: Inner } derive(Hash)" + main_src)
+  inspect(String::contains(two, "but `Inner::hash_key` takes 2 parameters"), content = "true")
+  let unannotated = derive_verdict(inner + "let Inner::hash_key = (x) -> \"k\"\nstruct Outer { i: Inner } derive(Hash)" + main_src)
+  inspect(String::contains(unannotated, "has no type annotation on its parameter"), content = "true")
+  let impl_int = derive_verdict(inner + "trait Keyed { hash_key(Self) -> Int }\nimpl Keyed for Inner { hash_key(self) -> Int { 1 } }\nstruct Outer { i: Inner } derive(Hash)" + main_src)
+  inspect(String::contains(impl_int, "but `Inner::hash_key` returns `Int`"), content = "true")
+  let applied = derive_verdict("struct Box[T] { v: T } derive(Show)\nfn Box::hash_key(b: Box[Int]) -> String { \"b\" }\nstruct Holder { b: Box[String] } derive(Hash)" + main_src)
+  inspect(String::contains(applied, "calls `Box::hash_key` with field `b`, which it does not take -- it takes only `Box[Int]`"), content = "true")
+}
+
+/// On the per-module lane a module sees another module's `hash_key` only by
+/// name. The whole-program facts carry why one cannot be called, and the
+/// module deriving `Hash` over that type refuses on it.
+test "an unusable hash_key known only by name is refused" {
+  let whole = parse_program(lex("struct Inner { a: Int }\nfn Inner::hash_key(x: Int) -> String { \"k\" }"))
+  let ops = collect_explicit_derived_op_names(whole)
+  inspect(String::join(ops, "|"), content = "Inner::hash_key|!Inner::hash_key takes `Int`")
+  let own = parse_program(lex("struct Outer { i: Inner } derive(Hash)" + main_src))
+  let ctx = parse_program(lex("struct Inner { a: Int } derive(Show)"))
+  let refused = handle {
+    let _ = desugar_trait_dicts_module_with_facts(own, ctx, "m", [], [], ModuleTraitFacts::{
+      wrapper_names: [],
+      explicit_ops: ops
+    })
+    "ok"
+  } with { Exception::Throw(msg) => msg }
+  inspect(String::contains(refused, "but `Inner::hash_key` takes `Int`"), content = "true")
+  // A usable one, known the same way, keys the field.
+  let good = collect_explicit_derived_op_names(parse_program(lex("struct Inner { a: Int }\nfn Inner::hash_key(x: Inner) -> String { \"k\" }")))
+  let own2 = parse_program(lex("struct Outer { i: Inner } derive(Hash)" + main_src))
+  let ctx2 = parse_program(lex("struct Inner { a: Int } derive(Show)"))
+  let accepted = handle {
+    let _ = desugar_trait_dicts_module_with_facts(own2, ctx2, "m", [], [], ModuleTraitFacts::{
+      wrapper_names: [],
+      explicit_ops: good
+    })
+    "ok"
+  } with { Exception::Throw(msg) => msg }
+  inspect(accepted, content = "ok")
+}
+
 /// What the key can encode is accepted: a type with its own key (derived or
 /// written), scalars, and a type parameter the written `hash_key` handles.
 test "keyed fields and a written hash_key are accepted" {
@@ -67,4 +142,10 @@ test "keyed fields and a written hash_key are accepted" {
   inspect(derive_verdict("struct Inner { a: String } derive(Show)\nfn Inner::hash_key(x: Inner) -> String { x.a }\nstruct Outer { i: Inner } derive(Hash)" + main_src), content = "ok")
   inspect(derive_verdict("struct Box[T] { v: T } derive(Hash)\nfn Box::hash_key(b: Box[Int]) -> String { \"box\" }" + main_src), content = "ok")
   inspect(derive_verdict("struct Inner { a: String } derive(Show)\nstruct Outer { i: Inner } derive(Hash)\nfn Outer::hash_key(o: Outer) -> String { o.i.a }" + main_src), content = "ok")
+  // An impl method takes its unannotated types from its trait; an alias in a
+  // written signature is expanded; a generic one takes every application.
+  inspect(derive_verdict("struct Inner { a: Int } derive(Show)\ntrait Hash { hash_key(Self) -> String }\nimpl Hash for Inner { hash_key(self) -> String { \"i\" } }\nstruct Outer { i: Inner } derive(Hash)" + main_src), content = "ok")
+  inspect(derive_verdict("struct Inner { a: Int } derive(Show)\ntype Key = String\ntype I = Inner\nfn Inner::hash_key(x: I) -> Key { \"i\" }\nstruct Outer { i: Inner } derive(Hash)" + main_src), content = "ok")
+  inspect(derive_verdict("struct Box[T] { v: T } derive(Show)\nfn Box::hash_key[T](b: Box[T]) -> String { \"b\" }\nstruct Holder { b: Box[String]; c: Box[Int] } derive(Hash)" + main_src), content = "ok")
+  inspect(derive_verdict("struct Box[T] { v: T } derive(Show)\nfn Box::hash_key(b: Box[Int]) -> String { \"b\" }\nstruct Holder { b: Box[Int] } derive(Hash)" + main_src), content = "ok")
 }

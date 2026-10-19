@@ -14,23 +14,33 @@
 // element count before its elements. A `Double` is keyed after adding `0.0`,
 // which folds `-0.0` into `0.0` (IEEE: `-0 + 0 == +0`), so the two zeros that
 // `==` equates share a key. A nested type that has a `hash_key` (derived or
-// written) contributes that key. A builtin with no key of its own (a `Map`)
-// contributes its structural rendering, length-prefixed, so it can no longer
-// bleed into its neighbours.
+// written) contributes that key. A field spelled through a type alias is
+// keyed as the type the alias names.
 //
-// Two field shapes have no key at all and are REFUSED at the derive
-// (`hash_note_unkeyed_field`, #3551), naming the edit: a declared struct /
+// Every other field shape has no key and is REFUSED at the derive
+// (`hash_note_unkeyed_field`, #3551), naming the edit; the judgement is an
+// allow-list of what the encoding above covers. Refused: a declared struct /
 // enum with no `hash_key` -- its `to_string` is not injective, so `Inner {
 // a: "p, b: q", b: "r" }` and `Inner { a: "p", b: "q, b: r" }` rendered alike
-// and two different enclosing values shared one key -- and a type parameter
-// of the declaration -- the derived key is one function for every
+// and two different enclosing values shared one key; a written `hash_key`
+// that does not take that field's type (`hash_key_signature.vibe`); a type
+// parameter of the declaration -- the derived key is one function for every
 // instantiation, so the value is erased there and was keyed by its address:
-// two equal `Box[Array[Int]]` values got two keys.
+// two equal `Box[Array[Int]]` values got two keys; and any other type, such
+// as a `Map` or a function, which the key could only read by address.
 //
 // `to_string` (Show) is untouched; it is still generated for a `Hash` type.
 
 import @vibe/compiler/core {
   Expr, Pat, Stmt, TypeExpr, namespace_rename_original
+}
+
+import ./equality_aliases.vibe {
+  eq_expand_alias_ty
+}
+
+import ./hash_key_signature.vibe {
+  hash_key_definitions, hash_key_fact_marker_read, hash_key_owner, hash_key_takes
 }
 
 import @vibe/ast {
@@ -61,47 +71,154 @@ import ./utilities.vibe {
   str_array_contains
 }
 
+/// The written `hash_key` definitions the derived key may call, as `(T,
+/// type variables, parameter type)`, and the ones it may not, as `(T, what is
+/// wrong)` -- both filled by `collect_hash_key_types` for this program.
+let hk_written: Array[(String, Array[String], TypeExpr)] = []
+
+let hk_unusable: Array[(String, String)] = []
+
 /// The types whose values have a `hash_key` this program can call: every
-/// struct / enum here that derives `Hash`, every `T::hash_key` written here,
-/// and every one the program's other modules define (`dtd_facts_explicit_ops`).
+/// struct / enum here that derives `Hash`, every `T::hash_key` written here
+/// that takes a `T` and returns a `String` (`hash_key_signature.vibe`), and
+/// every one the program's other modules define (`dtd_facts_explicit_ops`)
+/// that the whole-program scan did not mark as unusable.
 export fn collect_hash_key_types(stmts: Array[Stmt]) -> Array[String] {
+  Array::truncate(hk_written, 0)
+  Array::truncate(hk_unusable, 0)
   let out: Array[String] = array_empty()
   for stmt in stmts {
     match stmt {
       SStruct(_, name, _, derives, _, _) => if str_array_contains(derives, "Hash") {
-        Array::push(out, name)
+        hk_push_unique(out, name)
       } else {
         ()
       },
       SEnum(_, name, _, _, derives) => if str_array_contains(derives, "Hash") {
-        Array::push(out, name)
+        hk_push_unique(out, name)
       } else {
         ()
       },
-      SLet(_, _, name, _, _) => hash_key_owner_into(name, out),
       _ => ()
     }
   }
+  let (good, bad) = hash_key_definitions(stmts)
+  for row in good {
+    let (owner, _, _) = row
+    Array::push(hk_written, row)
+    hk_push_unique(out, owner)
+  }
+  for row in bad {
+    Array::push(hk_unusable, row)
+  }
+  // Another module's definition, known here only by name: usable unless the
+  // whole-program scan recorded why it is not.
+  let marked: Array[(String, String)] = array_empty()
   for name in dtd_facts_explicit_ops {
-    hash_key_owner_into(name, out)
+    match hash_key_fact_marker_read(name) {
+      Some(row) => {
+        let (owner, _) = row
+        if !hk_judged_here(owner) {
+          Array::push(marked, row)
+        } else {
+          ()
+        }
+      },
+      None => ()
+    }
+  }
+  for name in dtd_facts_explicit_ops {
+    let owner = hash_key_owner(name)
+    if owner != "" && !hk_judged_here(owner) && !hk_marked(marked, owner) {
+      hk_push_unique(out, owner)
+    } else {
+      ()
+    }
+  }
+  for row in marked {
+    Array::push(hk_unusable, row)
   }
   out
 }
 
-fn hash_key_owner_into(binding: String, out: Array[String]) -> Unit {
-  let suffix = "::hash_key"
-  let n = String::length(binding)
-  let k = String::length(suffix)
-  if n > k && String::ends_with(binding, suffix) {
-    let owner = String::substring(binding, 0, n - k)
-    if !str_array_contains(out, owner) {
-      Array::push(out, owner)
-    } else {
-      ()
-    }
+fn hk_push_unique(out: Array[String], name: String) -> Unit {
+  if !str_array_contains(out, name) {
+    Array::push(out, name)
   } else {
     ()
   }
+}
+
+fn hk_marked(rows: Array[(String, String)], owner: String) -> Bool {
+  let mut found = false
+  for row in rows {
+    let (o, _) = row
+    if o == owner {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// Was a `T::hash_key` of this program's own statements judged?
+fn hk_judged_here(owner: String) -> Bool {
+  let mut found = hk_marked(hk_unusable, owner)
+  for row in hk_written {
+    let (o, _, _) = row
+    if o == owner {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// Why the written `T::hash_key` cannot be called, or "".
+fn hk_unusable_reason(owner: String) -> String {
+  let mut out = ""
+  for row in hk_unusable {
+    let (o, why) = row
+    if out == "" && o == owner {
+      out = why
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// Does `T::hash_key` take a value of field type `ty`? A derived one, or one
+/// known only by name, takes every application of `T`.
+fn hk_takes(owner: String, ty: TypeExpr) -> Bool {
+  let mut out = true
+  let mut seen = false
+  for row in hk_written {
+    let (o, vars, param) = row
+    if !seen && o == owner {
+      seen = true
+      out = hash_key_takes(param, vars, ty)
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// The parameter type of the written `T::hash_key`, as the message shows it.
+fn hk_written_param(owner: String) -> String {
+  let mut out = ""
+  for row in hk_written {
+    let (o, _, param) = row
+    if out == "" && o == owner {
+      out = hk_type_text(param)
+    } else {
+      ()
+    }
+  }
+  out
 }
 
 /// A fresh binder for the generated body. Each derived function owns one
@@ -233,7 +350,7 @@ export fn gen_struct_hash_key_fn(tname: String, fields: Array[(String, TypeExpr)
   let parts: Array[Expr] = array_empty()
   for field in fields {
     let (fname, fty) = field
-    Array::push(parts, hk_component(fty, EDot(EIdent("self", -1), fname, -1, -1), known_types, hash_types, counter))
+    Array::push(parts, hk_component(eq_expand_alias_ty(fty), EDot(EIdent("self", -1), fname, -1, -1), known_types, hash_types, counter))
   }
   hk_fn(tname, hk_concat_all(parts))
 }
@@ -251,52 +368,77 @@ export fn gen_enum_hash_key_fn(ename: String, variants: Array[(String, Array[Typ
     for fty in ftypes {
       let bind = hk_fresh(counter, "p")
       Array::push(binds, PBind(bind))
-      Array::push(parts, hk_component(fty, EIdent(bind, -1), known_types, hash_types, counter))
+      Array::push(parts, hk_component(eq_expand_alias_ty(fty), EIdent(bind, -1), known_types, hash_types, counter))
     }
     Array::push(arms, (PCtor(vname, binds), hk_concat_all(parts)))
   }
   hk_fn(ename, EMatch(EIdent("self", -1), arms))
 }
 
-/// The first position in a field of declared type `fty` that a derived
-/// `hash_key` cannot key: `Some((name, true))` for a type parameter of the
-/// declaration, `Some((name, false))` for a declared struct / enum with no
-/// `hash_key`. It looks through the shapes `hk_component` encodes itself
-/// (`Option`, `Result`, tuples, `Array`) and through the arguments of a
-/// builtin it renders (`Map`); a type with a `hash_key` keys its own contents.
-fn hash_unkeyed_position(fty: TypeExpr, known_types: Array[String], hash_types: Array[String]) -> Option[(String, Bool)] {
+/// The first position in a field of type `fty` (aliases expanded) that a
+/// derived `hash_key` cannot key, as `(kind, name, detail)`; `None` when every
+/// position is keyed. The judgement is an allow-list of what `hk_component`
+/// encodes: the scalars, `Option` / `Result` / `Array` / tuples of keyed
+/// types, and a type whose `hash_key` takes it. The kinds:
+///
+///   `formal`     a type parameter of the declaration (`name`)
+///   `declared`   a declared struct / enum with no `hash_key` (`name`)
+///   `unusable`   a written `name::hash_key` the key cannot call (`detail`
+///                says why)
+///   `mismatch`   a written `name::hash_key` that takes another application
+///                (`detail` is the type it takes)
+///   `opaque`     anything else -- a `Map`, a function, an opaque builtin --
+///                which the key could only read by address (`name` is the
+///                type)
+fn hash_unkeyed_position(fty: TypeExpr, known_types: Array[String], hash_types: Array[String]) -> Option[(String, String, String)] {
   match fty {
-    TyName(n) => hash_unkeyed_name(n, known_types, hash_types),
-    TyApp(n, args) => if n == "Option" || n == "Result" || n == "Array" {
-      hash_unkeyed_first(args, known_types, hash_types)
-    } else if is_marked_formal_name(n) {
-      Some((n, true))
-    } else if str_array_contains(hash_types, n) {
+    TyName(n) => if hk_is_keyed_scalar(n) {
       None
-    } else if str_array_contains(known_types, n) {
-      Some((n, false))
     } else {
+      hash_unkeyed_head(n, fty, known_types, hash_types)
+    },
+    TyApp(n, args) => if (n == "Option" || n == "Array") && Array::length(args) == 1 {
       hash_unkeyed_first(args, known_types, hash_types)
+    } else if n == "Result" && Array::length(args) == 2 {
+      hash_unkeyed_first(args, known_types, hash_types)
+    } else {
+      hash_unkeyed_head(n, fty, known_types, hash_types)
     },
     TyTuple(ts) => hash_unkeyed_first(ts, known_types, hash_types),
-    _ => None
+    TyUnit => None,
+    TyFn(_, _, _) => Some(("opaque", hk_type_text(fty), ""))
   }
 }
 
-fn hash_unkeyed_name(n: String, known_types: Array[String], hash_types: Array[String]) -> Option[(String, Bool)] {
-  if is_scalar_type_name(n) || str_array_contains(hash_types, n) {
-    None
-  } else if is_marked_formal_name(n) {
-    Some((n, true))
+/// The scalars `hk_component` keys by value: every spelling the checker
+/// resolves to one (`resolve_builtin`). `Bytes` is not one -- it has no text.
+fn hk_is_keyed_scalar(n: String) -> Bool {
+  n == "Int" || n == "i32" || n == "Bool" || n == "Char" || n == "Unit" || n == "String" || n == "Double" || n == "Float" || n == "f64" || n == "f32"
+}
+
+/// A named type `n` (`fty` is the whole application), keyed only through its
+/// own `hash_key`.
+fn hash_unkeyed_head(n: String, fty: TypeExpr, known_types: Array[String], hash_types: Array[String]) -> Option[(String, String, String)] {
+  let unusable = hk_unusable_reason(n)
+  if is_marked_formal_name(n) {
+    Some(("formal", n, ""))
+  } else if unusable != "" {
+    Some(("unusable", n, unusable))
+  } else if str_array_contains(hash_types, n) {
+    if hk_takes(n, fty) {
+      None
+    } else {
+      Some(("mismatch", n, hk_written_param(n)))
+    }
   } else if str_array_contains(known_types, n) {
-    Some((n, false))
+    Some(("declared", n, ""))
   } else {
-    None
+    Some(("opaque", hk_type_text(fty), ""))
   }
 }
 
-fn hash_unkeyed_first(ts: Array[TypeExpr], known_types: Array[String], hash_types: Array[String]) -> Option[(String, Bool)] {
-  let mut out: Option[(String, Bool)] = None
+fn hash_unkeyed_first(ts: Array[TypeExpr], known_types: Array[String], hash_types: Array[String]) -> Option[(String, String, String)] {
+  let mut out: Option[(String, String, String)] = None
   for t in ts {
     if out is None {
       out = hash_unkeyed_position(t, known_types, hash_types)
@@ -316,19 +458,47 @@ fn hash_formal_source_name(n: String) -> String {
   }
 }
 
+/// A type as its source spells it: formals and merged names restored.
+fn hk_type_text(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => namespace_rename_original(hash_formal_source_name(n)),
+    TyApp(h, args) => namespace_rename_original(hash_formal_source_name(h)) + "[" + String::join(for a in args {
+      hk_type_text(a)
+    }, ", ") + "]",
+    TyTuple(items) => "(" + String::join(for a in items {
+      hk_type_text(a)
+    }, ", ") + ")",
+    TyUnit => "Unit",
+    TyFn(ps, r, _) => "(" + String::join(for a in ps {
+      hk_type_text(a)
+    }, ", ") + ") -> " + hk_type_text(r)
+  }
+}
+
 /// #3551: refuse a `derive (Hash)` field (or enum payload, `fname` = `V.0`)
 /// that the derived key cannot key, leading with the edit. Before, such a
-/// field was keyed by its rendering: a declared type's `to_string` is not
-/// injective, and an erased type parameter rendered as an address.
+/// field was keyed by its rendering or its address: a declared type's
+/// `to_string` is not injective; an erased type parameter, a `Map` and a field
+/// spelled through an alias rendered as an address; and a written `hash_key`
+/// of another signature was called with the field regardless.
 export fn hash_note_unkeyed_field(tname: String, fname: String, fty: TypeExpr, known_types: Array[String], hash_types: Array[String]) -> Unit {
   let shown = namespace_rename_original(tname)
-  let msg = match hash_unkeyed_position(fty, known_types, hash_types) {
-    Some((n, is_formal)) => if is_formal {
+  let yourself = "write `" + shown + "::hash_key` yourself"
+  let msg = match hash_unkeyed_position(eq_expand_alias_ty(fty), known_types, hash_types) {
+    Some((kind, n, detail)) => if kind == "formal" {
       let formal = hash_formal_source_name(n)
-      "write `" + shown + "::hash_key` yourself, or remove `Hash` from the `derive` of `" + shown + "`: its derived key is one function for every instantiation, so field `" + fname + "` holds `" + formal + "` (a type parameter of `" + shown + "`), which has no key there [@fn=" + shown + "]"
-    } else {
+      yourself + ", or remove `Hash` from the `derive` of `" + shown + "`: its derived key is one function for every instantiation, so field `" + fname + "` holds `" + formal + "` (a type parameter of `" + shown + "`), which has no key there [@fn=" + shown + "]"
+    } else if kind == "declared" {
       let inner = namespace_rename_original(n)
-      "add `Hash` to the `derive` of `" + inner + "` (or write `" + inner + "::hash_key`), or write `" + shown + "::hash_key` yourself: the derived key of `" + shown + "` keys field `" + fname + "` by the key of `" + inner + "`, which has none -- its rendering is not a key, since two different values can render alike [@fn=" + shown + "]"
+      "add `Hash` to the `derive` of `" + inner + "` (or write `" + inner + "::hash_key`), or " + yourself + ": the derived key of `" + shown + "` keys field `" + fname + "` by the key of `" + inner + "`, which has none -- its rendering is not a key, since two different values can render alike [@fn=" + shown + "]"
+    } else if kind == "unusable" {
+      let inner = namespace_rename_original(n)
+      "write `" + inner + "::hash_key` as `fn " + inner + "::hash_key(x: " + inner + ") -> String`, or " + yourself + ": the derived key of `" + shown + "` calls `" + inner + "::hash_key` with field `" + fname + "`, but `" + inner + "::hash_key` " + detail + " [@fn=" + shown + "]"
+    } else if kind == "mismatch" {
+      let inner = namespace_rename_original(n)
+      "make `" + inner + "::hash_key` take every `" + inner + "` (`fn " + inner + "::hash_key[T](x: " + inner + "[T]) -> String`), or " + yourself + ": the derived key of `" + shown + "` calls `" + inner + "::hash_key` with field `" + fname + "`, which it does not take -- it takes only `" + detail + "` [@fn=" + shown + "]"
+    } else {
+      yourself + ", or remove `Hash` from the `derive` of `" + shown + "`: field `" + fname + "` holds `" + n + "`, which has no key -- the derived key could only read it by its address, so two equal values would get different keys [@fn=" + shown + "]"
     },
     None => ""
   }
