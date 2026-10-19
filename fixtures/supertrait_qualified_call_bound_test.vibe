@@ -1,0 +1,67 @@
+//# A supertrait's method called by the supertrait's name under a sub-trait bound (#3547).
+//
+// With `trait Loud: Name`, `fn shout[T: Loud](x: T) -> String { Name::name(x) }`
+// asks for `T`'s `Name` witness, but the function receives only `Loud`'s
+// dictionary. The lookup missed, and the pass tried to build a concrete `Name`
+// dictionary for the formal `T`, refusing the program with "add a body for
+// `name` to `impl Name for T`" -- after `vibe check` had accepted it, and while
+// `T::name(x)` and `Loud::name(x)` compiled. `Loud`'s dictionary carries every
+// `Name` method, so the `Name` dictionary is now projected out of it.
+
+trait Name {
+  name(Self) -> String
+}
+
+trait Loud: Name {
+  loud(Self) -> String
+}
+
+trait Louder: Loud {
+  louder(Self) -> String
+}
+
+struct P {
+  n: Int
+}
+
+impl Name for P {
+  name(self) -> String {
+    "p\{self.n}"
+  }
+}
+
+impl Loud for P {
+  loud(self) -> String {
+    "P!"
+  }
+}
+
+impl Louder for P {
+  louder(self) -> String {
+    "P!!"
+  }
+}
+
+fn shout[T: Loud](x: T) -> String {
+  Name::name(x)
+}
+
+fn shout_both[T: Loud](x: T) -> String {
+  Name::name(x) + " " + Loud::loud(x) + " " + T::name(x)
+}
+
+fn deep[T: Louder](x: T) -> String {
+  Name::name(x) + " " + Loud::loud(x) + " " + Louder::louder(x)
+}
+
+test "the supertrait's name dispatches through the sub-trait witness" {
+  inspect(shout(P::{ n: 1 }), content = "p1")
+}
+
+test "every spelling agrees" {
+  inspect(shout_both(P::{ n: 2 }), content = "p2 P! p2")
+}
+
+test "two levels up" {
+  inspect(deep(P::{ n: 3 }), content = "p3 P! P!!")
+}
