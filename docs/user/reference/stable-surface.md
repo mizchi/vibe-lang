@@ -639,8 +639,12 @@ because those programs are already wrong.
 
 - **A closure created inside a `handle` can outlive it with a pure type**
   (#3540). Do not return or store a closure that performs the handled effect.
-- **The erased `Exception::Throw(m)` binder is untyped** (#3541). Use a kinded
-  arm (`Exception[K]::Throw(e)`) when the payload is used as a value.
+- **The erased `Exception::Throw(m)` binder is assumed to be a `String`**
+  (#3541). Using it at another type is refused, but the kind is not carried
+  at run time, so a non-`String` value thrown under a bare `with Exception`
+  row (or under a kinded row and caught by the erased arm) reaches `m` as a
+  `String`. Throw a value other than a `String` under a kinded row, and catch
+  it with the kinded arm (`Exception[K]::Throw(e)`).
 
 ## 7. Operating the freeze
 
