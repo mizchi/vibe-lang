@@ -171,6 +171,8 @@ import ./checker_lambda_expr.vibe {
   record_array_receiver,
   retaining_write_region_check,
   run_body_param_cell,
+  seed_lambda_arg_from_call,
+  seed_lambda_params,
   tab_call_ty,
   tail_named_record_mentions_region
 }
@@ -1428,11 +1430,29 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           check_builtin_arg_head(name, 0, subst_apply(s1, recv_ty), defs, errors, callee_off)
           let (s1, c1) = bind_array_arg(capture, name, callee_off, recv_ty, s1, c1)
           let (init_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          // #3547: `(acc, x)` start as the accumulator and the element.
+          match subst_apply(s2, recv_ty) {
+            CtArray(elem) => seed_lambda_params(Array::get(args, 2), [
+              init_ty,
+              elem
+            ], s2),
+            _ => ()
+          }
           let (fn_ty, s3, c3) = check_child(Array::get(args, 2), env, defs, s2, c2, errors, tytab, capture, lane)
           check_builtin_arg_head(name, 2, subst_apply(s3, fn_ty), defs, errors, callee_off)
           let s4 = match subst_apply(s3, fn_ty) {
             CtFn(ptys, _, _) => if Array::length(ptys) >= 1 {
-              check_assignable(subst_apply(s3, Array::get(ptys, 0)), subst_apply(s3, init_ty), s3, errors, "Array::fold accumulator type mismatch", tail_expr_off(Array::get(args, 1)))
+              let acc_param = subst_apply(s3, Array::get(ptys, 0))
+              let init_applied = subst_apply(s3, init_ty)
+              // #3547: an unannotated accumulator was typed by its body (`+`
+              // settles an open operand on `Int`), so "expected Int, got
+              // Double" read backwards: name the edit instead.
+              if fold_acc_unannotated(Array::get(args, 2)) && (unify(acc_param, init_applied, s3) is None) {
+                Array::push(errors, "annotate the callback's accumulator with the initial value's type (`(acc: " + type_to_string(init_applied) + ", x) -> ..`): `Array::fold` starts from `" + type_to_string(init_applied) + "`, but the callback's body made its accumulator `" + type_to_string(acc_param) + "`" + off_marker(tail_expr_off(Array::get(args, 1))))
+                s3
+              } else {
+                check_assignable(acc_param, init_applied, s3, errors, "Array::fold accumulator type mismatch", tail_expr_off(Array::get(args, 1)))
+              }
             } else {
               s3
             },
@@ -2122,6 +2142,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                     } else {
                       env
                     }
+                    // #3547: a lambda literal's unannotated parameters start
+                    // as the types this call expects of them.
+                    seed_lambda_arg_from_call(arg, inferred_param_tys, arg_tys, arg_s)
                     let (at, ns, nc) = check_child(arg, arg_env, defs, arg_s, c2, errors, tytab, capture, lane)
                     Array::push(arg_tys, at)
                     if ai < Array::length(inferred_param_tys) {
@@ -2827,5 +2850,19 @@ fn refuse_unreadable_callback_row(targs: Array[Type], op_qname: String, op_off: 
       true
     },
     None => false
+  }
+}
+
+/// #3547: is `callback` a lambda literal whose first (accumulator) parameter
+/// carries no annotation?
+fn fold_acc_unannotated(callback: Expr) -> Bool {
+  match callback {
+    EFn(_, _, params, _, _, _) => if Array::length(params) >= 1 {
+      let (_, ann) = Array::get(params, 0)
+      ann is None
+    } else {
+      false
+    },
+    _ => false
   }
 }

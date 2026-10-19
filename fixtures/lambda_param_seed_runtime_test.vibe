@@ -1,0 +1,52 @@
+//# An unannotated fold callback over strings takes the types the call expects of it (#3547).
+//
+// `+` on two fresh lambda parameters used to settle on `Int` while the body
+// was checked, so a fold over strings through `Iterator::fold` or a generic
+// callee was refused ("(Int, Int) -> Int"). The lambda's parameters now start
+// as the accumulator and element types where the operator lowering can act
+// on a type only the checker knows. These rows pin that `+` then lowers as
+// concatenation, not as Int addition over two string handles. A `Double`
+// accumulator must still be annotated (lambda_param_seed_test.vibe).
+
+import @vibe/builtin {
+  trait Iterator
+}
+
+fn my_fold[A, B](xs: Array[A], init: B, f: (B, A) -> B) -> B {
+  let mut acc = init
+  for x in xs {
+    acc = f(acc, x)
+  }
+  acc
+}
+
+test "Array::fold over String" {
+  let joined = Array::fold(["a", "b", "c"], "", (acc, s) -> acc + s)
+  inspect(joined, content = "abc")
+}
+
+test "Iterator::fold over String" {
+  let joined = Iterator::fold(["x", "y"], "", (acc, s) -> acc + s)
+  inspect(joined, content = "xy")
+}
+
+test "a generic callee over String" {
+  inspect(my_fold(["p", "q"], ">", (acc, s) -> acc + s), content = ">pq")
+  inspect(my_fold([1, 2], "n", (acc, n) -> acc + Int::to_string(n)), content = "n12")
+}
+
+test "a String comparison in the callback" {
+  inspect(Array::fold(["b", "a", "c"], "z", (acc, s) -> if s < acc {
+    s
+  } else {
+    acc
+  }), content = "a")
+}
+
+test "an annotated Double accumulator" {
+  inspect(Array::fold([1.5, 2.25], 0.0, (acc: Double, s) -> acc + s), content = "3.75")
+}
+
+test "Int is unchanged" {
+  inspect(Array::fold([1, 2, 3], 0, (acc, s) -> acc + s), content = "6")
+}

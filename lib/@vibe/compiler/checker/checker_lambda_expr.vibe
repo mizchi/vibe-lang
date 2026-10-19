@@ -2190,6 +2190,106 @@ export fn map_literal_ground(t: Type) -> Bool {
 /// cannot tell that the value it stores belongs to the group.
 export let run_body_param_cell: Array[Type] = []
 
+/// #3547: the parameter types a call expects of the lambda literal it is
+/// about to check, one slot per parameter (`None` = no expectation), set
+/// immediately before that one argument is checked and taken by
+/// `check_lambda_expr` before anything else, so no nested lambda can see it.
+/// Without it an unannotated parameter is a fresh variable while the body is
+/// checked, and `+` on two such variables settles on `Int` before the call
+/// unifies the lambda with its parameter: `Array::fold(["a"], "", (acc, s) ->
+/// acc + s)` was refused as `(Int, Int) -> Int`.
+let lambda_param_seed_cell: Array[Array[Option[Type]]] = []
+
+fn take_lambda_param_seeds() -> Array[Option[Type]] {
+  if Array::length(lambda_param_seed_cell) == 0 {
+    []
+  } else {
+    let seeds = Array::get(lambda_param_seed_cell, 0)
+    Array::truncate(lambda_param_seed_cell, 0)
+    seeds
+  }
+}
+
+/// The expectations that are seeded: the scalars whose operators lower
+/// correctly when only the CHECKER knows the operand's type. `+` / `<` on a
+/// `String` ride the typed String-lowering channel (#2391), and `Int` /
+/// `Bool` / `Char` need no classification. `Double` is deliberately absent:
+/// its arithmetic is chosen by the lowering from the operand's SYNTAX (an
+/// annotation, a float literal), so an unannotated `(acc, s) -> acc + s`
+/// typed `Double` here compiled to an integer add over two boxed values and
+/// printed `0` for `1.5 + 2.0` (measured). Left unseeded, it stays refused,
+/// with the edit (`Array::fold`'s accumulator check) -- never silently wrong.
+fn lambda_seed_type_lowers(t: Type) -> Bool {
+  match t {
+    CtInt => true,
+    CtString => true,
+    CtBool => true,
+    CtChar => true,
+    _ => false
+  }
+}
+
+/// Record the expected types of the unannotated parameters of `arg`, when it
+/// is a non-generic lambda literal with exactly `expected.length` parameters.
+/// Only the expectations `lambda_seed_type_lowers` admits are kept.
+export fn seed_lambda_params(arg: Expr, expected: Array[Type], s: Subst) -> Unit {
+  Array::truncate(lambda_param_seed_cell, 0)
+  match arg {
+    EFn(tparams, _, params, _, _, _) => if Array::length(tparams) == 0 && Array::length(params) == Array::length(expected) {
+      let seeds: Array[Option[Type]] = []
+      let mut any = false
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, ann) = Array::get(params, i)
+        let want = subst_apply(s, Array::get(expected, i))
+        if (ann is None) && lambda_seed_type_lowers(want) {
+          Array::push(seeds, Some(want))
+          any = true
+        } else {
+          Array::push(seeds, None)
+        }
+        i = i + 1
+      }
+      if any {
+        Array::push(lambda_param_seed_cell, seeds)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// `seed_lambda_params` for an argument of a call whose parameter `ai` has a
+/// function type: the expectation is read after unifying the arguments to its
+/// left with their parameters in a scratch substitution (the call's own
+/// unification does the same, later).
+export fn seed_lambda_arg_from_call(arg: Expr, param_tys: Array[Type], arg_tys: Array[Type], s: Subst) -> Unit {
+  Array::truncate(lambda_param_seed_cell, 0)
+  let ai = Array::length(arg_tys)
+  if ai < Array::length(param_tys) && (arg is EFn(_, _, _, _, _, _)) {
+    let mut scratch = s
+    let mut j = 0
+    while j < ai {
+      match unify(Array::get(param_tys, j), Array::get(arg_tys, j), scratch) {
+        Some(su) => {
+          scratch = su
+        },
+        None => ()
+      }
+      j = j + 1
+    }
+    match subst_apply(scratch, Array::get(param_tys, ai)) {
+      CtFn(eps, _, _) => seed_lambda_params(arg, eps, scratch),
+      _ => ()
+    }
+  } else {
+    ()
+  }
+}
+
 fn take_run_body_param() -> Option[Type] {
   if Array::length(run_body_param_cell) == 0 {
     None
@@ -2205,6 +2305,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
   match expr {
     EFn(tparams, tbounds, params, ret_ty, effect, body) => {
       let run_body_param = take_run_body_param()
+      let param_seeds = take_lambda_param_seeds()
       let efn_err_start = Array::length(errors)
       let (retention_rechecking, retention_override) = match take_retention_param_override() {
         Some(overrides) => (true, overrides),
@@ -2420,6 +2521,19 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
             let (tv, nc2) = fresh_var(c1)
             (tv, s1, nc2)
           }
+        }
+        // #3547: an unannotated parameter starts as the type the call
+        // expects of it (`take_lambda_param_seeds`).
+        let ns = if pi < Array::length(param_seeds) {
+          match Array::get(param_seeds, pi) {
+            Some(expected) => match unify(pt, expected, ns) {
+              Some(seeded) => seeded,
+              None => ns
+            },
+            None => ns
+          }
+        } else {
+          ns
         }
         // #3276: a `TaskGroup::run` body's group parameter carries the call's
         // region from the start, so every write in the body sees it. An
