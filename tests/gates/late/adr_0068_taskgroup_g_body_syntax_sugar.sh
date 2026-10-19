@@ -1441,7 +1441,7 @@ fi
 # #3523: an `Async` entry that reaches an `Async` function of its own gets the
 # suspend-class boundary, so the call answers instead of handing a step object
 # (or an unhandled suspension) back. Each pair is fixture and wanted output.
-for async_entry_case in "async_entry_calls_async_closure:5" "async_entry_calls_sleep_wait:5" "async_entry_calls_async_fn_beside_group:47" "async_entry_user_sleep_and_sleep_wait:8" "spawn_suspend_alias_rowless_sleep:42" "async_entry_shadowed_suspending_name:5"; do
+for async_entry_case in "async_entry_calls_async_closure:5" "async_entry_calls_sleep_wait:5" "async_entry_calls_async_fn_beside_group:47" "async_entry_user_sleep_and_sleep_wait:8" "spawn_suspend_alias_rowless_sleep:42" "spawn_suspend_alias_chain_rowless_sleep:42" "async_entry_shadowed_suspending_name:5"; do
   async_entry_fixture="${async_entry_case%%:*}"
   async_entry_want="${async_entry_case#*:}"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
