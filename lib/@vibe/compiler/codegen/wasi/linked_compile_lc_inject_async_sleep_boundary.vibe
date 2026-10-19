@@ -411,113 +411,6 @@ fn lc_top_level_fn_params(stmts: Array[Stmt], name: String) -> Option[Array[(Str
   out
 }
 
-/// The top-level function `fname`'s parameters (`lc_top_level_fn_params`),
-/// unless `root` -- the function being scanned -- binds that name itself: a
-/// parameter, a `let`, a loop or `for` name, or an arm pattern. The scan reads
-/// a callee by name alone, so a local `apply` would otherwise borrow the
-/// top-level `apply`'s discharge exemption and hide a suspension it reaches.
-/// The same check stands between a call and the `suspending` list: a local
-/// `tick` is not the top-level suspending `tick`, and counting it injected a
-/// boundary the entry's body could not be lowered under.
-fn lc_unshadowed_fn_params(stmts: Array[Stmt], fname: String, root: Expr) -> Option[Array[(String, Option[TypeExpr])]] {
-  match lc_top_level_fn_params(stmts, fname) {
-    Some(ps) => if lc_expr_binds(root, fname) {
-      None
-    } else {
-      Some(ps)
-    },
-    None => None
-  }
-}
-
-fn lc_expr_binds(e: Expr, name: String) -> Bool {
-  let here = match e {
-    ELet(n, _, _, _) => n == name,
-    ELetRec(n, _, _) => n == name,
-    ELetMut(n, _, _, _) => n == name,
-    EFn(_, _, ps, _, _, _) => {
-      let mut hit = false
-      let mut i = 0
-      while i < Array::length(ps) && !hit {
-        let (pn, _) = Array::get(ps, i)
-        hit = pn == name
-        i = i + 1
-      }
-      hit
-    },
-    ELoop(binds, _) => {
-      let mut hit = false
-      let mut i = 0
-      while i < Array::length(binds) && !hit {
-        let (bn, _) = Array::get(binds, i)
-        hit = bn == name
-        i = i + 1
-      }
-      hit
-    },
-    EForIn(n, idx, _, _) => n == name || match idx {
-      Some(ix) => ix == name,
-      None => false
-    },
-    EMatch(_, arms) => lc_arms_bind(arms, name),
-    EHandle(_, arms) => lc_arms_bind(arms, name),
-    _ => false
-  }
-  if here {
-    true
-  } else {
-    let kids = expr_children(e)
-    let mut found = false
-    let mut ki = 0
-    while ki < Array::length(kids) && !found {
-      found = lc_expr_binds(Array::get(kids, ki), name)
-      ki = ki + 1
-    }
-    found
-  }
-}
-
-fn lc_arms_bind(arms: Array[(Pat, Expr)], name: String) -> Bool {
-  let mut hit = false
-  let mut i = 0
-  while i < Array::length(arms) && !hit {
-    let (p, _) = Array::get(arms, i)
-    hit = lc_pat_binds(p, name)
-    i = i + 1
-  }
-  hit
-}
-
-fn lc_pat_binds(p: Pat, name: String) -> Bool {
-  match p {
-    PBind(n) => n == name,
-    PCtor(_, ps) => lc_pats_bind(ps, name),
-    PTuple(ps) => lc_pats_bind(ps, name),
-    POr(a, b) => lc_pat_binds(a, name) || lc_pat_binds(b, name),
-    PStruct(_, fields) => {
-      let mut hit = false
-      let mut i = 0
-      while i < Array::length(fields) && !hit {
-        let (_, fp) = Array::get(fields, i)
-        hit = lc_pat_binds(fp, name)
-        i = i + 1
-      }
-      hit
-    },
-    _ => false
-  }
-}
-
-fn lc_pats_bind(ps: Array[Pat], name: String) -> Bool {
-  let mut hit = false
-  let mut i = 0
-  while i < Array::length(ps) && !hit {
-    hit = lc_pat_binds(Array::get(ps, i), name)
-    i = i + 1
-  }
-  hit
-}
-
 /// #3523: is argument `ai` of a call to a function with `params` handed to a
 /// parameter whose own row names `Async`? That parameter is a suspendable
 /// task (`TaskGroup::spawn_suspend`), which discharges what its closure does.
@@ -537,28 +430,40 @@ fn lc_arg_is_suspendable_task(params: Option[Array[(String, Option[TypeExpr])]],
 }
 
 /// #3523: does `e` reach a suspension -- a raw `perform Async::Suspend(q)`
-/// that is not a poll-wait, or a call to one of `suspending` -- outside an
+/// that is not a poll-wait, a call to one of `suspending`, or such a function
+/// taken as a VALUE (`let f = work`, a callback, an array element), which can
+/// be called later through a name the scan cannot follow -- outside an
 /// argument handed to a suspendable task parameter
-/// (`lc_arg_is_suspendable_task`)? A poll-wait (`q` = 1: `await`, `recv_wait`)
-/// is left out: with nothing in the entry to wake it, the boundary could only
-/// trap on it, and an `Async` for-loop's poll would wrap the whole entry in a
-/// boundary its body is not eligible for (gate 19).
-fn lc_expr_reaches_suspend(e: Expr, suspending: Array[String], stmts: Array[Stmt], root: Expr) -> Bool {
+/// (`lc_arg_is_suspendable_task`)? A poll-wait (`q` = 1: `await`,
+/// `recv_wait`) is left out: with nothing in the entry to wake it, the
+/// boundary could only trap on it, and an `Async` for-loop's poll would wrap
+/// the whole entry in a boundary its body is not eligible for (gate 19).
+///
+/// `scope` holds the local binders in force at `e`. A name it holds is the
+/// local, not the top-level function of that spelling, from the binder
+/// onward and only there: `let n = tick(); let tick = () -> 0` still calls
+/// the top-level `tick`. A closure body is walked whether or not it is
+/// called, since its suspension can reach the entry through any name it is
+/// stored under; counting too much only injects a boundary, never drops one.
+fn lc_expr_reaches_suspend(e: Expr, suspending: Array[String], stmts: Array[Stmt], scope: Array[String]) -> Bool {
   match e {
+    EIdent(n, _) => !array_contains_str(scope, n) && array_contains_str(suspending, n),
     ECall(callee, args, _, _) => {
       let (hit, params) = match callee {
         EIdent(fname, _) => if fname == "perform" {
           (lc_is_non_poll_suspend(args), None)
+        } else if array_contains_str(scope, fname) {
+          (false, None)
         } else {
-          (array_contains_str(suspending, fname) && !lc_expr_binds(root, fname), lc_unshadowed_fn_params(stmts, fname, root))
+          (array_contains_str(suspending, fname), lc_top_level_fn_params(stmts, fname))
         },
-        _ => (false, None)
+        _ => (lc_expr_reaches_suspend(callee, suspending, stmts, scope), None)
       }
-      let mut found = hit || lc_expr_reaches_suspend(callee, suspending, stmts, root)
+      let mut found = hit
       let mut ai = 0
       while ai < Array::length(args) && !found {
         if !lc_arg_is_suspendable_task(params, ai) {
-          found = lc_expr_reaches_suspend(Array::get(args, ai), suspending, stmts, root)
+          found = lc_expr_reaches_suspend(Array::get(args, ai), suspending, stmts, scope)
         } else {
           ()
         }
@@ -566,17 +471,104 @@ fn lc_expr_reaches_suspend(e: Expr, suspending: Array[String], stmts: Array[Stmt
       }
       found
     },
+    ELet(n, v, body, _) => lc_expr_reaches_suspend(v, suspending, stmts, scope) || lc_expr_reaches_suspend(body, suspending, stmts, lc_scope_with(scope, [
+      n
+    ])),
+    ELetMut(n, v, body, _) => lc_expr_reaches_suspend(v, suspending, stmts, scope) || lc_expr_reaches_suspend(body, suspending, stmts, lc_scope_with(scope, [
+      n
+    ])),
+    ELetRec(n, v, body) => {
+      let inner = lc_scope_with(scope, [n])
+      lc_expr_reaches_suspend(v, suspending, stmts, inner) || lc_expr_reaches_suspend(body, suspending, stmts, inner)
+    },
+    EFn(_, _, ps, _, _, body) => {
+      let names: Array[String] = []
+      for pr in ps {
+        let (pn, _) = pr
+        Array::push(names, pn)
+      }
+      lc_expr_reaches_suspend(body, suspending, stmts, lc_scope_with(scope, names))
+    },
+    EForIn(n, idx, it, body) => {
+      let names = [n]
+      match idx {
+        Some(ix) => Array::push(names, ix),
+        None => ()
+      }
+      lc_expr_reaches_suspend(it, suspending, stmts, scope) || lc_expr_reaches_suspend(body, suspending, stmts, lc_scope_with(scope, names))
+    },
+    ELoop(binds, body) => {
+      let names: Array[String] = []
+      let mut found = false
+      for bd in binds {
+        let (bn, bv) = bd
+        if !found {
+          found = lc_expr_reaches_suspend(bv, suspending, stmts, scope)
+        } else {
+          ()
+        }
+        Array::push(names, bn)
+      }
+      found || lc_expr_reaches_suspend(body, suspending, stmts, lc_scope_with(scope, names))
+    },
+    EMatch(scrut, arms) => lc_expr_reaches_suspend(scrut, suspending, stmts, scope) || lc_arms_reach_suspend(arms, suspending, stmts, scope),
+    EHandle(body, arms) => lc_expr_reaches_suspend(body, suspending, stmts, scope) || lc_arms_reach_suspend(arms, suspending, stmts, scope),
     _ => {
       let kids = expr_children(e)
       let mut found = false
       let mut ki = 0
       while ki < Array::length(kids) && !found {
-        found = lc_expr_reaches_suspend(Array::get(kids, ki), suspending, stmts, root)
+        found = lc_expr_reaches_suspend(Array::get(kids, ki), suspending, stmts, scope)
         ki = ki + 1
       }
       found
     }
   }
+}
+
+fn lc_arms_reach_suspend(arms: Array[(Pat, Expr)], suspending: Array[String], stmts: Array[Stmt], scope: Array[String]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(arms) && !found {
+    let (p, body) = Array::get(arms, i)
+    let names: Array[String] = []
+    lc_pat_collect(p, names)
+    found = lc_expr_reaches_suspend(body, suspending, stmts, lc_scope_with(scope, names))
+    i = i + 1
+  }
+  found
+}
+
+fn lc_pat_collect(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, ps) => for q in ps {
+      lc_pat_collect(q, out)
+    },
+    PTuple(ps) => for q in ps {
+      lc_pat_collect(q, out)
+    },
+    POr(a, b) => {
+      lc_pat_collect(a, out)
+      lc_pat_collect(b, out)
+    },
+    PStruct(_, fields) => for fd in fields {
+      let (_, fp) = fd
+      lc_pat_collect(fp, out)
+    },
+    _ => ()
+  }
+}
+
+fn lc_scope_with(scope: Array[String], names: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  for n in scope {
+    Array::push(out, n)
+  }
+  for n in names {
+    Array::push(out, n)
+  }
+  out
 }
 
 /// `perform`'s arguments name a runtime-scheduled operation (`Async::Suspend`)
@@ -622,7 +614,8 @@ fn lc_entry_calls_async_fn(stmts: Array[Stmt], boundary_name: String) -> Bool {
         SLet(_, _, nm, _, EFn(tps, bounds, ps, ret, eff, body)) => if nm == boundary_name {
           entry_fn = EFn(tps, bounds, ps, ret, eff, body)
           has_entry = true
-        } else if lc_row_names_scheduled(eff) && !array_contains_str(suspending, nm) && lc_expr_reaches_suspend(body, suspending, stmts, EFn(tps, bounds, ps, ret, eff, body)) {
+        } else if lc_row_names_scheduled(eff) && !array_contains_str(suspending, nm) && lc_expr_reaches_suspend(EFn(tps, bounds, ps, ret, eff, body), suspending, stmts, [
+        ]) {
           Array::push(suspending, nm)
           changed = true
         } else {
@@ -633,7 +626,7 @@ fn lc_entry_calls_async_fn(stmts: Array[Stmt], boundary_name: String) -> Bool {
       i = i + 1
     }
   }
-  has_entry && lc_expr_reaches_suspend(entry_fn, suspending, stmts, entry_fn)
+  has_entry && lc_expr_reaches_suspend(entry_fn, suspending, stmts, [])
 }
 
 export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> String {

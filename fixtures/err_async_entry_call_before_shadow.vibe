@@ -1,0 +1,24 @@
+// #3534 review (Codex): the entry calls the top-level suspending `tick`
+// BEFORE a local `tick` is bound. The entry-boundary scan used to ask "does
+// the entry bind `tick` anywhere?", answered yes, and dropped the real call:
+// no boundary was injected and the run trapped on the unhandled suspension.
+// The scan now tracks lexical scope along the walk, so the boundary goes in.
+// The suspend lowering then refuses the call at build time: it drops a
+// suspending function whose name is rebound anywhere in the program (#1074),
+// so the program fails closed instead of trapping. Renaming the local makes
+// it build. Refusal row in
+// tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh.
+import @vibe/concurrent/experimental {
+  sleep_wait
+}
+
+fn tick() -> Int with Async {
+  sleep_wait(1)
+  5
+}
+
+fn main() -> Int allows Async {
+  let n = tick()
+  let tick = () -> 0
+  n + tick()
+}
