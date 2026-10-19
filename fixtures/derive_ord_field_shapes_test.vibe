@@ -1,0 +1,106 @@
+// `derive (Ord)` over a field whose type is spelled through an alias, an
+// applied declared type, or the `f64` / `f32` spelling of `Double` compares
+// the values. Each used to reach a raw `<` on the two references: equal values
+// answered `Less`, and unequal ones came out in allocation order. Every
+// comparison below allocates the larger operand first, so address order and
+// content order disagree.
+type Score = Double
+
+type Point = Inner
+
+struct Inner {
+  n: Int
+} derive (Ord)
+
+struct Box[T] {
+  n: Int
+} derive (Ord)
+
+struct ByScore {
+  s: Score
+} derive (Ord)
+
+struct ByAlias {
+  p: Point
+} derive (Ord)
+
+struct ByBox {
+  b: Box[Int]
+} derive (Ord)
+
+enum Tagged {
+  T(Box[String])
+} derive (Ord)
+
+struct Wide {
+  v: f64
+} derive (Ord)
+
+struct Narrow {
+  v: f32
+} derive (Ord)
+
+// A program that writes its own `compare` keeps `derive (Ord)` for the
+// trait and gets no generated comparator, so the field's type is not judged.
+struct Lengths {
+  w: Array[Int]
+} derive (Ord)
+
+fn Lengths::compare(a: Lengths, b: Lengths) -> Ordering {
+  let x = Array::length(a.w)
+  let y = Array::length(b.w)
+  if x < y {
+    Less
+  } else if x > y {
+    Greater
+  } else {
+    Equal
+  }
+}
+
+fn text(o: Ordering) -> String {
+  match o {
+    Less => "Less",
+    Equal => "Equal",
+    Greater => "Greater"
+  }
+}
+
+test "a field through a local alias orders by value" {
+  let big = ByScore::{ s: 9.5 }
+  let small = ByScore::{ s: 1.5 }
+  inspect(text(ByScore::compare(big, small)), "Greater")
+  inspect(text(ByScore::compare(ByScore::{ s: 2.5 }, ByScore::{ s: 2.5 })), "Equal")
+  let p = ByAlias::{ p: Inner::{ n: 9 } }
+  let q = ByAlias::{ p: Inner::{ n: 1 } }
+  inspect(text(ByAlias::compare(p, q)), "Greater")
+  inspect(text(ByAlias::compare(q, p)), "Less")
+}
+
+test "an applied declared type orders through its own compare" {
+  let big = ByBox::{ b: Box::{ n: 9 } }
+  let small = ByBox::{ b: Box::{ n: 1 } }
+  inspect(text(ByBox::compare(big, small)), "Greater")
+  let e1 = ByBox::{ b: Box::{ n: 4 } }
+  let e2 = ByBox::{ b: Box::{ n: 4 } }
+  inspect(text(ByBox::compare(e1, e2)), "Equal")
+  let t = T(Box::{ n: 7 })
+  let u = T(Box::{ n: 2 })
+  inspect(text(Tagged::compare(t, u)), "Greater")
+}
+
+test "f64 and f32 fields order by value" {
+  let big = Wide::{ v: 9.5 }
+  let small = Wide::{ v: 1.5 }
+  inspect(text(Wide::compare(big, small)), "Greater")
+  inspect(text(Wide::compare(Wide::{ v: 2.5 }, Wide::{ v: 2.5 })), "Equal")
+  let n_big = Narrow::{ v: 9.5 }
+  let n_small = Narrow::{ v: 1.5 }
+  inspect(text(Narrow::compare(n_big, n_small)), "Greater")
+}
+
+test "a written compare replaces the derived one" {
+  let big = Lengths::{ w: [1, 2, 3] }
+  let small = Lengths::{ w: [1] }
+  inspect(text(Lengths::compare(big, small)), "Greater")
+}

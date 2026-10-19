@@ -926,9 +926,11 @@ export fn collect_derive_field_errors(stmts: Array[Stmt], env: TypeEnv, errors: 
   let declared: Array[String] = []
   let declared_derives: Array[Array[String]] = []
   let defined: Array[String] = []
+  let aliases: Array[(String, Array[String], TypeExpr)] = []
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
+      STypeAlias(_, name, params, target) => Array::push(aliases, (name, params, target)),
       SStruct(_, name, _, derives, _, _) => {
         Array::push(declared, name)
         Array::push(declared_derives, derives)
@@ -969,7 +971,7 @@ export fn collect_derive_field_errors(stmts: Array[Stmt], env: TypeEnv, errors: 
         let mut f = 0
         while f < Array::length(fields) {
           let (fname, fty) = Array::get(fields, f)
-          dfe_check(name, derives, tparams, String::concat("field `", String::concat(fname, "`")), fty, declared, declared_derives, defined, env, errors)
+          dfe_check(name, derives, tparams, String::concat("field `", String::concat(fname, "`")), fty, declared, declared_derives, defined, aliases, env, errors)
           f = f + 1
         }
       },
@@ -979,7 +981,7 @@ export fn collect_derive_field_errors(stmts: Array[Stmt], env: TypeEnv, errors: 
           let (vname, payloads) = Array::get(variants, v)
           let mut p = 0
           while p < Array::length(payloads) {
-            dfe_check(name, derives, tparams, String::concat("payload of `", String::concat(vname, "`")), Array::get(payloads, p), declared, declared_derives, defined, env, errors)
+            dfe_check(name, derives, tparams, String::concat("payload of `", String::concat(vname, "`")), Array::get(payloads, p), declared, declared_derives, defined, aliases, env, errors)
             p = p + 1
           }
           v = v + 1
@@ -1008,10 +1010,24 @@ fn dfe_push_imported(declared: Array[String], declared_derives: Array[Array[Stri
   }
 }
 
-fn dfe_check(owner: String, derives: Array[String], tparams: Array[String], what: String, fty: TypeExpr, declared: Array[String], declared_derives: Array[Array[String]], defined: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
-  if struct_derives_has(derives, "Ord") && !dfe_ord_field_ok(owner, tparams, fty, declared) {
-    Array::push(errors, "write `\{owner}::compare` yourself, or give its \{what} a type `derive (Ord)` can order: it orders `Int`, `Char`, `Bool`, `String`, `Double`, `Float` and declared types field by field, and compared a \{dfe_ord_kind(fty, tparams)} by its address, so equal values answered `Less` [@fn=\{owner}]")
+/// One field or payload of a deriving declaration. A derive whose operation
+/// the program writes itself (`fn Owner::compare`) generates nothing, so
+/// nothing about the field is asked of it (derive_pass skips it the same way).
+fn dfe_check(owner: String, derives: Array[String], tparams: Array[String], what: String, fty: TypeExpr, declared: Array[String], declared_derives: Array[Array[String]], defined: Array[String], aliases: Array[(String, Array[String], TypeExpr)], env: TypeEnv, errors: Array[String]) -> Unit {
+  // The generated `compare` expands a local alias before it picks a
+  // comparison (`compare_then_typed`), so the field is judged expanded too.
+  let ord_fty = dfe_expand_aliases(fty, aliases, 32)
+  let ord_written = str_array_has(defined, String::concat(owner, "::compare"))
+  if struct_derives_has(derives, "Ord") && !ord_written && !dfe_ord_field_ok(owner, tparams, ord_fty, declared, env) {
+    Array::push(errors, "write `\{owner}::compare` yourself, or give its \{what} a type `derive (Ord)` can order: it orders `Int`, `Char`, `Bool`, `String`, `Double`, `Float` and declared structs and enums field by field, and compared a \{dfe_ord_kind(fty, tparams)} by its address, so equal values answered `Less` [@fn=\{owner}]")
   }
+  dfe_check_head(owner, derives, tparams, "Ord", "compare", what, ord_fty, declared, declared_derives, defined, env, errors)
+  dfe_check_head(owner, derives, tparams, "Show", "to_string", what, fty, declared, declared_derives, defined, env, errors)
+}
+
+/// The declared nominal at the head of `fty`, when the derive reaches its
+/// `op` (dfe_check_trait).
+fn dfe_check_head(owner: String, derives: Array[String], tparams: Array[String], trait_name: String, op: String, what: String, fty: TypeExpr, declared: Array[String], declared_derives: Array[Array[String]], defined: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
   let head = match fty {
     TyName(n) => n,
     TyApp(n, _) => n,
@@ -1031,27 +1047,138 @@ fn dfe_check(owner: String, derives: Array[String], tparams: Array[String], what
       i = i + 1
     }
     if idx >= 0 {
-      dfe_check_trait(owner, derives, "Ord", "compare", what, head, Array::get(declared_derives, idx), defined, env, errors)
-      dfe_check_trait(owner, derives, "Show", "to_string", what, head, Array::get(declared_derives, idx), defined, env, errors)
+      dfe_check_trait(owner, derives, trait_name, op, what, head, Array::get(declared_derives, idx), defined, env, errors)
     } else {
       ()
     }
   }
 }
 
-/// Can the generated `compare` order this field? A scalar it compares by
-/// value, a declared nominal through that type's own `compare` (whose
-/// existence dfe_check_trait checks). A container, a tuple, a function or a
-/// type parameter reached a raw `<` on references (#3042's generator has no
-/// typed arm for them), so `derive (Ord)` over one is refused rather than
-/// answering by address. An unknown name (an alias, an imported nominal) is
-/// left alone: no false refusal.
-fn dfe_ord_field_ok(owner: String, tparams: Array[String], fty: TypeExpr, declared: Array[String]) -> Bool {
+/// Can the generated `compare` order this (alias-expanded) field? A scalar
+/// it compares by value, a declared struct or enum -- bare or applied --
+/// through that type's own `compare` (whose existence dfe_check_trait
+/// checks). Everything else reached a raw `<` on references: a container, a
+/// tuple, a function, a type parameter, and an opaque builtin such as
+/// `StringBuilder` or `Bytes`. So the set is an allow-list, and a name it
+/// does not know is refused rather than compared by address.
+fn dfe_ord_field_ok(owner: String, tparams: Array[String], fty: TypeExpr, declared: Array[String], env: TypeEnv) -> Bool {
   match fty {
-    TyName(n) => !str_array_has(tparams, n) && n != "Bytes",
+    TyName(n) => if str_array_has(tparams, n) {
+      false
+    } else if dfe_ord_scalar(n) || n == owner || str_array_has(declared, n) {
+      true
+    } else {
+      dfe_imported_alias_ok(env, n, declared)
+    },
     TyApp(n, _) => n == owner || str_array_has(declared, n),
     TyUnit => true,
     _ => false
+  }
+}
+
+/// The scalar spellings the generated `compare` orders by value: each is one
+/// the checker resolves (`resolve_builtin`) to `Int`, `Double`, `Bool`,
+/// `String`, `Char` or `Unit`, and `ord_operand` marks the boxed ones.
+fn dfe_ord_scalar(n: String) -> Bool {
+  n == "Int" || n == "i32" || n == "Char" || n == "Bool" || n == "String" || n == "Double" || n == "Float" || n == "f64" || n == "f32" || n == "Unit"
+}
+
+/// An imported alias reaches this check resolved (`TDAlias`); it is
+/// orderable when its target is a scalar or a declared nominal.
+fn dfe_imported_alias_ok(env: TypeEnv, n: String, declared: Array[String]) -> Bool {
+  let defs = env_type_defs(env)
+  let mut ok = false
+  let mut i = 0
+  while i < Array::length(defs) {
+    match Array::get(defs, i) {
+      TDAlias(an, params, target) => if an == n && Array::length(params) == 0 {
+        ok = dfe_type_ord_ok(target, declared)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// `dfe_ord_field_ok` over a resolved type (an imported alias's target).
+fn dfe_type_ord_ok(t: Type, declared: Array[String]) -> Bool {
+  match t {
+    CtInt => true,
+    CtDouble => true,
+    CtBool => true,
+    CtString => true,
+    CtChar => true,
+    CtUnit => true,
+    CtStruct(n) => str_array_has(declared, n),
+    CtEnum(n) => str_array_has(declared, n),
+    CtNamed(n, _) => str_array_has(declared, n),
+    _ => false
+  }
+}
+
+/// Expand the program's own type aliases in `fty`, substituting an applied
+/// alias's arguments (`type AL[V] = Array[V]` at `AL[Int]`). `fuel` bounds a
+/// cyclic alias, which is its own error elsewhere.
+fn dfe_expand_aliases(fty: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)], fuel: Int) -> TypeExpr {
+  if fuel <= 0 {
+    fty
+  } else {
+    match fty {
+      TyName(n) => match dfe_find_alias(aliases, n, 0) {
+        Some((_, target)) => dfe_expand_aliases(target, aliases, fuel - 1),
+        None => fty
+      },
+      TyApp(n, args) => match dfe_find_alias(aliases, n, Array::length(args)) {
+        Some((params, target)) => dfe_expand_aliases(dfe_subst(target, params, args), aliases, fuel - 1),
+        None => fty
+      },
+      _ => fty
+    }
+  }
+}
+
+/// The local alias `n` declared with `arity` parameters, if any.
+fn dfe_find_alias(aliases: Array[(String, Array[String], TypeExpr)], n: String, arity: Int) -> Option[(Array[String], TypeExpr)] {
+  let mut found: Option[(Array[String], TypeExpr)] = None
+  let mut i = 0
+  while i < Array::length(aliases) {
+    let (an, params, target) = Array::get(aliases, i)
+    if an == n && Array::length(params) == arity {
+      found = Some((params, target))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Substitute an applied alias's arguments for its parameters.
+fn dfe_subst(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+  match ty {
+    TyName(n) => {
+      let mut out = ty
+      let mut i = 0
+      while i < Array::length(params) && i < Array::length(args) {
+        if Array::get(params, i) == n {
+          out = Array::get(args, i)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      out
+    },
+    TyApp(n, xs) => TyApp(n, for x in xs {
+      dfe_subst(x, params, args)
+    }),
+    TyTuple(xs) => TyTuple(for x in xs {
+      dfe_subst(x, params, args)
+    }),
+    _ => ty
   }
 }
 
@@ -1069,7 +1196,9 @@ fn dfe_ord_kind(fty: TypeExpr, tparams: Array[String]) -> String {
 }
 
 fn dfe_check_trait(owner: String, derives: Array[String], trait_name: String, op: String, what: String, head: String, head_derives: Array[String], defined: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
-  if !struct_derives_has(derives, trait_name) {
+  // The owner writes the operation itself: nothing is generated, so nothing
+  // goes through `head` (derive_pass skips the generator the same way).
+  if !struct_derives_has(derives, trait_name) || str_array_has(defined, String::concat(owner, String::concat("::", op))) {
     ()
   } else {
     let qualified = String::concat(head, String::concat("::", op))
