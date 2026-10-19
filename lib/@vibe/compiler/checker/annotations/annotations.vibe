@@ -802,6 +802,150 @@ fn structural_arity_error(name: String, given: Int, want: Int, where_label: Stri
   String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("`", name), "` takes "), Int::to_string(want)), " type argument, but "), Int::to_string(given)), " were given in "), String::concat(where_label, String::concat(String::concat(" -- write `", name), "[T]` with a single element type")))
 }
 
+/// #3536: how many type arguments a head written in an annotation takes when
+/// it is a program declaration (struct, enum, alias), `Map`, or one of the
+/// structural builtins, or -1 for any other head. A caller that counts the
+/// arguments still exempts a compiler-owned head with region slots, which
+/// may leave them out (`TaskHandle[Int]`).
+fn declared_generic_head_arity(name: String, defs: Array[TypeDef]) -> Int {
+  match find_typedef(defs, name) {
+    Some(td) => match td {
+      TDEnum(_, params, _) => Array::length(params),
+      TDStruct(_, _, _, params) => Array::length(params),
+      TDAlias(_, params, _) => Array::length(params),
+      _ => 0 - 1
+    },
+    None => if name == "Map" {
+      2
+    } else {
+      structural_head_arity(name)
+    }
+  }
+}
+
+/// Whether argument `i` of the head `name` is a type-constructor slot, which
+/// takes a bare constructor (`F[_]` of `enum K[T, F[_]]`).
+fn type_argument_takes_constructor(name: String, i: Int, defs: Array[TypeDef], shadow: Array[String]) -> Bool {
+  if string_array_has(shadow, name) || shadow_type_constructor_arity(shadow, name) >= 0 {
+    false
+  } else {
+    match find_typedef(defs, name) {
+      Some(td) => {
+        let formals = type_def_formals(td)
+        i < Array::length(formals) && type_param_arity(Array::get(formals, i)) > 0
+      },
+      None => false
+    }
+  }
+}
+
+fn plural_type_arguments(n: Int) -> String {
+  if n == 1 {
+    "1 type argument"
+  } else {
+    "\{Int::to_string(n)} type arguments"
+  }
+}
+
+fn type_argument_placeholders(n: Int) -> String {
+  let names = ["T", "U", "V", "W"]
+  let parts: Array[String] = []
+  let mut i = 0
+  while i < n {
+    Array::push(parts, if i < Array::length(names) {
+      Array::get(names, i)
+    } else {
+      "T\{Int::to_string(i)}"
+    })
+    i = i + 1
+  }
+  String::join(parts, ", ")
+}
+
+fn bare_generic_head_error(name: String, want: Int, where_label: String) -> String {
+  "`\{name}` takes \{plural_type_arguments(want)}, but none were given in \{where_label} -- write `\{name}[\{type_argument_placeholders(want)}]` with the type arguments it holds"
+}
+
+/// #3536: report a generic head written without its arguments in a function
+/// signature (`fn mk() -> Array`, `fn get(b: Box) -> Int`). There it resolved
+/// to a wildcard that every caller unified with anything, so `["s"]` came
+/// back as an `Array[Int]` and `b.value` read a `String` as an `Int`. A `let`
+/// annotation is not judged: there a bare head is a partial annotation the
+/// value fills in (#3493).
+///
+/// `in_scope` answers whether a name is a type formal or an impl's erased
+/// formal visible at the signature: a head that is one is not a generic
+/// declaration, and an impl's method may name its own target bare when every
+/// formal of the target is erased there (`impl AsyncIterator for AsyncIter`).
+/// Only a type-constructor argument slot (`K[Array[Int], Option]`) takes a
+/// bare constructor.
+export fn report_bare_generic_heads(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], in_scope: (String) -> Bool, where_label: String, errors: Array[String]) -> Unit {
+  bare_generic_heads_walk(te, defs, shadow, in_scope, where_label, errors, false)
+}
+
+fn bare_generic_heads_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], in_scope: (String) -> Bool, where_label: String, errors: Array[String], constructor_slot: Bool) -> Unit {
+  match te {
+    TyName(name) => {
+      let skipped = constructor_slot || string_array_has(shadow, name) || shadow_type_constructor_arity(shadow, name) >= 0 || in_scope(name)
+      let want = if skipped {
+        0
+      } else match resolve_builtin(name) {
+        Some(_) => 0,
+        None => declared_generic_head_arity(name, defs)
+      }
+      if want > 0 && !bare_head_erased_by_impl(name, defs, in_scope) {
+        Array::push(errors, bare_generic_head_error(name, want, where_label))
+      } else {
+        ()
+      }
+    },
+    TyUnit => (),
+    TyApp(name, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        bare_generic_heads_walk(Array::get(args, i), defs, shadow, in_scope, where_label, errors, type_argument_takes_constructor(name, i, defs, shadow))
+        i = i + 1
+      }
+    },
+    TyTuple(items) => for item in items {
+      bare_generic_heads_walk(item, defs, shadow, in_scope, where_label, errors, false)
+    },
+    TyFn(params, ret, _) => {
+      for param in params {
+        bare_generic_heads_walk(param, defs, shadow, in_scope, where_label, errors, false)
+      }
+      bare_generic_heads_walk(ret, defs, shadow, in_scope, where_label, errors, false)
+    }
+  }
+}
+
+fn bare_head_erased_by_impl(name: String, defs: Array[TypeDef], in_scope: (String) -> Bool) -> Bool {
+  match find_typedef(defs, name) {
+    Some(td) => {
+      let formals = type_def_formals(td)
+      let mut all = Array::length(formals) > 0
+      for formal in formals {
+        if !in_scope(String::concat("#erased.", type_param_name(formal))) {
+          all = false
+        } else {
+          ()
+        }
+      }
+      all
+    },
+    None => false
+  }
+}
+
+fn declared_arity_error(name: String, given: Int, want: Int, where_label: String) -> String {
+  let given_text = if given == 1 {
+    "1 was"
+  } else {
+    "\{Int::to_string(given)} were"
+  }
+  "`\{name}` takes \{plural_type_arguments(want)}, but \{given_text} given in \{where_label} -- write `\{name}[\{type_argument_placeholders(want)}]`"
+}
+
 fn shadow_type_constructor_arity(shadow: Array[String], name: String) -> Int {
   let mut i = 0
   let mut found = 0 - 1
@@ -963,6 +1107,17 @@ fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
       let want = structural_head_arity(name)
       if want >= 0 && Array::length(args) != want && !string_array_has(shadow, name) && find_typedef(defs, name) is None {
         Array::push(errors, structural_arity_error(name, Array::length(args), want, where_label))
+      } else {
+        ()
+      }
+      // #3536: a declared generic applied to the wrong number of arguments
+      // (`type Bx[T] = Array[T]` written `Bx[Int, String]`) dropped or
+      // invented the difference silently. A compiler-owned head with region
+      // slots may leave them out (`TaskHandle[Int]`), so it is not counted.
+      let declared = declared_generic_head_arity(name, defs)
+      let region_elidable = name != "Map" && structural_head_arity(name) < 0 && compiler_owned_type_arity(name) is Some(_)
+      if declared >= 0 && !region_elidable && structural_head_arity(name) < 0 && Array::length(args) != declared && !string_array_has(shadow, name) && shadow_type_constructor_arity(shadow, name) < 0 {
+        Array::push(errors, declared_arity_error(name, Array::length(args), declared, where_label))
       } else {
         ()
       }

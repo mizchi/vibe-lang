@@ -169,6 +169,7 @@ import ./checker_stmt_imported_decl_kind.vibe {
 }
 
 import ./checker_stmt_labeled_name_check_expr.vibe {
+  alias_decl_is_recursive,
   alias_expansion_node_limit,
   bind_annotation_return,
   bind_fn_return,
@@ -2172,6 +2173,14 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
       },
       STypeAlias(exported, name, params, te) => {
         builtin_spelling_decl_error("type alias", name, Array::length(params), errors)
+        // #3536: an alias is expanded in place, so one that reaches itself
+        // (`type A = B` / `type B = A`) names no type at all. It resolved to
+        // a wildcard and accepted every value.
+        if alias_decl_is_recursive(stmts, name, params, te) {
+          Array::push(errors, "type alias `\{name}` refers to itself, and an alias is expanded in place, so it names no type -- declare a `struct` or `enum` to hold the recursive part, or point the alias at an existing type")
+        } else {
+          ()
+        }
         // #2290: map-key and builtin-arity validation is deferred to
         // check_completed_decl_map_keys. At this point a later alias is not
         // in `defs`, so judging ownership here made valid programs depend on

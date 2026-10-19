@@ -4,6 +4,7 @@ import @vibe/compiler/checker/annotations {
   collect_formal_kind_uses,
   fapp_formal_marker_prefix,
   formal_application_error as annotations_formal_application_error,
+  report_bare_generic_heads as annotations_report_bare_generic_heads,
   report_formal_applications_across as annotations_report_formal_applications_across,
   report_kinded_formal_applications,
   report_map_key_types as annotations_report_map_key_types,
@@ -309,6 +310,31 @@ export fn formals_source_arity(formals: Array[String], name: String) -> Int {
 // Forward the established checker API to its owning package.
 export fn report_map_key_types(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], where_label: String, errors: Array[String]) -> Unit {
   annotations_report_map_key_types(te, defs, shadow, where_label, errors)
+}
+
+/// #3536: `report_bare_generic_heads` for a function signature checked in
+/// `env`. A name is in scope when an enclosing binder bound it as a type
+/// formal (a `CtVar`, or its rigid spelling), and `#erased.<name>` when an
+/// impl erases it in this method (`trait_erased_type_param_env`).
+export fn report_bare_generic_heads_in_env(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, where_label: String, errors: Array[String]) -> Unit {
+  let in_scope = (name) -> {
+    if String::starts_with(name, "#erased.") {
+      match env_lookup(env, String::concat(trait_erased_type_param_prefix, String::substring(name, 8, String::length(name)))) {
+        Some(_) => true,
+        None => false
+      }
+    } else {
+      match env_lookup(env, name) {
+        Some(t) => match t {
+          CtVar(_) => true,
+          CtNamed(bound_name, bargs) => Array::length(bargs) == 0 && (bound_name == name || bound_name == String::concat("#hktformal.", name)),
+          _ => false
+        },
+        None => false
+      }
+    }
+  }
+  annotations_report_bare_generic_heads(te, defs, shadow, in_scope, where_label, errors)
 }
 
 fn report_unknown_type_names_only(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, row_binders: Array[String], where_label: String, errors: Array[String]) -> Unit {

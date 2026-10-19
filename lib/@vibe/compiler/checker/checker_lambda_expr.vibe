@@ -176,7 +176,7 @@ import ./checker_region_retention.vibe {
 }
 
 import ./checker_pinned_formal.vibe {
-  pinned_row_formal_errors
+  collapsed_formal_errors, pinned_row_formal_errors
 }
 
 import ./checker_throw_kind_of_type.vibe {
@@ -186,6 +186,7 @@ import ./checker_throw_kind_of_type.vibe {
   formals_source_arity,
   min_int,
   railway_expr_off,
+  report_bare_generic_heads_in_env,
   report_exception_kinds_in_row,
   report_formal_applications,
   report_unknown_type_names,
@@ -2204,6 +2205,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
   match expr {
     EFn(tparams, tbounds, params, ret_ty, effect, body) => {
       let run_body_param = take_run_body_param()
+      let efn_err_start = Array::length(errors)
       let (retention_rechecking, retention_override) = match take_retention_param_override() {
         Some(overrides) => (true, overrides),
         None => (false, array_empty())
@@ -2409,6 +2411,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
               ()
             } else {
               report_unknown_type_names(te, defs, tparams, fn_env, declared_row_binders, String::concat(String::concat("parameter `", name), "`"), errors)
+              report_bare_generic_heads_in_env(te, defs, tparams, fn_env, String::concat(String::concat("parameter `", name), "`"), errors)
               report_formal_applications(te, tparams, String::concat(String::concat("parameter `", name), "`"), errors)
             }
             (pt2, s1, c1)
@@ -2509,6 +2512,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
         Some(rte) => {
           // #2125: see the parameter arm above.
           report_unknown_type_names(rte, defs, tparams, fn_env, declared_row_binders, "the return type", errors)
+          report_bare_generic_heads_in_env(rte, defs, tparams, fn_env, "the return type", errors)
           report_formal_applications(rte, tparams, "the return type", errors)
           env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, formal_shadow(rte, env, tparams)), fn_env))
         },
@@ -2700,6 +2704,14 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       // #3318: a formal the row names must stay generic in the body.
       if tplen > 0 {
         pinned_row_formal_errors(tparams, tparam_ids, effect, body, defs, s, s2_body, s2, s3, errors)
+        // #3536: two declared formals the body made one type. Judged only on
+        // an otherwise clean declaration, so a body error is not re-reported
+        // as the collapse it left behind.
+        if Array::length(errors) == efn_err_start {
+          collapsed_formal_errors(tparams, tparam_ids, body, s, s2_body, s2, s3, errors)
+        } else {
+          ()
+        }
       } else {
         ()
       }

@@ -1,0 +1,83 @@
+//# #3536: a type head must carry the arguments its declaration takes
+
+// Three annotations named no checked type. A generic head written bare
+// (`-> Array`, `-> Box`) resolved to a wildcard, so `["str"]` flowed into an
+// `Array[Int]` and `+ 1` read the string's pointer. A cyclic alias
+// (`type A = B` / `type B = A`) accepted every value the same way. An alias
+// applied to too many arguments (`Bx[Int, String]`) dropped the extra one.
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+/// A bare builtin generic in a return type.
+test "a bare Array return type is refused" {
+  let src = "fn mk() -> Array {\n  [\"str\"]\n}\n"
+  inspect(collect_all_diagnostics(src), "[`Array` takes 1 type argument, but none were given in the return type -- write `Array[T]` with the type arguments it holds]")
+}
+
+/// A bare program generic in a return type.
+test "a bare generic struct return type is refused" {
+  let src = "struct Box[T] {\n  v: T\n}\n\nfn mk() -> Box {\n  Box::{ v: \"str\" }\n}\n"
+  inspect(collect_all_diagnostics(src), "[`Box` takes 1 type argument, but none were given in the return type -- write `Box[T]` with the type arguments it holds]")
+}
+
+/// A bare generic as a parameter type, nested in a tuple.
+test "a bare Option nested in a parameter type is refused" {
+  let src = "fn f(p: (Int, Option)) -> Int {\n  p.0\n}\n"
+  inspect(collect_all_diagnostics(src), "[`Option` takes 1 type argument, but none were given in parameter `p` -- write `Option[T]` with the type arguments it holds]")
+}
+
+/// A bare program generic as a parameter type read its field at any type.
+test "a bare generic struct parameter type is refused" {
+  let src = "struct Box[T] {\n  v: T\n}\n\nfn get(b: Box) -> Int {\n  b.v\n}\n"
+  inspect(collect_all_diagnostics(src), "[`Box` takes 1 type argument, but none were given in parameter `b` -- write `Box[T]` with the type arguments it holds]")
+}
+
+/// In a `let` annotation a bare head is a partial annotation the value fills.
+test "a bare generic in a let annotation stays a partial annotation" {
+  let src = "struct Box[T] {\n  v: T\n}\n\nfn f() -> Int {\n  let b: Box = Box::{ v: 1 }\n  b.v\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+/// An impl method may name its own target bare where the target's formals
+/// are erased.
+test "an impl method naming its own target bare is accepted" {
+  let src = "trait Next[T] {\n  next(Self) -> Option[(T, Self)]\n}\n\nstruct It[T] {\n  v: T\n}\n\nimpl Next for It {\n  next(self) -> Option[(T, It)] {\n    None\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+/// Two aliases naming each other.
+test "a cyclic alias pair is refused" {
+  let src = "type A = B\ntype B = A\n\nfn f(x: A) -> Int {\n  x\n}\n"
+  inspect(collect_all_diagnostics(src), "[type alias `A` refers to itself, and an alias is expanded in place, so it names no type -- declare a `struct` or `enum` to hold the recursive part, or point the alias at an existing type, type alias `B` refers to itself, and an alias is expanded in place, so it names no type -- declare a `struct` or `enum` to hold the recursive part, or point the alias at an existing type]")
+}
+
+/// An alias naming itself through an application.
+test "a self-referencing alias is refused" {
+  let src = "type L = Array[L]\n"
+  inspect(collect_all_diagnostics(src), "[type alias `L` refers to itself, and an alias is expanded in place, so it names no type -- declare a `struct` or `enum` to hold the recursive part, or point the alias at an existing type]")
+}
+
+/// An alias applied to more arguments than it declares.
+test "an alias applied to too many arguments is refused" {
+  let src = "type Bx[T] = Array[T]\n\nfn f(x: Bx[Int, String]) -> Int {\n  Array::length(x)\n}\n"
+  inspect(collect_all_diagnostics(src), "[`Bx` takes 1 type argument, but 2 were given in parameter `x` -- write `Bx[T]`]")
+}
+
+/// A generic struct applied to fewer arguments than it declares.
+test "a struct applied to too few arguments is refused" {
+  let src = "struct P[A, B] {\n  a: A;\n  b: B\n}\n\nfn f(p: P[Int]) -> Int {\n  p.a\n}\n"
+  inspect(collect_all_diagnostics(src), "[`P` takes 2 type arguments, but 1 was given in parameter `p` -- write `P[T, U]`]")
+}
+
+/// The written forms with their arguments, and an acyclic alias chain.
+test "applied heads and an acyclic alias chain are accepted" {
+  let src = "struct Box[T] {\n  v: T\n}\n\ntype Bx[T] = Array[T]\ntype Ints = Bx[Int]\n\nfn mk() -> Box[Array[Int]] {\n  Box::{ v: [1] }\n}\n\nfn f(x: Ints, m: Map[String, Int]) -> Int {\n  Array::length(x)\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+/// A type-constructor slot takes a bare constructor.
+test "a bare constructor in a constructor slot is accepted" {
+  let src = "enum K[T, F[_]] {\n  Hold(T, F[Int])\n}\n\nfn f(k: K[Int, Option]) -> Int {\n  0\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
