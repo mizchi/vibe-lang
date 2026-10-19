@@ -1,0 +1,250 @@
+// `derive (Hash)` key generation (#3544).
+//
+// A derived `T::hash_key` used to be `T::to_string(self)`. That rendering is
+// for people, not for keys: it is not injective. A `String` field prints
+// verbatim, so `S { a: "p, b: q", b: "r" }` and `S { a: "p", b: "q, b: r" }`
+// both rendered `S { a: p, b: q, b: r }` -- two values `==` calls different
+// shared one Map entry -- and `0.0 == -0.0` rendered `0` and `-0`, so two
+// values `==` calls equal landed in two entries.
+//
+// The key is now its own encoding. Every component is SELF-DELIMITING --
+// `<byte length>:<text>` -- so a concatenation of components reads back one
+// way only; a variant is keyed by its name the same way; an `Option` /
+// `Result` carries a one-letter tag before its payload; an `Array` carries its
+// element count before its elements. A `Double` is keyed after adding `0.0`,
+// which folds `-0.0` into `0.0` (IEEE: `-0 + 0 == +0`), so the two zeros that
+// `==` equates share a key. A nested type that has a `hash_key` (derived or
+// written) contributes that key. Anything else contributes its structural
+// rendering, length-prefixed: no worse than before for that component, and
+// it can no longer bleed into its neighbours.
+//
+// `to_string` (Show) is untouched; it is still generated for a `Hash` type.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import @vibe/ast {
+  builtin_ref
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./derive_operations.vibe {
+  qualified_name, show_for_typed
+}
+
+import ./formal_scope.vibe {
+  is_scalar_type_name
+}
+
+import ./name_encoding.vibe {
+  concat2, idx_str
+}
+
+import ./state.vibe {
+  dtd_facts_explicit_ops
+}
+
+import ./utilities.vibe {
+  str_array_contains
+}
+
+/// The types whose values have a `hash_key` this program can call: every
+/// struct / enum here that derives `Hash`, every `T::hash_key` written here,
+/// and every one the program's other modules define (`dtd_facts_explicit_ops`).
+export fn collect_hash_key_types(stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = array_empty()
+  for stmt in stmts {
+    match stmt {
+      SStruct(_, name, _, derives, _, _) => if str_array_contains(derives, "Hash") {
+        Array::push(out, name)
+      } else {
+        ()
+      },
+      SEnum(_, name, _, _, derives) => if str_array_contains(derives, "Hash") {
+        Array::push(out, name)
+      } else {
+        ()
+      },
+      SLet(_, _, name, _, _) => hash_key_owner_into(name, out),
+      _ => ()
+    }
+  }
+  for name in dtd_facts_explicit_ops {
+    hash_key_owner_into(name, out)
+  }
+  out
+}
+
+fn hash_key_owner_into(binding: String, out: Array[String]) -> Unit {
+  let suffix = "::hash_key"
+  let n = String::length(binding)
+  let k = String::length(suffix)
+  if n > k && String::ends_with(binding, suffix) {
+    let owner = String::substring(binding, 0, n - k)
+    if !str_array_contains(out, owner) {
+      Array::push(out, owner)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// A fresh binder for the generated body. Each derived function owns one
+/// counter, so nested Option / tuple / Array encodings never shadow each other.
+fn hk_fresh(counter: Array[Int], stem: String) -> String {
+  let n = Array::get(counter, 0)
+  Array::set(counter, 0, n + 1)
+  String::concat("__hk_", String::concat(stem, idx_str(n)))
+}
+
+fn hk_str(text: String) -> Expr {
+  EString(text, -1)
+}
+
+/// `<byte length>:<text>`. The text is bound once so it is evaluated once.
+fn hk_length_prefixed(text: Expr, counter: Array[Int]) -> Expr {
+  let name = hk_fresh(counter, "s")
+  let length = ECall(builtin_ref("String::length"), [EIdent(name, -1)], -1, [])
+  let prefix = concat2(ECall(builtin_ref("Int::to_string"), [length], -1, []), hk_str(":"))
+  ELet(name, text, concat2(prefix, EIdent(name, -1)), -1)
+}
+
+/// The key component for a value `val` of declared type `fty`.
+fn hk_component(fty: TypeExpr, val: Expr, known_types: Array[String], hash_types: Array[String], counter: Array[Int]) -> Expr {
+  match fty {
+    TyName("String") => hk_length_prefixed(val, counter),
+    TyName(n) => if n == "Double" || n == "Float" || n == "f64" || n == "f32" {
+      // `-0.0 + 0.0` is `+0.0`, so the zeros `==` equates share one key.
+      let folded = EBinOp("+", ECall(builtin_ref("Double::to_float"), [val], -1, [
+      ]), EFloat(0.0), -1)
+      hk_length_prefixed(ECall(builtin_ref("Double::to_string"), [folded], -1, [
+      ]), counter)
+    } else if !is_scalar_type_name(n) && str_array_contains(hash_types, n) {
+      hk_length_prefixed(ECall(EIdent(qualified_name(n, "hash_key"), -1), [val], -1, [
+      ]), counter)
+    } else {
+      hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
+    },
+    TyApp("Option", args) => if Array::length(args) == 1 {
+      let bind = hk_fresh(counter, "o")
+      let inner = hk_component(Array::get(args, 0), EIdent(bind, -1), known_types, hash_types, counter)
+      EMatch(val, [
+        (PCtor("Some", [PBind(bind)]), concat2(hk_str("S"), inner)),
+        (PCtor("None", array_empty()), hk_str("N"))
+      ])
+    } else {
+      hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
+    },
+    TyApp("Result", args) => if Array::length(args) == 2 {
+      let ok_bind = hk_fresh(counter, "r")
+      let err_bind = hk_fresh(counter, "r")
+      let ok_inner = hk_component(Array::get(args, 0), EIdent(ok_bind, -1), known_types, hash_types, counter)
+      let err_inner = hk_component(Array::get(args, 1), EIdent(err_bind, -1), known_types, hash_types, counter)
+      EMatch(val, [
+        (PCtor("Ok", [PBind(ok_bind)]), concat2(hk_str("O"), ok_inner)),
+        (PCtor("Err", [PBind(err_bind)]), concat2(hk_str("E"), err_inner))
+      ])
+    } else {
+      hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
+    },
+    TyTuple(ts) => {
+      let pats: Array[Pat] = array_empty()
+      let parts: Array[Expr] = array_empty()
+      for t in ts {
+        let bind = hk_fresh(counter, "t")
+        Array::push(pats, PBind(bind))
+        Array::push(parts, hk_component(t, EIdent(bind, -1), known_types, hash_types, counter))
+      }
+      EMatch(val, [(PTuple(pats), hk_concat_all(parts))])
+    },
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      hk_array_component(Array::get(args, 0), val, known_types, hash_types, counter)
+    } else {
+      hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
+    },
+    TyApp(n, _) => if str_array_contains(hash_types, n) {
+      hk_length_prefixed(ECall(EIdent(qualified_name(n, "hash_key"), -1), [val], -1, [
+      ]), counter)
+    } else {
+      hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
+    },
+    _ => hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
+  }
+}
+
+/// `#<count>:` followed by each element's component.
+fn hk_array_component(elem_ty: TypeExpr, val: Expr, known_types: Array[String], hash_types: Array[String], counter: Array[Int]) -> Expr {
+  let arr = hk_fresh(counter, "a")
+  let idx = hk_fresh(counter, "i")
+  let acc = hk_fresh(counter, "acc")
+  let length = ECall(builtin_ref("Array::length"), [EIdent(arr, -1)], -1, [])
+  let elem = ECall(builtin_ref("Array::get"), [
+    EIdent(arr, -1),
+    EIdent(idx, -1)
+  ], -1, [])
+  let elem_key = hk_component(elem_ty, elem, known_types, hash_types, counter)
+  let set_acc = EAssign(acc, concat2(EIdent(acc, -1), elem_key), EUnit, -1)
+  let incr = EAssign(idx, EBinOp("+", EIdent(idx, -1), EInt(1), -1), EUnit, -1)
+  let walk = EWhile(EBinOp("<", EIdent(idx, -1), length, -1), ESeq(set_acc, incr))
+  let header = concat2(hk_str("#"), concat2(ECall(builtin_ref("Int::to_string"), [
+    length
+  ], -1, []), hk_str(":")))
+  ELet(arr, val, ELetMut(idx, EInt(0), ELetMut(acc, header, ESeq(walk, EIdent(acc, -1)), -1), -1), -1)
+}
+
+fn hk_concat_all(parts: Array[Expr]) -> Expr {
+  let n = Array::length(parts)
+  if n == 0 {
+    hk_str("")
+  } else {
+    let mut acc = Array::get(parts, n - 1)
+    let mut j = n - 2
+    while j >= 0 {
+      acc = concat2(Array::get(parts, j), acc)
+      j = j - 1
+    }
+    acc
+  }
+}
+
+fn hk_fn(tname: String, body: Expr) -> Stmt {
+  let params = [("self", Some(TyName(tname)))]
+  SLet(false, false, qualified_name(tname, "hash_key"), None, EFn(array_empty(), array_empty(), params, Some(TyName("String")), None, body))
+}
+
+/// `let S::hash_key = (self: S) -> String { <component of each field> }`.
+export fn gen_struct_hash_key_fn(tname: String, fields: Array[(String, TypeExpr)], known_types: Array[String], hash_types: Array[String]) -> Stmt {
+  let counter = [0]
+  let parts: Array[Expr] = array_empty()
+  for field in fields {
+    let (fname, fty) = field
+    Array::push(parts, hk_component(fty, EDot(EIdent("self", -1), fname, -1, -1), known_types, hash_types, counter))
+  }
+  hk_fn(tname, hk_concat_all(parts))
+}
+
+/// `let E::hash_key = (self: E) -> String { match self { V(p..) =>
+/// <variant name, length-prefixed> ++ <component of each payload> } }`.
+export fn gen_enum_hash_key_fn(ename: String, variants: Array[(String, Array[TypeExpr])], known_types: Array[String], hash_types: Array[String]) -> Stmt {
+  let counter = [0]
+  let arms: Array[(Pat, Expr)] = array_empty()
+  for variant in variants {
+    let (vname, ftypes) = variant
+    let binds: Array[Pat] = array_empty()
+    let parts: Array[Expr] = array_empty()
+    Array::push(parts, hk_length_prefixed(hk_str(vname), counter))
+    for fty in ftypes {
+      let bind = hk_fresh(counter, "p")
+      Array::push(binds, PBind(bind))
+      Array::push(parts, hk_component(fty, EIdent(bind, -1), known_types, hash_types, counter))
+    }
+    Array::push(arms, (PCtor(vname, binds), hk_concat_all(parts)))
+  }
+  hk_fn(ename, EMatch(EIdent("self", -1), arms))
+}

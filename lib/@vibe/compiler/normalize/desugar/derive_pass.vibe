@@ -20,10 +20,13 @@ import ./derive_operations.vibe {
   gen_enum_compare_fn,
   gen_enum_default_fn,
   gen_enum_show_fn,
-  gen_hash_key_fn,
   qualified_name,
   show_inline_merge_arr_elems,
   top_level_fn_exists
+}
+
+import ./hash_key_generation.vibe {
+  collect_hash_key_types, gen_enum_hash_key_fn, gen_struct_hash_key_fn
 }
 
 import ./equality_generation.vibe {
@@ -204,6 +207,8 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   let gen = empty_stmt_list()
   let own_end = dtd_own_end(stmts)
   let known_types = collect_decl_type_names(stmts)
+  // #3544: the types whose `hash_key` a derived key may call for a field.
+  let hash_types = collect_hash_key_types(stmts)
   // #2136: the type variables a generated `Array[e]` helper has to bind. Filled
   // here because this is the first pass that generates one, and read again by
   // `emit_recorded_arr_equals`, which runs later in the same
@@ -231,12 +236,13 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         } else {
           ()
         }
-        // #694 Layer 1: `derive(Hash)` -> structural `T::hash_key` (delegates to
-        // the recursive `to_string`), so the method-bearing `Hash` witness at a
-        // `get_by(m, T::{..})` call site resolves to a stable structural key.
+        // #694 Layer 1: `derive(Hash)` -> structural `T::hash_key`, so the
+        // method-bearing `Hash` witness at a `get_by(m, T::{..})` call site
+        // resolves to a stable structural key. #3544: an injective encoding of
+        // its own, not the `to_string` rendering (hash_key_generation.vibe).
         if str_array_contains(derives, "Hash") && !dtd_source_op_defined(stmts, qualified_name(name, "hash_key")) {
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_hash_key_fn(name))
+          Array::push(gen, gen_struct_hash_key_fn(name, fields, known_types, hash_types))
         } else {
           ()
         }
@@ -290,7 +296,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         }
         if str_array_contains(derives, "Hash") && !dtd_source_op_defined(stmts, qualified_name(ename, "hash_key")) {
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_hash_key_fn(ename))
+          Array::push(gen, gen_enum_hash_key_fn(ename, variants, known_types, hash_types))
         } else {
           ()
         }

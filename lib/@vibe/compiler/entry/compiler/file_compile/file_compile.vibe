@@ -28,6 +28,7 @@ import @vibe/core {
 
 import @vibe/compiler/core {
   ExportRenamePlan,
+  LinkedUnit,
   Stmt,
   append_builtin_iterator_plan_operation_markers,
   append_import_alias_rewritten_non_import_stmts_with_renames,
@@ -41,6 +42,7 @@ import @vibe/compiler/core {
   dir_of_path,
   export_plan_renames_for,
   import_value_rename_locals,
+  linked_unit_in,
   mark_private_builtin_references,
   merged_offset_space_add,
   merged_offset_space_reset,
@@ -49,6 +51,7 @@ import @vibe/compiler/core {
   namespace_private_value_stmts,
   namespace_private_value_stmts_after_renames,
   namespace_rename_originals_reset,
+  refuse_linked_impl_overlaps,
   resolution_env_seed,
   resolve_import_path,
   resolved_callee_row_rebase,
@@ -384,7 +387,8 @@ fn parse_sources_for_merge(sources: Array[(String, String)]) -> (Array[String], 
 /// statements, `is_entry_source` mirrors the pre-#716 per-group entry rule
 /// (entry keeps its private names), and `plan`/`sources` drive the export-name
 /// rewriting and the collision-def fallback.
-fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int]) -> Unit with Env + Exception {
+fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int], units: Array[LinkedUnit]) -> Unit with Env + Exception {
+  let unit_start = Array::length(merged)
   // Preserve the proof that an optimized trait namespace came from the
   // standard module. Desugaring consumes this source-local marker before
   // codegen; it is not part of the runtime program.
@@ -417,6 +421,8 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
   } else {
     append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
   }
+  // #3544: this file's share of the linked program, for the impl-overlap check.
+  Array::push(units, linked_unit_in(sources, path, unit_start, Array::length(merged)))
 }
 
 fn build_merged_stmts_from_sources(entry_path: String, sources: Array[(String, String)]) -> Array[Stmt] with Env + Exception {
@@ -436,6 +442,7 @@ fn build_merged_stmts_from_sources(entry_path: String, sources: Array[(String, S
   }
   let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
   let fallback_clone_offset_delta = [0]
+  let units = []
   let mut si = 0
   while si < source_count {
     let path = Array::get(file_paths, si)
@@ -444,9 +451,10 @@ fn build_merged_stmts_from_sources(entry_path: String, sources: Array[(String, S
     } else {
       path == entry_path
     }
-    append_merged_stmts_for_file(merged, path, Array::get(file_stmts, si), is_entry_source, plan, sources, file_stmts, fallback_clone_offset_delta, 0, array_empty(), array_empty(), array_empty())
+    append_merged_stmts_for_file(merged, path, Array::get(file_stmts, si), is_entry_source, plan, sources, file_stmts, fallback_clone_offset_delta, 0, array_empty(), array_empty(), array_empty(), units)
     si = si + 1
   }
+  refuse_linked_impl_overlaps(merged, units)
   merged
 }
 
@@ -516,6 +524,7 @@ fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, 
   // export renames while callers were rewritten to the renamed names:
   // "undefined variable (local): <name>_exp_<path>" at codegen.
   let flat_total = Array::length(file_paths)
+  let units = []
   let mut flat_idx = 0
   let mut gi = 0
   while gi < Array::length(source_groups) {
@@ -530,7 +539,7 @@ fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, 
       // call-result table is keyed by those offsets, so merging files without
       // rebasing lets one file's Double call classify another file's Int call.
       // Shift before the namespace/import rewrites; they preserve locations.
-      append_merged_stmts_for_file(merged, path, stmts, flat_idx == flat_total - 1, plan, flat_sources, located_file_stmts, fallback_clone_offset_delta, fallback_clone_offset_span, flat_paths_out, flat_bases_out, clone_float_offsets_out)
+      append_merged_stmts_for_file(merged, path, stmts, flat_idx == flat_total - 1, plan, flat_sources, located_file_stmts, fallback_clone_offset_delta, fallback_clone_offset_span, flat_paths_out, flat_bases_out, clone_float_offsets_out, units)
       // Everything this file contributed, including the alias-collision
       // fallback definitions it pulls in from providers, belongs to it: they
       // are emitted into this file's region and rewritten against its imports.
@@ -544,6 +553,7 @@ fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, 
     }
     gi = gi + 1
   }
+  refuse_linked_impl_overlaps(merged, units)
   merged
 }
 
@@ -1626,6 +1636,7 @@ fn build_grouped_merged_stmts_counted(source_groups: Array[(String, Array[(Strin
   let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
   let fallback_clone_offset_delta = [offset_base]
   let fallback_clone_offset_span = offset_base
+  let units = []
   let mut flat_idx = 0
   let mut gi = 0
   while gi < Array::length(source_groups) {
@@ -1635,13 +1646,14 @@ fn build_grouped_merged_stmts_counted(source_groups: Array[(String, Array[(Strin
     while si < source_count {
       let (path, _) = Array::get(sources, si)
       let before = Array::length(merged)
-      append_merged_stmts_for_file(merged, path, Array::get(located_file_stmts, flat_idx), flat_idx == Array::length(file_paths) - 1, plan, flat_sources, located_file_stmts, fallback_clone_offset_delta, fallback_clone_offset_span, out_paths, out_bases, clone_float_offsets_out)
+      append_merged_stmts_for_file(merged, path, Array::get(located_file_stmts, flat_idx), flat_idx == Array::length(file_paths) - 1, plan, flat_sources, located_file_stmts, fallback_clone_offset_delta, fallback_clone_offset_span, out_paths, out_bases, clone_float_offsets_out, units)
       Array::push(out_counts, Array::length(merged) - before)
       flat_idx = flat_idx + 1
       si = si + 1
     }
     gi = gi + 1
   }
+  refuse_linked_impl_overlaps(merged, units)
   (merged, out_paths, out_fps, out_counts, out_bases, clone_float_offsets_out)
 }
 

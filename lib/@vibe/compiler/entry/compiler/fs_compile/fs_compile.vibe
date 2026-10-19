@@ -38,12 +38,14 @@ import @vibe/compiler/core {
   dir_of_path,
   export_plan_renames_for,
   import_value_rename_locals,
+  linked_unit,
   merged_offset_space_add,
   merged_offset_space_reset,
   merged_source_boundary_names,
   namespace_entry_import_shadows,
   namespace_private_value_stmts,
   namespace_rename_originals_reset,
+  refuse_linked_impl_overlaps,
   resolve_import_path,
   resolved_callee_row_rebase,
   rewrite_imported_value_stmt_to_local,
@@ -474,11 +476,13 @@ fn build_merged_stmts_inline_impl(sources: Array[(String, String)], flat_paths_o
     ""
   }
   let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
+  let units = []
   let mut si = 0
   while si < source_count {
     let path = Array::get(file_paths, si)
     let stmts = Array::get(located_file_stmts, si)
     let is_entry_source = si == source_count - 1
+    let unit_start = Array::length(merged)
     let import_renames = collect_import_value_renames(plan, path, stmts)
     let (boundary_locals, boundary_surface_only) = merged_source_boundary_names(stmts)
     append_builtin_iterator_plan_operation_markers(boundary_locals, import_renames, plan)
@@ -505,8 +509,12 @@ fn build_merged_stmts_inline_impl(sources: Array[(String, String)], flat_paths_o
     // also arrived through a re-export of the same module.
     let skipped_locals = append_inline_import_alias_collision_defs(merged, path, stmts, file_paths, located_file_stmts, plan, import_value_rename_locals(import_renames), flat_paths_out, flat_bases_out, clone_offset_delta, clone_offset_span, clone_float_offsets_out)
     append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
+    let (_, unit_source) = Array::get(sources, si)
+    Array::push(units, linked_unit(path, unit_source, unit_start, Array::length(merged)))
     si = si + 1
   }
+  // #3544: two modules' impls of one method name would collapse to one here.
+  refuse_linked_impl_overlaps(merged, units)
   merged
 }
 

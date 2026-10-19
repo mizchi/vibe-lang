@@ -1,0 +1,401 @@
+//# Overlapping impls across the modules of one linked program (#3544)
+//
+// An impl's methods are program-wide bindings named after the target
+// (`impl Name for Int { name(..) }` binds `Int::name`), and the merge that
+// links the import closure into one program renames private and colliding
+// EXPORTED names apart but not these. So two modules that each write `impl
+// Name for Int` put two `Int::name` definitions into the linked program, the
+// lowering keeps the first, and every caller -- in either module, and in the
+// entry -- silently runs whichever module the import order merged first.
+// Measured before this check: a main importing both printed `from-a from-a`,
+// and `from-b from-b` with the imports swapped; an entry declaring its own
+// impl was overridden by an imported one even for its own calls.
+//
+// The checker refuses the same pair inside ONE file, but it checks each
+// module against the impls its imports PUBLISH, and an impl of a trait the
+// module does not re-export is not published -- so no per-module check sees
+// both. This check reads the linked program itself, after every rename, so
+// two definitions of one name here are exactly the ones the lowering would
+// collapse. A module reached along two import paths is merged once and so
+// counts once; a package contract restates impls without methods and binds
+// nothing.
+//
+// A derive is counted as the impl it registers: `derive (Show)` on `P` in one
+// module and `impl Show for P` in another also leave two `P::to_string`.
+
+import ./ast.vibe {
+  Stmt, TypeExpr
+}
+
+import ./import_alias_rewrite_rewrite_alias_expr_ix.vibe {
+  namespace_rename_original
+}
+
+import @vibe/ast {
+  impl_method_owner, impl_target_head, trait_ref_name
+}
+
+import @vibe/core {
+  struct MutMap
+}
+
+/// One source unit of a linked program: its path, the text it was parsed
+/// from (for the location), and its statements' half-open range in the
+/// merged array.
+export struct LinkedUnit {
+  path: String;
+  source: String;
+  start: Int;
+  end: Int
+}
+
+export fn linked_unit(path: String, source: String, start: Int, end: Int) -> LinkedUnit {
+  LinkedUnit::{ path: path, source: source, start: start, end: end }
+}
+
+/// `linked_unit` with the text looked up by path in the merge's sources.
+export fn linked_unit_in(sources: Array[(String, String)], path: String, start: Int, end: Int) -> LinkedUnit {
+  let mut found = ""
+  for entry in sources {
+    let (p, text) = entry
+    if p == path && found == "" {
+      found = text
+    } else {
+      ()
+    }
+  }
+  linked_unit(path, found, start, end)
+}
+
+/// Who binds an impl method name: the unit, what declared it (`impl Name for
+/// Int` / `derive (Show) on P`), and where.
+struct ImplBinder {
+  unit: Int;
+  what: String;
+  line: Int;
+  col: Int
+}
+
+/// The refusal for the first impl method name two units of `merged` bind, or
+/// `None`. `units` are in merge order and do not overlap.
+export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit]) -> Option[String] {
+  let binders: MutMap[String, ImplBinder] = MutMap::new_string()
+  let mut found: Option[String] = None
+  let mut u = 0
+  while u < Array::length(units) && found is None {
+    let unit = Array::get(units, u)
+    let impl_lines = line_starts_with_keyword(unit.source, "impl")
+    let mut impl_ordinal = 0
+    let mut k = if linked_unit_restates(unit) {
+      unit.end
+    } else {
+      unit.start
+    }
+    while k < unit.end && found is None {
+      match Array::get(merged, k) {
+        SImpl(tparams, _, trait_key, target) => {
+          let (line, col) = nth_position(impl_lines, impl_ordinal)
+          impl_ordinal = impl_ordinal + 1
+          let what = String::concat("impl ", String::concat(trait_ref_name(trait_key), String::concat(" for ", target_display(target))))
+          let prefix = String::concat(impl_method_owner(tparams, trait_key, target), "::")
+          let trait_prefix = String::concat(trait_ref_name(trait_key), "::")
+          let mut j = k + 1
+          let mut more = true
+          while more && j < unit.end && found is None {
+            let name = match Array::get(merged, j) {
+              SLet(_, _, n, _, _) => n,
+              SFnDecl(_, n, _, _, _) => n,
+              _ => ""
+            }
+            if String::length(name) > String::length(prefix) && String::starts_with(name, prefix) {
+              found = bind_or_refuse(binders, units, name, ImplBinder::{
+                unit: u,
+                what: what,
+                line: line,
+                col: col
+              })
+              j = j + 1
+            } else if String::length(name) > 0 && String::starts_with(name, trait_prefix) {
+              j = j + 1
+            } else {
+              more = false
+            }
+          }
+          k = j
+        },
+        SStruct(_, name, _, derives, _, _) => {
+          found = bind_derives(binders, units, u, name, derives, "struct")
+          k = k + 1
+        },
+        SEnum(_, name, _, _, derives) => {
+          found = bind_derives(binders, units, u, name, derives, "enum")
+          k = k + 1
+        },
+        _ => {
+          k = k + 1
+        }
+      }
+    }
+    u = u + 1
+  }
+  // A plain definition in another unit that reuses an impl method's name is
+  // the same collapse (`fn Int::name` next to an imported `impl .. for Int`).
+  let mut v = 0
+  while v < Array::length(units) && found is None {
+    let unit = Array::get(units, v)
+    let mut k = if linked_unit_restates(unit) {
+      unit.end
+    } else {
+      unit.start
+    }
+    while k < unit.end && found is None {
+      let name = match Array::get(merged, k) {
+        SLet(_, _, n, _, _) => n,
+        SFnDecl(_, n, _, _, _) => n,
+        _ => ""
+      }
+      match MutMap::get(binders, name) {
+        Some(binder) => if binder.unit != v && !unit_binds_impl_name(merged, unit, name) {
+          let (line, col) = definition_position(unit.source, name)
+          found = Some(overlap_message(name, binder, Array::get(units, binder.unit), ImplBinder::{
+            unit: v,
+            what: "a definition",
+            line: line,
+            col: col
+          }, unit))
+        } else {
+          ()
+        },
+        None => ()
+      }
+      k = k + 1
+    }
+    v = v + 1
+  }
+  found
+}
+
+/// A package contract (`.vpkg`) and the sources the loader synthesizes from
+/// one (each opens with its marker line, see `merged_offset_is_synthesized`)
+/// RESTATE declarations that their implementation files make; they define
+/// nothing of their own.
+fn linked_unit_restates(unit: LinkedUnit) -> Bool {
+  String::ends_with(unit.path, ".vpkg") || String::starts_with(unit.source, "// vibe: contract facade (desugared from .vibei)\n") || String::starts_with(unit.source, "// vibe: vpkg directory-shared imports (#897)\n") || String::starts_with(unit.source, "// vibe: vpkg contract types module (#1840)\n")
+}
+
+/// Whether `name` is one of the impl method bindings `unit` itself declares
+/// (those were compared in the first pass).
+fn unit_binds_impl_name(merged: Array[Stmt], unit: LinkedUnit, name: String) -> Bool {
+  let mut k = unit.start
+  let mut hit = false
+  while k < unit.end && !hit {
+    match Array::get(merged, k) {
+      SImpl(tparams, _, trait_key, target) => {
+        let prefix = String::concat(impl_method_owner(tparams, trait_key, target), "::")
+        if String::starts_with(name, prefix) {
+          hit = true
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    k = k + 1
+  }
+  hit
+}
+
+export fn refuse_linked_impl_overlaps(merged: Array[Stmt], units: Array[LinkedUnit]) -> Unit with Exception {
+  match linked_impl_overlap_error(merged, units) {
+    Some(msg) => throw(msg),
+    None => ()
+  }
+}
+
+fn bind_or_refuse(binders: MutMap[String, ImplBinder], units: Array[LinkedUnit], name: String, binder: ImplBinder) -> Option[String] {
+  match MutMap::get(binders, name) {
+    Some(prev) => if prev.unit != binder.unit {
+      Some(overlap_message(name, prev, Array::get(units, prev.unit), binder, Array::get(units, binder.unit)))
+    } else {
+      None
+    },
+    None => {
+      MutMap::set(binders, name, binder)
+      None
+    }
+  }
+}
+
+/// The methods a derive binds under its type -- the ones `derive_pass`
+/// generates and skips when the program already defines them.
+fn derive_methods(which: String) -> Array[String] {
+  if which == "Show" {
+    ["to_string"]
+  } else if which == "Hash" {
+    ["hash_key"]
+  } else if which == "Eq" {
+    ["equals"]
+  } else if which == "Ord" {
+    ["compare"]
+  } else if which == "Default" {
+    ["default"]
+  } else {
+    []
+  }
+}
+
+fn bind_derives(binders: MutMap[String, ImplBinder], units: Array[LinkedUnit], u: Int, name: String, derives: Array[String], keyword: String) -> Option[String] {
+  let mut found: Option[String] = None
+  if Array::length(derives) > 0 {
+    let unit = Array::get(units, u)
+    let shown = namespace_rename_original(name)
+    let (line, col) = type_decl_position(unit.source, keyword, shown)
+    for listed in derives {
+      for method in derive_methods(listed) {
+        if found is None {
+          let what = String::concat("derive (", String::concat(listed, String::concat(") on ", shown)))
+          found = bind_or_refuse(binders, units, String::concat(name, String::concat("::", method)), ImplBinder::{
+            unit: u,
+            what: what,
+            line: line,
+            col: col
+          })
+        } else {
+          ()
+        }
+      }
+    }
+  } else {
+    ()
+  }
+  found
+}
+
+fn overlap_message(name: String, first: ImplBinder, first_unit: LinkedUnit, second: ImplBinder, second_unit: LinkedUnit) -> String {
+  let here = position_text(second_unit.path, second.line, second.col)
+  let there = position_text(first_unit.path, first.line, first.col)
+  let shown = namespace_rename_original(name)
+  String::concat(here, String::concat(": remove one of these: `", String::concat(second.what, String::concat("` here and `", String::concat(first.what, String::concat("` in ", String::concat(there, String::concat(" both define `", String::concat(shown, "` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")))))))))
+}
+
+fn position_text(path: String, line: Int, col: Int) -> String {
+  if line > 0 {
+    String::concat(path, String::concat(": line ", String::concat(Int::to_string(line), String::concat(":", Int::to_string(col)))))
+  } else {
+    path
+  }
+}
+
+fn target_display(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => namespace_rename_original(n),
+    TyApp(h, args) => {
+      let mut out = String::concat(namespace_rename_original(h), "[")
+      let mut i = 0
+      while i < Array::length(args) {
+        if i > 0 {
+          out = String::concat(out, ", ")
+        } else {
+          ()
+        }
+        out = String::concat(out, target_display(Array::get(args, i)))
+        i = i + 1
+      }
+      String::concat(out, "]")
+    },
+    TyTuple(ts) => {
+      let mut out = "("
+      let mut i = 0
+      while i < Array::length(ts) {
+        if i > 0 {
+          out = String::concat(out, ", ")
+        } else {
+          ()
+        }
+        out = String::concat(out, target_display(Array::get(ts, i)))
+        i = i + 1
+      }
+      String::concat(out, ")")
+    },
+    TyUnit => "Unit",
+    _ => impl_target_head(t)
+  }
+}
+
+/// `(line, col)` of each source line whose first non-blank word is `word`,
+/// in order. 1-based line, 1-based byte column.
+fn line_starts_with_keyword(source: String, word: String) -> Array[(Int, Int)] {
+  let out: Array[(Int, Int)] = []
+  let n = String::length(source)
+  let wn = String::length(word)
+  let mut line = 1
+  let mut i = 0
+  while i < n {
+    // `i` is at the start of a line.
+    let mut j = i
+    while j < n && (String::byte_at(source, j) == 32 || String::byte_at(source, j) == 9) {
+      j = j + 1
+    }
+    if j + wn < n && String::substring(source, j, j + wn) == word {
+      let next = String::byte_at(source, j + wn)
+      if next == 32 || next == 91 || next == 9 {
+        Array::push(out, (line, j - i + 1))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    while j < n && String::byte_at(source, j) != 10 {
+      j = j + 1
+    }
+    i = j + 1
+    line = line + 1
+  }
+  out
+}
+
+fn nth_position(positions: Array[(Int, Int)], k: Int) -> (Int, Int) {
+  if k < Array::length(positions) {
+    Array::get(positions, k)
+  } else {
+    (0, 0)
+  }
+}
+
+/// The first line that declares `<keyword> <name>` (after any `export`).
+fn type_decl_position(source: String, keyword: String, name: String) -> (Int, Int) {
+  let needle = String::concat(keyword, String::concat(" ", name))
+  first_line_containing(source, needle)
+}
+
+/// The first line that defines `name` as `fn name` or `let name`.
+fn definition_position(source: String, name: String) -> (Int, Int) {
+  let (fl, fc) = first_line_containing(source, String::concat("fn ", name))
+  if fl > 0 {
+    (fl, fc)
+  } else {
+    first_line_containing(source, String::concat("let ", name))
+  }
+}
+
+fn first_line_containing(source: String, needle: String) -> (Int, Int) {
+  let at = String::index_of(source, needle)
+  if at < 0 {
+    (0, 0)
+  } else {
+    let mut line = 1
+    let mut line_start = 0
+    let mut i = 0
+    while i < at {
+      if String::byte_at(source, i) == 10 {
+        line = line + 1
+        line_start = i + 1
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    (line, at - line_start + 1)
+  }
+}

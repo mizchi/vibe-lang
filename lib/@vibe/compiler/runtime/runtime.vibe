@@ -26,12 +26,14 @@ import @vibe/compiler/core {
   export_plan_renames_for,
   import_value_rename_locals,
   is_builtin_iterator_serialized_boundary_path,
+  linked_unit,
   merged_source_boundary_names,
   namespace_entry_import_shadows,
   namespace_private_value_stmts,
   namespace_private_value_stmts_after_renames,
   namespace_rename_originals_reset,
   record_namespace_rename_originals_for_file,
+  refuse_linked_impl_overlaps,
   reject_user_iterator_serialized_boundaries,
   resolve_import_path,
   resolve_import_path_candidates,
@@ -706,10 +708,12 @@ fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, Str
   // points (build_merged_source, db_grouped_merged_source) reset instead.
   let merged = empty_stmt_array()
   let source_count = Array::length(sources)
+  let units = []
   let mut si = 0
   while si < source_count {
     let path = Array::get(file_paths, si)
     let stmts = Array::get(file_stmts, si)
+    let unit_start = Array::length(merged)
     let is_entry_source = if entry_path == "" {
       si == source_count - 1
     } else {
@@ -744,8 +748,12 @@ fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, Str
     } else {
       append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
     }
+    let (_, unit_source) = Array::get(sources, si)
+    Array::push(units, linked_unit(path, unit_source, unit_start, Array::length(merged)))
     si = si + 1
   }
+  // #3544: two modules' impls of one method name would collapse to one here.
+  refuse_linked_impl_overlaps(merged, units)
   print_program(merged)
 }
 

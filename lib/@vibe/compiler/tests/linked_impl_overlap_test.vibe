@@ -1,0 +1,98 @@
+//# Imports
+
+import @vibe/compiler/core {
+  Stmt, linked_impl_overlap_error, linked_unit
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Helpers
+
+/// Lay `modules` (path, source) out as one linked program, unit by unit, and
+/// answer the overlap refusal (or `ok`).
+fn link_verdict(modules: Array[(String, String)]) -> String with Exception {
+  let merged: Array[Stmt] = []
+  let units = []
+  for entry in modules {
+    let (path, source) = entry
+    let start = Array::length(merged)
+    for stmt in parse_program(lex(source)) {
+      Array::push(merged, stmt)
+    }
+    Array::push(units, linked_unit(path, source, start, Array::length(merged)))
+  }
+  match linked_impl_overlap_error(merged, units) {
+    Some(msg) => msg,
+    None => "ok"
+  }
+}
+
+let trait_src = "export trait Name {\n  name(Self) -> String\n}\n"
+
+let impl_a = "impl Name for Int {\n  name(x: Int) -> String { \"from-a\" }\n}\n"
+
+let impl_b = "fn helper() -> Int { 1 }\n\nimpl Name for Int {\n  name(x: Int) -> String { \"from-b\" }\n}\n"
+
+//# Tests
+
+/// #3544: two modules each implementing one trait for one type put two
+/// `Int::name` definitions into the linked program; the refusal names both
+/// positions and leads with the edit.
+test "two modules implementing one trait for one type are refused" {
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", impl_a),
+    ("tb.vibe", impl_b)
+  ]), content = "tb.vibe: line 3:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+}
+
+/// One module's impls are the checker's business, and a module reached twice
+/// is merged once: neither is a cross-module overlap.
+test "impls within one unit and distinct targets are accepted" {
+  inspect(link_verdict([("tr.vibe", trait_src), ("ta.vibe", impl_a)]), content = "ok")
+  let impl_bool = "impl Name for Bool {\n  name(x: Bool) -> String { \"bool\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", impl_a),
+    ("tc.vibe", impl_bool)
+  ]), content = "ok")
+}
+
+/// Two different traits whose methods share a name collapse the same way.
+test "different traits binding one method name are refused" {
+  let label = "export trait Label {\n  name(Self) -> String\n}\n\nimpl Label for Int {\n  name(x: Int) -> String { \"label\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", impl_a),
+    ("tl.vibe", label)
+  ]), content = "tl.vibe: line 5:1: remove one of these: `impl Label for Int` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+}
+
+/// A derive is the impl it registers.
+test "a derive and an impl in another module are refused" {
+  let decl = "export struct P {\n  x: Int\n} derive(Show)\n"
+  let other = "impl Show for P {\n  to_string(p: P) -> String { \"p\" }\n}\n"
+  inspect(link_verdict([("p.vibe", decl), ("q.vibe", other)]), content = "q.vibe: line 1:1: remove one of these: `impl Show for P` here and `derive (Show) on P` in p.vibe: line 1:8 both define `P::to_string` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+}
+
+/// A plain definition reusing an impl method's name collapses too.
+test "a plain definition of an impl method name in another module is refused" {
+  let plain = "export fn Int::name(x: Int) -> String {\n  \"plain\"\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", impl_a),
+    ("tp.vibe", plain)
+  ]), content = "tp.vibe: line 1:8: remove one of these: `a definition` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+}
+
+/// A package contract restates its implementation's impls without binding
+/// anything of its own.
+test "a contract restating an impl is not an overlap" {
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("pkg/index.vpkg", impl_a),
+    ("pkg/impl.vibe", impl_a)
+  ]), content = "ok")
+}

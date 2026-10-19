@@ -400,6 +400,14 @@ ur_refused fixtures/err_derive_show_recursive_generic_field_refused.vibe 'a deri
 # through a type argument, printed a table index or an address.
 ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type'
 ur_refused fixtures/err_derive_show_bytes_field_refused.vibe 'a derived renderer contains a `Bytes` value' 'write the type'
+# #3544: two modules' `impl Name for Int` -- two sibling imports, or the entry
+# and an import -- left two `Int::name` in the linked program, and the build
+# kept whichever the import order merged first. Refused, naming both impls.
+# The green control (one impl reached along two import paths) rides the unit
+# lane: fixtures/impl_overlap_shared_dep_test.vibe.
+ur_refused fixtures/err_impl_overlap_cross_module_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_b.vibe: line 7:1'
+ur_refused fixtures/err_impl_overlap_entry_vs_dep_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/err_impl_overlap_entry_vs_dep_refused.vibe: line 13:1'
+ur_refused fixtures/err_impl_overlap_cross_module_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' gc
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
 ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type' gc
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' gc 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
