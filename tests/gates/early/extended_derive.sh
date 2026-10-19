@@ -416,6 +416,10 @@ ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpol
 # helper it generated.
 ur_refused fixtures/err_derive_show_generic_array_field_refused.vibe 'the elements of `w: Array[T]`' 'write `G::to_string` yourself'
 ur_refused fixtures/err_derive_show_generic_array_field_refused.vibe 'the elements of `w: Array[T]`' 'write `G::to_string` yourself' gc
+# #3559: an explicit `H::to_string(h)` on a `derive (Show)` generic whose type
+# arguments are not known at the call printed a field's address.
+ur_refused fixtures/err_derive_show_generic_qualified_call_unknown_refused.vibe 'cannot call `H::to_string` here' 'call it where the type is concrete'
+ur_refused fixtures/err_derive_show_generic_qualified_call_unknown_refused.vibe 'cannot call `H::to_string` here' 'call it where the type is concrete' gc
 # #3084: a generic function's result typed, at the call site, as a struct with
 # no renderer printed its address; the checker's row names the struct.
 ur_refused fixtures/err_interp_generic_call_missing_show_refused.vibe 'cannot interpolate a value of type `Hidden`' 'add `derive(Show)` to `Hidden`' linear 'fixtures/err_interp_generic_call_missing_show_refused.vibe: line 14:14'
