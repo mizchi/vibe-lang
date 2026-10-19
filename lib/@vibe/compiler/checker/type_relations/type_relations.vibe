@@ -248,6 +248,13 @@ fn retry_bind_from(pattern: Type, source: Type, s: Subst) -> Subst {
       },
       _ => s
     },
+    CtRecord(pfs) => match source {
+      CtRecord(sfs) => match retry_record_pairs(pfs, sfs) {
+        Some((pts, sts)) => retry_bind_from_all(pts, sts, s),
+        None => s
+      },
+      _ => s
+    },
     _ => s
   }
 }
@@ -349,6 +356,25 @@ fn retry_merge(a: Type, b: Type) -> Option[Type] {
             Some(args) => Some(CtNamed(an, args)),
             None => None
           }
+        },
+        _ => Some(a)
+      },
+      CtRecord(afs) => match b {
+        CtRecord(bfs) => match retry_record_pairs(afs, bfs) {
+          Some((ats, bts)) => match retry_merge_all(ats, bts) {
+            Some(ts) => {
+              let fields: Array[(String, Type)] = array_empty()
+              let mut i = 0
+              while i < Array::length(afs) {
+                let (n, _) = Array::get(afs, i)
+                Array::push(fields, (n, Array::get(ts, i)))
+                i = i + 1
+              }
+              Some(CtRecord(fields))
+            },
+            None => None
+          },
+          None => Some(a)
         },
         _ => Some(a)
       },
@@ -561,7 +587,50 @@ fn retry_collect_occurrences(expected: Type, actual: Type, s: Subst, su: Subst, 
         },
         _ => ()
       },
+      CtRecord(efs) => match a {
+        CtRecord(afs) => match retry_record_pairs(efs, afs) {
+          Some((ets, ats)) => retry_collect_all(ets, ats, s, su, occ),
+          None => ()
+        },
+        _ => ()
+      },
       _ => ()
+    }
+  }
+}
+
+/// The field types of two records with the same field names, in `a`'s
+/// order, or None when the names differ.
+fn retry_record_pairs(a: Array[(String, Type)], b: Array[(String, Type)]) -> Option[(Array[Type], Array[Type])] {
+  if Array::length(a) != Array::length(b) {
+    None
+  } else {
+    let ats: Array[Type] = array_empty()
+    let bts: Array[Type] = array_empty()
+    let mut ok = true
+    let mut i = 0
+    while i < Array::length(a) && ok {
+      let (n, t) = Array::get(a, i)
+      let mut found = false
+      let mut k = 0
+      while k < Array::length(b) && !found {
+        let (bn, bt) = Array::get(b, k)
+        if bn == n {
+          Array::push(ats, t)
+          Array::push(bts, bt)
+          found = true
+        } else {
+          ()
+        }
+        k = k + 1
+      }
+      ok = found
+      i = i + 1
+    }
+    if ok {
+      Some((ats, bts))
+    } else {
+      None
     }
   }
 }
