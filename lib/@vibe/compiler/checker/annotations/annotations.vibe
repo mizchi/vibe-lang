@@ -928,23 +928,56 @@ fn bare_generic_heads_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[Str
 /// signature, or -1 when the head is not judged here (not compiler-owned, or
 /// `Map` / a structural head, which the caller judges itself). A program
 /// declaration of the name answers through its own formals
-/// (`declared_generic_head_arity`) -- except a declaration of the compiler's
-/// own shape (`type TaskHandle[rg, e, T]` in the concurrency contract), whose
-/// region and row slots the call still supplies.
+/// (`declared_generic_head_arity`) unless `owned_head_slots_elidable` says it
+/// is the compiler's own declaration, whose region and row slots the call
+/// still supplies.
 fn bare_owned_head_want(name: String, defs: Array[TypeDef]) -> Int {
-  if name == "Map" || structural_head_arity(name) >= 0 {
+  if owned_head_slots_elidable(name, defs) {
+    bare_owned_head_payload_arity(name)
+  } else {
     0 - 1
-  } else match find_typedef(defs, name) {
-    None => bare_owned_head_payload_arity(name),
-    Some(td) => match compiler_owned_type_arity(name) {
-      Some(n) => if Array::length(type_def_formals(td)) == n {
-        bare_owned_head_payload_arity(name)
-      } else {
-        0 - 1
-      },
-      None => 0 - 1
+  }
+}
+
+/// Whether `name` may leave its region and row slots to the call, in a bare
+/// spelling (`TaskGroup`) and in an applied one (`TaskHandle[Int]`). That
+/// holds for the compiler-owned head itself -- no program declaration;
+/// `@vibe/concurrent`'s contract declares it bodyless -- and for the one
+/// source declaration of it the compiler ships, `@vibe/concurrent/experimental`'s
+/// `struct TaskGroup[rg, e]` / `TaskHandle[rg, e, T]` / `Sender[rg, e, T]` /
+/// `Receiver[rg, e, T]`, recognised by that exact region-first shape.
+///
+/// The NAME alone grants nothing. A type alias is expanded in place, so a
+/// left-out argument stays a rigid formal that unifies with anything:
+/// `type Future[T, U] = (T, U)` written `Future[Int]` accepted `(1, 2)` and
+/// handed its `2` on as a `String`. A program struct of another shape
+/// (`struct MutList[T, U]` written `MutList[Int]`) lost a field type the same
+/// way. Both are held to their own formals.
+fn owned_head_slots_elidable(name: String, defs: Array[TypeDef]) -> Bool {
+  if name == "Map" || structural_head_arity(name) >= 0 {
+    false
+  } else match compiler_owned_type_arity(name) {
+    None => false,
+    Some(n) => match find_typedef(defs, name) {
+      None => true,
+      Some(td) => match td {
+        TDStruct(_, _, _, formals) => is_region_first_owned_head(name) && Array::length(formals) == n && formal_is_plain(formals, 0, "rg") && formal_is_plain(formals, 1, "e"),
+        _ => false
+      }
     }
   }
+}
+
+/// The compiler-owned heads that carry their region and row slots FIRST
+/// (`TaskHandle[rg, e, T]`) -- the only ones a shipped source package
+/// declares as a struct.
+fn is_region_first_owned_head(name: String) -> Bool {
+  name == "TaskGroup" || name == "TaskHandle" || name == "Sender" || name == "Receiver"
+}
+
+/// Whether formal `i` of `formals` is the plain (arity-0) formal `want`.
+fn formal_is_plain(formals: Array[String], i: Int, want: String) -> Bool {
+  i < Array::length(formals) && type_param_name(Array::get(formals, i)) == want && type_param_arity(Array::get(formals, i)) == 0
 }
 
 /// How many PAYLOAD type arguments a bare compiler-owned head leaves out, or
@@ -1162,9 +1195,11 @@ fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
       // #3536: a declared generic applied to the wrong number of arguments
       // (`type Bx[T] = Array[T]` written `Bx[Int, String]`) dropped or
       // invented the difference silently. A compiler-owned head with region
-      // slots may leave them out (`TaskHandle[Int]`), so it is not counted.
+      // slots may leave them out (`TaskHandle[Int]`), so it is not counted --
+      // the compiler's own declaration only, not a program alias or struct
+      // that reuses the name (`owned_head_slots_elidable`).
       let declared = declared_generic_head_arity(name, defs)
-      let region_elidable = name != "Map" && structural_head_arity(name) < 0 && compiler_owned_type_arity(name) is Some(_)
+      let region_elidable = owned_head_slots_elidable(name, defs)
       if declared >= 0 && !region_elidable && structural_head_arity(name) < 0 && Array::length(args) != declared && !string_array_has(shadow, name) && shadow_type_constructor_arity(shadow, name) < 0 {
         Array::push(errors, declared_arity_error(name, Array::length(args), declared, where_label))
       } else {
