@@ -416,6 +416,9 @@ fn lc_top_level_fn_params(stmts: Array[Stmt], name: String) -> Option[Array[(Str
 /// parameter, a `let`, a loop or `for` name, or an arm pattern. The scan reads
 /// a callee by name alone, so a local `apply` would otherwise borrow the
 /// top-level `apply`'s discharge exemption and hide a suspension it reaches.
+/// The same check stands between a call and the `suspending` list: a local
+/// `tick` is not the top-level suspending `tick`, and counting it injected a
+/// boundary the entry's body could not be lowered under.
 fn lc_unshadowed_fn_params(stmts: Array[Stmt], fname: String, root: Expr) -> Option[Array[(String, Option[TypeExpr])]] {
   match lc_top_level_fn_params(stmts, fname) {
     Some(ps) => if lc_expr_binds(root, fname) {
@@ -547,7 +550,7 @@ fn lc_expr_reaches_suspend(e: Expr, suspending: Array[String], stmts: Array[Stmt
         EIdent(fname, _) => if fname == "perform" {
           (lc_is_non_poll_suspend(args), None)
         } else {
-          (array_contains_str(suspending, fname), lc_unshadowed_fn_params(stmts, fname, root))
+          (array_contains_str(suspending, fname) && !lc_expr_binds(root, fname), lc_unshadowed_fn_params(stmts, fname, root))
         },
         _ => (false, None)
       }
