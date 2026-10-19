@@ -1831,6 +1831,15 @@ Rules:
   so the erased arm cannot check what a callee declared `with Exception`
   actually threw. Throw a value other than a `String` under a kinded row, and
   catch it with the kinded arm.
+- A rethrow from the erased arm is a throw of no known kind, not of
+  `Exception[String]`. That holds for `throw(m)` and for any payload that
+  names `m`, or a name the arm derived from it, when the payload's type could
+  hold a `String`: `throw(id(m))`, `let m2 = m` then `throw(m2)`,
+  `throw(Some(m))`, `throw(String::concat("ctx: ", m))`. So a function that
+  rethrows this way declares the erased `with Exception`, or catches with the
+  kinded arm `Exception[K]::Throw(m)`, whose rethrow keeps the kind `K`. A
+  payload whose type holds no `String` (`throw(Why::Because(m))` for an enum
+  `Why`) is a value of that type.
 
 Details and the v1 limits: [exception-effect.md](../../internal/design/exception-effect.md).
 

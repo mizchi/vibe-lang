@@ -119,6 +119,21 @@ effect Exception[E] {
   them. The kind is not carried at run time, so a non-`String` value thrown
   through an erased `with Exception` row still reaches this binder.
   The kinded row and arm are the typed path for such a value.
+- A rethrow from the erased arm records no kind, so it needs the erased row
+  (#3541, #3551 review). That covers `throw(m)` and any payload that may carry
+  `m`. While the arm body is typed, the checker keeps the arm's carrier names:
+  `m`, plus, to a fixpoint and ignoring scope, a `let` or assignment whose value
+  names a carrier, the binders of a `match`, `for`, `loop` or handler over
+  one, an identifier passed to a call next to one, and every parameter of a
+  function literal in the body. A throw payload records no kind when its type
+  still holds `m`'s open variable, or when it names a carrier and its type
+  could hold a `String`. The type check alone would depend on the order of
+  uses: `m` is pinned to `String` at its first such use, and after that
+  `id(m)` or an alias has plain type `String`. A payload whose type holds no
+  `String` is a new value of that type and keeps its kind. Such a site is
+  recorded as `#erased-rethrow`, which the effects pass takes as final:
+  the payload's syntax would answer `String` for `String::concat("ctx: ", m)`
+  or an alias annotated `String`.
 - A handle has **at most one exception arm**: the channel carries no kind and
   only the first arm would be compiled, so two kinded arms side by side are
   refused. Match on the payload inside one arm, or nest handles.

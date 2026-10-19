@@ -20,6 +20,7 @@ import @vibe/compiler/checker/effects {
   effect_error_to_string,
   env_fn_sigs,
   env_row_labels_from,
+  erased_rethrow_site_kind,
   row_text_labels,
   set_call_callee_types,
   set_throw_site_kinds,
@@ -83,7 +84,7 @@ import @vibe/compiler/checker/type_relations {
 }
 
 import ./checker_merge_capture_provenance.vibe {
-  call_callee_sites
+  call_callee_sites, type_is_erased_rethrow
 }
 
 import ./checker.vibe {
@@ -1250,7 +1251,13 @@ export fn publish_throw_site_kinds(final_s: Subst) -> Unit {
   let mut i = 0
   while i < Array::length(raw) {
     let (k, t) = Array::get(raw, i)
-    Array::push(out, (k, throw_kind_of_type(subst_apply(final_s, t))))
+    // #3551 review: a payload that may carry an erased arm's binder.
+    let kind = if type_is_erased_rethrow(t) {
+      erased_rethrow_site_kind
+    } else {
+      throw_kind_of_type(subst_apply(final_s, t))
+    }
+    Array::push(out, (k, kind))
     i = i + 1
   }
   set_throw_site_kinds(out)

@@ -78,3 +78,76 @@ test "a kinded arm binds its payload at the kind" {
   let src = "fn f() -> Int with Exception[Int] { throw(7) }\nfn g() -> Int {\n  handle { f() } with { Exception[Int]::Throw(e) => e + 1 }\n}\n"
   assert(check_source_ok(src))
 }
+
+//# Rethrowing through an expression (#3551 review)
+
+/// `g` declares `Exception[String]` and rethrows, from an erased arm, a value
+/// built by `body` from the binder `m`. `f` throws an `Int`, so a caller's
+/// `Exception[String]::Throw(s)` arm would read that `Int` as a `String`.
+fn rethrow_diags(body: String) -> Array[String] with Exception {
+  let head = "fn f() -> Int with Exception[Int] { throw(7) }\nfn id[T](x: T) -> T { x }\nstruct Box[T] {\n  v: T\n}\n"
+  let g = String::concat("fn g() -> Int with Exception[String] {\n  handle { f() } with { Exception::Throw(m) => {\n", String::concat(body, "\n  } }\n}\n"))
+  row_checked_diags(String::concat(head, g))
+}
+
+/// Whether the rethrow was charged as an exception of no known kind.
+fn charged_erased(diags: Array[String]) -> Bool {
+  let mut found = false
+  for d in diags {
+    if String::contains(d, "missing { Exception::Throw }") {
+      found = true
+    }
+  }
+  found
+}
+
+test "an erased binder rethrown through a generic call is not a String throw" {
+  assert(charged_erased(rethrow_diags("    throw(id(m))")))
+}
+
+test "an erased binder rethrown through a conditional is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let c = true\n    throw(if c { m } else { m })")))
+}
+
+/// The binder is already pinned to String when the alias is made, so the
+/// alias's type alone no longer says where its value came from.
+test "an alias made after a String use is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let _n = String::length(m)\n    let m2 = m\n    throw(m2)")))
+}
+
+test "a generic call after a String use is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let _n = String::length(m)\n    throw(id(m))")))
+}
+
+test "an erased binder rethrown through a closure is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let k = () -> m\n    throw(k())")))
+}
+
+test "an erased binder rethrown through a container is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let b = Box::{ v: m }\n    throw(b.v)")))
+  assert(charged_erased(rethrow_diags("    let xs = [m]\n    throw(Array::get(xs, 0))")))
+  assert(charged_erased(rethrow_diags("    throw(match Some(m) { Some(v) => v, None => m })")))
+}
+
+/// Annotating the alias does not change the value it holds.
+test "an annotated alias of an erased binder is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let m2: String = m\n    throw(m2)")))
+}
+
+/// Controls: a payload that does not carry the binder keeps its kind, and so
+/// does a kinded arm's binder, whose type is the kind the body may throw.
+test "a rethrow that does not carry an erased binder keeps its kind" {
+  inspect(rethrow_diags("    throw(\"other\")"), "[]")
+}
+
+test "a kinded arm's binder rethrown through a generic call keeps its kind" {
+  let src = "fn f() -> Int with Exception[String] { throw(\"x\") }\nfn id[T](x: T) -> T { x }\nfn g() -> Int with Exception[String] {\n  handle { f() } with { Exception[String]::Throw(m) => throw(id(m)) }\n}\n"
+  inspect(row_checked_diags(src), "[]")
+}
+
+/// A payload whose type holds no `String` is a new value of that type, so it
+/// keeps its kind.
+test "a value of another kind built from an erased binder keeps its kind" {
+  let src = "fn f() -> Int with Exception[Int] { throw(7) }\nenum Why {\n  Because(String)\n}\nfn g() -> Int with Exception[Why] {\n  handle { f() } with { Exception::Throw(m) => throw(Why::Because(m)) }\n}\n"
+  inspect(row_checked_diags(src), "[]")
+}

@@ -196,6 +196,8 @@ import ./checker_merge_capture_provenance.vibe {
   builtin_no_lowering_hint,
   deferred_field_reads,
   eq_formal_row_of,
+  erased_throw_arm_enter,
+  erased_throw_arm_leave,
   erased_throw_binder_vars,
   exception_kind_formals_in_env,
   expression_aliases_outer_binding,
@@ -1675,7 +1677,20 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               } else {
                 ()
               }
+              // #3551 review: while the body is typed, a throw whose payload
+              // may carry the binder's value records no known kind either
+              // (`throw_payload_recorded_type`).
+              let ea_mark = match ea_erased {
+                Some((ea_name, ea_tv)) => match ea_tv {
+                  CtVar(ea_id) => erased_throw_arm_enter(ea_id, ea_name, hbody),
+                  _ => 0 - 1
+                },
+                None => 0 - 1
+              }
               let (earm_ty, eans, eanc) = check_expr_capture(hbody, eaenv, defs, hs1, hc1, errors, tytab, capture, lane)
+              if ea_mark >= 0 {
+                erased_throw_arm_leave(ea_mark)
+              }
               hs1 = eans
               hc1 = eanc
               let eres_now = subst_apply(hs1, hres)

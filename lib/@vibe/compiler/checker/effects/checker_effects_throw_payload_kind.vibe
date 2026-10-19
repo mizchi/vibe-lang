@@ -901,6 +901,14 @@ export fn throw_payload_site_key(off: Int, payload: Expr) -> String {
 /// can only keep a refusal, never admit a wrong kind.
 let throw_site_kind_cell: Array[MutMap[String, String]] = [MutMap::new_string()]
 
+/// #3551 review: the kind the checker records for a throw whose payload may
+/// carry the value an ERASED arm (`Exception::Throw(m)`) caught. It is of no
+/// known kind, and the payload's syntax is not asked: `throw(String::concat(
+/// "ctx: ", m))` or an annotated `let e: String = m` would answer `String`
+/// for a value that is whatever was thrown. A collision with any other kind
+/// keeps this one.
+export let erased_rethrow_site_kind: String = "#erased-rethrow"
+
 export fn set_throw_site_kinds(sites: Array[(String, String)]) -> Unit {
   let m = MutMap::new_string()
   let mut i = 0
@@ -908,7 +916,11 @@ export fn set_throw_site_kinds(sites: Array[(String, String)]) -> Unit {
     let (k, kind) = Array::get(sites, i)
     match MutMap::get(m, k) {
       Some(prev) => if prev != kind {
-        MutMap::set(m, k, "")
+        if prev == erased_rethrow_site_kind || kind == erased_rethrow_site_kind {
+          MutMap::set(m, k, erased_rethrow_site_kind)
+        } else {
+          MutMap::set(m, k, "")
+        }
       },
       None => MutMap::set(m, k, kind)
     }
@@ -1319,7 +1331,9 @@ export fn throw_required_label(op_name: String, opargs: Array[Expr], binds: TkEn
     // spelling kinds are compared in. The syntax answers only what the
     // checker left unresolved (another lane, or a site whose key collided).
     let typed = throw_site_kind(call_off, payload)
-    let kind = if String::length(typed) > 0 {
+    let kind = if typed == erased_rethrow_site_kind {
+      ""
+    } else if String::length(typed) > 0 {
       typed
     } else {
       throw_payload_kind(payload, binds)
