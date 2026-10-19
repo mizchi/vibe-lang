@@ -1441,7 +1441,7 @@ fi
 # #3523: an `Async` entry that reaches an `Async` function of its own gets the
 # suspend-class boundary, so the call answers instead of handing a step object
 # (or an unhandled suspension) back. Each pair is fixture and wanted output.
-for async_entry_case in "async_entry_calls_async_closure:5" "async_entry_calls_sleep_wait:5" "async_entry_calls_async_fn_beside_group:47" "async_entry_user_sleep_and_sleep_wait:8"; do
+for async_entry_case in "async_entry_calls_async_closure:5" "async_entry_calls_sleep_wait:5" "async_entry_calls_async_fn_beside_group:47" "async_entry_user_sleep_and_sleep_wait:8" "spawn_suspend_alias_rowless_sleep:42"; do
   async_entry_fixture="${async_entry_case%%:*}"
   async_entry_want="${async_entry_case#*:}"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
@@ -1490,6 +1490,39 @@ for async_refusal_case in "err_async_entry_closure_to_plain_param:cannot see thr
     exit 1
   fi
 done
+# #3520: `vibe run` locates a lowering refusal. The run verb printed the
+# compiler's internal `[@off=N:M]` marker instead of `line L:C`, because it
+# skipped the step that resolves markers on the other verbs. A `sleep` in a
+# `TaskGroup::run` body with a row of its own is refused by the suspend
+# lowering, whose message carries such a marker. `VIBE_RC=1` is the lane
+# `vibe run` uses by default; the gates pin `VIBE_RC=0`, where the evidence
+# pass refuses this program first.
+cat > "$ssldir/run_lane_marker.vibex" <<'VIBE'
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn main allows Console + Exception + Async {
+  let r = TaskGroup::run((g) -> Int with Async + Exception {
+    let a = TaskGroup::spawn(g, () -> 1)
+    sleep(10)
+    TaskHandle::join(a) + 1
+  })
+  println("r = \{r}")
+}
+VIBE
+run_lane_out="$(VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" run "$ssldir/run_lane_marker.vibex" 2>&1 || true)"
+if ! printf '%s' "$run_lane_out" | grep -qF 'run_lane_marker.vibex: line 6:11' || printf '%s' "$run_lane_out" | grep -qF '[@off='; then
+  echo "[compiler-gate] FAIL: vibe run did not locate the refusal (want 'line 6:11', no '[@off='), got: $run_lane_out (#3520)" >&2
+  exit 1
+fi
+# A guest argument after `--` that happens to contain `[@` is the program's,
+# not source text, so it must not turn the resolution off.
+run_lane_guest_out="$(VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" run "$ssldir/run_lane_marker.vibex" -- 'x[@y' 2>&1 || true)"
+if ! printf '%s' "$run_lane_guest_out" | grep -qF 'run_lane_marker.vibex: line 6:11' || printf '%s' "$run_lane_guest_out" | grep -qF '[@off='; then
+  echo "[compiler-gate] FAIL: a guest argument containing '[@' left the marker raw: $run_lane_guest_out (#3520)" >&2
+  exit 1
+fi
 rm -rf "$ssldir"
 
 echo "[compiler-gate] 77/77 ADR-0089 D1 async sleep boundary (#1218)"

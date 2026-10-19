@@ -331,7 +331,7 @@ actionable_fail acquire-effect run 'missing { Stdin::read_via_stream }'
 cat >"$OUT/next-effect.vibe" <<'EOF'
 fn run() -> Int with Stdin { let s = Stdin::read_via_stream(); StdinStream::next(s) }
 EOF
-actionable_fail next-effect run 'effectful call outside effectful context: StdinStream::next'
+actionable_fail next-effect run '`StdinStream::next` needs it (effectful call outside effectful context)'
 cat >"$OUT/read-chunk-effect-direct.vibe" <<'EOF'
 fn pure_read_chunk(stream: StdinStream) -> Option[String] {
   StdinStream::read_chunk(stream, 4)
@@ -343,7 +343,7 @@ fn run() -> Int with Stdin + Async {
   0
 }
 EOF
-actionable_fail read-chunk-effect-direct run 'effectful call outside effectful context: StdinStream::read_chunk'
+actionable_fail read-chunk-effect-direct run '`StdinStream::read_chunk` needs it (effectful call outside effectful context)'
 cat >"$OUT/read-chunk-effect-alias.vibe" <<'EOF'
 fn pure_read_chunk(stream: StdinStream) -> Option[String] {
   let read_chunk = StdinStream::read_chunk
@@ -442,7 +442,7 @@ fn run() -> Int with Stdin {
   S::next(stream)
 }
 EOF
-actionable_fail fs-type-alias-effect run 'effectful call outside effectful context: StdinStream::next' linear 1
+actionable_fail fs-type-alias-effect run '`StdinStream::next` needs it (effectful call outside effectful context)' linear 1
 cat >"$OUT/fs-next-value-alias.vibe" <<'EOF'
 import @vibe/console { StdinStream::next as n }
 fn run() -> Int with Stdin + Async {

@@ -197,12 +197,36 @@ fn afe_contains_for(expr: Expr) -> Bool {
   }
 }
 
+/// #3520: where the walk is -- one entry per enclosing closure literal (1 = no
+/// row of its own, 2 = a row without `Async`), innermost last. Read by the
+/// `EEEffectfulCallOutsideEffect` it records, so the message names the edit
+/// for the closure rather than for the function around it.
+let afe_closure_kind_stack: Array[Int] = []
+
+fn afe_closure_kind() -> Int {
+  let n = Array::length(afe_closure_kind_stack)
+  if n == 0 {
+    0
+  } else {
+    Array::get(afe_closure_kind_stack, n - 1)
+  }
+}
+
 /// #3519: the parameter types of a call's named callee, or none when it is a
 /// local binding or has no visible function type.
 fn afe_callee_param_types(callee: Expr, env: TypeEnv, locals: AfeLocals) -> Array[Type] {
   match callee {
     EIdent(name, _) => if afe_binds_local(locals, name) {
-      []
+      // A local `let spawn = TaskGroup::spawn_suspend` is read through to the
+      // function it names, while nothing has rebound `spawn` since (Codex on
+      // #3552).
+      match afe_current_alias(locals, name) {
+        Some(target) => match env_lookup(env, target) {
+          Some(t) => afe_fn_param_types(t),
+          None => []
+        },
+        None => []
+      }
     } else {
       match env_lookup(env, name) {
         Some(t) => afe_fn_param_types(t),
@@ -211,6 +235,60 @@ fn afe_callee_param_types(callee: Expr, env: TypeEnv, locals: AfeLocals) -> Arra
     },
     _ => []
   }
+}
+
+fn afe_alias_key(name: String) -> String {
+  String::concat("__fn_alias$", name)
+}
+
+/// Record that the local `name` is bound to the top-level function `val`
+/// names, or hide an outer record of it.
+fn afe_bind_alias(locals: AfeLocals, name: String, val: Expr, env: TypeEnv, outer: AfeLocals) -> AfeLocals {
+  let target = match val {
+    EIdent(t, _) => if afe_binds_local(outer, t) {
+      None
+    } else {
+      match env_lookup(env, t) {
+        Some(ty) => if Array::length(afe_fn_param_types(ty)) > 0 {
+          Some(t)
+        } else {
+          None
+        },
+        None => None
+      }
+    },
+    _ => None
+  }
+  afe_bind_local(locals, afe_alias_key(name), target)
+}
+
+/// The function a local alias names, when the alias record is newer than
+/// any other binding of `name` (a parameter or pattern that rebinds it hides
+/// the alias).
+fn afe_current_alias(locals: AfeLocals, name: String) -> Option[String] {
+  let key = afe_alias_key(name)
+  let mut cur = locals
+  let mut found = None
+  let mut go = true
+  while go {
+    match cur {
+      AlNil => go = false,
+      AlBind(n, h, rest) => if n == key {
+        found = Some(h)
+        go = false
+      } else if n == name {
+        go = false
+      } else {
+        cur = rest
+      },
+      AlMask(n, rest) => if n == key || n == name {
+        go = false
+      } else {
+        cur = rest
+      }
+    }
+  }
+  found
 }
 
 fn afe_fn_param_types(t: Type) -> Array[Type] {
@@ -234,6 +312,7 @@ export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> 
   // cell while building the field-type table, so a reset placed after it
   // would let the previous entry's answer into this program's table.
   afe_reset_entry_memos()
+  Array::truncate(afe_closure_kind_stack, 0)
   Array::truncate(afe_callable_bodies, 0)
   Array::truncate(afe_payload_call_stack, 0)
   Array::truncate(afe_reachability_keys, 0)
@@ -258,14 +337,14 @@ fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, lo
     // #3163: a local binding of the name (a parameter, a `let`, a loop
     // variable) is what the call reaches, not the builtin of that spelling --
     // `let await = (f: Future[Int]) -> "s"` does not perform `Async`.
-    ECall(EIdent(name, _), _, _, _) => if !in_async && !afe_binds_local(locals, name) && is_async_primitive(name, env) {
-      Array::push(out, EEEffectfulCallOutsideEffect(name))
+    ECall(EIdent(name, noff), _, _, _) => if !in_async && !afe_binds_local(locals, name) && is_async_primitive(name, env) {
+      Array::push(out, EEEffectfulCallOutsideEffect(name, noff, afe_closure_kind()))
     } else {
       ()
     },
     EForIn(_, _, iter, _) => match afe_async_iterand(iter, env, locals) {
       Some(tn) => if !in_async {
-        Array::push(out, EEEffectfulCallOutsideEffect(String::concat(tn, "::next (a `for` over an async iterator awaits every step -- add `with Async` or wrap the loop in a handler for it)")))
+        Array::push(out, EEEffectfulCallOutsideEffect(String::concat(tn, "::next (a `for` over an async iterator awaits every step -- add `with Async` or wrap the loop in a handler for it)"), -1, afe_closure_kind()))
       } else {
         ()
       },
@@ -277,7 +356,13 @@ fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, lo
     // Scope boundary: a lambda's explicit row replaces its enclosing Async
     // context. All other expression forms retain the context unchanged.
     EFn(_, _, params, _, effect, body) => {
+      let mark = Array::length(afe_closure_kind_stack)
+      Array::push(afe_closure_kind_stack, match effect {
+        None => 1,
+        Some(_) => 2
+      })
       check_async_effects_expr_lo_into(body, env, effect_opt_is_async(effect), afe_bind_params(locals, params, env), out)
+      Array::truncate(afe_closure_kind_stack, mark)
     },
     EHandle(body, arms) => {
       let discharges_async = handle_arms_handle_async(arms)
@@ -329,7 +414,7 @@ fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, lo
     // itself, so both sides see it.
     ELet(name, val, body, _) => {
       check_async_effects_expr_lo_into(val, env, in_async, locals, out)
-      check_async_effects_expr_lo_into(body, env, in_async, afe_bind_value(locals, name, val, env), out)
+      check_async_effects_expr_lo_into(body, env, in_async, afe_bind_alias(afe_bind_value(locals, name, val, env), name, val, env, locals), out)
     },
     ELetMut(name, val, body, _) => {
       check_async_effects_expr_lo_into(val, env, in_async, locals, out)
@@ -354,9 +439,18 @@ fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, lo
         let arg = Array::get(args, ai)
         match arg {
           EFn(_, _, aparams, _, None, abody) => if ai < Array::length(param_tys) && afe_type_is_async_fn(Array::get(param_tys, ai)) {
+            let mark = Array::length(afe_closure_kind_stack)
+            Array::push(afe_closure_kind_stack, 1)
             check_async_effects_expr_lo_into(abody, env, true, afe_bind_params(locals, aparams, env), out)
+            Array::truncate(afe_closure_kind_stack, mark)
           } else {
-            check_async_effects_expr_lo_into(arg, env, in_async, locals, out)
+            // #3520: a row-less closure handed to a parameter that expects no
+            // `Async` runs as a plain function there, so a row on the literal
+            // would not help either: the message asks to move the call out.
+            let mark = Array::length(afe_closure_kind_stack)
+            Array::push(afe_closure_kind_stack, 3)
+            check_async_effects_expr_lo_into(abody, env, false, afe_bind_params(locals, aparams, env), out)
+            Array::truncate(afe_closure_kind_stack, mark)
           },
           _ => check_async_effects_expr_lo_into(arg, env, in_async, locals, out)
         }
@@ -423,6 +517,7 @@ export fn check_async_effects_stmt(stmt: Stmt, env: TypeEnv) -> Array[EffectErro
   // cell while building the field-type table, so a reset placed after it
   // would let the previous entry's answer into this program's table.
   afe_reset_entry_memos()
+  Array::truncate(afe_closure_kind_stack, 0)
   Array::truncate(afe_callable_bodies, 0)
   Array::truncate(afe_payload_call_stack, 0)
   Array::truncate(afe_reachability_keys, 0)
@@ -437,6 +532,7 @@ export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[E
   // cell while building the field-type table, so a reset placed after it
   // would let the previous entry's answer into this program's table.
   afe_reset_entry_memos()
+  Array::truncate(afe_closure_kind_stack, 0)
   // Enforce direct-call-only before ordinary Async row checks. These errors are
   // checker diagnostics, so no artifact reaches codegen for an opaque flow.
   let errors = check_stdin_provider_direct_calls_stmts(stmts)
