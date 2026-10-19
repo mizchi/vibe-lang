@@ -598,11 +598,11 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   a key, and `-0.0` and `0.0` share one as `==` says they should (#3544). A
   field the key cannot encode is refused at the derive, naming the edit: a
   declared type with no `hash_key` of its own, a type whose written
-  `hash_key` is not `(T) -> String`, a type parameter of a generic type, and a
-  builtin with no key such as `Map` or a function (#3551). A field spelled
-  through a type alias is keyed as the type the alias names. The key format is
-  new and may change. Key a map by a `String` you build yourself when the
-  format matters.
+  `hash_key` is not `(T) -> String` with no effect row, a type parameter of a
+  generic type, and a builtin with no key such as `Map` or a function
+  (#3551). A field spelled through a type alias is keyed as the type the
+  alias names. The key format is new and may change. Key a map by a `String`
+  you build yourself when the format matters.
 - **Trait impls beyond one module and one level of generics.** A conditional
   impl (`impl [T: X] Y for Box[T]`) now works at a nested instantiation
   (`Box[Box[Int]]`, #3547), and the same impl declared in two modules is

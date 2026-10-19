@@ -430,6 +430,11 @@ ur_refused fixtures/err_derive_hash_map_field_refused.vibe 'field `m` holds `Map
 ur_refused fixtures/err_derive_hash_map_field_refused.vibe 'field `m` holds `Map[String, Int]`, which has no key' 'write `S::hash_key` yourself' gc
 ur_refused fixtures/err_derive_hash_wrong_signature_refused.vibe 'but `Inner::hash_key` takes `Int`' 'write `Inner::hash_key` as `fn Inner::hash_key(x: Inner) -> String`'
 ur_refused fixtures/err_derive_hash_wrong_signature_refused.vibe 'but `Inner::hash_key` takes `Int`' 'write `Inner::hash_key` as `fn Inner::hash_key(x: Inner) -> String`' gc
+# #3551: an imported `hash_key` that declares `with Console`. The derived key
+# declares no effects and is generated after effect checking, so a caller with
+# an empty row printed through it.
+ur_refused fixtures/err_derive_hash_effectful_hash_key_refused.vibe 'would perform `Console` unchecked' 'remove `with Console` from `Inner::hash_key`'
+ur_refused fixtures/err_derive_hash_effectful_hash_key_refused.vibe 'would perform `Console` unchecked' 'remove `with Console` from `Inner::hash_key`' gc
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
 ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type' gc
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' gc 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'

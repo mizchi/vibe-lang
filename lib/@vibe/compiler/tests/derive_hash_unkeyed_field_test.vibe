@@ -14,7 +14,9 @@
 // alias (`type Values = Array[Int]`) and a `Map` field were rendered by
 // address. A written `hash_key` was called whatever its signature:
 // `fn Inner::hash_key(x: Int) -> String` received an `Inner` and keyed its
-// address. The alias is now expanded; the others are refused.
+// address. The alias is now expanded; the others are refused. So is a
+// written `hash_key` that declares an effect row: the derived key declares
+// none, so a pure caller performed the effect.
 
 //# Imports
 
@@ -116,6 +118,35 @@ test "a written hash_key of another signature is refused" {
   inspect(String::contains(impl_int, "but `Inner::hash_key` returns `Int`"), content = "true")
   let applied = derive_verdict("struct Box[T] { v: T } derive(Show)\nfn Box::hash_key(b: Box[Int]) -> String { \"b\" }\nstruct Holder { b: Box[String] } derive(Hash)" + main_src)
   inspect(String::contains(applied, "calls `Box::hash_key` with field `b`, which it does not take -- it takes only `Box[Int]`"), content = "true")
+}
+
+/// A written `hash_key` that declares an effect row is refused: the derived
+/// key declares none and is generated after effect checking, so a caller with
+/// an empty row (a pure helper, `Map::set_by`) performed the effect. Any
+/// non-empty row counts -- a plain `fn`, an impl method, an annotated `let`,
+/// a row variable; `with ()` is the empty row.
+test "a written hash_key with an effect row is refused" {
+  let inner = "struct Inner { a: Int } derive(Show)\n"
+  let outer = "\nstruct Outer { i: Inner } derive(Hash)" + main_src
+  inspect(derive_verdict(inner + "fn Inner::hash_key(x: Inner) -> String with Console { \"k\" }" + outer), content = "remove `with Console` from `Inner::hash_key`, or write `Outer::hash_key` yourself: the derived key of `Outer` calls `Inner::hash_key` with field `i` and declares no effects, so a caller with none in its row (a pure helper, `Map::set_by`) would perform `Console` unchecked [@fn=Outer]")
+  let two = derive_verdict(inner + "fn Inner::hash_key(x: Inner) -> String with Console + Fs { \"k\" }" + outer)
+  inspect(String::contains(two, "remove `with Console + Fs` from `Inner::hash_key`"), content = "true")
+  let impl_row = derive_verdict(inner + "trait Hash { hash_key(Self) -> String }\nimpl Hash for Inner { hash_key(self: Inner) -> String with Console { \"i\" } }" + outer)
+  inspect(String::contains(impl_row, "remove `with Console` from `Inner::hash_key`"), content = "true")
+  let annotated = derive_verdict(inner + "let Inner::hash_key: (Inner) -> String with Console = (x) -> \"k\"" + outer)
+  inspect(String::contains(annotated, "remove `with Console` from `Inner::hash_key`"), content = "true")
+  let row_var = derive_verdict(inner + "fn Inner::hash_key[e](x: Inner) -> String with e { \"k\" }" + outer)
+  inspect(String::contains(row_var, "remove `with e` from `Inner::hash_key`"), content = "true")
+  // A wrong signature is named first: its edit already drops the row.
+  let both = derive_verdict(inner + "fn Inner::hash_key(x: Int) -> String with Console { \"k\" }" + outer)
+  inspect(String::contains(both, "but `Inner::hash_key` takes `Int`"), content = "true")
+  inspect(derive_verdict(inner + "fn Inner::hash_key(x: Inner) -> String with () { \"k\" }" + outer), content = "ok")
+  // The whole-program facts mark it unusable, and a module deriving `Hash`
+  // over `Inner` refuses on that row instead of calling it.
+  let ops = collect_explicit_derived_op_names(parse_program(lex("struct Inner { a: Int }\nfn Inner::hash_key(x: Inner) -> String with Console { \"k\" }")))
+  inspect(String::join(ops, "|"), content = "Inner::hash_key|!Inner::hash_key declares `with Console`")
+  let refused = module_verdict("struct Outer { i: Inner } derive(Hash)" + main_src, "struct Inner { a: Int } derive(Show)", ops)
+  inspect(String::contains(refused, "remove `with Console` from `Inner::hash_key`"), content = "true")
 }
 
 /// On the per-module lane a module sees another module's `hash_key` only by

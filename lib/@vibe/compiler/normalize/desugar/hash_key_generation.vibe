@@ -40,7 +40,7 @@ import ./equality_aliases.vibe {
 }
 
 import ./hash_key_signature.vibe {
-  hash_key_definitions, hash_key_fact_marker_read, hash_key_fact_pattern_read, hash_key_takes
+  hash_key_definitions, hash_key_fact_marker_read, hash_key_fact_pattern_read, hash_key_problem_row, hash_key_takes
 }
 
 import @vibe/ast {
@@ -496,7 +496,8 @@ fn hk_type_text(t: TypeExpr) -> String {
 /// field was keyed by its rendering or its address: a declared type's
 /// `to_string` is not injective; an erased type parameter, a `Map` and a field
 /// spelled through an alias rendered as an address; and a written `hash_key`
-/// of another signature was called with the field regardless.
+/// of another signature was called with the field regardless, as was one
+/// that declares an effect row, from a key that declares none.
 export fn hash_note_unkeyed_field(tname: String, fname: String, fty: TypeExpr, known_types: Array[String], hash_types: Array[String]) -> Unit {
   let shown = namespace_rename_original(tname)
   let yourself = "write `" + shown + "::hash_key` yourself"
@@ -507,6 +508,10 @@ export fn hash_note_unkeyed_field(tname: String, fname: String, fty: TypeExpr, k
     } else if kind == "declared" {
       let inner = namespace_rename_original(n)
       "add `Hash` to the `derive` of `" + inner + "` (or write `" + inner + "::hash_key`), or " + yourself + ": the derived key of `" + shown + "` keys field `" + fname + "` by the key of `" + inner + "`, which has none -- its rendering is not a key, since two different values can render alike [@fn=" + shown + "]"
+    } else if kind == "unusable" && hash_key_problem_row(detail) != "" {
+      let inner = namespace_rename_original(n)
+      let row = hash_key_problem_row(detail)
+      "remove `with " + row + "` from `" + inner + "::hash_key`, or " + yourself + ": the derived key of `" + shown + "` calls `" + inner + "::hash_key` with field `" + fname + "` and declares no effects, so a caller with none in its row (a pure helper, `Map::set_by`) would perform `" + row + "` unchecked [@fn=" + shown + "]"
     } else if kind == "unusable" {
       let inner = namespace_rename_original(n)
       "write `" + inner + "::hash_key` as `fn " + inner + "::hash_key(x: " + inner + ") -> String`, or " + yourself + ": the derived key of `" + shown + "` calls `" + inner + "::hash_key` with field `" + fname + "`, but `" + inner + "::hash_key` " + detail + " [@fn=" + shown + "]"

@@ -5,8 +5,9 @@
 // `fn Inner::hash_key(x: Int) -> String` was called with an `Inner`, read its
 // address as the `Int`, and keyed `k240`. A written definition is admitted
 // only when its signature says what the call needs: ONE parameter whose type,
-// aliases expanded, is `T` (applied or not, or `Self`), and a `String`
-// result. The types come from the definition's own annotations; an impl
+// aliases expanded, is `T` (applied or not, or `Self`), a `String` result,
+// and no effect row -- the derived key declares none, so nothing would
+// authorize an effect the call performs. The types come from the definition's own annotations; an impl
 // method with an unannotated parameter or result takes them from the trait
 // that declares the method -- the one it implements or a supertrait of it --
 // which the checker holds the method to (#3538).
@@ -208,8 +209,70 @@ export fn hash_key_definitions(stmts: Array[Stmt]) -> (Array[(String, Array[Stri
 }
 
 /// `(problem, type variables, parameter type)`; the problem is "" when the
-/// definition takes a `T` and returns a `String`.
+/// definition takes a `T`, returns a `String` and declares no effects.
+///
+/// The row is part of the judgement because the derived call is generated
+/// after effect checking and the derived key declares no effects: a
+/// `fn Inner::hash_key(x: Inner) -> String with Console` was called from
+/// `Outer::hash_key`, so a caller with no `Console` in its row -- a pure
+/// helper, `Map::set_by` -- printed (#3551 review). Any non-empty row is
+/// refused, a row variable (`with e`) included; `with ()` is the empty row.
 fn hks_judge(owner: String, ann: Option[TypeExpr], value: Expr, trait_sig: Option[(Array[TypeExpr], TypeExpr)], in_impl: Bool, aliases: Array[(String, Array[String], TypeExpr)]) -> (String, Array[String], TypeExpr) {
+  let (problem, vars, param) = hks_judge_signature(owner, ann, value, trait_sig, in_impl, aliases)
+  if problem != "" {
+    (problem, vars, param)
+  } else {
+    let written_row = match value {
+      EFn(_, _, _, _, eff, _) => hks_row_text(eff),
+      _ => ""
+    }
+    let row = if written_row != "" {
+      written_row
+    } else {
+      match ann {
+        Some(TyFn(_, _, eff)) => hks_row_text(eff),
+        _ => ""
+      }
+    }
+    if row != "" {
+      (hash_key_row_problem(row), vars, param)
+    } else {
+      (problem, vars, param)
+    }
+  }
+}
+
+/// A stored effect row (`"A, B"`; `""` or `None` when empty) in its source
+/// spelling (`A + B`), or "" for the empty row.
+fn hks_row_text(eff: Option[String]) -> String {
+  match eff {
+    Some(r) => String::join(String::split(r, ", "), " + "),
+    None => ""
+  }
+}
+
+let hash_key_row_prefix = "declares `with "
+
+/// The problem recorded for a `hash_key` that declares the effect row `row`
+/// (source spelling): `declares `with Console``. It travels in
+/// `hash_key_fact_marker` rows too, so `hash_key_problem_row` reads it back.
+fn hash_key_row_problem(row: String) -> String {
+  hash_key_row_prefix + row + "`"
+}
+
+/// The row a `hash_key_row_problem` names (`Console`), or "" for any other
+/// problem.
+export fn hash_key_problem_row(problem: String) -> String {
+  let n = String::length(problem)
+  let k = String::length(hash_key_row_prefix)
+  if n > k + 1 && String::starts_with(problem, hash_key_row_prefix) && String::ends_with(problem, "`") {
+    String::substring(problem, k, n - 1)
+  } else {
+    ""
+  }
+}
+
+fn hks_judge_signature(owner: String, ann: Option[TypeExpr], value: Expr, trait_sig: Option[(Array[TypeExpr], TypeExpr)], in_impl: Bool, aliases: Array[(String, Array[String], TypeExpr)]) -> (String, Array[String], TypeExpr) {
   let declared: Option[(Array[TypeExpr], TypeExpr)] = match ann {
     Some(TyFn(ps, r, _)) => Some((ps, r)),
     _ => None
