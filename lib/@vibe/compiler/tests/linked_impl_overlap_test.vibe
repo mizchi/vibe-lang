@@ -4,6 +4,10 @@ import @vibe/compiler/core {
   Stmt, linked_impl_overlap_error, linked_unit
 }
 
+import @vibe/compiler/runtime {
+  db_grouped_merged_source, db_new
+}
+
 import @vibe/compiler/syntax {
   lex, parse_program
 }
@@ -27,6 +31,15 @@ fn link_verdict(modules: Array[(String, String)]) -> String with Exception {
     Some(msg) => msg,
     None => "ok"
   }
+}
+
+/// Merge `groups` through the grouped runtime merge (the lane the compiler's
+/// self-compile takes) and answer its refusal, or `ok`.
+fn grouped_verdict(groups: Array[(String, Array[(String, String)])]) -> String with Env {
+  handle {
+    let _ = db_grouped_merged_source(db_new(), groups)
+    "ok"
+  } with { Exception::Throw(msg) => msg }
 }
 
 let trait_src = "export trait Name {\n  name(Self) -> String\n}\n"
@@ -127,4 +140,57 @@ test "a contract restating an impl is not an overlap" {
     ("pkg/index.vpkg", impl_a),
     ("pkg/impl.vibe", impl_a)
   ]), content = "ok")
+}
+
+/// #3551 review: the grouped merge links each source group on its own and
+/// joins the texts afterwards, so a check per group never saw two impls in
+/// different groups together, and the joined program kept whichever came
+/// first. The check runs over the whole program: every group's units.
+test "the grouped merge refuses impls overlapping across source groups" {
+  let main_src = "import ./tr.vibe { trait Name }\n\nfn main() -> String {\n  Name::name(1)\n}\n"
+  let refusal = "tb.vibe: line 3:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one"
+  inspect(grouped_verdict([
+    ("tr", [("tr.vibe", trait_src)]),
+    ("a", [("ta.vibe", impl_a)]),
+    ("b", [("tb.vibe", impl_b)]),
+    ("main", [("main.vibe", main_src)])
+  ]), content = refusal)
+  // One group holding both is refused as before; distinct targets are not.
+  inspect(grouped_verdict([
+    ("tr", [("tr.vibe", trait_src)]),
+    ("ab", [("ta.vibe", impl_a), ("tb.vibe", impl_b)]),
+    ("main", [("main.vibe", main_src)])
+  ]), content = refusal)
+  let impl_bool = "impl Name for Bool {\n  name(x: Bool) -> String { \"bool\" }\n}\n"
+  inspect(grouped_verdict([
+    ("tr", [("tr.vibe", trait_src)]),
+    ("a", [("ta.vibe", impl_a)]),
+    ("c", [("tc.vibe", impl_bool)]),
+    ("main", [("main.vibe", main_src)])
+  ]), content = "ok")
+  // A group listed twice is merged twice but is one module: not an overlap.
+  inspect(grouped_verdict([
+    ("tr", [("tr.vibe", trait_src)]),
+    ("a", [("ta.vibe", impl_a)]),
+    ("a", [("ta.vibe", impl_a)]),
+    ("main", [("main.vibe", main_src)])
+  ]), content = "ok")
+}
+
+/// The same through a warm cache: each group's text was merged, and cached,
+/// by an earlier call that never held the other impl. Serving both texts from
+/// the cache must not skip the check on the program they are joined into.
+test "the grouped merge refuses an overlap between groups cached by separate calls" {
+  let main_src = "import ./tr.vibe { trait Name }\n\nfn main() -> String {\n  Name::name(1)\n}\n"
+  let tr = ("tr", [("tr.vibe", trait_src)])
+  let ga = ("a", [("ta.vibe", impl_a)])
+  let gb = ("b", [("tb.vibe", impl_b)])
+  let gm = ("main", [("main.vibe", main_src)])
+  let verdict = handle {
+    let (_, _, db1) = db_grouped_merged_source(db_new(), [tr, ga, gm])
+    let (_, _, db2) = db_grouped_merged_source(db1, [tr, gb, gm])
+    let _ = db_grouped_merged_source(db2, [tr, ga, gb, gm])
+    "ok"
+  } with { Exception::Throw(msg) => msg }
+  inspect(verdict, content = "tb.vibe: line 3:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
 }
