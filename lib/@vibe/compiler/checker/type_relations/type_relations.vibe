@@ -188,15 +188,18 @@ fn retry_bind_unstripped(expected: Type, actual: Type, s: Subst, su: Subst) -> O
   }
 }
 
-/// Unify the chosen binding with every other occurrence of `id`, rows set
-/// aside (the join already covers them), so the variables those occurrences
-/// hold are bound; an occurrence that does not unify is left alone.
+/// Bind the variables every other occurrence of `id` still holds -- `?u` of
+/// a `None` beside `Some(logged)` -- from the UNSTRIPPED join at the same
+/// position (`retry_bind_from`), so they keep its rows; what that leaves is
+/// unified with rows set aside (the join already covers them). An occurrence
+/// that does not unify is left alone.
 fn retry_unify_occurrences(occ: Array[(Int, Type)], id: Int, chosen: Type, s: Subst) -> Subst {
   let mut out = s
   let mut i = 0
   while i < Array::length(occ) {
     let (oid, other) = Array::get(occ, i)
     if oid == id {
+      out = retry_bind_from(other, chosen, out)
       match unify(strip_effects(subst_apply(out, chosen)), strip_effects(subst_apply(out, other)), out) {
         Some(u) => out = u,
         None => ()
@@ -207,6 +210,58 @@ fn retry_unify_occurrences(occ: Array[(Int, Type)], id: Int, chosen: Type, s: Su
     i = i + 1
   }
   out
+}
+
+/// Bind each open variable of `pattern` to the subtree of `source` at the
+/// same position, unstripped.
+fn retry_bind_from(pattern: Type, source: Type, s: Subst) -> Subst {
+  let p = subst_apply(s, pattern)
+  match p {
+    CtVar(id) => if occurs_in(id, source) {
+      s
+    } else {
+      subst_bind_value(id, source, s)
+    },
+    CtFn(pps, pr, _) => match source {
+      CtFn(sps, sr, _) => retry_bind_from(pr, sr, retry_bind_from_all(pps, sps, s)),
+      _ => s
+    },
+    CtArray(pe) => match source {
+      CtArray(se) => retry_bind_from(pe, se, s),
+      _ => s
+    },
+    CtOption(pe) => match source {
+      CtOption(se) => retry_bind_from(pe, se, s),
+      _ => s
+    },
+    CtTuple(pes) => match source {
+      CtTuple(ses) => retry_bind_from_all(pes, ses, s),
+      _ => s
+    },
+    CtNamed(pn, pas) => match source {
+      CtNamed(sn, sas) => if pn == sn {
+        retry_bind_from_all(pas, sas, s)
+      } else {
+        s
+      },
+      _ => s
+    },
+    _ => s
+  }
+}
+
+fn retry_bind_from_all(ps: Array[Type], ss: Array[Type], s: Subst) -> Subst {
+  if Array::length(ps) == Array::length(ss) {
+    let mut out = s
+    let mut i = 0
+    while i < Array::length(ps) {
+      out = retry_bind_from(Array::get(ps, i), Array::get(ss, i), out)
+      i = i + 1
+    }
+    out
+  } else {
+    s
+  }
 }
 
 /// The join of every occurrence of `id`, checked to cover each of them.
