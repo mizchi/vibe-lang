@@ -1746,7 +1746,7 @@ that names a handled effect is a parse error:
 
 ```
 fn f() -> Int with Error { .. }              // row item        -> parse error
-handle { .. } with Error { Throw(_) => .. }  // handled effect  -> parse error
+handle { .. } with { Error::Throw(_) => .. }  // handled effect  -> parse error
 handle { .. } with { Error::Throw(_) => .. } // qualified arm   -> parse error
 ```
 
@@ -2098,7 +2098,7 @@ ineligible call and points at its `line:col`** (`(here: the call to 'pred')`,
 **Suspending through a closure value is also accepted** (closure-CPS ABI,
 ADR-0076 addendum 31): a suspending body can be passed as a **closure
 argument**, as in `fn run_with(f: () -> Int with E) -> Int { handle { f() }
-with E {...} }`, so the handle site can live in a library
+with { E::Op(x) => .. } }`, so the handle site can live in a library
 (`TaskGroup::spawn_suspend` has this shape). A suspending closure literal
 **needs an explicit row annotation**: `() -> Int with E { ... }` (an
 unannotated lambda's effects are inherited from the enclosing row, #761). A
@@ -3491,9 +3491,7 @@ be declared. The client builtins (`Http::request` / `response_status` /
 when spelled directly in a bare file (the second barrier of #1508, removed;
 runnable example: `bench/http_bench.vibe`, which needs `python3
 tests/http_echo_server.py 18281`). The server side (`Http::listen` /
-`accept` / `respond`) still needs a handler. The old workaround of
-discharging the row with `handle { .. } with Http { _ => () }` is no longer
-needed for a real HTTP test / bench.
+`accept` / `respond`) still needs a handler.
 
 ### 引数
 

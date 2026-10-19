@@ -171,8 +171,8 @@ let risky: (Int) -> Int with Exception = (x) -> {
 export let main = () -> Int {
   handle {
     risky(0)
-  } with Exception {
-    Throw(_) => 42
+  } with {
+    Exception::Throw(_) => 42
   }
 }
 EOF

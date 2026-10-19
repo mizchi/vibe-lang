@@ -164,8 +164,8 @@ let rec walk = (path: String, depth: Int) -> String with FileIo {
 export let _start: () -> Int with Fs = () -> {
   let out = handle {
     walk("_build/_gate_deepresume/a.txt", 1)
-  } with FileIo {
-    ReadFile(p) => resume(Fs::read_file(p))
+  } with {
+    FileIo::ReadFile(p) => resume(Fs::read_file(p))
   }
   if out == "AAA|BBB|CCC" {
     42

@@ -1,0 +1,23 @@
+// #3518 review: the retry binds `T` through a higher-kinded result --
+// `F[T]` against `Option[() -> Int with Log]`. Copied from the retry's own
+// effect-stripped binding, `T` was the pure `() -> Int`, so the option could
+// be annotated `Option[() -> Int]` and its callback run with no `Log`
+// handler. The walk crosses the `F[T]`-to-`Option` bridge and binds `T` from
+// the unstripped payload, so the pure annotation is refused.
+effect Log {
+  Emit(Int) -> Unit
+}
+
+fn logged() -> Int with Log {
+  perform Log::Emit(1)
+  1
+}
+
+fn give[F[_], T, e](f: () -> F[T] with Exception + e) -> F[T] with Exception + e {
+  f()
+}
+
+fn main() -> Int allows Exception {
+  let x: Option[() -> Int] = give(() -> Some(logged))
+  0
+}

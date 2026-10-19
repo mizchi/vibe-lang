@@ -84,8 +84,8 @@ let boom = () -> Int with Exception[IoError] + Exception[ParseError] {
 let main = () -> Int {
   handle {
     boom()
-  } with Exception {
-    Throw(_e) => 42
+  } with {
+    Exception::Throw(_e) => 42
   }
 }
 EOF
@@ -109,8 +109,8 @@ enum ParseError {
 let boom = () -> Int {
   handle {
     throw(NotFound("cfg"))
-  } with Exception[ParseError] {
-    Throw(_e) => 42
+  } with {
+    Exception[ParseError]::Throw(_e) => 42
   }
 }
 
@@ -288,8 +288,8 @@ let _start = () -> Int with Console {
   println("interp=\{Bang(1)}")
   handle {
     throw(Bang(1))
-  } with Exception {
-    Throw(_m) => 7
+  } with {
+    Exception::Throw(_m) => 7
   }
 }
 VIBEEOF
@@ -840,7 +840,7 @@ fn shout(s: String) -> String with Log {
 fn main allows Console {
   let r = handle {
     shout("hi")
-  } with Log {
+  } with {
     Log::Emit(m) => resume(m)
   }
   println(r)

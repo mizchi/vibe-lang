@@ -2069,8 +2069,8 @@ let greet: () -> Int = () -> {
   handle {
     perform Console::Print("hi")
     7
-  } with Console {
-    Print(s) => resume(0)
+  } with {
+    Console::Print(s) => resume(0)
   }
 }
 export let _start: () -> Int = () -> { greet() }
@@ -2082,8 +2082,8 @@ let greet: () -> Int = () -> {
   handle {
     perform Logger::Log("hi")
     7
-  } with Console {
-    Print(s) => resume(0)
+  } with {
+    Console::Print(s) => resume(0)
   }
 }
 export let _start: () -> Int = () -> { greet() }
@@ -2111,17 +2111,17 @@ effect Calc {
   Mul(Int) -> Int
 }
 export let _start: () -> Int = () -> {
-  let a = handle { perform Calc::Mul(3) } with Calc {
-    Add(n) => resume(n + 100);
-    Mul(n) => resume(n * 1000)
+  let a = handle { perform Calc::Mul(3) } with {
+    Calc::Add(n) => resume(n + 100);
+    Calc::Mul(n) => resume(n * 1000)
   }
   let b = handle {
     let x = perform Calc::Mul(3)
     let y = perform Calc::Add(5)
     x + y
-  } with Calc {
-    Add(n) => resume(n + 10);
-    Mul(n) => resume(n * 10)
+  } with {
+    Calc::Add(n) => resume(n + 10);
+    Calc::Mul(n) => resume(n * 10)
   }
   a + b
 }
@@ -2129,8 +2129,8 @@ EOF
 cat > "$hdir/singleop.vibe" <<'EOF'
 effect Logger { Log(String) -> Unit }
 export let _start: () -> Int = () -> {
-  handle { perform Logger::Log("hi"); 42 } with Logger {
-    Log(s) => resume(())
+  handle { perform Logger::Log("hi"); 42 } with {
+    Logger::Log(s) => resume(())
   }
 }
 EOF
@@ -2166,57 +2166,57 @@ effect R { Take(Int) -> Int }
 export let _start: () -> Int = () -> {
   handle {
     perform R::Take(41)
-  } with R {
-    Take(n) => resume(n + 1)
+  } with {
+    R::Take(n) => resume(n + 1)
   }
 }
 EOF
 cat > "$odir/bad_performarg.vibe" <<'EOF'
 effect R { Take(Int) -> Int }
 export let _start: () -> Int = () -> {
-  handle { perform R::Take("str") } with R { Take(n) => resume(n + 1) }
+  handle { perform R::Take("str") } with { R::Take(n) => resume(n + 1) }
 }
 EOF
 cat > "$odir/bad_performarity.vibe" <<'EOF'
 effect R { Take(Int) -> Int }
 export let _start: () -> Int = () -> {
-  handle { perform R::Take(1, 2) } with R { Take(n) => resume(n + 1) }
+  handle { perform R::Take(1, 2) } with { R::Take(n) => resume(n + 1) }
 }
 EOF
 cat > "$odir/bad_armname.vibe" <<'EOF'
 effect Ask { Get() -> Int }
 export let _start: () -> Int = () -> {
-  handle { perform Ask::Get() } with Ask { Wrong(x) => resume(1) }
+  handle { perform Ask::Get() } with { Ask::Wrong(x) => resume(1) }
 }
 EOF
 cat > "$odir/bad_armpayload.vibe" <<'EOF'
 effect G { Give(Int) -> Int }
 export let _start: () -> Int = () -> {
-  handle { perform G::Give(7) } with G { Give(s) => resume(String::length(s)) }
+  handle { perform G::Give(7) } with { G::Give(s) => resume(String::length(s)) }
 }
 EOF
 cat > "$odir/bad_resumeval.vibe" <<'EOF'
 effect Q { Get() -> Int }
 export let _start: () -> Int = () -> {
-  handle { perform Q::Get() } with Q { Get() => resume("oops") }
+  handle { perform Q::Get() } with { Q::Get() => resume("oops") }
 }
 EOF
 cat > "$odir/bad_kconv.vibe" <<'EOF'
 effect E { Emit(Int) -> Int }
 export let _start: () -> Int = () -> {
-  handle { perform E::Emit(20) } with E { Emit(v, k) => v + k(0) }
+  handle { perform E::Emit(20) } with { E::Emit(v, k) => v + k(0) }
 }
 EOF
 cat > "$odir/bad_missingarm.vibe" <<'EOF'
 effect Duo { A() -> Int; B() -> Int }
 export let _start: () -> Int = () -> {
-  handle { perform Duo::B() } with Duo { A() => resume(1) }
+  handle { perform Duo::B() } with { Duo::A() => resume(1) }
 }
 EOF
 cat > "$odir/bad_resume0.vibe" <<'EOF'
 effect Q { Get() -> Int }
 export let _start: () -> Int = () -> {
-  handle { perform Q::Get() } with Q { Get() => resume() }
+  handle { perform Q::Get() } with { Q::Get() => resume() }
 }
 EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
