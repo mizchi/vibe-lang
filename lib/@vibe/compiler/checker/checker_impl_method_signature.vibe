@@ -484,10 +484,24 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, binding_name: St
                 applied_types: [],
                 impl_names: impl_names
               }
-              let self_ty = match raw_self {
-                CtConstructor(_, _) => CtUnknown,
-                CtApplied(_, _) => CtUnknown,
-                _ => fill_expected(pre_scope, raw_self)
+              // A bare generic head (`impl [T] Len2 for Array`) names every
+              // instantiation, so `Self` is left open. A declared head resolves
+              // to `CtConstructor`; a builtin one to its zero-argument spelling.
+              let bare_builtin_head = match origin.target {
+                TyName(tn) => match compiler_owned_type_arity(tn) {
+                  Some(arity) => arity > 0,
+                  None => false
+                },
+                _ => false
+              }
+              let self_ty = if bare_builtin_head {
+                CtUnknown
+              } else {
+                match raw_self {
+                  CtConstructor(_, _) => CtUnknown,
+                  CtApplied(_, _) => CtUnknown,
+                  _ => fill_expected(pre_scope, raw_self)
+                }
               }
               if substitutable {
                 for a in applied_args {
