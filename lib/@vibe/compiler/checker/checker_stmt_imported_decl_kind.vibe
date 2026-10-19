@@ -67,7 +67,7 @@ import @vibe/compiler/normalize {
 }
 
 import @vibe/parser {
-  BinderAuthorityNode, LocatedProgramBinderAuthority, SourceBinder
+  BinderAuthorityNode, LocatedProgramBinderAuthority, SourceBinder, is_builtin_namespace_name
 }
 
 import ./checker_stmt_push_source_scope_names.vibe {
@@ -1018,6 +1018,51 @@ fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, built
 export fn import_item_kind_errors(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, path: String) -> Array[String] {
   let errors = array_empty()
   check_import_item_kinds(items, initial_env, builtin_authority, path, errors)
+  errors
+}
+
+/// Whether `item` carries no kind keyword (`struct`, `enum`, `type`, `trait`,
+/// `effect`).
+fn import_item_has_no_kind(item: ImportItem) -> Bool {
+  match item.kind {
+    Some(_) => false,
+    None => true
+  }
+}
+
+/// Whether the providing module declares `item` as a value -- a function or a
+/// `let` -- rather than a type, trait or effect. The kind asked for is
+/// irrelevant to the answer: `imported_decl_kind` reports "value" only when
+/// no declaration of any other kind has the name.
+fn imported_item_is_value(item: ImportItem, initial_env: TypeEnv, builtin_authority: Bool) -> Bool {
+  match imported_decl_kind(item, ImportType, initial_env, builtin_authority) {
+    Some(kind) => kind == "value",
+    None => false
+  }
+}
+
+/// An imported VALUE aliased to a builtin namespace's name (`MakeTag as
+/// Array`) is refused: the alias rewrite turns `Array::length(xs)` into
+/// `MakeTag::length(xs)`, which nothing binds, and the program reached code
+/// generation unresolved. The parser refuses the spellings it can classify (a
+/// lowercase or qualified item); a plain capitalized item is a type or a
+/// function, and only the providing module's environment says which, so it is
+/// judged here. A type under a builtin's name stays legal (`Record as
+/// Future`, `struct Box as StringMap`). `(from '<path>')` is what
+/// `engine_locate_import_alias_namespace_msg` anchors on.
+export fn import_item_namespace_alias_errors(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, path: String) -> Array[String] {
+  let errors = array_empty()
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    match item.alias {
+      Some(alias) => if import_item_has_no_kind(item) && is_builtin_namespace_name(alias) && imported_item_is_value(item, initial_env, builtin_authority) {
+        Array::push(errors, "choose another name than `\{alias}` for this import of `\{item.name}` (from '\{path}'): `\{alias}` names the builtin `\{alias}::` operations, and `\{item.name}` is a value, so it would take the `\{alias}::...` calls instead")
+      },
+      None => ()
+    }
+    i = i + 1
+  }
   errors
 }
 

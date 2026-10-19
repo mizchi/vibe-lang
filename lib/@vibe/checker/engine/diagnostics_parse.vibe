@@ -647,6 +647,44 @@ fn engine_locate_import_kind_msg(source: String, msg: String) -> String {
     }
   }
 }
+/// `choose another name than `Alias` for this import of `Name` (from 'path')`:
+/// the span from `Name` through its `Alias` inside the one `import` /
+/// `export` of that path. The name is found as `engine_locate_import_kind_msg`
+/// finds it, so a comment, a longer path or two statements naming it leave the
+/// message unlocated.
+export fn engine_locate_import_alias_namespace_msg(source: String, msg: String) -> String {
+  let marker = "choose another name than `"
+  if !String::starts_with(msg, marker) {
+    msg
+  } else {
+    let alias = engine_extract_until_code(msg, marker, 96)
+    let sym = engine_extract_until_code(msg, " for this import of `", 96)
+    let path = engine_extract_quoted_after(msg, " (from '")
+    if alias == "" || sym == "" || path == "" {
+      msg
+    } else {
+      let offs = engine_import_kind_name_offs(source, "import", path, sym)
+      let exported = engine_import_kind_name_offs(source, "export", path, sym)
+      let mut ei = 0
+      while ei < Array::length(exported) {
+        Array::push(offs, Array::get(exported, ei))
+        ei = ei + 1
+      }
+      if Array::length(offs) != 1 {
+        msg
+      } else {
+        let start = Array::get(offs, 0)
+        let alias_at = engine_index_word_after(source, alias, start + String::length(sym))
+        let stop = if alias_at < 0 {
+          start + String::length(sym)
+        } else {
+          alias_at + String::length(alias)
+        }
+        String::concat(engine_offset_line_col_range_prefix(source, start, stop), msg)
+      }
+    }
+  }
+}
 fn engine_extract_until_code(msg: String, marker: String, end_code: Int) -> String {
   let mi = String::index_of(msg, marker)
   if mi < 0 {
