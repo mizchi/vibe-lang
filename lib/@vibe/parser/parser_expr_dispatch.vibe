@@ -724,7 +724,7 @@ fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int
       // `perform Error::Throw(x)` stays legal: that qualifier names the
       // operation dispatched, not a handled effect (parser_base.vibe).
       if effect_name == "Error" {
-        throw("write `Exception::Throw` (or `Exception[Kind]::Throw` for a typed arm) instead of `Error::Throw`: `Error` is no longer an effect name, and `vibe fmt` rewrites it for you. at #\{pos}")
+        throw("write `Exception::Throw` (or `Exception[Kind]::Throw` for a typed arm) instead of `Error::Throw`: `Error` is no longer an effect name. at #\{pos}")
       } else {
         ()
       }
@@ -744,9 +744,10 @@ fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int
   }
   let ref_mark = pattern_ref_mark()
   let (pat, pat_next) = parse_pattern_with_binder_context(tokens, operation_pos, context)
-  if !handler_payload_has_bare_ctor(tokens, operation_pos, pat_next, operation_name) {
-    discard_handler_operation_ref(ref_mark, "", operation_name)
-  }
+  // Every alternative names an operation, not an enum variant: the first is
+  // parsed bare (after `Effect::`), each later one as `Effect::Op`. Discard
+  // them all, or a later `Logger::B` collides with an enum's `Api::B`.
+  discard_handler_operation_refs(ref_mark, tokens, operation_pos, pat_next)
   let qualified_pat = match source_pat(pat) {
     PCtor(name, args) => if name == operation_name {
       PCtor(intern_qualified(effect_label, operation_name), args)
@@ -830,7 +831,7 @@ fn qualify_handler_set_or_arm(tokens: Array[Token], first: Int, end: Int, first_
           // #3284: the retired `Error` is refused in every alternative, as
           // it is in the first (Codex on #3426).
           if effect_name == "Error" {
-            throw("write `Exception::Throw` (or `Exception[Kind]::Throw` for a typed arm) instead of `Error::Throw`: `Error` is no longer an effect name, and `vibe fmt` rewrites it for you. at #\{start}")
+            throw("write `Exception::Throw` (or `Exception[Kind]::Throw` for a typed arm) instead of `Error::Throw`: `Error` is no longer an effect name. at #\{start}")
           } else {
             ()
           }

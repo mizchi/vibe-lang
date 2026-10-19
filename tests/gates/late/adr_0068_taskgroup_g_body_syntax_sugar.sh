@@ -2218,8 +2218,8 @@ let main = () -> Int {
   handle {
     gen()
     41
-  } with Yield {
-    Yield(x) => resume(())
+  } with {
+    Yield::Yield(x) => resume(())
   } + 1
 }
 EOF
@@ -2243,8 +2243,8 @@ fn gen() -> Unit with Yield {
 fn run(f: () -> Int with Yield) -> Int {
   handle {
     f()
-  } with Yield {
-    Yield(x) => resume(())
+  } with {
+    Yield::Yield(x) => resume(())
   }
 }
 

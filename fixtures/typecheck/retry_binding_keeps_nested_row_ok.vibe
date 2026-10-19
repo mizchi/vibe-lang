@@ -1,0 +1,32 @@
+// #3518 review: the effect-stripped retry binds `T` from `mk`, whose row
+// differs from the parameter's. It used to bind the STRIPPED type
+// (`() -> Int`), so `fallback`, the same function with its `Log` row, was
+// refused for dropping `Log`. `T` keeps the row the value has.
+effect Log {
+  Emit(Int) -> Unit
+}
+
+fn logged() -> Int with Log {
+  perform Log::Emit(1)
+  1
+}
+
+fn make() -> () -> Int with Log {
+  logged
+}
+
+fn choose[T, e](mk: () -> T with Exception + e, fallback: T) -> T {
+  fallback
+}
+
+fn pick() -> () -> Int with Log {
+  choose(make, logged)
+}
+
+fn main() -> Int {
+  handle {
+    logged()
+  } with {
+    Log::Emit(_) => resume(())
+  }
+}

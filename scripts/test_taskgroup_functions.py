@@ -169,6 +169,7 @@ def main():
             ("builtin-shadow", "fn compiler_lowering_run(n: Int) -> Int { n - 3 }\nfn main() -> Int { compiler_lowering_run(11) }", "8"),
             ("division", "fn quotient(a: Int, b: Int) -> Int { a / b }\nfn main() -> Int { quotient(43, 4) }", "10"),
             ("closures", "fn make(n: Int) -> (Int) -> Int { (x) -> { let inner = (y) -> y - n; inner(x) } }\nlet xs: Array[Int] = [9, 4]\nfn main() -> Int { let f = make(2); f(Array::get(xs, 0)) }", "7"),
+            ("branch-closures", "fn choose(n: Int) -> (Int) -> Int { if n > 0 { (x) -> x - 2 } else { (x) -> x + 100 } }\nfn main() -> Int { let f = choose(1); f(9) }", "7"),
             ("exception", 'fn fail() -> Int with Exception { throw("expected") }\nfn main() -> Int { handle { fail() } with { Exception::Throw(_) => 17 } }', "17"),
             ("large-string", 'let value: String = "' + "z" * 131072 + 'é🍣"\nfn main() -> Int { String::length(value) }', "131078"),
         ]

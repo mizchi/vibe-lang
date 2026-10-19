@@ -141,6 +141,12 @@ bind.
   released at arm end, so a read sequenced after a consume never sees a freed
   child.
 
+Consumes are counted by `md_view_consume_count_pre`, the count for a bind
+nothing else releases: a projection off the bind (`c.x`) reads the field in
+place, as the Perceus plan counts it, so it is not a consume and a bind used
+only through projections is borrow-only. The ordinary pattern bind
+(`bind_match_pat`) dups by the same count.
+
 The narrow tier admits raw transfers only; the wide tier admits all three. A
 scalar payload needs no special case: a tagged scalar moves like a pointer and
 the shared-path dup of an even value is a no-op.
@@ -228,6 +234,30 @@ path parks such a temporary (`cc_is_owned_temp`: a call to a callee that
 returns no view, or an array / tuple / record / map literal) and releases it
 after the call, unless the callee may return a view of that argument, in which
 case the leak is the safe side.
+
+A projection off such a temporary (`mk(i).y`, `pair(i).0`, `mk(i).inner.a`)
+is the same gap: the plan sees no binding, so nothing released the block the
+field was read from. The `EDot` lowering parks an owned temporary in a local
+across the field load, retains the field, and drops the temporary, so the read
+answers with a reference of its own -- an owned value, where every other
+projection is a view into a source that keeps it alive.
+
+`cc_is_owned_projection` names those reads, using the lowering's own test
+(`cc_is_owned_temp` of the object), and the consumers treat them as owned:
+
+- `cc_is_owned_temp` answers yes for one, so a borrowed position releases it
+  after the call (#2682) and a projection off it is itself an owned read;
+- the sites that retain a projection to own it -- a `let`, an assignment, a
+  tuple / array / record / map literal, an owning call argument, a stored
+  field, a collected `for` body, a lambda's return -- retain only a
+  `cc_is_borrowed_projection`, so an owned read moves in.
+
+A spine that ends in one is still read as a view (`value_spine_borrowed`,
+`pv_spine_is_view`): `let v = if c { f().a } else { g().a }` keeps the
+binding borrow-bound and leaks the read's reference, the safe side, because
+the plan and codegen must agree on that answer. The drop-guided reuse path
+(`compile_match`) cannot import the predicate without a cycle and retains an
+owned read as well, which leaks it the same way.
 
 ### Unannotated lambda parameters (#2681)
 

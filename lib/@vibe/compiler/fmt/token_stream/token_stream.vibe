@@ -2,7 +2,6 @@
 
 import @vibe/compiler/fmt/lexer {
   LTok,
-  k_alias,
   k_and_and,
   k_arrow,
   k_as,
@@ -14,7 +13,6 @@ import @vibe/compiler/fmt/lexer {
   k_comma,
   k_comment,
   k_continue,
-  k_declare,
   k_derive,
   k_dot,
   k_double_colon,
@@ -25,7 +23,6 @@ import @vibe/compiler/fmt/lexer {
   k_eqeq,
   k_example,
   k_export,
-  k_flake,
   k_float,
   k_fn,
   k_for,
@@ -61,14 +58,12 @@ import @vibe/compiler/fmt/lexer {
   k_pipe_gt,
   k_plus,
   k_plus_eq,
-  k_raise,
   k_rbrace,
   k_rbracket,
   k_rec,
   k_record,
   k_return,
   k_rparen,
-  k_semicolon,
   k_slash,
   k_slash_eq,
   k_star,
@@ -80,11 +75,9 @@ import @vibe/compiler/fmt/lexer {
   k_thin_arrow,
   k_trait,
   k_type,
-  k_use,
   k_while,
   k_with,
-  k_ws,
-  k_yield
+  k_ws
 }
 
 export fn is_operator_kind(k: Int) -> Bool {
@@ -96,13 +89,13 @@ export fn is_operator_kind(k: Int) -> Bool {
 }
 
 export fn is_keyword_kind(k: Int) -> Bool {
-  k == k_let || k == k_rec || k == k_enum || k == k_type || k == k_alias ||
-  k == k_import || k == k_use || k == k_declare || k == k_export || k == k_from ||
+  k == k_let || k == k_rec || k == k_enum || k == k_type ||
+  k == k_import || k == k_export || k == k_from ||
   k == k_as || k == k_test || k == k_example || k == k_bench || k == k_if || k == k_else ||
   k == k_match || k == k_record || k == k_for || k == k_in || k == k_with ||
   k == k_is || k == k_derive || k == k_fn || k == k_while || k == k_loop ||
-  k == k_break || k == k_continue || k == k_mut || k == k_raise || k == k_yield ||
-  k == k_struct || k == k_trait || k == k_impl || k == k_flake ||
+  k == k_break || k == k_continue || k == k_mut ||
+  k == k_struct || k == k_trait || k == k_impl ||
   k == k_handle || k == k_return
   // `handle`/`return` were missing here (real corruption: `return handle {
   // .. } with Exception { .. }` -- `return` immediately followed by `handle`
@@ -118,20 +111,15 @@ export fn is_literal_kind(k: Int) -> Bool {
 }
 
 export fn is_statement_start(k: Int) -> Bool {
-  k == k_let || k == k_flake || k == k_alias || k == k_import || k == k_use ||
+  k == k_let || k == k_import ||
   k == k_test || k == k_example || k == k_bench || k == k_if || k == k_while || k == k_loop ||
   k == k_match || k == k_break || k == k_continue || k == k_return ||
-  k == k_raise || k == k_enum || k == k_type || k == k_struct || k == k_trait ||
+  k == k_enum || k == k_type || k == k_struct || k == k_trait ||
   k == k_impl || k == k_export
 }
 
 export fn is_index_receiver_kind(k: Int) -> Bool {
   k == k_name || k == k_rparen || k == k_rbracket || k == k_rbrace || is_literal_kind(k)
-}
-
-export fn is_type_context_end(k: Int) -> Bool {
-  k == k_comma || k == k_semicolon || k == k_eq || k == k_arrow ||
-  k == k_lbrace || k == k_rparen || k == k_rbrace || k == k_rbracket
 }
 
 export fn next_non_trivia_kind(toks: Array[LTok], start: Int) -> Int {
@@ -193,36 +181,6 @@ export fn prev_non_trivia_index(toks: Array[LTok], start: Int) -> Int {
     }
   }
   result
-}
-
-fn find_matching_lbrace(toks: Array[LTok], close: Int) -> Int {
-  let mut depth = 0
-  let mut i = close
-  let mut result = -1
-  while result < 0 && i >= 0 {
-    let k = Array::get(toks, i).kind
-    if k == k_rbrace {
-      depth = depth + 1
-    } else if k == k_lbrace {
-      depth = depth - 1
-      if depth == 0 {
-        result = i
-      }
-    }
-    i = i - 1
-  }
-  result
-}
-
-export fn is_handler_with(toks: Array[LTok], with_pos: Int) -> Bool {
-  let close = prev_non_trivia_index(toks, with_pos)
-  if close < 0 || Array::get(toks, close).kind != k_rbrace {
-    false
-  } else {
-    let open_idx = find_matching_lbrace(toks, close)
-    let before = prev_non_trivia_index(toks, open_idx)
-    before >= 0 && Array::get(toks, before).kind == k_handle
-  }
 }
 
 /// #? import-list wrap: is the `{` at open_idx the item-list brace of an
@@ -399,16 +357,3 @@ export fn is_generic_param_bracket(toks: Array[LTok], start: Int) -> Bool {
   }
 }
 
-export fn next_non_trivia_index(toks: Array[LTok], start: Int) -> Int {
-  let mut i = start + 1
-  let mut result = -1
-  while result < 0 && i < Array::length(toks) {
-    let k = Array::get(toks, i).kind
-    if k == k_ws || k == k_newline || k == k_comment {
-      i = i + 1
-    } else {
-      result = i
-    }
-  }
-  result
-}

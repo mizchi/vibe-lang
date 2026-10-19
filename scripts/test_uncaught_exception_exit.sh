@@ -53,7 +53,7 @@ fn main() -> Unit allows Exception {
 EOF
 cat >"$WORK/handled.vibe" <<'EOF'
 fn main() -> Unit {
-  let _ = handle { throw("handled") } with Exception { Throw(_) => () }
+  let _ = handle { throw("handled") } with { Exception::Throw(_) => () }
 }
 EOF
 cat >"$WORK/explicit.vibe" <<'EOF'

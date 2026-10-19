@@ -119,17 +119,15 @@ if ! cmp -s "$WORK/wrap.expected.vibe" "$WORK/wrap.got.vibe"; then
   exit 1
 fi
 
-# A struct literal immediately after `export let x = ... -> Name { .. }` must
+# A struct literal immediately after `export let x = ... -> Name::{ .. }` must
 # NOT be mistaken for an import-list brace just because it follows a NAME
-# token in a statement whose head keyword was `export` -- must stay a plain
-# one-field-per-line block (c_brace_block), not the import-list wrap layout.
+# token in a statement whose head keyword was `export`. Two fields out of
+# alphabetical order: an import list would be sorted.
 cat > "$WORK/not_import.in.vibe" <<'EOF'
-export let make: () -> Foo = () -> Foo { field: 1 }
+export let make: () -> Foo = () -> Foo::{ zeta: 1, alpha: 2 }
 EOF
 cat > "$WORK/not_import.expected.vibe" <<'EOF'
-export let make: () -> Foo = () -> Foo {
-  field: 1
-}
+export let make: () -> Foo = () -> Foo::{ zeta: 1, alpha: 2 }
 EOF
 bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/not_import.in.vibe" > "$WORK/not_import.got.vibe" 2>/dev/null
 if ! cmp -s "$WORK/not_import.expected.vibe" "$WORK/not_import.got.vibe"; then
@@ -146,8 +144,8 @@ fi
 # `export` further back and wrongly sort/reflow the body as an import list.
 cat > "$WORK/enum_not_import.in.vibe" <<'EOF'
 export enum Re {
-  RChar(Int)
-  RDot
+  RChar(Int);
+  RDot;
   RSeq(Array[Re])
 }
 export struct Foo {
@@ -156,8 +154,8 @@ export struct Foo {
 EOF
 cat > "$WORK/enum_not_import.expected.vibe" <<'EOF'
 export enum Re {
-  RChar(Int)
-  RDot
+  RChar(Int);
+  RDot;
   RSeq(Array[Re])
 }
 export struct Foo {
@@ -251,18 +249,11 @@ fi
 # dropped, gluing them into a single `returnhandle` token, which cascaded
 # into an unrelated far-later "unexpected token: with" parse error (the
 # merge-flatten compile step of scripts/generate_bundle.sh).
-# Since the ADR-0102 migration the formatter also rewrites the legacy
-# `with Exception { Throw(msg) => .. }` header into the qualified
-# `with { Exception::Throw(msg) => .. }` form, so the input is no longer a
-# byte-fixpoint -- the guard here is only that `return handle` keeps its
-# space (and the migrated output is itself a fixpoint).
+# The input holds the handled block on one line; the formatter breaks it, so
+# it re-emits `return handle` rather than copying the line through.
 cat > "$WORK/return_handle.in.vibe" <<'EOF'
 fn foo() -> Int with Exception {
-  return handle {
-    1
-  } with Exception {
-    Throw(msg) => 0
-  }
+  return handle { 1 } with { Exception::Throw(msg) => 0 }
 }
 EOF
 cat > "$WORK/return_handle.expected.vibe" <<'EOF'
@@ -279,7 +270,7 @@ if grep -q 'returnhandle' "$WORK/return_handle.got.vibe"; then
   exit 1
 fi
 if ! cmp -s "$WORK/return_handle.expected.vibe" "$WORK/return_handle.got.vibe"; then
-  echo "[vibe-fmt-smoke] FAIL: 'return handle' did not format to the qualified-handler canonical form" >&2
+  echo "[vibe-fmt-smoke] FAIL: 'return handle' did not format to its canonical form" >&2
   diff "$WORK/return_handle.expected.vibe" "$WORK/return_handle.got.vibe" >&2 || true
   exit 1
 fi

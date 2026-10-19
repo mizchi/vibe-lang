@@ -685,6 +685,33 @@ export fn cc_is_owned_temp(e: Expr, ctx: CompileCtx) -> Bool {
     // block on this lane; `Map::set(Map::new(), k, v)` handed one to a
     // borrowed position and leaked 16 B per call.
     EMap(_) => true,
+    EDot(_, _, _, _) => cc_is_owned_projection(e, ctx),
+    _ => false
+  }
+}
+
+/// Is `e` a field read off an owned temporary -- `mk(i).a`, `pair(i).0`,
+/// `mk(i).inner.a`? The `EDot` lowering (compile_expr_tail4) holds such a
+/// temporary across the field load, retains the field and releases the
+/// temporary, so the read answers with a reference of its own: an OWNED
+/// value, unlike every other projection, which is a view into a source that
+/// keeps it alive. A consumer that retains a projection to own it must not
+/// retain this one, and a borrowing consumer must release it
+/// (`cc_is_owned_temp`). The test is the lowering's own, so the two cannot
+/// disagree about which reads were retained.
+export fn cc_is_owned_projection(e: Expr, ctx: CompileCtx) -> Bool {
+  match e {
+    EDot(obj, _, _, _) => ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && cc_is_owned_temp(obj, ctx),
+    _ => false
+  }
+}
+
+/// A projection that is a borrowed VIEW of its source: what a consumer that
+/// stores it must retain. Everything `cc_is_projection` answers except the
+/// owned reads above.
+export fn cc_is_borrowed_projection(e: Expr, ctx: CompileCtx) -> Bool {
+  match e {
+    EDot(_, _, _, _) => !cc_is_owned_projection(e, ctx),
     _ => false
   }
 }
@@ -1260,7 +1287,7 @@ export fn cc_bmask_has(mask: Int, i: Int) -> Bool {
 /// Expects the freshly compiled arg on the wasm stack; leaves it there.
 export fn cc_retain_stored_arg(buf: Bytes, carg: Expr, local_names: Array[String], nl: Int, ctx: CompileCtx) -> Int with Exception {
   let is_loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
-  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow) {
+  if ctx.enable_rc && (cc_is_borrowed_projection(carg, ctx) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow) {
     // #706 leak follow-up: a loop-borrowed trigger needs the epilogue's
     // compensating drop, same as the generic path's `__argdup` sites.
     if is_loop_borrow {
@@ -1320,7 +1347,7 @@ export fn cc_retain_stored_arg(buf: Bytes, carg: Expr, local_names: Array[String
 export fn cc_hof_retain_arg(buf: Bytes, carg: Expr, local_idx: Int, fname: String, pos: Int, ctx: CompileCtx) -> Unit with Exception {
   let is_loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
   let planner_borrows = ctx.enable_rc && cc_bmask_has(md_borrow_mask_of(fname, ctx.borrow_param_user, ctx.borrow_param_mask), pos)
-  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow || planner_borrows) {
+  if ctx.enable_rc && (cc_is_borrowed_projection(carg, ctx) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow || planner_borrows) {
     if is_loop_borrow {
       Array::push(ctx.loop_consumed_names, get_eident_name(carg))
     } else {

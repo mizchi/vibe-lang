@@ -24,25 +24,25 @@ test "handler_payload_generic_int_literal_reject" {
 }
 
 test "handler_payload_char_literal_reject" {
-  let m = message("effect E { P(Char) -> Int }\nfn main() -> Int { handle { perform E::P('a') } with E { P('a') => resume(0) } }\n")
+  let m = message("effect E { P(Char) -> Int }\nfn main() -> Int { handle { perform E::P('a') } with { E::P('a') => resume(0) } }\n")
   assert(String::contains(m, "if v == 97"))
   assert(!String::contains(m, "is an Int, but `E::P` takes a Char"))
 }
 
 test "same operation fallback arms must be consolidated" {
-  let m = message("// #3371: the legacy `with Effect { .. }` header qualifies each arm the same\n// way, so its literal payload was ignored too: `P(1)` lost to the later\n// `P(_)` for `perform Pick::P(1)` and `main` answered 5, not 100.\neffect Pick {\n  P(Int) -> Int\n  Q(Int) -> Int\n}\n\nfn main() -> Int {\n  handle {\n    perform Pick::P(1)\n  } with Pick {\n    P(1) => resume(100);\n    P(_) => resume(5);\n    Q(_) => resume(7)\n  }\n}\n")
+  let m = message("// #3371: a literal payload was ignored when a later arm of the same\n// operation matched everything: `P(1)` lost to the later\n// `P(_)` for `perform Pick::P(1)` and `main` answered 5, not 100.\neffect Pick {\n  P(Int) -> Int\n  Q(Int) -> Int\n}\n\nfn main() -> Int {\n  handle {\n    perform Pick::P(1)\n  } with {\n    Pick::P(1) => resume(100);\n    Pick::P(_) => resume(5);\n    Pick::Q(_) => resume(7)\n  }\n}\n")
   assert(String::contains(m, "combine all `Pick::P` arms"))
   assert(String::contains(m, "remove the separate same-operation fallback arm"))
 }
 
 test "handler_payload_char_comparison_ok" {
-  assert_eq(message("effect E { P(Char) -> Int }\nfn main() -> Int { handle { perform E::P('a') } with E { P(v) => if v == 97 { resume(42) } else { resume(0) } } }\n"), "accepted")
+  assert_eq(message("effect E { P(Char) -> Int }\nfn main() -> Int { handle { perform E::P('a') } with { E::P(v) => if v == 97 { resume(42) } else { resume(0) } } }\n"), "accepted")
 }
 test "handler_payload_generic_string_comparison_ok" {
   assert_eq(message("effect E[T] { P(T) -> Int }\nfn main() -> Int { handle { perform E::P(\"x\") } with { E::P(v) => if v == \"x\" { resume(42) } else { resume(0) } } }\n"), "accepted")
 }
 test "handler_payload_consolidated_comparison_ok" {
-  assert_eq(message("effect Pick { P(Int) -> Int; Q(Int) -> Int }\nfn main() -> Int { handle { perform Pick::P(1) } with Pick { P(v) => if v == 1 { resume(100) } else { resume(5) }; Q(_) => resume(7) } }\n"), "accepted")
+  assert_eq(message("effect Pick { P(Int) -> Int; Q(Int) -> Int }\nfn main() -> Int { handle { perform Pick::P(1) } with { Pick::P(v) => if v == 1 { resume(100) } else { resume(5) }; Pick::Q(_) => resume(7) } }\n"), "accepted")
 }
 
 test "handler_payload_record_fields_reject gets actionable advice before unbound payload names" {
@@ -70,7 +70,7 @@ test "handler_payload_struct_reject gets actionable advice before unbound payloa
 }
 
 test "a literal or-arm must split operations before binding its payload" {
-  let m = message("// #3371: each alternative of an or-pattern arm is checked like an arm of its\n// own, so the literal payload of the SECOND alternative is refused although\n// the first one is `_`. Before, the arm compiled and trapped at run time.\neffect Pick {\n  P(Int) -> Int\n  Q(Int) -> Int\n}\n\nfn run() -> Int {\n  handle {\n    perform Pick::P(3)\n  } with Pick {\n    P(_) | Q(2) => resume(100)\n  }\n}\n")
+  let m = message("// #3371: each alternative of an or-pattern arm is checked like an arm of its\n// own, so the literal payload of the SECOND alternative is refused although\n// the first one is `_`. Before, the arm compiled and trapped at run time.\neffect Pick {\n  P(Int) -> Int\n  Q(Int) -> Int\n}\n\nfn run() -> Int {\n  handle {\n    perform Pick::P(3)\n  } with {\n    Pick::P(_) | Pick::Q(2) => resume(100)\n  }\n}\n")
   assert(String::contains(m, "write one handler arm per operation, then"))
   assert(String::contains(m, "Pick::Q(v) => if v == 2"))
 }

@@ -40,8 +40,6 @@ import @vibe/compiler/fmt/lexer {
   k_string,
   k_string_interp,
   k_struct,
-  k_thin_arrow,
-  k_type,
   k_ws
 }
 
@@ -55,7 +53,6 @@ import @vibe/compiler/fmt/token_stream {
   is_literal_kind,
   is_operator_kind,
   is_statement_start,
-  is_type_context_end,
   next_non_trivia_kind,
   prev_non_trivia_index,
   span_has_newline,
@@ -116,8 +113,6 @@ let max_import_list_width = 140
 let max_collection_width = 80
 
 let decl_none = 0
-
-let decl_type_alias = 1
 
 let decl_enum = 2
 
@@ -371,7 +366,7 @@ fn quote_char_literal(text: String) -> String {
 }
 
 fn should_escape_identifier_text(text: String) -> Bool {
-  text == "let" || text == "import" || text == "use" || text == "declare" ||
+  text == "let" || text == "import" || text == "declare" ||
   text == "test" || text == "if" || text == "else" || text == "match" ||
   text == "record" || text == "fn" || text == "rec" ||
   text == "type" || text == "enum" || text == "while" || text == "loop" ||
@@ -412,10 +407,8 @@ fn container_kind_for_brace(prev_kind: Int) -> Int {
   }
 }
 
-fn container_kind_for_bracket(prev_kind: Int, in_type_context: Bool, in_type_decl_header: Bool, generic_hint: Bool) -> Int {
+fn container_kind_for_bracket(prev_kind: Int, generic_hint: Bool) -> Int {
   if generic_hint {
-    c_bracket_type_args
-  } else if (prev_kind == k_name || prev_kind == k_rbracket) && (in_type_context || in_type_decl_header) {
     c_bracket_type_args
   } else if is_index_receiver_kind(prev_kind) {
     c_bracket_index
@@ -431,15 +424,6 @@ fn should_force_newline_before(kind: Int, container_stack: Array[Int]) -> Bool {
     false
   } else {
     container_indents(Array::get(container_stack, Array::length(container_stack) - 1))
-  }
-}
-
-fn should_start_type_context_on_colon(container_stack: Array[Int]) -> Bool {
-  if Array::length(container_stack) == 0 {
-    true
-  } else {
-    let top = Array::get(container_stack, Array::length(container_stack) - 1)
-    !(top == c_brace_record)
   }
 }
 
@@ -590,11 +574,7 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
   let pm_paren = []
   let pm_brace = []
   let pm_bracket = []
-  let tc_paren = []
-  let tc_brace = []
-  let tc_bracket = []
   let mut type_decl_header = decl_none
-  let mut type_decl_rhs_active = false
   let mut saw_newline = false
   let mut line_has_content = false
   // #2103/#2104: column reached on the line being built, so a collection's
@@ -724,10 +704,6 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
       }
       if saw_newline && paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 &&
       is_statement_start(kind) {
-        Array::truncate(tc_paren, 0)
-        Array::truncate(tc_brace, 0)
-        Array::truncate(tc_bracket, 0)
-        type_decl_rhs_active = false
         type_decl_header = decl_none
         struct_header = false
       }
@@ -771,8 +747,6 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
       }
       let next_kind = next_non_trivia_kind(toks, i)
       let curr_pipe = kind == k_pipe && next_kind == k_gt
-      let in_type_context = Array::length(tc_paren) > 0 ||
-      type_decl_header != decl_none || type_decl_rhs_active
       let in_enum_container = Array::length(container_stack) > 0 &&
       Array::get(container_stack, Array::length(container_stack) - 1) == c_brace_enum
       let enum_top_level = in_enum_container && Array::length(cpb_stack) > 0 &&
@@ -819,21 +793,10 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         Array::push(out, rendered_text)
         cur_col = cur_col + String::length(rendered_text)
         line_has_content = true
-        if kind == k_type {
-          type_decl_header = decl_type_alias
-        } else if kind == k_enum {
+        if kind == k_enum {
           type_decl_header = decl_enum
         } else if kind == k_struct {
           struct_header = true
-        }
-        if kind == k_colon && should_start_type_context_on_colon(container_stack) {
-          Array::push(tc_paren, paren_depth)
-          Array::push(tc_brace, brace_depth)
-          Array::push(tc_bracket, bracket_depth)
-        } else if kind == k_thin_arrow {
-          Array::push(tc_paren, paren_depth)
-          Array::push(tc_brace, brace_depth)
-          Array::push(tc_bracket, bracket_depth)
         }
         if kind == k_lparen {
           paren_depth = paren_depth + 1
@@ -913,7 +876,7 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
             }
           } else {
             let generic_hint = prev_kind == k_impl || is_generic_param_bracket(toks, i)
-            let raw_container = container_kind_for_bracket(prev_kind, Array::length(tc_paren) > 0 || type_decl_rhs_active, type_decl_header != decl_none, generic_hint)
+            let raw_container = container_kind_for_bracket(prev_kind, generic_hint)
             // #2103: an array literal that fits on the line it starts on is
             // written there — `[1, 2, 3]`, `[]` — instead of one element per
             // line unconditionally.
@@ -970,38 +933,8 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
             pending_newlines = 1
           }
         }
-        if kind == k_eq && type_decl_header == decl_type_alias {
+        if kind == k_semicolon {
           type_decl_header = decl_none
-          type_decl_rhs_active = true
-        } else if kind == k_semicolon {
-          type_decl_rhs_active = false
-          type_decl_header = decl_none
-        }
-        // maybe_end_type_context
-        if Array::length(tc_paren) > 0 && is_type_context_end(kind) {
-          let eff_brace = if kind == k_lbrace && brace_depth > 0 {
-            brace_depth - 1
-          } else {
-            brace_depth
-          }
-          let eff_bracket = if kind == k_lbracket && bracket_depth > 0 {
-            bracket_depth - 1
-          } else {
-            bracket_depth
-          }
-          let mut going = true
-          while going && Array::length(tc_paren) > 0 {
-            let li = Array::length(tc_paren) - 1
-            if Array::get(tc_paren, li) == paren_depth &&
-            Array::get(tc_brace, li) == eff_brace &&
-            Array::get(tc_bracket, li) == eff_bracket {
-              let _ = arr_pop_int(tc_paren)
-              let _ = arr_pop_int(tc_brace)
-              let _ = arr_pop_int(tc_bracket)
-            } else {
-              going = false
-            }
-          }
         }
         prev_prev_kind = prev_kind
         prev_prev_text = prev_text

@@ -1,0 +1,45 @@
+// #3518 review: `T` occurs as `() -> (() -> Int with Log)` and as
+// `() -> (() -> Int with Tick)`. Their outer rows are both pure, so a check
+// of the outer row alone let `T` fall back to the effect-stripped type, and
+// the `Tick` callback came back typed pure. The rows are compared at every
+// depth: they differ, and the argument is refused with the edit.
+effect Log {
+  Emit(Int) -> Unit
+}
+
+effect Tick {
+  Bump() -> Unit
+}
+
+fn logged() -> Int with Log {
+  perform Log::Emit(1)
+  1
+}
+
+fn ticked() -> Int with Tick {
+  perform Tick::Bump()
+  2
+}
+
+fn give_logged() -> () -> Int with Log {
+  logged
+}
+
+fn give_ticked() -> () -> Int with Tick {
+  ticked
+}
+
+fn pair() -> (() -> () -> Int with Log, () -> () -> Int with Tick) {
+  (give_logged, give_ticked)
+}
+
+fn second[T, e](mk: () -> (T, T) with Exception + e) -> T with Exception + e {
+  let (_, b) = mk()
+  b
+}
+
+fn main() -> Int allows Exception {
+  let g = second(pair)
+  let cb: () -> Int = g()
+  0
+}

@@ -121,8 +121,8 @@ let risky: (Int) -> Int with Exception = (x) -> {
   if x < 0 { throw(MyErr(x)) } else { x * 2 }
 }
 export let main: () -> Int = () -> {
-  let n = handle { greet("world") } with Logger { Log(_, k) => k(()) }
-  let v = handle { risky(-1) } with Exception { Throw(_) => 99 }
+  let n = handle { greet("world") } with { Logger::Log(_, k) => k(()) }
+  let v = handle { risky(-1) } with { Exception::Throw(_) => 99 }
   n + v
 }
 EOF

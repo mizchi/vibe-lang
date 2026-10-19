@@ -349,9 +349,7 @@ fn hello() -> Unit with Console { println("hi") }
 // #1429: the effect row has exactly one spelling, plus one for the empty row.
 //   with A + B      the row
 //   with ()         the explicitly empty row
-// The braced `with { A, B }` was accepted through the migration and is now a
-// named parse error. `vibe fmt` rewrites it for you (the formatter is a
-// token-level pass, so it converts source the compiler no longer accepts).
+// The braced `with { A, B }` is a named parse error.
 // (`effectset X = { A, B }` keeps its braces — that is a set literal on the
 // right of `=`, not a row.)
 // `+` rather than `,` because once the braces are gone a comma cannot be told
@@ -397,9 +395,6 @@ let rec fact: (Int) -> Int = (n) -> {     // recursive
 let identity: [T](T) -> T = (x) -> { x }  // generic
 let show: [T: Eq + Ord](T) -> T = (x) -> { x } // trait bounds
 ```
-
-> **Deprecated**: `let f = (x: Int) -> Int { ... }` (inline param types)
-> is deprecated. Use `vibe fmt` to auto-convert.
 
 ### Labeled arguments
 
@@ -1729,12 +1724,9 @@ that names a handled effect is a parse error:
 
 ```
 fn f() -> Int with Error { .. }              // row item        -> parse error
-handle { .. } with Error { Throw(_) => .. }  // handled effect  -> parse error
+handle { .. } with { Error::Throw(_) => .. }  // handled effect  -> parse error
 handle { .. } with { Error::Throw(_) => .. } // qualified arm   -> parse error
 ```
-
-`vibe fmt` rewrites all three to `Exception` (token-level, so it can convert
-sources the parser no longer accepts).
 
 **`perform Error::Throw(x)` is still accepted.** That qualifier does not spell
 a row or a handled effect; it names the operation the runtime dispatches.
@@ -2084,7 +2076,7 @@ ineligible call and points at its `line:col`** (`(here: the call to 'pred')`,
 **Suspending through a closure value is also accepted** (closure-CPS ABI,
 ADR-0076 addendum 31): a suspending body can be passed as a **closure
 argument**, as in `fn run_with(f: () -> Int with E) -> Int { handle { f() }
-with E {...} }`, so the handle site can live in a library
+with { E::Op(x) => .. } }`, so the handle site can live in a library
 (`TaskGroup::spawn_suspend` has this shape). A suspending closure literal
 **needs an explicit row annotation**: `() -> Int with E { ... }` (an
 unannotated lambda's effects are inherited from the enclosing row, #761). A
@@ -3475,9 +3467,7 @@ be declared. The client builtins (`Http::request` / `response_status` /
 when spelled directly in a bare file (the second barrier of #1508, removed;
 runnable example: `bench/http_bench.vibe`, which needs `python3
 tests/http_echo_server.py 18281`). The server side (`Http::listen` /
-`accept` / `respond`) still needs a handler. The old workaround of
-discharging the row with `handle { .. } with Http { _ => () }` is no longer
-needed for a real HTTP test / bench.
+`accept` / `respond`) still needs a handler.
 
 ### 引数
 
