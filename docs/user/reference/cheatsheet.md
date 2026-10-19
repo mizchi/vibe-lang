@@ -403,6 +403,10 @@ let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
 let sum = f(x=10, y=20)   // => 30
 ```
 
+Labeled arguments are evaluated in **parameter order**, not in the order they
+are written: `f(y=g(), x=h())` calls `h()` before `g()`. Bind an argument
+first when its side effects must happen in a particular order.
+
 ### Optional arguments: `x: T = default` (#3120) and `x?: T` (#1500)
 
 A parameter with a **default** can be left out by the caller. The body sees
@@ -478,7 +482,7 @@ Iterator::fold(xs, 0, _ + _)
 |------|-----------|-------|
 | 1 | `.` `()` `[]` | field, call, index |
 | 2 | `-x` `!x` `~x` | unary (`~` is bit-not, #2344) |
-| 3 | `*` `/` `%` | |
+| 3 | `*` `/` `%` | `%` is `Int`-only; its sign follows the dividend (`-7 % 2 == -1`) |
 | 4 | `+` `-` | |
 | 5 | `<<` `>>` | >> is arithmetic (sign-extending) |
 | 6-8 | `&` `^` `\|` | bitwise AND, XOR, OR |
@@ -2606,7 +2610,9 @@ from `@vibe/core`.
 
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,
 `Int::is_even`, `Int::is_odd`, `Double::abs`, `Double::max`, `Double::min`,
-`Double::floor`, `Double::ceil`.
+`Double::floor`, `Double::ceil` -- library functions in `@vibe/builtin`, so
+import the ones you call (`import @vibe/builtin { Int::abs, Double::floor }`);
+without the import the call is `unknown name`.
 
 **Checked arithmetic** (#3127): `Int::checked_add`, `Int::checked_sub`,
 `Int::checked_mul`, `Int::checked_div`, `Int::checked_neg`, imported from

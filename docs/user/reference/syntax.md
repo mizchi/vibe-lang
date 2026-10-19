@@ -112,8 +112,12 @@ Rules:
 - Hex literals use `0x` or `0X`.
 - Decimal literals without `f` are `Double`; decimal literals with `f` are
   `Float`.
-- Strings support escapes and interpolation with `\{Expr}`. The former
-  `\(Expr)` spelling is a lex error. A `String`
+- Strings support interpolation with `\{Expr}` and the escapes `\n`, `\t`,
+  `\r`, `\0`, `\"`, `\'`, `\\` and `\u{hex}` (1 to 6 hex digits naming a
+  Unicode scalar value, written as its UTF-8 bytes). Any other escape is a lex
+  error that names it. The former `\(Expr)` spelling is a lex error. Numeric
+  literals have no digit separators (`1_000` is refused) and no exponent
+  (`1e3` is refused). A `String`
   is a byte string: `String::length`, indexes, slices, and iteration use byte
   counts/offsets, and iteration yields byte-valued `Int`s. Use
   `String::byte_at` and `String::from_byte` for single-byte operations;

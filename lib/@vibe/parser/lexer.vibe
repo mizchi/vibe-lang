@@ -1040,9 +1040,18 @@ fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[Str
         current_start = interp_end + 1
         current_parts_acc = empty_string_array()
         current_has_interp = true
+      } else if esc == 'u' {
+        let (text, after) = lex_unicode_escape(s, len, next + 1)
+        Array::push(current_parts_acc, chunk)
+        Array::push(current_parts_acc, text)
+        current_idx = after
+        current_start = after
       } else {
         let escaped = if esc == '"' {
           "\""
+        }
+        else if esc == '\'' {
+          "'"
         }
         else if esc == '\\' {
           "\\"
@@ -1059,7 +1068,7 @@ fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[Str
         else if esc == '0' {
           String::from_char_code(0)
         }
-        else throw("invalid escape sequence")
+        else throw(String::concat("invalid escape sequence `\\", String::concat(String::from_byte(esc), "`: a string supports \\n \\t \\r \\0 \\\" \\' \\\\ and \\u{hex}; write `\\\\` for a literal backslash")))
         Array::push(current_parts_acc, chunk)
         Array::push(current_parts_acc, escaped)
         current_idx = next + 1
@@ -1075,6 +1084,50 @@ fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[Str
     }
   }
   lex_ret(out_tok, out_next)
+}
+
+/// `\u{hex}` in a string literal: 1-6 hex digits naming a Unicode scalar
+/// value, written into the byte string as its UTF-8 encoding (a `String` is a
+/// byte string, ADR-0098). `brace` is the index just after the `u`; the answer
+/// is the encoded text and the index just after the closing `}`.
+fn lex_unicode_escape(s: String, len: Int, brace: Int) -> (String, Int) with Exception {
+  if brace >= len || String::char_code_at(s, brace) != '{' {
+    throw("write a Unicode escape with braces: `\\u{e9}`, 1 to 6 hex digits")
+  }
+  let mut i = brace + 1
+  let mut cp = 0
+  while i < len && is_hex_digit(String::char_code_at(s, i)) {
+    let c = String::char_code_at(s, i)
+    let digit = if c >= '0' && c <= '9' {
+      c - '0'
+    } else if c >= 'a' && c <= 'f' {
+      c - 'a' + 10
+    } else {
+      c - 'A' + 10
+    }
+    cp = cp * 16 + digit
+    i = i + 1
+  }
+  let ndigits = i - brace - 1
+  if ndigits < 1 || ndigits > 6 || i >= len || String::char_code_at(s, i) != '}' {
+    throw("write a Unicode escape as `\\u{` 1 to 6 hex digits `}`, such as `\\u{e9}`")
+  }
+  if cp > 1114111 || (cp >= 55296 && cp <= 57343) {
+    throw("`\\u{..}` must name a Unicode scalar value: at most 10FFFF, and not a surrogate (D800-DFFF)")
+  }
+  (utf8_encode(cp), i + 1)
+}
+
+fn utf8_encode(cp: Int) -> String {
+  if cp < 128 {
+    String::from_byte(cp)
+  } else if cp < 2048 {
+    String::concat(String::from_byte(192 + cp / 64), String::from_byte(128 + cp % 64))
+  } else if cp < 65536 {
+    String::concat(String::from_byte(224 + cp / 4096), String::concat(String::from_byte(128 + cp / 64 % 64), String::from_byte(128 + cp % 64)))
+  } else {
+    String::concat(String::from_byte(240 + cp / 262144), String::concat(String::from_byte(128 + cp / 4096 % 64), String::concat(String::from_byte(128 + cp / 64 % 64), String::from_byte(128 + cp % 64))))
+  }
 }
 
 fn lex_string(s: String, len: Int, i: Int) -> Token with Exception {
@@ -1154,6 +1207,11 @@ fn lex_decimal(s: String, len: Int, i: Int) -> Token with Exception {
   let int_end = scan_digits_end(s, len, i)
   if int_end == i {
     throw("expected digit")
+  }
+  // `1_000_000` lexed as `1` followed by the name `_000_000`, and the report
+  // was `unknown name: _000_000`.
+  if int_end + 1 < len && String::char_code_at(s, int_end) == '_' && is_digit(String::char_code_at(s, int_end + 1)) {
+    throw("remove the `_` from this number: a numeric literal has no digit separators (write `1000000`, not `1_000_000`)")
   }
   // Tuple field access `t.0.0`: a number immediately preceded by a single field
   // dot must NOT absorb a trailing `.<digit>` as a float decimal — that `.` is

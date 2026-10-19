@@ -174,6 +174,50 @@ fn pat_binds_any(pat: Pat) -> Bool {
 /// a variable in either branch, at any nesting depth, so the checker can
 /// reject it with a normal, located diagnostic instead of letting it reach
 /// codegen at all.
+/// The first name a pattern binds twice, or "". `(x, x)` used to be accepted
+/// and bound the later position, so `match (1, 2) { (x, x) => x }` answered 2
+/// -- a reader of other languages expects either an equality test or an
+/// error. An or-pattern is skipped: its alternatives bind separately, and a
+/// binding in one is refused on its own (pat_has_unsupported_or_binding).
+export fn pat_repeated_binder(pat: Pat) -> String {
+  let seen: Array[String] = []
+  prb_walk(pat, seen)
+}
+
+fn prb_walk(pat: Pat, seen: Array[String]) -> String {
+  match pat {
+    PBind(n) => if cp_names_has(seen, n) {
+      n
+    } else {
+      Array::push(seen, n)
+      ""
+    },
+    PCtor(_, pats) => prb_walk_all(pats, seen),
+    PTuple(pats) => prb_walk_all(pats, seen),
+    PStruct(_, fields) => {
+      let mut found = ""
+      let mut i = 0
+      while i < Array::length(fields) && found == "" {
+        let (_, fp) = Array::get(fields, i)
+        found = prb_walk(fp, seen)
+        i = i + 1
+      }
+      found
+    },
+    _ => ""
+  }
+}
+
+fn prb_walk_all(pats: Array[Pat], seen: Array[String]) -> String {
+  let mut found = ""
+  let mut i = 0
+  while i < Array::length(pats) && found == "" {
+    found = prb_walk(Array::get(pats, i), seen)
+    i = i + 1
+  }
+  found
+}
+
 export fn pat_has_unsupported_or_binding(pat: Pat) -> Bool {
   match pat {
     POr(a, b) => pat_binds_any(a) || pat_binds_any(b) || pat_has_unsupported_or_binding(a) || pat_has_unsupported_or_binding(b),

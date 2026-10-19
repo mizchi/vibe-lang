@@ -67,7 +67,7 @@ import ./checker_handler_payload_patterns.vibe {
 }
 
 import @vibe/compiler/checker/patterns {
-  check_pattern, ctor_pattern_scrutinee_mismatch, match_nonexhaustive_witness, pat_has_unsupported_or_binding
+  check_pattern, ctor_pattern_scrutinee_mismatch, match_nonexhaustive_witness, pat_has_unsupported_or_binding, pat_repeated_binder
 }
 
 import ./checker_resolve.vibe {
@@ -1075,6 +1075,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             Array::push(errors, String::concat("or-pattern bindings are not supported yet: `A(v) | B(v)`-style patterns cannot bind variables in an or-branch (rewrite without a shared binding, e.g. separate arms with the same body, or bind after matching)", off_marker(or_off)))
           } else {
             ()
+          }
+          let repeated = pat_repeated_binder(pat)
+          if repeated != "" {
+            Array::push(errors, String::concat("rename one of the two `\{repeated}` in this pattern: a pattern binds each name once (to compare two parts, bind them apart and test `a == b` in a guard)", off_marker(railway_expr_off(scrutinee))))
           }
           let arm_env = check_pattern(pat, scr_ty, rail_env, defs, errors)
           // #3419: a constructor the scrutinee's type cannot have makes the
@@ -2095,9 +2099,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else {
             ()
           }
-          (CtUnit, s1, c1)
+          let (tv, c2) = fresh_var(c1)
+          (tv, s1, c2)
         },
-        None => (CtUnit, s, c)
+        None => {
+          // `break` leaves the loop, so like `return` it has no value of its
+          // own and fits any branch type: `let v = if done { break } else { x }`
+          // and an arm `_ => if i == 3 { break } else { resume(i) }`. Typed
+          // `()` it was refused there as a branch mismatch.
+          let (tv, c1) = fresh_var(c)
+          (tv, s, c1)
+        }
       }
     },
     EContinue(args) => {
@@ -2115,7 +2127,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         c1 = nc
         ai = ai + 1
       }
-      (CtUnit, s1, c1)
+      // Diverges, like `break` above.
+      let (tv, c2) = fresh_var(c1)
+      (tv, s1, c2)
     },
     ERecord(rn, fields, targs) => {
       let flen = Array::length(fields)

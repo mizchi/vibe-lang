@@ -28,17 +28,23 @@ export fn int_parse_expr(arg: Expr) -> Expr {
   let acc = EIdent("__ip_acc", -1)
   let valid = EIdent("__ip_valid", -1)
   let ch = EIdent("__ip_ch", -1)
-  // Overflow guard: reject when `acc * 10 + digit` would exceed
-  // Int::max_value (2^61 - 1) — pre-check `acc > (max - d) / 10` so the
-  // accumulator never wraps. Without this, "4611686018427387904" (max + 1)
-  // silently parsed as an out-of-range value. The exact min_value string
-  // also yields None (its magnitude is max_value + 1).
-  let digit_step = EIf(EBinOp(">", acc, EBinOp("/", EBinOp("-", EInt((2305843009213693951<<1)|1), EBinOp("-", ch, EInt(48), -1), -1), EInt(10), -1), -1), EAssign("__ip_valid", EBool(false), EUnit, -1), EAssign("__ip_acc", EBinOp("+", EBinOp("*", acc, EInt(10), -1), EBinOp("-", ch, EInt(48), -1), -1), EUnit, -1))
+  // Overflow guard. The digits accumulate on the NEGATIVE side, where the
+  // range is one wider: `acc * 10 - digit` must not fall below
+  // Int::min_value, i.e. `acc >= (min + digit) / 10` (division truncates
+  // toward zero, which rounds a negative quotient up -- the bound needed).
+  // Accumulating positively refused "-4611686018427387904", so
+  // `Int::parse(Int::to_string(Int::min_value))` answered None. A positive
+  // string whose magnitude is min_value's is refused at the end.
+  let min_int = EInt(0 - 4611686018427387903 - 1)
+  let digit_step = EIf(EBinOp("<", acc, EBinOp("/", EBinOp("+", min_int, EBinOp("-", ch, EInt(48), -1), -1), EInt(10), -1), -1), EAssign("__ip_valid", EBool(false), EUnit, -1), EAssign("__ip_acc", EBinOp("-", EBinOp("*", acc, EInt(10), -1), EBinOp("-", ch, EInt(48), -1), -1), EUnit, -1))
   let loop_body = ELet("__ip_ch", c2("String::char_code_at", s, i), ESeq(EIf(EBinOp("||", EBinOp("<", ch, EInt(48), -1), EBinOp(">", ch, EInt(57), -1), -1), EAssign("__ip_valid", EBool(false), EUnit, -1), digit_step), EAssign("__ip_i", EBinOp("+", i, EInt(1), -1), EUnit, -1)), -1)
   // review-lint: allow-fixed-synthetic-name
   let while_loop = EWhile(EBinOp("<", i, len, -1), loop_body)
-  let result_val = EIf(neg, EBinOp("-", EInt(0), acc, -1), acc)
-  let final_check = EIf(EBinOp("&&", valid, EBinOp("<", start, len, -1), -1), c1("Some", result_val), EIdent("None", -1))
+  let result_val = EIf(neg, acc, EBinOp("-", EInt(0), acc, -1))
+  // `>` rather than `!=`: an untyped `==` / `!=` in synthesized AST can take
+  // the generic `eq`, whose string fallback confuses words with a zero low half.
+  let in_range = EBinOp("||", neg, EBinOp(">", acc, EInt(0 - 4611686018427387903 - 1), -1), -1)
+  let final_check = EIf(EBinOp("&&", EBinOp("&&", valid, EBinOp("<", start, len, -1), -1), in_range, -1), c1("Some", result_val), EIdent("None", -1))
   ELet("__ip_s", arg, ELet("__ip_len", c1("String::length", s), EIf(EBinOp("==", len, EInt(0), -1), EIdent("None", -1), ELet("__ip_neg", EBinOp("==", c2("String::char_code_at", s, EInt(0)), EInt(45), -1), ELet("__ip_start", EIf(neg, EInt(1), EInt(0)), ELetMut("__ip_i", start, ELetMut("__ip_acc", EInt(0), ELetMut("__ip_valid", EBool(true), ESeq(while_loop, final_check), -1), -1), -1), -1), -1)), -1), -1)
   // review-lint: allow-fixed-synthetic-name
 }
