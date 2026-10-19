@@ -501,6 +501,21 @@ fn parse_arm_assign_tail(tokens: Array[Token], body: Expr, at: Int, parse_recur:
   }
 }
 
+/// Where an arm's `if` guard starts: `pa`, or one past the lexer's synthetic
+/// line `;` when the guard opens the next line (`Some(x)` then `if x > 0 =>`).
+/// The lexer marks a line that begins with `if` after an expression-ending
+/// token as a statement boundary (#3546), but between a pattern and its `=>`
+/// no statement can end, so the `;` belongs to the guard's line break.
+fn arm_guard_start(tokens: Array[Token], pa: Int) -> Int {
+  match peek(tokens, pa) {
+    TSemicolon => match peek(tokens, pa + 1) {
+      TIf => pa + 1,
+      _ => pa
+    },
+    _ => pa
+  }
+}
+
 /// #666: parse all match arms into `b` as (pattern, guard|EBool(true), body).
 /// A negative return encodes `-end - 1` when any arm carries a guard, avoiding
 /// an allocation-only mutable Bool cell on the ordinary no-capture path.
@@ -508,13 +523,14 @@ fn collect_match_arms(tokens: Array[Token], starts: Array[Int], pos: Int, b: Arr
   let pat_mark = binder_capture_mark(context)
   let (pat, pa) = parse_pattern_with_binder_context(tokens, pos, context)
   let pat_rows = binder_capture_take_from(context, pat_mark)
-  let arm_has_guard = match peek(tokens, pa) {
+  let guard_at = arm_guard_start(tokens, pa)
+  let arm_has_guard = match peek(tokens, guard_at) {
     TIf => true,
     _ => false
   }
   let guard_mark = binder_capture_mark(context)
-  let (arm_guard, after_g) = match peek(tokens, pa) {
-    TIf => parse_recur(tokens, pa + 1, 0, context),
+  let (arm_guard, after_g) = match peek(tokens, guard_at) {
+    TIf => parse_recur(tokens, guard_at + 1, 0, context),
     _ => (EBool(true), pa)
   }
   let guard_rows = if arm_has_guard {

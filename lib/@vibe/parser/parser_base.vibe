@@ -211,8 +211,70 @@ fn is_lowercase_start(n: String) -> Bool {
 
 /// The builtin namespaces a program calls as `Name::op` without importing
 /// anything. An import alias with one of these names shadowed the namespace.
+///
+/// The parser cannot import the compiler's builtin tables, so this is a copy:
+/// `lib/@vibe/compiler/tests/import_alias_namespace_test.vibe` walks every
+/// `Name::op` spelling of the builtin registry, the checker's by-name call
+/// arms and the builtin-shadow rename list, and fails naming any head missing
+/// here.
+let builtin_namespace_names: Array[String] = [
+  "Array",
+  "ArrayBuilder",
+  "Bool",
+  "ByteStream",
+  "Bytes",
+  "Char",
+  "Console",
+  "Double",
+  "Env",
+  "FixedArray",
+  "Float",
+  "FrozenArray",
+  "Fs",
+  "Future",
+  "HostResponse",
+  "HostStream",
+  "Http",
+  "Int",
+  "Int64Array",
+  "Map",
+  "MapBuilder",
+  "MutBytes",
+  "MutList",
+  "Path",
+  "Process",
+  "Profiler",
+  "Stderr",
+  "Stdin",
+  "StdinStream",
+  "Stdout",
+  "String",
+  "StringBuilder",
+  "StringMap",
+  "TaskGroup"
+]
+
+/// Whether `n` is one of `builtin_namespace_names`.
 fn is_builtin_namespace_name(n: String) -> Bool {
-  n == "Array" || n == "String" || n == "Map" || n == "StringMap" || n == "Bytes" || n == "Int" || n == "Double" || n == "Float" || n == "Char" || n == "Bool" || n == "ArrayBuilder" || n == "MapBuilder" || n == "StringBuilder" || n == "Int64Array" || n == "FrozenArray" || n == "Console" || n == "Fs" || n == "Env" || n == "Stdin" || n == "Stdout" || n == "Stderr" || n == "Process"
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(builtin_namespace_names) {
+    found = Array::get(builtin_namespace_names, i) == n
+    i = i + 1
+  }
+  found
+}
+
+/// Whether an import item brings in a VALUE rather than a type. An item with
+/// a kind keyword (`struct`, `enum`, `type`, `trait`, `effect`) is a type. A
+/// qualified item (`Record::make`) is a member -- a method or an operation --
+/// so a value however it is spelled, and a plain item is a value when it is
+/// spelled in lowercase (`pub_f`).
+fn import_item_is_value(kind: Option[ImportKind], name: String) -> Bool {
+  match kind {
+    Some(_) => false,
+    None => String::contains(name, "::") || is_lowercase_start(name)
+  }
 }
 
 export fn skip_semi(tokens: Array[Token], pos: Int) -> Int {
@@ -1000,9 +1062,10 @@ export fn parse_import_item_with_binder_context(tokens: Array[Token], pos: Int, 
             TIdent(alias) => {
               // A TYPE imported under a builtin's name is a source-owned type
               // (`{ struct Box as StringMap }`, wit_gen_test); a VALUE under one
-              // shadows the namespace's operations.
-              if is_builtin_namespace_name(alias) && is_lowercase_start(base) {
-                throw("choose another name than `\{alias}` for this import: `\{alias}` names the builtin `\{alias}::` operations, and an alias of that name made `\{alias}::length`-style calls reach the import instead (an internal compiler error) at #\{after + 1}")
+              // shadows the namespace's operations. A qualified value
+              // (`Record::make as Array`) is a value too.
+              if is_builtin_namespace_name(alias) && import_item_is_value(kind, base) {
+                throw("choose another name than `\{alias}` for this import: `\{alias}` names the builtin `\{alias}::` operations, and an imported value under that name would take the `\{alias}::...` calls instead at #\{after + 1}")
               }
               binder_capture_source(context, alias, after + 1, after + 1)
               (ImportItem::{ kind, name: base, alias: Some(alias) }, after + 2)

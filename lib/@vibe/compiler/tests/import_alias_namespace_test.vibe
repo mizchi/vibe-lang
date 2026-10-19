@@ -4,6 +4,54 @@ import ./checker_parity_test_support.vibe {
   check_source_err_contains
 }
 
+import @vibe/compiler/core {
+  builtin_registry_typed, builtin_shadow_rename_name_list
+}
+
+import @vibe/compiler/checker/builtin_sigs {
+  builtin_call_arms
+}
+
+//# Functions
+
+/// The `Name` of a `Name::op` spelling, or "" for an unqualified one.
+fn namespace_head(name: String) -> String {
+  let at = String::index_of(name, "::")
+  if at > 0 {
+    String::substring(name, 0, at)
+  } else {
+    ""
+  }
+}
+
+/// Whether the parser refuses a value imported under `head`.
+fn alias_refused(head: String) -> Bool {
+  check_source_err_contains("import ./a.vibe { pub_f as \{head} }\nfn main() -> Int { 0 }", "choose another name than `\{head}`")
+}
+
+/// Appends `head` to `missing` when it is a namespace the parser lets an
+/// imported value take, once per head.
+fn note_unrefused(missing: Array[String], seen: Array[String], name: String) -> Unit {
+  let head = namespace_head(name)
+  if head != "" && !has_name(seen, head) {
+    Array::push(seen, head)
+    if !alias_refused(head) {
+      Array::push(missing, head)
+    }
+  }
+}
+
+/// Whether `names` holds `name`.
+fn has_name(names: Array[String], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(names) {
+    found = Array::get(names, i) == name
+    i = i + 1
+  }
+  found
+}
+
 //# Tests
 
 /// `import ./a.vibe { pub_f as Array }` made `Array::length([1])` reach the
@@ -13,4 +61,51 @@ import ./checker_parity_test_support.vibe {
 test "an import alias may not take a builtin namespace name" {
   assert(check_source_err_contains("import ./a.vibe { pub_f as Array }\nfn main() -> Int { Array::length([1]) }", "choose another name than `Array`"))
   assert(check_source_err_contains("import ./a.vibe { pub_f as Console }\nfn main() -> Int { 0 }", "choose another name than `Console`"))
+}
+
+/// A qualified VALUE (`Record::make`) is a value too: `Record::make as Array`
+/// rewrote `Array::length(..)` to `Record::make::length`, which reached code
+/// generation unresolved. A TYPE under a builtin's name stays legal.
+test "a qualified value import may not take a builtin namespace name" {
+  assert(check_source_err_contains("import ./provider.vibe { struct Record, Record::make as Array }\nfn main() -> Int { Array::length([1]) }", "choose another name than `Array`"))
+  assert(!check_source_err_contains("import ./provider.vibe { struct Record as StringMap }\nfn main() -> Int { 0 }", "choose another name"))
+  assert(!check_source_err_contains("import ./provider.vibe { Record as Future }\nfn main() -> Int { 0 }", "choose another name"))
+}
+
+/// The parser keeps its own copy of the builtin namespaces, and that copy
+/// missed `Future`, `FixedArray` and `TaskGroup`: `pub_f as Future` sent
+/// `Future::ready(3)` to the import. This walks every `Name::op` spelling the
+/// compiler treats as a builtin and names each head the parser still lets an
+/// imported value take.
+test "every builtin namespace head is refused as a value import alias" {
+  let missing: Array[String] = []
+  let seen: Array[String] = []
+  let registry = builtin_registry_typed()
+  let mut i = 0
+  while i < Array::length(registry) {
+    let (name, _, _, _, visible) = Array::get(registry, i)
+    if visible {
+      note_unrefused(missing, seen, name)
+    }
+    i = i + 1
+  }
+  let arms = builtin_call_arms()
+  i = 0
+  while i < Array::length(arms) {
+    note_unrefused(missing, seen, Array::get(arms, i).0)
+    i = i + 1
+  }
+  let renamed = builtin_shadow_rename_name_list()
+  i = 0
+  while i < Array::length(renamed) {
+    note_unrefused(missing, seen, Array::get(renamed, i))
+    i = i + 1
+  }
+  let mut listed = ""
+  i = 0
+  while i < Array::length(missing) {
+    listed = "\{listed} \{Array::get(missing, i)}"
+    i = i + 1
+  }
+  inspect(listed, content = "")
 }
