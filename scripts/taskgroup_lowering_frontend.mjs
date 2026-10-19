@@ -43,9 +43,9 @@ async function refuseUnrelatedTrace(trace, kind) {
   }
 }
 
-function run(runner, image, cwd, env) {
+function run(runner, image, cwd, env, returningFunctions = false) {
   return new Promise((yes, no) => {
-    const child = spawn(runner, [image], { cwd, detached: true,
+    const child = spawn(runner, returningFunctions ? ["--function-phases", image] : [image], { cwd, detached: true,
       stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
     let stdout = "", stderr = "";
     child.stdout.on("data", b => { stdout = (stdout + b).slice(-65536); });
@@ -86,10 +86,10 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
   const receipt = JSON.parse(await readFile(join(artifacts, "build.json"), "utf8"));
   if ((receipt.kind ?? "vibe-taskgroup-lowering") !== kind || receipt.version !== 1 || receipt.compiler_sha256 !== await digest(resolve(compiler)) ||
       receipt.runner_sha256 !== await digest(runner)) throw new Error("rebuild lowering images for this compiler and runner");
-  // ABI 2 requires canonical BLAKE3 digests on bump, even with the same compiler hash.
-  if (phase === "functions" && (receipt.function_abi !== "bump-core-tagged-callbacks-2" ||
+  // ABI3 returns an original receipt, releases preparation, then uses a fresh finisher.
+  if (phase === "functions" && (receipt.function_abi !== "bump-core-returning-phases-3" || receipt.phase_format !== 1 || receipt.assembly_format !== 1 ||
       receipt.context_format !== 7 || receipt.job_format !== 2 || receipt.compile_engine_rc !== 0 || receipt.worker_engine_rc !== 0 || receipt.coordinator_engine_rc !== 1)) {
-    throw new Error("rebuild function images for the supported native callback ABI");
+    throw new Error("rebuild function images for the supported native phase/callback ABI");
   }
   for (const name of ["worker.wasm", "compile.wasm", "coordinator.component.wasm"]) {
     if (receipt.artifacts[name] !== await digest(join(artifacts, name))) throw new Error(`lowering image changed: ${name}`);
@@ -106,8 +106,11 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
       runner, cwd: root, directory: work, jobs }));
     await run(runner, join(artifacts, "compile.wasm"), root, { ...base,
       VIBE_LOWERING_MODE: "single", VIBE_LOWERING_OUTPUT: privateOutput,
-      VIBE_LOWERING_SERVICE_CONFIG: service });
+      VIBE_LOWERING_SERVICE_CONFIG: service }, phase === "functions");
     const serviceReport = JSON.parse(await readFile(join(work, "service-report.json"), "utf8"));
+    if (phase === "functions" && (!serviceReport.preparation_store_dropped_before_workers || !serviceReport.finisher_store_fresh)) {
+      throw new Error("functions did not release preparation before starting workers");
+    }
     if (serviceReport.preparation_count !== 1 || serviceReport.modules <= 0 || serviceReport.workers !== jobs) {
       throw new Error("lowering returned an incomplete native service report");
     }
@@ -138,7 +141,7 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
         const { modules: rangeJobs, ...timings } = serviceReport;
         delete timings.replay_ms;
         phaseReport = { ...timings, range_jobs: rangeJobs, ...plan,
-          phase_scope: "prepare: whole-program lowering and canonical function planning; worker: context encoding, isolated TaskGroup CPU processes, product decoding and validation; finalize: canonical replay, module assembly, source verification and private output write" };
+          phase_scope: serviceReport.phase_scope };
       }
       const report = { ...phaseReport, version: 1, kind,
         total_ms: finished - started };

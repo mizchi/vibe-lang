@@ -830,15 +830,17 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.read_file_calls += 1;
             }
-            let content = match source_overlay_read(&path) {
-                Ok(c) => c,
-                Err(e) => {
-                    return Err(vibe_host_error(
-                        &mut caller,
-                        format!("fs_read_file failed for '{path}': {e}"),
-                    ))
-                }
-            };
+            let content =
+                match super::function_phases::read_input(caller.data().phase_reads.as_ref(), &path)
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return Err(vibe_host_error(
+                            &mut caller,
+                            format!("fs_read_file failed for '{path}': {e}"),
+                        ))
+                    }
+                };
             if let Some(inputs) = caller.data_mut().lowering_inputs.as_mut() {
                 inputs.file(&path, &content);
             }
@@ -1142,15 +1144,17 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.read_bytes_calls += 1;
             }
-            let data = match source_overlay_read(&path) {
-                Ok(d) => d,
-                Err(e) => {
-                    return Err(vibe_host_error(
-                        &mut caller,
-                        format!("fs_read_bytes failed for '{path}': {e}"),
-                    ))
-                }
-            };
+            let data =
+                match super::function_phases::read_input(caller.data().phase_reads.as_ref(), &path)
+                {
+                    Ok(d) => d,
+                    Err(e) => {
+                        return Err(vibe_host_error(
+                            &mut caller,
+                            format!("fs_read_bytes failed for '{path}': {e}"),
+                        ))
+                    }
+                };
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.read_bytes_returned_bytes += data.len() as u64;
             }

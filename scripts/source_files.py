@@ -5,10 +5,15 @@ from pathlib import Path
 import re
 import sys
 
+# The linked compiler facade owns linked plan/facts/preparation fragments too.
+# Other compatibility facades retain their original stem boundary.
+_IMPLEMENTATION_PREFIX = {"linked_compile": "linked_"}
+
 
 def read_source_group(path: str | Path) -> str:
     entry = Path(path).resolve()
     seen: set[Path] = set()
+    prefix = _IMPLEMENTATION_PREFIX.get(entry.stem, entry.stem + "_")
 
     def visit(file: Path) -> str:
         if file in seen:
@@ -19,7 +24,10 @@ def read_source_group(path: str | Path) -> str:
         if entry.suffix == ".vibe" and "// Compatibility exports; implementations are grouped" in entry.read_text():
             for target in re.findall(r"^(?:import|export) (\./\S+) \{", text, re.M):
                 child = (file.parent / target).resolve()
-                if child.parent == entry.parent and child.stem.startswith(entry.stem + "_"):
+                # Follow explicit local dependencies inside the facade-owned
+                # prefix, including the linked compiler's new phase fragments.
+                # Other groups must not absorb unrelated sibling dependencies.
+                if child.parent == entry.parent and child.suffix == ".vibe" and child.stem.startswith(prefix):
                     children.append(child)
         elif entry.suffix == ".rs" and "mod host_imports;" in entry.read_text():
             children = [file.parent / (name + ".rs") for name in re.findall(r"^mod (\w+);", text, re.M)]

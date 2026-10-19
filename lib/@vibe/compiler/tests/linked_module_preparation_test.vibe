@@ -1,0 +1,123 @@
+import @vibe/compiler/core {
+  merged_offset_line_col, merged_offset_space_add, merged_offset_space_reset
+}
+import @vibe/compiler/codegen/wasi {
+  LinkedFunctionPlan,
+  LinkedModulePreparation,
+  function_with_executor,
+  lc_finish_linked_module,
+  lc_finish_linked_module_with_flags,
+  lc_prepare_module_with_split_grants,
+  lc_render_unused
+}
+import @vibe/compiler/codegen/common_base {
+  DbgProv, codegen_body_cache_discard, module_split_none
+}
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+
+fn prepare(source: String, rc: Bool) -> LinkedModulePreparation with Exception {
+  merged_offset_space_reset()
+  merged_offset_space_add("input.vibe", source, 0)
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
+  let ids: Array[Int] = []
+  for stmt in stmts {
+    Array::push(ids, 0)
+  }
+  let nls: Array[Int] = []
+  let mut i = 0
+  while i < String::length(source) {
+    if String::char_code_at(source, i) == 10 {
+      Array::push(nls, i)
+    } else ()
+    i = i + 1
+  }
+  let prov = DbgProv::{
+    files: ["input.vibe"],
+    stmt_file_id: ids,
+    file_nls: [nls]
+  }
+  lc_prepare_module_with_split_grants(stmts, "main", [("input.vibe", source)], [
+  ], false, rc, false, false, false, false, false, prov, codegen_body_cache_discard(), codegen_body_cache_discard(), 0, -1, [
+  ], [], [], [], [], module_split_none(), lc_render_unused, [])
+}
+
+fn check_deferred(source: String, rc: Bool) -> Unit with Env + Exception + Fs {
+  let expected = lc_finish_linked_module(prepare(source, rc))
+  let calls = [0]
+  let actual = function_with_executor((plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow) -> {
+    Array::set(calls, 0, Array::get(calls, 0) + 1)
+    // The executable plan is already canonical. Reconstructing it from the
+    // discarded raw statements would lose functions and lambda ownership.
+    assert(Array::length(input.stmts) == 0)
+    assert(Array::length(input.fn_stmt_indices) == 0)
+    assert(Array::length(plan.bodies) == input.num_user_funcs)
+    let (path, _, _) = merged_offset_line_col(0)
+    assert(path == "input.vibe")
+    LinkedFunctionPlan::emit(plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+  }, () -> {
+    let prepared = prepare(source, rc)
+    assert(Array::get(calls, 0) == 0)
+    assert(!prepared.used)
+    let wrong_flags = handle {
+      lc_finish_linked_module_with_flags(prepared, false, false, false, !rc, false); "accepted"
+    } with { Exception::Throw(msg) => msg }
+    assert(wrong_flags == "module preparation: finish flags differ from preparation")
+    assert(!prepared.used && Array::get(calls, 0) == 0)
+    Array::truncate(prepared.input.stmts, 0)
+    Array::truncate(prepared.input.fn_stmt_indices, 0)
+    merged_offset_space_reset()
+    merged_offset_space_add("unrelated.vibe", "an unrelated source snapshot\n", 0)
+    let bytes = lc_finish_linked_module_with_flags(prepared, false, false, false, rc, false)
+    assert(prepared.used)
+    let again = handle {
+      lc_finish_linked_module(prepared); "accepted"
+    } with { Exception::Throw(msg) => msg }
+    assert(again == "module preparation: already consumed")
+    assert(Array::get(calls, 0) == 1)
+    let (path, _, _) = merged_offset_line_col(0)
+    assert(path == "unrelated.vibe")
+    bytes
+  })
+  assert(Bytes::compare(expected, actual) == 0)
+}
+
+test "module preparation defers emission and preserves one canonical plan" {
+  for rc in [false, true] {
+    check_deferred("let seed = 23\nfn helper(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int {\n  let f = (x: Int) -> helper(seed, x)\n  f(5)\n}\n", rc)
+    check_deferred("fn main() -> Unit allows Console {\n  println(\"prepared\")\n}\n", rc)
+    check_deferred("fn main() -> Int allows Exception {\n  handle { throw(\"boom\") } with { Exception::Throw(_) => { 7 } }\n}\n", rc)
+    // Runtime division locations are observed again during body emission.
+    // Resetting ambient sources must not change those strings or indices.
+    check_deferred("fn divide(n: Int) -> Int {\n  n / 0\n}\nfn main() -> Int { divide(7) }\n", rc)
+  }
+}
+
+test "failed deferred execution consumes the plan and restores location scope" {
+  let calls = [0]
+  let result = function_with_executor((plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow) -> {
+    Array::set(calls, 0, Array::get(calls, 0) + 1)
+    throw("injected executor failure")
+  }, () -> {
+    let prepared = prepare("fn main() -> Int { 7 }\n", false)
+    merged_offset_space_reset()
+    merged_offset_space_add("after-failure.vibe", "another snapshot", 0)
+    let failure = handle {
+      lc_finish_linked_module(prepared); "accepted"
+    } with { Exception::Throw(msg) => msg }
+    assert(failure == "injected executor failure")
+    let again = handle {
+      lc_finish_linked_module(prepared); "accepted"
+    } with { Exception::Throw(msg) => msg }
+    assert(again == "module preparation: already consumed")
+    assert(Array::get(calls, 0) == 1)
+    let (path, _, _) = merged_offset_line_col(0)
+    assert(path == "after-failure.vibe")
+    Bytes::new(0)
+  })
+  assert(Bytes::length(result) == 0)
+  // The executor itself is also removed after its outer scope returns.
+  assert(Bytes::length(lc_finish_linked_module(prepare("fn main() -> Int { 9 }\n", false))) > 0)
+}

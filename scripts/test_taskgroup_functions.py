@@ -40,7 +40,7 @@ sys.exit(code)
         VIBE_LOWERING_ENTRY="main", VIBE_LOWERING_MODE="single", VIBE_FUNCTION_JOBS="2",
         VIBE_LOWERING_DIRECTORY=str(private), VIBE_LOWERING_SERVICE_CONFIG=str(config),
         FUNCTION_PROTOCOL_REAL_RUNNER=str(runner), FUNCTION_PROTOCOL_MAGIC_OUT=str(observed))
-    result = subprocess.run([str(runner), str(artifacts / "compile.wasm")], cwd=project,
+    result = subprocess.run([str(runner), "--function-phases", str(artifacts / "compile.wasm")], cwd=project,
                             env=selected, capture_output=True, text=True, timeout=180)
     assert result.returncode == 0, (result.stdout, result.stderr)
     assert output.read_bytes() == expected.read_bytes(), "protocol probe output differs"
@@ -123,7 +123,7 @@ sys.exit(code)
             VIBE_LOWERING_DIRECTORY=str(private), VIBE_LOWERING_SERVICE_CONFIG=str(config),
             FUNCTION_PACKET_RUNNER=str(runner), FUNCTION_PACKET_KIND=kind,
             FUNCTION_PACKET_RECORD=str(record))
-        result = subprocess.run([str(runner), str(artifacts / "compile.wasm")], cwd=root,
+        result = subprocess.run([str(runner), "--function-phases", str(artifacts / "compile.wasm")], cwd=root,
                                 env=selected, capture_output=True, text=True, timeout=180)
         if kind == "control":
             assert result.returncode == 0, (result.stdout, result.stderr)
@@ -143,8 +143,178 @@ sys.exit(code)
                 assert "functions: product receipt differs" in result.stderr, result
             else:
                 assert any(s in result.stderr for s in
-                           ("coordinator exited", "functions: product receipt differs")), result
+                           ("coordinator exited", "functions: product receipt differs", "phase input changed after preparation:")), result
     print("changed jobs/products and changed/short/extra context preserve previous output", flush=True)
+
+
+
+def assert_finisher_recompile_refused(repo, compiler, artifacts, runner, env, project):
+    """A real compiled serial-finalizer mutant must fail at the FS boundary."""
+    private = project / "finisher-recompile"
+    private.mkdir()
+    target = repo / "lib/@vibe/function_build/phases/entry.vibe"
+    source = target.read_text()
+    before = "finish_function_assembly(assembly, merged)"
+    after = 'compile_file_fs_mode_rc_body_cached(Env::get("VIBE_LOWERING_INPUT"), Env::get("VIBE_LOWERING_ENTRY"), "off")'
+    assert source.count(before) == 1
+    overlay = private / "serial-finisher.vibe"
+    overlay.write_text(source.replace(before, after))
+    image = private / "compile.wasm"
+    compile_env = dict(env, VIBE_RC="0", VIBE_FS_COMPILE="1", VIBE_WASM_NAMES="1",
+        VIBE_WASM_KEEP_EXPORTS="1", VIBE_SOURCE_OVERLAY=str(target),
+        VIBE_SOURCE_OVERLAY_WITH=str(overlay), VIBE_BUILD_CACHE_DIR=str(private / "compile-cache"))
+    result = subprocess.run([str(runner), str(compiler), str(target), str(image), "__no_entry__"],
+        cwd=repo, env=compile_env, capture_output=True, text=True, timeout=180)
+    assert result.returncode == 0 and image.is_file() and image.stat().st_size > 0, result
+    assert image.read_bytes() != (artifacts / "compile.wasm").read_bytes(), "mutant did not change image"
+    config = private / "service.json"
+    config.write_text(json.dumps({"version": 1, "worker": str(artifacts / "worker.wasm"),
+        "coordinator": str(artifacts / "coordinator.component.wasm"), "runner": str(runner),
+        "cwd": str(project), "directory": str(private), "jobs": 2}))
+    output = private / "previous.wasm"
+    output.write_bytes(b"previous build")
+    selected = dict(env, VIBE_LOWERING_INPUT="main.vibe", VIBE_LOWERING_ENTRY="main",
+        VIBE_LOWERING_MODE="single", VIBE_FUNCTION_JOBS="2",
+        VIBE_LOWERING_DIRECTORY=str(private), VIBE_LOWERING_SERVICE_CONFIG=str(config),
+        VIBE_LOWERING_OUTPUT=str(output), VIBE_BUILD_CACHE_DIR=str(private / "run-cache"))
+    result = subprocess.run([str(runner), "--function-phases", str(image)], cwd=project,
+        env=selected, capture_output=True, text=True, timeout=180)
+    assert result.returncode != 0 and output.read_bytes() == b"previous build", result
+    assert "function finisher cannot use source or output capability" in result.stderr or "function finisher may only read" in result.stderr, result
+    print("compiled serial-finalizer mutant is refused before source reads/publication", flush=True)
+
+
+def assert_original_phase_receipt_bound(repo, compiler, artifacts, runner, env, project, expected):
+    """A valid rewritten packet needs its original returned digest, not a file."""
+    target = repo / "lib/@vibe/function_build/phases/entry.vibe"
+    source = target.read_text()
+    marker = '  Fs::write_bytes(directory + "/function.assembly", packet)\n'
+    assert source.count(marker) == 1
+    rewrite = '''  Array::push(assembly.replay.guard_layout, 9)
+  let changed_packet = write_function_assembly(assembly, context_digest)
+  Fs::write_bytes(directory + "/function.assembly", changed_packet)
+'''
+    for bound in (True, False):
+        private = project / ("receipt-bound" if bound else "receipt-stale")
+        private.mkdir()
+        changed = source.replace(marker, marker + rewrite)
+        if bound:
+            assert changed.count("assembly_digest: packet_digest") == 1
+            changed = changed.replace("assembly_digest: packet_digest",
+                                      "assembly_digest: blake3_bytes_simd(changed_packet)")
+        overlay = private / "changed-packet.vibe"
+        overlay.write_text(changed)
+        image = private / "compile.wasm"
+        compile_env = dict(env, VIBE_RC="0", VIBE_FS_COMPILE="1", VIBE_WASM_NAMES="1",
+            VIBE_WASM_KEEP_EXPORTS="1", VIBE_SOURCE_OVERLAY=str(target),
+            VIBE_SOURCE_OVERLAY_WITH=str(overlay), VIBE_BUILD_CACHE_DIR=str(private / "compile-cache"))
+        result = subprocess.run([str(runner), str(compiler), str(target), str(image), "__no_entry__"],
+            cwd=repo, env=compile_env, capture_output=True, text=True, timeout=180)
+        assert result.returncode == 0 and image.is_file() and image.stat().st_size > 0, result
+        assert image.read_bytes() != (artifacts / "compile.wasm").read_bytes()
+        config = private / "service.json"
+        config.write_text(json.dumps({"version": 1, "worker": str(artifacts / "worker.wasm"),
+            "coordinator": str(artifacts / "coordinator.component.wasm"), "runner": str(runner),
+            "cwd": str(project), "directory": str(private), "jobs": 2}))
+        output = private / "previous.wasm"
+        output.write_bytes(b"previous build")
+        selected = dict(env, VIBE_LOWERING_INPUT="main.vibe", VIBE_LOWERING_ENTRY="main",
+            VIBE_LOWERING_MODE="single", VIBE_FUNCTION_JOBS="2",
+            VIBE_LOWERING_DIRECTORY=str(private), VIBE_LOWERING_SERVICE_CONFIG=str(config),
+            VIBE_LOWERING_OUTPUT=str(output), VIBE_BUILD_CACHE_DIR=str(private / "run-cache"))
+        result = subprocess.run([str(runner), "--function-phases", str(image)], cwd=project,
+            env=selected, capture_output=True, text=True, timeout=180)
+        if bound:
+            assert result.returncode == 0 and output.read_bytes() == expected.read_bytes(), result
+        else:
+            assert result.returncode != 0 and output.read_bytes() == b"previous build", result
+            assert "function assembly: packet receipt differs" in result.stderr, result
+    print("valid changed assembly is accepted only with its original returned receipt binding", flush=True)
+
+
+def assert_completed_product_limit(artifacts, runner, env, project):
+    """Individually admitted products can still exceed the whole result budget."""
+    private = project / "product-pressure"
+    private.mkdir()
+    wrapper = private / "pressure-runner.py"
+    wrapper.write_text('''#!/usr/bin/env python3
+import json, os, subprocess, sys
+from pathlib import Path
+code = subprocess.call([os.environ["FUNCTION_PRESSURE_RUNNER"], *sys.argv[1:]])
+plan_path = os.environ.get("VIBE_LOWERING_WORKERS")
+if code == 0 and plan_path:
+    plan = json.loads(Path(plan_path).read_text())
+    jobs = [Path(p) for q in plan["queues"] for p in q]
+    assert len(jobs) == 2
+    sizes = []
+    for job in jobs:
+        product = Path(str(job) + ".product")
+        before = product.stat().st_size
+        with product.open("wb") as stream:
+            stream.truncate(128 * 1024 * 1024 + 1)
+        assert product.stat().st_size > before
+        sizes.append(product.stat().st_size)
+    Path(os.environ["FUNCTION_PRESSURE_RECORD"]).write_text(json.dumps(sizes))
+sys.exit(code)
+''')
+    wrapper.chmod(0o755)
+    config = private / "service.json"
+    config.write_text(json.dumps({"version": 1, "worker": str(artifacts / "worker.wasm"),
+        "coordinator": str(artifacts / "coordinator.component.wasm"), "runner": str(wrapper),
+        "cwd": str(project), "directory": str(private), "jobs": 2}))
+    output, record = private / "previous.wasm", private / "sizes.json"
+    output.write_bytes(b"previous build")
+    selected = dict(env, VIBE_LOWERING_INPUT="main.vibe", VIBE_LOWERING_ENTRY="main",
+        VIBE_LOWERING_MODE="single", VIBE_FUNCTION_JOBS="2",
+        VIBE_LOWERING_DIRECTORY=str(private), VIBE_LOWERING_SERVICE_CONFIG=str(config),
+        VIBE_LOWERING_OUTPUT=str(output), VIBE_BUILD_CACHE_DIR=str(private / "cache"),
+        FUNCTION_PRESSURE_RUNNER=str(runner), FUNCTION_PRESSURE_RECORD=str(record))
+    result = subprocess.run([str(runner), "--function-phases", str(artifacts / "compile.wasm")],
+        cwd=project, env=selected, capture_output=True, text=True, timeout=180)
+    sizes = json.loads(record.read_text())
+    assert all(0 < n < 256 * 1024 * 1024 for n in sizes) and sum(sizes) > 256 * 1024 * 1024
+    assert result.returncode != 0 and output.read_bytes() == b"previous build", result
+    assert "completed phase products exceed256MiB" in result.stderr, result
+    assert not (private / "service-report.json").exists()
+    print("aggregate product pressure is refused before finisher/publication", flush=True)
+
+
+def assert_phase_observation_cleanup(artifacts, runner, env, project, expected):
+    """Real sampler/profiler Stores finish; parent FS counters never reach children."""
+    for label, options in (
+        ("sampled", {"VIBE_MEM": "1", "VIBE_MEM_SAMPLE_MS": "1"}),
+        ("profiled", {}),
+    ):
+        private = project / ("phase-observation-" + label)
+        private.mkdir()
+        config = private / "service.json"
+        config.write_text(json.dumps({"version": 1, "worker": str(artifacts / "worker.wasm"),
+            "coordinator": str(artifacts / "coordinator.component.wasm"), "runner": str(runner),
+            "cwd": str(project), "directory": str(private), "jobs": 2}))
+        output = private / "out.wasm"
+        profiles = private / "guest.json"
+        if label == "profiled":
+            options = {"VIBE_GUEST_PROFILE": str(profiles), "VIBE_GUEST_PROFILE_INTERVAL_US": "1000"}
+        selected = dict(env, VIBE_LOWERING_INPUT="main.vibe", VIBE_LOWERING_ENTRY="main",
+            VIBE_LOWERING_MODE="single", VIBE_FUNCTION_JOBS="2",
+            VIBE_LOWERING_DIRECTORY=str(private), VIBE_LOWERING_SERVICE_CONFIG=str(config),
+            VIBE_LOWERING_OUTPUT=str(output), VIBE_BUILD_CACHE_DIR=str(private / "cache"),
+            VIBE_HOST_FS_SCOPE_OUT=str(private / "fs-scope.json"), VIBE_HOST_FS_SCOPE_NONCE=label,
+            **options)
+        result = subprocess.run([str(runner), "--function-phases", str(artifacts / "compile.wasm")],
+            cwd=project, env=selected, capture_output=True, text=True, timeout=180)
+        assert result.returncode == 0 and output.read_bytes() == expected.read_bytes(), result
+        scope = json.loads((private / "fs-scope.json").read_text())
+        assert scope["nonce"] == label and scope["read_file_calls"] > 0, scope
+        report = json.loads((private / "service-report.json").read_text())
+        assert report["preparation_store_dropped_before_workers"] and report["finisher_store_fresh"]
+        if label == "sampled":
+            assert result.stderr.count("vibe::mem ") == 2, result.stderr
+        else:
+            for phase in ("function_phase_prepare", "function_phase_finish"):
+                path = Path(str(profiles) + "." + phase)
+                assert isinstance(json.loads(path.read_text()), dict) and path.stat().st_size > 64
+    print("actual sampler/profiler cleanup and parent-only filesystem counters preserve phase outputs", flush=True)
 
 
 def main():
@@ -199,6 +369,10 @@ def main():
                 assert report["kind"] == "vibe-taskgroup-functions", report
                 assert report["workers"] == jobs and report["range_jobs"] == jobs, report
                 assert report["functions"] > 0 and report["preparation_count"] == 1, report
+                assert report["preparation_store_dropped_before_workers"] and report["finisher_store_fresh"], report
+                assert report["finisher_source_reads"] == 0, report
+                assert 0 < report["completed_product_bytes"] <= 256 * 1024 * 1024, report
+                assert len(report["original_phase_receipt_sha256"]) == 64, report
                 assert report["context_serialization_count"] == 1 and report["shared_context_bytes"] <= 64 * 1024 * 1024, report
                 assert "modules" not in report and "isolated" in report["phase_scope"], report
                 if case == "closures":
@@ -211,6 +385,10 @@ def main():
         # Updating both publisher and frontend constants cannot hide a drift.
         assert_context_receipt_format(artifacts, runner, env, project, "wire-format", control)
         assert_packet_integrity(repo, artifacts, runner, env, project)
+        assert_finisher_recompile_refused(repo, compiler, artifacts, runner, env, project)
+        assert_original_phase_receipt_bound(repo, compiler, artifacts, runner, env, project, control)
+        assert_phase_observation_cleanup(artifacts, runner, env, project, control)
+        assert_completed_product_limit(artifacts, runner, env, project)
 
         # A refused setting or changed image must leave a previous build intact.
         for label, extra in [

@@ -1,10 +1,6 @@
 // lib/@vibe/compiler/codegen/wasi/linked_compile.vibe — module sections.
 
 import @vibe/compiler/core {
-  Expr,
-  Pat,
-  Stmt,
-  TypeExpr,
   builtin_shadow_source_name,
   bytebuf_length,
   bytebuf_new,
@@ -13,12 +9,7 @@ import @vibe/compiler/core {
   bytebuf_push_section,
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
-  executable_exports_stripped,
   leb128_encode_u32
-}
-
-import @vibe/ast {
-  TypeExpr::is_array_of_int
 }
 
 import @vibe/core {
@@ -41,10 +32,6 @@ import @vibe/compiler/codegen/reloc {
   blind_kind_fn_value
 }
 
-import @vibe/compiler/codegen/common_analysis {
-  stmts_contain_exceptions
-}
-
 import @vibe/compiler/codegen/common_base {
   CodegenBodyCache,
   CompileCtx,
@@ -56,15 +43,13 @@ import @vibe/compiler/codegen/common_base {
   LineMapState,
   ModuleSplit,
   StrTable,
-  get_slet_expr,
-  is_efn,
   linemap_flush_fn,
   rc_shadow_base,
   rc_shadow_heap_start
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_int, array_contains_str, get_efn_params
+  array_contains_int, array_contains_str
 }
 
 import @vibe/compiler/codegen/expr {
@@ -109,7 +94,6 @@ import ./linked_compile_lc_rename_sleep_calls.vibe {
   lc_fresh_int_array_of_len,
   lc_fresh_string_array,
   lc_verify_blind_relocs,
-  linked_type_expr_is_unit,
   wasi_memory_min_pages_for_heap
 }
 
@@ -120,220 +104,221 @@ import ./linked_compile_linkedhostplan.vibe {
 // Serialize the completed module tables and diagnostic sections.
 // Keep lane flags explicit so constant-parameter folding can remove disabled code.
 export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool) -> Bytes with Exception {
-  let arr_concat_idx = input.arr_concat_idx
-  let arr_get_idx = input.arr_get_idx
-  let arr_len_idx = input.arr_len_idx
-  let arr_new_idx = input.arr_new_idx
-  let arr_push_all_idx = input.arr_push_all_idx
-  let arr_push_idx = input.arr_push_idx
-  let arr_set_idx = input.arr_set_idx
-  let arr_slice_idx = input.arr_slice_idx
-  let arr_truncate_idx = input.arr_truncate_idx
-  let array_capacity_idx = input.array_capacity_idx
-  let blind_kinds = input.blind_kinds
-  let blind_offsets = input.blind_offsets
-  let blind_owners = input.blind_owners
-  let blind_syms = input.blind_syms
-  let bodies = input.bodies
-  let builtin_type_idxs = input.builtin_type_idxs
-  let bytes_append_idx = input.bytes_append_idx
-  let bytes_blit_idx = input.bytes_blit_idx
-  let bytes_capacity_idx = input.bytes_capacity_idx
-  let bytes_compare_idx = input.bytes_compare_idx
-  let bytes_concat_idx = input.bytes_concat_idx
-  let bytes_count_byte_idx = input.bytes_count_byte_idx
-  let bytes_from_array_idx = input.bytes_from_array_idx
-  let bytes_get_idx = input.bytes_get_idx
-  let bytes_index_of_bytes_idx = input.bytes_index_of_bytes_idx
-  let bytes_index_of_idx = input.bytes_index_of_idx
-  let bytes_last_index_of_idx = input.bytes_last_index_of_idx
-  let bytes_len_idx = input.bytes_len_idx
-  let bytes_new_idx = input.bytes_new_idx
-  let bytes_push_idx = input.bytes_push_idx
-  let bytes_set_idx = input.bytes_set_idx
-  let bytes_slice_idx = input.bytes_slice_idx
-  let bytes_to_array_idx = input.bytes_to_array_idx
-  let compact_fingerprint_hash_idx = input.compact_fingerprint_hash_idx
-  let cov_base = input.cov_base
-  let cov_branch_base = input.cov_branch_base
-  let cov_branch_reserve = input.cov_branch_reserve
-  let cov_count = input.cov_count
-  let cov_reserve = input.cov_reserve
-  let cov_state = input.cov_state
-  let dbg_break_import_idx = input.dbg_break_import_idx
-  let dbg_line_import_idx = input.dbg_line_import_idx
-  let dbg_line_on = input.dbg_line_on
-  let dbgargs_base = input.dbgargs_base
-  let dbgargs_cap = input.dbgargs_cap
-  let dbgargs_count_addr = input.dbgargs_count_addr
-  let dbgargs_reserve = input.dbgargs_reserve
-  let div_zero_abort_idx = input.div_zero_abort_idx
-  let double_to_int_idx = input.double_to_int_idx
-  let eff_reserve = input.eff_reserve
-  let effect_names_list = input.effect_names_list
-  let enable_late_dce = input.enable_late_dce
-  let entry_name = input.entry_name
-  let entry_name_in = input.entry_name_in
-  let entry_user_idx = input.entry_user_idx
-  let env_args_get_import_idx = input.env_args_get_import_idx
-  let env_args_len_import_idx = input.env_args_len_import_idx
-  let env_get_import_idx = input.env_get_import_idx
-  let eq_idx = input.eq_idx
-  let export_fn_names = input.export_fn_names
-  let export_fn_user_indices = input.export_fn_user_indices
-  let fn_names_list = input.fn_names_list
-  let fn_param_counts = input.fn_param_counts
-  let fn_stmt_indices = input.fn_stmt_indices
-  let frozen_array_copy_idx = input.frozen_array_copy_idx
-  let fs_append_import_idx = input.fs_append_import_idx
-  let fs_chdir_import_idx = input.fs_chdir_import_idx
-  let fs_copy_import_idx = input.fs_copy_import_idx
-  let fs_exists_import_idx = input.fs_exists_import_idx
-  let fs_exists_stub_idx = input.fs_exists_stub_idx
-  let fs_getcwd_import_idx = input.fs_getcwd_import_idx
-  let fs_is_dir_import_idx = input.fs_is_dir_import_idx
-  let fs_is_file_import_idx = input.fs_is_file_import_idx
-  let fs_mkdir_import_idx = input.fs_mkdir_import_idx
-  let fs_mkdir_p_import_idx = input.fs_mkdir_p_import_idx
-  let fs_publish_immutable_text_import_idx = input.fs_publish_immutable_text_import_idx
-  let fs_publish_immutable_text_stub_idx = input.fs_publish_immutable_text_stub_idx
-  let compiler_lowering_import_idx = input.compiler_lowering_import_idx
-  let fs_read_bytes_import_idx = input.fs_read_bytes_import_idx
-  let fs_read_dir_import_idx = input.fs_read_dir_import_idx
-  let fs_read_file_import_idx = input.fs_read_file_import_idx
-  let fs_read_file_stub_idx = input.fs_read_file_stub_idx
-  let fs_remove_file_import_idx = input.fs_remove_file_import_idx
-  let fs_remove_import_idx = input.fs_remove_import_idx
-  let fs_remove_tree_import_idx = input.fs_remove_tree_import_idx
-  let fs_rename_import_idx = input.fs_rename_import_idx
-  let fs_stat_token_import_idx = input.fs_stat_token_import_idx
-  let fs_stat_token_stub_idx = input.fs_stat_token_stub_idx
-  let fs_write_bytes_import_idx = input.fs_write_bytes_import_idx
-  let fs_write_bytes_stub_idx = input.fs_write_bytes_stub_idx
-  let fs_write_file_import_idx = input.fs_write_file_import_idx
-  let fs_write_file_stub_idx = input.fs_write_file_stub_idx
-  let func_offset = input.func_offset
-  let generic_add_idx = input.generic_add_idx
-  let generic_rel_diff_idx = input.generic_rel_diff_idx
-  let heap_grow_check_idx = input.heap_grow_check_idx
-  let heap_start = input.heap_start
-  let hf_all_names = input.hf_all_names
-  let hf_arg_push_import_idx = input.hf_arg_push_import_idx
-  let hf_arm_import_idx = input.hf_arm_import_idx
-  let hf_cancel_import_idx = input.hf_cancel_import_idx
-  let hf_get_import_idx = input.hf_get_import_idx
-  let hf_named_names = input.hf_named_names
-  let hf_response_addresses = input.hf_response_addresses
-  let hf_response_arg_addresses = input.hf_response_arg_addresses
-  let hf_wait_any_import_idx = input.hf_wait_any_import_idx
-  let hf_wait_import_idx = input.hf_wait_import_idx
-  let hf_wit_names = input.hf_wit_names
-  let hs_arm_import_idx = input.hs_arm_import_idx
-  let hs_cancel_import_idx = input.hs_cancel_import_idx
-  let hs_claim_import_idx = input.hs_claim_import_idx
-  let hs_close_import_idx = input.hs_close_import_idx
-  let hs_named_names = input.hs_named_names
-  let hs_read_import_idx = input.hs_read_import_idx
-  let hsl_arm_import_idx = input.hsl_arm_import_idx
-  let hsl_cancel_import_idx = input.hsl_cancel_import_idx
-  let http_close_import_idx = input.http_close_import_idx
-  let http_request_import_idx = input.http_request_import_idx
-  let http_response_body_import_idx = input.http_response_body_import_idx
-  let http_response_header_import_idx = input.http_response_header_import_idx
-  let http_response_status_import_idx = input.http_response_status_import_idx
-  let identity_idx = input.identity_idx
-  let int_clz_idx = input.int_clz_idx
-  let int_ctz_idx = input.int_ctz_idx
-  let int_popcount_idx = input.int_popcount_idx
-  let int_to_double_idx = input.int_to_double_idx
-  let lambda_slot_base = input.lambda_slot_base
-  let library_mode = input.library_mode
-  let linemap_on = input.linemap_on
-  let linemap_state = input.linemap_state
-  let linked_imports = input.linked_imports
-  let lt_w = input.lt_w
-  let meta_i32 = input.meta_i32
-  let meta_i64 = input.meta_i64
-  let meta_v128 = input.meta_v128
-  let need_div_zero_abort = input.need_div_zero_abort
-  let need_host_future_builtin = input.need_host_future_builtin
-  let need_http_request_builtin = input.need_http_request_builtin
-  let num_base_types = input.num_base_types
-  let num_generated = input.num_generated
-  let num_imported_funcs = input.num_imported_funcs
-  let num_strings = input.num_strings
-  let num_user_funcs = input.num_user_funcs
-  let oob_abort_idx = input.oob_abort_idx
-  let oob_frag_slots = input.oob_frag_slots
-  let print_i64_raw_idx = input.print_i64_raw_idx
-  let print_int_idx = input.print_int_idx
-  let print_str_idx = input.print_str_idx
-  let process_exit_import_idx = input.process_exit_import_idx
-  let profiler_heap_bytes_import_idx = input.profiler_heap_bytes_import_idx
-  let profiler_now_us_import_idx = input.profiler_now_us_import_idx
-  let prov = input.prov
-  let rc_alloc_idx = input.rc_alloc_idx
-  let rc_bins_reserve = input.rc_bins_reserve
-  let rc_drop_idx = input.rc_drop_idx
-  let rc_drop_body_without_array_arm = input.rc_drop_body_without_array_arm
-  let rc_dup_idx = input.rc_dup_idx
-  let region_reserve = input.region_reserve
-  let resolve_path_import_idx = input.resolve_path_import_idx
-  let serve_handler_has_host_stream = input.serve_handler_has_host_stream
-  let sh_capture_close_import_idx = input.sh_capture_close_import_idx
-  let sh_capture_exit_code_import_idx = input.sh_capture_exit_code_import_idx
-  let sh_capture_import_idx = input.sh_capture_import_idx
-  let sh_capture_stderr_import_idx = input.sh_capture_stderr_import_idx
-  let sh_capture_stdout_import_idx = input.sh_capture_stdout_import_idx
-  let sh_import_idx = input.sh_import_idx
-  let sh_lines_import_idx = input.sh_lines_import_idx
-  let shadow_uaf_abort_idx = input.shadow_uaf_abort_idx
-  let simd_scan_alnum_idx = input.simd_scan_alnum_idx
-  let simd_scan_alnum_str_idx = input.simd_scan_alnum_str_idx
-  let simd_scan_line_end_str_idx = input.simd_scan_line_end_str_idx
-  let simd_scan_string_special_str_idx = input.simd_scan_string_special_str_idx
-  let simd_skip_ws_idx = input.simd_skip_ws_idx
-  let sleep_import_idx = input.sleep_import_idx
-  let sleep_needs_component_adapter = input.sleep_needs_component_adapter
-  let sources_idx = input.sources_idx
-  let stderr_write_char_import_idx = input.stderr_write_char_import_idx
-  let stderr_write_stream_import_idx = input.stderr_write_stream_import_idx
-  let stdin_provider_acquire_import_idx = input.stdin_provider_acquire_import_idx
-  let stdin_provider_close_import_idx = input.stdin_provider_close_import_idx
-  let stdin_provider_read_import_idx = input.stdin_provider_read_import_idx
-  let stdin_read_char_import_idx = input.stdin_read_char_import_idx
-  let stdin_read_stream_import_idx = input.stdin_read_stream_import_idx
-  let stdout_write_char_import_idx = input.stdout_write_char_import_idx
-  let stdout_write_stream_import_idx = input.stdout_write_stream_import_idx
-  let stmts = input.stmts
-  let str_char_code_at_idx = input.str_char_code_at_idx
-  let str_concat_idx = input.str_concat_idx
-  let str_eq_idx = input.str_eq_idx
-  let str_from_char_code_idx = input.str_from_char_code_idx
-  let str_len_idx = input.str_len_idx
-  let str_lex_diff_idx = input.str_lex_diff_idx
-  let str_offsets = input.str_offsets
-  let str_strs = input.str_strs
-  let str_substring_idx = input.str_substring_idx
-  let string_contains_idx = input.string_contains_idx
-  let string_ends_with_idx = input.string_ends_with_idx
-  let string_index_of_idx = input.string_index_of_idx
-  let string_join_idx = input.string_join_idx
-  let string_last_index_of_idx = input.string_last_index_of_idx
-  let string_split_idx = input.string_split_idx
-  let string_starts_with_idx = input.string_starts_with_idx
-  let string_trim_idx = input.string_trim_idx
-  let table_slots_used = input.table_slots_used
-  let tcp_close_import_idx = input.tcp_close_import_idx
-  let tcp_connect_import_idx = input.tcp_connect_import_idx
-  let tcp_read_import_idx = input.tcp_read_import_idx
-  let tcp_write_import_idx = input.tcp_write_import_idx
-  let test_fn_names = input.test_fn_names
-  let thunk_names_list = input.thunk_names_list
-  let trace_cap = input.trace_cap
-  let trace_counter_addr = input.trace_counter_addr
-  let trace_log_base = input.trace_log_base
-  let trace_reserve = input.trace_reserve
+  let prepared_sections = input.plan
+  let completed_bodies = input.body
+  let arr_concat_idx = prepared_sections.arr_concat_idx
+  let arr_get_idx = prepared_sections.arr_get_idx
+  let arr_len_idx = prepared_sections.arr_len_idx
+  let arr_new_idx = prepared_sections.arr_new_idx
+  let arr_push_all_idx = prepared_sections.arr_push_all_idx
+  let arr_push_idx = prepared_sections.arr_push_idx
+  let arr_set_idx = prepared_sections.arr_set_idx
+  let arr_slice_idx = prepared_sections.arr_slice_idx
+  let arr_truncate_idx = prepared_sections.arr_truncate_idx
+  let array_capacity_idx = prepared_sections.array_capacity_idx
+  let blind_kinds = prepared_sections.blind_kinds
+  let blind_offsets = prepared_sections.blind_offsets
+  let blind_owners = prepared_sections.blind_owners
+  let blind_syms = prepared_sections.blind_syms
+  let bodies = completed_bodies.bodies
+  let builtin_type_idxs = completed_bodies.builtin_type_idxs
+  let bytes_append_idx = prepared_sections.bytes_append_idx
+  let bytes_blit_idx = prepared_sections.bytes_blit_idx
+  let bytes_capacity_idx = prepared_sections.bytes_capacity_idx
+  let bytes_compare_idx = prepared_sections.bytes_compare_idx
+  let bytes_concat_idx = prepared_sections.bytes_concat_idx
+  let bytes_count_byte_idx = prepared_sections.bytes_count_byte_idx
+  let bytes_from_array_idx = prepared_sections.bytes_from_array_idx
+  let bytes_get_idx = prepared_sections.bytes_get_idx
+  let bytes_index_of_bytes_idx = prepared_sections.bytes_index_of_bytes_idx
+  let bytes_index_of_idx = prepared_sections.bytes_index_of_idx
+  let bytes_last_index_of_idx = prepared_sections.bytes_last_index_of_idx
+  let bytes_len_idx = prepared_sections.bytes_len_idx
+  let bytes_new_idx = prepared_sections.bytes_new_idx
+  let bytes_push_idx = prepared_sections.bytes_push_idx
+  let bytes_set_idx = prepared_sections.bytes_set_idx
+  let bytes_slice_idx = prepared_sections.bytes_slice_idx
+  let bytes_to_array_idx = prepared_sections.bytes_to_array_idx
+  let compact_fingerprint_hash_idx = prepared_sections.compact_fingerprint_hash_idx
+  let cov_base = prepared_sections.cov_base
+  let cov_branch_base = prepared_sections.cov_branch_base
+  let cov_branch_reserve = prepared_sections.cov_branch_reserve
+  let cov_count = prepared_sections.cov_count
+  let cov_reserve = prepared_sections.cov_reserve
+  let cov_state = prepared_sections.cov_state
+  let dbg_break_import_idx = prepared_sections.dbg_break_import_idx
+  let dbg_line_import_idx = prepared_sections.dbg_line_import_idx
+  let dbg_line_on = prepared_sections.dbg_line_on
+  let dbgargs_base = prepared_sections.dbgargs_base
+  let dbgargs_cap = prepared_sections.dbgargs_cap
+  let dbgargs_count_addr = prepared_sections.dbgargs_count_addr
+  let dbgargs_reserve = prepared_sections.dbgargs_reserve
+  let div_zero_abort_idx = prepared_sections.div_zero_abort_idx
+  let double_to_int_idx = prepared_sections.double_to_int_idx
+  let eff_reserve = prepared_sections.eff_reserve
+  let effect_names_list = prepared_sections.effect_names_list
+  let enable_late_dce = prepared_sections.enable_late_dce
+  let entry_name = prepared_sections.entry_name
+  let entry_name_in = prepared_sections.entry_name_in
+  let entry_user_idx = prepared_sections.entry_user_idx
+  let env_args_get_import_idx = prepared_sections.env_args_get_import_idx
+  let env_args_len_import_idx = prepared_sections.env_args_len_import_idx
+  let env_get_import_idx = prepared_sections.env_get_import_idx
+  let eq_idx = prepared_sections.eq_idx
+  let export_fn_names = prepared_sections.export_fn_names
+  let export_fn_user_indices = prepared_sections.export_fn_user_indices
+  let fn_names_list = prepared_sections.fn_names_list
+  let fn_param_counts = prepared_sections.fn_param_counts
+  let facts = prepared_sections.facts
+  let frozen_array_copy_idx = prepared_sections.frozen_array_copy_idx
+  let fs_append_import_idx = prepared_sections.fs_append_import_idx
+  let fs_chdir_import_idx = prepared_sections.fs_chdir_import_idx
+  let fs_copy_import_idx = prepared_sections.fs_copy_import_idx
+  let fs_exists_import_idx = prepared_sections.fs_exists_import_idx
+  let fs_exists_stub_idx = prepared_sections.fs_exists_stub_idx
+  let fs_getcwd_import_idx = prepared_sections.fs_getcwd_import_idx
+  let fs_is_dir_import_idx = prepared_sections.fs_is_dir_import_idx
+  let fs_is_file_import_idx = prepared_sections.fs_is_file_import_idx
+  let fs_mkdir_import_idx = prepared_sections.fs_mkdir_import_idx
+  let fs_mkdir_p_import_idx = prepared_sections.fs_mkdir_p_import_idx
+  let fs_publish_immutable_text_import_idx = prepared_sections.fs_publish_immutable_text_import_idx
+  let fs_publish_immutable_text_stub_idx = prepared_sections.fs_publish_immutable_text_stub_idx
+  let compiler_lowering_import_idx = prepared_sections.compiler_lowering_import_idx
+  let fs_read_bytes_import_idx = prepared_sections.fs_read_bytes_import_idx
+  let fs_read_dir_import_idx = prepared_sections.fs_read_dir_import_idx
+  let fs_read_file_import_idx = prepared_sections.fs_read_file_import_idx
+  let fs_read_file_stub_idx = prepared_sections.fs_read_file_stub_idx
+  let fs_remove_file_import_idx = prepared_sections.fs_remove_file_import_idx
+  let fs_remove_import_idx = prepared_sections.fs_remove_import_idx
+  let fs_remove_tree_import_idx = prepared_sections.fs_remove_tree_import_idx
+  let fs_rename_import_idx = prepared_sections.fs_rename_import_idx
+  let fs_stat_token_import_idx = prepared_sections.fs_stat_token_import_idx
+  let fs_stat_token_stub_idx = prepared_sections.fs_stat_token_stub_idx
+  let fs_write_bytes_import_idx = prepared_sections.fs_write_bytes_import_idx
+  let fs_write_bytes_stub_idx = prepared_sections.fs_write_bytes_stub_idx
+  let fs_write_file_import_idx = prepared_sections.fs_write_file_import_idx
+  let fs_write_file_stub_idx = prepared_sections.fs_write_file_stub_idx
+  let func_offset = prepared_sections.func_offset
+  let generic_add_idx = prepared_sections.generic_add_idx
+  let generic_rel_diff_idx = prepared_sections.generic_rel_diff_idx
+  let heap_grow_check_idx = prepared_sections.heap_grow_check_idx
+  let heap_start = prepared_sections.heap_start
+  let hf_all_names = prepared_sections.hf_all_names
+  let hf_arg_push_import_idx = prepared_sections.hf_arg_push_import_idx
+  let hf_arm_import_idx = prepared_sections.hf_arm_import_idx
+  let hf_cancel_import_idx = prepared_sections.hf_cancel_import_idx
+  let hf_get_import_idx = prepared_sections.hf_get_import_idx
+  let hf_named_names = prepared_sections.hf_named_names
+  let hf_response_addresses = prepared_sections.hf_response_addresses
+  let hf_response_arg_addresses = prepared_sections.hf_response_arg_addresses
+  let hf_wait_any_import_idx = prepared_sections.hf_wait_any_import_idx
+  let hf_wait_import_idx = prepared_sections.hf_wait_import_idx
+  let hf_wit_names = prepared_sections.hf_wit_names
+  let hs_arm_import_idx = prepared_sections.hs_arm_import_idx
+  let hs_cancel_import_idx = prepared_sections.hs_cancel_import_idx
+  let hs_claim_import_idx = prepared_sections.hs_claim_import_idx
+  let hs_close_import_idx = prepared_sections.hs_close_import_idx
+  let hs_named_names = prepared_sections.hs_named_names
+  let hs_read_import_idx = prepared_sections.hs_read_import_idx
+  let hsl_arm_import_idx = prepared_sections.hsl_arm_import_idx
+  let hsl_cancel_import_idx = prepared_sections.hsl_cancel_import_idx
+  let http_close_import_idx = prepared_sections.http_close_import_idx
+  let http_request_import_idx = prepared_sections.http_request_import_idx
+  let http_response_body_import_idx = prepared_sections.http_response_body_import_idx
+  let http_response_header_import_idx = prepared_sections.http_response_header_import_idx
+  let http_response_status_import_idx = prepared_sections.http_response_status_import_idx
+  let identity_idx = prepared_sections.identity_idx
+  let int_clz_idx = prepared_sections.int_clz_idx
+  let int_ctz_idx = prepared_sections.int_ctz_idx
+  let int_popcount_idx = prepared_sections.int_popcount_idx
+  let int_to_double_idx = prepared_sections.int_to_double_idx
+  let lambda_slot_base = prepared_sections.lambda_slot_base
+  let library_mode = prepared_sections.library_mode
+  let linemap_on = prepared_sections.linemap_on
+  let linemap_state = prepared_sections.linemap_state
+  let linked_imports = prepared_sections.linked_imports
+  let lt_w = prepared_sections.lt_w
+  let meta_i32 = completed_bodies.meta_i32
+  let meta_i64 = completed_bodies.meta_i64
+  let meta_v128 = completed_bodies.meta_v128
+  let need_div_zero_abort = prepared_sections.need_div_zero_abort
+  let need_host_future_builtin = prepared_sections.need_host_future_builtin
+  let need_http_request_builtin = prepared_sections.need_http_request_builtin
+  let num_base_types = prepared_sections.num_base_types
+  let num_generated = prepared_sections.num_generated
+  let num_imported_funcs = prepared_sections.num_imported_funcs
+  let num_strings = prepared_sections.num_strings
+  let num_user_funcs = prepared_sections.num_user_funcs
+  let oob_abort_idx = prepared_sections.oob_abort_idx
+  let oob_frag_slots = prepared_sections.oob_frag_slots
+  let print_i64_raw_idx = prepared_sections.print_i64_raw_idx
+  let print_int_idx = prepared_sections.print_int_idx
+  let print_str_idx = prepared_sections.print_str_idx
+  let process_exit_import_idx = prepared_sections.process_exit_import_idx
+  let profiler_heap_bytes_import_idx = prepared_sections.profiler_heap_bytes_import_idx
+  let profiler_now_us_import_idx = prepared_sections.profiler_now_us_import_idx
+  let prov = prepared_sections.prov
+  let rc_alloc_idx = prepared_sections.rc_alloc_idx
+  let rc_bins_reserve = prepared_sections.rc_bins_reserve
+  let rc_drop_idx = prepared_sections.rc_drop_idx
+  let rc_drop_body_without_array_arm = prepared_sections.rc_drop_body_without_array_arm
+  let rc_dup_idx = prepared_sections.rc_dup_idx
+  let region_reserve = prepared_sections.region_reserve
+  let resolve_path_import_idx = prepared_sections.resolve_path_import_idx
+  let serve_handler_has_host_stream = prepared_sections.serve_handler_has_host_stream
+  let sh_capture_close_import_idx = prepared_sections.sh_capture_close_import_idx
+  let sh_capture_exit_code_import_idx = prepared_sections.sh_capture_exit_code_import_idx
+  let sh_capture_import_idx = prepared_sections.sh_capture_import_idx
+  let sh_capture_stderr_import_idx = prepared_sections.sh_capture_stderr_import_idx
+  let sh_capture_stdout_import_idx = prepared_sections.sh_capture_stdout_import_idx
+  let sh_import_idx = prepared_sections.sh_import_idx
+  let sh_lines_import_idx = prepared_sections.sh_lines_import_idx
+  let shadow_uaf_abort_idx = prepared_sections.shadow_uaf_abort_idx
+  let simd_scan_alnum_idx = prepared_sections.simd_scan_alnum_idx
+  let simd_scan_alnum_str_idx = prepared_sections.simd_scan_alnum_str_idx
+  let simd_scan_line_end_str_idx = prepared_sections.simd_scan_line_end_str_idx
+  let simd_scan_string_special_str_idx = prepared_sections.simd_scan_string_special_str_idx
+  let simd_skip_ws_idx = prepared_sections.simd_skip_ws_idx
+  let sleep_import_idx = prepared_sections.sleep_import_idx
+  let sleep_needs_component_adapter = prepared_sections.sleep_needs_component_adapter
+  let sources_idx = prepared_sections.sources_idx
+  let stderr_write_char_import_idx = prepared_sections.stderr_write_char_import_idx
+  let stderr_write_stream_import_idx = prepared_sections.stderr_write_stream_import_idx
+  let stdin_provider_acquire_import_idx = prepared_sections.stdin_provider_acquire_import_idx
+  let stdin_provider_close_import_idx = prepared_sections.stdin_provider_close_import_idx
+  let stdin_provider_read_import_idx = prepared_sections.stdin_provider_read_import_idx
+  let stdin_read_char_import_idx = prepared_sections.stdin_read_char_import_idx
+  let stdin_read_stream_import_idx = prepared_sections.stdin_read_stream_import_idx
+  let stdout_write_char_import_idx = prepared_sections.stdout_write_char_import_idx
+  let stdout_write_stream_import_idx = prepared_sections.stdout_write_stream_import_idx
+  let str_char_code_at_idx = prepared_sections.str_char_code_at_idx
+  let str_concat_idx = prepared_sections.str_concat_idx
+  let str_eq_idx = prepared_sections.str_eq_idx
+  let str_from_char_code_idx = prepared_sections.str_from_char_code_idx
+  let str_len_idx = prepared_sections.str_len_idx
+  let str_lex_diff_idx = prepared_sections.str_lex_diff_idx
+  let str_offsets = prepared_sections.str_offsets
+  let str_strs = prepared_sections.str_strs
+  let str_substring_idx = prepared_sections.str_substring_idx
+  let string_contains_idx = prepared_sections.string_contains_idx
+  let string_ends_with_idx = prepared_sections.string_ends_with_idx
+  let string_index_of_idx = prepared_sections.string_index_of_idx
+  let string_join_idx = prepared_sections.string_join_idx
+  let string_last_index_of_idx = prepared_sections.string_last_index_of_idx
+  let string_split_idx = prepared_sections.string_split_idx
+  let string_starts_with_idx = prepared_sections.string_starts_with_idx
+  let string_trim_idx = prepared_sections.string_trim_idx
+  let table_slots_used = prepared_sections.table_slots_used
+  let tcp_close_import_idx = prepared_sections.tcp_close_import_idx
+  let tcp_connect_import_idx = prepared_sections.tcp_connect_import_idx
+  let tcp_read_import_idx = prepared_sections.tcp_read_import_idx
+  let tcp_write_import_idx = prepared_sections.tcp_write_import_idx
+  let test_fn_names = prepared_sections.test_fn_names
+  let thunk_names_list = prepared_sections.thunk_names_list
+  let trace_cap = prepared_sections.trace_cap
+  let trace_counter_addr = prepared_sections.trace_counter_addr
+  let trace_log_base = prepared_sections.trace_log_base
+  let trace_reserve = prepared_sections.trace_reserve
   let num_lambdas = Array::length(lt_w.bodies)
   let start_body = bytebuf_new()
   let entry_func_idx = if entry_user_idx >= 0 {
@@ -348,32 +333,7 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
   // appended a stray `0` line after the program's own output. Detect Unit
   // from the entry's declared return type: the EFn return annotation or the
   // binding's `: (..) -> Unit` type annotation.
-  let mut entry_returns_unit = false
-  if entry_user_idx >= 0 {
-    let mut eri = 0
-    while eri < Array::length(stmts) {
-      match Array::get(stmts, eri) {
-        SLet(_, _, ename, eann, eval) => if ename == entry_name {
-          let ann_unit = match eann {
-            Some(TyFn(_, ann_ret, _)) => linked_type_expr_is_unit(ann_ret),
-            _ => false
-          }
-          let ret_unit = match eval {
-            EFn(_, _, _, efn_ret, _, _) => match efn_ret {
-              Some(rt) => linked_type_expr_is_unit(rt),
-              None => false
-            },
-            _ => false
-          }
-          if ann_unit || ret_unit {
-            entry_returns_unit = true
-          }
-        },
-        _ => ()
-      }
-      eri = eri + 1
-    }
-  }
+  let entry_returns_unit = facts.entry_returns_unit
   if entry_user_idx >= 0 {
     let entry_params = Array::get(fn_param_counts, entry_user_idx)
     if entry_params != 0 {
@@ -857,55 +817,17 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
         bytebuf_push(dn_content, String::char_code_at(dn_fnname, dn_fci))
         dn_fci = dn_fci + 1
       }
-      let dn_stmt = Array::get(stmts, Array::get(fn_stmt_indices, dnfi))
-      let dn_expr = get_slet_expr(dn_stmt)
-      if is_efn(dn_expr) {
-        let dn_params = get_efn_params(dn_expr)
-        let dn_np = Array::length(dn_params)
-        let dn_n = if dn_np > dbgargs_cap {
-          dbgargs_cap
-        } else {
-          dn_np
+      let dn_params = Array::get(facts.debug_param_names, dnfi)
+      let mut dn_pi = 0
+      while dn_pi < Array::length(dn_params) {
+        let dn_pname = Array::get(dn_params, dn_pi)
+        bytebuf_push(dn_content, 9)
+        let mut dn_ci = 0
+        while dn_ci < String::length(dn_pname) {
+          bytebuf_push(dn_content, String::char_code_at(dn_pname, dn_ci))
+          dn_ci = dn_ci + 1
         }
-        let mut dn_pi = 0
-        while dn_pi < dn_n {
-          let (dn_pname_raw, _) = Array::get(dn_params, dn_pi)
-          let dn_pnl = String::length(dn_pname_raw)
-          let dn_pname = if dn_pnl > 0 {
-            let dn_plc = String::char_code_at(dn_pname_raw, dn_pnl - 1)
-            if dn_plc == '~' || dn_plc == '?' {
-              dn_pname_raw[0: dn_pnl - 1]
-            } else {
-              dn_pname_raw
-            }
-          } else {
-            dn_pname_raw
-          }
-          bytebuf_push(dn_content, 9)
-          let mut dn_ci = 0
-          while dn_ci < String::length(dn_pname) {
-            bytebuf_push(dn_content, String::char_code_at(dn_pname, dn_ci))
-            dn_ci = dn_ci + 1
-          }
-          dn_pi = dn_pi + 1
-        }
-      } else {
-        // #715: `dn_expr` is a fresh per-iteration owned binding (like
-        // `__bi_expr` in the main codegen loop above), and -- unlike
-        // `__bi_expr` -- `is_efn(dn_expr)` is NOT overwhelmingly true here:
-        // `fn_stmt_indices` legitimately mixes real functions with non-
-        // function "thunk" entries (constant initializers), so this `else`
-        // is a common, not rare, runtime path. An empty `else { () }` uses
-        // `dn_expr` zero times while `then` uses it once (via
-        // `get_efn_params`), so `pc_emit`'s EIf MIN-merge (#705) permanently
-        // carries the `then`-consumed (lower) remaining forward even on the
-        // iterations that really take this branch -- the loop-body scope-end
-        // drop for `dn_expr` is then skipped based on that borrowed count,
-        // leaking `dn_expr` on every thunk entry. Call `is_efn` again here,
-        // discarding the result, purely to consume `dn_expr` exactly once --
-        // matching `then`'s single consuming use so both branches leave the
-        // same remaining count and the plan's assumption holds either way.
-        is_efn(dn_expr)
+        dn_pi = dn_pi + 1
       }
       bytebuf_push(dn_content, 10)
       dnfi = dnfi + 1
@@ -1688,7 +1610,7 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
   // effect (per-effect tags at index 4+). Pure-compute modules then carry no
   // exceptions machinery at all, which keeps V8 off its slower exnref module
   // path (~35% wall on call-heavy code; wasmtime is indifferent).
-  let uses_exceptions = Array::length(effect_names_list) > 0 || stmts_contain_exceptions(stmts)
+  let uses_exceptions = facts.uses_exceptions
   if uses_exceptions {
     let tag_content = bytebuf_new()
     let num_tags = Array::length(effect_names_list) + 4
@@ -2324,7 +2246,7 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
   // dropped-lane fragments against these names, and a closure that survived
   // its pruned owner would otherwise count as named while matching nothing.
   // A slot outside the plan keeps the bare `__lambda_slot__<i>`.
-  let lsn_bases = input.lambda_bases
+  let lsn_bases = completed_bodies.lambda_bases
   let lsn_owners = if Array::length(lsn_bases) < num_user_funcs {
     Array::length(lsn_bases)
   } else {
@@ -2336,7 +2258,7 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
     while lsn_owner + 1 < lsn_owners && Array::get(lsn_bases, lsn_owner + 1) <= lsn_i {
       lsn_owner = lsn_owner + 1
     }
-    let lsn_name = if lsn_owner < lsn_owners && lsn_i < input.lambda_count && Array::get(lsn_bases, lsn_owner) <= lsn_i {
+    let lsn_name = if lsn_owner < lsn_owners && lsn_i < completed_bodies.lambda_count && Array::get(lsn_bases, lsn_owner) <= lsn_i {
       String::concat(Array::get(fn_names_list, lsn_owner), String::concat("__lambda_slot__", __to_string(lsn_i - Array::get(lsn_bases, lsn_owner))))
     } else {
       String::concat("__lambda_slot__", __to_string(lsn_i))
@@ -2349,7 +2271,7 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
   // body-stubbing pass above (instrumented builds must see unmodified
   // bodies), plus `enable_late_dce` so the no-DCE lane keeps its contract.
   if enable_late_dce && !coverage && !debug_trace && !debug_break && !rc_shadow {
-    lc_pf_prune_module(bytebuf_to_bytes(out), entry_name, executable_exports_stripped())
+    lc_pf_prune_module(bytebuf_to_bytes(out), entry_name, facts.strip_executable_exports)
   } else {
     bytebuf_to_bytes(out)
   }

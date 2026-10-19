@@ -1,0 +1,219 @@
+import @vibe/compiler {
+  configure_cfg_flags, executable_exports_stripped, strip_executable_wasm_env
+}
+import @vibe/compiler/checker {
+  set_error_row_checked
+}
+import @vibe/compiler/core {
+  set_executable_exports_stripped
+}
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_body_cached, prepare_file_fs_mode_rc_body
+}
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache, codegen_body_cache_merge
+}
+import @vibe/function_worker {
+  finish_function_assembly,
+  function_assembly_new,
+  function_context_new,
+  read_function_assembly,
+  validate_function_product_plan,
+  write_function_assembly,
+  write_function_context,
+  write_function_job_into
+}
+import @vibe/lowering_worker/linear {
+  linear_body_cache_from_bytes
+}
+import @vibe/blake3/simd {
+  blake3_bytes_simd
+}
+import ./receipt.vibe {
+  FunctionPhaseReceipt, read_function_phase_receipt, write_function_phase_receipt
+}
+
+let phase_used: Array[Bool] = [false]
+let phase_error: Array[String] = [""]
+
+// Only queried after a guest call has returned an error, while its Store lives.
+export fn function_phase_error() -> String {
+  Array::get(phase_error, 0)
+}
+
+fn phase_protect(action: () -> Bytes with Env + Exception + Fs) -> Bytes with Env + Exception + Fs {
+  handle {
+    action()
+  } with { Exception::Throw(message) => {
+    Array::set(phase_error, 0, message)
+    throw(message)
+  } }
+}
+
+/// Called before _start: constant data only, no heap, source reads or callbacks.
+/// Build this module with __no_entry__; _start only initializes its own cells.
+export fn function_phase_abi() -> String {
+  "vibe-function-phases-1-init-only-bump"
+}
+
+fn phase_decode_int(value: Int) -> Int = wasm
+"local.get $value i64.const 1 i64.shr_s"
+
+fn phase_clear(bytes: Bytes) -> Int = wasm
+"local.get $bytes i32.wrap_i64 i32.const 0 i32.store offset=4 i64.const 0"
+
+/// Internal core ABI takes tagged host Ints; the compiler engine stays bump.
+export fn function_phase_allocate(encoded_length: Int) -> Bytes with Exception {
+  let length = phase_decode_int(encoded_length)
+  if length <= 0 || length > 1024 {
+    throw("function phases: invalid original receipt length")
+  } else ()
+  Bytes::with_capacity(length)
+}
+
+fn phase_begin() -> Unit with Env + Exception {
+  if Array::get(phase_used, 0) {
+    throw("function phases: an instance may execute only one phase")
+  } else ()
+  Array::set(phase_used, 0, true)
+  if Env::get("VIBE_UNSTABLE") != "1" || Env::get("VIBE_RC") != "1" {
+    throw("function phases: requires unstable target RC1")
+  } else ()
+  let backend = Env::get("VIBE_BACKEND")
+  let cache = Env::get("VIBE_CODEGEN_BODY_CACHE")
+  if (backend != "" && backend != "linear") || (cache != "" && cache != "off") {
+    throw("function phases: requires the linear backend with body cache off")
+  } else ()
+  for flag in [
+    "VIBE_COVERAGE",
+    "VIBE_DEBUG",
+    "VIBE_DEBUG_BREAK",
+    "VIBE_TASKGROUP_LOWERING"
+  ] {
+    let value = Env::get(flag)
+    if value != "" && value != "0" {
+      throw("function phases: unsupported setting " + flag)
+    } else ()
+  }
+  configure_cfg_flags()
+  set_executable_exports_stripped(executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")))
+  set_error_row_checked(Env::get("VIBE_CHECK_ERROR_ROW") != "0")
+}
+
+fn phase_jobs() -> Int with Env + Exception {
+  let jobs = match Int::parse(Env::get("VIBE_FUNCTION_JOBS")) {
+    Some(value) => value,
+    None => 0
+  }
+  if jobs != 1 && jobs != 2 && jobs != 4 {
+    throw("function phases: jobs must be1,2or4")
+  } else ()
+  jobs
+}
+
+/// Return before native execution starts workers. The host copies this original
+/// receipt and drops the completed preparation Store; no Caller is suspended.
+export fn function_phase_prepare() -> Bytes with Env + Exception + Fs {
+  phase_protect(() -> phase_prepare_impl())
+}
+
+fn phase_prepare_impl() -> Bytes with Env + Exception + Fs {
+  phase_begin()
+  let jobs = phase_jobs()
+  let prepared = prepare_file_fs_mode_rc_body(Env::get("VIBE_LOWERING_INPUT"), Env::get("VIBE_LOWERING_ENTRY"))
+  let ctx = function_context_new(prepared.functions, prepared.input, false, false, true, false)
+  let shared = write_function_context(ctx)
+  let context_digest = blake3_bytes_simd(shared)
+  let directory = Env::get("VIBE_LOWERING_DIRECTORY")
+  Fs::write_bytes(directory + "/shared.context", shared)
+  let assembly = function_assembly_new(prepared)
+  let packet = write_function_assembly(assembly, context_digest)
+  let packet_digest = blake3_bytes_simd(packet)
+  Fs::write_bytes(directory + "/function.assembly", packet)
+  let inputs: Array[String] = []
+  let mut bytes = 0
+  let mut i = 0
+  while i < jobs {
+    phase_clear(shared)
+    write_function_job_into(shared, ctx, context_digest, prepared.input.num_user_funcs * i / jobs, prepared.input.num_user_funcs * (i + 1) / jobs)
+    bytes = bytes + Bytes::length(shared)
+    if bytes > 64 * 1024 * 1024 {
+      throw("function phases: outstanding jobs exceed64MiB")
+    } else ()
+    Array::push(inputs, blake3_bytes_simd(shared))
+    Fs::write_bytes(directory + "/" + Int::to_string(i) + ".job", shared)
+    i = i + 1
+  }
+  write_function_phase_receipt(FunctionPhaseReceipt::{
+    functions: prepared.input.num_user_funcs,
+    lambdas: prepared.functions.lambda_count,
+    jobs: jobs,
+    context_digest: context_digest,
+    assembly_digest: packet_digest,
+    inputs: inputs
+  })
+}
+
+/// Fresh Store, owned assembly metadata and products only. Native read admission
+/// refuses source reads here; actual buffers are authenticated before replay.
+export fn function_phase_finish(receipt: Bytes) -> Bytes with Env + Exception + Fs {
+  phase_protect(() -> phase_finish_impl(receipt))
+}
+
+fn phase_finish_impl(receipt: Bytes) -> Bytes with Env + Exception + Fs {
+  phase_begin()
+  let authority = read_function_phase_receipt(receipt)
+  if authority.jobs != phase_jobs() {
+    throw("function phases: original worker selection differs")
+  } else ()
+  let directory = Env::get("VIBE_LOWERING_DIRECTORY")
+  let shared = Fs::read_bytes(directory + "/shared.context")
+  let packet = Fs::read_bytes(directory + "/function.assembly")
+  let assembly = read_function_assembly(packet, shared, authority.assembly_digest, authority.context_digest)
+  if authority.functions != assembly.replay.validation.num_user_funcs ||
+  authority.lambdas != assembly.replay.validation.lambda_count {
+    throw("function phases: original plan counts differ")
+  } else ()
+  let completed: Array[CodegenBodyCache] = []
+  let mut product_bytes = 0
+  let mut i = 0
+  while i < authority.jobs {
+    let path = directory + "/" + Int::to_string(i) + ".job.product"
+    let bytes = Fs::read_bytes(path)
+    product_bytes = product_bytes + Bytes::length(bytes)
+    if product_bytes > 256 * 1024 * 1024 {
+      throw("function phases: completed products exceed256MiB")
+    } else ()
+    let receipt = String::split(Fs::read_file(path + ".receipt"), "\t")
+    if Array::length(receipt) != 2 ||
+    Array::get(receipt, 0) != Array::get(authority.inputs, i) ||
+    Array::get(receipt, 1) != blake3_bytes_simd(bytes) {
+      throw("functions: product receipt differs from its assigned original input")
+    } else ()
+    let product = match linear_body_cache_from_bytes(bytes) {
+      Some(value) => value,
+      None => throw("function phases: invalid product encoding")
+    }
+    validate_function_product_plan(assembly.replay.validation, product, authority.functions * i / authority.jobs, authority.functions * (i + 1) / authority.jobs)
+    Array::push(completed, product)
+    i = i + 1
+  }
+  let mut merged = Array::get(completed, 0)
+  i = 1
+  while i < authority.jobs {
+    merged = codegen_body_cache_merge(merged, Array::get(completed, i))
+    i = i + 1
+  }
+  strip_executable_wasm_env(finish_function_assembly(assembly, merged), Env::get("VIBE_LOWERING_ENTRY"))
+}
+
+/// Same compiler/input/configuration as the phased route, with no workers or
+/// transport. This is an explicit serial control, never a fallback.
+export fn function_phase_serial() -> Bytes with Env + Exception + Fs {
+  phase_protect(() -> phase_serial_impl())
+}
+
+fn phase_serial_impl() -> Bytes with Env + Exception + Fs {
+  phase_begin()
+  strip_executable_wasm_env(compile_file_fs_mode_rc_body_cached(Env::get("VIBE_LOWERING_INPUT"), Env::get("VIBE_LOWERING_ENTRY"), "off"), Env::get("VIBE_LOWERING_ENTRY"))
+}

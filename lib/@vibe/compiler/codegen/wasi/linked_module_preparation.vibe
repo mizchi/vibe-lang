@@ -1,0 +1,59 @@
+import @vibe/compiler/core {
+  MergedOffsetLocations, with_merged_offset_locations
+}
+import ./linked_compile_linkedhostplan.vibe {
+  LinkedBodyInputs, LinkedSectionInputs, LinkedSectionPlan
+}
+import ./linked_function_plan.vibe {
+  LinkedFunctionPlan
+}
+import ./linked_compile_function_bodies.vibe {
+  lc_execute_function_plan
+}
+import ./linked_compile_module_sections.vibe {
+  lc_emit_module_sections
+}
+
+/// Instance-local preparation, before any function executor has run. Mutable
+/// output tables are shared by the two plans and may be consumed only once.
+/// This transient value retains syntax; an owned worker/finisher packet must
+/// project its data before the preparation invocation and Store can be released.
+export struct LinkedModulePreparation {
+  functions: LinkedFunctionPlan;
+  input: LinkedBodyInputs;
+  sections: LinkedSectionPlan;
+  coverage: Bool;
+  debug_break: Bool;
+  debug_trace: Bool;
+  enable_rc: Bool;
+  rc_shadow: Bool;
+  locations: MergedOffsetLocations;
+  mut used: Bool
+}
+
+/// Ordinary compilation uses the same prepared result as an isolated transport.
+/// Capture diagnostic locations across the deferred boundary; no ambient-source
+/// reset between preparation and execution may change the resulting module.
+export fn lc_finish_linked_module(prepared: LinkedModulePreparation) -> Bytes with Exception {
+  lc_finish_linked_module_with_flags(prepared, prepared.coverage, prepared.debug_break, prepared.debug_trace, prepared.enable_rc, prepared.rc_shadow)
+}
+
+// Keep ordinary lane flags as direct parameters: constant-Bool specialization
+// cannot recover them from a preparation record. Deferred callers use the
+// wrapper above; both entrances consume the same canonical plan exactly once.
+export fn lc_finish_linked_module_with_flags(prepared: LinkedModulePreparation, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool) -> Bytes with Exception {
+  if prepared.used {
+    throw("module preparation: already consumed")
+  } else ()
+  if coverage != prepared.coverage || debug_break != prepared.debug_break || debug_trace != prepared.debug_trace || enable_rc != prepared.enable_rc || rc_shadow != prepared.rc_shadow {
+    throw("module preparation: finish flags differ from preparation")
+  } else ()
+  prepared.used = true
+  with_merged_offset_locations(prepared.locations, () -> {
+    let body = lc_execute_function_plan(prepared.functions, prepared.input, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+    lc_emit_module_sections(LinkedSectionInputs::{
+      plan: prepared.sections,
+      body: body
+    }, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+  })
+}

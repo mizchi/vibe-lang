@@ -1,0 +1,94 @@
+import @vibe/compiler/cache {
+  ast_binary_read_string_checked, ast_binary_read_varint_checked, ast_binary_reader_remaining, ast_binary_write_varint
+}
+import @vibe/lowering_worker/linear {
+  linear_string_reader
+}
+
+export struct FunctionPhaseReceipt {
+  functions: Int;
+  lambdas: Int;
+  jobs: Int;
+  context_digest: String;
+  assembly_digest: String;
+  inputs: Array[String]
+}
+
+fn phase_receipt_require(ok: Bool) -> Unit with Exception {
+  if !ok {
+    throw("function phases: malformed original receipt")
+  } else ()
+}
+fn phase_receipt_digest(value: String) -> Unit with Exception {
+  phase_receipt_require(String::length(value) == 64)
+  let mut i = 0
+  while i < 64 {
+    let c = String::char_code_at(value, i)
+    phase_receipt_require((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
+    i = i + 1
+  }
+}
+fn phase_receipt_put(bytes: Bytes, value: String) -> Unit {
+  ast_binary_write_varint(bytes, String::length(value))
+  let mut i = 0
+  while i < String::length(value) {
+    Bytes::push(bytes, String::char_code_at(value, i)); i = i + 1
+  }
+}
+fn phase_receipt_check(value: FunctionPhaseReceipt) -> Unit with Exception {
+  phase_receipt_require(value.functions > 0 && value.lambdas >= 0 && (value.jobs == 1 || value.jobs == 2 || value.jobs == 4) && Array::length(value.inputs) == value.jobs)
+  phase_receipt_digest(value.context_digest)
+  phase_receipt_digest(value.assembly_digest)
+  for input in value.inputs {
+    phase_receipt_digest(input)
+  }
+  ()
+}
+
+/// Returned directly from preparation; no receipt file is trusted as authority.
+export fn write_function_phase_receipt(value: FunctionPhaseReceipt) -> Bytes with Exception {
+  phase_receipt_check(value)
+  let bytes = Bytes::new()
+  phase_receipt_put(bytes, "vibe-function-phases-1")
+  ast_binary_write_varint(bytes, value.functions)
+  ast_binary_write_varint(bytes, value.lambdas)
+  ast_binary_write_varint(bytes, value.jobs)
+  phase_receipt_put(bytes, value.context_digest)
+  phase_receipt_put(bytes, value.assembly_digest)
+  for input in value.inputs {
+    phase_receipt_put(bytes, input)
+  }
+  bytes
+}
+
+export fn read_function_phase_receipt(bytes: Bytes) -> FunctionPhaseReceipt with Exception {
+  phase_receipt_require(Bytes::length(bytes) <= 1024)
+  let r = linear_string_reader(bytes)
+  phase_receipt_require(ast_binary_read_string_checked(r) == "vibe-function-phases-1")
+  let functions = ast_binary_read_varint_checked(r)
+  let lambdas = ast_binary_read_varint_checked(r)
+  let jobs = ast_binary_read_varint_checked(r)
+  phase_receipt_require(jobs == 1 || jobs == 2 || jobs == 4)
+  let context = ast_binary_read_string_checked(r)
+  let assembly = ast_binary_read_string_checked(r)
+  let inputs: Array[String] = []
+  let mut i = 0
+  while i < jobs {
+    Array::push(inputs, ast_binary_read_string_checked(r)); i = i + 1
+  }
+  phase_receipt_require(ast_binary_reader_remaining(r) == 0)
+  let value = FunctionPhaseReceipt::{
+    functions: functions,
+    lambdas: lambdas,
+    jobs: jobs,
+    context_digest: context,
+    assembly_digest: assembly,
+    inputs: inputs
+  }
+  phase_receipt_check(value)
+  value
+}
+
+export fn FunctionPhaseReceipt::write_function_phase_receipt(recv: FunctionPhaseReceipt) -> Bytes with Exception {
+  write_function_phase_receipt(recv)
+}

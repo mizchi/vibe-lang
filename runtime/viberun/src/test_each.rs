@@ -298,7 +298,10 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
             }
             Err((false, reason)) => {
                 all_ok = false;
-                emit(format!("vibe::test\tfail\t{name}\t{}", escape_field(&reason)))?
+                emit(format!(
+                    "vibe::test\tfail\t{name}\t{}",
+                    escape_field(&reason)
+                ))?
             }
         }
     }

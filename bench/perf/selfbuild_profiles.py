@@ -167,7 +167,7 @@ def parents(workspace):
                    "SELFBUILD_NATIVE_RUNNER": str(runner), "SELFBUILD_CAPTURE": str(out / f"capture-{subject}")}
             if index:
                 env["VIBE_GUEST_PROFILE"] = str(private / "cpu.json")
-            run([str(runner), str(images / "compile.wasm")], corpus, env, private / "logs")
+            run(base.function_parent_command(images, runner), corpus, env, private / "logs")
             if base.sha(private / "out.wasm") != matrix["artifacts"][subject]:
                 raise ValueError("parent diagnostic differs from measured frontend output")
             print(subject, index, "parent profile" if index else "input capture", flush=True)
@@ -319,7 +319,17 @@ def memory(workspace):
     for path in sorted((workspace / "parent-profiles").glob("capture-*/*/shared.context")):
         result["contexts"][str(path.relative_to(workspace))] = context_pool(path.read_bytes())
     for path in sorted((workspace / "parent-profiles").glob("*/logs/stderr.log")):
-        result["parent_guest"][str(path.relative_to(workspace))] = base.guest_memory(path.read_text())
+        lines = [line for line in path.read_text().splitlines() if line.startswith("vibe::mem ")]
+        receipt = base.function_image_receipt(workspace / "engines/images")
+        if receipt["function_abi"] == "bump-core-returning-phases-3":
+            if len(lines) != 2:
+                raise ValueError("missing preparation/finisher guest memory observations")
+            result["parent_guest"][str(path.relative_to(workspace))] = {
+                phase: base.guest_memory(line) for phase, line in zip(("prepare", "finish"), lines)}
+        else:
+            if len(lines) != 1:
+                raise ValueError("unexpected legacy parent guest memory observations")
+            result["parent_guest"][str(path.relative_to(workspace))] = base.guest_memory(lines[0])
     for path in sorted((workspace / "worker-profiles").glob("*/0/stderr.log")):
         result["worker_guest"][str(path.relative_to(workspace))] = base.guest_memory(path.read_text())
     if not all(result[key] for key in ["contexts", "parent_guest", "worker_guest"]):

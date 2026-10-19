@@ -25,7 +25,7 @@ expect_failure() {
   grep -qF "$2" result.log || { cat result.log >&2; exit 1; }
 }
 
-bash scripts/check_doc_commands.sh > result.log 2>&1
+bash scripts/check_doc_commands.sh > result.log 2>&1 || { cat result.log >&2; exit 1; }
 grep -qF '41 references' result.log
 
 cp scripts/pkfire/quality_tasks.pkl quality.original
@@ -59,5 +59,5 @@ cp dispatcher.original "$dispatcher"
 rm scripts/pkfire/quality_tasks.pkl
 expect_failure 'missing imported task module' 'quality_tasks.pkl'
 cp quality.original scripts/pkfire/quality_tasks.pkl
-bash scripts/check_doc_commands.sh > result.log 2>&1
+bash scripts/check_doc_commands.sh > result.log 2>&1 || { cat result.log >&2; exit 1; }
 echo 'doc-commands self-test: imported tasks, split verbs, and refusal controls passed'

@@ -1,0 +1,406 @@
+// Shared builtin output initialization; independent of user-body emission.
+
+import @vibe/compiler/codegen/builtin_bodies {
+  array_capacity_error_message,
+  bytes_capacity_error_message,
+  div_zero_at_fragment,
+  div_zero_colon_fragment,
+  div_zero_div_message,
+  div_zero_rem_message,
+  gen_arr_concat_body,
+  gen_arr_get_body,
+  gen_arr_len_body,
+  gen_arr_new_body,
+  gen_arr_push_all_body,
+  gen_arr_push_body,
+  gen_arr_set_body,
+  gen_arr_slice_body,
+  gen_arr_truncate_body,
+  gen_arr_with_capacity_body,
+  gen_array_value_copy_body,
+  gen_bytes_append_body,
+  gen_bytes_blit_linear_body,
+  gen_bytes_compare_body,
+  gen_bytes_concat_body,
+  gen_bytes_count_byte_body,
+  gen_bytes_from_array_body,
+  gen_bytes_get_body,
+  gen_bytes_index_of_byte_body,
+  gen_bytes_index_of_bytes_body,
+  gen_bytes_last_index_of_byte_body,
+  gen_bytes_len_body,
+  gen_bytes_new_body,
+  gen_bytes_push_body,
+  gen_bytes_set_body,
+  gen_bytes_slice_body,
+  gen_bytes_to_array_body,
+  gen_bytes_with_capacity_body,
+  gen_compact_fingerprint_hash_body,
+  gen_div_zero_abort_body,
+  gen_eq_body,
+  gen_generic_add_body,
+  gen_generic_rel_diff_body,
+  gen_int_clz_body,
+  gen_int_ctz_body,
+  gen_int_popcount_body,
+  gen_map_build_index_body,
+  gen_map_cap_body,
+  gen_map_hash_body,
+  gen_map_index_insert_body,
+  gen_map_probe_index_body,
+  gen_oob_abort_body,
+  gen_print_i64_body,
+  gen_print_i64_raw_body,
+  gen_rc_alloc_body,
+  gen_rc_drop_body,
+  gen_rc_dup_body,
+  gen_region_arr_new_body,
+  gen_region_bytes_new_body,
+  gen_simd_scan_alnum_body,
+  gen_simd_scan_line_end_body,
+  gen_simd_scan_string_special_body,
+  gen_simd_skip_ws_body,
+  gen_sources_proper_body,
+  gen_sources_stub_body,
+  gen_str_char_code_at_body,
+  gen_str_concat_body,
+  gen_str_eq_body,
+  gen_str_from_char_code_body,
+  gen_str_len_body,
+  gen_str_lex_diff_body,
+  gen_str_substring_body,
+  gen_string_contains_body,
+  gen_string_ends_with_body,
+  gen_string_index_of_body,
+  gen_string_join_body,
+  gen_string_last_index_of_body,
+  gen_string_split_body,
+  gen_string_starts_with_body,
+  gen_string_trim_body,
+  static_arr_len_body,
+  static_double_to_int_body,
+  static_fs_stub_body,
+  static_fs_write_bytes_stub_body,
+  static_identity_body,
+  static_int_to_double_body,
+  static_print_str_body,
+  static_str_len_body
+}
+
+import @vibe/compiler/codegen/common_base {
+  str_table_index_of
+}
+
+import ./linked_compile_lc_rename_sleep_calls.vibe {
+  gen_heap_grow_check_body, lc_fresh_bytes_array, lc_fresh_int_array
+}
+
+import ./linked_compile_linkedhostplan.vibe {
+  LinkedBodyInputs
+}
+
+/// Completed builtin rows in canonical index order. User rows are appended by
+/// ordinary emission or by the validated product replay phase.
+export struct LinkedBuiltinBodies {
+  bodies: Array[Bytes];
+  builtin_type_idxs: Array[Int];
+  meta_i32: Array[Int];
+  meta_i64: Array[Int];
+  meta_v128: Array[Int]
+}
+
+export fn lc_build_builtin_bodies(input: LinkedBodyInputs, enable_rc: Bool, rc_shadow: Bool) -> LinkedBuiltinBodies with Exception {
+  let arr_get_idx = input.arr_get_idx
+  let arr_len_idx = input.arr_len_idx
+  let arr_new_idx = input.arr_new_idx
+  let arr_push_idx = input.arr_push_idx
+  let arr_slice_idx = input.arr_slice_idx
+  let bytes_append_idx = input.bytes_append_idx
+  let bytes_get_idx = input.bytes_get_idx
+  let bytes_len_idx = input.bytes_len_idx
+  let bytes_new_idx = input.bytes_new_idx
+  let bytes_push_idx = input.bytes_push_idx
+  let div_zero_abort_idx = input.div_zero_abort_idx
+  let eq_idx = input.eq_idx
+  let fi = input.fi
+  let func_offset = input.func_offset
+  let heap_grow_check_idx = input.heap_grow_check_idx
+  let map_cap_idx = input.map_cap_idx
+  let map_hash_idx = input.map_hash_idx
+  let map_index_insert_idx = input.map_index_insert_idx
+  let need_array_capacity = input.need_array_capacity
+  let need_bytes_capacity = input.need_bytes_capacity
+  let need_div_zero_abort = input.need_div_zero_abort
+  let need_region_arena = input.need_region_arena
+  let num_src_pairs = input.num_src_pairs
+  let oob_abort_idx = input.oob_abort_idx
+  let print_i64_raw_idx = input.print_i64_raw_idx
+  let print_str_idx = input.print_str_idx
+  let rc_alloc_idx = input.rc_alloc_idx
+  let rc_bins_base = input.rc_bins_base
+  let rc_drop_idx = input.rc_drop_idx
+  let region_arr_new_idx = input.region_arr_new_idx
+  let region_bytes_new_idx = input.region_bytes_new_idx
+  let region_data_base = input.region_data_base
+  let region_limit = input.region_limit
+  let region_ptr_addr = input.region_ptr_addr
+  let shadow_uaf_abort_idx = input.shadow_uaf_abort_idx
+  let src_str_base = input.src_str_base
+  let str_char_code_at_idx = input.str_char_code_at_idx
+  let str_concat_idx = input.str_concat_idx
+  let str_eq_idx = input.str_eq_idx
+  let str_len_idx = input.str_len_idx
+  let str_lengths = input.str_lengths
+  let str_lex_diff_idx = input.str_lex_diff_idx
+  let str_offsets = input.str_offsets
+  let str_operand_abort_idx = input.str_operand_abort_idx
+  let str_substring_idx = input.str_substring_idx
+  let str_table_shared = input.str_table_shared
+  let string_index_of_idx = input.string_index_of_idx
+  let bodies = lc_fresh_bytes_array()
+  let meta_i32 = lc_fresh_int_array()
+  let meta_i64 = lc_fresh_int_array()
+  // #805 SIMD locals: v128 run length of each code entry's locals header.
+  // Non-zero only for inline-wasm fns declaring `(local $x v128)` -- every
+  // other push site pushes 0, keeping the three meta arrays aligned with
+  // `bodies` (asserted at the code-section assembly below).
+  let meta_v128 = lc_fresh_int_array()
+  let builtin_type_idxs = lc_fresh_int_array()
+  // #415 B-1: one call = one builtin body. The body bytes, its extra local
+  // counts (meta_i32/meta_i64), and its function-section type index are
+  // pushed TOGETHER, killing the four-way positional alignment this block
+  // used to share with a bare number list ~1,400 lines below (the function
+  // section splices builtin_type_idxs in this same order; a count mismatch
+  // still throws there).
+  let push_builtin: (Bytes, Int, Int, Int) -> Unit = (body, m32, m64, type_idx) -> {
+    Array::push(bodies, body)
+    Array::push(meta_i32, m32)
+    Array::push(meta_i64, m64)
+    Array::push(meta_v128, 0)
+    Array::push(builtin_type_idxs, type_idx)
+  }
+  push_builtin(gen_print_i64_body(), 3, 1, 1)
+  push_builtin(static_print_str_body(), 2, 0, 1)
+  push_builtin(if enable_rc {
+    gen_str_len_body(true)
+  } else {
+    static_str_len_body()
+  }, 0, 0, 3)
+  // #748: SIMD chunk compare needs the extra chunk_limit local (meta_i32 6).
+  push_builtin(gen_str_eq_body(), 6, 0, 4)
+  // #2199: raw (ptr<<32)|len string-table constants for the OOB abort
+  // message fragments, exactly the shape __rt_print_str's parameter takes
+  // (no RC tag on either lane). The strings were seeded above, so the
+  // lookups cannot miss.
+  //
+  // Defined before the str_concat push (#2427) because its shadow-lane
+  // operand guard needs one of these fragments; moving the PUSH instead
+  // would reorder the builtins and shift every function index.
+  let oob_fat_of: (String) -> Int = (frag) -> {
+    let fi = str_table_index_of(str_table_shared, frag)
+    (Array::get(str_offsets, fi)<<32)|Array::get(str_lengths, fi)
+  }
+  push_builtin(gen_str_concat_body(rc_shadow, str_operand_abort_idx, if rc_shadow {
+    oob_fat_of("String::concat operand is not a live string: ptr=")
+  } else {
+    0
+  }), 6, 0, 4)
+  let oob_arr_get_fat = oob_fat_of("Array::get: index ")
+  let oob_arr_set_fat = oob_fat_of("Array::set: index ")
+  let oob_bytes_get_fat = oob_fat_of("Bytes::get: index ")
+  let oob_bytes_set_fat = oob_fat_of("Bytes::set: index ")
+  let oob_ccat_fat = oob_fat_of("String::byte_at: index ")
+  let oob_mid_fat = oob_fat_of(" out of bounds for length ")
+  let oob_nl_fat = oob_fat_of("\n")
+  if enable_rc {
+    push_builtin(gen_arr_new_body(true, rc_alloc_idx), 1, 0, 5)
+    push_builtin(gen_arr_len_body(true), 0, 0, 3)
+    push_builtin(gen_arr_get_body(true, oob_arr_get_fat, oob_abort_idx), 1, 0, 4)
+    push_builtin(gen_arr_push_body(true, rc_alloc_idx, rc_shadow, -1, 0, 0), 6, 0, 6)
+    push_builtin(gen_arr_set_body(true, oob_arr_set_fat, oob_abort_idx), 1, 0, 7)
+  } else {
+    push_builtin(gen_arr_new_body(false, rc_alloc_idx), 1, 0, 5)
+    push_builtin(static_arr_len_body(), 0, 0, 3)
+    push_builtin(gen_arr_get_body(false, oob_arr_get_fat, oob_abort_idx), 1, 0, 4)
+    // ADR-0090 (#1262): ONE arr_push. Which lane a regrow allocates from is a
+    // property of the ARRAY (is its block inside the arena segment?), not of
+    // the call site, so it is a runtime range check inside the shared body
+    // rather than a second builtin -- a MutList and an ordinary Array can both
+    // be pushed through the same code. The arena form needs one extra i32
+    // local for the arena bump pointer.
+    push_builtin(gen_arr_push_body(false, rc_alloc_idx, rc_shadow, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+      7
+    } else {
+      6
+    }, 0, 6)
+    push_builtin(gen_arr_set_body(false, oob_arr_set_fat, oob_abort_idx), 1, 0, 7)
+  }
+  push_builtin(static_double_to_int_body(), 0, 0, 3)
+  push_builtin(static_int_to_double_body(), 0, 0, 3)
+  push_builtin(gen_str_char_code_at_body(enable_rc, oob_ccat_fat, oob_abort_idx), 1, 0, 4)
+  push_builtin(gen_str_from_char_code_body(enable_rc), 1, 0, 3)
+  // #982: substring's clamp prologue needs one i64 scratch (len) — meta 2/1.
+  push_builtin(gen_str_substring_body(enable_rc), 2, 1, 8)
+  push_builtin(static_identity_body(), 0, 0, 3)
+  if enable_rc {
+    push_builtin(gen_arr_slice_body(true, rc_alloc_idx, rc_shadow), 7, 1, 8)
+  } else {
+    // #982: the clamp prologue's i64 len scratch (RC reuses local 10 = elem).
+    push_builtin(gen_arr_slice_body(false, rc_alloc_idx, rc_shadow), 6, 1, 8)
+  }
+  push_builtin(gen_array_value_copy_body(arr_len_idx, arr_slice_idx), 0, 0, 3)
+  push_builtin(gen_arr_concat_body(), 9, 0, 4)
+  push_builtin(gen_arr_truncate_body(enable_rc), 0, 0, 6)
+  push_builtin(gen_string_join_body(enable_rc, arr_len_idx, arr_get_idx, str_concat_idx), 9, 1, 4)
+  push_builtin(static_fs_stub_body(), 0, 0, 3)
+  push_builtin(static_fs_stub_body(), 0, 0, 3)
+  push_builtin(static_fs_stub_body(), 0, 0, 3)
+  // Unused publish_immutable_text needs a never-called `(i64,i64)->i64` stub.
+  push_builtin(static_fs_stub_body(), 0, 0, 4)
+  push_builtin(static_fs_write_bytes_stub_body(), 0, 0, 6)
+  push_builtin(static_fs_write_bytes_stub_body(), 0, 0, 6)
+  push_builtin(gen_eq_body(str_eq_idx), 0, 0, 4)
+  push_builtin(gen_string_ends_with_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 2, 1, 4)
+  push_builtin(gen_string_last_index_of_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 3, 1, 4)
+  if enable_rc {
+    push_builtin(gen_arr_push_all_body(true, rc_alloc_idx, rc_shadow), 10, 1, 6)
+  } else {
+    push_builtin(gen_arr_push_all_body(false, rc_alloc_idx, rc_shadow), 9, 0, 6)
+  }
+  // #748 memchr rewrite: 8 i32 locals, the i64 substring scratch is gone.
+  push_builtin(gen_string_index_of_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 8, 0, 4)
+  push_builtin(gen_string_contains_body(enable_rc, string_index_of_idx), 0, 0, 4)
+  push_builtin(gen_string_starts_with_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 2, 1, 4)
+  push_builtin(gen_string_split_body(enable_rc, arr_new_idx, arr_push_idx, str_len_idx, str_substring_idx, string_index_of_idx), 4, 1, 4)
+  push_builtin(gen_string_trim_body(enable_rc, str_len_idx, str_char_code_at_idx, str_substring_idx), 4, 0, 3)
+  if num_src_pairs > 0 {
+    push_builtin(gen_sources_proper_body(num_src_pairs, str_offsets, str_lengths, src_str_base, arr_new_idx, arr_push_idx), 1, 1, 5)
+  } else {
+    push_builtin(gen_sources_stub_body(arr_new_idx), 0, 0, 5)
+  }
+  push_builtin(gen_bytes_new_body(), 1, 0, 5)
+  push_builtin(gen_bytes_len_body(enable_rc), 0, 0, 3)
+  push_builtin(gen_bytes_get_body(enable_rc, oob_bytes_get_fat, oob_abort_idx), 1, 0, 4)
+  push_builtin(gen_bytes_set_body(enable_rc, oob_bytes_set_fat, oob_abort_idx), 1, 0, 7)
+  // ADR-0090 MutBytes: same ONE-body routing as gen_arr_push_body above --
+  // whether a regrow allocates from the arena is a runtime range check on
+  // the buffer's own block, so MutBytes and ordinary Bytes share this body.
+  // region_ptr_addr is -1 when the module has no region (or under RC), which
+  // compiles the arena branch out. The arena form needs one extra i32 local.
+  push_builtin(gen_bytes_push_body(enable_rc, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    7
+  } else {
+    6
+  }, 0, 6)
+  push_builtin(gen_bytes_append_body(region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    9
+  } else {
+    8
+  }, 0, 6)
+  push_builtin(gen_bytes_concat_body(bytes_new_idx, bytes_append_idx), 0, 1, 4)
+  push_builtin(gen_bytes_slice_body(enable_rc, bytes_new_idx, bytes_get_idx, bytes_push_idx), 2, 1, 8)
+  push_builtin(gen_bytes_from_array_body(enable_rc, arr_len_idx, arr_get_idx, bytes_new_idx, bytes_push_idx), 2, 1, 3)
+  push_builtin(gen_bytes_to_array_body(enable_rc, arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx), 2, 1, 3)
+  let uaf_dup_fat = if rc_shadow {
+    oob_fat_of("dup of freed value at site ")
+  } else {
+    0
+  }
+  let uaf_drop_fat = if rc_shadow {
+    oob_fat_of("drop of freed value at site ")
+  } else {
+    0
+  }
+  if enable_rc {
+    push_builtin(gen_rc_drop_body(rc_drop_idx, rc_shadow, rc_bins_base, shadow_uaf_abort_idx, uaf_drop_fat, input.rc_map_arms, input.rc_closure_arms, true), 5, 1, 1)
+    push_builtin(gen_rc_alloc_body(rc_shadow, rc_bins_base), 5, 0, 3)
+    push_builtin(gen_rc_dup_body(rc_shadow, shadow_uaf_abort_idx, uaf_dup_fat), 0, 0, 1)
+  } else {
+    ()
+  }
+  push_builtin(gen_heap_grow_check_body(), 0, 0, 2)
+  push_builtin(gen_simd_skip_ws_body(enable_rc), 2, 2, 8)
+  push_builtin(gen_simd_scan_alnum_body(enable_rc, false), 1, 3, 8)
+  push_builtin(gen_simd_scan_alnum_body(enable_rc, true), 1, 3, 8)
+  push_builtin(gen_simd_scan_string_special_body(enable_rc), 1, 3, 8)
+  push_builtin(gen_simd_scan_line_end_body(enable_rc), 1, 3, 8)
+  push_builtin(gen_str_lex_diff_body(enable_rc), 7, 0, 4)
+  push_builtin(gen_generic_rel_diff_body(enable_rc, str_lex_diff_idx), 0, 0, 4)
+  push_builtin(gen_generic_add_body(enable_rc, str_concat_idx), 0, 0, 4)
+  push_builtin(gen_compact_fingerprint_hash_body(enable_rc), 3, 2, 3)
+  push_builtin(gen_map_hash_body(), 3, 2, 3)
+  push_builtin(gen_map_cap_body(), 0, 1, 3)
+  push_builtin(gen_map_index_insert_body(), 1, 4, 7)
+  // #2683: the index table is an RC leaf block on the RC lane (freed by the
+  // Map's class-6 rc_drop arm), a raw bump allocation on the bump lane.
+  push_builtin(gen_map_build_index_body(map_hash_idx, map_cap_idx, map_index_insert_idx, heap_grow_check_idx, if enable_rc {
+    rc_alloc_idx
+  } else {
+    -1
+  }), 0, 7, 4)
+  push_builtin(gen_map_probe_index_body(map_hash_idx, eq_idx), 1, 8, 8)
+  // #2199: the formatted OOB abort pair, in the print_i64_raw_idx /
+  // oob_abort_idx slot order fixed above.
+  push_builtin(gen_print_i64_raw_body(), 3, 1, 1)
+  push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_mid_fat, oob_nl_fat), 0, 0, 7)
+  // #2344: same order as int_popcount_idx / int_ctz_idx / int_clz_idx above.
+  // No extra locals, and type 3 is (i64) -> (i64) -- the same shape as
+  // int_to_double above. Type 1 is (i64) -> (), which would declare these as
+  // returning nothing.
+  push_builtin(gen_int_popcount_body(enable_rc), 0, 0, 3)
+  push_builtin(gen_int_ctz_body(enable_rc), 0, 0, 3)
+  push_builtin(gen_int_clz_body(enable_rc), 0, 0, 3)
+  push_builtin(gen_bytes_index_of_bytes_body(string_index_of_idx), 2, 0, 4)
+  push_builtin(gen_bytes_index_of_byte_body(enable_rc), 1, 3, 4)
+  push_builtin(gen_bytes_count_byte_body(enable_rc), 1, 4, 4)
+  push_builtin(gen_bytes_last_index_of_byte_body(enable_rc), 1, 3, 4)
+  push_builtin(gen_bytes_compare_body(enable_rc), 2, 4, 4)
+  // The four-argument void type is appended after the closure types below;
+  // its slot is filled there without shifting any existing type index.
+  push_builtin(gen_bytes_blit_linear_body(enable_rc, bytes_get_idx, bytes_push_idx, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    9
+  } else {
+    8
+  }, 0, -1)
+  push_builtin(gen_bytes_with_capacity_body(enable_rc, print_str_idx, if need_bytes_capacity {
+    oob_fat_of(bytes_capacity_error_message())
+  } else {
+    0
+  }), 2, 0, 3)
+  push_builtin(gen_arr_with_capacity_body(enable_rc, rc_alloc_idx, print_str_idx, if need_array_capacity {
+    oob_fat_of(array_capacity_error_message())
+  } else {
+    0
+  }), 3, 0, 3)
+  if rc_shadow {
+    push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of("; freed at site "), oob_nl_fat), 0, 0, 7)
+    // #2427: same body, ", len=" as the middle fragment -- see
+    // str_operand_abort_idx. Registered immediately after the UAF abort so
+    // max_builtin_func_idx stays the last push.
+    push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of(", len="), oob_nl_fat), 0, 0, 7)
+  } else {
+    ()
+  }
+  // #3126: div_zero_abort_idx -- after the shadow aborts, before the arena.
+  if need_div_zero_abort {
+    push_builtin(gen_div_zero_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of(div_zero_div_message()), oob_fat_of(div_zero_rem_message()), oob_fat_of(div_zero_at_fragment()), oob_fat_of(div_zero_colon_fragment()), oob_nl_fat), 0, 0, 7)
+  } else {
+    ()
+  }
+  // ADR-0090 (#1262): must stay LAST, in this order -- max_builtin_func_idx
+  // above names region_bytes_new_idx (= region_arr_new_idx + 1) as the final
+  // builtin, and num_generated/func_offset are derived from it.
+  if need_region_arena {
+    push_builtin(gen_region_arr_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
+    push_builtin(gen_region_bytes_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
+  } else {
+    ()
+  }
+  LinkedBuiltinBodies::{
+    bodies: bodies,
+    builtin_type_idxs: builtin_type_idxs,
+    meta_i32: meta_i32,
+    meta_i64: meta_i64,
+    meta_v128: meta_v128
+  }
+}
