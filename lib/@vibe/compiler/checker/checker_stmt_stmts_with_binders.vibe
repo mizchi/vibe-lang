@@ -58,7 +58,7 @@ import ./checker_impl_method_signature.vibe {
 }
 
 import ./checker_closure_capture_row.vibe {
-  tail_expr_off
+  quantify_own_rows, tail_expr_off
 }
 
 import ./checker_row_effect_inst.vibe {
@@ -535,7 +535,9 @@ fn hoisted_fn_scheme(value: Expr, defs: Array[TypeDef], c: Int) -> (Type, Int) {
     EFn(tparams, tbounds, params, ret, eff, _body) => {
       let tplen = Array::length(tparams)
       if tplen == 0 || hoist_has_hkt_formal(tparams, params, ret) {
-        (hoisted_fn_signature(value, defs), c)
+        // #3557: a caller above the declaration gets its own row per call
+        // too.
+        (quantify_own_rows(hoisted_fn_signature(value, defs)), c)
       } else {
         let ids = array_empty()
         let vars = array_empty()
@@ -1682,7 +1684,13 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         } else {
           type_exception_rows_resolved(t_published)
         }
-        let env1 = bind_function_dependency_contracts(env_bind(env, name, published), name, val)
+        // #3557: a declaration's own `with e` is quantified per call, type
+        // parameters or not.
+        let bound = match val {
+          EFn(_, _, _, _, _, _) => quantify_own_rows(published),
+          _ => published
+        }
+        let env1 = bind_function_dependency_contracts(env_bind(env, name, bound), name, val)
         capture_statement_root_type(capture, statement_path, "SLet", vt)
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
@@ -2525,9 +2533,14 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
                   } else {
                     ()
                   }
-                  cur_env = bind_function_dependency_contracts(env_bind(cur_env, name, published), name, value)
+                  // #3557: see the non-recursive arm.
+                  let bound = match value {
+                    EFn(_, _, _, _, _, _) => quantify_own_rows(published),
+                    _ => published
+                  }
+                  cur_env = bind_function_dependency_contracts(env_bind(cur_env, name, bound), name, value)
                   cur_env = bind_value_or_annotation_return(cur_env, name, value, None, defs)
-                  note_toplevel_generic_binding(name, value, Some(published), outer_env)
+                  note_toplevel_generic_binding(name, value, Some(bound), outer_env)
                 },
                 None => ()
               },

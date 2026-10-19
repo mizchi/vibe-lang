@@ -83,7 +83,7 @@ import ./checker_builtin_arg_head_rest.vibe {
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
-  env_has_active_region
+  env_has_active_region, row_variable_labels
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -852,6 +852,82 @@ fn expr_children_expansive(e: Expr) -> Bool {
 ///     no array in its type for (A) to find. Annotating the binding
 ///     (`let f: (Int) -> Array[Int] = make()`) states the one type it has.
 export fn let_generalize(val: Expr, vt: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, self_name: Option[String]) -> Type {
+  let gen = let_generalize_vars(val, vt, env, defs, s, self_name)
+  // #3557: an alias of a scheme keeps its rows quantified. The lookup of
+  // `apply` freshened them for this binding alone, so `let g = apply` is as
+  // polymorphic in its row as `apply` itself.
+  match val {
+    EIdent(name, _) => match env_lookup(env, name) {
+      Some(CtForAll(_, _, _)) => quantify_own_rows(gen),
+      _ => gen
+    },
+    _ => gen
+  }
+}
+
+/// #3557: a function's own row variables are quantified with it.
+///
+/// `instantiate` gives every use of a scheme fresh row variables, but only a
+/// `CtForAll` is instantiated, and a function declaring no type parameter
+/// generalized to a plain `CtFn`. Its `with e` was then ONE variable shared by
+/// every call in a body: after `apply(one)` fixed it as pure, `apply(noisy)`
+/// on the next line was refused for dropping `Console`, while the same
+/// function with a `[T]` binder accepted both. A scheme with no type variable
+/// quantifies exactly its rows.
+///
+/// Callers apply it only where the row variables are the binding's own: a
+/// top-level declaration (nothing encloses it to bind them) and an alias of a
+/// scheme (whose rows the lookup has just freshened). A local lambda's
+/// `with e` may be its enclosing function's, so it is left alone.
+export fn quantify_own_rows(t: Type) -> Type {
+  match t {
+    CtFn(_, _, _) => if type_names_row_variable(t) {
+      CtForAll(array_empty(), array_empty(), t)
+    } else {
+      t
+    },
+    _ => t
+  }
+}
+
+/// Does `t` name a row variable (`with e`, or an instantiated `$N`) in any
+/// function type it contains? The positions `instantiate` renames.
+fn type_names_row_variable(t: Type) -> Bool {
+  match t {
+    CtFn(params, ret, row) => if Array::length(row_variable_labels(row)) > 0 || type_names_row_variable(ret) {
+      true
+    } else {
+      types_name_row_variable(params)
+    },
+    CtArray(elem) => type_names_row_variable(elem),
+    CtOption(elem) => type_names_row_variable(elem),
+    CtTuple(items) => types_name_row_variable(items),
+    CtNamed(_, args) => types_name_row_variable(args),
+    CtRecord(fields) => {
+      let mut found = false
+      for field in fields {
+        let (_, ft) = field
+        if !found && type_names_row_variable(ft) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn types_name_row_variable(items: Array[Type]) -> Bool {
+  let mut found = false
+  for item in items {
+    if !found && type_names_row_variable(item) {
+      found = true
+    }
+  }
+  found
+}
+
+fn let_generalize_vars(val: Expr, vt: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, self_name: Option[String]) -> Type {
   let vt_resolved = subst_apply(s, vt)
   if Array::length(collect_tvars(vt_resolved)) == 0 {
     // Nothing to quantify; skip the right-hand-side walk entirely. Most

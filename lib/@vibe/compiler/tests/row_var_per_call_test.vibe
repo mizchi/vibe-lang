@@ -1,0 +1,54 @@
+//# #3557: a signature's row variable is quantified per call
+
+// `fn apply(f: () -> Int with e) -> Int with e` declares no type parameter, so
+// its binding used to be a plain function type rather than a scheme, and every
+// call in a body shared the one `e`: once a pure function had fixed it, a
+// `Console` function passed to the next call was refused as dropping
+// `Console`. Each call now gets its own `e`, exactly as it does when the
+// function also declares a type parameter.
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+fn program(sig: String, caller: String) -> String {
+  String::concat(String::concat(sig, " {\n  f()\n}\n\nfn one() -> Int {\n  1\n}\n\nfn noisy() -> Int with Console {\n  println(\"n\")\n  2\n}\n\n"), caller)
+}
+
+fn plain() -> String {
+  "fn apply(f: () -> Int with e) -> Int with e"
+}
+
+test "a pure function and a Console function passed to one row-polymorphic function are both accepted" {
+  let src = program(plain(), "fn main allows Console {\n  let a = apply(one)\n  let b = apply(noisy)\n  println(\"\\{a + b}\")\n}\n")
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "the calls are accepted in either order" {
+  let src = program(plain(), "fn main allows Console {\n  let b = apply(noisy)\n  let a = apply(one)\n  println(\"\\{a + b}\")\n}\n")
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "a caller above the declaration gets its own row per call too" {
+  let src = "fn main allows Console {\n  let a = apply(one)\n  let b = apply(noisy)\n  println(\"\\{a + b}\")\n}\n\nfn apply(f: () -> Int with e) -> Int with e {\n  f()\n}\n\nfn one() -> Int {\n  1\n}\n\nfn noisy() -> Int with Console {\n  println(\"n\")\n  2\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "a method-style call gets its own row per call" {
+  let src = "struct Runner {\n  n: Int\n}\n\nfn Runner::run(r: Runner, f: () -> Int with e) -> Int with e {\n  f() + r.n\n}\n\nfn one() -> Int {\n  1\n}\n\nfn noisy() -> Int with Console {\n  println(\"n\")\n  2\n}\n\nfn main allows Console {\n  let r = Runner::{ n: 1 }\n  let a = r.run(one)\n  let b = r.run(noisy)\n  let c = Runner::run(r, one)\n  let d = Runner::run(r, noisy)\n  println(\"\\{a + b + c + d}\")\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "the function taken as a value gets its own row per call" {
+  let src = program(plain(), "fn main allows Console {\n  let g = apply\n  let a = g(one)\n  let b = g(noisy)\n  println(\"\\{a + b}\")\n}\n")
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "the Console call still charges its row to a caller without Console" {
+  let src = program(plain(), "fn quiet() -> Int {\n  let a = apply(one)\n  let c = apply(noisy)\n  a + c\n}\n")
+  inspect(collect_all_diagnostics(src), "[line 16:11: effect row mismatch for 'quiet': missing { Console } (no 'with' clause, requires { Console })\nhint: declare 'fn quiet(...) -> T with Console']")
+}
+
+test "the same calls through a declared type parameter (control)" {
+  let src = program("fn apply[T](f: () -> T with e) -> T with e", "fn main allows Console {\n  let a = apply(one)\n  let b = apply(noisy)\n  println(\"\\{a + b}\")\n}\n")
+  inspect(collect_all_diagnostics(src), "[]")
+}
