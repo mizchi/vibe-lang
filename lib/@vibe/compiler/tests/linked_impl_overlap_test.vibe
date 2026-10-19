@@ -1,7 +1,15 @@
 //# Imports
 
+import @vibe/compiler/contract {
+  contract_facade_marker, vpkg_shared_import_marker, vpkg_types_module_marker
+}
+
 import @vibe/compiler/core {
   Stmt, linked_impl_overlap_error, linked_unit
+}
+
+import @vibe/compiler/loader {
+  vpkg_types_module_path_prefix
 }
 
 import @vibe/compiler/runtime {
@@ -140,6 +148,71 @@ test "a contract restating an impl is not an overlap" {
     ("pkg/index.vpkg", impl_a),
     ("pkg/impl.vibe", impl_a)
   ]), content = "ok")
+}
+
+/// #3551 review: which units only restate is the loader's provenance -- the
+/// path it gave the unit -- not the text. Every marker line the loader writes
+/// is an ordinary comment a module may open with, and the shared-import one
+/// heads every real sibling of a package whose contract shares an import
+/// (#897). Matched on the text, each of these linked silently (measured:
+/// `from-a from-a`, and `from-b from-b` with the imports swapped). Such a unit
+/// is named without a line: the loader's prepended lines would shift it.
+test "a module opening with a loader marker line is still checked" {
+  let refusal = "tb.vibe: line 3:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in ta.vibe both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one"
+  for marker in [
+    contract_facade_marker,
+    vpkg_shared_import_marker,
+    vpkg_types_module_marker
+  ] {
+    inspect(link_verdict([
+      ("tr.vibe", trait_src),
+      ("ta.vibe", String::concat(marker, impl_a)),
+      ("tb.vibe", impl_b)
+    ]), content = refusal)
+  }
+}
+
+/// The loader's own restating units stay exempt: a contract path, and the
+/// exact path it materializes a types module at. A lookalike under that
+/// directory is an ordinary module.
+test "a generated types module path is exempt and a lookalike is not" {
+  let decl = String::concat(vpkg_types_module_marker, "export struct P {\n  x: Int\n} derive(Show)\n")
+  let other = "impl Show for P {\n  to_string(p: P) -> String { \"p\" }\n}\n"
+  let generated = String::concat(vpkg_types_module_path_prefix, "k1_Ab9.vibe")
+  inspect(link_verdict([(generated, decl), ("q.vibe", other)]), content = "ok")
+  inspect(link_verdict([("pkg/index.vibei", decl), ("q.vibe", other)]), content = "ok")
+  let nested = String::concat(vpkg_types_module_path_prefix, "fake/p.vibe")
+  inspect(link_verdict([(nested, decl), ("q.vibe", other)]), content = "q.vibe: line 1:1: remove one of these: `impl Show for P` here and `derive (Show) on P` in .vibe/build/vpkg_types/types_fake/p.vibe both define `P::to_string` -- the derive gives way to the impl, so the deriving module, and every caller of the method, would silently run the impl; one module may not hold both either")
+}
+
+let child_src = "export trait Base {\n  get(Self) -> String\n}\n\nexport trait Child: Base {}\n"
+
+/// #3551 review: a binding in another trait's namespace inside an impl's run
+/// -- the supertrait operation `Base::get` the checker synthesizes after
+/// `impl Child for Int` -- used to end the run, so the `Int::get` after it was
+/// read as a plain definition rather than the impl's method. With the method
+/// on both sides after such a binding, neither was checked at all (two plain
+/// definitions; measured end to end: `from-a from-a`, and `from-b from-b` with
+/// the imports swapped).
+test "a supertrait binding inside an impl's run does not end it" {
+  let fallback_a = "impl Child for Int\n\nfn Base::tag(x: Int) -> Int {\n  7\n}\n\nfn Int::get(x: Int) -> String {\n  \"from-a\"\n}\n"
+  let fallback_b = "impl Child for Int\n\nfn Base::tag(x: Int) -> Int {\n  8\n}\n\nfn Int::get(x: Int) -> String {\n  \"from-b\"\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", child_src),
+    ("ta.vibe", fallback_a),
+    ("tb.vibe", fallback_b)
+  ]), content = "tb.vibe: line 1:1: remove one of these: `impl Child for Int` here and `impl Child for Int` in ta.vibe: line 1:1 both define `Int::get` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  // The synthesized operation's shape: it is the impl's method, not a plain
+  // definition, so the refusal names both impls.
+  let synthesized = "impl Child for Int\nlet rec Base::get = (x: Int) -> String { \"op\" }\nlet rec Int::get = (x: Int) -> String { \"from-a\" }\n"
+  let written = "impl Child for Int {\n  get(x: Int) -> String { \"from-b\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", child_src),
+    ("ta.vibe", synthesized),
+    ("tb.vibe", written)
+  ]), content = "tb.vibe: line 1:1: remove one of these: `impl Child for Int` here and `impl Child for Int` in ta.vibe: line 1:1 both define `Int::get` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  // One such impl in the program is no overlap.
+  inspect(link_verdict([("tr.vibe", child_src), ("ta.vibe", fallback_a)]), content = "ok")
 }
 
 /// #3551 review: the grouped merge links each source group on its own and

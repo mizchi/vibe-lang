@@ -33,7 +33,15 @@
 // Which definitions an impl made is decided per statement, from the run of
 // method bindings that follows the `SImpl` in the merged array -- not by the
 // owner's prefix, which a plain `fn Int::m` elsewhere in the same unit shares
-// with an `impl .. for Int` and would have been exempted by (#3551).
+// with an `impl .. for Int` and would have been exempted by (#3551). A binding
+// named after ANY trait (`Base::get` after `impl Child for Int`, `trait Child:
+// Base`) sits inside the run rather than ending it, as the checker's
+// `collect_impl_method_origins` reads the same shape.
+//
+// Which units only restate is the loader's provenance, read from the path it
+// gave the unit: a contract it desugared to a facade, and a types module it
+// materialized under its own build directory. Never from the text: any
+// module may open with one of the loader's marker comments (#3551).
 
 import ./ast.vibe {
   Stmt, TypeExpr
@@ -41,6 +49,10 @@ import ./ast.vibe {
 
 import ./import_alias_rewrite_rewrite_alias_expr_ix.vibe {
   namespace_rename_original
+}
+
+import ./module_graph_path.vibe {
+  is_contract_ext
 }
 
 import @vibe/ast {
@@ -91,7 +103,8 @@ struct ImplBinder {
 /// The refusal for the first impl method name two units of `merged` bind, or
 /// `None`. `units` are in merge order and do not overlap.
 export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit]) -> Option[String] {
-  let in_impl = impl_member_flags(merged, units)
+  let traits = linked_trait_names(merged)
+  let in_impl = impl_member_flags(merged, units, traits)
   // Every name a plain definition (one no impl made) binds: a derive gives
   // way to it, as `dtd_source_op_defined` makes the derive pass do.
   let plain: MutMap[String, Bool] = MutMap::new_string()
@@ -112,7 +125,7 @@ export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit
   let mut u = 0
   while u < Array::length(units) && found is None {
     let unit = Array::get(units, u)
-    let impl_lines = line_starts_with_keyword(unit.source, "impl")
+    let impl_lines = line_starts_with_keyword(unit_located_text(unit), "impl")
     let mut impl_ordinal = 0
     let mut k = unit_first_stmt(unit)
     while k < unit.end && found is None {
@@ -122,7 +135,7 @@ export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit
           impl_ordinal = impl_ordinal + 1
           let what = String::concat("impl ", String::concat(trait_ref_name(trait_key), String::concat(" for ", target_display(target))))
           let prefix = String::concat(impl_method_owner(tparams, trait_key, target), "::")
-          let run_end = impl_run_end(merged, k, unit.end)
+          let run_end = impl_run_end(merged, k, unit.end, traits)
           let mut j = k + 1
           while j < run_end && found is None {
             let name = definition_name(Array::get(merged, j))
@@ -165,7 +178,7 @@ export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit
       let name = definition_name(Array::get(merged, k))
       match MutMap::get(binders, name) {
         Some(binder) => if binder.unit != v && !Array::get(in_impl, k) {
-          let (line, col) = definition_position(unit.source, name)
+          let (line, col) = definition_position(unit_located_text(unit), name)
           found = Some(overlap_message(name, binder, Array::get(units, binder.unit), ImplBinder::{
             unit: v,
             what: "a definition",
@@ -184,12 +197,95 @@ export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit
   found
 }
 
-/// A package contract (`.vpkg`) and the sources the loader synthesizes from
-/// one (each opens with its marker line, see `merged_offset_is_synthesized`)
-/// RESTATE declarations that their implementation files make; they define
-/// nothing of their own.
+/// A unit that RESTATES declarations its package's implementation files make
+/// and defines nothing of its own: a package contract (`.vpkg` / `.vibei`),
+/// which the loader always desugars to a facade, and a contract's types module
+/// (#1840), which the loader materializes under its build directory.
+///
+/// Decided by the path the loader gave the unit, never by the text (#3551).
+/// The loader's marker lines are ordinary comments any module may open with,
+/// and `vpkg_shared_import_marker` even heads every REAL sibling of a package
+/// whose contract shares an import (#897). Matched on the text, two such
+/// packages each writing `impl Name for Int` linked silently, and so did two
+/// modules one of which opened with the facade's comment.
 fn linked_unit_restates(unit: LinkedUnit) -> Bool {
-  String::ends_with(unit.path, ".vpkg") || String::starts_with(unit.source, "// vibe: contract facade (desugared from .vibei)\n") || String::starts_with(unit.source, "// vibe: vpkg directory-shared imports (#897)\n") || String::starts_with(unit.source, "// vibe: vpkg contract types module (#1840)\n")
+  is_contract_ext(unit.path) || linked_unit_is_types_module(unit.path)
+}
+
+/// The text a refusal's line numbers are counted in, or `""` (no line) when
+/// the loader may have prepended lines the file on disk does not hold: a
+/// sibling under a contract that shares imports opens with
+/// `vpkg_shared_import_marker` and the inherited import lines, so a line
+/// counted in the unit's text is not the author's line. Read from the text,
+/// as `merged_offset_is_synthesized` does, only to WITHHOLD a line number --
+/// a module that merely opens with such a comment loses its line, never its
+/// check.
+fn unit_located_text(unit: LinkedUnit) -> String {
+  if String::starts_with(unit.source, "// vibe: contract facade (desugared from .vibei)\n") || String::starts_with(unit.source, "// vibe: vpkg directory-shared imports (#897)\n") || String::starts_with(unit.source, "// vibe: vpkg contract types module (#1840)\n") {
+    ""
+  } else {
+    unit.source
+  }
+}
+
+/// Exactly the path the loader writes a types module to
+/// (`ensure_vpkg_types_module_fs`): `vpkg_types_module_path_prefix`, an
+/// identifier-safe fingerprint, `.vibe` -- the shape
+/// `engine_is_generated_vpkg_types_path` trusts (#2324). `core` cannot import
+/// the loader, so the prefix is spelled here; were the two to drift, the types
+/// module would be checked as an ordinary unit rather than exempted
+/// (`linked_impl_overlap_test.vibe` pins the two spellings together).
+fn linked_unit_is_types_module(path: String) -> Bool {
+  let prefix = ".vibe/build/vpkg_types/types_"
+  let plen = String::length(prefix)
+  let stem_end = String::length(path) - 5
+  if !String::starts_with(path, prefix) || !String::ends_with(path, ".vibe") || stem_end <= plen {
+    false
+  } else {
+    let mut i = plen
+    let mut ok = true
+    while i < stem_end && ok {
+      let c = String::byte_at(path, i)
+      ok = (c >= 48 && c <= 57) || (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95
+      i = i + 1
+    }
+    ok
+  }
+}
+
+/// Every trait name a binding in an impl's run may be named after: each trait
+/// the linked program declares (as the merge renamed it, which its operation
+/// bindings share) and the checker's builtin ones.
+fn linked_trait_names(merged: Array[Stmt]) -> MutMap[String, Bool] {
+  let traits: MutMap[String, Bool] = MutMap::new_string()
+  for builtin in [
+    "Eq",
+    "Ord",
+    "Add",
+    "Sub",
+    "Mul",
+    "Div",
+    "Send",
+    "Show",
+    "Hash",
+    "Default",
+    "Signed"
+  ] {
+    MutMap::set(traits, builtin, true)
+  }
+  for stmt in merged {
+    match stmt {
+      STrait(_, name, _, _, _, _) => MutMap::set(traits, name, true),
+      _ => ()
+    }
+  }
+  traits
+}
+
+/// Is `name` a binding in a trait's namespace (`Base::get`)?
+fn names_trait_binding(name: String, traits: MutMap[String, Bool]) -> Bool {
+  let sep = String::index_of(name, "::")
+  sep > 0 && MutMap::has(traits, String::substring(name, 0, sep))
 }
 
 /// The first statement of `unit` this check reads: its end for a unit that
@@ -212,9 +308,13 @@ fn definition_name(stmt: Stmt) -> String {
 }
 
 /// One past the method bindings the `SImpl` at `k` made: they follow it in
-/// the merged array, each named after the impl's owner (`Int::name`) or its
-/// trait (`Name::name`, a default method).
-fn impl_run_end(merged: Array[Stmt], k: Int, end: Int) -> Int {
+/// the merged array, each named after the impl's owner (`Int::name`), with
+/// bindings in a trait's namespace among them: its own trait's (`Name::name`,
+/// a default method) or any other's. #3551: a supertrait operation
+/// (`Base::get` after `impl Child for Int`) used to end the run, so the
+/// `Int::get` after it escaped the check; `collect_impl_method_origins` skips
+/// the same bindings.
+fn impl_run_end(merged: Array[Stmt], k: Int, end: Int, traits: MutMap[String, Bool]) -> Int {
   match Array::get(merged, k) {
     SImpl(tparams, _, trait_key, target) => {
       let prefix = String::concat(impl_method_owner(tparams, trait_key, target), "::")
@@ -226,6 +326,8 @@ fn impl_run_end(merged: Array[Stmt], k: Int, end: Int) -> Int {
         if String::length(name) > String::length(prefix) && String::starts_with(name, prefix) {
           j = j + 1
         } else if String::length(name) > 0 && String::starts_with(name, trait_prefix) {
+          j = j + 1
+        } else if names_trait_binding(name, traits) {
           j = j + 1
         } else {
           more = false
@@ -241,7 +343,7 @@ fn impl_run_end(merged: Array[Stmt], k: Int, end: Int) -> Int {
 /// statement lies in the run of method bindings after an `SImpl`. A plain
 /// `fn Int::m` elsewhere in a unit that also holds an `impl .. for Int` is
 /// NOT one, whatever its prefix.
-fn impl_member_flags(merged: Array[Stmt], units: Array[LinkedUnit]) -> Array[Bool] {
+fn impl_member_flags(merged: Array[Stmt], units: Array[LinkedUnit], traits: MutMap[String, Bool]) -> Array[Bool] {
   let flags: Array[Bool] = []
   let mut i = 0
   while i < Array::length(merged) {
@@ -251,7 +353,7 @@ fn impl_member_flags(merged: Array[Stmt], units: Array[LinkedUnit]) -> Array[Boo
   for unit in units {
     let mut k = unit_first_stmt(unit)
     while k < unit.end {
-      let run_end = impl_run_end(merged, k, unit.end)
+      let run_end = impl_run_end(merged, k, unit.end, traits)
       let mut j = k + 1
       while j < run_end {
         Array::set(flags, j, true)
@@ -310,7 +412,7 @@ fn bind_derives(binders: MutMap[String, ImplBinder], plain: MutMap[String, Bool]
   if Array::length(derives) > 0 {
     let unit = Array::get(units, u)
     let shown = namespace_rename_original(name)
-    let (line, col) = type_decl_position(unit.source, keyword, shown)
+    let (line, col) = type_decl_position(unit_located_text(unit), keyword, shown)
     for listed in derives {
       for method in derive_methods(listed) {
         let overridden = match MutMap::get(plain, String::concat(name, String::concat("::", method))) {

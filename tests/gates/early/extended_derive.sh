@@ -414,6 +414,15 @@ ur_refused fixtures/err_impl_overlap_cross_module_refused.vibe 'both define `Int
 # green side -- a plain definition overriding another module's derive -- rides
 # the unit lane: fixtures/derive_override_cross_module_test.vibe.
 ur_refused fixtures/err_impl_overlap_plain_after_impl_refused.vibe 'both define `Int::name`' 'remove one of these: `a definition`' linear 'fixtures/modules/impl_overlap_plain_after_impl.vibe: line 18:1'
+# #3551: which units only restate is read from the path the loader gave them,
+# not from a marker comment. A module opening with the facade's comment, and a
+# real sibling the loader prefixes with the shared-import marker (#897), were
+# skipped and built `from-a from-a` / `from-pkg-a from-pkg-a`.
+ur_refused fixtures/err_impl_overlap_marker_comment_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_marker_comment.vibe: remove'
+ur_refused fixtures/err_impl_overlap_vpkg_sibling_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_pkg_b/impl.vibe: remove'
+# #3551: a binding in another trait's namespace inside an impl's run no longer
+# ends it; both modules' inherited `Int::get` built `from-a from-a`.
+ur_refused fixtures/err_impl_overlap_inherited_after_trait_binding_refused.vibe 'both define `Int::get`' 'remove one of these: `impl Child for Int`' linear 'fixtures/modules/impl_overlap_inherited_b.vibe: line 7:1'
 # #3551: a `derive (Hash)` field the derived key cannot key -- a declared type
 # with no `hash_key` (keyed by a rendering that is not injective), and an
 # erased type parameter (keyed by address, even with `Box::to_string` written).
