@@ -40,9 +40,11 @@ import ./perceus_pctx.vibe {
   pc_snap_zeros,
   pe_discarded_head,
   pe_discarded_spine,
+  pe_dup_merge_arms,
   pe_exit,
   pe_flag_has,
   pe_flag_or,
+  pe_note_dup_occurrence,
   pe_note_initial_ref_spent,
   pe_push_for,
   pe_stores_tuple,
@@ -77,7 +79,7 @@ fn pe_use(ctx: PCtx, scope: PScope, name: String, use_offset: Int) -> Int {
       ctx.move_use_id = 0 - 1
     } else if (rem > 1 || last_view_use) && !Array::get(ctx.scalar, id) {
       let _ = pe_push_for(ctx, PaDup, name, id, use_offset)
-      ()
+      pe_note_dup_occurrence(ctx, id, name, use_offset)
     } else {
       ()
     }
@@ -323,6 +325,18 @@ export fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[Stri
     mark_ids: [],
     mark_offs: [],
     mark_names: [],
+    decl_names: [],
+    decl_bodies: [],
+    dmark_ids: [],
+    dmark_offs: [],
+    dmark_names: [],
+    dmark_dead: [],
+    dmark_marked: [],
+    drm_ids: [],
+    drm_offs: [],
+    dsplit_ids: [],
+    dsplit_offs: [],
+    dsplit_names: [],
     cons: [],
     exit_ord: 0,
     handle_floor: 0,
@@ -418,6 +432,24 @@ export fn pctx_reset(ctx: PCtx) -> Int {
   Array::truncate(ctx.mark_offs, 0)
   let mnames0: Array[String] = []
   ctx.mark_names = mnames0
+  let declnames0: Array[String] = []
+  ctx.decl_names = declnames0
+  let declbodies0: Array[Expr] = []
+  ctx.decl_bodies = declbodies0
+  Array::truncate(ctx.dmark_ids, 0)
+  Array::truncate(ctx.dmark_offs, 0)
+  let dnames0: Array[String] = []
+  ctx.dmark_names = dnames0
+  let ddead0: Array[Bool] = []
+  ctx.dmark_dead = ddead0
+  let dmarked0: Array[Bool] = []
+  ctx.dmark_marked = dmarked0
+  Array::truncate(ctx.drm_ids, 0)
+  Array::truncate(ctx.drm_offs, 0)
+  Array::truncate(ctx.dsplit_ids, 0)
+  Array::truncate(ctx.dsplit_offs, 0)
+  let snames0: Array[String] = []
+  ctx.dsplit_names = snames0
   Array::truncate(ctx.cons, 0)
   ctx.exit_ord = 0
   ctx.handle_floor = 0
@@ -682,8 +714,10 @@ fn pe_self_reassign_moves(ctx: PCtx, scope: PScope, name: String, value: Expr) -
   }
 }
 
-export fn pe_declare(ctx: PCtx, _name: String) -> Int {
+export fn pe_declare(ctx: PCtx, name: String) -> Int {
   let id = ctx.next_id
+  Array::push(ctx.decl_names, name)
+  Array::push(ctx.decl_bodies, EUnit)
   let owning = Array::get(ctx.uses, id)
   let init = if owning == 0 {
     1
@@ -1008,6 +1042,7 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       // holds the same value at scope end that a consume moved out of.
       if !Array::get(ctx.scalar, id) && !Array::get(ctx.view_call_let, id) {
         pe_flag_or(ctx, id, pf_let)
+        Array::set(ctx.decl_bodies, id, body)
       } else {
         ()
       }
@@ -1187,7 +1222,9 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
         let n = Array::length(ctx.remaining)
         let snap = pc_snap(ctx.remaining)
         let cmark = pe_cons_begin(ctx)
+        let dm0 = Array::length(ctx.dmark_ids)
         pc_emit(ctx, scope, then_e)
+        let dm1 = Array::length(ctx.dmark_ids)
         pe_cons_arm(ctx, cmark)
         // #1100 alloc cut: swap the prefix instead of taking a SECOND copy —
         // one pass both restores `remaining` to the pre-branch values (what
@@ -1204,8 +1241,18 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
           sw = sw + 1
         }
         pc_emit(ctx, scope, else_e)
+        let dm2 = Array::length(ctx.dmark_ids)
         pe_cons_arm(ctx, cmark)
         pe_cons_end(ctx, cmark)
+        // Before the min below overwrites the else arm's counts.
+        if dm2 > dm0 {
+          let rem = ctx.remaining
+          pe_dup_merge_arms(ctx, n, [dm0, dm1, dm2], (id: Int) -> Bool {
+            Array::get(pc_scratch, snap + id) > 0 && Array::get(rem, id) > 0
+          })
+        } else {
+          ()
+        }
         // #705: leave the MIN remaining over both branches. A binding consumed in
         // one branch (e.g. a param threaded into a ctor in the `then`) but not the
         // other was previously left at the `else` branch's (higher) remaining, so
@@ -1430,6 +1477,11 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
         let ccount = Array::length(pc_scratch) - cmark
         let cmax = pc_snap_zeros(ccount)
         let consmark = pe_cons_begin(ctx)
+        // `pe_dup_merge`'s arm boundaries in `dmark_*`, one slot per arm plus
+        // the start, on the scratch stack (a nested construct in an arm
+        // truncates back to its own mark, above these).
+        let dbmark = Array::length(pc_scratch)
+        Array::push(pc_scratch, Array::length(ctx.dmark_ids))
         let mut a = 0
         while a < Array::length(arms) {
           let arm = Array::get(arms, a)
@@ -1472,9 +1524,19 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
             cj = cj + 1
           }
           pe_cons_arm(ctx, consmark)
+          Array::push(pc_scratch, Array::length(ctx.dmark_ids))
           a = a + 1
         }
         pe_cons_end(ctx, consmark)
+        let nb = Array::length(arms) + 1
+        if Array::get(pc_scratch, dbmark + nb - 1) > Array::get(pc_scratch, dbmark) {
+          let bounds = Array::slice(pc_scratch, dbmark, dbmark + nb)
+          pe_dup_merge_arms(ctx, n, bounds, (id: Int) -> Bool {
+            Array::get(pc_scratch, minrem + id) > 0
+          })
+        } else {
+          ()
+        }
         let mut ck = 0
         while ck < ccount {
           let cid = Array::get(pc_scratch, cmark + ck)

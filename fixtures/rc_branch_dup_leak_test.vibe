@@ -1,0 +1,217 @@
+// RC leak guard: a dup planned on one branch is released on the others, and a
+// `for` releases a fresh iterable.
+//
+// The Perceus plan budgets one dup for each consume of a `let` binding that
+// is not its last use, and codegen takes every one of them at the binding's
+// declaration site -- on every path. A consume inside a branch therefore
+// held its dup on the paths that never ran it: `if c { sink(v) }; use(v)`
+// leaked `v` whenever `c` was false, and with a consume on BOTH branches the
+// two dups summed while each path spent one. pe_dup_merge (perceus_pctx)
+// budgets the larger arm's count and, where the arms differ, marks the larger
+// arm's occurrences so a guarded path drop releases the reference on a path
+// that ran none of them.
+//
+// Separately, `for x in <fresh array>` never released the array it iterated:
+// the loop held it in a scratch local and nothing owned it afterwards
+// (compile_forin_loop), and the char-code array a String is materialized
+// into leaked the same way.
+//
+// Measured at N=20000 on the compiler before these changes:
+//
+//   | shape                                          | before       | after   |
+//   |------------------------------------------------|-------------:|--------:|
+//   | consume on one branch, used after              |  1,173,412 B |   112 B |
+//   | consume on both branches                       |  1,760,108 B |   112 B |
+//   | two consumes against one                       |  1,760,108 B |   112 B |
+//   | nested `if`, consume on one inner branch       |  1,466,716 B |   112 B |
+//   | `match`, consumes on two of three arms         |  1,760,108 B |   112 B |
+//   | consume on one branch, then a last consume     |    880,108 B |   112 B |
+//   | `for k in [i, i + 1]`                          |  1,760,084 B |   172 B |
+//   | `for k in mka(i)` and `for c in "ab"`          |  3,520,084 B |    84 B |
+//   | this fixture, with its controls                | 14,082,180 B | 1,740 B |
+//
+// The controls keep consumed values past the loop -- a branch push, a nested
+// branch push, a `for` whose elements are kept -- so a release that ran on a
+// path still holding the value would free it under the array that keeps it:
+// VIBE_RC=shadow traps on that. The gate compiles this under VIBE_RC=1 and
+// bounds __heap_ptr growth, and runs it under VIBE_RC=shadow
+// (tests/gates/mid/retired_v128_intrinsics_stay_retired.sh, 40e6). `main`
+// returns 0: every shape adds 0, so the answer cannot drift with the
+// allocation behaviour being measured.
+struct H {
+  inner: Array[Int]
+}
+
+fn mka(i: Int) -> Array[Int] {
+  [i, i + 1, i + 2]
+}
+
+// Takes its argument: stores it into a record that it then drops.
+fn sink(v: Array[Int]) -> Int {
+  let h = H::{ inner: v }
+  Array::get(h.inner, 0)
+}
+
+fn one_branch(i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 3 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  (a + Array::get(v, 2) - (i + 2)) * 0
+}
+
+fn both_branches(i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 2 == 0 {
+    sink(v)
+  } else {
+    sink(v) * 2
+  }
+  (a + Array::get(v, 2)) * 0
+}
+
+fn two_against_one(i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 2 == 0 {
+    sink(v) + sink(v)
+  } else {
+    sink(v)
+  }
+  (a + Array::get(v, 2)) * 0
+}
+
+fn nested(i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 2 == 0 {
+    if i % 3 == 0 {
+      sink(v)
+    } else {
+      0
+    }
+  } else {
+    0
+  }
+  (a + Array::get(v, 0)) * 0
+}
+
+fn match_arms(i: Int) -> Int {
+  let v = mka(i)
+  let a = match i % 3 {
+    0 => sink(v),
+    1 => sink(v) * 2,
+    _ => 0
+  }
+  (a + Array::get(v, 1)) * 0
+}
+
+fn then_last(i: Int) -> Int {
+  let v = mka(i)
+  let a = if i % 2 == 0 {
+    sink(v)
+  } else {
+    0
+  }
+  (a + sink(v)) * 0
+}
+
+fn for_literal(i: Int) -> Int {
+  let col = for k in [i, i + 1] { k * 2 }
+  (Array::get(col, 1) - 2 * (i + 1)) * 0
+}
+
+fn for_fresh(i: Int) -> Int {
+  let mut t = 0
+  for k in mka(i) {
+    t = t + k
+  }
+  for c in "ab" {
+    t = t + c
+  }
+  (t - 3 * i - 3 - 195) * 0
+}
+
+// Controls: the consumed value outlives the branch or the loop.
+fn branch_kept(ks: Array[Array[Int]], i: Int) -> Int {
+  let v = mka(i)
+  if i % 2 == 0 {
+    Array::push(ks, v)
+  } else {
+    ()
+  }
+  Array::get(v, 2) - (i + 2)
+}
+
+fn for_kept(ks: Array[Array[Int]], i: Int) -> Int {
+  for x in [mka(i), mka(i + 1)] {
+    Array::push(ks, x)
+  }
+  Array::length(ks) * 0
+}
+
+// The nested shape: an outer arm consumes, and so does an arm of an `if`
+// inside the other one. The outer merge is symmetric and drops the inner
+// arm's row, so the outer `then` path spends its whole budget and must stand
+// the inner merge's path drop down with a mark of its own; without one it
+// released the array the list keeps (checker effect tables, push_env_fn_eff).
+fn maybe_empty(j: Int) -> Array[Int] {
+  if j % 5 == 0 {
+    []
+  } else {
+    [j, j + 1]
+  }
+}
+
+fn nested_kept(ks: Array[Array[Int]], every: Bool, j: Int) -> Unit {
+  let labels = maybe_empty(j)
+  if every {
+    Array::push(ks, labels)
+  } else if Array::length(labels) > 0 {
+    Array::push(ks, labels)
+  } else {
+    ()
+  }
+}
+
+fn main() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 20000 {
+    acc = acc + one_branch(i) + both_branches(i) + two_against_one(i) + nested(i) + match_arms(i) + then_last(i) + for_literal(i) + for_fresh(i)
+    i = i + 1
+  }
+  let ks: Array[Array[Int]] = []
+  let mut j = 0
+  while j < 4 {
+    acc = acc + branch_kept(ks, j) + for_kept(ks, j)
+    j = j + 1
+  }
+  let mut s = 0
+  let mut m = 0
+  while m < Array::length(ks) {
+    s = s + Array::get(Array::get(ks, m), 0)
+    m = m + 1
+  }
+  // ks holds mka(0), mka(0), mka(1), mka(1), mka(2), mka(2), mka(2), mka(3),
+  // mka(3), mka(4): branch_kept keeps the even j's, for_kept j and j + 1.
+  let ks2: Array[Array[Int]] = []
+  let mut n = 0
+  while n < 6 {
+    nested_kept(ks2, n % 3 == 0, n)
+    n = n + 1
+  }
+  // ks2 holds [], [1, 2], [2, 3], [3, 4], [4, 5]: j = 5 is empty and not kept.
+  let mut s2 = 0
+  let mut q = 0
+  while q < Array::length(ks2) {
+    let xs = Array::get(ks2, q)
+    if Array::length(xs) > 0 {
+      s2 = s2 + Array::get(xs, 0)
+    } else {
+      ()
+    }
+    q = q + 1
+  }
+  acc + s - 18 + s2 - 10 + Array::length(ks2) - 5
+}

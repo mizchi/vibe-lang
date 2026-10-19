@@ -113,3 +113,37 @@ test "an occurrence with no source offset declines the whole binding" {
   assert(!String::contains(plan, "run t path_drop"))
   assert(!String::contains(plan, "run t consume_mark:"))
 }
+
+// #1980: a consume on ONE branch of a binding that is still used afterwards.
+// Its dup is taken at the declaration site on every path, so the paths that
+// skip the branch keep it: the occurrence becomes a mark and the binding gets
+// a guarded drop alongside its ordinary one.
+test "a dup planned on one branch gets a mark and a path drop" {
+  let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run t dup 1"))
+  assert(String::contains(plan, "run t consume_mark:"))
+  assert(String::contains(plan, "run t path_drop 1"))
+}
+
+test "dups planned on both branches are budgeted once" {
+  let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = if c {\n    own(t)\n  } else {\n    Pair(own(t), Leaf(5))\n  }\n  match t {\n    _ => u\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run t dup 1"))
+  assert(!String::contains(plan, "run t dup 2"))
+  assert(!String::contains(plan, "run t path_drop"))
+}
+
+test "an inner merge's mark makes the outer maximal arm mark too" {
+  // Symmetric at the outer merge, which drops the inner arm's row: the outer
+  // `then` path spends its whole budget, so it must stand the path drop down
+  // with a mark of its own (two marks), or the drop releases what `own` kept.
+  let src = String::concat(prelude, String::concat("let run: (Bool, Bool) -> Node = (c, d) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = if c {\n    own(t)\n  } else if d {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}", "\nlet main: () -> Int = () -> {\n  match run(true, false) {\n    _ => 0\n  }\n}"))
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run t dup 1"))
+  assert(String::contains(plan, "run t path_drop 1"))
+  let first = String::index_of(plan, "run t consume_mark:")
+  assert(first >= 0)
+  let rest = String::substring(plan, first + 1, String::length(plan))
+  assert(String::contains(rest, "run t consume_mark:"))
+}
