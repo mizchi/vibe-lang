@@ -84,7 +84,9 @@ ys[1] = 20
 もう一つの層は、値が時間をかけて届く場合 — ストリーム、ソケット、分割して
 読むファイル。そこでは手元にコレクションが無いので pull する。`next` が
 中断しうるイテレータになる。中断は専用のループ構文ではなく effect row が
-運ぶので、`for await` のような別形は存在しない。
-[並行性](17_concurrency.vibe.md) を参照。
+運ぶので、`for await` のような別形は存在しない。その層 — `Future`、`await`、
+`AsyncIter`、非同期イテレータに対する `for` — は
+[Future と非同期イテレーション](17_concurrency.vibe.md#future-と非同期イテレーション)
+にある。
 
 次: [ジェネリクス・trait・derive](15_generics.vibe.md)。
