@@ -594,17 +594,20 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   `Float::to_double`). It is documented as 32-bit but computes as a 64-bit
   double, so `16777217.0f == 16777216.0f` is `false` (#3543). Use `Double`.
 - **`derive (Hash)` and the `Map::*_by` operations keyed on it.** The derived
-  key is the unquoted `to_string`, so two different values can share a key.
-  It also does not follow `==` for `-0.0` (#3544). Key a map by a `String`
-  you build yourself.
+  key is length-prefixed and tagged, so two different values no longer share
+  a key, and `-0.0` and `0.0` share one as `==` says they should (#3544). The
+  key format is new and may change, and a field whose type has no `hash_key`
+  is still keyed by its rendering. Key a map by a `String` you build yourself
+  when the format matters.
 - **Trait impls beyond one module and one level of generics.** A conditional
-  impl (`impl [T: X] Y for Box[T]`) applied at a nested instantiation
-  (`Box[Box[Int]]`) emits invalid wasm (#3547). The same impl declared in two
-  modules is not detected as an overlap, so import order picks one (#3544).
-  The frozen subset is an impl in the module that declares the type, used at
-  one level of conditional impl. An impl method's signature is checked
-  against its trait (#3538), except a method the trait does not declare in a
-  plain (non-applied) impl.
+  impl (`impl [T: X] Y for Box[T]`) now works at a nested instantiation
+  (`Box[Box[Int]]`, #3547), and the same impl declared in two modules is
+  refused at build time (#3544). Two generic impls at overlapping targets
+  (`Array[T]` and `Array[Int]`) are still not detected, and `vibe check` does
+  not report the cross-module overlap. The frozen subset is an impl in the
+  module that declares the type, used at one level of conditional impl. An
+  impl method's signature is checked against its trait (#3538), except a
+  method the trait does not declare in a plain (non-applied) impl.
 - **Higher-kinded type parameters (`F[_]`).** They work in the hunt's probes,
   but they sit on the same unchecked impl machinery, and their diagnostics
   have no position (#3548).
