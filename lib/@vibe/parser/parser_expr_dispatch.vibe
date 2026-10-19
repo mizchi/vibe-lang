@@ -1152,9 +1152,34 @@ fn reject_same_line_paren(tokens: Array[Token], pos: Int) -> Unit with Exception
   }
 }
 
+/// #3546: a statement followed by another on the SAME line. The lexer marks
+/// a statement that opens a new line with a synthetic `;`, so what reaches
+/// here without one -- and not after a block's `}` -- was written on the
+/// line of the expression before it: `let x = 1 2` bound 1 and dropped the 2,
+/// and `let total = price quantity` dropped `quantity`.
+fn reject_same_line_statement(tokens: Array[Token], pos: Int) -> Unit with Exception {
+  let ends_block = pos > 0 && match Array::get(tokens, pos - 1) {
+    TRBrace => true,
+    _ => false
+  }
+  // A `{` opens a block statement, which the lexer does not mark on its own
+  // line (a declaration's `{` may also open one), so it is let through.
+  let separated = match peek(tokens, pos) {
+    TSemicolon => true,
+    TRBrace => true,
+    TEof => true,
+    TLBrace => true,
+    _ => false
+  }
+  if !ends_block && !separated {
+    throw("two expressions on one line: put the second on its own line or after `;`, or add the operator or `,` between them at #\{pos}")
+  }
+}
+
 fn parse_block_value_only(tokens: Array[Token], value_pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   let val_pair = parse_recur(tokens, value_pos, 0, context)
   reject_same_line_paren(tokens, val_pair.1)
+  reject_same_line_statement(tokens, val_pair.1)
   (val_pair.0, skip_semi(tokens, val_pair.1))
 }
 
@@ -1841,6 +1866,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
             // Reading it as a second statement silently dropped the call.
             TLParen => throw(same_line_paren_message(next)),
             _ => {
+              reject_same_line_statement(tokens, next)
               ArrayBuilder::push(steps, StepSeq(e))
               p = next
             }

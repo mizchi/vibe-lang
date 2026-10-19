@@ -194,11 +194,25 @@ fn expect_tk(tokens: Array[Token], pos: Int, expected: String) -> Int with Excep
   if is_tk(peek(tokens, pos), expected) {
     pos + 1
   } else {
-    let actual = tk_name(peek(tokens, pos))
+    // A `;` here is usually the lexer's line break (#3546), so name both.
+    let actual = match peek(tokens, pos) {
+      TSemicolon => "the end of the line (or `;`)",
+      other => tk_name(other)
+    }
     // #816: carry the failing TOKEN index; parse_program_located decodes it
     // to a real line:col (and strips it from the user-facing message).
     throw("expected \{expected} but got \{actual} at #\{pos}")
   }
+}
+
+fn is_lowercase_start(n: String) -> Bool {
+  String::length(n) > 0 && String::byte_at(n, 0) >= 'a' && String::byte_at(n, 0) <= 'z'
+}
+
+/// The builtin namespaces a program calls as `Name::op` without importing
+/// anything. An import alias with one of these names shadowed the namespace.
+fn is_builtin_namespace_name(n: String) -> Bool {
+  n == "Array" || n == "String" || n == "Map" || n == "StringMap" || n == "Bytes" || n == "Int" || n == "Double" || n == "Float" || n == "Char" || n == "Bool" || n == "ArrayBuilder" || n == "MapBuilder" || n == "StringBuilder" || n == "Int64Array" || n == "FrozenArray" || n == "Console" || n == "Fs" || n == "Env" || n == "Stdin" || n == "Stdout" || n == "Stderr" || n == "Process"
 }
 
 export fn skip_semi(tokens: Array[Token], pos: Int) -> Int {
@@ -984,6 +998,12 @@ export fn parse_import_item_with_binder_context(tokens: Array[Token], pos: Int, 
         match peek(tokens, after) {
           TAs => match peek(tokens, after + 1) {
             TIdent(alias) => {
+              // A TYPE imported under a builtin's name is a source-owned type
+              // (`{ struct Box as StringMap }`, wit_gen_test); a VALUE under one
+              // shadows the namespace's operations.
+              if is_builtin_namespace_name(alias) && is_lowercase_start(base) {
+                throw("choose another name than `\{alias}` for this import: `\{alias}` names the builtin `\{alias}::` operations, and an alias of that name made `\{alias}::length`-style calls reach the import instead (an internal compiler error) at #\{after + 1}")
+              }
               binder_capture_source(context, alias, after + 1, after + 1)
               (ImportItem::{ kind, name: base, alias: Some(alias) }, after + 2)
             },

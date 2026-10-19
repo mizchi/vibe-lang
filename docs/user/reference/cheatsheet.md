@@ -508,6 +508,12 @@ fn tail_value() -> Int {
 }
 ```
 
+Two expressions written on **one** line are refused (#3546): `let x = 1 2`
+used to bind `1` and drop the `2`, so a missing operator or comma
+(`let total = price quantity`) changed the program silently. Put a second
+statement on its own line or after `;`. A statement may still follow a
+block's closing `}` on the same line (`if c { n = 1 } n = n + 1`).
+
 Slice is a postfix `[]` form with four spellings:
 
 ```vibe

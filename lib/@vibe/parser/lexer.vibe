@@ -918,7 +918,7 @@ fn skip_ws_with_newline(s: String, len: Int, i: Int) -> Int {
 /// Keeping this decision in one helper prevents `lex`, offset lexing, and the
 /// recovering lexer from drifting apart.
 #zero_alloc
-fn needs_synthetic_semicolon(c: Int, nl_before: Bool, prev_tok: Token, tight_prefix: Bool) -> Bool {
+fn needs_synthetic_semicolon(c: Int, nl_before: Bool, prev_tok: Token, tight_prefix: Bool, tok: Token) -> Bool {
   if !nl_before {
     false
   } else {
@@ -928,8 +928,45 @@ fn needs_synthetic_semicolon(c: Int, nl_before: Bool, prev_tok: Token, tight_pre
       // separator look like the next pattern). Only separate a real token
       // that could otherwise become the optional payload.
       TBreak => c != '}' && c != ')' && c != ']' && c != ',' && c != ';',
-      _ => (c == '[' || c == '(' || tight_prefix) && is_expr_ending_tok(prev_tok)
+      // #3546: a line that begins a statement after a line that ended an
+      // expression is a statement boundary. Marking it lets the parser tell
+      // two statements on separate lines from two expressions juxtaposed on
+      // ONE line (`let x = 1 2`), which it refuses. A `}` is left out: a
+      // statement may follow a block on its own line or on the same one.
+      TRBrace => (c == '[' || c == '(' || tight_prefix) && is_expr_ending_tok(prev_tok),
+      // A postfix `?` ends an expression too (`let v = o?` then a new line).
+      TQuestion => starts_statement_tok(tok),
+      _ => (c == '[' || c == '(' || tight_prefix || starts_statement_tok(tok)) && is_expr_ending_tok(prev_tok)
     }
+  }
+}
+
+/// A token that can only begin a new statement when it opens a line after an
+/// expression: a name, a literal, or a statement keyword. `where` and
+/// `allows` continue a declaration header, so they are not on the list.
+#zero_alloc
+fn starts_statement_tok(tok: Token) -> Bool {
+  match tok {
+    TIdent(n) => n != "where" && n != "allows",
+    TInt(_) => true,
+    TFloat(_) => true,
+    TString(_) => true,
+    TStringInterp(_, _) => true,
+    TLet => true,
+    TReturn => true,
+    TIf => true,
+    TMatch => true,
+    TWhile => true,
+    TFor => true,
+    TLoop => true,
+    TGuard => true,
+    TThrow => true,
+    THandle => true,
+    TBreak => true,
+    TContinue => true,
+    TRegion => true,
+    TTaskGroup => true,
+    _ => false
   }
 }
 
@@ -1524,7 +1561,7 @@ export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[I
       let c = String::char_code_at(source, pos)
       let tok = lex_one_token(source, len, pos)
       let next = lex_end()
-      if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next)) {
+      if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next), tok) {
         Array::push(b, TSemicolon)
         Array::push(starts, pos)
         Array::push(ends, pos)
@@ -1578,7 +1615,7 @@ export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[In
     } }
     match res {
       Some((tok, next)) => {
-        if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next)) {
+        if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next), tok) {
           ArrayBuilder::push(b, TSemicolon)
           ArrayBuilder::push(starts, pos)
           ArrayBuilder::push(ends, pos)
@@ -1815,7 +1852,7 @@ export fn lex(source: String) -> Array[Token] with Exception {
       // newline-preceded and follows an expression-ending token; the statement
       // parser already treats `;` as a separator. A same-line `(`/`[` (no
       // newline) still attaches as a call/subscript suffix.
-      if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next)) {
+      if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next), tok) {
         Array::push(b, TSemicolon)
       } else {
         ()

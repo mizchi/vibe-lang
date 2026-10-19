@@ -1,0 +1,28 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+//# Tests
+
+/// #3546: two expressions juxtaposed on one line were read as two
+/// statements, so `let x = 1 2` bound 1 and dropped the 2, and a missing
+/// operator (`price quantity`) changed the program silently.
+test "two expressions on one line are refused" {
+  assert(check_source_err_contains("fn f() -> Int {\n  let x = 1 2\n  x\n}\nfn main() -> Int { f() }", "two expressions on one line"))
+  assert(check_source_err_contains("fn f(price: Int, quantity: Int) -> Int {\n  let total = price quantity\n  total\n}\nfn main() -> Int { f(2, 3) }", "two expressions on one line"))
+  assert(check_source_err_contains("fn f() -> Int {\n  let mut n = 0\n  n = 1 2\n  n\n}\nfn main() -> Int { f() }", "two expressions on one line"))
+}
+
+/// What stays accepted: one statement per line, `;` on one line, a statement
+/// after a block's `}`, a block on the next line, and a line continued by an
+/// operator.
+test "statements on separate lines, after `;` or after a block are accepted" {
+  assert(check_source_ok("fn f() -> Int {\n  let x = 1\n  let y = x\n  y\n}\nfn main() -> Int { f() }"))
+  assert(check_source_ok("fn f() -> Int {\n  let x = 1; let y = 2\n  x + y\n}\nfn main() -> Int { f() }"))
+  assert(check_source_ok("fn f(c: Bool) -> Int {\n  let mut n = 0\n  if c { n = 1 } n = n + 1\n  n\n}\nfn main() -> Int { f(true) }"))
+  assert(check_source_ok("fn f() -> Int {\n  let mut y = 0\n  {\n    y = 2\n  }\n  y\n}\nfn main() -> Int { f() }"))
+  assert(check_source_ok("fn f(o: Option[Int]) -> Option[Int] {\n  let v = o?\n  let w = v\n  Some(w)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f(a: Int) -> Int {\n  let x = a\n    + 1\n  x\n}\nfn main() -> Int { f(1) }"))
+}
