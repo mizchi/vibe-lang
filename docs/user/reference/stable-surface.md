@@ -592,9 +592,7 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
 
 - **`Float`** (`1.5f` literals, `Float` annotations, `Double::to_float` /
   `Float::to_double`). It is documented as 32-bit but computes as a 64-bit
-  double, so `16777217.0f == 16777216.0f` is `false`. A `Float` field in a
-  `derive (Show)` struct also renders as a number that is not its value
-  (#3543, #3542). Use `Double`.
+  double, so `16777217.0f == 16777216.0f` is `false` (#3543). Use `Double`.
 - **`derive (Hash)` and the `Map::*_by` operations keyed on it.** The derived
   key is the unquoted `to_string`, so two different values can share a key.
   It also does not follow `==` for `-0.0` (#3544). Key a map by a `String`
@@ -604,9 +602,9 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   (`Box[Box[Int]]`) emits invalid wasm (#3547). The same impl declared in two
   modules is not detected as an overlap, so import order picks one (#3544).
   The frozen subset is an impl in the module that declares the type, used at
-  one level of conditional impl. Even there, an impl's method signature is
-  not yet checked against its trait (#3538), so write it exactly as the
-  trait declares it.
+  one level of conditional impl. An impl method's signature is checked
+  against its trait (#3538), except a method the trait does not declare in a
+  plain (non-applied) impl.
 - **Higher-kinded type parameters (`F[_]`).** They work in the hunt's probes,
   but they sit on the same unchecked impl machinery, and their diagnostics
   have no position (#3548).
@@ -626,28 +624,22 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
 ### 6.2 Known soundness gaps in the frozen core (0.1.0)
 
 The policy is that vibe is never silently wrong. These gaps break that inside
-the frozen surface, and `0.1.0` ships with them. They are listed so a reader
-can stay clear of them. Each one is an open P0 bug, and closing it can
+the frozen surface, and `0.1.0` ships with them. (The hunt closed four more
+before the tag: a generic body making two type parameters one type and a
+bare generic type in a signature (#3536), an impl method that disagrees with
+its trait (#3538), effect rows not charged through a call expression
+(#3539), and `Double` interpolation through a binder or an index (#3542).)
+They are listed so a reader can stay clear of them. Each one is an open P0 bug, and closing it can
 reject programs that compile today. Each is fixed as a compatible change,
 because those programs are already wrong.
 
-- **A generic function's type parameters are not rigid** (#3536).
-  `fn cast[T, U](x: T) -> U { x }` type-checks, and so does a bare `Array`
-  with no argument. Write the body so it only passes a `T` value along.
 - **A generic function returning a closure, or a generic struct literal over
   an empty container, is generalized** (#3537). Annotate the binding:
   `let f: (Int) -> Array[Int] = make()`, `let b: Bag[Int] = Bag::{ xs: [] }`.
-- **An effect row is not charged for a call through an expression** (#3539).
-  This covers `mk()()`, `(xs[0])()`, a closure out of a `match` or a `for`, and
-  converting a `with Exception` function to a row-less function type. Bind the
-  closure to an annotated parameter or name before calling it.
 - **A closure created inside a `handle` can outlive it with a pure type**
   (#3540). Do not return or store a closure that performs the handled effect.
 - **The erased `Exception::Throw(m)` binder is untyped** (#3541). Use a kinded
   arm (`Exception[K]::Throw(e)`) when the payload is used as a value.
-- **Some `Double` values interpolate as an address** (#3542). This hits a
-  `for` binder, an index expression, or a library result. Bind the value
-  first: `let x: Double = ds[0]`.
 
 ## 7. Operating the freeze
 

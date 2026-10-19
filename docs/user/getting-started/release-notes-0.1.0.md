@@ -225,12 +225,14 @@ the edit that fixes them rather than an internal pass name.
   bug hunt (#3535) added `Float`, `derive (Hash)` keys, nested and duplicated
   trait impls, higher-kinded parameters, kinded exception arms over
   row-polymorphic callees, and first-class `resume` to that list (§6.1).
-- The same hunt found six soundness gaps inside the frozen core that 0.1.0
-  ships with: non-rigid type parameters, generalized closure-returning calls,
-  effect rows not charged through call expressions, closures escaping a
-  `handle`, the untyped erased `Throw` binder, and `Double` interpolation
-  through a `for` binder or an index. Each has a workaround in §6.2 of
-  [stable-surface.md](../reference/stable-surface.md) and an open P0 issue.
+- The same hunt found soundness gaps inside the frozen core. Fixed before
+  the tag: a generic body collapsing two type parameters, a bare generic type
+  in a signature, impl methods that disagree with their trait, effect rows
+  not charged through call expressions, and `Double` interpolation through a
+  `for` binder or an index. Shipped with a workaround in §6.2 of
+  [stable-surface.md](../reference/stable-surface.md) and an open P0 issue:
+  generalized closure-returning calls, closures escaping a `handle`, and the
+  untyped erased `Throw` binder.
 
 ## Release verification
 
