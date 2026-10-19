@@ -1738,8 +1738,40 @@ fn row_names_visible_label(row: String) -> Bool {
   }
 }
 
+/// #3541: the type variables an ERASED exception arm (`Exception::Throw(m)`)
+/// binds its payload to. The arm pins an open one to `String`, the thrown
+/// message, but the value it holds is whatever was thrown: rethrowing `m`
+/// is a throw of an erased kind, not of `String`. Reset with the throw sites.
+export let erased_throw_binder_vars: Array[Int] = []
+
+/// The type a `throw` records for its payload: an erased arm's binder,
+/// rethrown as written (`throw(m)`), is of no known kind. `bound` is the
+/// payload name's type as the env binds it, before any substitution.
+export fn throw_payload_recorded_type(payload: Expr, bound: Option[Type], pt: Type) -> Type {
+  match payload {
+    EIdent(_, _) => match bound {
+      Some(CtVar(id)) => {
+        let mut erased = false
+        for v in erased_throw_binder_vars {
+          if v == id {
+            erased = true
+          }
+        }
+        if erased {
+          CtUnknown
+        } else {
+          pt
+        }
+      },
+      _ => pt
+    },
+    _ => pt
+  }
+}
+
 export fn reset_throw_payload_sites() -> Unit {
   Array::truncate(throw_payload_sites, 0)
+  Array::truncate(erased_throw_binder_vars, 0)
   Array::truncate(call_callee_sites, 0)
   clear_call_callee_types()
   // #3033: a module's kind resolutions never answer for the next module.

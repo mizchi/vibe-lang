@@ -109,7 +109,16 @@ effect Exception[E] {
   `handle .. with Exception` nested inside is its own catch-all boundary.
 - A kinded arm binds its payload at the kind's type (#2963):
   `Exception[IoError]::Throw(e)` gives `e : IoError`. The erased
-  `Exception::Throw(m)` binder is untyped, since it may receive any kind.
+  `Exception::Throw(m)` binder is the thrown message, a `String` (#3541).
+  While the arm body is typed, `m` is a fresh variable. A use that pins no
+  type, such as `throw(m)` or a generic parameter, leaves the variable open,
+  and it is then pinned to `String`. A use at any other type is refused, and
+  the message names the kinded arm. `String` is the payload type measured in
+  practice: 715 erased arms bind their payload, and the compiler's own
+  sources read it as the message. An opaque payload type would refuse all of
+  them. The kind is not carried at run time, so a non-`String` value thrown
+  through an erased `with Exception` row still reaches this binder.
+  The kinded row and arm are the typed path for such a value.
 - A handle has **at most one exception arm**: the channel carries no kind and
   only the first arm would be compiled, so two kinded arms side by side are
   refused. Match on the payload inside one arm, or nest handles.

@@ -1,0 +1,80 @@
+//# Imports
+
+// #3541: the binder of an ERASED exception arm (`Exception::Throw(m)`) is the
+// thrown message, a `String`. It used to be untyped, so `m + 1` on a thrown
+// "str" compiled and printed a pointer. A use at another type is refused with
+// the kinded arm as the edit; a use that does not pin a type is accepted.
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+import @vibe/compiler/checker {
+  set_error_row_checked
+}
+
+//# Helpers
+
+/// Every diagnostic, with the exception row discipline switched on (the CLI
+/// turns it on; this harness calls the checker directly).
+fn row_checked_diags(src: String) -> Array[String] with Exception {
+  set_error_row_checked(true)
+  collect_all_diagnostics(src)
+}
+
+//# Tests
+
+/// The issue's program: a thrown String read as an Int.
+test "an erased binder used as Int is refused with the kinded arm as the edit" {
+  let src = "fn f() -> Int with Exception { throw(\"str\") }\nfn g() -> Int {\n  handle { f() } with { Exception::Throw(m) => m + 1 }\n}\n"
+  assert(check_source_err_contains(src, "write `Exception[Int]::Throw(m)` to catch a thrown `Int`"))
+}
+
+/// An annotation at another type is refused the same way.
+test "an erased binder bound at Int is refused" {
+  let src = "fn f() -> Int with Exception { throw(\"str\") }\nfn g() -> Int {\n  handle { f() } with { Exception::Throw(m) => {\n    let n: Int = m\n    n\n  } }\n}\n"
+  assert(check_source_err_contains(src, "binds `m` as the thrown message, a `String`"))
+}
+
+/// Returned as the handle's value where the body produces an Int.
+test "an erased binder returned as the handle's Int is refused" {
+  let src = "fn f() -> Int with Exception { throw(\"str\") }\nfn g() -> Int {\n  handle { f() } with { Exception::Throw(m) => m }\n}\n"
+  assert(check_source_err_contains(src, "write `Exception[Int]::Throw(m)`"))
+}
+
+/// The arm's body leaves the binder open and the handle's result is read at
+/// Int afterwards: pinned to String, so the later use is a mismatch.
+test "an erased binder that escapes the arm open is pinned to String" {
+  let src = "fn g() -> Int {\n  let r: Int = handle { throw(\"x\") } with { Exception::Throw(m) => m }\n  r\n}\n"
+  assert(check_source_err_contains(src, "expected Int, got String"))
+}
+
+/// Controls: the uses that read the message as a String, and the uses that
+/// accept any type, keep compiling.
+test "an erased binder used as a String is accepted" {
+  let src = "fn f() -> Int with Exception { throw(\"str\") }\nfn g() -> String {\n  handle { f(); \"ok\" } with { Exception::Throw(m) => String::concat(\"failed: \", m) }\n}\n"
+  assert(check_source_ok(src))
+}
+
+test "an erased binder rethrown or ignored is accepted" {
+  let src = "fn f() -> Int with Exception { throw(\"str\") }\nfn id[T](x: T) -> T { x }\nfn g() -> Int with Exception {\n  handle { f() } with { Exception::Throw(m) => {\n    let _k = id(m)\n    throw(m)\n  } }\n}\n"
+  assert(check_source_ok(src))
+}
+
+/// The binder is pinned to String, but the value it holds is whatever was
+/// thrown: a rethrow is a throw of no known kind, not an `Exception[String]`
+/// the enclosing row would have to declare (`TaskGroup::run`'s shape).
+test "rethrowing an erased binder is not a String throw" {
+  let src = "enum TaskErr {\n  Boom\n}\nfn run[e](body: () -> Int with e) -> Int with Exception[TaskErr] + e {\n  handle { body() } with { Exception::Throw(p) => throw(p) }\n}\n"
+  let diags = row_checked_diags(src)
+  inspect(diags, "[]")
+}
+
+/// The kinded arm keeps typing its payload at the kind.
+test "a kinded arm binds its payload at the kind" {
+  let src = "fn f() -> Int with Exception[Int] { throw(7) }\nfn g() -> Int {\n  handle { f() } with { Exception[Int]::Throw(e) => e + 1 }\n}\n"
+  assert(check_source_ok(src))
+}

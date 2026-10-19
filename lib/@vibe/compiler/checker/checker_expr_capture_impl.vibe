@@ -196,6 +196,7 @@ import ./checker_merge_capture_provenance.vibe {
   builtin_no_lowering_hint,
   deferred_field_reads,
   eq_formal_row_of,
+  erased_throw_binder_vars,
   exception_kind_formals_in_env,
   expression_aliases_outer_binding,
   formal_shadow,
@@ -1570,6 +1571,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // unify with the handle body's type. Ground-gated, so arms
               // whose value involves unknowns (throw/rethrow etc.) pass.
               let mut eaenv = env
+              // #3541: the erased binder's name and variable, judged after the
+              // arm body is typed (below).
+              let mut ea_erased: Option[(String, Type)] = None
               if Array::length(hbinds) == 1 {
                 match Array::get(hbinds, 0) {
                   PBind(eabname) => {
@@ -1593,10 +1597,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     // that unifies with nothing and checks nothing, and
                     // `String::length(Array::get(e, 0))` on an Int payload
                     // printed `82` (Codex P0 on #2985).
-                    // The ERASED payload stays CtUnknown: `throw` accepts any
-                    // value (#786 — suberror payloads like `throw(AppError("x"))`
-                    // are legal), so pinning String would newly reject valid
-                    // `Throw(e) => inspect(e)` handlers (Codex P1 on #954).
+                    // #3541: the ERASED payload is the thrown MESSAGE, a
+                    // `String`. It used to bind CtUnknown, which unifies with
+                    // everything, so `throw("str")` caught as `m + 1` printed
+                    // a pointer and a channel endpoint thrown out of
+                    // `TaskGroup::run` came back as any type. The binder is a
+                    // fresh variable while the arm body is typed, so a use the
+                    // body never pins (`throw(m)`, `inspect(m)`, a generic
+                    // parameter) stays accepted (Codex P1 on #954), and is then
+                    // pinned to String; a use at another type is refused with
+                    // the kinded arm as the edit, since only
+                    // `Exception[K]::Throw(e)` knows the payload's type.
                     let eakind = exception_effect_kind(String::substring(hqname, 0, hci))
                     let eaty = if String::length(eakind) > 0 {
                       handle {
@@ -1620,7 +1631,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         resolve_tparams_in(resolve_type_expr_shadowed(kind_te, defs, kind_shadow), eaenv)
                       } with { Exception::Throw(_unreadable) => CtUnknown }
                     } else {
-                      CtUnknown
+                      let (ea_tv, ea_nc) = fresh_var(hc1)
+                      // A rethrow `throw(m)` stays a throw of no known kind.
+                      Array::push(erased_throw_binder_vars, hc1)
+                      hc1 = ea_nc
+                      ea_erased = Some((eabname, ea_tv))
+                      ea_tv
                     }
                     eaenv = env_bind(eaenv, eabname, eaty)
                   },
@@ -1655,6 +1671,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 hres = earm_now
               } else {
                 hs1 = check_assignable(eres_now, earm_now, hs1, errors, "handler arm value type mismatch with the handle body's type", tail_expr_off(hbody))
+              }
+              match ea_erased {
+                Some((ea_name, ea_tv)) => hs1 = erased_throw_binder_settle(ea_name, ea_tv, hs1, errors, tail_expr_off(hbody)),
+                None => ()
               }
             } else {
               ()
@@ -2596,4 +2616,29 @@ fn check_unmatched_call_args(args: Array[Expr], env: TypeEnv, defs: Array[TypeDe
     i = i + 1
   }
   (s1, c1)
+}
+
+/// #3541: settle the binder of an ERASED exception arm (`Exception::Throw(m)`)
+/// once its body is typed. `var` is the fresh variable `m` was bound to. A
+/// body that left it open used `m` only where any type is accepted, and it is
+/// pinned to `String`, the thrown message, so a later use outside the arm
+/// (the handle's result) is checked against that. A body that used it as
+/// `String` is accepted. Any other type is refused with the edit: only a
+/// kinded arm knows its payload's type.
+fn erased_throw_binder_settle(name: String, var: Type, s: Subst, errors: Array[String], off: Int) -> Subst {
+  let now = subst_apply(s, var)
+  match now {
+    CtString => s,
+    CtVar(_) => match unify(now, CtString, s) {
+      Some(s2) => s2,
+      None => s
+    },
+    _ => {
+      let shown = type_to_string(now)
+      let edit = String::concat("write `Exception[", String::concat(shown, String::concat("]::Throw(", String::concat(name, String::concat(")` to catch a thrown `", String::concat(shown, "`"))))))
+      let why = String::concat(": the erased `Exception::Throw(", String::concat(name, String::concat(")` arm binds `", String::concat(name, String::concat("` as the thrown message, a `String`, and this arm uses it as `", String::concat(shown, "`"))))))
+      Array::push(errors, String::concat(edit, String::concat(why, off_marker(off))))
+      s
+    }
+  }
 }

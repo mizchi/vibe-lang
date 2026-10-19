@@ -1801,7 +1801,8 @@ Rules:
   the body may raise only `Exception[K]`. An erased or unresolved throw, an
   erased callee (`with Exception`), and a throw of another kind that the
   enclosing row would have let propagate are all refused there; the erased
-  `Exception::Throw(m)` arm still catches everything, with an untyped payload.
+  `Exception::Throw(m)` arm still catches everything, and reads its payload
+  as the thrown message (below).
   A closure literal passed straight to a callee is checked against the row
   the callee's PARAMETER declares: a row admitting the erased `Exception`
   (`TaskGroup::spawn`'s `() -> T with Exception + e`) takes any kind, and what
@@ -1819,8 +1820,17 @@ Rules:
 - A kinded arm binds its payload at the kind's type (#2963):
   `Exception[IoError]::Throw(e)` gives `e : IoError`, so `e` can be matched or
   passed on directly, and returning it where the handle produces an `Int` is a
-  type error. The erased `Exception::Throw(m)` binder is still untyped (it can
-  receive any kind).
+  type error.
+- The erased `Exception::Throw(m)` binder is the thrown MESSAGE, a `String`
+  (#3541). `println(m)` and `String::concat("failed: ", m)` compile, and so
+  does a use that accepts any type: rethrowing it with `throw(m)` or passing
+  it to a generic parameter. A use at another type (`m + 1`,
+  `let n: Int = m`, returning `m` where the handle produces an `Int`) is
+  refused with the edit: write ``Exception[Int]::Throw(m)``. Only the kinded
+  arm knows a payload of another type. The kind is not carried at run time,
+  so the erased arm cannot check what a callee declared `with Exception`
+  actually threw. Throw a value other than a `String` under a kinded row, and
+  catch it with the kinded arm.
 
 Details and the v1 limits: [exception-effect.md](../../internal/design/exception-effect.md).
 
@@ -1876,7 +1886,7 @@ same way; `suberror` only says what the type is for.
   propagate -- a kinded arm catches everything its body raises, so an arm for
   `Exception[NotFound]` over a body that can also raise `Denied` is refused --
   and a handle has only one exception arm. The arm that takes every kind at
-  once is the erased `Exception::Throw(_)`, whose payload is untyped.
+  once is the erased `Exception::Throw(_)`, which does not read the payload.
 - `Exception[K]` requires `K` to be a TYPE in scope, in a row and in a handler
   arm alike: an undeclared name and an effectset name are both refused
   (``unknown type `IoErrors` in an exception kind``; write `with IoErrors` to
