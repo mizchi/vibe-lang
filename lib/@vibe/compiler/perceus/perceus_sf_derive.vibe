@@ -65,11 +65,15 @@ import ./perceus_pctx.vibe {
   pa_is_trunc_release,
   pa_is_view_pin,
   pat_names,
+  pe_apply_dup_splits,
+  pe_dsplit_ok,
   pe_emit_exit_rows,
   pe_flag_has,
   pe_flag_or,
   pe_int_array_has,
+  pe_name_unique,
   pe_push_for,
+  pf_dsplit,
   pf_exit_owner,
   pf_mark_bad,
   pf_split,
@@ -1075,6 +1079,26 @@ fn pe_emit_path_release(ctx: PCtx) -> Unit {
     }
     mi = mi + 1
   }
+  // `pe_dup_merge`'s marks: the occurrences a dup was planned for on the
+  // larger arm of a merge. Never a #2389 split binding as well
+  // (`pe_dsplit_ok`), so the two kinds do not share one flag.
+  let mut si = 0
+  while si < Array::length(ctx.dsplit_ids) {
+    let id = Array::get(ctx.dsplit_ids, si)
+    if pe_flag_has(ctx, id, pf_dsplit) && pe_dsplit_ok(ctx, id) && pe_name_unique(ctx, id) {
+      let nm = Array::get(ctx.dsplit_names, si)
+      let _ = pe_push_for(ctx, PaConsumeMark, nm, id, Array::get(ctx.dsplit_offs, si))
+      if pe_int_array_has(done, id) {
+        ()
+      } else {
+        Array::push(done, id)
+        Array::push(done_names, nm)
+      }
+    } else {
+      ()
+    }
+    si = si + 1
+  }
   let mut di = 0
   while di < Array::length(done) {
     let _ = pe_push_for(ctx, PaPathDrop, Array::get(done_names, di), Array::get(done, di), 0 - 1)
@@ -1107,6 +1131,9 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
     pj = pj + 1
   }
   pc_emit(ctx, scope2, body)
+  // Branch-dependent dups (`pe_dup_merge`): drop the redundant rows while
+  // nothing has indexed the plan yet.
+  pe_apply_dup_splits(ctx)
   // The parameters' own scope-end drops are pushed AFTER the whole body, so
   // they are a suffix of the plan. `out_param_drop_start` records where that
   // suffix begins, which is what lets the borrowed-param drop filter in

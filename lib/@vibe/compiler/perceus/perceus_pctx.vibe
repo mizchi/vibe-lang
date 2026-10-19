@@ -192,6 +192,25 @@ export struct PCtx {
   mut mark_ids: Array[Int];
   mut mark_offs: Array[Int];
   mut mark_names: Array[String];
+  // Branch-dependent dups of a plain `let` (`pe_dup_merge`). Codegen takes
+  // every dup the plan budgets for one at the binding's declaration site, on
+  // every path. `dmark_*` are the occurrences those dups were planned for
+  // (id, offset, name, and whether a merge already dropped its row);
+  // `drm_*` the rows a merge found redundant; `dsplit_*` the occurrences that
+  // become PaConsumeMark rows.
+  // Each binding's name, by id (`pe_declare`). Codegen keys a path drop by
+  // NAME, so a mark may only be emitted for a name no other binding has.
+  mut decl_names: Array[String];
+  mut dmark_ids: Array[Int];
+  mut dmark_offs: Array[Int];
+  mut dmark_names: Array[String];
+  mut dmark_dead: Array[Bool];
+  mut dmark_marked: Array[Bool];
+  mut drm_ids: Array[Int];
+  mut drm_offs: Array[Int];
+  mut dsplit_ids: Array[Int];
+  mut dsplit_offs: Array[Int];
+  mut dsplit_names: Array[String];
   // #3141: per binding id, how many of the references the binding holds the
   // walk has consumed so far -- one per owning occurrence (a dup'd one
   // consumes its dup, the last one the initial reference) and one per
@@ -284,6 +303,15 @@ export let pf_exit_owner: Int = 16
 
 export let pf_mut_assigned: Int = 32
 
+// `pe_dup_merge`: a plain `let` with marked occurrences (its path drop is
+// wanted), one with redundant dup rows to drop, and one a merge could not
+// account for (left exactly as the plan had it).
+export let pf_dsplit: Int = 64
+
+export let pf_dsplit_bad: Int = 128
+
+export let pf_drm: Int = 256
+
 export fn pe_flag_or(ctx: PCtx, id: Int, bit: Int) -> Unit {
   if id >= 0 && id < Array::length(ctx.decl_flags) {
     Array::set(ctx.decl_flags, id, Array::get(ctx.decl_flags, id)|bit)
@@ -362,6 +390,267 @@ export fn pe_note_initial_ref_spent(ctx: PCtx, sid: Int, name: String, use_offse
     }
   } else {
     ()
+  }
+}
+
+/// A planned dup for a plain `let` is realized at the binding's declaration
+/// site, on every path. Record the occurrence it is planned for, so a branch
+/// merge can tell which path takes it (`pe_dup_merge`). An occurrence with no
+/// source offset, or one inside a loop the binding is declared outside of (it
+/// runs once per iteration against one planned dup), cannot be pinned and is
+/// not recorded -- which is what makes a merge over it decline.
+export fn pe_note_dup_occurrence(ctx: PCtx, id: Int, name: String, use_offset: Int) -> Unit {
+  if pe_flag_has(ctx, id, pf_let) && use_offset >= 0 && id >= ctx.loop_floor {
+    Array::push(ctx.dmark_ids, id)
+    Array::push(ctx.dmark_offs, use_offset)
+    Array::push(ctx.dmark_names, name)
+    Array::push(ctx.dmark_dead, false)
+    Array::push(ctx.dmark_marked, false)
+  } else {
+    ()
+  }
+}
+
+/// Live recorded occurrences of binding `id` in `dmark_*[from, to)`.
+fn pe_dmark_live(ctx: PCtx, id: Int, from: Int, to: Int) -> Int {
+  let mut n = 0
+  let mut i = from
+  while i < to {
+    if Array::get(ctx.dmark_ids, i) == id && !Array::get(ctx.dmark_dead, i) {
+      n = n + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  n
+}
+
+/// Does `dmark_*[from, to)` hold a marked occurrence of binding `id`?
+fn pe_dmark_any_marked(ctx: PCtx, id: Int, from: Int, to: Int) -> Bool {
+  let mut found = false
+  let mut i = from
+  while !found && i < to {
+    if Array::get(ctx.dmark_ids, i) == id && Array::get(ctx.dmark_marked, i) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The arms of a branch -- an `if`'s two, a `match`'s -- walked the recorded
+/// occurrences `dmark_*[bounds[a], bounds[a + 1])`, and every arm left plain
+/// `let` `id` with uses still owed (no arm took its initial reference). Each
+/// dup an arm planned for `id` is taken at the declaration site on EVERY
+/// path, so the budget was the SUM over the arms where each path needs only
+/// its own arm's: `let v = mk(); if c { keep(v) } else { keep2(v) }; use(v)`
+/// held two dups for one consume and leaked one either way, and with no
+/// `else` consume it leaked one whenever `c` was false.
+///
+/// With `live[a]` the arm's live occurrences of `id` and `M` their maximum:
+///
+/// - every arm but one maximal arm gives up its live occurrences' rows, so
+///   the budget is `M` (`drm_*`, applied by `pe_apply_dup_splits`);
+/// - when some arm has fewer than `M`, or an arm already holds a mark from an
+///   inner merge, every occurrence in a maximal arm -- including ones an inner
+///   merge already counted out -- becomes a consume mark, and the guarded
+///   path drop releases one reference on a path that ran none of them.
+///
+/// Neither can release a reference a path still needs. Removing rows leaves
+/// `M` for a path through any arm, which consumes at most its own arm's
+/// occurrences and the rows of any it did not count. A path that ran no mark
+/// went through a smaller arm, or through a maximal arm without reaching an
+/// occurrence: either way it consumed fewer than `M` here, so the one drop
+/// releases a reference it holds. The inner-mark rule is what keeps that true
+/// across nesting: `if a { keep(v) } else if b { keep(v) }` is symmetric at
+/// the outer merge, which drops the inner arm's row, so the outer `then`
+/// path -- consuming its whole budget -- must run a mark of its own, or the
+/// inner merge's path drop fires on it. A shortfall of two or more on a path
+/// still leaks the rest, as before.
+export fn pe_dup_merge(ctx: PCtx, id: Int, bounds: Array[Int]) -> Unit {
+  let k = Array::length(bounds) - 1
+  if Array::get(ctx.view_call_let, id) || Array::get(ctx.borrowed_view, id) {
+    pe_flag_or(ctx, id, pf_dsplit_bad)
+  } else {
+    let mut mx = 0
+    let mut mn = 0 - 1
+    let mut keep = 0 - 1
+    let mut a = 0
+    while a < k {
+      let l = pe_dmark_live(ctx, id, Array::get(bounds, a), Array::get(bounds, a + 1))
+      if l > mx {
+        mx = l
+        keep = a
+      } else {
+        ()
+      }
+      if mn < 0 || l < mn {
+        mn = l
+      } else {
+        ()
+      }
+      a = a + 1
+    }
+    if mx > 0 {
+      // Marks first: they include the occurrences about to be counted out.
+      // An arm already holding a mark (an inner merge's) needs the same of
+      // every maximal arm: removing rows below leaves a path through another
+      // maximal arm with no reference to spare, so it must stand the drop
+      // down too. A mark only ever withholds the drop -- an extra one leaks,
+      // a missing one releases a reference still held.
+      if mn < mx || pe_dmark_any_marked(ctx, id, Array::get(bounds, 0), Array::get(bounds, k)) {
+        let mut ma = 0
+        while ma < k {
+          let lo = Array::get(bounds, ma)
+          let hi = Array::get(bounds, ma + 1)
+          if pe_dmark_live(ctx, id, lo, hi) == mx {
+            let mut i = lo
+            while i < hi {
+              if Array::get(ctx.dmark_ids, i) == id && !Array::get(ctx.dmark_marked, i) {
+                Array::set(ctx.dmark_marked, i, true)
+                Array::push(ctx.dsplit_ids, id)
+                Array::push(ctx.dsplit_offs, Array::get(ctx.dmark_offs, i))
+                Array::push(ctx.dsplit_names, Array::get(ctx.dmark_names, i))
+              } else {
+                ()
+              }
+              i = i + 1
+            }
+          } else {
+            ()
+          }
+          ma = ma + 1
+        }
+        pe_flag_or(ctx, id, pf_dsplit)
+      } else {
+        ()
+      }
+      let mut ra = 0
+      while ra < k {
+        if ra != keep {
+          let mut i = Array::get(bounds, ra)
+          while i < Array::get(bounds, ra + 1) {
+            if Array::get(ctx.dmark_ids, i) == id && !Array::get(ctx.dmark_dead, i) {
+              Array::set(ctx.dmark_dead, i, true)
+              Array::push(ctx.drm_ids, id)
+              Array::push(ctx.drm_offs, Array::get(ctx.dmark_offs, i))
+              pe_flag_or(ctx, id, pf_drm)
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+        } else {
+          ()
+        }
+        ra = ra + 1
+      }
+    } else {
+      ()
+    }
+  }
+}
+
+/// Run `pe_dup_merge` for every outer binding (`id < n`) the arms recorded an
+/// occurrence of, once each. `owed(id)` is the caller's test that every arm
+/// left the binding with uses owed.
+export fn pe_dup_merge_arms(ctx: PCtx, n: Int, bounds: Array[Int], owed: (Int) -> Bool) -> Unit {
+  let lo = Array::get(bounds, 0)
+  let hi = Array::get(bounds, Array::length(bounds) - 1)
+  let mut i = lo
+  while i < hi {
+    let id = Array::get(ctx.dmark_ids, i)
+    let mut first = true
+    let mut j = lo
+    while j < i {
+      if Array::get(ctx.dmark_ids, j) == id {
+        first = false
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    if first && id < n && pe_flag_has(ctx, id, pf_let) {
+      if owed(id) {
+        pe_dup_merge(ctx, id, bounds)
+      } else if pe_dmark_live(ctx, id, lo, hi) > 0 {
+        // An arm took the initial reference: the #2389 split's business.
+        // Its rows stay, and so does every other merge's decision for it.
+        pe_flag_or(ctx, id, pf_dsplit_bad)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// May binding `id`'s `pe_dup_merge` decisions be applied? Not when any merge
+/// declined it, when the #2389 split already guards it (one flag cannot serve
+/// both), or when an early exit releases it: an exit row's count reads the
+/// dup budget these decisions change.
+export fn pe_dsplit_ok(ctx: PCtx, id: Int) -> Bool {
+  !pe_flag_has(ctx, id, pf_dsplit_bad) && !pe_flag_has(ctx, id, pf_split) && !pe_int_array_has(ctx.exit_ids, id)
+}
+
+/// May binding `id` get a path drop of its own? Codegen gives a `PaPathDrop`
+/// to EVERY `let` of the row's name (`rc_path_drop_names` is name-keyed), so a
+/// second binding of that name would take a guarded drop that no marked
+/// occurrence of its own ever stands down -- releasing a reference it still
+/// holds. Only a name exactly one binding of the plan has qualifies.
+export fn pe_name_unique(ctx: PCtx, id: Int) -> Bool {
+  let name = Array::get(ctx.decl_names, id)
+  let mut n = 0
+  let mut i = 0
+  while i < Array::length(ctx.decl_names) {
+    if Array::get(ctx.decl_names, i) == name {
+      n = n + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  n == 1
+}
+
+/// Drop the dup rows `pe_dup_merge` found redundant, before anything indexes
+/// the plan (`out_param_drop_start` is taken right after this).
+export fn pe_apply_dup_splits(ctx: PCtx) -> Unit {
+  let mut r = 0
+  while r < Array::length(ctx.drm_ids) {
+    let id = Array::get(ctx.drm_ids, r)
+    let off = Array::get(ctx.drm_offs, r)
+    if pe_dsplit_ok(ctx, id) {
+      let mut at = 0 - 1
+      let mut i = 0
+      while at < 0 && i < Array::length(ctx.actions) {
+        let a = Array::get(ctx.actions, i)
+        if pa_is_dup(a) && a.binding_id == id && a.use_offset == off {
+          at = i
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if at >= 0 {
+        let mut j = at
+        while j + 1 < Array::length(ctx.actions) {
+          Array::set(ctx.actions, j, Array::get(ctx.actions, j + 1))
+          j = j + 1
+        }
+        Array::truncate(ctx.actions, Array::length(ctx.actions) - 1)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    r = r + 1
   }
 }
 

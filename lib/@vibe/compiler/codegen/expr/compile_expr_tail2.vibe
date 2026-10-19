@@ -205,7 +205,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call_cc_ladder_names.vibe {
-  cc_is_borrowed_projection
+  cc_is_borrowed_projection, cc_is_owned_temp
 }
 
 import ./compile_call.vibe {
@@ -530,8 +530,9 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   // array loop. The offset-0 interned string ("") misclassifies as an
   // array whose length load reads zeroed memory — 0 iterations either way,
   // so it stays correct. String offsets are < 2^31, so the arithmetic
-  // shift never sign-extends. Under RC the materialized array is not
-  // dropped at loop exit (same as the iterated value today).
+  // shift never sign-extends. Under RC the materialized array is released
+  // after the loop (below); its slot is cleared first, because an enclosing
+  // loop runs this code again and a stale value would be released twice.
   let (str_len_fi, _, _) = resolve_func(ctx.func_table, "String::length")
   let (str_ccat_fi, _, _) = resolve_func(ctx.func_table, "String::char_code_at")
   let conv_local = nl1pre
@@ -539,6 +540,8 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   Array::push(local_names, "__forin_conv")
   Array::push(local_names, "__forin_j")
   let nl1 = nl1pre + 2
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, conv_local)
   emit_local_get(buf, arr_local)
   emit_i64_const(buf, 32)
   emit_i64_shr_s(buf)
@@ -689,6 +692,30 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   emit_br(buf, 0)
   emit_end(buf)
   emit_end(buf)
+  // The loop owned nothing it iterated over: a NAMED array stays its
+  // binding's to release, but a fresh one -- `for k in [a, b]`, `for x in
+  // build()`, the char-code array a String is materialized into -- had no
+  // owner, so every run of the loop leaked it. The element binding is a view
+  // into it, and an owning use of that view retains (loop_borrowed_names), as
+  // does a collected body, so nothing outlives it by now.
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+    emit_local_get(buf, conv_local)
+    emit_call(buf, ctx.rc_drop_func_idx)
+    if cc_is_owned_temp(iter_expr, ctx) {
+      // A String iterable's slot holds the materialized array by now, and
+      // the String itself is no rc block.
+      emit_local_get(buf, conv_local)
+      emit_i64_eqz(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, arr_local)
+      emit_call(buf, ctx.rc_drop_func_idx)
+      emit_end(buf)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
   Array::truncate(ctx.loop_borrowed_names, lb_base)
   emit_local_get(buf, result_local)
   // Restore the outer scope. The loop's internal bindings (result/arr/i, the
