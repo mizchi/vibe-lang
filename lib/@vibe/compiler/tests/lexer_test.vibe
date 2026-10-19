@@ -349,7 +349,24 @@ test "lex_tuple_index_then_float_unaffected" {
 }
 
 test "lex_comment_skip" {
-  assert(lex_match("a // comment\nb", [TIdent("a"), TIdent("b"), TEof]))
+  assert(lex_match("a // comment\nb", [
+    TIdent("a"),
+    TSemicolon,
+    TIdent("b"),
+    TEof
+  ]))
+}
+
+/// #3546: a line that begins a statement after a line that ended an
+/// expression is marked with a synthetic `;`, so the parser can refuse two
+/// expressions juxtaposed on ONE line. A line continued by an operator, a
+/// line after a `}` and a declaration-header word (`where`) are not marked.
+test "lex_statement_line_break" {
+  assert(lex_match("x\ny", [TIdent("x"), TSemicolon, TIdent("y"), TEof]))
+  assert(lex_match("x y", [TIdent("x"), TIdent("y"), TEof]))
+  assert(lex_match("x\n+ y", [TIdent("x"), TPlus, TIdent("y"), TEof]))
+  assert(lex_match("}\ny", [TRBrace, TIdent("y"), TEof]))
+  assert(lex_match("Int\nwhere", [TIdent("Int"), TIdent("where"), TEof]))
 }
 
 test "lex_empty" {
@@ -451,7 +468,7 @@ test "lex_negative_int" {
 }
 
 test "lex_multiline" {
-  assert(eq(lex_len("let x = 1\nlet y = 2"), 9))
+  assert(eq(lex_len("let x = 1\nlet y = 2"), 10))
 }
 
 test "lex_block_comment" {
@@ -642,6 +659,7 @@ test "lex_multiline_string_indented_block" {
     TIdent("x"),
     TEq,
     TString("hello\nworld"),
+    TSemicolon,
     TIdent("x"),
     TEof
   ]))
@@ -650,7 +668,12 @@ test "lex_multiline_string_indented_block" {
 test "lex_multiline_string_stops_at_non_pipe_line" {
   // A following line that is not `#|`-prefixed at all simply ends the block
   // (not an error) -- the blank line here just terminates it.
-  assert(lex_match("#|hello\n\nx", [TString("hello"), TIdent("x"), TEof]))
+  assert(lex_match("#|hello\n\nx", [
+    TString("hello"),
+    TSemicolon,
+    TIdent("x"),
+    TEof
+  ]))
 }
 
 test "lex_multiline_string_indent_mismatch_is_error" {

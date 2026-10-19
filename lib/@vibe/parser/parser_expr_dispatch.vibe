@@ -1164,14 +1164,25 @@ fn reject_same_line_statement(tokens: Array[Token], pos: Int) -> Unit with Excep
   }
   // A `{` opens a block statement, which the lexer does not mark on its own
   // line (a declaration's `{` may also open one), so it is let through.
+  // An `else` here belongs to a construct with its own diagnostic (the
+  // retired `let PAT = e else { .. }`, #1283), so it is left to that one.
   let separated = match peek(tokens, pos) {
     TSemicolon => true,
     TRBrace => true,
     TEof => true,
     TLBrace => true,
+    TElse => true,
+    _ => false
+  }
+  let after_question = pos > 0 && match Array::get(tokens, pos - 1) {
+    TQuestion => true,
     _ => false
   }
   if !ends_block && !separated {
+    if after_question {
+      // `c ? a : b` reads `c?` as the railway `?` and then meets `a`.
+      throw("unexpected token after `?`: vibe has no `c ? a : b` conditional -- write `if c { a } else { b }` at #\{pos}")
+    }
     throw("two expressions on one line: put the second on its own line or after `;`, or add the operator or `,` between them at #\{pos}")
   }
 }
