@@ -12,8 +12,10 @@
 //
 // The per-module lane sees another module's definition only by name
 // (`ModuleTraitFacts.explicit_ops`), so `collect_explicit_derived_op_names`,
-// which reads the whole program, adds a `hash_key_fact_marker` row for each
-// definition judged here as not callable.
+// which reads the whole program, adds a row for each definition it judges: a
+// `hash_key_fact_marker` for one that cannot be called, and a
+// `hash_key_fact_pattern` carrying the parameter of one that can -- a name
+// alone would let `fn Box::hash_key(b: Box[Int])` key a `Box[String]` field.
 
 import @vibe/compiler/core {
   Expr, Stmt, TypeExpr, row_type_text
@@ -291,6 +293,201 @@ export fn hash_key_fact_marker_read(row: String) -> Option[(String, String)] {
     }
   } else {
     None
+  }
+}
+
+/// The `ModuleTraitFacts.explicit_ops` row carrying a callable `T::hash_key`'s
+/// parameter: `?T::hash_key <type variables><parameter>`, each part in the
+/// `hks_encode` form. The bare name says only that the definition exists; a
+/// definition written for `Box[Int]` takes only `Box[Int]`, so a module that
+/// keys a `Box[String]` field needs the parameter to refuse it (#3551 review).
+export fn hash_key_fact_pattern(owner: String, vars: Array[String], param: TypeExpr) -> String {
+  let names = TyTuple(for v in vars {
+    TyName(v)
+  })
+  "?" + owner + hash_key_suffix + " " + hks_encode(names) + hks_encode(param)
+}
+
+/// `Some((T, decoded))` for a `hash_key_fact_pattern` row; `decoded` is the
+/// `(type variables, parameter type)` it carries, or `None` when the row does
+/// not decode.
+export fn hash_key_fact_pattern_read(row: String) -> Option[(String, Option[(Array[String], TypeExpr)])] {
+  let space = String::index_of(row, " ")
+  let owner = if String::starts_with(row, "?") && space > 0 {
+    hash_key_owner(String::substring(row, 1, space))
+  } else {
+    ""
+  }
+  if owner == "" {
+    None
+  } else {
+    let text = String::substring(row, space + 1, String::length(row))
+    let at = [0]
+    let decoded = match hks_decode(text, at) {
+      Some(TyTuple(names)) => {
+        let vars: Array[String] = array_empty()
+        let mut ok = true
+        for n in names {
+          match n {
+            TyName(v) => Array::push(vars, v),
+            _ => {
+              ok = false
+            }
+          }
+        }
+        match hks_decode(text, at) {
+          Some(param) => if ok && Array::get(at, 0) == String::length(text) {
+            Some((vars, param))
+          } else {
+            None
+          },
+          None => None
+        }
+      },
+      _ => None
+    }
+    Some((owner, decoded))
+  }
+}
+
+/// A type as a self-delimiting string: `N<len>:<name>`, `A<len>:<head><n>:`
+/// and its `n` arguments, `T<n>:` and its items, `F<n>:` and its parameters,
+/// result and effect row (`E<len>:<row>` or `-`), and `U`.
+fn hks_encode(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => "N" + hks_text(n),
+    TyApp(h, args) => "A" + hks_text(h) + hks_items(args),
+    TyTuple(items) => "T" + hks_items(items),
+    TyFn(ps, r, eff) => "F" + hks_items(ps) + hks_encode(r) + match eff {
+      Some(e) => "E" + hks_text(e),
+      None => "-"
+    },
+    TyUnit => "U"
+  }
+}
+
+fn hks_text(s: String) -> String {
+  Int::to_string(String::length(s)) + ":" + s
+}
+
+fn hks_items(ts: Array[TypeExpr]) -> String {
+  Int::to_string(Array::length(ts)) + ":" + String::join(for t in ts {
+    hks_encode(t)
+  }, "")
+}
+
+/// The type `hks_encode` wrote at `at[0]`, advancing past it.
+fn hks_decode(s: String, at: Array[Int]) -> Option[TypeExpr] {
+  let i = Array::get(at, 0)
+  if i >= String::length(s) {
+    None
+  } else {
+    let tag = String::substring(s, i, i + 1)
+    Array::set(at, 0, i + 1)
+    if tag == "U" {
+      Some(TyUnit)
+    } else if tag == "N" {
+      match hks_decode_text(s, at) {
+        Some(n) => Some(TyName(n)),
+        None => None
+      }
+    } else if tag == "A" {
+      match hks_decode_text(s, at) {
+        Some(h) => match hks_decode_items(s, at) {
+          Some(args) => Some(TyApp(h, args)),
+          None => None
+        },
+        None => None
+      }
+    } else if tag == "T" {
+      match hks_decode_items(s, at) {
+        Some(items) => Some(TyTuple(items)),
+        None => None
+      }
+    } else if tag == "F" {
+      match hks_decode_items(s, at) {
+        Some(ps) => match hks_decode(s, at) {
+          Some(r) => {
+            let j = Array::get(at, 0)
+            if j < String::length(s) && String::substring(s, j, j + 1) == "-" {
+              Array::set(at, 0, j + 1)
+              Some(TyFn(ps, r, None))
+            } else if j < String::length(s) && String::substring(s, j, j + 1) == "E" {
+              Array::set(at, 0, j + 1)
+              match hks_decode_text(s, at) {
+                Some(e) => Some(TyFn(ps, r, Some(e))),
+                None => None
+              }
+            } else {
+              None
+            }
+          },
+          None => None
+        },
+        None => None
+      }
+    } else {
+      None
+    }
+  }
+}
+
+/// The `<n>:` count at `at[0]`, advancing past it.
+fn hks_decode_count(s: String, at: Array[Int]) -> Option[Int] {
+  let i = Array::get(at, 0)
+  let colon = String::index_of(String::substring(s, i, String::length(s)), ":")
+  if colon <= 0 {
+    None
+  } else {
+    match Int::parse(String::substring(s, i, i + colon)) {
+      Some(n) => if n >= 0 {
+        Array::set(at, 0, i + colon + 1)
+        Some(n)
+      } else {
+        None
+      },
+      None => None
+    }
+  }
+}
+
+fn hks_decode_text(s: String, at: Array[Int]) -> Option[String] {
+  match hks_decode_count(s, at) {
+    Some(n) => {
+      let i = Array::get(at, 0)
+      if i + n <= String::length(s) {
+        Array::set(at, 0, i + n)
+        Some(String::substring(s, i, i + n))
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+}
+
+fn hks_decode_items(s: String, at: Array[Int]) -> Option[Array[TypeExpr]] {
+  match hks_decode_count(s, at) {
+    Some(n) => {
+      let out: Array[TypeExpr] = array_empty()
+      let mut ok = true
+      let mut k = 0
+      while ok && k < n {
+        match hks_decode(s, at) {
+          Some(t) => Array::push(out, t),
+          None => {
+            ok = false
+          }
+        }
+        k = k + 1
+      }
+      if ok {
+        Some(out)
+      } else {
+        None
+      }
+    },
+    None => None
   }
 }
 

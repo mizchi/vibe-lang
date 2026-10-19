@@ -40,7 +40,7 @@ import ./equality_aliases.vibe {
 }
 
 import ./hash_key_signature.vibe {
-  hash_key_definitions, hash_key_fact_marker_read, hash_key_owner, hash_key_takes
+  hash_key_definitions, hash_key_fact_marker_read, hash_key_fact_pattern_read, hash_key_takes
 }
 
 import @vibe/ast {
@@ -81,8 +81,9 @@ let hk_unusable: Array[(String, String)] = []
 /// The types whose values have a `hash_key` this program can call: every
 /// struct / enum here that derives `Hash`, every `T::hash_key` written here
 /// that takes a `T` and returns a `String` (`hash_key_signature.vibe`), and
-/// every one the program's other modules define (`dtd_facts_explicit_ops`)
-/// that the whole-program scan did not mark as unusable.
+/// every one the program's other modules define that the whole-program scan
+/// judged callable (`dtd_facts_explicit_ops`), with the parameter it recorded,
+/// so a definition for `Box[Int]` keys only `Box[Int]` fields here too.
 export fn collect_hash_key_types(stmts: Array[Stmt]) -> Array[String] {
   Array::truncate(hk_written, 0)
   Array::truncate(hk_unusable, 0)
@@ -111,9 +112,11 @@ export fn collect_hash_key_types(stmts: Array[Stmt]) -> Array[String] {
   for row in bad {
     Array::push(hk_unusable, row)
   }
-  // Another module's definition, known here only by name: usable unless the
-  // whole-program scan recorded why it is not.
+  // Another module's definition, which this module sees only through the
+  // whole-program scan's rows: the parameter of a callable one, or why one is
+  // not callable. A bare `T::hash_key` name says neither, so it keys nothing.
   let marked: Array[(String, String)] = array_empty()
+  let patterned: Array[(String, Array[String], TypeExpr)] = array_empty()
   for name in dtd_facts_explicit_ops {
     match hash_key_fact_marker_read(name) {
       Some(row) => {
@@ -126,10 +129,22 @@ export fn collect_hash_key_types(stmts: Array[Stmt]) -> Array[String] {
       },
       None => ()
     }
+    match hash_key_fact_pattern_read(name) {
+      Some((owner, decoded)) => if !hk_judged_here(owner) {
+        match decoded {
+          Some((vars, param)) => Array::push(patterned, (owner, vars, param)),
+          None => Array::push(marked, (owner, "has a signature this module could not read"))
+        }
+      } else {
+        ()
+      },
+      None => ()
+    }
   }
-  for name in dtd_facts_explicit_ops {
-    let owner = hash_key_owner(name)
-    if owner != "" && !hk_judged_here(owner) && !hk_marked(marked, owner) {
+  for row in patterned {
+    let (owner, _, _) = row
+    if !hk_marked(marked, owner) {
+      Array::push(hk_written, row)
       hk_push_unique(out, owner)
     } else {
       ()
@@ -190,8 +205,9 @@ fn hk_unusable_reason(owner: String) -> String {
   out
 }
 
-/// Does `T::hash_key` take a value of field type `ty`? A derived one, or one
-/// known only by name, takes every application of `T`.
+/// Does `T::hash_key` take a value of field type `ty`? A derived one takes
+/// every application of `T`; a written one, here or in another module, takes
+/// what its parameter matches.
 fn hk_takes(owner: String, ty: TypeExpr) -> Bool {
   let mut out = true
   let mut seen = false

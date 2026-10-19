@@ -1,0 +1,55 @@
+// #3551 review: on the per-module lane, a `derive (Hash)` key over another
+// module's type saw that type's written `hash_key` only by NAME, so a
+// definition written for one application was taken to key every one:
+// `fn Box::hash_key(b: Box[Int])` keyed a `Box[String]` field, calling the
+// `Box[Int]` body with a `Box[String]`. The whole-program lane judged the
+// definition itself and refused; the split lane compiled. The facts now carry
+// the parameter, and both lanes give the same refusal.
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_body_cached_split, ordinary_lane_split_shape
+}
+
+/// The refusal compiling `main_src` against `owner_src` raises, or `ok`.
+fn verdict(tag: String, owner_src: String, main_src: String, split: Bool) -> String with Env + Fs {
+  // Flat /tmp paths with a relative import, as the other FS-lane tests do.
+  let owner = "/tmp/vibe_split_hash_owner_" + tag + ".vibe"
+  let main = "/tmp/vibe_split_hash_main_" + tag + ".vibe"
+  Fs::write_file(owner, owner_src)
+  Fs::write_file(main, "import ./vibe_split_hash_owner_" + tag + ".vibe { struct Box }\n" + main_src)
+  handle {
+    let _ = compile_file_fs_mode_rc_body_cached_split(main, "main", "off", split)
+    "ok"
+  } with { Exception::Throw(msg) => msg }
+}
+
+/// How many modules the split lane cut the last program written for `tag`
+/// into.
+fn split_modules(tag: String) -> Int with Env + Exception + Fs {
+  let (modules, _) = ordinary_lane_split_shape("/tmp/vibe_split_hash_main_" + tag + ".vibe")
+  modules
+}
+
+let holder_src = "struct Holder { b: Box[String] } derive (Hash)\nfn main() -> Int { String::length(Holder::hash_key(Holder::{ b: Box::{ v: \"x\" } })) }\n"
+
+/// The `hash_key` is private to its module, so the deriving module's context
+/// does not hold its signature -- only the whole-program facts do.
+test "an imported hash_key for one application does not key another" {
+  let owner = "export struct Box[T] { v: T } derive (Show)\nfn Box::hash_key(b: Box[Int]) -> String { Int::to_string(b.v) }\n"
+  let refusal = "make `Box::hash_key` take every `Box` (`fn Box::hash_key[T](x: Box[T]) -> String`), or write `Holder::hash_key` yourself: the derived key of `Holder` calls `Box::hash_key` with field `b`, which it does not take -- it takes only `Box[Int]` [@fn=Holder]"
+  inspect(verdict("applied_whole", owner, holder_src, false) == refusal, content = "true")
+  inspect(verdict("applied_split", owner, holder_src, true) == refusal, content = "true")
+  // Not vacuous: the split lane really cuts this program into two modules.
+  inspect(split_modules("applied_split"), content = "2")
+}
+
+/// The controls: a generic `hash_key` keys every application, and an applied
+/// one keys its own application, on both lanes.
+test "an imported hash_key keys the applications it takes" {
+  let generic = "export struct Box[T] { v: T } derive (Show)\nfn Box::hash_key[T](b: Box[T]) -> String { \"b\" }\n"
+  inspect(verdict("generic_whole", generic, holder_src, false), content = "ok")
+  inspect(verdict("generic_split", generic, holder_src, true), content = "ok")
+  let owner = "export struct Box[T] { v: T } derive (Show)\nfn Box::hash_key(b: Box[String]) -> String { b.v }\n"
+  inspect(verdict("same_whole", owner, holder_src, false), content = "ok")
+  inspect(verdict("same_split", owner, holder_src, true), content = "ok")
+}

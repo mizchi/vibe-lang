@@ -38,6 +38,20 @@ fn derive_verdict(src: String) -> String {
 
 let main_src = "\nlet main = () -> Unit { () }"
 
+/// The refusal desugaring module `own` raises on the per-module lane, given
+/// its context `ctx` and the whole-program `explicit_ops` facts, or `ok`.
+fn module_verdict(own: String, ctx: String, ops: Array[String]) -> String {
+  let facts = ModuleTraitFacts::{ wrapper_names: [], explicit_ops: ops }
+  let no_offsets: Array[Int] = []
+  let no_keys: Array[String] = []
+  handle {
+    let own_stmts = parse_program(lex(own))
+    let ctx_stmts = parse_program(lex(ctx))
+    let _ = desugar_trait_dicts_module_with_facts(own_stmts, ctx_stmts, "m", no_offsets, no_keys, facts)
+    "ok"
+  } with { Exception::Throw(msg) => msg }
+}
+
 //# Tests
 
 /// A field of a declared type with no `hash_key` names the edit on that type.
@@ -133,6 +147,37 @@ test "an unusable hash_key known only by name is refused" {
     "ok"
   } with { Exception::Throw(msg) => msg }
   inspect(accepted, content = "ok")
+}
+
+/// The facts carry a callable `hash_key`'s parameter, not just its name: one
+/// written for `Box[Int]` in another module keys only `Box[Int]` fields here,
+/// as it does on the whole-program lane. Known by name alone it keyed a
+/// `Box[String]` field, calling the `Box[Int]` body with a `Box[String]`.
+test "an imported hash_key for one application keys only that application" {
+  let ctx = "struct Box[T] { v: T } derive(Show)"
+  let applied = collect_explicit_derived_op_names(parse_program(lex("struct Box[T] { v: T }\nfn Box::hash_key(b: Box[Int]) -> String { \"b\" }")))
+  let refused = module_verdict("struct Holder { b: Box[String] } derive(Hash)" + main_src, ctx, applied)
+  inspect(String::contains(refused, "calls `Box::hash_key` with field `b`, which it does not take -- it takes only `Box[Int]`"), content = "true")
+  inspect(module_verdict("struct Holder { b: Box[Int] } derive(Hash)" + main_src, ctx, applied), content = "ok")
+  // A generic one, one whose type variable recurs inside a tuple and an
+  // `Option`, and one whose parameter holds a function type read back exactly.
+  let generic = collect_explicit_derived_op_names(parse_program(lex("struct Box[T] { v: T }\nfn Box::hash_key[T](b: Box[T]) -> String { \"b\" }")))
+  inspect(module_verdict("struct Holder { b: Box[String] } derive(Hash)" + main_src, ctx, generic), content = "ok")
+  let ctx2 = "struct Box[A, B] { v: A } derive(Show)"
+  let paired = collect_explicit_derived_op_names(parse_program(lex("struct Box[A, B] { v: A }\nfn Box::hash_key[T](b: Box[(T, Int), Option[T]]) -> String { \"b\" }")))
+  inspect(module_verdict("struct Holder { b: Box[(String, Int), Option[String]] } derive(Hash)" + main_src, ctx2, paired), content = "ok")
+  let mixed = module_verdict("struct Holder { b: Box[(String, Int), Option[Int]] } derive(Hash)" + main_src, ctx2, paired)
+  inspect(String::contains(mixed, "it takes only `Box[(T, Int), Option[T]]`"), content = "true")
+  let fn_typed = collect_explicit_derived_op_names(parse_program(lex("struct Box[A, B] { v: A }\nfn Box::hash_key(b: Box[Int, (Int) -> Unit]) -> String { \"b\" }")))
+  // With `to_string` written, no derived renderer refuses the function first.
+  let shown = "\nfn Holder::to_string(h: Holder) -> String { \"h\" }"
+  inspect(module_verdict("struct Holder { b: Box[Int, (Int) -> Unit] } derive(Hash)" + shown + main_src, ctx2, fn_typed), content = "ok")
+  let other_fn = module_verdict("struct Holder { b: Box[Int, (Int) -> Int] } derive(Hash)" + shown + main_src, ctx2, fn_typed)
+  inspect(String::contains(other_fn, "it takes only `Box[Int, (Int) -> Unit]`"), content = "true")
+  // A bare name with no recorded parameter keys nothing.
+  let bare_ops = ["Box::hash_key"]
+  let bare = module_verdict("struct Holder { b: Box[Int] } derive(Hash)" + main_src, ctx, bare_ops)
+  inspect(String::contains(bare, "keys field `b` by the key of `Box`"), content = "true")
 }
 
 /// What the key can encode is accepted: a type with its own key (derived or
