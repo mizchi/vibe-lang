@@ -1,0 +1,25 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+//# Tests
+
+/// #3547: a written single-arm `match` over a `Bool` or an `Option` was not
+/// exhaustiveness-checked, because it has the partial-let desugar's shape. It
+/// compiled and trapped with a bare `unreachable` on the missing case.
+test "a single-arm match over Bool or Option is checked" {
+  assert(check_source_err_contains("fn b(x: Bool) -> Int {\n  match x {\n    true => 1\n  }\n}\nfn main() -> Int { b(false) }", "non-exhaustive match"))
+  assert(check_source_err_contains("fn f(o: Option[Int]) -> Int {\n  match o {\n    Some(v) => v\n  }\n}\nfn main() -> Int { f(None) }", "non-exhaustive match"))
+  assert(check_source_err_contains("fn f(o: Option[Int]) -> Int {\n  match o {\n    None => 0\n  }\n}\nfn main() -> Int { f(None) }", "non-exhaustive match"))
+}
+
+/// The partial `let`, a complete match and a single catch-all arm are
+/// unchanged.
+test "the partial let and complete matches are accepted" {
+  assert(check_source_ok("fn f(o: Option[Int]) -> Int {\n  let Some(v) = o\n  v\n}\nfn main() -> Int { f(Some(1)) }"))
+  assert(check_source_ok("fn f(o: Option[Int]) -> Int {\n  match o {\n    Some(v) => v,\n    None => 0\n  }\n}\nfn main() -> Int { f(None) }"))
+  assert(check_source_ok("fn b(x: Bool) -> Int {\n  match x {\n    true | false => 1\n  }\n}\nfn main() -> Int { b(false) }"))
+  assert(check_source_ok("fn b(x: Bool) -> Int {\n  match x {\n    _ => 1\n  }\n}\nfn main() -> Int { b(false) }"))
+}

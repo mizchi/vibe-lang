@@ -302,6 +302,26 @@ enum BlockStep {
 /// written). An earlier GUARDED arm is not appended: its guard may fail too,
 /// so it does not cover anything, and a pattern only guarded arms reach is
 /// still reported as not handled.
+/// #3547: a written single-arm `match` whose arm is a Bool literal or `Some` /
+/// `None` can never be exhaustive, yet it has the shape of the partial-let
+/// desugar (`let Some(v) = o`), which the checker tolerates, so it compiled and
+/// trapped with a bare `unreachable`. Binding its scrutinee to `__mg`, as a
+/// guarded match does, puts it under the checker's flat Option / Bool
+/// exhaustiveness check.
+fn single_arm_needs_check(arms: Array[(Pat, Expr, Expr)]) -> Bool {
+  let (p, _, _) = Array::get(arms, 0)
+  refutable_option_or_bool_pat(p)
+}
+
+fn refutable_option_or_bool_pat(p: Pat) -> Bool {
+  match p {
+    PBool(_) => true,
+    PCtor(n, _) => n == "Some" || n == "None",
+    POr(l, r) => refutable_option_or_bool_pat(l) || refutable_option_or_bool_pat(r),
+    _ => false
+  }
+}
+
 fn desugar_guarded(arms: Array[(Pat, Expr, Expr)], i: Int, scrut: Expr, context: Option[ParserBinderContext]) -> Array[(Pat, Expr)] {
   desugar_guarded_from(arms, i, scrut, empty_arms(), context)
 }
@@ -1983,6 +2003,15 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
             Some(rows) => Some(ArrayBuilder::freeze(rows)),
             None => None
           }
+          let checked_single = Array::length(arms3) == 1 && single_arm_needs_check(arms3)
+          if checked_single {
+            match row_b {
+              Some(_) => binder_capture_insert_synthetic_at(context, match_mark, "__mg"),
+              None => ()
+            }
+          } else {
+            ()
+          }
           let plain = ArrayBuilder::new()
           let mut k = 0
           while k < Array::length(arms3) {
@@ -1998,7 +2027,11 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
             ArrayBuilder::push(plain, (p, bd))
             k = k + 1
           }
-          (EMatch(scrutinee, ArrayBuilder::freeze(plain)), endpos)
+          if checked_single {
+            (ELet("__mg", scrutinee, EMatch(EIdent("__mg", 0 - 1), ArrayBuilder::freeze(plain)), -1), endpos)
+          } else {
+            (EMatch(scrutinee, ArrayBuilder::freeze(plain)), endpos)
+          }
         }
       }
     }
