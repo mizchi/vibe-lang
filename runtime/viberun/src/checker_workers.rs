@@ -328,6 +328,8 @@ impl CheckerProcess {
             "VIBE_COVERAGE",
             "VIBE_DEBUG",
             "VIBE_GUEST_PROFILE",
+            "VIBE_HOST_FS_SCOPE_OUT",
+            "VIBE_HOST_FS_SCOPE_NONCE",
             "VIBE_MEM",
         ] {
             command.env_remove(name);
@@ -363,6 +365,8 @@ impl CheckerProcess {
             "VIBE_LOWERING_SERVICE_CONFIG",
             "VIBE_CHECKER_WORKERS",
             "VIBE_GUEST_PROFILE",
+            "VIBE_HOST_FS_SCOPE_OUT",
+            "VIBE_HOST_FS_SCOPE_NONCE",
             "VIBE_MEM",
             "VIBE_FS_COMPILE",
         ] {

@@ -16,6 +16,7 @@ bash scripts/vibe_fmt_parse_guard_test.sh
 
 echo "[compiler-gate] parser binder-context spine"
 node --test scripts/parser_binder_context_spine.test.mjs
+python3 scripts/source_files_test.py
 node scripts/test_immutable_publish_plumbing.js
 
 echo "[compiler-gate] 1-2/3 generated compiler artifacts"

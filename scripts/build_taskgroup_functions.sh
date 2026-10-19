@@ -18,7 +18,7 @@ export VIBE_WASM_NAMES=1 VIBE_UNSTABLE=1 VIBE_RC=1
 for name in worker compile coordinator; do
   case "$name" in
     worker) source_file=lib/@vibe/function_worker/worker.vibe; entry=main; target=worker.wasm ;;
-    compile) source_file=lib/@vibe/function_build/compile.vibe; entry=main; target=compile.wasm ;;
+    compile) source_file=lib/@vibe/function_build/phases/entry.vibe; entry=__no_entry__; target=compile.wasm ;;
     coordinator) source_file=lib/@vibe/lowering_worker/coordinator/coordinator.vibe; entry=run; target=coordinator.component.wasm ;;
   esac
   if [ "$name" = coordinator ]; then export VIBE_RC=1; else export VIBE_RC=0; fi
@@ -30,7 +30,7 @@ import hashlib, json, sys
 from pathlib import Path
 compiler, out, runner = map(Path, sys.argv[1:])
 files = [out/'worker.wasm', out/'compile.wasm', out/'coordinator.component.wasm']
-receipt = {'version': 1, 'kind': 'vibe-taskgroup-functions', 'function_abi': 'bump-core-tagged-callbacks-2',
+receipt = {'version': 1, 'kind': 'vibe-taskgroup-functions', 'function_abi': 'bump-core-returning-phases-3', 'phase_format': 1, 'assembly_format': 1,
            'context_format': 7, 'job_format': 2, 'compile_engine_rc': 0, 'worker_engine_rc': 0, 'coordinator_engine_rc': 1, 'compiler_sha256': hashlib.sha256(compiler.read_bytes()).hexdigest(),
            'runner_sha256': hashlib.sha256(runner.read_bytes()).hexdigest(),
            'artifacts': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}}

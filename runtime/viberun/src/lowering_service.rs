@@ -99,6 +99,14 @@ fn source_kind(path: &Path) -> Option<u8> {
 }
 
 impl InputSnapshot {
+    pub(super) fn is_empty(&self) -> bool {
+        self.files.is_empty()
+            && self.directories.is_empty()
+            && self.probes.is_empty()
+            && self.kinds.is_empty()
+            && !self.inconsistent
+    }
+
     fn record_kind(&mut self, path: &Path) {
         let kind = source_kind(path);
         if self
@@ -181,8 +189,7 @@ impl InputSnapshot {
             }
         }
         for (path, expected) in &self.files {
-            let bytes =
-                source_overlay_read(&path.to_string_lossy()).map_err(|_| changed())?;
+            let bytes = source_overlay_read(&path.to_string_lossy()).map_err(|_| changed())?;
             let actual: [u8; 32] = Sha256::digest(&bytes).into();
             if actual != *expected {
                 return Err(changed());

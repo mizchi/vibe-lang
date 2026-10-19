@@ -142,11 +142,6 @@ import @vibe/compiler/codegen/common_base {
   StrTable,
   agg_info_of_type_expr,
   bcc_int_lists_equal,
-  bcc_layout_fp_bools,
-  bcc_layout_fp_ints,
-  bcc_layout_fp_string_matrix,
-  bcc_layout_fp_strings,
-  bcc_layout_fp_strings_upto,
   codegen_body_cache_filter_src_below,
   codegen_body_cache_find_at,
   codegen_body_cache_find_named_at,
@@ -242,6 +237,14 @@ import ./linked_compile_linkedhostplan.vibe {
   LinkedBodyInputs, LinkedBodyPlan
 }
 
+import ./linked_builtin_bodies.vibe {
+  lc_build_builtin_bodies
+}
+
+import ./linked_emission_layout.vibe {
+  lc_build_emission_layout
+}
+
 let function_executors: Array[(LinkedFunctionPlan, LinkedBodyInputs, Bool, Bool, Bool, Bool, Bool) -> LinkedBodyPlan with Exception] = [
 ]
 
@@ -267,6 +270,12 @@ export fn function_with_executor(executor: (LinkedFunctionPlan, LinkedBodyInputs
 // Keep lane flags explicit so constant-parameter folding can remove disabled code.
 export fn lc_build_function_bodies(input: LinkedBodyInputs, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool) -> LinkedBodyPlan with Exception {
   let plan = lc_prepare_function_plan(input.stmts, input.fn_stmt_indices, input.fn_names_list, input.num_user_funcs, input.const_int_names_list, input.ctor_names_list, enable_rc)
+  lc_execute_function_plan(plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+}
+
+/// Execute a previously prepared canonical plan exactly once at the chosen boundary.
+/// Preparation does not invoke an executor or compile a throwaway module.
+export fn lc_execute_function_plan(plan: LinkedFunctionPlan, input: LinkedBodyInputs, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool) -> LinkedBodyPlan with Exception {
   if Array::length(function_executors) == 0 {
     LinkedFunctionPlan::emit(plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
   } else {
@@ -423,418 +432,27 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   let trace_counter_addr = input.trace_counter_addr
   let trace_log_base = input.trace_log_base
   let user_shadows_trunc_builtins = input.user_shadows_trunc_builtins
-  let bodies = lc_fresh_bytes_array()
-  let meta_i32 = lc_fresh_int_array()
-  let meta_i64 = lc_fresh_int_array()
-  // #805 SIMD locals: v128 run length of each code entry's locals header.
-  // Non-zero only for inline-wasm fns declaring `(local $x v128)` -- every
-  // other push site pushes 0, keeping the three meta arrays aligned with
-  // `bodies` (asserted at the code-section assembly below).
-  let meta_v128 = lc_fresh_int_array()
+  let builtins = lc_build_builtin_bodies(input, enable_rc, rc_shadow)
+  let bodies = builtins.bodies
+  let meta_i32 = builtins.meta_i32
+  let meta_i64 = builtins.meta_i64
+  let meta_v128 = builtins.meta_v128
+  let builtin_type_idxs = builtins.builtin_type_idxs
   // Scratch cell lc_compile_iw_body fills per function (see its doc comment
   // for why this is a cell and not a return value).
   let iw_extra_cell = lc_fresh_int_array()
   Array::push(iw_extra_cell, 0)
   Array::push(iw_extra_cell, 0)
   Array::push(iw_extra_cell, 0)
-  let builtin_type_idxs = lc_fresh_int_array()
-  // #415 B-1: one call = one builtin body. The body bytes, its extra local
-  // counts (meta_i32/meta_i64), and its function-section type index are
-  // pushed TOGETHER, killing the four-way positional alignment this block
-  // used to share with a bare number list ~1,400 lines below (the function
-  // section splices builtin_type_idxs in this same order; a count mismatch
-  // still throws there).
-  let push_builtin: (Bytes, Int, Int, Int) -> Unit = (body, m32, m64, type_idx) -> {
-    Array::push(bodies, body)
-    Array::push(meta_i32, m32)
-    Array::push(meta_i64, m64)
-    Array::push(meta_v128, 0)
-    Array::push(builtin_type_idxs, type_idx)
-  }
-  push_builtin(gen_print_i64_body(), 3, 1, 1)
-  push_builtin(static_print_str_body(), 2, 0, 1)
-  push_builtin(if enable_rc {
-    gen_str_len_body(true)
-  } else {
-    static_str_len_body()
-  }, 0, 0, 3)
-  // #748: SIMD chunk compare needs the extra chunk_limit local (meta_i32 6).
-  push_builtin(gen_str_eq_body(), 6, 0, 4)
-  // #2199: raw (ptr<<32)|len string-table constants for the OOB abort
-  // message fragments, exactly the shape __rt_print_str's parameter takes
-  // (no RC tag on either lane). The strings were seeded above, so the
-  // lookups cannot miss.
-  //
-  // Defined before the str_concat push (#2427) because its shadow-lane
-  // operand guard needs one of these fragments; moving the PUSH instead
-  // would reorder the builtins and shift every function index.
-  let oob_fat_of: (String) -> Int = (frag) -> {
-    let fi = str_table_index_of(str_table_shared, frag)
-    (Array::get(str_offsets, fi)<<32)|Array::get(str_lengths, fi)
-  }
-  push_builtin(gen_str_concat_body(rc_shadow, str_operand_abort_idx, if rc_shadow {
-    oob_fat_of("String::concat operand is not a live string: ptr=")
-  } else {
-    0
-  }), 6, 0, 4)
-  let oob_arr_get_fat = oob_fat_of("Array::get: index ")
-  let oob_arr_set_fat = oob_fat_of("Array::set: index ")
-  let oob_bytes_get_fat = oob_fat_of("Bytes::get: index ")
-  let oob_bytes_set_fat = oob_fat_of("Bytes::set: index ")
-  let oob_ccat_fat = oob_fat_of("String::byte_at: index ")
-  let oob_mid_fat = oob_fat_of(" out of bounds for length ")
-  let oob_nl_fat = oob_fat_of("\n")
-  if enable_rc {
-    push_builtin(gen_arr_new_body(true, rc_alloc_idx), 1, 0, 5)
-    push_builtin(gen_arr_len_body(true), 0, 0, 3)
-    push_builtin(gen_arr_get_body(true, oob_arr_get_fat, oob_abort_idx), 1, 0, 4)
-    push_builtin(gen_arr_push_body(true, rc_alloc_idx, rc_shadow, -1, 0, 0), 6, 0, 6)
-    push_builtin(gen_arr_set_body(true, oob_arr_set_fat, oob_abort_idx), 1, 0, 7)
-  } else {
-    push_builtin(gen_arr_new_body(false, rc_alloc_idx), 1, 0, 5)
-    push_builtin(static_arr_len_body(), 0, 0, 3)
-    push_builtin(gen_arr_get_body(false, oob_arr_get_fat, oob_abort_idx), 1, 0, 4)
-    // ADR-0090 (#1262): ONE arr_push. Which lane a regrow allocates from is a
-    // property of the ARRAY (is its block inside the arena segment?), not of
-    // the call site, so it is a runtime range check inside the shared body
-    // rather than a second builtin -- a MutList and an ordinary Array can both
-    // be pushed through the same code. The arena form needs one extra i32
-    // local for the arena bump pointer.
-    push_builtin(gen_arr_push_body(false, rc_alloc_idx, rc_shadow, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
-      7
-    } else {
-      6
-    }, 0, 6)
-    push_builtin(gen_arr_set_body(false, oob_arr_set_fat, oob_abort_idx), 1, 0, 7)
-  }
-  push_builtin(static_double_to_int_body(), 0, 0, 3)
-  push_builtin(static_int_to_double_body(), 0, 0, 3)
-  push_builtin(gen_str_char_code_at_body(enable_rc, oob_ccat_fat, oob_abort_idx), 1, 0, 4)
-  push_builtin(gen_str_from_char_code_body(enable_rc), 1, 0, 3)
-  // #982: substring's clamp prologue needs one i64 scratch (len) — meta 2/1.
-  push_builtin(gen_str_substring_body(enable_rc), 2, 1, 8)
-  push_builtin(static_identity_body(), 0, 0, 3)
-  if enable_rc {
-    push_builtin(gen_arr_slice_body(true, rc_alloc_idx, rc_shadow), 7, 1, 8)
-  } else {
-    // #982: the clamp prologue's i64 len scratch (RC reuses local 10 = elem).
-    push_builtin(gen_arr_slice_body(false, rc_alloc_idx, rc_shadow), 6, 1, 8)
-  }
-  push_builtin(gen_array_value_copy_body(arr_len_idx, arr_slice_idx), 0, 0, 3)
-  push_builtin(gen_arr_concat_body(), 9, 0, 4)
-  push_builtin(gen_arr_truncate_body(enable_rc), 0, 0, 6)
-  push_builtin(gen_string_join_body(enable_rc, arr_len_idx, arr_get_idx, str_concat_idx), 9, 1, 4)
-  push_builtin(static_fs_stub_body(), 0, 0, 3)
-  push_builtin(static_fs_stub_body(), 0, 0, 3)
-  push_builtin(static_fs_stub_body(), 0, 0, 3)
-  // Unused publish_immutable_text needs a never-called `(i64,i64)->i64` stub.
-  push_builtin(static_fs_stub_body(), 0, 0, 4)
-  push_builtin(static_fs_write_bytes_stub_body(), 0, 0, 6)
-  push_builtin(static_fs_write_bytes_stub_body(), 0, 0, 6)
-  push_builtin(gen_eq_body(str_eq_idx), 0, 0, 4)
-  push_builtin(gen_string_ends_with_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 2, 1, 4)
-  push_builtin(gen_string_last_index_of_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 3, 1, 4)
-  if enable_rc {
-    push_builtin(gen_arr_push_all_body(true, rc_alloc_idx, rc_shadow), 10, 1, 6)
-  } else {
-    push_builtin(gen_arr_push_all_body(false, rc_alloc_idx, rc_shadow), 9, 0, 6)
-  }
-  // #748 memchr rewrite: 8 i32 locals, the i64 substring scratch is gone.
-  push_builtin(gen_string_index_of_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 8, 0, 4)
-  push_builtin(gen_string_contains_body(enable_rc, string_index_of_idx), 0, 0, 4)
-  push_builtin(gen_string_starts_with_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 2, 1, 4)
-  push_builtin(gen_string_split_body(enable_rc, arr_new_idx, arr_push_idx, str_len_idx, str_substring_idx, string_index_of_idx), 4, 1, 4)
-  push_builtin(gen_string_trim_body(enable_rc, str_len_idx, str_char_code_at_idx, str_substring_idx), 4, 0, 3)
-  if num_src_pairs > 0 {
-    push_builtin(gen_sources_proper_body(num_src_pairs, str_offsets, str_lengths, src_str_base, arr_new_idx, arr_push_idx), 1, 1, 5)
-  } else {
-    push_builtin(gen_sources_stub_body(arr_new_idx), 0, 0, 5)
-  }
-  push_builtin(gen_bytes_new_body(), 1, 0, 5)
-  push_builtin(gen_bytes_len_body(enable_rc), 0, 0, 3)
-  push_builtin(gen_bytes_get_body(enable_rc, oob_bytes_get_fat, oob_abort_idx), 1, 0, 4)
-  push_builtin(gen_bytes_set_body(enable_rc, oob_bytes_set_fat, oob_abort_idx), 1, 0, 7)
-  // ADR-0090 MutBytes: same ONE-body routing as gen_arr_push_body above --
-  // whether a regrow allocates from the arena is a runtime range check on
-  // the buffer's own block, so MutBytes and ordinary Bytes share this body.
-  // region_ptr_addr is -1 when the module has no region (or under RC), which
-  // compiles the arena branch out. The arena form needs one extra i32 local.
-  push_builtin(gen_bytes_push_body(enable_rc, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
-    7
-  } else {
-    6
-  }, 0, 6)
-  push_builtin(gen_bytes_append_body(region_ptr_addr, region_data_base, region_limit), if need_region_arena {
-    9
-  } else {
-    8
-  }, 0, 6)
-  push_builtin(gen_bytes_concat_body(bytes_new_idx, bytes_append_idx), 0, 1, 4)
-  push_builtin(gen_bytes_slice_body(enable_rc, bytes_new_idx, bytes_get_idx, bytes_push_idx), 2, 1, 8)
-  push_builtin(gen_bytes_from_array_body(enable_rc, arr_len_idx, arr_get_idx, bytes_new_idx, bytes_push_idx), 2, 1, 3)
-  push_builtin(gen_bytes_to_array_body(enable_rc, arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx), 2, 1, 3)
-  let uaf_dup_fat = if rc_shadow {
-    oob_fat_of("dup of freed value at site ")
-  } else {
-    0
-  }
-  let uaf_drop_fat = if rc_shadow {
-    oob_fat_of("drop of freed value at site ")
-  } else {
-    0
-  }
-  if enable_rc {
-    push_builtin(gen_rc_drop_body(rc_drop_idx, rc_shadow, rc_bins_base, shadow_uaf_abort_idx, uaf_drop_fat, input.rc_map_arms, input.rc_closure_arms, true), 5, 1, 1)
-    push_builtin(gen_rc_alloc_body(rc_shadow, rc_bins_base), 5, 0, 3)
-    push_builtin(gen_rc_dup_body(rc_shadow, shadow_uaf_abort_idx, uaf_dup_fat), 0, 0, 1)
-  } else {
-    ()
-  }
-  push_builtin(gen_heap_grow_check_body(), 0, 0, 2)
-  push_builtin(gen_simd_skip_ws_body(enable_rc), 2, 2, 8)
-  push_builtin(gen_simd_scan_alnum_body(enable_rc, false), 1, 3, 8)
-  push_builtin(gen_simd_scan_alnum_body(enable_rc, true), 1, 3, 8)
-  push_builtin(gen_simd_scan_string_special_body(enable_rc), 1, 3, 8)
-  push_builtin(gen_simd_scan_line_end_body(enable_rc), 1, 3, 8)
-  push_builtin(gen_str_lex_diff_body(enable_rc), 7, 0, 4)
-  push_builtin(gen_generic_rel_diff_body(enable_rc, str_lex_diff_idx), 0, 0, 4)
-  push_builtin(gen_generic_add_body(enable_rc, str_concat_idx), 0, 0, 4)
-  push_builtin(gen_compact_fingerprint_hash_body(enable_rc), 3, 2, 3)
-  push_builtin(gen_map_hash_body(), 3, 2, 3)
-  push_builtin(gen_map_cap_body(), 0, 1, 3)
-  push_builtin(gen_map_index_insert_body(), 1, 4, 7)
-  // #2683: the index table is an RC leaf block on the RC lane (freed by the
-  // Map's class-6 rc_drop arm), a raw bump allocation on the bump lane.
-  push_builtin(gen_map_build_index_body(map_hash_idx, map_cap_idx, map_index_insert_idx, heap_grow_check_idx, if enable_rc {
-    rc_alloc_idx
-  } else {
-    -1
-  }), 0, 7, 4)
-  push_builtin(gen_map_probe_index_body(map_hash_idx, eq_idx), 1, 8, 8)
-  // #2199: the formatted OOB abort pair, in the print_i64_raw_idx /
-  // oob_abort_idx slot order fixed above.
-  push_builtin(gen_print_i64_raw_body(), 3, 1, 1)
-  push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_mid_fat, oob_nl_fat), 0, 0, 7)
-  // #2344: same order as int_popcount_idx / int_ctz_idx / int_clz_idx above.
-  // No extra locals, and type 3 is (i64) -> (i64) -- the same shape as
-  // int_to_double above. Type 1 is (i64) -> (), which would declare these as
-  // returning nothing.
-  push_builtin(gen_int_popcount_body(enable_rc), 0, 0, 3)
-  push_builtin(gen_int_ctz_body(enable_rc), 0, 0, 3)
-  push_builtin(gen_int_clz_body(enable_rc), 0, 0, 3)
-  push_builtin(gen_bytes_index_of_bytes_body(string_index_of_idx), 2, 0, 4)
-  push_builtin(gen_bytes_index_of_byte_body(enable_rc), 1, 3, 4)
-  push_builtin(gen_bytes_count_byte_body(enable_rc), 1, 4, 4)
-  push_builtin(gen_bytes_last_index_of_byte_body(enable_rc), 1, 3, 4)
-  push_builtin(gen_bytes_compare_body(enable_rc), 2, 4, 4)
-  // The four-argument void type is appended after the closure types below;
-  // its slot is filled there without shifting any existing type index.
-  push_builtin(gen_bytes_blit_linear_body(enable_rc, bytes_get_idx, bytes_push_idx, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
-    9
-  } else {
-    8
-  }, 0, -1)
-  push_builtin(gen_bytes_with_capacity_body(enable_rc, print_str_idx, if need_bytes_capacity {
-    oob_fat_of(bytes_capacity_error_message())
-  } else {
-    0
-  }), 2, 0, 3)
-  push_builtin(gen_arr_with_capacity_body(enable_rc, rc_alloc_idx, print_str_idx, if need_array_capacity {
-    oob_fat_of(array_capacity_error_message())
-  } else {
-    0
-  }), 3, 0, 3)
-  if rc_shadow {
-    push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of("; freed at site "), oob_nl_fat), 0, 0, 7)
-    // #2427: same body, ", len=" as the middle fragment -- see
-    // str_operand_abort_idx. Registered immediately after the UAF abort so
-    // max_builtin_func_idx stays the last push.
-    push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of(", len="), oob_nl_fat), 0, 0, 7)
-  } else {
-    ()
-  }
-  // #3126: div_zero_abort_idx -- after the shadow aborts, before the arena.
-  if need_div_zero_abort {
-    push_builtin(gen_div_zero_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of(div_zero_div_message()), oob_fat_of(div_zero_rem_message()), oob_fat_of(div_zero_at_fragment()), oob_fat_of(div_zero_colon_fragment()), oob_nl_fat), 0, 0, 7)
-  } else {
-    ()
-  }
-  // ADR-0090 (#1262): must stay LAST, in this order -- max_builtin_func_idx
-  // above names region_bytes_new_idx (= region_arr_new_idx + 1) as the final
-  // builtin, and num_generated/func_offset are derived from it.
-  if need_region_arena {
-    push_builtin(gen_region_arr_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
-    push_builtin(gen_region_bytes_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
-  } else {
-    ()
-  }
-  // #799 perf: ONE membership index over the flat fn + ctor name tables,
-  // shared by every per-function CompileCtx below. collect_free_vars_indexed
-  // consults it per ident instead of linearly scanning ~thousands of names
-  // (which dominated compiler-closure compile profiles).
-  // Round 2: a SORTED array + binary search -- the previous MapBuilder index
-  // was O(N^2) to build (set scans for duplicates) and O(N) per has_key.
-  let capture_index_names = lc_fresh_string_array()
-  let mut cib_i = 0
-  while cib_i < Array::length(all_fn_names_list) {
-    Array::push(capture_index_names, Array::get(all_fn_names_list, cib_i))
-    cib_i = cib_i + 1
-  }
-  let mut cib_j = 0
-  while cib_j < Array::length(ctor_names_list) {
-    Array::push(capture_index_names, Array::get(ctor_names_list, cib_j))
-    cib_j = cib_j + 1
-  }
-  // #3356: a module-level Int literal (`let base = 10`) is folded into
-  // `const_int_names`, not the function table, and codegen reads it there
-  // from any frame. Left out of this index, a lambda that read it recorded it
-  // as a CAPTURE, found no enclosing local of that name, and stored 0 into its
-  // env slot: `let g = (n) -> n + base` answered `n`, and a `let rec` lambda
-  // reading it counted down to 0. The lambda plan's walk already counts it as
-  // global (`shadow_names_only` below).
-  let mut cib_k = 0
-  while cib_k < Array::length(const_int_names_list) {
-    Array::push(capture_index_names, Array::get(const_int_names_list, cib_k))
-    cib_k = cib_k + 1
-  }
-  let capture_name_index_shared = sorted_names_of(capture_index_names)
-  // Codex review on #1186: this was computed inside the `bi < num_user_funcs`
-  // loop below, re-sorting the same thunk_names_list once per function
-  // instead of once per compile -- hoist it out, same fix shape as
-  // capture_name_index_shared above.
-  let thunk_names_sorted_shared = sorted_names_of(thunk_names_list)
   // Canonical ranges were planned before emission. Each function starts a
   // private table and cursor at its range base, including when emitted alone.
   let planned_bodies = function_plan.bodies
   let lambda_bases = function_plan.lambda_bases
   let lambda_base_acc = function_plan.lambda_count
-  // #2669 step 2b: the program-wide inputs a cached body's bytes depend on.
-  //
-  // Read off the per-function `CompileCtx` construction below, which is the
-  // whole interface between the program-wide prologue and a body's codegen: a
-  // function's bytes are a function of its own AST and this context, and every
-  // PER-function field of that context is in turn a function of its own AST
-  // and the program-wide values folded here (the Perceus plan, the widest of
-  // them, takes only the body plus `lc_perceus_pin` and the borrow tables).
-  // So an unchanged file's body compiles to the same bytes exactly while these
-  // agree -- which is what the prefix rule used to supply for free, merge
-  // order being topological.
-  //
-  // Enumerating index spaces by inspection is how the reloc scan lost four
-  // reference classes one at a time. Enumerating ONE struct's program-wide
-  // fields at the site that builds it is a different kind of list: it is
-  // closed, it sits next to what it describes, and
-  // `lib/@vibe/compiler/tests/body_cache_edit_classes_test.vibe` makes an edit
-  // that moves each of them for real and requires the compile to answer what a
-  // fresh one answers -- so a slot left out fails as a byte mismatch in a test
-  // rather than as a wrong module in someone's build.
-  let guard_layout_now = lc_fresh_int_array()
-  if pin_region_capacity >= 0 {
-    // func_table -- every `call` immediate.
-    bcc_layout_fp_strings(guard_layout_now, all_fn_names_list)
-    bcc_layout_fp_ints(guard_layout_now, all_fn_indices_list)
-    bcc_layout_fp_ints(guard_layout_now, all_fn_param_counts)
-    bcc_layout_fp_ints(guard_layout_now, all_fn_returns_list)
-    bcc_layout_fp_bools(guard_layout_now, all_fn_needs_env_list)
-    //
-    // `all_fn_names_list` is the whole vector, so it pins ORDER as well as
-    // membership -- the case `guard_unmangled_names` (a sorted set) cannot
-    // see. A `__test_` name riding along in it is not over-strict in the way
-    // it looks: a renamed test is an edit to the ENTRY file, which is last in
-    // merge order, so the prefix the lane narrows to is everything before it
-    // -- exactly what it would have replayed anyway.
-    // str_table -- every `(offset << 32) | length`.
-    bcc_layout_fp_strings_upto(guard_layout_now, str_strs, src_str_base)
-    // The scalars the table indices are built on. `lc_perceus_pin` is NOT one
-    // of them: it is a process-local monotonic token (`pctx_pin_counter`)
-    // memoizing the borrow tables, so it differs between two compiles of the
-    // SAME program in one process -- measured, it was the only slot that moved
-    // under a leading comment. The tables it stands for are folded below.
-    bcc_layout_fp_ints(guard_layout_now, [
-      num_user_funcs,
-      lambda_slot_base,
-      func_offset
-    ])
-    // The lambda plan -- every `lambda_slot_base + lambda_idx`.
-    bcc_layout_fp_ints(guard_layout_now, lambda_bases)
-    // ctor_table -- every constructor tag is `(type_index << 16) | variant`,
-    // and `type_index` counts type declarations in merge order.
-    bcc_layout_fp_strings(guard_layout_now, ctor_names_list)
-    bcc_layout_fp_ints(guard_layout_now, ctor_tags_list)
-    bcc_layout_fp_ints(guard_layout_now, ctor_field_counts_list)
-    bcc_layout_fp_strings(guard_layout_now, ctor_type_names_list)
-    bcc_layout_fp_strings(guard_layout_now, struct_names)
-    bcc_layout_fp_string_matrix(guard_layout_now, struct_field_names)
-    bcc_layout_fp_ints(guard_layout_now, ctor_float_fields_list)
-    // Which functions return a Double. The three typed-lowering OFFSET arrays
-    // beside it are deliberately NOT folded in: they are source positions in
-    // the MERGED text, so appending a comment to any file shifts every offset
-    // after it, and the guard would decline on an edit that moves no body's
-    // bytes at all. Measured on the compiler's own closure (5242 functions),
-    // comment-edited: with them folded in, `offered=4394 recompiled=5155` --
-    // the wide lane declined and the build was a cold one in all but name;
-    // without them, `recompiled=848`. Same tree, same leaf, one difference.
-    // They also do not need to be folded: a replayed body never consults them,
-    // and a recompiled one consults them against ITS OWN current offsets,
-    // which shift with the same text.
-    // What could change an unchanged file's lowering is a cross-file
-    // classification change, and those are name-keyed and pinned -- a callee
-    // that starts returning Double enters `float_ret_fn_names`, a const that
-    // stops being an Int leaves `const_int_names`, a struct field that becomes
-    // Double enters `ctor_float_fields`. `body_cache_edit_classes_test.vibe`
-    // probes that residue directly rather than leaving it argued.
-    bcc_layout_fp_strings(guard_layout_now, float_ret_fn_names)
-    // Thunks decide call-vs-value at a reference; a folded const decides the
-    // literal a body embeds.
-    bcc_layout_fp_strings(guard_layout_now, thunk_names_sorted_shared)
-    bcc_layout_fp_strings(guard_layout_now, const_int_names_list)
-    bcc_layout_fp_ints(guard_layout_now, const_int_values_list)
-    // Generated-builtin indices and the region arena's address. `num_generated`
-    // pins their COUNT; these are the assignment.
-    bcc_layout_fp_ints(guard_layout_now, [
-      rc_drop_idx,
-      rc_dup_idx,
-      rc_alloc_idx,
-      region_ptr_addr,
-      region_arr_new_idx,
-      region_bytes_new_idx,
-      heap_grow_check_idx,
-      map_hash_idx,
-      map_cap_idx,
-      map_build_index_idx,
-      map_probe_index_idx,
-      map_index_insert_idx
-    ])
-    // Exception tags: effect `effect_names[i]` routes through tag `3 + i`, so
-    // a declared effect added anywhere moves every later `perform`'s tag.
-    bcc_layout_fp_strings(guard_layout_now, effect_names_list)
-    bcc_layout_fp_strings(guard_layout_now, effect_op_keys_list)
-    bcc_layout_fp_ints(guard_layout_now, effect_op_arities_list)
-    bcc_layout_fp_bools(guard_layout_now, [has_exceptions])
-    // Whole-program return classifications: they decide a call site's shape.
-    bcc_layout_fp_strings(guard_layout_now, lc_agg_ret_names)
-    bcc_layout_fp_ints(guard_layout_now, lc_agg_ret_infos)
-    bcc_layout_fp_strings(guard_layout_now, lc_heap_ret_names)
-    bcc_layout_fp_strings(guard_layout_now, lc_scalar_ret_names)
-    bcc_layout_fp_strings(guard_layout_now, lc_borrow_ret_names)
-    bcc_layout_fp_strings(guard_layout_now, lc_borrow_view_ret)
-    bcc_layout_fp_strings(guard_layout_now, lc_borrow_param_user_srt)
-    bcc_layout_fp_ints(guard_layout_now, lc_borrow_param_mask)
-    // The shared capture-name index a lambda resolves a capture through.
-    bcc_layout_fp_strings(guard_layout_now, capture_name_index_shared)
-    // Compile modes that change emitted code, and the entry name, which
-    // `rc_entry_untag_return` compares each function's own name against.
-    bcc_layout_fp_bools(guard_layout_now, [
-      enable_rc,
-      rc_shadow,
-      dbg_line_on,
-      coverage,
-      library_mode
-    ])
-    bcc_layout_fp_strings(guard_layout_now, [entry_name])
-  } else {
-    ()
-  }
+  let emission_layout = lc_build_emission_layout(input, lambda_bases, coverage, enable_rc, rc_shadow)
+  let capture_name_index_shared = emission_layout.capture_names
+  let thunk_names_sorted_shared = emission_layout.thunk_names
+  let guard_layout_now = emission_layout.guard_layout
   if pin_region_capacity >= 0 && !late_dce_rewrote_bodies {
     let mut __glc2 = 0
     while __glc2 < Array::length(guard_layout_now) {

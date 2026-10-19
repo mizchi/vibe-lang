@@ -1,0 +1,1058 @@
+// Private assembly packet: owned metadata and fresh output cells, with no AST.
+// The original phase receipt must bind both packet and shared-context bytes.
+import @vibe/compiler/cache {
+  AstBinaryReader,
+  ast_binary_read_bool_checked,
+  ast_binary_read_count_checked,
+  ast_binary_read_string_checked,
+  ast_binary_read_svarint_checked,
+  ast_binary_reader_remaining,
+  ast_binary_write_bool,
+  ast_binary_write_svarint,
+  ast_binary_write_varint
+}
+import @vibe/compiler/codegen/wasi {
+  LinkedBuiltinBodies,
+  LinkedModulePreparation,
+  LinkedSectionFacts,
+  LinkedSectionInputs,
+  LinkedSectionPlan,
+  lc_emit_module_sections,
+  lc_function_linemap_new
+}
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache, CovState, DbgProv, LambdaTable, LineMapState, codegen_body_cache_to_bytes
+}
+import @vibe/lowering_worker/linear {
+  linear_body_cache_from_bytes, linear_string_reader
+}
+import @vibe/blake3/simd {
+  blake3_bytes_simd
+}
+import ./product.vibe {
+  function_product_plan_new
+}
+import ./product_plan_wire.vibe {
+  read_function_product_plan, write_function_product_plan
+}
+import ./replay.vibe {
+  FunctionReplayState, function_replay_state_new, replay_function_state
+}
+
+/// No syntax, source text, function-emitter closure, Store handle or compiler
+/// input record is retained. The section and replay records share fresh output
+/// cells within this instance; their owned wire form crosses the native phase.
+export struct FunctionAssembly {
+  sections: LinkedSectionPlan;
+  replay: FunctionReplayState;
+  enable_rc: Bool
+}
+
+fn fa_require(ok: Bool, message: String) -> Unit with Exception {
+  if !ok {
+    throw("function assembly: " + message)
+  } else ()
+}
+
+fn fa_digest(value: String) -> Unit with Exception {
+  fa_require(String::length(value) == 64, "invalid digest")
+  let mut i = 0
+  while i < 64 {
+    let c = String::char_code_at(value, i)
+    fa_require((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'), "invalid digest")
+    i = i + 1
+  }
+}
+
+// Reserve a conservative varint allowance before any variable-size append.
+// Ordinary Bytes growth keeps small packets from reserving another64MiB.
+fn fa_room(b: Bytes, length: Int) -> Unit with Exception {
+  fa_require(length >= 0 && length <= 64 * 1024 * 1024 - 10 && Bytes::length(b) <= 64 * 1024 * 1024 - 10 - length, "exceeds64MiB")
+}
+fn fa_put_int(b: Bytes, value: Int) -> Unit with Exception {
+  fa_room(b, 0); ast_binary_write_svarint(b, value)
+}
+fn fa_get_int(r: AstBinaryReader) -> Int with Exception {
+  ast_binary_read_svarint_checked(r)
+}
+fn fa_put_bool(b: Bytes, value: Bool) -> Unit with Exception {
+  fa_room(b, 0); ast_binary_write_bool(b, value)
+}
+fn fa_get_bool(r: AstBinaryReader) -> Bool with Exception {
+  ast_binary_read_bool_checked(r)
+}
+fn fa_put_count(b: Bytes, value: Int) -> Unit with Exception {
+  fa_room(b, 0); fa_require(value >= 0, "negative count")
+  ast_binary_write_varint(b, value)
+}
+fn fa_put_string(b: Bytes, value: String) -> Unit with Exception {
+  fa_room(b, String::length(value))
+  ast_binary_write_varint(b, String::length(value))
+  let mut i = 0
+  while i < String::length(value) {
+    Bytes::push(b, String::char_code_at(value, i)); i = i + 1
+  }
+}
+fn fa_get_string(r: AstBinaryReader) -> String with Exception {
+  ast_binary_read_string_checked(r)
+}
+fn fa_put_bytes(b: Bytes, value: Bytes) -> Unit with Exception {
+  fa_room(b, Bytes::length(value))
+  ast_binary_write_varint(b, Bytes::length(value))
+  Bytes::blit(b, value, 0, Bytes::length(value))
+}
+fn fa_get_bytes(r: AstBinaryReader) -> Bytes with Exception {
+  let n = ast_binary_read_count_checked(r)
+  let value = Bytes::slice(r.bytes, r.pos, r.pos + n)
+  r.pos = r.pos + n
+  value
+}
+fn fa_put_ints(b: Bytes, values: Array[Int]) -> Unit with Exception {
+  fa_put_count(b, Array::length(values))
+  for value in values {
+    fa_put_int(b, value)
+  }
+  ()
+}
+fn fa_get_ints(r: AstBinaryReader) -> Array[Int] with Exception {
+  let n = ast_binary_read_count_checked(r)
+  let values: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(values, fa_get_int(r)); i = i + 1
+  }
+  values
+}
+fn fa_put_strings(b: Bytes, values: Array[String]) -> Unit with Exception {
+  fa_put_count(b, Array::length(values))
+  for value in values {
+    fa_put_string(b, value)
+  }
+  ()
+}
+fn fa_get_strings(r: AstBinaryReader) -> Array[String] with Exception {
+  let n = ast_binary_read_count_checked(r)
+  let values: Array[String] = []
+  let mut i = 0
+  while i < n {
+    Array::push(values, fa_get_string(r)); i = i + 1
+  }
+  values
+}
+fn fa_put_int_matrix(b: Bytes, values: Array[Array[Int]]) -> Unit with Exception {
+  fa_put_count(b, Array::length(values))
+  for value in values {
+    fa_put_ints(b, value)
+  }
+  ()
+}
+fn fa_get_int_matrix(r: AstBinaryReader) -> Array[Array[Int]] with Exception {
+  let n = ast_binary_read_count_checked(r)
+  let values: Array[Array[Int]] = []
+  let mut i = 0
+  while i < n {
+    Array::push(values, fa_get_ints(r)); i = i + 1
+  }
+  values
+}
+fn fa_put_string_matrix(b: Bytes, values: Array[Array[String]]) -> Unit with Exception {
+  fa_put_count(b, Array::length(values))
+  for value in values {
+    fa_put_strings(b, value)
+  }
+  ()
+}
+fn fa_get_string_matrix(r: AstBinaryReader) -> Array[Array[String]] with Exception {
+  let n = ast_binary_read_count_checked(r)
+  let values: Array[Array[String]] = []
+  let mut i = 0
+  while i < n {
+    Array::push(values, fa_get_strings(r)); i = i + 1
+  }
+  values
+}
+fn fa_put_imports(b: Bytes, values: Array[(String, String, Int, Int)]) -> Unit with Exception {
+  fa_put_count(b, Array::length(values))
+  for value in values {
+    let (import_module, name, arity, index) = value
+    fa_put_string(b, import_module); fa_put_string(b, name)
+    fa_put_int(b, arity); fa_put_int(b, index)
+  }
+  ()
+}
+fn fa_get_imports(r: AstBinaryReader) -> Array[(String, String, Int, Int)] with Exception {
+  let n = ast_binary_read_count_checked(r)
+  let values: Array[(String, String, Int, Int)] = []
+  let mut i = 0
+  while i < n {
+    let import_module = fa_get_string(r)
+    let name = fa_get_string(r)
+    let arity = fa_get_int(r)
+    let index = fa_get_int(r)
+    Array::push(values, (import_module, name, arity, index)); i = i + 1
+  }
+  values
+}
+fn fa_put_facts(b: Bytes, value: LinkedSectionFacts) -> Unit with Exception {
+  fa_put_bool(b, value.entry_returns_unit); fa_put_bool(b, value.uses_exceptions)
+  fa_put_string_matrix(b, value.debug_param_names)
+  fa_put_bool(b, value.strip_executable_exports)
+}
+fn fa_get_facts(r: AstBinaryReader) -> LinkedSectionFacts with Exception {
+  let unit = fa_get_bool(r)
+  let exceptions = fa_get_bool(r)
+  let names = fa_get_string_matrix(r)
+  let strip = fa_get_bool(r)
+  LinkedSectionFacts::{
+    entry_returns_unit: unit,
+    uses_exceptions: exceptions,
+    debug_param_names: names,
+    strip_executable_exports: strip
+  }
+}
+fn fa_put_prov(b: Bytes, value: DbgProv) -> Unit with Exception {
+  fa_put_strings(b, value.files); fa_put_int_matrix(b, value.file_nls)
+  fa_put_ints(b, value.stmt_file_id)
+}
+fn fa_get_prov(r: AstBinaryReader) -> DbgProv with Exception {
+  let files = fa_get_strings(r)
+  let nls = fa_get_int_matrix(r)
+  let owners = fa_get_ints(r)
+  DbgProv::{ files: files, file_nls: nls, stmt_file_id: owners }
+}
+fn fa_put_cov(b: Bytes, value: CovState) -> Unit with Exception {
+  fa_require(!value.enabled && Array::length(value.next) == 1 && Array::get(value.next, 0) == 0 && Array::length(value.cur_fn) == 1 && Array::get(value.cur_fn, 0) == 0 && Array::length(value.owners) == 0, "coverage or consumed coverage state")
+  fa_put_int(b, value.base); fa_put_int(b, value.cap)
+}
+fn fa_get_cov(r: AstBinaryReader) -> CovState with Exception {
+  let base = fa_get_int(r)
+  let cap = fa_get_int(r)
+  CovState::{
+    enabled: false,
+    base: base,
+    cap: cap,
+    next: [0],
+    cur_fn: [0],
+    owners: []
+  }
+}
+fn fa_check_linemap(value: LineMapState) -> Unit with Exception {
+  fa_require(Array::length(value.cur_fn) == 1 && Array::get(value.cur_fn, 0) == 0 && Array::length(value.site) == 1 && Array::get(value.site, 0) == 0 && Array::length(value.funcs) == 0 && Array::length(value.offsets) == 0 && Array::length(value.file_ids) == 0 && Array::length(value.lines) == 0 && Array::length(value.grp_fn) == 0 && Array::length(value.grp_start) == 0 && Array::length(value.grp_first_off) == 0 && Bytes::length(value.stream) == 0, "expected a fresh line publisher")
+}
+fn fa_put_linemap(b: Bytes, value: LineMapState) -> Unit with Exception {
+  fa_check_linemap(value); fa_put_bool(b, value.enabled)
+}
+fn fa_get_linemap(r: AstBinaryReader) -> LineMapState with Exception {
+  lc_function_linemap_new(fa_get_bool(r))
+}
+fn fa_check_lambdas(value: LambdaTable) -> Unit with Exception {
+  fa_require(value.base == 0 && Array::length(value.bodies) == 0 && Array::length(value.param_counts) == 0 && Array::length(value.captures) == 0 && Array::length(value.meta_i32) == 0 && Array::length(value.meta_i64) == 0, "expected fresh whole-module lambdas")
+}
+fn fa_put_lambdas(b: Bytes, value: LambdaTable) -> Unit with Exception {
+  fa_check_lambdas(value)
+}
+fn fa_get_lambdas(r: AstBinaryReader) -> LambdaTable {
+  LambdaTable::{
+    base: 0,
+    bodies: [],
+    param_counts: [],
+    captures: [],
+    meta_i32: [],
+    meta_i64: []
+  }
+}
+
+fn fa_check(state: FunctionAssembly) -> Unit with Exception {
+  let sections = state.sections
+  let replay = state.replay
+  let plan = replay.validation
+  fa_require(!replay.used, "assembly was already consumed")
+  fa_require(!sections.library_mode && !sections.cov_state.enabled, "library and coverage modes are unsupported")
+  // Section name/signature tables include the appended builtin aliases;
+  // only their leading user range belongs to the executable function plan.
+  fa_require(sections.num_user_funcs == plan.num_user_funcs && Array::length(plan.fn_names) == plan.num_user_funcs && Array::length(sections.fn_names_list) >= plan.num_user_funcs && Array::length(sections.fn_param_counts) == Array::length(sections.fn_names_list), "function column counts differ")
+  let mut fi = 0
+  while fi < plan.num_user_funcs {
+    fa_require(Array::get(sections.fn_names_list, fi) == Array::get(plan.fn_names, fi), "planned function name differs")
+    fi = fi + 1
+  }
+  fa_require(sections.lambda_slot_base == plan.lambda_slot_base, "lambda slot base differs")
+  fa_require(sections.linemap_on == plan.linemap_on && sections.linemap_state.enabled == plan.linemap_on, "line publisher mode differs")
+  fa_require(Array::length(sections.prov.files) == plan.source_file_count, "source file count differs")
+  fa_require(sections.num_strings == Array::length(sections.str_strs) && Array::length(sections.str_offsets) == sections.num_strings, "literal pool columns differ")
+  let n = Array::length(replay.builtins.bodies)
+  fa_require(n == sections.num_generated && Array::length(replay.builtins.builtin_type_idxs) == n && Array::length(replay.builtins.meta_i32) == n && Array::length(replay.builtins.meta_i64) == n && Array::length(replay.builtins.meta_v128) == n, "builtin columns differ")
+  fa_require(Array::length(replay.placed_files) == (if plan.linemap_on {
+    plan.num_user_funcs
+  } else {
+    0
+  }), "line placement columns differ")
+  fa_require(Array::length(sections.table_slots_used) == 0 && Array::length(sections.blind_owners) == 0 && Array::length(sections.blind_offsets) == 0 && Array::length(sections.blind_kinds) == 0 && Array::length(sections.blind_syms) == 0, "expected fresh relocation output")
+  fa_check_linemap(sections.linemap_state)
+  fa_check_lambdas(sections.lt_w)
+}
+
+/// Project while syntax is still available, then consume the preparation token.
+/// The result keeps only owned assembly/validation data and empty output cells.
+export fn function_assembly_new(prepared: LinkedModulePreparation) -> FunctionAssembly with Exception {
+  fa_require(!prepared.used, "preparation was already consumed")
+  fa_require(!prepared.coverage && !prepared.debug_break && !prepared.debug_trace && !prepared.rc_shadow, "coverage and debug modes are unsupported")
+  fa_require(Array::length(prepared.input.body_cache_in.fn_indices) == 0 && Array::length(prepared.input.body_cache_out.fn_indices) == 0 && prepared.input.slice_lo == 0 && prepared.input.slice_hi < 0, "expected a fresh whole-program body phase")
+  let validation = function_product_plan_new(prepared.functions, prepared.input)
+  let replay = function_replay_state_new(validation, prepared.input, prepared.enable_rc, false)
+  let state = FunctionAssembly::{
+    sections: prepared.sections,
+    replay: replay,
+    enable_rc: prepared.enable_rc
+  }
+  fa_check(state)
+  prepared.used = true
+  state
+}
+
+/// The large runtime literal pool is referenced through the original context,
+/// never serialized again in this packet. All other section fields are explicit.
+export fn write_function_assembly(state: FunctionAssembly, context_digest: String) -> Bytes with Exception {
+  fa_digest(context_digest); fa_check(state)
+  let b = Bytes::new()
+  fa_put_string(b, "vibe-function-assembly-1")
+  fa_put_string(b, context_digest)
+  fa_put_bool(b, state.enable_rc)
+  fa_put_bytes(b, write_function_product_plan(state.replay.validation))
+  let sections = state.sections
+  fa_put_int(b, sections.arr_concat_idx)
+  fa_put_int(b, sections.arr_get_idx)
+  fa_put_int(b, sections.arr_len_idx)
+  fa_put_int(b, sections.arr_new_idx)
+  fa_put_int(b, sections.arr_push_all_idx)
+  fa_put_int(b, sections.arr_push_idx)
+  fa_put_int(b, sections.arr_set_idx)
+  fa_put_int(b, sections.arr_slice_idx)
+  fa_put_int(b, sections.arr_truncate_idx)
+  fa_put_int(b, sections.array_capacity_idx)
+  fa_put_ints(b, sections.blind_kinds)
+  fa_put_ints(b, sections.blind_offsets)
+  fa_put_ints(b, sections.blind_owners)
+  fa_put_ints(b, sections.blind_syms)
+  fa_put_int(b, sections.bytes_append_idx)
+  fa_put_int(b, sections.bytes_blit_idx)
+  fa_put_int(b, sections.bytes_capacity_idx)
+  fa_put_int(b, sections.bytes_compare_idx)
+  fa_put_int(b, sections.bytes_concat_idx)
+  fa_put_int(b, sections.bytes_count_byte_idx)
+  fa_put_int(b, sections.bytes_from_array_idx)
+  fa_put_int(b, sections.bytes_get_idx)
+  fa_put_int(b, sections.bytes_index_of_bytes_idx)
+  fa_put_int(b, sections.bytes_index_of_idx)
+  fa_put_int(b, sections.bytes_last_index_of_idx)
+  fa_put_int(b, sections.bytes_len_idx)
+  fa_put_int(b, sections.bytes_new_idx)
+  fa_put_int(b, sections.bytes_push_idx)
+  fa_put_int(b, sections.bytes_set_idx)
+  fa_put_int(b, sections.bytes_slice_idx)
+  fa_put_int(b, sections.bytes_to_array_idx)
+  fa_put_int(b, sections.compact_fingerprint_hash_idx)
+  fa_put_int(b, sections.cov_base)
+  fa_put_int(b, sections.cov_branch_base)
+  fa_put_int(b, sections.cov_branch_reserve)
+  fa_put_int(b, sections.cov_count)
+  fa_put_int(b, sections.cov_reserve)
+  fa_put_cov(b, sections.cov_state)
+  fa_put_int(b, sections.dbg_break_import_idx)
+  fa_put_int(b, sections.dbg_line_import_idx)
+  fa_put_bool(b, sections.dbg_line_on)
+  fa_put_int(b, sections.dbgargs_base)
+  fa_put_int(b, sections.dbgargs_cap)
+  fa_put_int(b, sections.dbgargs_count_addr)
+  fa_put_int(b, sections.dbgargs_reserve)
+  fa_put_int(b, sections.div_zero_abort_idx)
+  fa_put_int(b, sections.double_to_int_idx)
+  fa_put_int(b, sections.eff_reserve)
+  fa_put_strings(b, sections.effect_names_list)
+  fa_put_bool(b, sections.enable_late_dce)
+  fa_put_string(b, sections.entry_name)
+  fa_put_string(b, sections.entry_name_in)
+  fa_put_int(b, sections.entry_user_idx)
+  fa_put_int(b, sections.env_args_get_import_idx)
+  fa_put_int(b, sections.env_args_len_import_idx)
+  fa_put_int(b, sections.env_get_import_idx)
+  fa_put_int(b, sections.eq_idx)
+  fa_put_strings(b, sections.export_fn_names)
+  fa_put_ints(b, sections.export_fn_user_indices)
+  fa_put_strings(b, sections.fn_names_list)
+  fa_put_ints(b, sections.fn_param_counts)
+  fa_put_facts(b, sections.facts)
+  fa_put_int(b, sections.frozen_array_copy_idx)
+  fa_put_int(b, sections.fs_append_import_idx)
+  fa_put_int(b, sections.fs_chdir_import_idx)
+  fa_put_int(b, sections.fs_copy_import_idx)
+  fa_put_int(b, sections.fs_exists_import_idx)
+  fa_put_int(b, sections.fs_exists_stub_idx)
+  fa_put_int(b, sections.fs_getcwd_import_idx)
+  fa_put_int(b, sections.fs_is_dir_import_idx)
+  fa_put_int(b, sections.fs_is_file_import_idx)
+  fa_put_int(b, sections.fs_mkdir_import_idx)
+  fa_put_int(b, sections.fs_mkdir_p_import_idx)
+  fa_put_int(b, sections.fs_publish_immutable_text_import_idx)
+  fa_put_int(b, sections.fs_publish_immutable_text_stub_idx)
+  fa_put_int(b, sections.compiler_lowering_import_idx)
+  fa_put_int(b, sections.fs_read_bytes_import_idx)
+  fa_put_int(b, sections.fs_read_dir_import_idx)
+  fa_put_int(b, sections.fs_read_file_import_idx)
+  fa_put_int(b, sections.fs_read_file_stub_idx)
+  fa_put_int(b, sections.fs_remove_file_import_idx)
+  fa_put_int(b, sections.fs_remove_import_idx)
+  fa_put_int(b, sections.fs_remove_tree_import_idx)
+  fa_put_int(b, sections.fs_rename_import_idx)
+  fa_put_int(b, sections.fs_stat_token_import_idx)
+  fa_put_int(b, sections.fs_stat_token_stub_idx)
+  fa_put_int(b, sections.fs_write_bytes_import_idx)
+  fa_put_int(b, sections.fs_write_bytes_stub_idx)
+  fa_put_int(b, sections.fs_write_file_import_idx)
+  fa_put_int(b, sections.fs_write_file_stub_idx)
+  fa_put_int(b, sections.func_offset)
+  fa_put_int(b, sections.generic_add_idx)
+  fa_put_int(b, sections.generic_rel_diff_idx)
+  fa_put_int(b, sections.heap_grow_check_idx)
+  fa_put_int(b, sections.heap_start)
+  fa_put_strings(b, sections.hf_all_names)
+  fa_put_int(b, sections.hf_arg_push_import_idx)
+  fa_put_int(b, sections.hf_arm_import_idx)
+  fa_put_int(b, sections.hf_cancel_import_idx)
+  fa_put_int(b, sections.hf_get_import_idx)
+  fa_put_strings(b, sections.hf_named_names)
+  fa_put_strings(b, sections.hf_response_addresses)
+  fa_put_strings(b, sections.hf_response_arg_addresses)
+  fa_put_int(b, sections.hf_wait_any_import_idx)
+  fa_put_int(b, sections.hf_wait_import_idx)
+  fa_put_strings(b, sections.hf_wit_names)
+  fa_put_int(b, sections.hs_arm_import_idx)
+  fa_put_int(b, sections.hs_cancel_import_idx)
+  fa_put_int(b, sections.hs_claim_import_idx)
+  fa_put_int(b, sections.hs_close_import_idx)
+  fa_put_strings(b, sections.hs_named_names)
+  fa_put_int(b, sections.hs_read_import_idx)
+  fa_put_int(b, sections.hsl_arm_import_idx)
+  fa_put_int(b, sections.hsl_cancel_import_idx)
+  fa_put_int(b, sections.http_close_import_idx)
+  fa_put_int(b, sections.http_request_import_idx)
+  fa_put_int(b, sections.http_response_body_import_idx)
+  fa_put_int(b, sections.http_response_header_import_idx)
+  fa_put_int(b, sections.http_response_status_import_idx)
+  fa_put_int(b, sections.identity_idx)
+  fa_put_int(b, sections.int_clz_idx)
+  fa_put_int(b, sections.int_ctz_idx)
+  fa_put_int(b, sections.int_popcount_idx)
+  fa_put_int(b, sections.int_to_double_idx)
+  fa_put_int(b, sections.lambda_slot_base)
+  fa_put_bool(b, sections.library_mode)
+  fa_put_bool(b, sections.linemap_on)
+  fa_put_linemap(b, sections.linemap_state)
+  fa_put_imports(b, sections.linked_imports)
+  fa_put_lambdas(b, sections.lt_w)
+  fa_put_bool(b, sections.need_div_zero_abort)
+  fa_put_bool(b, sections.need_host_future_builtin)
+  fa_put_bool(b, sections.need_http_request_builtin)
+  fa_put_int(b, sections.num_base_types)
+  fa_put_int(b, sections.num_generated)
+  fa_put_int(b, sections.num_imported_funcs)
+  fa_put_int(b, sections.num_strings)
+  fa_put_int(b, sections.num_user_funcs)
+  fa_put_int(b, sections.oob_abort_idx)
+  fa_put_ints(b, sections.oob_frag_slots)
+  fa_put_int(b, sections.print_i64_raw_idx)
+  fa_put_int(b, sections.print_int_idx)
+  fa_put_int(b, sections.print_str_idx)
+  fa_put_int(b, sections.process_exit_import_idx)
+  fa_put_int(b, sections.profiler_heap_bytes_import_idx)
+  fa_put_int(b, sections.profiler_now_us_import_idx)
+  fa_put_prov(b, sections.prov)
+  fa_put_int(b, sections.rc_alloc_idx)
+  fa_put_int(b, sections.rc_bins_reserve)
+  fa_put_bytes(b, sections.rc_drop_body_without_array_arm)
+  fa_put_int(b, sections.rc_drop_idx)
+  fa_put_int(b, sections.rc_dup_idx)
+  fa_put_int(b, sections.region_reserve)
+  fa_put_int(b, sections.resolve_path_import_idx)
+  fa_put_bool(b, sections.serve_handler_has_host_stream)
+  fa_put_int(b, sections.sh_capture_close_import_idx)
+  fa_put_int(b, sections.sh_capture_exit_code_import_idx)
+  fa_put_int(b, sections.sh_capture_import_idx)
+  fa_put_int(b, sections.sh_capture_stderr_import_idx)
+  fa_put_int(b, sections.sh_capture_stdout_import_idx)
+  fa_put_int(b, sections.sh_import_idx)
+  fa_put_int(b, sections.sh_lines_import_idx)
+  fa_put_int(b, sections.shadow_uaf_abort_idx)
+  fa_put_int(b, sections.simd_scan_alnum_idx)
+  fa_put_int(b, sections.simd_scan_alnum_str_idx)
+  fa_put_int(b, sections.simd_scan_line_end_str_idx)
+  fa_put_int(b, sections.simd_scan_string_special_str_idx)
+  fa_put_int(b, sections.simd_skip_ws_idx)
+  fa_put_int(b, sections.sleep_import_idx)
+  fa_put_bool(b, sections.sleep_needs_component_adapter)
+  fa_put_int(b, sections.sources_idx)
+  fa_put_int(b, sections.stderr_write_char_import_idx)
+  fa_put_int(b, sections.stderr_write_stream_import_idx)
+  fa_put_int(b, sections.stdin_provider_acquire_import_idx)
+  fa_put_int(b, sections.stdin_provider_close_import_idx)
+  fa_put_int(b, sections.stdin_provider_read_import_idx)
+  fa_put_int(b, sections.stdin_read_char_import_idx)
+  fa_put_int(b, sections.stdin_read_stream_import_idx)
+  fa_put_int(b, sections.stdout_write_char_import_idx)
+  fa_put_int(b, sections.stdout_write_stream_import_idx)
+  fa_put_int(b, sections.str_char_code_at_idx)
+  fa_put_int(b, sections.str_concat_idx)
+  fa_put_int(b, sections.str_eq_idx)
+  fa_put_int(b, sections.str_from_char_code_idx)
+  fa_put_int(b, sections.str_len_idx)
+  fa_put_int(b, sections.str_lex_diff_idx)
+  fa_put_ints(b, sections.str_offsets)
+  fa_put_int(b, sections.str_substring_idx)
+  fa_put_int(b, sections.string_contains_idx)
+  fa_put_int(b, sections.string_ends_with_idx)
+  fa_put_int(b, sections.string_index_of_idx)
+  fa_put_int(b, sections.string_join_idx)
+  fa_put_int(b, sections.string_last_index_of_idx)
+  fa_put_int(b, sections.string_split_idx)
+  fa_put_int(b, sections.string_starts_with_idx)
+  fa_put_int(b, sections.string_trim_idx)
+  fa_put_ints(b, sections.table_slots_used)
+  fa_put_int(b, sections.tcp_close_import_idx)
+  fa_put_int(b, sections.tcp_connect_import_idx)
+  fa_put_int(b, sections.tcp_read_import_idx)
+  fa_put_int(b, sections.tcp_write_import_idx)
+  fa_put_strings(b, sections.test_fn_names)
+  fa_put_strings(b, sections.thunk_names_list)
+  fa_put_int(b, sections.trace_cap)
+  fa_put_int(b, sections.trace_counter_addr)
+  fa_put_int(b, sections.trace_log_base)
+  fa_put_int(b, sections.trace_reserve)
+  let builtins = state.replay.builtins
+  fa_put_count(b, Array::length(builtins.bodies))
+  for body in builtins.bodies {
+    fa_put_bytes(b, body)
+  }
+  fa_put_ints(b, builtins.builtin_type_idxs)
+  fa_put_ints(b, builtins.meta_i32)
+  fa_put_ints(b, builtins.meta_i64)
+  fa_put_ints(b, builtins.meta_v128)
+  fa_put_ints(b, state.replay.guard_layout)
+  fa_put_bool(b, state.replay.publish_layout)
+  fa_put_ints(b, state.replay.placed_files)
+  fa_require(Array::length(state.replay.cache.collect) == 1, "invalid cache collection cell")
+  fa_put_int(b, Array::get(state.replay.cache.collect, 0))
+  fa_put_bytes(b, codegen_body_cache_to_bytes(state.replay.cache))
+  b
+}
+
+/// Authenticate actual input buffers against the original trusted phase receipt
+/// before decoding. Reading just the context's owned literal prefix avoids AST
+/// placeholders and a second copy of every compiler/CLI source literal.
+export fn read_function_assembly(bytes: Bytes, shared: Bytes, packet_digest: String, context_digest: String) -> FunctionAssembly with Exception {
+  fa_digest(packet_digest); fa_digest(context_digest)
+  fa_require(Bytes::length(bytes) <= 64 * 1024 * 1024 && Bytes::length(shared) <= 64 * 1024 * 1024, "exceeds64MiB")
+  fa_require(blake3_bytes_simd(bytes) == packet_digest, "packet receipt differs")
+  fa_require(blake3_bytes_simd(shared) == context_digest, "context receipt differs")
+  let r = linear_string_reader(bytes)
+  fa_require(fa_get_string(r) == "vibe-function-assembly-1", "unsupported format")
+  fa_require(fa_get_string(r) == context_digest, "context binding differs")
+  let enable_rc = fa_get_bool(r)
+  let validation = read_function_product_plan(fa_get_bytes(r))
+  let arr_concat_idx = fa_get_int(r)
+  let arr_get_idx = fa_get_int(r)
+  let arr_len_idx = fa_get_int(r)
+  let arr_new_idx = fa_get_int(r)
+  let arr_push_all_idx = fa_get_int(r)
+  let arr_push_idx = fa_get_int(r)
+  let arr_set_idx = fa_get_int(r)
+  let arr_slice_idx = fa_get_int(r)
+  let arr_truncate_idx = fa_get_int(r)
+  let array_capacity_idx = fa_get_int(r)
+  let blind_kinds = fa_get_ints(r)
+  let blind_offsets = fa_get_ints(r)
+  let blind_owners = fa_get_ints(r)
+  let blind_syms = fa_get_ints(r)
+  let bytes_append_idx = fa_get_int(r)
+  let bytes_blit_idx = fa_get_int(r)
+  let bytes_capacity_idx = fa_get_int(r)
+  let bytes_compare_idx = fa_get_int(r)
+  let bytes_concat_idx = fa_get_int(r)
+  let bytes_count_byte_idx = fa_get_int(r)
+  let bytes_from_array_idx = fa_get_int(r)
+  let bytes_get_idx = fa_get_int(r)
+  let bytes_index_of_bytes_idx = fa_get_int(r)
+  let bytes_index_of_idx = fa_get_int(r)
+  let bytes_last_index_of_idx = fa_get_int(r)
+  let bytes_len_idx = fa_get_int(r)
+  let bytes_new_idx = fa_get_int(r)
+  let bytes_push_idx = fa_get_int(r)
+  let bytes_set_idx = fa_get_int(r)
+  let bytes_slice_idx = fa_get_int(r)
+  let bytes_to_array_idx = fa_get_int(r)
+  let compact_fingerprint_hash_idx = fa_get_int(r)
+  let cov_base = fa_get_int(r)
+  let cov_branch_base = fa_get_int(r)
+  let cov_branch_reserve = fa_get_int(r)
+  let cov_count = fa_get_int(r)
+  let cov_reserve = fa_get_int(r)
+  let cov_state = fa_get_cov(r)
+  let dbg_break_import_idx = fa_get_int(r)
+  let dbg_line_import_idx = fa_get_int(r)
+  let dbg_line_on = fa_get_bool(r)
+  let dbgargs_base = fa_get_int(r)
+  let dbgargs_cap = fa_get_int(r)
+  let dbgargs_count_addr = fa_get_int(r)
+  let dbgargs_reserve = fa_get_int(r)
+  let div_zero_abort_idx = fa_get_int(r)
+  let double_to_int_idx = fa_get_int(r)
+  let eff_reserve = fa_get_int(r)
+  let effect_names_list = fa_get_strings(r)
+  let enable_late_dce = fa_get_bool(r)
+  let entry_name = fa_get_string(r)
+  let entry_name_in = fa_get_string(r)
+  let entry_user_idx = fa_get_int(r)
+  let env_args_get_import_idx = fa_get_int(r)
+  let env_args_len_import_idx = fa_get_int(r)
+  let env_get_import_idx = fa_get_int(r)
+  let eq_idx = fa_get_int(r)
+  let export_fn_names = fa_get_strings(r)
+  let export_fn_user_indices = fa_get_ints(r)
+  let fn_names_list = fa_get_strings(r)
+  let fn_param_counts = fa_get_ints(r)
+  let facts = fa_get_facts(r)
+  let frozen_array_copy_idx = fa_get_int(r)
+  let fs_append_import_idx = fa_get_int(r)
+  let fs_chdir_import_idx = fa_get_int(r)
+  let fs_copy_import_idx = fa_get_int(r)
+  let fs_exists_import_idx = fa_get_int(r)
+  let fs_exists_stub_idx = fa_get_int(r)
+  let fs_getcwd_import_idx = fa_get_int(r)
+  let fs_is_dir_import_idx = fa_get_int(r)
+  let fs_is_file_import_idx = fa_get_int(r)
+  let fs_mkdir_import_idx = fa_get_int(r)
+  let fs_mkdir_p_import_idx = fa_get_int(r)
+  let fs_publish_immutable_text_import_idx = fa_get_int(r)
+  let fs_publish_immutable_text_stub_idx = fa_get_int(r)
+  let compiler_lowering_import_idx = fa_get_int(r)
+  let fs_read_bytes_import_idx = fa_get_int(r)
+  let fs_read_dir_import_idx = fa_get_int(r)
+  let fs_read_file_import_idx = fa_get_int(r)
+  let fs_read_file_stub_idx = fa_get_int(r)
+  let fs_remove_file_import_idx = fa_get_int(r)
+  let fs_remove_import_idx = fa_get_int(r)
+  let fs_remove_tree_import_idx = fa_get_int(r)
+  let fs_rename_import_idx = fa_get_int(r)
+  let fs_stat_token_import_idx = fa_get_int(r)
+  let fs_stat_token_stub_idx = fa_get_int(r)
+  let fs_write_bytes_import_idx = fa_get_int(r)
+  let fs_write_bytes_stub_idx = fa_get_int(r)
+  let fs_write_file_import_idx = fa_get_int(r)
+  let fs_write_file_stub_idx = fa_get_int(r)
+  let func_offset = fa_get_int(r)
+  let generic_add_idx = fa_get_int(r)
+  let generic_rel_diff_idx = fa_get_int(r)
+  let heap_grow_check_idx = fa_get_int(r)
+  let heap_start = fa_get_int(r)
+  let hf_all_names = fa_get_strings(r)
+  let hf_arg_push_import_idx = fa_get_int(r)
+  let hf_arm_import_idx = fa_get_int(r)
+  let hf_cancel_import_idx = fa_get_int(r)
+  let hf_get_import_idx = fa_get_int(r)
+  let hf_named_names = fa_get_strings(r)
+  let hf_response_addresses = fa_get_strings(r)
+  let hf_response_arg_addresses = fa_get_strings(r)
+  let hf_wait_any_import_idx = fa_get_int(r)
+  let hf_wait_import_idx = fa_get_int(r)
+  let hf_wit_names = fa_get_strings(r)
+  let hs_arm_import_idx = fa_get_int(r)
+  let hs_cancel_import_idx = fa_get_int(r)
+  let hs_claim_import_idx = fa_get_int(r)
+  let hs_close_import_idx = fa_get_int(r)
+  let hs_named_names = fa_get_strings(r)
+  let hs_read_import_idx = fa_get_int(r)
+  let hsl_arm_import_idx = fa_get_int(r)
+  let hsl_cancel_import_idx = fa_get_int(r)
+  let http_close_import_idx = fa_get_int(r)
+  let http_request_import_idx = fa_get_int(r)
+  let http_response_body_import_idx = fa_get_int(r)
+  let http_response_header_import_idx = fa_get_int(r)
+  let http_response_status_import_idx = fa_get_int(r)
+  let identity_idx = fa_get_int(r)
+  let int_clz_idx = fa_get_int(r)
+  let int_ctz_idx = fa_get_int(r)
+  let int_popcount_idx = fa_get_int(r)
+  let int_to_double_idx = fa_get_int(r)
+  let lambda_slot_base = fa_get_int(r)
+  let library_mode = fa_get_bool(r)
+  let linemap_on = fa_get_bool(r)
+  let linemap_state = fa_get_linemap(r)
+  let linked_imports = fa_get_imports(r)
+  let lt_w = fa_get_lambdas(r)
+  let need_div_zero_abort = fa_get_bool(r)
+  let need_host_future_builtin = fa_get_bool(r)
+  let need_http_request_builtin = fa_get_bool(r)
+  let num_base_types = fa_get_int(r)
+  let num_generated = fa_get_int(r)
+  let num_imported_funcs = fa_get_int(r)
+  let num_strings = fa_get_int(r)
+  let num_user_funcs = fa_get_int(r)
+  let oob_abort_idx = fa_get_int(r)
+  let oob_frag_slots = fa_get_ints(r)
+  let print_i64_raw_idx = fa_get_int(r)
+  let print_int_idx = fa_get_int(r)
+  let print_str_idx = fa_get_int(r)
+  let process_exit_import_idx = fa_get_int(r)
+  let profiler_heap_bytes_import_idx = fa_get_int(r)
+  let profiler_now_us_import_idx = fa_get_int(r)
+  let prov = fa_get_prov(r)
+  let rc_alloc_idx = fa_get_int(r)
+  let rc_bins_reserve = fa_get_int(r)
+  let rc_drop_body_without_array_arm = fa_get_bytes(r)
+  let rc_drop_idx = fa_get_int(r)
+  let rc_dup_idx = fa_get_int(r)
+  let region_reserve = fa_get_int(r)
+  let resolve_path_import_idx = fa_get_int(r)
+  let serve_handler_has_host_stream = fa_get_bool(r)
+  let sh_capture_close_import_idx = fa_get_int(r)
+  let sh_capture_exit_code_import_idx = fa_get_int(r)
+  let sh_capture_import_idx = fa_get_int(r)
+  let sh_capture_stderr_import_idx = fa_get_int(r)
+  let sh_capture_stdout_import_idx = fa_get_int(r)
+  let sh_import_idx = fa_get_int(r)
+  let sh_lines_import_idx = fa_get_int(r)
+  let shadow_uaf_abort_idx = fa_get_int(r)
+  let simd_scan_alnum_idx = fa_get_int(r)
+  let simd_scan_alnum_str_idx = fa_get_int(r)
+  let simd_scan_line_end_str_idx = fa_get_int(r)
+  let simd_scan_string_special_str_idx = fa_get_int(r)
+  let simd_skip_ws_idx = fa_get_int(r)
+  let sleep_import_idx = fa_get_int(r)
+  let sleep_needs_component_adapter = fa_get_bool(r)
+  let sources_idx = fa_get_int(r)
+  let stderr_write_char_import_idx = fa_get_int(r)
+  let stderr_write_stream_import_idx = fa_get_int(r)
+  let stdin_provider_acquire_import_idx = fa_get_int(r)
+  let stdin_provider_close_import_idx = fa_get_int(r)
+  let stdin_provider_read_import_idx = fa_get_int(r)
+  let stdin_read_char_import_idx = fa_get_int(r)
+  let stdin_read_stream_import_idx = fa_get_int(r)
+  let stdout_write_char_import_idx = fa_get_int(r)
+  let stdout_write_stream_import_idx = fa_get_int(r)
+  let str_char_code_at_idx = fa_get_int(r)
+  let str_concat_idx = fa_get_int(r)
+  let str_eq_idx = fa_get_int(r)
+  let str_from_char_code_idx = fa_get_int(r)
+  let str_len_idx = fa_get_int(r)
+  let str_lex_diff_idx = fa_get_int(r)
+  let str_offsets = fa_get_ints(r)
+  let str_substring_idx = fa_get_int(r)
+  let string_contains_idx = fa_get_int(r)
+  let string_ends_with_idx = fa_get_int(r)
+  let string_index_of_idx = fa_get_int(r)
+  let string_join_idx = fa_get_int(r)
+  let string_last_index_of_idx = fa_get_int(r)
+  let string_split_idx = fa_get_int(r)
+  let string_starts_with_idx = fa_get_int(r)
+  let string_trim_idx = fa_get_int(r)
+  let table_slots_used = fa_get_ints(r)
+  let tcp_close_import_idx = fa_get_int(r)
+  let tcp_connect_import_idx = fa_get_int(r)
+  let tcp_read_import_idx = fa_get_int(r)
+  let tcp_write_import_idx = fa_get_int(r)
+  let test_fn_names = fa_get_strings(r)
+  let thunk_names_list = fa_get_strings(r)
+  let trace_cap = fa_get_int(r)
+  let trace_counter_addr = fa_get_int(r)
+  let trace_log_base = fa_get_int(r)
+  let trace_reserve = fa_get_int(r)
+  let n = ast_binary_read_count_checked(r)
+  let bodies: Array[Bytes] = []
+  let mut i = 0
+  while i < n {
+    Array::push(bodies, fa_get_bytes(r)); i = i + 1
+  }
+  let types = fa_get_ints(r)
+  let i32s = fa_get_ints(r)
+  let i64s = fa_get_ints(r)
+  let v128s = fa_get_ints(r)
+  let layout = fa_get_ints(r)
+  let publish = fa_get_bool(r)
+  let placed = fa_get_ints(r)
+  let collect = fa_get_int(r)
+  fa_require(collect == 0 || collect == 1, "invalid cache collection flag")
+  let cache = match linear_body_cache_from_bytes(fa_get_bytes(r)) {
+    Some(value) => value,
+    None => throw("function assembly: invalid cache template")
+  }
+  Array::set(cache.collect, 0, collect)
+  fa_require(ast_binary_reader_remaining(r) == 0, "trailing packet bytes")
+  // Version7 puts the complete literal pool before worker metadata and syntax.
+  let prefix = linear_string_reader(shared)
+  fa_require(fa_get_string(prefix) == "vibe-function-context-7", "unsupported context")
+  let str_strs = fa_get_strings(prefix)
+  let debug_break = fa_get_bool(prefix)
+  let debug_trace = fa_get_bool(prefix)
+  let context_rc = fa_get_bool(prefix)
+  let shadow = fa_get_bool(prefix)
+  let exceptions = fa_get_bool(prefix)
+  fa_require(!debug_break && !debug_trace && !shadow && context_rc == enable_rc && (!exceptions || facts.uses_exceptions), "context modes differ")
+  let sections = LinkedSectionPlan::{
+    arr_concat_idx: arr_concat_idx,
+    arr_get_idx: arr_get_idx,
+    arr_len_idx: arr_len_idx,
+    arr_new_idx: arr_new_idx,
+    arr_push_all_idx: arr_push_all_idx,
+    arr_push_idx: arr_push_idx,
+    arr_set_idx: arr_set_idx,
+    arr_slice_idx: arr_slice_idx,
+    arr_truncate_idx: arr_truncate_idx,
+    array_capacity_idx: array_capacity_idx,
+    blind_kinds: blind_kinds,
+    blind_offsets: blind_offsets,
+    blind_owners: blind_owners,
+    blind_syms: blind_syms,
+    bytes_append_idx: bytes_append_idx,
+    bytes_blit_idx: bytes_blit_idx,
+    bytes_capacity_idx: bytes_capacity_idx,
+    bytes_compare_idx: bytes_compare_idx,
+    bytes_concat_idx: bytes_concat_idx,
+    bytes_count_byte_idx: bytes_count_byte_idx,
+    bytes_from_array_idx: bytes_from_array_idx,
+    bytes_get_idx: bytes_get_idx,
+    bytes_index_of_bytes_idx: bytes_index_of_bytes_idx,
+    bytes_index_of_idx: bytes_index_of_idx,
+    bytes_last_index_of_idx: bytes_last_index_of_idx,
+    bytes_len_idx: bytes_len_idx,
+    bytes_new_idx: bytes_new_idx,
+    bytes_push_idx: bytes_push_idx,
+    bytes_set_idx: bytes_set_idx,
+    bytes_slice_idx: bytes_slice_idx,
+    bytes_to_array_idx: bytes_to_array_idx,
+    compact_fingerprint_hash_idx: compact_fingerprint_hash_idx,
+    cov_base: cov_base,
+    cov_branch_base: cov_branch_base,
+    cov_branch_reserve: cov_branch_reserve,
+    cov_count: cov_count,
+    cov_reserve: cov_reserve,
+    cov_state: cov_state,
+    dbg_break_import_idx: dbg_break_import_idx,
+    dbg_line_import_idx: dbg_line_import_idx,
+    dbg_line_on: dbg_line_on,
+    dbgargs_base: dbgargs_base,
+    dbgargs_cap: dbgargs_cap,
+    dbgargs_count_addr: dbgargs_count_addr,
+    dbgargs_reserve: dbgargs_reserve,
+    div_zero_abort_idx: div_zero_abort_idx,
+    double_to_int_idx: double_to_int_idx,
+    eff_reserve: eff_reserve,
+    effect_names_list: effect_names_list,
+    enable_late_dce: enable_late_dce,
+    entry_name: entry_name,
+    entry_name_in: entry_name_in,
+    entry_user_idx: entry_user_idx,
+    env_args_get_import_idx: env_args_get_import_idx,
+    env_args_len_import_idx: env_args_len_import_idx,
+    env_get_import_idx: env_get_import_idx,
+    eq_idx: eq_idx,
+    export_fn_names: export_fn_names,
+    export_fn_user_indices: export_fn_user_indices,
+    fn_names_list: fn_names_list,
+    fn_param_counts: fn_param_counts,
+    facts: facts,
+    frozen_array_copy_idx: frozen_array_copy_idx,
+    fs_append_import_idx: fs_append_import_idx,
+    fs_chdir_import_idx: fs_chdir_import_idx,
+    fs_copy_import_idx: fs_copy_import_idx,
+    fs_exists_import_idx: fs_exists_import_idx,
+    fs_exists_stub_idx: fs_exists_stub_idx,
+    fs_getcwd_import_idx: fs_getcwd_import_idx,
+    fs_is_dir_import_idx: fs_is_dir_import_idx,
+    fs_is_file_import_idx: fs_is_file_import_idx,
+    fs_mkdir_import_idx: fs_mkdir_import_idx,
+    fs_mkdir_p_import_idx: fs_mkdir_p_import_idx,
+    fs_publish_immutable_text_import_idx: fs_publish_immutable_text_import_idx,
+    fs_publish_immutable_text_stub_idx: fs_publish_immutable_text_stub_idx,
+    compiler_lowering_import_idx: compiler_lowering_import_idx,
+    fs_read_bytes_import_idx: fs_read_bytes_import_idx,
+    fs_read_dir_import_idx: fs_read_dir_import_idx,
+    fs_read_file_import_idx: fs_read_file_import_idx,
+    fs_read_file_stub_idx: fs_read_file_stub_idx,
+    fs_remove_file_import_idx: fs_remove_file_import_idx,
+    fs_remove_import_idx: fs_remove_import_idx,
+    fs_remove_tree_import_idx: fs_remove_tree_import_idx,
+    fs_rename_import_idx: fs_rename_import_idx,
+    fs_stat_token_import_idx: fs_stat_token_import_idx,
+    fs_stat_token_stub_idx: fs_stat_token_stub_idx,
+    fs_write_bytes_import_idx: fs_write_bytes_import_idx,
+    fs_write_bytes_stub_idx: fs_write_bytes_stub_idx,
+    fs_write_file_import_idx: fs_write_file_import_idx,
+    fs_write_file_stub_idx: fs_write_file_stub_idx,
+    func_offset: func_offset,
+    generic_add_idx: generic_add_idx,
+    generic_rel_diff_idx: generic_rel_diff_idx,
+    heap_grow_check_idx: heap_grow_check_idx,
+    heap_start: heap_start,
+    hf_all_names: hf_all_names,
+    hf_arg_push_import_idx: hf_arg_push_import_idx,
+    hf_arm_import_idx: hf_arm_import_idx,
+    hf_cancel_import_idx: hf_cancel_import_idx,
+    hf_get_import_idx: hf_get_import_idx,
+    hf_named_names: hf_named_names,
+    hf_response_addresses: hf_response_addresses,
+    hf_response_arg_addresses: hf_response_arg_addresses,
+    hf_wait_any_import_idx: hf_wait_any_import_idx,
+    hf_wait_import_idx: hf_wait_import_idx,
+    hf_wit_names: hf_wit_names,
+    hs_arm_import_idx: hs_arm_import_idx,
+    hs_cancel_import_idx: hs_cancel_import_idx,
+    hs_claim_import_idx: hs_claim_import_idx,
+    hs_close_import_idx: hs_close_import_idx,
+    hs_named_names: hs_named_names,
+    hs_read_import_idx: hs_read_import_idx,
+    hsl_arm_import_idx: hsl_arm_import_idx,
+    hsl_cancel_import_idx: hsl_cancel_import_idx,
+    http_close_import_idx: http_close_import_idx,
+    http_request_import_idx: http_request_import_idx,
+    http_response_body_import_idx: http_response_body_import_idx,
+    http_response_header_import_idx: http_response_header_import_idx,
+    http_response_status_import_idx: http_response_status_import_idx,
+    identity_idx: identity_idx,
+    int_clz_idx: int_clz_idx,
+    int_ctz_idx: int_ctz_idx,
+    int_popcount_idx: int_popcount_idx,
+    int_to_double_idx: int_to_double_idx,
+    lambda_slot_base: lambda_slot_base,
+    library_mode: library_mode,
+    linemap_on: linemap_on,
+    linemap_state: linemap_state,
+    linked_imports: linked_imports,
+    lt_w: lt_w,
+    need_div_zero_abort: need_div_zero_abort,
+    need_host_future_builtin: need_host_future_builtin,
+    need_http_request_builtin: need_http_request_builtin,
+    num_base_types: num_base_types,
+    num_generated: num_generated,
+    num_imported_funcs: num_imported_funcs,
+    num_strings: num_strings,
+    num_user_funcs: num_user_funcs,
+    oob_abort_idx: oob_abort_idx,
+    oob_frag_slots: oob_frag_slots,
+    print_i64_raw_idx: print_i64_raw_idx,
+    print_int_idx: print_int_idx,
+    print_str_idx: print_str_idx,
+    process_exit_import_idx: process_exit_import_idx,
+    profiler_heap_bytes_import_idx: profiler_heap_bytes_import_idx,
+    profiler_now_us_import_idx: profiler_now_us_import_idx,
+    prov: prov,
+    rc_alloc_idx: rc_alloc_idx,
+    rc_bins_reserve: rc_bins_reserve,
+    rc_drop_body_without_array_arm: rc_drop_body_without_array_arm,
+    rc_drop_idx: rc_drop_idx,
+    rc_dup_idx: rc_dup_idx,
+    region_reserve: region_reserve,
+    resolve_path_import_idx: resolve_path_import_idx,
+    serve_handler_has_host_stream: serve_handler_has_host_stream,
+    sh_capture_close_import_idx: sh_capture_close_import_idx,
+    sh_capture_exit_code_import_idx: sh_capture_exit_code_import_idx,
+    sh_capture_import_idx: sh_capture_import_idx,
+    sh_capture_stderr_import_idx: sh_capture_stderr_import_idx,
+    sh_capture_stdout_import_idx: sh_capture_stdout_import_idx,
+    sh_import_idx: sh_import_idx,
+    sh_lines_import_idx: sh_lines_import_idx,
+    shadow_uaf_abort_idx: shadow_uaf_abort_idx,
+    simd_scan_alnum_idx: simd_scan_alnum_idx,
+    simd_scan_alnum_str_idx: simd_scan_alnum_str_idx,
+    simd_scan_line_end_str_idx: simd_scan_line_end_str_idx,
+    simd_scan_string_special_str_idx: simd_scan_string_special_str_idx,
+    simd_skip_ws_idx: simd_skip_ws_idx,
+    sleep_import_idx: sleep_import_idx,
+    sleep_needs_component_adapter: sleep_needs_component_adapter,
+    sources_idx: sources_idx,
+    stderr_write_char_import_idx: stderr_write_char_import_idx,
+    stderr_write_stream_import_idx: stderr_write_stream_import_idx,
+    stdin_provider_acquire_import_idx: stdin_provider_acquire_import_idx,
+    stdin_provider_close_import_idx: stdin_provider_close_import_idx,
+    stdin_provider_read_import_idx: stdin_provider_read_import_idx,
+    stdin_read_char_import_idx: stdin_read_char_import_idx,
+    stdin_read_stream_import_idx: stdin_read_stream_import_idx,
+    stdout_write_char_import_idx: stdout_write_char_import_idx,
+    stdout_write_stream_import_idx: stdout_write_stream_import_idx,
+    str_char_code_at_idx: str_char_code_at_idx,
+    str_concat_idx: str_concat_idx,
+    str_eq_idx: str_eq_idx,
+    str_from_char_code_idx: str_from_char_code_idx,
+    str_len_idx: str_len_idx,
+    str_lex_diff_idx: str_lex_diff_idx,
+    str_offsets: str_offsets,
+    str_strs: str_strs,
+    str_substring_idx: str_substring_idx,
+    string_contains_idx: string_contains_idx,
+    string_ends_with_idx: string_ends_with_idx,
+    string_index_of_idx: string_index_of_idx,
+    string_join_idx: string_join_idx,
+    string_last_index_of_idx: string_last_index_of_idx,
+    string_split_idx: string_split_idx,
+    string_starts_with_idx: string_starts_with_idx,
+    string_trim_idx: string_trim_idx,
+    table_slots_used: table_slots_used,
+    tcp_close_import_idx: tcp_close_import_idx,
+    tcp_connect_import_idx: tcp_connect_import_idx,
+    tcp_read_import_idx: tcp_read_import_idx,
+    tcp_write_import_idx: tcp_write_import_idx,
+    test_fn_names: test_fn_names,
+    thunk_names_list: thunk_names_list,
+    trace_cap: trace_cap,
+    trace_counter_addr: trace_counter_addr,
+    trace_log_base: trace_log_base,
+    trace_reserve: trace_reserve
+  }
+  let builtins = LinkedBuiltinBodies::{
+    bodies: bodies,
+    builtin_type_idxs: types,
+    meta_i32: i32s,
+    meta_i64: i64s,
+    meta_v128: v128s
+  }
+  let replay = FunctionReplayState::{
+    validation: validation,
+    builtins: builtins,
+    guard_layout: layout,
+    publish_layout: publish,
+    placed_files: placed,
+    lambdas: lt_w,
+    slots: table_slots_used,
+    blind_owners: blind_owners,
+    blind_offsets: blind_offsets,
+    blind_kinds: blind_kinds,
+    blind_syms: blind_syms,
+    linemap: linemap_state,
+    cache: cache,
+    used: false
+  }
+  let state = FunctionAssembly::{
+    sections: sections,
+    replay: replay,
+    enable_rc: enable_rc
+  }
+  fa_check(state)
+  state
+}
+
+/// Canonical replay validates the complete product before modifying any output
+/// cell. Final sections consume only the decoded owned state and real products.
+export fn finish_function_assembly(state: FunctionAssembly, products: CodegenBodyCache) -> Bytes with Exception {
+  fa_check(state)
+  let body = replay_function_state(state.replay, products)
+  lc_emit_module_sections(LinkedSectionInputs::{
+    plan: state.sections,
+    body: body
+  }, false, false, false, state.enable_rc, false)
+}
+
+export fn FunctionAssembly::write_function_assembly(recv: FunctionAssembly, context_digest: String) -> Bytes with Exception {
+  write_function_assembly(recv, context_digest)
+}
+
+export fn FunctionAssembly::finish_function_assembly(recv: FunctionAssembly, products: CodegenBodyCache) -> Bytes with Exception {
+  finish_function_assembly(recv, products)
+}

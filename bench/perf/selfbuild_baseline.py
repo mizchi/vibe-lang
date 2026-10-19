@@ -305,9 +305,33 @@ def images(workspace):
     verify_source(corpus, meta)
 
 
+def function_image_receipt(images):
+    """Select a recorded private ABI explicitly; an init-only _start is no build."""
+    receipt = json.loads((images / "build.json").read_text())
+    formats = {"version": 1, "context_format": 7, "job_format": 2,
+               "compile_engine_rc": 0, "worker_engine_rc": 0, "coordinator_engine_rc": 1}
+    if (receipt.get("kind") != "vibe-taskgroup-functions"
+            or any(type(receipt.get(k)) is not int or receipt[k] != v for k, v in formats.items())):
+        raise ValueError("unsupported function image formats or engine policies")
+    abi = receipt.get("function_abi")
+    if abi == "bump-core-returning-phases-3":
+        if any(type(receipt.get(k)) is not int or receipt[k] != 1 for k in ("phase_format", "assembly_format")):
+            raise ValueError("unsupported function phase or assembly format")
+    elif abi != "bump-core-tagged-callbacks-2":
+        raise ValueError("unsupported function execution ABI")
+    return receipt
+
+
+def function_parent_command(images, runner):
+    receipt = function_image_receipt(images)
+    return ([str(runner), "--function-phases", str(images / "compile.wasm")]
+            if receipt["function_abi"] == "bump-core-returning-phases-3"
+            else [str(runner), str(images / "compile.wasm")])
+
+
 def image_receipts(workspace):
     engines = workspace / "engines"
-    receipt = json.loads((engines / "images/build.json").read_text())
+    receipt = function_image_receipt(engines / "images")
     producer = json.loads((engines / "compiler-generation.json").read_text())
     bootstrap_report = json.loads((workspace / "bootstrap/measurement.json").read_text())
     measured = bootstrap_report.get("artifacts", {}).get("compiler")
@@ -355,9 +379,21 @@ def matrix_command(workspace, variant, source, destination, entry, cache, trace)
     if variant in ["o0", "a0"]:
         command = [str(engines / variant / "viberun"), str(engines / variant / "compiler.wasm"), source, str(destination), entry]
     elif variant == "s0":
-        command = [str(engines / "o0/viberun"), str(engines / "images/compile.wasm")]
+        images = engines / "images"
+        runner = engines / "o0/viberun"
+        command = function_parent_command(images, runner)
         env.update(VIBE_LOWERING_MODE="serial", VIBE_LOWERING_INPUT=source,
                    VIBE_LOWERING_OUTPUT=str(destination), VIBE_LOWERING_ENTRY=entry)
+        if function_image_receipt(images)["function_abi"] == "bump-core-returning-phases-3":
+            directory = destination.parent / "serial-phase"
+            directory.mkdir(parents=True, exist_ok=True)
+            config = directory / "service.json"
+            write(config, {"version": 1, "worker": str(images / "worker.wasm"),
+                           "coordinator": str(images / "coordinator.component.wasm"),
+                           "runner": str(runner), "cwd": str(corpus),
+                           "directory": str(directory), "jobs": 1})
+            env.update(VIBE_FUNCTION_JOBS="1", VIBE_LOWERING_DIRECTORY=str(directory),
+                       VIBE_LOWERING_SERVICE_CONFIG=str(config))
     else:
         command = ["node", str(corpus / "scripts/taskgroup_functions_frontend.mjs"), str(engines / "o0/compiler.wasm"),
                    source, str(destination), entry, variant[1], str(corpus), str(engines / "images"), str(engines / "o0/viberun")]
@@ -383,7 +419,7 @@ def matrix(workspace, rounds):
     samples = []
     report = {"source_commit": meta["source_commit"], "receipts": receipt, "input_sha256": inputs, "harness_sha256": sha(__file__),
               "machine": meta["machine"], "samples": samples,
-              "protocol": "Native JIT primed on a different input; fresh guest cache per round/variant, cold followed by warm in new processes. Forward/reverse/forward order; equal-length lane and cache paths. o0/a0 are A/A controls; s0 is the same-driver serial reference; p1/p2/p4 are whole public native frontend builds. Target RC1; parent/worker engines bump, coordinator RC. Checked-module/body/final-artifact caches off. RSS sampled every20ms; shared mappings may be double-counted. No concurrent builds/profiles."}
+              "protocol": "Native JIT primed on a different input; fresh guest cache per round/variant, cold followed by warm in new processes. Forward/reverse/forward order; equal-length lane and cache paths. o0/a0 are A/A controls; s0 is the explicit same-image serial reference selected by recorded execution ABI (its private control config is prepared before the timed command); p1/p2/p4 are whole public native frontend builds. Target RC1; parent/worker engines bump, coordinator RC. Checked-module/body/final-artifact caches off. RSS sampled every20ms; shared mappings may be double-counted. No concurrent builds/profiles."}
     expected = {}
     for subject, prefix, source, entry in [
         ("compiler", "c", "lib/@vibe/compiler/tests/codegen_lexer_test.vibe", "__no_entry__"),
