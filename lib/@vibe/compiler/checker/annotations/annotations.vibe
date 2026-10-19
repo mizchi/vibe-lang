@@ -887,11 +887,11 @@ fn bare_generic_heads_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[Str
   match te {
     TyName(name) => {
       let skipped = constructor_slot || string_array_has(shadow, name) || shadow_type_constructor_arity(shadow, name) >= 0 || in_scope(name)
-      // A compiler-owned head with region slots (`TaskGroup`) is written
-      // bare on purpose: the call supplies its region and element types.
-      let region_elidable = name != "Map" && structural_head_arity(name) < 0 && compiler_owned_type_arity(name) is Some(_)
-      let want = if skipped || region_elidable {
+      let owned = bare_owned_head_want(name, defs)
+      let want = if skipped {
         0
+      } else if owned >= 0 {
+        owned
       } else match resolve_builtin(name) {
         Some(_) => 0,
         None => declared_generic_head_arity(name, defs)
@@ -919,6 +919,50 @@ fn bare_generic_heads_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[Str
       }
       bare_generic_heads_walk(ret, defs, shadow, in_scope, where_label, errors, false)
     }
+  }
+}
+
+/// How many type arguments a bare compiler-owned head `name` is missing in a
+/// signature, or -1 when the head is not judged here (not compiler-owned, or
+/// `Map` / a structural head, which the caller judges itself). A program
+/// declaration of the name answers through its own formals
+/// (`declared_generic_head_arity`) -- except a declaration of the compiler's
+/// own shape (`type TaskHandle[rg, e, T]` in the concurrency contract), whose
+/// region and row slots the call still supplies.
+fn bare_owned_head_want(name: String, defs: Array[TypeDef]) -> Int {
+  if name == "Map" || structural_head_arity(name) >= 0 {
+    0 - 1
+  } else match find_typedef(defs, name) {
+    None => bare_owned_head_payload_arity(name),
+    Some(td) => match compiler_owned_type_arity(name) {
+      Some(n) => if Array::length(type_def_formals(td)) == n {
+        bare_owned_head_payload_arity(name)
+      } else {
+        0 - 1
+      },
+      None => 0 - 1
+    }
+  }
+}
+
+/// How many PAYLOAD type arguments a bare compiler-owned head leaves out, or
+/// -1 when `name` is not compiler-owned. Only region and row slots may be
+/// elided -- the call supplies them -- so `TaskGroup[rg, e]` and
+/// `MutBytes[r]` are complete when written bare. Every other compiler-owned
+/// head also holds an element type, and its bare spelling resolved to a
+/// wildcard each caller unified with anything: `fn mk() -> ArrayBuilder`
+/// handed a builder of `String` to a caller that froze it as `Array[Int]`,
+/// and `fn add(l: MutList)` pushed a `String` into a `MutList[Int]`.
+fn bare_owned_head_payload_arity(name: String) -> Int {
+  if name == "TaskGroup" || name == "MutBytes" {
+    0
+  } else if name == "TaskHandle" || name == "Sender" || name == "Receiver" || name == "MutList" {
+    1
+  } else if name == "MutMap" {
+    2
+  } else match compiler_owned_type_arity(name) {
+    Some(n) => n,
+    None => 0 - 1
   }
 }
 
