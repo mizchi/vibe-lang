@@ -1,0 +1,28 @@
+// #3534 review (Codex): a host builtin is see-through to the suspend lowering
+// only as the BUILTIN. Here a top-level binding takes `println`'s spelling and
+// holds a closure that suspends; exempting the call by spelling lowered it as
+// a plain call, and the task answered its step object (`r = 1524`, a heap
+// pointer) instead of 42. A program binding of the spelling withdraws the
+// exemption, so the call is refused. Executed by
+// tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle, sleep_wait
+}
+
+fn make() -> (Int) -> Int with Async {
+  (n: Int) -> Int with Async {
+    sleep_wait(1)
+    n + 1
+  }
+}
+
+let println = make()
+
+fn main() -> Int allows Exception + Async {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> {
+      println(41)
+    })
+    TaskHandle::join(a)
+  })
+}

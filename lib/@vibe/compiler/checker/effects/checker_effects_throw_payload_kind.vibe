@@ -15,6 +15,7 @@ import @vibe/compiler/core {
   env_name_index_length,
   exception_effect_labels_equal,
   exception_kinds_compatible,
+  exception_label_kind,
   exception_throw_label_for_kind,
   is_entry_runtime_managed_effect,
   is_exception_label,
@@ -1485,7 +1486,44 @@ export fn make_row_mismatch(fn_name: String, declared: Array[String], missing: A
     row_labels_pasteable(declared)
   }
   let required = sort_labels(labels_union(own, row_labels_pasteable(missing)))
-  EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(own), join_labels(required), off)
+  if Array::length(missing_sorted) > 0 && labels_subset(missing_sorted, own) {
+    // #3520: the function already declares every missing label, so the row
+    // that lacks them is an explicitly annotated closure literal's
+    // (`() -> T with Async + Exception { println(..) }`). Blaming the
+    // function told the reader to add what it already had.
+    let closure_row = row_labels_pasteable(declared)
+    EEEffectRowMismatch(closure_row_mismatch_marker(), join_labels(missing_sorted), join_labels(closure_row), join_labels(sort_labels(labels_union(closure_row, row_labels_pasteable(missing)))), off)
+  } else {
+    EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(own), join_labels(required), off)
+  }
+}
+
+/// #3520: the `fn_name` of an `EEEffectRowMismatch` whose row is a closure
+/// literal's own. `#` cannot start a source name.
+export fn closure_row_mismatch_marker() -> String {
+  "#closure"
+}
+
+fn labels_subset(xs: Array[String], ys: Array[String]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(xs) && ok {
+    let x = Array::get(xs, i)
+    let mut found = false
+    let mut j = 0
+    while j < Array::length(ys) && !found {
+      let y = Array::get(ys, j)
+      // An erased `Exception` covers every kinded one, as the row check reads
+      // it (`fn main allows Exception` covers `Exception[TaskError]`). The
+      // converse does not hold: a kinded row never covers an erased
+      // exception (#3033), so that mismatch stays the function's.
+      found = y == x || (is_exception_label(y) && is_exception_label(x) && String::length(exception_label_kind(y)) == 0)
+      j = j + 1
+    }
+    ok = found
+    i = i + 1
+  }
+  ok
 }
 
 export fn is_program_entry_name(name: String) -> Bool {

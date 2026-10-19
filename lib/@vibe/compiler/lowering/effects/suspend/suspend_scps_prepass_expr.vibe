@@ -682,7 +682,7 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, ctx: 
   }
   let (eff_declared, decl_ops) = scps_effect_decl_ops(ctx, eff)
   if !shape_ok || idp_arms_discharge_error(arms) || !eff_declared {
-    Array::push(errs, "a handler arm captures `resume` as a value, but this handle has an Error arm (Error is non-resumable, #640), mixes effects, or handles a non-declared effect -- not supported by the suspend lowering (#817, ADR-0076)")
+    Array::push(errs, "a handler arm captures `resume` as a value, but this handle has an Error arm (Error is non-resumable), mixes effects, or handles a non-declared effect -- not supported by the suspend lowering")
     None
   } else {
     let ops_qnames = array_empty_str()
@@ -724,9 +724,17 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, ctx: 
       // as the ` [@off=N:M]` marker the located lanes resolve (and every
       // lane strips), same contract as the handle-side culprit marker.
       let (culprit_lead, culprit_clause, culprit_marker) = scps_culprit_parts(body, sctx, ctx, call_scope)
-      let mut scps_msg = String::concat(culprit_lead, "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but the handle body calls something this suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a function whose declared row has a row variable)")
+      // #3520: for `Async` the handle is the entry's own boundary, which the
+      // program never wrote, so a lead about "a handler arm" named nothing
+      // the reader could edit. Lead with the edits that apply instead.
+      let async_lead = if culprit_lead == "" && is_runtime_scheduled_effect(eff) {
+        "run the code that suspends in a `TaskGroup::spawn_suspend` task, or give the parameter it is handed to a row with `Async` (`f: () -> T with Async`) -- the entry's `Async` code reaches a call that cannot suspend: "
+      } else {
+        ""
+      }
+      let mut scps_msg = String::concat(String::concat(async_lead, culprit_lead), "a handler arm captures `resume` as a value, but the handle body calls something this suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a function whose declared row has a row variable)")
       scps_msg = String::concat(scps_msg, culprit_clause)
-      scps_msg = String::concat(scps_msg, " -- only `perform`, pure builtins, constructors, provably effect-free functions, and functions whose concrete row carries the handled effect may be called in the handled body (#817)")
+      scps_msg = String::concat(scps_msg, " -- only `perform`, pure builtins, constructors, provably effect-free functions, and functions whose concrete row carries the handled effect may be called in the handled body")
       scps_msg = String::concat(scps_msg, culprit_marker)
       Array::push(errs, scps_msg)
       None
@@ -738,7 +746,7 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, ctx: 
       let body2 = scps_elim_array_for(body, array_empty_str(), array_empty_str(), site, scps_anf_ctr(), ctx)
       let (split_ok, split_body) = scps_split_tail(body2, sctx, ctx, st)
       if !split_ok {
-        Array::push(errs, "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but a perform of the handled effect (or a call to a function that performs it) is not directly on the handle body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)")
+        Array::push(errs, "a handler arm captures `resume` as a value, but a perform of the handled effect (or a call to a function that performs it) is not directly on the handle body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload)")
         None
       } else {
         scps_ensure_effect_runtime(eff, ctx, st)
@@ -1141,7 +1149,7 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
     fi = fi + 1
   }
   if def_idx < 0 {
-    Array::push(errs, String::concat(String::concat("suspend lowering: internal error -- no top-level definition found for `", fname), "` while emitting its CPS clone (#817)"))
+    Array::push(errs, String::concat(String::concat("suspend lowering: internal error -- no top-level definition found for `", fname), "` while emitting its CPS clone"))
   } else {
     match Array::get(stmts, def_idx) {
       SLet(_, _, _, _, EFn(tps, tbs, params, _, _, fbody)) => {
@@ -1212,7 +1220,7 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
           let (culprit_lead, culprit_clause, culprit_marker) = scps_culprit_parts(fbody2, sctx, ctx, call_scope)
           let mut scps_msg = String::concat(culprit_lead, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but its own body calls something the suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a row-variable callee)"))
           scps_msg = String::concat(scps_msg, culprit_clause)
-          scps_msg = String::concat(scps_msg, " (#817, ADR-0076 Phase 3b)")
+          scps_msg = String::concat(scps_msg, "")
           scps_msg = String::concat(scps_msg, culprit_marker)
           Array::push(errs, scps_msg)
         } else {
@@ -1233,14 +1241,14 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
           } else {
             let (split_ok, split_body) = scps_split_tail(fbody3, sctx, ctx, st)
             if !split_ok {
-              Array::push(errs, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but a perform of that effect (or a call to a function that performs it) is not directly on its body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817, ADR-0076 Phase 3b)"))
+              Array::push(errs, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but a perform of that effect (or a call to a function that performs it) is not directly on its body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload)"))
             } else {
               Array::push(scps_st_inj(st), SLet(false, true, scps_clone_name(eff, fname), None, EFn(tps, tbs, cparams, None, None, split_body)))
             }
           }
         }
       },
-      _ => Array::push(errs, String::concat(String::concat("suspend lowering: internal error -- `", fname), "` is not a plain top-level function definition (#817)"))
+      _ => Array::push(errs, String::concat(String::concat("suspend lowering: internal error -- `", fname), "` is not a plain top-level function definition"))
     }
   }
 }
@@ -1776,6 +1784,16 @@ fn scps_arg_is_own_step_for(arg: Expr, eff: String, scope: Array[(String, Int)])
   }
 }
 
+/// #3523: a top-level function whose row carries the effect, passed by name.
+/// Its original is what the scheduler calls, on the plain convention, so a
+/// suspension in it reached no handler and trapped (Codex on #3524).
+fn scps_arg_names_needing_fn(arg: Expr, needing: Array[String], scope: Array[(String, Int)]) -> Bool {
+  match arg {
+    EIdent(name, _) => scps_local_class(scope, name) < 0 && edp_str_array_contains(needing, name),
+    _ => false
+  }
+}
+
 fn scps_task_cannot_suspend_msg(fname: String, eff: String) -> String {
   let head = String::concat(String::concat("`", fname), String::concat("` runs its task to completion, so the task cannot suspend, but this task closure uses `", String::concat(eff, "`")))
   if is_runtime_scheduled_effect(eff) {
@@ -1830,9 +1848,9 @@ fn scps_split_literal(tps: Array[String], tbs: Array[(String, Array[String])], p
   if !scps_calls_ok(b, sctx, ctx, call_scope) {
     // #1536 / #1514 parity: name the offending call in the literal's body.
     let (culprit_lead, culprit_clause, culprit_marker) = scps_culprit_parts(b, sctx, ctx, call_scope)
-    let mut scps_msg = String::concat(culprit_lead, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) calls something the suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a row-variable callee)"))
+    let mut scps_msg = String::concat(culprit_lead, String::concat(String::concat("a closure literal whose row carries ", eff), " calls something the suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a row-variable callee)"))
     scps_msg = String::concat(scps_msg, culprit_clause)
-    scps_msg = String::concat(scps_msg, " (#817)")
+    scps_msg = String::concat(scps_msg, "")
     scps_msg = String::concat(scps_msg, culprit_marker)
     Array::push(errs, scps_msg)
     EFn(tps, tbs, params, None, None, b)
@@ -1850,7 +1868,7 @@ fn scps_split_literal(tps: Array[String], tbs: Array[(String, Array[String])], p
       None => b
     }, site), scps_array_names_seed(params), scps_string_names_seed(params), site, scps_anf_ctr(), ctx), sctx, ctx, st)
     if !split_ok {
-      Array::push(errs, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) performs it (or calls a function that performs it) off the let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)"))
+      Array::push(errs, String::concat(String::concat("a closure literal whose row carries ", eff), " performs it (or calls a function that performs it) off the let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload)"))
       EFn(tps, tbs, params, None, None, b)
     } else {
       scps_ensure_effect_runtime(eff, ctx, st)
@@ -1885,7 +1903,7 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
         ei = ei + 1
       }
       if multi {
-        Array::push(scps_st_errs(st), "a closure literal raw-performs more than one suspend-class effect -- not supported (split the effect or handle one of them inside the literal) (ADR-0076 追記31 Vertical B)")
+        Array::push(scps_st_errs(st), "a closure literal raw-performs more than one suspend-class effect -- not supported (split the effect or handle one of them inside the literal)")
         EFn(tps, tbs, params, ret, eff, b2)
       } else if hit_eff != "" {
         let mut cfg = ("", array_empty_str(), array_empty_str())
@@ -1956,7 +1974,7 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
                   // clean and silently returned a heap pointer as an Int.
                   let mut ei0 = 0
                   while ei0 < Array::length(ecfgs) {
-                    let (ceff0, _, _) = Array::get(ecfgs, ei0)
+                    let (ceff0, _, cneeding0) = Array::get(ecfgs, ei0)
                     // A parameter whose row is a row VARIABLE is exempt: the
                     // variable can be instantiated to this effect at the call
                     // site, which is exactly what makes
@@ -1964,8 +1982,8 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
                     // receive a step-returning literal. Only a CONCRETE row that
                     // does not carry the effect is a plain-convention parameter.
                     if !scps_row_has_var(prow) && !scps_row_contains(ctx, prow, ceff0) && scps_literal_is_step_for(Array::get(rargs, aj), ceff0) {
-                      Array::push(scps_st_errs(st), String::concat(String::concat(String::concat("a closure literal that performs `", ceff0), "` (so it is compiled to return a step) is passed to a parameter of `"), String::concat(String::concat(fname, "` whose type does not declare that effect -- the callee would call it under the plain convention and hand the step object back as the value. Declare the parameter as `(..) -> .. with "), String::concat(ceff0, "`, or move the performing call out of the literal (#1707, ADR-0076 追記31 Vertical B)"))))
-                    } else if scps_row_has_var(prow) && !scps_row_contains(ctx, prow, ceff0) && scps_is_task_param(fparams, aj) && scps_arg_is_own_step_for(Array::get(rargs, aj), ceff0, scope) {
+                      Array::push(scps_st_errs(st), String::concat(String::concat(String::concat("a closure literal that performs `", ceff0), "` (so it is compiled to return a step) is passed to a parameter of `"), String::concat(String::concat(fname, "` whose type does not declare that effect -- the callee would call it under the plain convention and hand the step object back as the value. Declare the parameter as `(..) -> .. with "), String::concat(ceff0, "`, or move the performing call out of the literal"))))
+                    } else if scps_row_has_var(prow) && !scps_row_contains(ctx, prow, ceff0) && scps_is_task_param(fparams, aj) && (scps_arg_is_own_step_for(Array::get(rargs, aj), ceff0, scope) || scps_arg_names_needing_fn(Array::get(rargs, aj), cneeding0, scope)) {
                       // #3517: the row-variable exemption above does not hold
                       // for a task parameter. A spawn-shaped callee (a
                       // `TaskGroup` first, the task closure last) stores the
@@ -2133,7 +2151,7 @@ fn scps_guard_untriggered(e: Expr, guard_effs: Array[String], errs: Array[String
               } else {
                 ""
               }
-              Array::push(errs, String::concat(String::concat(String::concat(edit, async_edit), String::concat(" -- effect ", ge)), " has step-compiled closure values (a literal or argument was CPS-lowered for it), but this handle for it does not capture `resume` as a value: mixing the step convention with tail-resumptive/replay handling of the same effect is not supported (ADR-0076 追記31 Vertical B)"))
+              Array::push(errs, String::concat(String::concat(String::concat(edit, async_edit), String::concat(" -- effect ", ge)), " has step-compiled closure values (a literal or argument was CPS-lowered for it), but this handle for it does not capture `resume` as a value: mixing the step convention with tail-resumptive/replay handling of the same effect is not supported"))
             } else {
               ()
             }

@@ -398,9 +398,16 @@ one linearization, so the guarantees above hold across them.
 ## `Send` and capture safety
 
 This section is the canonical statement of the `Send` allowlist. Other
-documents link here instead of copying it. The behaviour is pinned by
-`lib/@vibe/compiler/tests/send_allowlist_test.vibe`, so the list below cannot
-drift from the checker without a test failing.
+documents link here instead of copying it. Each row of the list below has a
+case in `lib/@vibe/compiler/tests/send_allowlist_test.vibe`, so a row cannot
+drift from the checker without a test failing -- except "a type parameter with
+no `Send` bound", which is refused where a spawned closure captures it but
+not yet where it reaches a `Send` bound inside its generic body (#3554). That
+test asks the bound
+directly; the places the bound is required -- a task's result, a channel
+element, `Parallel::map` -- are pinned by
+`fixtures/typecheck/{spawn_result_closure,spawn_result_option_array,parallel_map_result}_not_send_reject.vibe`
+(#3518: a task whose result is a closure used to be accepted).
 
 ### `Send`
 
@@ -436,7 +443,9 @@ Not Send:
 - closures;
 - a type with an unresolved type variable, even when every resolved part is
   `Send`: an unannotated `Result::Ok(1)` leaves `E` open and is refused;
-- a type parameter with no `Send` bound;
+- a type parameter with no `Send` bound -- refused today where a spawned
+  closure captures it; inside its generic body it still satisfies a `T: Send`
+  bound (`Channel::bounded` included), which #3554 tracks;
 - any named type with no visible declaration -- host resources, opaque
   handles, and the builtin `Map`.
 
@@ -540,7 +549,7 @@ TaskHandle[Int]` or `-> Box` are all refused when stored outside:
 
 ```text
 region escapes its nursery scope: this write stores this TaskGroup::run call's
-own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver` in a binding declared outside the body
 -- join the task (or use the endpoint) inside the body and store the result
 instead, or declare the binding inside the body
 ```
@@ -599,7 +608,7 @@ A write the second check refuses refuses the call, naming the callee:
 
 ```text
 region escapes its nursery scope: this call to `put` stores this
-TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding
+TaskGroup::run call's own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver` in a binding
 declared outside the body -- join the task (or use the endpoint) inside the
 body and pass the result instead, or declare the binding inside the body
 ```
@@ -614,7 +623,7 @@ carrying the region as a literal body's does:
 
 ```text
 region escapes its nursery scope: `body`, the body this TaskGroup::run call
-runs, stores the call's own Nursery/Task/Sender/Receiver token in a binding
+runs, stores the call's own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver` in a binding
 declared outside it -- join the task (or use the endpoint) inside the body and
 store the result instead, or declare the binding inside the body
 ```
@@ -742,12 +751,13 @@ After the body is checked, the call is also refused when:
 - **the returned value mentions the region** -- the body returns a task
   handle, an endpoint, or anything containing one, through its tail or an
   explicit `return`, a value whose type hides the region judged by what it
-  reads as above: `region escapes its nursery scope: the value returned from
-  this TaskGroup::run body still depends on its own
-  Nursery/Task/Sender/Receiver token`;
-- **a binding visible at the call now mentions the region**: `region escapes
+  reads as above: "join the task (or use the endpoint) inside this
+  TaskGroup::run body and return its result instead: the value the body returns
+  still holds the group's own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver`
+  (region escapes its nursery scope)";
+- **a binding visible at the call now mentions the region**: "region escapes
   its nursery scope: an outer binding now depends on this TaskGroup::run
-  call's own Nursery/Task/Sender/Receiver token`. This scan sees a binding
+  call's own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver`". This scan sees a binding
   only when every use of it shares one type instance (an array whose element
   type is still open, a `let mut` option), so it is a backstop behind the
   write check, which it does not repeat. The return check has no such limit.
@@ -891,11 +901,21 @@ fn main() -> Int allows Async + Exception {
 }
 ```
 
-A body that suspends carries its row on the literal, as above. Without it the
-suspension is charged to the enclosing function instead (measured: an
-unannotated `() -> { sleep_wait(5); 41 }` makes `main` fail with ``effect row
-mismatch for 'main': missing { Async }``). A body that never suspends needs no
-annotation: `TaskGroup::spawn_suspend(g, () -> 6 * 7)` settles at once.
+The body's row may be written on the literal, as above, or left off. Left off,
+the body's effects are the enclosing function's: its `Async` is discharged by
+`spawn_suspend` like a written one, and its other capabilities -- `println`'s
+`Console`, say -- are the enclosing function's own, so the entry must allow them
+(`fn main allows Console + Async`). A written row is the task's whole row,
+`Async + Exception`: a body that prints is written without one (#3519). A body
+that never suspends needs no annotation either:
+`TaskGroup::spawn_suspend(g, () -> 6 * 7)` settles at once.
+
+A host builtin that cannot reach `Async` and takes no closure (`println`,
+`Fs::read_file`) is see-through to the suspend lowering, so a suspendable task
+-- and an `Async` entry the lowering rewrites -- may call it (#3523; it used to
+be refused as "cannot see through ... the call to 'println'"). Pinned by
+`fixtures/suspend_task_prints_and_sleeps.vibe`, whose two tasks print and
+`sleep` and interleave `a1 b1 a2 b2`.
 
 Pinned by `fixtures/err_spawn_suspend_{alias,ascribed,rebound,wrapper,wrapper_rebound}_plain.vibe`
 and `fixtures/spawn_suspend_wrapper_inline.vibe`, whose gate rows in
@@ -910,12 +930,15 @@ stack-driving forms do not.
 
 | waits by | siblings | operations |
 |---|---|---|
-| blocking the instance | nothing runs | `sleep` outside a suspendable body |
+| blocking the instance | nothing runs | `sleep_blocking` |
 | driving on the caller's stack | ready siblings run to completion | `join`, `send`, `recv` |
-| suspending the task | siblings interleave with it | `sleep_wait`, `send_wait`, `recv_wait`, `result_wait`, `await` |
+| suspending the task | siblings interleave with it | `sleep`, `sleep_wait`, `send_wait`, `recv_wait`, `result_wait`, `await` |
 
-(When the entry's row carries `Async`, the compiler routes `sleep` everywhere
-through the entry's async boundary instead, ADR-0089.)
+An entry whose row carries `Async` is a place to suspend too: `sleep` and
+`await` in `main`, or in a function with `Async` in its row, suspend at the
+entry's async boundary (ADR-0089). A run-to-completion task and a
+`TaskGroup::run` body are not: `sleep` there is refused with the edit to move
+it into a suspendable task.
 
 - `Sender::send_wait` buffers when there is room. Otherwise it deposits the
   message (its linearization point) and suspends until that message is
@@ -934,6 +957,15 @@ through the entry's async boundary instead, ADR-0089.)
 - `await` on a builtin `Future[T]` parks the task until the future resolves.
   A task waiting on a future is woken by the resolve, not by polling.
 
+An `Async` entry that itself calls an `Async` function -- `sleep_wait`, or one
+of the program's own -- gets the suspend-class boundary even when the program
+calls no `sleep` and no host future (#3523). Without it a direct `sleep_wait`
+trapped, and an `Async` closure the entry called answered its step object (a
+heap pointer). An `Async` closure handed to a parameter that calls it plainly
+(`fn apply(f: () -> Int)`) cannot reach that boundary, and is refused at build
+time. Pinned by `fixtures/async_entry_calls_{async_closure,sleep_wait,async_fn_beside_group}.vibe`
+and `fixtures/err_async_entry_closure_to_plain_param.vibe`.
+
 A run-to-completion task cannot suspend. A `TaskGroup::spawn` or
 `Parallel::map` closure that uses `Async` -- a `_wait` operation, or any
 function whose row carries `Async`, even one that never suspends -- is refused
@@ -942,7 +974,10 @@ it compiled clean and `join` answered a heap pointer). The check reads the task
 closure's own body, so a plain task that opens a group of its own and starts a
 suspendable task there is accepted. Pinned by
 `fixtures/err_{spawn_task_wait,spawn_task_async_fn,spawn_task_named_closure,parallel_map_task_async_fn}_plain.vibe`
-and `fixtures/spawn_task_nested_suspend_group.vibe`.
+and `fixtures/spawn_task_nested_suspend_group.vibe`. A top-level `Async`
+function passed to the task by name is refused the same way
+(`fixtures/err_spawn_task_async_fn_by_name.vibe`): the scheduler calls its plain
+original, where a suspension reached no handler and trapped.
 
 A task blocked on a channel, a sibling or a future is woken by the event it
 waits for. A waiting task that nothing in the group can wake makes `pump_all`,

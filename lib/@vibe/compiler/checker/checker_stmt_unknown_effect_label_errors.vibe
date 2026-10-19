@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker/diagnostics {
-  off_marker
+  bound_var_site_marker, off_marker, reset_bound_var_sites
 }
 
 import @vibe/compiler/checker/effects {
@@ -23,6 +23,10 @@ import @vibe/compiler/checker/effects {
   row_text_labels,
   set_throw_site_kinds,
   stmt_type_rows
+}
+
+import @vibe/compiler/checker/type_relations {
+  type_for_reader
 }
 
 import @vibe/compiler/checker/patterns {
@@ -371,14 +375,14 @@ export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], err
             type_implements_trait(env, s, resolved, resolved_bound)
           }
           if resolved_bound != "" && not(sat) {
-            Array::push(errors, String::concat("no impl `", String::concat(trait_reference_display(resolved_bound), String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, s, resolved_bound, resolved)))))))
+            Array::push(errors, String::concat("no impl `", String::concat(trait_reference_display(resolved_bound), String::concat("` for `", String::concat(type_for_reader(resolved), String::concat("`", String::concat(unsatisfied_bound_hint(env, s, resolved_bound, resolved), bound_var_site_marker(vid))))))))
           } else if resolved_bound != "" && resolved_bound != "Send" {
             if bound_entails_send(env, resolved_bound) && not(type_send_ok(env, s, defs, resolved)) {
               // #3156 review: a bound that EXTENDS `Send` (`trait Work: Send`)
               // counts as Send inside the generic body (`type_send_ok`), so
               // its instantiation must be Send too -- an impl of `Work` alone
               // does not make a type Send, since `Send` has no user impls.
-              Array::push(errors, String::concat("no impl `Send` for `", String::concat(type_to_string(resolved), String::concat("`: `", String::concat(trait_reference_display(resolved_bound), "` extends `Send`, so a type used at it must be Send -- pass a Send value (no `Array`, `Bytes`, closure or `mut` field)")))))
+              Array::push(errors, String::concat("no impl `Send` for `", String::concat(type_for_reader(resolved), String::concat("`: `", String::concat(trait_reference_display(resolved_bound), String::concat("` extends `Send`, so a type used at it must be Send -- pass a Send value (no `Array`, `Bytes`, closure or `mut` field)", bound_var_site_marker(vid)))))))
             }
             // #3327: the same for a bound that EXTENDS such a trait
             // (`trait Key: Eq {}` over a program's own marker `Eq`): judged
@@ -386,7 +390,7 @@ export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], err
             if refused != "" {
               let shown_refused = trait_reference_display(refused)
               let via = String::concat(" (`", String::concat(trait_reference_display(resolved_bound), String::concat("` extends `", String::concat(shown_refused, "`)"))))
-              Array::push(errors, String::concat("no impl `", String::concat(shown_refused, String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", String::concat(via, erased_cmp_hint(env, s, refused, resolved_bound, resolved))))))))
+              Array::push(errors, String::concat("no impl `", String::concat(shown_refused, String::concat("` for `", String::concat(type_for_reader(resolved), String::concat("`", String::concat(via, String::concat(erased_cmp_hint(env, s, refused, resolved_bound, resolved), bound_var_site_marker(vid)))))))))
             }
           }
           bi = bi + 1
@@ -395,6 +399,7 @@ export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], err
     }
     i = i + 1
   }
+  reset_bound_var_sites()
 }
 
 /// #1340 (ADR-0071): validate a generic-instantiation row item
