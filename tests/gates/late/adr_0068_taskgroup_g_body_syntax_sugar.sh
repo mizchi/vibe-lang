@@ -1478,7 +1478,7 @@ fi
 # `Async` function passed by name to a run-to-completion task, and a program
 # binding that takes a host builtin's spelling (`let println = ..`) and holds a
 # suspending closure.
-for async_refusal_case in "err_async_entry_closure_to_plain_param:cannot see through" "err_spawn_task_async_fn_by_name:runs its task to completion, so the task cannot suspend" "err_suspend_shadowed_builtin_async:(here: the call to 'println')" "err_async_entry_closure_to_async_hof:cannot see through"; do
+for async_refusal_case in "err_async_entry_closure_to_plain_param:cannot see through" "err_spawn_task_async_fn_by_name:runs its task to completion, so the task cannot suspend" "err_suspend_shadowed_builtin_async:(here: the call to 'println')" "err_async_entry_closure_to_async_hof:cannot see through" "err_async_entry_shadowed_discharger:cannot see through"; do
   async_refusal_fixture="${async_refusal_case%%:*}"
   async_refusal_needle="${async_refusal_case#*:}"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
