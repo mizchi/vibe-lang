@@ -1,0 +1,55 @@
+import @vibe/compiler/codegen/wasi {
+  lc_prepare_section_facts
+}
+import @vibe/compiler/core {
+  set_executable_exports_stripped
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+test "section facts survive discarding syntax and snapshot export policy" {
+  let stmts = parse_program(lex("fn main() -> Unit { () }\nlet constant = 7\nfn helper(a: Int, b?: Int) -> Int { a }\n"))
+  let indices = [0, 1, 2]
+  set_executable_exports_stripped(true)
+  let facts = lc_prepare_section_facts(stmts, "main", 0, indices, 3, [], true, 8)
+  Array::truncate(stmts, 0)
+  Array::truncate(indices, 0)
+  set_executable_exports_stripped(false)
+  inspect(facts.entry_returns_unit, content = "true")
+  inspect(facts.uses_exceptions, content = "false")
+  inspect(facts.strip_executable_exports, content = "true")
+  inspect(Array::length(facts.debug_param_names), content = "3")
+  inspect(Array::length(Array::get(facts.debug_param_names, 0)), content = "0")
+  inspect(Array::length(Array::get(facts.debug_param_names, 1)), content = "0")
+  inspect(String::join(Array::get(facts.debug_param_names, 2), ","), content = "a,b")
+}
+
+test "debug metadata is bounded and absent outside break builds" {
+  let stmts = parse_program(lex("fn main(a: Int, b: Int) -> Int { a - b }"))
+  let capped = lc_prepare_section_facts(stmts, "main", 0, [0], 1, [], true, 1)
+  inspect(String::join(Array::get(capped.debug_param_names, 0), ","), content = "a")
+  // The ordinary lane must not read debug-only syntax indices at all.
+  let plain = lc_prepare_section_facts(stmts, "main", 0, [-1], 1, [], false, 8)
+  inspect(Array::length(plain.debug_param_names), content = "0")
+  inspect(plain.entry_returns_unit, content = "false")
+}
+
+test "section facts distinguish entry annotations and a missing entry" {
+  let stmts = parse_program(lex("let main: () -> Unit = () -> { () }"))
+  let unit = lc_prepare_section_facts(stmts, "main", 0, [], 0, [], false, 8)
+  let absent = lc_prepare_section_facts(stmts, "main", -1, [], 0, [], false, 8)
+  inspect(unit.entry_returns_unit, content = "true")
+  inspect(absent.entry_returns_unit, content = "false")
+}
+
+test "exception facts retain both syntax and declared-effect requirements" {
+  let throwing = parse_program(lex("fn main() -> Int allows Exception { throw(\"boom\") }"))
+  let pure = parse_program(lex("fn main() -> Int { 7 }"))
+  let syntax = lc_prepare_section_facts(throwing, "main", 0, [], 0, [], false, 8)
+  let declared = lc_prepare_section_facts(pure, "main", 0, [], 0, ["Ask"], false, 8)
+  let none = lc_prepare_section_facts(pure, "main", 0, [], 0, [], false, 8)
+  inspect(syntax.uses_exceptions, content = "true")
+  inspect(declared.uses_exceptions, content = "true")
+  inspect(none.uses_exceptions, content = "false")
+}

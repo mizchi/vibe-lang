@@ -1,0 +1,98 @@
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, executable_exports_stripped
+}
+import @vibe/compiler/codegen/common_analysis {
+  stmts_contain_exceptions
+}
+import @vibe/compiler/codegen/common_base {
+  get_slet_expr, is_efn
+}
+import @vibe/compiler/codegen/common_extractors {
+  get_efn_params
+}
+import ./linked_compile_lc_rename_sleep_calls.vibe {
+  linked_type_expr_is_unit
+}
+
+/// The only syntax/configuration observations needed by final section assembly.
+/// Arrays belong to this snapshot; no statement or expression survives here.
+export struct LinkedSectionFacts {
+  entry_returns_unit: Bool;
+  uses_exceptions: Bool;
+  debug_param_names: Array[Array[String]];
+  strip_executable_exports: Bool
+}
+
+export fn lc_prepare_section_facts(stmts: Array[Stmt], entry_name: String, entry_user_idx: Int, fn_stmt_indices: Array[Int], num_user_funcs: Int, effect_names: Array[String], debug_break: Bool, dbgargs_cap: Int) -> LinkedSectionFacts with Exception {
+  let mut entry_returns_unit = false
+  if entry_user_idx >= 0 {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(_, _, name, annotation, value) => if name == entry_name {
+          let ann_unit = match annotation {
+            Some(TyFn(_, result, _)) => linked_type_expr_is_unit(result),
+            _ => false
+          }
+          let ret_unit = match value {
+            EFn(_, _, _, result, _, _) => match result {
+              Some(ty) => linked_type_expr_is_unit(ty),
+              None => false
+            },
+            _ => false
+          }
+          if ann_unit || ret_unit {
+            entry_returns_unit = true
+          } else ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+  } else ()
+  let debug_param_names: Array[Array[String]] = []
+  if debug_break {
+    let mut fi = 0
+    while fi < num_user_funcs {
+      let names: Array[String] = []
+      let stmt = Array::get(stmts, Array::get(fn_stmt_indices, fi))
+      let value = get_slet_expr(stmt)
+      if is_efn(value) {
+        let params = get_efn_params(value)
+        let count = if Array::length(params) > dbgargs_cap {
+          dbgargs_cap
+        } else {
+          Array::length(params)
+        }
+        let mut pi = 0
+        while pi < count {
+          let (raw, _) = Array::get(params, pi)
+          let n = String::length(raw)
+          let name = if n > 0 {
+            let last = String::char_code_at(raw, n - 1)
+            if last == '~' || last == '?' {
+              raw[0: n - 1]
+            } else {
+              raw
+            }
+          } else {
+            raw
+          }
+          Array::push(names, name)
+          pi = pi + 1
+        }
+      } else {
+        // Consume the owned projection on the thunk arm too (#715).
+        is_efn(value)
+      }
+      Array::push(debug_param_names, names)
+      fi = fi + 1
+    }
+  } else ()
+  LinkedSectionFacts::{
+    entry_returns_unit: entry_returns_unit,
+    uses_exceptions: Array::length(effect_names) > 0 || stmts_contain_exceptions(stmts),
+    debug_param_names: debug_param_names,
+    strip_executable_exports: executable_exports_stripped()
+  }
+}

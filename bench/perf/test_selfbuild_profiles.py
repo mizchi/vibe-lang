@@ -93,6 +93,36 @@ class ProfileIntegrityTests(unittest.TestCase):
             self.assertEqual(inclusive["emit"], 100)
             self.assertEqual(inclusive["encode"], 30)
 
+    def test_phase_memory_keeps_preparation_and_finish_separate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            images = root / "engines/images"
+            images.mkdir(parents=True)
+            profiles.base.write(images / "build.json", {
+                "version": 1, "kind": "vibe-taskgroup-functions", "function_abi": "bump-core-returning-phases-3",
+                "phase_format": 1, "assembly_format": 1, "context_format": 7, "job_format": 2,
+                "compile_engine_rc": 0, "worker_engine_rc": 0, "coordinator_engine_rc": 1})
+            parent = root / "parent-profiles/compiler-0/logs/stderr.log"
+            parent.parent.mkdir(parents=True)
+            prepare = "vibe::mem heap_base=64 heap_peak=192 allocated=128 committed=65536"
+            finish = "vibe::mem heap_base=64 heap_peak=128 allocated=64 committed=65536"
+            parent.write_text(prepare + "\n" + finish + "\n")
+            worker = root / "worker-profiles/capture-compiler-slot/0/stderr.log"
+            worker.parent.mkdir(parents=True)
+            worker.write_text(finish + "\n")
+            context = root / "parent-profiles/capture-compiler/phase-wave/shared.context"
+            context.parent.mkdir(parents=True)
+            magic = b"vibe-function-context-7"
+            context.write_bytes(bytes([len(magic)]) + magic + b"\x00")
+            profiles.memory(root)
+            result = json.loads((root / "memory-summary.json").read_text())
+            phases = result["parent_guest"][str(parent.relative_to(root))]
+            self.assertEqual(phases["prepare"]["allocated"], 128)
+            self.assertEqual(phases["finish"]["allocated"], 64)
+            parent.write_text(finish + "\n")
+            with self.assertRaisesRegex(ValueError, "missing preparation/finisher"):
+                profiles.memory(root)
+
     def test_capture_records_real_job_and_product_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

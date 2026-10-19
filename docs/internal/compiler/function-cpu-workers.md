@@ -22,9 +22,11 @@ VIBE_CLI_WASM=/absolute/path/to/stage2.wasm \
 `VIBE_FUNCTION_ARTIFACT_DIR` selects another image directory.
 `VIBE_FUNCTION_TRACE_OUT` writes a diagnostic timing report. Images are bound
 to compiler and runner hashes, individual artifact hashes, payload versions
-and the callback ABI. Callback ABI 2 requires allocator-correct SIMD BLAKE3;
-rebuild ABI 1 images even when compiler and runner hashes are unchanged.
-Rebuild them after selecting another compiler. The
+and the private execution ABI. `bump-core-returning-phases-3` requires an
+init-only core image, phase receipt format 1, assembly format 1, context format
+7 and job format 2. Rebuild older callback images; they cannot enter this route.
+Allocator-correct SIMD BLAKE3 remains required. Rebuild images after selecting
+another compiler or runner. The
 ordinary command and the existing checker-worker route retain their defaults.
 This experiment accepts `.vibe` core builds, target RC, and 1/2/4 workers.
 Coverage, debug instrumentation, wasm-gc, persistent body-cache replay,
@@ -34,11 +36,29 @@ Installed-toolchain packaging is subsequent work.
 
 ## Ownership and transport
 
-`@vibe/function_build` is the synchronous parent entry. Its scoped executor
-receives the plan after normalization and lambda planning, before body output.
-The ordinary compiler installs no executor and imports no native CPU service.
-`@vibe/function_worker` is a separate build unit with codecs and the worker
-entry. Its values contain mutable arrays and Bytes; they are not `Send`.
+The current parent image is `@vibe/function_build/phases`, compiled with
+`__no_entry__` and its private exports retained. `_start` initializes cells;
+`function_phase_prepare` performs the actual filesystem preparation once and
+returns an owned receipt. The native driver copies that original return value,
+completes normal sampler/profiler cleanup, drops the preparation Store and
+checks its lifetime guard before starting any worker. The driver retains the
+immutable compiled Engine/Module and owned bytes/observations, without
+Store-bound handles or a suspended Caller.
+
+After workers join, `function_phase_finish` runs in a fresh Store from the same
+compiled Module. It reads only admitted assembly/context/products, authenticates
+the actual buffers against the original returned receipt and constructs the
+output from AST-free section/replay metadata. Source reads, directory probing,
+source resolution, output writes and recursive compiler-service entry are
+refused even if a guest catches the refusal. Source observations and streamed
+artifact identities are checked again before publication. The output is
+published atomically after finishing and all freshness checks succeed.
+
+`@vibe/function_build/compile.vibe` retains the synchronous executor as a
+regression oracle. The ordinary compiler installs no executor and imports no
+native CPU service. `@vibe/function_worker` is a separate build unit with codecs
+and the worker entry. Its mutable arrays and Bytes are not `Send`; no guest
+pointers cross Stores.
 
 The parent sends shared tables once: function and constructor identities,
 layout facts, the canonical string pool, lambda ranges, codegen flags, origin
@@ -81,13 +101,24 @@ paths, source ranges, synthesized-source placement flags and newline offsets.
 A scoped override restores the previous location lookup on success and
 exception. Workers receive no duplicate full source texts for this lookup.
 
-The parent reuses one owned input buffer. Native input/context receipts bind
+The preparation phase reuses one owned input buffer. Context, assembly and
+outstanding job bytes have separate 64 MiB bounds. The finisher admits at most
+256 MiB of completed product wire bytes in total, checked with fixed-scratch
+streaming before its Store exists. Actual admitted reads charge that aggregate budget,
+including repeated reads, and the guest checks its cumulative product bytes.
+Products and their receipts are checked again before publication. These are
+wire-volume limits, not proofs of the decoded heap or physical RSS bound;
+`completed_product_bytes` reports admitted wire volume only. This check does
+not reserve producer heaps or throttle worker file writes during the wave;
+producer admission and backpressure belong to #3484's bounded CPU executor.
+
+Native input/context receipts bind
 each result to its exact input, and product checks run before publication into
 module tables. Checks cover complete function identity and range, lambda
 coverage and ownership, aligned metadata, paired funcref/blind-reference logs,
-known table slots, body-relative offsets, and line-map rows. The coordinator
-replays complete products in canonical order and publishes the output only
-after module validation and source freshness verification succeed. Coverage
+known table slots, body-relative offsets, and line-map rows. The fresh finisher
+replays complete products in canonical order; native/frontend publication waits
+for module validation and source freshness verification. Coverage
 ranges remain unplanned, so coverage builds use the ordinary serial route;
 explicitly selecting this experiment with coverage is an error.
 
@@ -112,10 +143,15 @@ filtering still happens before index construction.
 Core compiler and worker images follow the bootstrap compiler's bump allocation
 policy. The Async coordinator remains RC. Target RC is a separate setting:
 building an RC target does not require an RC implementation of the compiler.
-The native service supplies tagged callback Int arguments; the bump parent
-explicitly decodes that boundary. The build receipt records this ABI and all
-three engine policies. Using an RC parent as the serial control confounded
-early experiments by approximately doubling its compile time.
+The private native phase ABI supplies a tagged receipt-allocation length; the
+bump parent explicitly decodes that boundary. The build receipt records the
+phase/assembly formats and all three engine policies. `--function-phases` with
+explicit `VIBE_LOWERING_MODE=serial` invokes the same image's serial entry as a
+control, with no worker selection or fallback. Ordinary `_start` on this
+init-only image does not compile an artifact. Historical callback ABI controls
+must continue to use their matching archived runner/image. Using an RC parent
+as the serial control confounded early experiments by approximately doubling
+its compile time.
 
 ## Validation and measurement
 
@@ -137,8 +173,22 @@ and aggregate process-tree RSS, with native compilation caches primed, isolated
 guest caches, one frozen corpus and complete output equivalence. Worker-phase
 timings alone are not a whole-build speedup. The route remains opt-in while
 transport, worker setup and coordinator costs exceed the saved emission time.
-The report's `finalize_ms` includes canonical replay and module assembly;
-external walltime also includes frontend verification and publication.
+The current report's `prepare_ms` includes initial Module loading/JIT,
+preparation and Store cleanup; `finalize_ms` includes fresh instantiation,
+canonical replay, module assembly, cleanup and native freshness/publication.
+These scopes differ from historical callback phase timings. External walltime
+also includes frontend verification and final publication; compare whole-wall
+controls on matching sources and explicitly recorded ABIs.
+
+`VIBE_MEM` produces one normal memory observation per preparation/finisher
+Store; it does not measure their simultaneous physical live sets or workers.
+`VIBE_GUEST_PROFILE` writes separate `.function_phase_prepare` and
+`.function_phase_finish` files after normal cleanup. Parent filesystem-scope
+counters merge the two phases and are removed from coordinator/worker child
+environments. Public regressions cover these actual observation paths, original
+receipt binding, a compiled source-recompiling finisher mutant and aggregate
+product pressure. Functional Store-lifetime checks alone establish no walltime
+or RSS improvement; #3483 still requires the controlled lifetime measurements.
 
 The [2026-10-18 transfer report](../reports/function-worker-transfer-2026-10-18.md)
 records 120 alternating before/after complete builds for metadata interning.
@@ -159,7 +209,7 @@ serial. The function-worker matrix separately compiles a compiler-sized test
 closure and `lib/@vibe/cli/entry.vibe` through the filesystem compiler.
 
 The current bootstrap invokes the low-level `cli_main` directly. The function
-executor is installed by the separate `@vibe/function_build` parent image.
+executor is selected by the separate `@vibe/function_build/phases` image.
 Worker selection therefore needs the integration tracked by #3485 before it
 can change the bootstrap critical path.
 

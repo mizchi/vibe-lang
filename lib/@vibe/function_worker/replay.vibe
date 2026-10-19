@@ -1,0 +1,163 @@
+// Canonical product replay has no syntax, normalization or body-emitter state.
+import ./product.vibe {
+  FunctionProductPlan, validate_function_product_plan
+}
+import @vibe/compiler/codegen/wasi {
+  LinkedBodyInputs,
+  LinkedBodyPlan,
+  LinkedBuiltinBodies,
+  lc_build_builtin_bodies,
+  lc_build_emission_layout,
+  lc_dbg_file_placed,
+  lc_function_linemap_begin,
+  lc_function_linemap_new
+}
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache,
+  LambdaTable,
+  LineMapState,
+  codegen_body_cache_find_at,
+  codegen_body_cache_replay_index,
+  codegen_body_cache_replay_indexed,
+  codegen_body_cache_slot_index,
+  linemap_flush_fn_into
+}
+
+/// The parent adapter shares these output cells with section assembly. A wire
+/// finisher can recreate them without retaining the preparing compiler's AST.
+/// One successful replay consumes the state's mutable outputs.
+export struct FunctionReplayState {
+  validation: FunctionProductPlan;
+  builtins: LinkedBuiltinBodies;
+  guard_layout: Array[Int];
+  publish_layout: Bool;
+  placed_files: Array[Int];
+  lambdas: LambdaTable;
+  slots: Array[Int];
+  blind_owners: Array[Int];
+  blind_offsets: Array[Int];
+  blind_kinds: Array[Int];
+  blind_syms: Array[Int];
+  linemap: LineMapState;
+  cache: CodegenBodyCache;
+  mut used: Bool
+}
+
+fn fw_replay_require(ok: Bool, message: String) -> Unit with Exception {
+  if !ok {
+    throw("function product: " + message)
+  } else ()
+}
+
+/// Project only metadata and output cells while preparation inputs exist.
+/// The resulting state contains no LinkedBodyInputs or LinkedFunctionPlan.
+export fn function_replay_state_new(plan: FunctionProductPlan, input: LinkedBodyInputs, enable_rc: Bool, rc_shadow: Bool) -> FunctionReplayState with Exception {
+  let n = plan.num_user_funcs
+  fw_replay_require(n >= 0 && input.num_user_funcs == n && Array::length(plan.fn_names) == n && Array::length(plan.lambda_bases) == n && input.linemap_on == plan.linemap_on, "invalid replay plan counts or mode")
+  let placed: Array[Int] = []
+  if plan.linemap_on {
+    let mut i = 0
+    while i < n {
+      Array::push(placed, lc_dbg_file_placed(input.dbg_name_file, input.dbg_owner_file, Array::get(plan.fn_names, i)))
+      i = i + 1
+    }
+  } else ()
+  let builtins = lc_build_builtin_bodies(input, enable_rc, rc_shadow)
+  let layout = lc_build_emission_layout(input, plan.lambda_bases, false, enable_rc, rc_shadow)
+  FunctionReplayState::{
+    validation: plan,
+    builtins: builtins,
+    guard_layout: layout.guard_layout,
+    publish_layout: input.pin_region_capacity >= 0 && !input.late_dce_rewrote_bodies,
+    placed_files: placed,
+    lambdas: input.lt_w,
+    slots: input.table_slots_used,
+    blind_owners: input.blind_owners,
+    blind_offsets: input.blind_offsets,
+    blind_kinds: input.blind_kinds,
+    blind_syms: input.blind_syms,
+    linemap: input.linemap_state,
+    cache: input.body_cache_out,
+    used: false
+  }
+}
+
+// Both public entrances validate exactly once before reaching this function.
+fn fw_replay_validated(state: FunctionReplayState, products: CodegenBodyCache) -> LinkedBodyPlan with Exception {
+  fw_replay_require(!state.used, "replay state was already consumed")
+  fw_replay_require(Array::length(state.lambdas.bodies) == 0 && Array::length(state.lambdas.param_counts) == 0 && Array::length(state.lambdas.captures) == 0 && Array::length(state.lambdas.meta_i32) == 0 && Array::length(state.lambdas.meta_i64) == 0, "replay needs fresh lambda output")
+  let builtin_count = Array::length(state.builtins.builtin_type_idxs)
+  fw_replay_require(Array::length(state.builtins.bodies) == builtin_count && Array::length(state.builtins.meta_i32) == builtin_count && Array::length(state.builtins.meta_i64) == builtin_count && Array::length(state.builtins.meta_v128) == builtin_count, "replay builtin rows differ")
+  let n = state.validation.num_user_funcs
+  fw_replay_require(Array::length(state.placed_files) == (if state.validation.linemap_on {
+    n
+  } else {
+    0
+  }), "replay line placement rows differ")
+  let slots = codegen_body_cache_slot_index(products, n)
+  let rows = codegen_body_cache_replay_index(products, n)
+  let on = lc_function_linemap_new(state.validation.linemap_on)
+  let off = lc_function_linemap_new(false)
+  state.used = true
+  if state.publish_layout {
+    for value in state.guard_layout {
+      Array::push(state.cache.guard_layout, value)
+    }
+  } else ()
+  let mut i = 0
+  while i < n {
+    let at = codegen_body_cache_find_at(slots, i)
+    fw_replay_require(at >= 0, "replay is missing a planned function")
+    let lm = if state.validation.linemap_on && Array::get(state.placed_files, i) >= 0 {
+      on
+    } else {
+      off
+    }
+    lc_function_linemap_begin(lm, i)
+    let slot_lo = Array::length(state.slots)
+    let blind_lo = Array::length(state.blind_owners)
+    codegen_body_cache_replay_indexed(rows, at, state.builtins.bodies, state.builtins.meta_i32, state.builtins.meta_i64, state.builtins.meta_v128, state.lambdas, state.slots, state.blind_owners, state.blind_offsets, state.blind_kinds, state.blind_syms, lm, i)
+    let slot_grew = Array::length(state.slots) - slot_lo
+    let blind_grew = Array::length(state.blind_owners) - blind_lo
+    if slot_grew != blind_grew {
+      throw("blind reloc: replayed function " + Int::to_string(i) + " restored " + Int::to_string(slot_grew) + " funcref slots but " + Int::to_string(blind_grew) + " blind references -- the cache entry is not a complete pair")
+    } else ()
+    linemap_flush_fn_into(lm, state.linemap)
+    i = i + 1
+  }
+  LinkedBodyPlan::{
+    bodies: state.builtins.bodies,
+    builtin_type_idxs: state.builtins.builtin_type_idxs,
+    lambda_bases: state.validation.lambda_bases,
+    lambda_count: state.validation.lambda_count,
+    meta_i32: state.builtins.meta_i32,
+    meta_i64: state.builtins.meta_i64,
+    meta_v128: state.builtins.meta_v128
+  }
+}
+
+/// Entry for a decoded assembly state: validation precedes all output changes.
+export fn replay_function_state(state: FunctionReplayState, products: CodegenBodyCache) -> LinkedBodyPlan with Exception {
+  validate_function_product_plan(state.validation, products, 0, state.validation.num_user_funcs)
+  fw_replay_validated(state, products)
+}
+
+/// Adapter for the current parent. Invalid products do not even initialize
+/// builtin/layout output; validation is not repeated by the private replayer.
+export fn replay_function_products_from_input(plan: FunctionProductPlan, input: LinkedBodyInputs, products: CodegenBodyCache, enable_rc: Bool, rc_shadow: Bool) -> LinkedBodyPlan with Exception {
+  validate_function_product_plan(plan, products, 0, plan.num_user_funcs)
+  let state = function_replay_state_new(plan, input, enable_rc, rc_shadow)
+  fw_replay_validated(state, products)
+}
+
+export fn FunctionProductPlan::function_replay_state_new(recv: FunctionProductPlan, input: LinkedBodyInputs, enable_rc: Bool, rc_shadow: Bool) -> FunctionReplayState with Exception {
+  function_replay_state_new(recv, input, enable_rc, rc_shadow)
+}
+
+export fn FunctionReplayState::replay_function_state(recv: FunctionReplayState, products: CodegenBodyCache) -> LinkedBodyPlan with Exception {
+  replay_function_state(recv, products)
+}
+
+export fn FunctionProductPlan::replay_function_products_from_input(recv: FunctionProductPlan, input: LinkedBodyInputs, products: CodegenBodyCache, enable_rc: Bool, rc_shadow: Bool) -> LinkedBodyPlan with Exception {
+  replay_function_products_from_input(recv, input, products, enable_rc, rc_shadow)
+}

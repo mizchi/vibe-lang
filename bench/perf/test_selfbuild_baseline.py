@@ -104,8 +104,10 @@ class ReceiptRefusalTests(unittest.TestCase):
             (images / name).write_bytes(name.encode())
             artifacts[name] = baseline.sha(images / name)
         digest = baseline.sha(engines / "o0/compiler.wasm")
-        baseline.write(images / "build.json", {"kind": "vibe-taskgroup-functions", "compiler_sha256": digest,
-                       "runner_sha256": baseline.sha(engines / "o0/viberun"), "artifacts": artifacts})
+        baseline.write(images / "build.json", {"version": 1, "kind": "vibe-taskgroup-functions", "compiler_sha256": digest,
+                       "runner_sha256": baseline.sha(engines / "o0/viberun"), "artifacts": artifacts,
+                       "function_abi": "bump-core-tagged-callbacks-2", "context_format": 7, "job_format": 2,
+                       "compile_engine_rc": 0, "worker_engine_rc": 0, "coordinator_engine_rc": 1})
         producer = {"result": {"stage3_equal_stage2": True}, "stages": {
             "stage2": {"sha256": digest}, "stage3": {"sha256": digest}}}
         baseline.write(engines / "compiler-generation.json", producer)
@@ -127,6 +129,25 @@ class ReceiptRefusalTests(unittest.TestCase):
         baseline.write(self.root / "bootstrap/measurement.json", {"verified_complete": True, "artifacts": {"compiler": "another run"}})
         with self.assertRaisesRegex(ValueError, "measured producer"):
             baseline.image_receipts(self.root)
+
+    def test_measurement_refuses_unknown_abi_or_phase_formats_before_launch(self):
+        self.image_set()
+        path = self.root / "engines/images/build.json"
+        original = json.loads(path.read_text())
+        for changes in ({"function_abi": "unknown"},
+                        {"function_abi": "bump-core-returning-phases-3"},
+                        {"function_abi": "bump-core-returning-phases-3", "phase_format": 1, "assembly_format": 2},
+                        {"function_abi": "bump-core-returning-phases-3", "phase_format": True, "assembly_format": 1},
+                        {"compile_engine_rc": 1}, {"compile_engine_rc": False},
+                        {"version": True}, {"job_format": 1}, {"context_format": 6}):
+            with self.subTest(changes=changes):
+                baseline.write(path, original | changes)
+                with self.assertRaises(ValueError):
+                    baseline.matrix_command(self.root, "s0", "main.vibe", self.root / "out.wasm",
+                                            "main", self.root / "cache", self.root / "trace.json")
+                with self.assertRaises(ValueError):
+                    baseline.image_receipts(self.root)
+                self.assertFalse((self.root / "out.wasm").exists())
 
     def test_freeze_creates_ignored_seed_directory(self):
         repo = self.root / "repo"

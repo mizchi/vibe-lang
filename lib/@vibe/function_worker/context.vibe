@@ -1,5 +1,8 @@
 import ./product.vibe {
-  validate_function_product
+  FunctionProductPlan, function_product_plan_new
+}
+import ./replay.vibe {
+  replay_function_products_from_input
 }
 // Owned function snapshot. Mutable compiler objects never cross stores.
 import @vibe/compiler/cache {
@@ -36,6 +39,7 @@ import @vibe/lowering_worker/linear {
 export struct FunctionContext {
   plan: LinkedFunctionPlan;
   input: LinkedBodyInputs;
+  validation: FunctionProductPlan;
   debug_break: Bool;
   debug_trace: Bool;
   enable_rc: Bool;
@@ -231,6 +235,9 @@ fn fw_get_blob(r: AstBinaryReader) -> Bytes with Exception {
 /// Capture after planning, before any body output. The existing cache codec
 /// supplies an owned template of coordinator guards, not cached function data.
 export fn function_context_new(plan: LinkedFunctionPlan, input: LinkedBodyInputs, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool) -> FunctionContext with Exception {
+  if plan.enable_rc != enable_rc || Array::length(plan.bodies) != input.num_user_funcs || Array::length(plan.source_types) != input.num_user_funcs || Array::length(plan.lambda_bases) != input.num_user_funcs {
+    throw("function plan: RC mode or function count does not match body inputs")
+  } else ()
   if Array::length(input.body_cache_in.fn_indices) != 0 || Array::length(input.body_cache_out.fn_indices) != 0 || Array::length(input.lt_w.bodies) != 0 || input.slice_lo != 0 || input.slice_hi >= 0 {
     throw("function workers: expected a fresh whole-program body phase")
   } else ()
@@ -240,6 +247,7 @@ export fn function_context_new(plan: LinkedFunctionPlan, input: LinkedBodyInputs
   FunctionContext::{
     plan: plan,
     input: input,
+    validation: function_product_plan_new(plan, input),
     debug_break: debug_break,
     debug_trace: debug_trace,
     enable_rc: enable_rc,
@@ -752,15 +760,17 @@ export fn read_function_context(bytes: Bytes) -> FunctionContext with Exception 
     trace_log_base: trace_log_base,
     user_shadows_trunc_builtins: user_shadows_trunc_builtins
   }
+  let plan = LinkedFunctionPlan::{
+    bodies: bodies,
+    source_types: source_types,
+    lambda_bases: lambda_bases,
+    lambda_count: lambda_count,
+    enable_rc: plan_rc
+  }
   FunctionContext::{
-    plan: LinkedFunctionPlan::{
-      bodies: bodies,
-      source_types: source_types,
-      lambda_bases: lambda_bases,
-      lambda_count: lambda_count,
-      enable_rc: plan_rc
-    },
+    plan: plan,
     input: input,
+    validation: function_product_plan_new(plan, input),
     debug_break: debug_break,
     debug_trace: debug_trace,
     enable_rc: enable_rc,
@@ -1002,9 +1012,7 @@ export fn run_function_range(ctx: FunctionContext, lo: Int, hi: Int) -> CodegenB
 /// Replay complete validated products into the coordinator's original tables.
 /// Only the caller publishes Wasm sections and persistent state.
 export fn replay_function_products(ctx: FunctionContext, products: CodegenBodyCache) -> LinkedBodyPlan with Exception {
-  validate_function_product(ctx.plan, ctx.input, products, 0, ctx.input.num_user_funcs)
-  let input = fw_copy_input(ctx.input, products, ctx.input.body_cache_out, true, 0, -1, true)
-  LinkedFunctionPlan::emit(ctx.plan, input, false, ctx.debug_break, ctx.debug_trace, ctx.enable_rc, ctx.rc_shadow)
+  replay_function_products_from_input(ctx.validation, ctx.input, products, ctx.enable_rc, ctx.rc_shadow)
 }
 
 export fn FunctionContext::write_function_context(recv: FunctionContext) -> Bytes with Exception {

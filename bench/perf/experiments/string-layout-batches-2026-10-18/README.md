@@ -106,3 +106,25 @@ byte/substring test on both bump and RC.
 The final summary refuses incomplete matrices or profiles. Preserve the new
 workspace and its hashes separately. Its results belong to the newly recorded
 machine/toolchain; do not overwrite or relabel the historical archive.
+
+## Later functional integrations
+
+`integration-6406/` retains the earlier functional integration after #3514.
+`integration-9f93/` retains the later source-bound rebuild after #3515/#3510,
+including stage2 == stage3, matching image receipts, bump/RC/shadow execution
+on both hosts, compiled overflow negative controls, 39 cache/runtime tests and
+the real public jobs 1/2/4 worker and relative-path mutation suites. Its manifest
+binds exact raw bytes; gzip does not change whitespace or EOFs.
+
+The later full-import GC run still fails with #3512. A control using main test
+and body-cache inputs under the integration producer fails likewise; it is not
+a second unmodified-main compiler producer. Exact extracted definitions and all
+scalar/legacy tests pass GC on Node and Wasmtime. Both the initial failed
+attempt and the scoped continuation are retained. These integrations do not
+retime or relabel the original 403d performance evidence.
+
+`integration-9f93/release-check/` separately retains the subsequent complete
+126-task local gate, its fixed-tree/source qualification, and actual later-main
+hosted CI/install proof. Its own manifest binds exact raw bytes. These records
+were packaged after the local gate; no new documentation tree or later code
+is claimed to have been part of that earlier fixed-tree run.

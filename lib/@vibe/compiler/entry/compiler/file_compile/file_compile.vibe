@@ -1,3 +1,7 @@
+import ./file_body_preparation.vibe {
+  FileBodyPreparation, typed_lowering_guard_for_files
+}
+
 //# Imports
 
 import @vibe/compiler/syntax {
@@ -84,6 +88,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/wasi {
+  LinkedModulePreparation,
   compile_wasi_module_impl_with_typed_offsets,
   compile_wasi_module_impl_with_typed_offsets_grants,
   compile_wasi_module_no_dce_impl_with_typed_offsets,
@@ -98,6 +103,7 @@ import @vibe/compiler/codegen/wasi {
   compile_wasi_module_with_sources_coverage_impl_with_typed_offsets,
   compile_wasi_module_with_sources_trace_impl_with_typed_offsets,
   effect_lowering_prelude,
+  lc_prepare_wasi_module_rc_cached_with_split_grants,
   prelude_module_full_oracle_line,
   prelude_pass_module_oracle_step
 }
@@ -1964,57 +1970,6 @@ fn record_typed_lowering_guard(cache: CodegenBodyCache, rows: Array[Int]) -> Uni
   }
 }
 
-/// #2669 step 2b (Codex P0): the checker's per-module typed-lowering tables,
-/// fingerprinted in each module's OWN coordinates, six slots per file.
-///
-/// The merged tables `union_module_typed_lowering_with_clones` produces are
-/// positions in the MERGED text, so a comment anywhere shifts every offset
-/// after it -- folding those into the codegen guard made a comment-only edit
-/// decline the whole widened lane. These are the same rows before the rebase,
-/// so a file's contribution moves only when THAT file's own classification
-/// moves, which is the property the guard needs.
-///
-/// It is the CLASSIFICATION that has to be pinned, not the positions: a callee
-/// that changes from `Int` to `Bool` keeps its name, arity and scalar-return
-/// classification, so no name-keyed table separates the two, while every
-/// render and `eq` argument fed by it changes tag.
-///
-/// Measured on a two-file chain, reading the UNTOUCHED consumer's rows while
-/// editing the callee's file: a comment, a same-length body edit and a body
-/// edit that lengthens the file all leave them at `[715]`, and the `Int` to
-/// `Bool` change moves them to `[717]`. So the rows track the interfaces a
-/// module reads and not the bytes anyone else adds -- which is what makes the
-/// per-file comparison at the decode both able to see the interface change and
-/// quiet on every ordinary edit. Pinned by
-/// `tests/typed_lowering_rows_interface_test.vibe`.
-///
-/// The memo these read is populated by the check that just ran and reset at
-/// the start of each walk, so a file with no row contributes an empty slot --
-/// which is what a module that classified nothing has, and is stable.
-fn typed_lowering_guard_for_files(file_paths: Array[String]) -> Array[Int] {
-  let out: Array[Int] = []
-  let mut i = 0
-  while i < Array::length(file_paths) {
-    let path = Array::get(file_paths, i)
-    match module_typed_lowering_offsets_for_path(path) {
-      Some(offsets) => bcc_layout_fp_ints(out, offsets),
-      None => bcc_layout_fp_ints(out, array_empty())
-    }
-    match module_typed_eq_rows_for_path(path) {
-      Some((eq_offs, eq_keys)) => {
-        bcc_layout_fp_ints(out, eq_offs)
-        bcc_layout_fp_strings(out, eq_keys)
-      },
-      None => {
-        bcc_layout_fp_ints(out, array_empty())
-        bcc_layout_fp_strings(out, array_empty())
-      }
-    }
-    i = i + 1
-  }
-  out
-}
-
 /// #2575 item 2: the ordinary lane's statement-to-module map, as a `DbgProv`.
 ///
 /// This is the input `prelude_run_per_module` needs and no production compile
@@ -2266,7 +2221,7 @@ fn body_cache_harvest_is_replayable(cache: CodegenBodyCache) -> Bool {
   Array::length(cache.guard_meta) == 5
 }
 
-fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool, counts_out: Array[Int]) -> Bytes with Env + Exception + Fs {
+fn prepare_file_body_inputs_fs(entry_path: String, use_split: Bool) -> FileBodyPreparation with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -2279,6 +2234,43 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
   // `merged_stmts`.
   let lane_prov = ordinary_lane_dbg_prov(file_paths, file_counts, source_groups, file_bases)
   let lane_split = ordinary_lane_module_split(file_paths, file_counts, source_groups, use_split)
+  FileBodyPreparation::{
+    stmts: merged_stmts,
+    paths: file_paths,
+    fingerprints: file_fps,
+    counts: file_counts,
+    floats: float_offsets,
+    int_renders: int_offsets,
+    bool_renders: bool_offsets,
+    eq_offsets: eq_offsets,
+    eq_keys: eq_keys,
+    prov: lane_prov,
+    split: lane_split,
+    typed_guard: typed_lowering_guard_for_files(file_paths)
+  }
+}
+
+/// The cache-off production filesystem prefix, returned before body execution.
+/// Configuration and input-observation ownership stay with the calling phase.
+export fn prepare_file_fs_mode_rc_body(entry_path: String, entry_name: String) -> LinkedModulePreparation with Env + Exception + Fs {
+  let prepared = prepare_file_body_inputs_fs(entry_path, false)
+  lc_prepare_wasi_module_rc_cached_with_split_grants(prepared.stmts, entry_name, codegen_body_cache_new(), codegen_body_cache_discard(), prepared.prov, prepared.floats, prepared.int_renders, prepared.bool_renders, prepared.eq_offsets, prepared.eq_keys, prepared.split, print_stmt, [
+  ])
+}
+
+fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool, counts_out: Array[Int]) -> Bytes with Env + Exception + Fs {
+  let prepared = prepare_file_body_inputs_fs(entry_path, use_split)
+  let merged_stmts = prepared.stmts
+  let file_paths = prepared.paths
+  let file_fps = prepared.fingerprints
+  let file_counts = prepared.counts
+  let float_offsets = prepared.floats
+  let int_offsets = prepared.int_renders
+  let bool_offsets = prepared.bool_renders
+  let eq_offsets = prepared.eq_offsets
+  let eq_keys = prepared.eq_keys
+  let lane_prov = prepared.prov
+  let lane_split = prepared.split
   // The key is independent of source CONTENT (the point is to hit after an
   // edit) but scoped to the entry PATH: two roots that share a conventional
   // entry name (`run`, `main`) must not share one artifact slot, or their
@@ -2296,9 +2288,9 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
   // body-level difference between the lanes would then be cached away and the
   // comparison would pass while measuring nothing.
   let caching = cache_mode != "off"
-  // #2669 step 2b (Codex P0): computed here, after the check has published
-  // every module's table and before any decision reads the cache.
-  let typed_lowering_guard = typed_lowering_guard_for_files(file_paths)
+  // #2669 step 2b (Codex P0): captured by the shared preparation after the
+  // check publishes every module's table, before any cache decision.
+  let typed_lowering_guard = prepared.typed_guard
   let cache_in_decoded = if caching {
     match load_persistent_artifact("codegen-body-cache", entry_name, artifact_key) {
       Some(stored) => decode_body_cache_artifact_for(stored, file_paths, file_fps, file_counts),

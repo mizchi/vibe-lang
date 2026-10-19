@@ -33,6 +33,7 @@ use wasmtime::{
 
 mod checker_workers;
 mod commands;
+mod function_phases;
 mod lowering_service;
 mod lowering_workers;
 mod native_cache;
@@ -292,6 +293,8 @@ struct HostState {
     stdin_pending: Vec<u8>,
     host_fs_scope: Option<HostFsScope>,
     lowering_inputs: Option<lowering_service::InputSnapshot>,
+    phase_reads: Option<function_phases::ArtifactReads>,
+    phase_lifetime: Option<function_phases::StoreLifetime>,
     lowering_service_used: bool,
     lowering_finalize: Option<(Instant, std::path::PathBuf)>,
 }
@@ -409,6 +412,8 @@ impl HostState {
             host_fs_scope: None,
             lowering_inputs: std::env::var_os("VIBE_LOWERING_SERVICE_CONFIG")
                 .map(|_| lowering_service::InputSnapshot::default()),
+            phase_reads: None,
+            phase_lifetime: None,
             lowering_service_used: false,
             lowering_finalize: None,
         }
@@ -813,6 +818,16 @@ fn run_epoch_ticker(engine: Engine, stop: Arc<std::sync::atomic::AtomicBool>, in
 }
 
 fn run(args: Vec<String>) -> Result<i32> {
+    run_core(args, None, None)
+}
+
+// The internal invocation returns host-owned data only. Ordinary cleanup below
+// still owns the local Store, sampler, profiles and diagnostics on every path.
+fn run_core(
+    args: Vec<String>,
+    mut shared: Option<&mut function_phases::SharedRuntime>,
+    mut invocation: Option<&mut function_phases::Invocation>,
+) -> Result<i32> {
     if args.is_empty() {
         print_help();
         bail!("missing wasm/cwasm argument");
@@ -820,7 +835,11 @@ fn run(args: Vec<String>) -> Result<i32> {
     let wasm_path = &args[0];
     let guest_profile_path = std::env::var("VIBE_GUEST_PROFILE")
         .ok()
-        .filter(|path| !path.is_empty());
+        .filter(|path| !path.is_empty())
+        .map(|path| match invocation.as_ref() {
+            Some(invocation) => invocation.profile_path(path),
+            None => path,
+        });
     let guest_profile_interval_value = std::env::var("VIBE_GUEST_PROFILE_INTERVAL_US").ok();
     let guest_profile_interval = if guest_profile_path.is_some() {
         parse_guest_profile_interval(guest_profile_interval_value.as_deref())?
@@ -834,6 +853,9 @@ fn run(args: Vec<String>) -> Result<i32> {
     }
     let host_fs_scope = prepare_host_fs_scope()?;
     if is_component_file(wasm_path) {
+        if invocation.is_some() {
+            bail!("function phases require a core module");
+        }
         if guest_profile_path.is_some() {
             bail!("guest profiling for Component Model inputs is not implemented yet");
         }
@@ -890,12 +912,33 @@ fn run(args: Vec<String>) -> Result<i32> {
     if fuel_profile {
         cfg.consume_fuel(true);
     }
-    let engine = Engine::new(&cfg)?;
-    let module = load_module(&engine, wasm_path)?;
+    let (engine, module) = if let Some(shared) = shared.as_mut() {
+        if let Some((engine, module)) = &shared.loaded {
+            if shared.path.as_deref() != Some(wasm_path.as_str()) {
+                bail!("function phases cannot change the shared module");
+            }
+            (engine.clone(), module.clone())
+        } else {
+            let engine = Engine::new(&cfg)?;
+            let module = load_module(&engine, wasm_path)?;
+            shared.path = Some(wasm_path.clone());
+            shared.loaded = Some((engine.clone(), module.clone()));
+            (engine, module)
+        }
+    } else {
+        let engine = Engine::new(&cfg)?;
+        let module = load_module(&engine, wasm_path)?;
+        (engine, module)
+    };
 
     let limits = store_mem_limits();
 
     let mut state = HostState::new(prog_args, MemLimiter::new(limits));
+    if let Some(invocation) = invocation.as_mut() {
+        state.lowering_inputs = Some(lowering_service::InputSnapshot::default());
+        state.phase_reads = invocation.reads.clone();
+        state.phase_lifetime = Some(invocation.store_lifetime()?);
+    }
     if guest_profile_path.is_some() {
         state.guest_profiler = Some(GuestProfiler::new(
             &engine,
@@ -988,6 +1031,12 @@ fn run(args: Vec<String>) -> Result<i32> {
     let mut linker = Linker::new(&engine);
     register_imports(&mut linker)?;
     withhold_capability_imports(&mut linker, &module)?;
+    if let Some(scope) = invocation
+        .as_ref()
+        .and_then(|invocation| invocation.reads.as_ref())
+    {
+        function_phases::restrict_finisher(&mut linker, &module, scope)?;
+    }
 
     let instance = linker.instantiate(&mut store, &module)?;
     let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
@@ -1070,7 +1119,16 @@ fn run(args: Vec<String>) -> Result<i32> {
         }));
     }
 
-    let result = start.call(&mut store, ());
+    let result: Result<()> = (|| {
+        if let Some(invocation) = invocation.as_mut() {
+            invocation.before_start(&instance, &mut store)?;
+        }
+        start.call(&mut store, ())?;
+        if let Some(invocation) = invocation.as_mut() {
+            invocation.after_start(&instance, &mut store)?;
+        }
+        Ok(())
+    })();
 
     // Stop the sampler thread before reading samples.
     stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2189,6 +2247,15 @@ fn real_main() {
             Ok(code) => std::process::exit(code),
             Err(e) => {
                 eprintln!("viberun: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if args.first().map(|s| s.as_str()) == Some("--function-phases") {
+        match function_phases::run(args.iter().skip(1).cloned().collect()) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("viberun: function phases: {error:#}");
                 std::process::exit(1);
             }
         }

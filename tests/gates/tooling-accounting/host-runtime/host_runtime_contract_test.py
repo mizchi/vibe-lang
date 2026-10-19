@@ -14,6 +14,15 @@ spec.loader.exec_module(module)
 
 
 class HostRuntimeContractTest(unittest.TestCase):
+    def without_native_service(self, text):
+        mutated, count = re.subn(
+            r'(linker\.func_wrap\(\s*"vibe",\s*)"compiler_lowering_run"',
+            lambda match: match.group(1) + '"missing_lowering_service"',
+            text,
+        )
+        self.assertEqual(count, 1, "mutation must replace the actual native registration")
+        return mutated
+
     def test_native_core_provider_is_present(self):
         manifest = json.loads(module.MANIFEST.read_text())
         module.validate_native_core_providers(
@@ -24,12 +33,25 @@ class HostRuntimeContractTest(unittest.TestCase):
 
     def test_missing_native_service_fails(self):
         text = module.read_source_group(module.RUST)
-        mutated = text.replace('"compiler_lowering_run"', '"missing_lowering_service"', 1)
+        mutated = self.without_native_service(text)
         self.assertTrue(mutated != text, "mutation did not apply")
         with self.assertRaises(SystemExit):
             module.validate_native_core_providers(
                 {"compiler_lowering_run"}, module.rust_imports(mutated), set()
             )
+
+    def test_native_registration_mutation_ignores_refusal_references(self):
+        reference = 'let denied = name == "compiler_lowering_run";\n'
+        provider = 'linker.func_wrap("vibe", "compiler_lowering_run", handler)?;\n'
+        other = 'linker.func_wrap("vibe", "env-get", handler)?;\n'
+        for text in [reference + provider + other, provider + reference + other]:
+            with self.subTest(reference_first=text.startswith(reference)):
+                mutated = self.without_native_service(text)
+                self.assertIn(reference, mutated)
+                with self.assertRaises(SystemExit):
+                    module.validate_native_core_providers(
+                        {"compiler_lowering_run"}, module.rust_imports(mutated), set()
+                    )
 
     def test_native_service_leaking_into_node_fails(self):
         text = module.read_source_group(module.NODE)

@@ -1,0 +1,45 @@
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_body_cached, prepare_file_fs_mode_rc_body
+}
+import @vibe/compiler/codegen/wasi {
+  LinkedFunctionPlan, function_with_executor, lc_finish_linked_module
+}
+import @vibe/compiler/core {
+  merged_offset_line_col, merged_offset_space_add, merged_offset_space_reset
+}
+
+fn check_prepared_file(path: String, entry: String) -> Unit with Env + Exception + Fs {
+  let expected = compile_file_fs_mode_rc_body_cached(path, entry, "off")
+  let calls = [0]
+  let actual = function_with_executor((plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow) -> {
+    Array::set(calls, 0, Array::get(calls, 0) + 1)
+    assert(Array::length(input.stmts) == 0)
+    assert(Array::length(input.fn_stmt_indices) == 0)
+    assert(enable_rc)
+    assert(!coverage && !debug_break && !debug_trace && !rc_shadow)
+    LinkedFunctionPlan::emit(plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+  }, () -> {
+    let prepared = prepare_file_fs_mode_rc_body(path, entry)
+    assert(Array::get(calls, 0) == 0)
+    assert(prepared.enable_rc)
+    Array::truncate(prepared.input.stmts, 0)
+    Array::truncate(prepared.input.fn_stmt_indices, 0)
+    merged_offset_space_reset()
+    merged_offset_space_add("unrelated-after-file-prepare.vibe", "another snapshot", 0)
+    let bytes = lc_finish_linked_module(prepared)
+    assert(Array::get(calls, 0) == 1)
+    let (owner, _, _) = merged_offset_line_col(0)
+    assert(owner == "unrelated-after-file-prepare.vibe")
+    bytes
+  })
+  assert(Bytes::compare(expected, actual) == 0)
+}
+
+test "deferred filesystem preparation shares checked lowering and import resolution" {
+  // These enter real loader/checker and per-file typed rows. The first needs
+  // checker-supplied equality for an untyped array mutated through a function;
+  // the others preserve nested witnesses and the imported builtin type owner.
+  check_prepared_file("fixtures/structural_eq_untyped_empty_custom_result_scalar_typed.vibe", "_start")
+  check_prepared_file("fixtures/lambda_bound_nested_witness_test.vibe", "__no_entry__")
+  check_prepared_file("fixtures/type_member_import_namespace_int_typed_test.vibe", "__no_entry__")
+}

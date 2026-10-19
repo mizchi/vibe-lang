@@ -11,6 +11,7 @@ import @vibe/compiler/core {
   dce_stmts,
   fold_const_bool_params,
   is_exception_effect_name,
+  merged_offset_locations_snapshot,
   rename_builtin_shadow_defs,
   sorted_names_of,
   verify_lane_builtins
@@ -106,8 +107,8 @@ import ./linked_helpers.vibe {
   collect_used_builtin_names, program_has_array_literal, program_makes_closure_blocks, program_makes_map_blocks
 }
 
-import ./linked_compile_function_bodies.vibe {
-  lc_build_function_bodies
+import ./linked_function_plan.vibe {
+  lc_prepare_function_plan
 }
 
 import ./linked_compile_host_plan.vibe {
@@ -139,11 +140,15 @@ import ./linked_compile_lc_retarget_call.vibe {
 }
 
 import ./linked_compile_linkedhostplan.vibe {
-  LinkedBodyInputs, LinkedSectionInputs
+  LinkedBodyInputs, LinkedSectionPlan
 }
 
-import ./linked_compile_module_sections.vibe {
-  lc_emit_module_sections
+import ./linked_section_facts.vibe {
+  lc_prepare_section_facts
+}
+
+import ./linked_module_preparation.vibe {
+  LinkedModulePreparation, lc_finish_linked_module_with_flags
 }
 
 import ./linked_compile_prelude_run_per_module.vibe {
@@ -188,6 +193,12 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
 
 /// #2828 rung 2: the grant-carrying arity. See the delegate below.
 export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], entry_name_in: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Bytes with Exception {
+  lc_finish_linked_module_with_flags(lc_prepare_module_with_split_grants(stmts, entry_name_in, srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, enable_late_dce, prov, body_cache_in, body_cache_out, slice_lo, slice_hi, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, split, render, grants), coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+}
+
+/// Compute lowering, canonical function indices and all assembly observations.
+/// The returned value is instance-local and owns the state needed by the executor.
+export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> LinkedModulePreparation with Exception {
   // #3132 review: `--entry StringBuilder::new` can name the program's own
   // function, which the rename moves to `StringBuilder::new$user`. Rename
   // first (idempotent, the prelude repeats it) so every lookup and DCE root
@@ -1848,7 +1859,8 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   } else {
     Bytes::new(0)
   }
-  let linked_function_bodies = lc_build_function_bodies(LinkedBodyInputs::{
+  let section_facts = lc_prepare_section_facts(stmts, entry_name, entry_user_idx, fn_stmt_indices, num_user_funcs, effect_names_list, debug_break, dbgargs_cap)
+  let body_input = LinkedBodyInputs::{
     has_exceptions: stmts_contain_exceptions(stmts),
     all_fn_indices_list: all_fn_indices_list,
     all_fn_names_list: all_fn_names_list,
@@ -1990,13 +2002,9 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     trace_counter_addr: trace_counter_addr,
     trace_log_base: trace_log_base,
     user_shadows_trunc_builtins: user_shadows_trunc_builtins
-  }, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
-  let bodies = linked_function_bodies.bodies
-  let builtin_type_idxs = linked_function_bodies.builtin_type_idxs
-  let meta_i32 = linked_function_bodies.meta_i32
-  let meta_i64 = linked_function_bodies.meta_i64
-  let meta_v128 = linked_function_bodies.meta_v128
-  lc_emit_module_sections(LinkedSectionInputs::{
+  }
+  let function_plan = lc_prepare_function_plan(body_input.stmts, body_input.fn_stmt_indices, body_input.fn_names_list, body_input.num_user_funcs, body_input.const_int_names_list, body_input.ctor_names_list, enable_rc)
+  let sections = LinkedSectionPlan::{
     arr_concat_idx: arr_concat_idx,
     arr_get_idx: arr_get_idx,
     arr_len_idx: arr_len_idx,
@@ -2011,8 +2019,6 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     blind_offsets: blind_offsets,
     blind_owners: blind_owners,
     blind_syms: blind_syms,
-    bodies: bodies,
-    builtin_type_idxs: builtin_type_idxs,
     bytes_append_idx: bytes_append_idx,
     bytes_blit_idx: bytes_blit_idx,
     bytes_capacity_idx: bytes_capacity_idx,
@@ -2060,7 +2066,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     export_fn_user_indices: export_fn_user_indices,
     fn_names_list: fn_names_list,
     fn_param_counts: fn_param_counts,
-    fn_stmt_indices: fn_stmt_indices,
+    facts: section_facts,
     frozen_array_copy_idx: frozen_array_copy_idx,
     fs_append_import_idx: fs_append_import_idx,
     fs_chdir_import_idx: fs_chdir_import_idx,
@@ -2123,17 +2129,12 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     int_ctz_idx: int_ctz_idx,
     int_popcount_idx: int_popcount_idx,
     int_to_double_idx: int_to_double_idx,
-    lambda_bases: linked_function_bodies.lambda_bases,
-    lambda_count: linked_function_bodies.lambda_count,
     lambda_slot_base: lambda_slot_base,
     library_mode: library_mode,
     linemap_on: linemap_on,
     linemap_state: linemap_state,
     linked_imports: linked_imports,
     lt_w: lt_w,
-    meta_i32: meta_i32,
-    meta_i64: meta_i64,
-    meta_v128: meta_v128,
     need_div_zero_abort: need_div_zero_abort,
     need_host_future_builtin: need_host_future_builtin,
     need_http_request_builtin: need_http_request_builtin,
@@ -2184,7 +2185,6 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     stdin_read_stream_import_idx: stdin_read_stream_import_idx,
     stdout_write_char_import_idx: stdout_write_char_import_idx,
     stdout_write_stream_import_idx: stdout_write_stream_import_idx,
-    stmts: stmts,
     str_char_code_at_idx: str_char_code_at_idx,
     str_concat_idx: str_concat_idx,
     str_eq_idx: str_eq_idx,
@@ -2213,5 +2213,17 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     trace_counter_addr: trace_counter_addr,
     trace_log_base: trace_log_base,
     trace_reserve: trace_reserve
-  }, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+  }
+  LinkedModulePreparation::{
+    functions: function_plan,
+    input: body_input,
+    sections: sections,
+    coverage: coverage,
+    debug_break: debug_break,
+    debug_trace: debug_trace,
+    enable_rc: enable_rc,
+    rc_shadow: rc_shadow,
+    locations: merged_offset_locations_snapshot(),
+    used: false
+  }
 }

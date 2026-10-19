@@ -1,0 +1,82 @@
+import @vibe/compiler/core {
+  Stmt
+}
+import @vibe/compiler/codegen/common_base {
+  DbgProv, ModuleSplit, bcc_layout_fp_ints, bcc_layout_fp_strings
+}
+import @vibe/compiler/runtime {
+  module_typed_eq_rows_for_path, module_typed_lowering_offsets_for_path
+}
+import @vibe/core {
+  array_empty
+}
+
+/// The normal filesystem cache lane and deferred CPU preparation share these
+/// exact checker, merged-offset, typed-lowering and provenance observations.
+/// This value is transient instance-local syntax, not a cross-Store packet.
+export struct FileBodyPreparation {
+  stmts: Array[Stmt];
+  paths: Array[String];
+  fingerprints: Array[String];
+  counts: Array[Int];
+  floats: Array[Int];
+  int_renders: Array[Int];
+  bool_renders: Array[Int];
+  eq_offsets: Array[Int];
+  eq_keys: Array[String];
+  prov: DbgProv;
+  split: ModuleSplit;
+  typed_guard: Array[Int]
+}
+
+/// #2669 step 2b (Codex P0): the checker's per-module typed-lowering tables,
+/// fingerprinted in each module's OWN coordinates, six slots per file.
+///
+/// The merged tables `union_module_typed_lowering_with_clones` produces are
+/// positions in the MERGED text, so a comment anywhere shifts every offset
+/// after it -- folding those into the codegen guard made a comment-only edit
+/// decline the whole widened lane. These are the same rows before the rebase,
+/// so a file's contribution moves only when THAT file's own classification
+/// moves, which is the property the guard needs.
+///
+/// It is the CLASSIFICATION that has to be pinned, not the positions: a callee
+/// that changes from `Int` to `Bool` keeps its name, arity and scalar-return
+/// classification, so no name-keyed table separates the two, while every
+/// render and `eq` argument fed by it changes tag.
+///
+/// Measured on a two-file chain, reading the UNTOUCHED consumer's rows while
+/// editing the callee's file: a comment, a same-length body edit and a body
+/// edit that lengthens the file all leave them at `[715]`, and the `Int` to
+/// `Bool` change moves them to `[717]`. So the rows track the interfaces a
+/// module reads and not the bytes anyone else adds -- which is what makes the
+/// per-file comparison at the decode both able to see the interface change and
+/// quiet on every ordinary edit. Pinned by
+/// `tests/typed_lowering_rows_interface_test.vibe`.
+///
+/// The memo these read is populated by the check that just ran and reset at
+/// the start of each walk, so a file with no row contributes an empty slot --
+/// which is what a module that classified nothing has, and is stable.
+
+export fn typed_lowering_guard_for_files(file_paths: Array[String]) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(file_paths) {
+    let path = Array::get(file_paths, i)
+    match module_typed_lowering_offsets_for_path(path) {
+      Some(offsets) => bcc_layout_fp_ints(out, offsets),
+      None => bcc_layout_fp_ints(out, array_empty())
+    }
+    match module_typed_eq_rows_for_path(path) {
+      Some((eq_offs, eq_keys)) => {
+        bcc_layout_fp_ints(out, eq_offs)
+        bcc_layout_fp_strings(out, eq_keys)
+      },
+      None => {
+        bcc_layout_fp_ints(out, array_empty())
+        bcc_layout_fp_strings(out, array_empty())
+      }
+    }
+    i = i + 1
+  }
+  out
+}
