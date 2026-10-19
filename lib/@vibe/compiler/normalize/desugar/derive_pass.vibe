@@ -1,7 +1,7 @@
 // Derive pass.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr
+  Expr, Pat, Stmt, TypeExpr, namespace_rename_original
 }
 
 import @vibe/core {
@@ -39,7 +39,7 @@ import ./equality_shape_queries.vibe {
 }
 
 import ./formal_scope.vibe {
-  subst_field_formals, subst_variant_formals, type_param_names_reset
+  arr_helper_tparams, subst_field_formals, subst_variant_formals, type_param_names_reset
 }
 
 import ./name_encoding.vibe {
@@ -54,8 +54,98 @@ import ./show_generation.vibe {
   gen_arr_to_string_fn, gen_show_fn
 }
 
+import ./state.vibe {
+  dtd_show_refusals
+}
+
 import ./typed_equality.vibe {
   eq_for_typed
+}
+
+/// The innermost element of `Array[..[Array[e]]..]`.
+fn show_array_innermost(t: TypeExpr) -> TypeExpr {
+  match t {
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      show_array_innermost(Array::get(args, 0))
+    } else {
+      t
+    },
+    _ => t
+  }
+}
+
+/// Is `t`, after peeling `Array` layers, a bare type parameter of the
+/// declaration? Its `__arr_to_string__` helper would have to render an erased
+/// formal, which is refused.
+fn show_array_of_bare_formal(t: TypeExpr) -> Bool {
+  match show_array_innermost(t) {
+    TyName(n) => Array::length(arr_helper_tparams(TyName(n))) > 0,
+    _ => false
+  }
+}
+
+/// The source spelling of a re-spelled declaration formal (`__Vfp_T` -> `T`).
+fn show_formal_source_name(t: TypeExpr) -> String {
+  match show_array_innermost(t) {
+    TyName(n) => if String::starts_with(n, "__Vfp_") {
+      n[6: String::length(n)]
+    } else {
+      n
+    },
+    _ => "T"
+  }
+}
+
+/// Does `fty` hold an `Array` (at any depth, through `Option` / tuples / type
+/// arguments) whose innermost element is a bare formal? Returns that array
+/// type, or None.
+fn show_field_formal_array(fty: TypeExpr) -> Option[TypeExpr] {
+  match fty {
+    TyApp("Array", _) => if show_array_of_bare_formal(fty) {
+      Some(fty)
+    } else {
+      None
+    },
+    TyApp(_, args) => show_field_formal_array_of(args),
+    TyTuple(ts) => show_field_formal_array_of(ts),
+    _ => None
+  }
+}
+
+fn show_field_formal_array_of(ts: Array[TypeExpr]) -> Option[TypeExpr] {
+  let mut out: Option[TypeExpr] = None
+  for t in ts {
+    if out is None {
+      out = show_field_formal_array(t)
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// #3547: a `derive (Show)` / `derive (Hash)` type with a field (or payload)
+/// holding `Array[T]` of its own type parameter. Its derived renderer is one
+/// function for every instantiation, so the array's elements have no renderer
+/// there; the generated helper used to be refused while its own body was
+/// rewritten, with the compiler's spelling of the formal and helper
+/// (`pass an explicit renderer '(__Vfp_T) -> String' ...
+/// [@fn=__arr_to_string____Vfp_T]`) and nothing naming the type. The refusal
+/// now names the type, the field and the edit. The helper is not generated.
+fn show_note_formal_array_field(tname: String, fname: String, fty: TypeExpr) -> Unit {
+  match show_field_formal_array(fty) {
+    Some(arr) => {
+      let shown = namespace_rename_original(tname)
+      let formal = show_formal_source_name(arr)
+      let msg = "write `" + shown + "::to_string` yourself, or remove `Show` / `Hash` from the `derive` of `" + shown + "`: its derived renderer is shared by every instantiation, so the elements of `" + fname + ": Array[" + formal + "]` (a type parameter of `" + shown + "`) have no renderer there [@fn=" + shown + "]"
+      if !str_array_contains(dtd_show_refusals, msg) {
+        Array::push(dtd_show_refusals, msg)
+      } else {
+        ()
+      }
+    },
+    None => ()
+  }
 }
 
 import ./typed_row_queries.vibe {
@@ -153,7 +243,12 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         if str_array_contains(derives, "Show") || str_array_contains(derives, "Hash") {
           let mut fi = 0
           while fi < Array::length(fields) {
-            let (_, fty) = Array::get(fields, fi)
+            let (fname, fty) = Array::get(fields, fi)
+            if !dtd_source_op_defined(stmts, qualified_name(name, "to_string")) {
+              show_note_formal_array_field(name, fname, fty)
+            } else {
+              ()
+            }
             collect_show_array_elems(fty, arr_elems, arr_keys)
             fi = fi + 1
           }
@@ -202,9 +297,14 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         if str_array_contains(derives, "Show") || str_array_contains(derives, "Hash") {
           let mut vi = 0
           while vi < Array::length(variants) {
-            let (_, ftypes) = Array::get(variants, vi)
+            let (vname, ftypes) = Array::get(variants, vi)
             let mut ti = 0
             while ti < Array::length(ftypes) {
+              if !dtd_source_op_defined(stmts, qualified_name(ename, "to_string")) {
+                show_note_formal_array_field(ename, namespace_rename_original(vname) + "." + idx_str(ti), Array::get(ftypes, ti))
+              } else {
+                ()
+              }
               collect_show_array_elems(Array::get(ftypes, ti), arr_elems, arr_keys)
               ti = ti + 1
             }
@@ -317,7 +417,10 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   let mut ei2 = 0
   while ei2 < Array::length(arr_elems) {
     let et2 = Array::get(arr_elems, ei2)
-    if !top_level_fn_exists(stmts, arr_to_string_name(et2)) {
+    if show_array_of_bare_formal(et2) {
+      // Refused above (`show_note_formal_array_field`).
+      ()
+    } else if !top_level_fn_exists(stmts, arr_to_string_name(et2)) {
       dtd_fresh_reset_for_decl()
       Array::push(gen, gen_arr_to_string_fn(et2, known_types))
     } else {

@@ -403,6 +403,11 @@ ur_refused fixtures/err_derive_show_bytes_field_refused.vibe 'a derived renderer
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
 ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type' gc
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' gc 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
+# #3547: an `Array[T]` field of a `derive (Show)` generic type is refused at the
+# type, naming the field and the edit -- not in the compiler's spelling of the
+# helper it generated.
+ur_refused fixtures/err_derive_show_generic_array_field_refused.vibe 'the elements of `w: Array[T]`' 'write `G::to_string` yourself'
+ur_refused fixtures/err_derive_show_generic_array_field_refused.vibe 'the elements of `w: Array[T]`' 'write `G::to_string` yourself' gc
 # #3084: a generic function's result typed, at the call site, as a struct with
 # no renderer printed its address; the checker's row names the struct.
 ur_refused fixtures/err_interp_generic_call_missing_show_refused.vibe 'cannot interpolate a value of type `Hidden`' 'add `derive(Show)` to `Hidden`' linear 'fixtures/err_interp_generic_call_missing_show_refused.vibe: line 14:14'
