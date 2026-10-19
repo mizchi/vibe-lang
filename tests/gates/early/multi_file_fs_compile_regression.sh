@@ -343,6 +343,14 @@ fn main allows Console {
   println("\{String::byte_at(s, 5)}")
 }
 VEOF
+# #3547: `m[k]` on a missing key trapped with only a backtrace.
+cat > "$oobdir/map_get.vibe" <<'VEOF'
+fn main allows Console {
+  let m = Map::from_pairs([("a", 1)])
+  println("before")
+  println("\{m["b"]}")
+}
+VEOF
 oob_compile_one() {
   local src="$1" out="$2"
   # Production RC: this lane's VIBE_RC=0 pin would compile bump, which has
@@ -362,6 +370,7 @@ oob_compile_one "$oobdir/arr_set.vibe" "$oobdir/arr_set.wasm"
 oob_compile_one "$oobdir/bytes_get.vibe" "$oobdir/bytes_get.wasm"
 oob_compile_one "$oobdir/bytes_set.vibe" "$oobdir/bytes_set.wasm"
 oob_compile_one "$oobdir/str_byte_at.vibe" "$oobdir/str_byte_at.wasm"
+oob_compile_one "$oobdir/map_get.vibe" "$oobdir/map_get.wasm"
 oob_run_one() {
   VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$1" 2>&1
 }
@@ -394,6 +403,8 @@ oob_bytes_set_out="$(oob_run_one "$oobdir/bytes_set.wasm")"
 oob_bytes_set_rc=$?
 oob_str_out="$(oob_run_one "$oobdir/str_byte_at.wasm")"
 oob_str_rc=$?
+oob_map_out="$(oob_run_one "$oobdir/map_get.wasm")"
+oob_map_rc=$?
 set -e
 # The expected location carries the DIRECTORY the source was compiled from,
 # not just its file name: `vibe.dbgfiles` holds the path the compiler opened
@@ -405,6 +416,7 @@ oob_check "Array::set" "Array::set: index 10 out of bounds for length 3" "$oobdi
 oob_check "Bytes::get" "Bytes::get: index 9 out of bounds for length 3" "$oobdir/bytes_get.vibe:4" "$oob_bytes_get_out" "$oob_bytes_get_rc"
 oob_check "Bytes::set" "Bytes::set: index 9 out of bounds for length 3" "$oobdir/bytes_set.vibe:4" "$oob_bytes_set_out" "$oob_bytes_set_rc"
 oob_check "String::byte_at" "String::byte_at: index 5 out of bounds for length 3" "$oobdir/str_byte_at.vibe:4" "$oob_str_out" "$oob_str_rc"
+oob_check "Map::get" "Map::get: key not found" "$oobdir/map_get.vibe:4" "$oob_map_out" "$oob_map_rc"
 # Stripped mapping: OOB line and wasm frame remain; no fabricated path:line.
 node scripts/wasm_custom_section.js strip "$oobdir/arr_get.wasm" "$oobdir/arr_get.stripped.wasm" vibe.linemap vibe.dbgfiles
 set +e

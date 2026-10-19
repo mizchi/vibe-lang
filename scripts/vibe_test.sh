@@ -458,6 +458,10 @@ vt_fail_detail() {
       ndiag++
       diags[ndiag] = "       " $0
     }
+    $0 ~ /^Map::get: key not found/ {
+      ndiag++
+      diags[ndiag] = "       " $0
+    }
     # The closing line the generated assert_eq abort prints (lower_assert_eq
     # in normalize/desugar_trait_dict.vibe): the definitive signal, immune to
     # multiline rendered values and to output that imitates the block. Hidden
