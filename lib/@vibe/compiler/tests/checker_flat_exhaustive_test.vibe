@@ -85,3 +85,18 @@ test "guarded arm with no unguarded arm for its own pattern is still rejected" {
   assert(check_source_err("fn f(o: Option[Int]) -> Int { match o { None => 0, Some(v) if v > 0 => v } }\nfn main() -> Int { f(None) }"))
   assert(check_source_err("enum Shape { Circle(Int); Rect(Int, Int); Empty }\nfn f(s: Shape, g: Bool) -> Int { match s { Circle(r) => r, Rect(w, h) if g => 1, Rect(w, h) if w == h => 2, Empty => 0 } }\nfn main() -> Int { f(Empty, true) }"))
 }
+
+/// The checker used to recognise the desugared match by the temporary's
+/// SPELLING (`__mg` / `__mg_<digits>`), which a program can also write, so a
+/// partial let over such a parameter was judged as a guard's fall-through and
+/// refused. The temporary is now a name no source can spell.
+test "partial let over a source __mg / __mg_N stays accepted" {
+  assert(check_source_ok("fn f(__mg: Option[Int]) -> Int { let Some(v) = __mg\n  v }\nfn main() -> Int { f(Some(3)) }"))
+  assert(check_source_ok("fn f(__mg_1: Option[Int]) -> Int { let Some(v) = __mg_1\n  v }\nfn main() -> Int { f(Some(3)) }"))
+  assert(check_source_ok("fn f(__mg_12: Option[Int], o: Option[Int]) -> Int { let Some(v) = __mg_12\n  match o { Some(w) if w > v => w, _ => v } }\nfn main() -> Int { f(Some(3), None) }"))
+}
+
+test "guarded match over a source __mg with a partial fall-through is still rejected" {
+  assert(check_source_err("fn f(__mg: Bool, g: Bool) -> Int { match __mg { true if g => 1, false => 0 } }\nfn main() -> Int { f(true, true) }"))
+  assert(check_source_err("fn f(__mg_1: Option[Int], g: Bool) -> Int { match __mg_1 { Some(_) if g => 1, None => 0 } }\nfn main() -> Int { f(Some(1), true) }"))
+}

@@ -1,0 +1,59 @@
+// A partial destructure (`let Some(x) = o`, the documented idiom) lowers to a
+// single-arm match over the program's own expression, which stays tolerated.
+// The checker used to tell the parser's desugared-match temporary apart from
+// that by its SPELLING (`__mg`, later also `__mg_<digits>`), and a program may
+// spell those names too: each function below was refused with a false
+// "non-exhaustive match: variant `None` of Option is not handled". The
+// temporary now has a name no source text can spell.
+
+import ./_match_scrutinee_temp_source_dep.vibe {
+  dep_pick
+}
+
+fn first(__mg: Option[Int]) -> Int {
+  let Some(x) = __mg
+  x
+}
+
+fn second(__mg_1: Option[Int]) -> Int {
+  let Some(x) = __mg_1
+  x
+}
+
+fn many(__mg_12: Option[(Int, Int)]) -> Int {
+  let Some((a, b)) = __mg_12
+  a - b
+}
+
+fn flag(__mg_2: Bool) -> Int {
+  let true = __mg_2
+  1
+}
+
+// Both shapes in one body: the partial let reads the source `__mg`, and the
+// guarded match beside it still binds (and re-matches) its own temporary.
+fn mixed(__mg: Option[Int], o: Option[Int]) -> Int {
+  let Some(base) = __mg
+  match o {
+    Some(v) if v > 100 => v,
+    Some(v) => base - v,
+    None => base
+  }
+}
+
+test "a source __mg / __mg_N scrutinee of a partial let is not a desugared match" {
+  inspect(first(Some(3)), "3")
+  inspect(second(Some(4)), "4")
+  inspect(many(Some((9, 2))), "7")
+  inspect(flag(true), "1")
+  inspect(mixed(Some(10), Some(500)), "500")
+  inspect(mixed(Some(10), Some(3)), "7")
+  inspect(mixed(Some(10), None), "10")
+}
+
+test "an imported module's desugared matches keep the source __mg names apart" {
+  inspect(dep_pick(10, 3, Some(500)), "500")
+  inspect(dep_pick(10, 3, Some(60)), "13")
+  inspect(dep_pick(10, 3, Some(1)), "7")
+  inspect(dep_pick(10, 3, None), "3")
+}

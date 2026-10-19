@@ -5,7 +5,7 @@ import ./parser_source_span.vibe {
 }
 
 import @vibe/ast {
-  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr, trait_ref_from_key, type_param_arity, type_param_name
+  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr, match_scrutinee_temp, trait_ref_from_key, type_param_arity, type_param_name
 }
 
 import ./polyfill.vibe {
@@ -210,9 +210,46 @@ fn is_keyword_name(name: String) -> Bool {
 }
 
 fn print_name(name: String) -> String {
-  if is_keyword_name(name) {
+  if name == match_scrutinee_temp() && Array::length(printer_match_temp_spelling) > 0 {
+    Array::get(printer_match_temp_spelling, 0)
+  } else if is_keyword_name(name) {
     String::concat("r#", name)
   } else name
+}
+
+/// The spelling the printer writes for the parser's match temporary
+/// (`match_scrutinee_temp()`) while a public entry prints; empty otherwise.
+/// That temporary is a name no source can spell, which is what keeps it from
+/// capturing a program's own `__mg` and from being mistaken for one -- but
+/// printed text is lexed again (the merged module source, `vibe normalize`),
+/// so it is written as `__mg`, or `__mg_N` for the first N, that occurs
+/// NOWHERE in the text printed with the raw name. That is conservative (a
+/// string literal mentioning `__mg` also moves it on) and exact: renaming one
+/// name to a name the printed text never uses changes no binding. A temporary
+/// nested in another's arms has the same name, so it shadows the outer one
+/// exactly as the unprintable name did.
+let printer_match_temp_spelling: Array[String] = []
+
+fn with_printable_match_temp(render: () -> String) -> String {
+  if Array::length(printer_match_temp_spelling) > 0 {
+    render()
+  } else {
+    let raw = render()
+    if !String::contains(raw, match_scrutinee_temp()) {
+      raw
+    } else {
+      let mut cand = "__mg"
+      let mut n = 0
+      while String::contains(raw, cand) {
+        n = n + 1
+        cand = String::concat("__mg_", __to_string(n))
+      }
+      Array::push(printer_match_temp_spelling, cand)
+      let out = render()
+      Array::truncate(printer_match_temp_spelling, 0)
+      out
+    }
+  }
 }
 
 /// One parameter of a printed `fn` or lambda. An optional parameter `x?`
@@ -448,7 +485,13 @@ fn peel_empty_handles(expr: Expr) -> Expr {
   }
 }
 
+/// An expression as source text; `printer_match_temp_spelling` says how the
+/// parser's match temporary is spelled.
 export fn print_expr(e: Expr) -> String {
+  with_printable_match_temp(() -> print_expr_tree(e))
+}
+
+fn print_expr_tree(e: Expr) -> String {
   match source_expr(e) {
     EInt(n) => __to_string(n),
     EFloat(n) => {
@@ -469,12 +512,12 @@ export fn print_expr(e: Expr) -> String {
     } else "false",
     EIdent(name, _) => print_name(name),
     EUnit => "()",
-    ETuple(elems) => String::concat("(", String::concat(join(map_to_strings(elems, print_expr), ", "), ")")),
-    EArray(elems) => String::concat("[", String::concat(join(map_to_strings(elems, print_expr), ", "), "]")),
+    ETuple(elems) => String::concat("(", String::concat(join(map_to_strings(elems, print_expr_tree), ", "), ")")),
+    EArray(elems) => String::concat("[", String::concat(join(map_to_strings(elems, print_expr_tree), ", "), "]")),
     ERecord(rn, fields, targs) => {
       let parts = for field in fields {
         let (name, val) = field
-        String::concat(name, String::concat(": ", print_expr(val)))
+        String::concat(name, String::concat(": ", print_expr_tree(val)))
       }
       // #886: re-emit explicit struct type arguments (`Pair[Int]::{ .. }`)
       // so the normalize round-trip preserves the pinned instantiation.
@@ -491,47 +534,47 @@ export fn print_expr(e: Expr) -> String {
       String::concat(prefix, String::concat(join(parts, ", "), " }"))
     },
     EIf(cond, then_e, else_e) => match source_expr(else_e) {
-      EUnit => String::concat("if ", String::concat(print_expr(cond), String::concat(" { ", String::concat(print_expr(then_e), " }")))),
-      _ => String::concat("if ", String::concat(print_expr(cond), String::concat(" { ", String::concat(print_expr(then_e), String::concat(" } else { ", String::concat(print_expr(else_e), " }"))))))
+      EUnit => String::concat("if ", String::concat(print_expr_tree(cond), String::concat(" { ", String::concat(print_expr_tree(then_e), " }")))),
+      _ => String::concat("if ", String::concat(print_expr_tree(cond), String::concat(" { ", String::concat(print_expr_tree(then_e), String::concat(" } else { ", String::concat(print_expr_tree(else_e), " }"))))))
     },
-    ELet(name, val, body, _) => String::concat("{ let ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
-    ELetRec(name, val, body) => String::concat("{ let rec ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
-    ELetMut(name, val, body, _) => String::concat("{ let mut ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
-    EAssign(name, val, body, _) => String::concat("{ ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
-    EAssignOp(name, op, val, body, _) => String::concat("{ ", String::concat(print_name(name), String::concat(" ", String::concat(op, String::concat("= ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))))),
-    ESeq(a, b) => String::concat("{ ", String::concat(print_expr(a), String::concat("; ", String::concat(print_expr(b), " }")))),
+    ELet(name, val, body, _) => String::concat("{ let ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr_tree(val), String::concat("; ", String::concat(print_expr_tree(body), " }")))))),
+    ELetRec(name, val, body) => String::concat("{ let rec ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr_tree(val), String::concat("; ", String::concat(print_expr_tree(body), " }")))))),
+    ELetMut(name, val, body, _) => String::concat("{ let mut ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr_tree(val), String::concat("; ", String::concat(print_expr_tree(body), " }")))))),
+    EAssign(name, val, body, _) => String::concat("{ ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr_tree(val), String::concat("; ", String::concat(print_expr_tree(body), " }")))))),
+    EAssignOp(name, op, val, body, _) => String::concat("{ ", String::concat(print_name(name), String::concat(" ", String::concat(op, String::concat("= ", String::concat(print_expr_tree(val), String::concat("; ", String::concat(print_expr_tree(body), " }")))))))),
+    ESeq(a, b) => String::concat("{ ", String::concat(print_expr_tree(a), String::concat("; ", String::concat(print_expr_tree(b), " }")))),
     EMatch(scrutinee, arms) => {
       let parts = for arm in arms {
         let (pat, expr) = arm
-        String::concat(print_pat(pat), String::concat(" => ", print_expr(expr)))
+        String::concat(print_pat(pat), String::concat(" => ", print_expr_tree(expr)))
       }
-      String::concat("match ", String::concat(print_expr(scrutinee), String::concat(" { ", String::concat(join(parts, ", "), " }"))))
+      String::concat("match ", String::concat(print_expr_tree(scrutinee), String::concat(" { ", String::concat(join(parts, ", "), " }"))))
     },
     EHandle(body, arms) => if Array::length(arms) == 0 {
       // Empty handlers carry no authority and are rejected by the parser.
       // Preserve printer/parser round-tripping by emitting their equivalent body.
-      print_expr(body)
+      print_expr_tree(body)
     } else {
       let parts = for arm in arms {
         let (pat, expr) = arm
-        String::concat(print_handle_pat(pat), String::concat(" => ", print_expr(expr)))
+        String::concat(print_handle_pat(pat), String::concat(" => ", print_expr_tree(expr)))
       }
-      String::concat("handle { ", String::concat(print_expr(body), String::concat(" } with { ", String::concat(join(parts, "; "), " }"))))
+      String::concat("handle { ", String::concat(print_expr_tree(body), String::concat(" } with { ", String::concat(join(parts, "; "), " }"))))
     },
-    EWhile(cond, body) => String::concat("while ", String::concat(print_expr(cond), String::concat(" { ", String::concat(print_expr(body), " }")))),
+    EWhile(cond, body) => String::concat("while ", String::concat(print_expr_tree(cond), String::concat(" { ", String::concat(print_expr_tree(body), " }")))),
     ELoop(params, body) => {
       let parts = for param in params {
         let (name, init) = param
-        String::concat(print_name(name), String::concat(" = ", print_expr(init)))
+        String::concat(print_name(name), String::concat(" = ", print_expr_tree(init)))
       }
-      String::concat("loop (", String::concat(join(parts, ", "), String::concat(") { ", String::concat(print_expr(body), " }"))))
+      String::concat("loop (", String::concat(join(parts, ", "), String::concat(") { ", String::concat(print_expr_tree(body), " }"))))
     },
     EForIn(value_name, index_name, iterable, body) => {
       let binding = match index_name {
         Some(index_name) => String::concat(print_name(index_name), String::concat(", ", print_name(value_name))),
         None => print_name(value_name)
       }
-      String::concat("for ", String::concat(binding, String::concat(" in ", String::concat(print_expr(iterable), String::concat(" { ", String::concat(print_expr(body), " }"))))))
+      String::concat("for ", String::concat(binding, String::concat(" in ", String::concat(print_expr_tree(iterable), String::concat(" { ", String::concat(print_expr_tree(body), " }"))))))
     },
     ECall(callee, args, _, _) => match peel_empty_handles(callee) {
       EIdent("perform", _) => if Array::length(args) == 1 {
@@ -564,21 +607,21 @@ export fn print_expr(e: Expr) -> String {
           _ => None
         }
         match resugar {
-          Some(payload) => String::concat("throw(", String::concat(print_expr(payload), ")")),
-          None => String::concat("perform ", print_expr(Array::get(args, 0)))
+          Some(payload) => String::concat("throw(", String::concat(print_expr_tree(payload), ")")),
+          None => String::concat("perform ", print_expr_tree(Array::get(args, 0)))
         }
       } else {
-        String::concat(print_expr(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))
+        String::concat(print_expr_tree(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr_tree), ", "), ")")))
       },
       // #726: an immediately-invoked lambda callee must be parenthesized —
       // `(x: T) -> { x }(args)` re-parses with the CALL inside the lambda
       // body (`{ x }(args)`, "calling a non-function value"), so print
       // `((x: T) -> { x })(args)`.
-      EFn(_, _, _, _, _, _) => String::concat("(", String::concat(print_expr(peel_empty_handles(callee)), String::concat(")(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))),
-      _ => String::concat(print_expr(peel_empty_handles(callee)), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))
+      EFn(_, _, _, _, _, _) => String::concat("(", String::concat(print_expr_tree(peel_empty_handles(callee)), String::concat(")(", String::concat(join(map_to_strings(args, print_expr_tree), ", "), ")")))),
+      _ => String::concat(print_expr_tree(peel_empty_handles(callee)), String::concat("(", String::concat(join(map_to_strings(args, print_expr_tree), ", "), ")")))
     },
-    EBinOp(op, left, right, _) => String::concat("(", String::concat(print_expr(left), String::concat(" ", String::concat(op, String::concat(" ", String::concat(print_expr(right), ")")))))),
-    EUnaryOp(op, expr) => String::concat("(", String::concat(op, String::concat(print_expr(expr), ")"))),
+    EBinOp(op, left, right, _) => String::concat("(", String::concat(print_expr_tree(left), String::concat(" ", String::concat(op, String::concat(" ", String::concat(print_expr_tree(right), ")")))))),
+    EUnaryOp(op, expr) => String::concat("(", String::concat(op, String::concat(print_expr_tree(expr), ")"))),
     EFn(type_params, bounds, params, ret_ty, effect, body) => {
       let tp_str = print_fn_type_params(type_params, bounds)
       let parts = for param in params {
@@ -590,22 +633,22 @@ export fn print_expr(e: Expr) -> String {
             Some(e) => print_effect_row(e),
             None => ""
           }
-          String::concat(") -> ", String::concat(print_type_expr(rt), String::concat(eff_str, String::concat(" { ", String::concat(print_expr(body), " }")))))
+          String::concat(") -> ", String::concat(print_type_expr(rt), String::concat(eff_str, String::concat(" { ", String::concat(print_expr_tree(body), " }")))))
         },
-        None => String::concat(") -> { ", String::concat(print_expr(body), " }"))
+        None => String::concat(") -> { ", String::concat(print_expr_tree(body), " }"))
       }
       String::concat(tp_str, String::concat("(", String::concat(join(parts, ", "), ret_str)))
     },
-    EDot(expr, field, _, _) => String::concat(print_expr(expr), String::concat(".", field)),
-    EReturn(e) => String::concat("return ", print_expr(e)),
+    EDot(expr, field, _, _) => String::concat(print_expr_tree(expr), String::concat(".", field)),
+    EReturn(e) => String::concat("return ", print_expr_tree(e)),
     EBreak(opt) => match opt {
       None => "break",
-      Some(v) => String::concat("break ", print_expr(v))
+      Some(v) => String::concat("break ", print_expr_tree(v))
     },
     EContinue(args) => if Array::length(args) == 0 {
       "continue"
-    } else String::concat("continue(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")),
-    ELabeledArg(name, _modifier, val) => String::concat(name, String::concat("=", print_expr(val))),
+    } else String::concat("continue(", String::concat(join(map_to_strings(args, print_expr_tree), ", "), ")")),
+    ELabeledArg(name, _modifier, val) => String::concat(name, String::concat("=", print_expr_tree(val))),
     // #960 Stage 2: the `map { ... }` literal is retired, so EMap prints as
     // the replacement API — the parser desugars these spellings back into the
     // same EMap node, keeping flat module source round-trippable.
@@ -614,11 +657,11 @@ export fn print_expr(e: Expr) -> String {
     } else {
       let parts = for field in fields {
         let (k, v) = field
-        String::concat("(\"", String::concat(escape_string(k), String::concat("\", ", String::concat(print_expr(v), ")"))))
+        String::concat("(\"", String::concat(escape_string(k), String::concat("\", ", String::concat(print_expr_tree(v), ")"))))
       }
       String::concat("Map::from_pairs([", String::concat(join(parts, ", "), "])"))
     },
-    ESpread(inner) => String::concat("...", print_expr(inner)),
+    ESpread(inner) => String::concat("...", print_expr_tree(inner)),
     EStringInterp(parts) => String::concat("\"", String::concat(join(parts, ""), "\""))
   }
 }
@@ -637,11 +680,11 @@ fn print_annotated_let_value(ty_opt: Option[TypeExpr], val: Expr) -> String {
           let (name, _) = param
           print_name(name)
         }
-        String::concat(tp_str, String::concat("(", String::concat(join(parts, ", "), String::concat(") -> { ", String::concat(print_expr(body), " }")))))
+        String::concat(tp_str, String::concat("(", String::concat(join(parts, ", "), String::concat(") -> { ", String::concat(print_expr_tree(body), " }")))))
       },
-      _ => print_expr(val)
+      _ => print_expr_tree(val)
     },
-    _ => print_expr(val)
+    _ => print_expr_tree(val)
   }
 }
 
@@ -653,7 +696,13 @@ fn print_ctor_list(ctors: Array[(String, Array[TypeExpr])]) -> String {
   join(parts, "; ")
 }
 
+/// A statement as source text; `printer_match_temp_spelling` says how the
+/// parser's match temporary is spelled.
 export fn print_stmt(s: Stmt) -> String {
+  with_printable_match_temp(() -> print_stmt_tree(s))
+}
+
+fn print_stmt_tree(s: Stmt) -> String {
   let prefix: (Bool) -> String = (exported) -> {
     if exported {
       "export "
@@ -701,12 +750,12 @@ export fn print_stmt(s: Stmt) -> String {
             let conds = ArrayBuilder::new()
             let mut qi = 0
             while qi < Array::length(reqs) {
-              ArrayBuilder::push(conds, String::concat("requires: ", print_expr(Array::get(reqs, qi))))
+              ArrayBuilder::push(conds, String::concat("requires: ", print_expr_tree(Array::get(reqs, qi))))
               qi = qi + 1
             }
             let mut ei = 0
             while ei < Array::length(enss) {
-              ArrayBuilder::push(conds, String::concat("ensures: ", print_expr(Array::get(enss, ei))))
+              ArrayBuilder::push(conds, String::concat("ensures: ", print_expr_tree(Array::get(enss, ei))))
               ei = ei + 1
             }
             String::concat(" where { ", String::concat(join(ArrayBuilder::freeze(conds), ", "), " }"))
@@ -733,12 +782,12 @@ export fn print_stmt(s: Stmt) -> String {
           }
           match wasm_text {
             Some(wt) => String::concat(head, String::concat(sig, String::concat(" = wasm \"", String::concat(escape_string(wt), "\"")))),
-            None => String::concat(head, String::concat(sig, String::concat(" { ", String::concat(print_expr(body), " }"))))
+            None => String::concat(head, String::concat(sig, String::concat(" { ", String::concat(print_expr_tree(body), " }"))))
           }
         },
         // Defensive: a non-EFn value cannot be spelled in fn syntax; fall
         // back to the lowered let-rec form so output stays parseable.
-        _ => String::concat(p, String::concat("let rec ", String::concat(print_name(name), String::concat(" = ", print_expr(fn_value)))))
+        _ => String::concat(p, String::concat("let rec ", String::concat(print_name(name), String::concat(" = ", print_expr_tree(fn_value)))))
       }
     },
     SLetMut(name, ty_opt, val) => {
@@ -746,7 +795,7 @@ export fn print_stmt(s: Stmt) -> String {
         Some(ty) => String::concat(": ", print_type_expr(ty)),
         None => ""
       }
-      String::concat("let mut ", String::concat(print_name(name), String::concat(t, String::concat(" = ", print_expr(val)))))
+      String::concat("let mut ", String::concat(print_name(name), String::concat(t, String::concat(" = ", print_expr_tree(val)))))
     },
     SEnum(exported, name, params, ctors, derives) => {
       // #735: `[T]` type params and `derive(...)` were dropped, so a printed
@@ -889,10 +938,10 @@ export fn print_stmt(s: Stmt) -> String {
       }
       String::concat("import ", String::concat(path, String::concat(" { ", String::concat(join(parts, ", "), " }"))))
     },
-    STest(name, body) => String::concat("test \"", String::concat(name, String::concat("\"", String::concat(block_row_suffix(name), String::concat(" { ", String::concat(print_expr(body), " }")))))),
-    SExample(name, body) => String::concat("example \"", String::concat(name, String::concat("\"", String::concat(block_row_suffix(name), String::concat(" { ", String::concat(print_expr(body), " }")))))),
-    SBench(name, body) => String::concat("bench \"", String::concat(name, String::concat("\"", String::concat(block_row_suffix(name), String::concat(" { ", String::concat(print_expr(body), " }")))))),
-    SExpr(e) => print_expr(e),
+    STest(name, body) => String::concat("test \"", String::concat(name, String::concat("\"", String::concat(block_row_suffix(name), String::concat(" { ", String::concat(print_expr_tree(body), " }")))))),
+    SExample(name, body) => String::concat("example \"", String::concat(name, String::concat("\"", String::concat(block_row_suffix(name), String::concat(" { ", String::concat(print_expr_tree(body), " }")))))),
+    SBench(name, body) => String::concat("bench \"", String::concat(name, String::concat("\"", String::concat(block_row_suffix(name), String::concat(" { ", String::concat(print_expr_tree(body), " }")))))),
+    SExpr(e) => print_expr_tree(e),
     SExport(names) => String::concat("export { ", String::concat(join(names, ", "), " }")),
     SReExport(path, items) => {
       let parts = for item in items {
@@ -908,10 +957,10 @@ export fn print_stmt(s: Stmt) -> String {
     // print -> reparse round trip.
     SQualifiedPatternRefs(_) => "",
     STestEffectRows(_) => "",
-    SLetPat(pat, expr) => String::concat("let ", String::concat(print_pat(pat), String::concat(" = ", print_expr(expr)))),
+    SLetPat(pat, expr) => String::concat("let ", String::concat(print_pat(pat), String::concat(" = ", print_expr_tree(expr)))),
     SModule(exported, name, stmts) => {
       let parts = for s in stmts {
-        print_stmt(s)
+        print_stmt_tree(s)
       }
       let p = if exported {
         "export "
@@ -960,9 +1009,15 @@ fn needs_program_separator(stmt_text: String) -> Bool {
 }
 
 export fn print_program(stmts: Array[Stmt]) -> String {
-  let len = Array::length(stmts)
   // The block rows live in the trailing marker; see register_block_rows.
   register_block_rows(stmts)
+  let out = with_printable_match_temp(() -> print_program_stmts(stmts))
+  Array::truncate(printer_block_rows, 0)
+  out
+}
+
+fn print_program_stmts(stmts: Array[Stmt]) -> String {
+  let len = Array::length(stmts)
   // O(N) build via ArrayBuilder (matching this file's join/escape_string idiom);
   // the previous `out = String::concat(out, ...)` per statement was O(N²) over
   // the total printed size, which dominates emit-module-source (issue #366).
@@ -970,7 +1025,7 @@ export fn print_program(stmts: Array[Stmt]) -> String {
   let mut i = 0
   let mut emitted = 0
   while i < len {
-    let stmt_text = print_stmt(Array::get(stmts, i))
+    let stmt_text = print_stmt_tree(Array::get(stmts, i))
     // #1455 step 3: a statement that prints as nothing (the
     // SQualifiedPatternRefs marker) must not draw a separator either, or a
     // parsed-then-printed program would gain a trailing blank line.
@@ -988,7 +1043,5 @@ export fn print_program(stmts: Array[Stmt]) -> String {
     }
     i = i + 1
   }
-  let out = String::join(ArrayBuilder::freeze(b), "")
-  Array::truncate(printer_block_rows, 0)
-  out
+  String::join(ArrayBuilder::freeze(b), "")
 }

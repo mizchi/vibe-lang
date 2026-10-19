@@ -47,7 +47,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_encode_name
+  impl_encode_name, match_scrutinee_temp
 }
 
 import @vibe/parser {
@@ -239,26 +239,6 @@ fn tab_dot_field_name_ty(tytab: Array[(Int, Type)], field_off: Int, ty: Type, ca
 /// locator can read the token's own extent back, `r#name` included). A
 /// synthesized assignment has no token (`off < 0`) and gets the bare
 /// ` [@assign-target]`, which the locator strips without inventing a position.
-/// Whether `name` is the parser's binding for a desugared `match` scrutinee
-/// (a guarded match, or a single-arm Bool / Option match): `__mg`, or
-/// `__mg_N` when the arms already spell `__mg` (parser `fresh_match_temp`).
-fn is_match_scrutinee_temp(name: String) -> Bool {
-  if name == "__mg" {
-    true
-  } else if String::length(name) > 5 && String::starts_with(name, "__mg_") {
-    let mut i = 5
-    let mut digits = true
-    while i < String::length(name) && digits {
-      let ch = String::char_code_at(name, i)
-      digits = ch >= 48 && ch <= 57
-      i = i + 1
-    }
-    digits
-  } else {
-    false
-  }
-}
-
 fn assign_target_marker(off: Int) -> String {
   if off >= 0 {
     String::concat(" [@assign-target=", String::concat(__to_string(off), "]"))
@@ -1036,7 +1016,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let alen = Array::length(arms)
       if alen == 0 {
         // #809: a match with ZERO arms is only produced by the guard desugar
-        // (#666) — `pat if g => body` chains end in `match __mg { }` when NO
+        // (#666) — `pat if g => body` chains end in `match <temp> { }` when NO
         // unguarded arm exists — or by a literal empty `match x { }`. Both
         // reach codegen as an unconditional `unreachable`: every guard failing
         // at runtime trapped with no source location. Reject at compile time.
@@ -1220,20 +1200,20 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // Bool match missing `false` compiled clean and trapped at runtime
         // (codegen's test chain ends in `unreachable`). Checked for
         // MULTI-arm matches, plus (Codex P2 on #980) for ANY match whose
-        // scrutinee is the guard desugar's synthesized `__mg` temp: a failed
-        // guard falls through to `EMatch(__mg, rest)` (#666), and that
-        // residual can have a single arm (`match b { true if g => 1,
-        // false => 0 }` leaves `match __mg { false => 0 }` — `b == true &&
-        // !g` trapped). A single-arm match over anything else stays
-        // tolerated: it is syntactically indistinguishable from the
-        // partial-let desugar (`let Some(v) = o`, the cheatsheet's
-        // documented idiom), whose scrutinee is the user's own expression,
-        // never `__mg`. The parser picks `__mg_N` instead when the arms
-        // spell `__mg` themselves (`fresh_match_temp`). Nested-pattern completeness (tuples, ctor payloads,
-        // literals) is the Phase 2 usefulness algorithm — this closes only
-        // the flat gap.
+        // scrutinee is the parser's match temporary
+        // (`match_scrutinee_temp()`): a failed guard falls through to
+        // `EMatch(temp, rest)` (#666), and that residual can have a single
+        // arm (`match b { true if g => 1, false => 0 }` leaves
+        // `match temp { false => 0 }` — `b == true && !g` trapped); a written
+        // single-arm Bool / Option match is bound to it as well (#3547). A
+        // single-arm match over anything else stays tolerated: it is the
+        // partial-let desugar (`let Some(v) = o`, the cheatsheet's documented
+        // idiom), whose scrutinee is the program's own expression. No program
+        // can spell the temporary, so a source `__mg` is never taken for it.
+        // Nested-pattern completeness (tuples, ctor payloads, literals) is the
+        // Phase 2 usefulness algorithm — this closes only the flat gap.
         let flat_guard_residual = match scrutinee {
-          EIdent(sn, _) => is_match_scrutinee_temp(sn),
+          EIdent(sn, _) => sn == match_scrutinee_temp(),
           _ => false
         }
         if alen >= 2 || flat_guard_residual {
