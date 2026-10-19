@@ -18,6 +18,7 @@ import @vibe/compiler/core {
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  is_borrow_ret_builtin,
   is_exception_throw_operation
 }
 
@@ -201,6 +202,9 @@ export struct PCtx {
   // Each binding's name, by id (`pe_declare`). Codegen keys a path drop by
   // NAME, so a mark may only be emitted for a name no other binding has.
   mut decl_names: Array[String];
+  // A plain `let`'s body, by id (EUnit for every other declaration), read
+  // only for a binding a merge marked (`pe_tail_may_view`).
+  mut decl_bodies: Array[Expr];
   mut dmark_ids: Array[Int];
   mut dmark_offs: Array[Int];
   mut dmark_names: Array[String];
@@ -603,6 +607,11 @@ export fn pe_dsplit_ok(ctx: PCtx, id: Int) -> Bool {
 /// second binding of that name would take a guarded drop that no marked
 /// occurrence of its own ever stands down -- releasing a reference it still
 /// holds. Only a name exactly one binding of the plan has qualifies.
+export fn pe_dsplit_marks_ok(ctx: PCtx, id: Int) -> Bool {
+  pe_flag_has(ctx, id, pf_dsplit) && pe_dsplit_ok(ctx, id) && pe_name_unique(ctx, id) && !pe_tail_may_view(ctx, Array::get(ctx.decl_bodies, id), [
+  ])
+}
+
 export fn pe_name_unique(ctx: PCtx, id: Int) -> Bool {
   let name = Array::get(ctx.decl_names, id)
   let mut n = 0
@@ -616,6 +625,76 @@ export fn pe_name_unique(ctx: PCtx, id: Int) -> Bool {
     i = i + 1
   }
   n == 1
+}
+
+/// May the value a `let` body hands back be a VIEW -- a reference into
+/// something it does not own, the binding itself above all? The guarded path
+/// drop releases the binding after the body, and unlike the ordinary
+/// scope-end drop it does not first retain an escaping interior read
+/// (`scope_tail_proj_root`, and the spine promotion beside it): `let t = ..;
+/// if c { keep(t) } else { Array::get(t, 0) }` would free the element it is
+/// returning. Conservative by construction -- any field read, any call to a
+/// borrow-returning or may-return-view function, a spine-local name whose own
+/// value may be one, or a payload bound from a scrutinee that may be one
+/// answers yes; an owned result (arithmetic, a constructor, an owned call, a
+/// literal) answers no.
+export fn pe_tail_may_view(ctx: PCtx, e: Expr, views: Array[String]) -> Bool {
+  match e {
+    EIdent(x, _) => array_contains_str_pctx(views, x),
+    EDot(_, _, _, _) => true,
+    // The lambda return normalization's marker hands back its argument.
+    ECall(EIdent(f, off), args, _, _) => if f == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
+      pe_tail_may_view(ctx, Array::get(args, 0), views)
+    } else {
+      is_borrow_ret_builtin(f) || is_borrow_ret_fname(ctx, f) || bsearch_leftmost(ctx.view_ret_user, f) >= 0 || array_contains_str_pctx(views, f)
+    },
+    EIf(_, t, el) => pe_tail_may_view(ctx, t, views) || pe_tail_may_view(ctx, el, views),
+    EMatch(s, arms) => pe_tail_arms_may_view(ctx, s, arms, views),
+    EHandle(b, arms) => pe_tail_may_view(ctx, b, views) || pe_tail_arms_may_view(ctx, EUnit, arms, views),
+    ELet(n, v, b, _) => pe_tail_under_binder(ctx, n, v, b, views),
+    ELetMut(n, v, b, _) => pe_tail_under_binder(ctx, n, v, b, views),
+    ELetRec(n, v, b) => pe_tail_under_binder(ctx, n, v, b, views),
+    ESeq(_, b) => pe_tail_may_view(ctx, b, views),
+    EAssign(_, _, b, _) => pe_tail_may_view(ctx, b, views),
+    EAssignOp(_, _, _, b, _) => pe_tail_may_view(ctx, b, views),
+    _ => false
+  }
+}
+
+fn pe_tail_under_binder(ctx: PCtx, n: String, v: Expr, b: Expr, views: Array[String]) -> Bool {
+  let mark = Array::length(views)
+  if pe_tail_may_view(ctx, v, views) {
+    Array::push(views, n)
+  } else {
+    ()
+  }
+  let r = pe_tail_may_view(ctx, b, views)
+  Array::truncate(views, mark)
+  r
+}
+
+// A payload is a view into its scrutinee: when the scrutinee may itself be
+// one, or is a name (an owner the arm reads into), its pattern names may be.
+fn pe_tail_arms_may_view(ctx: PCtx, s: Expr, arms: Array[(Pat, Expr)], views: Array[String]) -> Bool {
+  let names_view = match s {
+    EIdent(_, _) => true,
+    _ => pe_tail_may_view(ctx, s, views)
+  }
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(arms) {
+    let (ap, ab) = Array::get(arms, i)
+    let mark = Array::length(views)
+    if names_view {
+      let _ = pat_names(ap, views)
+    } else {
+      ()
+    }
+    found = pe_tail_may_view(ctx, ab, views)
+    Array::truncate(views, mark)
+    i = i + 1
+  }
+  found
 }
 
 /// Drop the dup rows `pe_dup_merge` found redundant, before anything indexes
