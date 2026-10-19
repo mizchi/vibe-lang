@@ -127,15 +127,16 @@ fn strip_effects(ty: Type) -> Type {
 /// untyped `[]`) from the expected.
 ///
 /// A variable met more than once takes the JOIN of its occurrences
-/// (`retry_join`): rows are unioned at every covariant position, so the
-/// answer does not depend on walk order and every occurrence fits it. The
+/// (`retry_join`): rows are unioned at every covariant position and
+/// intersected at every parameter, so the answer does not depend on walk
+/// order and every occurrence fits it. The
 /// occurrences are then unified with the join so the variables they hold are
 /// bound too. A variable the walk does not reach keeps the retry's own
 /// binding when that binding holds no function type, since stripping changes
 /// nothing else; left open, a `T: Send` bound would be skipped. Where neither
-/// answer is sound -- occurrences whose parameter rows differ, or an
-/// unreached binding holding a function -- the result is None and the caller
-/// refuses the argument.
+/// answer is sound -- occurrences of different arity, or an unreached
+/// binding holding a function -- the result is None and the caller refuses
+/// the argument.
 fn retry_bind_unstripped(expected: Type, actual: Type, s: Subst, su: Subst) -> Option[Subst] {
   let occ: Array[(Int, Type)] = array_empty()
   retry_collect_occurrences(expected, actual, s, su, occ)
@@ -316,49 +317,21 @@ fn retry_join_occurrences(occ: Array[(Int, Type)], id: Int) -> Option[Type] {
 /// The least type both `a` and `b` fit into, given that they already agree
 /// once rows are stripped: a function's own row and its result are joined
 /// (covariant, the same positions `effect_row_dropped` reads covariantly), a
-/// parameter must carry the same row on both sides (contravariant -- a joined
-/// parameter row would accept a callback one of them cannot handle), and a
-/// variable gives way to the other side. None when a parameter differs.
+/// parameter takes the MEET of the two (`retry_meet`: contravariant, so the
+/// slot accepts only a callback both can handle), and a variable gives way
+/// to the other side. None only when the shapes disagree in arity.
 fn retry_join(a: Type, b: Type) -> Option[Type] {
   match b {
     CtVar(_) => Some(a),
     _ => match a {
       CtVar(_) => Some(b),
       CtFn(aps, ar, arow) => match b {
-        CtFn(bps, br, brow) => if Array::length(aps) == Array::length(bps) {
-          let ps = array_empty()
-          let mut ok = true
-          let mut i = 0
-          while i < Array::length(aps) && ok {
-            let ap = Array::get(aps, i)
-            let bp = Array::get(bps, i)
-            let same_row = match effect_row_dropped(ap, bp) {
-              Some(_) => false,
-              None => match effect_row_dropped(bp, ap) {
-                Some(_) => false,
-                None => true
-              }
-            }
-            match retry_join(ap, bp) {
-              Some(p) => if same_row {
-                Array::push(ps, p)
-              } else {
-                ok = false
-              },
-              None => ok = false
-            }
-            i = i + 1
-          }
-          if ok {
-            match retry_join(ar, br) {
-              Some(r) => Some(CtFn(ps, r, retry_row_union(arow, brow))),
-              None => None
-            }
-          } else {
-            None
-          }
-        } else {
-          None
+        CtFn(bps, br, brow) => match retry_meet_all(aps, bps) {
+          Some(ps) => match retry_join(ar, br) {
+            Some(r) => Some(CtFn(ps, r, retry_row_union(arow, brow))),
+            None => None
+          },
+          None => None
         },
         _ => Some(a)
       },
@@ -396,6 +369,117 @@ fn retry_join(a: Type, b: Type) -> Option[Type] {
       },
       _ => Some(a)
     }
+  }
+}
+
+/// The dual of `retry_join`: the greatest type that fits into both. A
+/// function's own row is the intersection, its result the meet, and its
+/// parameters the join.
+fn retry_meet(a: Type, b: Type) -> Option[Type] {
+  match b {
+    CtVar(_) => Some(a),
+    _ => match a {
+      CtVar(_) => Some(b),
+      CtFn(aps, ar, arow) => match b {
+        CtFn(bps, br, brow) => match retry_join_all(aps, bps) {
+          Some(ps) => match retry_meet(ar, br) {
+            Some(r) => Some(CtFn(ps, r, retry_row_intersection(arow, brow))),
+            None => None
+          },
+          None => None
+        },
+        _ => Some(a)
+      },
+      CtArray(ae) => match b {
+        CtArray(be) => match retry_meet(ae, be) {
+          Some(e) => Some(CtArray(e)),
+          None => None
+        },
+        _ => Some(a)
+      },
+      CtOption(ae) => match b {
+        CtOption(be) => match retry_meet(ae, be) {
+          Some(e) => Some(CtOption(e)),
+          None => None
+        },
+        _ => Some(a)
+      },
+      CtTuple(aes) => match b {
+        CtTuple(bes) => match retry_meet_all(aes, bes) {
+          Some(es) => Some(CtTuple(es)),
+          None => None
+        },
+        _ => Some(a)
+      },
+      CtNamed(an, aargs) => match b {
+        CtNamed(bn, bargs) => if an == bn {
+          match retry_meet_all(aargs, bargs) {
+            Some(args) => Some(CtNamed(an, args)),
+            None => None
+          }
+        } else {
+          Some(a)
+        },
+        _ => Some(a)
+      },
+      _ => Some(a)
+    }
+  }
+}
+
+fn retry_meet_all(as_: Array[Type], bs: Array[Type]) -> Option[Array[Type]] {
+  if Array::length(as_) == Array::length(bs) {
+    let out = array_empty()
+    let mut ok = true
+    let mut i = 0
+    while i < Array::length(as_) && ok {
+      match retry_meet(Array::get(as_, i), Array::get(bs, i)) {
+        Some(t) => Array::push(out, t),
+        None => ok = false
+      }
+      i = i + 1
+    }
+    if ok {
+      Some(out)
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}
+
+/// The labels both rows carry, in `a`'s order; no row when they share none.
+fn retry_row_intersection(a: Option[String], b: Option[String]) -> Option[String] {
+  let al = row_labels(a)
+  let bl = row_labels(b)
+  let mut joined = ""
+  let mut n = 0
+  let mut i = 0
+  while i < Array::length(al) {
+    let l = Array::get(al, i)
+    let mut seen = false
+    let mut k = 0
+    while k < Array::length(bl) && !seen {
+      seen = Array::get(bl, k) == l
+      k = k + 1
+    }
+    if seen {
+      joined = if n == 0 {
+        l
+      } else {
+        String::concat(joined, String::concat(", ", l))
+      }
+      n = n + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if n == 0 {
+    None
+  } else {
+    Some(joined)
   }
 }
 
