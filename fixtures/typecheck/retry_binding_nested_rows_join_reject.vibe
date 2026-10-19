@@ -1,0 +1,46 @@
+// #3518 review: `T` occurs as `() -> (() -> Int with Log)` and as
+// `() -> (() -> Int with Tick)`. Their outer rows are both pure, so a union
+// of the outer row alone covered neither, and `T` fell back to the retry's
+// effect-stripped type: the `Tick` callback came back typed pure, and a pure
+// slot took it. The rows are joined at every covariant position, so `T` is
+// `() -> (() -> Int with Log + Tick)` and the pure annotation is refused.
+effect Log {
+  Emit(Int) -> Unit
+}
+
+effect Tick {
+  Bump() -> Unit
+}
+
+fn logged() -> Int with Log {
+  perform Log::Emit(1)
+  1
+}
+
+fn ticked() -> Int with Tick {
+  perform Tick::Bump()
+  2
+}
+
+fn give_logged() -> () -> Int with Log {
+  logged
+}
+
+fn give_ticked() -> () -> Int with Tick {
+  ticked
+}
+
+fn pair() -> (() -> () -> Int with Log, () -> () -> Int with Tick) {
+  (give_logged, give_ticked)
+}
+
+fn second[T, e](mk: () -> (T, T) with Exception + e) -> T with Exception + e {
+  let (_, b) = mk()
+  b
+}
+
+fn main() -> Int allows Exception {
+  let g = second(pair)
+  let cb: () -> Int = g()
+  0
+}
