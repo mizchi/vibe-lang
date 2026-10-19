@@ -227,13 +227,13 @@ the edit that fixes them rather than an internal pass name.
   row-polymorphic callees, and first-class `resume` to that list (§6.1).
 - The same hunt found soundness gaps inside the frozen core. Fixed before
   the tag: a generic body collapsing two type parameters, a bare generic type
-  in a signature, impl methods that disagree with their trait, effect rows
+  in a signature, a generic call result or struct literal generalized by
+  `let` (the value restriction), impl methods that disagree with their trait, effect rows
   not charged through call expressions, `Double` interpolation through a
   `for` binder or an index, and an explicit `H::to_string(x)` on a
   `derive (Show)` generic printing a field's address. Shipped with a workaround in §6.2 of
   [stable-surface.md](../reference/stable-surface.md) and an open P0 issue:
-  generalized closure-returning calls, closures escaping a `handle`, and the
-  untyped erased `Throw` binder.
+  closures escaping a `handle`, and the untyped erased `Throw` binder.
 
 ## Release verification
 

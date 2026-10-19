@@ -627,18 +627,16 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
 ### 6.2 Known soundness gaps in the frozen core (0.1.0)
 
 The policy is that vibe is never silently wrong. These gaps break that inside
-the frozen surface, and `0.1.0` ships with them. (The hunt closed four more
+the frozen surface, and `0.1.0` ships with them. (The hunt closed five more
 before the tag: a generic body making two type parameters one type and a
-bare generic type in a signature (#3536), an impl method that disagrees with
-its trait (#3538), effect rows not charged through a call expression
-(#3539), and `Double` interpolation through a binder or an index (#3542).)
+bare generic type in a signature (#3536), a generic call result or struct
+literal generalized by `let` (#3537), an impl method that disagrees with its
+trait (#3538), effect rows not charged through a call expression (#3539),
+and `Double` interpolation through a binder or an index (#3542).)
 They are listed so a reader can stay clear of them. Each one is an open P0 bug, and closing it can
 reject programs that compile today. Each is fixed as a compatible change,
 because those programs are already wrong.
 
-- **A generic function returning a closure, or a generic struct literal over
-  an empty container, is generalized** (#3537). Annotate the binding:
-  `let f: (Int) -> Array[Int] = make()`, `let b: Bag[Int] = Bag::{ xs: [] }`.
 - **A closure created inside a `handle` can outlive it with a pure type**
   (#3540). Do not return or store a closure that performs the handled effect.
 - **The erased `Exception::Throw(m)` binder is untyped** (#3541). Use a kinded

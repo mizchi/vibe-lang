@@ -3248,6 +3248,36 @@ What still has no renderer is an unbounded formal, at either level:
 formal a method-bearing `Show` bound, or interpolate at a concrete type.
 A renderless struct is still refused by name (#1445).
 
+### A `let` bound to a call result is not generic (value restriction, #3537)
+
+A `let` generalizes its type only when the right-hand side is a syntactic
+value: a lambda, a name, a constructor applied to values, a tuple or an
+anonymous record. A call result, a named struct literal, an array literal and
+a `let mut` are **not** generalized, because each can hold mutable state
+shared by every use:
+
+```vibe skip
+fn make[T]() -> (T) -> Array[T] {
+  let xs = []
+  (x) -> {
+    Array::push(xs, x)
+    xs
+  }
+}
+
+fn main() -> Unit {
+  let f = make()
+  let _ = f(1)
+  // -- rejected: `f` is one closure over one array, already used at `Int`
+  let _ = f("s")
+}
+```
+
+Before #3537 this compiled and one runtime array held an `Int` and a `String`.
+The edit is to annotate the binding at the type you mean
+(`let f: (Int) -> Array[Int] = make()`, `let b: Bag[Int] = Bag::{ xs: [] }`),
+or to call `make()` once per type.
+
 ### A generic binder may not quantify a slot the lambda CAPTURED
 
 An explicit binder (`[T]`) makes a lambda generic per call. That is only sound
