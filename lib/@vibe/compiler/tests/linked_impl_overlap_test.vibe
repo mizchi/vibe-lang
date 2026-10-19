@@ -70,11 +70,43 @@ test "different traits binding one method name are refused" {
   ]), content = "tl.vibe: line 5:1: remove one of these: `impl Label for Int` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
 }
 
-/// A derive is the impl it registers.
+/// A derive is the impl it registers: with an impl of the same trait it is the
+/// overlap one module may not hold either.
 test "a derive and an impl in another module are refused" {
   let decl = "export struct P {\n  x: Int\n} derive(Show)\n"
   let other = "impl Show for P {\n  to_string(p: P) -> String { \"p\" }\n}\n"
-  inspect(link_verdict([("p.vibe", decl), ("q.vibe", other)]), content = "q.vibe: line 1:1: remove one of these: `impl Show for P` here and `derive (Show) on P` in p.vibe: line 1:8 both define `P::to_string` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  inspect(link_verdict([("p.vibe", decl), ("q.vibe", other)]), content = "q.vibe: line 1:1: remove one of these: `impl Show for P` here and `derive (Show) on P` in p.vibe: line 1:8 both define `P::to_string` -- the derive gives way to the impl, so the deriving module, and every caller of the method, would silently run the impl; one module may not hold both either")
+}
+
+/// #3551: a plain definition of a derived method is the override one module
+/// accepts -- the derive generates nothing when the program defines the
+/// method, so one definition remains whatever the import order.
+test "a plain definition overriding a derive in another module is accepted" {
+  let decl = "export struct P {\n  x: Int\n} derive(Show, Hash)\n"
+  let other = "export fn P::to_string(p: P) -> String {\n  \"custom\"\n}\n"
+  inspect(link_verdict([("p.vibe", decl), ("q.vibe", other)]), content = "ok")
+  inspect(link_verdict([("q.vibe", other), ("p.vibe", decl)]), content = "ok")
+  // The derive still binds what is not overridden: `P::hash_key`.
+  let impl_hash = "impl Hash for P {\n  hash_key(p: P) -> String { \"k\" }\n}\n"
+  inspect(link_verdict([
+    ("p.vibe", decl),
+    ("q.vibe", other),
+    ("r.vibe", impl_hash)
+  ]), content = "r.vibe: line 1:1: remove one of these: `impl Hash for P` here and `derive (Hash) on P` in p.vibe: line 1:8 both define `P::hash_key` -- the derive gives way to the impl, so the deriving module, and every caller of the method, would silently run the impl; one module may not hold both either")
+}
+
+/// #3551: a unit holding an impl for `Int` does not make every `Int::..`
+/// definition in it an impl method. A plain `fn Int::name` after an
+/// intervening statement collides with another unit's `impl Name for Int`.
+test "a plain definition in a unit that also holds an impl for the owner is refused" {
+  let mixed = "export trait Bar {\n  n(Self) -> Int\n}\n\nimpl Bar for Int {\n  n(x: Int) -> Int { 1 }\n}\n\nlet gap = 1\n\nfn Int::name(x: Int) -> String {\n  \"plain\"\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", impl_a),
+    ("tm.vibe", mixed)
+  ]), content = "tm.vibe: line 11:1: remove one of these: `a definition` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  // Its own impl's method stays the impl's: no overlap with itself.
+  inspect(link_verdict([("tr.vibe", trait_src), ("tm.vibe", mixed)]), content = "ok")
 }
 
 /// A plain definition reusing an impl method's name collapses too.

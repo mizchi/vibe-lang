@@ -14,14 +14,23 @@
 // element count before its elements. A `Double` is keyed after adding `0.0`,
 // which folds `-0.0` into `0.0` (IEEE: `-0 + 0 == +0`), so the two zeros that
 // `==` equates share a key. A nested type that has a `hash_key` (derived or
-// written) contributes that key. Anything else contributes its structural
-// rendering, length-prefixed: no worse than before for that component, and
-// it can no longer bleed into its neighbours.
+// written) contributes that key. A builtin with no key of its own (a `Map`)
+// contributes its structural rendering, length-prefixed, so it can no longer
+// bleed into its neighbours.
+//
+// Two field shapes have no key at all and are REFUSED at the derive
+// (`hash_note_unkeyed_field`, #3551), naming the edit: a declared struct /
+// enum with no `hash_key` -- its `to_string` is not injective, so `Inner {
+// a: "p, b: q", b: "r" }` and `Inner { a: "p", b: "q, b: r" }` rendered alike
+// and two different enclosing values shared one key -- and a type parameter
+// of the declaration -- the derived key is one function for every
+// instantiation, so the value is erased there and was keyed by its address:
+// two equal `Box[Array[Int]]` values got two keys.
 //
 // `to_string` (Show) is untouched; it is still generated for a `Hash` type.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr
+  Expr, Pat, Stmt, TypeExpr, namespace_rename_original
 }
 
 import @vibe/ast {
@@ -37,7 +46,7 @@ import ./derive_operations.vibe {
 }
 
 import ./formal_scope.vibe {
-  is_scalar_type_name
+  is_marked_formal_name, is_scalar_type_name
 }
 
 import ./name_encoding.vibe {
@@ -45,7 +54,7 @@ import ./name_encoding.vibe {
 }
 
 import ./state.vibe {
-  dtd_facts_explicit_ops
+  dtd_facts_explicit_ops, dtd_show_refusals
 }
 
 import ./utilities.vibe {
@@ -247,4 +256,85 @@ export fn gen_enum_hash_key_fn(ename: String, variants: Array[(String, Array[Typ
     Array::push(arms, (PCtor(vname, binds), hk_concat_all(parts)))
   }
   hk_fn(ename, EMatch(EIdent("self", -1), arms))
+}
+
+/// The first position in a field of declared type `fty` that a derived
+/// `hash_key` cannot key: `Some((name, true))` for a type parameter of the
+/// declaration, `Some((name, false))` for a declared struct / enum with no
+/// `hash_key`. It looks through the shapes `hk_component` encodes itself
+/// (`Option`, `Result`, tuples, `Array`) and through the arguments of a
+/// builtin it renders (`Map`); a type with a `hash_key` keys its own contents.
+fn hash_unkeyed_position(fty: TypeExpr, known_types: Array[String], hash_types: Array[String]) -> Option[(String, Bool)] {
+  match fty {
+    TyName(n) => hash_unkeyed_name(n, known_types, hash_types),
+    TyApp(n, args) => if n == "Option" || n == "Result" || n == "Array" {
+      hash_unkeyed_first(args, known_types, hash_types)
+    } else if is_marked_formal_name(n) {
+      Some((n, true))
+    } else if str_array_contains(hash_types, n) {
+      None
+    } else if str_array_contains(known_types, n) {
+      Some((n, false))
+    } else {
+      hash_unkeyed_first(args, known_types, hash_types)
+    },
+    TyTuple(ts) => hash_unkeyed_first(ts, known_types, hash_types),
+    _ => None
+  }
+}
+
+fn hash_unkeyed_name(n: String, known_types: Array[String], hash_types: Array[String]) -> Option[(String, Bool)] {
+  if is_scalar_type_name(n) || str_array_contains(hash_types, n) {
+    None
+  } else if is_marked_formal_name(n) {
+    Some((n, true))
+  } else if str_array_contains(known_types, n) {
+    Some((n, false))
+  } else {
+    None
+  }
+}
+
+fn hash_unkeyed_first(ts: Array[TypeExpr], known_types: Array[String], hash_types: Array[String]) -> Option[(String, Bool)] {
+  let mut out: Option[(String, Bool)] = None
+  for t in ts {
+    if out is None {
+      out = hash_unkeyed_position(t, known_types, hash_types)
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// The source spelling of a re-spelled declaration formal (`__Vfp_T` -> `T`).
+fn hash_formal_source_name(n: String) -> String {
+  if String::starts_with(n, "__Vfp_") {
+    n[6: String::length(n)]
+  } else {
+    n
+  }
+}
+
+/// #3551: refuse a `derive (Hash)` field (or enum payload, `fname` = `V.0`)
+/// that the derived key cannot key, leading with the edit. Before, such a
+/// field was keyed by its rendering: a declared type's `to_string` is not
+/// injective, and an erased type parameter rendered as an address.
+export fn hash_note_unkeyed_field(tname: String, fname: String, fty: TypeExpr, known_types: Array[String], hash_types: Array[String]) -> Unit {
+  let shown = namespace_rename_original(tname)
+  let msg = match hash_unkeyed_position(fty, known_types, hash_types) {
+    Some((n, is_formal)) => if is_formal {
+      let formal = hash_formal_source_name(n)
+      "write `" + shown + "::hash_key` yourself, or remove `Hash` from the `derive` of `" + shown + "`: its derived key is one function for every instantiation, so field `" + fname + "` holds `" + formal + "` (a type parameter of `" + shown + "`), which has no key there [@fn=" + shown + "]"
+    } else {
+      let inner = namespace_rename_original(n)
+      "add `Hash` to the `derive` of `" + inner + "` (or write `" + inner + "::hash_key`), or write `" + shown + "::hash_key` yourself: the derived key of `" + shown + "` keys field `" + fname + "` by the key of `" + inner + "`, which has none -- its rendering is not a key, since two different values can render alike [@fn=" + shown + "]"
+    },
+    None => ""
+  }
+  if msg != "" && !str_array_contains(dtd_show_refusals, msg) {
+    Array::push(dtd_show_refusals, msg)
+  } else {
+    ()
+  }
 }

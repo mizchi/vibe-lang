@@ -1,0 +1,70 @@
+// #3551: a `derive (Hash)` field the derived key cannot key is refused at the
+// derive, naming the edit, instead of being keyed by its rendering.
+//
+// Two shapes had no key. A declared type that only derives `Show` was keyed
+// by its `to_string`, which is not injective: `Inner { a: "p, b: q", b: "r" }`
+// and `Inner { a: "p", b: "q, b: r" }` render alike, so two different `Outer`
+// values shared one key and one Map entry. A type parameter of the
+// declaration is erased in the one derived `hash_key` every instantiation
+// shares, so it was keyed by its address: two equal `Box[Array[Int]]` values
+// got two keys -- also when a written `Box::to_string` had switched the
+// formal-array refusal off, although the key never calls it.
+
+//# Imports
+
+import @vibe/compiler/normalize {
+  desugar_trait_dicts
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Helpers
+
+/// The refusal desugaring `src` raises, or `ok`.
+fn derive_verdict(src: String) -> String {
+  handle {
+    desugar_trait_dicts(parse_program(lex(src)))
+    "ok"
+  } with { Exception::Throw(msg) => msg }
+}
+
+let main_src = "\nlet main = () -> Unit { () }"
+
+//# Tests
+
+/// A field of a declared type with no `hash_key` names the edit on that type.
+test "a Show-only declared field is refused" {
+  inspect(derive_verdict("struct Inner { a: String; b: String } derive(Eq, Show)\nstruct Outer { i: Inner } derive(Eq, Hash)" + main_src), content = "add `Hash` to the `derive` of `Inner` (or write `Inner::hash_key`), or write `Outer::hash_key` yourself: the derived key of `Outer` keys field `i` by the key of `Inner`, which has none -- its rendering is not a key, since two different values can render alike [@fn=Outer]")
+}
+
+/// The same type reached through a shape the key encodes itself, and as an
+/// enum payload.
+test "a Show-only type inside an Option, a tuple or a payload is refused" {
+  let inner = "struct Inner { a: String } derive(Show)\n"
+  let opt = derive_verdict(inner + "struct Outer { i: Option[(Int, Inner)] } derive(Hash)" + main_src)
+  inspect(String::contains(opt, "add `Hash` to the `derive` of `Inner`"), content = "true")
+  inspect(String::contains(opt, "keys field `i` by the key of `Inner`"), content = "true")
+  let payload = derive_verdict(inner + "enum E { V(Int, Array[Inner]) } derive(Hash)" + main_src)
+  inspect(String::contains(payload, "keys field `V.1` by the key of `Inner`"), content = "true")
+}
+
+/// A type parameter of the declaration has no key in the shared function --
+/// bare, inside an array, or with a written `to_string`, which the key does
+/// not call.
+test "a type-parameter field is refused" {
+  inspect(derive_verdict("struct Box[T] { v: T } derive(Hash)" + main_src), content = "write `Box::hash_key` yourself, or remove `Hash` from the `derive` of `Box`: its derived key is one function for every instantiation, so field `v` holds `T` (a type parameter of `Box`), which has no key there [@fn=Box]")
+  let written = derive_verdict("struct Box[T] { xs: Array[T] } derive(Hash)\nfn Box::to_string(b: Box[Int]) -> String { \"box\" }" + main_src)
+  inspect(String::contains(written, "write `Box::hash_key` yourself"), content = "true")
+  inspect(String::contains(written, "field `xs` holds `T`"), content = "true")
+}
+
+/// What the key can encode is accepted: a type with its own key (derived or
+/// written), scalars, and a type parameter the written `hash_key` handles.
+test "keyed fields and a written hash_key are accepted" {
+  inspect(derive_verdict("struct Inner { a: String } derive(Hash)\nstruct Outer { i: Inner; o: Option[Inner]; t: (Int, String, Double) } derive(Hash)" + main_src), content = "ok")
+  inspect(derive_verdict("struct Inner { a: String } derive(Show)\nfn Inner::hash_key(x: Inner) -> String { x.a }\nstruct Outer { i: Inner } derive(Hash)" + main_src), content = "ok")
+  inspect(derive_verdict("struct Box[T] { v: T } derive(Hash)\nfn Box::hash_key(b: Box[Int]) -> String { \"box\" }" + main_src), content = "ok")
+  inspect(derive_verdict("struct Inner { a: String } derive(Show)\nstruct Outer { i: Inner } derive(Hash)\nfn Outer::hash_key(o: Outer) -> String { o.i.a }" + main_src), content = "ok")
+}

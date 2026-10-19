@@ -408,6 +408,19 @@ ur_refused fixtures/err_derive_show_bytes_field_refused.vibe 'a derived renderer
 ur_refused fixtures/err_impl_overlap_cross_module_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_b.vibe: line 7:1'
 ur_refused fixtures/err_impl_overlap_entry_vs_dep_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/err_impl_overlap_entry_vs_dep_refused.vibe: line 13:1'
 ur_refused fixtures/err_impl_overlap_cross_module_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' gc
+# #3551: a plain `fn Int::name` in a module that also holds an impl for `Int`
+# (after an intervening statement) is a definition, not that impl's method.
+# It used to be exempted by the owner prefix and built `from-a from-a`. The
+# green side -- a plain definition overriding another module's derive -- rides
+# the unit lane: fixtures/derive_override_cross_module_test.vibe.
+ur_refused fixtures/err_impl_overlap_plain_after_impl_refused.vibe 'both define `Int::name`' 'remove one of these: `a definition`' linear 'fixtures/modules/impl_overlap_plain_after_impl.vibe: line 18:1'
+# #3551: a `derive (Hash)` field the derived key cannot key -- a declared type
+# with no `hash_key` (keyed by a rendering that is not injective), and an
+# erased type parameter (keyed by address, even with `Box::to_string` written).
+ur_refused fixtures/err_derive_hash_show_only_field_refused.vibe 'keys field `i` by the key of `Inner`' 'add `Hash` to the `derive` of `Inner`'
+ur_refused fixtures/err_derive_hash_show_only_field_refused.vibe 'keys field `i` by the key of `Inner`' 'add `Hash` to the `derive` of `Inner`' gc
+ur_refused fixtures/err_derive_hash_generic_array_field_refused.vibe 'field `xs` holds `T`' 'write `Box::hash_key` yourself'
+ur_refused fixtures/err_derive_hash_generic_array_field_refused.vibe 'field `xs` holds `T`' 'write `Box::hash_key` yourself' gc
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
 ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type' gc
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' gc 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'

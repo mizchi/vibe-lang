@@ -595,10 +595,12 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   double, so `16777217.0f == 16777216.0f` is `false` (#3543). Use `Double`.
 - **`derive (Hash)` and the `Map::*_by` operations keyed on it.** The derived
   key is length-prefixed and tagged, so two different values no longer share
-  a key, and `-0.0` and `0.0` share one as `==` says they should (#3544). The
-  key format is new and may change, and a field whose type has no `hash_key`
-  is still keyed by its rendering. Key a map by a `String` you build yourself
-  when the format matters.
+  a key, and `-0.0` and `0.0` share one as `==` says they should (#3544). A
+  field the key cannot encode is refused at the derive, naming the edit: a
+  declared type with no `hash_key` of its own, and a type parameter of a
+  generic type (#3551). The key format is new and may change, and a field of a
+  builtin with no key (`Map`) is still keyed by its rendering. Key a map by a
+  `String` you build yourself when the format matters.
 - **Trait impls beyond one module and one level of generics.** A conditional
   impl (`impl [T: X] Y for Box[T]`) now works at a nested instantiation
   (`Box[Box[Int]]`, #3547), and the same impl declared in two modules is
