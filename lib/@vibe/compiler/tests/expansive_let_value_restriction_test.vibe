@@ -114,3 +114,17 @@ test "a parameter stored only behind a phantom one stays polymorphic" {
   let src = "enum Marker[T] { Tag(Int) }\nstruct Tagged[T] { m: Marker[T]; n: Int }\nfn tagged[T]() -> Tagged[T] { Tagged::{ m: Marker::Tag(1), n: 2 } }\nfn main() -> Unit {\n  let t = tagged()\n  let a: Tagged[Int] = t\n  let b: Tagged[String] = t\n  ()\n}\n"
   inspect(check_source_ok(src), content = "true")
 }
+
+/// A capitalized FUNCTION is a call, not a constructor: whether a callee
+/// constructs is read from the declarations, not from its first letter.
+test "a capitalized generic function result is monomorphic" {
+  let src = "fn Make[T]() -> (T) -> Array[T] {\n  let a: Array[T] = []\n  (x) -> { Array::push(a, x); a }\n}\nfn main() -> Unit {\n  let f = Make()\n  let _ = f(\"hello\")\n  let r: Array[Int] = f(5)\n  ()\n}\n"
+  inspect(check_source_error_message(src), content = "argument type mismatch for f: expected String, got Int")
+}
+
+/// Control: a bare, a qualified, an aliased and the builtin `Some`
+/// constructor applied to a value are values, and stay polymorphic.
+test "constructor applications of values are used at two types" {
+  let src = "enum Wrap[T] { W(T); Empty }\ntype Wr[T] = Wrap[T]\nfn main() -> Unit {\n  let a = W((x) -> x)\n  let b = Wrap::W((x) -> x)\n  let c = Wr::W((x) -> x)\n  let d = Some((x) -> x)\n  let a1: Wrap[(Int) -> Int] = a\n  let a2: Wrap[(String) -> String] = a\n  let b1: Wrap[(Int) -> Int] = b\n  let b2: Wrap[(String) -> String] = b\n  let c1: Wrap[(Int) -> Int] = c\n  let c2: Wrap[(String) -> String] = c\n  let d1: Option[(Int) -> Int] = d\n  let d2: Option[(String) -> String] = d\n  ()\n}\n"
+  inspect(check_source_ok(src), content = "true")
+}

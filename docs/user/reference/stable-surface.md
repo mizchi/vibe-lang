@@ -631,8 +631,9 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
 The policy is that vibe is never silently wrong. These gaps break that inside
 the frozen surface, and `0.1.0` ships with them. (The hunt closed five more
 before the tag: a generic body making two type parameters one type and a
-bare generic type in a signature (#3536), a generic call result or struct
-literal generalized by `let` (#3537), an impl method that disagrees with its
+bare generic type in a signature or a declaration (#3536), a generic call
+result or struct literal generalized by `let` (#3537), an impl method that
+disagrees with its
 trait (#3538), effect rows not charged through a call expression (#3539),
 and `Double` interpolation through a binder or an index (#3542).)
 They are listed so a reader can stay clear of them. Each one is an open P0 bug, and closing it can

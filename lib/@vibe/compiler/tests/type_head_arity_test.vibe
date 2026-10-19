@@ -81,3 +81,48 @@ test "a bare constructor in a constructor slot is accepted" {
   let src = "enum K[T, F[_]] {\n  Hold(T, F[Int])\n}\n\nfn f(k: K[Int, Option]) -> Int {\n  0\n}\n"
   inspect(collect_all_diagnostics(src), "[]")
 }
+
+/// A declaration's type is as rigid as a signature's: a bare head in a struct
+/// field stored an `Array[String]` a reader took back as an `Array[Int]`.
+test "a bare Array struct field is refused" {
+  let src = "struct Box {\n  xs: Array\n}\n"
+  inspect(collect_all_diagnostics(src), "[`Array` takes 1 type argument, but none were given in field `xs` of struct `Box` -- write `Array[T]` with the type arguments it holds]")
+}
+
+/// A bare program generic in an enum payload.
+test "a bare generic enum payload is refused" {
+  let src = "struct Box[T] {\n  v: T\n}\n\nenum Holder {\n  H(Box)\n}\n"
+  inspect(collect_all_diagnostics(src), "[`Box` takes 1 type argument, but none were given in the payload of `Holder::H` -- write `Box[T]` with the type arguments it holds]")
+}
+
+/// A bare head as a type alias body.
+test "a bare Option alias body is refused" {
+  let src = "type Maybe = Option\n"
+  inspect(collect_all_diagnostics(src), "[`Option` takes 1 type argument, but none were given in the body of type alias `Maybe` -- write `Option[T]` with the type arguments it holds]")
+}
+
+/// A bare head in an effect operation's result.
+test "a bare Map effect operation result is refused" {
+  let src = "effect Src {\n  Get() -> Map\n}\n"
+  inspect(collect_all_diagnostics(src), "[`Map` takes 2 type arguments, but none were given in the signature of `Src::Get` -- write `Map[T, U]` with the type arguments it holds]")
+}
+
+/// A bare head in a trait method signature is judged as the signature of the
+/// method's dispatcher.
+test "a bare Array trait method result is refused" {
+  let src = "trait Source {\n  items(Self) -> Array\n}\n"
+  inspect(collect_all_diagnostics(src), "[`Array` takes 1 type argument, but none were given in the return type -- write `Array[T]` with the type arguments it holds]")
+}
+
+/// A bare head in an extern declaration's type.
+test "a bare Array extern is refused" {
+  let src = "extern let % host_items: Array\n"
+  inspect(collect_all_diagnostics(src), "[`Array` takes 1 type argument, but none were given in extern declaration `%host_items` -- write `Array[T]` with the type arguments it holds]")
+}
+
+/// Declarations naming their own formals, applied heads, a constructor slot,
+/// a kinded formal, and a struct declared after its use are all accepted.
+test "applied heads in declarations are accepted" {
+  let src = "enum K[T, F[_]] {\n  Hold(T, F[Int])\n}\n\nstruct S[T, F[_]] {\n  xs: Array[T];\n  k: K[T, Option];\n  f: F[T];\n  later: Later[T]\n}\n\ntype Ys[T] = Array[Later[T]]\n\ntrait Source[T] {\n  items(Self) -> Array[T]\n}\n\nstruct Later[T] {\n  v: T\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}

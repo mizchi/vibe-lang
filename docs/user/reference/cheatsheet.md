@@ -3262,10 +3262,11 @@ A renderless struct is still refused by name (#1445).
 ### A `let` bound to a call result is not generic (value restriction, #3537)
 
 A `let` generalizes its type only when the right-hand side is a syntactic
-value: a lambda, a name, a constructor applied to values, a tuple or an
-anonymous record. A call result, a named struct literal, an array literal and
-a `let mut` are **not** generalized, because each can hold mutable state
-shared by every use:
+value: a lambda, a name, a declared enum constructor applied to values, a
+tuple or an anonymous record. A call result, a named struct literal, an array
+literal and a `let mut` are **not** generalized, because each can hold mutable
+state shared by every use. A function whose name happens to be capitalized
+(`fn Make[T]()`) is a call like any other:
 
 ```vibe skip
 fn make[T]() -> (T) -> Array[T] {

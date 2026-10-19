@@ -31,6 +31,7 @@ import @vibe/compiler/core {
   env_bind,
   env_lookup,
   expr_children,
+  find_enum_typedef,
   find_typedef,
   generalize,
   generalize_except,
@@ -87,13 +88,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 }
 
 import ./checker_merge_capture_provenance.vibe {
-  append_row_label,
-  callee_is_ctor_name,
-  checker_string_array_has,
-  esc_int_has,
-  escape_tvars_into,
-  expression_aliases_outer_binding,
-  type_mentions_named
+  append_row_label, checker_string_array_has, esc_int_has, escape_tvars_into, expression_aliases_outer_binding, type_mentions_named
 }
 
 import ./checker_throw_kind_of_type.vibe {
@@ -769,6 +764,9 @@ export fn env_reachable_tvars(val: Expr, env: TypeEnv, s: Subst, self_name: Opti
 /// literals, lambdas (a lambda body runs per call, so it is never walked),
 /// tuples and anonymous records of values, and constructor applications
 /// (`Some(v)`, `Wrap::W(v)`) to values -- enum payloads are immutable.
+/// Whether a callee IS a constructor is read from the declarations
+/// (`callee_is_declared_ctor`), never from its spelling: `fn MakeTag[T]()` is
+/// an ordinary function whatever its first letter.
 ///
 /// A call to anything but a constructor is expansive: its result may close
 /// over a container it allocated (`fn make[T]() -> (T) -> Array[T]`). So is a
@@ -777,18 +775,18 @@ export fn env_reachable_tvars(val: Expr, env: TypeEnv, s: Subst, self_name: Opti
 /// literal is a mutable container, and `let mut`, loops, handlers and
 /// assignment run code. Map literals are functional (#996) and are judged by
 /// their values.
-fn expr_is_expansive(e: Expr) -> Bool {
+fn expr_is_expansive(e: Expr, defs: Array[TypeDef]) -> Bool {
   match e {
     EFn(_, _, _, _, _, _) => false,
     ECall(callee, args, _, _) => {
       let ctor = match callee {
-        EIdent(name, _) => callee_is_ctor_name(name),
+        EIdent(name, _) => callee_is_declared_ctor(name, defs),
         _ => false
       }
       if ctor {
         let mut found = false
         for arg in args {
-          if !found && expr_is_expansive(arg) {
+          if !found && expr_is_expansive(arg, defs) {
             found = true
           }
         }
@@ -798,7 +796,7 @@ fn expr_is_expansive(e: Expr) -> Bool {
       }
     },
     ERecord(name, _, _) => if name == "" {
-      expr_children_expansive(e)
+      expr_children_expansive(e, defs)
     } else {
       true
     },
@@ -810,14 +808,62 @@ fn expr_is_expansive(e: Expr) -> Bool {
     EWhile(_, _) => true,
     ELoop(_, _) => true,
     EForIn(_, _, _, _) => true,
-    _ => expr_children_expansive(e)
+    _ => expr_children_expansive(e, defs)
   }
 }
 
-fn expr_children_expansive(e: Expr) -> Bool {
+fn expr_children_expansive(e: Expr, defs: Array[TypeDef]) -> Bool {
   let mut found = false
   for kid in expr_children(e) {
-    if !found && expr_is_expansive(kid) {
+    if !found && expr_is_expansive(kid, defs) {
+      found = true
+    }
+  }
+  found
+}
+
+/// #3537: true when the callee `name` resolves to an ENUM CONSTRUCTOR, read
+/// from the declarations in scope (`defs` carries local and imported enums).
+/// `Some` is the builtin `Option`'s. A qualified `Enum::Variant` must name a
+/// variant its enum (through an alias, too) actually declares; a bare name
+/// must be a variant of some enum -- a function cannot share a constructor's
+/// name (the checker asks for it to be renamed), so a declared variant name
+/// is never a function. Anything not found is treated as a call, which only
+/// generalizes less.
+fn callee_is_declared_ctor(name: String, defs: Array[TypeDef]) -> Bool {
+  if name == "Some" || name == "Option::Some" {
+    true
+  } else {
+    let cut = String::last_index_of(name, "::")
+    if cut >= 0 {
+      let head = String::substring(name, 0, cut)
+      let member = String::substring(name, cut + 2, String::length(name))
+      match find_enum_typedef(defs, head) {
+        Some(TDEnum(_, _, variants)) => enum_variants_have(variants, member),
+        _ => false
+      }
+    } else {
+      let mut found = false
+      for d in defs {
+        if !found {
+          match d {
+            TDEnum(_, _, variants) => if enum_variants_have(variants, name) {
+              found = true
+            },
+            _ => ()
+          }
+        }
+      }
+      found
+    }
+  }
+}
+
+fn enum_variants_have(variants: Array[(String, Array[Type])], name: String) -> Bool {
+  let mut found = false
+  for v in variants {
+    let (vname, _) = v
+    if vname == name {
       found = true
     }
   }
@@ -946,7 +992,7 @@ fn let_generalize_vars(val: Expr, vt: Type, env: TypeEnv, defs: Array[TypeDef], 
     }
     if restricted {
       vt
-    } else if expr_is_expansive(val) {
+    } else if expr_is_expansive(val, defs) {
       // #3537: (C) the ML value restriction. A value the right-hand side
       // COMPUTED may hold state its type can no longer show: `make()` returns
       // a closure over one array, and `Bag::{ xs: [] }` is one struct with one
