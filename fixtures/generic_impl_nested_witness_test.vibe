@@ -1,0 +1,56 @@
+//# A bounded generic impl instantiated at a nested type builds its inner witness (#3547).
+//
+// `impl [T: Desc] Desc for Box[T]` at `Box[Box[Int]]` needs the `Desc`
+// dictionary of `Box[Int]`, which in turn needs `Int`'s. The literal
+// `Box::{ v: Box::{ v: 1 } }` was read as the bare head `Box`, so the inner
+// dictionary could not be built and the call was emitted one argument short:
+// the module failed wasm validation ("not enough arguments on the stack for
+// call (need 3, got 2)") after a clean `vibe check`. A single `Box` worked.
+// The literal's type arguments are now read off its fields recursively; a
+// value whose type argument cannot be read is refused with the edit.
+
+trait Desc {
+  desc(Self) -> String
+}
+
+impl Desc for Int {
+  desc(self) -> String {
+    "int"
+  }
+}
+
+struct Box[T] {
+  v: T
+}
+
+impl [T: Desc] Desc for Box[T] {
+  desc(self) -> String {
+    "box(" + T::desc(self.v) + ")"
+  }
+}
+
+fn d[T: Desc](x: T) -> String {
+  T::desc(x)
+}
+
+test "a single box" {
+  inspect(d(Box::{ v: 1 }), content = "box(int)")
+}
+
+test "a nested literal reaches the inner witness" {
+  inspect(d(Box::{ v: Box::{ v: 1 } }), content = "box(box(int))")
+}
+
+test "three levels" {
+  inspect(d(Box::{ v: Box::{ v: Box::{ v: 7 } } }), content = "box(box(box(int)))")
+}
+
+test "through an unannotated binding" {
+  let b = Box::{ v: Box::{ v: 2 } }
+  inspect(d(b), content = "box(box(int))")
+}
+
+test "through an annotated binding" {
+  let b: Box[Box[Int]] = Box::{ v: Box::{ v: 3 } }
+  inspect(d(b), content = "box(box(int))")
+}
