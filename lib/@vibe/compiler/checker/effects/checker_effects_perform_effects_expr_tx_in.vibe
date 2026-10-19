@@ -772,6 +772,59 @@ export fn overlay_alias_target(ov_names: Array[String], ov_effs: Array[Array[Str
   }
 }
 
+/// #3561: the row VARIABLES a call hands to a callee's row variable through
+/// a callback parameter or local closure of the enclosing function.
+///
+/// `resolve_row_var_instantiation` reads what `apply`'s `e` stands for at
+/// `apply(f)`, and a variable in that answer used to be treated as still
+/// unresolved and charged nothing. But a callback parameter's `with e` is the
+/// ENCLOSING signature's own variable (#885) -- the token a direct `f()`
+/// already charges -- so `fn wrap(f: () -> Int with e) -> Int { apply(f) }`
+/// performed `f`'s effects from a function declaring none, while the same
+/// body written `f()` was refused. These variables are charged like any other
+/// label. A local alias of a top-level function is left out: its variable is
+/// the target's scheme's, not the enclosing signature's (#3155).
+fn lexical_row_var_args(row_var: String, callee_param_effs: Array[Array[String]], args: Array[Expr], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Array[String] {
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(callee_param_effs) && i < Array::length(args) {
+    if effect_row_has_label(Some(Array::get(callee_param_effs, i)), row_var) {
+      match Array::get(args, i) {
+        EIdent(argname, _) => match lookup_fn_effs(ov_names, ov_effs, argname) {
+          Some(labels) => match overlay_alias_target(ov_names, ov_effs, argname) {
+            Some(_) => (),
+            None => {
+              for lbl in labels {
+                if label_is_effect_var(lbl) && !effect_row_has_label(Some(out), lbl) {
+                  Array::push(out, lbl)
+                }
+              }
+              ()
+            }
+          },
+          None => ()
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #3561: charge each of `vars` the enclosing signature owns and does not
+/// declare.
+fn charge_own_row_vars(vars: Array[String], declared: Array[String], in_handle: Bool, missing: Array[String]) -> Unit {
+  for v in vars {
+    if !in_handle && !decl_authorizes_op(declared, v) && !effect_row_has_label(Some(missing), v) {
+      Array::push(missing, v)
+    }
+  }
+  ()
+}
+
 fn local_fn_overlay_labels(val: Expr, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Array[String] {
   match val {
     EFn(_, _, _, _, eff, _) => effect_row_labels(effect_row_parse(eff)),
@@ -1225,6 +1278,9 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                       Some(pe) => pe,
                       None => no_param_row()
                     }
+                    // #3561: a variable the enclosing signature owns.
+                    let own_vars = lexical_row_var_args(teff, callee_param_effs, args, ov_names, ov_effs)
+                    charge_own_row_vars(own_vars, declared, in_handle, missing)
                     match resolve_row_var_instantiation(teff, callee_param_effs, args, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
                       Some(inst) => {
                         let mut ii = 0
@@ -1238,8 +1294,9 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                           // Same discipline the concrete branch below applies:
                           // the exception row is row-transparent, and a
                           // variable resolving to another variable is still
-                          // unresolved. #2967: `Async` is charged like any
-                          // other label.
+                          // unresolved (one the enclosing signature owns was
+                          // charged above). #2967: `Async` is charged like
+                          // any other label.
                           if String::length(ieff) > 0 && (!is_exception_effect_name(ieff) || error_row_checked() || under_kinded_handle(declared)) && !label_is_effect_var(ieff) && !in_handle && !decl_authorizes_op(declared, ieff) {
                             Array::push(missing, ieff)
                           } else {
@@ -1319,6 +1376,8 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                         Some(pe) => pe,
                         None => no_param_row()
                       }
+                      // #3561: see the named-callee case.
+                      charge_own_row_vars(lexical_row_var_args(peff, target_param_effs, args, ov_names, ov_effs), declared, in_handle, missing)
                       match resolve_row_var_instantiation(peff, target_param_effs, args, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
                         Some(inst) => {
                           let mut ii = 0

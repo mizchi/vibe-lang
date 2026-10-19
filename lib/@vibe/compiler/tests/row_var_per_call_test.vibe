@@ -52,3 +52,26 @@ test "the same calls through a declared type parameter (control)" {
   let src = program("fn apply[T](f: () -> T with e) -> T with e", "fn main allows Console {\n  let a = apply(one)\n  let b = apply(noisy)\n  println(\"\\{a + b}\")\n}\n")
   inspect(collect_all_diagnostics(src), "[]")
 }
+
+// #3561: a callback parameter's `with e` is its enclosing signature's own
+// variable. Handing it to `apply` passes that variable on, so the enclosing
+// function must declare it -- exactly as a direct `f()` requires.
+test "passing a callback parameter to a row-polymorphic function requires its row" {
+  let src = program(plain(), "fn wrap(f: () -> Int with e) -> Int {\n  apply(f)\n}\n")
+  inspect(collect_all_diagnostics(src), "[line 15:3: effect row mismatch for 'wrap': missing { e } (no 'with' clause, requires { e })\nhint: declare 'fn wrap(...) -> T with e']")
+}
+
+test "passing it through an alias of the function requires its row too" {
+  let src = program(plain(), "fn wrap(f: () -> Int with e) -> Int {\n  let g = apply\n  g(f)\n}\n")
+  inspect(collect_all_diagnostics(src), "[line 16:3: effect row mismatch for 'wrap': missing { e } (no 'with' clause, requires { e })\nhint: declare 'fn wrap(...) -> T with e']")
+}
+
+test "a signature that declares the row may pass its callback on" {
+  let src = program(plain(), "fn wrap(f: () -> Int with e) -> Int with e {\n  apply(f)\n}\n\nfn main allows Console {\n  println(\"\\{wrap(noisy) + wrap(one)}\")\n}\n")
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "a direct call of the callback is refused the same way (control)" {
+  let src = program(plain(), "fn wrap(f: () -> Int with e) -> Int {\n  f()\n}\n")
+  inspect(collect_all_diagnostics(src), "[line 15:3: effect row mismatch for 'wrap': missing { e } (no 'with' clause, requires { e })\nhint: declare 'fn wrap(...) -> T with e']")
+}
