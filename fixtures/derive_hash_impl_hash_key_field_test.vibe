@@ -1,0 +1,81 @@
+// #3551: a `derive (Hash)` field whose type's `hash_key` is written as an
+// impl method is keyed by that method.
+//
+// Two shapes were refused although the checker holds the method to `(Self)
+// -> String`. On the RC lane an unannotated `self` reaches the derive with the
+// planner's heap marker as its annotation, so even `impl Hash for Inner {
+// hash_key(self) -> String { .. } }` was refused with "takes `__rc_heap`".
+// And the result of a method written in an impl of a SUBTRAIT of `Hash`
+// (`trait Keyed: Hash {}`) was looked up on the subtrait only, which declares
+// no `hash_key`, so "has no `-> String` annotation". A local subtrait, a
+// two-level one, and one in another module are all keyed by the method.
+
+import @vibe/core {
+  has_by, set_by
+}
+
+import ./modules/derive_hash_subtrait_owner.vibe {
+  struct Far
+}
+
+struct Direct {
+  n: Int
+} derive (Show)
+
+impl Hash for Direct {
+  hash_key(self) -> String {
+    let d: Direct = self
+    "d" + Int::to_string(d.n)
+  }
+}
+
+trait Keyed: Hash {
+}
+
+trait Deeper: Keyed {
+}
+
+struct Sub {
+  n: Int
+} derive (Show)
+
+impl Keyed for Sub {
+  hash_key(self) -> {
+    let s: Sub = self
+    "s" + Int::to_string(s.n)
+  }
+}
+
+struct Deep {
+  n: Int
+} derive (Show)
+
+impl Deeper for Deep {
+  hash_key(self) -> {
+    let d: Deep = self
+    "p" + Int::to_string(d.n)
+  }
+}
+
+struct Outer {
+  a: Direct;
+  b: Sub;
+  c: Deep;
+  d: Far
+} derive (Hash)
+
+fn make(n: Int) -> Outer {
+  Outer::{
+    a: Direct::{ n: n },
+    b: Sub::{ n: n + 1 },
+    c: Deep::{ n: n + 2 },
+    d: Far::{ n: n + 3 }
+  }
+}
+
+test "a field keyed by an impl method's hash_key" {
+  inspect(Outer::hash_key(make(1)), content = "2:d12:s22:p32:f4")
+  inspect(Outer::hash_key(make(1)) == Outer::hash_key(make(1)), content = "true")
+  inspect(Outer::hash_key(make(1)) == Outer::hash_key(make(2)), content = "false")
+  inspect(has_by(set_by(Map::new(), make(1), 1), make(1)), content = "true")
+}

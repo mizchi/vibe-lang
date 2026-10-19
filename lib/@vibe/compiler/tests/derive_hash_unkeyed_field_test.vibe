@@ -194,3 +194,27 @@ test "keyed fields and a written hash_key are accepted" {
   inspect(derive_verdict("struct Box[T] { v: T } derive(Show)\nfn Box::hash_key[T](b: Box[T]) -> String { \"b\" }\nstruct Holder { b: Box[String]; c: Box[Int] } derive(Hash)" + main_src), content = "ok")
   inspect(derive_verdict("struct Box[T] { v: T } derive(Show)\nfn Box::hash_key(b: Box[Int]) -> String { \"b\" }\nstruct Holder { b: Box[Int] } derive(Hash)" + main_src), content = "ok")
 }
+
+/// An impl method's unannotated types come from the trait that DECLARES the
+/// method, found as the checker finds it: the implemented trait, then its
+/// supertraits. Looked up on the implemented trait alone, a method of an impl
+/// of `trait Keyed: Hash {}` had no result type, and the field was refused
+/// although the checker holds the method to `(Self) -> String`. On the RC lane
+/// an unannotated `self` arrives with the planner's heap marker `__rc_heap` as
+/// its annotation, which is not a type the source wrote.
+test "an impl method takes its types from the trait that declares them" {
+  let inner = "struct Inner { a: Int } derive(Show)\ntrait Hash { hash_key(Self) -> String }\n"
+  let outer = "\nstruct Outer { i: Inner } derive(Hash)" + main_src
+  inspect(derive_verdict(inner + "trait Keyed: Hash {}\nimpl Keyed for Inner { hash_key(self) -> { \"i\" } }" + outer), content = "ok")
+  inspect(derive_verdict(inner + "trait Keyed: Hash {}\ntrait Deeper: Keyed {}\nimpl Deeper for Inner { hash_key(self) -> { \"i\" } }" + outer), content = "ok")
+  inspect(derive_verdict(inner + "trait Tag {}\ntrait Keyed: Tag + Hash {}\nimpl Keyed for Inner { hash_key(self) -> { \"i\" } }" + outer), content = "ok")
+  inspect(derive_verdict(inner + "impl Hash for Inner { hash_key(self: __rc_heap) -> String { \"i\" } }" + outer), content = "ok")
+  // The supertrait's signature is held, not waved through.
+  let wrong = derive_verdict("struct Inner { a: Int } derive(Show)\ntrait Base { hash_key(Self) -> Int }\ntrait Keyed: Base {}\nimpl Keyed for Inner { hash_key(self) -> { 1 } }" + outer)
+  inspect(String::contains(wrong, "but `Inner::hash_key` returns `Int`"), content = "true")
+  // The whole-program facts judge it the same way, so a module deriving
+  // `Hash` over `Inner` keys the field.
+  let ops = collect_explicit_derived_op_names(parse_program(lex(inner + "trait Keyed: Hash {}\nimpl Keyed for Inner { hash_key(self) -> { \"i\" } }")))
+  inspect(String::join(ops, "|"), content = "Inner::hash_key|?Inner::hash_key T0:N4:Self")
+  inspect(module_verdict("struct Outer { i: Inner } derive(Hash)" + main_src, "struct Inner { a: Int } derive(Show)", ops), content = "ok")
+}

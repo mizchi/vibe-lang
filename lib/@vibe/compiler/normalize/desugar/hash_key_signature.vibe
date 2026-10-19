@@ -7,8 +7,9 @@
 // only when its signature says what the call needs: ONE parameter whose type,
 // aliases expanded, is `T` (applied or not, or `Self`), and a `String`
 // result. The types come from the definition's own annotations; an impl
-// method with an unannotated parameter or result takes them from the trait it
-// implements (the checker holds the method to that signature, #3538).
+// method with an unannotated parameter or result takes them from the trait
+// that declares the method -- the one it implements or a supertrait of it --
+// which the checker holds the method to (#3538).
 //
 // The per-module lane sees another module's definition only by name
 // (`ModuleTraitFacts.explicit_ops`), so `collect_explicit_derived_op_names`,
@@ -106,12 +107,25 @@ fn hks_alias(aliases: Array[(String, Array[String], TypeExpr)], name: String, ar
   out
 }
 
-/// The `(parameter types, result)` trait `trait_name` declares for `method`.
+/// The `(parameter types, result)` the trait `trait_name` declares for
+/// `method`, found the way the checker holds an impl method to it
+/// (`declaring_trait_params`, #3538): the trait itself, then its supertraits
+/// in order, depth first. So `impl Keyed for Inner { hash_key(self) -> .. }`
+/// under `trait Keyed: Hash {}` takes `Hash`'s `(Self) -> String` (#3551
+/// review). A supertrait cycle, which the checker refuses, stops at a fixed
+/// depth instead of looping.
 fn hks_trait_method(stmts: Array[Stmt], trait_name: String, method: String) -> Option[(Array[TypeExpr], TypeExpr)] {
+  hks_trait_method_deep(stmts, trait_name, method, 32)
+}
+
+fn hks_trait_method_deep(stmts: Array[Stmt], trait_name: String, method: String, depth: Int) -> Option[(Array[TypeExpr], TypeExpr)] {
   let mut out: Option[(Array[TypeExpr], TypeExpr)] = None
+  let mut seen = false
+  let supers: Array[String] = array_empty()
   for stmt in stmts {
     match stmt {
-      STrait(_, name, _, methods, _, _) => if (out is None) && name == trait_name {
+      STrait(_, name, sups, methods, _, _) => if !seen && name == trait_name {
+        seen = true
         for m in methods {
           let (mname, params, result) = m
           if (out is None) && mname == method {
@@ -120,11 +134,25 @@ fn hks_trait_method(stmts: Array[Stmt], trait_name: String, method: String) -> O
             ()
           }
         }
+        for s in sups {
+          Array::push(supers, s)
+        }
       } else {
         ()
       },
       _ => ()
     }
+  }
+  if (out is None) && depth > 0 {
+    for s in supers {
+      if out is None {
+        out = hks_trait_method_deep(stmts, s, method, depth - 1)
+      } else {
+        ()
+      }
+    }
+  } else {
+    ()
   }
   out
 }
@@ -198,7 +226,20 @@ fn hks_judge(owner: String, ann: Option[TypeExpr], value: Expr, trait_sig: Optio
       if Array::length(params) != 1 {
         ("takes " + Int::to_string(Array::length(params)) + " parameters", vars, TyUnit)
       } else {
-        let (pname, pann) = Array::get(params, 0)
+        let (pname, written) = Array::get(params, 0)
+        // `__rc_heap` is the RC planner's heap marker (perceus
+        // `inferred_heap_type`), put on an unannotated parameter before this
+        // pass runs, so `hash_key(self)` arrives as `self: __rc_heap`. It is
+        // not a type the source wrote: the parameter is unannotated here, as
+        // `annotate_params_from_sig` reads it too.
+        let pann = match written {
+          Some(TyName(tn)) => if tn == "__rc_heap" {
+            None
+          } else {
+            written
+          },
+          _ => written
+        }
         let param = match pann {
           Some(t) => Some(t),
           None => match fallback {
