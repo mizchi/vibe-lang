@@ -28,6 +28,10 @@ import @vibe/compiler/syntax {
   lex, parse_program
 }
 
+import @vibe/compiler/lowering/trait_namespaces {
+  derive_trait_namespace_operations
+}
+
 //# Helpers
 
 /// The refusal desugaring `src` raises, or `ok`.
@@ -248,4 +252,23 @@ test "an impl method takes its types from the trait that declares them" {
   let ops = collect_explicit_derived_op_names(parse_program(lex(inner + "trait Keyed: Hash {}\nimpl Keyed for Inner { hash_key(self) -> { \"i\" } }")))
   inspect(String::join(ops, "|"), content = "Inner::hash_key|?Inner::hash_key T0:N4:Self")
   inspect(module_verdict("struct Outer { i: Inner } derive(Hash)" + main_src, "struct Inner { a: Int } derive(Show)", ops), content = "ok")
+}
+
+/// A trait's namespace operations are inserted right after the program's last
+/// trait or impl -- between that impl and its methods. On the wasm-gc lane they
+/// are already there when the derive runs, and read as the end of the impl
+/// they cost its methods the trait's signature: `hash_key(self) -> { .. }` was
+/// refused for "no type annotation on its parameter".
+test "a trait operation between an impl and its methods keeps the trait's signature" {
+  let src = "struct Inner { a: Int } derive(Show)\ntrait MyHash { hash_key(Self) -> String }\nimpl MyHash for Inner { hash_key(self) -> { \"i\" } }\nstruct Outer { i: Inner } derive(Hash)" + main_src
+  let stmts = parse_program(lex(src))
+  inspect(derive_trait_namespace_operations(stmts, Array::length(stmts)), content = "1")
+  let verdict = handle {
+    desugar_trait_dicts(stmts)
+    "ok"
+  } with { Exception::Throw(msg) => msg }
+  inspect(verdict, content = "ok")
+  let again = parse_program(lex(src))
+  let _ = derive_trait_namespace_operations(again, Array::length(again))
+  inspect(String::join(collect_explicit_derived_op_names(again), "|"), content = "MyHash::hash_key|Inner::hash_key|?Inner::hash_key T0:N4:Self")
 }

@@ -170,13 +170,22 @@ export fn hash_key_definitions(stmts: Array[Stmt]) -> (Array[(String, Array[Stri
   // trait: the parser places an impl's methods right after its `SImpl`.
   let mut impl_prefix = ""
   let mut impl_trait = ""
+  // A trait's namespace operations (`Hash::hash_key`) are inserted right
+  // after the program's last trait or impl (`derive_trait_namespace_operations`),
+  // so when that statement is an impl they sit between it and its methods. On
+  // the wasm-gc lane they are already there when this scan runs; read as a
+  // statement that ends the impl, they cost the methods after them the
+  // trait's signature, and `impl Hash for Inner { hash_key(self) -> {..} }`
+  // was refused for "no type annotation on its parameter". An operation is
+  // neither a type's `hash_key` nor the end of an impl, so it is passed over.
+  let traits = hks_trait_names(stmts)
   for stmt in stmts {
     match stmt {
       SImpl(tparams, _, trait_name, target) => {
         impl_prefix = impl_method_owner(tparams, trait_name, target) + "::"
         impl_trait = trait_name
       },
-      SLet(_, _, name, ann, value) => {
+      SLet(_, _, name, ann, value) => if !hks_is_trait_operation(name, traits) {
         let in_impl = impl_prefix != "" && String::starts_with(name, impl_prefix)
         if !in_impl {
           impl_prefix = ""
@@ -199,6 +208,8 @@ export fn hash_key_definitions(stmts: Array[Stmt]) -> (Array[(String, Array[Stri
         } else {
           ()
         }
+      } else {
+        ()
       },
       _ => {
         impl_prefix = ""
@@ -206,6 +217,24 @@ export fn hash_key_definitions(stmts: Array[Stmt]) -> (Array[(String, Array[Stri
     }
   }
   (good, bad)
+}
+
+/// The names of the traits `stmts` declares.
+fn hks_trait_names(stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = array_empty()
+  for stmt in stmts {
+    match stmt {
+      STrait(_, name, _, _, _, _) => Array::push(out, name),
+      _ => ()
+    }
+  }
+  out
+}
+
+/// Is `name` a trait namespace operation: `Trait::op` for a trait in `traits`?
+fn hks_is_trait_operation(name: String, traits: Array[String]) -> Bool {
+  let sep = String::index_of(name, "::")
+  sep > 0 && hks_contains(traits, String::substring(name, 0, sep))
 }
 
 /// `(problem, type variables, parameter type)`; the problem is "" when the
