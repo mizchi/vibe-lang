@@ -55,3 +55,26 @@ test "an impl header continued on the next line is accepted" {
   // ...and two expressions on one line inside an impl body are still refused.
   assert(check_source_err_contains(String::concat(tr, "struct Foo { n: Int }\nimpl Tag\n  for Foo {\n  tag(self: Foo) -> Int {\n    let x = 1 2\n    x\n  }\n}\nfn main() -> Int { 0 }"), "two expressions on one line"))
 }
+
+/// A postfix `?` ends an expression like a name does, so a next line that
+/// opens with `(`, `[` or a tight prefix operator begins a new statement.
+/// Before, `o?` then `()` called the unwrapped value, `[0]` indexed it and
+/// `-1` subtracted from it, with no diagnostic: the callback ran.
+test "a line after a postfix `?` that opens with `(`, `[` or a prefix operator is a new statement" {
+  assert(check_source_ok("fn f(o: Option[() -> Int]) -> Option[() -> Int] {\n  let v = o?\n  ()\n  Some(v)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f(o: Option[Array[Int]]) -> Option[Array[Int]] {\n  let v = o?\n  [0]\n  Some(v)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f(o: Option[Bool]) -> Option[Bool] {\n  let v = o?\n  -1\n  Some(v)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f(o: Option[Int]) -> Option[Int] {\n  o?\n  (0)\n  Some(1)\n}\nfn main() -> Int { 0 }"))
+}
+
+/// What a postfix `?` still continues: a `.field` chain, an operator at the
+/// start of the next line with a space after it, and a call or an index on
+/// the same line as the `?`.
+test "a postfix `?` still continues into a chain or an operator on the next line" {
+  let p = "struct P { n: Int }\n"
+  assert(check_source_ok(String::concat(p, "fn f(o: Option[P]) -> Option[Int] {\n  let v = o?\n    .n\n  Some(v)\n}\nfn main() -> Int { 0 }")))
+  assert(check_source_ok("fn f(o: Option[Int]) -> Option[Bool] {\n  let v = o?\n    == 1\n  Some(v)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f(o: Option[Int]) -> Option[Bool] {\n  let v = o?\n    - 1 > 0\n  Some(v)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f(o: Option[() -> Int]) -> Option[Int] {\n  let v = o?()\n  Some(v)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f(o: Option[Array[Int]]) -> Option[Int] {\n  let v = o?[0]\n  Some(v)\n}\nfn main() -> Int { 0 }"))
+}
