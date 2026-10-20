@@ -1790,8 +1790,10 @@ export fn erased_throw_arm_leave(mark: Int) -> Unit {
 /// payload that mentions a binding that may hold the binder's value, and
 /// whose type could hold a `String`, records no kind. That is judged by
 /// binding, not by spelling: after `let m = "other"`, `throw(m)` throws a
-/// `String` of its own. A payload whose type holds no `String`
-/// (`Why::Because(m)` for an enum `Why`) is a new value of its own type.
+/// `String` of its own. A payload whose type holds no `String` (an `Int`
+/// such as `String::length(m)`) is a new value of its own type. A declared
+/// type counts as one that may hold a `String` whatever its fields, so
+/// `Why::Because(m)` records no kind either.
 export fn throw_payload_recorded_type(payload: Expr, bound: Option[Type], pt: Type, s: Subst) -> Type {
   let direct = match payload {
     EIdent(_, _) => match bound {
@@ -1843,6 +1845,13 @@ fn erased_rethrow_carries_binder(payload: Expr, pt_now: Type, s: Subst) -> Bool 
 
 /// Whether a value of type `t` may be, or hold, a `String`. An unresolved
 /// part may still be one.
+///
+/// A declared type (an enum, a struct, a named or applied type) always may
+/// (#3551 review). Its type arguments do not show its fields: `enum Why {
+/// Because(String) }` has none, yet `Why::Because(m)` holds the caught value,
+/// and a caller's `Exception[Why]::Throw(w)` arm would read an `Int` thrown
+/// under `Exception[Int]` as the `String` in `w`. The fields are not looked
+/// into, so a declared type whose fields hold no `String` counts too.
 fn type_may_hold_string(t: Type) -> Bool {
   match t {
     CtString => true,
@@ -1852,8 +1861,10 @@ fn type_may_hold_string(t: Type) -> Bool {
     CtArray(e) => type_may_hold_string(e),
     CtOption(e) => type_may_hold_string(e),
     CtFn(params, ret, _) => type_may_hold_string(ret) || types_may_hold_string(params),
-    CtNamed(_, args) => types_may_hold_string(args),
-    CtApplied(head, args) => type_may_hold_string(head) || types_may_hold_string(args),
+    CtEnum(_) => true,
+    CtStruct(_) => true,
+    CtNamed(_, _) => true,
+    CtApplied(_, _) => true,
     CtForAll(_, _, body) => type_may_hold_string(body),
     CtRecord(fields) => {
       let mut found = false

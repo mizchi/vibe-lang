@@ -653,7 +653,8 @@ because those programs are already wrong.
   at run time, so a non-`String` value thrown under a bare `with Exception`
   row (or under a kinded row and caught by the erased arm) reaches `m` as a
   `String`. A rethrow from the arm that may carry `m` is of no known kind, so
-  it is never advertised as `Exception[String]`. But `m` passed out of the
+  it is never advertised as `Exception[String]`, nor as a declared type built
+  from `m` (`Exception[Why]` for `Why::Because(m)`). But `m` passed out of the
   arm, as the handle's value or through a `String` variable declared outside
   it, is still a `String` to whatever reads it next, a `throw` included.
   Throw a value other than a `String` under a kinded row, and catch it with

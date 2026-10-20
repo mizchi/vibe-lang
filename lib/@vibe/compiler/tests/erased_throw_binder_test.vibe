@@ -147,8 +147,54 @@ test "a kinded arm's binder rethrown through a generic call keeps its kind" {
 
 /// A payload whose type holds no `String` is a new value of that type, so it
 /// keeps its kind.
-test "a value of another kind built from an erased binder keeps its kind" {
-  let src = "fn f() -> Int with Exception[Int] { throw(7) }\nenum Why {\n  Because(String)\n}\nfn g() -> Int with Exception[Why] {\n  handle { f() } with { Exception::Throw(m) => throw(Why::Because(m)) }\n}\n"
+test "an Int built from an erased binder keeps its kind" {
+  let src = "fn f() -> Int with Exception[Int] { throw(7) }\nfn g() -> Int with Exception[Int] {\n  handle { f() } with { Exception::Throw(m) => throw(String::length(m)) }\n}\n"
+  inspect(row_checked_diags(src), "[]")
+}
+
+//# A declared type built from the binder (#3551 review)
+
+/// `g` declares `Exception[<row>]` and rethrows, from an erased arm, the
+/// declared value `body` builds from the binder `m`, after `decls`. `f`
+/// throws an `Int`, so a caller's `Exception[<row>]::Throw(w)` arm would read
+/// that `Int` as the `String` in `w`.
+fn nominal_diags(decls: String, row: String, body: String) -> Array[String] with Exception {
+  let head = String::concat("fn f() -> Int with Exception[Int] { throw(7) }\n", decls)
+  let sig = String::concat("fn g() -> Int with Exception[", String::concat(row, "] {\n  handle { f() } with { Exception::Throw(m) => {\n"))
+  row_checked_diags(String::concat(head, String::concat(sig, String::concat(body, "\n  } }\n}\n"))))
+}
+
+/// A field or payload is not shown by the type's arguments: `Why` has none,
+/// and `Why::Because(m)` holds the caught value. This was accepted, and a
+/// caller's `Exception[Why]::Throw(w)` arm read the `Int` 7 as a `String`.
+test "an enum payload built from an erased binder is not a known kind" {
+  let why = "enum Why {\n  Because(String)\n}\n"
+  assert(charged_erased(nominal_diags(why, "Why", "    throw(Why::Because(m))")))
+  assert(charged_erased(nominal_diags(why, "Option[Why]", "    throw(Some(Why::Because(m)))")))
+  assert(charged_erased(nominal_diags(why, "Why", "    let _n = String::length(m)\n    let w = Why::Because(m)\n    throw(w)")))
+}
+
+test "a struct literal built from an erased binder is not a known kind" {
+  let w = "struct W {\n  s: String\n}\n"
+  assert(charged_erased(nominal_diags(w, "W", "    throw(W::{ s: m })")))
+  let boxed = "struct Box[T] {\n  v: T\n}\n"
+  assert(charged_erased(nominal_diags(boxed, "Box[String]", "    throw(Box::{ v: m })")))
+}
+
+/// The fields are not looked into: a declared type built from the binder
+/// records no kind even when no field could hold a `String`. The kinded arm
+/// or the erased row is the edit.
+test "a declared type with no String field built from an erased binder is not a known kind" {
+  let code = "enum Code {\n  C(Int)\n}\n"
+  assert(charged_erased(nominal_diags(code, "Code", "    throw(Code::C(String::length(m)))")))
+}
+
+/// Controls: a declared value that does not carry the binder keeps its kind,
+/// and so does one built under the kinded arm.
+test "a declared value that does not carry an erased binder keeps its kind" {
+  let why = "enum Why {\n  Because(String)\n}\n"
+  inspect(nominal_diags(why, "Why", "    let _n = String::length(m)\n    throw(Why::Because(\"other\"))"), "[]")
+  let src = "fn f() -> Int with Exception[String] { throw(\"x\") }\nenum Why {\n  Because(String)\n}\nfn g() -> Int with Exception[Why] {\n  handle { f() } with { Exception[String]::Throw(m) => throw(Why::Because(m)) }\n}\n"
   inspect(row_checked_diags(src), "[]")
 }
 

@@ -143,8 +143,14 @@ effect Exception[E] {
   when its type still holds `m`'s open variable, or when it mentions a carrier
   and its type could hold a `String`. The type check alone would depend on the order of
   uses: `m` is pinned to `String` at its first such use, and after that
-  `id(m)` or an alias has plain type `String`. A payload whose type holds no
-  `String` is a new value of that type and keeps its kind. Such a site is
+  `id(m)` or an alias has plain type `String`. A declared type (an enum, a
+  struct, a named or applied type) could always hold a `String`: its type
+  arguments do not show its fields, so `enum Why { Because(String) }` has
+  none, yet `Why::Because(m)` holds the caught value. Its fields are not
+  looked into, so `Code::C(String::length(m))` for `enum Code { C(Int) }`
+  records no kind either; the kinded arm is the edit. A payload whose type
+  holds no `String` and is not a declared type (`String::length(m)`) is a new
+  value of that type and keeps its kind. Such a site is
   recorded as `#erased-rethrow`, which the effects pass takes as final:
   the payload's syntax would answer `String` for `String::concat("ctx: ", m)`
   or an alias annotated `String`.

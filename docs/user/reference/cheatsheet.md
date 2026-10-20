@@ -1845,9 +1845,13 @@ Rules:
   `outer.cell.value = m`, `throw(outer.cell.value)`. So a function that
   rethrows this way declares the erased `with Exception`, or catches with the
   kinded arm `Exception[K]::Throw(m)`, whose rethrow keeps the kind `K`. A
-  payload whose type holds no `String` (`throw(Why::Because(m))` for an enum
-  `Why`) is a value of that type, and so is a name rebound to a value of its
-  own: after `let m = "other"`, `throw(m)` throws that `String`.
+  value of a declared type built from `m` counts as one that could hold a
+  `String`, whatever its fields: `throw(Why::Because(m))`, `throw(W::{ s: m })`
+  and `throw(Some(Why::Because(m)))` are of no known kind too. A payload whose
+  type holds no `String` and is not a declared type
+  (`throw(String::length(m))`) is a value of that type, and so is a name
+  rebound to a value of its own: after `let m = "other"`, `throw(m)` throws
+  that `String`.
 
 Details and the v1 limits: [exception-effect.md](../../internal/design/exception-effect.md).
 
