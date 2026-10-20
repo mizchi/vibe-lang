@@ -1262,7 +1262,7 @@ for oh_layout in lib store shadowed; do
   fi
   rm -rf "$oh_root"
 done
-echo "[compiler-gate] owned-head spelling outside the selected package refused"
+echo "[compiler-gate] owned-head spelling outside the selected package ok (refused)"
 
 # 6j. distribution pipeline (#754, ADR-0065 Phase 4): publish (version
 #     directive + semver gate) -> fetch cache (CAS keyed by package hash +
