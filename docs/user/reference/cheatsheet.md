@@ -3487,7 +3487,9 @@ A call that stores its argument in state it captured, or in a module-level
 binding, names no such binding and is not caught. A closure whose effect the
 enclosing function's result type declares (`fn mid() -> (() -> Int with Ask)`)
 takes that row instead (#1451), so its caller supplies the handler and it may
-leave.
+leave -- when the result is that function type itself. A tuple or other
+composite of function types does not exempt the closures in it: the lowering
+gives the declared row only to a closure that is the result.
 
 ### 補間できるのは Show を持つ型だけ (#1445)
 

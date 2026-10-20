@@ -17,15 +17,17 @@
 //
 //   - a closure literal written in the handled body, without its own row for
 //     the operation, whose body performs it -- a `perform`, a `throw` for an
-//     exception arm, a call (by name or a method call) to a function whose
-//     row names it, or a call to another handle-bound local;
+//     exception arm, a call (by name, through a local alias, or a method
+//     call) to a function whose row names it, or a call to another
+//     handle-bound local;
 //   - the result of a call to a function whose row names a non-exception
 //     effect and whose result type spells a function without that row (the
 //     closure it returns inherited the row of that call).
 //
-// An effect the enclosing declaration's result type gives its returned
-// function values (#1451) is not bound here: such a closure takes the row and
-// its caller passes the handler.
+// An effect the enclosing declaration's result type gives the function
+// value it returns (#1451) is not bound here when the result is that
+// function type: such a closure takes the row and its caller passes the
+// handler.
 //
 // Where such a value can go is read from where it is written (its REACH):
 //
@@ -147,11 +149,16 @@ export fn refuse_handle_bound_escape(body: Expr, arms: Array[(Pat, Expr)], body_
   // result type declares for the function values it returns, and the caller
   // of such a value passes its own handler (`fn mid() -> (() -> Int with
   // Box[Int]) { handle { () -> mk() } with { .. } }` answers through the
-  // handler around the call). An effect carried that way is not bound here.
-  let returned_rows = array_empty()
-  match env_lookup(env, "__return__") {
-    Some(rt) => hce_result_fn_rows(subst_apply(s, rt), returned_rows),
-    None => ()
+  // handler around the call). An effect carried that way is not bound here
+  // -- but only when the result IS that function type. A closure is not
+  // told which position of a composite result it fills: a row-less slot
+  // beside a `with Ask` one (`-> (() -> Int with Ask, () -> Int)`) took a
+  // closure that kept this handle's evidence (`6`, from the dead handler),
+  // and with both slots declaring the row the lowering gave the row to
+  // neither (`null function or function signature mismatch`).
+  let returned_rows = match env_lookup(env, "__return__") {
+    Some(rt) => hce_result_fn_row(subst_apply(s, rt)),
+    None => array_empty()
   }
   let labels = hce_without(hce_handled_bases(arms), returned_rows)
   if Array::length(labels) > 0 {
@@ -233,35 +240,24 @@ fn hce_message(what: String, label: String, route: String, off: Int) -> String {
   String::concat(edit, String::concat(why, off_marker(off)))
 }
 
-/// The row labels of every function type a result of type `ty` can be.
-fn hce_result_fn_rows(ty: Type, out: Array[String]) -> Unit {
+/// The row labels of `ty` when it is a function type; none otherwise.
+fn hce_result_fn_row(ty: Type) -> Array[String] {
+  let labels: Array[String] = array_empty()
   match ty {
-    CtFn(_, ret, row) => {
-      match row {
-        Some(r) => for raw in String::split(r, ",") {
-          let l = String::trim(raw)
-          if String::length(l) > 0 && !String::starts_with(l, "#") {
-            Array::push(out, l)
-          } else {
-            ()
-          }
-        },
-        None => array_empty()
+    CtForAll(_, _, inner) => hce_result_fn_row(inner),
+    CtFn(_, _, Some(r)) => {
+      for raw in String::split(r, ",") {
+        let l = String::trim(raw)
+        if String::length(l) > 0 && !String::starts_with(l, "#") {
+          Array::push(labels, l)
+        } else {
+          ()
+        }
       }
-      hce_result_fn_rows(ret, out)
+      labels
     },
-    CtForAll(_, _, inner) => hce_result_fn_rows(inner, out),
-    CtArray(inner) => hce_result_fn_rows(inner, out),
-    CtOption(inner) => hce_result_fn_rows(inner, out),
-    CtTuple(items) => for item in items {
-      hce_result_fn_rows(item, out)
-    },
-    CtNamed(_, args) => for arg in args {
-      hce_result_fn_rows(arg, out)
-    },
-    _ => array_empty()
+    _ => labels
   }
-  ()
 }
 
 /// The base of every effect an arm of the handle discharges.
@@ -783,6 +779,16 @@ fn hce_note_call(callee: Expr, args: Array[Expr], off: Int, pos: Int, st: HceWal
         } else {
           noff
         })
+      } else if local == 1 && off >= 0 && Array::length(st.labels) > 0 {
+        // A plain local holding a function (`let f = ask`, an alias of an
+        // alias, a method value): the row the checker inferred for the
+        // callee at this call (#3539).
+        let label = hce_site_label(st, off, name, s)
+        if label != "" {
+          hce_count_perform(st, label, off)
+        } else {
+          ()
+        }
       } else if local == 0 && name != "perform" && Array::length(st.labels) > 0 {
         match env_lookup(env, name) {
           Some(ty) => {
