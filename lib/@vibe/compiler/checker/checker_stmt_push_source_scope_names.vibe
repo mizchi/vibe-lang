@@ -20,6 +20,10 @@ import @vibe/compiler/checker/patterns {
   check_qualified_pattern_refs
 }
 
+import @vibe/compiler/checker/annotations {
+  is_owned_head_source_module, owned_head_shape_refusal
+}
+
 import @vibe/compiler/checker/builtin_sigs {
   lookup_builtin
 }
@@ -81,8 +85,57 @@ import ./checker_stmt_labeled_name_check_expr.vibe {
 
 /// Validate a parsed raw-source API input before any checker or lowering pass
 /// can interpret compiler-only source-boundary metadata as trusted provenance.
+///
+/// #3551 review: that includes the spelling of a shipped region-first owned
+/// head (`struct TaskGroup[rg, e]`), which the checker reads as the compiler's
+/// own declaration. A raw source string is checked with no module path, so the
+/// checker cannot tell where the declaration lives -- but this lane can: one
+/// string, with no import merged into it, is never the module that ships it.
 export fn validate_user_source_stmts(stmts: Array[Stmt]) -> Unit with Exception {
   reject_user_iterator_serialized_boundaries(stmts)
+  match first_owned_head_shape_refusal(stmts) {
+    Some(message) => throw(message),
+    None => ()
+  }
+}
+
+/// #3551 review: the refusal for the first top-level struct in `stmts` spelled
+/// like a shipped region-first owned head (`owned_head_shape_refusal`).
+fn first_owned_head_shape_refusal(stmts: Array[Stmt]) -> Option[String] {
+  let mut found: Option[String] = None
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _, tparams) => match owned_head_shape_refusal(name, tparams) {
+        Some(message) => {
+          found = Some(message)
+          i = Array::length(stmts)
+        },
+        None => {
+          i = i + 1
+        }
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+
+/// #3551 review: a merged closure's door for the same rule. Called on each
+/// source file BEFORE the closure is flattened, while the file's path still
+/// says whether it is the module that ships the region-first heads; the
+/// merged program is checked with no module path, so the checker cannot.
+export fn validate_source_file_owned_heads(path: String, stmts: Array[Stmt]) -> Unit with Exception {
+  if is_owned_head_source_module(path) {
+    ()
+  } else {
+    match first_owned_head_shape_refusal(stmts) {
+      Some(message) => throw(String::concat(message, String::concat(" (in ", String::concat(path, ")")))),
+      None => ()
+    }
+  }
 }
 
 /// The names an aggregate `export { .. }` lists, in source order.

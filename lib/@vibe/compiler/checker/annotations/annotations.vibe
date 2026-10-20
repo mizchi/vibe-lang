@@ -987,33 +987,55 @@ fn owned_head_shipped_shape(name: String, formals: Array[String]) -> Bool {
 /// #3551 review: the module that ships the region-first heads' source
 /// declarations. A path names it by its package-relative tail, whatever root
 /// the package was found under (`lib/`, a `VIBE_LIB` root, `.vibe/store/`).
-fn is_owned_head_source_module(path: String) -> Bool {
+export fn is_owned_head_source_module(path: String) -> Bool {
   let tail = "@vibe/concurrent/experimental/concurrent.vibe"
   path == tail || String::ends_with(path, String::concat("/", tail))
 }
 
-/// #3551 review: refuse a struct spelled like the shipped declaration of a
-/// region-first head (`owned_head_shipped_shape`) in any module but the one
-/// that ships it. `owned_head_slots_elidable` reads that spelling as the
-/// compiler's own declaration and lets a signature leave its region and row
-/// to the call, which is sound only for the compiler's: a program's `struct
-/// TaskGroup[rg, e] { first: rg; second: e }` written bare left both formals
-/// unbound, so `fn f(g: TaskGroup) -> String { g.first }` checked clean and
-/// read an `Int` field as a `String`. A struct of that name with other formals
-/// (`struct Sender[T]`) is the program's own and is held to them.
+/// #3551 review: the refusal for a struct spelled like the shipped declaration
+/// of a region-first head (`owned_head_shipped_shape`) declared outside the
+/// module that ships it, or `None` when `name[formals]` is not that spelling.
+/// `owned_head_slots_elidable` reads that spelling as the compiler's own
+/// declaration and lets a signature leave its region and row to the call,
+/// which is sound only for the compiler's: a program's `struct TaskGroup[rg,
+/// e] { first: rg; second: e }` written bare left both formals unbound, so
+/// `fn f(g: TaskGroup) -> String { g.first }` checked clean and read an `Int`
+/// field as a `String`. A struct of that name with other formals (`struct
+/// Sender[T]`) is the program's own and is held to them.
 ///
-/// `module_path` is the module being checked, or "" on a lane that names no
-/// module (a flattened program, a bare source string), which keeps the shape
-/// rule: every module a build compiles is first checked by a lane that names
-/// it.
-export fn owned_head_shape_decl_error(name: String, formals: Array[String], module_path: String, errors: Array[String]) -> Unit {
-  if String::length(module_path) > 0 && !is_owned_head_source_module(module_path) && owned_head_shipped_shape(name, formals) {
+/// Where the declaration lives is the caller's to say: the checker asks
+/// through `owned_head_shape_decl_error`, and a lane that holds a unit's
+/// statements before they are checked asks here directly -- for a raw source
+/// string, which is never the shipped file, and for each file of a merged
+/// closure, before the merge erases which file declared what.
+export fn owned_head_shape_refusal(name: String, formals: Array[String]) -> Option[String] {
+  if owned_head_shipped_shape(name, formals) {
     let written = array_empty()
     for f in formals {
       Array::push(written, type_param_name(f))
     }
     let shape = String::join(written, ", ")
-    Array::push(errors, "rename this struct or its type parameters `rg` and `e`: `\{name}[\{shape}]` is spelled like `@vibe/concurrent`'s own `\{name}`, whose region and row a call supplies, so a `\{name}` written without them would leave this struct's `rg` and `e` unbound and its fields readable at any type")
+    Some("rename this struct or its type parameters `rg` and `e`: `\{name}[\{shape}]` is spelled like `@vibe/concurrent`'s own `\{name}`, whose region and row a call supplies, so a `\{name}` written without them would leave this struct's `rg` and `e` unbound and its fields readable at any type")
+  } else {
+    None
+  }
+}
+
+/// #3551 review: `owned_head_shape_refusal` for a struct the checker is
+/// declaring, in any module but the shipped one.
+///
+/// `module_path` is the module being checked, or "" on a lane that names no
+/// module. Those lanes vet the declaration before the check instead: a raw
+/// source string is refused outright (`validate_user_source_stmts`), a merged
+/// closure file by file before it is flattened
+/// (`validate_source_file_owned_heads`), and every module a build compiles is
+/// checked by a lane that names it.
+export fn owned_head_shape_decl_error(name: String, formals: Array[String], module_path: String, errors: Array[String]) -> Unit {
+  if String::length(module_path) > 0 && !is_owned_head_source_module(module_path) {
+    match owned_head_shape_refusal(name, formals) {
+      Some(message) => Array::push(errors, message),
+      None => ()
+    }
   } else {
     ()
   }
