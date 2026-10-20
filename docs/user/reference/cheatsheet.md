@@ -3472,13 +3472,17 @@ let g = handle {
 `g()` trapped (`unreachable`) or answered from the dead handler (`6`),
 depending on how the closure was lowered.
 
-When the handled body holds such a closure, three routes out are refused: the
-handle's value, if its type can hold a function (directly, or in a tuple,
-array, `Option`, struct, enum or map); a write into a binding declared outside
-the body whose type can hold one (an assignment, a field write, `Array::push`,
-or any call given that binding); and a `return` whose declared type can hold
-one. The rule does not trace which value takes the route, so a body that calls
-a performing closure and also returns an unrelated pure one is refused too.
+A closure applied in place (`(() -> perform Ask::Get())()`) or bound by `let`
+and only ever called cannot leave, and is not looked at again. One handed
+straight to a function whose result type holds no function (`apply(() -> ..)`)
+can only be stored by that call: a write into a binding declared outside the
+body whose type can hold a function is refused (an assignment, a field write,
+`Array::push`, or any call given that binding). A closure that can go anywhere
+else also refuses a `return` whose declared type can hold a function, and the
+handle's value when its type can hold one (directly, or in a tuple, array,
+`Option`, struct, enum or map -- so an `AsyncIter`). The rule does not trace
+which value takes the route: once such a closure exists, any function value
+leaving through one of them is refused.
 A call that stores its argument in state it captured, or in a module-level
 binding, names no such binding and is not caught. A closure whose effect the
 enclosing function's result type declares (`fn mid() -> (() -> Int with Ask)`)

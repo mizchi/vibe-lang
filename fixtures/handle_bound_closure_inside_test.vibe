@@ -88,12 +88,46 @@ fn thrown_inside() -> Int {
   } with { Exception[String]::Throw(_) => 0 }
 }
 
+// The handle's value holds a function, but every performing closure in the
+// body stays inside: one applied in place (through parentheses), one bound by
+// `let` and only called, one handed straight to a call that returns an
+// `Int`. Measured: `(() -> perform ..)()` beside a handle whose value is an
+// `AsyncIter` was refused by the first version of #3540's check.
+struct Holder {
+  f: () -> Int
+}
+
+fn holder_beside_bound_closures() -> Holder {
+  handle {
+    let h = () -> perform Ask::Get() + 1
+    let n = (() -> perform Ask::Get())() + h() + apply(() -> perform Ask::Get())
+    Holder::{ f: () -> n }
+  } with { Ask::Get() => resume(5) }
+}
+
+fn pair_beside_called_closure() -> (Int, () -> Int) {
+  handle {
+    let h = (x: Int) -> perform Ask::Get() + x
+    let f = () -> 3
+    (h(1), f)
+  } with { Ask::Get() => resume(5) }
+}
+
 test "a handle-bound closure called inside its handle" {
   inspect(called_inside(), "12")
   inspect(called_through_closure(), "60")
   inspect(applied_in_place(), "6")
   inspect(handed_to_a_caller(), "106")
   inspect(suspend_arm(), "84")
+}
+
+test "a function value leaves beside closures that stay inside" {
+  let held = holder_beside_bound_closures()
+  let f = held.f
+  inspect(f(), "116")
+  let (a, g) = pair_beside_called_closure()
+  inspect(a, "6")
+  inspect(g(), "3")
 }
 
 test "a closure that needs nothing from the handle leaves it" {
