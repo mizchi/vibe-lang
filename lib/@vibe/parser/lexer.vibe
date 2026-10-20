@@ -949,7 +949,10 @@ fn needs_synthetic_semicolon(c: Int, nl_before: Bool, prev_tok: Token, tight_pre
       TQuestion => c == '[' || c == '(' || tight_prefix || starts_statement_tok(tok),
       // Inside an impl header no statement can start, so its lines continue
       // it (`impl Tag` / `for Foo`, `impl [T: Tag]` / `Tag for Box[T]`).
-      _ => (c == '[' || c == '(' || tight_prefix || (!impl_header && starts_statement_tok(tok))) && is_expr_ending_tok(prev_tok)
+      // A name right after `where` / `allows` is the clause that word opens
+      // (`contextual_ident_opens_statement` read it as a clause because a
+      // name follows), so the line break between them continues the header.
+      _ => (c == '[' || c == '(' || tight_prefix || (!impl_header && !is_contextual_clause_word(prev_tok) && starts_statement_tok(tok))) && is_expr_ending_tok(prev_tok)
     }
   }
 }
@@ -1029,14 +1032,22 @@ fn is_tight_prefix_op(tok: Token, source: String, len: Int, next: Int) -> Bool {
 /// line after an expression they open a statement like any other name. The
 /// result joins `needs_synthetic_semicolon`'s `tight_prefix` flag, which marks
 /// a line-leading token that opens a statement whatever precedes it.
+/// `where` or `allows`, the words a declaration header's clauses open.
+#zero_alloc
+fn is_contextual_clause_word(tok: Token) -> Bool {
+  match tok {
+    TIdent(n) => n == "where" || n == "allows",
+    _ => false
+  }
+}
+
 #zero_alloc
 fn contextual_ident_opens_statement(tok: Token, source: String, len: Int, next: Int) -> Bool {
   match tok {
     TIdent(n) => if n == "where" || n == "allows" {
-      let mut i = next
-      while i < len && is_ws(String::char_code_at(source, i)) {
-        i = i + 1
-      }
+      // Whitespace and `//` comments between the word and what follows it
+      // are trivia here as everywhere else.
+      let i = skip_ws_with_newline(source, len, next)>>1
       i < len && !is_alpha(String::char_code_at(source, i)) && String::char_code_at(source, i) != '{'
     } else {
       false
