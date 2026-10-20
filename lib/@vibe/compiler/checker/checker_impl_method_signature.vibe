@@ -788,10 +788,9 @@ fn applied_index(scope: ExpectedScope, name: String) -> Int {
   found
 }
 
-/// Is `name` a type this module can name? Anything else -- typically a type
-/// the trait's own module declares but this one does not import -- resolved
-/// to a rigid placeholder that would compare by spelling, so it is left open
-/// rather than refusing an impl over a name this check cannot see.
+/// Is `name` a type this module can name? Anything else is typically a type
+/// the trait's own module declares and this one does not import; the
+/// refusal then says to import it (`unselected_type_names`).
 fn known_type_name(scope: ExpectedScope, name: String) -> Bool {
   match find_typedef(scope.defs, name) {
     Some(_) => true,
@@ -799,6 +798,66 @@ fn known_type_name(scope: ExpectedScope, name: String) -> Bool {
       Some(_) => true,
       None => false
     }
+  }
+}
+
+/// The nominal names in `ty` this module can neither declare nor import
+/// (`known_type_name`), less `Self` and the rigid formals.
+fn unselected_type_names_into(scope: ExpectedScope, ty: Type, out: Array[String]) -> Unit {
+  match ty {
+    CtNamed(name, args) => {
+      if name == "Self" || string_list_has(scope.impl_names, name) || string_list_has(scope.method_rigid, name) || known_type_name(scope, name) || string_list_has(out, name) {
+        ()
+      } else {
+        Array::push(out, name)
+      }
+      for a in args {
+        unselected_type_names_into(scope, a, out)
+      }
+      ()
+    },
+    CtArray(elem) => unselected_type_names_into(scope, elem, out),
+    CtOption(elem) => unselected_type_names_into(scope, elem, out),
+    CtTuple(items) => {
+      for item in items {
+        unselected_type_names_into(scope, item, out)
+      }
+      ()
+    },
+    CtFn(params, ret, _) => {
+      for p in params {
+        unselected_type_names_into(scope, p, out)
+      }
+      unselected_type_names_into(scope, ret, out)
+    },
+    CtRecord(fields) => {
+      for field in fields {
+        let (_, fty) = field
+        unselected_type_names_into(scope, fty, out)
+      }
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// The second half of a refusal whose expected type names a type this module
+/// does not import: where that type comes from, and what to do when it
+/// cannot be imported.
+fn unselected_type_hint(scope: ExpectedScope, want: Type, trait_disp: String) -> String {
+  let names: Array[String] = []
+  unselected_type_names_into(scope, want, names)
+  if Array::length(names) == 0 {
+    ""
+  } else {
+    let shown = String::join(["`", String::join(names, "`, `"), "`"], "")
+    String::join([
+      "; ",
+      shown,
+      " is named by trait `",
+      trait_disp,
+      "`'s signature but not in scope here: import it to write it, or, if it is not exported, leave the position unannotated so the method is generic over it"
+    ], "")
   }
 }
 
@@ -829,12 +888,18 @@ fn fill_expected(scope: ExpectedScope, ty: Type) -> Type {
         } else {
           CtUnknown
         }
-      } else if known_type_name(scope, name) {
+      } else {
+        // A name this module does not declare or import stays the rigid
+        // nominal type it is: the trait's module means its own `Hidden`,
+        // and an impl written for `Int` there is handed one (#3551 review;
+        // measured: `make(x: Int)` under `make(Hidden) -> Self` read the
+        // `Hidden`'s address as the `Int`). Nothing this module writes
+        // resolves to that spelling -- a local type of the same name is
+        // refused at the import -- so only a position the impl leaves
+        // generic meets it.
         CtNamed(name, for a in args {
           fill_expected(scope, a)
         })
-      } else {
-        CtUnknown
       }
     },
     CtArray(elem) => CtArray(fill_expected(scope, elem)),
@@ -1532,6 +1597,7 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
                             type_to_string(want),
                             "`",
                             declares,
+                            unselected_type_hint(scope, want, trait_disp),
                             origin_marker(origin, trait_head, owner, trait_disp, method, "param", pname)
                           ], ""))
                         }
@@ -1558,6 +1624,7 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
                           type_to_string(want_ret),
                           "`",
                           declares,
+                          unselected_type_hint(scope, want_ret, trait_disp),
                           origin_marker(origin, trait_head, owner, trait_disp, method, "ret", "")
                         ], ""))
                       }

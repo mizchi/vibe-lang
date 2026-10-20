@@ -673,7 +673,9 @@ fn engine_foreign_type_declaration_collisions(item: ImportItem, raw_path: String
 /// #3026, the trait half: importing a trait retains the dependency's impls of
 /// it (`prepend_dependency_trait_nodes`). An impl whose target names a type the
 /// importer declares locally would let the LOCAL type satisfy the dependency's
-/// impl -- and dispatch into code compiled for the dependency's layout.
+/// impl -- and dispatch into code compiled for the dependency's layout. The
+/// same holds for a type the trait's method signatures name: an impl in this
+/// module is held to them.
 fn engine_foreign_trait_impl_collisions(dep_env: TypeEnv, mappings: Array[(String, String)], raw_path: String, resolved: String, dep_types: Array[String], local_types: Array[String], unresolved: Array[String], reported: Array[String]) -> Unit {
   if Array::length(local_types) > 0 && Array::length(mappings) > 0 && !engine_is_vpkg_types_stub_path(resolved) {
     let mut cur = dep_env
@@ -710,7 +712,21 @@ fn engine_foreign_trait_impl_collisions(dep_env: TypeEnv, mappings: Array[(Strin
         EnvMutCell(_, _, rest) => {
           cur = rest
         },
-        EnvTraitDef(_, _, _, _, rest, _, _) => {
+        // An imported trait's method signatures name the dependency's types
+        // as well. An impl here is checked against them, so a local type of
+        // the same spelling would let `impl Tr for P { make(x: Hidden) .. }`
+        // take the LOCAL `Hidden` where the dependency's callers pass theirs
+        // (#3551 review; measured: a field of one read through the other).
+        EnvTraitDef(name, _, _, methods, rest, params, method_gens) => {
+          match engine_trait_projection_mapping(mappings, name) {
+            // Every such name is the dependency's (it never sees this
+            // module), whichever module declared it; the formals are not
+            // among them.
+            Some(_) => for n in engine_trait_method_reference_names(methods, params, method_gens) {
+              engine_report_foreign_type_name(n, name, raw_path, local_types, unresolved, reported)
+            },
+            None => ()
+          }
           cur = rest
         },
         EnvTypeDefs(_, _, rest) => {
