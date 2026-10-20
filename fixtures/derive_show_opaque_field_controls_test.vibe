@@ -2,7 +2,14 @@
 // (`StringMap`, `ArrayBuilder`, ...) is refused at the derive, because the
 // derived renderer printed the handle's address. These are the shapes that
 // stay accepted, each with the text it renders. The refusal side is
-// `fixtures/typecheck/err_derive_show_opaque_*.vibe`.
+// `fixtures/typecheck/err_derive_show_opaque_*.vibe`. A Hash-only derive
+// generates the same renderer, so it is refused the same way
+// (`fixtures/typecheck/err_derive_hash_opaque_*.vibe`); its controls are at
+// the end.
+
+import @vibe/core {
+  get_by, set_by
+}
 
 // A handwritten renderer over a handle is trusted: it reads what it shows.
 struct Counts {
@@ -74,4 +81,62 @@ test "nested derived types render by content" {
   inspect("\{o}", "Outer { i: Inner { a: 1, s: x }, xs: [Inner { a: 1, s: x }, Inner { a: 2, s: y }], o: Some(Holder { v: Inner { a: 1, s: x } }) }")
   inspect("\{Shape::Many([i])}", "Many([Inner { a: 1, s: x }])")
   inspect("\{Shape::One(i)}", "One(Inner { a: 1, s: x })")
+}
+
+// A Hash-only type with both `hash_key` and `to_string` written: no derived
+// renderer or key reads the handle, and both written ones are used.
+struct Bag {
+  id: Int
+  m: Map[String, Int]
+} derive (Hash)
+
+fn Bag::hash_key(b: Bag) -> String {
+  "bag:\{b.id}"
+}
+
+fn Bag::to_string(b: Bag) -> String {
+  "Bag(\{b.id}, \{Map::size(b.m)})"
+}
+
+// A Hash-only generic renders its argument at the instantiation, so one with
+// no handle there is accepted inside a derived type.
+struct Cell[T] {
+  v: T
+} derive (Hash)
+
+fn Cell::hash_key[T](c: Cell[T]) -> String {
+  "cell"
+}
+
+struct Wrap {
+  c: Cell[Int]
+  n: Int
+} derive (Show)
+
+// A plain derived key, with no handle anywhere, keys and renders as before.
+struct Pt {
+  x: Int
+  y: Int
+} derive (Hash)
+
+test "a Hash-only type with written key and renderer is accepted" {
+  let b = Bag::{ id: 4, m: Map::from_pairs([("a", 1)]) }
+  inspect("\{b}", "Bag(4, 1)")
+  let m = set_by(Map::new(), b, "four")
+  let found = get_by(m, Bag::{ id: 4, m: Map::new() })
+  inspect("\{found}", "Some(four)")
+}
+
+test "a Hash-only generic without a handle renders by content" {
+  let w = Wrap::{ c: Cell::{ v: 7 }, n: 1 }
+  inspect("\{w}", "Wrap { c: Cell { v: 7 }, n: 1 }")
+}
+
+test "a derived Hash key without a handle still keys" {
+  let m = set_by(Map::new(), Pt::{ x: 1, y: 2 }, 12)
+  let hit = get_by(m, Pt::{ x: 1, y: 2 })
+  let miss = get_by(m, Pt::{ x: 2, y: 1 })
+  inspect("\{hit} \{miss}", "Some(12) None")
+  let p = Pt::{ x: 1, y: 2 }
+  inspect("\{p}", "Pt { x: 1, y: 2 }")
 }
