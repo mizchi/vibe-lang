@@ -132,6 +132,39 @@ fn alias_called_inside(fail: Bool) -> (Int, () -> Int) {
   } with { Exception[String]::Throw(_) => (0, () -> 0) }
 }
 
+// A method that performs what the handle answers: one returning a value
+// (`get`), and one whose returned closure carries the row in its type
+// (`rowed`), so the caller of that closure supplies the handler.
+struct Factory {
+  k: Int
+}
+
+fn Factory::get(self: Factory) -> Int with Ask {
+  perform Ask::Get() + self.k
+}
+
+fn Factory::rowed(self: Factory) -> (() -> Int with Ask) with Ask {
+  let base = perform Ask::Get()
+  () -> perform Ask::Get() + self.k + base
+}
+
+fn drive(f: () -> Int with Ask) -> Int {
+  handle {
+    f()
+  } with { Ask::Get() => resume(7) }
+}
+
+fn method_results() -> (Int, Int) {
+  let fac = Factory::{ k: 1 }
+  let n = handle {
+    fac.get()
+  } with { Ask::Get() => resume(5) }
+  let g = handle {
+    fac.rowed()
+  } with { Ask::Get() => resume(100) }
+  (n, drive(g))
+}
+
 test "a handle-bound closure called inside its handle" {
   inspect(called_inside(), "12")
   inspect(called_through_closure(), "60")
@@ -163,4 +196,5 @@ test "a closure that needs nothing from the handle leaves it" {
   let (z, h) = alias_called_inside(true)
   inspect(z, "0")
   inspect(h(), "0")
+  inspect(method_results(), "(6, 108)")
 }

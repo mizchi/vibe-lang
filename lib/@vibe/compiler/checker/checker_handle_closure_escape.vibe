@@ -22,7 +22,9 @@
 //     handle-bound local;
 //   - the result of a call to a function whose row names a non-exception
 //     effect and whose result type spells a function without that row (the
-//     closure it returns inherited the row of that call).
+//     closure it returns inherited the row of that call) -- called by name,
+//     through a local alias, or as a method (`factory.mk()`), whose type is
+//     the one the checker recorded at the call.
 //
 // An effect the enclosing declaration's result type gives the function
 // value it returns (#1451) is not bound here when the result is that
@@ -773,68 +775,38 @@ fn hce_note_call(callee: Expr, args: Array[Expr], off: Int, pos: Int, st: HceWal
   match callee {
     EIdent(name, noff) => {
       let local = hce_lookup(st, name)
+      let at = if off >= 0 {
+        off
+      } else {
+        noff
+      }
       if local == 2 {
-        hce_count_perform(st, hce_local_label(st, name), if off >= 0 {
-          off
-        } else {
-          noff
-        })
+        hce_count_perform(st, hce_local_label(st, name), at)
       } else if local == 1 && off >= 0 && Array::length(st.labels) > 0 {
         // A plain local holding a function (`let f = ask`, an alias of an
-        // alias, a method value): the row the checker inferred for the
+        // alias, a method value): the type the checker inferred for the
         // callee at this call (#3539).
-        let label = hce_site_label(st, off, name, s)
-        if label != "" {
-          hce_count_perform(st, label, off)
-        } else {
-          ()
+        match hce_site_type(st, off, name, s) {
+          Some(ty) => hce_note_callee(st, ty, name, at, pos, defs, s),
+          None => ()
         }
       } else if local == 0 && name != "perform" && Array::length(st.labels) > 0 {
         match env_lookup(env, name) {
-          Some(ty) => {
-            let label = hce_row_label(ty, st.labels)
-            if label != "" {
-              hce_count_perform(st, label, if off >= 0 {
-                off
-              } else {
-                noff
-              })
-              // Not for an exception row: a function that may throw and
-              // returns a value whose type holds a function somewhere (a
-              // table of callbacks, compiler state) is common, and the
-              // throw is its own -- refusing it refused seven handles in
-              // the compiler itself, none of which return a closure that
-              // throws.
-              match hce_fn_result(ty) {
-                Some(ret) => if !is_exception_effect_name(label) && hce_holds_fn_without(subst_apply(s, ret), label, defs, array_empty()) {
-                  Array::push(st.producers, (String::concat("the closure `", String::concat(name, "` returns")), if off >= 0 {
-                    off
-                  } else {
-                    noff
-                  }, label, pos))
-                } else {
-                  ()
-                },
-                None => ()
-              }
-            } else {
-              ()
-            }
-          },
+          Some(ty) => hce_note_callee(st, ty, name, at, pos, defs, s),
           None => ()
         }
       } else {
         ()
       }
     },
-    // A method call (`foo.ask()`) or a call through any other expression:
-    // the row of the callee the checker resolved there (#3539).
+    // A method call (`foo.mk()`, `foo.me().mk()`) or a call through any
+    // other expression: the type of the callee the checker resolved there
+    // (#3539).
     _ => if off >= 0 && Array::length(st.labels) > 0 {
-      let label = hce_site_label(st, off, call_callee_spelling(callee), s)
-      if label != "" {
-        hce_count_perform(st, label, off)
-      } else {
-        ()
+      let spelling = call_callee_spelling(callee)
+      match hce_site_type(st, off, spelling, s) {
+        Some(ty) => hce_note_callee(st, ty, spelling, off, pos, defs, s),
+        None => ()
       }
     } else {
       ()
@@ -864,16 +836,56 @@ fn hce_note_call(callee: Expr, args: Array[Expr], off: Int, pos: Int, st: HceWal
   }
 }
 
-/// The first counted label the callee recorded for the call at `off` names,
-/// among the calls the handled body recorded.
-fn hce_site_label(st: HceWalk, off: Int, spelling: String, s: Subst) -> String {
-  let mut found = ""
+/// A call at `at` whose callee, spelled `spelling`, has type `ty`: it
+/// performs the first counted effect the callee's row names, and its result
+/// is handle-bound when it can hold a function without that row -- the
+/// closure it returns inherited the row of this call. However the callee is
+/// reached (a name, a local alias, a method), the same type decides.
+fn hce_note_callee(st: HceWalk, ty: Type, spelling: String, at: Int, pos: Int, defs: Array[TypeDef], s: Subst) -> Unit {
+  let label = hce_row_label(ty, st.labels)
+  if label != "" {
+    hce_count_perform(st, label, at)
+    // Not for an exception row: a function that may throw and returns a
+    // value whose type holds a function somewhere (a table of callbacks,
+    // compiler state) is common, and the throw is its own -- refusing it
+    // refused seven handles in the compiler itself, none of which return a
+    // closure that throws.
+    match hce_fn_result(ty) {
+      Some(ret) => if !is_exception_effect_name(label) && hce_holds_fn_without(subst_apply(s, ret), label, defs, array_empty()) {
+        let what = if spelling == "" {
+          "the closure this call returns"
+        } else {
+          String::concat("the closure `", String::concat(spelling, "` returns"))
+        }
+        Array::push(st.producers, (what, at, label, pos))
+      } else {
+        ()
+      },
+      None => ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// The callee type the checker recorded for the call at `off` among the
+/// calls the handled body recorded: the first whose row names a counted
+/// label.
+fn hce_site_type(st: HceWalk, off: Int, spelling: String, s: Subst) -> Option[Type] {
+  let mut found: Option[Type] = None
+  let mut hit = false
   let mut i = st.sites_from
   let n = Array::length(call_callee_sites)
-  while found == "" && i < n {
+  while !hit && i < n {
     let (soff, sp, ty) = Array::get(call_callee_sites, i)
     if soff == off && sp == spelling {
-      found = hce_row_label(subst_apply(s, ty), st.labels)
+      let t = subst_apply(s, ty)
+      if hce_row_label(t, st.labels) != "" {
+        found = Some(t)
+        hit = true
+      } else {
+        ()
+      }
     } else {
       ()
     }
