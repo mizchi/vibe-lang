@@ -1,0 +1,89 @@
+// #3538: an impl method of a trait method generic over its OWN type
+// parameter (`write: [X](Self, X) -> X`) must itself be generic over it; a
+// caller through the trait chooses `X`. These are the forms that are, and
+// they answer through a bound at more than one `X`: the binder the trait
+// attaches (written `x: X`, or left unannotated), the method's own binder
+// under another spelling, a bodyless impl's fallback with its own binder, and
+// a generic impl's method with its own binder.
+
+trait W {
+  write: [X](Self, X) -> X
+}
+
+// `x: X` names the binder the trait's signature attaches.
+struct Named {
+  k: Int
+}
+
+impl W for Named {
+  write(self, x: X) -> X {
+    x
+  }
+}
+
+// An unannotated parameter takes the trait's type.
+struct Bare {
+  k: Int
+}
+
+impl W for Bare {
+  write(self, x) -> X {
+    x
+  }
+}
+
+// The method's own binder, spelled differently.
+struct Own {
+  k: Int
+}
+
+impl W for Own {
+  write[Y](self, x: Y) -> Y {
+    x
+  }
+}
+
+// A bodyless impl dispatches to a fallback generic over its own binder,
+// declared before the impl.
+struct Fall {
+  k: Int
+}
+
+fn Fall::write[Y](self: Fall, x: Y) -> Y {
+  x
+}
+
+impl W for Fall
+
+// A generic impl's method: its binders are the impl's formals, so it
+// declares one of its own.
+struct GBox[T] {
+  v: T
+}
+
+impl [T] W for GBox[T] {
+  write[Y](self, x: Y) -> Y {
+    x
+  }
+}
+
+fn via_string[T: W](t: T, s: String) -> String {
+  T::write(t, s)
+}
+
+fn via_int[T: W](t: T, n: Int) -> Int {
+  T::write(t, n)
+}
+
+test "a method generic over the trait method's binder answers at every type" {
+  inspect(via_string(Named::{ k: 1 }, "hello"), "hello")
+  inspect(via_int(Named::{ k: 1 }, 41), "41")
+  inspect(via_string(Bare::{ k: 1 }, "bare"), "bare")
+  inspect(via_int(Bare::{ k: 1 }, 7), "7")
+  inspect(via_string(Own::{ k: 1 }, "own"), "own")
+  inspect(via_int(Own::{ k: 1 }, 9), "9")
+  inspect(via_string(Fall::{ k: 1 }, "fall"), "fall")
+  inspect(via_int(Fall::{ k: 1 }, 3), "3")
+  inspect(via_string(GBox::{ v: 5 }, "gbox"), "gbox")
+  inspect(via_int(GBox::{ v: "five" }, 11), "11")
+}

@@ -128,6 +128,87 @@ test "a method-level generic is accepted" {
   assert(check_source_ok(src))
 }
 
+/// A trait method generic over its OWN parameter lets a caller through the
+/// trait choose it, so an impl method written for one type is refused: with
+/// `X = String` the string reached `x + self.k`.
+test "an impl method not generic over the trait method's own generic is refused" {
+  let src = "trait W { write: [X](Self, X) -> X }\nstruct P { k: Int }\nimpl W for P { write(self, x: Int) -> Int { x + self.k } }\nfn main() -> Int { 0 }\n"
+  inspect(check_source_error_message(src), "change parameter `x` of `P::write` to `X`: trait `W` declares `write(Self, X) -> X` generic over `X`, and a caller through the trait chooses `X`, so the method receives every type there, not only `Int` [@impl-method=W|P|write|param|x]")
+}
+
+/// The diagnostic is located on the parameter in the impl block.
+test "the method-generic diagnostic is located on the parameter" {
+  let src = "trait W { write: [X](Self, X) -> X }\nstruct P { k: Int }\nimpl W for P { write(self, x: Int) -> Int { x + self.k } }\nfn main() -> Int { 0 }\n"
+  assert(check_source_located_err_contains(src, "line 3:28-29: change parameter `x` of `P::write` to `X`"))
+}
+
+/// A return type fixed where the trait returns its method's own generic is
+/// refused the same way.
+test "an impl method returning one type for the method's own generic is refused" {
+  let src = "trait W { write: [X](Self, X) -> X }\nstruct P { k: Int }\nimpl W for P { write(self, x: X) -> Int { 1 } }\nfn main() -> Int { 0 }\n"
+  inspect(check_source_error_message(src), "change the return type of `P::write` to `X`: trait `W` declares `write(Self, X) -> X` generic over `X`, and a caller through the trait chooses `X`, so the method must return every type there, not only `Int` [@impl-method=W|P|write|ret|]")
+}
+
+/// A body that fixes the binder (`x + 1` on `x: X`) is refused too, and the
+/// edit is in the body, not the signature.
+test "an impl method whose body fixes the method's own generic is refused" {
+  let src = "trait W { write: [X](Self, X) -> X }\nstruct P { k: Int }\nimpl W for P { write(self, x: X) -> X { x + 1 } }\nfn main() -> Int { 0 }\n"
+  inspect(check_source_error_message(src), "keep parameter `x` of `P::write` generic over `X`, which its body uses as `Int`: trait `W` declares `write(Self, X) -> X` generic over `X`, and a caller through the trait chooses `X`, so the method receives every type there, not only `Int` [@impl-method=W|P|write|param|x]")
+}
+
+/// One binder of the method spent on two of the trait's generics ties them
+/// together, and the edit gives the second its own.
+test "an impl method sharing one binder between two method generics is refused" {
+  let src = "trait W { two: [X, Z](Self, X, Z) -> X }\nstruct P { k: Int }\nimpl W for P { two[Y](self, x: Y, z: Y) -> Y { x } }\nfn main() -> Int { 0 }\n"
+  inspect(check_source_error_message(src), "declare another type parameter on `P::two` (`U`) and take `z: U` instead of the one it shares with `X`: trait `W` declares `two(Self, X, Z) -> X` generic over `X, Z`, and a caller through the trait chooses `X, Z`, so the method receives every type there, not only the type chosen for `X` [@impl-method=W|P|two|param|z]")
+}
+
+/// A fallback of a bodyless impl is held to the method's own generic too.
+test "a fallback not generic over the trait method's own generic is refused" {
+  let src = "trait W { write: [X](Self, X) -> X }\nstruct P { k: Int }\nimpl W for P\nfn helper() -> Int { 3 }\nfn P::write(self: P, x: Int) -> Int { x }\nfn main() -> Int { helper() }\n"
+  inspect(check_source_error_message(src), "change parameter `x` of `P::write` to `X`: trait `W` declares `write(Self, X) -> X` generic over `X`, and a caller through the trait chooses `X`, so the method receives every type there, not only `Int` (`impl W for P` has no body for `write`, so the trait dispatches to this function) [@fn=P::write]")
+}
+
+/// An impl method generic over the binder, under the trait's spelling, left
+/// unannotated, or under its own spelling, is accepted, and so is a fallback
+/// with its own binder.
+test "an impl method generic over the trait method's own generic is accepted" {
+  assert(check_source_ok("trait W { write: [X](Self, X) -> X }\nstruct P { k: Int }\nimpl W for P { write(self, x: X) -> X { x } }\nfn main() -> Int { 0 }\n"))
+  assert(check_source_ok("trait W { write: [X](Self, X) -> X }\nstruct P { k: Int }\nimpl W for P { write(self, x) -> X { x } }\nfn main() -> Int { 0 }\n"))
+  assert(check_source_ok("trait W { write: [X](Self, X) -> X }\nstruct P { k: Int }\nimpl W for P { write[Y](self, x: Y) -> Y { x } }\nfn main() -> Int { 0 }\n"))
+  assert(check_source_ok("trait W { write: [X](Self, X) -> X }\nstruct P { k: Int }\nimpl W for P\nfn helper() -> Int { 3 }\nfn P::write[Y](self: P, x: Y) -> Y { x }\nfn main() -> Int { helper() }\n"))
+}
+
+/// In a generic impl the impl's formal is fixed by the receiver, so writing
+/// it where the trait method's own generic belongs is refused: the method
+/// needs a binder of its own.
+test "an impl formal written for the trait method's own generic is refused" {
+  let src = "trait W { write: [X](Self, X) -> X }\nstruct Box[T] { v: T }\nimpl [T] W for Box[T] { write(self, x: T) -> T { x } }\nfn main() -> Int { 0 }\n"
+  inspect(check_source_error_message(src), "declare `Box::write` generic over a type parameter of its own (`[Y]`) and take `x: Y` instead of the impl's `T`, which the receiver fixes: trait `W` declares `write(Self, X) -> X` generic over `X`, and a caller through the trait chooses `X`, so the method receives every type there, not only the impl's `T` [@impl-method=W|Box|write|param|x]")
+}
+
+/// ... also when the trait spells its method generic like the impl's formal:
+/// the two are still different types.
+test "a method generic spelled like the impl's formal is not the impl's" {
+  let src = "trait W { write: [T](Self, T) -> T }\nstruct Box[T] { v: T }\nimpl [T] W for Box[T] { write(self, x: T) -> T { self.v } }\nfn main() -> Int { 0 }\n"
+  inspect(check_source_error_message(src), "declare `Box::write` generic over a type parameter of its own (`[Y]`) and take `x: Y` instead of the impl's `T`, which the receiver fixes: trait `W` declares `write(Self, T) -> T` generic over `T`, and a caller through the trait chooses `T`, so the method receives every type there, not only the impl's `T` [@impl-method=W|Box|write|param|x]")
+}
+
+/// A generic impl's method has no binder of the trait's spelling, so the edit
+/// declares one.
+test "a generic impl's method written for one type declares the binder first" {
+  let src = "trait W { write: [X](Self, X) -> X }\nstruct Box[T] { v: T }\nimpl [T] W for Box[T] { write(self, x: Int) -> Int { x } }\nfn main() -> Int { 0 }\n"
+  inspect(check_source_error_message(src), "declare `Box::write` generic over `X` and change parameter `x` of `Box::write` to `X`: trait `W` declares `write(Self, X) -> X` generic over `X`, and a caller through the trait chooses `X`, so the method receives every type there, not only `Int` [@impl-method=W|Box|write|param|x]")
+}
+
+/// A generic impl's method or fallback generic over a binder of its own is
+/// accepted.
+test "a generic impl's method generic over its own binder is accepted" {
+  assert(check_source_ok("trait W { write: [X](Self, X) -> X }\nstruct Box[T] { v: T }\nimpl [T] W for Box[T] { write[Y](self, x: Y) -> Y { x } }\nfn main() -> Int { 0 }\n"))
+  assert(check_source_ok("trait W { write: [T](Self, T) -> T }\nstruct Box[T] { v: T }\nimpl [T] W for Box[T] { write[Y](self, x: Y) -> Y { x } }\nfn main() -> Int { 0 }\n"))
+  assert(check_source_ok("trait W { write: [X](Self, X) -> X }\nstruct Box[T] { v: T }\nimpl [T] W for Box[T]\nfn helper() -> Int { 1 }\nfn Box::write[U, Y](self: Box[U], x: Y) -> Y { x }\nfn main() -> Int { helper() }\n"))
+}
+
 /// A supertrait's method may be implemented under the subtrait.
 test "an inherited method is declared" {
   let src = "trait Base { base(Self) -> Int }\ntrait Child: Base { child(Self) -> Int }\nstruct P { x: Int }\nimpl Child for P {\n  base(self) -> Int { self.x }\n  child(self) -> Int { self.x }\n}\nfn main() -> Int { 0 }\n"
