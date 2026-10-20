@@ -422,6 +422,10 @@ ur_refused fixtures/err_impl_overlap_vpkg_sibling_refused.vibe 'both define `Int
 # #3551: a binding in another trait's namespace inside an impl's run no longer
 # ends it; both modules' inherited `Int::get` built `from-a from-a`.
 ur_refused fixtures/err_impl_overlap_inherited_after_trait_binding_refused.vibe 'both define `Int::get`' 'remove one of these: `impl Child for Int`' linear 'fixtures/modules/impl_overlap_inherited_b.vibe: line 7:1'
+# #3551 review: a bodyless impl's method declared behind another statement is
+# still the impl's; both modules' `Int::name` read as plain definitions and
+# built `from-a from-a`.
+ur_refused fixtures/err_impl_overlap_fallback_after_helper_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_fallback_b.vibe: line 8:1'
 # #3551 review: no unit is exempt by its path. An ordinary module imported
 # from the path the loader writes a contract's types module to was skipped, so
 # this built `from-types-path from-types-path` (`from-a from-a` with the

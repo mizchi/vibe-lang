@@ -268,6 +268,77 @@ test "a supertrait binding inside an impl's run does not end it" {
   inspect(link_verdict([("tr.vibe", child_src), ("ta.vibe", fallback_a)]), content = "ok")
 }
 
+/// #3551 review: a bodyless impl (or a block omitting a method) dispatches to
+/// the unit's `P::m` wherever it is declared, as the checker pairs it. With a
+/// statement between the impl and that definition, the run ended before it, so
+/// no impl bound `Int::name`; both modules' definitions read as plain and were
+/// never compared (measured end to end: `from-a from-a`, and `from-b from-b`
+/// with the imports swapped).
+test "a fallback away from its bodyless impl is the impl's method" {
+  let fallback_a = "impl Name for Int\n\nfn helper_a() -> Int {\n  1\n}\n\nfn Int::name(x: Int) -> String {\n  \"from-a\"\n}\n"
+  let fallback_b = "impl Name for Int\n\nfn helper_b() -> Int {\n  2\n}\n\nfn Int::name(x: Int) -> String {\n  \"from-b\"\n}\n"
+  let refusal = "tb.vibe: line 1:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one"
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", fallback_a),
+    ("tb.vibe", fallback_b)
+  ]), content = refusal)
+  // Against a written block, and against a plain definition, in either order.
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("tb.vibe", impl_b),
+    ("ta.vibe", fallback_a)
+  ]), content = "ta.vibe: line 1:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in tb.vibe: line 3:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  let plain = "export fn Int::name(x: Int) -> String {\n  \"plain\"\n}\n"
+  let plain_refusal = "tp.vibe: line 1:8: remove one of these: `a definition` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one"
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", fallback_a),
+    ("tp.vibe", plain)
+  ]), content = plain_refusal)
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("tp.vibe", plain),
+    ("ta.vibe", fallback_a)
+  ]), content = plain_refusal)
+  // One such impl in the program is no overlap.
+  inspect(link_verdict([("tr.vibe", trait_src), ("ta.vibe", fallback_a)]), content = "ok")
+}
+
+/// The fallback may precede the impl, and the block may write the trait's
+/// other methods: the method the block omits is still the unit's `P::m`.
+test "a fallback before an impl whose block omits the method is the impl's" {
+  let two_src = "export trait Two {\n  name(Self) -> String\n  size(Self) -> Int\n}\n"
+  let before = "fn Int::name(x: Int) -> String {\n  \"from-a\"\n}\n\nimpl Two for Int {\n  size(x: Int) -> Int { 1 }\n}\n"
+  // Another module's bodyless `impl Name for Int` with a distant fallback:
+  // neither `Int::name` sits in an impl's run.
+  let other = "impl Name for Int\n\nlet gap = 1\n\nfn Int::name(x: Int) -> String {\n  \"from-b\"\n}\n"
+  inspect(link_verdict([
+    ("two.vibe", two_src),
+    ("tr.vibe", trait_src),
+    ("ta.vibe", before),
+    ("tb.vibe", other)
+  ]), content = "tb.vibe: line 1:1: remove one of these: `impl Name for Int` here and `impl Two for Int` in ta.vibe: line 5:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  // A definition the trait does not dispatch is no fallback: still plain, so
+  // another module's derive gives way to it.
+  let decl = "export struct P {\n  x: Int\n} derive(Show)\n"
+  let unrelated = "fn P::to_string(p: P) -> String {\n  \"custom\"\n}\n\nimpl Tag for P\n\nlet gap = 1\n\nfn P::tag(p: P) -> Int {\n  1\n}\n"
+  inspect(link_verdict([
+    ("tag.vibe", tag_src),
+    ("p.vibe", decl),
+    ("q.vibe", unrelated)
+  ]), content = "ok")
+}
+
+/// A derive gives way to a plain definition only: a bodyless `impl Show for
+/// P` whose `P::to_string` sits behind another statement is an impl, the
+/// overlap one module may not hold beside `derive (Show)` either.
+test "a bodyless impl's distant fallback does not override a derive" {
+  let decl = "export struct P {\n  x: Int\n} derive(Show)\n"
+  let bodyless = "impl Show for P\n\nlet gap = 1\n\nfn P::to_string(p: P) -> String {\n  \"custom\"\n}\n"
+  inspect(link_verdict([("p.vibe", decl), ("q.vibe", bodyless)]), content = "q.vibe: line 1:1: remove one of these: `impl Show for P` here and `derive (Show) on P` in p.vibe: line 1:8 both define `P::to_string` -- the derive gives way to the impl, so the deriving module, and every caller of the method, would silently run the impl; one module may not hold both either")
+}
+
 /// #3551 review: the grouped merge links each source group on its own and
 /// joins the texts afterwards, so a check per group never saw two impls in
 /// different groups together, and the joined program kept whichever came
