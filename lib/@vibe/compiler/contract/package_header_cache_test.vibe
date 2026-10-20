@@ -1,0 +1,56 @@
+import @vibe/compiler/contract {
+  extract_package_deps, extract_package_version, extract_require_pins
+}
+
+test "header memo does not expose mutable pin or dependency arrays" allows Exception {
+  let source = "version = 1.2.3\nrequire @example/dep 2.0.0\ndeps = {\n  @example/dep : 2.0.0\n}\nlet answer = 17\n"
+  let (pins, text) = extract_require_pins(source)
+  assert(Array::get(pins, 0) == ("@example/dep", "2.0.0", ""))
+  Array::set(pins, 0, ("changed", "9.0.0", ""))
+  Array::push(pins, ("extra", "1.0.0", ""))
+  let (again, text_again) = extract_require_pins(source)
+  assert(again == [("@example/dep", "2.0.0", "")])
+  assert(text_again == text)
+  assert(String::length(text) == String::length(source))
+  assert(String::ends_with(text, "let answer = 17\n"))
+  let deps = extract_package_deps(source)
+  Array::truncate(deps, 0)
+  assert(extract_package_deps(source) == [("@example/dep", "2.0.0")])
+}
+
+test "header memo keys the full source and handles eviction and errors" allows Exception {
+  let first = "version = 1.2.3\nlet answer = 17\n"
+  let (_, original) = extract_require_pins(first)
+  let mut i = 0
+  while i < 12 {
+    let version = "1.0.\{i}"
+    let source = "version = \{version}\nlet answer = \{i}\n"
+    assert(extract_package_version(source) == version)
+    let (_, text) = extract_require_pins(source)
+    assert(String::ends_with(text, "let answer = \{i}\n"))
+    i = i + 1
+  }
+  let (_, revisited) = extract_require_pins(first)
+  assert(revisited == original)
+  let changed = "version = 1.2.3\nlet answer = 91\n"
+  let (_, changed_text) = extract_require_pins(changed)
+  assert(String::ends_with(changed_text, "let answer = 91\n"))
+  let error = handle {
+    extract_package_version("version = 1.0.0\nversion = 2.0.0\n")
+    "accepted"
+  } with { Exception::Throw(message) => message }
+  assert(String::starts_with(error, "duplicate version directive:"))
+  assert(extract_package_version(first) == "1.2.3")
+}
+
+test "no-header shortcut stops at ordinary code and returns fresh pin arrays" allows Exception {
+  let source = " \t// leading comment\r\nfn answer() -> Int { 7 }\nversion = invalid\n"
+  assert(extract_package_version(source) == "")
+  let (pins, text) = extract_require_pins(source)
+  assert(text == source)
+  Array::push(pins, ("changed", "9.0.0", ""))
+  let (again, untouched) = extract_require_pins(source)
+  assert(Array::length(again) == 0)
+  assert(untouched == source)
+  assert(extract_package_version(" \t// leading comment\r\nversion = 1.2.3\nfn answer() -> Int { 7 }\n") == "1.2.3")
+}

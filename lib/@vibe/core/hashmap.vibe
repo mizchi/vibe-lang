@@ -120,19 +120,22 @@ fn ctrl_tag(h: Int) -> Int {
   128|(b&127)
 }
 
-/// Index of the occupied slot holding `k`, or -1. Probing stops at the first
-/// empty slot; tombstones are skipped (deleted slots must not break chains).
+/// Occupied slot index on a hit; `-empty_index-1` on a miss. The bounded
+/// full-table fallback is `-capacity-1`. Get can reuse an empty slot's None
+/// without a fresh box; other callers only test the sign. Tombstones never
+/// end a probe chain.
 fn find_index[K, V](m: MutMap[K, V], k: K) -> Int {
   let cap = Bytes::length(m.ctrl)
   let h = (m.hash_fn)(k)
   let tag = ctrl_tag(h)
   let mut idx = home_of(h, cap)
-  let mut result = -1
+  let mut result = 0 - cap - 1
   let mut scanning = true
   let mut steps = 0
   while scanning {
     let c = Bytes::get(m.ctrl, idx)
     if c == 0 {
+      result = 0 - idx - 1
       scanning = false
     } else {
       // An occupied slot with a different fingerprint cannot hold `k`, so the
@@ -253,6 +256,28 @@ fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V, overwrite: Bool) -> Unit {
   }
 }
 
+// Rehash moves entries already known to be distinct into a fresh empty
+// table. Reuse their immutable Some boxes instead of boxing both payloads
+// again; occupied control bytes still determine the probe chain.
+fn place_rehashed_slot[K, V](m: MutMap[K, V], key: K, key_slot: Option[K], value_slot: Option[V]) -> Unit {
+  let cap = Bytes::length(m.ctrl)
+  let hash = (m.hash_fn)(key)
+  let mut idx = home_of(hash, cap)
+  let mut steps = 0
+  while Bytes::get(m.ctrl, idx) != 0 {
+    idx = idx + 1
+    if idx >= cap {
+      idx = 0
+    } else ()
+    steps = steps + 1
+    assert(steps < cap)
+  }
+  Array::set(m.keys, idx, key_slot)
+  Array::set(m.vals, idx, value_slot)
+  Bytes::set(m.ctrl, idx, ctrl_tag(hash))
+  m.size = m.size + 1
+}
+
 fn rehash[K, V](m: MutMap[K, V], new_cap: Int) -> Unit {
   let cap = if new_cap < 8 {
     8
@@ -271,10 +296,12 @@ fn rehash[K, V](m: MutMap[K, V], new_cap: Int) -> Unit {
   let mut i = 0
   while i < n {
     if Bytes::get(old_ctrl, i) >= 128 {
-      match Array::get(old_keys, i) {
+      let key_slot = Array::get(old_keys, i)
+      let value_slot = Array::get(old_vals, i)
+      match key_slot {
         Some(k) =>
-        match Array::get(old_vals, i) {
-          Some(v) => insert_raw(m, k, v, true),
+        match value_slot {
+          Some(_) => place_rehashed_slot(m, k, key_slot, value_slot),
           None => ()
         },
         None => ()
@@ -363,7 +390,18 @@ export fn MutMap::insert_if_absent[K, V](m: MutMap[K, V], k: K, v: V) -> Bool {
 export fn MutMap::get[K, V](m: MutMap[K, V], k: K) -> Option[V] {
   let idx = find_index(m, k)
   if idx < 0 {
-    None
+    let empty = 0 - idx - 1
+    if empty < Array::length(m.vals) {
+      let slot = Array::get(m.vals, empty)
+      // Keep the old None result if a caller violated the control/value
+      // invariant; well-formed empty slots already contain immutable None.
+      match slot {
+        None => slot,
+        Some(_) => None
+      }
+    } else {
+      None
+    }
   } else {
     Array::get(m.vals, idx)
   }

@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — callback slot refusals.
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, expr_children, is_runtime_scheduled_effect
+  Expr, Stmt, TypeExpr, expr_children, expr_children_into, is_runtime_scheduled_effect
 }
 
 import @vibe/core {
@@ -24,6 +24,9 @@ import @vibe/compiler/lowering/effects/queries {
 /// call type mismatch`). These are those values, refused with the edit that
 /// gives them the row -- each edit was measured to compile and answer.
 let edp_slot_refusal_msgs: Array[String] = []
+
+// Read-only fallback for nodes without arguments; the census never mutates it.
+let edp_no_slot_args: Array[Expr] = []
 
 /// The row each refusal in `edp_slot_refusal_msgs` was made for, by index.
 /// A call through the parameter passes a dict only for an effect the pass
@@ -155,9 +158,7 @@ fn edp_expr_mentions(e: Expr, name: String) -> Bool {
       },
       _ => ()
     }
-    for child in expr_children(cur) {
-      Array::push(stack, child)
-    }
+    expr_children_into(cur, stack)
   }
   found
 }
@@ -323,16 +324,16 @@ export fn edp_expr_passes_value_to_slot(e: Expr, slot_callees: MutSet[String]) -
         ECall(EIdent(cn, _), args, _, _) => if MutSet::has(slot_callees, cn) {
           args
         } else {
-          array_empty()
+          edp_no_slot_args
         },
         // Codex on #3467: a method-style call (`runner.run(h)`) to the one
         // function spelled `T::run` that takes a row-typed slot.
         ECall(EDot(_, m, _, _), args, _, _) => if edp_unique_method_in(slot_callees, m) != "" {
           args
         } else {
-          array_empty()
+          edp_no_slot_args
         },
-        _ => array_empty()
+        _ => edp_no_slot_args
       }
       for a0 in slot_args {
         // A labeled argument (`run(f = h)`) passes its value the same way
@@ -355,9 +356,7 @@ export fn edp_expr_passes_value_to_slot(e: Expr, slot_callees: MutSet[String]) -
           _ => ()
         }
       }
-      for child in expr_children(cur) {
-        Array::push(stack, child)
-      }
+      expr_children_into(cur, stack)
     }
     found
   }
