@@ -23,3 +23,16 @@ test "the partial let and complete matches are accepted" {
   assert(check_source_ok("fn b(x: Bool) -> Int {\n  match x {\n    true | false => 1\n  }\n}\nfn main() -> Int { b(false) }"))
   assert(check_source_ok("fn b(x: Bool) -> Int {\n  match x {\n    _ => 1\n  }\n}\nfn main() -> Int { b(false) }"))
 }
+
+/// #3551 review: the predicate that binds a single-arm match to the temporary
+/// reads the arm's constructor NAME, so a qualified `Option::Some` /
+/// `Option::None` reaches it only because the pattern parser drops an
+/// `Option::` qualifier (it keeps any other owner, #3422). These rows pin that
+/// a qualified arm is refused like a bare one, and that a program enum's own
+/// `Some` variant is judged against that enum, not against `Option`.
+test "a qualified single-arm Option match is checked" {
+  assert(check_source_err_contains("fn f(o: Option[Int]) -> Int {\n  match o {\n    Option::Some(v) => v\n  }\n}\nfn main() -> Int { f(None) }", "variant `None` of Option is not handled"))
+  assert(check_source_err_contains("fn f(o: Option[Int]) -> Int {\n  match o {\n    Option::None => 0\n  }\n}\nfn main() -> Int { f(None) }", "variant `Some` of Option is not handled"))
+  assert(check_source_err_contains("fn f(o: Option[Int]) -> Int {\n  match o {\n    Option::Some(1) | Option::Some(2) => 1\n  }\n}\nfn main() -> Int { f(None) }", "variant `None` of Option is not handled"))
+  assert(check_source_err_contains("enum Maybe {\n  Some(Int);\n  Nada\n}\nfn f(m: Maybe) -> Int {\n  match m {\n    Maybe::Some(v) => v\n  }\n}\nfn main() -> Int { f(Nada) }", "variant `Nada` of enum Maybe is not handled"))
+}
