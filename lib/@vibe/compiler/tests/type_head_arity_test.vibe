@@ -126,3 +126,62 @@ test "applied heads in declarations are accepted" {
   let src = "enum K[T, F[_]] {\n  Hold(T, F[Int])\n}\n\nstruct S[T, F[_]] {\n  xs: Array[T];\n  k: K[T, Option];\n  f: F[T];\n  later: Later[T]\n}\n\ntype Ys[T] = Array[Later[T]]\n\ntrait Source[T] {\n  items(Self) -> Array[T]\n}\n\nstruct Later[T] {\n  v: T\n}\n"
   inspect(collect_all_diagnostics(src), "[]")
 }
+
+/// #3551 review: a compiler-owned head has no declaration to count against,
+/// so an applied one went uncounted -- `ArrayBuilder[String, Int]` accepted
+/// an `ArrayBuilder[Int]` and froze it into an `Array[String]`.
+test "a compiler-owned head applied to too many arguments is refused" {
+  let src = "fn take(b: ArrayBuilder[String, Int]) -> Array[String] {\n  ArrayBuilder::freeze(b)\n}\n"
+  inspect(collect_all_diagnostics(src), "[write `ArrayBuilder[T]`: `ArrayBuilder` takes 1 type argument, but 2 were given in parameter `b`]")
+}
+
+/// A compiler-owned head applied to too few arguments.
+test "a compiler-owned head applied to too few arguments is refused" {
+  let src = "fn f(m: MapBuilder[Int]) -> Int {\n  0\n}\n"
+  inspect(collect_all_diagnostics(src), "[write `MapBuilder[T, U]`: `MapBuilder` takes 2 type arguments, but 1 was given in parameter `m`]")
+}
+
+/// `Future` takes one type argument and has no region slot.
+test "a Future applied to two arguments is refused" {
+  let src = "fn f(x: Future[Int, String]) -> Int {\n  0\n}\n"
+  inspect(collect_all_diagnostics(src), "[write `Future[T]`: `Future` takes 1 type argument, but 2 were given in parameter `x`]")
+}
+
+/// A compiler-owned head that takes no arguments.
+test "a compiler-owned head that takes none is refused when applied" {
+  let src = "fn f(b: StringBuilder[Int]) -> Int {\n  0\n}\n"
+  inspect(collect_all_diagnostics(src), "[write `StringBuilder` without type arguments: `StringBuilder` takes no type arguments, but 1 was given in parameter `b`]")
+}
+
+/// A region-first head may leave out its region and row together, never one
+/// of them alone.
+test "a region-first head applied to a count between its spellings is refused" {
+  let src = "fn f(h: TaskHandle[Int, String]) -> Int {\n  0\n}\n"
+  inspect(collect_all_diagnostics(src), "[write `TaskHandle[T]`, or `TaskHandle[rg, e, T]` with its region and row written out: `TaskHandle` takes 1 type argument besides its region and row, but 2 were given in parameter `h`]")
+}
+
+/// `TaskGroup` holds no payload past its region and row.
+test "a TaskGroup applied to one argument is refused" {
+  let src = "fn f(g: TaskGroup[Int]) -> Int {\n  0\n}\n"
+  inspect(collect_all_diagnostics(src), "[write `TaskGroup`, or `TaskGroup[rg, e]` with its region and row written out: `TaskGroup` takes no type arguments besides its region and row, but 1 was given in parameter `g`]")
+}
+
+/// A region-last head takes its payload and then, optionally, its region.
+test "a region-last head applied to too many arguments is refused" {
+  let src = "fn f(l: MutList[Int, String, Bool]) -> Int {\n  0\n}\n"
+  inspect(collect_all_diagnostics(src), "[write `MutList[T]`, or `MutList[T, r]` with its region written out: `MutList` takes 1 type argument besides its region, but 3 were given in parameter `l`]")
+}
+
+/// `MutBytes` holds no payload: bare, or with its region.
+test "a MutBytes applied to two arguments is refused" {
+  let src = "fn f(b: MutBytes[Int, String]) -> Int {\n  0\n}\n"
+  inspect(collect_all_diagnostics(src), "[write `MutBytes`, or `MutBytes[r]` with its region written out: `MutBytes` takes no type arguments besides its region, but 2 were given in parameter `b`]")
+}
+
+/// Every legal applied spelling of the compiler-owned heads: the complete
+/// one, and for a head with region (and row) slots the one that leaves
+/// exactly those to the call.
+test "the legal applied spellings of compiler-owned heads are accepted" {
+  let src = "fn f(a: Future[Int], b: Task[Int], c: ArrayBuilder[Int], d: FrozenArray[Int], e: FixedArray[Int], m: MapBuilder[String, Int], t: Attempt[Int, String]) -> Int {\n  0\n}\n\nfn g(h: TaskHandle[Int], s: Sender[Int], r: Receiver[Int], l: MutList[Int], g: TaskGroup, b: MutBytes) -> Int {\n  0\n}\n\nfn full[rg, e](h: TaskHandle[rg, e, Int], s: Sender[rg, e, Int], r: Receiver[rg, e, Int], g: TaskGroup[rg, e]) -> Int {\n  0\n}\n\nfn region_last(l: MutList[Int, r], b: MutBytes[r]) -> Int with r {\n  0\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}

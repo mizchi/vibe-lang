@@ -1028,6 +1028,55 @@ fn declared_arity_error(name: String, given: Int, want: Int, where_label: String
   "write `\{name}[\{type_argument_placeholders(want)}]`: `\{name}` takes \{plural_type_arguments(want)}, but \{given_text} given in \{where_label}"
 }
 
+/// A compiler-owned head applied to a count it does not take (#3551 review).
+/// `payload` is how many arguments it takes with its region (and row) slots
+/// left to the call, `full` how many it takes with them written out; a head
+/// without such slots has `payload == full`.
+fn owned_head_arity_error(name: String, given: Int, payload: Int, full: Int, where_label: String) -> String {
+  let given_text = if given == 1 {
+    "1 was"
+  } else {
+    "\{Int::to_string(given)} were"
+  }
+  let short = if payload == 0 {
+    name
+  } else {
+    "\{name}[\{type_argument_placeholders(payload)}]"
+  }
+  let takes = if payload == 0 {
+    "no type arguments"
+  } else {
+    plural_type_arguments(payload)
+  }
+  if full == payload {
+    if payload == 0 {
+      "write `\{name}` without type arguments: `\{name}` takes no type arguments, but \{given_text} given in \{where_label}"
+    } else {
+      declared_arity_error(name, given, payload, where_label)
+    }
+  } else {
+    let region_first = is_region_first_owned_head(name)
+    let slots = if region_first {
+      "region and row"
+    } else {
+      "region"
+    }
+    let payload_text = type_argument_placeholders(payload)
+    let full_args = if region_first {
+      if payload == 0 {
+        "rg, e"
+      } else {
+        "rg, e, \{payload_text}"
+      }
+    } else if payload == 0 {
+      "r"
+    } else {
+      "\{payload_text}, r"
+    }
+    "write `\{short}`, or `\{name}[\{full_args}]` with its \{slots} written out: `\{name}` takes \{takes} besides its \{slots}, but \{given_text} given in \{where_label}"
+  }
+}
+
 fn shadow_type_constructor_arity(shadow: Array[String], name: String) -> Int {
   let mut i = 0
   let mut found = 0 - 1
@@ -1200,8 +1249,31 @@ fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
       // that reuses the name (`owned_head_slots_elidable`).
       let declared = declared_generic_head_arity(name, defs)
       let region_elidable = owned_head_slots_elidable(name, defs)
-      if declared >= 0 && !region_elidable && structural_head_arity(name) < 0 && Array::length(args) != declared && !string_array_has(shadow, name) && shadow_type_constructor_arity(shadow, name) < 0 {
+      let head_is_formal = string_array_has(shadow, name) || shadow_type_constructor_arity(shadow, name) >= 0
+      if declared >= 0 && !region_elidable && structural_head_arity(name) < 0 && Array::length(args) != declared && !head_is_formal {
         Array::push(errors, declared_arity_error(name, Array::length(args), declared, where_label))
+      } else {
+        ()
+      }
+      // #3551 review: the compiler's own heads are counted too. With no
+      // `TypeDef` behind them they were never counted at all, so
+      // `ArrayBuilder[String, Int]` stayed an unresolved application that
+      // accepted an `ArrayBuilder[Int]` and froze it into an `Array[String]`.
+      // The complete spelling is always legal, and a head with region (and
+      // row) slots may also leave exactly those to the call
+      // (`TaskHandle[Int]`, `MutList[Int]`) -- no other count is.
+      if region_elidable && !head_is_formal {
+        let given = Array::length(args)
+        let full = match compiler_owned_type_arity(name) {
+          Some(n) => n,
+          None => 0 - 1
+        }
+        let payload = bare_owned_head_payload_arity(name)
+        if full >= 0 && given != full && given != payload {
+          Array::push(errors, owned_head_arity_error(name, given, payload, full, where_label))
+        } else {
+          ()
+        }
       } else {
         ()
       }
