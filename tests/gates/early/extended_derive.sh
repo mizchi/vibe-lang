@@ -546,6 +546,21 @@ ur_refused fixtures/err_handle_arm_throw_inner_catch_refused.vibe 'an exception 
 ur_refused fixtures/err_handle_arm_effect_cycle_refused.vibe 'handler arms of the effects `Ask` and `Log` each perform another of them' 'move the `perform` out of one of those arms'
 ur_refused fixtures/err_handle_arm_throw_inner_catch_refused.vibe 'an exception handler between the `perform` and this `handle` would catch it' 'resume with a value and `throw` after this `handle`' gc
 ur_refused fixtures/err_handle_arm_effect_cycle_refused.vibe 'handler arms of the effects `Ask` and `Log` each perform another of them' 'move the `perform` out of one of those arms' gc
+# #3547: an arm's `return` (not a `resume` capture) sent this handle to the
+# lowering that cannot take a call inside a `for`; the refusal names the
+# `return` and leads with the edit.
+ur_refused fixtures/err_handle_arm_return_for_call_refused.vibe 'a handler arm for `Ask` here leaves the function with `return`' 'write `perform Ask::..` in the `handle` body itself'
+ur_refused fixtures/err_handle_arm_return_for_call_refused.vibe 'a handler arm for `Ask` here leaves the function with `return`' 'write `perform Ask::..` in the `handle` body itself' gc
+ur_refused fixtures/err_handle_arm_return_outer_break_refused.vibe 'leaves a loop outside it, which the rewritten body cannot do' 'write `perform Ask::..` in the `handle` body itself'
+ur_refused fixtures/err_handle_arm_return_outer_break_refused.vibe 'leaves a loop outside it, which the rewritten body cannot do' 'write `perform Ask::..` in the `handle` body itself' gc
+for ur_case in err_handle_arm_return_for_call_refused err_handle_arm_return_outer_break_refused; do
+  for ur_lane in linear gc; do
+    if grep -qF 'captures `resume` as a value' "$urdir/${ur_case}_$ur_lane.wasm.diag"; then
+      echo "[compiler-gate] FAIL: $ur_case.vibe on $ur_lane blames a \`resume\` capture the program does not have (#3547)" >&2
+      exit 1
+    fi
+  done
+done
 # #3042: an `Ordering` of another shape that reached a module only through an
 # imported signature. The module's checker never saw the declaration, so the
 # merged program is refused instead of stopping with an internal error.

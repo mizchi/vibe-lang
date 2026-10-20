@@ -662,7 +662,7 @@ fn scps_referenced_elsewhere(stmts: Array[Stmt], at: Int, name: String) -> Bool 
 // failure (a value-referencing arm can never compile on the replay path,
 // so silence is not an option).
 
-fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String]), scope: Array[(String, String)]) -> Option[Expr] {
+fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, why: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String]), scope: Array[(String, String)]) -> Option[Expr] {
   let errs = scps_st_errs(st)
   // effect identity: every arm must be `Eff::Op` for one shared DECLARED
   // effect, and Error (non-resumable) arms may not appear.
@@ -695,7 +695,7 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, ctx: 
   }
   let (eff_declared, decl_ops) = scps_effect_decl_ops(ctx, eff)
   if !shape_ok || idp_arms_discharge_error(arms) || !eff_declared {
-    Array::push(errs, "a handler arm captures `resume` as a value, but this handle has an Error arm (Error is non-resumable), mixes effects, or handles a non-declared effect -- not supported by the suspend lowering")
+    Array::push(errs, String::concat(scps_driver_lead(why, eff), "this handle has an Error arm (Error is non-resumable), mixes effects, or handles a non-declared effect -- not supported by the suspend lowering"))
     None
   } else {
     let ops_qnames = array_empty_str()
@@ -745,7 +745,7 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, ctx: 
       } else {
         ""
       }
-      let mut scps_msg = String::concat(String::concat(async_lead, culprit_lead), "a handler arm captures `resume` as a value, but the handle body calls something this suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a function whose declared row has a row variable)")
+      let mut scps_msg = String::concat(String::concat(String::concat(async_lead, culprit_lead), scps_driver_lead(why, eff)), "the handle body calls something this suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a function whose declared row has a row variable)")
       scps_msg = String::concat(scps_msg, culprit_clause)
       scps_msg = String::concat(scps_msg, " -- only `perform`, pure builtins, constructors, provably effect-free functions, and functions whose concrete row carries the handled effect may be called in the handled body")
       scps_msg = String::concat(scps_msg, culprit_marker)
@@ -759,7 +759,7 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, ctx: 
       let body2 = scps_elim_array_for(body, array_empty_str(), array_empty_str(), site, scps_anf_ctr(), ctx)
       let (split_ok, split_body) = scps_split_tail(body2, sctx, ctx, st)
       if !split_ok {
-        Array::push(errs, "a handler arm captures `resume` as a value, but a perform of the handled effect (or a call to a function that performs it) is not directly on the handle body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload)")
+        Array::push(errs, String::concat(scps_driver_lead(why, eff), "a perform of the handled effect (or a call to a function that performs it) is not directly on the handle body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload)"))
         None
       } else {
         scps_ensure_effect_runtime(eff, ctx, st)
@@ -1547,7 +1547,9 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
       }
       // #3064: an arm's `return` must leave the function even when the arm
       // would otherwise run as an evidence closure.
-      if !triggered && scps_arm_return_needs_driver(rbody, rarms, ctx, scope) {
+      // #3547: a refusal names what sent the handle here, so remember it.
+      let return_escape = !triggered && scps_arm_return_needs_driver(rbody, rarms, ctx, scope)
+      if return_escape {
         triggered = true
       } else {
         ()
@@ -1561,7 +1563,12 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
         ()
       }
       let emark = Array::length(scps_st_errs(st))
-      let lowered = scps_rewrite_triggered_handle(rbody, rarms, triggered, ctx, st, scope)
+      let why = if return_escape {
+        "return"
+      } else {
+        "resume"
+      }
+      let lowered = scps_rewrite_triggered_handle(rbody, rarms, triggered, why, ctx, st, scope)
       if throw_escape && Array::length(scps_st_errs(st)) > emark {
         // The driver cannot take this handle; its refusal would blame a
         // `resume` capture the program does not have. Name the real conflict.
@@ -1590,7 +1597,7 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
 
 /// The lowering of one `handle` after its body and arms were rewritten:
 /// through the suspend driver when `triggered`, unchanged otherwise.
-fn scps_rewrite_triggered_handle(rbody: Expr, rarms: Array[(Pat, Expr)], triggered: Bool, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String]), scope: Array[(String, String)]) -> Expr {
+fn scps_rewrite_triggered_handle(rbody: Expr, rarms: Array[(Pat, Expr)], triggered: Bool, why: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String]), scope: Array[(String, String)]) -> Expr {
   if triggered {
     // #2962 (Codex P0 on #2985): a sibling arm that captures `resume`
     // sends the WHOLE handle through the driver below, where an arm's
@@ -1640,7 +1647,11 @@ fn scps_rewrite_triggered_handle(rbody: Expr, rarms: Array[(Pat, Expr)], trigger
       // for branch`) after a clean `vibe check`. Refused with the edit
       // until the record-and-transfer rewrite `return` gets exists for
       // loop transfers too.
-      Array::push(scps_st_errs(st), "a `break` / `continue` inside this `handle` leaves a loop outside it, but a handler arm captures `resume` as a value, so the handle runs as a closure the transfer cannot leave -- set a flag inside the handle and `break` after it, or `return` from the function instead")
+      Array::push(scps_st_errs(st), if why == "return" {
+        String::concat(scps_driver_lead(why, scps_arms_effect_name(rarms)), "a `break` / `continue` inside this `handle` leaves a loop outside it, which the rewritten body cannot do -- or set a flag inside the handle and `break` after it")
+      } else {
+        "a `break` / `continue` inside this `handle` leaves a loop outside it, but a handler arm captures `resume` as a value, so the handle runs as a closure the transfer cannot leave -- set a flag inside the handle and `break` after it, or `return` from the function instead"
+      })
       EHandle(rbody, rarms)
     } else if scps_body_has_return(rbody) || scps_body_arms_have_return(sarms) {
       let hsite = scps_next_site(st)
@@ -1663,17 +1674,21 @@ fn scps_rewrite_triggered_handle(rbody: Expr, rarms: Array[(Pat, Expr)], trigger
         }, hsite, flag, slot))
       }
       if scps_body_has_return(captured) || scps_body_arms_have_return(sarms_ret) {
-        Array::push(scps_st_errs(st), scps_return_in_split_msg("a handler arm captures `resume` as a value, so this handle's body and its arms"))
+        Array::push(scps_st_errs(st), scps_return_in_split_msg(if why == "return" {
+          "a handler arm leaves the function with `return` while the handle body reaches the effect through a call, so this handle's body and its arms"
+        } else {
+          "a handler arm captures `resume` as a value, so this handle's body and its arms"
+        }))
         EHandle(rbody, rarms)
       } else {
-        let inner = match scps_transform_handle(captured, sarms_ret, ik, ctx, st, scope) {
+        let inner = match scps_transform_handle(captured, sarms_ret, ik, why, ctx, st, scope) {
           Some(t) => t,
           None => EHandle(captured, sarms_ret)
         }
         ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ELet(hv, inner, EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), EIdent(hv, -1)), -1), -1), -1)
       }
     } else {
-      match scps_transform_handle(rbody, sarms, ik, ctx, st, scope) {
+      match scps_transform_handle(rbody, sarms, ik, why, ctx, st, scope) {
         Some(t) => t,
         None => EHandle(rbody, sarms)
       }
@@ -2030,6 +2045,44 @@ fn scps_name_referenced(stmts: Array[Stmt], nm: String) -> Bool {
     i = i + 1
   }
   hit
+}
+
+/// #3547: how a refusal from the handle's driver lowering begins -- with
+/// what sent the handle there. `why` is "resume" when an arm captures
+/// `resume` as a value (the historic wording, which already names the
+/// arm's own construct) and "return" when an arm leaves the function with
+/// `return` while the body reaches the effect only through a call; that
+/// one used to borrow the `resume` wording for a program that captures
+/// nothing, so it now leads with the edits that avoid the driver: a direct
+/// `perform` in the body runs the arm where the `handle` is.
+fn scps_driver_lead(why: String, eff: String) -> String {
+  if why == "return" {
+    String::concat(String::concat(String::concat("write `perform ", eff), String::concat("::..` in the `handle` body itself instead of calling a function that performs it, or `resume` with a value and `return` after the `handle` -- a handler arm for `", eff)), "` here leaves the function with `return`, and since the body reaches the effect through a call, the body is rewritten into steps so that arm can run where the `handle` is, but ")
+  } else {
+    "a handler arm captures `resume` as a value, but "
+  }
+}
+
+/// The effect a handle's arms name, for a message (the first `Eff::Op`).
+fn scps_arms_effect_name(arms: Array[(Pat, Expr)]) -> String {
+  let mut eff = ""
+  for a in arms {
+    let (p, _) = a
+    match p {
+      PCtor(q, _) => if eff == "" {
+        let ci = String::index_of(q, "::")
+        eff = if ci > 0 {
+          String::substring(q, 0, ci)
+        } else {
+          q
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  eff
 }
 
 fn scps_throw_escape_msg(arms: Array[(Pat, Expr)]) -> String {

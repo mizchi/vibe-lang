@@ -1269,7 +1269,29 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
             }
           }
         } else {
-          (false, e)
+          // #3547: a non-suspending assignment is an ordinary statement on
+          // the spine; only its continuation suspends. This arm used to
+          // answer (false, e) here, so `i = 1; ask()` on a mutable bound
+          // OUTSIDE the split root (a handle body's enclosing `let mut`,
+          // which cellification never rewrites into `Array::set`) was
+          // refused while `ask() + i` compiled. A target captured by the
+          // continuation closures is boxed by codegen like any other
+          // captured `let mut`, so later writes and arm reads share it.
+          let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+          (bok, EAssign(x, v, bexpr, target_off))
+        },
+        // #3547: likewise a compound assignment whose right side does not
+        // suspend. A suspending right side keeps the generic compound path.
+        EAssignOp(x, op, v, b, target_off) => if !scps_contains_susp(v, sctx) {
+          let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+          (bok, EAssignOp(x, op, v, bexpr, target_off))
+        } else {
+          let (aok, abn, abv, e2) = scps_anf_compound(e, sctx, e, site)
+          if aok {
+            scps_split_tail(scps_anf_wrap(abn, abv, e2), sctx, ctx, st)
+          } else {
+            (false, e)
+          }
         },
         ELetMut(x, v, b, off) => if scps_contains_susp(v, sctx) {
           // #1536: block- or selection-valued initializer -- move the
