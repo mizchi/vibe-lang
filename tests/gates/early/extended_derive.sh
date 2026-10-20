@@ -426,6 +426,14 @@ ur_refused fixtures/err_impl_overlap_inherited_after_trait_binding_refused.vibe 
 # still the impl's; both modules' `Int::name` read as plain definitions and
 # built `from-a from-a`.
 ur_refused fixtures/err_impl_overlap_fallback_after_helper_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_fallback_b.vibe: line 8:1'
+# #3551 review: `impl [T] Name for Box[T]` and `impl Name for Box[Int]` in two
+# modules bind differently encoded method names, so only comparing names let
+# both through and both modules printed `from-int`. The heads are compared as
+# the checker compares them in one file. The green controls (disjoint targets,
+# a generic impl in one module) ride the unit lane:
+# fixtures/impl_overlap_{disjoint_targets,generic_single}_test.vibe.
+ur_refused fixtures/err_impl_overlap_generic_cross_module_refused.vibe 'both implement `Name` for the same types' 'remove one of these, or narrow one so their targets no longer overlap: `impl Name for Box[Int]`' linear 'fixtures/modules/impl_overlap_box_int.vibe: line 6:1'
+ur_refused fixtures/err_impl_overlap_generic_cross_module_refused.vibe 'both implement `Name` for the same types' 'remove one of these, or narrow one so their targets no longer overlap' gc
 # #3551 review: no unit is exempt by its path. An ordinary module imported
 # from the path the loader writes a contract's types module to was skipped, so
 # this built `from-types-path from-types-path` (`from-a from-a` with the

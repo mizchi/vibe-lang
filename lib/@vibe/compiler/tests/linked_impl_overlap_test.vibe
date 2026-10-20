@@ -391,3 +391,91 @@ test "the grouped merge refuses an overlap between groups cached by separate cal
   } with { Exception::Throw(msg) => msg }
   inspect(verdict, content = "tb.vibe: line 3:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
 }
+
+let box_src = "export trait Name {\n  name(Self) -> String\n}\n\nexport struct Box[T] {\n  v: T\n}\n"
+
+let impl_box_generic = "impl [T] Name for Box[T] {\n  name(x: Box[T]) -> String { \"generic\" }\n}\n"
+
+let impl_box_int = "impl Name for Box[Int] {\n  name(x: Box[Int]) -> String { \"int\" }\n}\n"
+
+/// #3551 review: `impl [T] Name for Box[T]` and `impl Name for Box[Int]` bind
+/// differently encoded method names, so comparing names let both through, and
+/// both modules' `Box[Int]` calls ran one of them (measured: `from-int
+/// from-int`). The instance sets are compared, as the checker compares them
+/// inside one file, in either order.
+test "a generic impl and a specialized impl in two modules are refused" {
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("ga.vibe", impl_box_generic),
+    ("gb.vibe", impl_box_int)
+  ]), content = "gb.vibe: line 1:1: remove one of these, or narrow one so their targets no longer overlap: `impl Name for Box[Int]` here and `impl [T] Name for Box[T]` in ga.vibe: line 1:1 both implement `Name` for the same types -- a linked program dispatches each such type to only one of them, so a caller in either module would silently run the other module's impl")
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("gb.vibe", impl_box_int),
+    ("ga.vibe", impl_box_generic)
+  ]), content = "ga.vibe: line 1:1: remove one of these, or narrow one so their targets no longer overlap: `impl [T] Name for Box[T]` here and `impl Name for Box[Int]` in gb.vibe: line 1:1 both implement `Name` for the same types -- a linked program dispatches each such type to only one of them, so a caller in either module would silently run the other module's impl")
+}
+
+/// Every spelling the checker resolves to one instance set: formals named
+/// apart (measured: `from-generic` or `from-generic-u` by import order), a
+/// type alias, an implicit-parameter target, and a derive's impl.
+test "overlapping impl targets spelled apart are refused" {
+  let renamed = "impl [U] Name for Box[U] {\n  name(x: Box[U]) -> String { \"generic-u\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("ga.vibe", impl_box_generic),
+    ("gu.vibe", renamed)
+  ]), content = "gu.vibe: line 1:1: remove one of these, or narrow one so their targets no longer overlap: `impl [U] Name for Box[U]` here and `impl [T] Name for Box[T]` in ga.vibe: line 1:1 both implement `Name` for the same types -- a linked program dispatches each such type to only one of them, so a caller in either module would silently run the other module's impl")
+  let alias = "type IB = Box[Int]\n\nimpl Name for IB {\n  name(x: IB) -> String { \"alias\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("ga.vibe", impl_box_generic),
+    ("gi.vibe", alias)
+  ]), content = "gi.vibe: line 3:1: remove one of these, or narrow one so their targets no longer overlap: `impl Name for IB` here and `impl [T] Name for Box[T]` in ga.vibe: line 1:1 both implement `Name` for the same types -- a linked program dispatches each such type to only one of them, so a caller in either module would silently run the other module's impl")
+  let implicit = "impl [T] Name for Box {\n  name(x: Box[T]) -> String { \"implicit\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("gm.vibe", implicit),
+    ("gb.vibe", impl_box_int)
+  ]), content = "gb.vibe: line 1:1: remove one of these, or narrow one so their targets no longer overlap: `impl Name for Box[Int]` here and `impl [T] Name for Box` in gm.vibe: line 1:1 both implement `Name` for the same types -- a linked program dispatches each such type to only one of them, so a caller in either module would silently run the other module's impl")
+  let derived = "export struct Bx[T] {\n  v: T\n} derive(Show)\n"
+  let shown = "impl Show for Bx[Int] {\n  to_string(x: Bx[Int]) -> String { \"custom\" }\n}\n"
+  inspect(link_verdict([("p.vibe", derived), ("q.vibe", shown)]), content = "q.vibe: line 1:1: remove one of these, or narrow one so their targets no longer overlap: `impl Show for Bx[Int]` here and `derive (Show) on Bx` in p.vibe: line 1:8 both implement `Show` for the same types -- a linked program dispatches each such type to only one of them, so a caller in either module would silently run the other module's impl")
+}
+
+/// Targets whose instance sets are disjoint, a generic impl in one module
+/// only, and impls of different traits are not overlaps; neither are two
+/// units that each declare their own trait of one name, which the checker
+/// keeps apart as two instance scopes.
+test "disjoint impl targets across modules are accepted" {
+  let impl_box_string = "impl Name for Box[String] {\n  name(x: Box[String]) -> String { \"string\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("gb.vibe", impl_box_int),
+    ("gs.vibe", impl_box_string)
+  ]), content = "ok")
+  let user = "export fn use_it() -> String {\n  Name::name(Box::{ v: 1 })\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("ga.vibe", impl_box_generic),
+    ("gc.vibe", user)
+  ]), content = "ok")
+  let pair = "export struct Pair[A, B] {\n  a: A;\n  b: B\n}\n"
+  let same = "impl [T] Name for Pair[T, T] {\n  name(x: Pair[T, T]) -> String { \"same\" }\n}\n"
+  let mixed = "impl Name for Pair[Int, String] {\n  name(x: Pair[Int, String]) -> String { \"mixed\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("pr.vibe", pair),
+    ("ps.vibe", same),
+    ("pm.vibe", mixed)
+  ]), content = "ok")
+  let label = "export trait Label {\n  label(Self) -> String\n}\n\nimpl Label for Box[Int] {\n  label(x: Box[Int]) -> String { \"label\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("ga.vibe", impl_box_generic),
+    ("tl.vibe", label)
+  ]), content = "ok")
+  let marker = "export trait Zero\n\nimpl Zero for Int\n"
+  let declared = "export trait Zero {\n  zero() -> Self\n}\n\nimpl Zero for Int {\n  zero() -> Int { 0 }\n}\n"
+  inspect(link_verdict([("z1.vibe", marker), ("z2.vibe", declared)]), content = "ok")
+}

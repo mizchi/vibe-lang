@@ -609,10 +609,11 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   you build yourself when the format matters.
 - **Trait impls beyond one module and one level of generics.** A conditional
   impl (`impl [T: X] Y for Box[T]`) now works at a nested instantiation
-  (`Box[Box[Int]]`, #3547), and the same impl declared in two modules is
-  refused at build time (#3544). Two generic impls at overlapping targets
-  (`Array[T]` and `Array[Int]`) are still not detected, and `vibe check` does
-  not report the cross-module overlap. The frozen subset is an impl in the
+  (`Box[Box[Int]]`, #3547), and two modules' impls of one trait whose targets
+  share a type are refused by `vibe check` and at build time, as one file
+  refuses them: the same target (#3544), or targets that overlap (`Box[T]`
+  and `Box[Int]`, `Box[T]` and `Box[U]`, an alias and the type it names,
+  #3551). The frozen subset is an impl in the
   module that declares the type, used at one level of conditional impl. An
   impl method's signature is checked against its trait (#3538), except a
   method the trait does not declare in a plain (non-applied) impl.

@@ -51,6 +51,18 @@
 // is the ONE site of the type family it defines (#1879), so their derives are
 // the program's derives. Exempting them by path let an ordinary module at the
 // types module's path skip the check (#3551).
+//
+// Two impls need not bind one name to overlap. `impl [T] Name for Box[T]`
+// and `impl Name for Box[Int]` encode their targets into different owners
+// (`impl_method_owner`), and so do `Box[T]` and `Box[U]`, an alias and the
+// type it names, and `impl [T] Name for Box` beside `Box[Int]`; yet each pair
+// covers a common type, and the linked program dispatched that type to one of
+// them, the other module's own calls included (#3551 review: both modules
+// printed `from-int`). So the impl heads are compared as well, by the
+// checker's own coherence test (`impl_trait_and_target_patterns_overlap`, the
+// one `overlapping_impl_target_for` applies inside one file), each target
+// resolved against the linked program's declarations as the checker resolves
+// it (`head_type`).
 
 import ./ast.vibe {
   Stmt, TypeExpr
@@ -60,8 +72,20 @@ import ./import_alias_rewrite_rewrite_alias_expr_ix.vibe {
   namespace_rename_original
 }
 
+import ./types_env_cache.vibe {
+  Type
+}
+
+import ./types_types_equal.vibe {
+  resolve_builtin
+}
+
+import ./types_unify.vibe {
+  impl_trait_and_target_patterns_overlap
+}
+
 import @vibe/ast {
-  impl_method_owner, impl_target_head, trait_ref_name
+  impl_method_owner, impl_target_head, trait_ref_from_key, trait_ref_name, type_param_name
 }
 
 import @vibe/core {
@@ -139,7 +163,7 @@ export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit
         SImpl(tparams, _, trait_key, target) => {
           let (line, col) = nth_position(impl_lines, impl_ordinal)
           impl_ordinal = impl_ordinal + 1
-          let what = String::concat("impl ", String::concat(trait_ref_name(trait_key), String::concat(" for ", target_display(target))))
+          let what = impl_what(tparams, trait_key, target)
           let prefix = String::concat(impl_method_owner(tparams, trait_key, target), "::")
           let run_end = impl_run_end(merged, k, unit.end, traits.names)
           let mut j = k + 1
@@ -222,7 +246,383 @@ export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit
     }
     v = v + 1
   }
+  // Heads whose instance sets meet, whatever their methods are named.
+  if found is None {
+    head_overlap_error(linked_impl_heads(merged, units, linked_type_decls(merged)), units)
+  } else {
+    found
+  }
+}
+
+/// One impl head of the linked program, as the checker's coherence test
+/// compares it: an `impl`, or the impl a derive registers.
+struct ImplHead {
+  unit: Int;
+  /// The unit whose own declaration of the trait this implements, or -1 for
+  /// a trait its unit does not declare (imported, or builtin).
+  decl: Int;
+  trait_key: String;
+  trait_name: String;
+  params: Array[String];
+  target: Type;
+  /// `head_key` of the target.
+  head: String;
+  what: String;
+  line: Int;
+  col: Int
+}
+
+/// The type declarations of a linked program a target is resolved against.
+struct LinkedTypeDecls {
+  /// Each declared struct (`true`) and enum (`false`).
+  nominal: MutMap[String, Bool];
+  /// Each type alias's formals and body.
+  aliases: MutMap[String, (Array[String], TypeExpr)]
+}
+
+fn linked_type_decls(merged: Array[Stmt]) -> LinkedTypeDecls {
+  let nominal: MutMap[String, Bool] = MutMap::new_string()
+  let aliases: MutMap[String, (Array[String], TypeExpr)] = MutMap::new_string()
+  for stmt in merged {
+    match stmt {
+      SStruct(_, name, _, _, _, _) => MutMap::set(nominal, name, true),
+      SEnum(_, name, _, _, _) => MutMap::set(nominal, name, false),
+      STypeAlias(_, name, formals, body) => MutMap::set(aliases, name, (formals, body)),
+      _ => ()
+    }
+  }
+  LinkedTypeDecls::{ nominal: nominal, aliases: aliases }
+}
+
+/// Is `name` one of the formals `params`?
+fn names_formal(params: Array[String], name: String) -> Bool {
+  let mut found = false
+  for p in params {
+    if type_param_name(p) == name {
+      found = true
+    } else {
+      ()
+    }
+  }
   found
+}
+
+/// `te` resolved as the checker resolves an impl target
+/// (`resolve_type_expr_shadowed`): a formal stays the rigid name the
+/// coherence test freshens, an alias is the type it names, a declared struct
+/// or enum named bare is its nominal type (which the test matches against
+/// every application of it), and `Array` / `Option` are structural.
+fn head_type(te: TypeExpr, params: Array[String], decls: LinkedTypeDecls, depth: Int) -> Type {
+  match te {
+    TyName(n) => if names_formal(params, n) {
+      CtNamed(n, [])
+    } else {
+      match expand_alias(decls, n, [], depth) {
+        Some(body) => head_type(body, params, decls, depth + 1),
+        None => match MutMap::get(decls.nominal, n) {
+          Some(is_struct) => if is_struct {
+            CtStruct(n)
+          } else {
+            CtEnum(n)
+          },
+          None => match resolve_builtin(n) {
+            Some(ty) => ty,
+            None => CtNamed(n, [])
+          }
+        }
+      }
+    },
+    TyApp(n, args) => match expand_alias(decls, n, args, depth) {
+      Some(body) => head_type(body, params, decls, depth + 1),
+      None => {
+        let resolved: Array[Type] = for arg in args {
+          head_type(arg, params, decls, depth)
+        }
+        if n == "Array" && Array::length(resolved) == 1 {
+          CtArray(Array::get(resolved, 0))
+        } else if n == "Option" && Array::length(resolved) == 1 {
+          CtOption(Array::get(resolved, 0))
+        } else {
+          CtNamed(n, resolved)
+        }
+      }
+    },
+    TyTuple(items) => CtTuple(for item in items {
+      head_type(item, params, decls, depth)
+    }),
+    TyFn(ps, ret, effect) => CtFn(for p in ps {
+      head_type(p, params, decls, depth)
+    }, head_type(ret, params, decls, depth), effect),
+    TyUnit => CtUnit
+  }
+}
+
+/// The type alias `name` names at `args`, or `None`: not an alias, a
+/// different number of arguments, or deeper than an acyclic chain of aliases
+/// reaches.
+fn expand_alias(decls: LinkedTypeDecls, name: String, args: Array[TypeExpr], depth: Int) -> Option[TypeExpr] {
+  if depth > 32 {
+    None
+  } else {
+    match MutMap::get(decls.aliases, name) {
+      Some(alias) => {
+        let (formals, body) = alias
+        if Array::length(formals) == Array::length(args) {
+          Some(subst_type_expr(body, formals, args))
+        } else {
+          None
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn subst_type_expr(te: TypeExpr, formals: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+  match te {
+    TyName(n) => {
+      let mut out = te
+      let mut i = 0
+      while i < Array::length(formals) {
+        if type_param_name(Array::get(formals, i)) == n {
+          out = Array::get(args, i)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      out
+    },
+    TyApp(n, xs) => TyApp(n, for x in xs {
+      subst_type_expr(x, formals, args)
+    }),
+    TyTuple(xs) => TyTuple(for x in xs {
+      subst_type_expr(x, formals, args)
+    }),
+    TyFn(ps, ret, effect) => TyFn(for p in ps {
+      subst_type_expr(p, formals, args)
+    }, subst_type_expr(ret, formals, args), effect),
+    TyUnit => TyUnit
+  }
+}
+
+/// The outermost constructor of a resolved target, which two overlapping
+/// targets share, or `*` for a target whose head is a formal (or anything
+/// else this does not name), which may be any type:
+/// heads are compared only within one trait and one such key (or `*`), so
+/// the check is not quadratic in a program's derives.
+fn head_key(target: Type, params: Array[String]) -> String {
+  match target {
+    CtNamed(n, _) => if names_formal(params, n) {
+      "*"
+    } else {
+      n
+    },
+    CtStruct(n) => n,
+    CtEnum(n) => n,
+    CtArray(_) => "Array",
+    CtOption(_) => "Option",
+    CtTuple(items) => String::concat("(", Int::to_string(Array::length(items))),
+    CtFn(_, _, _) => "->",
+    CtInt => "Int",
+    CtDouble => "Double",
+    CtBool => "Bool",
+    CtString => "String",
+    CtChar => "Char",
+    CtUnit => "Unit",
+    CtBytes => "Bytes",
+    _ => "*"
+  }
+}
+
+/// The traits a derive registers an impl of, as the checker registers them.
+fn derive_registers_impl(which: String) -> Bool {
+  which == "Show" || which == "Eq" || which == "Hash" || which == "Default"
+}
+
+/// Every impl head of `merged`, unit by unit in merge order.
+fn linked_impl_heads(merged: Array[Stmt], units: Array[LinkedUnit], decls: LinkedTypeDecls) -> Array[ImplHead] {
+  // `<unit>:<trait>` for each trait a unit declares itself. The checker keeps
+  // a newer declaration of a trait name apart as a new instance scope (a
+  // package's method-bearing `Default` beside the builtin marker one), so an
+  // impl of a unit's own trait is compared only with impls of a trait their
+  // unit does not declare.
+  let declares: MutMap[String, Bool] = MutMap::new_string()
+  let mut u = 0
+  while u < Array::length(units) {
+    let unit = Array::get(units, u)
+    let mut k = unit.start
+    while k < unit.end {
+      match Array::get(merged, k) {
+        STrait(_, name, _, _, _, _) => MutMap::set(declares, decl_key(u, name), true),
+        _ => ()
+      }
+      k = k + 1
+    }
+    u = u + 1
+  }
+  let heads: Array[ImplHead] = []
+  let mut v = 0
+  while v < Array::length(units) {
+    let unit = Array::get(units, v)
+    let text = unit_located_text(unit)
+    let impl_lines = line_starts_with_keyword(text, "impl")
+    let mut ordinal = 0
+    let mut k = unit.start
+    while k < unit.end {
+      match Array::get(merged, k) {
+        SImpl(tparams, _, trait_key, target) => {
+          let (line, col) = nth_position(impl_lines, ordinal)
+          ordinal = ordinal + 1
+          let name = trait_ref_name(trait_key)
+          let resolved = head_type(target, tparams, decls, 0)
+          Array::push(heads, ImplHead::{
+            unit: v,
+            decl: if MutMap::has(declares, decl_key(v, name)) {
+              v
+            } else {
+              -1
+            },
+            trait_key: trait_key,
+            trait_name: name,
+            params: tparams,
+            target: resolved,
+            head: head_key(resolved, tparams),
+            what: impl_what(tparams, trait_key, target),
+            line: line,
+            col: col
+          })
+        },
+        SStruct(_, name, _, derives, _, _) => push_derive_heads(heads, declares, text, v, name, derives, "struct", CtStruct(name)),
+        SEnum(_, name, _, _, derives) => push_derive_heads(heads, declares, text, v, name, derives, "enum", CtEnum(name)),
+        _ => ()
+      }
+      k = k + 1
+    }
+    v = v + 1
+  }
+  heads
+}
+
+fn decl_key(unit: Int, trait_name: String) -> String {
+  String::concat(Int::to_string(unit), String::concat(":", trait_name))
+}
+
+/// The impl each derive in `derives` registers: at the bare type, which
+/// covers every instance of a generic one (`derive (Show)` on `Bx[T]` beside
+/// `impl Show for Bx[Int]` is refused inside one file).
+fn push_derive_heads(heads: Array[ImplHead], declares: MutMap[String, Bool], text: String, u: Int, name: String, derives: Array[String], keyword: String, target: Type) -> Unit {
+  if Array::length(derives) > 0 {
+    let shown = namespace_rename_original(name)
+    let (line, col) = type_decl_position(text, keyword, shown)
+    for listed in derives {
+      if derive_registers_impl(listed) {
+        Array::push(heads, ImplHead::{
+          unit: u,
+          decl: if MutMap::has(declares, decl_key(u, listed)) {
+            u
+          } else {
+            -1
+          },
+          trait_key: listed,
+          trait_name: listed,
+          params: [],
+          target: target,
+          head: name,
+          what: String::concat("derive (", String::concat(listed, String::concat(") on ", shown))),
+          line: line,
+          col: col
+        })
+      } else {
+        ()
+      }
+    }
+  } else {
+    ()
+  }
+}
+
+/// The refusal for the first head that shares an instance with a head of an
+/// earlier unit, or `None`.
+fn head_overlap_error(heads: Array[ImplHead], units: Array[LinkedUnit]) -> Option[String] {
+  // Earlier heads by `<trait>\t<head key>`, and by trait alone (for a head
+  // that may be any type).
+  let by_key: MutMap[String, Array[Int]] = MutMap::new_string()
+  let by_trait: MutMap[String, Array[Int]] = MutMap::new_string()
+  let mut found: Option[String] = None
+  let mut j = 0
+  while j < Array::length(heads) && found is None {
+    let later = Array::get(heads, j)
+    let candidates = if later.head == "*" {
+      int_list_at(by_trait, later.trait_name)
+    } else {
+      Array::concat(int_list_at(by_key, head_bucket(later.trait_name, later.head)), int_list_at(by_key, head_bucket(later.trait_name, "*")))
+    }
+    for i in candidates {
+      if found is None {
+        let earlier = Array::get(heads, i)
+        if earlier.unit != later.unit && (earlier.decl == later.decl || earlier.decl < 0 || later.decl < 0) && impl_trait_and_target_patterns_overlap(earlier.trait_key, earlier.params, earlier.target, later.trait_key, later.params, later.target) {
+          found = Some(head_overlap_message(earlier, Array::get(units, earlier.unit), later, Array::get(units, later.unit)))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    }
+    Array::push(int_list_at(by_key, head_bucket(later.trait_name, later.head)), j)
+    Array::push(int_list_at(by_trait, later.trait_name), j)
+    j = j + 1
+  }
+  found
+}
+
+fn head_bucket(trait_name: String, head: String) -> String {
+  String::concat(trait_name, String::concat("\t", head))
+}
+
+/// The list `m` holds at `key`, made empty there first when it holds none.
+fn int_list_at(m: MutMap[String, Array[Int]], key: String) -> Array[Int] {
+  match MutMap::get(m, key) {
+    Some(list) => list,
+    None => {
+      let fresh: Array[Int] = []
+      MutMap::set(m, key, fresh)
+      fresh
+    }
+  }
+}
+
+fn head_overlap_message(first: ImplHead, first_unit: LinkedUnit, second: ImplHead, second_unit: LinkedUnit) -> String {
+  let here = position_text(second_unit.path, second.line, second.col)
+  let there = position_text(first_unit.path, first.line, first.col)
+  String::concat(here, String::concat(": remove one of these, or narrow one so their targets no longer overlap: `", String::concat(second.what, String::concat("` here and `", String::concat(first.what, String::concat("` in ", String::concat(there, String::concat(" both implement `", String::concat(namespace_rename_original(second.trait_name), "` for the same types -- a linked program dispatches each such type to only one of them, so a caller in either module would silently run the other module's impl")))))))))
+}
+
+/// `impl [T] Name for Box[T]`, as the impl was written.
+fn impl_what(tparams: Array[String], trait_key: String, target: TypeExpr) -> String {
+  let mut binder = ""
+  if Array::length(tparams) > 0 {
+    binder = "["
+    let mut i = 0
+    while i < Array::length(tparams) {
+      if i > 0 {
+        binder = String::concat(binder, ", ")
+      } else {
+        ()
+      }
+      binder = String::concat(binder, type_param_name(Array::get(tparams, i)))
+      i = i + 1
+    }
+    binder = String::concat(binder, "] ")
+  } else {
+    ()
+  }
+  let trait_shown = match trait_ref_from_key(trait_key) {
+    Some(reference) => target_display(reference),
+    None => trait_key
+  }
+  String::concat("impl ", String::concat(binder, String::concat(trait_shown, String::concat(" for ", target_display(target)))))
 }
 
 /// The text a refusal's line numbers are counted in, or `""` (no line) when
