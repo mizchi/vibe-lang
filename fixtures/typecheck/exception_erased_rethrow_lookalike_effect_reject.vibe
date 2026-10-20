@@ -1,0 +1,38 @@
+// #3551 review (Codex): `ExceptionLog::Throw` is an operation of a PROGRAM
+// effect whose name merely starts with `Exception`. Its handler keeps the
+// erased arm's binder and resumes, and `perform ExceptionLog::Get()` reads it
+// back, so `throw(perform ExceptionLog::Get())` rethrows the value
+// `Exception::Throw(m)` caught -- `f`'s `Int` -- and is a throw of no known
+// kind, which the declared `Exception[String]` does not cover. The carrier
+// walk took the operation for the exception's own abortive throw by its
+// spelling, saw no escape, and `main` printed `len=14`. The edit is the
+// kinded arm (`Exception[Int]::Throw(m)`) or the erased `with Exception` row.
+effect ExceptionLog {
+  Throw(String) -> Unit
+  Get() -> String
+}
+
+fn f() -> Int with Exception[Int] {
+  throw(7)
+}
+
+fn g() -> Int with Exception[String] + ExceptionLog {
+  handle { f() } with { Exception::Throw(m) => {
+    perform ExceptionLog::Throw(m)
+    throw(perform ExceptionLog::Get())
+  } }
+}
+
+fn main allows Console {
+  let cell: Array[String] = [""]
+  let r = handle {
+    handle { g() } with {
+      ExceptionLog::Throw(s) => {
+        Array::set(cell, 0, s)
+        resume(())
+      }
+      ExceptionLog::Get() => resume(Array::get(cell, 0))
+    }
+  } with { Exception[String]::Throw(s) => String::length(s) }
+  println("len=\{r}")
+}
