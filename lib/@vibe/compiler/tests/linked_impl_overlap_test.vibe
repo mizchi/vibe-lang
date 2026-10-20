@@ -140,21 +140,30 @@ test "a plain definition of an impl method name in another module is refused" {
   ]), content = "tp.vibe: line 1:8: remove one of these: `a definition` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
 }
 
-/// A package contract restates its implementation's impls without binding
-/// anything of its own.
-test "a contract restating an impl is not an overlap" {
-  inspect(link_verdict([
-    ("tr.vibe", trait_src),
-    ("pkg/index.vpkg", impl_a),
-    ("pkg/impl.vibe", impl_a)
-  ]), content = "ok")
+/// #3551 review: no unit is exempt by the path it carries. Exempting the
+/// loader's paths (a contract's, and the generated types module's) let an
+/// ordinary module at such a path skip the check: one imported from
+/// `.vibe/build/vpkg_types/types_spoof.vibe` built `from-spoof from-spoof`,
+/// and `from-b from-b` with the imports swapped. A real facade states no impl
+/// (a contract cannot), so reading it binds nothing.
+test "a unit at a loader path is checked like any other" {
+  for path in [
+    String::concat(vpkg_types_module_path_prefix, "spoof.vibe"),
+    "pkg/index.vpkg",
+    "pkg/index.vibei"
+  ] {
+    inspect(link_verdict([
+      ("tr.vibe", trait_src),
+      (path, impl_a),
+      ("tb.vibe", impl_b)
+    ]), content = "tb.vibe: line 3:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in \{path}: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  }
 }
 
-/// #3551 review: which units only restate is the loader's provenance -- the
-/// path it gave the unit -- not the text. Every marker line the loader writes
-/// is an ordinary comment a module may open with, and the shared-import one
-/// heads every real sibling of a package whose contract shares an import
-/// (#897). Matched on the text, each of these linked silently (measured:
+/// #3551 review: no unit is exempt by its text. Every marker line the loader
+/// writes is an ordinary comment a module may open with, and the shared-import
+/// one heads every real sibling of a package whose contract shares an import
+/// (#897). Exempted by the text, each of these linked silently (measured:
 /// `from-a from-a`, and `from-b from-b` with the imports swapped). Such a unit
 /// is named without a line: the loader's prepended lines would shift it.
 test "a module opening with a loader marker line is still checked" {
@@ -172,17 +181,61 @@ test "a module opening with a loader marker line is still checked" {
   }
 }
 
-/// The loader's own restating units stay exempt: a contract path, and the
-/// exact path it materializes a types module at. A lookalike under that
-/// directory is an ordinary module.
-test "a generated types module path is exempt and a lookalike is not" {
+/// A contract's types module is the one site of the type family it defines
+/// (#1879), so its derives are the program's: a sibling's plain definition
+/// overrides one, and an impl of the same trait elsewhere is the overlap. The
+/// module is named without a line -- its text is generated.
+test "a generated types module's derives are the program's derives" {
   let decl = String::concat(vpkg_types_module_marker, "export struct P {\n  x: Int\n} derive(Show)\n")
-  let other = "impl Show for P {\n  to_string(p: P) -> String { \"p\" }\n}\n"
   let generated = String::concat(vpkg_types_module_path_prefix, "k1_Ab9.vibe")
-  inspect(link_verdict([(generated, decl), ("q.vibe", other)]), content = "ok")
-  inspect(link_verdict([("pkg/index.vibei", decl), ("q.vibe", other)]), content = "ok")
-  let nested = String::concat(vpkg_types_module_path_prefix, "fake/p.vibe")
-  inspect(link_verdict([(nested, decl), ("q.vibe", other)]), content = "q.vibe: line 1:1: remove one of these: `impl Show for P` here and `derive (Show) on P` in .vibe/build/vpkg_types/types_fake/p.vibe both define `P::to_string` -- the derive gives way to the impl, so the deriving module, and every caller of the method, would silently run the impl; one module may not hold both either")
+  let plain = "export fn P::to_string(p: P) -> String {\n  \"custom\"\n}\n"
+  inspect(link_verdict([(generated, decl), ("pkg/impl.vibe", plain)]), content = "ok")
+  let other = "impl Show for P {\n  to_string(p: P) -> String { \"p\" }\n}\n"
+  inspect(link_verdict([(generated, decl), ("q.vibe", other)]), content = "q.vibe: line 1:1: remove one of these: `impl Show for P` here and `derive (Show) on P` in \{generated} both define `P::to_string` -- the derive gives way to the impl, so the deriving module, and every caller of the method, would silently run the impl; one module may not hold both either")
+}
+
+let tag_src = "export trait Tag {\n  tag(Self) -> Int\n}\n"
+
+/// #3551 review: a binding in an impl's run is the impl's method only when the
+/// impl's trait, or a supertrait, declares it. `fn P::to_string` right after
+/// `impl Tag for P` was recorded as the impl's because it shares the `P::`
+/// prefix, so another module's `derive (Show)` on `P` was refused -- though
+/// the derive pass gives way to that definition and the program holds one
+/// `P::to_string` in either import order.
+test "a definition after an impl whose trait does not declare it is plain" {
+  let decl = "export struct P {\n  x: Int\n} derive(Show)\n"
+  let tagged = "impl Tag for P {\n  tag(p: P) -> Int { 1 }\n}\n\nfn P::to_string(p: P) -> String {\n  \"custom\"\n}\n"
+  inspect(link_verdict([
+    ("tag.vibe", tag_src),
+    ("p.vibe", decl),
+    ("q.vibe", tagged)
+  ]), content = "ok")
+  inspect(link_verdict([
+    ("tag.vibe", tag_src),
+    ("q.vibe", tagged),
+    ("p.vibe", decl)
+  ]), content = "ok")
+  // It is still the one `P::to_string` the program may hold.
+  let shown = "impl Show for P {\n  to_string(p: P) -> String { \"p\" }\n}\n"
+  inspect(link_verdict([
+    ("tag.vibe", tag_src),
+    ("q.vibe", tagged),
+    ("r.vibe", shown)
+  ]), content = "r.vibe: line 1:1: remove one of these: `impl Show for P` here and `a definition` in q.vibe: line 5:1 both define `P::to_string` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  // A method the trait declares stays the impl's.
+  inspect(link_verdict([
+    ("tag.vibe", tag_src),
+    ("q.vibe", tagged),
+    ("q2.vibe", "impl Tag for P {\n  tag(p: P) -> Int { 2 }\n}\n")
+  ]), content = "q2.vibe: line 1:1: remove one of these: `impl Tag for P` here and `impl Tag for P` in q.vibe: line 1:1 both define `P::tag` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  // And a builtin trait the program declares as a marker dispatches the
+  // method its derive generates: `impl Show for P { to_string }` is the impl's.
+  let marker_show = "export trait Show\n"
+  inspect(link_verdict([
+    ("show.vibe", marker_show),
+    ("p.vibe", decl),
+    ("r.vibe", shown)
+  ]), content = "r.vibe: line 1:1: remove one of these: `impl Show for P` here and `derive (Show) on P` in p.vibe: line 1:8 both define `P::to_string` -- the derive gives way to the impl, so the deriving module, and every caller of the method, would silently run the impl; one module may not hold both either")
 }
 
 let child_src = "export trait Base {\n  get(Self) -> String\n}\n\nexport trait Child: Base {}\n"

@@ -414,15 +414,50 @@ ur_refused fixtures/err_impl_overlap_cross_module_refused.vibe 'both define `Int
 # green side -- a plain definition overriding another module's derive -- rides
 # the unit lane: fixtures/derive_override_cross_module_test.vibe.
 ur_refused fixtures/err_impl_overlap_plain_after_impl_refused.vibe 'both define `Int::name`' 'remove one of these: `a definition`' linear 'fixtures/modules/impl_overlap_plain_after_impl.vibe: line 18:1'
-# #3551: which units only restate is read from the path the loader gave them,
-# not from a marker comment. A module opening with the facade's comment, and a
-# real sibling the loader prefixes with the shared-import marker (#897), were
-# skipped and built `from-a from-a` / `from-pkg-a from-pkg-a`.
+# #3551: no unit is exempt by a marker comment. A module opening with the
+# facade's comment, and a real sibling the loader prefixes with the
+# shared-import marker (#897), were skipped and built `from-a from-a` / `from-pkg-a from-pkg-a`.
 ur_refused fixtures/err_impl_overlap_marker_comment_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_marker_comment.vibe: remove'
 ur_refused fixtures/err_impl_overlap_vpkg_sibling_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_pkg_b/impl.vibe: remove'
 # #3551: a binding in another trait's namespace inside an impl's run no longer
 # ends it; both modules' inherited `Int::get` built `from-a from-a`.
 ur_refused fixtures/err_impl_overlap_inherited_after_trait_binding_refused.vibe 'both define `Int::get`' 'remove one of these: `impl Child for Int`' linear 'fixtures/modules/impl_overlap_inherited_b.vibe: line 7:1'
+# #3551 review: no unit is exempt by its path. An ordinary module imported
+# from the path the loader writes a contract's types module to was skipped, so
+# this built `from-types-path from-types-path` (`from-a from-a` with the
+# imports swapped). Both files are written here, not tracked: `.vibe/build/`
+# is the build directory.
+mkdir -p .vibe/build/vpkg_types
+cat > .vibe/build/vpkg_types/types_impl_overlap_gate.vibe <<'EOF'
+import ../../../fixtures/modules/impl_overlap_trait.vibe {
+  trait Name
+}
+
+impl Name for Int {
+  name(x: Int) -> String {
+    "from-types-path"
+  }
+}
+
+export fn types_path_name() -> String {
+  Name::name(1)
+}
+EOF
+cat > "$urdir/err_impl_overlap_types_path_refused.vibe" <<'EOF'
+import ../../.vibe/build/vpkg_types/types_impl_overlap_gate.vibe {
+  types_path_name
+}
+
+import ../../fixtures/modules/impl_overlap_a.vibe {
+  a_name
+}
+
+test "both modules keep their own impl" {
+  inspect("\{types_path_name()} \{a_name()}", "from-types-path from-a")
+}
+EOF
+ur_refused "$urdir/err_impl_overlap_types_path_refused.vibe" 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_a.vibe: line 7:1'
+rm -f .vibe/build/vpkg_types/types_impl_overlap_gate.vibe
 # #3551: a `derive (Hash)` field the derived key cannot key -- a declared type
 # with no `hash_key` (keyed by a rendering that is not injective), and an
 # erased type parameter (keyed by address, even with `Box::to_string` written).
