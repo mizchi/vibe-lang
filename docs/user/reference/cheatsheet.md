@@ -1849,7 +1849,15 @@ Rules:
   hold a `String`: `throw(id(m))`, `let m2 = m` then `throw(m2)`,
   `throw(Some(m))`, `throw(String::concat("ctx: ", m))`, and a value read
   back from where `m` may have been stored: after `store(outer.cell, m)` or
-  `outer.cell.value = m`, `throw(outer.cell.value)`. So a function that
+  `outer.cell.value = m`, `throw(outer.cell.value)`. Once `m` reaches code
+  the checker does not follow -- a function or closure bound outside the arm
+  (`remember(m)`, `slot(Some(m))`, a parameter `sink(m)`), an effect
+  operation (`perform Keep::Put(m)`), or a binding of the enclosing code
+  (`Array::push(saved, m)`) -- any value read from the program's state
+  (`throw(recall())`, `throw(slot(None))`, `throw(cell.value)`) is of no
+  known kind too; a value of its own (`throw("failed")`) keeps its kind, and
+  a builtin (`String::concat("ctx: ", m)`) keeps `m` only in its result and
+  its arguments. So a function that
   rethrows this way declares the erased `with Exception`, or catches with the
   kinded arm `Exception[K]::Throw(m)`, whose rethrow keeps the kind `K`. A
   value of a declared type built from `m` counts as one that could hold a

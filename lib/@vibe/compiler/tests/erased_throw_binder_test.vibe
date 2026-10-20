@@ -290,3 +290,48 @@ test "a projection nothing stored an erased binder into keeps its kind" {
   inspect(stored_diags("    store(outer.cell, \"x\")\n    throw(outer.cell.value)"), "[]")
   inspect(stored_diags("    let _n = String::length(m)\n    throw(outer.cell.value)"), "[]")
 }
+
+//# A carrier that escapes the walk (#3551 review)
+
+/// `g` rethrows, from an erased arm, after `body` handed the binder `m` to
+/// code the walk does not follow: the top-level `remember`, which keeps it in
+/// the global `saved` that `recall` reads, or a parameter of `g`.
+fn escape_diags(body: String) -> Array[String] with Exception {
+  let head = "let saved: Array[String] = []\nfn remember(s: String) -> Unit {\n  Array::push(saved, s)\n}\nfn recall() -> String {\n  Array::get(saved, 0)\n}\nfn f() -> Int with Exception[Int] { throw(7) }\n"
+  let g = String::concat("fn g(slot: (Option[String]) -> String, sink: (String) -> Unit, keep: Array[String], view: Array[String]) -> Int with Exception[String] {\n  handle { f() } with { Exception::Throw(m) => {\n", String::concat(body, "\n  } }\n}\n"))
+  row_checked_diags(String::concat(head, g))
+}
+
+test "an erased binder kept by a top-level function is not a String throw" {
+  assert(charged_erased(escape_diags("    remember(m)\n    throw(recall())")))
+  assert(charged_erased(escape_diags("    let k = (s: String) -> remember(s)\n    k(m)\n    throw(recall())")))
+  assert(charged_erased(escape_diags("    remember(m)\n    let v = recall()\n    throw(v)")))
+}
+
+test "an erased binder kept by a closure bound outside the arm is not a String throw" {
+  assert(charged_erased(escape_diags("    let _ = slot(Some(m))\n    throw(slot(None))")))
+  assert(charged_erased(escape_diags("    sink(m)\n    throw(Array::get(view, 0))")))
+}
+
+/// A store into a binding of the enclosing code may be read through another.
+test "an erased binder stored into an outer binding is not a String throw" {
+  assert(charged_erased(escape_diags("    Array::push(keep, m)\n    throw(Array::get(view, 0))")))
+}
+
+/// Escape is judged for the whole arm: the read may run after the store on
+/// a later iteration.
+test "a read before the escape is not a String throw" {
+  assert(charged_erased(escape_diags("    let mut i = 0\n    while i < 2 {\n      if i == 1 {\n        throw(recall())\n      }\n      remember(m)\n      i = i + 1\n    }\n    0")))
+}
+
+/// Controls: a value of its own thrown after an escape, and state read back
+/// when nothing escaped, keep their kind.
+test "a value of its own thrown after an escape keeps its kind" {
+  inspect(escape_diags("    remember(m)\n    throw(\"logged\")"), "[]")
+  inspect(escape_diags("    remember(m)\n    throw(String::concat(\"a\", \"b\"))"), "[]")
+}
+
+test "state read back without an escape keeps its kind" {
+  inspect(escape_diags("    let _n = String::length(String::concat(\"ctx: \", m))\n    throw(recall())"), "[]")
+  inspect(escape_diags("    let xs: Array[String] = []\n    Array::push(xs, m)\n    throw(Array::get(view, 0))"), "[]")
+}

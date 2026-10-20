@@ -1,0 +1,28 @@
+// #3551 review (Codex): the closure that keeps the erased arm's binder is a
+// local of the enclosing function, bound outside the arm, and the
+// `Exception[String]::Throw(s)` handler sits right around the arm. The value
+// `slot(None)` reads back is `f`'s `Int`, so the inner handle raises an
+// exception of no known kind, which the kinded handler must not catch as a
+// `String`. Before, `String::length(s)` read the `Int` 7 and `main` printed
+// `len=14`.
+fn f() -> Int with Exception[Int] {
+  throw(7)
+}
+
+fn main allows Console {
+  let cell: Array[String] = [""]
+  let slot = (o: Option[String]) -> match o {
+    Some(v) => {
+      Array::set(cell, 0, v)
+      v
+    },
+    None => Array::get(cell, 0)
+  }
+  let r = handle {
+    handle { f() } with { Exception::Throw(m) => {
+      let _ = slot(Some(m))
+      throw(slot(None))
+    } }
+  } with { Exception[String]::Throw(s) => String::length(s) }
+  println("len=\{r}")
+}

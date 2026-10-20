@@ -1,0 +1,28 @@
+// #3551 review: `sink(m)` hands the erased arm's binder to a function
+// parameter, and the closure the caller passes writes it into `cell`, so
+// `throw(cell.value)` rethrows the value `Exception::Throw(m)` caught --
+// `f`'s `Int` -- and is a throw of no known kind, which the declared
+// `Exception[String]` does not cover. Nothing in the arm connects `sink` to
+// `cell`, so the throw was charged as a `String` one and `main` printed
+// `len=14`. The edit is the kinded arm (`Exception[Int]::Throw(m)`) or the
+// erased `with Exception` row.
+struct Cell {
+  mut value: String
+}
+
+fn f() -> Int with Exception[Int] {
+  throw(7)
+}
+
+fn g(cell: Cell, sink: (String) -> Unit) -> Int with Exception[String] {
+  handle { f() } with { Exception::Throw(m) => {
+    sink(m)
+    throw(cell.value)
+  } }
+}
+
+fn main allows Console {
+  let cell = Cell::{ value: "" }
+  let r = handle { g(cell, (s) -> { cell.value = s }) } with { Exception[String]::Throw(s) => String::length(s) }
+  println("len=\{r}")
+}

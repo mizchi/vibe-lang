@@ -22,12 +22,16 @@ import @vibe/core {
 /// The carriers of one erased arm: for each identifier occurrence the walk
 /// resolved (by its source offset), whether its binding may hold the caught
 /// value; the spellings of every carrier binding, the answer for an
-/// occurrence the walk did not see at its offset; and (one cell) whether a
-/// `perform`'s result may be a carrier.
+/// occurrence the walk did not see at its offset; (one cell) whether a
+/// `perform`'s result may be a carrier; (one cell) whether the caught value
+/// ESCAPED to a place the walk cannot follow; and the spellings bound outside
+/// the arm that may reach state such an escape wrote (`outer_state`).
 export struct ErasedCarriers {
   offs: MutMap[Int, Bool];
   names: Array[String];
-  resumed: Array[Bool]
+  resumed: Array[Bool];
+  escaped: Array[Bool];
+  state_names: Array[String]
 }
 
 /// The carriers of the erased arm whose binder is `binder` and whose body is
@@ -59,23 +63,61 @@ export struct ErasedCarriers {
 ///   of its direct calls, and any other use (passed, stored, aliased,
 ///   returned) may give it anything, so its parameters are carriers;
 /// - the result of every `perform` once a nested handler arm mentions a
-///   carrier, because that arm may `resume` the `perform` with it.
+///   carrier, because that arm may `resume` the `perform` with it;
+/// - once the caught value ESCAPES, every name bound outside the arm that
+///   `outer_state` says is a binding of the program (a function, closure,
+///   parameter, local or global, not a builtin), and the result of every
+///   `perform`.
+///
+/// The value escapes when a carrier is handed to a callee the walk does not
+/// follow -- a function or closure bound outside the arm (`remember(m)`,
+/// `slot(Some(m))`, a parameter `sink(m)`), a method, a computed callee --
+/// or is stored into a binding of the enclosing code (`Array::push(saved,
+/// m)`, `outer.cell.value = m`). The callee may keep it in state it captured
+/// or in a global, and a later `recall()`, `slot(None)` or `cell.value` may
+/// read it back; an alias of the binding stored into may too. So after an
+/// escape anything such state may reach is a carrier. Escape is judged for
+/// the whole arm, not in order, because a loop may run the store after the
+/// read. A builtin keeps what it is handed only in its arguments, which the
+/// store targets already follow. A value kept by the arm and read back by a
+/// throw OUTSIDE every arm is not this walk's to see (#3541).
+///
+/// `outer_state(name, off)` answers, for an identifier occurrence bound
+/// outside the arm, whether it means a binding of the program rather than a
+/// builtin.
 ///
 /// A binding whose value mentions no carrier is not one, and SHADOWS a
 /// carrier of the same spelling for its scope only. Carriers grow to a
 /// fixpoint, because a later assignment or call can make an earlier binding
 /// one.
-export fn erased_arm_carriers(binder: String, body: Expr) -> ErasedCarriers {
+export fn erased_arm_carriers(binder: String, body: Expr, outer_state: (String, Int) -> Bool) -> ErasedCarriers {
   let out = ErasedCarriers::{
     offs: MutMap::new_int(),
     names: [binder],
-    resumed: [false]
+    resumed: [false],
+    escaped: [false],
+    state_names: []
   }
   let throws = expr_any_node(body, (e) -> match e {
     ECall(EIdent(n, _), _, _, _) => n == "perform" || n == "perform?",
     _ => false
   })
   if throws {
+    // Asked once per occurrence, before the walk; the walk consults it only
+    // for an occurrence bound outside the arm.
+    let state_offs: MutMap[Int, Bool] = MutMap::new_int()
+    let _ = expr_any_node(body, (n) -> match n {
+      EIdent(x, off) => {
+        if outer_state(x, off) {
+          if off >= 0 {
+            MutMap::set(state_offs, off, true)
+          }
+          cw_add_name(out.state_names, x)
+        }
+        false
+      },
+      _ => false
+    })
     let w = CarrierWalk::{
       scope_names: [],
       scope_ids: [],
@@ -88,9 +130,11 @@ export fn erased_arm_carriers(binder: String, body: Expr) -> ErasedCarriers {
       targeted: [],
       outer: [],
       outer_targeted: [],
-      counters: [0, 0, 0, 0],
+      counters: [0, 0, 0, 0, 0],
       offs: out.offs,
-      off_ids: MutMap::new_int()
+      off_ids: MutMap::new_int(),
+      state_offs: state_offs,
+      state_names: out.state_names
     }
     let mut again = true
     while again {
@@ -114,20 +158,23 @@ export fn erased_arm_carriers(binder: String, body: Expr) -> ErasedCarriers {
       cw_add_name(out.names, n)
     }
     cw_set_bool(out.resumed, 0, Array::get(w.counters, 3) != 0)
+    cw_set_bool(out.escaped, 0, Array::get(w.counters, 4) != 0)
   }
   out
 }
 
 /// Whether `payload` mentions an identifier that may hold the arm's caught
 /// value. An occurrence the walk resolved answers by its binding; any other
-/// (a synthesized node) answers by its spelling. A `perform` answers whether
-/// a handler arm may resume it with a carrier.
+/// (a synthesized node) answers by its spelling, and so does one that may
+/// reach state the caught value escaped to. A `perform` answers whether a
+/// handler arm may resume it with a carrier.
 export fn erased_carriers_mention(payload: Expr, c: ErasedCarriers) -> Bool {
   let resumed = Array::get(c.resumed, 0)
+  let escaped = Array::get(c.escaped, 0)
   expr_any_node(payload, (n) -> match n {
     EIdent(x, off) => match cw_off_answer(c.offs, off) {
       Some(known) => known,
-      None => cw_str_in(c.names, x)
+      None => cw_str_in(c.names, x) || escaped && cw_str_in(c.state_names, x)
     },
     ECall(EIdent(p, _), _, _, _) => resumed && (p == "perform" || p == "perform?"),
     _ => false
@@ -147,8 +194,8 @@ fn cw_off_answer(offs: MutMap[Int, Bool], off: Int) -> Option[Bool] {
 /// One fixpoint pass's state. Binding and lambda ids are handed out in walk
 /// order, so a pass gives each the same id as the one before it, and the
 /// per-id flags carry over. `counters` holds the next binding id, the next
-/// lambda id, whether this pass turned a flag on, and whether a `perform`'s
-/// result may be a carrier.
+/// lambda id, whether this pass turned a flag on, whether a `perform`'s
+/// result may be a carrier, and whether the caught value escaped.
 struct CarrierWalk {
   scope_names: Array[String];
   scope_ids: Array[Int];
@@ -172,11 +219,45 @@ struct CarrierWalk {
   // The binding id each identifier occurrence resolved to (-1: outside the
   // arm), by source offset, so a store target's value is re-read with the
   // scope it was walked in.
-  off_ids: MutMap[Int, Int]
+  off_ids: MutMap[Int, Int];
+  // The occurrences (by offset) and spellings `outer_state` answered for:
+  // names that may reach state the caught value escaped to.
+  state_offs: MutMap[Int, Bool];
+  state_names: Array[String]
 }
 
 fn cw_changed(w: CarrierWalk) -> Unit {
   cw_set_int(w.counters, 2, 1)
+}
+
+/// The caught value escaped to a place the walk does not follow: every name
+/// that may reach state, and every `perform`'s result, may now hold it.
+fn cw_escape(w: CarrierWalk) -> Unit {
+  if Array::get(w.counters, 4) == 0 {
+    cw_set_int(w.counters, 4, 1)
+    cw_changed(w)
+  }
+  if Array::get(w.counters, 3) == 0 {
+    cw_set_int(w.counters, 3, 1)
+    cw_changed(w)
+  }
+}
+
+fn cw_escaped(w: CarrierWalk) -> Bool {
+  Array::get(w.counters, 4) != 0
+}
+
+/// Whether an occurrence bound outside the arm is a binding of the program,
+/// which may reach state the caught value escaped to.
+fn cw_outer_state(w: CarrierWalk, x: String, off: Int) -> Bool {
+  if off >= 0 {
+    match MutMap::get(w.state_offs, off) {
+      Some(v) => v,
+      None => false
+    }
+  } else {
+    cw_str_in(w.state_names, x)
+  }
 }
 
 /// Bind `name` in the current scope; answers its id.
@@ -233,9 +314,14 @@ fn cw_mark_name(w: CarrierWalk, name: String) -> Unit {
   let id = cw_resolve(w, name)
   if id >= 0 {
     cw_mark_id(w, id)
-  } else if !cw_str_in(w.outer, name) {
-    Array::push(w.outer, name)
-    cw_changed(w)
+  } else {
+    // Assigned to a binding of the enclosing code, which an alias the walk
+    // cannot see may read.
+    cw_escape(w)
+    if !cw_str_in(w.outer, name) {
+      Array::push(w.outer, name)
+      cw_changed(w)
+    }
   }
 }
 
@@ -254,7 +340,7 @@ fn cw_ident(w: CarrierWalk, x: String, off: Int, callee: Bool) -> Bool {
   let carrier = if id >= 0 {
     Array::get(w.carrier, id)
   } else {
-    cw_str_in(w.outer, x)
+    cw_str_in(w.outer, x) || cw_escaped(w) && cw_outer_state(w, x, off)
   }
   if id >= 0 && !callee {
     cw_open_lambda(w, Array::get(w.binding_lambda, id))
@@ -492,6 +578,15 @@ fn cw_call(w: CarrierWalk, callee: Expr, args: Array[Expr]) -> Bool {
   // parameters go, and a parameter that is a store target makes its
   // arguments ones.
   let tracked = applied >= 0
+  // A carrier handed to a callee the walk does not follow, other than a
+  // builtin, escapes: the callee may keep it where a later call reads it.
+  let via_perform = match callee {
+    EIdent(p, _) => (p == "perform" || p == "perform?") && cw_perform_escapes(args),
+    _ => false
+  }
+  if (ma || mc) && !tracked && (via_perform || cw_callee_escapes(w, callee)) {
+    cw_escape(w)
+  }
   if ma || (mc && !tracked) || (tracked && cw_params_targeted(w, applied)) {
     for a in args {
       cw_target(w, a)
@@ -509,6 +604,42 @@ fn cw_call(w: CarrierWalk, callee: Expr, args: Array[Expr]) -> Bool {
     cw_open_lambda(w, applied)
   }
   performed || mc || ma
+}
+
+/// Whether an untracked callee may keep what it is handed where the walk
+/// does not see. A builtin keeps it only in its arguments; a binding of the
+/// arm or of the program, a method, or a computed callee may keep it
+/// anywhere.
+///
+/// `perform` hands its operation to a handler outside the arm, which may
+/// keep what the operation carries, so that escapes too (`cw_perform_escapes`)
+/// -- except a throw, whose payload is what the throw site this walk serves
+/// judges, and which never resumes.
+fn cw_callee_escapes(w: CarrierWalk, callee: Expr) -> Bool {
+  match callee {
+    EIdent(x, off) => if cw_is_throw_op(x) || x == "perform" || x == "perform?" {
+      false
+    } else {
+      cw_occ_id(w, x, off) >= 0 || cw_outer_state(w, x, off)
+    },
+    _ => true
+  }
+}
+
+/// Whether `perform`'s argument applies an operation other than a throw.
+fn cw_perform_escapes(args: Array[Expr]) -> Bool {
+  if Array::length(args) == 1 {
+    match Array::get(args, 0) {
+      ECall(EIdent(op, _), _, _, _) => !cw_is_throw_op(op),
+      _ => true
+    }
+  } else {
+    true
+  }
+}
+
+fn cw_is_throw_op(x: String) -> Bool {
+  String::starts_with(x, "Exception") && String::ends_with(x, "::Throw")
 }
 
 //# Store targets
@@ -537,6 +668,11 @@ fn cw_target_ref(w: CarrierWalk, id: Int, x: String) -> Unit {
     }
     cw_mark_id(w, id)
   } else {
+    // A carrier stored into what a binding of the enclosing code reaches
+    // escapes: an alias of it the walk cannot see may read it back.
+    if cw_str_in(w.state_names, x) {
+      cw_escape(w)
+    }
     if !cw_str_in(w.outer_targeted, x) {
       Array::push(w.outer_targeted, x)
       cw_changed(w)

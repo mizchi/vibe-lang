@@ -1,0 +1,33 @@
+// #3551 review: `remember(m)` stores the erased arm's binder in the
+// module-level `saved`, and `recall()` reads it back, so `throw(recall())`
+// rethrows the value `Exception::Throw(m)` caught -- `f`'s `Int` -- and is a
+// throw of no known kind, which the declared `Exception[String]` does not
+// cover. Neither top-level function is a binding of the arm, so the walk did
+// not see the store, charged the throw as a `String` one, and `main` printed
+// `len=14`. The edit is the kinded arm (`Exception[Int]::Throw(m)`) or the
+// erased `with Exception` row.
+let saved: Array[String] = []
+
+fn remember(s: String) -> Unit {
+  Array::push(saved, s)
+}
+
+fn recall() -> String {
+  Array::get(saved, 0)
+}
+
+fn f() -> Int with Exception[Int] {
+  throw(7)
+}
+
+fn g() -> Int with Exception[String] {
+  handle { f() } with { Exception::Throw(m) => {
+    remember(m)
+    throw(recall())
+  } }
+}
+
+fn main allows Console {
+  let r = handle { g() } with { Exception[String]::Throw(s) => String::length(s) }
+  println("len=\{r}")
+}

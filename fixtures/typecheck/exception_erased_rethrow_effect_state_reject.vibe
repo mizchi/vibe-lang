@@ -1,0 +1,36 @@
+// #3551 review: `perform Keep::Put(m)` hands the erased arm's binder to a
+// handler outside the arm, which keeps it, and `perform Keep::Get()` reads it
+// back. So `throw(perform Keep::Get())` rethrows the value
+// `Exception::Throw(m)` caught -- `f`'s `Int` -- and is a throw of no known
+// kind, which the declared `Exception[String]` does not cover. Charged as a
+// `String` throw, it compiled and `main` printed `len=14`. The edit is the
+// kinded arm (`Exception[Int]::Throw(m)`) or the erased `with Exception` row.
+effect Keep {
+  Put(String) -> Unit
+  Get() -> String
+}
+
+fn f() -> Int with Exception[Int] {
+  throw(7)
+}
+
+fn g() -> Int with Exception[String] + Keep {
+  handle { f() } with { Exception::Throw(m) => {
+    perform Keep::Put(m)
+    throw(perform Keep::Get())
+  } }
+}
+
+fn main allows Console {
+  let cell: Array[String] = [""]
+  let r = handle {
+    handle { g() } with {
+      Keep::Put(s) => {
+        Array::set(cell, 0, s)
+        resume(())
+      }
+      Keep::Get() => resume(Array::get(cell, 0))
+    }
+  } with { Exception[String]::Throw(s) => String::length(s) }
+  println("len=\{r}")
+}

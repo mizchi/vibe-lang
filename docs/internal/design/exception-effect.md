@@ -140,7 +140,18 @@ effect Exception[E] {
   `store(cell_of(outer), m)` all make `outer` one. A store target's own value
   (its `let` or assigned value, the subject it was matched or iterated from, a
   tracked lambda's call arguments, a local closure's captures) is one in turn,
-  so `let c = outer.cell` then `store(c, m)` reaches `outer` too. Each
+  so `let c = outer.cell` then `store(c, m)` reaches `outer` too. A carrier
+  ESCAPES when it is handed to a callee the walk does not follow (a function,
+  closure or parameter bound outside the arm, a method, a computed callee, or
+  an effect operation other than a throw) or stored into a binding of the
+  enclosing code; a builtin keeps it only in its result and its arguments.
+  After an escape, judged for the whole arm because a loop may read before
+  it stores, every name of the program bound outside the arm and every
+  `perform` result is a carrier: `remember(m)` then `throw(recall())`,
+  `slot(Some(m))` then `throw(slot(None))`, `sink(m)` then
+  `throw(cell.value)`, `Array::push(saved, m)` then a read through another
+  name for `saved`. A value the arm keeps and a throw OUTSIDE every arm reads
+  back is not seen by this walk (#3541). Each
   identifier is resolved by scope, so a binding of the same spelling to a
   value of its own (`let m = "other"`, a `match` or lambda parameter `m`)
   shadows the carrier for its scope only. A throw payload records no kind

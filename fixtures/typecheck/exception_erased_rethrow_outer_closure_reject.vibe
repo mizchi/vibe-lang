@@ -1,0 +1,32 @@
+// #3551 review (Codex): `slot(Some(m))` hands the erased arm's binder to a
+// closure bound OUTSIDE the arm, which keeps it in the cell it captured, and
+// `slot(None)` reads it back. So `throw(slot(None))` rethrows the value
+// `Exception::Throw(m)` caught -- `f`'s `Int` -- and is a throw of no known
+// kind, which the declared `Exception[String]` does not cover. The walk did
+// not follow the outer closure, charged the throw as a `String` one, and
+// `main` printed `len=14`: its `Exception[String]` arm read the `Int` as a
+// `String`. The edit is the kinded arm (`Exception[Int]::Throw(m)`) or the
+// erased `with Exception` row.
+fn f() -> Int with Exception[Int] {
+  throw(7)
+}
+
+fn g(slot: (Option[String]) -> String) -> Int with Exception[String] {
+  handle { f() } with { Exception::Throw(m) => {
+    let _ = slot(Some(m))
+    throw(slot(None))
+  } }
+}
+
+fn main allows Console {
+  let cell: Array[String] = [""]
+  let slot = (o: Option[String]) -> match o {
+    Some(v) => {
+      Array::set(cell, 0, v)
+      v
+    },
+    None => Array::get(cell, 0)
+  }
+  let r = handle { g(slot) } with { Exception[String]::Throw(s) => String::length(s) }
+  println("len=\{r}")
+}
