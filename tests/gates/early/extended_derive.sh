@@ -539,6 +539,13 @@ ur_refused fixtures/err_eq_formal_payload_refused.vibe 'compares values with a p
 # #3019 rides the same helper: a lowering-time refusal asserted on its message
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'
+# #3540: a handler arm's effects belong to the handlers around its `handle`.
+# Where the lowering that guarantees that cannot take the program, the build
+# is refused with the edit instead of answering through a nested handler.
+ur_refused fixtures/err_handle_arm_throw_inner_catch_refused.vibe 'an exception handler between the `perform` and this `handle` would catch it' 'resume with a value and `throw` after this `handle`'
+ur_refused fixtures/err_handle_arm_effect_cycle_refused.vibe 'handler arms of the effects `Ask` and `Log` each perform another of them' 'move the `perform` out of one of those arms'
+ur_refused fixtures/err_handle_arm_throw_inner_catch_refused.vibe 'an exception handler between the `perform` and this `handle` would catch it' 'resume with a value and `throw` after this `handle`' gc
+ur_refused fixtures/err_handle_arm_effect_cycle_refused.vibe 'handler arms of the effects `Ask` and `Log` each perform another of them' 'move the `perform` out of one of those arms' gc
 # #3042: an `Ordering` of another shape that reached a module only through an
 # imported signature. The module's checker never saw the declaration, so the
 # merged program is refused instead of stopping with an internal error.

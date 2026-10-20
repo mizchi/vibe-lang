@@ -5,7 +5,17 @@ import @vibe/ast {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, builtin_callee_resolution, expr_children, is_runtime_scheduled_effect, lookup_registry_builtin
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  builtin_callee_resolution,
+  expr_children,
+  is_exception_effect_name,
+  is_exception_label,
+  is_exception_throw_handler_name,
+  is_runtime_scheduled_effect,
+  lookup_registry_builtin
 }
 
 import @vibe/core {
@@ -27,6 +37,7 @@ import @vibe/compiler/lowering/effects/queries {
   edp_is_program_binder,
   edp_rq_fold,
   edp_str_array_contains,
+  edp_user_perform_effect_of,
   scps_arm_refs_resume_value,
   scps_as_target_perform,
   scps_pat_binds_name,
@@ -286,6 +297,8 @@ export fn suspend_cps_pass(stmts: Array[Stmt]) -> Array[String] {
     let mut i = 0
     while i < Array::length(stmts) {
       if scps_stmt_has_trigger(Array::get(stmts, i)) {
+        Array::truncate(scps_cur_stmt, 0)
+        Array::push(scps_cur_stmt, i)
         match Array::get(stmts, i) {
           SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, i, SLet(exported, is_rec, name, ty, scps_rewrite(expr, ctx, st, cps_effs, scope))),
           SLetMut(name, ty, expr) => Array::set(stmts, i, SLetMut(name, ty, scps_rewrite(expr, ctx, st, cps_effs, scope))),
@@ -1539,95 +1552,24 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
       } else {
         ()
       }
-      if triggered {
-        // #2962 (Codex P0 on #2985): a sibling arm that captures `resume`
-        // sends the WHOLE handle through the driver below, where an arm's
-        // value is the driver's final result -- so a bare arm (`Get() =>
-        // "abcd"`) next to a capturing one ABORTED the handle with its value,
-        // while the checker (and the tail-resumptive lowering the same arm
-        // takes with no such sibling) reads a bare tail value as an implicit
-        // `resume`. Measured: an Int-valued handle over `Get() -> String`
-        // answered `296352743426`, the string delivered as the Int. The tail
-        // values of every non-capturing arm are wrapped in `resume(..)` here,
-        // so the driver runs the continuation for them exactly as the
-        // non-suspend lowering does. The continuation is called through
-        // `ik`, a fresh name the driver binds beside `resume`, so an arm
-        // whose payload binder or local `let` is named `resume` resumes too
-        // (Codex P0 on #2985) instead of calling the user's binding.
-        let iksite = scps_next_site(st)
-        let ik = scps_seq_float_fresh("iresume", EHandle(rbody, rarms), EUnit, iksite)
-        let sarms = for a in rarms {
-          let (ap, ab) = a
-          let ashadow = scps_pat_binds_resume(ap)
-          if scps_arm_refs_resume_value(ab, ashadow) {
-            (ap, ab)
-          } else {
-            (ap, scps_wrap_tail_resume(ab, ik, ashadow))
-          }
-        }
-        // #1536: a `return` in a HANDLE body means "leave the enclosing
-        // function", not "the handle's value", so it cannot be hoisted to the
-        // body's tail the way a function's own return is. The value is
-        // recorded in a cell declared OUTSIDE the handle, the body finishes
-        // with a placeholder, and the real return happens after the handle --
-        // where it is an ordinary spine return the hoist handles if this whole
-        // thing is itself inside a body being split.
-        // A `return` inside an ARM has the same problem as one inside the
-        // body: the arm runs inside the driver's step closure, so a bare
-        // `return v` handed `v` to the driver as the handle's value (measured
-        // `420` for `Get() => return 42` followed by `r * 10`, Codex P2 on
-        // #2985). The arms go through the same cell rewrite as the body, AFTER
-        // the implicit-resume wrap, so the recorded placeholder stays an
-        // unwrapped tail (an abort of the driver) and the real return happens
-        // after the handle.
-        if scps_loop_ctl_remains(rbody) || scps_loop_arms_ctl_remain(sarms) {
-          // #3019: a `break` / `continue` in this handle that targets a loop
-          // OUTSIDE it. The handle runs inside the driver's step closure, so
-          // codegen emitted a branch to a label the closure does not have and
-          // the module failed validation (`expected 1 elements on the stack
-          // for branch`) after a clean `vibe check`. Refused with the edit
-          // until the record-and-transfer rewrite `return` gets exists for
-          // loop transfers too.
-          Array::push(scps_st_errs(st), "a `break` / `continue` inside this `handle` leaves a loop outside it, but a handler arm captures `resume` as a value, so the handle runs as a closure the transfer cannot leave -- set a flag inside the handle and `break` after it, or `return` from the function instead")
-          EHandle(rbody, rarms)
-        } else if scps_body_has_return(rbody) || scps_body_arms_have_return(sarms) {
-          let hsite = scps_next_site(st)
-          let probe = EHandle(rbody, sarms)
-          let flag = scps_seq_float_fresh("hreturned", probe, EUnit, hsite)
-          let slot = scps_seq_float_fresh("hretslot", probe, EUnit, hsite)
-          let hv = scps_seq_float_fresh("hvalue", probe, EUnit, hsite)
-          // The loop pass lifts a loop return onto the spine as an ordinary
-          // `return`; the capture then turns THAT into the cell write, so the
-          // two compose without the loop pass knowing about the cell.
-          let captured = scps_elim_returns_to(match scps_elim_loop_returns(rbody, hsite) {
-            Some(lifted) => lifted,
-            None => rbody
-          }, hsite, flag, slot)
-          let sarms_ret = for a in sarms {
-            let (ap, ab) = a
-            (ap, scps_elim_returns_to(match scps_elim_loop_returns(ab, hsite) {
-              Some(lifted) => lifted,
-              None => ab
-            }, hsite, flag, slot))
-          }
-          if scps_body_has_return(captured) || scps_body_arms_have_return(sarms_ret) {
-            Array::push(scps_st_errs(st), scps_return_in_split_msg("a handler arm captures `resume` as a value, so this handle's body and its arms"))
-            EHandle(rbody, rarms)
-          } else {
-            let inner = match scps_transform_handle(captured, sarms_ret, ik, ctx, st, scope) {
-              Some(t) => t,
-              None => EHandle(captured, sarms_ret)
-            }
-            ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ELet(hv, inner, EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), EIdent(hv, -1)), -1), -1), -1)
-          }
-        } else {
-          match scps_transform_handle(rbody, sarms, ik, ctx, st, scope) {
-            Some(t) => t,
-            None => EHandle(rbody, sarms)
-          }
-        }
+      // #3540: an arm whose `throw` an exception handler inside the body
+      // would catch must run where the handle is, which only the driver does.
+      let throw_escape = !triggered && scps_arm_throw_needs_driver(rbody, rarms, ctx, scope)
+      if throw_escape {
+        triggered = true
       } else {
+        ()
+      }
+      let emark = Array::length(scps_st_errs(st))
+      let lowered = scps_rewrite_triggered_handle(rbody, rarms, triggered, ctx, st, scope)
+      if throw_escape && Array::length(scps_st_errs(st)) > emark {
+        // The driver cannot take this handle; its refusal would blame a
+        // `resume` capture the program does not have. Name the real conflict.
+        Array::truncate(scps_st_errs(st), emark)
+        Array::push(scps_st_errs(st), scps_throw_escape_msg(rarms))
         EHandle(rbody, rarms)
+      } else {
+        lowered
       }
     },
     EFn(tps, tbs, params, ret, eff, b) => {
@@ -1642,6 +1584,108 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
       Array::truncate(scope, fmark)
       EFn(tps, tbs, params, ret, eff, rb)
     },
+    _ => scps_rewrite_rest(e, ctx, st, cps_effs, scope)
+  }
+}
+
+/// The lowering of one `handle` after its body and arms were rewritten:
+/// through the suspend driver when `triggered`, unchanged otherwise.
+fn scps_rewrite_triggered_handle(rbody: Expr, rarms: Array[(Pat, Expr)], triggered: Bool, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String]), scope: Array[(String, String)]) -> Expr {
+  if triggered {
+    // #2962 (Codex P0 on #2985): a sibling arm that captures `resume`
+    // sends the WHOLE handle through the driver below, where an arm's
+    // value is the driver's final result -- so a bare arm (`Get() =>
+    // "abcd"`) next to a capturing one ABORTED the handle with its value,
+    // while the checker (and the tail-resumptive lowering the same arm
+    // takes with no such sibling) reads a bare tail value as an implicit
+    // `resume`. Measured: an Int-valued handle over `Get() -> String`
+    // answered `296352743426`, the string delivered as the Int. The tail
+    // values of every non-capturing arm are wrapped in `resume(..)` here,
+    // so the driver runs the continuation for them exactly as the
+    // non-suspend lowering does. The continuation is called through
+    // `ik`, a fresh name the driver binds beside `resume`, so an arm
+    // whose payload binder or local `let` is named `resume` resumes too
+    // (Codex P0 on #2985) instead of calling the user's binding.
+    let iksite = scps_next_site(st)
+    let ik = scps_seq_float_fresh("iresume", EHandle(rbody, rarms), EUnit, iksite)
+    let sarms = for a in rarms {
+      let (ap, ab) = a
+      let ashadow = scps_pat_binds_resume(ap)
+      if scps_arm_refs_resume_value(ab, ashadow) {
+        (ap, ab)
+      } else {
+        (ap, scps_wrap_tail_resume(ab, ik, ashadow))
+      }
+    }
+    // #1536: a `return` in a HANDLE body means "leave the enclosing
+    // function", not "the handle's value", so it cannot be hoisted to the
+    // body's tail the way a function's own return is. The value is
+    // recorded in a cell declared OUTSIDE the handle, the body finishes
+    // with a placeholder, and the real return happens after the handle --
+    // where it is an ordinary spine return the hoist handles if this whole
+    // thing is itself inside a body being split.
+    // A `return` inside an ARM has the same problem as one inside the
+    // body: the arm runs inside the driver's step closure, so a bare
+    // `return v` handed `v` to the driver as the handle's value (measured
+    // `420` for `Get() => return 42` followed by `r * 10`, Codex P2 on
+    // #2985). The arms go through the same cell rewrite as the body, AFTER
+    // the implicit-resume wrap, so the recorded placeholder stays an
+    // unwrapped tail (an abort of the driver) and the real return happens
+    // after the handle.
+    if scps_loop_ctl_remains(rbody) || scps_loop_arms_ctl_remain(sarms) {
+      // #3019: a `break` / `continue` in this handle that targets a loop
+      // OUTSIDE it. The handle runs inside the driver's step closure, so
+      // codegen emitted a branch to a label the closure does not have and
+      // the module failed validation (`expected 1 elements on the stack
+      // for branch`) after a clean `vibe check`. Refused with the edit
+      // until the record-and-transfer rewrite `return` gets exists for
+      // loop transfers too.
+      Array::push(scps_st_errs(st), "a `break` / `continue` inside this `handle` leaves a loop outside it, but a handler arm captures `resume` as a value, so the handle runs as a closure the transfer cannot leave -- set a flag inside the handle and `break` after it, or `return` from the function instead")
+      EHandle(rbody, rarms)
+    } else if scps_body_has_return(rbody) || scps_body_arms_have_return(sarms) {
+      let hsite = scps_next_site(st)
+      let probe = EHandle(rbody, sarms)
+      let flag = scps_seq_float_fresh("hreturned", probe, EUnit, hsite)
+      let slot = scps_seq_float_fresh("hretslot", probe, EUnit, hsite)
+      let hv = scps_seq_float_fresh("hvalue", probe, EUnit, hsite)
+      // The loop pass lifts a loop return onto the spine as an ordinary
+      // `return`; the capture then turns THAT into the cell write, so the
+      // two compose without the loop pass knowing about the cell.
+      let captured = scps_elim_returns_to(match scps_elim_loop_returns(rbody, hsite) {
+        Some(lifted) => lifted,
+        None => rbody
+      }, hsite, flag, slot)
+      let sarms_ret = for a in sarms {
+        let (ap, ab) = a
+        (ap, scps_elim_returns_to(match scps_elim_loop_returns(ab, hsite) {
+          Some(lifted) => lifted,
+          None => ab
+        }, hsite, flag, slot))
+      }
+      if scps_body_has_return(captured) || scps_body_arms_have_return(sarms_ret) {
+        Array::push(scps_st_errs(st), scps_return_in_split_msg("a handler arm captures `resume` as a value, so this handle's body and its arms"))
+        EHandle(rbody, rarms)
+      } else {
+        let inner = match scps_transform_handle(captured, sarms_ret, ik, ctx, st, scope) {
+          Some(t) => t,
+          None => EHandle(captured, sarms_ret)
+        }
+        ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ELet(hv, inner, EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), EIdent(hv, -1)), -1), -1), -1)
+      }
+    } else {
+      match scps_transform_handle(rbody, sarms, ik, ctx, st, scope) {
+        Some(t) => t,
+        None => EHandle(rbody, sarms)
+      }
+    }
+  } else {
+    EHandle(rbody, rarms)
+  }
+}
+
+/// `scps_rewrite` for every node but `EHandle` and `EFn`.
+fn scps_rewrite_rest(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String]), cps_effs: Array[String], scope: Array[(String, String)]) -> Expr {
+  match e {
     ELet(n, v, b, off) => {
       let rv = scps_rewrite(v, ctx, st, cps_effs, scope)
       let lmark = Array::length(scope)
@@ -1739,6 +1783,274 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
     },
     _ => e
   }
+}
+
+/// The statement `scps_rewrite` is in, for `scps_program_may_catch_elsewhere`.
+let scps_cur_stmt: Array[Int] = []
+
+/// #3540 (P0): does a handle whose arm can THROW have to run its arms through
+/// the driver below instead of being lowered in place?
+///
+/// In place, an arm runs where its effect is performed: spliced at a direct
+/// `perform`, or as the evidence closure a needing call runs inside its
+/// callee. An exception is one wasm tag caught by the dynamically innermost
+/// exception handler, so a `throw` in the arm was caught by any exception
+/// handler between that point and the `handle` -- while the arm's effects
+/// belong to the code around the `handle` (the checker types them there).
+/// Measured on main: an `Ask::Get() => throw("not an int")` arm over a body
+/// that reaches the perform inside `handle { .. } with { Exception[Int]::
+/// Throw(code) => code * 2 }` answered `r=274877906954` (the string's pointer
+/// doubled as an Int) where the outer `Exception[String]` arm must answer -1.
+/// The driver runs an arm at the handle, after the body has suspended out of
+/// its own handlers.
+///
+/// True when some arm of a non-exception effect may throw and an exception
+/// handler can sit between a perform of that effect and the handle: one
+/// written in the body whose own body can reach the perform, or one in code
+/// the arm's evidence may run inside (the body reaches the perform other than
+/// directly, and the program has an exception handler some call could be
+/// running). Anything this cannot see through answers true; the driver then
+/// lowers the handle or it is refused with the edit, never answered wrongly.
+fn scps_arm_throw_needs_driver(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, String)]) -> Bool {
+  let effs = array_empty_str()
+  let mut throws = false
+  for a in arms {
+    let (p, ab) = a
+    match p {
+      PCtor(q, _) => if !is_exception_throw_handler_name(q) {
+        let ci = String::index_of(q, "::")
+        let qe = if ci > 0 {
+          String::substring(q, 0, ci)
+        } else {
+          q
+        }
+        if !edp_str_array_contains(effs, qe) {
+          Array::push(effs, qe)
+        } else {
+          ()
+        }
+        if !throws && scps_arm_may_throw(ab, ab, ctx, scope) {
+          throws = true
+        } else {
+          ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  if !throws {
+    false
+  } else {
+    let mut hit = false
+    for eff in effs {
+      if !hit {
+        let (declared, decl_ops) = scps_effect_decl_ops(ctx, eff)
+        if !declared {
+          hit = true
+        } else {
+          let ops = array_empty_str()
+          for o in decl_ops {
+            let (opname, _) = o
+            Array::push(ops, String::concat(String::concat(eff, "::"), opname))
+          }
+          let needing = scps_needing_for(ctx, eff)
+          if scps_catch_reaches(body, body, eff, ops, needing, ctx, scope) {
+            hit = true
+          } else if scps_reaches_arm_indirectly(body, body, eff, ops, needing, ctx, scope, false) && scps_program_may_catch_elsewhere(ctx) {
+            hit = true
+          } else {
+            ()
+          }
+        }
+      } else {
+        ()
+      }
+    }
+    hit
+  }
+}
+
+/// May evaluating this arm expression throw? `root` is the arm, whose own
+/// binders make a callee local (and so unseen).
+fn scps_arm_may_throw(e: Expr, root: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, String)]) -> Bool {
+  match e {
+    ECall(callee, args, _, _) => match callee {
+      EIdent(nm, _) => if nm == "throw" {
+        true
+      } else if nm == "perform" {
+        is_exception_effect_name(edp_user_perform_effect_of(e)) || scps_arms_may_throw_exprs(args, root, ctx, scope)
+      } else if scps_name_is_local(root, scope, nm) {
+        true
+      } else {
+        let (is_fn, row) = scps_fn_row_of(ctx, nm)
+        let seen_through = if is_fn {
+          !scps_row_may_throw(ctx, row)
+        } else {
+          nm == "resume" || idp_is_pure_builtin_call(nm) || scps_is_safe_mut_builtin(nm) || scps_is_ctor_name(ctx, nm) || match lookup_registry_builtin(nm) {
+            Some(_) => true,
+            None => false
+          }
+        }
+        if seen_through {
+          scps_arms_may_throw_exprs(args, root, ctx, scope)
+        } else {
+          true
+        }
+      },
+      _ => true
+    },
+    EIdent(nm, _) => if scps_name_is_local(root, scope, nm) {
+      scps_scope_row_has(scope, nm, "Exception", ctx)
+    } else {
+      let (is_fn, row) = scps_fn_row_of(ctx, nm)
+      is_fn && scps_row_may_throw(ctx, row)
+    },
+    _ => scps_arms_may_throw_exprs(expr_children(e), root, ctx, scope)
+  }
+}
+
+fn scps_arms_may_throw_exprs(es: Array[Expr], root: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, String)]) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(es) && !hit {
+    hit = scps_arm_may_throw(Array::get(es, i), root, ctx, scope)
+    i = i + 1
+  }
+  hit
+}
+
+fn scps_row_may_throw(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), row: String) -> Bool {
+  if scps_row_has_var(row) || scps_row_contains(ctx, row, "Exception") {
+    true
+  } else {
+    let mut hit = false
+    for item in String::split(row, ",") {
+      let label = String::trim(item)
+      if String::length(label) > 0 && is_exception_label(label) {
+        hit = true
+      } else {
+        ()
+      }
+    }
+    hit
+  }
+}
+
+/// Is there a `handle` with an exception arm inside `e` whose own body can
+/// reach a perform of `eff`?
+fn scps_catch_reaches(e: Expr, root: Expr, eff: String, ops: Array[String], needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, String)]) -> Bool {
+  let here = match e {
+    EHandle(hb, harms) => idp_arms_discharge_error(harms) && scps_reaches_arm_indirectly(hb, root, eff, ops, needing, ctx, scope, true),
+    _ => false
+  }
+  if here {
+    true
+  } else {
+    let kids = expr_children(e)
+    let mut hit = false
+    let mut i = 0
+    while i < Array::length(kids) && !hit {
+      hit = scps_catch_reaches(Array::get(kids, i), root, eff, ops, needing, ctx, scope)
+      i = i + 1
+    }
+    hit
+  }
+}
+
+/// Could a call made from the statement being rewritten be running inside an
+/// exception handler? One inside any function (top-level or a lambda) can be;
+/// the current top-level function's own handlers count only when its name is
+/// referenced, since a call can then re-enter it.
+fn scps_program_may_catch_elsewhere(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+  let (stmts, _, _, _, _, _) = ctx
+  let cur = if Array::length(scps_cur_stmt) > 0 {
+    Array::get(scps_cur_stmt, 0)
+  } else {
+    0 - 1
+  }
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(stmts) && !hit {
+    hit = match Array::get(stmts, i) {
+      SLet(_, _, nm, _, v) => match v {
+        EFn(_, _, _, _, _, b) => scps_has_catch(b, i != cur || scps_name_referenced(stmts, nm)),
+        _ => scps_has_catch(v, false)
+      },
+      SLetMut(_, _, v) => scps_has_catch(v, false),
+      SExpr(v) => scps_has_catch(v, false),
+      STest(_, v) => scps_has_catch(v, false),
+      SBench(_, v) => scps_has_catch(v, false),
+      _ => false
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// A `handle` with an exception arm in `e`; at its top level only when `top`,
+/// and anywhere inside a lambda.
+fn scps_has_catch(e: Expr, top: Bool) -> Bool {
+  match e {
+    EFn(_, _, _, _, _, b) => scps_has_catch(b, true),
+    _ => {
+      let here = match e {
+        EHandle(_, harms) => top && idp_arms_discharge_error(harms),
+        _ => false
+      }
+      if here {
+        true
+      } else {
+        let kids = expr_children(e)
+        let mut hit = false
+        let mut i = 0
+        while i < Array::length(kids) && !hit {
+          hit = scps_has_catch(Array::get(kids, i), top)
+          i = i + 1
+        }
+        hit
+      }
+    }
+  }
+}
+
+fn scps_name_referenced(stmts: Array[Stmt], nm: String) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(stmts) && !hit {
+    hit = match Array::get(stmts, i) {
+      SLet(_, _, _, _, v) => edp_rq_fold(RQRefsName(nm), v) > 0,
+      SLetMut(_, _, v) => edp_rq_fold(RQRefsName(nm), v) > 0,
+      SExpr(v) => edp_rq_fold(RQRefsName(nm), v) > 0,
+      STest(_, v) => edp_rq_fold(RQRefsName(nm), v) > 0,
+      SBench(_, v) => edp_rq_fold(RQRefsName(nm), v) > 0,
+      _ => false
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn scps_throw_escape_msg(arms: Array[(Pat, Expr)]) -> String {
+  let mut eff = ""
+  for a in arms {
+    let (p, _) = a
+    match p {
+      PCtor(q, _) => if eff == "" && !is_exception_throw_handler_name(q) {
+        let ci = String::index_of(q, "::")
+        eff = if ci > 0 {
+          String::substring(q, 0, ci)
+        } else {
+          q
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  String::concat(String::concat("resume with a value and `throw` after this `handle`, or move the inner exception handler outside it: a handler arm of `", eff), "` here can throw, and an exception handler between the `perform` and this `handle` would catch it, but an arm's exceptions belong to the code around the `handle` -- the lowering that runs the arm there cannot take this handle (for example, it also has an exception arm, mixes effects, or its body calls through a closure or a row variable)")
 }
 
 fn scps_prepass_bind_local(scope: Array[(String, Int)], name: String, value: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Array[(String, Int)] {

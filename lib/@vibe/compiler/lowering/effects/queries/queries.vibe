@@ -9,6 +9,8 @@ import @vibe/compiler/core {
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  is_exception_effect_name,
+  is_exception_throw_handler_name,
   lookup_registry_builtin
 }
 
@@ -239,7 +241,8 @@ export fn edp_rq_arms(q: EdpReadQuery, arms: Array[(Pat, Expr)], is_handle: Bool
       // #3064: an arm that leaves the function with `return` may need the
       // suspend driver too (scps_arm_return_needs_driver decides precisely);
       // this pre-scan only has to be conservative.
-      RQTrigger => if is_handle && (scps_arm_refs_resume_value(body, scps_pat_binds_resume(pat)) || edp_rq_fold(RQBodyReturn, body) > 0) {
+      // #3540: so may an arm that can throw (scps_arm_throw_needs_driver).
+      RQTrigger => if is_handle && (scps_arm_refs_resume_value(body, scps_pat_binds_resume(pat)) || edp_rq_fold(RQBodyReturn, body) > 0 || (!is_exception_throw_handler_name(edp_pat_qname(pat)) && scps_arm_may_throw_syntactic(body))) {
         1
       } else {
         0
@@ -1852,6 +1855,41 @@ fn scps_fn_params_bind_resume(params: Array[(String, Option[TypeExpr])]) -> Bool
     i = i + 1
   }
   found
+}
+
+/// #3540: the allocation-light pre-scan half of `scps_arm_throw_needs_driver`
+/// -- may this handler arm throw? Syntax only, so it answers true for any call
+/// it cannot classify without the program's rows (a user function, a local
+/// closure, a computed callee); the suspend pass decides precisely.
+fn scps_arm_may_throw_syntactic(e: Expr) -> Bool {
+  match e {
+    ECall(callee, args, _, _) => match callee {
+      EIdent(nm, _) => if nm == "throw" {
+        true
+      } else if nm == "perform" {
+        is_exception_effect_name(edp_user_perform_effect_of(e)) || scps_any_may_throw_syntactic(args)
+      } else if nm == "resume" || idp_is_pure_builtin_call(nm) || match lookup_registry_builtin(nm) {
+        Some(_) => true,
+        None => false
+      } {
+        scps_any_may_throw_syntactic(args)
+      } else {
+        true
+      },
+      _ => true
+    },
+    _ => scps_any_may_throw_syntactic(expr_children(e))
+  }
+}
+
+fn scps_any_may_throw_syntactic(es: Array[Expr]) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(es) && !hit {
+    hit = scps_arm_may_throw_syntactic(Array::get(es, i))
+    i = i + 1
+  }
+  hit
 }
 
 export fn scps_arm_refs_resume_value(e: Expr, sh: Bool) -> Bool {

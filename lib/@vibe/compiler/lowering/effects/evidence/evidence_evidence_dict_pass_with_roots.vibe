@@ -13,7 +13,8 @@ import @vibe/compiler/core {
   expr_children_push,
   expr_children_top,
   is_exception_effect_name,
-  is_exception_throw_operation
+  is_exception_throw_operation,
+  lookup_registry_builtin
 }
 
 import @vibe/core {
@@ -21,7 +22,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/lowering/effects/direct {
-  idp_note_program_decls, idp_pure_builtin_names
+  idp_is_pure_builtin_call, idp_note_program_decls, idp_pure_builtin_names
 }
 
 import @vibe/compiler/lowering/effects/queries {
@@ -33,6 +34,7 @@ import @vibe/compiler/lowering/effects/queries {
   edp_handle_statement_index,
   edp_handle_statement_indices,
   edp_has_unsafe_construct,
+  edp_pat_qname,
   edp_row_is_exactly,
   edp_rq_fold,
   edp_str_array_contains,
@@ -644,7 +646,8 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   // row, so the type-directed sweep gives it the dict its callee passes.
   edp_stamp_slot_rows(stmts, fn_defs)
   let keep = dce_keep_flags(stmts, roots)
-  let plans = edp_plan_migrations(stmts, effect_defs, fn_defs, keep, errs, fn_row_labels)
+  // #3540: an arm's own effects are migrated before the arm is spliced.
+  let plans = edp_order_plans_for_arm_performs(stmts, edp_plan_migrations(stmts, effect_defs, fn_defs, keep, errs, fn_row_labels), fn_defs, fn_row_labels, errs)
   // #3424: a function value at such a parameter that the stamp could not
   // give the row is called with a dict it has no parameter for -- when the
   // row's effect is migrated, so the call passes one.
@@ -1924,4 +1927,233 @@ fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[Str
     si = si + 1
   }
   found
+}
+
+/// #3540 (P0): the order the planned migrations are applied in.
+///
+/// A tail-resumptive arm is spliced into its handle's body -- at each
+/// `perform`, or as the dict closure built at a needing call -- and every
+/// `perform` the ARM makes is then resolved by whichever migration runs later,
+/// against the arm's NEW lexical position. A handler for that effect nested in
+/// the body sits between the two, so applying the arm's own effect first made
+/// it the arm's handler: `handle { handle { handle { perform Ask::Get() } with
+/// Log } with { Ask::Get() => { perform Log::Say("x"); resume(10) } } } with
+/// Log` printed through the INNER `Log` arm, while the arm's effects belong to
+/// the handlers around the `handle` (the checker types them there). Which
+/// answer a program got depended on the order its effects were declared in.
+///
+/// Migrating the arm's effect FIRST resolves the arm's performs where the arm
+/// is written, before it is copied anywhere, which is the handler semantics.
+/// So a plan for `E` waits for every planned `Y` that some arm of an `E`
+/// handle may perform while the handle's body holds a `Y` handle. Plans with
+/// no such dependency keep their order. A cycle has no order that is right
+/// for both handles; it is refused with the edit rather than answered.
+fn edp_order_plans_for_arm_performs(stmts: Array[Stmt], plans: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], errs: Array[String]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+  if Array::length(plans) < 2 {
+    plans
+  } else {
+    let names = empty_str_array()
+    for plan in plans {
+      Array::push(names, plan.0)
+    }
+    // (E, Y): Y must be applied before E.
+    let edges: Array[(String, String)] = []
+    for s in stmts {
+      match s {
+        SLet(_, _, _, _, expr) => edp_ao_collect_edges(expr, names, fn_defs, row_labels, edges),
+        SLetMut(_, _, expr) => edp_ao_collect_edges(expr, names, fn_defs, row_labels, edges),
+        SExpr(expr) => edp_ao_collect_edges(expr, names, fn_defs, row_labels, edges),
+        STest(_, expr) => edp_ao_collect_edges(expr, names, fn_defs, row_labels, edges),
+        SBench(_, expr) => edp_ao_collect_edges(expr, names, fn_defs, row_labels, edges),
+        _ => ()
+      }
+    }
+    if Array::length(edges) == 0 {
+      plans
+    } else {
+      let ordered = array_empty()
+      let done = empty_str_array()
+      let taken: Array[Bool] = []
+      while Array::length(taken) < Array::length(plans) {
+        Array::push(taken, false)
+      }
+      let mut progress = true
+      while Array::length(ordered) < Array::length(plans) && progress {
+        progress = false
+        let mut i = 0
+        while i < Array::length(plans) && !progress {
+          let plan = Array::get(plans, i)
+          if !Array::get(taken, i) && edp_ao_deps_done(plan.0, edges, names, done) {
+            Array::push(ordered, plan)
+            Array::push(done, plan.0)
+            Array::set(taken, i, true)
+            progress = true
+          } else ()
+          i = i + 1
+        }
+      }
+      if Array::length(ordered) < Array::length(plans) {
+        let cyc = empty_str_array()
+        let mut i = 0
+        while i < Array::length(plans) {
+          if !Array::get(taken, i) {
+            let plan = Array::get(plans, i)
+            Array::push(cyc, plan.0)
+            Array::push(ordered, plan)
+          } else ()
+          i = i + 1
+        }
+        Array::push(errs, String::concat(String::concat("handler arms of the effects ", edp_join_and(cyc)), " each perform another of them while a `handle` for it is nested in the handled body, so no order of their handlers is right for both -- move the `perform` out of one of those arms (resume with a value and perform after the `handle`), or move the nested `handle` outside"))
+      } else ()
+      ordered
+    }
+  }
+}
+
+fn edp_ao_deps_done(e: String, edges: Array[(String, String)], names: Array[String], done: Array[String]) -> Bool {
+  let mut ok = true
+  for edge in edges {
+    let (from, to) = edge
+    if from == e && to != e && edp_str_array_contains(names, to) && !edp_str_array_contains(done, to) {
+      ok = false
+    } else ()
+  }
+  ok
+}
+
+fn edp_ao_push_edge(edges: Array[(String, String)], from: String, to: String) -> Unit {
+  let mut seen = false
+  for edge in edges {
+    let (f, t) = edge
+    if f == from && t == to {
+      seen = true
+    } else ()
+  }
+  if !seen {
+    Array::push(edges, (from, to))
+  } else ()
+}
+
+fn edp_ao_collect_edges(expr: Expr, names: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], edges: Array[(String, String)]) -> Unit {
+  match expr {
+    EHandle(body, arms) => {
+      let inner = empty_str_array()
+      edp_ao_nested_handle_effects(body, names, inner)
+      if Array::length(inner) > 0 {
+        for arm in arms {
+          let (p, ab) = arm
+          let e = edp_effect_name_of(edp_pat_qname(p))
+          if edp_str_array_contains(names, e) {
+            for y in inner {
+              if y != e && edp_ao_arm_may_perform(ab, y, fn_defs, row_labels) {
+                edp_ao_push_edge(edges, e, y)
+              } else ()
+            }
+          } else ()
+        }
+      } else ()
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    edp_ao_collect_edges(expr_child_at(i), names, fn_defs, row_labels, edges)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// The planned effects some `handle` inside `expr` names in an arm.
+fn edp_ao_nested_handle_effects(expr: Expr, names: Array[String], out: Array[String]) -> Unit {
+  match expr {
+    EHandle(_, arms) => for arm in arms {
+      let (p, _) = arm
+      let e = edp_effect_name_of(edp_pat_qname(p))
+      if edp_str_array_contains(names, e) && !edp_str_array_contains(out, e) {
+        Array::push(out, e)
+      } else ()
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    edp_ao_nested_handle_effects(expr_child_at(i), names, out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// May evaluating `expr` perform effect `y`? Conservative: a call this walk
+/// cannot see through (a local closure, a computed callee, a row variable)
+/// answers true.
+fn edp_ao_arm_may_perform(expr: Expr, y: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]]) -> Bool {
+  match expr {
+    ECall(callee, args, _, _) => match callee {
+      EIdent(nm, _) => if nm == "perform" {
+        if edp_user_perform_effect_of(expr) == y {
+          true
+        } else {
+          edp_ao_any_may_perform(args, y, fn_defs, row_labels)
+        }
+      } else {
+        let fi = edp_ao_fn_index(fn_defs, nm)
+        let seen_through = if fi >= 0 {
+          !edp_ao_labels_reach(Array::get(row_labels, fi), y)
+        } else {
+          nm == "resume" || nm == "throw" || idp_is_pure_builtin_call(nm) || match lookup_registry_builtin(nm) {
+            Some(_) => true,
+            None => false
+          }
+        }
+        if seen_through {
+          edp_ao_any_may_perform(args, y, fn_defs, row_labels)
+        } else {
+          true
+        }
+      },
+      _ => true
+    },
+    EIdent(nm, _) => {
+      let fi = edp_ao_fn_index(fn_defs, nm)
+      fi >= 0 && edp_ao_labels_reach(Array::get(row_labels, fi), y)
+    },
+    _ => edp_ao_any_may_perform(expr_children(expr), y, fn_defs, row_labels)
+  }
+}
+
+fn edp_ao_any_may_perform(es: Array[Expr], y: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]]) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(es) && !hit {
+    hit = edp_ao_arm_may_perform(Array::get(es, i), y, fn_defs, row_labels)
+    i = i + 1
+  }
+  hit
+}
+
+fn edp_ao_fn_index(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], nm: String) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (_, _, _, fname, _, _) = Array::get(fn_defs, i)
+    if fname == nm {
+      found = i
+    } else ()
+    i = i + 1
+  }
+  found
+}
+
+fn edp_ao_labels_reach(labels: Array[String], y: String) -> Bool {
+  let mut hit = false
+  for label in labels {
+    if edp_effect_name_of(label) == y || (String::length(label) > 0 && String::byte_at(label, 0) >= 97 && String::byte_at(label, 0) <= 122) {
+      hit = true
+    } else ()
+  }
+  hit
 }

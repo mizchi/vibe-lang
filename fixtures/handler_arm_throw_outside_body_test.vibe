@@ -1,0 +1,192 @@
+// #3540: a handler arm's `throw` belongs to the code around its `handle`, so
+// an exception handler INSIDE the handled body must not catch it. A
+// tail-resumptive arm used to be lowered in place -- run as the evidence
+// closure inside the function that performs -- and an exception is one wasm
+// tag caught by the dynamically innermost handler. So `body`'s
+// `Exception[Int]` arm caught the `Ask` arm's `throw("not an int")` and
+// doubled the string's pointer: `r=274877906954` where the outer
+// `Exception[String]` arm must answer -1. Such a handle now runs its arms at
+// the handle (the suspend driver), after the body has left its own handlers.
+effect Ask {
+  Get() -> Int
+}
+
+fn body() -> Int with Ask {
+  handle {
+    perform Ask::Get() + 1
+  } with { Exception[Int]::Throw(code) => code * 2 }
+}
+
+fn plain() -> Int with Ask {
+  perform Ask::Get() + 1
+}
+
+fn caught_outside(log: Array[String]) -> Int {
+  handle {
+    handle {
+      body()
+    } with { Ask::Get() => throw("not an int") }
+  } with {
+    Exception[String]::Throw(m) => {
+      Array::push(log, "outer caught \{m}")
+      -1
+    }
+  }
+}
+
+// The arm throws on one branch and resumes on the other.
+fn sometimes(n: Int, log: Array[String]) -> Int {
+  handle {
+    handle {
+      body() + body()
+    } with { Ask::Get() => if n > 5 {
+      throw("too big")
+    } else {
+      resume(n)
+    } }
+  } with {
+    Exception[String]::Throw(m) => {
+      Array::push(log, "outer caught \{m}")
+      -1
+    }
+  }
+}
+
+// Controls with no exception handler between the perform and the handle:
+// the arm stays on the in-place lowering and its throw reaches the outer arm.
+fn no_inner_handler(log: Array[String]) -> Int {
+  handle {
+    handle {
+      plain()
+    } with { Ask::Get() => throw("from arm") }
+  } with {
+    Exception[String]::Throw(m) => {
+      Array::push(log, "outer caught \{m}")
+      -2
+    }
+  }
+}
+
+fn direct_perform(log: Array[String]) -> Int {
+  handle {
+    handle {
+      perform Ask::Get() + 1
+    } with { Ask::Get() => throw("direct") }
+  } with {
+    Exception[String]::Throw(m) => {
+      Array::push(log, "outer caught \{m}")
+      -3
+    }
+  }
+}
+
+// A sibling exception arm of the same handle does not catch the arm's throw.
+fn sibling_exception_arm(log: Array[String]) -> Int {
+  handle {
+    handle {
+      perform Ask::Get() + 1
+    } with {
+      Ask::Get() => throw("from arm");
+      Exception[String]::Throw(m) => {
+        Array::push(log, "sibling caught \{m}")
+        -4
+      }
+    }
+  } with {
+    Exception[String]::Throw(m) => {
+      Array::push(log, "outer caught \{m}")
+      -5
+    }
+  }
+}
+
+// An exception the BODY throws is still caught by the body's handler.
+fn body_throw_caught_inside() -> Int {
+  handle {
+    handle {
+      handle {
+        let v = perform Ask::Get()
+        throw(v)
+      } with { Exception[Int]::Throw(code) => code * 2 }
+    } with { Ask::Get() => resume(21) }
+  } with { Exception[String]::Throw(_) => -1 }
+}
+
+// `return` and `break` in an arm that performs nothing keep working.
+fn arm_return() -> Int {
+  let r = handle {
+    plain()
+  } with { Ask::Get() => return 42 }
+  r * 10
+}
+
+fn arm_break() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 10 {
+    i = i + 1
+    let v = handle {
+      perform Ask::Get() * 100
+    } with { Ask::Get() => if i == 3 {
+      break
+    } else {
+      resume(i)
+    } }
+    acc = acc + v
+  }
+  acc
+}
+
+test "an exception handler inside the body does not catch the arm's throw" {
+  let log: Array[String] = []
+  inspect(caught_outside(log), "-1")
+  inspect(log, "[outer caught not an int]")
+}
+
+test "an arm that throws on one branch and resumes on the other" {
+  let log: Array[String] = []
+  inspect(sometimes(2, log), "6")
+  inspect(sometimes(9, log), "-1")
+  inspect(log, "[outer caught too big]")
+}
+
+test "with no handler in between the throw reaches the outer arm" {
+  let log: Array[String] = []
+  inspect(no_inner_handler(log), "-2")
+  inspect(direct_perform(log), "-3")
+  inspect(log, "[outer caught from arm, outer caught direct]")
+}
+
+test "a sibling exception arm does not catch the arm's throw" {
+  let log: Array[String] = []
+  inspect(sibling_exception_arm(log), "-5")
+  inspect(log, "[outer caught from arm]")
+}
+
+test "the body's own throw is still caught inside" {
+  inspect(body_throw_caught_inside(), "42")
+}
+
+// The driver steps `body` inside a closure, so its exception arm sits in a
+// lambda; the arm's payload binder is the arm's own, not a capture (the gc
+// lane stopped with "`code` reached code generation unresolved").
+fn thrower(n: Int) -> Int with Exception[Int] {
+  if n > 3 {
+    throw(n)
+  } else {
+    n
+  }
+}
+
+test "an exception arm inside a lambda binds its payload" {
+  let f = (n: Int) -> handle {
+    thrower(n) + 1
+  } with { Exception[Int]::Throw(code) => code * 2 }
+  inspect(f(2), "3")
+  inspect(f(5), "10")
+}
+
+test "return and break arms" {
+  inspect(arm_return(), "42")
+  inspect(arm_break(), "300")
+}

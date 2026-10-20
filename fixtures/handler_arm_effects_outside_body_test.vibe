@@ -1,0 +1,250 @@
+// #3540: a tail-resumptive handler arm runs where its `handle` is, so the
+// effects the ARM performs go to the handlers around that `handle` -- never to
+// a handler nested inside the handled body, even though the arm is lowered by
+// splicing it at the `perform`. The checker already types an arm's effects
+// there. The lowering applied one effect's migration at a time in declaration
+// order, so with `Ask` declared before `Log` the `Ask` arm was spliced into
+// the inner `Log` handler first and its `perform Log::Say` was answered by
+// that inner arm: `INNER from Ask arm` where `OUTER from Ask arm` is right.
+// Declaring `Log` first gave the right answer, so the answer depended on
+// declaration order. The arm's own effects are now migrated first.
+effect Ask {
+  Get() -> Int
+}
+
+effect Log {
+  Say(String) -> Unit
+}
+
+// The same pair declared in the other order.
+effect Note {
+  Put(String) -> Unit
+}
+
+effect Query {
+  Fetch() -> Int
+}
+
+fn say(m: String) -> Unit with Log {
+  perform Log::Say(m)
+}
+
+fn log_inside(log: Array[String]) -> Int with Ask + Log {
+  handle {
+    perform Ask::Get() + 1
+  } with {
+    Log::Say(m) => {
+      Array::push(log, "INNER \{m}")
+      resume(())
+    }
+  }
+}
+
+fn direct_perform_in_arm(log: Array[String]) -> Int {
+  handle {
+    handle {
+      handle {
+        perform Ask::Get() + 1
+      } with {
+        Log::Say(m) => {
+          Array::push(log, "INNER \{m}")
+          resume(())
+        }
+      }
+    } with {
+      Ask::Get() => {
+        perform Log::Say("from Ask arm")
+        resume(10)
+      }
+    }
+  } with {
+    Log::Say(m) => {
+      Array::push(log, "OUTER \{m}")
+      resume(())
+    }
+  }
+}
+
+fn call_in_arm(log: Array[String]) -> Int {
+  handle {
+    handle {
+      handle {
+        perform Ask::Get() + 1
+      } with {
+        Log::Say(m) => {
+          Array::push(log, "INNER \{m}")
+          resume(())
+        }
+      }
+    } with {
+      Ask::Get() => {
+        say("through a call")
+        resume(20)
+      }
+    }
+  } with {
+    Log::Say(m) => {
+      Array::push(log, "OUTER \{m}")
+      resume(())
+    }
+  }
+}
+
+fn other_declaration_order(log: Array[String]) -> Int {
+  handle {
+    handle {
+      handle {
+        perform Query::Fetch() + 1
+      } with {
+        Note::Put(m) => {
+          Array::push(log, "INNER \{m}")
+          resume(())
+        }
+      }
+    } with {
+      Query::Fetch() => {
+        perform Note::Put("from Query arm")
+        resume(30)
+      }
+    }
+  } with {
+    Note::Put(m) => {
+      Array::push(log, "OUTER \{m}")
+      resume(())
+    }
+  }
+}
+
+// The inner handler is inside a function the body calls.
+fn handler_in_callee(log: Array[String]) -> Int {
+  handle {
+    handle {
+      log_inside(log)
+    } with {
+      Ask::Get() => {
+        perform Log::Say("callee")
+        resume(40)
+      }
+    }
+  } with {
+    Log::Say(m) => {
+      Array::push(log, "OUTER \{m}")
+      resume(())
+    }
+  }
+}
+
+// The handler around the `handle` reaches it through the caller, and the
+// inner handler's own arm performs the effect onward.
+fn noisy() -> Int with Ask + Log {
+  perform Log::Say("noisy")
+  perform Ask::Get() + 1
+}
+
+fn handler_from_caller() -> Int with Log {
+  handle {
+    handle {
+      noisy()
+    } with {
+      Log::Say(m) => {
+        perform Log::Say("INNER saw \{m}")
+        resume(())
+      }
+    }
+  } with {
+    Ask::Get() => {
+      perform Log::Say("from Ask arm")
+      resume(60)
+    }
+  }
+}
+
+fn call_handler_from_caller(log: Array[String]) -> Int {
+  handle {
+    handler_from_caller()
+  } with {
+    Log::Say(m) => {
+      Array::push(log, "OUTER \{m}")
+      resume(())
+    }
+  }
+}
+
+// Control: an arm that performs nothing still answers through the body's
+// handlers as before, and the body's own `Log` goes to the inner arm.
+fn arm_performs_nothing(log: Array[String]) -> Int {
+  handle {
+    handle {
+      handle {
+        perform Log::Say("body")
+        perform Ask::Get() + 1
+      } with {
+        Log::Say(m) => {
+          Array::push(log, "INNER \{m}")
+          resume(())
+        }
+      }
+    } with { Ask::Get() => resume(50) }
+  } with {
+    Log::Say(m) => {
+      Array::push(log, "OUTER \{m}")
+      resume(())
+    }
+  }
+}
+
+// #2500 item 2's shape: an arm performing its OWN effect reaches the outer
+// handler for it.
+fn same_effect_nesting() -> Int {
+  handle {
+    handle {
+      perform Ask::Get() * 2
+    } with { Ask::Get() => resume(perform Ask::Get() + 1) }
+  } with { Ask::Get() => resume(10) }
+}
+
+test "an arm's perform goes to the handler around its handle" {
+  let log: Array[String] = []
+  let r = direct_perform_in_arm(log)
+  inspect(r, "11")
+  inspect(log, "[OUTER from Ask arm]")
+}
+
+test "an arm's call to a performing function goes there too" {
+  let log: Array[String] = []
+  let r = call_in_arm(log)
+  inspect(r, "21")
+  inspect(log, "[OUTER through a call]")
+}
+
+test "the answer does not depend on declaration order" {
+  let log: Array[String] = []
+  let r = other_declaration_order(log)
+  inspect(r, "31")
+  inspect(log, "[OUTER from Query arm]")
+}
+
+test "a handler inside a called function does not see the arm's perform" {
+  let log: Array[String] = []
+  let r = handler_in_callee(log)
+  inspect(r, "41")
+  inspect(log, "[OUTER callee]")
+}
+
+test "the handler around the handle arrives from the caller" {
+  let log: Array[String] = []
+  let r = call_handler_from_caller(log)
+  inspect(r, "61")
+  inspect(log, "[OUTER INNER saw noisy, OUTER from Ask arm]")
+}
+
+test "an arm that performs nothing is unchanged" {
+  let log: Array[String] = []
+  let r = arm_performs_nothing(log)
+  inspect(r, "51")
+  inspect(log, "[INNER body]")
+}
+
+test "same-effect nesting reaches the outer handler" {
+  inspect(same_effect_nesting(), "22")
+}

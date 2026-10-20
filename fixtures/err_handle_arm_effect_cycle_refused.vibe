@@ -1,0 +1,38 @@
+// #3540: an arm's effects are migrated before the arm is spliced into its
+// handle's body, so they reach the handlers around the `handle`. Here an `Ask`
+// arm performs `Log` over a nested `Log` handler AND a `Log` arm performs
+// `Ask` over a nested `Ask` handler: no migration order is right for both, so
+// the build is refused with the edit rather than answering one of them through
+// the nested handler.
+effect Ask {
+  Get() -> Int
+}
+
+effect Log {
+  Say(Int) -> Unit
+}
+
+export let _start: () -> Int = () -> {
+  let a = handle {
+    handle {
+      handle {
+        perform Ask::Get() + 1
+      } with { Log::Say(_) => resume(()) }
+    } with { Ask::Get() => {
+      perform Log::Say(1)
+      resume(10)
+    } }
+  } with { Log::Say(_) => resume(()) }
+  let b = handle {
+    handle {
+      handle {
+        perform Log::Say(2)
+        1
+      } with { Ask::Get() => resume(100) }
+    } with { Log::Say(_) => {
+      let _ = perform Ask::Get()
+      resume(())
+    } }
+  } with { Ask::Get() => resume(7) }
+  a + b
+}
