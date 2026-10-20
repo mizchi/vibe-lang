@@ -486,51 +486,6 @@ export fn resolve_import_path_candidates_with_roots(base_dir: String, raw_path: 
   }
 }
 
-/// #3551 review: the file that ships the source declarations of the
-/// region-first compiler-owned heads (`struct TaskGroup[rg, e]`, ...), at
-/// every location the package resolver reads `@vibe/concurrent/experimental`
-/// from: the contract each `resolve_import_path_candidates_with_roots`
-/// candidate names, with its implementation file beside it. The locations are
-/// the resolver's own strings, normalized the way the loader normalizes the
-/// module paths it reads.
-export fn owned_head_source_locations(roots: Array[String]) -> Array[String] {
-  let out = array_empty()
-  for candidate in resolve_import_path_candidates_with_roots("", "@vibe/concurrent/experimental", roots) {
-    let location = normalize_path(String::concat(dir_of_path(candidate), "/concurrent.vibe"))
-    if contains_path(out, location) {
-      ()
-    } else {
-      Array::push(out, location)
-    }
-  }
-  out
-}
-
-/// #3551 review: whether the module at `path` IS the shipped declaration
-/// file -- the file the package resolver reads for
-/// `@vibe/concurrent/experimental` under `roots` -- rather than a file whose
-/// path only ends like it. A relative import names its target by a path the
-/// program chooses (`./@vibe/concurrent/experimental/concurrent.vibe`), so
-/// the path's tail is no provenance. Matching the whole path against the
-/// resolver's own locations is: a relative import reaches one only by naming
-/// that very file, the one an `@vibe/concurrent/experimental` import reads.
-export fn is_owned_head_source_location(path: String, roots: Array[String]) -> Bool {
-  contains_path(owned_head_source_locations(roots), normalize_path(path))
-}
-
-/// `is_owned_head_source_location` under the library roots the environment
-/// names (`external_lib_roots`), for a lane that resolves packages against
-/// them. Every module of a build is asked, so the environment is read only
-/// for a path that could be one of the locations at all.
-export fn is_owned_head_source_location_env(path: String) -> Bool with Env {
-  let tail = "@vibe/concurrent/experimental/concurrent.vibe"
-  if String::ends_with(path, tail) {
-    is_owned_head_source_location(path, external_lib_roots())
-  } else {
-    false
-  }
-}
-
 /// #1872 (#1770 Phase 2): the compiler's read-side source-access effect.
 /// The FS lane discharges it with the real capability builtins
 /// (`Fs::exists` / `Fs::read_file`) at the call boundary; an in-memory lane
@@ -561,28 +516,16 @@ export effect Source {
 /// candidates[0] when every candidate was self).
 export fn resolve_import_path_probe(base_dir: String, raw_path: String, self_path: String) -> String with Env + Source {
   let candidates = resolve_import_path_candidates(base_dir, raw_path)
-  let mut i = 0
-  let mut found = ""
-  let mut fallback = ""
-  while i < Array::length(candidates) {
-    let candidate = Array::get(candidates, i)
-    if candidate == self_path {
-      ()
-    } else {
-      if fallback == "" {
+  let found = first_existing_import_candidate(candidates, self_path)
+  if found == "" {
+    let mut fallback = ""
+    for candidate in candidates {
+      if fallback == "" && candidate != self_path {
         fallback = candidate
       } else {
         ()
       }
-      if found == "" && perform Source::Exists(candidate) {
-        found = candidate
-      } else {
-        ()
-      }
     }
-    i = i + 1
-  }
-  if found == "" {
     if fallback == "" {
       Array::get(candidates, 0)
     } else {
@@ -590,5 +533,101 @@ export fn resolve_import_path_probe(base_dir: String, raw_path: String, self_pat
     }
   } else {
     found
+  }
+}
+
+/// The candidate the resolver SELECTS: the first of `candidates` that exists,
+/// skipping `self_path` (`resolve_import_path_probe` adds the fallback a
+/// missing import reports). "" when none exists.
+export fn first_existing_import_candidate(candidates: Array[String], self_path: String) -> String with Source {
+  let mut found = ""
+  for candidate in candidates {
+    if found == "" && candidate != self_path && perform Source::Exists(candidate) {
+      found = candidate
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// #3551 review: every location the package resolver COULD read the shipped
+/// owned-head declaration file from -- `concurrent.vibe` beside each contract
+/// candidate for `@vibe/concurrent/experimental` under `roots`, normalized.
+/// Being one of them is not being the shipped file (that is
+/// `owned_head_source_location`); this is the best a lane that can see no
+/// other file can say.
+export fn owned_head_source_candidates(roots: Array[String]) -> Array[String] {
+  let out = array_empty()
+  for candidate in resolve_import_path_candidates_with_roots("", "@vibe/concurrent/experimental", roots) {
+    let location = normalize_path(String::concat(dir_of_path(candidate), "/concurrent.vibe"))
+    if contains_path(out, location) {
+      ()
+    } else {
+      Array::push(out, location)
+    }
+  }
+  out
+}
+
+/// Whether `path` names one of `owned_head_source_candidates(roots)`.
+export fn is_owned_head_source_candidate(path: String, roots: Array[String]) -> Bool {
+  contains_path(owned_head_source_candidates(roots), normalize_path(path))
+}
+
+/// #3551 review: the file that ships the source declarations of the
+/// region-first compiler-owned heads (`struct TaskGroup[rg, e]`, ...) is
+/// `concurrent.vibe` beside the contract the package resolver SELECTS for
+/// `@vibe/concurrent/experimental` under `roots`: the first of
+/// `resolve_import_path_candidates_with_roots`' candidates that exists
+/// (`.vibe/store/`, the workspace `lib/`, then each library root). "" when it
+/// selects none. Normalized the way the loader normalizes module paths.
+///
+/// A candidate location is not enough. A program may put an ordinary file at
+/// `lib/@vibe/concurrent/experimental/concurrent.vibe` with no contract beside
+/// it, or beside a contract an earlier candidate shadows, and import it by a
+/// relative path; no `@vibe/concurrent/experimental` import ever reads it.
+export fn owned_head_source_location(roots: Array[String]) -> String with Source {
+  let contract = first_existing_import_candidate(resolve_import_path_candidates_with_roots("", "@vibe/concurrent/experimental", roots), "")
+  if contract == "" {
+    ""
+  } else {
+    normalize_path(String::concat(dir_of_path(contract), "/concurrent.vibe"))
+  }
+}
+
+/// #3551 review: whether the module at `path` IS the shipped declaration
+/// file -- the one an `@vibe/concurrent/experimental` import reads under
+/// `roots` -- rather than a file whose path only ends like it, or one at a
+/// location the resolver could read but does not select. A relative import
+/// that names that very file is the same module; any other path is a program
+/// module. Only a path with the shipped tail probes anything.
+export fn is_owned_head_source_location(path: String, roots: Array[String]) -> Bool with Source {
+  let normalized = normalize_path(path)
+  if String::ends_with(normalized, "@vibe/concurrent/experimental/concurrent.vibe") {
+    let location = owned_head_source_location(roots)
+    location != "" && location == normalized
+  } else {
+    false
+  }
+}
+
+/// `is_owned_head_source_location` against the filesystem, for a lane that
+/// resolves packages under `roots` and reads its modules with `Fs`.
+export fn is_owned_head_source_location_fs(path: String, roots: Array[String]) -> Bool with Fs {
+  handle {
+    is_owned_head_source_location(path, roots)
+  } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)) }
+}
+
+/// `is_owned_head_source_location_fs` under the library roots the environment
+/// names (`external_lib_roots`), the roots the FS lanes resolve packages
+/// against. Every module of a build is asked, so the environment is read only
+/// for a path that could be the file at all.
+export fn is_owned_head_source_location_env_fs(path: String) -> Bool with Env + Fs {
+  if String::ends_with(normalize_path(path), "@vibe/concurrent/experimental/concurrent.vibe") {
+    is_owned_head_source_location_fs(path, external_lib_roots())
+  } else {
+    false
   }
 }

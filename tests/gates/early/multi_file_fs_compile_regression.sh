@@ -1213,6 +1213,57 @@ fi
 rm -rf "$xdir" "$xroot"
 echo "[compiler-gate] VIBE_LIB external roots + freeze ok"
 
+# 6i-b. #3551 review: the region-first owned-head spelling (`struct
+#     TaskGroup[rg, e]`) is trusted only in `concurrent.vibe` beside the
+#     contract the package resolver SELECTS for `@vibe/concurrent/experimental`
+#     -- the first of its candidates that exists. A project of its own,
+#     compiled from its root, puts an ordinary file at a location the resolver
+#     could read: the workspace `lib/` or the store with no contract beside it
+#     (imported relatively from the root), or `lib/` beside a contract of its
+#     own that the store shadows (imported from inside that directory). No
+#     `@vibe/concurrent/experimental` import reads any of them, so each is a
+#     program module. Trusted as the shipped one, it let a bare `TaskGroup` read
+#     the `Int` 7 as a `String`: each compiled, and `_start` answered 14.
+echo "[compiler-gate] 6i-b owned-head spelling outside the selected package (#3551)"
+case "$stage2_wasm" in /*) oh_stage2="$stage2_wasm" ;; *) oh_stage2="$ROOT_DIR/$stage2_wasm" ;; esac
+for oh_layout in lib store shadowed; do
+  oh_root="$(mktemp -d)"
+  oh_import="./lib/@vibe/concurrent/experimental/concurrent.vibe"
+  oh_entry="main.vibe"
+  case "$oh_layout" in
+    lib) oh_dep="lib/@vibe/concurrent/experimental" ;;
+    store)
+      oh_dep=".vibe/store/@vibe/concurrent/experimental"
+      oh_import="./.vibe/store/@vibe/concurrent/experimental/concurrent.vibe"
+      ;;
+    shadowed)
+      oh_dep="lib/@vibe/concurrent/experimental"
+      oh_import="./concurrent.vibe"
+      oh_entry="$oh_dep/main.vibe"
+      mkdir -p "$oh_root/.vibe/store/@vibe/concurrent/experimental" "$oh_root/$oh_dep"
+      printf 'fn unused() -> Int\n' > "$oh_root/.vibe/store/@vibe/concurrent/experimental/index.vpkg"
+      printf 'export fn unused() -> Int { 0 }\n' > "$oh_root/.vibe/store/@vibe/concurrent/experimental/concurrent.vibe"
+      printf 'fn helper() -> Int\n' > "$oh_root/$oh_dep/index.vpkg"
+      ;;
+  esac
+  mkdir -p "$oh_root/$oh_dep"
+  printf 'export struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nexport fn helper() -> Int { 1 }\n' > "$oh_root/$oh_dep/concurrent.vibe"
+  printf 'import %s {\n  struct TaskGroup\n}\n\nfn as_str(g: TaskGroup) -> String {\n  g.first\n}\n\nexport let _start: () -> Int = () -> { String::length(as_str(TaskGroup::{ first: 7, second: 8 })) }\n' "$oh_import" > "$oh_root/$oh_entry"
+  ( cd "$oh_root" && VIBE_PREOPEN_DIR="$oh_root" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$oh_stage2" \
+    "$oh_entry" main.wasm _start >/dev/null 2>&1 ) || true
+  if [ -s "$oh_root/main.wasm" ]; then
+    echo "[compiler-gate] FAIL: $oh_dep/concurrent.vibe was trusted as the shipped owned-head module ($oh_layout, #3551)" >&2
+    rm -rf "$oh_root"; exit 1
+  fi
+  if ! grep -qF 'rename this struct or its type parameters `rg` and `e`: `TaskGroup[rg, e]`' "$oh_root/main.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: $oh_dep/concurrent.vibe ($oh_layout) was refused without the edit (#3551)" >&2
+    cat "$oh_root/main.wasm.diag" >&2 2>/dev/null; rm -rf "$oh_root"; exit 1
+  fi
+  rm -rf "$oh_root"
+done
+echo "[compiler-gate] owned-head spelling outside the selected package refused"
+
 # 6j. distribution pipeline (#754, ADR-0065 Phase 4): publish (version
 #     directive + semver gate) -> fetch cache (CAS keyed by package hash +
 #     versions.tsv) -> materialize into $VIBE_HOME/lib (the default VIBE_LIB

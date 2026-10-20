@@ -7,6 +7,7 @@ import ./typecheck_fs_local_type_member_markers.vibe {
 import @vibe/compiler/core {
   ExportRenamePlan,
   LinkedUnit,
+  Source,
   Stmt,
   Type,
   TypeEnv,
@@ -25,15 +26,17 @@ import @vibe/compiler/core {
   env_lookup_flat,
   export_plan_fingerprint_text,
   export_plan_renames_for,
+  external_lib_roots,
   import_value_rename_locals,
   is_builtin_iterator_serialized_boundary_path,
-  is_owned_head_source_location_env,
+  is_owned_head_source_location,
   linked_unit,
   merged_source_boundary_names,
   namespace_entry_import_shadows,
   namespace_private_value_stmts,
   namespace_private_value_stmts_after_renames,
   namespace_rename_originals_reset,
+  normalize_path,
   record_namespace_rename_originals_for_file,
   refuse_linked_impl_overlaps,
   reject_user_iterator_serialized_boundaries,
@@ -482,6 +485,27 @@ fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, St
   }
 }
 
+/// #3551 review: whether the module at `path` ships the region-first owned
+/// heads, on the walk whose files are the db's sources. The package resolver
+/// selects the first of `@vibe/concurrent/experimental`'s candidates that
+/// EXISTS, and here a file exists when the db holds it, so the shipped module
+/// is `concurrent.vibe` beside the first contract candidate the db holds.
+fn db_module_ships_owned_heads(rdb: RippleDb, path: String) -> Bool with Env {
+  if String::ends_with(normalize_path(path), "@vibe/concurrent/experimental/concurrent.vibe") {
+    handle {
+      is_owned_head_source_location(path, external_lib_roots())
+    } with { Source::Read(p) => resume(match ripple_get_source(rdb, p) {
+      Some(source) => source,
+      None => ""
+    }); Source::Exists(p) => resume(match ripple_get_source(rdb, p) {
+      Some(_) => true,
+      None => false
+    }) }
+  } else {
+    false
+  }
+}
+
 /// #2449: the in-memory module walk's check, with the typed-lowering tables
 /// published per module the way the FS lane publishes them
 /// (`check_module_impl` in typecheck_fs.vibe).
@@ -574,7 +598,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
             let stmts = parse_program_with_path(path, source)
             let final_parse_count = parse_count_after_deps + 1
             let (import_env, reexport_declarations) = build_import_envs(stmts, dir_of_path(path), env_cache_after_deps, interfaces)
-            let full_checked_env = check_module_publishing_typed_lowering_offsets(path, is_owned_head_source_location_env(path), fingerprint, source, stmts, import_env)
+            let full_checked_env = check_module_publishing_typed_lowering_offsets(path, db_module_ships_owned_heads(db_after_deps, path), fingerprint, source, stmts, import_env)
             let checked_env = checked_module_public_env_for_path(path, stmts, full_checked_env, reexport_declarations)
             dependency_interface_set_publish(interfaces, path, checked_env)
             let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
@@ -585,7 +609,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
             let stmts = parse_program_with_path(path, source)
             let final_parse_count = parse_count_after_deps + 1
             let (import_env, reexport_declarations) = build_import_envs(stmts, dir_of_path(path), env_cache_after_deps, interfaces)
-            let full_checked_env = check_module_publishing_typed_lowering_offsets(path, is_owned_head_source_location_env(path), fingerprint, source, stmts, import_env)
+            let full_checked_env = check_module_publishing_typed_lowering_offsets(path, db_module_ships_owned_heads(db_after_deps, path), fingerprint, source, stmts, import_env)
             let checked_env = checked_module_public_env_for_path(path, stmts, full_checked_env, reexport_declarations)
             dependency_interface_set_publish(interfaces, path, checked_env)
             let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)

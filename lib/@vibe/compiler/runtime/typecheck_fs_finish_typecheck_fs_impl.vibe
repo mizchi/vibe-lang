@@ -72,6 +72,7 @@ import @vibe/compiler/core {
   TypeEnv,
   dir_of_path,
   is_builtin_iterator_serialized_boundary_path,
+  is_owned_head_source_location_env_fs,
   resolve_import_path
 }
 
@@ -585,7 +586,14 @@ fn checked_module_artifact_outcome(job: ModuleJob, artifact: CheckedModuleArtifa
 fn finish_checked_module_artifact_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], interfaces: Option[DependencyInterfaceSet]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
   let coordinated = ensure_env_cache_for_paths(rdb, env_cache, deps)
   let projected = project_exact_dependency_envs(deps, coordinated)
-  let job = ModuleJob::{ path, source, deps, dep_fps, dep_envs: projected }
+  let job = ModuleJob::{
+    path,
+    source,
+    deps,
+    dep_fps,
+    dep_envs: projected,
+    ships_owned_heads: is_owned_head_source_location_env_fs(path)
+  }
   let input_identity = checked_module_cache_input_identity(path, source, typing_semantics_seed(), projected)
   if checked_module_cache_mode() == "on" {
     match load_checked_module_artifact(path, input_identity) {
@@ -722,7 +730,8 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
             source: source,
             deps: deps,
             dep_fps: dep_fps,
-            dep_envs: projected_dep_envs
+            dep_envs: projected_dep_envs,
+            ships_owned_heads: is_owned_head_source_location_env_fs(path)
           }
           let outcome = check_module_impl(job, false, None, None, interfaces)
           commit_module_outcome(rdb, coordinated_env_cache, dep_source_cache, parse_count + 1, job, outcome, Some(reuse_eligible), reuse_input_key)
@@ -1050,6 +1059,7 @@ fn checker_engine_job(job: ModuleJob) -> CheckJob {
     source: job.source,
     deps: job.deps,
     dep_fps: job.dep_fps,
-    dep_envs: job.dep_envs
+    dep_envs: job.dep_envs,
+    ships_owned_heads: job.ships_owned_heads
   }
 }
