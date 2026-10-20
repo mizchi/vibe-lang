@@ -130,6 +130,23 @@ test "the merged entry lane refuses the spelling in an imported program module" 
   inspect(got, String::concat(refusal(), String::concat(" (in ", String::concat(dir, "/dep.vibe)"))))
 }
 
+/// #3551 review: a program module whose path merely ends like the shipped
+/// module's (`./@vibe/concurrent/experimental/concurrent.vibe`) is a program
+/// module. Before, the path's tail exempted it and the program compiled.
+test "the merged entry lane refuses the spelling under a path that only ends like the shipped one" {
+  let dir = "/tmp/vibe_owned_head_shape_suffix"
+  let dep_dir = String::concat(dir, "/@vibe/concurrent/experimental")
+  Fs::mkdir_p(dep_dir)
+  let dep = String::concat(dep_dir, "/concurrent.vibe")
+  write_file(dep, "export struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nexport fn as_str(g: TaskGroup) -> String {\n  g.first\n}\n")
+  write_file(String::concat(dir, "/main.vibe"), "import ./@vibe/concurrent/experimental/concurrent.vibe { TaskGroup, as_str }\nexport fn answer() -> Int {\n  String::length(as_str(TaskGroup::{ first: 7, second: 8 }))\n}\n")
+  let got = handle {
+    let _ = compile_file_wasi_only(String::concat(dir, "/main.vibe"), "answer")
+    "accepted"
+  } with { Exception::Throw(m) => m }
+  inspect(got, String::concat(refusal(), String::concat(" (in ", String::concat(dep, ")"))))
+}
+
 test "the library lane refuses the spelling" {
   let dir = "/tmp/vibe_owned_head_shape_library"
   Fs::mkdir_p(dir)

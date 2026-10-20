@@ -43,7 +43,17 @@ import @vibe/compiler/runtime/checked_module_cache {
 }
 
 import @vibe/compiler/core {
-  BindingOrigin, EnvValueBinding, Expr, Stmt, Type, TypeDef, TypeEnv, is_contract_ext, str_lt, unstable_package_note
+  BindingOrigin,
+  EnvValueBinding,
+  Expr,
+  Stmt,
+  Type,
+  TypeDef,
+  TypeEnv,
+  is_contract_ext,
+  is_owned_head_source_location,
+  str_lt,
+  unstable_package_note
 }
 
 import @vibe/compiler/codegen {
@@ -855,8 +865,14 @@ export fn collect_all_diagnostics_for_path(input_path: String, source: String) -
     extract_package_version(source)
   } with { Exception::Throw(_) => "" }
   // #3551 review: a declaration rule that depends on the module's own path
-  // (`owned_head_shape_decl_error`) answers here as on the module walks.
-  declaring_module_path_set(input_path)
+  // (`owned_head_shape_decl_error`) answers here as on the module walks. This
+  // lane reads no environment, so the library roots are not known: the
+  // shipped file is recognised at the workspace's own package locations
+  // (`lib/`, `.vibe/store/`), the ones the `vibe` launcher's project-relative
+  // paths name. Anywhere else the declaration is refused loudly, never
+  // trusted on its path's tail.
+  let no_library_roots: Array[String] = []
+  declaring_module_path_set(input_path, is_owned_head_source_location(input_path, no_library_roots))
   let found = collect_all_diagnostics_on(input_path, pin_blanked, pkg_version)
   declaring_module_path_clear()
   found

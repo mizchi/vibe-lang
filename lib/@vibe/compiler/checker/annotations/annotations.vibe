@@ -984,14 +984,6 @@ fn owned_head_shipped_shape(name: String, formals: Array[String]) -> Bool {
   }
 }
 
-/// #3551 review: the module that ships the region-first heads' source
-/// declarations. A path names it by its package-relative tail, whatever root
-/// the package was found under (`lib/`, a `VIBE_LIB` root, `.vibe/store/`).
-export fn is_owned_head_source_module(path: String) -> Bool {
-  let tail = "@vibe/concurrent/experimental/concurrent.vibe"
-  path == tail || String::ends_with(path, String::concat("/", tail))
-}
-
 /// #3551 review: the refusal for a struct spelled like the shipped declaration
 /// of a region-first head (`owned_head_shipped_shape`) declared outside the
 /// module that ships it, or `None` when `name[formals]` is not that spelling.
@@ -1030,8 +1022,15 @@ export fn owned_head_shape_refusal(name: String, formals: Array[String]) -> Opti
 /// closure file by file before it is flattened
 /// (`validate_source_file_owned_heads`), and every module a build compiles is
 /// checked by a lane that names it.
-export fn owned_head_shape_decl_error(name: String, formals: Array[String], module_path: String, errors: Array[String]) -> Unit {
-  if String::length(module_path) > 0 && !is_owned_head_source_module(module_path) {
+///
+/// `ships_owned_heads` is the naming lane's answer to whether that module is
+/// the shipped file: the one the package resolver reads for
+/// `@vibe/concurrent/experimental` (`is_owned_head_source_location`). The lane
+/// answers because it knows the library roots it resolves packages against.
+/// A path that merely ends like the shipped file's -- a program's own
+/// `./@vibe/concurrent/experimental/concurrent.vibe` -- is not it.
+export fn owned_head_shape_decl_error(name: String, formals: Array[String], module_path: String, ships_owned_heads: Bool, errors: Array[String]) -> Unit {
+  if String::length(module_path) > 0 && !ships_owned_heads {
     match owned_head_shape_refusal(name, formals) {
       Some(message) => Array::push(errors, message),
       None => ()

@@ -17,7 +17,14 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, contains_name, dir_of_path, is_builtin_iterator_serialized_boundary_path, path_to_module_name, resolve_import_path
+  Expr,
+  Stmt,
+  contains_name,
+  dir_of_path,
+  is_builtin_iterator_serialized_boundary_path,
+  is_owned_head_source_location,
+  path_to_module_name,
+  resolve_import_path
 }
 
 import @vibe/compiler/syntax {
@@ -142,6 +149,14 @@ fn collect_direct_dep_paths(entry_stmts: Array[Stmt], entry_dir: String) -> (Arr
   (dep_paths, dep_wanted_names)
 }
 
+/// #3551 review: whether `path` is the file that ships the region-first owned
+/// heads. This lane resolves every import as a plain path and reads no
+/// library roots, so only the workspace's own package locations
+/// (`.vibe/store/`, `lib/`) can name that file here.
+fn linked_file_ships_owned_heads(path: String) -> Bool {
+  is_owned_head_source_location(path, [])
+}
+
 /// #711: `wanted_names[i]` (parallel to `dep_paths[i]`) restricts which of
 /// `dep_paths[i]`'s own exported top-level names get registered into
 /// `linked_imports` -- only the names the ENTRY file actually imports/
@@ -162,7 +177,7 @@ fn collect_linked_dep_artifacts(dep_paths: Array[String], wanted_names: Array[Ar
     validate_source_file_exports(dep_path, dep_stmts)
     // #3551 review: and the region-first head spelling, while the path says
     // whether this file is the module that ships it.
-    validate_source_file_owned_heads(dep_path, dep_stmts)
+    validate_source_file_owned_heads(dep_path, linked_file_ships_owned_heads(dep_path), dep_stmts)
     let module_name = path_to_module_name(dep_path)
     let dep_dir = dir_of_path(dep_path)
     let wanted = Array::get(wanted_names, di)
@@ -247,7 +262,7 @@ export fn collect_linked_compile_inputs(entry_path: String) -> (Array[Stmt], Arr
   // the entry it just read; each dep is validated in
   // `collect_linked_dep_artifacts`, where that file's statements are parsed.
   validate_source_file_exports(entry_path, entry_stmts)
-  validate_source_file_owned_heads(entry_path, entry_stmts)
+  validate_source_file_owned_heads(entry_path, linked_file_ships_owned_heads(entry_path), entry_stmts)
   let (resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_dep_inputs_for_stmts(entry_path, entry_stmts)
   (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs)
 }

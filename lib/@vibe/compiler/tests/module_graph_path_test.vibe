@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  parse_vibe_lib_roots, resolve_import_path_candidates
+  is_owned_head_source_location, owned_head_source_locations, parse_vibe_lib_roots, resolve_import_path_candidates
 }
 
 //# Misc
@@ -46,4 +46,32 @@ test "@scope candidates: store first, workspace lib/ second (#751)" {
   assert(Array::get(cands, 1) == ".vibe/store/@scope/name/index.vibei")
   assert(Array::get(cands, 2) == "lib/@scope/name/index.vpkg")
   assert(Array::get(cands, 3) == "lib/@scope/name/index.vibei")
+}
+
+/// #3551 review: the shipped region-first owned heads' declaration file is
+/// found where the package resolver reads `@vibe/concurrent/experimental`:
+/// the workspace store, the workspace `lib/`, then each library root.
+test "the owned-head source file sits at the package resolver's locations" {
+  inspect(owned_head_source_locations(["/opt/vibe/lib/"]), "[.vibe/store/@vibe/concurrent/experimental/concurrent.vibe, lib/@vibe/concurrent/experimental/concurrent.vibe, /opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe]")
+}
+
+/// A path is that file only when it names one of those locations; ending like
+/// one is not enough, since a relative import's path is the program's choice.
+test "a path that only ends like the owned-head source file is not it" {
+  let roots = ["/opt/vibe/lib"]
+  let answers: Array[String] = []
+  for path in [
+    "lib/@vibe/concurrent/experimental/concurrent.vibe",
+    "./lib/@vibe/concurrent/experimental/concurrent.vibe",
+    "/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe",
+    "@vibe/concurrent/experimental/concurrent.vibe",
+    "app/@vibe/concurrent/experimental/concurrent.vibe",
+    "app/lib/@vibe/concurrent/experimental/concurrent.vibe",
+    "/home/u/p/@vibe/concurrent/experimental/concurrent.vibe",
+    "/opt/vibe/lib/x/@vibe/concurrent/experimental/concurrent.vibe",
+    "lib/@vibe/concurrent/experimental/other.vibe"
+  ] {
+    Array::push(answers, "\{path}: \{is_owned_head_source_location(path, roots)}")
+  }
+  inspect(String::join(answers, "\n"), "lib/@vibe/concurrent/experimental/concurrent.vibe: true\n./lib/@vibe/concurrent/experimental/concurrent.vibe: true\n/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe: true\n@vibe/concurrent/experimental/concurrent.vibe: false\napp/@vibe/concurrent/experimental/concurrent.vibe: false\napp/lib/@vibe/concurrent/experimental/concurrent.vibe: false\n/home/u/p/@vibe/concurrent/experimental/concurrent.vibe: false\n/opt/vibe/lib/x/@vibe/concurrent/experimental/concurrent.vibe: false\nlib/@vibe/concurrent/experimental/other.vibe: false")
 }
