@@ -1,0 +1,47 @@
+// #3551 review control: inside an erased `Exception::Throw(m)` arm, a binding
+// that rebinds `m` to a value of its own shadows the caught value for its
+// scope. Each `throw(m)` below throws that `String`, so `Exception[String]`
+// is the row each function declares. These used to be refused as a rethrow
+// of no known kind, because the arm's carriers were tracked by spelling.
+fn f() -> Int with Exception[Int] {
+  throw(7)
+}
+
+fn by_let() -> Int with Exception[String] {
+  handle { f() } with { Exception::Throw(m) => {
+    let m = "other"
+    throw(m)
+  } }
+}
+
+fn by_let_mut() -> Int with Exception[String] {
+  handle { f() } with { Exception::Throw(m) => {
+    let mut m = "other"
+    m = String::concat(m, "!")
+    throw(m)
+  } }
+}
+
+fn by_match() -> Int with Exception[String] {
+  handle { f() } with { Exception::Throw(m) => match Some("other") {
+    Some(m) => throw(m),
+    None => throw("none")
+  } }
+}
+
+fn by_for() -> Int with Exception[String] {
+  handle { f() } with { Exception::Throw(m) => {
+    for m in ["a", "b"] {
+      throw(m)
+    }
+    0
+  } }
+}
+
+fn main allows Console {
+  let a = handle { by_let() } with { Exception[String]::Throw(s) => String::length(s) }
+  let b = handle { by_let_mut() } with { Exception[String]::Throw(s) => String::length(s) }
+  let c = handle { by_match() } with { Exception[String]::Throw(s) => String::length(s) }
+  let d = handle { by_for() } with { Exception[String]::Throw(s) => String::length(s) }
+  println("\{a} \{b} \{c} \{d}")
+}

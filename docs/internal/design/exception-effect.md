@@ -121,13 +121,19 @@ effect Exception[E] {
   The kinded row and arm are the typed path for such a value.
 - A rethrow from the erased arm records no kind, so it needs the erased row
   (#3541, #3551 review). That covers `throw(m)` and any payload that may carry
-  `m`. While the arm body is typed, the checker keeps the arm's carrier names:
-  `m`, plus, to a fixpoint and ignoring scope, a `let` or assignment whose value
-  names a carrier, the binders of a `match`, `for`, `loop` or handler over
-  one, an identifier passed to a call next to one, and every parameter of a
-  function literal in the body. A throw payload records no kind when its type
-  still holds `m`'s open variable, or when it names a carrier and its type
-  could hold a `String`. The type check alone would depend on the order of
+  `m`. While the arm body is typed, the checker knows the arm's carrier
+  BINDINGS (`checker_erased_throw_carriers.vibe`): `m`, plus, to a fixpoint,
+  a `let` or assigned variable whose value mentions a carrier, the binders of
+  a `match`, `for`, `loop` or handler over one, an identifier passed to a call
+  next to one, the parameters of a function literal that may receive one (a
+  `let`-bound or directly applied literal gets its direct calls' arguments;
+  any other use may pass it anything), and every `perform` result once a
+  nested handler arm mentions a carrier (it may `resume` with one). Each
+  identifier is resolved by scope, so a binding of the same spelling to a
+  value of its own (`let m = "other"`, a `match` or lambda parameter `m`)
+  shadows the carrier for its scope only. A throw payload records no kind
+  when its type still holds `m`'s open variable, or when it mentions a carrier
+  and its type could hold a `String`. The type check alone would depend on the order of
   uses: `m` is pinned to `String` at its first such use, and after that
   `id(m)` or an alias has plain type `String`. A payload whose type holds no
   `String` is a new value of that type and keeps its kind. Such a site is

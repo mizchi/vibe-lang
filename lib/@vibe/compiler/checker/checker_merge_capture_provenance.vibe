@@ -30,7 +30,6 @@ import @vibe/compiler/core {
   env_name_index_length,
   env_type_defs,
   exception_kind_resolutions_clear,
-  expr_any_node,
   expr_children,
   find_typedef,
   instantiate,
@@ -68,6 +67,10 @@ import @vibe/compiler/checker/patterns {
 
 import ./checker_region_retention_arms.vibe {
   retention_arms_bind, retention_assigned_values_into, retention_decl_value, retention_pat_names_into, retention_result_items
+}
+
+import ./checker_erased_throw_carriers.vibe {
+  ErasedCarriers, erased_arm_carriers, erased_carriers_mention
 }
 
 import ./checker_resolve.vibe {
@@ -1747,17 +1750,17 @@ fn row_names_visible_label(row: String) -> Bool {
 export let erased_throw_binder_vars: Array[Int] = []
 
 /// #3551 review: the ERASED arms whose body is being typed, innermost last:
-/// the arm's binder variable and the names in its body that may hold the
-/// binder's value (`erased_arm_carrier_names`). Pushed and popped around the
+/// the arm's binder variable and the identifiers in its body that may hold
+/// the binder's value (`erased_arm_carriers`). Pushed and popped around the
 /// arm body by `erased_throw_arm_enter` / `erased_throw_arm_leave`; reset
 /// with the throw sites.
-export let erased_throw_active_arms: Array[(Int, Array[String])] = []
+export let erased_throw_active_arms: Array[(Int, ErasedCarriers)] = []
 
 /// Enter an erased arm whose binder `binder` is the variable `var_id`.
 /// Answers the mark `erased_throw_arm_leave` takes.
 export fn erased_throw_arm_enter(var_id: Int, binder: String, body: Expr) -> Int {
   let mark = Array::length(erased_throw_active_arms)
-  Array::push(erased_throw_active_arms, (var_id, erased_arm_carrier_names(binder, body)))
+  Array::push(erased_throw_active_arms, (var_id, erased_arm_carriers(binder, body)))
   mark
 }
 
@@ -1783,9 +1786,11 @@ export fn erased_throw_arm_leave(mark: Int) -> Unit {
 /// or a container holding it. Its type is the binder's variable while that is
 /// open, and plain `String` once an earlier use pinned it, so the type alone
 /// would answer by the order of the uses. Such a payload is therefore also
-/// judged by the names it mentions: inside an active erased arm, a payload
-/// that names one of the arm's carrier names, and whose type could hold a
-/// `String`, records no kind. A payload whose type holds no `String`
+/// judged by the identifiers it mentions: inside an active erased arm, a
+/// payload that mentions a binding that may hold the binder's value, and
+/// whose type could hold a `String`, records no kind. That is judged by
+/// binding, not by spelling: after `let m = "other"`, `throw(m)` throws a
+/// `String` of its own. A payload whose type holds no `String`
 /// (`Why::Because(m)` for an enum `Why`) is a new value of its own type.
 export fn throw_payload_recorded_type(payload: Expr, bound: Option[Type], pt: Type, s: Subst) -> Type {
   let direct = match payload {
@@ -1821,7 +1826,7 @@ export fn type_is_erased_rethrow(t: Type) -> Bool {
 fn erased_rethrow_carries_binder(payload: Expr, pt_now: Type, s: Subst) -> Bool {
   let mut carries = false
   for arm in erased_throw_active_arms {
-    let (var_id, names) = arm
+    let (var_id, carriers) = arm
     if !carries {
       // The payload's type still is, or holds, the binder's open variable.
       carries = match subst_apply(s, CtVar(var_id)) {
@@ -1830,7 +1835,7 @@ fn erased_rethrow_carries_binder(payload: Expr, pt_now: Type, s: Subst) -> Bool 
       }
     }
     if !carries && type_may_hold_string(pt_now) {
-      carries = erased_carrier_mentions(payload, names)
+      carries = erased_carriers_mention(payload, carriers)
     }
   }
   carries
@@ -1868,159 +1873,6 @@ fn types_may_hold_string(ts: Array[Type]) -> Bool {
   let mut found = false
   for t in ts {
     if type_may_hold_string(t) {
-      found = true
-    }
-  }
-  found
-}
-
-/// The names in an erased arm's `body` that may hold the value of its binder
-/// `binder`. They are the binder itself and, to a fixpoint:
-///
-/// - a `let`, `let mut` or `let rec` binding, or an assignment target, whose
-///   value names one of them (annotated or not: an annotation does not change
-///   the value);
-/// - the binders of a `match`, a `for` or a nested handler whose subject
-///   names one, and the state of a `loop` that names one;
-/// - an identifier handed to a call alongside one (`Array::push(xs, m)`,
-///   `obj.f = m`);
-/// - every parameter of a function literal in the body, which receives its
-///   arguments from calls this walk does not follow.
-///
-/// Scope is ignored, which can only add names. Only a body that throws needs
-/// the names, so any other answers the binder alone.
-fn erased_arm_carrier_names(binder: String, body: Expr) -> Array[String] {
-  let names: Array[String] = [binder]
-  let throws = expr_any_node(body, (e) -> match e {
-    ECall(EIdent(n, _), _, _, _) => n == "perform" || n == "perform?",
-    _ => false
-  })
-  if throws {
-    let mut grew = true
-    while grew {
-      let before = Array::length(names)
-      erased_carrier_walk(body, names)
-      grew = Array::length(names) > before
-    }
-  }
-  names
-}
-
-fn erased_carrier_walk(e: Expr, names: Array[String]) -> Unit {
-  match e {
-    ELet(x, v, _, _) => erased_carrier_add_if(names, x, v),
-    ELetMut(x, v, _, _) => erased_carrier_add_if(names, x, v),
-    ELetRec(x, v, _) => erased_carrier_add_if(names, x, v),
-    EAssign(x, v, _, _) => erased_carrier_add_if(names, x, v),
-    EAssignOp(x, _, v, _, _) => erased_carrier_add_if(names, x, v),
-    EMatch(subject, arms) => erased_carrier_add_arm_binders(names, subject, arms),
-    EHandle(handled, arms) => erased_carrier_add_arm_binders(names, handled, arms),
-    EForIn(x, y, subject, _) => if erased_carrier_mentions(subject, names) {
-      erased_carrier_add(names, x)
-      match y {
-        Some(n) => erased_carrier_add(names, n),
-        None => ()
-      }
-    },
-    ELoop(state, _) => if erased_carrier_mentions(e, names) {
-      for slot in state {
-        let (n, _) = slot
-        erased_carrier_add(names, n)
-      }
-      ()
-    },
-    ECall(_, args, _, _) => {
-      let mut mentioned = false
-      for a in args {
-        if erased_carrier_mentions(a, names) {
-          mentioned = true
-        }
-      }
-      if mentioned {
-        for a in args {
-          match a {
-            EIdent(n, _) => erased_carrier_add(names, n),
-            _ => ()
-          }
-        }
-        ()
-      }
-    },
-    EFn(_, _, params, _, _, _) => {
-      for param in params {
-        let (n, _) = param
-        erased_carrier_add(names, n)
-      }
-      ()
-    },
-    _ => ()
-  }
-  for child in expr_children(e) {
-    erased_carrier_walk(child, names)
-  }
-  ()
-}
-
-fn erased_carrier_add_arm_binders(names: Array[String], subject: Expr, arms: Array[(Pat, Expr)]) -> Unit {
-  if erased_carrier_mentions(subject, names) {
-    for arm in arms {
-      let (p, _) = arm
-      erased_carrier_pat_names(p, names)
-    }
-    ()
-  }
-}
-
-fn erased_carrier_mentions(e: Expr, names: Array[String]) -> Bool {
-  expr_any_node(e, (n) -> match n {
-    EIdent(x, _) => erased_str_in(names, x),
-    _ => false
-  })
-}
-
-fn erased_carrier_add_if(names: Array[String], x: String, value: Expr) -> Unit {
-  if erased_carrier_mentions(value, names) {
-    erased_carrier_add(names, x)
-  }
-}
-
-fn erased_carrier_add(names: Array[String], x: String) -> Unit {
-  if !erased_str_in(names, x) {
-    Array::push(names, x)
-  }
-}
-
-fn erased_carrier_pat_names(p: Pat, names: Array[String]) -> Unit {
-  match p {
-    PBind(n) => erased_carrier_add(names, n),
-    PCtor(_, items) => erased_carrier_pats_names(items, names),
-    PTuple(items) => erased_carrier_pats_names(items, names),
-    POr(a, b) => {
-      erased_carrier_pat_names(a, names)
-      erased_carrier_pat_names(b, names)
-    },
-    PStruct(_, fields) => {
-      for field in fields {
-        let (_, fp) = field
-        erased_carrier_pat_names(fp, names)
-      }
-      ()
-    },
-    _ => ()
-  }
-}
-
-fn erased_carrier_pats_names(items: Array[Pat], names: Array[String]) -> Unit {
-  for item in items {
-    erased_carrier_pat_names(item, names)
-  }
-  ()
-}
-
-fn erased_str_in(xs: Array[String], x: String) -> Bool {
-  let mut found = false
-  for v in xs {
-    if v == x {
       found = true
     }
   }

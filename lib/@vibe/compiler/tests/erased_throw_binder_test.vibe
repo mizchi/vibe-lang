@@ -151,3 +151,52 @@ test "a value of another kind built from an erased binder keeps its kind" {
   let src = "fn f() -> Int with Exception[Int] { throw(7) }\nenum Why {\n  Because(String)\n}\nfn g() -> Int with Exception[Why] {\n  handle { f() } with { Exception::Throw(m) => throw(Why::Because(m)) }\n}\n"
   inspect(row_checked_diags(src), "[]")
 }
+
+//# A rebinding of the binder's spelling (#3551 review)
+
+/// A `let` that rebinds `m` to a value of its own throws a `String` of its
+/// own: it shadows the carrier for its scope.
+test "a let that shadows an erased binder throws its own kind" {
+  inspect(rethrow_diags("    let m = \"other\"\n    throw(m)"), "[]")
+  inspect(rethrow_diags("    let mut m = \"other\"\n    m = String::concat(m, \"!\")\n    throw(m)"), "[]")
+}
+
+test "a match or for binder that shadows an erased binder throws its own kind" {
+  inspect(rethrow_diags("    match Some(\"other\") {\n      Some(m) => throw(m),\n      None => throw(\"none\")\n    }"), "[]")
+  inspect(rethrow_diags("    for m in [\"a\", \"b\"] {\n      throw(m)\n    }\n    0"), "[]")
+}
+
+/// A lambda bound by `let` receives only its direct calls' arguments.
+test "a lambda parameter that shadows an erased binder throws its own kind" {
+  inspect(rethrow_diags("    let k = (m: String) -> throw(m)\n    k(\"other\")"), "[]")
+  inspect(rethrow_diags("    let _n = String::length(m)\n    let k = (s: String) -> throw(s)\n    k(\"other\")"), "[]")
+}
+
+/// The shadow ends with its block: the arm's `m` after it is the caught value.
+test "an erased binder used after a shadowing block is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let c = true\n    if c {\n      let m = \"other\"\n      let _n = String::length(m)\n    }\n    throw(m)")))
+}
+
+/// A rebinding whose value comes from a carrier is a carrier.
+test "a rebinding derived from an erased binder is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let m = id(m)\n    throw(m)")))
+  assert(charged_erased(rethrow_diags("    match Some(m) {\n      Some(m) => throw(m),\n      None => throw(\"none\")\n    }")))
+  assert(charged_erased(rethrow_diags("    let k = () -> m\n    let m = \"other\"\n    throw(k())")))
+  assert(charged_erased(rethrow_diags("    let mut x = \"a\"\n    x = m\n    let m = \"other\"\n    throw(x)")))
+}
+
+/// A nested handler that resumes with the caught value hands it to a
+/// `perform`, whose result names no carrier.
+test "a perform resumed with an erased binder is not a String throw" {
+  let src = "effect Ask {\n  Get() -> String\n}\nfn f() -> Int with Exception[Int] { throw(7) }\nfn g() -> Int with Exception[String] {\n  handle { f() } with { Exception::Throw(m) => handle {\n    let v = perform Ask::Get()\n    throw(v)\n  } with {\n    Ask::Get() => resume(m)\n  } }\n}\n"
+  assert(charged_erased(row_checked_diags(src)))
+}
+
+/// A lambda that may receive the caught value: called with it directly,
+/// aliased, applied where it is written, or reached through a container.
+test "a lambda parameter that may receive an erased binder is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let k = (m: String) -> throw(m)\n    k(m)")))
+  assert(charged_erased(rethrow_diags("    let k = (s: String) -> throw(s)\n    let k2 = k\n    k2(m)")))
+  assert(charged_erased(rethrow_diags("    ((s: String) -> throw(s))(m)")))
+  assert(charged_erased(rethrow_diags("    let xs: Array[String] = []\n    Array::push(xs, m)\n    let m = Array::get(xs, 0)\n    throw(m)")))
+}
