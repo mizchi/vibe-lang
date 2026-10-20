@@ -46,8 +46,10 @@ import ./checker_effects_throw_payload_kind.vibe {
   entry_user_effect_operations,
   exception_effect_labels,
   fn_binding_effects,
+  is_kinded_handle_pseudo_label,
   is_program_entry_name,
   kinded_handle_marker,
+  kinded_handle_open_row_var,
   labels_union,
   requirement_marked_for,
   row_base_membership,
@@ -104,7 +106,7 @@ export fn labels_without_exception_family(labels: Array[String]) -> Array[String
   let mut i = 0
   while i < Array::length(labels) {
     let l = Array::get(labels, i)
-    if is_exception_label(l) || l == kinded_handle_marker() {
+    if is_exception_label(l) || is_kinded_handle_pseudo_label(l) {
       ()
     } else {
       Array::push(out, l)
@@ -199,7 +201,14 @@ export fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Boo
 /// item (that check compares the full qualified label directly, without
 /// stripping to the base effect name).
 export fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
-  if decl_authorizes_effect(labels, effect_name_of_op(op_name)) || decl_authorizes_effect(labels, op_name) {
+  // #3540: under a kinded handle an open row variable is not authorized by
+  // the enclosing row that declares it -- whatever exception a caller puts
+  // in it would land in the kinded arm. Every charge of a row variable
+  // (a callback parameter, a local closure, `apply(f)`, the typed
+  // fallback) asks this question, so they all refuse it.
+  if kinded_handle_open_row_var(labels, op_name) {
+    false
+  } else if decl_authorizes_effect(labels, effect_name_of_op(op_name)) || decl_authorizes_effect(labels, op_name) {
     true
   } else {
     // #2985 review (Codex P0): under a kinded handle the erased-compatible

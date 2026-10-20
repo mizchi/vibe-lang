@@ -1816,7 +1816,14 @@ Rules:
   literal throw exactly `K`; a row with no exception label
   (`invoke[e](f: () -> Int with e) -> Int with e`) absorbs nothing, so the
   literal is as strict as the body -- and so is one handed to a callback
-  parameter or a builtin, or created and called in the body. An erased
+  parameter or a builtin, or created and called in the body. A row VARIABLE
+  of the enclosing signature is not run there either (#3540): in
+  `fn guarded(f: () -> Int with e) -> Int with e`, a kinded handle around
+  `f()` is refused, because a caller may fill `e` with another kind. Move the
+  handle to the caller, give the callback a closed row (`with
+  Exception[Int]`), or use the erased arm; a kind label beside the variable
+  (`with Exception[Int] + e`) matches the whole exception family, so that
+  variable is admitted. An erased
   `handle .. with Exception` nested inside is its own
   catch-all boundary. And a handle may have only ONE exception arm: the
   channel carries no kind and only the first exception arm is compiled, so

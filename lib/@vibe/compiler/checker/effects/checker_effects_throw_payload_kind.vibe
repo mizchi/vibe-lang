@@ -462,6 +462,29 @@ export fn under_kinded_handle(labels: Array[String]) -> Bool {
   effect_row_has_label(Some(labels), kinded_handle_marker())
 }
 
+/// #3540: the pseudo-label that admits row variable `v` in the body of a
+/// handle with a kinded arm. Without it such a body may not run `v` at all: a
+/// caller can fill an open `with e` with any exception kind, and the arm,
+/// which catches every exception at run time, would read that payload at its
+/// own kind. A variable is admitted only when every callback or local
+/// closure row in scope that carries it also names an exception label
+/// (`with Exception[K] + e`): the exception family is then matched by that
+/// label, so the variable holds no exception (#3033).
+export fn kinded_pinned_row_var_marker(v: String) -> String {
+  String::concat("#kinded-pinned:", v)
+}
+
+/// A pseudo-label of a kinded handle's body (the marker, or a pinned row
+/// variable); neither is a row item a reader can write.
+export fn is_kinded_handle_pseudo_label(l: String) -> Bool {
+  String::starts_with(l, "#kinded-")
+}
+
+/// #3540: is `v` a row variable this kinded handle's body may not run?
+export fn kinded_handle_open_row_var(labels: Array[String], v: String) -> Bool {
+  label_is_effect_var(v) && under_kinded_handle(labels) && !effect_row_has_label(Some(labels), kinded_pinned_row_var_marker(v))
+}
+
 /// The exception EFFECT labels (`Exception`, `Exception[K]`; not the `::Throw`
 /// operation spellings) among a handle's discharged effect names.
 export fn exception_effect_labels(labels: Array[String]) -> Array[String] {
@@ -1631,7 +1654,7 @@ fn row_labels_pasteable(labels: Array[String]) -> Array[String] {
   let mut i = 0
   while i < Array::length(labels) {
     let l = Array::get(labels, i)
-    if String::contains(l, "]::") || l == kinded_handle_marker() {
+    if String::contains(l, "]::") || is_kinded_handle_pseudo_label(l) {
       ()
     } else {
       Array::push(out, l)

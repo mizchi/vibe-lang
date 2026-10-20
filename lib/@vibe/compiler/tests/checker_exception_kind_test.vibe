@@ -172,6 +172,22 @@ test "handle with Exception[E] discharges that kind only" {
   assert(String::contains(Array::get(diags, 0), "it also raises { Exception[IoError] }"))
 }
 
+test "a kinded arm may not run an open row variable (#3540)" {
+  // A caller may fill `e` with `Exception[String]`; the `Exception[Int]` arm
+  // catches every exception at run time and read the String as an Int.
+  let bad = "fn guarded(f: () -> Int with e) -> Int with e {\n  handle {\n    f() + 1\n  } with {\n    Exception[Int]::Throw(code) => code * 2\n  }\n}\n"
+  let diags = checked_diags(bad)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), ": move this `Exception[Int]::Throw` handle out of 'guarded' to its caller, where { e } is filled in"))
+  assert(String::contains(Array::get(diags, 0), "so it would read that payload as `Int`"))
+  // A kind label beside the variable pins it: the variable holds no
+  // exception (#3033). The erased arm catches everything by design.
+  let pinned = "fn guarded(f: () -> Int with Exception[Int] + e) -> Int with e {\n  handle {\n    f() + 1\n  } with {\n    Exception[Int]::Throw(code) => code * 2\n  }\n}\n"
+  assert(eq(Array::length(checked_diags(pinned)), 0))
+  let erased = "fn guarded(f: () -> Int with e) -> Int with e {\n  handle {\n    f() + 1\n  } with {\n    Exception::Throw(m) => String::length(m)\n  }\n}\n"
+  assert(eq(Array::length(checked_diags(erased)), 0))
+}
+
 test "a kinded exception row cannot be laundered through a mismatched fn slot" {
   let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = () -> Int with Exception[IoError] {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with Exception[ParseError]) -> Int with Exception[ParseError] {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(boom)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)

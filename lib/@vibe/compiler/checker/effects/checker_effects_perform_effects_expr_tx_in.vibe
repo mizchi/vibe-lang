@@ -136,6 +136,7 @@ import ./checker_effects_throw_payload_kind.vibe {
   is_program_entry_name,
   join_labels,
   kinded_handle_marker,
+  kinded_pinned_row_var_marker,
   labels_union,
   lookup_fn_effs,
   lookup_program_fn_effs,
@@ -1094,6 +1095,41 @@ fn overlay_owns_row_var(ov_names: Array[String], ov_effs: Array[Array[String]], 
   found
 }
 
+/// #3540: the pinned-variable pseudo-labels for the body of a handle with a
+/// kinded arm (see kinded_pinned_row_var_marker). A row variable of the
+/// enclosing row is pinned when some callback or local closure in scope
+/// carries it and every one that does also names an exception label.
+fn kinded_pinned_row_var_labels(declared: Array[String], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Array[String] {
+  let out = no_str_labels()
+  for v in declared {
+    if label_is_effect_var(v) {
+      let mut carriers = 0
+      let mut unpinned = false
+      let mut i = 0
+      while i < Array::length(ov_names) && i < Array::length(ov_effs) {
+        let n = Array::get(ov_names, i)
+        let row = Array::get(ov_effs, i)
+        if !String::starts_with(n, "#") && str_labels_contain(row, v) {
+          match overlay_alias_target(ov_names, ov_effs, n) {
+            Some(_) => (),
+            None => {
+              carriers = carriers + 1
+              if Array::length(exception_effect_labels(row)) == 0 {
+                unpinned = true
+              }
+            }
+          }
+        }
+        i = i + 1
+      }
+      if carriers > 0 && !unpinned {
+        Array::push(out, kinded_pinned_row_var_marker(v))
+      }
+    }
+  }
+  out
+}
+
 /// #3551 review: the row variables of the callee's type at this call that the
 /// enclosing signature owns, charged like the direct call of its callback.
 /// `charge_typed_callee_row` leaves every row variable open, which is right
@@ -1730,10 +1766,12 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
         // for the body and the marker makes the exception check exact. An
         // ERASED arm is a new catch-all boundary: everything its body raises
         // ends in it, so an enclosing kinded handle's marker is cleared.
+        // #3540: and a row variable of the enclosing row is not run in it
+        // unless a kind label pins it (kinded_pinned_row_var_labels).
         let body_declared = if Array::length(kinded_exception_labels(discharged)) > 0 {
-          labels_union(labels_union(labels_without_exception_family(declared), discharged), [
+          labels_union(labels_union(labels_union(labels_without_exception_family(declared), discharged), [
             kinded_handle_marker()
-          ])
+          ]), kinded_pinned_row_var_labels(declared, ov_names, ov_effs))
         } else if Array::length(exc_arms) > 0 {
           labels_union(labels_without_exception_family_marker(declared), discharged)
         } else {
