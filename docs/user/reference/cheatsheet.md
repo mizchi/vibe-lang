@@ -1840,7 +1840,9 @@ Rules:
   `Exception[String]`. That holds for `throw(m)` and for any payload that
   names `m`, or a name the arm derived from it, when the payload's type could
   hold a `String`: `throw(id(m))`, `let m2 = m` then `throw(m2)`,
-  `throw(Some(m))`, `throw(String::concat("ctx: ", m))`. So a function that
+  `throw(Some(m))`, `throw(String::concat("ctx: ", m))`, and a value read
+  back from where `m` may have been stored: after `store(outer.cell, m)` or
+  `outer.cell.value = m`, `throw(outer.cell.value)`. So a function that
   rethrows this way declares the erased `with Exception`, or catches with the
   kinded arm `Exception[K]::Throw(m)`, whose rethrow keeps the kind `K`. A
   payload whose type holds no `String` (`throw(Why::Because(m))` for an enum

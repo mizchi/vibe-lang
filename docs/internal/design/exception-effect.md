@@ -124,11 +124,19 @@ effect Exception[E] {
   `m`. While the arm body is typed, the checker knows the arm's carrier
   BINDINGS (`checker_erased_throw_carriers.vibe`): `m`, plus, to a fixpoint,
   a `let` or assigned variable whose value mentions a carrier, the binders of
-  a `match`, `for`, `loop` or handler over one, an identifier passed to a call
-  next to one, the parameters of a function literal that may receive one (a
+  a `match`, `for`, `loop` or handler over one, every store target (below),
+  the parameters of a function literal that may receive one (a
   `let`-bound or directly applied literal gets its direct calls' arguments;
   any other use may pass it anything), and every `perform` result once a
-  nested handler arm mentions a carrier (it may `resume` with one). Each
+  nested handler arm mentions a carrier (it may `resume` with one). A call
+  whose arguments or callee mention a carrier may store it into anything its
+  arguments or receiver reach, so every binding they mention is a store
+  target, a projection included: `store(outer.cell, m)`,
+  `outer.cell.value = m`, `outer.cells[0].value = m`, `outer.cell.put(m)` and
+  `store(cell_of(outer), m)` all make `outer` one. A store target's own value
+  (its `let` or assigned value, the subject it was matched or iterated from, a
+  tracked lambda's call arguments, a local closure's captures) is one in turn,
+  so `let c = outer.cell` then `store(c, m)` reaches `outer` too. Each
   identifier is resolved by scope, so a binding of the same spelling to a
   value of its own (`let m = "other"`, a `match` or lambda parameter `m`)
   shadows the carrier for its scope only. A throw payload records no kind

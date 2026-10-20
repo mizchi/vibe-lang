@@ -1,0 +1,36 @@
+// #3551 review: `store(outer.cell, m)` writes the erased arm's binder into a
+// cell `outer` reaches, so `outer.cell.value` holds the value
+// `Exception::Throw(m)` caught -- `f`'s `Int` -- and `throw(outer.cell.value)`
+// is a rethrow of no known kind, which the declared `Exception[String]` does
+// not cover. Charged as a `String` throw, it compiled and `main` printed
+// `len=14`: its `Exception[String]` arm read the `Int` as a `String`. The
+// edit is the kinded arm (`Exception[Int]::Throw(m)`) or the erased
+// `with Exception` row.
+struct Cell {
+  mut value: String
+}
+
+struct Outer {
+  cell: Cell
+}
+
+fn store(c: Cell, v: String) -> Unit {
+  c.value = v
+}
+
+fn f() -> Int with Exception[Int] {
+  throw(7)
+}
+
+fn g(outer: Outer) -> Int with Exception[String] {
+  handle { f() } with { Exception::Throw(m) => {
+    store(outer.cell, m)
+    throw(outer.cell.value)
+  } }
+}
+
+fn main allows Console {
+  let outer = Outer::{ cell: Cell::{ value: "init" } }
+  let r = handle { g(outer) } with { Exception[String]::Throw(s) => String::length(s) }
+  println("len=\{r}")
+}

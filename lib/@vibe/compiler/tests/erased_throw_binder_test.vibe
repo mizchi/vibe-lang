@@ -200,3 +200,47 @@ test "a lambda parameter that may receive an erased binder is not a String throw
   assert(charged_erased(rethrow_diags("    ((s: String) -> throw(s))(m)")))
   assert(charged_erased(rethrow_diags("    let xs: Array[String] = []\n    Array::push(xs, m)\n    let m = Array::get(xs, 0)\n    throw(m)")))
 }
+
+//# A carrier stored through a projection (#3551 review)
+
+/// `g` rethrows, from an erased arm, a value read back from `outer` after
+/// `body` stored the binder `m` somewhere `outer` reaches. `store` writes its
+/// `String` into the cell, so `outer.cell.value` holds whatever `f` threw.
+fn stored_diags(body: String) -> Array[String] with Exception {
+  let head = "fn f() -> Int with Exception[Int] { throw(7) }\nstruct Cell {\n  mut value: String\n}\nstruct Outer {\n  cell: Cell;\n  cells: Array[Cell]\n}\nfn store(c: Cell, v: String) -> Unit {\n  c.value = v\n}\nfn Cell::put(c: Cell, v: String) -> Unit {\n  c.value = v\n}\nfn cell_of(o: Outer) -> Cell {\n  o.cell\n}\n"
+  let g = String::concat("fn g(outer: Outer) -> Int with Exception[String] {\n  handle { f() } with { Exception::Throw(m) => {\n", String::concat(body, "\n  } }\n}\n"))
+  row_checked_diags(String::concat(head, g))
+}
+
+test "an erased binder stored beside a projection is not a String throw" {
+  assert(charged_erased(stored_diags("    store(outer.cell, m)\n    throw(outer.cell.value)")))
+  assert(charged_erased(stored_diags("    store(outer.cells[0], m)\n    throw(outer.cells[0].value)")))
+  assert(charged_erased(stored_diags("    store(cell_of(outer), m)\n    throw(outer.cell.value)")))
+}
+
+test "an erased binder assigned through a projection is not a String throw" {
+  assert(charged_erased(stored_diags("    outer.cell.value = m\n    throw(outer.cell.value)")))
+  assert(charged_erased(stored_diags("    outer.cells[0].value = m\n    throw(outer.cells[0].value)")))
+}
+
+test "an erased binder passed to a projected receiver is not a String throw" {
+  assert(charged_erased(stored_diags("    outer.cell.put(m)\n    throw(outer.cell.value)")))
+}
+
+/// What a store target was bound from, iterated over, matched on or called
+/// with is a store target too.
+test "an erased binder stored through an alias of a projection is not a String throw" {
+  assert(charged_erased(stored_diags("    let c = outer.cell\n    store(c, m)\n    throw(outer.cell.value)")))
+  assert(charged_erased(stored_diags("    let o = outer\n    o.cell.value = m\n    throw(outer.cell.value)")))
+  assert(charged_erased(stored_diags("    let get = () -> outer.cell\n    store(get(), m)\n    throw(outer.cell.value)")))
+  assert(charged_erased(stored_diags("    let put = (c: Cell) -> store(c, m)\n    put(outer.cell)\n    throw(outer.cell.value)")))
+  assert(charged_erased(stored_diags("    for c in outer.cells {\n      store(c, m)\n    }\n    throw(Array::get(outer.cells, 0).value)")))
+  assert(charged_erased(stored_diags("    match outer {\n      Outer::{ cell, cells } => store(cell, m)\n    }\n    throw(outer.cell.value)")))
+}
+
+/// Controls: a store of a value of its own, or a read of a cell nothing
+/// stored the binder into, keeps its kind.
+test "a projection nothing stored an erased binder into keeps its kind" {
+  inspect(stored_diags("    store(outer.cell, \"x\")\n    throw(outer.cell.value)"), "[]")
+  inspect(stored_diags("    let _n = String::length(m)\n    throw(outer.cell.value)"), "[]")
+}
