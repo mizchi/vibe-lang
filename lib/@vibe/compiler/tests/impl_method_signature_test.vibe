@@ -317,3 +317,43 @@ test "a bounded generic fallback of a bounded generic impl is accepted" {
 test "a concrete impl's fallback for its target is accepted" {
   assert(check_source_ok("trait Name { name(Self) -> Int }\nstruct Box[T] { v: T }\nimpl Name for Box[Int]\nfn Box::name(self: Box[Int]) -> Int { self.v + 1 }\nfn main() -> Int { Name::name(Box::{ v: 3 }) }\n"))
 }
+
+/// #3551 review: a caller through the trait chooses the trait method's own
+/// generic with only the bounds the trait declares, so an impl method's
+/// binder may not require more: its `Render` would be evidence nobody passes.
+test "an impl method binder bounded beyond the trait's is refused" {
+  let src = "trait Render { render(Self) -> String }\ntrait W { write: [X](Self, X) -> String }\nstruct P { k: Int }\nimpl W for P { write[Y: Render](self, x: Y) -> String { Y::render(x) } }\nfn main() -> Int { 0 }\n"
+  inspect(check_source_error_message(src), "drop the `Render` bound from `Y` in `P::write`, or add it to trait `W`'s `write[X: Render]`: a caller through the trait may choose any type for `X`, since the trait declares no bound on it, so nothing provides `Render` for `Y` [@impl-method=W|P|write|binder|Y]")
+}
+
+/// The diagnostic is located on the binder.
+test "the binder-bound diagnostic is located on the binder" {
+  let src = "trait Render { render(Self) -> String }\ntrait W { write: [X](Self, X) -> String }\nstruct P { k: Int }\nimpl W for P { write[Y: Render](self, x: Y) -> String { Y::render(x) } }\nfn main() -> Int { 0 }\n"
+  assert(check_source_located_err_contains(src, "line 4:22-23: drop the `Render` bound from `Y`"))
+}
+
+/// A bound the trait's bound does not extend is refused for a fallback too.
+test "a fallback binder bounded beyond the trait's is refused" {
+  let src = "trait Render { render(Self) -> String }\ntrait Loud: Render { shout(Self) -> String }\ntrait W { write: [X: Render](Self, X) -> String }\nstruct P { k: Int }\nimpl W for P\nfn helper() -> Int { 3 }\nfn P::write[Y: Loud](self: P, x: Y) -> String { Y::shout(x) }\nfn main() -> Int { helper() }\n"
+  inspect(check_source_error_message(src), "drop the `Loud` bound from `Y` in `P::write`, or add it to trait `W`'s `write[X: Render + Loud]`: a caller through the trait may choose any type for `X` that satisfies `Render`, so nothing provides `Loud` for `Y` (`impl W for P` has no body for `write`, so the trait dispatches to this function) [@fn=P::write]")
+}
+
+/// A fallback generic over the impl's formal may not require more than the
+/// impl declares on that formal.
+test "a fallback binder bounded beyond the impl's formal is refused" {
+  let src = "trait Render { render(Self) -> String }\ntrait Name { name(Self) -> String }\nstruct Box[T] { v: T }\nimpl [T] Name for Box[T]\nfn helper() -> Int { 3 }\nfn Box::name[U: Render](self: Box[U]) -> String { U::render(self.v) }\nfn main() -> Int { helper() }\n"
+  inspect(check_source_error_message(src), "drop the `Render` bound from `U` in `Box::name`, or add it to the impl's `T` (`[T: Render]` on `impl Name for Box[T]`): the trait calls this function at every instantiation of the impl, and the impl declares no bound on `T`, so nothing provides `Render` for `U` (`impl Name for Box[T]` has no body for `name`, so the trait dispatches to this function) [@fn=Box::name]")
+}
+
+/// An equal bound under another spelling, a weaker one, one the trait's bound
+/// extends, two binders matched by position, a generic impl's own bound next
+/// to the method's, and a fallback with the trait's bound are accepted.
+test "an impl method binder bounded no more than the trait's is accepted" {
+  let pre = "trait Render { render(Self) -> String }\ntrait Loud: Render { shout(Self) -> String }\nstruct P { k: Int }\n"
+  assert(check_source_ok(String::concat(pre, "trait W { write: [X: Render](Self, X) -> String }\nimpl W for P { write[Y: Render](self, x: Y) -> String { Y::render(x) } }\nfn main() -> Int { 0 }\n")))
+  assert(check_source_ok(String::concat(pre, "trait W { write: [X: Render](Self, X) -> String }\nimpl W for P { write[Y](self, x: Y) -> String { \"w\" } }\nfn main() -> Int { 0 }\n")))
+  assert(check_source_ok(String::concat(pre, "trait W { write: [X: Loud](Self, X) -> String }\nimpl W for P { write[Y: Render](self, x: Y) -> String { Y::render(x) } }\nfn main() -> Int { 0 }\n")))
+  assert(check_source_ok(String::concat(pre, "trait W { pair: [A: Render, B](Self, A, B) -> String }\nimpl W for P { pair[C: Render, D](self, a: C, b: D) -> String { C::render(a) } }\nfn main() -> Int { 0 }\n")))
+  assert(check_source_ok(String::concat(pre, "trait W { write: [X: Render](Self, X) -> String }\nstruct Box[T] { v: T }\nimpl [T: Loud] W for Box[T] { write[Y: Render](self, x: Y) -> String { String::concat(T::shout(self.v), Y::render(x)) } }\nfn main() -> Int { 0 }\n")))
+  assert(check_source_ok(String::concat(pre, "trait W { write: [X: Render](Self, X) -> String }\nimpl W for P\nfn helper() -> Int { 1 }\nfn P::write[Y: Render](self: P, x: Y) -> String { Y::render(x) }\nfn main() -> Int { helper() }\n")))
+}

@@ -1,0 +1,100 @@
+// #3551 review: an impl method's own binder may not require more than the
+// trait method's binder it implements, because a caller through the trait
+// supplies only what the trait declares. These are the forms that require
+// no more, and stay accepted: the same bound under another spelling, a
+// weaker bound (none), a bound the trait's extends, and two binders matched
+// by position. The refused forms are the
+// `fixtures/typecheck/err_impl_method_*_bound_stronger.vibe` rows.
+
+trait Render {
+  render(Self) -> String
+}
+
+trait Loud: Render {
+  shout(Self) -> String
+}
+
+struct Pt {
+  x: Int;
+  tag: String
+}
+
+impl Render for Pt {
+  render(self) -> String {
+    "Pt(\{self.x}, \{self.tag})"
+  }
+}
+
+impl Loud for Pt {
+  shout(self) -> String {
+    "PT!"
+  }
+}
+
+trait W {
+  write: [X: Render](Self, X) -> String
+}
+
+// The same bound, on the method's own binder.
+struct Same {
+  k: Int
+}
+
+impl W for Same {
+  write[Y: Render](self, x: Y) -> String {
+    "\{self.k}:" + Y::render(x)
+  }
+}
+
+// A weaker bound: the method needs nothing of its binder.
+struct Weaker {
+  k: Int
+}
+
+impl W for Weaker {
+  write[Y](self, x: Y) -> String {
+    "weaker \{self.k}"
+  }
+}
+
+fn via[T: W](t: T) -> String {
+  T::write(t, Pt::{ x: 1, tag: "a" })
+}
+
+// `Loud` extends `Render`, so a caller holding `X: Loud` supplies `Render`.
+trait WL {
+  write_loud: [X: Loud](Self, X) -> String
+}
+
+impl WL for Same {
+  write_loud[Y: Render](self, x: Y) -> String {
+    "loud " + Y::render(x)
+  }
+}
+
+// Two binders, matched by position under other spellings.
+trait Two {
+  pair: [A: Render, B](Self, A, B) -> String
+}
+
+impl Two for Same {
+  pair[C: Render, D](self, a: C, b: D) -> String {
+    "pair " + C::render(a)
+  }
+}
+
+test "the same bound under another spelling answers" {
+  inspect(Same::write(Same::{ k: 1 }, Pt::{ x: 2, tag: "b" }), "1:Pt(2, b)")
+}
+
+test "a weaker bound answers through the trait" {
+  inspect(via(Weaker::{ k: 3 }), "weaker 3")
+}
+
+test "a bound the trait's bound extends answers" {
+  inspect(Same::write_loud(Same::{ k: 4 }, Pt::{ x: 5, tag: "c" }), "loud Pt(5, c)")
+}
+
+test "two binders match by position" {
+  inspect(Same::pair(Same::{ k: 6 }, Pt::{ x: 7, tag: "d" }, 8), "pair Pt(7, d)")
+}

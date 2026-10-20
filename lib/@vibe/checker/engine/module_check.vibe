@@ -871,9 +871,13 @@ fn engine_impl_method_name_index(tokens: Array[Token], trait_head: String, owner
               TRBrace => {
                 d = d - 1
               },
+              // ... or by its own binder (`write[Y: Show](..)`).
               TIdent(name) => if d == 1 && name == method && k + 1 < n {
                 match Array::get(tokens, k + 1) {
                   TLParen => {
+                    found = k
+                  },
+                  TLBracket => {
                     found = k
                   },
                   _ => ()
@@ -902,7 +906,8 @@ fn engine_impl_method_name_index(tokens: Array[Token], trait_head: String, owner
 /// names. The parser gives an impl method's lambda no source offsets, so the
 /// span is found from the tokens: the impl block (its trait and owner), the
 /// method in it, and then the part -- the method name, the parameter PARAM,
-/// the declared return type, or the `with` clause. Anything the tokens do not
+/// the binder PARAM of the method's own `[..]`, the declared return type, or
+/// the `with` clause. Anything the tokens do not
 /// show falls back to the method name, and no method to -1.
 fn engine_impl_method_span(source: String, trait_head: String, owner: String, method: String, part: String, param: String) -> (Int, Int) {
   let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
@@ -912,12 +917,36 @@ fn engine_impl_method_span(source: String, trait_head: String, owner: String, me
     return (0 - 1, 0 - 1)
   }
   let name_span = (Array::get(starts, at), Array::get(ends, at))
-  let close = engine_impl_close_index(tokens, at + 1)
+  // The parameter list opens after the method's own binder, if it has one.
+  let params_open = match Array::get(tokens, at + 1) {
+    TLBracket => engine_impl_close_index(tokens, at + 1) + 1,
+    _ => at + 1
+  }
+  if params_open >= n {
+    return name_span
+  }
+  let close = engine_impl_close_index(tokens, params_open)
   if close >= n {
     return name_span
   }
-  if part == "param" {
+  if part == "binder" {
+    // The binder PARAM inside the method's own `[..]`.
     let mut k = at + 2
+    let mut span = name_span
+    while k < params_open - 1 {
+      match Array::get(tokens, k) {
+        TIdent(name) => if name == param && (span.0 == Array::get(starts, at)) {
+          span = (Array::get(starts, k), Array::get(ends, k))
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      k = k + 1
+    }
+    span
+  } else if part == "param" {
+    let mut k = params_open + 1
     let mut depth = 1
     let mut span = name_span
     let mut done = false
