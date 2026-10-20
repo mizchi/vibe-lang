@@ -1,0 +1,77 @@
+// #3551 review: a `derive (Show)` type with a builtin handle field
+// (`StringMap`, `ArrayBuilder`, ...) is refused at the derive, because the
+// derived renderer printed the handle's address. These are the shapes that
+// stay accepted, each with the text it renders. The refusal side is
+// `fixtures/typecheck/err_derive_show_opaque_*.vibe`.
+
+// A handwritten renderer over a handle is trusted: it reads what it shows.
+struct Counts {
+  m: Map[String, Int]
+}
+
+fn Counts::to_string(c: Counts) -> String {
+  "Counts(\{Map::size(c.m)})"
+}
+
+// A derived type whose field has a handwritten renderer goes through it.
+struct Report {
+  counts: Counts
+  total: Int
+} derive (Show)
+
+// A phantom parameter is never rendered, so a handle there is no reason to
+// refuse the derive of the type that holds it.
+struct Tag[T] {
+  n: Int
+} derive (Show)
+
+struct Tagged {
+  t: Tag[StringMap[Int]]
+} derive (Show)
+
+// Nested derived types without a handle render by content.
+struct Inner {
+  a: Int
+  s: String
+} derive (Show)
+
+enum Shape {
+  One(Inner)
+  Many(Array[Inner])
+  Nothing
+} derive (Show)
+
+struct Holder[T] {
+  v: T
+} derive (Show)
+
+struct Outer {
+  i: Inner
+  xs: Array[Inner]
+  o: Option[Holder[Inner]]
+} derive (Show)
+
+test "a handwritten renderer over a handle is used" {
+  let c = Counts::{ m: Map::from_pairs([("a", 1), ("b", 2)]) }
+  inspect("\{c}", "Counts(2)")
+  let r = Report::{ counts: c, total: 3 }
+  inspect("\{r}", "Report { counts: Counts(2), total: 3 }")
+}
+
+test "a handle in a phantom argument does not refuse the derive" {
+  let t: Tag[StringMap[Int]] = Tag::{ n: 1 }
+  let h = Tagged::{ t: t }
+  inspect("\{h}", "Tagged { t: Tag { n: 1 } }")
+}
+
+test "nested derived types render by content" {
+  let i = Inner::{ a: 1, s: "x" }
+  let o = Outer::{
+    i: i,
+    xs: [i, Inner::{ a: 2, s: "y" }],
+    o: Some(Holder::{ v: i })
+  }
+  inspect("\{o}", "Outer { i: Inner { a: 1, s: x }, xs: [Inner { a: 1, s: x }, Inner { a: 2, s: y }], o: Some(Holder { v: Inner { a: 1, s: x } }) }")
+  inspect("\{Shape::Many([i])}", "Many([Inner { a: 1, s: x }])")
+  inspect("\{Shape::One(i)}", "One(Inner { a: 1, s: x })")
+}
