@@ -40,7 +40,8 @@ import @vibe/compiler/codegen/common_base {
   func_table_index_of,
   map_get_miss_message,
   resolve_func,
-  str_table_index_of
+  str_table_index_of,
+  str_table_slot_or_neg
 }
 
 import @vibe/compiler/codegen/common_extractors {
@@ -117,9 +118,12 @@ import ./compile_call_named_3.vibe {
 }
 
 /// #3547: the `print_str` index and the pooled message for `Map::get`'s miss
-/// trap, or `(-1, 0, 0)` when either is missing on this lane.
+/// trap, or `(-1, 0, 0)` when either is missing on this lane. The lookup must
+/// not throw: a lane whose pool was not seeded with the message (the module
+/// lane's string table is empty) keeps the bare trap instead of failing the
+/// build (#3551 review).
 fn cc_map_get_miss_parts(ctx: CompileCtx) -> (Int, Int, Int) with Exception {
-  let mi = str_table_index_of(ctx.str_table, map_get_miss_message())
+  let mi = str_table_slot_or_neg(ctx.str_table, map_get_miss_message())
   if mi >= 0 && func_table_index_of(ctx.func_table, "print_str") >= 0 {
     let (ps_idx, _, _) = resolve_func(ctx.func_table, "print_str")
     (ps_idx, Array::get(ctx.str_table.offsets, mi), Array::get(ctx.str_table.lengths, mi))
