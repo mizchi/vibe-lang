@@ -79,6 +79,20 @@ test "a statement on the line after a bare `continue` is accepted" {
   assert(check_source_err_contains("fn f(n: Int) -> Int {\n  let mut i = 0\n  while i < n {\n    i = i + 1\n    continue 1\n  }\n  i\n}\nfn main() -> Int { f(3) }", "two expressions on one line"))
 }
 
+/// `where` and `allows` are contextual: a name after them continues a
+/// declaration header, anything else makes them an ordinary identifier, which
+/// opens a statement on a new line (#3551 review). Before, every line-leading
+/// `allows` or `where` continued the previous line, so `allows()` after a call
+/// was refused as "two expressions on one line".
+test "a line-leading `allows` or `where` used as an identifier opens a statement" {
+  assert(check_source_ok("fn allows() -> Int { 1 }\nfn f() -> Int {\n  let x = 2\n  allows()\n}\nfn main() -> Int { f() }"))
+  assert(check_source_ok("fn where() -> Int { 1 }\nfn f() -> Int {\n  let x = 2\n  where()\n}\nfn main() -> Int { f() }"))
+  assert(check_source_ok("fn f() -> Int {\n  let mut allows = 1\n  let y = allows\n  allows = y + 1\n  allows\n}\nfn main() -> Int { f() }"))
+  // ...and a clause on the next line still continues its header.
+  assert(check_source_ok("fn main() -> Unit\n  allows Console {\n  println(\"x\")\n}"))
+  assert(check_source_ok("fn add(x: Int, y: Int) -> Int\n  where { requires: x >= 0, ensures: result >= x } {\n  x + y\n}\nfn main() -> Int { add(1, 2) }"))
+}
+
 /// What a postfix `?` still continues: a `.field` chain, an operator at the
 /// start of the next line with a space after it, and a call or an index on
 /// the same line as the `?`.

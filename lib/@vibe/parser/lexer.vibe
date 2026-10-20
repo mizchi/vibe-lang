@@ -975,7 +975,8 @@ fn impl_header_after(impl_header: Bool, tok: Token) -> Bool {
 
 /// A token that can only begin a new statement when it opens a line after an
 /// expression: a name, a literal, or a statement keyword. `where` and
-/// `allows` continue a declaration header, so they are not on the list.
+/// `allows` continue a declaration header, so they are not on the list
+/// (`contextual_ident_opens_statement` answers for them by what follows).
 #zero_alloc
 fn starts_statement_tok(tok: Token) -> Bool {
   match tok {
@@ -1019,6 +1020,29 @@ fn is_tight_prefix_op(tok: Token, source: String, len: Int, next: Int) -> Bool {
     _ => false
   }
   prefixable && next < len && !is_ws(String::char_code_at(source, next))
+}
+
+/// `where` and `allows` continue a declaration header only when a name or a
+/// `{` follows them (`allows Console`, `where { requires: .. }`). Spelled as
+/// an identifier they are followed by anything else (`allows()`,
+/// `where = 1`; at the end of the input there is nothing to call), so on a new
+/// line after an expression they open a statement like any other name. The
+/// result joins `needs_synthetic_semicolon`'s `tight_prefix` flag, which marks
+/// a line-leading token that opens a statement whatever precedes it.
+#zero_alloc
+fn contextual_ident_opens_statement(tok: Token, source: String, len: Int, next: Int) -> Bool {
+  match tok {
+    TIdent(n) => if n == "where" || n == "allows" {
+      let mut i = next
+      while i < len && is_ws(String::char_code_at(source, i)) {
+        i = i + 1
+      }
+      i < len && !is_alpha(String::char_code_at(source, i)) && String::char_code_at(source, i) != '{'
+    } else {
+      false
+    },
+    _ => false
+  }
 }
 
 fn concat_string_parts(parts: Array[String], tail: String) -> String {
@@ -1594,7 +1618,7 @@ export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[I
       let c = String::char_code_at(source, pos)
       let tok = lex_one_token(source, len, pos)
       let next = lex_end()
-      if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next), tok, impl_header) {
+      if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next) || contextual_ident_opens_statement(tok, source, len, next), tok, impl_header) {
         Array::push(b, TSemicolon)
         Array::push(starts, pos)
         Array::push(ends, pos)
@@ -1650,7 +1674,7 @@ export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[In
     } }
     match res {
       Some((tok, next)) => {
-        if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next), tok, impl_header) {
+        if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next) || contextual_ident_opens_statement(tok, source, len, next), tok, impl_header) {
           ArrayBuilder::push(b, TSemicolon)
           ArrayBuilder::push(starts, pos)
           ArrayBuilder::push(ends, pos)
@@ -1889,7 +1913,7 @@ export fn lex(source: String) -> Array[Token] with Exception {
       // newline-preceded and follows an expression-ending token; the statement
       // parser already treats `;` as a separator. A same-line `(`/`[` (no
       // newline) still attaches as a call/subscript suffix.
-      if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next), tok, impl_header) {
+      if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next) || contextual_ident_opens_statement(tok, source, len, next), tok, impl_header) {
         Array::push(b, TSemicolon)
       } else {
         ()
