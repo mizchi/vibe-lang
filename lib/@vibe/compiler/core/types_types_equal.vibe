@@ -25,7 +25,7 @@ import ./env_name_index.vibe {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutMap
 }
 
 import ./types_env_cache.vibe {
@@ -1524,6 +1524,37 @@ fn remap_trait_bound_vids(key: String, id_map: Array[(Int, Int)]) -> String {
   }
 }
 
+/// The source spelling of each fresh effect variable `instantiate` minted
+/// (`$4` -> `e`), so a message shows the row as the program wrote it
+/// (`effect_var_spelling`). Display only: the checker never reads it.
+let effect_var_spellings: Array[MutMap[String, String]] = [MutMap::new_string()]
+
+/// Record that `fresh` renames `from`. A variable that is itself a fresh one
+/// passes on its own spelling, so a re-instantiated scheme still reads `e`.
+fn note_effect_var_spelling(fresh: String, from: String) -> Unit {
+  let names = Array::get(effect_var_spellings, 0)
+  match MutMap::get(names, from) {
+    Some(src) => MutMap::set(names, fresh, src),
+    None => if String::starts_with(from, "$") {
+      ()
+    } else {
+      MutMap::set(names, fresh, from)
+    }
+  }
+}
+
+/// #3557 follow-up: the spelling the source wrote for an effect variable a
+/// call instantiated (`$4` -> `e`), or the name unchanged when it is not one.
+/// Since #3557 quantified a signature's own `with e` per call, a row-mismatch
+/// message printed the internal `Console + $4` where it used to print
+/// `Console + e`; an explicit `[e]` binder printed `$7` before that.
+export fn effect_var_spelling(name: String) -> String {
+  match MutMap::get(Array::get(effect_var_spellings, 0), name) {
+    Some(src) => src,
+    None => name
+  }
+}
+
 export fn instantiate(ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[String])]) {
   match ty {
     CtForAll(bound_vars, var_bounds, body) => {
@@ -1583,7 +1614,9 @@ export fn instantiate(ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[String]
       let mut ev_c = c1
       while ev_i < Array::length(eff_vars) {
         let ev = Array::get(eff_vars, ev_i)
-        Array::push(eff_pairs, (ev, String::concat("$", __to_string(ev_c))))
+        let fresh = String::concat("$", __to_string(ev_c))
+        note_effect_var_spelling(fresh, ev)
+        Array::push(eff_pairs, (ev, fresh))
         ev_c = ev_c + 1
         ev_i = ev_i + 1
       }

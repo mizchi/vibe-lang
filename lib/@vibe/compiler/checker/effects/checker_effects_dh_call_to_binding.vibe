@@ -76,6 +76,7 @@ import ./checker_effects_throw_payload_kind.vibe {
   is_program_entry_name,
   join_labels,
   kinded_handle_marker,
+  kinded_handle_owner_prefix,
   labels_union,
   lookup_fn_effs,
   lookup_program_fn_effs,
@@ -217,6 +218,19 @@ fn closure_arg_declared_base(arg: Expr, declared: Array[String], callee: String,
   }
 }
 
+/// #3540: where a kinded handle sits: `fn_name`, or -- when the handle is in
+/// a local lambda's body -- `#lambda:<name>` (`#lambda:` for an unnamed
+/// one), which the message renders as that lambda.
+fn kinded_handle_owner(fn_name: String, declared: Array[String]) -> String {
+  let mut owner = fn_name
+  for l in declared {
+    if String::starts_with(l, kinded_handle_owner_prefix()) {
+      owner = String::concat("#lambda:", String::substring(l, String::length(kinded_handle_owner_prefix()), String::length(l)))
+    }
+  }
+  owner
+}
+
 export fn make_contextual_row_error(fn_name: String, declared: Array[String], missing: Array[String], off: Int) -> EffectError {
   // #2985 review (Codex P0): under a kinded exception handler the body's
   // exception requirements are checked exactly (see kinded_handle_marker);
@@ -252,7 +266,7 @@ export fn make_contextual_row_error(fn_name: String, declared: Array[String], mi
   if Array::length(missing_exc) > 0 {
     EEKindedHandleCatchesAll(fn_name, join_labels(kinded_exception_labels(declared)), join_labels(sort_labels(missing_exc)), off)
   } else if Array::length(missing_vars) > 0 {
-    EEKindedHandleOpenRow(fn_name, join_labels(kinded_exception_labels(declared)), join_labels(sort_labels(missing_vars)), off)
+    EEKindedHandleOpenRow(kinded_handle_owner(fn_name, declared), join_labels(kinded_exception_labels(declared)), join_labels(sort_labels(missing_vars)), off)
   } else {
     make_contextual_row_error_plain(fn_name, labels_without_exception_family_marker(declared), missing, off)
   }

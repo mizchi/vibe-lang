@@ -3,6 +3,7 @@ import @vibe/compiler/core {
   Type,
   TypeDef,
   compiler_owned_type_arity,
+  effect_var_spelling,
   exception_effect_labels_equal,
   exception_label_kind,
   find_typedef,
@@ -1350,17 +1351,31 @@ fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
   }
 }
 
-/// #3520: a type as a message shows it -- an unresolved inference variable is
-/// `_`, not the internal `?t429` the reader cannot act on. Display only:
-/// `type_to_string` stays the spelling keys are built from.
-export fn type_for_reader(t: Type) -> String {
+fn reader_ident_byte(b: Int) -> Bool {
+  (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_'
+}
+
+/// A type's spelling for a message. An effect variable a call instantiated
+/// (`$4`) reads as the source spelled it (`e`), as it did before #3557 made a
+/// signature's row variable fresh per call; a `$` inside a name (`T$1`, a
+/// scoped formal) is left alone. With `blank_vars`, an unresolved inference
+/// variable (`?t429`) reads `_` (#3520).
+fn type_spelled_for_message(t: Type, blank_vars: Bool) -> String {
   let raw = type_to_string(t)
   let n = String::length(raw)
   let out = StringBuilder::new()
   let mut i = 0
   while i < n {
-    let var_start = i + 2 < n && String::byte_at(raw, i) == '?' && String::byte_at(raw, i + 1) == 't' && String::byte_at(raw, i + 2) >= '0' && String::byte_at(raw, i + 2) <= '9'
-    if var_start {
+    let var_start = blank_vars && i + 2 < n && String::byte_at(raw, i) == '?' && String::byte_at(raw, i + 1) == 't' && String::byte_at(raw, i + 2) >= '0' && String::byte_at(raw, i + 2) <= '9'
+    let eff_var_start = i + 1 < n && String::byte_at(raw, i) == '$' && String::byte_at(raw, i + 1) >= '0' && String::byte_at(raw, i + 1) <= '9' && (i == 0 || !reader_ident_byte(String::byte_at(raw, i - 1)))
+    if eff_var_start {
+      let mut j = i + 1
+      while j < n && String::byte_at(raw, j) >= '0' && String::byte_at(raw, j) <= '9' {
+        j = j + 1
+      }
+      StringBuilder::push(out, effect_var_spelling(String::substring(raw, i, j)))
+      i = j
+    } else if var_start {
       StringBuilder::push(out, "_")
       i = i + 2
       while i < n && String::byte_at(raw, i) >= '0' && String::byte_at(raw, i) <= '9' {
@@ -1372,6 +1387,20 @@ export fn type_for_reader(t: Type) -> String {
     }
   }
   StringBuilder::freeze(out)
+}
+
+/// #3520: a type as a message shows it -- an unresolved inference variable is
+/// `_`, not the internal `?t429` the reader cannot act on, and an instantiated
+/// effect variable is the source's spelling. Display only: `type_to_string`
+/// stays the spelling keys are built from.
+export fn type_for_reader(t: Type) -> String {
+  type_spelled_for_message(t, true)
+}
+
+/// The `expected X, got Y` spelling: effect variables as the source wrote
+/// them, inference variables unchanged.
+fn type_for_mismatch(t: Type) -> String {
+  type_spelled_for_message(t, false)
 }
 
 export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array[String], what: String, off: Int) -> Subst {
@@ -1445,7 +1474,7 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
       // stays on the historical tolerate path.
       let named_vs_scalar = (type_fully_concrete(expected) && is_fully_concrete_named(expected_zonked) && is_builtin_scalar(actual_zonked)) || (is_builtin_scalar(expected_zonked) && is_fully_concrete_named(actual_zonked))
       if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict || (named_vs_scalar && !structural) {
-        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(expected_zonked), String::concat(", got ", String::concat(type_to_string(actual_zonked), assignable_marker(off)))))))
+        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(expected_zonked), String::concat(", got ", String::concat(type_for_mismatch(actual_zonked), assignable_marker(off)))))))
         s
       } else if structural {
         // #939: the structural retry tolerated EVERY effect-only difference,
@@ -1464,7 +1493,7 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
             Some(su) => match retry_bind_unstripped(expected, actual, s, su) {
               Some(out) => out,
               None => {
-                Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": annotate this value with the function type it should have: the function values in it carry effect rows that no single type covers (expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), String::concat(")", assignable_marker(off))))))))
+                Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": annotate this value with the function type it should have: the function values in it carry effect rows that no single type covers (expected ", String::concat(type_for_mismatch(subst_apply(s, expected)), String::concat(", got ", String::concat(type_for_mismatch(subst_apply(s, actual)), String::concat(")", assignable_marker(off))))))))
                 s
               }
             },
@@ -1500,7 +1529,7 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
           s
         }
       } else {
-        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), assignable_marker(off)))))))
+        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(subst_apply(s, expected)), String::concat(", got ", String::concat(type_for_mismatch(subst_apply(s, actual)), assignable_marker(off)))))))
         s
       }
     }
@@ -1880,7 +1909,7 @@ export fn detect_narrowed_generic_mismatch_for(expected: Type, actual: Type, s: 
         match unify(e2, a2, s) {
           Some(_) => s,
           None => {
-            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(e2), String::concat(", got ", String::concat(type_to_string(a2), assignable_marker(off)))))))
+            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(e2), String::concat(", got ", String::concat(type_for_mismatch(a2), assignable_marker(off)))))))
             s
           }
         }

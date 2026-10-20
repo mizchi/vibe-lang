@@ -136,6 +136,7 @@ import ./checker_effects_throw_payload_kind.vibe {
   is_program_entry_name,
   join_labels,
   kinded_handle_marker,
+  kinded_handle_owner_marker,
   kinded_pinned_row_var_marker,
   labels_union,
   lookup_fn_effs,
@@ -1095,6 +1096,47 @@ fn overlay_owns_row_var(ov_names: Array[String], ov_effs: Array[Array[String]], 
   found
 }
 
+/// #3540: the local lambdas the walk is inside, innermost last: each one's
+/// `let` name, or "" for a lambda bound to no name. A kinded handle names
+/// the innermost one as the place to edit (`kinded_handle_owner_labels`).
+let lambda_owner_stack: Array[String] = []
+
+/// The `let` name the next function literal takes, set by the marker the
+/// `let` pushes just ahead of its value.
+let lambda_owner_pending: Array[String] = [""]
+
+fn lambda_owner_none() -> String {
+  ""
+}
+
+fn lambda_owner_pop_marker() -> String {
+  "#lambda-owner-pop"
+}
+
+fn lambda_name_marker_prefix() -> String {
+  "#lambda-name:"
+}
+
+/// Walked right before `val`, so a function literal bound by `let name`
+/// knows its name. Pushed after `val` because the walk is a stack.
+fn push_lambda_name_marker(stack: Array[Expr], stack_ci: Array[Int], name: String, val: Expr, ci: Int) -> Unit {
+  match val {
+    EFn(_, _, _, _, _, _) => pe_push(stack, stack_ci, EIdent(String::concat(lambda_name_marker_prefix(), name), 0 - 1), ci),
+    _ => ()
+  }
+}
+
+/// The owner pseudo-label of a kinded handle opened here: none inside a
+/// top-level function's own body, the innermost local lambda otherwise.
+fn kinded_handle_owner_labels() -> Array[String] {
+  let n = Array::length(lambda_owner_stack)
+  if n == 0 {
+    no_str_labels()
+  } else {
+    [kinded_handle_owner_marker(Array::get(lambda_owner_stack, n - 1))]
+  }
+}
+
 /// #3540: the pinned-variable pseudo-labels for the body of a handle with a
 /// kinded arm (see kinded_pinned_row_var_marker). A row variable of the
 /// enclosing row is pinned when some callback or local closure in scope
@@ -1152,6 +1194,8 @@ fn charge_typed_own_row_vars(call_off: Int, spelling: String, ov_names: Array[St
 export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], root_kinds: TkEnv) -> Array[EffectError] {
   let errors = array_empty()
   let scope_depth = Array::length(row_formal_scope)
+  let owner_depth = Array::length(lambda_owner_stack)
+  Array::set(lambda_owner_pending, 0, lambda_owner_none())
   Array::push(row_mismatch_roots, root_declared)
   // The pending nodes and, in parallel, the index of the context each one is
   // checked under. Children almost always inherit their parent's context, so
@@ -1731,12 +1775,21 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
         } else {
           ()
         }
+        // #3540: the lambda owns a handle in its body (see
+        // kinded_handle_owner_labels); its `let` name was set just before.
+        Array::push(lambda_owner_stack, Array::get(lambda_owner_pending, 0))
+        Array::set(lambda_owner_pending, 0, lambda_owner_none())
+        pe_push(stack, stack_ci, EIdent(lambda_owner_pop_marker(), 0 - 1), ci)
         pe_push(stack, stack_ci, body, pe_ctx(ctxs, body_declared, in_handle, body_ov_names, body_ov_effs, throw_kind_bind_params(kinds, params)))
       },
       EIdent(ident, _) => if ident == row_scope_pop_marker() {
         row_scope_pop()
       } else if ident == ret_rows_pop_marker() {
         pop_ret_fn_rows()
+      } else if ident == lambda_owner_pop_marker() {
+        Array::truncate(lambda_owner_stack, Array::length(lambda_owner_stack) - 1)
+      } else if String::starts_with(ident, lambda_name_marker_prefix()) {
+        Array::set(lambda_owner_pending, 0, String::substring(ident, String::length(lambda_name_marker_prefix()), String::length(ident)))
       } else {
         ()
       },
@@ -1771,7 +1824,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
         let body_declared = if Array::length(kinded_exception_labels(discharged)) > 0 {
           labels_union(labels_union(labels_union(labels_without_exception_family(declared), discharged), [
             kinded_handle_marker()
-          ]), kinded_pinned_row_var_labels(declared, ov_names, ov_effs))
+          ]), labels_union(kinded_pinned_row_var_labels(declared, ov_names, ov_effs), kinded_handle_owner_labels()))
         } else if Array::length(exc_arms) > 0 {
           labels_union(labels_without_exception_family_marker(declared), discharged)
         } else {
@@ -1807,6 +1860,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
         // in the OUTER scope for the same non-recursive reason.
         let body_kinds = throw_kind_bind(kinds, name, throw_payload_kind(val, kinds))
         pe_push(stack, stack_ci, val, ci)
+        push_lambda_name_marker(stack, stack_ci, name, val, ci)
         pe_push(stack, stack_ci, body, pe_ctx(ctxs, declared, in_handle, body_ov_names, body_ov_effs, body_kinds))
       },
       ELetRec(name, val, body) => {
@@ -1820,6 +1874,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
         // stops it resolving through a same-named top-level binding).
         let rec_kinds = throw_kind_bind(kinds, name, "")
         pe_push(stack, stack_ci, val, pe_ctx(ctxs, declared, in_handle, rec_ov_names, rec_ov_effs, rec_kinds))
+        push_lambda_name_marker(stack, stack_ci, name, val, ci)
         pe_push(stack, stack_ci, body, pe_ctx(ctxs, declared, in_handle, rec_ov_names, rec_ov_effs, rec_kinds))
       },
       ELetMut(name, val, body, _) => {
@@ -1968,5 +2023,6 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
   }
   Array::truncate(row_mismatch_roots, Array::length(row_mismatch_roots) - 1)
   Array::truncate(row_formal_scope, scope_depth)
+  Array::truncate(lambda_owner_stack, owner_depth)
   errors
 }
