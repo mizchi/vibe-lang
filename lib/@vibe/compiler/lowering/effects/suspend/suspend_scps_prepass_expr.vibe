@@ -1573,7 +1573,7 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
         // The driver cannot take this handle; its refusal would blame a
         // `resume` capture the program does not have. Name the real conflict.
         Array::truncate(scps_st_errs(st), emark)
-        Array::push(scps_st_errs(st), scps_throw_escape_msg(rarms))
+        Array::push(scps_st_errs(st), String::concat(scps_throw_escape_msg(rarms), scps_throw_marker(rarms, ctx, scope)))
         EHandle(rbody, rarms)
       } else {
         lowered
@@ -1895,15 +1895,29 @@ fn scps_arm_may_throw(e: Expr, root: Expr, ctx: (Array[Stmt], Array[(String, Arr
       EIdent(nm, _) => if nm == "throw" {
         true
       } else if nm == "perform" {
-        is_exception_effect_name(edp_user_perform_effect_of(e)) || scps_arms_may_throw_exprs(args, root, ctx, scope)
+        is_exception_effect_name(edp_user_perform_effect_of(e)) || scps_arms_may_throw_exprs(scps_perform_args(e), root, ctx, scope)
       } else if scps_name_is_local(root, scope, nm) {
-        true
+        // A local whose one binding in this statement is a lambda literal is
+        // judged by that lambda (its declared row, then its body).
+        match scps_known_local_lambda(ctx, nm) {
+          Some((lrow, lbody)) => if scps_row_may_throw(ctx, lrow) {
+            true
+          } else if edp_str_array_contains(scps_lambda_visiting, nm) {
+            scps_arms_may_throw_exprs(args, root, ctx, scope)
+          } else {
+            Array::push(scps_lambda_visiting, nm)
+            let hit = scps_arm_may_throw(lbody, lbody, ctx, scope)
+            Array::truncate(scps_lambda_visiting, Array::length(scps_lambda_visiting) - 1)
+            hit || scps_arms_may_throw_exprs(args, root, ctx, scope)
+          },
+          None => true
+        }
       } else {
         let (is_fn, row) = scps_fn_row_of(ctx, nm)
         let seen_through = if is_fn {
           !scps_row_may_throw(ctx, row)
         } else {
-          nm == "resume" || idp_is_pure_builtin_call(nm) || scps_is_safe_mut_builtin(nm) || scps_is_ctor_name(ctx, nm) || match lookup_registry_builtin(nm) {
+          nm == "resume" || nm == "__to_string" || idp_is_pure_builtin_call(nm) || scps_is_safe_mut_builtin(nm) || scps_is_ctor_name(ctx, nm) || match lookup_registry_builtin(nm) {
             Some(_) => true,
             None => false
           }
@@ -1934,6 +1948,159 @@ fn scps_arms_may_throw_exprs(es: Array[Expr], root: Expr, ctx: (Array[Stmt], Arr
     i = i + 1
   }
   hit
+}
+
+/// Local lambdas `scps_arm_may_throw` is inside, so a recursive one ends.
+let scps_lambda_visiting: Array[String] = []
+
+/// (declared row, body) of the lambda literal `nm` names in the statement
+/// being rewritten, when that `let` is the ONLY binding of `nm` there --
+/// a parameter, a pattern, a `let mut` or a second `let` of the same name
+/// could be what a call resolves to, so any of those answers None.
+fn scps_known_local_lambda(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), nm: String) -> Option[(String, Expr)] {
+  let (stmts, _, _, _, _, _) = ctx
+  let cur = if Array::length(scps_cur_stmt) > 0 {
+    Array::get(scps_cur_stmt, 0)
+  } else {
+    0 - 1
+  }
+  if cur < 0 || cur >= Array::length(stmts) {
+    None
+  } else {
+    let root = match Array::get(stmts, cur) {
+      SLet(_, _, _, _, v) => Some(v),
+      SLetMut(_, _, v) => Some(v),
+      SExpr(v) => Some(v),
+      STest(_, v) => Some(v),
+      SBench(_, v) => Some(v),
+      _ => None
+    }
+    match root {
+      Some(v) => {
+        let found: Array[(String, Expr)] = []
+        let others = [0]
+        scps_find_local_lambda(v, nm, found, others)
+        if Array::length(found) == 1 && Array::get(others, 0) == 0 {
+          Some(Array::get(found, 0))
+        } else {
+          None
+        }
+      },
+      None => None
+    }
+  }
+}
+
+/// Every binding of `nm` in `e`: a `let nm = <lambda>` goes to `found`, any
+/// other binder counts in `others[0]`.
+fn scps_find_local_lambda(e: Expr, nm: String, found: Array[(String, Expr)], others: Array[Int]) -> Unit {
+  let mut other = 0
+  match e {
+    ELet(n, v, _, _) => if n == nm {
+      match v {
+        EFn(_, _, _, _, eff, body) => Array::push(found, (match eff {
+          Some(r) => r,
+          None => ""
+        }, body)),
+        _ => {
+          other = 1
+        }
+      }
+    } else (),
+    ELetMut(n, _, _, _) => if n == nm {
+      other = 1
+    } else (),
+    ELetRec(n, _, _) => if n == nm {
+      other = 1
+    } else (),
+    EFn(_, _, params, _, _, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        if pn == nm || pn == String::concat(nm, "~") || pn == String::concat(nm, "?") {
+          other = 1
+        } else ()
+        i = i + 1
+      }
+    },
+    ELoop(states, _) => {
+      let mut i = 0
+      while i < Array::length(states) {
+        let (sn, _) = Array::get(states, i)
+        if sn == nm {
+          other = 1
+        } else ()
+        i = i + 1
+      }
+    },
+    EForIn(n, idx, _, _) => if n == nm || match idx {
+      Some(ix) => ix == nm,
+      None => false
+    } {
+      other = 1
+    } else (),
+    EMatch(_, arms) => if scps_arms_bind_name(arms, nm) {
+      other = 1
+    } else (),
+    EHandle(_, arms) => if scps_arms_bind_name(arms, nm) {
+      other = 1
+    } else (),
+    _ => ()
+  }
+  if other > 0 {
+    Array::set(others, 0, Array::get(others, 0) + 1)
+  } else ()
+  let kids = expr_children(e)
+  let mut k = 0
+  while k < Array::length(kids) {
+    scps_find_local_lambda(Array::get(kids, k), nm, found, others)
+    k = k + 1
+  }
+}
+
+fn scps_arms_bind_name(arms: Array[(Pat, Expr)], nm: String) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, _) = Array::get(arms, i)
+    if scps_pat_binds_name(p, nm) {
+      hit = true
+    } else ()
+    i = i + 1
+  }
+  hit
+}
+
+/// The source offset of the innermost call in an arm that may throw, for the
+/// refusal's position; -1 when none carries one.
+fn scps_throw_site_offset(e: Expr, root: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, String)]) -> Int {
+  let kids = expr_children(e)
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(kids) && found < 0 {
+    let k = Array::get(kids, i)
+    if scps_arm_may_throw(k, root, ctx, scope) {
+      found = scps_throw_site_offset(k, root, ctx, scope)
+    } else ()
+    i = i + 1
+  }
+  if found >= 0 {
+    found
+  } else {
+    match e {
+      ECall(EIdent(nm, off), args, _, _) => if nm == "perform" && Array::length(args) == 1 {
+        match Array::get(args, 0) {
+          ECall(EIdent(_, ooff), _, _, _) => ooff,
+          EIdent(_, ooff) => ooff,
+          _ => off
+        }
+      } else {
+        off
+      },
+      EIdent(_, off) => off,
+      _ => 0 - 1
+    }
+  }
 }
 
 fn scps_row_may_throw(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), row: String) -> Bool {
@@ -2083,6 +2250,25 @@ fn scps_arms_effect_name(arms: Array[(Pat, Expr)]) -> String {
     }
   }
   eff
+}
+
+/// ` [@off=N]` at the first throwing site of a non-exception arm.
+fn scps_throw_marker(arms: Array[(Pat, Expr)], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, String)]) -> String {
+  let mut at = 0 - 1
+  for a in arms {
+    let (p, ab) = a
+    match p {
+      PCtor(q, _) => if at < 0 && !is_exception_throw_handler_name(q) && scps_arm_may_throw(ab, ab, ctx, scope) {
+        at = scps_throw_site_offset(ab, ab, ctx, scope)
+      } else (),
+      _ => ()
+    }
+  }
+  if at >= 0 {
+    String::concat(" [@off=", String::concat(__to_string(at), "]"))
+  } else {
+    ""
+  }
 }
 
 fn scps_throw_escape_msg(arms: Array[(Pat, Expr)]) -> String {

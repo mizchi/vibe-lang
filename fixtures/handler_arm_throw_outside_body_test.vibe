@@ -177,3 +177,35 @@ test "return and break arms" {
   inspect(arm_return(), "42")
   inspect(arm_break(), "300")
 }
+
+// An arm calling a local lambda is judged by that lambda. A pure one keeps
+// the in-place lowering, even beside an exception arm the driver cannot take
+// (this was refused, with a message about a throw the program cannot make).
+fn pure_local_call() -> Int {
+  let pick = (x: Int) -> x + 1
+  handle {
+    body()
+  } with { Ask::Get() => resume(pick(10)); Exception[String]::Throw(_) => -4 }
+}
+
+// One that throws still runs the arm at the handle.
+fn throwing_local_call(log: Array[String]) -> Int {
+  handle {
+    let boom = (m: String) -> Int {
+      throw(m)
+    }
+    handle {
+      body()
+    } with { Ask::Get() => resume(boom("from a local")) }
+  } with { Exception[String]::Throw(m) => {
+    Array::push(log, "outer caught \{m}")
+    -6
+  } }
+}
+
+test "an arm calling a local lambda" {
+  let log: Array[String] = []
+  inspect(pure_local_call(), "12")
+  inspect(throwing_local_call(log), "-6")
+  inspect(log, "[outer caught from a local]")
+}
