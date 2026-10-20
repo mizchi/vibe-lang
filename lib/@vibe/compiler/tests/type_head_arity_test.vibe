@@ -6,7 +6,7 @@
 // (`type A = B` / `type B = A`) accepted every value the same way. An alias
 // applied to too many arguments (`Bx[Int, String]`) dropped the extra one.
 import @vibe/compiler/runtime {
-  collect_all_diagnostics
+  collect_all_diagnostics, collect_all_diagnostics_for_path
 }
 
 /// A bare builtin generic in a return type.
@@ -184,4 +184,37 @@ test "a MutBytes applied to two arguments is refused" {
 test "the legal applied spellings of compiler-owned heads are accepted" {
   let src = "fn f(a: Future[Int], b: Task[Int], c: ArrayBuilder[Int], d: FrozenArray[Int], e: FixedArray[Int], m: MapBuilder[String, Int], t: Attempt[Int, String]) -> Int {\n  0\n}\n\nfn g(h: TaskHandle[Int], s: Sender[Int], r: Receiver[Int], l: MutList[Int], g: TaskGroup, b: MutBytes) -> Int {\n  0\n}\n\nfn full[rg, e](h: TaskHandle[rg, e, Int], s: Sender[rg, e, Int], r: Receiver[rg, e, Int], g: TaskGroup[rg, e]) -> Int {\n  0\n}\n\nfn region_last(l: MutList[Int, r], b: MutBytes[r]) -> Int with r {\n  0\n}\n"
   inspect(collect_all_diagnostics(src), "[]")
+}
+
+/// #3551 review: a program struct spelled like the shipped `TaskGroup[rg, e]`
+/// was read as the compiler's own declaration, so a bare `TaskGroup` left both
+/// formals unbound and `g.first` was accepted as a `String`. It is refused
+/// where it is declared.
+test "a program struct spelled like a shipped region-first head is refused" {
+  let src = "struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nfn as_str(g: TaskGroup) -> String {\n  g.first\n}\n"
+  inspect(collect_all_diagnostics_for_path("main.vibe", src), "[rename this struct or its type parameters `rg` and `e`: `TaskGroup[rg, e]` is spelled like `@vibe/concurrent`'s own `TaskGroup`, whose region and row a call supplies, so a `TaskGroup` written without them would leave this struct's `rg` and `e` unbound and its fields readable at any type]")
+}
+
+/// The applied spelling of a program `TaskHandle[rg, e, T]`.
+test "a program TaskHandle spelled like the shipped one is refused" {
+  let src = "struct TaskHandle[rg, e, T] {\n  tag: rg;\n  v: T\n}\n\nfn tag_of(h: TaskHandle[Int]) -> String {\n  h.tag\n}\n"
+  inspect(collect_all_diagnostics_for_path("main.vibe", src), "[rename this struct or its type parameters `rg` and `e`: `TaskHandle[rg, e, T]` is spelled like `@vibe/concurrent`'s own `TaskHandle`, whose region and row a call supplies, so a `TaskHandle` written without them would leave this struct's `rg` and `e` unbound and its fields readable at any type]")
+}
+
+/// The module that ships the declaration may write it.
+test "the shipped module may declare the region-first shape" {
+  let src = "export struct TaskGroup[rg, e] {\n  w: (rg) -> rg\n}\n"
+  inspect(collect_all_diagnostics_for_path("lib/@vibe/concurrent/experimental/concurrent.vibe", src), "[]")
+}
+
+/// A path is the shipped module only by its whole package-relative tail.
+test "a path that only ends like the shipped module's is refused" {
+  let src = "export struct TaskGroup[rg, e] {\n  w: (rg) -> rg\n}\n"
+  inspect(collect_all_diagnostics_for_path("lib/my@vibe/concurrent/experimental/concurrent.vibe", src), "[rename this struct or its type parameters `rg` and `e`: `TaskGroup[rg, e]` is spelled like `@vibe/concurrent`'s own `TaskGroup`, whose region and row a call supplies, so a `TaskGroup` written without them would leave this struct's `rg` and `e` unbound and its fields readable at any type]")
+}
+
+/// A program struct of the name with other formals is its own, held to them.
+test "a program struct of a region-first name with other formals is held to them" {
+  let src = "struct TaskGroup[A, B] {\n  first: A;\n  second: B\n}\n\nfn as_str(g: TaskGroup) -> String {\n  g.first\n}\n\nfn first_of(g: TaskGroup[Int, String]) -> Int {\n  g.first\n}\n"
+  inspect(collect_all_diagnostics_for_path("main.vibe", src), "[write `TaskGroup[T, U]` with the type arguments it holds: `TaskGroup` takes 2 type arguments, but none were given in parameter `g`]")
 }

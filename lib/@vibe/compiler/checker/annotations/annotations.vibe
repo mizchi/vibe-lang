@@ -945,7 +945,13 @@ fn bare_owned_head_want(name: String, defs: Array[TypeDef]) -> Int {
 /// `@vibe/concurrent`'s contract declares it bodyless -- and for the one
 /// source declaration of it the compiler ships, `@vibe/concurrent/experimental`'s
 /// `struct TaskGroup[rg, e]` / `TaskHandle[rg, e, T]` / `Sender[rg, e, T]` /
-/// `Receiver[rg, e, T]`, recognised by that exact region-first shape.
+/// `Receiver[rg, e, T]`, recognised by that exact region-first shape
+/// (`owned_head_shipped_shape`). The shape stands for provenance only because
+/// no other module may declare it: `owned_head_shape_decl_error` refuses it
+/// everywhere but the shipped file, so a program's own `struct TaskGroup[rg,
+/// e] { first: rg }` is refused where it is declared instead of being read
+/// here as the compiler's, which left `rg` unbound and `first` readable at any
+/// type.
 ///
 /// The NAME alone grants nothing. A type alias is expanded in place, so a
 /// left-out argument stays a rigid formal that unifies with anything:
@@ -958,13 +964,58 @@ fn owned_head_slots_elidable(name: String, defs: Array[TypeDef]) -> Bool {
     false
   } else match compiler_owned_type_arity(name) {
     None => false,
-    Some(n) => match find_typedef(defs, name) {
+    Some(_) => match find_typedef(defs, name) {
       None => true,
       Some(td) => match td {
-        TDStruct(_, _, _, formals) => is_region_first_owned_head(name) && Array::length(formals) == n && formal_is_plain(formals, 0, "rg") && formal_is_plain(formals, 1, "e"),
+        TDStruct(_, _, _, formals) => owned_head_shipped_shape(name, formals),
         _ => false
       }
     }
+  }
+}
+
+/// Whether `name[formals]` is spelled like the shipped declaration of a
+/// region-first compiler-owned head: that name, the compiler's arity, and the
+/// plain formals `rg` and `e` first.
+fn owned_head_shipped_shape(name: String, formals: Array[String]) -> Bool {
+  is_region_first_owned_head(name) && match compiler_owned_type_arity(name) {
+    Some(n) => Array::length(formals) == n && formal_is_plain(formals, 0, "rg") && formal_is_plain(formals, 1, "e"),
+    None => false
+  }
+}
+
+/// #3551 review: the module that ships the region-first heads' source
+/// declarations. A path names it by its package-relative tail, whatever root
+/// the package was found under (`lib/`, a `VIBE_LIB` root, `.vibe/store/`).
+fn is_owned_head_source_module(path: String) -> Bool {
+  let tail = "@vibe/concurrent/experimental/concurrent.vibe"
+  path == tail || String::ends_with(path, String::concat("/", tail))
+}
+
+/// #3551 review: refuse a struct spelled like the shipped declaration of a
+/// region-first head (`owned_head_shipped_shape`) in any module but the one
+/// that ships it. `owned_head_slots_elidable` reads that spelling as the
+/// compiler's own declaration and lets a signature leave its region and row
+/// to the call, which is sound only for the compiler's: a program's `struct
+/// TaskGroup[rg, e] { first: rg; second: e }` written bare left both formals
+/// unbound, so `fn f(g: TaskGroup) -> String { g.first }` checked clean and
+/// read an `Int` field as a `String`. A struct of that name with other formals
+/// (`struct Sender[T]`) is the program's own and is held to them.
+///
+/// `module_path` is the module being checked, or "" on a lane that names no
+/// module (a flattened program, a bare source string), which keeps the shape
+/// rule: every module a build compiles is first checked by a lane that names
+/// it.
+export fn owned_head_shape_decl_error(name: String, formals: Array[String], module_path: String, errors: Array[String]) -> Unit {
+  if String::length(module_path) > 0 && !is_owned_head_source_module(module_path) && owned_head_shipped_shape(name, formals) {
+    let written = array_empty()
+    for f in formals {
+      Array::push(written, type_param_name(f))
+    }
+    let shape = String::join(written, ", ")
+    Array::push(errors, "rename this struct or its type parameters `rg` and `e`: `\{name}[\{shape}]` is spelled like `@vibe/concurrent`'s own `\{name}`, whose region and row a call supplies, so a `\{name}` written without them would leave this struct's `rg` and `e` unbound and its fields readable at any type")
+  } else {
+    ()
   }
 }
 
