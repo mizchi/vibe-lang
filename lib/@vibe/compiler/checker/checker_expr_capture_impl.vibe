@@ -66,6 +66,10 @@ import ./checker_handler_payload_patterns.vibe {
   reject_handler_arm_payload_patterns
 }
 
+import ./checker_handle_closure_escape.vibe {
+  refuse_handle_bound_escape
+}
+
 import @vibe/compiler/checker/patterns {
   check_pattern, ctor_pattern_scrutinee_mismatch, match_nonexhaustive_witness, pat_has_unsupported_or_binding, pat_repeated_binder
 }
@@ -194,6 +198,7 @@ import ./checker_lambda_expr.vibe {
 import ./checker_merge_capture_provenance.vibe {
   binding_predates_active_region,
   builtin_no_lowering_hint,
+  call_callee_sites,
   deferred_field_reads,
   eq_formal_row_of,
   erased_throw_arm_enter,
@@ -1352,6 +1357,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
         hpi = hpi + 1
       }
+      let hsites_from = Array::length(call_callee_sites)
       let (hty, hs, hc) = check_expr_capture(body, henv_shared, defs, s, hc0, errors, tytab, capture, lane)
       // #813: validate handler arms against DECLARED effects (TDEffect).
       // Previously arms were never checked at all: a typo'd op name silently
@@ -1804,6 +1810,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         hri = hri + 1
       }
       check_handle_inst_vs_callee_rows(body, hinst_resolved, env, defs, hs1, errors)
+      // #3540: a closure that performs what this handle answers must not
+      // leave it (checker_handle_closure_escape.vibe).
+      refuse_handle_bound_escape(body, harms, hty, env, defs, hs1, hsites_from, errors)
       (hres, hs1, hc1)
     },
     EWhile(cond, body) => {

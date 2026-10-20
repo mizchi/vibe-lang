@@ -1,0 +1,107 @@
+// #3540: a closure that performs what a `handle` answers may be used inside
+// that handle -- called, called through another closure, applied in place,
+// handed to a function that calls it -- and a closure that performs nothing
+// the handle answers may leave it. The refused shapes are the
+// fixtures/typecheck/handle_bound_closure_*_reject.vibe rows.
+effect Ask {
+  Get() -> Int
+}
+
+fn apply(f: () -> Int) -> Int {
+  f() + 100
+}
+
+fn called_inside() -> Int {
+  handle {
+    let h = () -> perform Ask::Get() + 1
+    h() + h()
+  } with { Ask::Get() => resume(5) }
+}
+
+fn called_through_closure() -> Int {
+  handle {
+    let h = () -> perform Ask::Get() + 1
+    let k = () -> h() * 10
+    k()
+  } with { Ask::Get() => resume(5) }
+}
+
+fn applied_in_place() -> Int {
+  handle {
+    (() -> perform Ask::Get() + 1)()
+  } with { Ask::Get() => resume(5) }
+}
+
+fn handed_to_a_caller() -> Int {
+  handle {
+    apply(() -> perform Ask::Get() + 1)
+  } with { Ask::Get() => resume(5) }
+}
+
+// A suspend arm (it takes `resume` as a value) answers the closure's perform
+// while the body runs. Its own effect: one effect is handled either by
+// suspend arms or by tail-resumptive ones throughout a program.
+effect Pull {
+  Next() -> Int
+}
+
+fn suspend_arm() -> Int {
+  handle {
+    let h = () -> perform Pull::Next() + 1
+    h() * 2
+  } with { Pull::Next() => {
+    let k = resume
+    k(41)
+  } }
+}
+
+// The closure handles `Ask` itself, so it needs nothing from the handle
+// around it.
+fn self_handled() -> () -> Int {
+  handle {
+    () -> handle {
+      perform Ask::Get() + 1
+    } with { Ask::Get() => resume(20) }
+  } with { Ask::Get() => resume(5) }
+}
+
+// A pure closure is the handle's value, and the exception arm's value is a
+// closure too: neither throws.
+fn pure_value(fail: Bool) -> () -> Int {
+  handle {
+    if fail {
+      throw("no")
+    } else {
+      ()
+    }
+    () -> 3
+  } with { Exception[String]::Throw(_) => () -> 0 }
+}
+
+fn thrown_inside() -> Int {
+  handle {
+    let h = () -> {
+      throw("x")
+      1
+    }
+    h()
+  } with { Exception[String]::Throw(_) => 0 }
+}
+
+test "a handle-bound closure called inside its handle" {
+  inspect(called_inside(), "12")
+  inspect(called_through_closure(), "60")
+  inspect(applied_in_place(), "6")
+  inspect(handed_to_a_caller(), "106")
+  inspect(suspend_arm(), "84")
+}
+
+test "a closure that needs nothing from the handle leaves it" {
+  let g = self_handled()
+  inspect(g(), "21")
+  let p = pure_value(false)
+  inspect(p(), "3")
+  let q = pure_value(true)
+  inspect(q(), "0")
+  inspect(thrown_inside(), "0")
+}

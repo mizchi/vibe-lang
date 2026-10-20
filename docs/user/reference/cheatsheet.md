@@ -3439,6 +3439,44 @@ parameter … is what this rejects". #2137 measured that: four of the shapes it
 named as rejected compile, and the two that fail fail for reasons it did not
 mention. The message was rewritten; this table replaced the enumeration.)
 
+### A closure that performs must not outlive its `handle` (#3540)
+
+An unannotated closure inherits the row of the place it is written (#761), and
+its type stays pure. Written inside a `handle`, it may perform what that handle
+answers -- but the handle answers only while its body runs. So a closure that
+performs (or throws) something the handle discharges may be called inside the
+handle, called through another closure there, or handed to a call there; it
+may not leave:
+
+```vibe skip
+// Rejected: `g` would perform `Ask` after the handle that answers it is gone.
+let g = handle {
+  let h = () -> perform Ask::Get() + 1
+  h
+} with {
+  Ask::Get() => resume(5)
+}
+```
+
+`vibe check` refuses it, naming the closure and the edit: call it inside the
+`handle` and keep only what it computes, or move the `handle` into the closure
+(`() -> handle { .. } with { .. }`). Before #3540 this compiled, and calling
+`g()` trapped (`unreachable`) or answered from the dead handler (`6`),
+depending on how the closure was lowered.
+
+When the handled body holds such a closure, three routes out are refused: the
+handle's value, if its type can hold a function (directly, or in a tuple,
+array, `Option`, struct, enum or map); a write into a binding declared outside
+the body whose type can hold one (an assignment, a field write, `Array::push`,
+or any call given that binding); and a `return` whose declared type can hold
+one. The rule does not trace which value takes the route, so a body that calls
+a performing closure and also returns an unrelated pure one is refused too.
+A call that stores its argument in state it captured, or in a module-level
+binding, names no such binding and is not caught. A closure whose effect the
+enclosing function's result type declares (`fn mid() -> (() -> Int with Ask)`)
+takes that row instead (#1451), so its caller supplies the handler and it may
+leave.
+
 ### 補間できるのは Show を持つ型だけ (#1445)
 
 宣言済みの struct / enum を `\{x}` に入れるには **`derive(Show)` か手書きの
