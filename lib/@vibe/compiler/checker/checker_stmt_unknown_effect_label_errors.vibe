@@ -1346,7 +1346,13 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
       SLetMut(lname, _, _) => Array::push(local_names, lname),
       SSuberror(_, tname, _) => Array::push(type_names, tname),
       SEnum(_, tname, _, _, _) => Array::push(type_names, tname),
-      SStruct(_, tname, _, _, _, _) => Array::push(type_names, tname),
+      SStruct(_, tname, _, _, _, _) => {
+        Array::push(type_names, tname)
+        // The env binds a struct's constructor under its name, with the
+        // field rows in its signature: left in, `with Nope` in a field
+        // would vouch for itself.
+        Array::push(local_names, tname)
+      },
       _ => ()
     }
     ln = ln + 1
@@ -1439,6 +1445,37 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
     }
     ti = ti + 1
   }
+  // A struct field's row is held like a function's: a label that names no
+  // effect is refused at the declaration. Unchecked, `struct Holder[E] { run:
+  // () -> Int with E }` read the formal `E` as an effect named `E`, and the
+  // program was refused at its entry point ("cannot discharge { E }", with a
+  // `handle` as the suggested edit), far from the cause.
+  let mut si = 0
+  while si < Array::length(stmts) && !reported {
+    match Array::get(stmts, si) {
+      SStruct(_, sname, _, _, _, stparams) => {
+        let (_, slabels) = stmt_type_rows(Array::get(stmts, si))
+        let mut sli = 0
+        while sli < Array::length(slabels) && !reported {
+          let label = Array::get(slabels, sli)
+          let msg = unknown_effect_label_message(label, es_names, ed_names, ed_ops, env_labels, type_names)
+          if String::length(msg) > 0 {
+            reported = true
+            let head = uel_head(label)
+            let text = if String::starts_with(msg, "unknown effect `") && uel_formal_named(stparams, head) {
+              struct_formal_row_message(sname, head)
+            } else {
+              msg
+            }
+            Array::push(errors, String::concat(text, String::concat(" (in a field of struct '", String::concat(sname, String::concat("')", String::concat(" [@fn=", String::concat(sname, "]")))))))
+          }
+          sli = sli + 1
+        }
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
   let mut i = 0
   while i < Array::length(stmts) && !reported {
     match Array::get(stmts, i) {
@@ -1521,6 +1558,29 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
     }
     bi = bi + 1
   }
+}
+
+/// Does a declaration's type-parameter list (`type_param_key` spellings)
+/// bind `name`?
+fn uel_formal_named(keys: Array[String], name: String) -> Bool {
+  let mut found = false
+  for k in keys {
+    if type_param_name(k) == name {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// The refusal for a struct type parameter `formal` written in a field's
+/// effect row. Only a single lowercase letter is a row variable, so an
+/// uppercase formal there is read as an effect named after it.
+fn struct_formal_row_message(sname: String, formal: String) -> String {
+  // `formal` reached here as an unknown effect, so it starts with A-Z.
+  let row_var = String::from_char_code(String::char_code_at(formal, 0) + 32)
+  "write `struct " + sname + "[" + row_var + "]` and `with " + row_var + "` if the row is meant to vary: a row parameter is a single lowercase letter, so `" + formal + "` (a type parameter of `" + sname + "`) is read in a field's row as an effect named `" + formal + "`, and no effect `" + formal + "` is declared"
 }
 
 fn uel_contains(xs: Array[String], x: String) -> Bool {
