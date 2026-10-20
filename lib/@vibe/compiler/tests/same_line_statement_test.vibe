@@ -36,3 +36,22 @@ test "a match arm guard on the line after its pattern is accepted" {
   // A statement `if` after a whole match still starts its own statement.
   assert(check_source_ok("fn h(n: Int) -> Int {\n  let mut r = match n {\n    0 => 1,\n    _ => 2\n  }\n  if r > 1 { r = 3 }\n  r\n}\nfn main() -> Int { h(0) }"))
 }
+
+/// An impl header may break before `for`, or after its `[..]` binder. Both
+/// lines continue the header: the line boundary the lexer marks before a
+/// statement-starting `for` or name used to land inside it, and the header
+/// failed with `expected for`.
+test "an impl header continued on the next line is accepted" {
+  let tr = "trait Tag {\n  tag(Self) -> Int\n}\n"
+  assert(check_source_ok(String::concat(tr, "struct Foo { n: Int }\nimpl Tag\n  for Foo {\n  tag(self: Foo) -> Int { self.n }\n}\nfn main() -> Int { 0 }")))
+  assert(check_source_ok(String::concat(tr, "struct Foo { n: Int }\nimpl Tag\n  for Foo\n{\n  tag(self: Foo) -> Int { self.n }\n}\nfn main() -> Int { 0 }")))
+  assert(check_source_ok("trait Conv[A] {\n  conv(Self) -> A\n}\nstruct Foo { n: Int }\nimpl Conv[Int]\n  for Foo {\n  conv(self: Foo) -> Int { self.n }\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok(String::concat(tr, "struct Box[T] { v: T }\nimpl [T: Tag]\n  Tag for Box[T] {\n  tag(self: Box[T]) -> Int { T::tag(self.v) }\n}\nfn main() -> Int { 0 }")))
+  assert(check_source_ok(String::concat(tr, "struct Foo { n: Int }\nimpl Tag for\n  Foo {\n  tag(self: Foo) -> Int { self.n }\n}\nfn main() -> Int { 0 }")))
+  // A `for` loop after an expression on the previous line still starts its
+  // own statement, inside an impl and outside one.
+  assert(check_source_ok(String::concat(tr, "struct Foo { n: Int }\nimpl Tag\n  for Foo {\n  tag(self: Foo) -> Int {\n    let mut s = self.n\n    let xs = [1, 2]\n    for x in xs {\n      s = s + x\n    }\n    s\n  }\n}\nfn main() -> Int { 0 }")))
+  assert(check_source_ok("fn f(xs: Array[Int]) -> Int {\n  let mut s = 0\n  let y = 1\n  for x in xs {\n    s = s + x\n  }\n  s + y\n}\nfn main() -> Int { f([1]) }"))
+  // ...and two expressions on one line inside an impl body are still refused.
+  assert(check_source_err_contains(String::concat(tr, "struct Foo { n: Int }\nimpl Tag\n  for Foo {\n  tag(self: Foo) -> Int {\n    let x = 1 2\n    x\n  }\n}\nfn main() -> Int { 0 }"), "two expressions on one line"))
+}
