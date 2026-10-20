@@ -272,3 +272,20 @@ test "a trait operation between an impl and its methods keeps the trait's signat
   let _ = derive_trait_namespace_operations(again, Array::length(again))
   inspect(String::join(collect_explicit_derived_op_names(again), "|"), content = "MyHash::hash_key|Inner::hash_key|?Inner::hash_key T0:N4:Self")
 }
+
+/// An impl for one application (`impl Hash for Box[Int]`) names its method
+/// for the applied target (`Box$impl$..::hash_key`). Stored under that name,
+/// the key never met a field of head `Box`, and `b: Box[Int]` was refused as
+/// having none. It keys the application it is written for and no other.
+test "an applied impl's hash_key keys that application only" {
+  let decls = "struct Box[T] { v: T } derive(Show)\ntrait Hash { hash_key(Self) -> String }\nimpl Hash for Box[Int] { hash_key(self) -> { \"b\" } }\n"
+  inspect(derive_verdict(decls + "struct Outer { b: Box[Int] } derive(Hash)" + main_src), content = "ok")
+  inspect(derive_verdict(decls + "struct Outer { b: Box[String] } derive(Hash)" + main_src), content = "add `impl Hash for Box[String]`, or write `Outer::hash_key` yourself: the derived key of `Outer` keys field `b` by an impl of `Hash` for `Box[String]`, and there is one only for `Box[Int]` [@fn=Outer]")
+  inspect(derive_verdict(decls + "impl Hash for Box[Bool] { hash_key(self) -> String { \"c\" } }\nstruct Outer { b: Box[Int]; c: Box[Bool] } derive(Hash)" + main_src), content = "ok")
+  // A module deriving `Hash` over a `Box[Int]` field keys it through the
+  // whole-program facts, with the applied parameter.
+  let ops = collect_explicit_derived_op_names(parse_program(lex(decls)))
+  inspect(String::join(ops, "|"), content = "Box$impl$72_97_115_104_$A66_111_120_LN73_110_116_ZR::hash_key|?Box$impl$72_97_115_104_$A66_111_120_LN73_110_116_ZR::hash_key T0:A3:Box1:N3:Int")
+  inspect(module_verdict("struct Outer { b: Box[Int] } derive(Hash)" + main_src, "struct Box[T] { v: T } derive(Show)", ops), content = "ok")
+  inspect(module_verdict("struct Outer { b: Box[String] } derive(Hash)" + main_src, "struct Box[T] { v: T } derive(Show)", ops), content = "add `impl Hash for Box[String]`, or write `Outer::hash_key` yourself: the derived key of `Outer` keys field `b` by an impl of `Hash` for `Box[String]`, and there is one only for `Box[Int]` [@fn=Outer]")
+}

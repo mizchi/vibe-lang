@@ -24,7 +24,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_method_owner, type_param_name
+  impl_method_owner, impl_method_owner_head, type_param_name
 }
 
 import @vibe/core {
@@ -162,6 +162,13 @@ fn hks_trait_method_deep(stmts: Array[Stmt], trait_name: String, method: String,
 /// the callable ones as `(T, type variables, parameter type)`, the parameter
 /// with aliases expanded; the second the rest as `(T, what is wrong)`, the
 /// reason phrased to follow "`T::hash_key` ".
+///
+/// `T` is the owner the binding is named for, so a method of an impl for one
+/// application (`impl Hash for Box[Int]`) has the encoded owner
+/// `Box$impl$..`, which is what a derived key calls; `impl_method_owner_head`
+/// gives its nominal head. Its parameter is that application with `Self`
+/// filled in, over the impl's type parameters, so it keys `Box[Int]` and not
+/// `Box[String]`.
 export fn hash_key_definitions(stmts: Array[Stmt]) -> (Array[(String, Array[String], TypeExpr)], Array[(String, String)]) {
   let good: Array[(String, Array[String], TypeExpr)] = array_empty()
   let bad: Array[(String, String)] = array_empty()
@@ -170,6 +177,10 @@ export fn hash_key_definitions(stmts: Array[Stmt]) -> (Array[(String, Array[Stri
   // trait: the parser places an impl's methods right after its `SImpl`.
   let mut impl_prefix = ""
   let mut impl_trait = ""
+  // An applied impl's target (`Box[Int]`) and the impl's own type
+  // parameters, which `Self` in the method's parameter stands for.
+  let mut impl_applied: Option[TypeExpr] = None
+  let mut impl_vars: Array[String] = array_empty()
   // A trait's namespace operations (`Hash::hash_key`) are inserted right
   // after the program's last trait or impl (`derive_trait_namespace_operations`),
   // so when that statement is an impl they sit between it and its methods. On
@@ -184,6 +195,13 @@ export fn hash_key_definitions(stmts: Array[Stmt]) -> (Array[(String, Array[Stri
       SImpl(tparams, _, trait_name, target) => {
         impl_prefix = impl_method_owner(tparams, trait_name, target) + "::"
         impl_trait = trait_name
+        impl_applied = match target {
+          TyApp(_, _) => Some(target),
+          _ => None
+        }
+        impl_vars = for tp in tparams {
+          type_param_name(tp)
+        }
       },
       SLet(_, _, name, ann, value) => if !hks_is_trait_operation(name, traits) {
         let in_impl = impl_prefix != "" && String::starts_with(name, impl_prefix)
@@ -201,7 +219,17 @@ export fn hash_key_definitions(stmts: Array[Stmt]) -> (Array[(String, Array[Stri
           }
           let (problem, vars, param) = hks_judge(owner, ann, value, trait_sig, in_impl, aliases)
           if problem == "" {
-            Array::push(good, (owner, vars, param))
+            match impl_applied {
+              Some(target) => if in_impl {
+                let applied = eq_subst_ty(param, ["Self"], [
+                  hash_key_expand(target, aliases)
+                ])
+                Array::push(good, (owner, Array::concat(impl_vars, vars), applied))
+              } else {
+                Array::push(good, (owner, vars, param))
+              },
+              None => Array::push(good, (owner, vars, param))
+            }
           } else {
             Array::push(bad, (owner, problem))
           }
@@ -374,9 +402,10 @@ fn hks_check(owner: String, vars: Array[String], param: Option[TypeExpr], result
     None => ("has no type annotation on its parameter", vars, TyUnit),
     Some(p0) => {
       let p = hash_key_expand(p0, aliases)
+      let head = impl_method_owner_head(owner)
       let takes_owner = match p {
-        TyName(n) => n == owner || n == "Self",
-        TyApp(h, _) => h == owner,
+        TyName(n) => n == head || n == "Self",
+        TyApp(h, _) => h == head,
         _ => false
       }
       if !takes_owner {

@@ -55,7 +55,7 @@ import ./hash_key_signature.vibe {
 }
 
 import @vibe/ast {
-  builtin_ref
+  builtin_ref, impl_method_owner_head
 }
 
 import @vibe/core {
@@ -118,7 +118,7 @@ export fn collect_hash_key_types(stmts: Array[Stmt]) -> Array[String] {
   for row in good {
     let (owner, _, _) = row
     Array::push(hk_written, row)
-    hk_push_unique(out, owner)
+    hk_push_unique(out, impl_method_owner_head(owner))
   }
   for row in bad {
     Array::push(hk_unusable, row)
@@ -156,7 +156,7 @@ export fn collect_hash_key_types(stmts: Array[Stmt]) -> Array[String] {
     let (owner, _, _) = row
     if !hk_marked(marked, owner) {
       Array::push(hk_written, row)
-      hk_push_unique(out, owner)
+      hk_push_unique(out, impl_method_owner_head(owner))
     } else {
       ()
     }
@@ -202,12 +202,13 @@ fn hk_judged_here(owner: String) -> Bool {
   found
 }
 
-/// Why the written `T::hash_key` cannot be called, or "".
-fn hk_unusable_reason(owner: String) -> String {
+/// Why the written `T::hash_key` cannot be called, or "". `head` is a type's
+/// nominal head; an applied impl's method (`Box$impl$..`) counts for `Box`.
+fn hk_unusable_reason(head: String) -> String {
   let mut out = ""
   for row in hk_unusable {
     let (o, why) = row
-    if out == "" && o == owner {
+    if out == "" && impl_method_owner_head(o) == head {
       out = why
     } else {
       ()
@@ -218,15 +219,56 @@ fn hk_unusable_reason(owner: String) -> String {
 
 /// Does `T::hash_key` take a value of field type `ty`? A derived one takes
 /// every application of `T`; a written one, here or in another module, takes
-/// what its parameter matches.
-fn hk_takes(owner: String, ty: TypeExpr) -> Bool {
-  let mut out = true
+/// what its parameter matches. `head` is the nominal head `T`: the methods of
+/// impls for single applications (`impl Hash for Box[Int]`, `Box[Bool]`) are
+/// all `Box`'s, and one taking `ty` is enough.
+fn hk_takes(head: String, ty: TypeExpr) -> Bool {
   let mut seen = false
+  let mut out = false
   for row in hk_written {
     let (o, vars, param) = row
-    if !seen && o == owner {
+    if impl_method_owner_head(o) == head {
       seen = true
-      out = hash_key_takes(param, vars, ty)
+      if !out && hash_key_takes(param, vars, ty) {
+        out = true
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  }
+  !seen || out
+}
+
+/// The owner whose `hash_key` a field of type `ty` and head `head` is keyed
+/// by: the written definition that takes `ty` -- an applied impl's method is
+/// named for its target (`Box$impl$..::hash_key`) -- or `head` itself.
+fn hk_key_owner(head: String, ty: TypeExpr) -> String {
+  let mut out = ""
+  for row in hk_written {
+    let (o, vars, param) = row
+    if out == "" && impl_method_owner_head(o) == head && hash_key_takes(param, vars, ty) {
+      out = o
+    } else {
+      ()
+    }
+  }
+  if out == "" {
+    head
+  } else {
+    out
+  }
+}
+
+/// Are all the written `hash_key` definitions of head `T` methods of impls for
+/// single applications (`impl Hash for Box[Int]`)?
+fn hk_only_applied_impls(head: String) -> Bool {
+  let mut out = true
+  for row in hk_written {
+    let (o, _, _) = row
+    if impl_method_owner_head(o) == head && o == head {
+      out = false
     } else {
       ()
     }
@@ -234,18 +276,19 @@ fn hk_takes(owner: String, ty: TypeExpr) -> Bool {
   out
 }
 
-/// The parameter type of the written `T::hash_key`, as the message shows it.
-fn hk_written_param(owner: String) -> String {
-  let mut out = ""
+/// The parameter types of the written `T::hash_key` definitions of head `T`,
+/// as the message shows them.
+fn hk_written_param(head: String) -> String {
+  let params: Array[String] = array_empty()
   for row in hk_written {
     let (o, _, param) = row
-    if out == "" && o == owner {
-      out = hk_type_text(param)
+    if impl_method_owner_head(o) == head {
+      Array::push(params, hk_type_text(param))
     } else {
       ()
     }
   }
-  out
+  String::join(params, "` or `")
 }
 
 /// A fresh binder for the generated body. Each derived function owns one
@@ -281,8 +324,9 @@ fn hk_component(fty: TypeExpr, val: Expr, known_types: Array[String], hash_types
       hk_length_prefixed(ECall(builtin_ref("Double::to_string"), [folded], -1, [
       ]), counter)
     } else if !is_scalar_type_name(n) && str_array_contains(hash_types, n) {
-      hk_length_prefixed(ECall(EIdent(qualified_name(n, "hash_key"), -1), [val], -1, [
-      ]), counter)
+      hk_length_prefixed(ECall(EIdent(qualified_name(hk_key_owner(n, fty), "hash_key"), -1), [
+        val
+      ], -1, []), counter)
     } else {
       hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
     },
@@ -324,8 +368,9 @@ fn hk_component(fty: TypeExpr, val: Expr, known_types: Array[String], hash_types
       hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
     },
     TyApp(n, _) => if str_array_contains(hash_types, n) {
-      hk_length_prefixed(ECall(EIdent(qualified_name(n, "hash_key"), -1), [val], -1, [
-      ]), counter)
+      hk_length_prefixed(ECall(EIdent(qualified_name(hk_key_owner(n, fty), "hash_key"), -1), [
+        val
+      ], -1, []), counter)
     } else {
       hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
     },
@@ -416,6 +461,9 @@ export fn gen_enum_hash_key_fn(ename: String, variants: Array[(String, Array[Typ
 ///                says why)
 ///   `mismatch`   a written `name::hash_key` that takes another application
 ///                (`detail` is the type it takes)
+///   `applied`    the type's only keys are impls for other applications
+///                (`impl Hash for Box[Int]`; `name` is the field's type,
+///                `detail` the applications that have one)
 ///   `opaque`     anything else -- a `Map`, a function, an opaque builtin --
 ///                which the key could only read by address (`name` is the
 ///                type)
@@ -456,6 +504,8 @@ fn hash_unkeyed_head(n: String, fty: TypeExpr, known_types: Array[String], hash_
   } else if str_array_contains(hash_types, n) {
     if hk_takes(n, fty) {
       None
+    } else if hk_only_applied_impls(n) {
+      Some(("applied", hk_type_text(fty), hk_written_param(n)))
     } else {
       Some(("mismatch", n, hk_written_param(n)))
     }
@@ -528,6 +578,8 @@ export fn hash_note_unkeyed_field(tname: String, fname: String, fty: TypeExpr, k
     } else if kind == "unusable" {
       let inner = namespace_rename_original(n)
       "write `" + inner + "::hash_key` as `fn " + inner + "::hash_key(x: " + inner + ") -> String`, or " + yourself + ": the derived key of `" + shown + "` calls `" + inner + "::hash_key` with field `" + fname + "`, but `" + inner + "::hash_key` " + detail + " [@fn=" + shown + "]"
+    } else if kind == "applied" {
+      "add `impl Hash for " + n + "`, or " + yourself + ": the derived key of `" + shown + "` keys field `" + fname + "` by an impl of `Hash` for `" + n + "`, and there is one only for `" + detail + "` [@fn=" + shown + "]"
     } else if kind == "mismatch" {
       let inner = namespace_rename_original(n)
       "make `" + inner + "::hash_key` take every `" + inner + "` (`fn " + inner + "::hash_key[T](x: " + inner + "[T]) -> String`), or " + yourself + ": the derived key of `" + shown + "` calls `" + inner + "::hash_key` with field `" + fname + "`, which it does not take -- it takes only `" + detail + "` [@fn=" + shown + "]"
