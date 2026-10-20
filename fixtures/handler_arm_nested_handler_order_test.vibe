@@ -150,3 +150,43 @@ test "a local shadowing a pure function is not that function" {
   inspect(log, "[INNER callee, OUTER local from Ask arm]")
   inspect(say("x"), "x")
 }
+
+// A program effect spelled like the name a renamed nested handler would get
+// (the old numbering gave this one the third copy in the file).
+// The copy must take another name: sharing this one made the renamed `Log`
+// handler catch `count_it`'s `Count` (a trap), and gave the copy this
+// effect's operation table.
+effect Log__nested_3 {
+  Count(Int, Int) -> Int
+}
+
+fn count_it() -> Int with Log__nested_3 {
+  perform Log__nested_3::Count(3, 4)
+}
+
+fn generated_name_taken(log: Array[String]) -> Int {
+  handle {
+    handle {
+      handle {
+        handle {
+          perform Ask::Get() + count_it()
+        } with { Log::Say(m) => {
+          Array::push(log, "INNER \{m}")
+          resume(())
+        } }
+      } with { Ask::Get() => {
+        perform Log::Say("from Ask arm")
+        resume(10)
+      } }
+    } with { Log::Say(m) => {
+      Array::push(log, "OUTER \{m}")
+      resume(())
+    } }
+  } with { Log__nested_3::Count(a, b) => resume(a * b) }
+}
+
+test "a renamed handler does not take a program effect's name" {
+  let log: Array[String] = []
+  inspect(generated_name_taken(log), "22")
+  inspect(log, "[OUTER from Ask arm]")
+}

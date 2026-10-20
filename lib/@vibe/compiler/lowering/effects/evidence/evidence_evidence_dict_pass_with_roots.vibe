@@ -2366,7 +2366,30 @@ fn edp_isolate_nested_arm_handlers(stmts: Array[Stmt]) -> Unit {
     let es_names = array_empty()
     let es_members_list = array_empty()
     edp_es_collect_into(stmts, es_names, es_members_list)
-    let fx = (fn_defs, edp_fn_row_label_table(fn_defs, es_names, es_members_list), edp_collect_program_binders(stmts))
+    let row_labels = edp_fn_row_label_table(fn_defs, es_names, es_members_list)
+    let fx = (fn_defs, row_labels, edp_collect_program_binders(stmts))
+    // Every effect name the program already spells -- declared (imported
+    // declarations are statements of the merged program too), handled,
+    // performed, or named in a row -- so a generated copy never takes one.
+    Array::truncate(edp_iso_taken, 0)
+    for nm in names {
+      Array::push(edp_iso_taken, nm)
+    }
+    for labels in row_labels {
+      for label in labels {
+        Array::push(edp_iso_taken, edp_effect_name_of(label))
+      }
+    }
+    for st in stmts {
+      match st {
+        SLet(_, _, _, _, expr) => edp_iso_note_effect_names(expr),
+        SLetMut(_, _, expr) => edp_iso_note_effect_names(expr),
+        SExpr(expr) => edp_iso_note_effect_names(expr),
+        STest(_, expr) => edp_iso_note_effect_names(expr),
+        SBench(_, expr) => edp_iso_note_effect_names(expr),
+        _ => ()
+      }
+    }
     let fresh: Array[Stmt] = []
     for i in needs {
       match Array::get(stmts, i) {
@@ -2385,6 +2408,45 @@ fn edp_isolate_nested_arm_handlers(stmts: Array[Stmt]) -> Unit {
       Array::push(stmts, d)
     }
   } else ()
+}
+
+/// Effect names `edp_iso_fresh_name` must not reuse.
+let edp_iso_taken: Array[String] = []
+
+/// `<effect>__nested_<n>` for the first `n` no effect of the program (and
+/// no copy made earlier) is named. A user effect spelled the same way would
+/// otherwise share the copy's operation table and its handlers (#3540).
+fn edp_iso_fresh_name(y: String) -> String {
+  let mut k = 1
+  let mut name = String::concat(String::concat(y, "__nested_"), Int::to_string(k))
+  while edp_str_array_contains(edp_iso_taken, name) {
+    k = k + 1
+    name = String::concat(String::concat(y, "__nested_"), Int::to_string(k))
+  }
+  Array::push(edp_iso_taken, name)
+  name
+}
+
+/// Note the effect of every handler arm and `perform` in `expr`.
+fn edp_iso_note_effect_names(expr: Expr) -> Unit {
+  match expr {
+    EHandle(_, arms) => for arm in arms {
+      let (p, _) = arm
+      Array::push(edp_iso_taken, edp_effect_name_of(edp_pat_qname(p)))
+    },
+    ECall(EIdent(nm, _), _, _, _) => if nm == "perform" {
+      Array::push(edp_iso_taken, edp_user_perform_effect_of(expr))
+    } else (),
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    edp_iso_note_effect_names(expr_child_at(i))
+    i = i + 1
+  }
+  expr_children_pop(mark)
 }
 
 /// The one declared effect every arm of a handle names, or "".
@@ -2490,7 +2552,7 @@ fn edp_iso_expr(expr: Expr, stack: Array[(String, Array[(Pat, Expr)])], names: A
         }
       } else ()
       if shadowing {
-        let fname = String::concat(String::concat(y, "__nested_"), Int::to_string(Array::length(fresh) + 1))
+        let fname = edp_iso_fresh_name(y)
         let body3 = edp_iso_rename(body2, y, fname)
         if edp_iso_still_reaches(body3, y, fx) {
           EHandle(body2, arms2)
