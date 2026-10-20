@@ -95,10 +95,17 @@ artifacts pass through the production Node host, which supplies their
 The separate RC-shadow recurrence fixture is compiled with its actual `main`
 entry and executes to the expected `25377489`.
 
-The full normal `pkf run release-check -j 1` passes: 126 tasks (34 cached,
-92 executed). Its compiler-gate verified the stage2/stage3 fixed point; the
+The full normal `pkf run release-check -j 1` passes: 126 tasks (22 cached,
+104 executed). Its compiler-gate verified the stage2/stage3 fixed point; the
 normal stage2 SHA matches the measured compiler. Compile-only lane checks
 and their mutation controls also pass.
+
+The annotated-lambda allocation oracle prepares both variants' shared AST
+traversal scratch before counting per-invocation inference overhead. Its
+512-byte limit is unchanged; unannotated positive controls still expose
+roughly 34 KB of call-site table work. Its three test blocks pass under RC,
+shadow and bump. Test-only preparation changes leave the generated compiler
+inputs and the measured artifact unchanged.
 
 The absolute baseline in `bench/perf/heap_baseline.txt` is ratcheted down
 from 1,084,426,520 to 953,336,600 bytes. The existing 10% allowance is unchanged,
