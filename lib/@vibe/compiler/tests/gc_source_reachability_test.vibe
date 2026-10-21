@@ -179,3 +179,49 @@ test "GC keeps dependency initializers and their callees" {
   let wasm = compile_generated_stmts_gc_only(stmts, "main")
   gc_reachability_run_wasm("dependency-init", wasm, "ok:dependency-init\n")
 }
+
+test "GC generated test runners keep their original source validation" {
+  let stmts: Array[Stmt] = []
+  gc_reachability_add_segment(stmts, "export fn published() -> Future[Int] { Future::ready(7) } test \"entry\" { () }")
+  gc_reachability_add_segment(stmts, "export fn harmless() -> Int { 1 }")
+  set_executable_exports_stripped(false)
+  let msg = handle {
+    let _ = compile_generated_stmts_gc_only(stmts, "__no_entry__")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "does not support the builtin `Future::ready`"))
+}
+
+test "GC generated bench runners keep their original source validation" {
+  let stmts: Array[Stmt] = []
+  gc_reachability_add_segment(stmts, "fn dormant() -> Future[Int] { Future::ready(7) } bench \"entry\" { () }")
+  gc_reachability_add_segment(stmts, "export fn harmless() -> Int { 1 }")
+  set_executable_exports_stripped(false)
+  let msg = handle {
+    let _ = compile_generated_stmts_gc_only(stmts, "__no_entry__")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "does not support the builtin `Future::ready`"))
+}
+
+test "GC generated test runners prune the trailing dependency source" {
+  let stmts: Array[Stmt] = []
+  gc_reachability_add_segment(stmts, "test \"entry\" { () }")
+  gc_reachability_add_segment(stmts, "export fn unused() -> Future[Int] { Future::ready(7) }")
+  set_executable_exports_stripped(false)
+  let wasm = compile_generated_stmts_gc_only(stmts, "__no_entry__")
+  gc_reachability_run_wasm("test-entry-first", wasm, "0\n")
+}
+
+test "GC generated test runners retain each test source" {
+  let stmts: Array[Stmt] = []
+  gc_reachability_add_segment(stmts, "test \"first\" { () }")
+  gc_reachability_add_segment(stmts, "fn dormant() -> Future[Int] { Future::ready(7) } test \"second\" { () }")
+  gc_reachability_add_segment(stmts, "export fn harmless() -> Int { 1 }")
+  set_executable_exports_stripped(false)
+  let msg = handle {
+    let _ = compile_generated_stmts_gc_only(stmts, "__no_entry__")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "does not support the builtin `Future::ready`"))
+}

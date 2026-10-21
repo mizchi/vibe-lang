@@ -212,12 +212,32 @@ export fn gc_prune_unreachable_functions(mod_bytes: Bytes, entry_name: String) -
 // reachable through actual calls, rather than becoming source initializer roots.
 // Keep this behind the GC package boundary so the source driver does not grow
 // its documented core import graph. An absent entry keeps the old diagnostics.
-export fn gc_source_dce_roots(stmts: Array[Stmt], entry_name: String, lowered_test_names: Array[String]) -> Option[Array[String]] {
+export fn gc_source_dce_roots(stmts: Array[Stmt], entry_name: String, lowered_test_names: Array[String], generated_test_artifact: Bool) -> Option[Array[String]] {
   let entry = builtin_shadow_entry_name(stmts, entry_name)
   if lc_defines_top_level(stmts, entry) {
     // GC does not publish dependency linking exports, including on its
     // instrumented CLI lane where the ordinary executable strip is disabled.
-    let roots = lc_source_dce_roots(stmts, entry, false, true)
+    let roots = if generated_test_artifact {
+      // `_start` was appended after all source segments. Its position cannot
+      // identify the source that supplied a test or bench. Each lowered body
+      // still occupies its original segment; preserve every such source's
+      // validation while continuing to discard unrelated dependency bodies.
+      let owned: Array[String] = []
+      let seen: MutSet[String] = MutSet::new_string()
+      for owner in lowered_test_names {
+        if owner != entry {
+          for root in lc_source_dce_roots(stmts, owner, false, true) {
+            if !MutSet::has(seen, root) {
+              MutSet::add(seen, root)
+              Array::push(owned, root)
+            }
+          }
+        }
+      }
+      owned
+    } else {
+      lc_source_dce_roots(stmts, entry, false, true)
+    }
     for name in lowered_test_names {
       Array::push(roots, name)
     }
