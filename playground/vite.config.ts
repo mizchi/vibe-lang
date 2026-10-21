@@ -20,10 +20,14 @@ export default defineConfig({
   build: {
     target: "esnext",
     rollupOptions: {
-      input: {
-        main: resolve(__dirname, "index.html"),
-        slides: resolve(__dirname, "slides.html"),
-      },
+      // The preview stubs out the compiler, so it must not ship the playground,
+      // which would report Ready and then fail every Run.
+      input: preview
+        ? { slides: resolve(__dirname, "slides.html") }
+        : {
+            main: resolve(__dirname, "index.html"),
+            slides: resolve(__dirname, "slides.html"),
+          },
     },
   },
   optimizeDeps: {
