@@ -1075,13 +1075,23 @@ fn bare_owned_head_payload_arity(name: String) -> Int {
   }
 }
 
+/// Whether a bare `name` in an impl method's signature is the impl's OWN
+/// target with every formal erased there (`impl AsyncIterator for AsyncIter`
+/// writing `AsyncIter`), which `expand_erased_owner_heads` reads as the
+/// target applied to those formals. Only the owner qualifies (#3551 review):
+/// a formal's spelling is no provenance, so another declaration whose formals
+/// merely share the trait's names (`struct Victim[A]` under `trait Gen[A]`)
+/// written bare got no arity diagnostic, unified with the trait's
+/// `Victim[Int]` by name, and left `x.v` free to read an `Int` as a `String`.
+/// `in_scope("#erased.#owner.<name>")` answers whether `name` is the owner
+/// (`trait_erased_type_param_env`).
 fn bare_head_erased_by_impl(name: String, defs: Array[TypeDef], in_scope: (String) -> Bool) -> Bool {
   match find_typedef(defs, name) {
     Some(td) => {
       let formals = type_def_formals(td)
-      let mut all = Array::length(formals) > 0
+      let mut all = Array::length(formals) > 0 && in_scope(String::concat("#erased.#owner.", name))
       for formal in formals {
-        if !in_scope(String::concat("#erased.", type_param_name(formal))) {
+        if type_param_arity(formal) > 0 || !in_scope(String::concat("#erased.", type_param_name(formal))) {
           all = false
         } else {
           ()
@@ -1090,6 +1100,46 @@ fn bare_head_erased_by_impl(name: String, defs: Array[TypeDef], in_scope: (Strin
       all
     },
     None => false
+  }
+}
+
+/// The impl owner written bare in an impl method's signature, applied to its
+/// formals: `AsyncIter` reads as `AsyncIter[T]`, the trait's erased `T`
+/// (#3551 review). Left bare it was a wildcard that unified with any
+/// application, so `impl Gen for Q { f(self, x: Q) -> String { x.v } }`
+/// under `f(Self, Q[Int]) -> String` read the `Int` field as a `String`;
+/// applied, it is held to the trait's `Q[Int]` like the written `Q[A]`. Any
+/// other head is left alone, for `report_bare_generic_heads` to judge.
+export fn expand_erased_owner_heads(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], in_scope: (String) -> Bool) -> TypeExpr {
+  expand_erased_owner_walk(te, defs, shadow, in_scope, false)
+}
+
+fn expand_erased_owner_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], in_scope: (String) -> Bool, constructor_slot: Bool) -> TypeExpr {
+  match te {
+    TyName(name) => if constructor_slot || string_array_has(shadow, name) || shadow_type_constructor_arity(shadow, name) >= 0 || in_scope(name) || !bare_head_erased_by_impl(name, defs, in_scope) {
+      te
+    } else match find_typedef(defs, name) {
+      Some(td) => TyApp(name, for formal in type_def_formals(td) {
+        TyName(type_param_name(formal))
+      }),
+      None => te
+    },
+    TyUnit => te,
+    TyApp(name, args) => {
+      let out: Array[TypeExpr] = []
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, expand_erased_owner_walk(Array::get(args, i), defs, shadow, in_scope, type_argument_takes_constructor(name, i, defs, shadow)))
+        i = i + 1
+      }
+      TyApp(name, out)
+    },
+    TyTuple(items) => TyTuple(for item in items {
+      expand_erased_owner_walk(item, defs, shadow, in_scope, false)
+    }),
+    TyFn(params, ret, eff) => TyFn(for param in params {
+      expand_erased_owner_walk(param, defs, shadow, in_scope, false)
+    }, expand_erased_owner_walk(ret, defs, shadow, in_scope, false), eff)
   }
 }
 

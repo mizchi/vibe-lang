@@ -2,6 +2,7 @@
 
 import @vibe/compiler/checker/annotations {
   collect_formal_kind_uses,
+  expand_erased_owner_heads as annotations_expand_erased_owner_heads,
   fapp_formal_marker_prefix,
   formal_application_error as annotations_formal_application_error,
   report_bare_generic_heads as annotations_report_bare_generic_heads,
@@ -213,6 +214,13 @@ export fn trait_erased_type_param_env(env: TypeEnv, binding_name: String) -> Typ
     let method_name = String::substring(binding_name, sep + 2, String::length(binding_name))
     let names = array_empty()
     collect_impl_erased_type_params(env, env, type_name, method_name, names)
+    // The impl's own target, under a name no type can spell: only it may be
+    // written bare where its formals are erased (`bare_head_erased_by_impl`).
+    if Array::length(names) > 0 {
+      Array::push(names, String::concat("#owner.", type_name))
+    } else {
+      ()
+    }
     let mut out = env
     let mut i = 0
     while i < Array::length(names) {
@@ -317,7 +325,46 @@ export fn report_map_key_types(te: TypeExpr, defs: Array[TypeDef], shadow: Array
 /// formal (a `CtVar`, or its rigid spelling), and `#erased.<name>` when an
 /// impl erases it in this method (`trait_erased_type_param_env`).
 export fn report_bare_generic_heads_in_env(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, where_label: String, errors: Array[String]) -> Unit {
-  let in_scope = (name) -> {
+  annotations_report_bare_generic_heads(te, defs, shadow, signature_type_scope(env), where_label, errors)
+}
+
+/// An impl method `val` with its owner written bare in the signature read as
+/// the owner applied to its erased formals (`expand_erased_owner_heads`), so
+/// the method is typed -- and held to its trait's signature -- at that
+/// application rather than at a wildcard (#3551 review). `env` is the one
+/// `trait_erased_type_param_env` built for the binding; any other value is
+/// returned as it is.
+export fn expand_impl_owner_bare_heads(val: Expr, defs: Array[TypeDef], env: TypeEnv) -> Expr {
+  match val {
+    EFn(tps, bounds, params, ret, eff, body) => {
+      let shadow: Array[String] = []
+      for tp in tps {
+        Array::push(shadow, type_param_name(tp))
+      }
+      let in_scope = signature_type_scope(env)
+      let expand = (te: TypeExpr) -> TypeExpr {
+        annotations_expand_erased_owner_heads(te, defs, shadow, in_scope)
+      }
+      EFn(tps, bounds, for p in params {
+        let (pname, ann) = p
+        (pname, match ann {
+          Some(te) => Some(expand(te)),
+          None => None
+        })
+      }, match ret {
+        Some(te) => Some(expand(te)),
+        None => None
+      }, eff, body)
+    },
+    _ => val
+  }
+}
+
+/// Whether a name is in scope at a signature checked in `env`: a type formal
+/// an enclosing binder bound, or `#erased.<name>` for what an impl erases in
+/// this method (`trait_erased_type_param_env`).
+fn signature_type_scope(env: TypeEnv) -> (String) -> Bool {
+  (name) -> {
     if String::starts_with(name, "#erased.") {
       match env_lookup(env, String::concat(trait_erased_type_param_prefix, String::substring(name, 8, String::length(name)))) {
         Some(_) => true,
@@ -334,7 +381,6 @@ export fn report_bare_generic_heads_in_env(te: TypeExpr, defs: Array[TypeDef], s
       }
     }
   }
-  annotations_report_bare_generic_heads(te, defs, shadow, in_scope, where_label, errors)
 }
 
 /// #3536: `report_bare_generic_heads` for a DECLARATION's type -- a struct
