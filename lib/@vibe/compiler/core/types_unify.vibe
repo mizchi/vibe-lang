@@ -55,6 +55,7 @@ import ./types_types_equal.vibe {
   parse_trait_bound_vid,
   resolve_builtin,
   resolve_effect_opt_preserving_open,
+  resolve_row_type_arg,
   row_var_type_arg,
   subst_apply,
   trait_is_subtrait,
@@ -132,7 +133,12 @@ fn subst_apply_except_go(s: Subst, ty: Type, keep: Array[Int]) -> Type {
       let ra = array_empty()
       let mut i = 0
       while i < Array::length(args) {
-        Array::push(ra, subst_apply_except_go(s, Array::get(args, i), keep))
+        let a = Array::get(args, i)
+        Array::push(ra, match row_var_type_arg(a) {
+          // #3589: a row argument resolves as the row of a `CtFn` does here.
+          Some(v) => resolve_row_type_arg(a, resolve_effect_opt_preserving_open(s, Some(v))),
+          None => subst_apply_except_go(s, a, keep)
+        })
         i = i + 1
       }
       zonk_hkt(CtNamed(name, ra))

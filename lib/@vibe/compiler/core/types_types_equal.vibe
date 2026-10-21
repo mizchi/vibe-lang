@@ -535,10 +535,27 @@ export fn subst_apply(s: Subst, ty: Type) -> Type {
       (rfn, subst_apply(s, rft))
     }),
     CtNamed(name, args) => zonk_hkt(CtNamed(name, for arg in args {
-      subst_apply(s, arg)
+      match row_var_type_arg(arg) {
+        Some(v) => resolve_row_type_arg(arg, resolve_effect_opt(s, Some(v))),
+        None => subst_apply(s, arg)
+      }
     })),
     CtForAll(_, _, _) => ty,
     _ => ty
+  }
+}
+
+/// #3589: a row argument (`Holder[$4]`) after its row variable is resolved
+/// the way a function's `with $4` is: the labels it is bound to
+/// (`Holder[Console]`, the shape a literal storing `run: noisy` has before
+/// generalization reads it). Without this, `generalize` published the bound
+/// `$4` as a free row, `instantiate` freshened it, and `(make().run)()` in a
+/// pure function ran `Console` uncharged. A variable bound to the pure row
+/// stays as it was: no argument spells the pure row.
+export fn resolve_row_type_arg(arg: Type, resolved: Option[String]) -> Type {
+  match resolved {
+    Some(row) => CtNamed(row, array_empty()),
+    None => arg
   }
 }
 
