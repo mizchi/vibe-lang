@@ -745,6 +745,11 @@ Every other operator at the start of a line (`+`, `*`, `|>`, `&&`, `==`, ...)
 continues the previous line. `->`, `-=` and `!=` are distinct tokens, not a
 prefix operator followed by something else.
 
+`return` and `break` read their value from the same line only. A `return`
+with nothing after it on its line is a bare `return`: the next line is a new
+statement, which it makes unreachable, not the value returned (#3578). Write
+`return value` on one line.
+
 ## Pipe
 
 ```vibe skip
