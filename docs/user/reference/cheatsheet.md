@@ -3499,6 +3499,22 @@ leave -- when the result is that function type itself. A tuple or other
 composite of function types does not exempt the closures in it: the lowering
 gives the declared row only to a closure that is the result.
 
+A closure can also leave inside the value a call returns, held in a field of
+a declared struct or enum (`Box::{ f: () -> throw(7) }`), where the result's
+type shows only the pure field type. When the handle's value is such a type,
+`vibe check` reads the body of the function the handled call reaches, and
+refuses the handle if that function builds a closure performing what the
+handle discharges (#3584). The function may be declared in the same module or
+imported (#3593), reached as a method (`fac.mk()`), through a top-level or
+local alias (`let g = mk`, annotated or chosen by an `if`, #3596), as a
+literal a top-level binding chooses (`let make = if c { () -> .. } else { ..
+}`), or as a row-polymorphic builder whose row the call fills
+(`forward[e](g: () -> Int with e) -> Box with e`). A function reached only
+through a value nothing names -- a parameter (`fn run(g: () -> Box with
+Exception[Int])`) or a call's result (`let g = pick(3)`) -- is not read, and
+its closure still leaves unseen; that is a known gap of `0.1.0`
+(stable-surface §6.2).
+
 ### 補間できるのは Show を持つ型だけ (#1445)
 
 宣言済みの struct / enum を `\{x}` に入れるには **`derive(Show)` か手書きの
