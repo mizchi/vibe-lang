@@ -56,7 +56,7 @@ fn main allows Console {
   greet("自作言語を自慢する会")
 }`,
     expect: "hi 自作言語を自慢する会\n",
-    hint: "<code>main</code> の <code>allows</code> を <code>with</code> にしてみる。診断は直し方から出る",
+    hint: "<code>main</code> の <code>allows</code> を <code>with</code> にしてみる。エラーの 1 行目が直し方になってる",
   },
   zero_alloc: {
     source: String.raw`
@@ -341,7 +341,7 @@ export const SLIDES: Slide[] = [
           <li>適当に論文を突っ込む</li>
           <li><strong>Lean</strong> で難しそうな部分を実装して、テストオラクルにする
             <div class="muted">型検査器の健全性 / モジュールシステム / スレッド実行モデル</div></li>
-          <li>「バグを潰して」</li>
+          <li>あとはひたすら「バグを潰して」と言う</li>
           <li>Rust Book を参考に <strong>Vibe Book</strong> を書いた。例は全部 CI で動かして、サブエージェントにルーブリックで使いやすさを採点させてる</li>
         </ul>
         <div class="card">
@@ -372,7 +372,7 @@ export const SLIDES: Slide[] = [
         <li>MoonBit も LLVM もいらない。wasm ランナーだけで動く</li>
         <li>罠。<code>vibe test</code> は既定だと seed がコンパイルする。コンパイラを直したのに、直す前のコンパイラで検証してた</li>
       </ul>
-      <p class="quote small">44 行の変更で、seed の自己ビルドが <strong>wasm32 の 4GiB</strong> を超えた。pass 3 で 3.89GiB、残り 119MB だった (#3439)</p>`,
+      <p class="quote small">seed の自己ビルドは pass 3 の時点で 3.89GiB、<strong>wasm32 の 4GiB</strong> まで残り 119MB。そこに 44 行足したら超えた (#3439)</p>`,
     notes: "6:25 (35s) seed → stage3。vibe test が seed で答える罠。4GiB の話",
   },
   {
@@ -404,9 +404,7 @@ export const SLIDES: Slide[] = [
         </div>
         <div>
           <ul class="small">
-            <li>件数は checker と codegen。1 万行あたりだと他と同じくらい</li>
-            <li>黙って間違う率は desugar が一番高い (48%)。型を持たないまま書き換えるパスなので、落ちずに違う答えを出す</li>
-            <li>密度だと CLI (1 万行あたり 57) と RC (53)</li>
+            <li>一番黙って間違うのは desugar (48%)。型を見ないで書き換えてるので、落ちずに違う答えを出す</li>
             <li>セルフホスト後、bug の起票は月 105 → 228 → 293 件</li>
           </ul>
         </div>
@@ -437,7 +435,7 @@ export const SLIDES: Slide[] = [
           )}
         </div>
         <div>
-          <p class="chart-title">そのうち黙って間違う (P0) 割合</p>
+          <p class="chart-title">そのうち P0 の割合</p>
           ${bars(
             [
               { label: "等価性 ==", value: 59, hot: true },
@@ -455,7 +453,10 @@ export const SLIDES: Slide[] = [
           )}
         </div>
       </div>
-      <p>バグが多かったのは機能単体より組み合わせ (クロージャ × effect row × ジェネリクス)。<code>==</code> のバグは半分以上が黙って間違う系だった。権限まわりはほとんどバグらなかった</p>
+      <ul>
+        <li>だいたいクロージャ × effect row × ジェネリクスが重なるところでバグる</li>
+        <li>権限まわりはほぼバグらなかった</li>
+      </ul>
       ${SOURCE}`,
     notes: "7:40 (35s) バグが多いのは組み合わせ。クロージャ × effect row × ジェネリクス。== と String は P0 率も高い。権限まわりはほぼバグらなかった",
   },
@@ -490,8 +491,8 @@ export const SLIDES: Slide[] = [
           <h3>バグが生まれる速度 &gt; 潰れる速度</h3>
           <ul class="small">
             <li>ある PR のレビューで落ちるバグ (P1) が 4 件出て、3 件はその PR 自身が入れたものだった (#2725)</li>
-            <li>bug 841 件、うち P0 (黙って間違う) 266 件</li>
-            <li>CI が通っても信用しない。わざと壊して落ちるのを見てから</li>
+            <li>bug 841 件、うち P0 は 266 件</li>
+            <li>CI のゲートが 5 回 ok を返して、実は何も見てなかった (#2248)。今はわざと壊して落ちるのを見てから信用してる</li>
             <li>Lean のオラクルが型検査器との食い違いを 3 件見つけた</li>
           </ul>
         </div>
@@ -534,11 +535,10 @@ export const SLIDES: Slide[] = [
     html: `
       <h2><span class="kicker">Next</span>これから</h2>
       <ul>
-        <li>スレッドと 256bit lane はまだ。wasm 側待ち</li>
         <li>0.1.0 をもうすぐ出すので、触ってみてください</li>
         <li>皆さんも自作言語をセルフホストしましょう</li>
       </ul>
       <p class="muted">github.com/mizchi/vibe-lang · The Vibe Book: mizchi.github.io/vibe-lang</p>`,
-    notes: "10:50 (30s) スレッドと 256bit lane は wasm 待ち。0.1.0 触ってください。皆さんもセルフホストしましょう",
+    notes: "10:50 (30s) 0.1.0 触ってください。皆さんもセルフホストしましょう",
   },
 ];
