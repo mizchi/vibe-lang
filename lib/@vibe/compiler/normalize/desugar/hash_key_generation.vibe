@@ -89,6 +89,9 @@ let hk_written: Array[(String, Array[String], TypeExpr)] = []
 
 let hk_unusable: Array[(String, String)] = []
 
+/// The types here or in the context that derive `Hash`.
+let hk_derived: Array[String] = []
+
 /// The types whose values have a `hash_key` this program can call: every
 /// struct / enum here that derives `Hash`, every `T::hash_key` written here
 /// that takes a `T` and returns a `String` (`hash_key_signature.vibe`), and
@@ -98,16 +101,19 @@ let hk_unusable: Array[(String, String)] = []
 export fn collect_hash_key_types(stmts: Array[Stmt]) -> Array[String] {
   Array::truncate(hk_written, 0)
   Array::truncate(hk_unusable, 0)
+  Array::truncate(hk_derived, 0)
   let out: Array[String] = array_empty()
   for stmt in stmts {
     match stmt {
       SStruct(_, name, _, derives, _, _) => if str_array_contains(derives, "Hash") {
         hk_push_unique(out, name)
+        hk_push_unique(hk_derived, name)
       } else {
         ()
       },
       SEnum(_, name, _, _, derives) => if str_array_contains(derives, "Hash") {
         hk_push_unique(out, name)
+        hk_push_unique(hk_derived, name)
       } else {
         ()
       },
@@ -217,28 +223,46 @@ fn hk_unusable_reason(head: String) -> String {
   out
 }
 
-/// Does `T::hash_key` take a value of field type `ty`? A derived one takes
-/// every application of `T`; a written one, here or in another module, takes
-/// what its parameter matches. `head` is the nominal head `T`: the methods of
-/// impls for single applications (`impl Hash for Box[Int]`, `Box[Bool]`) are
-/// all `Box`'s, and one taking `ty` is enough.
-fn hk_takes(head: String, ty: TypeExpr) -> Bool {
-  let mut seen = false
-  let mut out = false
+/// Is there a key the derived key can call for a field of type `ty` and head
+/// `head`? A written definition, here or in another module, whose parameter
+/// matches `ty` -- the methods of impls for single applications
+/// (`impl Hash for Box[Int]`, `Box[Bool]`) are all `Box`'s, and one taking
+/// `ty` is enough -- or `head`'s derived key, which takes every application.
+fn hk_callable(head: String, ty: TypeExpr) -> Bool {
+  let mut out = hk_derived_key(head)
   for row in hk_written {
     let (o, vars, param) = row
-    if impl_method_owner_head(o) == head {
-      seen = true
-      if !out && hash_key_takes(param, vars, ty) {
-        out = true
-      } else {
-        ()
-      }
+    if !out && impl_method_owner_head(o) == head && hash_key_takes(param, vars, ty) {
+      out = true
     } else {
       ()
     }
   }
-  !seen || out
+  out
+}
+
+/// Does `head` derive its key? It does when it derives `Hash` and no
+/// `head::hash_key` is written: a written one, callable or not, takes the
+/// derived key's place (`dtd_source_op_defined`).
+fn hk_derived_key(head: String) -> Bool {
+  let mut written = false
+  for row in hk_written {
+    let (o, _, _) = row
+    if o == head {
+      written = true
+    } else {
+      ()
+    }
+  }
+  for row in hk_unusable {
+    let (o, _) = row
+    if o == head {
+      written = true
+    } else {
+      ()
+    }
+  }
+  str_array_contains(hk_derived, head) && !written
 }
 
 /// The owner whose `hash_key` a field of type `ty` and head `head` is keyed
@@ -499,12 +523,15 @@ fn hash_unkeyed_head(n: String, fty: TypeExpr, known_types: Array[String], hash_
   let unusable = hk_unusable_reason(n)
   if is_marked_formal_name(n) {
     Some(("formal", n, ""))
+  } else if hk_callable(n, fty) {
+    // A definition that takes the field keys it, whatever else is written
+    // for `n`: an unusable `fn Box::hash_key(x: Int)` is another binding
+    // than `impl Hash for Box[Int]`'s method, which `hk_key_owner` calls.
+    None
   } else if unusable != "" {
     Some(("unusable", n, unusable))
   } else if str_array_contains(hash_types, n) {
-    if hk_takes(n, fty) {
-      None
-    } else if hk_only_applied_impls(n) {
+    if hk_only_applied_impls(n) {
       Some(("applied", hk_type_text(fty), hk_written_param(n)))
     } else {
       Some(("mismatch", n, hk_written_param(n)))

@@ -289,3 +289,25 @@ test "an applied impl's hash_key keys that application only" {
   inspect(module_verdict("struct Outer { b: Box[Int] } derive(Hash)" + main_src, "struct Box[T] { v: T } derive(Show)", ops), content = "ok")
   inspect(module_verdict("struct Outer { b: Box[String] } derive(Hash)" + main_src, "struct Box[T] { v: T } derive(Show)", ops), content = "add `impl Hash for Box[String]`, or write `Outer::hash_key` yourself: the derived key of `Outer` keys field `b` by an impl of `Hash` for `Box[String]`, and there is one only for `Box[Int]` [@fn=Outer]")
 }
+
+/// Another trait's method for one application (`impl Other for Box[Int] {
+/// hash_key(..) }`) is bound apart from `Box`'s key and is not one: it cost a
+/// `derive (Hash)` type its derived key for every other application, and
+/// keyed a `Box[Int]` field by `Other`'s method.
+test "another trait's applied hash_key is not a key" {
+  let decls = "struct Box[T] { v: Int } derive(Hash)\ntrait Hash { hash_key(Self) -> String }\ntrait Other { hash_key(Self) -> String }\nimpl Other for Box[Int] { hash_key(self) -> String { \"other\" } }\n"
+  inspect(derive_verdict(decls + "struct Outer { s: Box[String]; i: Box[Int] } derive(Hash)" + main_src), content = "ok")
+  inspect(String::join(collect_explicit_derived_op_names(parse_program(lex(decls))), "|"), content = "Box$impl$79_116_104_101_114_$A66_111_120_LN73_110_116_ZR::hash_key")
+  // A subtrait of `Hash` counts.
+  let keyed = "struct Box[T] { v: Int } derive(Show)\ntrait Hash { hash_key(Self) -> String }\ntrait Keyed: Hash {}\nimpl Keyed for Box[Int] { hash_key(self) -> { \"k\" } }\n"
+  inspect(derive_verdict(keyed + "struct Outer { i: Box[Int] } derive(Hash)" + main_src), content = "ok")
+}
+
+/// A definition that takes the field keys it although the type also has an
+/// unusable `hash_key`: the two are separate bindings. The unusable one is
+/// reported only for a field nothing else takes.
+test "a matching applied impl keys the field beside an unusable hash_key" {
+  let decls = "struct Box[T] { v: T } derive(Show)\ntrait Hash { hash_key(Self) -> String }\nfn Box::hash_key(x: Int) -> String { \"n\" }\nimpl Hash for Box[Int] { hash_key(self) -> String { \"b\" } }\n"
+  inspect(derive_verdict(decls + "struct Outer { b: Box[Int] } derive(Hash)" + main_src), content = "ok")
+  inspect(derive_verdict(decls + "struct Outer { b: Box[String] } derive(Hash)" + main_src), content = "write `Box::hash_key` as `fn Box::hash_key(x: Box) -> String`, or write `Outer::hash_key` yourself: the derived key of `Outer` calls `Box::hash_key` with field `b`, but `Box::hash_key` takes `Int` [@fn=Outer]")
+}

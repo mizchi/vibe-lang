@@ -1,0 +1,44 @@
+// #3551 review: a type that derives `Hash` keeps its derived key beside a
+// method of the same name that an impl of ANOTHER trait defines for one
+// application (`impl Other for Box[Int] { hash_key(..) }`).
+//
+// The derive read every `hash_key` binding as a key, so that method counted
+// as `Box`'s key for `Box[Int]` alone: a `Box[String]` field was refused as
+// having no key, and a `Box[Int]` field was keyed by `Other`'s method instead
+// of the `Hash` key. Only a method of `Hash` (or of a trait extending it), a
+// written `Box::hash_key` or the derived key counts.
+
+import @vibe/core {
+  has_by, set_by
+}
+
+trait Other {
+  hash_key(Self) -> String
+}
+
+struct Box[T] {
+  v: Int
+} derive (Hash)
+
+impl Other for Box[Int] {
+  hash_key(self) -> String {
+    "other"
+  }
+}
+
+struct Outer {
+  s: Box[String];
+  i: Box[Int]
+} derive (Hash)
+
+fn make(a: Int, b: Int) -> Outer {
+  Outer::{ s: Box::{ v: a }, i: Box::{ v: b } }
+}
+
+test "derived keys beside another trait's applied hash_key" {
+  inspect(Outer::hash_key(make(1, 2)), content = "3:1:13:1:2")
+  inspect(Outer::hash_key(make(1, 2)) == Outer::hash_key(make(1, 3)), content = "false")
+  inspect(has_by(set_by(Map::new(), make(1, 2), 1), make(1, 2)), content = "true")
+  let i: Box[Int] = Box::{ v: 5 }
+  inspect(Other::hash_key(i), content = "other")
+}

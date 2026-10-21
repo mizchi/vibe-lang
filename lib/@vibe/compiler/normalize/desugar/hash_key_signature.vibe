@@ -24,7 +24,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_method_owner, impl_method_owner_head, type_param_name
+  impl_method_owner, impl_method_owner_head, trait_ref_name, type_param_name
 }
 
 import @vibe/core {
@@ -211,7 +211,14 @@ export fn hash_key_definitions(stmts: Array[Stmt]) -> (Array[(String, Array[Stri
           ()
         }
         let owner = hash_key_owner(name)
-        if owner != "" {
+        // A method an impl of another trait defines for one application
+        // (`impl Other for Box[Int] { hash_key(..) }`) is bound apart
+        // (`Box$impl$Other$..::hash_key`): it is neither `Box`'s `Hash` key
+        // nor a written `Box::hash_key`, and read as one it keyed a
+        // `Box[Int]` field by `Other`'s method and cost a `derive (Hash)`
+        // type its derived key for every other application.
+        let foreign = in_impl && owner != impl_method_owner_head(owner) && !hks_trait_reaches(stmts, trait_ref_name(impl_trait), "Hash", 32)
+        if owner != "" && !foreign {
           let trait_sig = if in_impl {
             hks_trait_method(stmts, impl_trait, "hash_key")
           } else {
@@ -245,6 +252,36 @@ export fn hash_key_definitions(stmts: Array[Stmt]) -> (Array[(String, Array[Stri
     }
   }
   (good, bad)
+}
+
+/// Is `trait_name` the trait `goal`, or does it extend it (through its
+/// supertraits, depth first)? A cycle, which the checker refuses, stops at a
+/// fixed depth.
+fn hks_trait_reaches(stmts: Array[Stmt], trait_name: String, goal: String, depth: Int) -> Bool {
+  if trait_name == goal {
+    true
+  } else if depth <= 0 {
+    false
+  } else {
+    let mut out = false
+    for stmt in stmts {
+      match stmt {
+        STrait(_, name, sups, _, _, _) => if !out && name == trait_name {
+          for sup in sups {
+            if !out && hks_trait_reaches(stmts, trait_ref_name(sup), goal, depth - 1) {
+              out = true
+            } else {
+              ()
+            }
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+    }
+    out
+  }
 }
 
 /// The names of the traits `stmts` declares.

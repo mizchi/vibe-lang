@@ -339,7 +339,9 @@ if VIBE_TEST_CLI_WASM="$CLI_WASM" VIBE_TEST_BACKEND=gc \
     fixtures/handler_arm_throw_outside_body_test.vibe \
     fixtures/iterator_map_direct_key_gc_test.vibe \
     fixtures/derive_hash_impl_hash_key_field_test.vibe \
-    fixtures/derive_hash_applied_impl_field_test.vibe > "$gcfx_log" 2>&1; then
+    fixtures/derive_hash_applied_impl_field_test.vibe \
+    fixtures/derive_hash_applied_other_trait_test.vibe \
+    fixtures/derive_hash_applied_beside_unusable_test.vibe > "$gcfx_log" 2>&1; then
   sed 's/^/[gc-selfbuild]   /' "$gcfx_log"
   echo "[gc-selfbuild] gc runtime fixtures ok"
 else
