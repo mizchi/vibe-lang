@@ -192,6 +192,98 @@ struct HceWalk {
 /// name it binds is declared outside the body. `sites_from` is the length of
 /// `call_callee_sites` before the body was checked.
 export fn refuse_handle_bound_escape(body: Expr, arms: Array[(Pat, Expr)], body_ty: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, sites_from: Int, errors: Array[String]) -> Unit {
+  let unsure_before = Array::length(hce_unsure)
+  let errors_before = Array::length(errors)
+  hce_refuse(body, arms, body_ty, env, defs, s, sites_from, errors)
+  // A declaration read before its body was checked may have answered no
+  // for want of the callee types that body records (Codex on #3594): ask
+  // again once the module is checked (`hce_run_deferred`).
+  if Array::length(hce_final) == 0 && Array::length(errors) == errors_before && Array::length(hce_unsure) > unsure_before {
+    Array::push(hce_pending, (body, arms, body_ty, env, defs, s, sites_from))
+  } else {
+    ()
+  }
+  Array::truncate(hce_unsure, unsure_before)
+}
+
+/// Handles whose answer leaned on a declaration read before its body was
+/// checked, to be asked again by `hce_run_deferred`.
+let hce_pending: Array[(Expr, Array[(Pat, Expr)], Type, TypeEnv, Array[TypeDef], Subst, Int)] = [
+]
+
+/// The module's final substitution while `hce_run_deferred` runs; empty
+/// otherwise.
+let hce_final: Array[Subst] = []
+
+/// One entry for each call a declaration's body was read through without
+/// the callee type its check records (see `hce_note_unsure`).
+let hce_unsure: Array[Int] = []
+
+/// Where the handles a module's check is about to defer begin.
+export fn hce_deferred_mark() -> Int {
+  Array::length(hce_pending)
+}
+
+/// Forget the handles deferred from `mark` on: the statements that deferred
+/// them are being checked again.
+export fn hce_drop_deferred(mark: Int) -> Unit {
+  if Array::length(hce_pending) > mark {
+    Array::truncate(hce_pending, mark)
+  } else {
+    ()
+  }
+}
+
+/// Ask again, now that every declaration of the module is checked and has
+/// recorded its callee types, about the handles deferred from `mark` on.
+/// `final_s` is the module's final substitution, which the types recorded
+/// after a handle was checked are read under.
+export fn hce_run_deferred(mark: Int, final_s: Subst, errors: Array[String]) -> Unit {
+  if Array::length(hce_pending) > mark {
+    let entries = Array::slice(hce_pending, mark, Array::length(hce_pending))
+    Array::truncate(hce_pending, mark)
+    Array::push(hce_final, final_s)
+    let found: Array[String] = array_empty()
+    for entry in entries {
+      let (body, arms, body_ty, env, defs, s, sites_from) = entry
+      hce_refuse(body, arms, body_ty, env, defs, s, sites_from, found)
+    }
+    Array::truncate(hce_final, Array::length(hce_final) - 1)
+    for msg in found {
+      if !hce_has(errors, msg) {
+        Array::push(errors, msg)
+      } else {
+        ()
+      }
+    }
+  } else {
+    ()
+  }
+}
+
+/// `ty`, read also under the module's final substitution while deferred
+/// handles are asked again.
+fn hce_late(ty: Type) -> Type {
+  if Array::length(hce_final) > 0 {
+    subst_apply(Array::get(hce_final, Array::length(hce_final) - 1), ty)
+  } else {
+    ty
+  }
+}
+
+/// A declaration's body (`hce_decl_makes_bound`) calls through `spelling`
+/// at `off`, and the checker recorded no callee type there. Before the
+/// module is checked that may be only because the body is not checked yet,
+/// so no answer read through it is final.
+fn hce_note_unsure(off: Int, spelling: String) -> Unit {
+  if Array::length(hce_decl_stack) > 0 && Array::length(hce_final) == 0 && hce_recorded_type(off, spelling) is None {
+    Array::push(hce_unsure, 1)
+  } else {
+    ()
+  }
+}
+
+fn hce_refuse(body: Expr, arms: Array[(Pat, Expr)], body_ty: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, sites_from: Int, errors: Array[String]) -> Unit {
   // #1451: a closure literal also takes the rows the enclosing declaration's
   // result type declares for the function values it returns, and the caller
   // of such a value passes its own handler (`fn mid() -> (() -> Int with
@@ -1016,11 +1108,18 @@ fn hce_note_call(callee: Expr, args: Array[Expr], off: Int, pos: Int, st: HceWal
         // callee at this call (#3539).
         match hce_site_type(st, off, name, s) {
           Some(ty) => hce_note_callee(st, ty, name, "", at, pos, env, defs, s),
-          None => ()
+          None => hce_note_unsure(off, name)
         }
       } else if local == 0 && name != "perform" && Array::length(st.labels) > 0 {
         match env_lookup(env, name) {
-          Some(ty) => hce_note_callee(st, ty, name, name, at, pos, env, defs, s),
+          Some(ty) => {
+            // A declaration not inferred yet has no row to read.
+            match subst_apply(s, ty) {
+              CtVar(_) => hce_note_unsure(0 - 1, name),
+              _ => ()
+            }
+            hce_note_callee(st, ty, name, name, at, pos, env, defs, s)
+          },
           None => ()
         }
       } else {
@@ -1034,7 +1133,7 @@ fn hce_note_call(callee: Expr, args: Array[Expr], off: Int, pos: Int, st: HceWal
       let spelling = call_callee_spelling(callee)
       match hce_site_type(st, off, spelling, s) {
         Some(ty) => hce_note_callee(st, ty, spelling, "", off, pos, env, defs, s),
-        None => ()
+        None => hce_note_unsure(off, spelling)
       }
     } else {
       ()
@@ -1130,7 +1229,7 @@ fn hce_site_type(st: HceWalk, off: Int, spelling: String, s: Subst) -> Option[Ty
   while !hit && i < n {
     let (soff, sp, ty) = Array::get(call_callee_sites, i)
     if soff == off && sp == spelling {
-      let t = subst_apply(s, ty)
+      let t = hce_late(subst_apply(s, ty))
       if hce_row_label(t, st.labels) != "" {
         found = Some(t)
         hit = true
@@ -1183,6 +1282,7 @@ fn hce_decl_makes_bound(name: String, label: String, env: TypeEnv, defs: Array[T
       Some(val) => match let_rhs_closure_literal(val) {
         Some(EFn(_, _, params, _, _, fbody)) => {
           let cycles_before = Array::length(hce_decl_cycles)
+          let unsure_before = Array::length(hce_unsure)
           Array::push(hce_decl_stack, key)
           let names: Array[String] = array_empty()
           hce_collect_let_names(fbody, names)
@@ -1202,7 +1302,7 @@ fn hce_decl_makes_bound(name: String, label: String, env: TypeEnv, defs: Array[T
               ()
             }
           }
-          if made || Array::length(hce_decl_cycles) == cycles_before {
+          if made || (Array::length(hce_decl_cycles) == cycles_before && Array::length(hce_unsure) == unsure_before) {
             Array::push(hce_decl_facts, (key, made))
           } else {
             ()
@@ -1325,7 +1425,7 @@ fn hce_param_type(callee: Expr, off: Int, arg: Expr, ai: Int, nargs: Int, st: Hc
   match arg {
     ELabeledArg(_, _, _) => None,
     _ => match ty {
-      Some(t) => match hce_fn_params(subst_apply(s, t)) {
+      Some(t) => match hce_fn_params(hce_late(subst_apply(s, t))) {
         Some(params) => {
           let at = if Array::length(params) == nargs + 1 {
             ai + 1

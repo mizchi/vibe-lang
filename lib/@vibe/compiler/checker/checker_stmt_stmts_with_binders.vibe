@@ -81,6 +81,10 @@ import ./checker_region_retention.vibe {
   retention_begin_module, retention_bind_module_summaries, retention_end_module, retention_note_module_env
 }
 
+import ./checker_handle_closure_escape.vibe {
+  hce_deferred_mark, hce_drop_deferred, hce_run_deferred
+}
+
 import ./checker.vibe {
   TypedOccurrenceRoleLaneCapture,
   attach_unlocated_decl_name_marker,
@@ -1298,6 +1302,9 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   } else {
     None
   }
+  // #3584: the handles whose escape check read a declaration before its
+  // body was checked are asked again at the end of the module.
+  let hce_mark = hce_deferred_mark()
   let completed_decl_error_insert_at = Array::length(errors)
   let observation_checkpoint = checker_observation_checkpoint(capture, role_lane_capture, tytab)
   let root_capture_start = match capture {
@@ -2696,6 +2703,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
       let recheck_errors = array_empty()
       let recheck_c = next_type_def_binder_id(recheck_binders, c)
       restore_checker_observation(observation_checkpoint, capture, role_lane_capture, tytab)
+      hce_drop_deferred(hce_mark)
       let (rechecked_env, rechecked_s, rechecked_c) = check_stmts_with_binders(raw_stmts, i, env, recheck_defs, recheck_binders, local_defs_start, SubstEmpty, recheck_c, recheck_errors, tytab, statement_parent_path, capture, role_lane_capture, imports_already_projected, false)
       // First-pass statement diagnostics may have judged a compiler-owned
       // spelling before a nested declaration claimed it. Replace that whole
@@ -2718,7 +2726,9 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   // modules that import it, found while this module's tables are in place.
   let final_env = match retention_saved {
     Some(saved) => {
+      hce_run_deferred(hce_mark, cur_s, errors)
       let summarized = retention_bind_module_summaries(stmts, cur_env, defs, cur_s, cur_c, check_expr_capture)
+      hce_drop_deferred(hce_mark)
       retention_end_module(saved)
       summarized
     },
