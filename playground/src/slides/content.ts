@@ -50,32 +50,6 @@ fn main allows Console {
     expect: "[log] start: 21\nresult = 42\n",
     hint: "<code>work</code> はログの出し先を知らない。<code>handle</code> が実装を与える。<br>試す: ハンドラ腕の <code>println</code> を消す → テスト用の無音ハンドラになる。",
   },
-  rows: {
-    source: String.raw`
-fn risky(x: Int) -> Int with Exception {
-  if x == 0 { throw("division by zero") }
-  100 / x
-}
-
-fn twice(f~: (Int) -> Int with e, x~: Int) -> Int with e {
-  f(f(x))
-}
-
-fn main allows Console {
-  println("pure: \{twice(f=(n) -> n * 2, x=10)}")
-  let r = handle {
-    twice(f=risky, x=0)
-  } with {
-    Exception::Throw(msg) => {
-      println("caught: \{msg}")
-      -1
-    }
-  }
-  println("r = \{r}")
-}`,
-    expect: "pure: 40\ncaught: division by zero\nr = -1\n",
-    hint: "試す: <code>handle</code> を外して <code>twice(f=risky, x=0)</code> を直接呼ぶ → <code>main</code> の row に <code>Exception</code> が足りない、と言われる。",
-  },
   caps: {
     source: String.raw`
 fn greet(name: String) -> Unit with Console {
@@ -117,10 +91,7 @@ fn main allows Console {
   },
   pipe: {
     source: String.raw`
-struct Talk {
-  title: String,
-  minutes: Int
-}
+struct Talk { title: String, minutes: Int }
 
 fn main allows Console {
   let talks = [
@@ -135,29 +106,11 @@ fn main allows Console {
   println("total = \{total} min, n = \{n}")
 }`,
     expect: "total = 36 min, n = 4\n",
-    hint: "メソッド呼び出し <code>x.f()</code> は無い。<code>.</code> はフィールドだけ。関数は必ず <code>Type::f</code> で書き、<code>|&gt;</code> と <code>_</code> でつなぐ。",
+    hint: "<code>|&gt;</code> は左の値を第 1 引数に、<code>_</code> はその位置に差し込む。<code>_ + _</code> は 2 引数ラムダの略記。",
   },
 };
 
 export const CODE: Record<string, string> = {
-  syntax: String.raw`
-import @vibe/core { Attempt }           // file-scoped, explicit
-import ./talk.vibe { Talk, render }
-
-let n = String::length(title)            // never title.length()
-let m = title |> String::trim |> String::length
-let w = talk.minutes                     // '.' is field access only`,
-  taskgroup: String.raw`
-import @vibe/concurrent { TaskGroup, TaskHandle }
-
-fn main allows Console + Exception {
-  let total = TaskGroup::run((g) -> {
-    let a = TaskGroup::spawn(g, () -> 1)
-    let b = TaskGroup::spawn(g, () -> 2)
-    TaskHandle::join(a) + TaskHandle::join(b)
-  })            // the group never outlives run()
-  println("total = \{total}")
-}`,
   optional: String.raw`
 fn main allows Console + Fs::read_file? {
   match perform? Fs::read_file("config.json") {
@@ -183,10 +136,10 @@ export const SLIDES: Slide[] = [
     className: "title",
     html: `
       <div class="logo">vibe<span>-lang</span></div>
-      <div class="tagline">シグネチャが「できること」を語る、<br><strong>wasm ファースト</strong>な<strong>セルフホスト</strong>関数型言語</div>
+      <div class="tagline"><strong>黙ってやらない</strong>言語。シグネチャが「できること」を語る、<br>wasm ファーストなセルフホスト関数型言語</div>
       <div class="meta">mizchi · 自作プログラミング言語を自慢する会 · 2026-10-22<br>
       <span class="small">このスライドの中で vibe コンパイラ (wasm) が動いています · github.com/mizchi/vibe-lang</span></div>`,
-    notes: "0:00 (20s) 挨拶。「このスライド自体の中で vibe のコンパイラが動いています」と最初に言う。",
+    notes: "0:00 (20s) 挨拶。「黙ってやらない言語です」。このスライドの中でコンパイラが動いていると最初に言う。",
   },
   {
     html: `
@@ -209,7 +162,7 @@ export const SLIDES: Slide[] = [
           </div>
         </div>
         <div class="card">
-          <h3>Required (wasm の新しめの機能)</h3>
+          <h3>必須にした wasm の機能</h3>
           <ul>
             <li><code>v128</code> SIMD</li>
             <li><code>js-string</code> builtins</li>
@@ -219,13 +172,13 @@ export const SLIDES: Slide[] = [
           <p class="small muted">CLI は Rust + Wasmtime。ホスト import を外付けして Browser / Node でも動く。</p>
         </div>
       </div>`,
-    notes: "0:20 (40s) 一言で: シグネチャがその関数にできることを言う言語。row にエフェクトも権限も乗る。参考にした言語を指す。",
+    notes: "0:20 (35s) row にエフェクトも権限も乗る。参考にした言語を指す。必須の wasm 機能は v128 / js-string / component model / exnref。",
   },
   {
     html: `
       <h2><span class="kicker">Live</span>このタブでコンパイルして実行</h2>
       <div class="demo" data-demo="hello"></div>`,
-    notes: "1:00 (30s) r で実行 → compile+run の ms を読む。ブラウザのタブ内でセルフホストのコンパイラが動いている。",
+    notes: "0:55 (30s) r で実行 → compile+run の ms を読む。タブの中でセルフホストのコンパイラが動いている。",
   },
   {
     html: `
@@ -249,8 +202,8 @@ export const SLIDES: Slide[] = [
         </div>
       </div>
       <p class="quote">設計の迷いどころのプロンプト: <strong>「迷ったら wasm / wasi のプリミティブとして自然な方」</strong></p>
-      <p class="small muted">値は tagged i64、<code>String</code> はバイト列 (byte offset で添字)。WIT 境界に出られる型は nominal に決まる。</p>`,
-    notes: "1:30 (30s) 動機1: wasm first。SIMD、ブラウザで開発、component model。「迷ったら wasm/wasi として自然な方」。",
+      <p class="small">wasm-gc の ref 配列には <code>v128</code> が乗らない → codegen は <strong>linear memory と wasm-gc の 2 本立て</strong>。値は tagged i64、<code>String</code> はバイト列 (byte offset で添字)。WIT 境界に出られる型は nominal に決まる。</p>`,
+    notes: "1:25 (40s) 動機1: wasm first。SIMD、ブラウザで開発、component model。wasm-gc の配列に v128 が乗らないので 2 本立て。",
   },
   {
     html: `
@@ -267,36 +220,33 @@ export const SLIDES: Slide[] = [
         <div class="card">
           <h3>型と診断を LLM の評価ループ向けに</h3>
           <ul>
-            <li>最悪の壊れ方は <strong>黙って間違うこと</strong> (P0)。クラッシュ (P1) より悪い</li>
+            <li>最悪の壊れ方は <strong>黙って間違うこと</strong> (P0)。クラッシュ (P1) より悪い。LLM の評価ループはそれに気づけない</li>
             <li>診断は <strong>直し方</strong> から始める。pass 名や ADR 番号を出さない</li>
             <li>LSP ではなく <strong>CLI</strong> で IDE 相当の問い合わせ</li>
           </ul>
         </div>
       </div>`,
-    notes: "2:00 (30s) 動機2: AI first。権限制御と、LLM の評価ループ向けの診断。黙って間違うのが最悪。",
+    notes: "2:05 (35s) 動機2: AI first。LLM の評価ループは黙って間違うのに気づけない。だから P0 = 黙って間違う、を最悪にした。",
   },
   {
     className: "section",
-    html: `<h1><small>FEATURES</small>カッコいいところ</h1><p class="muted">ここからはスライド内でライブコンパイルします</p>`,
-    notes: "2:30 (5s) ここからライブ。",
+    html: `<h1><small>FEATURES</small>黙ってやらせない</h1><p>失敗・権限・確保・比較を、型と診断で表に出す。<span class="muted">ここからはスライド内でライブコンパイル</span></p>`,
+    notes: "2:40 (10s) ここから「黙ってやらせない」4 つ。ライブで。",
   },
   {
     html: `
-      <h2><span class="kicker">Effects</span>エフェクトは row に乗る</h2>
+      <h2><span class="kicker">Effects</span>黙って失敗しない: エフェクトは row に乗る</h2>
       <div class="demo" data-demo="effects"></div>`,
-    notes: "2:35 (40s) r で実行。Koka 由来の代数的エフェクト。resume は one-shot / 末尾に絞った。println を消して無音ハンドラにしてみせる。",
+    notes: "2:50 (35s) r で実行。失敗も row に出る。handle が実装を与えるので、ログの出し先は呼び出し側が決める。",
   },
   {
     html: `
-      <h2><span class="kicker">Row polymorphism</span>row は変数にできる</h2>
-      <div class="demo" data-demo="rows"></div>`,
-    notes: "3:15 (35s) row 変数 e。twice は f が純粋なら純粋、throw するなら Exception を運ぶ。handle を外してエラーを見せてもよい。",
-  },
-  {
-    html: `
-      <h2><span class="kicker">Capabilities</span><code>with</code> は要求、<code>allows</code> は付与</h2>
-      <div class="demo" data-demo="caps"></div>`,
-    notes: "3:50 (50s) ライブで with Console を消す → 直し方が出る。allows → with に変える → `write fn main allows Console`。Deno × Koka。",
+      <h2><span class="kicker">Capabilities</span>黙って権限を使わない: <code>with</code> は要求、<code>allows</code> は付与</h2>
+      <div class="demo" data-demo="caps"></div>
+      <pre class="code console diag">$ vibe check greet.vibe     <span class="out"># allows を with に書き換えた</span>
+<span class="out">\`fn main\` is an entry point and grants its row, so the keyword is \`allows\`:</span>
+<span class="out">write \`fn main allows Console\`</span></pre>`,
+    notes: "3:25 (55s) ライブで allows を with に書き換え → 下の診断がそのまま出る。with Console を消しても直し方が出る。",
   },
   {
     html: `
@@ -318,47 +268,25 @@ export const SLIDES: Slide[] = [
         </div>
         <pre class="code" data-src="optional"></pre>
       </div>`,
-    notes: "4:40 (35s) 権限はビルド時に一度。拒否した cap は const-fold + DCE で wasm から消える。ホストは imports を外付け。",
+    notes: "4:20 (35s) 権限はビルド時に一度。拒否した cap は const-fold + DCE で wasm から消える。ホストは imports を外付け。",
   },
   {
     html: `
-      <h2><span class="kicker">#zero_alloc</span>OxCaml から移植: アロケーションしない契約</h2>
+      <h2><span class="kicker">#zero_alloc (OxCaml から移植)</span>黙って確保しない</h2>
       <div class="demo" data-demo="zero_alloc"></div>`,
-    notes: "5:15 (30s) OxCaml の #zero_alloc。本体を Array::length([a, b]) にしてエラーを見せる。",
+    notes: "4:55 (30s) OxCaml の #zero_alloc。本体を Array::length([a, b]) にしてエラーを見せる。",
   },
   {
     html: `
       <h2><span class="kicker">Syntax</span>メソッド呼び出しは要らない</h2>
-      <ul>
+      <ul class="small">
         <li><code>foo.bar()</code> のメッセージパッシングは無い</li>
-        <li><code>.</code> の補完は人間用。LLM には<strong>型名を省略しない方が読める</strong></li>
+        <li><code>.</code> の補完は人間用。仮説: LLM には<strong>型名が書いてある方が読める</strong></li>
         <li><code>Foo::bar(foo)</code> か <code>foo |&gt; Foo::bar()</code>。<code>foo.prop</code> はフィールドアクセスだけ</li>
         <li>import はファイルスコープで明示。JS / Python と同じく、書いた名前だけがスコープに現れる</li>
       </ul>
-      <pre class="code" data-src="syntax"></pre>`,
-    notes: "5:45 (30s) メソッド呼び出しを捨てた理由: . 補完は人間用。LLM には型名が書いてある方が読める。",
-  },
-  {
-    html: `
-      <h2><span class="kicker">Pipe</span><code>|&gt;</code> と <code>_</code> でつなぐ</h2>
       <div class="demo" data-demo="pipe"></div>`,
-    notes: "6:15 (20s) r で実行。|> と _ のセクション。",
-  },
-  {
-    html: `
-      <h2><span class="kicker">Concurrency</span>スレッドではなく TaskGroup</h2>
-      <div class="cols wide-left">
-        <pre class="code" data-src="taskgroup"></pre>
-        <div>
-          <ul class="small">
-            <li>構造化並行性: グループは <code>run</code> より長生きしない</li>
-            <li>region タグで値の脱出を拒否、<code>Send</code> 検査</li>
-            <li>今は shared-nothing。スケジューラは決定的で、意味は並列 backend でも同じ</li>
-            <li>待つことは <code>Async</code> effect が表す</li>
-          </ul>
-        </div>
-      </div>`,
-    notes: "6:35 (25s) TaskGroup: 構造化並行性。グループは run より長生きしない。今は shared-nothing。",
+    notes: "5:25 (45s) メソッド呼び出しを捨てた。型名が書いてある方が LLM は読める、はまだ仮説。r でパイプを実行。",
   },
   {
     html: `
@@ -369,12 +297,12 @@ export const SLIDES: Slide[] = [
         <li><code>vibe grep</code> は AST パターン + checker の答え (型・effect row) でフィルタ。<code>vibe mutate</code> でテストの効き目も測る</li>
         <li>CLI が答えられない質問は、そのまま LLM のコスト → <strong>その場で CLI を直す</strong></li>
       </ul>`,
-    notes: "7:00 (30s) LSP ではなく CLI。空出力 = clean。LLM が叩けないものは CLI 側を直す。",
+    notes: "6:10 (35s) LSP ではなく CLI。空出力 = clean。型でフィルタする AST grep。LLM が叩けないものは CLI 側を直す。",
   },
   {
     className: "section",
     html: `<h1><small>HOW</small>どう作ったか</h1>`,
-    notes: "7:30 (5s) どう作ったか。",
+    notes: "6:45 (5s) どう作ったか。",
   },
   {
     html: `
@@ -406,7 +334,7 @@ export const SLIDES: Slide[] = [
           </div>
         </div>
       </div>`,
-    notes: "7:35 (40s) MoonBit でプロトタイプ → 部分ごとにセルフホスト。Lean をオラクルに。Vibe Book をサブエージェントに採点させた。8.5ヶ月で PR 2,035。",
+    notes: "6:50 (45s) MoonBit でプロトタイプ → 部分ごとにセルフホスト。Lean をオラクルに。8.5ヶ月で PR 2,035、P0 264 件を自分で数えている。",
   },
   {
     html: `
@@ -426,12 +354,12 @@ export const SLIDES: Slide[] = [
         <li>罠: <code>vibe test</code> は既定で <strong>seed</strong> がコンパイルする → コンパイラの変更を「どのコンパイラが答えたか」分からないまま検証してしまう</li>
       </ul>
       <p class="quote small">44 行の変更で seed の自己ビルドが <strong>wasm32 の 4GiB 上限</strong>を突破。pass 3 で 3.89GiB、残り 119MB だった (#3439)</p>`,
-    notes: "8:15 (35s) seed → stage3 の fixpoint。4GiB の話で笑いを取る。",
+    notes: "7:35 (40s) seed → stage3 の fixpoint。vibe test が seed で答える罠。4GiB の話。",
   },
   {
     className: "section",
     html: `<h1><small>PAIN</small>大変だったこと</h1>`,
-    notes: "8:50 (5s) 大変だったこと。",
+    notes: "8:15 (5s) 大変だったこと。",
   },
   {
     html: `
@@ -450,12 +378,12 @@ export const SLIDES: Slide[] = [
           <ul class="small">
             <li>cold セルフコンパイルのヒープ 1,203MB → <strong>953MB</strong> (#3579, 10/21)</li>
             <li>リーク: <code>let rec</code> クロージャが評価ごとに 24B、反復ごとに 80B</li>
-            <li><strong>Perceus</strong> (参照カウント) + <strong>FBIP</strong> (in-place 再利用) を入れた。でも壁時計はほぼ変わらず</li>
+            <li><strong>Perceus</strong> (参照カウント) + <strong>FBIP</strong> (in-place 再利用)。再利用は 8,879 箇所中 1,830 で成立、でも壁時計はほぼ変わらず</li>
           </ul>
         </div>
       </div>
       <p class="small">linear と wasm-gc の 2 本立ても重い。Int のオーバーフローで 2 つのレーンが<strong>黙って別の値</strong>を返していた (#1877)</p>`,
-    notes: "8:55 (45s) ベンチが揺れる → fuel に切り替え。ヒープ 953MB。Perceus + FBIP。",
+    notes: "8:20 (45s) ベンチが揺れる → fuel に切り替えて ±2%。ヒープ 953MB。FBIP は効いたのに壁時計は変わらない。",
   },
   {
     html: `
@@ -480,14 +408,15 @@ export const SLIDES: Slide[] = [
             <li>String interning が無く、全シンボルを文字列比較して爆発</li>
             <li>型システムの穴を<strong>大量の実行時アサーション</strong>で塞ごうとする</li>
             <li>構文だけで判定する検査に抜け道 63 個 → <strong>1,970 行を削除</strong>して型検査器に一本化</li>
+            <li>初期のエフェクトハンドラは resume のたびに本体を<strong>最初から再実行</strong>していた</li>
           </ul>
         </div>
       </div>`,
-    notes: "9:40 (45s) 安いモデルだとバグの生成 > 修正。interning 無し、実行時アサーション、1,970 行削除。",
+    notes: "9:05 (50s) 安いモデルだとバグの生成 > 修正。interning 無し、実行時アサーション、1,970 行削除、replay 方式のハンドラ。",
   },
   {
     html: `
-      <h2><span class="kicker">Pain 3</span>黙って間違う <code>==</code></h2>
+      <h2><span class="kicker">Pain 3</span>それでも黙って間違っていた <code>==</code></h2>
       <p>優先度は <strong>黙って間違う (P0) &gt; 落ちる (P1) &gt; 機能追加 (P2)</strong></p>
       <ul class="small">
         <li><code>[1, 2] == [1, 2]</code> の答えが文脈で変わった。裸と tuple の中では参照比較、struct の中では構造比較 (#1526)</li>
@@ -495,17 +424,17 @@ export const SLIDES: Slide[] = [
         <li>今は、型が届かない <code>==</code> では<strong>注釈を求めてビルドを止める</strong></li>
       </ul>
       <div class="demo" data-demo="eq"></div>`,
-    notes: "10:25 (40s) == の話。r で実行して true を見せる。P0 > P1 の方針。",
+    notes: "9:55 (40s) それでも == が黙って間違っていた。r で実行して true を見せる。今は型が届かなければビルドを止める。",
   },
   {
     html: `
       <h2><span class="kicker">Spec gaps</span>wasm の仕様が足りない</h2>
       <div class="cols three">
-        <div class="card"><h3>スレッド</h3><p class="small">結局どれを使えばいいのか。今は shared-nothing で設計し、本物のスレッドを見越して表現を選んでいる</p></div>
+        <div class="card"><h3>スレッド</h3><p class="small">結局どれを使えばいいのか。今は <code>TaskGroup</code> の構造化並行性 + shared-nothing。本物のスレッドを見越して表現を選んでいる</p></div>
         <div class="card"><h3>wasm-gc × SIMD</h3><p class="small">wasm-gc の ref 型の配列には <code>v128</code> が使えない。だから linear と wasm-gc の 2 本立て</p></div>
         <div class="card"><h3>WIT</h3><p class="small">ジェネリクスが無い。境界に出せる型を nominal 規則で決めている</p></div>
       </div>`,
-    notes: "11:05 (25s) wasm の仕様が足りない: スレッド、wasm-gc の配列に v128 が無い、WIT にジェネリクスが無い。",
+    notes: "10:35 (30s) wasm の仕様が足りない: スレッド、wasm-gc の配列に v128 が無い、WIT にジェネリクスが無い。",
   },
   {
     html: `
@@ -529,14 +458,19 @@ export const SLIDES: Slide[] = [
           <ul><li>bend-lang</li><li>借用を証明する系</li></ul>
         </div>
       </div>`,
-    notes: "11:30 (20s) よかったもの: wasmtime guest profiler、fuel、#zero_alloc。MoonBit への SIMD PR。気になる言語 bend。",
+    notes: "11:05 (25s) よかったもの: wasmtime guest profiler、fuel。気になる言語 bend。",
   },
   {
-    className: "title",
+    className: "closing",
     html: `
-      <div class="logo">vibe<span>-lang</span></div>
-      <div class="tagline">関数のシグネチャがその関数に<strong>できること</strong>を言う。<br>それを wasm の上で、自分自身でコンパイルする。</div>
-      <div class="meta">github.com/mizchi/vibe-lang · The Vibe Book: mizchi.github.io/vibe-lang</div>`,
-    notes: "11:50 (10s) まとめ。リポジトリと Book の URL。",
+      <h2><span class="kicker">Takeaways</span>vibe でやったこと</h2>
+      <ol class="takeaways">
+        <li><strong>シグネチャが権限を語る。</strong><code>with</code> で要求し <code>allows</code> で付与する。拒否した権限のコードは wasm から消える</li>
+        <li><strong>wasm の上でセルフホスト。</strong>このタブの中でもコンパイラが動いている</li>
+        <li><strong>AI と作るなら、黙って間違わないことを最優先に。</strong>P0 を 264 件数えて潰した</li>
+      </ol>
+      <p>次は 0.1.0 のリリース。</p>
+      <p class="muted">github.com/mizchi/vibe-lang · The Vibe Book: mizchi.github.io/vibe-lang</p>`,
+    notes: "11:30 (30s) 3 点でまとめる。次は 0.1.0。",
   },
 ];
