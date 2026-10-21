@@ -30,3 +30,31 @@ test "a handle in a phantom type argument still interpolates" {
 test "what is read out of a map still interpolates" {
   assert(check_source_ok("fn f() -> String { let m = Map::from_pairs([(\"a\", 1)])\n let ks = Map::keys(m)\n \"n=\\{Map::size(m)} ks=\\{ks}\" }\nfn main() -> Int { 0 }"))
 }
+
+/// `FrozenArray::from_array([1, 2])` interpolated as `f=276`, and the other
+/// compiler-owned handles printed their address the same way. An unannotated
+/// `StringBuilder::new()` / `MapBuilder::new()` reached the check untyped.
+test "the other compiler-owned handles are refused" {
+  assert(check_source_err_contains("fn f() -> String { let a = FrozenArray::from_array([1, 2])\n \"a=\\{a}\" }\nfn main() -> Int { 0 }", "cannot interpolate a `FrozenArray` value"))
+  assert(check_source_err_contains("fn f() -> String { let a = FrozenArray::from_array([\"x\"])\n let o = Some(a)\n \"o=\\{o}\" }\nfn main() -> Int { 0 }", "= FrozenArray::to_array(f)`"))
+  assert(check_source_err_contains("fn f() -> String { let a: FixedArray[Int] = FixedArray::make(2, 7)\n let t = (1, a)\n \"t=\\{t}\" }\nfn main() -> Int { 0 }", "cannot interpolate a `FixedArray` value"))
+  assert(check_source_err_contains("fn f() -> String { let a = Future::ready(1)\n \"a=\\{a}\" }\nfn main() -> Int { 0 }", "cannot interpolate a `Future` value"))
+  assert(check_source_err_contains("fn f() -> String { region r {\n let l = MutList::empty(r)\n MutList::push(l, 1)\n \"l=\\{[l]}\" } }\nfn main() -> Int { 0 }", "cannot interpolate a `MutList` value"))
+  assert(check_source_err_contains("fn f() -> String { region r {\n let b = MutBytes::empty(r)\n \"b=\\{b}\" } }\nfn main() -> Int { 0 }", "cannot interpolate a `MutBytes` value"))
+  assert(check_source_err_contains("fn f() -> String { region r {\n \"r=\\{r}\" } }\nfn main() -> Int { 0 }", "cannot interpolate a `Region` value"))
+  assert(check_source_err_contains("fn f() -> String { let b = StringBuilder::new()\n \"b=\\{b}\" }\nfn main() -> Int { 0 }", "cannot interpolate a `StringBuilder` value"))
+  assert(check_source_err_contains("fn f() -> String { let b = MapBuilder::new()\n MapBuilder::set(b, \"a\", 1)\n \"b=\\{b}\" }\nfn main() -> Int { 0 }", "cannot interpolate a `MapBuilder` value"))
+  assert(check_source_err_contains("fn f() -> String { let b = MapBuilder::new()\n MapBuilder::set(b, \"a\", 1)\n let m = MapBuilder::freeze(b)\n \"m=\\{m}\" }\nfn main() -> Int { 0 }", "cannot interpolate a `StringMap` value"))
+}
+
+test "what is copied out of a compiler-owned handle still interpolates" {
+  assert(check_source_ok("fn f() -> String { let a = FrozenArray::from_array([1, 2])\n let xs: Array[Int] = FrozenArray::to_array(a)\n \"xs=\\{xs} n=\\{FrozenArray::length(a)}\" }\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f() -> String { let b = StringBuilder::new()\n StringBuilder::push(b, \"x\")\n let s: String = StringBuilder::freeze(b)\n \"s=\\{s}\" }\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f() -> String { let b = MapBuilder::new()\n MapBuilder::set(b, \"a\", 1)\n let m = MapBuilder::freeze(b)\n let v: Int = Map::get(m, \"a\")\n \"v=\\{v}\" }\nfn main() -> Int { 0 }"))
+}
+
+/// The `@vibe/concurrent` handles are told apart by the region they carry,
+/// so a program's own type of the same name still renders.
+test "a program's own Sender still interpolates" {
+  assert(check_source_ok("struct Sender {\n  name: String\n} derive (Show)\nfn f() -> String { let s = Sender::{ name: \"a\" }\n let o = Some(s)\n \"s=\\{s} o=\\{o}\" }\nfn main() -> Int { 0 }"))
+}

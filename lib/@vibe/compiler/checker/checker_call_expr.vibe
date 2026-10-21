@@ -833,6 +833,33 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
             _ => CtArray(CtUnknown)
           }
           (tab_call_ty(tytab, call_off, result, capture, lane), s1, c1)
+        } else if arm == "StringBuilder::new" {
+          // The registry row types the handle `CtUnknown`, so an unannotated
+          // builder reached `"\{b}"` untyped and printed its address. Give it
+          // the head an annotation resolves to, so the interpolation check
+          // sees it.
+          (tab_call_ty(tytab, call_off, CtNamed("StringBuilder", []), capture, lane), s, c)
+        } else if arm == "MapBuilder::new" {
+          // As `StringBuilder::new` above. The value slot stays open
+          // (`CtUnknown`), as `MapBuilder::set`'s row leaves it.
+          (tab_call_ty(tytab, call_off, CtNamed("MapBuilder", [
+            CtString,
+            CtUnknown
+          ]), capture, lane), s, c)
+        } else if arm == "MapBuilder::freeze" {
+          // The frozen map carries the builder's value slot, in the shape a
+          // map literal has (`Map[String, V]`); an untyped builder gives an
+          // open slot.
+          let (fb_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let frozen = match subst_apply(s1, fb_ty) {
+            CtNamed(fbn, fbargs) => if fbn == "MapBuilder" && Array::length(fbargs) == 2 {
+              CtNamed("Map", [CtString, subst_apply(s1, Array::get(fbargs, 1))])
+            } else {
+              CtNamed("Map", [CtString, CtUnknown])
+            },
+            _ => CtNamed("Map", [CtString, CtUnknown])
+          }
+          (tab_call_ty(tytab, call_off, frozen, capture, lane), s1, c1)
         } else if arm == "FrozenArray::from_array" {
           // #906: FrozenArray[T] is a checker-only phantom-type distinction over
           // Array[T]'s exact same runtime layout -- same technique as
