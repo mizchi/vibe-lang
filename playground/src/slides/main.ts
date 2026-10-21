@@ -32,6 +32,7 @@ monaco.editor.defineTheme("vibe-book", {
 });
 monaco.editor.setTheme("vibe-book");
 
+const PREVIEW = import.meta.env.VITE_SLIDES_PREVIEW === "1";
 const deck = document.getElementById("deck")!;
 const counter = document.getElementById("counter")!;
 const progress = document.querySelector<HTMLSpanElement>("#progress span")!;
@@ -109,6 +110,15 @@ function mountDemo(host: HTMLElement): LiveDemo {
     output.textContent = "compiling in this tab…";
     await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
     const started = performance.now();
+    if (PREVIEW) {
+      // A build without the browser compiler (VITE_SLIDES_PREVIEW=1): show the
+      // output the smoke test checks for the unedited source, and say so.
+      output.className = "output";
+      output.textContent = `${demo.expect}\n(プレビュー: コンパイラ無しのビルド。CI で確認済みの出力を表示)`;
+      timing.textContent = "";
+      runButton.disabled = false;
+      return;
+    }
     try {
       const stdout = await compileAndRun(editor.getValue(), demo.entry ?? "main");
       output.className = "output";
@@ -225,5 +235,7 @@ if (new URLSearchParams(location.search).get("view") === "all") {
 } else {
   show(Number(location.hash.slice(1)) - 1 || 0);
 }
-compilerState.textContent = `selfhost vibec (wasm) · ${import.meta.env.VITE_VIBE_BUILD_LABEL ?? "local"}`;
+compilerState.textContent = PREVIEW
+  ? "preview: compiler not bundled"
+  : `selfhost vibec (wasm) · ${import.meta.env.VITE_VIBE_BUILD_LABEL ?? "local"}`;
 compilerState.classList.add("ready");

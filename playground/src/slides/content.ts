@@ -127,6 +127,22 @@ main 12 46 50</span>
 <span class="prompt">$</span> vibe grep --pattern '$(f:id)($(a:args))' --where-row '$f with Async' lib
 <span class="prompt">$</span> vibe run --deny-fs app.vibe     <span class="out"># denied caps are DCE'd away</span>`;
 
+
+type Bar = { label: string; value: number; note?: string; hot?: boolean };
+function bars(rows: Bar[], max: number, unit: string): string {
+  return `<div class="bars">${rows
+    .map(
+      (r) => `<div class="bar-row${r.hot ? " hot" : ""}" title="${r.label}: ${r.value}${unit}${r.note ? ` (${r.note})` : ""}">
+        <span class="bar-label">${r.label}</span>
+        <span class="bar-track"><span class="bar-fill" style="width:${(100 * r.value) / max}%"></span></span>
+        <span class="bar-value">${r.value}${unit}${r.note ? `<small>${r.note}</small>` : ""}</span>
+      </div>`,
+    )
+    .join("")}</div>`;
+}
+
+const SOURCE = `<p class="source">mizchi/vibe-lang の issue 1,549 件 (bug 841) とコミット 6,934 件、2026-10-21 時点。bug は修正コミットが触ったソースに割り当て (bug の 51% が対応付く)。</p>`;
+
 export const SLIDES: Slide[] = [
   {
     className: "title",
@@ -168,13 +184,13 @@ export const SLIDES: Slide[] = [
           <p class="small muted">CLI は Rust + Wasmtime。ホスト import を外付けして Browser / Node でも動く。</p>
         </div>
       </div>`,
-    notes: "0:20 (35s) row にエフェクトも権限も乗る。参考にした言語を指す。必須の wasm 機能は v128 / js-string / component model / exnref。",
+    notes: "0:20 (30s) row にエフェクトも権限も乗る。参考にした言語を指す。必須の wasm 機能は v128 / js-string / component model / exnref。",
   },
   {
     html: `
       <h2><span class="kicker">Live</span>このタブでコンパイルして実行</h2>
       <div class="demo" data-demo="hello"></div>`,
-    notes: "0:55 (30s) r で実行 → compile+run の ms を読む。タブの中でセルフホストのコンパイラが動いている。",
+    notes: "0:50 (25s) r で実行 → compile+run の ms を読む。タブの中でセルフホストのコンパイラが動いている。",
   },
   {
     html: `
@@ -199,7 +215,7 @@ export const SLIDES: Slide[] = [
       </div>
       <p class="quote">設計の迷いどころのプロンプト: <strong>「迷ったら wasm / wasi のプリミティブとして自然な方」</strong></p>
       <p>wasm-gc の配列には <code>v128</code> が乗らない → codegen は <strong>linear memory と wasm-gc の 2 本立て</strong></p>`,
-    notes: "1:25 (40s) 動機1: wasm first。SIMD、ブラウザで開発、component model。wasm-gc の配列に v128 が乗らないので 2 本立て。",
+    notes: "1:15 (35s) 動機1: wasm first。SIMD、ブラウザで開発、component model。wasm-gc の配列に v128 が乗らないので 2 本立て。",
   },
   {
     html: `
@@ -222,18 +238,18 @@ export const SLIDES: Slide[] = [
           </ul>
         </div>
       </div>`,
-    notes: "2:05 (35s) 動機2: AI first。LLM の評価ループは黙って間違うのに気づけない。だから P0 = 黙って間違う、を最悪にした。",
+    notes: "1:50 (30s) 動機2: AI first。LLM の評価ループは黙って間違うのに気づけない。だから P0 = 黙って間違う、を最悪にした。",
   },
   {
     className: "section",
     html: `<h1><small>FEATURES</small>黙ってやらない</h1><p>失敗・権限・確保を、型と診断で表に出す。4 つ目の「比較」は後半の苦労話で。ここからはライブでコンパイル</p>`,
-    notes: "2:40 (10s) ここから「黙ってやらせない」4 つ。ライブで。",
+    notes: "2:20 (10s) ここから「黙ってやらない」。ライブで。",
   },
   {
     html: `
       <h2><span class="kicker">Effects</span>黙って失敗しない: エフェクトは row に乗る</h2>
       <div class="demo" data-demo="effects"></div>`,
-    notes: "2:50 (35s) r で実行。失敗しうることが row に出る。handle を外すとコンパイルが止まる。",
+    notes: "2:30 (30s) r で実行。失敗しうることが row に出る。handle を外すとコンパイルが止まる。",
   },
   {
     html: `
@@ -242,7 +258,7 @@ export const SLIDES: Slide[] = [
       <pre class="code console diag">$ vibe check greet.vibe     <span class="out"># allows を with に書き換えた</span>
 <span class="out">\`fn main\` is an entry point and grants its row, so the keyword is \`allows\`:</span>
 <span class="out">write \`fn main allows Console\`</span></pre>`,
-    notes: "3:25 (55s) ライブで allows を with に書き換え → 下の診断がそのまま出る。with Console を消しても直し方が出る。",
+    notes: "3:00 (50s) ライブで allows を with に書き換え → 下の診断がそのまま出る。with Console を消しても直し方が出る。",
   },
   {
     html: `
@@ -264,13 +280,13 @@ export const SLIDES: Slide[] = [
         </div>
         <pre class="code" data-src="optional"></pre>
       </div>`,
-    notes: "4:20 (35s) 権限はビルド時に一度。拒否した cap は const-fold + DCE で wasm から消える。ホストは imports を外付け。",
+    notes: "3:50 (30s) 権限はビルド時に一度。拒否した cap は const-fold + DCE で wasm から消える。ホストは imports を外付け。",
   },
   {
     html: `
       <h2><span class="kicker">#zero_alloc (OxCaml から移植)</span>黙って確保しない</h2>
       <div class="demo" data-demo="zero_alloc"></div>`,
-    notes: "4:55 (30s) OxCaml の #zero_alloc。本体を Array::length([a, b]) にしてエラーを見せる。",
+    notes: "4:20 (30s) OxCaml の #zero_alloc。本体を Array::length([a, b]) にしてエラーを見せる。",
   },
   {
     html: `
@@ -282,7 +298,7 @@ export const SLIDES: Slide[] = [
         <li>import はファイルスコープで明示。JS / Python と同じく、書いた名前だけがスコープに現れる</li>
       </ul>
       <div class="demo" data-demo="pipe"></div>`,
-    notes: "5:25 (45s) メソッド呼び出しを捨てた。型名が書いてある方が LLM は読める、はまだ仮説。r でパイプを実行。",
+    notes: "4:50 (40s) メソッド呼び出しを捨てた。型名が書いてある方が LLM は読める、はまだ仮説。r でパイプを実行。",
   },
   {
     html: `
@@ -293,12 +309,12 @@ export const SLIDES: Slide[] = [
         <li><code>vibe grep</code> は AST パターン + checker の答え (型・effect row) でフィルタ。<code>vibe mutate</code> でテストの効き目も測る</li>
         <li>CLI が答えられない質問は、そのまま LLM のコスト → <strong>その場で CLI を直す</strong></li>
       </ul>`,
-    notes: "6:10 (35s) LSP ではなく CLI。空出力 = clean。型でフィルタする AST grep。LLM が叩けないものは CLI 側を直す。",
+    notes: "5:30 (30s) LSP ではなく CLI。空出力 = clean。型でフィルタする AST grep。LLM が叩けないものは CLI 側を直す。",
   },
   {
     className: "section",
     html: `<h1><small>HOW</small>どう作ったか</h1>`,
-    notes: "6:45 (5s) どう作ったか。",
+    notes: "6:00 (5s) どう作ったか。",
   },
   {
     html: `
@@ -327,7 +343,7 @@ export const SLIDES: Slide[] = [
           </table>
         </div>
       </div>`,
-    notes: "6:50 (45s) MoonBit でプロトタイプ → 部分ごとにセルフホスト。Lean をオラクルに。8.5ヶ月で PR 2,035、P0 264 件を自分で数えている。",
+    notes: "6:05 (40s) MoonBit でプロトタイプ → 部分ごとにセルフホスト。Lean をオラクルに。8.5ヶ月で PR 2,035、P0 264 件を自分で数えている。",
   },
   {
     html: `
@@ -347,12 +363,91 @@ export const SLIDES: Slide[] = [
         <li>罠: <code>vibe test</code> は既定で <strong>seed</strong> がコンパイルする → コンパイラの変更を「どのコンパイラが答えたか」分からないまま検証してしまう</li>
       </ul>
       <p class="quote small">44 行の変更で seed の自己ビルドが <strong>wasm32 の 4GiB 上限</strong>を突破。pass 3 で 3.89GiB、残り 119MB だった (#3439)</p>`,
-    notes: "7:35 (40s) seed → stage3 の fixpoint。vibe test が seed で答える罠。4GiB の話。",
+    notes: "6:45 (35s) seed → stage3 の fixpoint。vibe test が seed で答える罠。4GiB の話。",
   },
   {
     className: "section",
     html: `<h1><small>PAIN</small>大変だったこと</h1>`,
-    notes: "8:15 (5s) 大変だったこと。",
+    notes: "7:20 (5s) 大変だったこと。まず数字。",
+  },
+  {
+    html: `
+      <h2><span class="kicker">In numbers</span>どこにバグが多いか</h2>
+      <div class="cols wide-left grow">
+        <div>
+          <p class="chart-title">bug の件数 (修正が触ったサブシステム)、右は P0 率</p>
+          ${bars(
+            [
+              { label: "checker", value: 213, note: "P0 37%", hot: true },
+              { label: "codegen", value: 197, note: "P0 29%", hot: true },
+              { label: "stdlib", value: 133, note: "P0 38%" },
+              { label: "CLI / LSP", value: 130, note: "P0 29%" },
+              { label: "normalize / desugar", value: 108, note: "P0 48%", hot: true },
+              { label: "runtime", value: 93, note: "P0 28%" },
+              { label: "parser", value: 89, note: "P0 33%" },
+              { label: "lowering", value: 66, note: "P0 36%" },
+              { label: "RC / Perceus", value: 43, note: "P0 19%" },
+            ],
+            213,
+            "",
+          )}
+        </div>
+        <div>
+          <ul class="small">
+            <li>件数は checker と codegen。1 万行あたりなら他と同程度</li>
+            <li><strong>黙って間違う率は desugar が最悪 (48%)</strong>。型を持たないまま意味を書き換えるパスなので、落ちずに違う答えを出す</li>
+            <li>密度なら CLI (57 / 1 万行) と RC (53)。小さいのに集中する</li>
+            <li>セルフホスト後の 7〜9 月、bug 起票は月 105 → 228 → 293 件</li>
+          </ul>
+        </div>
+      </div>
+      ${SOURCE}`,
+    notes: "7:25 (35s) issue 1,549 / bug 841 を修正の場所で数えた。件数は checker と codegen、黙って間違う率は desugar の 48%。",
+  },
+  {
+    html: `
+      <h2><span class="kicker">In numbers</span>どの仕様が高くついたか</h2>
+      <div class="cols">
+        <div>
+          <p class="chart-title">100 コミットあたりの bug 件数</p>
+          ${bars(
+            [
+              { label: "クロージャ・捕獲", value: 44, hot: true },
+              { label: "String", value: 33, hot: true },
+              { label: "等価性 ==", value: 28, hot: true },
+              { label: "ジェネリクス・trait", value: 27 },
+              { label: "エフェクト・ハンドラ", value: 23 },
+              { label: "async・並行", value: 22 },
+              { label: "RC / メモリ", value: 15 },
+              { label: "ケーパビリティ", value: 12 },
+              { label: "WIT・component", value: 5 },
+            ],
+            44,
+            "",
+          )}
+        </div>
+        <div>
+          <p class="chart-title">そのうち黙って間違う (P0) 割合</p>
+          ${bars(
+            [
+              { label: "等価性 ==", value: 59, hot: true },
+              { label: "String", value: 53, hot: true },
+              { label: "ジェネリクス・trait", value: 45, hot: true },
+              { label: "クロージャ・捕獲", value: 40 },
+              { label: "エフェクト・ハンドラ", value: 32 },
+              { label: "RC / メモリ", value: 29 },
+              { label: "async・並行", value: 26 },
+              { label: "ケーパビリティ", value: 18 },
+              { label: "WIT・component", value: 0 },
+            ],
+            100,
+            "%",
+          )}
+        </div>
+      </div>
+      <p>高くつくのは単独の機能ではなく<strong>組み合わせ</strong> (クロージャ × row × ジェネリクス)。型が lowering まで届かない比較は半分以上が P0。row に乗せたケーパビリティは安かった</p>
+      ${SOURCE}`,
+    notes: "8:00 (35s) 高くつくのは組み合わせ。クロージャ・String・== が bug 密度でも P0 率でも上位。ケーパビリティは安かった。",
   },
   {
     html: `
@@ -376,7 +471,7 @@ export const SLIDES: Slide[] = [
         </div>
       </div>
       <p class="small">linear と wasm-gc の 2 本立ても重い。Int のオーバーフローで 2 つのレーンが<strong>黙って別の値</strong>を返していた (#1877)</p>`,
-    notes: "8:20 (45s) ベンチが揺れる → fuel に切り替えて ±2%。ヒープ 953MB。FBIP は効いたのに壁時計は変わらない。",
+    notes: "8:35 (35s) ベンチが揺れる → fuel に切り替え。ヒープ 953MB。FBIP は効いたのに壁時計は変わらない。",
   },
   {
     html: `
@@ -405,7 +500,7 @@ export const SLIDES: Slide[] = [
           </ul>
         </div>
       </div>`,
-    notes: "9:05 (50s) 安いモデルだとバグの生成 > 修正。interning 無し、実行時アサーション、1,970 行削除、replay 方式のハンドラ。",
+    notes: "9:10 (45s) 安いモデルだとバグの生成 > 修正。interning 無し、実行時アサーション、1,970 行削除、replay 方式のハンドラ。",
   },
   {
     html: `
@@ -428,7 +523,7 @@ export const SLIDES: Slide[] = [
         <div class="card"><h3>WIT</h3><p class="small">ジェネリクスが無い。境界に出せる型を nominal 規則で決めている</p></div>
       </div>
       <p>よかった道具: <strong>wasmtime guest profiler</strong> (wasm のままプロファイル)。気になっている言語: <strong>bend-lang</strong></p>`,
-    notes: "10:35 (45s) 仕様が足りない: スレッド、wasm-gc の配列に v128 が無い、WIT にジェネリクスが無い。よかった道具は wasmtime guest profiler、気になる言語は bend。",
+    notes: "10:35 (40s) 仕様が足りない: スレッド、wasm-gc の配列に v128 が無い、WIT にジェネリクスが無い。よかった道具は wasmtime guest profiler、気になる言語は bend。",
   },
   {
     className: "closing",
@@ -441,6 +536,6 @@ export const SLIDES: Slide[] = [
       </ol>
       <p class="quote">AI と書くなら、言語のほうが黙っていてはいけない。</p>
       <p class="muted">github.com/mizchi/vibe-lang · The Vibe Book: mizchi.github.io/vibe-lang</p>`,
-    notes: "11:20 (40s) 3 点でまとめる。== の話から最後の一文へ。0.1.0 直前なので触ってみてほしい。",
+    notes: "11:15 (40s) 3 点でまとめる。== の話から最後の一文へ。0.1.0 直前なので触ってみてほしい。",
   },
 ];
