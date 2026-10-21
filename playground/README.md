@@ -37,3 +37,8 @@ compiler as the playground, so every live demo compiles in the tab. Open
 Slide content lives in `src/slides/content.ts`. `pnpm smoke:slides` runs every
 live demo in Chromium and requires it to print the `expect` recorded next to
 its source.
+
+`pnpm build:slides-preview` builds the deck without the browser compiler, so it
+needs no stage2. In that build, Run shows the output `smoke:slides` checks for
+the unedited demo source and refuses edited source, since nothing can compile
+it.

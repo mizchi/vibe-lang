@@ -111,10 +111,15 @@ function mountDemo(host: HTMLElement): LiveDemo {
     await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
     const started = performance.now();
     if (PREVIEW) {
-      // A build without the browser compiler (VITE_SLIDES_PREVIEW=1): show the
-      // output the smoke test checks for the unedited source, and say so.
-      output.className = "output";
-      output.textContent = `${demo.expect}\n(プレビュー: コンパイラ無しのビルド。CI で確認済みの出力を表示)`;
+      // A build without the browser compiler (VITE_SLIDES_PREVIEW=1): the only
+      // honest answer is the output the smoke test checks for the unedited source.
+      if (editor.getValue().trim() !== demo.source.trim()) {
+        output.className = "output error";
+        output.textContent = "プレビュー版にはコンパイラが入っていないので、編集したコードは実行できません。Reset で元のコードに戻すと、CI で確認済みの出力を表示します。";
+      } else {
+        output.className = "output";
+        output.textContent = `${demo.expect}\n(プレビュー: 元のコードについて CI で確認済みの出力)`;
+      }
       timing.textContent = "";
       runButton.disabled = false;
       return;
