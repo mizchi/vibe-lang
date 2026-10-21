@@ -232,7 +232,11 @@ export fn arr_to_string_name(t: TypeExpr) -> String {
 /// The structural `Type::to_string` (and the derived `Type::hash_key` that
 /// delegates to it) is therefore stable for two distinct-but-equal aggregates,
 /// no matter how deeply nested.
-export fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -> Expr {
+export fn show_for_typed(fty0: TypeExpr, val: Expr, known_types: Array[String]) -> Expr {
+  // #3564: a field spelled through a type alias (`v: Values` with `type
+  // Values = Array[Int]`) is rendered as the type the alias names. Matched
+  // as written, it fell to `__to_string`, which printed the array's address.
+  let fty = eq_expand_alias_ty(fty0)
   show_note_unrenderable(fty)
   match fty {
     TyName("String") => val,
@@ -314,6 +318,11 @@ export fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -
       EMatch(val, Array::slice([(PTuple(pats), acc)], 0, 1))
     },
     TyApp("Array", args) => if Array::length(args) == 1 {
+      // #3564: record the helper this call names wherever the array sits
+      // (`Option[Array[Int]]`, a tuple, an alias); `desugar_derives` collects
+      // only a field's own top-level `Array`, and a helper nothing generated
+      // reached code generation unresolved.
+      Array::push(dtd_show_inline_arr_elems, Array::get(args, 0))
       ECall(EIdent(arr_to_string_name(Array::get(args, 0)), -1), Array::slice([
         val
       ], 0, 1), -1, [])
@@ -658,7 +667,8 @@ export fn gen_enum_show_fn(ename: String, variants: Array[(String, Array[TypeExp
 /// (dedup by type-key), so a Show/Hash-deriving type with an `Array[t]` field or
 /// payload gets a generated `__arr_to_string__<key>` helper. (#694 Layer 2.)
 export fn collect_show_array_elems(ty: TypeExpr, acc: Array[TypeExpr], keys: Array[String]) -> Unit {
-  match ty {
+  // #3564: an alias of an array needs the helper its expansion names.
+  match eq_expand_alias_ty(ty) {
     TyApp("Array", args) => if Array::length(args) == 1 {
       let et = Array::get(args, 0)
       let k = ts_type_key(et)
