@@ -1467,7 +1467,7 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
       let stdin_stream_conflict = stdin_stream_nominal_conflict(expected_zonked, actual_zonked)
       let nominal_conflict = nominal_head_conflict(expected_zonked, actual_zonked)
       let rigid_applied_conflict = rigid_applied_mismatch(expected_zonked, actual_zonked)
-      let owned_payload_conflict = owned_head_payload_conflict(expected, actual_zonked, s)
+      let argument_conflict = applied_argument_conflict(expected, actual_zonked, s)
       // A body that instantiated `T := Box[Int]` publishes that named type,
       // and `f(1)` is then Box vs Int. `type_is_ground` is false for every
       // `CtNamed` and `head_kind` of a named type is 0, so the existing
@@ -1475,7 +1475,7 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
       // scalar: Array vs FixedArray (zlib Huffman) is a different pair and
       // stays on the historical tolerate path.
       let named_vs_scalar = (type_fully_concrete(expected) && is_fully_concrete_named(expected_zonked) && is_builtin_scalar(actual_zonked)) || (is_builtin_scalar(expected_zonked) && is_fully_concrete_named(actual_zonked))
-      if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict || owned_payload_conflict || (named_vs_scalar && !structural) {
+      if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict || argument_conflict || (named_vs_scalar && !structural) {
         Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(expected_zonked), String::concat(", got ", String::concat(type_for_mismatch(actual_zonked), assignable_marker(off)))))))
         s
       } else if structural {
@@ -1540,78 +1540,149 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
   result
 }
 
-/// #3588: true when a compiler-owned head with region and row slots
-/// (`owned_head_payload_span`) meets itself with a payload argument that is
-/// concrete on both sides and differs -- `TaskHandle[rg, e, String]` against
-/// `TaskHandle[Int]`, either spelling on either side, and nested inside an
-/// `Array` / `Option` / tuple / function / same-name application. The region
-/// and row positions are rigid formals in a signature, which kept the whole
-/// pair on the tolerated path, but no instantiation of them reconciles a
-/// `String` payload with an `Int` one. `expected` is read as written, so a
-/// payload that only became concrete through this check's own substitution
-/// is not trusted (see `detect_narrowed_generic_mismatch_for`'s caller).
-fn owned_head_payload_conflict(expected: Type, actual: Type, s: Subst) -> Bool {
+/// #3590: true when two applications of one head meet with an argument that
+/// is concrete on both sides and differs -- `Pair[x, String]` against
+/// `Pair[x, Int]`, and the same nested inside an `Array` / `Option` / tuple /
+/// function / same-name application (`Option[Pair[x, Int]]`). A `CtNamed`
+/// pair whose other positions still hold a formal or an inference variable
+/// is not ground, so a failed unify there was tolerated as possibly
+/// polymorphic, and a returned `Pair[x, Int]` read its `Int` field as a
+/// `String`. No instantiation of the open positions reconciles two different
+/// concrete arguments, so each position is judged on its own: an open one
+/// (a formal, a variable, a zero-argument name such as a row or an
+/// unresolved alias) is only searched for a nested application, never
+/// reported. A constructor-kinded argument (`#hkt`, `CtConstructor`,
+/// `CtApplied`) is left to `rigid_applied_mismatch`, and effect rows are
+/// stripped first, since a row difference alone is the effect checks' to
+/// judge.
+///
+/// #3588: a compiler-owned head with region and row slots
+/// (`owned_head_payload_span`) pairs its payload positions across the elided
+/// and complete spellings (`TaskHandle[Int]` against `TaskHandle[rg, e,
+/// String]`), so either spelling on either side is compared.
+///
+/// `expected` is read as written, so an argument that only became concrete
+/// through this check's own substitution is not trusted (see
+/// `detect_narrowed_generic_mismatch_for`'s caller).
+fn applied_argument_conflict(expected: Type, actual: Type, s: Subst) -> Bool {
   match expected {
     CtNamed(en, eargs) => match actual {
-      CtNamed(an, aargs) => if en != an {
+      CtNamed(an, aargs) => if en != an || String::starts_with(en, "#") {
         false
       } else match owned_head_payload_span(en, Array::length(eargs)) {
         Some((estart, count)) => match owned_head_payload_span(an, Array::length(aargs)) {
           Some((astart, acount)) => if count != acount {
             false
           } else {
-            let mut i = 0
-            let mut conflict = false
-            while i < count && !conflict {
-              let e = Array::get(eargs, estart + i)
-              let a = Array::get(aargs, astart + i)
-              conflict = if type_fully_concrete(e) && type_fully_concrete(a) {
-                unify(e, a, s) is None
-              } else {
-                owned_head_payload_conflict(e, a, s)
-              }
-              i = i + 1
-            }
-            conflict
+            applied_argument_conflict_pairwise(Array::slice(eargs, estart, estart + count), Array::slice(aargs, astart, astart + count), s)
           },
           None => false
         },
-        None => owned_head_payload_conflict_pairwise(eargs, aargs, s)
+        None => applied_argument_conflict_pairwise(eargs, aargs, s)
       },
       _ => false
     },
     CtArray(e) => match actual {
-      CtArray(a) => owned_head_payload_conflict(e, a, s),
+      CtArray(a) => applied_argument_conflict(e, a, s),
       _ => false
     },
     CtOption(e) => match actual {
-      CtOption(a) => owned_head_payload_conflict(e, a, s),
+      CtOption(a) => applied_argument_conflict(e, a, s),
       _ => false
     },
     CtTuple(es) => match actual {
-      CtTuple(acts) => owned_head_payload_conflict_pairwise(es, acts, s),
+      CtTuple(acts) => nested_argument_conflict_pairwise(es, acts, s),
       _ => false
     },
     CtFn(eps, er, _) => match actual {
-      CtFn(aps, ar, _) => owned_head_payload_conflict(er, ar, s) || owned_head_payload_conflict_pairwise(eps, aps, s),
+      CtFn(aps, ar, _) => applied_argument_conflict(er, ar, s) || nested_argument_conflict_pairwise(eps, aps, s),
       _ => false
     },
     _ => false
   }
 }
 
-fn owned_head_payload_conflict_pairwise(es: Array[Type], acts: Array[Type], s: Subst) -> Bool {
+/// One application's arguments, position by position: a pair that is
+/// concrete on both sides must unify; any other pair is searched for a
+/// nested application that conflicts.
+fn applied_argument_conflict_pairwise(es: Array[Type], acts: Array[Type], s: Subst) -> Bool {
   if Array::length(es) != Array::length(acts) {
     false
   } else {
     let mut i = 0
     let mut conflict = false
     while i < Array::length(es) && !conflict {
-      conflict = owned_head_payload_conflict(Array::get(es, i), Array::get(acts, i), s)
+      let e = Array::get(es, i)
+      let a = Array::get(acts, i)
+      conflict = if argument_comparable(e) && argument_comparable(a) {
+        unify(strip_effects(e), strip_effects(a), s) is None
+      } else {
+        applied_argument_conflict(e, a, s)
+      }
       i = i + 1
     }
     conflict
   }
+}
+
+/// Tuple elements and function parameters are not arguments of an
+/// application themselves; only applications nested in them are judged.
+fn nested_argument_conflict_pairwise(es: Array[Type], acts: Array[Type], s: Subst) -> Bool {
+  if Array::length(es) != Array::length(acts) {
+    false
+  } else {
+    let mut i = 0
+    let mut conflict = false
+    while i < Array::length(es) && !conflict {
+      conflict = applied_argument_conflict(Array::get(es, i), Array::get(acts, i), s)
+      i = i + 1
+    }
+    conflict
+  }
+}
+
+/// Whether an argument position can be judged on its own: fully concrete
+/// (`type_fully_concrete`: no variable, formal, zero-argument name or
+/// unknown anywhere) and free of constructor-kinded parts.
+fn argument_comparable(t: Type) -> Bool {
+  type_fully_concrete(t) && !mentions_constructor_kind(t)
+}
+
+fn mentions_constructor_kind(t: Type) -> Bool {
+  match t {
+    CtConstructor(_, _) => true,
+    CtApplied(_, _) => true,
+    CtNamed(n, args) => String::starts_with(n, "#") || types_mention_constructor_kind(args),
+    CtArray(e) => mentions_constructor_kind(e),
+    CtOption(e) => mentions_constructor_kind(e),
+    CtTuple(items) => types_mention_constructor_kind(items),
+    CtFn(ps, r, _) => mentions_constructor_kind(r) || types_mention_constructor_kind(ps),
+    CtRecord(fields) => {
+      let mut found = false
+      for field in fields {
+        let (_, ft) = field
+        if mentions_constructor_kind(ft) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn types_mention_constructor_kind(ts: Array[Type]) -> Bool {
+  let mut found = false
+  for t in ts {
+    if mentions_constructor_kind(t) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
 }
 
 /// #1001: the type's outer constructor's nominal name, when it is one that can
