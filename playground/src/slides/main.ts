@@ -194,6 +194,11 @@ document.addEventListener("keydown", (event) => {
   event.preventDefault();
 });
 
+// Printing shows every slide, so every demo needs its editor, not just the visited ones.
+window.addEventListener("beforeprint", () => {
+  for (const host of deck.querySelectorAll<HTMLElement>(".demo[data-demo]")) mountDemo(host);
+});
+
 window.addEventListener("resize", () => {
   for (const { editor } of liveDemos.values()) editor.updateOptions({ fontSize: demoFontSize() });
 });
