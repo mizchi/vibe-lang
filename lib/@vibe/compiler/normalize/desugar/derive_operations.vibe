@@ -49,7 +49,13 @@ import ./renderer_scope.vibe {
 }
 
 import ./state.vibe {
-  dtd_facts_explicit_ops, dtd_facts_wrappers, dtd_show_inline_arr_elems, dtd_show_inline_stack, dtd_show_refusals, dtd_type_param_names
+  dtd_facts_explicit_ops,
+  dtd_facts_wrappers,
+  dtd_show_generic_source_renderers,
+  dtd_show_inline_arr_elems,
+  dtd_show_inline_stack,
+  dtd_show_refusals,
+  dtd_type_param_names
 }
 
 import ./utilities.vibe {
@@ -364,20 +370,59 @@ fn show_note_unrenderable(fty: TypeExpr) -> Unit {
 }
 
 fn show_unrenderable_kind(t: TypeExpr) -> String {
-  match t {
+  show_unrenderable_kind_seen(t, [])
+}
+
+/// Inspect the values structural rendering reads. A phantom argument
+/// contributes no stored field or payload.
+/// Recursive generic rendering has its own expansion guard below.
+fn show_unrenderable_kind_seen(t0: TypeExpr, seen: Array[String]) -> String {
+  match eq_expand_alias_ty(t0) {
     TyFn(_, _, _) => "a function value",
     TyName("Bytes") => "a `Bytes` value",
-    TyApp(_, args) => show_unrenderable_kind_of(args),
-    TyTuple(ts) => show_unrenderable_kind_of(ts),
+    TyApp(head, args) => if head == "Array" || head == "Option" || head == "Result" {
+      show_unrenderable_kind_of(args, seen)
+    } else if str_array_contains(seen, head) {
+      ""
+    } else if !show_generic_known(head) || str_array_contains(dtd_show_generic_source_renderers, head) {
+      show_unrenderable_kind_of(args, seen)
+    } else {
+      let next = for name in seen {
+        name
+      }
+      Array::push(next, head)
+      let parts: Array[TypeExpr] = []
+      match show_generic_struct_decl(head) {
+        Some((_, params, fields)) => {
+          for field in fields {
+            Array::push(parts, eq_subst_ty(field.1, params, args))
+          }
+          ()
+        },
+        None => match show_generic_enum_decl(head) {
+          Some((_, params, variants)) => {
+            for variant in variants {
+              for payload in variant.1 {
+                Array::push(parts, eq_subst_ty(payload, params, args))
+              }
+            }
+            ()
+          },
+          None => ()
+        }
+      }
+      show_unrenderable_kind_of(parts, next)
+    },
+    TyTuple(ts) => show_unrenderable_kind_of(ts, seen),
     _ => ""
   }
 }
 
-fn show_unrenderable_kind_of(ts: Array[TypeExpr]) -> String {
+fn show_unrenderable_kind_of(ts: Array[TypeExpr], seen: Array[String]) -> String {
   let mut found = ""
   let mut i = 0
   while i < Array::length(ts) && String::length(found) == 0 {
-    found = show_unrenderable_kind(Array::get(ts, i))
+    found = show_unrenderable_kind_seen(Array::get(ts, i), seen)
     i = i + 1
   }
   found
@@ -527,8 +572,8 @@ export fn show_inline_merge_arr_elems(arr_elems: Array[TypeExpr], arr_keys: Arra
 /// Record the `Array[e]` element types a substituted type mentions.
 /// Walks the whole type: `show_for_typed` reaches an `Array` inside an
 /// `Option` / `Result` / tuple too, and each needs its helper.
-fn show_inline_note_arrays(t: TypeExpr) -> Unit {
-  match t {
+fn show_inline_note_arrays(t0: TypeExpr) -> Unit {
+  match eq_expand_alias_ty(t0) {
     TyApp(n, args) => {
       if n == "Array" && Array::length(args) == 1 {
         Array::push(dtd_show_inline_arr_elems, Array::get(args, 0))
