@@ -9,6 +9,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  compiler_owned_type_arity,
   env_cache_read_snapshot,
   env_lookup,
   expr_child_at,
@@ -963,9 +964,59 @@ export fn build_param_overlay(params: Array[(String, Option[TypeExpr])], fn_name
     } else {
       ()
     }
+    // #3589: a row variable passed to a struct parameter's type
+    // (`h: Holder[q]`) is this signature's own, like a callback's `with q`:
+    // a call through `h.run` runs it, so the body is charged it.
+    let row_args = no_str_labels()
+    match ptype {
+      Some(te) => type_arg_row_vars_into(te, row_args),
+      None => ()
+    }
+    if Array::length(row_args) > 0 {
+      Array::push(names, String::concat(row_arg_owner_prefix(), base_name))
+      Array::push(effs, row_args)
+    }
     i = i + 1
   }
   (names, effs)
+}
+
+/// The overlay entry under which a struct parameter's row variables are
+/// recorded (`build_param_overlay`). The `#` keeps every lookup by name and
+/// every walk over callbacks away from it; only `overlay_owns_row_var` reads
+/// it.
+fn row_arg_owner_prefix() -> String {
+  "#rowarg:"
+}
+
+/// The row variables `te` passes as a type argument (`Holder[q]`), outside
+/// a compiler-owned head (`TaskGroup[rg, e]`), whose row slot keeps its own
+/// handling.
+fn type_arg_row_vars_into(te: TypeExpr, out: Array[String]) -> Unit {
+  match te {
+    TyApp(head, args) => {
+      let owned = match compiler_owned_type_arity(head) {
+        Some(_) => true,
+        None => false
+      }
+      for a in args {
+        match a {
+          TyName(n) => if !owned && label_is_effect_var(n) && !str_labels_contain(out, n) {
+            Array::push(out, n)
+          },
+          _ => type_arg_row_vars_into(a, out)
+        }
+      }
+      ()
+    },
+    TyTuple(items) => {
+      for a in items {
+        type_arg_row_vars_into(a, out)
+      }
+      ()
+    },
+    _ => ()
+  }
 }
 
 /// A `let apply: [T](f: (T) -> T with e, x: T) -> T = (f, x) -> { f(x) }`
@@ -1085,7 +1136,9 @@ fn overlay_owns_row_var(ov_names: Array[String], ov_effs: Array[Array[String]], 
   let mut i = 0
   while i < Array::length(ov_names) && i < Array::length(ov_effs) && !found {
     let n = Array::get(ov_names, i)
-    if !String::starts_with(n, "#") && str_labels_contain(Array::get(ov_effs, i), v) {
+    if String::starts_with(n, row_arg_owner_prefix()) && str_labels_contain(Array::get(ov_effs, i), v) {
+      found = true
+    } else if !String::starts_with(n, "#") && str_labels_contain(Array::get(ov_effs, i), v) {
       match overlay_alias_target(ov_names, ov_effs, n) {
         Some(_) => (),
         None => found = true

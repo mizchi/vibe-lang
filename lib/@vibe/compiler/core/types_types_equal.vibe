@@ -98,6 +98,20 @@ fn is_effect_var_name(name: String) -> Bool {
   }
 }
 
+/// #3589: the row variable a type argument stands for, when it is one: a
+/// struct's row parameter is passed a row as `CtNamed(<row>, [])`, so
+/// `Holder[e]` carries `e` (or the fresh `$N` a call renamed it to).
+export fn row_var_type_arg(t: Type) -> Option[String] {
+  match t {
+    CtNamed(n, args) => if Array::length(args) == 0 && is_effect_var_name(n) {
+      Some(n)
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
 /// Resolve an effect variable name through the effect-binding chain (transitively
 /// following var->var links). Returns the bound effect-label string ("" = pure)
 /// or None if the variable is unbound.
@@ -1427,6 +1441,14 @@ fn collect_effect_vars_walk(t: Type, out: Array[String]) -> Int {
     },
     CtNamed(_, args) => {
       for a in args {
+        // #3589: a row variable passed as a type argument (`Holder[e]`)
+        // is the same variable as the row's `with e`.
+        match row_var_type_arg(a) {
+          Some(name) => if !string_array_contains(out, name) {
+            Array::push(out, name)
+          },
+          None => ()
+        }
         let _ = collect_effect_vars_walk(a, out)
       }
       0
@@ -1497,7 +1519,11 @@ fn rename_effect_vars(t: Type, pairs: Array[(String, String)]) -> Type {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(args) {
-        Array::push(out, rename_effect_vars(Array::get(args, i), pairs))
+        let a = Array::get(args, i)
+        Array::push(out, match row_var_type_arg(a) {
+          Some(v) => CtNamed(rename_eff_name(v, pairs), array_empty()),
+          None => rename_effect_vars(a, pairs)
+        })
         i = i + 1
       }
       CtNamed(name, out)

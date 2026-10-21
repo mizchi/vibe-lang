@@ -47,7 +47,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_encode_name, match_scrutinee_temp
+  impl_encode_name, match_scrutinee_temp, type_param_name
 }
 
 import @vibe/parser {
@@ -95,6 +95,8 @@ import ./checker_builtin_arg_head_rest.vibe {
   bind_builtin_arg_var,
   bind_struct_row_formals,
   env_lookup_unless_synthesized_builtin,
+  field_rows_name,
+  inst_struct_field_ty,
   let_rhs_closure_literal,
   let_rhs_is_alias,
   lookup_builtin_in_env,
@@ -2307,7 +2309,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 while tpi < tplen {
                   match fresh_var(c2) {
                     (tv, nc) => {
-                      Array::push(fresh_targs, tv)
+                      // #3589: a row parameter takes a fresh ROW variable,
+                      // which the field's row names below, so the value
+                      // stored there binds it (`Holder[$4]`, `$4` =
+                      // `Console`) instead of the struct's own spelling
+                      // `r`, which every declaration shares.
+                      if field_rows_name(dfields, type_param_name(Array::get(s_tparams, tpi))) {
+                        Array::push(fresh_targs, CtNamed("$\{c2}", array_empty()))
+                      } else {
+                        Array::push(fresh_targs, tv)
+                      }
                       c2 = nc
                     },
                     _ => ()
@@ -2323,7 +2334,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 // (rigid params substituted by the fresh vars above); a
                 // non-generic struct keeps the raw declared type as before.
                 let dty = if tplen > 0 {
-                  subst_type_params(dty0, s_tparams, fresh_targs)
+                  inst_struct_field_ty(dty0, s_tparams, fresh_targs)
                 } else {
                   dty0
                 }
