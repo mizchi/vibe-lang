@@ -1,0 +1,31 @@
+import @vibe/compiler/core {
+  Subst, Type, subst_apply
+}
+
+test "substitution fast paths retain variable-chain cycle detection" {
+  assert(subst_apply(SubstEmpty, CtVar(17)) is CtVar(17))
+  let bound = SubstBind(17, CtString, SubstEmpty)
+  assert(subst_apply(bound, CtVar(17)) is CtString)
+  let cycle = SubstBind(1, CtVar(2), SubstBind(2, CtVar(1), SubstEmpty))
+  assert(subst_apply(cycle, CtVar(1)) is CtVar(1))
+  assert(subst_apply(cycle, CtVar(2)) is CtVar(2))
+  let nested = SubstBind(3, CtArray(CtVar(17)), bound)
+  assert(subst_apply(nested, CtVar(3)) is CtArray(CtString))
+}
+
+test "function substitution still resolves parameters return and effect row" {
+  let s = SubstEffBind("e", "Async", SubstBind(1, CtString, SubstBind(2, CtOption(CtInt), SubstEmpty)))
+  let fn_ty = CtFn([CtVar(1), CtBool], CtVar(2), Some("e"))
+  match subst_apply(s, fn_ty) {
+    CtFn(params, CtOption(CtInt), Some("Async")) => {
+      assert(Array::length(params) == 2)
+      assert(Array::get(params, 0) is CtString)
+      assert(Array::get(params, 1) is CtBool)
+    },
+    _ => assert(false)
+  }
+  match subst_apply(s, CtFn([], CtUnit, None)) {
+    CtFn(params, CtUnit, None) => assert(Array::length(params) == 0),
+    _ => assert(false)
+  }
+}

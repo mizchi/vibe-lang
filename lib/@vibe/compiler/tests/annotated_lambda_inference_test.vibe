@@ -39,18 +39,27 @@ fn annotated_call_scan_extra(params: Array[(String, Option[TypeExpr])], recursiv
   }
   let local_stmts = [SExpr(local)]
   let control_stmts = [SExpr(control)]
+  // Prepare both variants before measuring per-invocation inference overhead.
+  // The first traversal can grow shared AST scratch, independently of whether
+  // the lambda needs a call-site table. Both variants must see that capacity.
+  let _ = elaborate_bytes(control_stmts)
+  let _ = elaborate_bytes(local_stmts)
   let local_bytes = elaborate_bytes(local_stmts)
   let control_bytes = elaborate_bytes(control_stmts)
   local_bytes - control_bytes
 }
 
 test "annotated local lambdas allocate no call-site inference table" {
-  // Allow the fixed cost of rebuilding the lambda and RC free-list reuse,
-  // but not a classification table for its 128 calls. No annotation can change.
+  // Allow fixed lambda overhead and RC free-list reuse, but not a
+  // classification table for its 128 calls. No annotation can change.
   assert(annotated_call_scan_extra([("p", Some(TyName("Int")))], false) <= 512)
   assert(annotated_call_scan_extra([("p", Some(TyApp("Array", [TyName("Int")])))], true) <= 512)
   assert(annotated_call_scan_extra([], false) <= 512)
   assert(annotated_call_scan_extra([], true) <= 512)
+  // Positive controls still allocate a table: preparing shared scratch must
+  // not conceal the per-invocation work this regression test guards.
+  assert(annotated_call_scan_extra([("p", None)], false) > 512)
+  assert(annotated_call_scan_extra([("p", None)], true) > 512)
 }
 
 fn local_parameter_types(params: Array[(String, Option[TypeExpr])], args: Array[Expr], recursive: Bool) -> Array[Bool] {

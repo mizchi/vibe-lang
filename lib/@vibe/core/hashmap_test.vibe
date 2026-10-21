@@ -341,3 +341,64 @@ test "the key hashes separate distinct keys" {
   assert(hash_string("ab") != hash_string("ba"))
   assert(hash_int(1) != hash_int(2))
 }
+
+test "rehash keeps colliding boxed values alive through deletion and regrowth" {
+  let m: MutMap[Int, Array[Int]] = MutMap::with_capacity((k: Int) -> 0, (a: Int, b: Int) -> a == b, 8)
+  let shared = [7]
+  MutMap::set(m, -1, shared)
+  let mut i = 0
+  while i < 80 {
+    MutMap::set(m, i, [i - 11])
+    i = i + 1
+  }
+  i = 0
+  while i < 80 {
+    assert(MutMap::delete(m, i))
+    i = i + 2
+  }
+  while i < 400 {
+    MutMap::set(m, i, [i - 11])
+    i = i + 1
+  }
+  Array::push(shared, 13)
+  assert(get_or(m, -1, []) == [7, 13])
+  i = 0
+  while i < 400 {
+    if i < 80 && i % 2 == 0 {
+      assert(!MutMap::has(m, i))
+    } else {
+      assert(get_or(m, i, []) == [i - 11])
+    }
+    i = i + 1
+  }
+  MutMap::set(m, -1, [31])
+  assert(get_or(m, -1, []) == [31])
+  assert(shared == [7, 13])
+}
+
+test "lookup results survive replacement and a miss skips tombstones" {
+  let m: MutMap[Int, Array[Int]] = MutMap::with_capacity((k: Int) -> 0, (a: Int, b: Int) -> a == b, 8)
+  MutMap::set(m, 1, [3])
+  let missing = MutMap::get(m, 2)
+  let saved = MutMap::get(m, 1)
+  MutMap::set(m, 2, [5])
+  MutMap::set(m, 1, [7])
+  assert(missing is None)
+  assert(saved == Some([3]))
+  assert(MutMap::delete(m, 1))
+  assert(MutMap::get(m, 2) == Some([5]))
+  assert(MutMap::get(m, 3) is None)
+}
+
+test "a full corrupted table still gives a bounded lookup miss" {
+  let m: MutMap[Int, Int] = MutMap::with_capacity((k: Int) -> 0, (a: Int, b: Int) -> a == b, 8)
+  let mut i = 0
+  while i < 8 {
+    Array::set(m.keys, i, Some(i))
+    Array::set(m.vals, i, Some(i + 10))
+    Bytes::set(m.ctrl, i, 128)
+    i = i + 1
+  }
+  assert(MutMap::get(m, 99) is None)
+  assert(!MutMap::has(m, 99))
+}

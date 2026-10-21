@@ -3,7 +3,7 @@ import @vibe/ast {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, builtin_callee_resolution
+  Expr, Pat, Stmt, TypeExpr, builtin_callee_resolution, expr_any_node
 }
 
 import @vibe/core {
@@ -110,19 +110,19 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: B
     while i < Array::length(stmts) {
       match Array::get(stmts, i) {
         SLet(ex, isrec, nm, ty, expr) => {
-          Array::set(stmts, i, SLet(ex, isrec, nm, ty, awp_tail(expr, ctr, sh)))
+          Array::set(stmts, i, SLet(ex, isrec, nm, ty, awp_entry(expr, ctr, sh)))
         },
         SLetMut(nm, ty, expr) => {
-          Array::set(stmts, i, SLetMut(nm, ty, awp_tail(expr, ctr, sh)))
+          Array::set(stmts, i, SLetMut(nm, ty, awp_entry(expr, ctr, sh)))
         },
         SExpr(expr) => {
-          Array::set(stmts, i, SExpr(awp_tail(expr, ctr, sh)))
+          Array::set(stmts, i, SExpr(awp_entry(expr, ctr, sh)))
         },
         STest(nm, expr) => {
-          Array::set(stmts, i, STest(nm, awp_tail(expr, ctr, sh)))
+          Array::set(stmts, i, STest(nm, awp_entry(expr, ctr, sh)))
         },
         SBench(nm, expr) => {
-          Array::set(stmts, i, SBench(nm, awp_tail(expr, ctr, sh)))
+          Array::set(stmts, i, SBench(nm, awp_entry(expr, ctr, sh)))
         },
         _ => ()
       }
@@ -143,6 +143,23 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: B
     } else {
       ()
     }
+  }
+}
+
+// A declaration with no syntactic await cannot be changed by this pass.
+// The test is conservative about shadowing; the existing rewrite owns that.
+fn awp_is_await_call(e: Expr) -> Bool {
+  match e {
+    ECall(EIdent("await", _), args, _, _) => Array::length(args) == 1,
+    _ => false
+  }
+}
+
+fn awp_entry(e: Expr, ctr: Array[Int], sh: Int) -> Expr {
+  if expr_any_node(e, awp_is_await_call) {
+    awp_tail(e, ctr, sh)
+  } else {
+    e
   }
 }
 

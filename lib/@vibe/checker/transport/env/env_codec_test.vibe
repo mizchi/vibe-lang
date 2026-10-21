@@ -74,3 +74,27 @@ test "checked dependency codec rejects malformed bodies and headers" {
   } with { Exception::Throw(message) => message }
   assert(header_message == "invalid persistent dep list header: cache/file")
 }
+
+test "nested and repeated encodes preserve earlier returned strings" {
+  let env = EnvShowWrappers(["Pretty::to_string"], ["Unknown"], env_bind(EnvEmpty, "answer", CtInt))
+  let saved = encode_checked_environment(env)
+  let snapshot = String::concat(saved, "!")
+  let product = encode_checked_module_product(env, Some(([], [], [])))
+  let product_snapshot = String::concat(product, "!")
+  let mut i = 0
+  while i < 40 {
+    let current = env_bind(env, "binding\{i}", CtString)
+    let encoded = encode_checked_environment(current)
+    match decode_checked_environment(encoded) {
+      Some(decoded) => assert(encode_checked_environment(decoded) == encoded),
+      None => assert(false)
+    }
+    assert(encode_checked_dependency_paths(["a", "a"]) == "version\t2\n2[1:a1:a]")
+    encode_checked_module_product(current, None)
+    i = i + 1
+  }
+  assert(String::concat(saved, "!") == snapshot)
+  assert(String::concat(product, "!") == product_snapshot)
+  assert(encode_checked_environment(env) == saved)
+  assert(encode_checked_module_product(env, Some(([], [], []))) == product)
+}

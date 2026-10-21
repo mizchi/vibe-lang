@@ -62,8 +62,29 @@ struct CacheTextWriter {
   mut byte_count: Int
 }
 
+// Only empty backing arrays are retained, never serialized values or an env.
+// Nested digest writers lease separate arrays; the pool bounds daemon state.
+let cache_text_parts_pool: Array[Array[String]] = []
+
 fn cache_text_writer() -> CacheTextWriter {
-  CacheTextWriter::{ parts: [], byte_count: 0 }
+  let count = Array::length(cache_text_parts_pool)
+  let parts = if count > 0 {
+    let reused = Array::get(cache_text_parts_pool, count - 1)
+    Array::truncate(cache_text_parts_pool, count - 1)
+    reused
+  } else {
+    array_empty()
+  }
+  CacheTextWriter::{ parts: parts, byte_count: 0 }
+}
+
+fn cache_text_finish(out: CacheTextWriter) -> String {
+  let text = String::join(out.parts, "")
+  if Array::length(out.parts) <= 262144 && Array::length(cache_text_parts_pool) < 4 {
+    Array::truncate(out.parts, 0)
+    Array::push(cache_text_parts_pool, out.parts)
+  } else ()
+  text
 }
 
 fn cache_push(out: CacheTextWriter, text: String) -> Unit {
@@ -408,7 +429,7 @@ fn show_wrapper_facts_digest(wrappers: Array[String], unknown: Array[String]) ->
   let out = cache_text_writer()
   write_string_array(out, wrappers)
   write_string_array(out, unknown)
-  compact_string_fingerprint(String::join(out.parts, ""))
+  compact_string_fingerprint(cache_text_finish(out))
 }
 
 fn write_type_env(out: CacheTextWriter, env: TypeEnv) -> Unit {
@@ -1120,7 +1141,7 @@ export fn encode_checked_dependency_paths(deps: Array[String]) -> String {
     let out = cache_text_writer()
     cache_push(out, "version\t2\n")
     write_string_array(out, deps)
-    String::join(out.parts, "")
+    cache_text_finish(out)
   }
 }
 
@@ -1152,7 +1173,7 @@ export fn encode_checked_environment(env: TypeEnv) -> String {
   cache_push(out, "version\t10\nenv\t")
   write_type_env_segment(out, env)
   cache_push(out, "\n")
-  String::join(out.parts, "")
+  cache_text_finish(out)
 }
 
 /// Encode a v11 environment with absent or complete v8 lowering.
@@ -1165,7 +1186,7 @@ export fn encode_checked_module_product(env: TypeEnv, lowering: Option[(Array[In
     Some((offsets, eq_offs, eq_keys)) => append_checked_lowering_text(out.parts, offsets, eq_offs, eq_keys),
     None => cache_push(out, "lowering\tmissing\n")
   }
-  String::join(out.parts, "")
+  cache_text_finish(out)
 }
 
 /// Reject an entire v11 product when its environment or lowering is malformed.

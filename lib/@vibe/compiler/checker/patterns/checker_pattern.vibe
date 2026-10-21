@@ -731,7 +731,7 @@ fn cp_scrutinee_is_structural(ty: Type) -> Bool {
 /// enum's variants, or none for a struct. None when the type is not a
 /// declared struct or enum (a formal, an alias, a builtin head, an
 /// unresolved name), which stays tolerated.
-fn cp_nominal_variants(ty: Type, defs: Array[TypeDef]) -> Option[Array[String]] {
+fn cp_nominal_variants(ty: Type, defs: Array[TypeDef]) -> Option[Array[(String, Array[Type])]] {
   let head = match ty {
     CtNamed(n, _) => n,
     CtEnum(n) => n,
@@ -743,18 +743,10 @@ fn cp_nominal_variants(ty: Type, defs: Array[TypeDef]) -> Option[Array[String]] 
   } else {
     match find_typedef(defs, head) {
       Some(td) => match td {
-        TDEnum(_, _, variants) => {
-          let names: Array[String] = []
-          for v in variants {
-            let (vname, _) = v
-            Array::push(names, vname)
-          }
-          Some(names)
-        },
-        TDStruct(_, _, _, _) => {
-          let none: Array[String] = []
-          Some(none)
-        },
+        // The definition already owns this immutable variant list. Callers
+        // inspect it without building a second array of all constructor names.
+        TDEnum(_, _, variants) => Some(variants),
+        TDStruct(_, _, _, _) => Some(cp_no_nominal_variants),
         _ => None
       },
       None => None
@@ -762,9 +754,12 @@ fn cp_nominal_variants(ty: Type, defs: Array[TypeDef]) -> Option[Array[String]] 
   }
 }
 
-fn cp_names_has(names: Array[String], name: String) -> Bool {
+let cp_no_nominal_variants: Array[(String, Array[Type])] = []
+
+fn cp_names_has(names: Array[(String, Array[Type])], name: String) -> Bool {
   let mut found = false
-  for n in names {
+  for variant in names {
+    let (n, _) = variant
     if n == name {
       found = true
     }
@@ -814,7 +809,11 @@ fn cp_pattern_edit(ty: Type, ty_text: String, defs: Array[TypeDef]) -> String {
     CtOption(_) => "match it with `Some(..)` or `None`",
     _ => match cp_nominal_variants(ty, defs) {
       Some(variants) => if Array::length(variants) > 0 {
-        "match it with a constructor of `\{ty_text}` (\{String::join(variants, ", ")})"
+        let names = for variant in variants {
+          let (name, _) = variant
+          name
+        }
+        "match it with a constructor of `\{ty_text}` (\{String::join(names, ", ")})"
       } else {
         "match it with a binding or `_`"
       },
