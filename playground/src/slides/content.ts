@@ -532,7 +532,7 @@ export const SLIDES: Slide[] = [
   },
   {
     html: `
-      <h2><span class="kicker">Good parts</span>よかったもの・副産物</h2>
+      <h2><span class="kicker">Good parts</span>よかったもの・気になるもの</h2>
       <div class="cols">
         <div class="card">
           <h3>よかったもの</h3>
@@ -544,16 +544,15 @@ export const SLIDES: Slide[] = [
           </ul>
         </div>
         <div class="card">
-          <h3>副産物</h3>
+          <h3>ついでに</h3>
           <ul>
-            <li><strong>jsimd</strong></li>
             <li>MoonBit 標準ライブラリへの SIMD PR</li>
           </ul>
           <h3 style="margin-top:1.2cqw">気になっている言語</h3>
           <ul><li>bend-lang</li><li>借用を証明する系</li></ul>
         </div>
       </div>`,
-    notes: "11:30 (20s) よかったもの: wasmtime guest profiler、fuel、#zero_alloc。副産物 jsimd。気になる言語 bend。",
+    notes: "11:30 (20s) よかったもの: wasmtime guest profiler、fuel、#zero_alloc。MoonBit への SIMD PR。気になる言語 bend。",
   },
   {
     className: "title",
