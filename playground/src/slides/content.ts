@@ -229,9 +229,8 @@ export const SLIDES: Slide[] = [
           </ul>
         </div>
       </div>
-      <p class="quote">設計で迷ったときのプロンプトは<strong>「迷ったら wasm / wasi のプリミティブとして自然な方」</strong></p>
-      <p>wasm-gc の配列だと <code>v128</code> が使えないので、codegen は linear と wasm-gc の両対応にしてる</p>`,
-    notes: "1:30 (30s) wasm first。SIMD、ブラウザで開発、component model。wasm-gc だと v128 が使えないので両対応",
+      <p class="quote">設計で迷ったときのプロンプトは<strong>「迷ったら wasm / wasi のプリミティブとして自然な方」</strong></p>`,
+    notes: "1:30 (30s) wasm first。SIMD、ブラウザで開発、component model",
   },
   {
     html: `
@@ -240,7 +239,7 @@ export const SLIDES: Slide[] = [
         <div class="card">
           <h3>権限を制御したい</h3>
           <ul>
-            <li>Vibe Coding で書かせたコードが何をしうるか、シグネチャで読みたい</li>
+            <li>AI に書かせたコードが何をするか、シグネチャを見ればわかるようにしたい</li>
             <li>Deno のパーミッション × Koka のエフェクト</li>
             <li>呼び出す側はただの関数呼び出しのまま</li>
           </ul>
@@ -307,12 +306,12 @@ export const SLIDES: Slide[] = [
       <h2><span class="kicker">Syntax</span>メソッド呼び出しなし</h2>
       <ul class="small">
         <li><code>foo.bar()</code> のメッセージパッシングはいらない</li>
-        <li><code>.</code> の補完は人間用。LLM には型名を省略しないほうが読みやすいはず (まだ仮説)</li>
+        <li><code>.</code> の補完は人間用。LLM には型名が書いてあるほうが読みやすいと思ってる。まだ測ってない</li>
         <li><code>Foo::bar(foo)</code> か <code>foo |&gt; Foo::bar()</code>。<code>foo.prop</code> はフィールドアクセスだけ</li>
         <li>import はファイルスコープで明示。書いたものだけがスコープに出てくる</li>
       </ul>
       <div class="demo" data-demo="pipe"></div>`,
-    notes: "4:40 (35s) メソッド呼び出しを捨てた理由。型名があると LLM が読みやすいはず、はまだ仮説。r でパイプ",
+    notes: "4:40 (35s) メソッド呼び出しを捨てた理由。型名があると LLM が読みやすいと思ってる (測ってない)。r でパイプ",
   },
   {
     html: `
@@ -480,7 +479,7 @@ export const SLIDES: Slide[] = [
           </ul>
         </div>
       </div>
-      <p class="small">linear と wasm-gc の両対応も重い。Int のオーバーフローの結果が linear 版と wasm-gc 版で黙って違ってた (#1877)</p>`,
+      <p class="small">Int のオーバーフローの結果が linear と wasm-gc で違ってた (#1877)</p>`,
     notes: "8:15 (35s) ベンチが揺れるので fuel に切り替えた。ヒープ 953MB。FBIP は効いたけど壁時計は変わらず",
   },
   {
@@ -501,7 +500,7 @@ export const SLIDES: Slide[] = [
           <ul class="small">
             <li>String interning してなくて、全シンボルを文字列比較して爆発</li>
             <li>型システムの穴を、大量の実行時アサーションで止めようとする</li>
-            <li>構文だけで判定する検査に抜け道が 63 個。1,970 行消して型検査器に寄せた</li>
+            <li>型を見ないで構文だけで穴を塞ごうとする。抜け道が 63 個出て、結局 1,970 行消して型検査器でやった</li>
             <li>最初のエフェクトハンドラは resume のたびに本体を頭から再実行してた</li>
           </ul>
         </div>
@@ -524,11 +523,11 @@ export const SLIDES: Slide[] = [
       <h2><span class="kicker">Spec gaps</span>wasm に足りないもの</h2>
       <div class="cols three">
         <div class="card"><h3>スレッド</h3><p class="small">結局どれ。今は <code>TaskGroup</code> の構造化並行性と shared-nothing でやってる。wasm threads が来たら乗り換えられるようにはしてる</p></div>
-        <div class="card"><h3>wasm-gc と SIMD</h3><p class="small">wasm-gc の ref 型だと、配列に <code>v128</code> が使えない。両対応を続けるのがしんどい</p></div>
+        <div class="card"><h3>wasm-gc と SIMD</h3><p class="small">wasm-gc の ref 型だと、配列に <code>v128</code> が使えない。なので codegen は linear と wasm-gc の両対応で、これを続けるのがしんどい</p></div>
         <div class="card"><h3>WIT</h3><p class="small">ジェネリクスがない。WIT に出せる型はこっちで決め打ちしてる</p></div>
       </div>
       <p>よかったのは wasmtime の guest profiler と fuel。気になってる言語は bend-lang</p>`,
-    notes: "10:15 (35s) 仕様が足りない。スレッド、wasm-gc の v128、WIT のジェネリクス",
+    notes: "10:15 (35s) wasm に足りないもの。スレッド、wasm-gc の配列に v128 が無いので両対応、WIT のジェネリクス",
   },
   {
     className: "closing",
