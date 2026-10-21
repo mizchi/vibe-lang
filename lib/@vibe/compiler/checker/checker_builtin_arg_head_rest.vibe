@@ -74,7 +74,7 @@ import @vibe/compiler/checker/traits {
 }
 
 import @vibe/compiler/checker/effects {
-  row_items_top_level
+  row_items_top_level, sort_labels
 }
 
 import ./checker_escape.vibe {
@@ -1804,32 +1804,31 @@ fn inst_struct_field_rows(ft: Type, tparams: Array[String], targs: Array[Type]) 
   }
 }
 
-/// #3568: a struct literal types a row parameter's argument by the row of
-/// the function it stores there, when that row is one row variable: storing
-/// `f: () -> Int with e` in `run: () -> Int with r` makes the literal a
-/// `Holder[e]`, and `inst_struct_field_rows` reads the field back as `with
-/// e`. Any other row leaves the argument as it was.
-export fn bind_struct_row_formals(field_ty: Type, value_ty: Type, tparams: Array[String], targs: Array[Type], s: Subst) -> Subst {
+/// #3568: a struct literal types a row parameter's argument by the rows of
+/// the functions it stores there: storing `f: () -> Int with e` in `run: ()
+/// -> Int with r` makes the literal a `Holder[e]`, and
+/// `inst_struct_field_rows` reads the field back as `with e`. These are the
+/// labels the function stored in a field of type `field_ty` (a value of
+/// `value_ty`) gives the struct's row formal its row names, added to that
+/// formal's entry of `formals` / `labels`. The field's row holds one of the
+/// struct's row formals beside any fixed labels (`with Exception + r`); the
+/// stored function's row holds the labels the formal stands for beside those
+/// (`Console` from `run: noisy`, `Console, e` from a `with Console + e`
+/// callback). Two fields under one formal (`struct Pair[r] { a: () -> Int
+/// with r; b: () -> Int with r }`) add to one entry, so `Pair::{ a: say, b:
+/// home }` is a `Pair[Console, Env]` (Codex review on #3594).
+export fn collect_struct_row_labels(field_ty: Type, value_ty: Type, tparams: Array[String], s: Subst, formals: Array[String], labels: Array[Array[String]]) -> Unit {
   match (field_ty, resolve_type_head(value_ty, s)) {
     (CtFn(_, _, Some(frow)), CtFn(_, _, Some(vrow))) => {
-      // The field's row holds one of the struct's row formals beside any
-      // fixed labels (`with Exception + r`), and the stored function's row
-      // one row variable beside its own (`with Exception + e`): `r` is `e`.
-      let formals: Array[String] = []
+      let own: Array[String] = []
       for l in plain_row_labels(frow) {
         if is_row_var_spelling(l) && checker_string_array_has(tparam_names(tparams), l) {
-          Array::push(formals, l)
+          Array::push(own, l)
         }
       }
-      // #3589: everything else the stored function's row holds is the
-      // formal's too -- `Console` from `run: noisy`, and `Console, e` from a
-      // `with Console + e` callback -- so a call through a `Holder[e]`
-      // parameter, which the call unifies with this argument, is charged
-      // it. Before, only a lone row variable was bound, and the concrete
-      // labels of a stored function reached no caller.
       let fixed: Array[String] = []
       for l in plain_row_labels(frow) {
-        if !checker_string_array_has(formals, l) {
+        if !checker_string_array_has(own, l) {
           Array::push(fixed, l)
         }
       }
@@ -1839,37 +1838,66 @@ export fn bind_struct_row_formals(field_ty: Type, value_ty: Type, tparams: Array
           Array::push(vars, l)
         }
       }
-      let mut out = s
-      if Array::length(formals) == 1 && Array::length(vars) > 0 {
-        let mut k = 0
-        while k < Array::length(tparams) && k < Array::length(targs) {
-          if type_param_name(Array::get(tparams, k)) == Array::get(formals, 0) {
-            let bound: Type = CtNamed(String::join(vars, ", "), array_empty())
-            match unify(Array::get(targs, k), bound, out) {
-              Some(ns) => out = ns,
-              None => ()
-            }
+      if Array::length(own) == 1 && Array::length(vars) > 0 {
+        let formal = Array::get(own, 0)
+        let mut at = 0 - 1
+        let mut i = 0
+        while i < Array::length(formals) {
+          if Array::get(formals, i) == formal {
+            at = i
           }
-          k = k + 1
+          i = i + 1
+        }
+        if at < 0 {
+          Array::push(formals, formal)
+          Array::push(labels, array_empty())
+          at = Array::length(formals) - 1
+        }
+        let acc = Array::get(labels, at)
+        for l in vars {
+          if !checker_string_array_has(acc, l) {
+            Array::push(acc, l)
+          }
         }
       }
-      out
     },
-    (CtArray(fe), CtArray(ve)) => bind_struct_row_formals(fe, ve, tparams, targs, s),
-    (CtOption(fe), CtOption(ve)) => bind_struct_row_formals(fe, ve, tparams, targs, s),
+    (CtArray(fe), CtArray(ve)) => collect_struct_row_labels(fe, ve, tparams, s, formals, labels),
+    (CtOption(fe), CtOption(ve)) => collect_struct_row_labels(fe, ve, tparams, s, formals, labels),
     // A function stored inside a tuple field (`run: (() -> Int with r,
     // Int)`) binds the row formal the same way, element by element.
     (CtTuple(fes), CtTuple(ves)) => {
-      let mut out = s
       let mut i = 0
       while i < Array::length(fes) && i < Array::length(ves) {
-        out = bind_struct_row_formals(Array::get(fes, i), Array::get(ves, i), tparams, targs, out)
+        collect_struct_row_labels(Array::get(fes, i), Array::get(ves, i), tparams, s, formals, labels)
         i = i + 1
       }
-      out
     },
-    _ => s
+    _ => ()
   }
+}
+
+/// Binds each row formal in `formals` -- through its fresh argument in
+/// `targs` -- to the labels `collect_struct_row_labels` gathered for it, in
+/// canonical order. An argument already bound to another row is left as it
+/// is: the field type check reports that mismatch.
+export fn bind_struct_row_unions(tparams: Array[String], targs: Array[Type], formals: Array[String], labels: Array[Array[String]], s: Subst) -> Subst {
+  let mut out = s
+  let mut f = 0
+  while f < Array::length(formals) {
+    let mut k = 0
+    while k < Array::length(tparams) && k < Array::length(targs) {
+      if type_param_name(Array::get(tparams, k)) == Array::get(formals, f) {
+        let bound: Type = CtNamed(String::join(sort_labels(Array::get(labels, f)), ", "), array_empty())
+        match unify(Array::get(targs, k), bound, out) {
+          Some(ns) => out = ns,
+          None => ()
+        }
+      }
+      k = k + 1
+    }
+    f = f + 1
+  }
+  out
 }
 
 /// #3589: the positions of `args`, the arguments of the type `name`, that
