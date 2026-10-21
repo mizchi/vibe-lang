@@ -185,9 +185,10 @@ fn kept_with_its_row() -> (Int, Int, Int) {
 }
 
 // A function that may throw and returns a declared type whose field holds a
-// closure: an exception row counts the functions a result type spells, not
-// those inside a declared type's fields (compiler state and `MutMap`s hold
-// callbacks there), and this one does not throw.
+// closure: inside a declared type's fields, an exception row counts only a
+// closure the function creates that throws and can leave it (#3584;
+// compiler state and `MutMap`s hold callbacks there), and this one does not
+// throw.
 struct Table {
   fs: Array[(Int) -> Int]
 }
@@ -204,6 +205,25 @@ fn load(n: Int) -> Table with Exception[String] {
 fn table_from_a_throwing_call() -> Int {
   let t = handle {
     load(2)
+  } with { Exception[String]::Throw(_) => Table::{ fs: [] } }
+  let f = Array::get(t.fs, 0)
+  f(3)
+}
+
+// The throwing closure `load_checked` creates is applied in place; the one
+// its result holds does not throw.
+fn load_checked(n: Int) -> Table with Exception[String] {
+  let m = (() -> if n < 0 {
+    throw("neg")
+  } else {
+    n
+  })()
+  Table::{ fs: [(x: Int) -> x + m] }
+}
+
+fn table_from_a_checked_call() -> Int {
+  let t = handle {
+    load_checked(4)
   } with { Exception[String]::Throw(_) => Table::{ fs: [] } }
   let f = Array::get(t.fs, 0)
   f(3)
@@ -243,4 +263,5 @@ test "a closure that needs nothing from the handle leaves it" {
   inspect(method_results(), "(6, 108)")
   inspect(kept_with_its_row(), "(5, 8, 9)")
   inspect(table_from_a_throwing_call(), "5")
+  inspect(table_from_a_checked_call(), "7")
 }
