@@ -1,0 +1,53 @@
+import @vibe/compiler/lowering/effects/evidence {
+  edp_append_visible_pure_lambda_names, edp_collect_fn_defs, edp_pure_fn_names
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn admitted(body: String, declaration: String) -> Bool with Exception {
+  let source = "effect Ask { Get() -> Int }\nfn side() -> Int { 3 }\nfn other() -> Int { 7 }\nfn impure() -> Int with Ask { perform Ask::Get() }\n" + declaration + "\nfn entry() -> Int with Ask { " + body + " }\n"
+  let stmts = parse_program(lex(source))
+  let names = edp_pure_fn_names(edp_collect_fn_defs(stmts))
+  edp_append_visible_pure_lambda_names(stmts, names)
+  let mut found = false
+  for name in names {
+    found = found || name == "__edpsh_0_side"
+  }
+  found
+}
+
+fn owner() -> String {
+  "let owner = (__edpsh_0_side) -> Int with Ask { __edpsh_0_side() + perform Ask::Get() }"
+}
+
+test "all callers of a closed renamed capture supply an inert function" {
+  assert(admitted("owner(side)", owner()))
+  assert(admitted("owner(side) + owner(other)", owner()))
+}
+
+test "one effectful or computed argument invalidates the capture proof" {
+  assert(!admitted("owner(side) + owner(impure)", owner()))
+  assert(!admitted("owner(if true { side } else { other })", owner()))
+}
+
+test "a private owner must have calls and must not escape as a value" {
+  assert(!admitted("0", owner()))
+  assert(!admitted("let escaped = owner; owner(side)", owner()))
+  assert(!admitted("owner(side)", "export " + owner()))
+}
+
+test "neither a shared owner spelling nor a shared parameter spelling is inert" {
+  assert(!admitted("owner(side)", owner() + "\nfn hidden(owner: Int) -> Int { owner }"))
+  assert(!admitted("owner(side)", owner() + "\nfn hidden(__edpsh_0_side: Int) -> Int { __edpsh_0_side }"))
+  assert(!admitted("owner(side)", owner() + "\nfn hidden(side: Int) -> Int { side }"))
+}
+
+test "a checked pure function parameter is inert even on an exported owner" {
+  assert(admitted("owner(side)", "export fn owner(__edpsh_0_side: () -> Int) -> Int with Ask { __edpsh_0_side() + perform Ask::Get() }"))
+  assert(admitted("owner(__edpsh_0_side = side)", "export fn owner(__edpsh_0_side~: () -> Int) -> Int with Ask { __edpsh_0_side() + perform Ask::Get() }"))
+}
+
+test "a row-carrying parameter keeps its dictionary convention even at pure arguments" {
+  assert(!admitted("owner(side)", "fn owner(__edpsh_0_side: () -> Int with Ask) -> Int with Ask { __edpsh_0_side() }"))
+}
