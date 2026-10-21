@@ -143,11 +143,11 @@ import ./checker_merge_capture_provenance.vibe {
 }
 
 import ./checker_region_retention_arms.vibe {
-  hce_decl_facts, retention_alias_names, retention_decl_value
+  hce_decl_facts, retention_alias_names, retention_decl_value, retention_pat_names_into
 }
 
 import ./checker_builtin_arg_head_rest.vibe {
-  let_rhs_closure_literal, type_name_prefix
+  ascription_lambda_ann, type_name_prefix
 }
 
 import ./checker_region_retention_summary.vibe {
@@ -1573,6 +1573,146 @@ fn hce_site_type(st: HceWalk, off: Int, spelling: String, s: Subst) -> Option[Ty
   found
 }
 
+/// Does the function literal `f`, the value (or one of the values) of the
+/// declaration `name`, create a closure that performs `label` and can leave
+/// it? Its body is walked the way a handled body is.
+fn hce_literal_makes_bound(name: String, label: String, f: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Bool {
+  match f {
+    EFn(_, _, params, _, _, fbody) => {
+      let names: Array[String] = array_empty()
+      hce_collect_let_names(fbody, names)
+      let st = hce_new([label], false, 0, names)
+      // #3594: read for a row variable (`label` is `e`), a parameter
+      // whose function type's row is `e` performs it when called.
+      let declared = if label_is_effect_var(label) {
+        match env_lookup(env, name) {
+          Some(t) => match hce_fn_params(t) {
+            Some(ps) => ps,
+            None => array_empty()
+          },
+          None => array_empty()
+        }
+      } else {
+        array_empty()
+      }
+      let mut pi = 0
+      for p in params {
+        let (pname, _) = p
+        hce_bind(st, pname, if pi < Array::length(declared) && hce_row_names_var(Array::get(declared, pi), label) {
+          label
+        } else {
+          ""
+        })
+        pi = pi + 1
+      }
+      hce_walk(fbody, st, env, defs, s)
+      let mut made = false
+      for p in st.producers {
+        let (_, _, plabel, preach) = p
+        if preach > 0 && hce_has(hce_set_items(plabel), label) {
+          made = true
+        } else {
+          ()
+        }
+      }
+      made
+    },
+    _ => false
+  }
+}
+
+/// Is `callee` the parser's spelling of an annotation (`e: T`)?
+fn hce_is_ascription(callee: Expr) -> Bool {
+  match ascription_lambda_ann(callee) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// The function literals (`lits`) and the declarations (`srcs`) the value
+/// `e` of a top-level function-typed `let` may be, and whether every place
+/// its value can come from was read. Read the way `retention_alias_sources`
+/// reads an alias, with a literal as one more source: each branch of an
+/// `if` or a `match`, a block's tail, under an annotation or parentheses. A
+/// literal under a `let` of a block, or in a `match` arm that binds, may
+/// close over what those bind, which a walk of its body does not see, so it
+/// leaves the reading incomplete.
+fn hce_decl_sources(e: Expr, lits: Array[Expr], srcs: Array[String]) -> Bool {
+  match e {
+    EFn(_, _, _, _, _, _) => {
+      Array::push(lits, e)
+      true
+    },
+    EIdent(src, _) => {
+      Array::push(srcs, src)
+      true
+    },
+    EIf(_, a, b) => {
+      let ca = hce_decl_sources(a, lits, srcs)
+      let cb = hce_decl_sources(b, lits, srcs)
+      ca && cb
+    },
+    EMatch(_, arms) => {
+      let mut complete = true
+      for arm in arms {
+        let bound: Array[String] = array_empty()
+        retention_pat_names_into(arm.0, bound)
+        let found_lits: Array[Expr] = array_empty()
+        let found: Array[String] = array_empty()
+        if !hce_decl_sources(arm.1, found_lits, found) {
+          complete = false
+        } else {
+          ()
+        }
+        if Array::length(bound) > 0 && Array::length(found_lits) > 0 {
+          complete = false
+        } else {
+          for f in found_lits {
+            Array::push(lits, f)
+          }
+        }
+        for src in found {
+          if hce_has(bound, src) {
+            complete = false
+          } else {
+            Array::push(srcs, src)
+          }
+        }
+      }
+      complete
+    },
+    ESeq(_, b) => hce_decl_sources(b, lits, srcs),
+    ELet(n, v, rest, _) => {
+      let found_lits: Array[Expr] = array_empty()
+      let found: Array[String] = array_empty()
+      let mut complete = hce_decl_sources(rest, found_lits, found)
+      if Array::length(found_lits) > 0 {
+        complete = false
+      } else {
+        ()
+      }
+      for src in found {
+        if src == n {
+          if !hce_decl_sources(v, lits, srcs) {
+            complete = false
+          } else {
+            ()
+          }
+        } else {
+          Array::push(srcs, src)
+        }
+      }
+      complete
+    },
+    ECall(callee, args, _, _) => if hce_is_paren(e) || Array::length(args) == 1 && hce_is_ascription(callee) {
+      hce_decl_sources(Array::get(args, 0), lits, srcs)
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
 /// The declarations `hce_decl_makes_bound` is reading, innermost last, and
 /// one entry for each time it met one of them again.
 let hce_decl_stack: Array[String] = []
@@ -1610,80 +1750,52 @@ fn hce_decl_makes_bound(name: String, label: String, env: TypeEnv, defs: Array[T
     false
   } else {
     match retention_decl_value(name) {
-      Some(val) => match let_rhs_closure_literal(val) {
-        Some(EFn(_, _, params, _, _, fbody)) => {
-          let cycles_before = Array::length(hce_decl_cycles)
-          let unsure_before = Array::length(hce_unsure)
-          Array::push(hce_decl_stack, key)
-          let names: Array[String] = array_empty()
-          hce_collect_let_names(fbody, names)
-          let st = hce_new([label], false, 0, names)
-          // #3594: read for a row variable (`label` is `e`), a parameter
-          // whose function type's row is `e` performs it when called.
-          let declared = if label_is_effect_var(label) {
-            match env_lookup(env, name) {
-              Some(t) => match hce_fn_params(t) {
-                Some(ps) => ps,
-                None => array_empty()
-              },
-              None => array_empty()
-            }
-          } else {
-            array_empty()
-          }
-          let mut pi = 0
-          for p in params {
-            let (pname, _) = p
-            hce_bind(st, pname, if pi < Array::length(declared) && hce_row_names_var(Array::get(declared, pi), label) {
-              label
-            } else {
-              ""
-            })
-            pi = pi + 1
-          }
-          hce_walk(fbody, st, env, defs, s)
-          Array::truncate(hce_decl_stack, Array::length(hce_decl_stack) - 1)
-          let mut made = false
-          for p in st.producers {
-            let (_, _, plabel, preach) = p
-            if preach > 0 && hce_has(hce_set_items(plabel), label) {
-              made = true
-            } else {
-              ()
-            }
-          }
-          if made || (Array::length(hce_decl_cycles) == cycles_before && Array::length(hce_unsure) == unsure_before) {
-            Array::push(hce_decl_facts, (key, made))
-          } else {
-            ()
-          }
-          if Array::length(hce_decl_stack) == 0 {
-            Array::truncate(hce_decl_cycles, 0)
-          } else {
-            ()
-          }
-          made
-        },
-        // An alias of other declarations (`let make = mk`, `let make: () ->
-        // Box with Exception[Int] = mk`, `let make = if c { mk } else {
-        // mk_ok }`) answers for them, read the way a local alias is
-        // (`retention_alias_names`). One whose value may also come from
-        // something that names no function may be any, and answers yes
-        // (`hce_unknown_decl`); one that names none at all (a call's result)
-        // is not followed, like a local of that kind.
-        _ => {
-          let mut made = false
-          Array::push(hce_decl_stack, key)
-          for src in retention_alias_names(val) {
-            if !made && src != name && hce_decl_makes_bound(src, label, env, defs, s) {
-              made = true
-            } else {
-              ()
-            }
-          }
-          Array::truncate(hce_decl_stack, Array::length(hce_decl_stack) - 1)
-          made
+      // The function literals and the declarations its value may be
+      // (`hce_decl_sources`): `let make = () -> ..`, an alias of other
+      // declarations (`let make = mk`, `let make: () -> Box with
+      // Exception[Int] = mk`), or a choice between them (`let make = if c {
+      // () -> .. } else { mk }`). One whose value may also come from
+      // something it does not read may be any, and answers yes
+      // (`hce_unknown_decl`); one that reads nothing at all (a call's result)
+      // is not followed, like a local of that kind.
+      Some(val) => {
+        let lits: Array[Expr] = array_empty()
+        let srcs: Array[String] = array_empty()
+        if !hce_decl_sources(val, lits, srcs) && (Array::length(lits) > 0 || Array::length(srcs) > 0) {
+          Array::push(srcs, hce_unknown_decl())
+        } else {
+          ()
         }
+        let cycles_before = Array::length(hce_decl_cycles)
+        let unsure_before = Array::length(hce_unsure)
+        Array::push(hce_decl_stack, key)
+        let mut made = false
+        for f in lits {
+          if !made && hce_literal_makes_bound(name, label, f, env, defs, s) {
+            made = true
+          } else {
+            ()
+          }
+        }
+        for src in srcs {
+          if !made && src != name && hce_decl_makes_bound(src, label, env, defs, s) {
+            made = true
+          } else {
+            ()
+          }
+        }
+        Array::truncate(hce_decl_stack, Array::length(hce_decl_stack) - 1)
+        if made || (Array::length(hce_decl_cycles) == cycles_before && Array::length(hce_unsure) == unsure_before) {
+          Array::push(hce_decl_facts, (key, made))
+        } else {
+          ()
+        }
+        if Array::length(hce_decl_stack) == 0 {
+          Array::truncate(hce_decl_cycles, 0)
+        } else {
+          ()
+        }
+        made
       },
       // #3593: a declaration of another module, by the fact its module
       // published (`hce_bind_module_summaries`).

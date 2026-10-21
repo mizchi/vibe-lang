@@ -1,0 +1,37 @@
+// #3594 control: a top-level binding choosing between literals whose
+// closures do not throw returns its struct out of a `handle` freely, and one
+// whose closure throws is fine while the field is called inside the handle.
+struct Box {
+  f: () -> Int
+}
+
+let c = true
+
+let quiet: () -> Box with Exception[Int] = if c {
+  () -> Box::{ f: () -> 5 }
+} else {
+  () -> Box::{ f: () -> 6 }
+}
+
+let loud: () -> Box with Exception[Int] = if c {
+  () -> Box::{ f: () -> throw(7) }
+} else {
+  () -> Box::{ f: () -> 1 }
+}
+
+test "a literal choice with no throwing closure leaves the handle" {
+  let b = handle {
+    quiet()
+  } with { Exception[Int]::Throw(x) => Box::{ f: () -> x } }
+  let f = b.f
+  inspect(f(), content="5")
+}
+
+test "a throwing field called inside the handle is caught" {
+  let n = handle {
+    let b = loud()
+    let f = b.f
+    f() + 100
+  } with { Exception[Int]::Throw(x) => x + 200 }
+  inspect(n, content="207")
+}
