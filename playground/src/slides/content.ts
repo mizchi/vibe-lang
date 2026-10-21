@@ -27,28 +27,24 @@ fn main allows Console {
   },
   effects: {
     source: String.raw`
-effect Log {
-  Emit(String) -> Unit
-}
-
-fn work(x: Int) -> Int with Log {
-  perform Log::Emit("start: \{x}")
-  x * 2
+fn safe_div(a: Int, b: Int) -> Int with Exception {
+  if b == 0 { throw("division by zero") }
+  a / b
 }
 
 fn main allows Console {
   let r = handle {
-    work(21)
+    safe_div(84, 2) + safe_div(1, 0)
   } with {
-    Log::Emit(msg) => {
-      println("[log] \{msg}")
-      resume(())
+    Exception::Throw(msg) => {
+      println("caught: \{msg}")
+      -1
     }
   }
-  println("result = \{r}")
+  println("r = \{r}")
 }`,
-    expect: "[log] start: 21\nresult = 42\n",
-    hint: "<code>work</code> はログの出し先を知らない。<code>handle</code> が実装を与える。",
+    expect: "caught: division by zero\nr = -1\n",
+    hint: "失敗しうる関数は <code>with Exception</code> と書く。試す: <code>handle</code> を外して直接呼ぶ → <code>main</code> の row に <code>Exception</code> が足りないと言われる。",
   },
   caps: {
     source: String.raw`
@@ -230,14 +226,14 @@ export const SLIDES: Slide[] = [
   },
   {
     className: "section",
-    html: `<h1><small>FEATURES</small>黙ってやらない</h1><p>失敗・権限・確保・比較を、型と診断で表に出す。ここからはライブでコンパイル</p>`,
+    html: `<h1><small>FEATURES</small>黙ってやらない</h1><p>失敗・権限・確保を、型と診断で表に出す。4 つ目の「比較」は後半の苦労話で。ここからはライブでコンパイル</p>`,
     notes: "2:40 (10s) ここから「黙ってやらせない」4 つ。ライブで。",
   },
   {
     html: `
       <h2><span class="kicker">Effects</span>黙って失敗しない: エフェクトは row に乗る</h2>
       <div class="demo" data-demo="effects"></div>`,
-    notes: "2:50 (35s) r で実行。失敗も row に出る。handle が実装を与えるので、ログの出し先は呼び出し側が決める。",
+    notes: "2:50 (35s) r で実行。失敗しうることが row に出る。handle を外すとコンパイルが止まる。",
   },
   {
     html: `
@@ -430,32 +426,9 @@ export const SLIDES: Slide[] = [
         <div class="card"><h3>スレッド</h3><p class="small">結局どれを使えばいいのか。今は <code>TaskGroup</code> の構造化並行性 + shared-nothing。本物のスレッドを見越して表現を選んでいる</p></div>
         <div class="card"><h3>wasm-gc × SIMD</h3><p class="small">wasm-gc の ref 型の配列には <code>v128</code> が使えない。だから linear と wasm-gc の 2 本立て</p></div>
         <div class="card"><h3>WIT</h3><p class="small">ジェネリクスが無い。境界に出せる型を nominal 規則で決めている</p></div>
-      </div>`,
-    notes: "10:35 (30s) wasm の仕様が足りない: スレッド、wasm-gc の配列に v128 が無い、WIT にジェネリクスが無い。",
-  },
-  {
-    html: `
-      <h2><span class="kicker">Good parts</span>よかったもの・気になるもの</h2>
-      <div class="cols">
-        <div class="card">
-          <h3>よかったもの</h3>
-          <ul>
-            <li><strong>wasmtime guest profiler</strong> で wasm のままプロファイル</li>
-            <li>Fuel で命令数を数える (ベンチのぶれ対策)</li>
-            <li>OxCaml の <code>#zero_alloc</code></li>
-            <li>Lean のオラクル</li>
-          </ul>
-        </div>
-        <div class="card">
-          <h3>ついでに</h3>
-          <ul>
-            <li>MoonBit 標準ライブラリへの SIMD PR</li>
-          </ul>
-          <h3 style="margin-top:1.2cqw">気になっている言語</h3>
-          <ul><li>bend-lang</li><li>借用を証明する系</li></ul>
-        </div>
-      </div>`,
-    notes: "11:05 (25s) よかったもの: wasmtime guest profiler、fuel。気になる言語 bend。",
+      </div>
+      <p>よかった道具: <strong>wasmtime guest profiler</strong> (wasm のままプロファイル)。気になっている言語: <strong>bend-lang</strong></p>`,
+    notes: "10:35 (45s) 仕様が足りない: スレッド、wasm-gc の配列に v128 が無い、WIT にジェネリクスが無い。よかった道具は wasmtime guest profiler、気になる言語は bend。",
   },
   {
     className: "closing",
@@ -464,10 +437,10 @@ export const SLIDES: Slide[] = [
       <ol class="takeaways">
         <li><strong>シグネチャが権限を語る。</strong><code>with</code> で要求し <code>allows</code> で付与する。拒否した権限のコードは wasm から消える</li>
         <li><strong>wasm の上でセルフホスト。</strong>このタブの中でもコンパイラが動いている</li>
-        <li><strong>AI と作るなら、黙って間違わないことを最優先に。</strong>P0 を 264 件数えて潰した</li>
+        <li><strong>AI と作るなら、黙って間違わないことを最優先に。</strong><code>[1, 2] == [1, 2]</code> の答えすら文脈で変わっていた。P0 を 264 件数えて潰した</li>
       </ol>
       <p>次は 0.1.0 のリリース。</p>
       <p class="muted">github.com/mizchi/vibe-lang · The Vibe Book: mizchi.github.io/vibe-lang</p>`,
-    notes: "11:30 (30s) 3 点でまとめる。次は 0.1.0。",
+    notes: "11:20 (40s) 3 点でまとめる。== の話で締める。次は 0.1.0。",
   },
 ];
