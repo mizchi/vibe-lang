@@ -5,7 +5,7 @@ import @vibe/compiler/checker/annotations {
 }
 
 import @vibe/compiler/checker/type_relations {
-  check_assignable_set_type_defs, type_is_ground
+  check_assignable_set_type_defs, struct_param_is_row, type_is_ground, widen_struct_row_args
 }
 
 import @vibe/compiler/checker/resume {
@@ -96,7 +96,6 @@ import ./checker_builtin_arg_head_rest.vibe {
   bind_struct_row_unions,
   collect_struct_row_labels,
   env_lookup_unless_synthesized_builtin,
-  field_rows_name,
   inst_struct_field_ty,
   let_rhs_closure_literal,
   let_rhs_is_alias,
@@ -2315,7 +2314,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                       // stored there binds it (`Holder[$4]`, `$4` =
                       // `Console`) instead of the struct's own spelling
                       // `r`, which every declaration shares.
-                      if field_rows_name(dfields, type_param_name(Array::get(s_tparams, tpi))) {
+                      if struct_param_is_row(defs, dfields, type_param_name(Array::get(s_tparams, tpi))) {
                         Array::push(fresh_targs, CtNamed("$\{c2}", array_empty()))
                       } else {
                         Array::push(fresh_targs, tv)
@@ -2337,7 +2336,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 for df in dfields {
                   let (dfn, dfty) = df
                   match lookup_actual_field_ty(field_tys, dfn) {
-                    Some(aty) => collect_struct_row_labels(dfty, aty, s_tparams, s1, row_formals, row_labels),
+                    Some(aty) => collect_struct_row_labels(defs, dfty, aty, s_tparams, s1, row_formals, row_labels),
                     None => ()
                   }
                 }
@@ -2358,7 +2357,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 match lookup_actual_field_ty(field_tys, dn) {
                   Some(aty) => {
                     // Value type check (ground-gated like check_record_fields).
-                    s1 = check_assignable_for(dty, subst_apply(s1, aty), s1, errors, "struct field type mismatch for ", dn, lookup_field_expr_off(fields, dn))
+                    // #3589: a nested struct's row argument may be narrower
+                    // than the union this literal bound (`Inner[Console]` in
+                    // a `Pair[Console, Env]`); `widen_struct_row_args` admits
+                    // that at a covariant row parameter only.
+                    let aty_checked = if tplen > 0 {
+                      widen_struct_row_args(defs, subst_apply(s1, dty), subst_apply(s1, aty))
+                    } else {
+                      subst_apply(s1, aty)
+                    }
+                    s1 = check_assignable_for(dty, aty_checked, s1, errors, "struct field type mismatch for ", dn, lookup_field_expr_off(fields, dn))
                     // Compare latent payloads before the struct's field type
                     // replaces the value's own instantiation evidence.
                     for field in fields {

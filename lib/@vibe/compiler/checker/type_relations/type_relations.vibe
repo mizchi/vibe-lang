@@ -22,6 +22,10 @@ import @vibe/compiler/core {
   unify
 }
 
+import @vibe/ast {
+  type_param_name
+}
+
 import @vibe/core {
   array_empty, struct MutMap
 }
@@ -1525,10 +1529,20 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
         // slot), and reporting that shape would reject valid polymorphic
         // calls. A monomorphic signature (the #981 hole) is concrete without
         // any substitution, so the genuine cases all keep reporting.
-        if type_fully_concrete(expected) {
-          detect_narrowed_generic_mismatch_for(expected, actual, s, errors, what_head, what_tail, off)
-        } else {
-          s
+        match struct_row_arg_dropped(assignable_defs(), expected_zonked, actual_zonked) {
+          // #3589: a struct's row argument holds a label the slot drops.
+          Some(lbl) => if String::length(lbl) > 0 {
+            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": effect row mismatch: a value of type ", String::concat(type_for_reader(actual_zonked), String::concat(" cannot be used where ", String::concat(type_for_reader(expected_zonked), String::concat(" is expected (the { ", String::concat(lbl, String::concat(" } effect would be dropped — no handler could ever run)", assignable_marker(off))))))))))
+            s
+          } else {
+            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_reader(expected_zonked), String::concat(", got ", String::concat(type_for_reader(actual_zonked), String::concat(" -- give both the same effect row: a `mut` field, an array or a function parameter reaches it, so a value with fewer effects cannot stand for one with more", assignable_marker(off))))))))
+            s
+          },
+          None => if type_fully_concrete(expected) {
+            detect_narrowed_generic_mismatch_for(expected, actual, s, errors, what_head, what_tail, off)
+          } else {
+            s
+          }
         }
       } else {
         Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(subst_apply(s, expected)), String::concat(", got ", String::concat(type_for_mismatch(subst_apply(s, actual)), assignable_marker(off)))))))
@@ -1730,6 +1744,10 @@ let assignable_type_defs: Array[Array[TypeDef]] = [[]]
 
 export fn check_assignable_set_type_defs(defs: Array[TypeDef]) -> Unit {
   Array::set(assignable_type_defs, 0, defs)
+}
+
+fn assignable_defs() -> Array[TypeDef] {
+  Array::get(assignable_type_defs, 0)
 }
 
 fn source_declares_type(name: String) -> Bool {
@@ -2064,5 +2082,483 @@ export fn detect_narrowed_generic_mismatch_for(expected: Type, actual: Type, s: 
       _ => s
     },
     _ => s
+  }
+}
+
+/// Does a field of a struct name `formal` in a function row?
+export fn field_rows_name(fields: Array[(String, Type)], formal: String) -> Bool {
+  let mut found = false
+  if is_row_var_spelling(formal) {
+    for f in fields {
+      let (_, ft) = f
+      if !found && type_rows_name(ft, formal) {
+        found = true
+      }
+    }
+  }
+  found
+}
+
+fn type_rows_name(t: Type, label: String) -> Bool {
+  match t {
+    CtFn(ps, r, row) => {
+      let mut found = match row {
+        Some(text) => row_name_has(plain_row_labels(text), label),
+        None => false
+      }
+      for p in ps {
+        if !found && type_rows_name(p, label) {
+          found = true
+        }
+      }
+      found || type_rows_name(r, label)
+    },
+    CtArray(e) => type_rows_name(e, label),
+    CtOption(e) => type_rows_name(e, label),
+    CtTuple(items) => {
+      let mut found = false
+      for x in items {
+        if !found && type_rows_name(x, label) {
+          found = true
+        }
+      }
+      found
+    },
+    CtNamed(_, xs) => {
+      let mut found = false
+      for x in xs {
+        if !found && type_rows_name(x, label) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// #3589 (Codex review on #3594): is `formal` a ROW parameter of the struct
+/// whose fields are `fields`? It is when a field names it in a function row
+/// (`run: () -> Int with r`, `field_rows_name`), or passes it, bare, to a
+/// row parameter of another struct (`a: Inner[r]` for `struct Inner[r] {
+/// run: () -> Int with r }`), transitively. Before this, the second shape was
+/// an ordinary type parameter: `Pair::{ a: Inner::{ run: say }, b: Inner::{
+/// run: home } }` took `a`'s `Console` as the whole of its row and ran
+/// `home`'s `Env` in a caller declaring only `Console`. A parameter merely
+/// spelled like a row (`struct Box[t] { v: Other[t] }` over `struct Other[t]
+/// { x: t }`) stays an ordinary one: the question is answered by the
+/// declarations, not by the spelling.
+export fn struct_param_is_row(defs: Array[TypeDef], fields: Array[(String, Type)], formal: String) -> Bool {
+  struct_param_is_row_seen(defs, fields, formal, array_empty())
+}
+
+fn struct_param_is_row_seen(defs: Array[TypeDef], fields: Array[(String, Type)], formal: String, seen: Array[String]) -> Bool {
+  if field_rows_name(fields, formal) {
+    true
+  } else if is_row_var_spelling(formal) {
+    let mut found = false
+    for f in fields {
+      let (_, ft) = f
+      if !found && type_passes_row(defs, ft, formal, seen) {
+        found = true
+      }
+    }
+    found
+  } else {
+    false
+  }
+}
+
+/// Does `t` pass `formal`, bare, to a row parameter of a declared struct?
+fn type_passes_row(defs: Array[TypeDef], t: Type, formal: String, seen: Array[String]) -> Bool {
+  match t {
+    CtNamed(m, xs) => {
+      let mut found = false
+      let mut k = 0
+      while k < Array::length(xs) && !found {
+        let x = Array::get(xs, k)
+        found = if is_bare_type_name(x, formal) {
+          struct_row_param_at(defs, m, k, seen)
+        } else {
+          type_passes_row(defs, x, formal, seen)
+        }
+        k = k + 1
+      }
+      found
+    },
+    CtFn(ps, r, _) => {
+      let mut found = type_passes_row(defs, r, formal, seen)
+      for p in ps {
+        if !found && type_passes_row(defs, p, formal, seen) {
+          found = true
+        }
+      }
+      found
+    },
+    CtArray(e) => type_passes_row(defs, e, formal, seen),
+    CtOption(e) => type_passes_row(defs, e, formal, seen),
+    CtTuple(items) => {
+      let mut found = false
+      for x in items {
+        if !found && type_passes_row(defs, x, formal, seen) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn is_bare_type_name(t: Type, name: String) -> Bool {
+  match t {
+    CtNamed(n, xs) => Array::length(xs) == 0 && n == name,
+    _ => false
+  }
+}
+
+fn seen_with(seen: Array[String], key: String) -> Array[String] {
+  let out: Array[String] = []
+  for x in seen {
+    Array::push(out, x)
+  }
+  Array::push(out, key)
+  out
+}
+
+/// Is parameter `k` of the declared struct `m` a row parameter? `seen` holds
+/// the parameters already being asked about, so a recursive struct ends: a
+/// cycle alone never makes a parameter a row.
+fn struct_row_param_at(defs: Array[TypeDef], m: String, k: Int, seen: Array[String]) -> Bool {
+  let key = "\{m}.\{k}"
+  if row_name_has(seen, key) {
+    false
+  } else {
+    match find_typedef(defs, m) {
+      Some(TDStruct(_, fields, _, params)) => if k < Array::length(params) {
+        struct_param_is_row_seen(defs, fields, type_param_name(Array::get(params, k)), seen_with(seen, key))
+      } else {
+        false
+      },
+      _ => false
+    }
+  }
+}
+
+/// May a value of struct `m` whose row parameter `k` holds fewer labels
+/// stand where more are expected? Only when every field reaches that
+/// parameter covariantly: as the row of a function it may call (`run: () ->
+/// Int with r`), never in a parameter of one, never under a `mut` field or
+/// an `Array` (a writer holding the wider type could store a function the
+/// narrower alias then runs uncharged), and through a nested struct only at
+/// a row parameter of its own that is covariant the same way.
+fn struct_row_param_covariant(defs: Array[TypeDef], m: String, k: Int, seen: Array[String]) -> Bool {
+  let key = "\{m}.\{k}"
+  if row_name_has(seen, key) {
+    true
+  } else {
+    match find_typedef(defs, m) {
+      Some(TDStruct(_, fields, muts, params)) => if k < Array::length(params) {
+        let formal = type_param_name(Array::get(params, k))
+        let next = seen_with(seen, key)
+        let mut ok = true
+        for f in fields {
+          let (fname, ft) = f
+          if ok && type_mentions_name(ft, formal) {
+            ok = !row_name_has(muts, fname) && row_covariant_in(defs, ft, formal, next)
+          }
+        }
+        ok
+      } else {
+        false
+      },
+      _ => false
+    }
+  }
+}
+
+fn row_covariant_in(defs: Array[TypeDef], t: Type, formal: String, seen: Array[String]) -> Bool {
+  match t {
+    CtFn(ps, r, _) => {
+      let mut ok = row_covariant_in(defs, r, formal, seen)
+      for p in ps {
+        if ok && type_mentions_name(p, formal) {
+          ok = false
+        }
+      }
+      ok
+    },
+    CtOption(e) => row_covariant_in(defs, e, formal, seen),
+    CtTuple(items) => {
+      let mut ok = true
+      for x in items {
+        if ok {
+          ok = row_covariant_in(defs, x, formal, seen)
+        }
+      }
+      ok
+    },
+    CtNamed(m, xs) => {
+      let mut ok = true
+      let mut k = 0
+      while k < Array::length(xs) && ok {
+        let x = Array::get(xs, k)
+        if type_mentions_name(x, formal) {
+          ok = is_bare_type_name(x, formal) && struct_row_param_at(defs, m, k, array_empty()) && struct_row_param_covariant(defs, m, k, seen)
+        }
+        k = k + 1
+      }
+      ok
+    },
+    _ => !type_mentions_name(t, formal)
+  }
+}
+
+/// Does `t` mention `name`, as a type or as a row label? Unknown shapes
+/// answer yes, so a covariance question about them is refused.
+fn type_mentions_name(t: Type, name: String) -> Bool {
+  match t {
+    CtNamed(n, xs) => {
+      let mut found = n == name
+      for x in xs {
+        if !found && type_mentions_name(x, name) {
+          found = true
+        }
+      }
+      found
+    },
+    CtFn(ps, r, row) => {
+      let mut found = match row {
+        Some(text) => row_name_has(plain_row_labels(text), name),
+        None => false
+      } || type_mentions_name(r, name)
+      for p in ps {
+        if !found && type_mentions_name(p, name) {
+          found = true
+        }
+      }
+      found
+    },
+    CtArray(e) => type_mentions_name(e, name),
+    CtOption(e) => type_mentions_name(e, name),
+    CtTuple(items) => {
+      let mut found = false
+      for x in items {
+        if !found && type_mentions_name(x, name) {
+          found = true
+        }
+      }
+      found
+    },
+    CtRecord(rfields) => {
+      let mut found = false
+      for rf in rfields {
+        let (_, rt) = rf
+        if !found && type_mentions_name(rt, name) {
+          found = true
+        }
+      }
+      found
+    },
+    CtApplied(_, _) => true,
+    CtForAll(_, _, _) => true,
+    _ => false
+  }
+}
+
+/// #3589 (Codex review on #3594): `actual`, a field value's type, with each
+/// row argument of a nested struct widened to the expected one when its
+/// labels are a subset (`Inner[Console]` stored where `Pair[Console, Env]`
+/// expects `Inner[Console, Env]`). A struct holding a `Console` callback may
+/// stand where `Console, Env` is allowed, as the callback itself may -- but
+/// only at a parameter `struct_row_param_covariant` admits. Every other
+/// position is returned as it was, so the field check compares it exactly.
+export fn widen_struct_row_args(defs: Array[TypeDef], expected: Type, actual: Type) -> Type {
+  match (expected, actual) {
+    (CtNamed(en, eargs), CtNamed(an, aargs)) => if en == an && Array::length(eargs) == Array::length(aargs) && Array::length(aargs) > 0 {
+      let out: Array[Type] = []
+      let mut k = 0
+      while k < Array::length(aargs) {
+        let ea = Array::get(eargs, k)
+        let aa = Array::get(aargs, k)
+        let widens = match (ea, aa) {
+          (CtNamed(er, ers), CtNamed(ar, ars)) => Array::length(ers) == 0 && Array::length(ars) == 0 && er != ar && row_labels_within(ar, er) && struct_row_param_at(defs, en, k, array_empty()) && struct_row_param_covariant(defs, en, k, array_empty()),
+          _ => false
+        }
+        if widens {
+          Array::push(out, ea)
+        } else {
+          Array::push(out, widen_struct_row_args(defs, ea, aa))
+        }
+        k = k + 1
+      }
+      CtNamed(an, out)
+    } else {
+      actual
+    },
+    (CtOption(e), CtOption(a)) => CtOption(widen_struct_row_args(defs, e, a)),
+    (CtTuple(es), CtTuple(xs)) => if Array::length(es) == Array::length(xs) {
+      let out: Array[Type] = []
+      let mut i = 0
+      while i < Array::length(xs) {
+        Array::push(out, widen_struct_row_args(defs, Array::get(es, i), Array::get(xs, i)))
+        i = i + 1
+      }
+      CtTuple(out)
+    } else {
+      actual
+    },
+    _ => actual
+  }
+}
+
+/// Is every label of the row `inner` one of the row `outer`'s? An unresolved
+/// row variable in `inner` is a label like any other, so it widens only into
+/// a row that already names it.
+fn row_labels_within(inner: String, outer: String) -> Bool {
+  let have = plain_row_labels(outer)
+  let mut ok = true
+  for l in plain_row_labels(inner) {
+    if !row_name_has(have, l) {
+      ok = false
+    }
+  }
+  ok
+}
+
+/// The labels of a row as written, without the compiler's own `#` marks.
+export fn plain_row_labels(row: String) -> Array[String] {
+  let out: Array[String] = []
+  for seg in String::split(row, ",") {
+    let l = String::trim(seg)
+    if String::length(l) > 0 && !String::starts_with(l, "#") {
+      Array::push(out, l)
+    }
+  }
+  out
+}
+
+/// A row variable's spelling: one lowercase letter.
+export fn is_row_var_spelling(l: String) -> Bool {
+  String::length(l) == 1 && String::char_code_at(l, 0) >= 97 && String::char_code_at(l, 0) <= 122
+}
+
+fn row_name_has(items: Array[String], wanted: String) -> Bool {
+  let mut found = false
+  for x in items {
+    if x == wanted {
+      found = true
+    }
+  }
+  found
+}
+
+/// Is parameter `k` of the declared struct `m` a row parameter?
+export fn struct_row_param(defs: Array[TypeDef], m: String, k: Int) -> Bool {
+  struct_row_param_at(defs, m, k, array_empty())
+}
+
+/// A row variable among a row's labels: a source one (`e`) or one a call
+/// minted (`$4`).
+fn row_var_label(l: String) -> Bool {
+  is_row_var_spelling(l) || String::starts_with(l, "$")
+}
+
+/// #3589 (Codex review on #3594): where a value whose type passes a row to a
+/// struct's row parameter (`Inner[Env]`) meets a slot expecting another
+/// (`Inner[Console]`), the label the slot would drop (`Env`), or `""` when
+/// the value's row is narrower but the parameter is not covariant
+/// (`struct_row_param_covariant`). A failed unification there used to be
+/// tolerated, as an argument no declaration explains is: `if c {
+/// Inner::{ run: say } } else { Inner::{ run: home } }` typed as
+/// `Inner[Console]`, and the `Env` branch ran in a `Console` function. A
+/// function value in the same place is refused (`effect_row_dropped`); this
+/// is that refusal for a struct's row argument. An open row on either side
+/// (a variable among its labels) is left to `unify`.
+fn struct_row_arg_dropped(defs: Array[TypeDef], expected: Type, actual: Type) -> Option[String] {
+  match (expected, actual) {
+    (CtNamed(en, eargs), CtNamed(an, aargs)) => if en == an && Array::length(eargs) == Array::length(aargs) && Array::length(eargs) > 0 && compiler_owned_type_arity(en) is None {
+      let mut out = None
+      let mut k = 0
+      while k < Array::length(eargs) && out is None {
+        let ea = Array::get(eargs, k)
+        let aa = Array::get(aargs, k)
+        out = match (ea, aa) {
+          (CtNamed(er, ers), CtNamed(ar, ars)) => if Array::length(ers) == 0 && Array::length(ars) == 0 && er != ar && struct_row_param_at(defs, en, k, array_empty()) {
+            struct_row_label_dropped(defs, en, k, er, ar)
+          } else {
+            struct_row_arg_dropped(defs, ea, aa)
+          },
+          _ => struct_row_arg_dropped(defs, ea, aa)
+        }
+        k = k + 1
+      }
+      out
+    } else {
+      None
+    },
+    (CtArray(e), CtArray(a)) => struct_row_arg_dropped(defs, e, a),
+    (CtOption(e), CtOption(a)) => struct_row_arg_dropped(defs, e, a),
+    (CtTuple(es), CtTuple(xs)) => if Array::length(es) == Array::length(xs) {
+      let mut out = None
+      let mut i = 0
+      while i < Array::length(es) && out is None {
+        out = struct_row_arg_dropped(defs, Array::get(es, i), Array::get(xs, i))
+        i = i + 1
+      }
+      out
+    } else {
+      None
+    },
+    (CtFn(eps, er, _), CtFn(aps, ar, _)) => {
+      let mut out = struct_row_arg_dropped(defs, er, ar)
+      if Array::length(eps) == Array::length(aps) {
+        let mut i = 0
+        while i < Array::length(eps) && out is None {
+          // A parameter is contravariant: the slot's parameter is what the
+          // value's function will be handed.
+          out = struct_row_arg_dropped(defs, Array::get(aps, i), Array::get(eps, i))
+          i = i + 1
+        }
+      }
+      out
+    },
+    _ => None
+  }
+}
+
+fn struct_row_label_dropped(defs: Array[TypeDef], m: String, k: Int, expected_row: String, actual_row: String) -> Option[String] {
+  let want = plain_row_labels(expected_row)
+  let have = plain_row_labels(actual_row)
+  let mut has_var = false
+  for l in want {
+    if row_var_label(l) {
+      has_var = true
+    }
+  }
+  for l in have {
+    if row_var_label(l) {
+      has_var = true
+    }
+  }
+  if has_var {
+    None
+  } else {
+    let mut dropped = None
+    let mut found = false
+    for l in have {
+      if !found && !row_name_has(want, l) {
+        dropped = Some(l)
+        found = true
+      }
+    }
+    match dropped {
+      Some(l) => Some(l),
+      None => if Array::length(have) == Array::length(want) || struct_row_param_covariant(defs, m, k, array_empty()) {
+        None
+      } else {
+        Some("")
+      }
+    }
   }
 }
