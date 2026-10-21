@@ -417,14 +417,14 @@ export const SLIDES: Slide[] = [
         <li>今は、型が届かない <code>==</code> では<strong>注釈を求めてビルドを止める</strong></li>
       </ul>
       <div class="demo" data-demo="eq"></div>`,
-    notes: "9:55 (40s) それでも == が黙って間違っていた。r で実行して true を見せる。今は型が届かなければビルドを止める。",
+    notes: "9:55 (40s) それでも == が黙って間違っていた (昔は false)。r で実行すると今は両方 true。型が届かなければビルドを止める。",
   },
   {
     html: `
       <h2><span class="kicker">Spec gaps</span>wasm の仕様が足りない</h2>
       <div class="cols three">
         <div class="card"><h3>スレッド</h3><p class="small">結局どれを使えばいいのか。今は <code>TaskGroup</code> の構造化並行性 + shared-nothing。本物のスレッドを見越して表現を選んでいる</p></div>
-        <div class="card"><h3>wasm-gc × SIMD</h3><p class="small">wasm-gc の ref 型の配列には <code>v128</code> が使えない。だから linear と wasm-gc の 2 本立て</p></div>
+        <div class="card"><h3>wasm-gc × SIMD</h3><p class="small">2 本立ては維持し続けるのが重い。Int のラップ位置まで 2 つのレーンでずれていた</p></div>
         <div class="card"><h3>WIT</h3><p class="small">ジェネリクスが無い。境界に出せる型を nominal 規則で決めている</p></div>
       </div>
       <p>よかった道具: <strong>wasmtime guest profiler</strong> (wasm のままプロファイル)。気になっている言語: <strong>bend-lang</strong></p>`,
@@ -439,8 +439,8 @@ export const SLIDES: Slide[] = [
         <li><strong>wasm の上でセルフホスト。</strong>このタブの中でもコンパイラが動いている</li>
         <li><strong>AI と作るなら、黙って間違わないことを最優先に。</strong><code>[1, 2] == [1, 2]</code> の答えすら文脈で変わっていた。P0 を 264 件数えて潰した</li>
       </ol>
-      <p>次は 0.1.0 のリリース。</p>
+      <p class="quote">AI と書くなら、言語のほうが黙っていてはいけない。</p>
       <p class="muted">github.com/mizchi/vibe-lang · The Vibe Book: mizchi.github.io/vibe-lang</p>`,
-    notes: "11:20 (40s) 3 点でまとめる。== の話で締める。次は 0.1.0。",
+    notes: "11:20 (40s) 3 点でまとめる。== の話から最後の一文へ。0.1.0 直前なので触ってみてほしい。",
   },
 ];
