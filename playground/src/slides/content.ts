@@ -160,7 +160,7 @@ fn main allows Console + Exception + Async {
 }`,
     files: CONCURRENT,
     expect: "a1\nb1\na2\nb2 saw a = 1\n",
-    hint: "<code>sleep_wait</code> で止まると、ほかのタスクが動く。時計は読まない",
+    hint: "<code>sleep_wait</code> で止まると、その間にほかのタスクが動く",
   },
   region: {
     source: String.raw`

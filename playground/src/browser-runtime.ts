@@ -32,6 +32,8 @@ function compiledBytes(payload: string, entry: string): Uint8Array {
   return bytes;
 }
 
+const MAX_SLEEP_MS = 5000;
+
 // `entry` names the function the compiler roots the module at: `_start` for
 // the playground presets, `main` for `fn main allows ...` programs.
 export async function compileAndRun(
@@ -92,9 +94,19 @@ export async function compileAndRun(
         stdout += String.fromCharCode(Number(code & 0xffffn));
         return 0n;
       },
-      // `sleep(ms)` blocks the instance. A tab cannot block, and the
-      // cooperative scheduler reads no clock, so the wait is skipped.
-      sleep(_ms: bigint): bigint {
+      // `sleep(ms)` blocks the instance (a parked task group waits here for
+      // its next wake-up). A synchronous import cannot yield to the tab, so
+      // the wait is a busy loop, and one long enough to freeze the page is
+      // refused rather than shortened.
+      sleep(ms: bigint): bigint {
+        const wait = Number(ms);
+        if (wait > MAX_SLEEP_MS) {
+          throw new Error(`sleep(${wait}) would freeze this tab; the playground waits at most ${MAX_SLEEP_MS} ms.`);
+        }
+        const until = performance.now() + wait;
+        while (performance.now() < until) {
+          // busy-wait: the guest asked to block
+        }
         return 0n;
       },
       process_exit(code: bigint): bigint {
