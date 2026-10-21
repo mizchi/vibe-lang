@@ -650,16 +650,14 @@ because those programs are already wrong.
 - **A closure created inside a `handle` can outlive it with a pure type**
   (#3540). Do not return or store a closure that performs the handled effect.
 - **The erased `Exception::Throw(m)` binder is assumed to be a `String`**
-  (#3541). Using it at another type is refused, but the kind is not carried
-  at run time, so a non-`String` value thrown under a bare `with Exception`
-  row (or under a kinded row and caught by the erased arm) reaches `m` as a
-  `String`. A rethrow from the arm that may carry `m` is of no known kind, so
-  it is never advertised as `Exception[String]`, nor as a declared type built
-  from `m` (`Exception[Why]` for `Why::Because(m)`). But `m` passed out of the
-  arm, as the handle's value or through a `String` variable declared outside
-  it, is still a `String` to whatever reads it next, a `throw` included.
-  Throw a value other than a `String` under a kinded row, and catch it with
-  the kinded arm (`Exception[K]::Throw(e)`).
+  (#3541). An arm that reads `m` is refused over a body that raises another
+  kind, including a kind that a function of the same module lets out through
+  its erased `with Exception` row. The kind is not carried at run time, and
+  two routes are not seen: a function imported from another module and
+  declared `with Exception` that throws another kind, and a callback or a
+  lambda with an erased row of its own (`f: () -> Int with Exception`) that
+  does. Throw a value other than a `String` under a kinded row, and catch it
+  with the kinded arm (`Exception[K]::Throw(e)`).
 
 ## 7. Operating the freeze
 

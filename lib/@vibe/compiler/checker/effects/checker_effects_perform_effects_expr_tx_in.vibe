@@ -131,6 +131,8 @@ import ./checker_effects_throw_payload_kind.vibe {
   collect_handle_effects,
   effect_name_of_op,
   entry_block_display_name,
+  erased_arm_read_binder,
+  erased_reads_marker,
   exception_effect_labels,
   instantiate_callee_label,
   instantiate_callee_label_marked,
@@ -1879,7 +1881,20 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
             kinded_handle_marker()
           ]), labels_union(kinded_pinned_row_var_labels(declared, ov_names, ov_effs), kinded_handle_owner_labels()))
         } else if Array::length(exc_arms) > 0 {
-          labels_union(labels_without_exception_family_marker(declared), discharged)
+          // #3541: an erased arm that reads its binder reads it as the thrown
+          // message, a `String`, and the kind is not carried at run time. So
+          // its body may raise only messages: the enclosing row's exception
+          // labels are dropped (the arm catches those kinds too) and the
+          // erased label covers `String` and unresolved kinds only. An arm
+          // that leaves its payload unread catches every kind.
+          let read_binder = erased_arm_read_binder(arms)
+          if String::length(read_binder) > 0 {
+            labels_union(labels_union(labels_without_exception_family(declared), discharged), [
+              erased_reads_marker(read_binder)
+            ])
+          } else {
+            labels_union(labels_without_exception_family_marker(declared), discharged)
+          }
         } else {
           labels_union(declared, discharged)
         }

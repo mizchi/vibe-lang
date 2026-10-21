@@ -146,7 +146,7 @@ export fn effect_error_to_string(err: EffectError) -> String {
       } else {
         String::concat("'", String::concat(fname, "'"))
       }
-      String::concat("a handle may have only ONE exception arm, in ", String::concat(where_, String::concat(" it has { ", String::concat(arms, " }: the exception channel carries no kind and only the first exception arm is compiled, so the others can never run\nhint: keep one arm -- an erased `Exception::Throw(m)` arm catches every kind, and the payload can be matched inside it -- or nest one handle inside another"))))
+      String::concat("a handle may have only ONE exception arm, in ", String::concat(where_, String::concat(" it has { ", String::concat(arms, " }: the exception channel carries no kind and only the first exception arm is compiled, so the others can never run\nhint: nest one handle per kind inside another, or keep one arm -- an erased `Exception::Throw(_)` arm that leaves its payload unread catches every kind"))))
     },
     EEKindedHandleCatchesAll(fname, handler, offending, off) => {
       let block = entry_block_display_name(fname)
@@ -156,6 +156,33 @@ export fn effect_error_to_string(err: EffectError) -> String {
         String::concat("'", String::concat(fname, "'"))
       }
       let body = String::concat("handler arm `", String::concat(handler, String::concat("::Throw` catches EVERY exception its body raises at run time (the exception channel carries no kind), so the body may raise only `", String::concat(handler, String::concat("`; in ", String::concat(where_, String::concat(" it also raises { ", String::concat(offending, " }\nhint: add an arm for that kind, use the erased `Exception::Throw(m)` arm (which catches everything, with an untyped payload), give the throw a payload of the handled kind, or move that call outside this handle"))))))))
+      if off >= 0 {
+        String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+      } else {
+        body
+      }
+    },
+    EEErasedArmReadsOtherKind(fname, binder, offending, off) => {
+      let block = entry_block_display_name(fname)
+      let where_ = if fname == "#lambda:" || String::length(fname) == 0 {
+        "this handle's body"
+      } else if String::starts_with(fname, "#lambda:") {
+        String::concat("the lambda '", String::concat(String::substring(fname, 8, String::length(fname)), "'"))
+      } else if String::length(block) > 0 {
+        block
+      } else {
+        String::concat("'", String::concat(fname, "'"))
+      }
+      let name = if String::contains(binder, " ") {
+        "e"
+      } else {
+        binder
+      }
+      let first = Array::get(String::split(offending, ","), 0)
+      let edit = String::concat("write `", String::concat(String::trim(first), String::concat("::Throw(", String::concat(name, ")` to catch it"))))
+      let why = String::concat(": the erased arm `Exception::Throw(", String::concat(name, String::concat(")` reads `", String::concat(name, String::concat("` as the thrown message, a `String`, and the kind is not carried at run time, but in ", String::concat(where_, String::concat(" the handled body raises { ", String::concat(offending, " }"))))))))
+      let more = "\nhint: a kinded arm binds the payload at its own type; for several kinds, nest one handle per kind, or leave the payload unread (`Exception::Throw(_)`), which catches every kind. A callee declared with the erased `with Exception` raises the kinds its body throws"
+      let body = String::concat(edit, String::concat(why, more))
       if off >= 0 {
         String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
       } else {

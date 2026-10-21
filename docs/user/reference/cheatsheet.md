@@ -1827,8 +1827,9 @@ Rules:
   `handle .. with Exception` nested inside is its own
   catch-all boundary. And a handle may have only ONE exception arm: the
   channel carries no kind and only the first exception arm is compiled, so
-  `Exception[A]::Throw` next to `Exception[B]::Throw` is refused -- match on
-  the payload inside one erased arm, or nest handles.
+  `Exception[A]::Throw` next to `Exception[B]::Throw` is refused -- nest
+  handles, one per kind, or put the kinds in one enum and match on it inside
+  its kinded arm.
 - A kinded arm binds its payload at the kind's type (#2963):
   `Exception[IoError]::Throw(e)` gives `e : IoError`, so `e` can be matched or
   passed on directly, and returning it where the handle produces an `Int` is a
@@ -1840,9 +1841,16 @@ Rules:
   `let n: Int = m`, returning `m` where the handle produces an `Int`) is
   refused with the edit: write ``Exception[Int]::Throw(m)``. Only the kinded
   arm knows a payload of another type. The kind is not carried at run time,
-  so the erased arm cannot check what a callee declared `with Exception`
-  actually threw. Throw a value other than a `String` under a kinded row, and
-  catch it with the kinded arm.
+  so an arm that reads `m` may catch only messages: over a body that raises
+  another kind (`handle { f() } with { Exception::Throw(m) => .. }` with
+  `fn f() -> Int with Exception[Int]`) it is refused with the same edit. A
+  function declared with the erased `with Exception` raises the kinds its body
+  throws, so `fn h() -> Int with Exception { throw(5) }` counts as raising
+  `Exception[Int]` there. An arm that leaves its payload unread
+  (`Exception::Throw(_)`) still catches every kind. Not seen yet (#3541): a
+  function imported from another module, and a callback or lambda with an
+  erased row of its own. Throw a value other than a `String` under a kinded
+  row, and catch it with the kinded arm.
 - A rethrow from the erased arm is a throw of no known kind, not of
   `Exception[String]`. That holds for `throw(m)` and for any payload that
   names `m`, or a name the arm derived from it, when the payload's type could
