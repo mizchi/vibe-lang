@@ -23,7 +23,7 @@ fn main allows Console {
   println("compiled by vibe, in this browser tab")
 }`,
     expect: "inspired by Rust\ninspired by MoonBit\ninspired by Koka\ninspired by Verse\ncompiled by vibe, in this browser tab\n",
-    hint: "上の出力は、このページに入れたセルフホストの vibe コンパイラ (wasm) が、このタブでコンパイルして実行した結果",
+    hint: "上の出力は、このタブの中で vibe コンパイラ (wasm) が今コンパイルして実行したもの",
   },
   effects: {
     source: String.raw`
@@ -148,10 +148,10 @@ export const SLIDES: Slide[] = [
     className: "title",
     html: `
       <div class="logo">vibe<span>-lang</span></div>
-      <div class="tagline"><strong>黙ってやらない</strong>言語。<br>wasm の上でセルフホストしてる関数型言語</div>
+      <div class="tagline"><strong>黙って間違えない</strong>言語を作ってる<br>wasm の上でセルフホストしてる関数型言語</div>
       <div class="meta">mizchi · 自作プログラミング言語を自慢する会 · 2026-10-22<br>
-      <span class="small">このスライドの中で vibe のコンパイラ (wasm) が動いてます · github.com/mizchi/vibe-lang</span></div>`,
-    notes: "0:00 (15s) 挨拶。黙ってやらない言語です。このスライドの中でコンパイラが動いてる",
+      <span class="small">このスライドの中で vibe のコンパイラ (wasm) が動いてる · github.com/mizchi/vibe-lang</span></div>`,
+    notes: "0:00 (15s) 挨拶。黙って間違えない言語を作ってる。このスライドの中でコンパイラが動いてる",
   },
   {
     html: `
@@ -176,8 +176,8 @@ export const SLIDES: Slide[] = [
         <div>
           <ul>
             <li>静的型付きの関数型言語。WebAssembly にコンパイルする</li>
-            <li>エフェクトは戻り値のラッパーじゃなくて <strong>effect row</strong> に乗せる</li>
-            <li><strong>権限 (capability)</strong> も同じ row に乗せて、ビルド時に決める</li>
+            <li>エフェクトは戻り値で包まずに、関数の型 (<strong>effect row</strong>) に書く</li>
+            <li><strong>権限 (capability)</strong> もエフェクトとして型に書いて、ビルド時に決める</li>
             <li>コンパイラは vibe で書いてて、wasm で動く</li>
           </ul>
           <p class="muted">参考にしたもの</p>
@@ -248,7 +248,7 @@ export const SLIDES: Slide[] = [
         <div class="card">
           <h3>LSP じゃなくて CLI</h3>
           <ul>
-            <li>一番まずいのは<strong>黙って間違う</strong>こと。クラッシュより悪い。LLM の評価ループはこれに気づけない</li>
+            <li>落ちるならまだいい。<strong>黙って間違う</strong>のが一番困る。LLM は気づかずに先に進む</li>
             <li>診断は直し方から書く。pass 名や ADR 番号は出さない</li>
             <li>IDE 相当の問い合わせは CLI で (<code>vibe symbols</code>、<code>vibe grep</code>)</li>
           </ul>
@@ -258,8 +258,8 @@ export const SLIDES: Slide[] = [
   },
   {
     className: "section",
-    html: `<h1><small>FEATURES</small>黙ってやらない</h1><p>失敗・権限・アロケーションを、型と診断に出す。比較の話は後半で。ここからライブでコンパイルする</p>`,
-    notes: "2:25 (5s) ここからライブ",
+    html: `<h1><small>FEATURES</small>型に書くもの</h1><p>失敗・権限・アロケーションは型に書く。書いてないとコンパイルが通らない</p>`,
+    notes: "2:25 (5s) 型に書くもの 3 つ。比較の話は後半。ここからライブでコンパイル",
   },
   {
     html: `
@@ -289,18 +289,18 @@ export const SLIDES: Slide[] = [
       <div class="cols">
         <div>
           <ul class="small">
-            <li>拒否した capability のコードは wasm に入らない。<code>Http</code> を使わないプログラムは、ネットワークのランタイムを要求しない</li>
+            <li>拒否した権限のコードは wasm に入らない。<code>Http</code> を使わないプログラムは、ネットワークのランタイムを要求しない</li>
             <li>ホスト (Rust + Wasmtime / ブラウザ / Node.js) は imports を外付けする。実行時の権限はここで止める</li>
             <li>省略可能な権限は <code>perform?</code> で <code>Attempt</code> を受け取る</li>
           </ul>
         </div>
         <pre class="code" data-src="optional"></pre>
       </div>`,
-    notes: "3:45 (30s) 権限はビルド時に一度だけ。拒否した cap は DCE で wasm から消える",
+    notes: "3:45 (30s) 権限はビルド時に一度だけ。拒否した権限のコードは DCE で wasm から消える",
   },
   {
     html: `
-      <h2><span class="kicker">OxCaml から移植</span><code>#zero_alloc</code></h2>
+      <h2><span class="kicker">Allocation</span><code>#zero_alloc</code> (OxCaml から移植)</h2>
       <div class="demo" data-demo="zero_alloc"></div>`,
     notes: "4:15 (25s) 本体を Array::length([a, b]) にしてエラーを見せる",
   },
@@ -323,7 +323,7 @@ export const SLIDES: Slide[] = [
       <ul class="small">
         <li>1 件 1 行、フィールド順は固定、空出力なら clean</li>
         <li><code>vibe grep</code> は AST パターンを型や effect row で絞れる。<code>vibe mutate</code> でテストの効き目も測る</li>
-        <li>CLI で答えられない質問は、毎回 LLM のコストになる。見つけたらその場で CLI を直す</li>
+        <li>CLI で答えられないと、LLM が毎回 grep で探し回る。見つけたらその場で CLI を直す</li>
       </ul>`,
     notes: "5:15 (30s) LSP じゃなくて CLI。空出力なら clean。答えられない質問は CLI を直す",
   },
@@ -334,7 +334,7 @@ export const SLIDES: Slide[] = [
   },
   {
     html: `
-      <h2><span class="kicker">Process</span>作り方</h2>
+      <h2><span class="kicker">Process</span>MoonBit からセルフホストまで</h2>
       <div class="cols">
         <ul class="small">
           <li><strong>MoonBit でプロトタイプ</strong>
@@ -418,7 +418,7 @@ export const SLIDES: Slide[] = [
   },
   {
     html: `
-      <h2><span class="kicker">In numbers</span>高くついた仕様</h2>
+      <h2><span class="kicker">In numbers</span>バグの多かった機能</h2>
       <div class="cols">
         <div>
           <p class="chart-title">100 コミットあたりの bug 件数</p>
@@ -431,7 +431,7 @@ export const SLIDES: Slide[] = [
               { label: "エフェクト・ハンドラ", value: 23 },
               { label: "async・並行", value: 22 },
               { label: "RC / メモリ", value: 15 },
-              { label: "ケーパビリティ", value: 12 },
+              { label: "権限 (capability)", value: 12 },
               { label: "WIT・component", value: 5 },
             ],
             44,
@@ -449,7 +449,7 @@ export const SLIDES: Slide[] = [
               { label: "エフェクト・ハンドラ", value: 32 },
               { label: "RC / メモリ", value: 29 },
               { label: "async・並行", value: 26 },
-              { label: "ケーパビリティ", value: 18 },
+              { label: "権限 (capability)", value: 18 },
               { label: "WIT・component", value: 0 },
             ],
             100,
@@ -457,9 +457,9 @@ export const SLIDES: Slide[] = [
           )}
         </div>
       </div>
-      <p>高くついたのは単体の機能より組み合わせ (クロージャ × row × ジェネリクス)。型が lowering まで届かない比較は半分以上が P0。row に乗せたケーパビリティは安かった</p>
+      <p>バグが多かったのは機能単体より組み合わせ (クロージャ × effect row × ジェネリクス)。lowering の時点で型が分かってない <code>==</code> は半分以上が P0。権限まわりはほとんどバグらなかった</p>
       ${SOURCE}`,
-    notes: "7:40 (35s) 高くつくのは組み合わせ。クロージャ・String・==。ケーパビリティは安かった",
+    notes: "7:40 (35s) バグが多いのは組み合わせ。クロージャ × effect row × ジェネリクス。== と String は P0 率も高い。権限まわりはほぼバグらなかった",
   },
   {
     html: `
@@ -468,7 +468,7 @@ export const SLIDES: Slide[] = [
         <div class="card">
           <h3>ベンチが安定しない</h3>
           <ul class="small">
-            <li>GitHub Actions のコンテナ次第で、無関係な PR が最大 64% 遅く見える</li>
+            <li>GitHub Actions のコンテナ次第で、同じベンチでも 20% ぐらいズレる。無関係な PR が 64% 遅く見えたこともある</li>
             <li>VM 割り当てだけじゃなくてハードも違う。AVX512 がある時と無い時がある</li>
             <li>wall-time はやめて、wasmtime の <strong>fuel (実行命令数)</strong> で比べることにした</li>
           </ul>
@@ -477,11 +477,11 @@ export const SLIDES: Slide[] = [
           <h3>セルフビルドが重い、メモリが漏れまくる</h3>
           <ul class="small">
             <li>セルフコンパイルのヒープは今でも 953MB</li>
-            <li><strong>Perceus</strong> (参照カウント) と <strong>FBIP</strong> を入れた。再利用は 8,879 箇所中 1,830 で効いたけど、壁時計はほとんど変わらなかった</li>
+            <li><strong>Perceus</strong> (参照カウント) と <strong>FBIP</strong> を入れた。再利用は 8,879 箇所中 1,830 で効いたけど、実行時間はほとんど変わらなかった</li>
           </ul>
         </div>
       </div>
-      <p class="small">linear と wasm-gc の両対応も重い。Int のオーバーフローで、2 つのレーンが黙って違う値を返してた (#1877)</p>`,
+      <p class="small">linear と wasm-gc の両対応も重い。Int のオーバーフローの結果が linear 版と wasm-gc 版で黙って違ってた (#1877)</p>`,
     notes: "8:15 (35s) ベンチが揺れるので fuel に切り替えた。ヒープ 953MB。FBIP は効いたけど壁時計は変わらず",
   },
   {
@@ -491,9 +491,9 @@ export const SLIDES: Slide[] = [
         <div class="card">
           <h3>バグが生まれる速度 &gt; 潰れる速度</h3>
           <ul class="small">
-            <li>レビューの P1 指摘 4 件のうち 3 件が、その PR 自身が入れたバグ</li>
+            <li>ある PR (#2725) のレビューで P1 が 4 件出て、3 件はその PR 自身が入れたバグだった</li>
             <li>bug 841 件、うち P0 (黙って間違う) 266 件</li>
-            <li>CI の検査はわざと壊した入力で落ちるのを確認してから信用する</li>
+            <li>CI が通っても信用しない。わざと壊して落ちるのを見てから</li>
             <li>Lean のオラクルが型検査器との食い違いを 3 件見つけた</li>
           </ul>
         </div>
@@ -514,20 +514,20 @@ export const SLIDES: Slide[] = [
       <h2><span class="kicker">Pain 3</span><code>==</code></h2>
       <p>優先度は <strong>黙って間違う (P0) &gt; 落ちる (P1) &gt; 機能追加 (P2)</strong></p>
       <ul class="small">
-        <li><code>[1, 2] == [1, 2]</code> の答えが文脈で変わってた。裸と tuple の中だと参照比較、struct の中だと構造比較 (#1526)</li>
+        <li><code>[1, 2] == [1, 2]</code> の答えが文脈で変わってた。そのまま書くと参照比較、struct の中だと構造比較 (#1526)</li>
         <li><code>[T: Eq]</code> で <code>bare(1.5, 1.5)</code> が <strong>false</strong>。<code>Double</code> の箱を比べてた (#2895)</li>
-        <li>今は、型が届かない <code>==</code> は注釈を求めてビルドを止める</li>
+        <li>今は、型が分からない <code>==</code> はビルドエラーにして、型注釈を書かせる</li>
       </ul>
       <div class="demo" data-demo="eq"></div>`,
     notes: "9:35 (40s) == が黙って間違ってた (昔は false)。r で実行、今は両方 true",
   },
   {
     html: `
-      <h2><span class="kicker">Spec gaps</span>仕様が足りない</h2>
+      <h2><span class="kicker">Spec gaps</span>足りない仕様</h2>
       <div class="cols three">
-        <div class="card"><h3>スレッド</h3><p class="small">結局どれ。今は <code>TaskGroup</code> の構造化並行性と shared-nothing でやってて、本物のスレッドが来ても困らない表現にしてる</p></div>
+        <div class="card"><h3>スレッド</h3><p class="small">結局どれ。今は <code>TaskGroup</code> の構造化並行性と shared-nothing でやってる。wasm threads が来たら乗り換えられるようにはしてる</p></div>
         <div class="card"><h3>wasm-gc と SIMD</h3><p class="small">wasm-gc の ref 型だと、配列に <code>v128</code> が使えない。両対応を続けるのがしんどい</p></div>
-        <div class="card"><h3>WIT</h3><p class="small">ジェネリクスがない。境界に出せる型は nominal に決めてる</p></div>
+        <div class="card"><h3>WIT</h3><p class="small">ジェネリクスがない。WIT に出せる型はこっちで決め打ちしてる</p></div>
       </div>
       <p>よかったのは wasmtime の guest profiler と fuel。気になってる言語は bend-lang</p>`,
     notes: "10:15 (35s) 仕様が足りない。スレッド、wasm-gc の v128、WIT のジェネリクス",
@@ -536,12 +536,12 @@ export const SLIDES: Slide[] = [
     className: "closing",
     html: `
       <h2><span class="kicker">Next</span>これから</h2>
-      <p class="quote"><code>[1, 2] == [1, 2]</code> の答えすら文脈で変わる。AI に書かせるなら、言語のほうが黙っていてはいけない、と自分は思ってる</p>
+      <p class="quote"><code>[1, 2] == [1, 2]</code> の答えすら文脈で変わってた。だから自分は、言語の側で黙って間違えさせないことにした</p>
       <ul>
         <li>0.1.0 をもうすぐ出すので、触ってみてください</li>
         <li>皆さんも自作言語をセルフホストしましょう</li>
       </ul>
       <p class="muted">github.com/mizchi/vibe-lang · The Vibe Book: mizchi.github.io/vibe-lang</p>`,
-    notes: "10:50 (30s) == の話から最後の一文へ。0.1.0 触ってください。皆さんもセルフホストしましょう",
+    notes: "10:50 (30s) == の話から。0.1.0 触ってください。皆さんもセルフホストしましょう",
   },
 ];
