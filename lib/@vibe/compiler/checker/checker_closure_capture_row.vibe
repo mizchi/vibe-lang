@@ -926,14 +926,86 @@ export fn let_generalize(val: Expr, vt: Type, env: TypeEnv, defs: Array[TypeDef]
 /// top-level declaration (nothing encloses it to bind them) and an alias of a
 /// scheme (whose rows the lookup has just freshened). A local lambda's
 /// `with e` may be its enclosing function's, so it is left alone.
+///
+/// A row variable no parameter names is not the binding's own: nothing at a
+/// call can fill it, so it is one the body captured (`let get = () ->
+/// shared` returns the `Cell[$N]` of a top-level `shared`), and quantifying
+/// it let each call freshen the same mutable cell's row -- one `get()`
+/// stored a `Console` function in `run` while a pure caller's `get()` ran it
+/// uncharged (Codex review on #3594). Such a type is left unquantified.
 export fn quantify_own_rows(t: Type) -> Type {
   match t {
-    CtFn(_, _, _) => if type_names_row_variable(t) {
+    CtFn(params, _, _) => if type_names_row_variable(t) && rows_all_named_by(t, params) {
       CtForAll(array_empty(), array_empty(), t)
     } else {
       t
     },
     _ => t
+  }
+}
+
+/// Is every row variable `t` names also named by one of `params`?
+fn rows_all_named_by(t: Type, params: Array[Type]) -> Bool {
+  let all: Array[String] = array_empty()
+  collect_row_variable_names(t, all)
+  let named: Array[String] = array_empty()
+  for p in params {
+    collect_row_variable_names(p, named)
+  }
+  let mut ok = true
+  for v in all {
+    let mut seen = false
+    for n in named {
+      if n == v {
+        seen = true
+      }
+    }
+    if !seen {
+      ok = false
+    }
+  }
+  ok
+}
+
+/// The row variables `t` names, in the positions `type_names_row_variable`
+/// looks at, added to `out`.
+fn collect_row_variable_names(t: Type, out: Array[String]) -> Unit {
+  match t {
+    CtFn(params, ret, row) => {
+      for l in row_variable_labels(row) {
+        Array::push(out, l)
+      }
+      collect_row_variable_names(ret, out)
+      for p in params {
+        collect_row_variable_names(p, out)
+      }
+      ()
+    },
+    CtArray(elem) => collect_row_variable_names(elem, out),
+    CtOption(elem) => collect_row_variable_names(elem, out),
+    CtTuple(items) => {
+      for item in items {
+        collect_row_variable_names(item, out)
+      }
+      ()
+    },
+    CtNamed(_, args) => {
+      for a in args {
+        match row_var_type_arg(a) {
+          Some(v) => Array::push(out, v),
+          None => collect_row_variable_names(a, out)
+        }
+      }
+      ()
+    },
+    CtRecord(fields) => {
+      for field in fields {
+        let (_, ft) = field
+        collect_row_variable_names(ft, out)
+      }
+      ()
+    },
+    _ => ()
   }
 }
 
