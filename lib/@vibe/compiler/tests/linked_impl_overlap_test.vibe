@@ -506,3 +506,58 @@ test "one definition of a type-qualified function is accepted" {
   let user = "fn helper() -> Int { 2 }\n\nfn Int::whisper(x: Int) -> String {\n  \"w\"\n}\n\nexport fn use_it() -> String {\n  Int::shout(helper())\n}\n"
   inspect(link_verdict([("ta.vibe", def), ("tu.vibe", user)]), content = "ok")
 }
+
+let key_box_src = "export trait Key: Eq {\n  tag(Self) -> Int\n}\n\nexport struct Box[T] {\n  v: T\n}\n"
+
+let key_writes_equals = "impl [T] Key for Box[T] {\n  tag(x: Box[T]) -> Int { 0 }\n  equals(x: Box[T], o: Box[T]) -> Bool { false }\n}\n"
+
+let eq_box_impl = "impl [T] Eq for Box[T] {\n  equals(x: Box[T], o: Box[T]) -> Bool { true }\n}\n"
+
+/// #3587: a supertrait method written in a subtrait impl (`equals` in `impl
+/// [T] Key for Box[T]`, `trait Key: Eq`) beside another unit's `impl Eq`, its
+/// derive, or another subtrait impl writing `equals`. The bindings are named
+/// apart and the heads are of different traits, so neither check above sees
+/// it, while `[U: Eq]` and `[T: Key]` ran different `equals` on one value.
+test "a supertrait method written beside another unit's impl of it is refused" {
+  inspect(link_verdict([
+    ("ty.vibe", key_box_src),
+    ("kw.vibe", key_writes_equals),
+    ("eq.vibe", eq_box_impl)
+  ]), content = "eq.vibe: line 1:1: remove `equals` from `impl [T] Key for Box[T]` in kw.vibe: line 1:1, or remove `impl [T] Eq for Box[T]` here: both implement `Eq::equals` for `Box`, and callers through different bounds would run different `equals` on the same value")
+  inspect(link_verdict([
+    ("ty.vibe", key_box_src),
+    ("eq.vibe", eq_box_impl),
+    ("kw.vibe", key_writes_equals)
+  ]), content = "kw.vibe: line 1:1: remove `equals` from `impl [T] Key for Box[T]` here, or remove `impl [T] Eq for Box[T]` in eq.vibe: line 1:1: both implement `Eq::equals` for `Box`, and callers through different bounds would run different `equals` on the same value")
+  let derived = "export trait Key: Eq {\n  tag(Self) -> Int\n}\n\nexport struct Box[T] {\n  v: T\n} derive (Eq)\n"
+  inspect(link_verdict([("td.vibe", derived), ("kw.vibe", key_writes_equals)]), content = "kw.vibe: line 1:1: drop `Eq` from the `derive` of `Box` in td.vibe: line 5:8, or remove `equals` from `impl [T] Key for Box[T]` here: both implement `Eq::equals` for `Box`, and callers through different bounds would run different `equals` on the same value")
+  let mark = "export trait Mark: Eq {\n  mark(Self) -> Int\n}\n\nimpl [T] Mark for Box[T] {\n  mark(x: Box[T]) -> Int { 1 }\n  equals(x: Box[T], o: Box[T]) -> Bool { true }\n}\n"
+  inspect(link_verdict([
+    ("ty.vibe", key_box_src),
+    ("kw.vibe", key_writes_equals),
+    ("mk.vibe", mark)
+  ]), content = "mk.vibe: line 5:1: remove `equals` from `impl [T] Mark for Box[T]` here or from `impl [T] Key for Box[T]` in kw.vibe: line 1:1: both implement `Eq::equals` for `Box`, and callers through different bounds would run different `equals` on the same value")
+}
+
+/// One unit's pair is the checker's (`check_impl_supertrait_method_overlap`);
+/// a subtrait impl that writes no supertrait method, and targets that share no
+/// type, are no second `Eq::equals`.
+test "a supertrait method with one implementation per type is accepted" {
+  inspect(link_verdict([
+    ("ty.vibe", key_box_src),
+    ("both.vibe", String::concat(key_writes_equals, eq_box_impl))
+  ]), content = "ok")
+  let key_only = "impl [T] Key for Box[T] {\n  tag(x: Box[T]) -> Int { 0 }\n}\n"
+  inspect(link_verdict([
+    ("ty.vibe", key_box_src),
+    ("ko.vibe", key_only),
+    ("eq.vibe", eq_box_impl)
+  ]), content = "ok")
+  let key_int = "impl Key for Box[Int] {\n  tag(x: Box[Int]) -> Int { 0 }\n  equals(x: Box[Int], o: Box[Int]) -> Bool { false }\n}\n"
+  let eq_string = "impl Eq for Box[String] {\n  equals(x: Box[String], o: Box[String]) -> Bool { true }\n}\n"
+  inspect(link_verdict([
+    ("ty.vibe", key_box_src),
+    ("ki.vibe", key_int),
+    ("es.vibe", eq_string)
+  ]), content = "ok")
+}

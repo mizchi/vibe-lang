@@ -247,8 +247,13 @@ export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit
     v = v + 1
   }
   // Heads whose instance sets meet, whatever their methods are named.
+  let supers: Array[SuperMethodHead] = []
+  let heads = linked_impl_heads(merged, units, linked_type_decls(merged), traits, supers)
   let head_found = if found is None {
-    head_overlap_error(linked_impl_heads(merged, units, linked_type_decls(merged)), units)
+    match head_overlap_error(heads, units) {
+      Some(msg) => Some(msg),
+      None => super_method_overlap_error(heads, supers, units)
+    }
   } else {
     found
   }
@@ -495,8 +500,9 @@ fn derive_registers_impl(which: String) -> Bool {
   which == "Show" || which == "Eq" || which == "Hash" || which == "Default"
 }
 
-/// Every impl head of `merged`, unit by unit in merge order.
-fn linked_impl_heads(merged: Array[Stmt], units: Array[LinkedUnit], decls: LinkedTypeDecls) -> Array[ImplHead] {
+/// Every impl head of `merged`, unit by unit in merge order. The supertrait
+/// methods an impl block writes are pushed onto `supers` (#3587).
+fn linked_impl_heads(merged: Array[Stmt], units: Array[LinkedUnit], decls: LinkedTypeDecls, traits: LinkedTraits, supers: Array[SuperMethodHead]) -> Array[ImplHead] {
   // `<unit>:<trait>` for each trait a unit declares itself. The checker keeps
   // a newer declaration of a trait name apart as a new instance scope (a
   // package's method-bearing `Default` beside the builtin marker one), so an
@@ -531,6 +537,7 @@ fn linked_impl_heads(merged: Array[Stmt], units: Array[LinkedUnit], decls: Linke
           ordinal = ordinal + 1
           let name = trait_ref_name(trait_key)
           let resolved = head_type(target, tparams, decls, 0)
+          let what = impl_what(tparams, trait_key, target)
           Array::push(heads, ImplHead::{
             unit: v,
             decl: if MutMap::has(declares, decl_key(v, name)) {
@@ -543,10 +550,57 @@ fn linked_impl_heads(merged: Array[Stmt], units: Array[LinkedUnit], decls: Linke
             params: tparams,
             target: resolved,
             head: head_key(resolved, tparams),
-            what: impl_what(tparams, trait_key, target),
+            what: what,
             line: line,
             col: col
           })
+          // #3587: each supertrait method this block writes is an impl of
+          // that supertrait for the target.
+          let owner = impl_method_owner(tparams, trait_key, target)
+          if String::contains(owner, "$impl$") {
+            let prefix = String::concat(owner, "::")
+            let run_end = impl_run_end(merged, k, unit.end, traits.names)
+            let mut j = k + 1
+            while j < run_end {
+              let written = definition_name(Array::get(merged, j))
+              if String::length(written) > String::length(prefix) && String::starts_with(written, prefix) {
+                let method = String::substring(written, String::length(prefix), String::length(written))
+                if !trait_declares_method(traits, name, method) {
+                  let seen = [name]
+                  match linked_super_declaring(traits, string_list_or_empty(traits.supers, name), method, seen) {
+                    Some(declaring) => Array::push(supers, SuperMethodHead::{
+                      at: ImplHead::{
+                        unit: v,
+                        decl: if MutMap::has(declares, decl_key(v, declaring)) {
+                          v
+                        } else {
+                          -1
+                        },
+                        trait_key: declaring,
+                        trait_name: declaring,
+                        params: tparams,
+                        target: resolved,
+                        head: head_key(resolved, tparams),
+                        what: what,
+                        line: line,
+                        col: col
+                      },
+                      method: method,
+                      owner: namespace_rename_original(impl_target_head(target))
+                    }),
+                    None => ()
+                  }
+                } else {
+                  ()
+                }
+              } else {
+                ()
+              }
+              j = j + 1
+            }
+          } else {
+            ()
+          }
         },
         SStruct(_, name, _, derives, _, _) => push_derive_heads(heads, declares, text, v, name, derives, "struct", CtStruct(name)),
         SEnum(_, name, _, _, derives) => push_derive_heads(heads, declares, text, v, name, derives, "enum", CtEnum(name)),
@@ -630,6 +684,159 @@ fn head_overlap_error(heads: Array[ImplHead], units: Array[LinkedUnit]) -> Optio
     j = j + 1
   }
   found
+}
+
+/// A supertrait method one impl block writes (`equals` in `impl [T] Key for
+/// Box[T]` under `trait Key: Eq`): `at` is the impl of the SUPERTRAIT it
+/// amounts to, with the block's own text and position.
+struct SuperMethodHead {
+  at: ImplHead;
+  method: String;
+  /// The target's type name, as written.
+  owner: String
+}
+
+/// Does `trait_name` itself declare `method`? A builtin trait the program
+/// does not declare (or declares as a marker) dispatches its derive's method,
+/// as `impl_dispatched_methods` reads it.
+fn trait_declares_method(traits: LinkedTraits, trait_name: String, method: String) -> Bool {
+  let declared = string_list_or_empty(traits.methods, trait_name)
+  let methods = if Array::length(declared) == 0 {
+    derive_methods(trait_name)
+  } else {
+    declared
+  }
+  let mut hit = false
+  for m in methods {
+    if m == method {
+      hit = true
+    } else {
+      ()
+    }
+  }
+  hit
+}
+
+fn string_list_or_empty(m: MutMap[String, Array[String]], key: String) -> Array[String] {
+  match MutMap::get(m, key) {
+    Some(list) => list,
+    None => []
+  }
+}
+
+/// The trait among `supers` that declares `method`, in declaration order and
+/// transitively -- the checker's `super_declaring_method`, over the linked
+/// program's trait declarations.
+fn linked_super_declaring(traits: LinkedTraits, supers: Array[String], method: String, seen: Array[String]) -> Option[String] {
+  let mut found: Option[String] = None
+  for sup in supers {
+    let fresh = !string_list_contains(seen, sup) && found is None
+    if fresh {
+      Array::push(seen, sup)
+      found = if trait_declares_method(traits, sup, method) {
+        Some(sup)
+      } else {
+        linked_super_declaring(traits, string_list_or_empty(traits.supers, sup), method, seen)
+      }
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+fn string_list_contains(list: Array[String], s: String) -> Bool {
+  let mut hit = false
+  for x in list {
+    if x == s {
+      hit = true
+    } else {
+      ()
+    }
+  }
+  hit
+}
+
+/// #3587: a supertrait method written in a subtrait impl in one unit, beside
+/// another unit's implementation of that supertrait for an overlapping
+/// target -- an impl or a derive of the supertrait, or another subtrait impl
+/// that writes the same method. Each fills a different witness: a caller
+/// through `[U: Eq]` ran one `equals` and a caller through `[T: Key]` the
+/// other on the same two values (measured: `eq=true key=false`), with every
+/// module clean on its own. The checker refuses the pair inside one module
+/// (`check_impl_supertrait_method_overlap`), but it sees another module's
+/// impl only when that module publishes it to this one, so a dependency's
+/// subtrait impl beside the entry's `impl Eq`, or two sibling modules, were
+/// never compared. The binding names differ (`Box$impl$Key$..::equals` and
+/// `Box$impl$Eq$..::equals`), so the name check above cannot see it either.
+fn super_method_overlap_error(heads: Array[ImplHead], supers: Array[SuperMethodHead], units: Array[LinkedUnit]) -> Option[String] {
+  let mut found: Option[String] = None
+  let mut i = 0
+  while i < Array::length(supers) && found is None {
+    let sup = Array::get(supers, i)
+    for other in heads {
+      if other.trait_name == sup.at.trait_name && heads_meet(sup.at, other) && found is None {
+        found = Some(super_method_overlap_message(sup, other, None, units))
+      } else {
+        ()
+      }
+    }
+    let mut j = 0
+    while j < i && found is None {
+      let earlier = Array::get(supers, j)
+      if earlier.method == sup.method && earlier.at.trait_name == sup.at.trait_name && heads_meet(sup.at, earlier.at) {
+        found = Some(super_method_overlap_message(sup, earlier.at, Some(earlier), units))
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Two heads of different units, of one trait instance scope, whose targets
+/// share a type.
+fn heads_meet(a: ImplHead, b: ImplHead) -> Bool {
+  a.unit != b.unit && (a.decl == b.decl || a.decl < 0 || b.decl < 0) && impl_trait_and_target_patterns_overlap(a.trait_key, a.params, a.target, b.trait_key, b.params, b.target)
+}
+
+/// The refusal for `sup` beside `other` (an impl or derive of the supertrait,
+/// or, with `other_sup`, another block writing the same method), worded as
+/// the checker's one-module refusal and naming both positions. It is reported
+/// at the later unit's position, which the message calls "here".
+fn super_method_overlap_message(sup: SuperMethodHead, other: ImplHead, other_sup: Option[SuperMethodHead], units: Array[LinkedUnit]) -> String {
+  let sup_here = sup.at.unit > other.unit
+  let sup_where = head_where(sup.at, sup_here, units)
+  let other_where = head_where(other, !sup_here, units)
+  let shown_trait = namespace_rename_original(sup.at.trait_name)
+  let remove_sup = String::concat("remove `", String::concat(sup.method, String::concat("` from `", String::concat(sup.at.what, String::concat("` ", sup_where)))))
+  let edit = match other_sup {
+    Some(_) => String::concat(remove_sup, String::concat(" or from `", String::concat(other.what, String::concat("` ", other_where)))),
+    None => if String::starts_with(other.what, "derive (") {
+      String::concat("drop `", String::concat(shown_trait, String::concat("` from the `derive` of `", String::concat(sup.owner, String::concat("` ", String::concat(other_where, String::concat(", or ", remove_sup)))))))
+    } else {
+      String::concat(remove_sup, String::concat(", or remove `", String::concat(other.what, String::concat("` ", other_where))))
+    }
+  }
+  let here = if sup_here {
+    sup.at
+  } else {
+    other
+  }
+  let here_unit = Array::get(units, here.unit)
+  String::concat(position_text(here_unit.path, here.line, here.col), String::concat(": ", String::concat(edit, String::concat(": both implement `", String::concat(shown_trait, String::concat("::", String::concat(sup.method, String::concat("` for `", String::concat(sup.owner, String::concat("`, and callers through different bounds would run different `", String::concat(sup.method, "` on the same value")))))))))))
+}
+
+/// `here`, or `in <path>: line L:C` for the head's position.
+fn head_where(head: ImplHead, here: Bool, units: Array[LinkedUnit]) -> String {
+  if here {
+    "here"
+  } else {
+    let unit = Array::get(units, head.unit)
+    String::concat("in ", position_text(unit.path, head.line, head.col))
+  }
 }
 
 fn head_bucket(trait_name: String, head: String) -> String {

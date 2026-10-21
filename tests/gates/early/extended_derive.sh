@@ -419,6 +419,17 @@ ur_refused fixtures/err_qualified_fn_overlap_cross_module_refused.vibe 'both mod
 ur_refused fixtures/err_qualified_fn_overlap_cross_module_refused.vibe 'both modules define `Int::shout`' 'or make one of them a plain function (`fn shout`)' gc
 ur_refused fixtures/err_qualified_fn_overlap_foreign_type_refused.vibe 'both modules define `Pt::shout`' 'rename `Pt::shout` here or in fixtures/modules/qualified_fn_overlap_pt_a.vibe: line 8:1' linear 'fixtures/modules/qualified_fn_overlap_pt_b.vibe: line 7:1'
 ur_refused fixtures/err_qualified_fn_overlap_entry_vs_dep_refused.vibe 'both modules define `Int::shout`' 'rename `Int::shout` here or in fixtures/modules/qualified_fn_overlap_a.vibe: line 3:1' linear 'fixtures/err_qualified_fn_overlap_entry_vs_dep_refused.vibe: line 9:1'
+# #3587: a supertrait method written in a subtrait impl (`equals` in `impl [T]
+# Key for Box[T]`, `trait Key: Eq`) in one module, beside another module's
+# `impl Eq` for `Box` or another subtrait impl writing `equals` -- modules that
+# never see each other's impls -- ran different `equals` through `[U: Eq]` and
+# `[T: Key]` (`eq=true key=false`). Refused at link time, naming both impls.
+# The green side (disjoint targets) rides the unit lane:
+# fixtures/eq_subtrait_equals_disjoint_targets_test.vibe.
+ur_refused fixtures/err_eq_subtrait_equals_dep_beside_entry_impl_refused.vibe 'both implement `Eq::equals` for `Box`' 'remove `equals` from `impl [T] Key for Box[T]` in fixtures/modules/eq_subtrait_dep_key_equals.vibe: line 12:1, or remove `impl [T] Eq for Box[T]` here' linear 'fixtures/err_eq_subtrait_equals_dep_beside_entry_impl_refused.vibe: line 12:1'
+ur_refused fixtures/err_eq_subtrait_equals_sibling_impl_refused.vibe 'both implement `Eq::equals` for `Box`' 'remove `equals` from `impl [T] Key for Box[T]` in fixtures/modules/eq_subtrait_sib_key.vibe: line 7:1, or remove `impl [T] Eq for Box[T]` here' linear 'fixtures/modules/eq_subtrait_sib_eq.vibe: line 7:1'
+ur_refused fixtures/err_eq_subtrait_equals_sibling_impl_refused.vibe 'both implement `Eq::equals` for `Box`' 'remove `equals` from `impl [T] Key for Box[T]`' gc
+ur_refused fixtures/err_eq_subtrait_equals_two_sibling_subtraits_refused.vibe 'both implement `Eq::equals` for `Box`' 'remove `equals` from `impl [T] Mark for Box[T]` here or from `impl [T] Key for Box[T]` in fixtures/modules/eq_subtrait_sib_key.vibe: line 7:1' linear 'fixtures/modules/eq_subtrait_sib_mark.vibe: line 12:1'
 # #3551: a plain `fn Int::name` in a module that also holds an impl for `Int`
 # (after an intervening statement) is a definition, not that impl's method.
 # It used to be exempted by the owner prefix and built `from-a from-a`. The
