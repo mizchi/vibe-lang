@@ -1343,6 +1343,68 @@ fn split_fields(line: String) -> Array[String] {
   out
 }
 
+// Most generated signatures and implementation files have no directives.
+// Scan the leading comments without allocating line strings or an eight-field
+// header result. A possible directive (or unfamiliar non-ASCII byte) takes the
+// complete scanner, which remains responsible for validation and diagnostics.
+fn may_have_package_header(source: String) -> Bool {
+  let len = String::length(source)
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(source, i)
+    if c <= 32 {
+      i = i + 1
+    } else if c == '/' && i + 1 < len && String::char_code_at(source, i + 1) == '/' {
+      while i < len && String::char_code_at(source, i) != 10 {
+        i = i + 1
+      }
+    } else {
+      // version, name, main, description, deps, generated_hash, require.
+      // False positives deliberately keep the existing validation path.
+      return c >= 128 || c == 'v' || c == 'n' || c == 'm' || c == 'd' || c == 'g' || c == 'r'
+    }
+  }
+  false
+}
+
+// All inputs to the scan are in the source text. A few adjacent source
+// variants recur while checking a module. Keep at most eight sources of at
+// most 1 MiB each; neither exceptions nor filesystem state are cached.
+struct PackageHeaderMemo {
+  source: String;
+  result: (Array[(String, String, String)], String, String, Bool, String, Array[(String, String)], String, String)
+}
+
+struct PackageHeaderCache {
+  entries: Array[PackageHeaderMemo];
+  mut next: Int
+}
+
+let package_header_cache = PackageHeaderCache::{ entries: [], next: 0 }
+
+fn scan_package_header(source: String) -> (Array[(String, String, String)], String, String, Bool, String, Array[(String, String)], String, String) with Exception {
+  let entries = package_header_cache.entries
+  let mut i = Array::length(entries) - 1
+  while i >= 0 {
+    let entry = Array::get(entries, i)
+    if entry.source == source {
+      return entry.result
+    } else ()
+    i = i - 1
+  }
+  let result = scan_package_header_uncached(source)
+  if String::length(source) <= 1048576 {
+    let entry = PackageHeaderMemo::{ source: source, result: result }
+    if Array::length(entries) < 8 {
+      Array::push(entries, entry)
+    } else {
+      Array::set(entries, package_header_cache.next, entry)
+      package_header_cache.next = (package_header_cache.next + 1) % 8
+    }
+  } else ()
+  result
+}
+
 /// Returns ((name, constraint, pin) triples, source with require lines
 /// blanked to spaces). Only the leading directive region is scanned; a
 /// `require` line after the first ordinary statement is a parse error
@@ -1353,7 +1415,7 @@ fn split_fields(line: String) -> Array[String] {
 /// extract_package_version below. The raw line stays in the file text, so it
 /// is part of the package hash by construction: a version change is a new
 /// artifact, and version->hash immutability is checkable.
-fn scan_package_header(source: String) -> (Array[(String, String, String)], String, String, Bool, String, Array[(String, String)], String, String) with Exception {
+fn scan_package_header_uncached(source: String) -> (Array[(String, String, String)], String, String, Bool, String, Array[(String, String)], String, String) with Exception {
   let pins = array_empty()
   let deps = array_empty()
   let sb = StringBuilder::new()
@@ -1584,18 +1646,28 @@ fn deps_extend(deps: Array[(String, String)], more: Array[(String, String)]) -> 
 /// (require, version, name, main, description, deps, generated_hash) blanked
 /// to spaces (byte length preserved, so downstream offsets never shift).
 export fn extract_require_pins(source: String) -> (Array[(String, String, String)], String) with Exception {
+  if !may_have_package_header(source) {
+    return (array_empty(), source)
+  }
   let (pins, _name, _version, _main, _description, _deps, _hash, blanked) = scan_package_header(source)
-  (pins, blanked)
+  // The memo owns its arrays; callers keep the original fresh-array API.
+  (Array::slice(pins, 0, Array::length(pins)), blanked)
 }
 
 /// #754/#1128: read the `version = x.y.z` directive ("" when absent).
 export fn extract_package_version(source: String) -> String with Exception {
+  if !may_have_package_header(source) {
+    return ""
+  }
   let (_pins, _name, version, _main, _description, _deps, _hash, _blanked) = scan_package_header(source)
   version
 }
 
 /// #1128: read the `name = @scope/pkg` directive ("" when absent).
 export fn extract_package_name(source: String) -> String with Exception {
+  if !may_have_package_header(source) {
+    return ""
+  }
   let (_pins, name, _version, _main, _description, _deps, _hash, _blanked) = scan_package_header(source)
   name
 }
@@ -1604,6 +1676,9 @@ export fn extract_package_name(source: String) -> String with Exception {
 /// parsed only, no compiler behavior attached yet; see the header-scanner
 /// doc comment above).
 export fn extract_package_main(source: String) -> Bool with Exception {
+  if !may_have_package_header(source) {
+    return false
+  }
   let (_pins, _name, _version, main, _description, _deps, _hash, _blanked) = scan_package_header(source)
   main
 }
@@ -1611,6 +1686,9 @@ export fn extract_package_main(source: String) -> Bool with Exception {
 /// #1128: read the `description = \n  #|...` block, joined with "\n"
 /// ("" when absent).
 export fn extract_package_description(source: String) -> String with Exception {
+  if !may_have_package_header(source) {
+    return ""
+  }
   let (_pins, _name, _version, _main, description, _deps, _hash, _blanked) = scan_package_header(source)
   description
 }
@@ -1618,13 +1696,19 @@ export fn extract_package_description(source: String) -> String with Exception {
 /// #1128: read the `deps = { @scope/pkg : x.y.z ... }` block (empty array
 /// when absent).
 export fn extract_package_deps(source: String) -> Array[(String, String)] with Exception {
+  if !may_have_package_header(source) {
+    return array_empty()
+  }
   let (_pins, _name, _version, _main, _description, deps, _hash, _blanked) = scan_package_header(source)
-  deps
+  Array::slice(deps, 0, Array::length(deps))
 }
 
 /// #1128: read the `generated_hash = ...` directive ("" when absent or not
 /// yet computed).
 export fn extract_package_generated_hash(source: String) -> String with Exception {
+  if !may_have_package_header(source) {
+    return ""
+  }
   let (_pins, _name, _version, _main, _description, _deps, hash, _blanked) = scan_package_header(source)
   hash
 }
