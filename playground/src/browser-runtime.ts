@@ -1,7 +1,11 @@
 import { compile } from "./generated/vibec.component.js";
 
-function sourcePayload(source: string): string {
-  const bytes = new TextEncoder().encode(`playground.vibe\0${source}`);
+// The compiler takes a closure of sources: `path\0source` pairs, the entry
+// file first. Extra files are what the entry reaches with `import ./x.vibe`.
+function sourcePayload(source: string, files: Record<string, string>): string {
+  let closure = `playground.vibe\0${source}`;
+  for (const [path, text] of Object.entries(files)) closure += `\0${path}\0${text}`;
+  const bytes = new TextEncoder().encode(closure);
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
@@ -30,8 +34,12 @@ function compiledBytes(payload: string, entry: string): Uint8Array {
 
 // `entry` names the function the compiler roots the module at: `_start` for
 // the playground presets, `main` for `fn main allows ...` programs.
-export async function compileAndRun(source: string, entry = "_start"): Promise<string> {
-  const bytes = compiledBytes(sourcePayload(source), entry);
+export async function compileAndRun(
+  source: string,
+  entry = "_start",
+  files: Record<string, string> = {},
+): Promise<string> {
+  const bytes = compiledBytes(sourcePayload(source, files), entry);
   let instance: WebAssembly.Instance | undefined;
   let stdout = "";
   const decoder = new TextDecoder();
@@ -41,6 +49,16 @@ export async function compileAndRun(source: string, entry = "_start"): Promise<s
       throw new Error("Program memory is unavailable to the stdout host.");
     }
     return exported;
+  }
+  function guestString(packed: bigint): string {
+    const bits = BigInt.asUintN(64, packed);
+    const pointer = Number(bits >> 32n);
+    const length = Number(bits & 0xffffffffn);
+    const bytes = new Uint8Array(memory().buffer);
+    if (pointer + length > bytes.length) {
+      throw new Error(`Program string is out of bounds: ${pointer}+${length}.`);
+    }
+    return decoder.decode(bytes.subarray(pointer, pointer + length));
   }
   const imports = {
     wasi_snapshot_preview1: {
@@ -60,17 +78,27 @@ export async function compileAndRun(source: string, entry = "_start"): Promise<s
     },
     vibe: {
       stdout_write_stream(packed: bigint): void {
-        const bits = BigInt.asUintN(64, packed);
-        const pointer = Number(bits >> 32n);
-        const length = Number(bits & 0xffffffffn);
-        const bytes = new Uint8Array(memory().buffer);
-        if (pointer + length > bytes.length) {
-          throw new Error(`Program stdout string is out of bounds: ${pointer}+${length}.`);
-        }
-        stdout += decoder.decode(bytes.subarray(pointer, pointer + length));
+        stdout += guestString(packed);
       },
       stdout_write_char(code: bigint): void {
         stdout += String.fromCharCode(Number(code & 0xffffn));
+      },
+      // stderr shares the output pane, marked so it is not mistaken for stdout.
+      stderr_write_stream(packed: bigint): bigint {
+        stdout += `[stderr] ${guestString(packed)}`;
+        return 0n;
+      },
+      stderr_write_char(code: bigint): bigint {
+        stdout += String.fromCharCode(Number(code & 0xffffn));
+        return 0n;
+      },
+      // `sleep(ms)` blocks the instance. A tab cannot block, and the
+      // cooperative scheduler reads no clock, so the wait is skipped.
+      sleep(_ms: bigint): bigint {
+        return 0n;
+      },
+      process_exit(code: bigint): bigint {
+        throw new Error(`program exited with code ${Number(code)}`);
       },
     },
   };
