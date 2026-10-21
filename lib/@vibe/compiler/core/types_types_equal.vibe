@@ -906,6 +906,47 @@ export fn compiler_owned_type_arity(name: String) -> Option[Int] {
   }
 }
 
+/// #3588: where the PAYLOAD arguments sit in an application of a
+/// compiler-owned head whose region and row slots a signature may leave to
+/// the call, as `(start, count)`, or `None` when `name` is not such a head or
+/// `argc` is neither its full arity nor its payload-only arity. The
+/// task/channel heads carry the region and row first (`TaskHandle[rg, e, T]`,
+/// so `TaskHandle[Int]` is the payload alone), the region-bound containers
+/// carry the region last (`MutList[T, r]`, `MutMap[K, V, r]`, `MutBytes[r]`).
+/// The two spellings of one head line up by these positions; the elided
+/// slots are unbound by construction and line up with anything.
+export fn owned_head_payload_span(name: String, argc: Int) -> Option[(Int, Int)] {
+  let (payload, region_first) = if name == "TaskGroup" {
+    (0, true)
+  } else if name == "TaskHandle" || name == "Sender" || name == "Receiver" {
+    (1, true)
+  } else if name == "MutBytes" {
+    (0, false)
+  } else if name == "MutList" {
+    (1, false)
+  } else if name == "MutMap" {
+    (2, false)
+  } else {
+    (0 - 1, false)
+  }
+  match compiler_owned_type_arity(name) {
+    Some(full) => if payload < 0 {
+      None
+    } else if argc == payload {
+      Some((0, payload))
+    } else if argc == full {
+      if region_first {
+        Some((full - payload, payload))
+      } else {
+        Some((0, payload))
+      }
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
 export fn resolve_builtin(name: String) -> Option[Type] {
   if name == "Int" || name == "i32" {
     Some(CtInt)

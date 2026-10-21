@@ -17,7 +17,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/cache {
-  cache_read_source_fs
+  cache_read_source_fs, cache_source_memo_token
 }
 
 import @vibe/compiler/config {
@@ -1919,10 +1919,24 @@ export fn executable_exports_stripped(entry_name: String) -> Bool with Env {
 /// be written, and nothing is written until it passes. A rejected build wastes
 /// the compile, which is the same trade the release lane already makes.
 ///
+/// #3577: the TYPE check cannot be read off that record -- this lane's parse
+/// is unlocated and runs no checker -- so it does run first, on the loader's
+/// snapshot. What keeps it from authorizing one snapshot and emitting another
+/// is the comparison before anything is written: every file the check read
+/// must still carry the stat token it had when the check read it.
+///
 /// `allow_unstable` is the caller's, read at the edge; this function has no
 /// Env effect.
 export fn write_linked_debug_build_checked(input_path: String, output_path: String, entry_name: String, allow_unstable: Bool) -> Unit with Env + Exception + Fs {
   unstable_closure_reset()
+  // #3577: `--debug` changes code generation only. `build_linked_debug_entry`
+  // parses without offsets and runs no checker, so a type error compiled and
+  // ran (`let x: Int = "s"` printed `st`). Run the check `vibe check` and the
+  // release build run, on the same import resolution, before emitting.
+  // The compile below reads the files again, so the build is refused unless
+  // every checked file is unchanged once it has finished
+  // (`refuse_changed_checked_sources`): the bytes written are the bytes checked.
+  let checked = checked_source_tokens(check_linked_file_source_groups(input_path))
   let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(input_path, entry_name)
   // STAGE every dependency before the verdict. `compile_debug_library` reads
   // the dependency again, so compiling them after the check would authorize
@@ -1949,6 +1963,7 @@ export fn write_linked_debug_build_checked(input_path: String, output_path: Stri
       ()
     }
   }
+  refuse_changed_checked_sources(checked)
   Fs::write_bytes(output_path, entry_bytes)
   let mut pi = 0
   while pi < Array::length(staged) {
@@ -1959,19 +1974,47 @@ export fn write_linked_debug_build_checked(input_path: String, output_path: Stri
 }
 
 export fn write_linked_debug_build(input_path: String, output_path: String, entry_name: String) -> Unit with Env + Exception + Fs {
-  let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(input_path, entry_name)
-  write_linked_debug_outputs(output_path, entry_bytes, linked_dep_specs)
+  // #3577: the same check as the gated builder, on the same snapshot: it
+  // stages every library before writing, so the comparison with the checked
+  // files covers them too. `true` skips only the unstable-surface verdict,
+  // which this builder never ran.
+  write_linked_debug_build_checked(input_path, output_path, entry_name, true)
 }
 
-fn write_linked_debug_outputs(output_path: String, entry_bytes: Bytes, linked_dep_specs: Array[(String, String)]) -> Unit with Env + Exception + Fs {
-  Fs::write_bytes(output_path, entry_bytes)
-  let output_dir = linked_output_dir(output_path)
-  let mut i = 0
-  while i < Array::length(linked_dep_specs) {
-    let (module_name, dep_path) = Array::get(linked_dep_specs, i)
-    let lib_output_path = String::concat(output_dir, String::concat("/", String::concat(module_name, ".wasm")))
-    let lib_bytes = compile_debug_library(dep_path)
-    Fs::write_bytes(lib_output_path, lib_bytes)
-    i = i + 1
+/// #3577: each file the check read, with the stat token the source memo took
+/// just before reading it. A path the memo did not see is stat'ed now, which
+/// is later than its read and so only ever errs toward refusing.
+fn checked_source_tokens(groups: Array[(String, Array[(String, String)])]) -> Array[(String, Int)] with Fs {
+  let out: Array[(String, Int)] = array_empty()
+  for group in groups {
+    let (_group_name, members) = group
+    for member in members {
+      let (path, _source) = member
+      let memo = cache_source_memo_token(path)
+      Array::push(out, (path, if memo == 0 - 1 {
+        Fs::stat_token(path)
+      } else {
+        memo
+      }))
+    }
   }
+  out
 }
+
+/// #3577: refuse to write a debug build whose sources changed after they were
+/// type-checked. The compile reads them again, so a save racing the build
+/// would otherwise publish bytes no check ever saw. The token is the one the
+/// source memo trusts; -1 means the host gives none, and that file is not
+/// compared.
+fn refuse_changed_checked_sources(checked: Array[(String, Int)]) -> Unit with Exception + Fs {
+  for entry in checked {
+    let (path, token) = entry
+    if token != 0 - 1 && Fs::stat_token(path) != token {
+      throw("run the build again: `\{path}` changed after it was type-checked, so the compiled output may hold code that was never checked")
+    } else {
+      ()
+    }
+  }
+  ()
+}
+

@@ -169,13 +169,41 @@ export fn check_interp_formal(ty: Type, s: Subst, env: TypeEnv, errors: Array[St
   }
   let opaque = interp_opaque_builtin(subst_apply(s, ty), s, env)
   if opaque != "" {
-    Array::push(errors, String::concat("cannot interpolate a `\{opaque}` value: it has no text form, and rendering it printed a memory address -- bind what you read out of it and interpolate that (`let ks: Array[String] = Map::keys(m)`, a value you look up, a frozen array), or a description you write", off_marker(off)))
+    Array::push(errors, String::concat("cannot interpolate a `\{opaque}` value: it has no text form, and rendering it printed a memory address -- \{interp_opaque_edit(opaque)}", off_marker(off)))
+  }
+}
+
+/// The edit for interpolating the handle `head`: the conversion to a value
+/// the renderer has an arm for, where there is one, else a description.
+fn interp_opaque_edit(head: String) -> String {
+  if head == "FrozenArray" {
+    "convert it first: `let a: Array[Int] = FrozenArray::to_array(f)`, then interpolate `a`"
+  } else if head == "FixedArray" {
+    "bind it as an array first: `let a: Array[Int] = f`, then interpolate `a`"
+  } else if head == "MutList" {
+    "copy it out first: `let a: Array[Int] = MutList::to_array(l)`, then interpolate `a`"
+  } else if head == "MutBytes" {
+    "copy it out first: `let a: Array[Int] = Bytes::to_array(MutBytes::to_bytes(b))`, then interpolate `a`"
+  } else if head == "ArrayBuilder" {
+    "freeze it first: `let a: Array[Int] = ArrayBuilder::freeze(b)`, then interpolate `a`"
+  } else if head == "StringBuilder" {
+    "freeze it first: `let s: String = StringBuilder::freeze(b)`, then interpolate `s`"
+  } else if head == "Future" {
+    "interpolate the value it resolves to (`let v = await f`), or a description you write"
+  } else if head == "TaskHandle" {
+    "interpolate the value it joins to (`let v = TaskHandle::join(h)`), or a description you write"
+  } else if head == "Region" || head == "TaskGroup" || head == "Sender" || head == "Receiver" || head == "Channel" {
+    "interpolate a description you write"
+  } else {
+    "bind what you read out of it and interpolate that (`let ks: Array[String] = Map::keys(m)`, a value you look up), or a description you write"
   }
 }
 
 /// A builtin container the renderer has no arm for. `"\{m}"` on a
 /// `StringMap` or an `ArrayBuilder` printed the handle's address, with
-/// `vibe check` clean. The walk descends the same shapes the renderer does
+/// `vibe check` clean, and so did a `FrozenArray`, a `FixedArray`, a
+/// `MutList`, a `MutBytes`, a `Future`, a region and the `@vibe/concurrent`
+/// handles (`f=276` for `FrozenArray::from_array([1, 2])`). The walk descends the same shapes the renderer does
 /// (array, option, tuple, applied head, and the type arguments a nominal's
 /// fields read), as the `Bytes` and function checks below do: `Some(m)` and
 /// `[m]` printed `Some(244)` and `[244]`. A program-declared type of the same
@@ -191,7 +219,7 @@ fn interp_opaque_builtin(ty: Type, s: Subst, env: TypeEnv) -> String {
     CtOption(element) => interp_opaque_builtin(element, s, env),
     CtTuple(items) => interp_opaque_builtin_any(items, s, env),
     CtNamed(n, args) => {
-      let head = interp_opaque_head(n, env)
+      let head = interp_opaque_head(n, args, s, env)
       if head != "" {
         head
       } else {
@@ -222,8 +250,14 @@ fn interp_opaque_builtin_any(items: Array[Type], s: Subst, env: TypeEnv) -> Stri
 }
 
 /// The handle name a builtin head `name` renders as an address, or `""`.
-fn interp_opaque_head(name: String, env: TypeEnv) -> String {
-  if name == "Map" || name == "StringMap" || name == "ArrayBuilder" || name == "MapBuilder" || name == "StringBuilder" {
+/// A region (`#region_N`) is the region token, which printed `0`. The
+/// `@vibe/concurrent` handles are declared by that library, so they are told
+/// from a program's own type of the same name by the region their first
+/// argument names.
+fn interp_opaque_head(name: String, args: Array[Type], s: Subst, env: TypeEnv) -> String {
+  if String::starts_with(name, "#region_") {
+    "Region"
+  } else if interp_opaque_builtin_name(name) {
     if interp_declared_type(env, name) {
       ""
     } else if name == "Map" {
@@ -231,9 +265,41 @@ fn interp_opaque_head(name: String, env: TypeEnv) -> String {
     } else {
       name
     }
+  } else if interp_concurrent_handle_name(name) && interp_shipped_concurrent_shape(env, name, Array::length(args)) {
+    // The shipped declaration written without its region and row
+    // (`Sender[Int]`, a bare `TaskGroup`, Codex review on #3587): its first
+    // argument is the payload, not a region, so the test below cannot see it.
+    name
+  } else if interp_concurrent_handle_name(name) && Array::length(args) > 0 {
+    match subst_apply(s, Array::get(args, 0)) {
+      CtNamed(r, _) => if String::starts_with(r, "#region_") {
+        name
+      } else {
+        ""
+      },
+      _ => ""
+    }
   } else {
     ""
   }
+}
+
+/// Whether `name` is the shipped `@vibe/concurrent` declaration (`[rg, e,
+/// ..]`, the shape `owned_head_slots_elidable` admits) applied to fewer
+/// arguments than it declares: the elided spelling.
+fn interp_shipped_concurrent_shape(env: TypeEnv, name: String, given: Int) -> Bool {
+  match find_typedef(env_type_defs(env), name) {
+    Some(TDStruct(_, _, _, tparams)) => Array::length(tparams) >= 2 && type_param_name(Array::get(tparams, 0)) == "rg" && type_param_name(Array::get(tparams, 1)) == "e" && given < Array::length(tparams),
+    _ => false
+  }
+}
+
+fn interp_opaque_builtin_name(name: String) -> Bool {
+  name == "Map" || name == "StringMap" || name == "ArrayBuilder" || name == "MapBuilder" || name == "StringBuilder" || name == "FrozenArray" || name == "FixedArray" || name == "MutList" || name == "MutBytes" || name == "Future"
+}
+
+fn interp_concurrent_handle_name(name: String) -> Bool {
+  name == "TaskGroup" || name == "TaskHandle" || name == "Sender" || name == "Receiver" || name == "Channel"
 }
 
 fn interp_declared_type(env: TypeEnv, name: String) -> Bool {

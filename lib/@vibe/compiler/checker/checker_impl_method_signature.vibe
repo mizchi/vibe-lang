@@ -15,7 +15,9 @@ import @vibe/compiler/core {
   TypeExpr,
   compiler_owned_type_arity,
   find_typedef,
+  impl_trait_and_target_patterns_overlap,
   is_builtin_type_name,
+  overlapping_impl_target_for,
   subst_apply,
   trait_definition,
   trait_method_sig_binders_deep,
@@ -67,7 +69,11 @@ export struct ImplMethodOrigin {
 /// can serve several impls of `P` at once (its own block's, and every impl
 /// whose block has no body for `m`), so a name maps to a list.
 export struct ImplMethodOrigins {
-  by_name: MutMap[String, Array[ImplMethodOrigin]]
+  by_name: MutMap[String, Array[ImplMethodOrigin]];
+  // #3562: every impl block, in parse order, and each declared type's
+  // `derive` list, for `check_impl_supertrait_method_overlap`.
+  blocks: Array[ImplBlock];
+  derives: Array[(String, Array[String])]
 }
 
 fn push_origin(out: MutMap[String, Array[ImplMethodOrigin]], name: String, origin: ImplMethodOrigin) -> Unit {
@@ -105,9 +111,12 @@ struct ImplBlock {
 /// impl's trait like a method in the block.
 export fn collect_impl_method_origins(stmts: Array[Stmt], from: Int, env: TypeEnv) -> ImplMethodOrigins {
   let local_traits: Array[String] = []
+  let derives: Array[(String, Array[String])] = []
   for st in stmts {
     match st {
       STrait(_, tname, _, _, _, _) => Array::push(local_traits, tname),
+      SStruct(_, sname, _, sderives, _, _) => Array::push(derives, (sname, sderives)),
+      SEnum(_, ename, _, _, ederives) => Array::push(derives, (ename, ederives)),
       _ => ()
     }
   }
@@ -177,7 +186,7 @@ export fn collect_impl_method_origins(stmts: Array[Stmt], from: Int, env: TypeEn
   } else {
     ()
   }
-  ImplMethodOrigins::{ by_name: out }
+  ImplMethodOrigins::{ by_name: out, blocks: blocks, derives: derives }
 }
 
 /// Is `qname` a trait operation binding (`Tr::m` for a trait declared in this
@@ -1660,5 +1669,279 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
         }
       }
     }
+  }
+}
+
+//# A supertrait's method written in a subtrait impl (#3562)
+
+/// The trait among `supers` that declares `method`, searched in declaration
+/// order and transitively, the way `declaring_trait_params` walks them.
+fn super_declaring_method(env: TypeEnv, supers: Array[String], method: String, seen: Array[String]) -> Option[String] {
+  let mut found: Option[String] = None
+  for sup in supers {
+    let missing = found is None
+    if missing && !string_list_has(seen, sup) {
+      Array::push(seen, sup)
+      match trait_definition(env, sup) {
+        Some(def) => {
+          let (sup_supers, methods, _, _) = def
+          found = if method_declared_here(methods, method) {
+            Some(sup)
+          } else {
+            super_declaring_method(env, sup_supers, method, seen)
+          }
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// The supertrait methods `block` writes, as `(declaring trait, method)`: a
+/// method of the block that its own trait does not declare but a supertrait
+/// does (`equals` in `impl [T] Key for Box[T]` under `trait Key: Eq`). It
+/// fills the supertrait's slot of the block's witness, so it implements the
+/// SUPERTRAIT for the target.
+///
+/// Only a binding no declaration can spell (`Box$impl$Key$..::equals`)
+/// counts. A plain impl's method is `let P::m`, the statement `fn P::m`
+/// lowers to: it is the one `P::m` that every impl of `P` without a body for
+/// `m`, and a `derive` (which gives way to it, `dtd_source_op_defined`),
+/// dispatches to, so it is never a second definition.
+fn block_super_methods(block: ImplBlock, env: TypeEnv) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  let prefix = String::concat(impl_method_owner(block.tparams, block.trait_key, block.target), "::")
+  if String::contains(prefix, "$impl$") {
+    match trait_definition(env, block.trait_key) {
+      Some(def) => {
+        let (supers, methods, _, _) = def
+        for written in block.written {
+          let method = String::substring(written, String::length(prefix), String::length(written))
+          if method_declared_here(methods, method) {
+            ()
+          } else {
+            match super_declaring_method(env, supers, method, [block.trait_key]) {
+              Some(declaring) => Array::push(out, (declaring, method)),
+              None => ()
+            }
+          }
+        }
+      },
+      None => ()
+    }
+  } else {
+    ()
+  }
+  out
+}
+
+fn super_methods_have(methods: Array[(String, String)], declaring: String, method: String) -> Bool {
+  let mut hit = false
+  for entry in methods {
+    let (d, m) = entry
+    if d == declaring && m == method {
+      hit = true
+    } else {
+      ()
+    }
+  }
+  hit
+}
+
+/// Does the declaration of `type_name` in this list derive `trait_name`?
+fn derives_trait(origins: ImplMethodOrigins, type_name: String, trait_name: String) -> Bool {
+  let mut hit = false
+  for entry in origins.derives {
+    let (name, derives) = entry
+    if name == type_name && string_list_has(derives, trait_name) {
+      hit = true
+    } else {
+      ()
+    }
+  }
+  hit
+}
+
+/// `impl Key for Box[T]`, as a diagnostic names a block.
+fn impl_block_text(block: ImplBlock) -> String {
+  String::join([
+    "`impl ",
+    trait_reference_display(block.trait_key),
+    " for ",
+    print_type_expr(block.target),
+    "`"
+  ], "")
+}
+
+/// The parsed block of the `SImpl` being checked: the first with its trait,
+/// formals and target (two identical heads are an overlap reported anyway),
+/// or -1.
+fn impl_block_index(origins: ImplMethodOrigins, tparams: Array[String], trait_key: String, target_expr: TypeExpr) -> Int {
+  let shown = print_type_expr(target_expr)
+  let formals = String::join(tparams, ",")
+  let mut at = -1
+  let mut i = 0
+  while at < 0 && i < Array::length(origins.blocks) {
+    let block = Array::get(origins.blocks, i)
+    if block.trait_key == trait_key && String::join(block.tparams, ",") == formals && print_type_expr(block.target) == shown {
+      at = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  at
+}
+
+/// #3562: refuse a second implementation of a supertrait's method for one
+/// type. A subtrait impl that writes the supertrait's method (`impl [T] Key
+/// for Box[T] { equals(..) }` under `trait Key: Eq`) fills the `Eq` slot of
+/// its own witness with it, while `derive (Eq)` on `Box` -- or `impl Eq for
+/// Box[..]`, or another subtrait impl that writes `equals` -- fills the `Eq`
+/// witness with another. A caller through `[U: Eq]` and one through `[T:
+/// Key]` then ran different `equals` on the same two values (measured:
+/// `true` and `false`, with `vibe check` clean). It is the overlap `derive
+/// (Eq)` beside `impl Eq for Box` is refused as (#2523), reached through a
+/// subtrait.
+///
+/// Judged at each `SImpl` against what the checker has already seen: the
+/// supertrait's impls in `env` (a derive's registration, an earlier or
+/// imported impl) and the blocks parsed before this one, so each pair is
+/// reported once, at the later of the two.
+export fn check_impl_supertrait_method_overlap(origins: ImplMethodOrigins, tparams: Array[String], trait_key: String, target_expr: TypeExpr, target: Type, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> Unit {
+  let at = impl_block_index(origins, tparams, trait_key, target_expr)
+  if at >= 0 {
+    let block = Array::get(origins.blocks, at)
+    let own = block_super_methods(block, env)
+    let owner = impl_target_head(target_expr)
+    let this_text = impl_block_text(block)
+    let this_disp = trait_reference_display(trait_key)
+    for entry in own {
+      let (declaring, method) = entry
+      match overlapping_impl_target_for(env, declaring, tparams, target) {
+        Some(existing) => {
+          let sup = trait_reference_display(declaring)
+          let edit = if derives_trait(origins, owner, trait_ref_name(declaring)) {
+            String::join([
+              "drop `",
+              sup,
+              "` from the `derive` of `",
+              owner,
+              "`, or remove `",
+              method,
+              "` from ",
+              this_text
+            ], "")
+          } else if type_to_string(existing) == owner {
+            // A whole-family implementation declared elsewhere: a derive in
+            // the type's own module registers exactly this shape.
+            String::join([
+              "remove `",
+              method,
+              "` from ",
+              this_text,
+              ", or remove `",
+              sup,
+              "` from the `derive` of `",
+              owner,
+              "` (or its `impl ",
+              sup,
+              "`)"
+            ], "")
+          } else {
+            String::join([
+              "remove `",
+              method,
+              "` from ",
+              this_text,
+              ", or remove the `impl ",
+              sup,
+              "` for `",
+              type_to_string(existing),
+              "`"
+            ], "")
+          }
+          Array::push(errors, String::join([
+            edit,
+            ": `",
+            owner,
+            "` already implements `",
+            sup,
+            "`, so this `",
+            method,
+            "` is a second `",
+            sup,
+            "::",
+            method,
+            "` for it, and a caller through `",
+            sup,
+            "` and one through `",
+            this_disp,
+            "` would run different `",
+            method,
+            "` on the same value",
+            impl_method_marker(trait_ref_name(trait_key), owner, method, "name", "")
+          ], ""))
+        },
+        None => ()
+      }
+    }
+    let mut j = 0
+    while j < at {
+      let other = Array::get(origins.blocks, j)
+      let other_own = block_super_methods(other, env)
+      if Array::length(other_own) > 0 {
+        let other_target = resolve_type_expr_shadowed(other.target, defs, other.tparams)
+        for entry in other_own {
+          let (declaring, method) = entry
+          let direct = trait_ref_name(trait_key) == trait_ref_name(declaring)
+          if (direct || super_methods_have(own, declaring, method)) && impl_trait_and_target_patterns_overlap(declaring, other.tparams, other_target, declaring, tparams, target) {
+            let sup = trait_reference_display(declaring)
+            let edit = if direct {
+              String::join([
+                "remove `",
+                method,
+                "` from ",
+                impl_block_text(other),
+                ", or remove this ",
+                this_text
+              ], "")
+            } else {
+              String::join([
+                "remove `",
+                method,
+                "` from ",
+                this_text,
+                " or from ",
+                impl_block_text(other)
+              ], "")
+            }
+            Array::push(errors, String::join([
+              edit,
+              ": both implement `",
+              sup,
+              "::",
+              method,
+              "` for `",
+              owner,
+              "`, and callers through different bounds would run different `",
+              method,
+              "` on the same value",
+              impl_method_marker(trait_ref_name(other.trait_key), impl_target_head(other.target), method, "name", "")
+            ], ""))
+          } else {
+            ()
+          }
+        }
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+  } else {
+    ()
   }
 }

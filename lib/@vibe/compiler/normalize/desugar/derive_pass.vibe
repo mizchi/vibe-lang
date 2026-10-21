@@ -136,7 +136,8 @@ fn show_field_formal_array_of(ts: Array[TypeExpr]) -> Option[TypeExpr] {
 /// [@fn=__arr_to_string____Vfp_T]`) and nothing naming the type. The refusal
 /// now names the type, the field and the edit. The helper is not generated.
 fn show_note_formal_array_field(tname: String, fname: String, fty: TypeExpr) -> Unit {
-  match show_field_formal_array(fty) {
+  // #3564: the renderer expands an alias of an array, so this does too.
+  match show_field_formal_array(eq_expand_alias_ty(fty)) {
     Some(arr) => {
       let shown = namespace_rename_original(tname)
       let formal = show_formal_source_name(arr)
@@ -154,8 +155,10 @@ fn show_note_formal_array_field(tname: String, fname: String, fty: TypeExpr) -> 
 /// A builtin handle the derived renderer has no arm for: it reaches
 /// `__to_string`, which prints the handle's address. A program-declared type
 /// of the same name renders through its own `to_string`, so it is left alone.
+/// `FrozenArray` / `FixedArray` / `MutList` / `MutBytes` / `Future` fields
+/// printed their address too (`S { v: 280 }`).
 fn show_opaque_handle_head(n: String, known_types: Array[String]) -> Bool {
-  (n == "Map" || n == "StringMap" || n == "ArrayBuilder" || n == "MapBuilder" || n == "StringBuilder") && !str_array_contains(known_types, n)
+  (n == "Map" || n == "StringMap" || n == "ArrayBuilder" || n == "MapBuilder" || n == "StringBuilder" || n == "FrozenArray" || n == "FixedArray" || n == "MutList" || n == "MutBytes" || n == "Future") && !str_array_contains(known_types, n)
 }
 
 /// The first builtin handle the derived renderer of a field of type `t`
@@ -250,7 +253,7 @@ fn show_note_opaque_field(stmts: Array[Stmt], tname: String, fname: String, fty:
     } else {
       "write `" + shown + "::to_string` yourself: `derive (Hash)` also derives the renderer an interpolation of `" + shown + "` calls, and field `"
     }
-    let msg = edit + fname + "` holds `" + hk_type_text(fty) + "`; `" + head + "` is a handle with no text form, so the derived renderer would print its memory address. A renderer you write can show what you read out of it (its keys, a value you look up, a frozen array) [@fn=" + shown + "]"
+    let msg = edit + fname + "` holds `" + hk_type_text(fty) + "`; `" + head + "` is a handle with no text form, so the derived renderer would print its memory address. A renderer you write can show what you read out of it (its keys, a value you look up, an array you copy out of it) [@fn=" + shown + "]"
     if !str_array_contains(dtd_show_refusals, msg) {
       Array::push(dtd_show_refusals, msg)
     } else {

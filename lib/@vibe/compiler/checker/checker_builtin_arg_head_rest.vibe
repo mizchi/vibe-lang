@@ -35,12 +35,13 @@ import @vibe/compiler/core {
   registry_builtin_arity,
   registry_builtin_param_type,
   subst_apply,
+  subst_lookup,
   type_to_string,
   unify
 }
 
 import @vibe/ast {
-  is_builtin_ref_offset
+  is_builtin_ref_offset, type_param_name
 }
 
 import @vibe/parser {
@@ -61,6 +62,10 @@ import @vibe/compiler/checker/patterns {
 
 import ./checker_resolve.vibe {
   subst_type_params
+}
+
+import @vibe/compiler/checker/resolution {
+  elided_owned_head_field_refusal
 }
 
 import @vibe/compiler/checker/traits {
@@ -1743,9 +1748,238 @@ fn struct_field_type(defs: Array[TypeDef], sname: String, field: String) -> Opti
 /// which downstream checks tolerate exactly as before.
 export fn inst_struct_field_ty(ft: Type, tparams: Array[String], targs: Array[Type]) -> Type {
   if Array::length(tparams) > 0 && Array::length(tparams) == Array::length(targs) {
-    subst_type_params(ft, tparams, targs)
+    inst_struct_field_rows(subst_type_params(ft, tparams, targs), tparams, targs)
   } else {
     ft
+  }
+}
+
+/// #3572: `ft`, the type of field `field` of `recv`, unless `recv` is a
+/// compiler-owned head written without its region and row (`TaskGroup`,
+/// `TaskHandle[Int]`), whose formals that spelling never binds: then the
+/// refusal, located by `marker`, is pushed and the field types as unknown.
+/// A read, a write and a call through the field ask here; a struct pattern
+/// asks `elided_owned_head_field_refusal` itself.
+export fn owned_head_field_ty(defs: Array[TypeDef], recv: Type, field: String, ft: Type, errors: Array[String], marker: String) -> Type {
+  match elided_owned_head_field_refusal(defs, recv, field) {
+    Some(message) => {
+      Array::push(errors, String::concat(message, marker))
+      CtUnknown
+    },
+    None => ft
+  }
+}
+
+/// #3568: a struct's ROW parameter (`struct Holder[r] { run: () -> Int with
+/// r }`) is written in its fields' rows as a label, which the type
+/// substitution does not reach. When the receiver's argument for it names a
+/// row variable -- `Holder[e]`, the type of a literal that stores a `with e`
+/// callback -- the field's row reads that variable, so a call through the
+/// field is charged it. Before this, the field kept the struct's own
+/// spelling `r`, which no enclosing signature owns, and `fn wrap(f: () -> Int
+/// with e) -> Int { (Holder::{ run: f }.run)() }` ran `f` uncharged.
+fn inst_struct_field_rows(ft: Type, tparams: Array[String], targs: Array[Type]) -> Type {
+  let froms: Array[String] = []
+  let tos: Array[String] = []
+  let mut i = 0
+  while i < Array::length(tparams) && i < Array::length(targs) {
+    let formal = type_param_name(Array::get(tparams, i))
+    match Array::get(targs, i) {
+      CtNamed(n, xs) => if Array::length(xs) == 0 && is_row_var_spelling(formal) && is_row_var_spelling(n) && n != formal {
+        Array::push(froms, formal)
+        Array::push(tos, n)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if Array::length(froms) == 0 {
+    ft
+  } else {
+    rename_row_labels(ft, froms, tos)
+  }
+}
+
+/// #3568: a struct literal types a row parameter's argument by the row of
+/// the function it stores there, when that row is one row variable: storing
+/// `f: () -> Int with e` in `run: () -> Int with r` makes the literal a
+/// `Holder[e]`, and `inst_struct_field_rows` reads the field back as `with
+/// e`. Any other row leaves the argument as it was.
+export fn bind_struct_row_formals(field_ty: Type, value_ty: Type, tparams: Array[String], targs: Array[Type], s: Subst) -> Subst {
+  match (field_ty, resolve_type_head(value_ty, s)) {
+    (CtFn(_, _, Some(frow)), CtFn(_, _, Some(vrow))) => {
+      // The field's row holds one of the struct's row formals beside any
+      // fixed labels (`with Exception + r`), and the stored function's row
+      // one row variable beside its own (`with Exception + e`): `r` is `e`.
+      let formals: Array[String] = []
+      for l in plain_row_labels(frow) {
+        if is_row_var_spelling(l) && checker_string_array_has(tparam_names(tparams), l) {
+          Array::push(formals, l)
+        }
+      }
+      let vars: Array[String] = []
+      for l in plain_row_labels(vrow) {
+        if is_row_var_spelling(l) {
+          Array::push(vars, l)
+        }
+      }
+      let mut out = s
+      if Array::length(formals) == 1 && Array::length(vars) == 1 {
+        let mut k = 0
+        while k < Array::length(tparams) && k < Array::length(targs) {
+          if type_param_name(Array::get(tparams, k)) == Array::get(formals, 0) {
+            let bound: Type = CtNamed(Array::get(vars, 0), array_empty())
+            match unify(Array::get(targs, k), bound, out) {
+              Some(ns) => out = ns,
+              None => ()
+            }
+          }
+          k = k + 1
+        }
+      }
+      out
+    },
+    (CtArray(fe), CtArray(ve)) => bind_struct_row_formals(fe, ve, tparams, targs, s),
+    (CtOption(fe), CtOption(ve)) => bind_struct_row_formals(fe, ve, tparams, targs, s),
+    // A function stored inside a tuple field (`run: (() -> Int with r,
+    // Int)`) binds the row formal the same way, element by element.
+    (CtTuple(fes), CtTuple(ves)) => {
+      let mut out = s
+      let mut i = 0
+      while i < Array::length(fes) && i < Array::length(ves) {
+        out = bind_struct_row_formals(Array::get(fes, i), Array::get(ves, i), tparams, targs, out)
+        i = i + 1
+      }
+      out
+    },
+    _ => s
+  }
+}
+
+fn tparam_names(tparams: Array[String]) -> Array[String] {
+  for p in tparams {
+    type_param_name(p)
+  }
+}
+
+/// `t` with a bound type variable at its head replaced by what it is bound
+/// to. Rows are left as written: the substitution's row bindings are keyed by
+/// a variable's spelling, which every declaration shares.
+fn resolve_type_head(t: Type, s: Subst) -> Type {
+  let mut cur = t
+  let mut steps = 0
+  let mut done = false
+  while !done && steps < 64 {
+    match cur {
+      CtVar(id) => match subst_lookup(s, id) {
+        Some(next) => cur = next,
+        None => done = true
+      },
+      _ => done = true
+    }
+    steps = steps + 1
+  }
+  cur
+}
+
+/// The labels of a row as written, without the compiler's own `#` marks.
+fn plain_row_labels(row: String) -> Array[String] {
+  let out: Array[String] = []
+  for seg in String::split(row, ",") {
+    let l = String::trim(seg)
+    if String::length(l) > 0 && !String::starts_with(l, "#") {
+      Array::push(out, l)
+    }
+  }
+  out
+}
+
+/// #3568: the function a tuple projection callee (`(t.0)()`) evaluates to,
+/// read off the receiver's tuple type with its row as written, or None when
+/// the receiver is not a tuple or the element is not a function.
+export fn tuple_projection_fn_type(recv: Type, field: String, s: Subst) -> Option[Type] {
+  match resolve_type_head(recv, s) {
+    CtTuple(items) => {
+      let mut idx = 0 - 1
+      if String::length(field) > 0 {
+        let mut ok = true
+        let mut n = 0
+        let mut i = 0
+        while i < String::length(field) {
+          let ch = String::char_code_at(field, i)
+          if ch >= 48 && ch <= 57 {
+            n = n * 10 + (ch - 48)
+          } else {
+            ok = false
+          }
+          i = i + 1
+        }
+        if ok {
+          idx = n
+        }
+      }
+      if idx >= 0 && idx < Array::length(items) {
+        match resolve_type_head(Array::get(items, idx), s) {
+          CtFn(ps, r, row) => Some(CtFn(ps, r, row)),
+          _ => None
+        }
+      } else {
+        None
+      }
+    },
+    _ => None
+  }
+}
+
+/// A row variable's spelling: one lowercase letter.
+fn is_row_var_spelling(l: String) -> Bool {
+  String::length(l) == 1 && String::char_code_at(l, 0) >= 97 && String::char_code_at(l, 0) <= 122
+}
+
+/// `t` with every row label in `froms` renamed to the matching `tos`, all at
+/// once (so `r -> e` and `e -> q` do not chain).
+fn rename_row_labels(t: Type, froms: Array[String], tos: Array[String]) -> Type {
+  match t {
+    CtFn(ps, r, row) => CtFn(for p in ps {
+      rename_row_labels(p, froms, tos)
+    }, rename_row_labels(r, froms, tos), match row {
+      Some(text) => {
+        let parts: Array[String] = []
+        for seg in String::split(text, ",") {
+          let label = String::trim(seg)
+          let mut out = seg
+          let mut k = 0
+          while k < Array::length(froms) {
+            if Array::get(froms, k) == label {
+              out = Array::get(tos, k)
+            }
+            k = k + 1
+          }
+          Array::push(parts, out)
+        }
+        let mut joined = ""
+        let mut j = 0
+        while j < Array::length(parts) {
+          joined = if j == 0 {
+            Array::get(parts, j)
+          } else {
+            joined + "," + Array::get(parts, j)
+          }
+          j = j + 1
+        }
+        Some(joined)
+      },
+      None => None
+    }),
+    CtArray(e) => CtArray(rename_row_labels(e, froms, tos)),
+    CtOption(e) => CtOption(rename_row_labels(e, froms, tos)),
+    CtTuple(items) => CtTuple(for x in items {
+      rename_row_labels(x, froms, tos)
+    }),
+    CtNamed(n, xs) => CtNamed(n, for x in xs {
+      rename_row_labels(x, froms, tos)
+    }),
+    _ => t
   }
 }
 
