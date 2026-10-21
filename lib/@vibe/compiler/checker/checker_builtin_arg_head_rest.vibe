@@ -1808,14 +1808,28 @@ fn inst_struct_field_rows(ft: Type, tparams: Array[String], targs: Array[Type]) 
 export fn bind_struct_row_formals(field_ty: Type, value_ty: Type, tparams: Array[String], targs: Array[Type], s: Subst) -> Subst {
   match (field_ty, resolve_type_head(value_ty, s)) {
     (CtFn(_, _, Some(frow)), CtFn(_, _, Some(vrow))) => {
-      let flabels = plain_row_labels(frow)
-      let vlabels = plain_row_labels(vrow)
+      // The field's row holds one of the struct's row formals beside any
+      // fixed labels (`with Exception + r`), and the stored function's row
+      // one row variable beside its own (`with Exception + e`): `r` is `e`.
+      let formals: Array[String] = []
+      for l in plain_row_labels(frow) {
+        if is_row_var_spelling(l) && checker_string_array_has(tparam_names(tparams), l) {
+          Array::push(formals, l)
+        }
+      }
+      let vars: Array[String] = []
+      for l in plain_row_labels(vrow) {
+        if is_row_var_spelling(l) {
+          Array::push(vars, l)
+        }
+      }
       let mut out = s
-      if Array::length(flabels) == 1 && Array::length(vlabels) == 1 && is_row_var_spelling(Array::get(vlabels, 0)) {
+      if Array::length(formals) == 1 && Array::length(vars) == 1 {
         let mut k = 0
         while k < Array::length(tparams) && k < Array::length(targs) {
-          if type_param_name(Array::get(tparams, k)) == Array::get(flabels, 0) && is_row_var_spelling(Array::get(flabels, 0)) {
-            match unify(Array::get(targs, k), CtNamed(Array::get(vlabels, 0), []), out) {
+          if type_param_name(Array::get(tparams, k)) == Array::get(formals, 0) {
+            let bound: Type = CtNamed(Array::get(vars, 0), array_empty())
+            match unify(Array::get(targs, k), bound, out) {
               Some(ns) => out = ns,
               None => ()
             }
@@ -1839,6 +1853,12 @@ export fn bind_struct_row_formals(field_ty: Type, value_ty: Type, tparams: Array
       out
     },
     _ => s
+  }
+}
+
+fn tparam_names(tparams: Array[String]) -> Array[String] {
+  for p in tparams {
+    type_param_name(p)
   }
 }
 

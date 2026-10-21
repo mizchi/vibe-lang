@@ -265,6 +265,11 @@ fn interp_opaque_head(name: String, args: Array[Type], s: Subst, env: TypeEnv) -
     } else {
       name
     }
+  } else if interp_concurrent_handle_name(name) && interp_shipped_concurrent_shape(env, name, Array::length(args)) {
+    // The shipped declaration written without its region and row
+    // (`Sender[Int]`, a bare `TaskGroup`, Codex review on #3587): its first
+    // argument is the payload, not a region, so the test below cannot see it.
+    name
   } else if interp_concurrent_handle_name(name) && Array::length(args) > 0 {
     match subst_apply(s, Array::get(args, 0)) {
       CtNamed(r, _) => if String::starts_with(r, "#region_") {
@@ -276,6 +281,16 @@ fn interp_opaque_head(name: String, args: Array[Type], s: Subst, env: TypeEnv) -
     }
   } else {
     ""
+  }
+}
+
+/// Whether `name` is the shipped `@vibe/concurrent` declaration (`[rg, e,
+/// ..]`, the shape `owned_head_slots_elidable` admits) applied to fewer
+/// arguments than it declares: the elided spelling.
+fn interp_shipped_concurrent_shape(env: TypeEnv, name: String, given: Int) -> Bool {
+  match find_typedef(env_type_defs(env), name) {
+    Some(TDStruct(_, _, _, tparams)) => Array::length(tparams) >= 2 && type_param_name(Array::get(tparams, 0)) == "rg" && type_param_name(Array::get(tparams, 1)) == "e" && given < Array::length(tparams),
+    _ => false
   }
 }
 
