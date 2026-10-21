@@ -231,24 +231,45 @@ export fn retention_is_function_type(ty: Type) -> Bool {
   }
 }
 
-/// #3596: the names a conditional `let` of a function may stand for: each
-/// branch of an `if` or a `match`, or a block's tail, that names one
-/// (`let g = if c { mk } else { mk_ok }`). An arm whose pattern binds the
-/// spelling names its own binder and is skipped; a branch of any other form
-/// names nothing.
-export fn retention_branch_sources(e: Expr, out: Array[String]) -> Unit {
+/// #3596: the names the value `e` of a function-typed `let` may stand for
+/// (`retention_alias_sources`), followed by `?` when a place its value can
+/// come from names no function beside one that does
+/// (`if c { mk } else { pick() }`): that one may be any function.
+export fn retention_alias_names(e: Expr) -> Array[String] {
+  let out: Array[String] = []
+  if !retention_alias_sources(e, out) && Array::length(out) > 0 {
+    Array::push(out, "?")
+  }
+  out
+}
+
+/// The names the value `e` of a function-typed `let` may stand for, and
+/// whether every place its value can come from was read. A name
+/// (`mk`), under an annotation (`let g: () -> Box = mk`) or in parentheses;
+/// each branch of an `if` or a `match`; a block's tail, through a `let` of
+/// the block (`{ let t = mk; t }` names `mk`). Anything else -- a call's
+/// result, a field, a `match` arm handing back its own binder -- names
+/// nothing and answers false: the value may be any function.
+fn retention_alias_sources(e: Expr, out: Array[String]) -> Bool {
   match e {
-    EIdent(src, _) => Array::push(out, src),
+    EIdent(src, _) => {
+      Array::push(out, src)
+      true
+    },
     EIf(_, a, b) => {
-      retention_branch_sources(a, out)
-      retention_branch_sources(b, out)
+      let ca = retention_alias_sources(a, out)
+      let cb = retention_alias_sources(b, out)
+      ca && cb
     },
     EMatch(_, arms) => {
+      let mut complete = true
       for arm in arms {
         let bound: Array[String] = []
         retention_pat_names_into(arm.0, bound)
         let found: Array[String] = []
-        retention_branch_sources(arm.1, found)
+        if !retention_alias_sources(arm.1, found) {
+          complete = false
+        }
         for src in found {
           let mut hidden = false
           for b in bound {
@@ -256,18 +277,55 @@ export fn retention_branch_sources(e: Expr, out: Array[String]) -> Unit {
               hidden = true
             }
           }
-          if !hidden {
+          if hidden {
+            complete = false
+          } else {
             Array::push(out, src)
           }
         }
         ()
       }
-      ()
+      complete
     },
-    ESeq(_, b) => retention_branch_sources(b, out),
+    ESeq(_, b) => retention_alias_sources(b, out),
+    ELet(n, v, rest, _) => {
+      let found: Array[String] = []
+      let mut complete = retention_alias_sources(rest, found)
+      for src in found {
+        if src == n {
+          if !retention_alias_sources(v, out) {
+            complete = false
+          }
+        } else {
+          Array::push(out, src)
+        }
+      }
+      complete
+    },
     ECall(EIdent(wrapper, _), wargs, _, _) => if wrapper == "$source_span" && Array::length(wargs) > 0 {
-      retention_branch_sources(Array::get(wargs, 0), out)
+      retention_alias_sources(Array::get(wargs, 0), out)
+    } else {
+      false
     },
-    _ => ()
+    ECall(callee, args, _, _) => if Array::length(args) == 1 && retention_is_ascription(callee) {
+      retention_alias_sources(Array::get(args, 0), out)
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// The parser's spelling of an annotation `e: T`, `((__asc: T) -> __asc)(e)`:
+/// is `callee` that identity lambda?
+fn retention_is_ascription(callee: Expr) -> Bool {
+  match callee {
+    EFn(tparams, _, params, None, None, EIdent(body, _)) => if Array::length(tparams) == 0 && Array::length(params) == 1 && body == "__asc" {
+      let (pname, _) = Array::get(params, 0)
+      pname == "__asc"
+    } else {
+      false
+    },
+    _ => false
   }
 }

@@ -310,7 +310,7 @@ function stableCachePath(cache, version, prefix, seed, suffix) {
   return join(cache, `vibe_${prefix}_${token}${suffix}`);
 }
 
-function typeEnvPath(stage2, cache, target, major = "v27") {
+function typeEnvPath(stage2, cache, target, major = "v28") {
   return stableCachePath(cache, `${major}|cg-${stageCodegenFingerprint(stage2)}`, "selfhost_type_env_v10", target, ".tsv");
 }
 
