@@ -20,6 +20,10 @@ import @vibe/compiler/checker/patterns {
   check_qualified_pattern_refs
 }
 
+import @vibe/compiler/checker/annotations {
+  owned_head_shape_refusal
+}
+
 import @vibe/compiler/checker/builtin_sigs {
   lookup_builtin
 }
@@ -35,6 +39,8 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  canonical_builtin_name,
+  collect_type_var_ids,
   compiler_owned_type_arity,
   env_flat_bindings,
   env_lookup_flat,
@@ -44,6 +50,7 @@ import @vibe/compiler/core {
   is_singleton_resource_kind,
   lookup_registry_builtin,
   predeclared_resources,
+  registry_builtin_scheme,
   reject_user_iterator_serialized_boundaries,
   resolve_builtin
 }
@@ -78,8 +85,62 @@ import ./checker_stmt_labeled_name_check_expr.vibe {
 
 /// Validate a parsed raw-source API input before any checker or lowering pass
 /// can interpret compiler-only source-boundary metadata as trusted provenance.
+///
+/// #3551 review: that includes the spelling of a shipped region-first owned
+/// head (`struct TaskGroup[rg, e]`), which the checker reads as the compiler's
+/// own declaration. A raw source string is checked with no module path, so the
+/// checker cannot tell where the declaration lives -- but this lane can: one
+/// string, with no import merged into it, is never the module that ships it.
 export fn validate_user_source_stmts(stmts: Array[Stmt]) -> Unit with Exception {
   reject_user_iterator_serialized_boundaries(stmts)
+  match first_owned_head_shape_refusal(stmts) {
+    Some(message) => throw(message),
+    None => ()
+  }
+}
+
+/// #3551 review: the refusal for the first top-level struct in `stmts` spelled
+/// like a shipped region-first owned head (`owned_head_shape_refusal`).
+fn first_owned_head_shape_refusal(stmts: Array[Stmt]) -> Option[String] {
+  let mut found: Option[String] = None
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _, tparams) => match owned_head_shape_refusal(name, tparams) {
+        Some(message) => {
+          found = Some(message)
+          i = Array::length(stmts)
+        },
+        None => {
+          i = i + 1
+        }
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+
+/// #3551 review: a merged closure's door for the same rule. Called on each
+/// source file BEFORE the closure is flattened, while the file's path still
+/// says whether it is the module that ships the region-first heads; the
+/// merged program is checked with no module path, so the checker cannot.
+/// `ships_owned_heads` is the collecting lane's answer for `path`
+/// (`is_owned_head_source_location` under the roots it resolves packages
+/// against): the path's tail alone is no answer, since a program may give its
+/// own module a path that ends like the shipped one's, or put it at a location
+/// the resolver could read but does not select.
+export fn validate_source_file_owned_heads(path: String, ships_owned_heads: Bool, stmts: Array[Stmt]) -> Unit with Exception {
+  if ships_owned_heads {
+    ()
+  } else {
+    match first_owned_head_shape_refusal(stmts) {
+      Some(message) => throw(String::concat(message, String::concat(" (in ", String::concat(path, ")")))),
+      None => ()
+    }
+  }
 }
 
 /// The names an aggregate `export { .. }` lists, in source order.
@@ -163,6 +224,47 @@ export fn export_local_nonvalue_kind(stmts: Array[Stmt], name: String) -> Option
     i = i + 1
   }
   found
+}
+
+/// #3542: an import of this name under its own spelling must leave it to the
+/// builtin table. A qualified builtin OPERATION (`Double::floor`) has no
+/// binding of its own: its publication mints a `CtUnknown` marker, and an
+/// importer that bound that marker hid the table's signature behind it -- the
+/// call typed as unknown, `let s: String = Double::floor(2.5)` checked clean,
+/// and the Double result interpolated as a box address.
+export fn import_keeps_builtin_signature(name: String) -> Bool {
+  String::index_of(name, "::") > 0 && lookup_builtin(name) != None && is_explicit_builtin_declaration(name)
+}
+
+/// The type an ALIASED import of a builtin operation binds
+/// (`import @vibe/builtin { Double::floor as floor }`): the builtin's own
+/// signature, generalized over its variables so each use instantiates afresh.
+/// `None` for any other name. Under its own spelling the import binds nothing
+/// (`import_keeps_builtin_signature`); under an alias there is no builtin of
+/// the alias's name to fall back to, so binding the publication's `CtUnknown`
+/// marker left every call untyped and `let s: String = floor(2.5)` read a
+/// Double as a String.
+export fn aliased_builtin_import_type(name: String) -> Option[Type] {
+  if import_keeps_builtin_signature(name) {
+    match registry_builtin_scheme(canonical_builtin_name(name)) {
+      Some(scheme) => Some(scheme),
+      None => match lookup_builtin(name) {
+        Some(ty) => {
+          let vars: Array[Int] = []
+          collect_type_var_ids(ty, vars)
+          if Array::length(vars) == 0 {
+            Some(ty)
+          } else {
+            let no_bounds: Array[(Int, Array[String])] = []
+            Some(CtForAll(vars, no_bounds, ty))
+          }
+        },
+        None => None
+      }
+    }
+  } else {
+    None
+  }
 }
 
 /// #2762: which compiler-provided names a module may republish with an

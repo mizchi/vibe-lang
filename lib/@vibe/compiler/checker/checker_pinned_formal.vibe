@@ -150,11 +150,66 @@ fn text_has_word(text: String, word: String) -> Bool {
   found
 }
 
+/// #3536: refuse a declared type parameter the body makes the same type as
+/// another declared type parameter -- of this declaration or of an enclosing
+/// one. Inside its body a formal is a unification variable (#2130), so
+/// `fn cast[T, U](x: T) -> U { x }` unified `T` with `U` while the scheme
+/// still quantified both: `let n: Int = cast("hello")` compiled and `n + 1`
+/// read the string's pointer. Both formals stay open in the substitution, so
+/// nothing downstream of the scheme can tell; only the collapse can.
+///
+/// The substitutions are read the way `pinned_row_formal_errors` reads them,
+/// for the same reasons: only what the body and the return annotation bound
+/// counts, and a formal `s_in` already binds is not this body's choice.
+///
+/// A formal the body fixes to a CONCRETE type is not judged here: the
+/// declaration's scheme carries the fixed type (#3149), so a caller below it
+/// gets a type error at the call, and #3378 refuses a caller above it.
+export fn collapsed_formal_errors(tparams: Array[String], tparam_ids: Array[Int], body: Expr, s_in: Subst, s_body: Subst, s_deferred: Subst, s_final: Subst, errors: Array[String]) -> Unit {
+  let reported: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(tparam_ids) && i < Array::length(tparams) {
+    let vid = Array::get(tparam_ids, i)
+    let open_in = match subst_lookup(s_in, vid) {
+      Some(_) => false,
+      None => true
+    }
+    if open_in {
+      let at_body = pinned_formal(tparams, tparam_ids, i, s_body)
+      let (kind, other, shared) = if at_body.0 != 0 {
+        at_body
+      } else if pinned_formal(tparams, tparam_ids, i, s_deferred).0 == 0 {
+        pinned_formal(tparams, tparam_ids, i, s_final)
+      } else {
+        (0, "", 0 - 1)
+      }
+      if kind == 1 && !int_array_has(reported, shared) {
+        Array::push(reported, shared)
+        let name = type_param_name(Array::get(tparams, i))
+        Array::push(errors, "write one type parameter in place of both `\{name}` and `\{other}`, or keep their values apart: the body makes `\{name}` and `\{other}` the same type, so a caller that picks two different types for them would read one as the other\{off_marker(railway_expr_off(body))}")
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
 /// What the formal at `i` is fixed to under `s`, spelled for the message, or
 /// "" when it is still free. A free variable that is no declared formal is
 /// free; the formal's own name as a rigid spelling (`CtNamed("T", [])`, an
 /// impl method's erased parameter) is the formal itself.
 fn pinned_text(tparams: Array[String], tparam_ids: Array[Int], i: Int, s: Subst) -> String {
+  let (_, text, _) = pinned_formal(tparams, tparam_ids, i, s)
+  text
+}
+
+/// `pinned_text` with the verdict kept apart from its spelling: kind 0 is
+/// free, 1 is the same type as another formal (the text names it, the third
+/// slot identifies the shared variable), 2 is a concrete type.
+fn pinned_formal(tparams: Array[String], tparam_ids: Array[Int], i: Int, s: Subst) -> (Int, String, Int) {
   let name = type_param_name(Array::get(tparams, i))
   let vid = Array::get(tparam_ids, i)
   match subst_apply(s, CtVar(vid)) {
@@ -197,17 +252,21 @@ fn pinned_text(tparams: Array[String], tparam_ids: Array[Int], i: Int, s: Subst)
       } else {
         ()
       }
-      other
+      if other == "" {
+        (0, "", x)
+      } else {
+        (1, other, x)
+      }
     },
-    CtUnknown => "",
+    CtUnknown => (0, "", 0 - 1),
     CtNamed(hn, args) => if Array::length(args) == 0 && (hn == name || hn == String::concat("#hktformal.", name)) {
-      ""
+      (0, "", 0 - 1)
     } else if Array::length(args) == 0 && String::starts_with(hn, "#hktformal.") {
-      String::substring(hn, 11, String::length(hn))
+      (1, String::substring(hn, 11, String::length(hn)), 0 - 2 - vid)
     } else {
-      type_to_string(CtNamed(hn, args))
+      (2, type_to_string(CtNamed(hn, args)), 0 - 1)
     },
-    t => type_to_string(t)
+    t => (2, type_to_string(t), 0 - 1)
   }
 }
 

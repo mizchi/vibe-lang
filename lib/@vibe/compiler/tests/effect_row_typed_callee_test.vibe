@@ -1,0 +1,174 @@
+//# Imports
+
+// #3539: two effect-row holes that `vibe check` reported clean.
+//
+// 1. A call charged only the row of a callee the effects walk could NAME (a
+//    top-level function, a builtin, a callback parameter, a local closure).
+//    Through anything else -- a call result, an annotated `let` bound to one,
+//    an array element, a struct field, a `match` / `for` / destructuring
+//    binder, a method, or an argument the walk cannot read passed to a `with
+//    e` function -- the callee's row was dropped, and a pure function printed
+//    or threw with no handler. The call is now charged the row of the
+//    callee's inferred function type.
+// 2. A function value whose row is the bare `Exception` converted to a
+//    row-less function type, where `with Console` / `with Exception[K]` were
+//    already refused.
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+import @vibe/compiler/checker {
+  set_error_row_checked
+}
+
+//# Misc
+
+/// The checked exception row is a process-wide switch `cli_main` turns on;
+/// this harness calls the checker directly, so it turns it on itself.
+fn diags(src: String) -> Array[String] with Exception {
+  set_error_row_checked(true)
+  collect_all_diagnostics(src)
+}
+
+/// The one diagnostic `src` reports contains `needle`.
+fn refused_with(src: String, needle: String) -> Bool with Exception {
+  let ds = diags(src)
+  Array::length(ds) == 1 && String::contains(Array::get(ds, 0), needle)
+}
+
+fn clean(src: String) -> Bool with Exception {
+  Array::length(diags(src)) == 0
+}
+
+let mk_console: String = "fn mk() -> (() -> Unit with Console) {\n  () -> println(\"side effect\")\n}\n"
+
+// --- 1. calls through an unnamed callee are charged its row
+
+/// The issue's own program: `mk()()` from an empty-row function.
+test "a call through a call result is charged the callee's row" {
+  let src = String::concat(mk_console, "fn pure_fn() -> Int {\n  mk()()\n  42\n}\n")
+  assert(refused_with(src, "effect row mismatch for 'pure_fn': missing { Console }"))
+  assert(refused_with(src, "hint: declare 'fn pure_fn(...) -> T with Console'"))
+}
+
+test "a call through an annotated let of a call result is charged its row" {
+  let src = String::concat(mk_console, "fn pure_fn() -> Int {\n  let g: () -> Unit with Console = mk()\n  g()\n  42\n}\n")
+  assert(refused_with(src, "missing { Console }"))
+}
+
+test "a call through an unannotated let of a call result is charged its row" {
+  let src = String::concat(mk_console, "fn pure_fn() -> Int {\n  let g = mk()\n  g()\n  42\n}\n")
+  assert(refused_with(src, "missing { Console }"))
+}
+
+test "a call through an array element is charged its row" {
+  let src = "fn pure_fn(fs: Array[() -> Unit with Console]) -> Int {\n  (Array::get(fs, 0))()\n  42\n}\n"
+  assert(refused_with(src, "missing { Console }"))
+}
+
+test "a call through a struct field is charged its row" {
+  let src = "struct S {\n  f: () -> Unit with Console\n}\n\nfn pure_fn(s: S) -> Int {\n  (s.f)()\n  42\n}\n"
+  assert(refused_with(src, "missing { Console }"))
+}
+
+test "a call through a match binder is charged its row" {
+  let src = "fn pure_fn(o: Option[() -> Unit with Console]) -> Int {\n  match o {\n    Some(f) => f(),\n    None => ()\n  }\n  42\n}\n"
+  assert(refused_with(src, "missing { Console }"))
+}
+
+test "a call through a for binder is charged its row" {
+  let src = "fn pure_fn(fs: Array[() -> Unit with Console]) -> Int {\n  for f in fs {\n    f()\n  }\n  42\n}\n"
+  assert(refused_with(src, "missing { Console }"))
+}
+
+test "a call through a destructured binder is charged its row" {
+  let src = "fn pure_fn(p: (Int, () -> Unit with Console)) -> Int {\n  let (n, f) = p\n  f()\n  n\n}\n"
+  assert(refused_with(src, "missing { Console }"))
+}
+
+test "a method call is charged the method's row" {
+  let src = "struct P {\n  n: Int\n}\n\nfn P::say(p: P) -> Unit with Console {\n  println(\"x\")\n}\n\nfn pure_fn(p: P) -> Int {\n  p.say()\n  42\n}\n"
+  assert(refused_with(src, "missing { Console }"))
+}
+
+test "an unreadable argument to a with-e function is charged the row it binds" {
+  let src = "fn apply(f: () -> Unit with e) -> Unit with e {\n  f()\n}\n\nfn pure_fn(fs: Array[() -> Unit with Console]) -> Int {\n  apply(Array::get(fs, 0))\n  42\n}\n"
+  assert(refused_with(src, "missing { Console }"))
+}
+
+test "a call through a call result charges an exception row" {
+  let src = "fn mk() -> (() -> Unit with Exception) {\n  () -> throw(\"boom\")\n}\n\nfn pure_fn() -> Int {\n  mk()()\n  42\n}\n"
+  assert(refused_with(src, "missing { Exception }"))
+}
+
+test "a call through a call result charges a user effect row" {
+  let src = "effect Log {\n  Emit(String) -> Unit\n}\n\nfn mk() -> (() -> Unit with Log) {\n  () -> perform Log::Emit(\"x\")\n}\n\nfn pure_fn() -> Int {\n  mk()()\n  42\n}\n"
+  assert(refused_with(src, "missing { Log }"))
+}
+
+// --- 1. controls: the same shapes accepted
+
+test "the same shapes with pure callees stay clean" {
+  assert(clean("fn mk() -> (() -> Int) {\n  () -> 1\n}\n\nfn pure_fn() -> Int {\n  mk()()\n}\n"))
+  assert(clean("fn pure_fn(fs: Array[() -> Int]) -> Int {\n  (Array::get(fs, 0))()\n}\n"))
+  assert(clean("struct S {\n  f: (Int) -> Int\n}\n\nfn pure_fn(s: S) -> Int {\n  (s.f)(1) + s.f(2)\n}\n"))
+  assert(clean("fn pure_fn(o: Option[() -> Int]) -> Int {\n  match o {\n    Some(f) => f(),\n    None => 0\n  }\n}\n"))
+  assert(clean("fn pure_fn(fs: Array[() -> Unit]) -> Int {\n  for f in fs {\n    f()\n  }\n  42\n}\n"))
+  assert(clean("fn pure_fn(p: (Int, () -> Int)) -> Int {\n  let (n, f) = p\n  f() + n\n}\n"))
+  assert(clean("struct P {\n  n: Int\n}\n\nfn P::get(p: P) -> Int {\n  p.n\n}\n\nfn pure_fn(p: P) -> Int {\n  p.get()\n}\n"))
+}
+
+test "the same shapes stay clean where the row is declared" {
+  assert(clean(String::concat(mk_console, "fn eff_fn() -> Int with Console {\n  mk()()\n  let g: () -> Unit with Console = mk()\n  g()\n  42\n}\n")))
+  assert(clean("fn eff_fn(fs: Array[() -> Unit with Console]) -> Int with Console {\n  (Array::get(fs, 0))()\n  for f in fs {\n    f()\n  }\n  42\n}\n"))
+}
+
+/// One program per row: a row variable of a function with no type
+/// parameters is shared by every call to it (a separate, pre-existing false
+/// refusal), so each instantiation gets its own program here.
+test "a with-e function passes the row of what it is given through" {
+  let apply = "fn apply(f: () -> Unit with e) -> Unit with e {\n  f()\n}\n\n"
+  assert(clean(String::concat(apply, "fn pure_fn(fs: Array[() -> Unit]) -> Int {\n  apply(Array::get(fs, 0))\n  42\n}\n")))
+  assert(clean(String::concat(apply, "fn eff_fn(fs: Array[() -> Unit with Console]) -> Int with Console {\n  apply(Array::get(fs, 0))\n  42\n}\n")))
+  assert(clean(String::concat(apply, "fn eff_fn() -> Int with Console {\n  apply(() -> println(\"x\"))\n  42\n}\n")))
+  let generic = "fn apply[T](x: T, f: () -> Unit with e) -> Unit with e {\n  f()\n}\n\nfn pure_fn(fs: Array[() -> Unit]) -> Int {\n  apply(1, Array::get(fs, 0))\n  42\n}\n\nfn eff_fn(fs: Array[() -> Unit with Console]) -> Int with Console {\n  apply(1, Array::get(fs, 0))\n  42\n}\n"
+  assert(clean(generic))
+}
+
+test "a handler discharges a row charged through a call result" {
+  let src = "effect Log {\n  Emit(String) -> Unit\n}\n\nfn mk() -> (() -> Unit with Log) {\n  () -> perform Log::Emit(\"x\")\n}\n\nfn pure_fn() -> Int {\n  handle {\n    mk()()\n    42\n  } with {\n    Log::Emit(_) => resume(())\n  }\n}\n"
+  assert(clean(src))
+}
+
+// --- 2. a bare `Exception` row cannot be dropped into a row-less slot
+
+let thrower_src: String = "fn thrower() -> Int with Exception {\n  throw(\"dropped\")\n  1\n}\n"
+
+test "a with-Exception function passed to a row-less parameter is refused" {
+  let src = String::concat(thrower_src, "fn call(f: () -> Int) -> Int {\n  f()\n}\n\nfn pure() -> Int {\n  call(thrower)\n}\n")
+  assert(refused_with(src, "the { Exception } effect would be dropped"))
+}
+
+test "a with-Exception function bound to a row-less let is refused" {
+  let src = String::concat(thrower_src, "fn pure() -> Int {\n  let g: () -> Int = thrower\n  g()\n}\n")
+  assert(refused_with(src, "the { Exception } effect would be dropped"))
+}
+
+test "a with-Exception function returned as a row-less type is refused" {
+  let src = String::concat(thrower_src, "fn get() -> () -> Int {\n  thrower\n}\n")
+  assert(refused_with(src, "the { Exception } effect would be dropped"))
+}
+
+test "a with-Exception function stored in a row-less field or element is refused" {
+  let field = String::concat(thrower_src, "struct S {\n  f: () -> Int\n}\n\nfn make() -> S {\n  S::{ f: thrower }\n}\n")
+  assert(refused_with(field, "effect would be dropped"))
+  let elem = String::concat(thrower_src, "fn make() -> Array[() -> Int] {\n  let xs: Array[() -> Int] = [thrower]\n  xs\n}\n")
+  assert(refused_with(elem, "effect would be dropped"))
+}
+
+test "exception rows still pass where the slot carries them" {
+  // An erased slot takes an erased or a kinded value; a row variable takes
+  // either; a closure literal is checked against the parameter's row.
+  let src = String::concat(thrower_src, "fn kinded() -> Int with Exception[String] {\n  throw(\"k\")\n  1\n}\n\nfn call_e(f: () -> Int with Exception) -> Int with Exception {\n  f()\n}\n\nfn apply(f: () -> Int with e) -> Int with e {\n  f()\n}\n\nfn ok() -> Int with Exception {\n  call_e(thrower) + call_e(kinded) + apply(thrower) + call_e(() -> {\n    throw(\"lit\")\n    1\n  })\n}\n")
+  assert(clean(src))
+}

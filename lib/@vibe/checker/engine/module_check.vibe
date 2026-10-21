@@ -19,6 +19,7 @@ import ./diagnostics_parse.vibe {
   engine_find_fn_anchor_off,
   engine_incremental_interface_trace_enabled,
   engine_incremental_typecheck_telemetry_add,
+  engine_locate_import_alias_namespace_msg,
   engine_locate_type_error_heuristic,
   engine_offset_line_col_prefix,
   engine_offset_line_col_range_prefix,
@@ -48,6 +49,8 @@ import @vibe/compiler/cache {
 import @vibe/compiler/checker {
   CheckedProgram,
   check_program_with_projected_import_env_typed_lowering_located_observation,
+  declaring_module_path_clear,
+  declaring_module_path_set,
   retention_summaries_clear,
   retention_summaries_for_path,
   typing_semantics_seed
@@ -65,7 +68,7 @@ import @vibe/compiler/checker/artifacts/program {
   encode_checked_program
 }
 import @vibe/compiler/core {
-  Stmt, TypeEnv, dir_of_path
+  Stmt, TypeEnv, dir_of_path, is_owned_head_source_location_env_fs
 }
 import @vibe/compiler/syntax {
   lex_with_offsets_recovering
@@ -745,10 +748,343 @@ fn engine_locate_assignment_target(source: String, msg: String, marker_at: Int) 
   }
 }
 
+/// #3538: the index of the token that closes the bracket opened at `open`
+/// (`(`/`[`/`{` nest together), or the token count when it never closes.
+fn engine_impl_close_index(tokens: Array[Token], opener: Int) -> Int {
+  let n = Array::length(tokens)
+  let mut depth = 0
+  let mut k = opener
+  let mut close = n
+  while k < n && close == n {
+    match Array::get(tokens, k) {
+      TLParen => {
+        depth = depth + 1
+      },
+      TLBracket => {
+        depth = depth + 1
+      },
+      TLBrace => {
+        depth = depth + 1
+      },
+      TRParen => {
+        depth = depth - 1
+      },
+      TRBracket => {
+        depth = depth - 1
+      },
+      TRBrace => {
+        depth = depth - 1
+      },
+      _ => ()
+    }
+    if depth == 0 {
+      close = k
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  close
+}
+
+/// #3538: the token index of `method`'s name inside the body of the `impl`
+/// of `trait_head` for `owner`, or -1. The impl's methods sit at brace depth
+/// one of the impl body, each a name directly followed by `(`.
+fn engine_impl_method_name_index(tokens: Array[Token], trait_head: String, owner: String, method: String) -> Int {
+  let n = Array::length(tokens)
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < n && found < 0 {
+    match Array::get(tokens, i) {
+      TImpl => {
+        let mut j = i + 1
+        let mut depth = 0
+        let mut saw_trait = false
+        let mut owner_ok = false
+        let mut header_done = false
+        while j < n && !header_done {
+          match Array::get(tokens, j) {
+            TLBracket => {
+              depth = depth + 1
+            },
+            TRBracket => {
+              depth = depth - 1
+            },
+            TIdent(name) => if name == trait_head {
+              saw_trait = true
+            } else {
+              ()
+            },
+            TFor => if depth == 0 && j + 1 < n {
+              owner_ok = match Array::get(tokens, j + 1) {
+                TIdent(name) => name == owner,
+                _ => false
+              }
+            } else {
+              ()
+            },
+            _ => ()
+          }
+          match Array::get(tokens, j) {
+            TLBrace => if depth == 0 {
+              header_done = true
+            } else {
+              j = j + 1
+            },
+            TSemicolon => {
+              header_done = true
+            },
+            TEof => {
+              header_done = true
+            },
+            // A body-less impl ends where the next declaration starts.
+            TFn => {
+              header_done = true
+            },
+            TLet => {
+              header_done = true
+            },
+            TImpl => {
+              header_done = true
+            },
+            TExport => {
+              header_done = true
+            },
+            _ => {
+              j = j + 1
+            }
+          }
+        }
+        let has_body = j < n && match Array::get(tokens, j) {
+          TLBrace => true,
+          _ => false
+        }
+        if has_body && saw_trait && owner_ok {
+          let body_end = engine_impl_close_index(tokens, j)
+          let mut k = j + 1
+          let mut d = 1
+          while k < body_end && found < 0 {
+            match Array::get(tokens, k) {
+              TLBrace => {
+                d = d + 1
+              },
+              TRBrace => {
+                d = d - 1
+              },
+              // ... or by its own binder (`write[Y: Show](..)`).
+              TIdent(name) => if d == 1 && name == method && k + 1 < n {
+                match Array::get(tokens, k + 1) {
+                  TLParen => {
+                    found = k
+                  },
+                  TLBracket => {
+                    found = k
+                  },
+                  _ => ()
+                }
+              } else {
+                ()
+              },
+              _ => ()
+            }
+            k = k + 1
+          }
+        } else {
+          ()
+        }
+        i = j + 1
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+
+/// #3538: the span a ` [@impl-method=TRAIT|OWNER|METHOD|PART|PARAM]` marker
+/// names. The parser gives an impl method's lambda no source offsets, so the
+/// span is found from the tokens: the impl block (its trait and owner), the
+/// method in it, and then the part -- the method name, the parameter PARAM,
+/// the binder PARAM of the method's own `[..]`, the declared return type, or
+/// the `with` clause. Anything the tokens do not
+/// show falls back to the method name, and no method to -1.
+fn engine_impl_method_span(source: String, trait_head: String, owner: String, method: String, part: String, param: String) -> (Int, Int) {
+  let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
+  let n = Array::length(tokens)
+  let at = engine_impl_method_name_index(tokens, trait_head, owner, method)
+  if at < 0 {
+    return (0 - 1, 0 - 1)
+  }
+  let name_span = (Array::get(starts, at), Array::get(ends, at))
+  // The parameter list opens after the method's own binder, if it has one.
+  let params_open = match Array::get(tokens, at + 1) {
+    TLBracket => engine_impl_close_index(tokens, at + 1) + 1,
+    _ => at + 1
+  }
+  if params_open >= n {
+    return name_span
+  }
+  let close = engine_impl_close_index(tokens, params_open)
+  if close >= n {
+    return name_span
+  }
+  if part == "binder" {
+    // The binder PARAM inside the method's own `[..]`.
+    let mut k = at + 2
+    let mut span = name_span
+    while k < params_open - 1 {
+      match Array::get(tokens, k) {
+        TIdent(name) => if name == param && (span.0 == Array::get(starts, at)) {
+          span = (Array::get(starts, k), Array::get(ends, k))
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      k = k + 1
+    }
+    span
+  } else if part == "param" {
+    let mut k = params_open + 1
+    let mut depth = 1
+    let mut span = name_span
+    let mut done = false
+    while k < close && !done {
+      match Array::get(tokens, k) {
+        TLParen => {
+          depth = depth + 1
+        },
+        TLBracket => {
+          depth = depth + 1
+        },
+        TRParen => {
+          depth = depth - 1
+        },
+        TRBracket => {
+          depth = depth - 1
+        },
+        TIdent(name) => if depth == 1 && name == param {
+          let leads = match Array::get(tokens, k - 1) {
+            TLParen => true,
+            TComma => true,
+            _ => false
+          }
+          if leads {
+            span = (Array::get(starts, k), Array::get(ends, k))
+            done = true
+          } else {
+            ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      k = k + 1
+    }
+    span
+  } else if part == "ret" || part == "row" {
+    // The signature tail runs from the `)` to the body's `{`.
+    let mut body = close + 1
+    let mut depth = 0
+    let mut with_at = 0 - 1
+    let mut done = false
+    while body < n && !done {
+      match Array::get(tokens, body) {
+        TLBracket => {
+          depth = depth + 1
+          body = body + 1
+        },
+        TRBracket => {
+          depth = depth - 1
+          body = body + 1
+        },
+        TLParen => {
+          depth = depth + 1
+          body = body + 1
+        },
+        TRParen => {
+          depth = depth - 1
+          body = body + 1
+        },
+        TWith => {
+          if depth == 0 && with_at < 0 {
+            with_at = body
+          } else {
+            ()
+          }
+          body = body + 1
+        },
+        TLBrace => if depth == 0 {
+          done = true
+        } else {
+          body = body + 1
+        },
+        _ => {
+          body = body + 1
+        }
+      }
+    }
+    if !done || body <= close + 1 {
+      name_span
+    } else if part == "row" {
+      if with_at < 0 {
+        name_span
+      } else {
+        (Array::get(starts, with_at), Array::get(ends, body - 1))
+      }
+    } else {
+      let has_arrow = match Array::get(tokens, close + 1) {
+        TThinArrow => true,
+        _ => false
+      }
+      let ret_end = if with_at < 0 {
+        body
+      } else {
+        with_at
+      }
+      if has_arrow && close + 2 < ret_end {
+        (Array::get(starts, close + 2), Array::get(ends, ret_end - 1))
+      } else {
+        name_span
+      }
+    }
+  } else {
+    name_span
+  }
+}
+
+/// #3538: locate (and always strip) the ` [@impl-method=...]` marker.
+fn engine_locate_impl_method(source: String, msg: String, marker_at: Int) -> String {
+  let marker = " [@impl-method="
+  let body_start = marker_at + String::length(marker)
+  let rel_close = String::index_of(String::substring(msg, body_start, String::length(msg)), "]")
+  if rel_close < 0 {
+    return engine_locate_type_error_heuristic(source, String::substring(msg, 0, marker_at))
+  }
+  let close = body_start + rel_close
+  let fields = String::split(String::substring(msg, body_start, close), "|")
+  let stripped = String::concat(String::substring(msg, 0, marker_at), String::substring(msg, close + 1, String::length(msg)))
+  if Array::length(fields) != 5 {
+    return engine_locate_type_error_heuristic(source, stripped)
+  }
+  let (s, e) = engine_impl_method_span(source, Array::get(fields, 0), Array::get(fields, 1), Array::get(fields, 2), Array::get(fields, 3), Array::get(fields, 4))
+  if s < 0 {
+    engine_locate_type_error_heuristic(source, stripped)
+  } else {
+    String::concat(engine_offset_line_col_range_prefix(source, s, e), stripped)
+  }
+}
+
 export fn engine_locate_type_error(source: String, msg: String) -> String {
   let assign_at = String::index_of(msg, " [@assign-target")
   if assign_at >= 0 {
     return engine_locate_assignment_target(source, msg, assign_at)
+  }
+  let impl_method_at = String::index_of(msg, " [@impl-method=")
+  if impl_method_at >= 0 {
+    return engine_locate_impl_method(source, msg, impl_method_at)
   }
   let marker = " [@off="
   let mi = String::index_of(msg, marker)
@@ -983,8 +1319,11 @@ export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool,
   // silently do nothing.
   let fingerprint = engine_typecheck_fs_build_fingerprint(job.path, job.source, job.dep_fps, typing_semantics_seed())
   if Array::length(unresolved_imports) > 0 {
+    // An alias that takes a builtin namespace's name is pointed at in the
+    // import that wrote it; the other import diagnostics name the import
+    // in their text.
     Diagnosed(job.path, for msg in unresolved_imports {
-      String::concat(String::concat(job.path, ": "), msg)
+      String::concat(String::concat(job.path, ": "), engine_locate_import_alias_namespace_msg(job.source, msg))
     })
   } else {
     handle {
@@ -998,7 +1337,17 @@ export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool,
       // call-result offsets for the FS lanes' float_call_offsets channel.
       // #3360: this module publishes what its exported functions keep.
       retention_summaries_for_path(job.path)
-      let (checked_program, located_offsets, eq_offs, eq_keys) = check_program_with_projected_import_env_typed_lowering_located_observation(stmts, import_env)
+      declaring_module_path_set(job.path, job.ships_owned_heads)
+      // A check that throws must not leave this module named as the one
+      // being checked: the cells are process-global.
+      let (checked_program, located_offsets, eq_offs, eq_keys) = handle {
+        check_program_with_projected_import_env_typed_lowering_located_observation(stmts, import_env)
+      } with { Exception::Throw(message) => {
+        declaring_module_path_clear()
+        retention_summaries_clear()
+        throw(message)
+      } }
+      declaring_module_path_clear()
       retention_summaries_clear()
       // `None` (the parse carried no offsets) cannot happen on this lane --
       // parse_program_with_path_impl lexes with offsets -- but if it did, an
@@ -1240,7 +1589,8 @@ export fn engine_run_module_job_dir(dir: String) -> Unit with Env + Exception + 
     source: source,
     deps: deps,
     dep_fps: job_dep_fps,
-    dep_envs: dep_envs
+    dep_envs: dep_envs,
+    ships_owned_heads: is_owned_head_source_location_env_fs(path)
   }
   // Parse errors are still an `Error` out of check_module (see the Phase 1
   // note above). At the transport boundary they have to become a value

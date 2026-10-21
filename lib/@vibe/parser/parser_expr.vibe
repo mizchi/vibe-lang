@@ -1256,16 +1256,20 @@ fn parse_fn_wasm_body(tokens: Array[Token], pos: Int, exported: Bool, name: Stri
   } else {
     ()
   }
-  match peek(tokens, pos) {
+  // The WAT body is one string literal per line, the first often on the
+  // line after `= wasm`; the lexer separates each of those lines with a
+  // synthetic `;` (#3546), which belongs to no statement here.
+  let body_at = wat_line_start(tokens, pos)
+  match peek(tokens, body_at) {
     TString(first) => {
       let mut text = first
-      let mut sp = pos + 1
+      let mut sp = body_at + 1
       let mut more = true
       while more {
-        match peek(tokens, sp) {
+        match peek(tokens, wat_line_start(tokens, sp)) {
           TString(nxt) => {
             text = String::concat(text, String::concat("\n", nxt))
-            sp = sp + 1
+            sp = wat_line_start(tokens, sp) + 1
           },
           _ => {
             more = false
@@ -1276,6 +1280,17 @@ fn parse_fn_wasm_body(tokens: Array[Token], pos: Int, exported: Bool, name: Stri
       (SFnDecl(exported, name, EFn(tps, tbs, params, Some(ret_ty), None, marker), reqs, enss), sp)
     },
     _ => throw("expected WAT string literal after '= wasm' in fn '\{name}' at #\{pos}")
+  }
+}
+
+/// `pos`, or one past a synthetic line `;` that a WAT string line follows.
+fn wat_line_start(tokens: Array[Token], pos: Int) -> Int {
+  match peek(tokens, pos) {
+    TSemicolon => match peek(tokens, pos + 1) {
+      TString(_) => pos + 1,
+      _ => pos
+    },
+    _ => pos
   }
 }
 

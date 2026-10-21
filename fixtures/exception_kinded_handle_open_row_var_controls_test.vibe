@@ -1,0 +1,92 @@
+// #3540: what stays accepted next to the refusal of a kinded arm over an open
+// row variable (fixtures/typecheck/exception_kinded_handle_open_row_var_*).
+// Each shape here is one the refusal's message names as the edit, or one
+// whose row variable cannot carry another exception kind.
+
+fn thrower() -> Int with Exception[String] {
+  throw("boom")
+}
+
+fn int_thrower() -> Int with Exception[Int] {
+  throw(20)
+}
+
+// The erased arm catches every kind by design, with the message as payload.
+fn guarded_erased(f: () -> Int with e) -> Int with e {
+  handle {
+    f() + 1
+  } with { Exception::Throw(m) => String::length(m) }
+}
+
+// The kinded handle moved to the caller, where the row is known.
+fn plus_one(f: () -> Int with e) -> Int with e {
+  f() + 1
+}
+
+// A closed row naming the kind: a caller cannot pass another kind.
+fn guarded_closed(f: () -> Int with Exception[Int]) -> Int {
+  handle {
+    f() + 1
+  } with { Exception[Int]::Throw(code) => code * 2 }
+}
+
+// A kind label beside the variable matches the whole exception family, so
+// the variable carries no exception (#3033).
+fn guarded_pinned[e](f: () -> Int with Exception[Int] + e) -> Int with e {
+  handle {
+    f() + 1
+  } with { Exception[Int]::Throw(code) => code * 2 }
+}
+
+// An erased handle nested in the kinded one is its own catch-all boundary.
+fn guarded_nested(f: () -> Int with e) -> Int with e {
+  handle {
+    let a = handle {
+      f()
+    } with { Exception::Throw(m) => String::length(m) }
+    a + 1
+  } with { Exception[Int]::Throw(code) => code * 2 }
+}
+
+// A kinded handle in a row-polymorphic function that runs the variable
+// outside it.
+fn guarded_outside(f: () -> Int with e) -> Int with e {
+  let base = f()
+  base + handle {
+    int_thrower()
+  } with { Exception[Int]::Throw(code) => code * 2 }
+}
+
+test "the erased arm over an open row catches every kind" {
+  inspect(guarded_erased(thrower), content = "4")
+  inspect(guarded_erased(() -> 41), content = "42")
+}
+
+test "a kinded handle at the caller catches the kind the caller passed" {
+  let r = handle {
+    plus_one(thrower)
+  } with { Exception[String]::Throw(m) => String::length(m) + 100 }
+  inspect(r, content = "104")
+}
+
+test "a closed kinded row under a kinded arm" {
+  inspect(guarded_closed(int_thrower), content = "40")
+  inspect(guarded_closed(() -> 1), content = "2")
+}
+
+test "a kind label pins the row variable" {
+  inspect(guarded_pinned(int_thrower), content = "40")
+  inspect(guarded_pinned(() -> 5), content = "6")
+}
+
+test "an erased handle nested in a kinded one" {
+  inspect(guarded_nested(thrower), content = "5")
+}
+
+test "the variable run outside the kinded handle" {
+  inspect(guarded_outside(() -> 1), content = "41")
+  let r = handle {
+    guarded_outside(thrower)
+  } with { Exception[String]::Throw(m) => String::length(m) }
+  inspect(r, content = "4")
+}

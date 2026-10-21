@@ -1,0 +1,27 @@
+// #3540: a closure that performs what a `handle` answers must not outlive
+// that handle. Held by a lazy iterator: `AsyncIter` keeps its mapping
+// closure in a field and runs it when the `for` pulls, after the handle is
+// gone. This printed `y=-1981583836026241020` / `y=-1369094286720630783`
+// (and nothing for the third element) after `vibe check` was clean.
+// fixtures/handle_bound_closure_inside_test.vibe runs the shapes that stay
+// inside.
+import @vibe/builtin {
+  Array::iter, AsyncIter::map, struct AsyncIter
+}
+
+effect Ask {
+  Get() -> Int
+}
+
+fn main() -> Unit allows Console + Async {
+  let ys = handle {
+    let f = (x: Int) -> Int {
+      perform Ask::Get() + x
+    }
+    AsyncIter::map(Array::iter([1, 2, 3]), f)
+  } with { Ask::Get() => resume(5) }
+  for y in ys {
+    println("y=\{y}")
+  }
+  ()
+}

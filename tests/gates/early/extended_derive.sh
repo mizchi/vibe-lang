@@ -400,9 +400,109 @@ ur_refused fixtures/err_derive_show_recursive_generic_field_refused.vibe 'a deri
 # through a type argument, printed a table index or an address.
 ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type'
 ur_refused fixtures/err_derive_show_bytes_field_refused.vibe 'a derived renderer contains a `Bytes` value' 'write the type'
+# #3544: two modules' `impl Name for Int` -- two sibling imports, or the entry
+# and an import -- left two `Int::name` in the linked program, and the build
+# kept whichever the import order merged first. Refused, naming both impls.
+# The green control (one impl reached along two import paths) rides the unit
+# lane: fixtures/impl_overlap_shared_dep_test.vibe.
+ur_refused fixtures/err_impl_overlap_cross_module_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_b.vibe: line 7:1'
+ur_refused fixtures/err_impl_overlap_entry_vs_dep_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/err_impl_overlap_entry_vs_dep_refused.vibe: line 13:1'
+ur_refused fixtures/err_impl_overlap_cross_module_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' gc
+# #3551: a plain `fn Int::name` in a module that also holds an impl for `Int`
+# (after an intervening statement) is a definition, not that impl's method.
+# It used to be exempted by the owner prefix and built `from-a from-a`. The
+# green side -- a plain definition overriding another module's derive -- rides
+# the unit lane: fixtures/derive_override_cross_module_test.vibe.
+ur_refused fixtures/err_impl_overlap_plain_after_impl_refused.vibe 'both define `Int::name`' 'remove one of these: `a definition`' linear 'fixtures/modules/impl_overlap_plain_after_impl.vibe: line 18:1'
+# #3551: no unit is exempt by a marker comment. A module opening with the
+# facade's comment, and a real sibling the loader prefixes with the
+# shared-import marker (#897), were skipped and built `from-a from-a` / `from-pkg-a from-pkg-a`.
+ur_refused fixtures/err_impl_overlap_marker_comment_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_marker_comment.vibe: remove'
+ur_refused fixtures/err_impl_overlap_vpkg_sibling_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_pkg_b/impl.vibe: remove'
+# #3551: a binding in another trait's namespace inside an impl's run no longer
+# ends it; both modules' inherited `Int::get` built `from-a from-a`.
+ur_refused fixtures/err_impl_overlap_inherited_after_trait_binding_refused.vibe 'both define `Int::get`' 'remove one of these: `impl Child for Int`' linear 'fixtures/modules/impl_overlap_inherited_b.vibe: line 7:1'
+# #3551 review: a bodyless impl's method declared behind another statement is
+# still the impl's; both modules' `Int::name` read as plain definitions and
+# built `from-a from-a`.
+ur_refused fixtures/err_impl_overlap_fallback_after_helper_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_fallback_b.vibe: line 8:1'
+# #3551 review: `impl [T] Name for Box[T]` and `impl Name for Box[Int]` in two
+# modules bind differently encoded method names, so only comparing names let
+# both through and both modules printed `from-int`. The heads are compared as
+# the checker compares them in one file. The green controls (disjoint targets,
+# a generic impl in one module) ride the unit lane:
+# fixtures/impl_overlap_{disjoint_targets,generic_single}_test.vibe.
+ur_refused fixtures/err_impl_overlap_generic_cross_module_refused.vibe 'both implement `Name` for the same types' 'remove one of these, or narrow one so their targets no longer overlap: `impl Name for Box[Int]`' linear 'fixtures/modules/impl_overlap_box_int.vibe: line 6:1'
+ur_refused fixtures/err_impl_overlap_generic_cross_module_refused.vibe 'both implement `Name` for the same types' 'remove one of these, or narrow one so their targets no longer overlap' gc
+# #3551 review: no unit is exempt by its path. An ordinary module imported
+# from the path the loader writes a contract's types module to was skipped, so
+# this built `from-types-path from-types-path` (`from-a from-a` with the
+# imports swapped). Both files are written here, not tracked: `.vibe/build/`
+# is the build directory.
+mkdir -p .vibe/build/vpkg_types
+cat > .vibe/build/vpkg_types/types_impl_overlap_gate.vibe <<'EOF'
+import ../../../fixtures/modules/impl_overlap_trait.vibe {
+  trait Name
+}
+
+impl Name for Int {
+  name(x: Int) -> String {
+    "from-types-path"
+  }
+}
+
+export fn types_path_name() -> String {
+  Name::name(1)
+}
+EOF
+cat > "$urdir/err_impl_overlap_types_path_refused.vibe" <<'EOF'
+import ../../.vibe/build/vpkg_types/types_impl_overlap_gate.vibe {
+  types_path_name
+}
+
+import ../../fixtures/modules/impl_overlap_a.vibe {
+  a_name
+}
+
+test "both modules keep their own impl" {
+  inspect("\{types_path_name()} \{a_name()}", "from-types-path from-a")
+}
+EOF
+ur_refused "$urdir/err_impl_overlap_types_path_refused.vibe" 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_a.vibe: line 7:1'
+rm -f .vibe/build/vpkg_types/types_impl_overlap_gate.vibe
+# #3551: a `derive (Hash)` field the derived key cannot key -- a declared type
+# with no `hash_key` (keyed by a rendering that is not injective), and an
+# erased type parameter (keyed by address, even with `Box::to_string` written).
+ur_refused fixtures/err_derive_hash_show_only_field_refused.vibe 'keys field `i` by the key of `Inner`' 'add `Hash` to the `derive` of `Inner`'
+ur_refused fixtures/err_derive_hash_show_only_field_refused.vibe 'keys field `i` by the key of `Inner`' 'add `Hash` to the `derive` of `Inner`' gc
+ur_refused fixtures/err_derive_hash_generic_array_field_refused.vibe 'field `xs` holds `T`' 'write `Box::hash_key` yourself'
+ur_refused fixtures/err_derive_hash_generic_array_field_refused.vibe 'field `xs` holds `T`' 'write `Box::hash_key` yourself' gc
+# #3551: a `Map` field, keyed by the map's address (two equal maps, two keys),
+# and a field whose type's written `hash_key` takes an `Int` -- imported from
+# another module -- which the generated key called with the value anyway. The
+# green side (an aliased field keyed by content, local and imported) rides the
+# unit lane: fixtures/derive_hash_alias_field_test.vibe.
+ur_refused fixtures/err_derive_hash_map_field_refused.vibe 'field `m` holds `Map[String, Int]`, which has no key' 'write `S::hash_key` yourself'
+ur_refused fixtures/err_derive_hash_map_field_refused.vibe 'field `m` holds `Map[String, Int]`, which has no key' 'write `S::hash_key` yourself' gc
+ur_refused fixtures/err_derive_hash_wrong_signature_refused.vibe 'but `Inner::hash_key` takes `Int`' 'write `Inner::hash_key` as `fn Inner::hash_key(x: Inner) -> String`'
+ur_refused fixtures/err_derive_hash_wrong_signature_refused.vibe 'but `Inner::hash_key` takes `Int`' 'write `Inner::hash_key` as `fn Inner::hash_key(x: Inner) -> String`' gc
+# #3551: an imported `hash_key` that declares `with Console`. The derived key
+# declares no effects and is generated after effect checking, so a caller with
+# an empty row printed through it.
+ur_refused fixtures/err_derive_hash_effectful_hash_key_refused.vibe 'would perform `Console` unchecked' 'remove `with Console` from `Inner::hash_key`'
+ur_refused fixtures/err_derive_hash_effectful_hash_key_refused.vibe 'would perform `Console` unchecked' 'remove `with Console` from `Inner::hash_key`' gc
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
 ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type' gc
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' gc 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
+# #3547: an `Array[T]` field of a `derive (Show)` generic type is refused at the
+# type, naming the field and the edit -- not in the compiler's spelling of the
+# helper it generated.
+ur_refused fixtures/err_derive_show_generic_array_field_refused.vibe 'the elements of `w: Array[T]`' 'write `G::to_string` yourself'
+ur_refused fixtures/err_derive_show_generic_array_field_refused.vibe 'the elements of `w: Array[T]`' 'write `G::to_string` yourself' gc
+# #3559: an explicit `H::to_string(h)` on a `derive (Show)` generic whose type
+# arguments are not known at the call printed a field's address.
+ur_refused fixtures/err_derive_show_generic_qualified_call_unknown_refused.vibe 'cannot call `H::to_string` here' 'call it where the type is concrete'
+ur_refused fixtures/err_derive_show_generic_qualified_call_unknown_refused.vibe 'cannot call `H::to_string` here' 'call it where the type is concrete' gc
 # #3084: a generic function's result typed, at the call site, as a struct with
 # no renderer printed its address; the checker's row names the struct.
 ur_refused fixtures/err_interp_generic_call_missing_show_refused.vibe 'cannot interpolate a value of type `Hidden`' 'add `derive(Show)` to `Hidden`' linear 'fixtures/err_interp_generic_call_missing_show_refused.vibe: line 14:14'
@@ -439,6 +539,28 @@ ur_refused fixtures/err_eq_formal_payload_refused.vibe 'compares values with a p
 # #3019 rides the same helper: a lowering-time refusal asserted on its message
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'
+# #3540: a handler arm's effects belong to the handlers around its `handle`.
+# Where the lowering that guarantees that cannot take the program, the build
+# is refused with the edit instead of answering through a nested handler.
+ur_refused fixtures/err_handle_arm_throw_inner_catch_refused.vibe 'an exception handler between the `perform` and this `handle` would catch it' 'resume with a value and `throw` after this `handle`' linear 'fixtures/err_handle_arm_throw_inner_catch_refused.vibe: line 21:28'
+ur_refused fixtures/err_handle_arm_effect_cycle_refused.vibe 'handler arms of the effects `Ask` and `Log` each perform another of them' 'move the `perform` out of one of those arms' linear 'fixtures/err_handle_arm_effect_cycle_refused.vibe: line 37:15'
+ur_refused fixtures/err_handle_arm_throw_inner_catch_refused.vibe 'an exception handler between the `perform` and this `handle` would catch it' 'resume with a value and `throw` after this `handle`' gc 'fixtures/err_handle_arm_throw_inner_catch_refused.vibe: line 21:28'
+ur_refused fixtures/err_handle_arm_effect_cycle_refused.vibe 'handler arms of the effects `Ask` and `Log` each perform another of them' 'move the `perform` out of one of those arms' gc 'fixtures/err_handle_arm_effect_cycle_refused.vibe: line 37:15'
+# #3547: an arm's `return` (not a `resume` capture) sent this handle to the
+# lowering that cannot take a call inside a `for`; the refusal names the
+# `return` and leads with the edit.
+ur_refused fixtures/err_handle_arm_return_for_call_refused.vibe 'a handler arm for `Ask` here leaves the function with `return`' 'write `perform Ask::..` in the `handle` body itself'
+ur_refused fixtures/err_handle_arm_return_for_call_refused.vibe 'a handler arm for `Ask` here leaves the function with `return`' 'write `perform Ask::..` in the `handle` body itself' gc
+ur_refused fixtures/err_handle_arm_return_outer_break_refused.vibe 'leaves a loop outside it, which the rewritten body cannot do' 'write `perform Ask::..` in the `handle` body itself'
+ur_refused fixtures/err_handle_arm_return_outer_break_refused.vibe 'leaves a loop outside it, which the rewritten body cannot do' 'write `perform Ask::..` in the `handle` body itself' gc
+for ur_case in err_handle_arm_return_for_call_refused err_handle_arm_return_outer_break_refused; do
+  for ur_lane in linear gc; do
+    if grep -qF 'captures `resume` as a value' "$urdir/${ur_case}_$ur_lane.wasm.diag"; then
+      echo "[compiler-gate] FAIL: $ur_case.vibe on $ur_lane blames a \`resume\` capture the program does not have (#3547)" >&2
+      exit 1
+    fi
+  done
+done
 # #3042: an `Ordering` of another shape that reached a module only through an
 # imported signature. The module's checker never saw the declaration, so the
 # merged program is refused instead of stopping with an internal error.

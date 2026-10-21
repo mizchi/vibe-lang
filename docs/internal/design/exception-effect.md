@@ -104,12 +104,71 @@ effect Exception[E] {
   `Exception[K]::Throw(e) => ..` catches every exception its body raises, so
   the checker allows the body to raise only `K`. An erased or unresolved throw,
   a callee declared with the erased `Exception`, and a throw of another kind
-  are all refused under a kinded arm. A closure literal handed straight to a
+  are all refused under a kinded arm. So is running a row variable of the
+  enclosing signature (a callback's `with e`, #3540): a caller may fill it with
+  any kind, so the handle belongs at the caller, unless a kind label beside the
+  variable (`with Exception[K] + e`) has taken the whole exception family. A
+  closure literal handed straight to a
   callee is judged against the row the callee's parameter declares; an erased
   `handle .. with Exception` nested inside is its own catch-all boundary.
 - A kinded arm binds its payload at the kind's type (#2963):
   `Exception[IoError]::Throw(e)` gives `e : IoError`. The erased
-  `Exception::Throw(m)` binder is untyped, since it may receive any kind.
+  `Exception::Throw(m)` binder is the thrown message, a `String` (#3541).
+  While the arm body is typed, `m` is a fresh variable. A use that pins no
+  type, such as `throw(m)` or a generic parameter, leaves the variable open,
+  and it is then pinned to `String`. A use at any other type is refused, and
+  the message names the kinded arm. `String` is the payload type measured in
+  practice: 715 erased arms bind their payload, and the compiler's own
+  sources read it as the message. An opaque payload type would refuse all of
+  them. The kind is not carried at run time, so a non-`String` value thrown
+  through an erased `with Exception` row still reaches this binder.
+  The kinded row and arm are the typed path for such a value.
+- A rethrow from the erased arm records no kind, so it needs the erased row
+  (#3541, #3551 review). That covers `throw(m)` and any payload that may carry
+  `m`. While the arm body is typed, the checker knows the arm's carrier
+  BINDINGS (`checker_erased_throw_carriers.vibe`): `m`, plus, to a fixpoint,
+  a `let` or assigned variable whose value mentions a carrier, the binders of
+  a `match`, `for`, `loop` or handler over one, every store target (below),
+  the parameters of a function literal that may receive one (a
+  `let`-bound or directly applied literal gets its direct calls' arguments;
+  any other use may pass it anything), and every `perform` result once a
+  nested handler arm mentions a carrier (it may `resume` with one). A call
+  whose arguments or callee mention a carrier may store it into anything its
+  arguments or receiver reach, so every binding they mention is a store
+  target, a projection included: `store(outer.cell, m)`,
+  `outer.cell.value = m`, `outer.cells[0].value = m`, `outer.cell.put(m)` and
+  `store(cell_of(outer), m)` all make `outer` one. A store target's own value
+  (its `let` or assigned value, the subject it was matched or iterated from, a
+  tracked lambda's call arguments, a local closure's captures) is one in turn,
+  so `let c = outer.cell` then `store(c, m)` reaches `outer` too. A carrier
+  ESCAPES when it is handed to a callee the walk does not follow (a function,
+  closure or parameter bound outside the arm, a method, a computed callee, or
+  an effect operation other than a throw) or stored into a binding of the
+  enclosing code; a builtin keeps it only in its result and its arguments.
+  After an escape, judged for the whole arm because a loop may read before
+  it stores, every name of the program bound outside the arm and every
+  `perform` result is a carrier: `remember(m)` then `throw(recall())`,
+  `slot(Some(m))` then `throw(slot(None))`, `sink(m)` then
+  `throw(cell.value)`, `Array::push(saved, m)` then a read through another
+  name for `saved`. A value the arm keeps and a throw OUTSIDE every arm reads
+  back is not seen by this walk (#3541). Each
+  identifier is resolved by scope, so a binding of the same spelling to a
+  value of its own (`let m = "other"`, a `match` or lambda parameter `m`)
+  shadows the carrier for its scope only. A throw payload records no kind
+  when its type still holds `m`'s open variable, or when it mentions a carrier
+  and its type could hold a `String`. The type check alone would depend on the order of
+  uses: `m` is pinned to `String` at its first such use, and after that
+  `id(m)` or an alias has plain type `String`. A declared type (an enum, a
+  struct, a named or applied type) could always hold a `String`: its type
+  arguments do not show its fields, so `enum Why { Because(String) }` has
+  none, yet `Why::Because(m)` holds the caught value. Its fields are not
+  looked into, so `Code::C(String::length(m))` for `enum Code { C(Int) }`
+  records no kind either; the kinded arm is the edit. A payload whose type
+  holds no `String` and is not a declared type (`String::length(m)`) is a new
+  value of that type and keeps its kind. Such a site is
+  recorded as `#erased-rethrow`, which the effects pass takes as final:
+  the payload's syntax would answer `String` for `String::concat("ctx: ", m)`
+  or an alias annotated `String`.
 - A handle has **at most one exception arm**: the channel carries no kind and
   only the first arm would be compiled, so two kinded arms side by side are
   refused. Match on the payload inside one arm, or nest handles.

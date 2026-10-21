@@ -200,6 +200,7 @@ import ./railway_binds.vibe {
 
 import ./renderer_scope.vibe {
   char_render_expr,
+  has_derived_renderer,
   interp_has_repl,
   interp_missing_show_msg,
   interp_take_repl,
@@ -727,6 +728,73 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Ar
 /// a missing row as a fresh name instead rendered a same-type `Char` shadow as
 /// its code point and an `Option` one as an address, and let a `Raw` without
 /// `Show` past the missing-Show refusal.
+/// #3559: `H::to_string(x)` names the one renderer `derive (Show)` generates
+/// for a generic `H`, and that renderer erases the formals: `H::{ v: [1, 2] }`
+/// printed `H { v: 280 }` while `"\{x}"` printed the content. Where this pass
+/// knows the argument's instantiation, the call renders the way interpolation
+/// does, field by field at the real types.
+fn derived_generic_show_call(callee: Expr, args: Array[Expr], off: Int, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool with Exception {
+  match callee {
+    EIdent(n, _) => if Array::length(args) == 1 && String::ends_with(n, "::to_string") && n != Array::get(dtd_show_self_fn, 0) {
+      let head = String::substring(n, 0, String::length(n) - 11)
+      if show_generic_known(head) && has_derived_renderer(head) {
+        let arg = Array::get(args, 0)
+        let syn_sh = interp_shape(infer_shape(arg, struct_sets, render_classify_var_types(var_types, arg), fn_returns))
+        let sh = if String::starts_with(syn_sh, "{g:") {
+          syn_sh
+        } else {
+          dtd_typed_render_shape_for(arg)
+        }
+        if String::starts_with(sh, "{g:") && generic_shape_head(sh) == head {
+          true
+        } else if !in_derived_renderer() && infer_arg_type_name(arg, struct_sets, render_classify_var_types(var_types, arg), fn_returns) == Some(head) {
+          // An `H` whose type arguments are not known here (a generic
+          // function's parameter): the derived renderer would print a field
+          // through the erased formal, so refuse, as `"\{x}"` does (#3082).
+          throw(derived_generic_show_unknown_msg(namespace_rename_original(head), off))
+        } else {
+          false
+        }
+      } else {
+        false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// #3559: the body being walked is a renderer `derive` generated (`X::to_string`
+/// / `X::hash_key` of a derived type, or a `__` helper). Those render a field
+/// through its own type's derived renderer by design.
+fn in_derived_renderer() -> Bool {
+  let cur = Array::get(dtd_show_self_fn, 0)
+  if String::starts_with(cur, "__") {
+    true
+  } else if String::ends_with(cur, "::to_string") {
+    has_derived_renderer(String::substring(cur, 0, String::length(cur) - 11))
+  } else if String::ends_with(cur, "::hash_key") {
+    has_derived_renderer(String::substring(cur, 0, String::length(cur) - 10))
+  } else {
+    false
+  }
+}
+
+/// #3559: the refusal for `H::to_string(x)` where `x`'s type arguments are not
+/// known, naming the edit.
+fn derived_generic_show_unknown_msg(head: String, off: Int) -> String {
+  let lead = String::concat("cannot call `", String::concat(head, "::to_string` here: the type arguments of this `"))
+  let why = String::concat(head, "` are not known, and its derived renderer would print a field through an erased type parameter (an address for a `Double` or an array) -- call it where the type is concrete (e.g. `let v: ")
+  let edit = String::concat(head, String::concat("[Double] = ...`, then `", String::concat(head, "::to_string(v)`), or write the renderer yourself (#3559)")))
+  let base = String::concat(lead, String::concat(why, edit))
+  if off >= 0 {
+    String::concat(base, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+  } else {
+    base
+  }
+}
+
 fn render_classify_var_types(var_types: Array[(String, String)], arg: Expr) -> Array[(String, String)] {
   match arg {
     EIdent(n, off) => if off >= 0 && render_masked(var_types, n) {
@@ -1152,7 +1220,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       // inside the else-if chain below so the resolvers run at most once per
       // call site. Slice 1 (the argument's type names a `T::to_string`) wins
       // over slice 2 (the argument is, or is headed by, a wrapper).
-      let interp_repl = if is_interp_to_string_call(callee, args) || is_show_shim_call(callee, args) {
+      let interp_repl = if is_interp_to_string_call(callee, args) || is_show_shim_call(callee, args) || derived_generic_show_call(callee, args, off, struct_sets, var_types, fn_returns) {
         // #2745 (Codex, P1 on #2761): FIRST, ahead of every rendering path below.
         // All of them key on the argument's type NAME, and a nested formal is a
         // NAME -- so a binder spelled like a type they recognise takes that

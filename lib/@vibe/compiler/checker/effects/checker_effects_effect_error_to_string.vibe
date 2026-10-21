@@ -162,6 +162,29 @@ export fn effect_error_to_string(err: EffectError) -> String {
         body
       }
     },
+    EEKindedHandleOpenRow(fname, handler, vars, off) => {
+      let block = entry_block_display_name(fname)
+      // A handle in a local lambda's body names that lambda (#3540).
+      let where_ = if fname == "#lambda:" {
+        "this lambda"
+      } else if String::starts_with(fname, "#lambda:") {
+        String::concat("the lambda '", String::concat(String::substring(fname, 8, String::length(fname)), "'"))
+      } else if String::length(block) > 0 {
+        block
+      } else {
+        String::concat("'", String::concat(fname, "'"))
+      }
+      let kind = exception_label_kind(handler)
+      let edit = String::concat("move this `", String::concat(handler, String::concat("::Throw` handle out of ", String::concat(where_, String::concat(" to its caller, where { ", String::concat(vars, " } is filled in"))))))
+      let edit2 = String::concat("; or give the callback the closed row `with ", String::concat(handler, String::concat("` in place of { ", String::concat(vars, " }; or catch with the erased `Exception::Throw(m)` arm"))))
+      let why = String::concat(". The handle's body runs the effect row variable { ", String::concat(vars, String::concat(" }, which a caller may fill with another exception kind, and a kinded arm catches EVERY exception at run time (the exception channel carries no kind), so it would read that payload as `", String::concat(kind, "`"))))
+      let body = String::concat(edit, String::concat(edit2, why))
+      if off >= 0 {
+        String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+      } else {
+        body
+      }
+    },
     EEEffectRowMismatch(fname, missing0, declared0, required0, off) => {
       // #3051: a published row spells a formal `NAME$K`; show `NAME`.
       // #3351: and a struct `^Name` or an enum `^^Name`; show `Name`.
@@ -208,8 +231,10 @@ export fn effect_error_to_string(err: EffectError) -> String {
       } else if missing_is_erased_exception_only(missing) && declared_is_kinded_exception(declared) {
         // #2964 / #3015: the requirement is an exception whose KIND this check
         // could not resolve, under a row that promises kinds. Adding the erased
-        // label is one honest edit; the others keep the kinded promise.
-        "\nhint: the kind of this exception is not known here, and a kinded row promises exactly its kinds -- give the thrown value a type (`let e: K = ..` then `throw(e)`), give the callback or callee a kinded `with Exception[K]` row, or declare the erased `with Exception`"
+        // label is one honest edit; the others keep the kinded promise. A
+        // value an erased arm caught is of no known kind however it is
+        // rethrown, so its edit is the kinded arm (#3551 review).
+        "\nhint: the kind of this exception is not known here, and a kinded row promises exactly its kinds -- give the thrown value a type (`let e: K = ..` then `throw(e)`), give the callback or callee a kinded `with Exception[K]` row, rethrow what a kinded arm `Exception[K]::Throw(e)` caught instead of the erased `Exception::Throw(e)`, or declare the erased `with Exception`"
       } else if String::length(fname) == 0 {
         String::concat("\nhint: add 'with ", String::concat(row_as_source(required), "' to the enclosing function"))
       } else if String::length(entry_block) > 0 {

@@ -1,0 +1,192 @@
+// #3540 review follow-ups to the handler-arm ordering.
+//
+// An arm's own effects must reach the handlers around its `handle`, so a
+// nested handler that a copied arm could land inside is either renamed apart
+// (when everything it handles is a `perform` written in its body) or ordered
+// after the arm's effects. Three shapes the first version got wrong:
+//
+// - two unrelated functions that need opposite orders were refused together
+//   (the order was chosen once per effect for the whole program);
+// - a nested handler that finished BEFORE the perform the arm answers still
+//   ordered the effects, so the mirrored shape made a false cycle;
+// - a local whose name shadows a pure top-level function was read as
+//   that function, so its `Log` was not seen and the arm's `Log` went to the
+//   inner handler again.
+effect Ask {
+  Get() -> Int
+}
+
+effect Log {
+  Say(String) -> Unit
+}
+
+// `first` needs `Log` resolved before `Ask`'s arm is copied...
+fn first(log: Array[String]) -> Int {
+  handle {
+    handle {
+      handle {
+        perform Ask::Get() + 1
+      } with { Log::Say(m) => {
+        Array::push(log, "first INNER \{m}")
+        resume(())
+      } }
+    } with { Ask::Get() => {
+      perform Log::Say("from Ask arm")
+      resume(10)
+    } }
+  } with { Log::Say(m) => {
+    Array::push(log, "first OUTER \{m}")
+    resume(())
+  } }
+}
+
+// ...and `second` the opposite.
+fn second(log: Array[String]) -> Int {
+  handle {
+    handle {
+      handle {
+        perform Log::Say("body")
+        1
+      } with { Ask::Get() => resume(100) }
+    } with { Log::Say(m) => {
+      let v = perform Ask::Get()
+      Array::push(log, "second \{m} \{v}")
+      resume(())
+    } }
+  } with { Ask::Get() => resume(7) }
+}
+
+// A `Log` handler that finished before the `Ask` perform cannot hold the arm.
+fn finished_before(log: Array[String]) -> Int {
+  handle {
+    handle {
+      handle {
+        perform Log::Say("body")
+      } with { Log::Say(m) => {
+        Array::push(log, "INNER \{m}")
+        resume(())
+      } }
+      perform Ask::Get() + 1
+    } with { Ask::Get() => {
+      perform Log::Say("from Ask arm")
+      resume(20)
+    } }
+  } with { Log::Say(m) => {
+    Array::push(log, "OUTER \{m}")
+    resume(())
+  } }
+}
+
+// The mirror: an `Ask` handler that finished before the `Log` perform.
+fn finished_before_mirror(log: Array[String]) -> Int {
+  handle {
+    handle {
+      let x = handle {
+        perform Ask::Get()
+      } with { Ask::Get() => resume(100) }
+      perform Log::Say("body \{x}")
+      x
+    } with { Log::Say(m) => {
+      let v = perform Ask::Get()
+      Array::push(log, "\{m} \{v}")
+      resume(())
+    } }
+  } with { Ask::Get() => resume(7) }
+}
+
+// A pure top-level function...
+fn say(m: String) -> String {
+  m
+}
+
+fn log_then_ask() -> Int with Ask + Log {
+  perform Log::Say("callee")
+  perform Ask::Get() + 1
+}
+
+// ...shadowed by a local closure that performs `Log`. The inner handler
+// reaches `Log` through a call, so it cannot be renamed apart; the order has
+// to see that the arm's `say` is the local, not the pure function.
+fn shadowed(log: Array[String]) -> Int {
+  handle {
+    let pre = "local "
+    let say = (m: String) -> Unit with Log {
+      perform Log::Say(pre + m)
+    }
+    handle {
+      handle {
+        log_then_ask()
+      } with { Log::Say(m) => {
+        Array::push(log, "INNER \{m}")
+        resume(())
+      } }
+    } with { Ask::Get() => {
+      say("from Ask arm")
+      resume(30)
+    } }
+  } with { Log::Say(m) => {
+    Array::push(log, "OUTER \{m}")
+    resume(())
+  } }
+}
+
+test "two functions needing opposite orders both answer" {
+  let log: Array[String] = []
+  inspect(first(log), "11")
+  inspect(second(log), "1")
+  inspect(log, "[first OUTER from Ask arm, second body 7]")
+}
+
+test "a handler that finished before the perform orders nothing" {
+  let log: Array[String] = []
+  inspect(finished_before(log), "21")
+  inspect(finished_before_mirror(log), "100")
+  inspect(log, "[INNER body, OUTER from Ask arm, body 100 7]")
+}
+
+test "a local shadowing a pure function is not that function" {
+  let log: Array[String] = []
+  inspect(shadowed(log), "31")
+  inspect(log, "[INNER callee, OUTER local from Ask arm]")
+  inspect(say("x"), "x")
+}
+
+// A program effect spelled like the name a renamed nested handler would get
+// (the old numbering gave this one the third copy in the file).
+// The copy must take another name: sharing this one made the renamed `Log`
+// handler catch `count_it`'s `Count` (a trap), and gave the copy this
+// effect's operation table.
+effect Log__nested_3 {
+  Count(Int, Int) -> Int
+}
+
+fn count_it() -> Int with Log__nested_3 {
+  perform Log__nested_3::Count(3, 4)
+}
+
+fn generated_name_taken(log: Array[String]) -> Int {
+  handle {
+    handle {
+      handle {
+        handle {
+          perform Ask::Get() + count_it()
+        } with { Log::Say(m) => {
+          Array::push(log, "INNER \{m}")
+          resume(())
+        } }
+      } with { Ask::Get() => {
+        perform Log::Say("from Ask arm")
+        resume(10)
+      } }
+    } with { Log::Say(m) => {
+      Array::push(log, "OUTER \{m}")
+      resume(())
+    } }
+  } with { Log__nested_3::Count(a, b) => resume(a * b) }
+}
+
+test "a renamed handler does not take a program effect's name" {
+  let log: Array[String] = []
+  inspect(generated_name_taken(log), "22")
+  inspect(log, "[OUTER from Ask arm]")
+}

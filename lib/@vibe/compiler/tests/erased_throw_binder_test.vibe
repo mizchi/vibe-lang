@@ -1,0 +1,344 @@
+//# Imports
+
+// #3541: the binder of an ERASED exception arm (`Exception::Throw(m)`) is the
+// thrown message, a `String`. It used to be untyped, so `m + 1` on a thrown
+// "str" compiled and printed a pointer. A use at another type is refused with
+// the kinded arm as the edit; a use that does not pin a type is accepted.
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+import @vibe/compiler/checker {
+  set_error_row_checked
+}
+
+//# Helpers
+
+/// Every diagnostic, with the exception row discipline switched on (the CLI
+/// turns it on; this harness calls the checker directly).
+fn row_checked_diags(src: String) -> Array[String] with Exception {
+  set_error_row_checked(true)
+  collect_all_diagnostics(src)
+}
+
+//# Tests
+
+/// The issue's program: a thrown String read as an Int.
+test "an erased binder used as Int is refused with the kinded arm as the edit" {
+  let src = "fn f() -> Int with Exception { throw(\"str\") }\nfn g() -> Int {\n  handle { f() } with { Exception::Throw(m) => m + 1 }\n}\n"
+  assert(check_source_err_contains(src, "write `Exception[Int]::Throw(m)` to catch a thrown `Int`"))
+}
+
+/// An annotation at another type is refused the same way.
+test "an erased binder bound at Int is refused" {
+  let src = "fn f() -> Int with Exception { throw(\"str\") }\nfn g() -> Int {\n  handle { f() } with { Exception::Throw(m) => {\n    let n: Int = m\n    n\n  } }\n}\n"
+  assert(check_source_err_contains(src, "binds `m` as the thrown message, a `String`"))
+}
+
+/// Returned as the handle's value where the body produces an Int.
+test "an erased binder returned as the handle's Int is refused" {
+  let src = "fn f() -> Int with Exception { throw(\"str\") }\nfn g() -> Int {\n  handle { f() } with { Exception::Throw(m) => m }\n}\n"
+  assert(check_source_err_contains(src, "write `Exception[Int]::Throw(m)`"))
+}
+
+/// The arm's body leaves the binder open and the handle's result is read at
+/// Int afterwards: pinned to String, so the later use is a mismatch.
+test "an erased binder that escapes the arm open is pinned to String" {
+  let src = "fn g() -> Int {\n  let r: Int = handle { throw(\"x\") } with { Exception::Throw(m) => m }\n  r\n}\n"
+  assert(check_source_err_contains(src, "expected Int, got String"))
+}
+
+/// Controls: the uses that read the message as a String, and the uses that
+/// accept any type, keep compiling.
+test "an erased binder used as a String is accepted" {
+  let src = "fn f() -> Int with Exception { throw(\"str\") }\nfn g() -> String {\n  handle { f(); \"ok\" } with { Exception::Throw(m) => String::concat(\"failed: \", m) }\n}\n"
+  assert(check_source_ok(src))
+}
+
+test "an erased binder rethrown or ignored is accepted" {
+  let src = "fn f() -> Int with Exception { throw(\"str\") }\nfn id[T](x: T) -> T { x }\nfn g() -> Int with Exception {\n  handle { f() } with { Exception::Throw(m) => {\n    let _k = id(m)\n    throw(m)\n  } }\n}\n"
+  assert(check_source_ok(src))
+}
+
+/// The binder is pinned to String, but the value it holds is whatever was
+/// thrown: a rethrow is a throw of no known kind, not an `Exception[String]`
+/// the enclosing row would have to declare (`TaskGroup::run`'s shape).
+test "rethrowing an erased binder is not a String throw" {
+  let src = "enum TaskErr {\n  Boom\n}\nfn run[e](body: () -> Int with e) -> Int with Exception[TaskErr] + e {\n  handle { body() } with { Exception::Throw(p) => throw(p) }\n}\n"
+  let diags = row_checked_diags(src)
+  inspect(diags, "[]")
+}
+
+/// The kinded arm keeps typing its payload at the kind.
+test "a kinded arm binds its payload at the kind" {
+  let src = "fn f() -> Int with Exception[Int] { throw(7) }\nfn g() -> Int {\n  handle { f() } with { Exception[Int]::Throw(e) => e + 1 }\n}\n"
+  assert(check_source_ok(src))
+}
+
+//# Rethrowing through an expression (#3551 review)
+
+/// `g` declares `Exception[String]` and rethrows, from an erased arm, a value
+/// built by `body` from the binder `m`. `f` throws an `Int`, so a caller's
+/// `Exception[String]::Throw(s)` arm would read that `Int` as a `String`.
+fn rethrow_diags(body: String) -> Array[String] with Exception {
+  let head = "fn f() -> Int with Exception[Int] { throw(7) }\nfn id[T](x: T) -> T { x }\nstruct Box[T] {\n  v: T\n}\n"
+  let g = String::concat("fn g() -> Int with Exception[String] {\n  handle { f() } with { Exception::Throw(m) => {\n", String::concat(body, "\n  } }\n}\n"))
+  row_checked_diags(String::concat(head, g))
+}
+
+/// Whether the rethrow was charged as an exception of no known kind.
+fn charged_erased(diags: Array[String]) -> Bool {
+  let mut found = false
+  for d in diags {
+    if String::contains(d, "missing { Exception::Throw }") {
+      found = true
+    }
+  }
+  found
+}
+
+test "an erased binder rethrown through a generic call is not a String throw" {
+  assert(charged_erased(rethrow_diags("    throw(id(m))")))
+}
+
+test "an erased binder rethrown through a conditional is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let c = true\n    throw(if c { m } else { m })")))
+}
+
+/// The binder is already pinned to String when the alias is made, so the
+/// alias's type alone no longer says where its value came from.
+test "an alias made after a String use is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let _n = String::length(m)\n    let m2 = m\n    throw(m2)")))
+}
+
+test "a generic call after a String use is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let _n = String::length(m)\n    throw(id(m))")))
+}
+
+test "an erased binder rethrown through a closure is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let k = () -> m\n    throw(k())")))
+}
+
+test "an erased binder rethrown through a container is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let b = Box::{ v: m }\n    throw(b.v)")))
+  assert(charged_erased(rethrow_diags("    let xs = [m]\n    throw(Array::get(xs, 0))")))
+  assert(charged_erased(rethrow_diags("    throw(match Some(m) { Some(v) => v, None => m })")))
+}
+
+/// Annotating the alias does not change the value it holds.
+test "an annotated alias of an erased binder is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let m2: String = m\n    throw(m2)")))
+}
+
+/// Controls: a payload that does not carry the binder keeps its kind, and so
+/// does a kinded arm's binder, whose type is the kind the body may throw.
+test "a rethrow that does not carry an erased binder keeps its kind" {
+  inspect(rethrow_diags("    throw(\"other\")"), "[]")
+}
+
+test "a kinded arm's binder rethrown through a generic call keeps its kind" {
+  let src = "fn f() -> Int with Exception[String] { throw(\"x\") }\nfn id[T](x: T) -> T { x }\nfn g() -> Int with Exception[String] {\n  handle { f() } with { Exception[String]::Throw(m) => throw(id(m)) }\n}\n"
+  inspect(row_checked_diags(src), "[]")
+}
+
+/// A payload whose type holds no `String` is a new value of that type, so it
+/// keeps its kind.
+test "an Int built from an erased binder keeps its kind" {
+  let src = "fn f() -> Int with Exception[Int] { throw(7) }\nfn g() -> Int with Exception[Int] {\n  handle { f() } with { Exception::Throw(m) => throw(String::length(m)) }\n}\n"
+  inspect(row_checked_diags(src), "[]")
+}
+
+//# A declared type built from the binder (#3551 review)
+
+/// `g` declares `Exception[<row>]` and rethrows, from an erased arm, the
+/// declared value `body` builds from the binder `m`, after `decls`. `f`
+/// throws an `Int`, so a caller's `Exception[<row>]::Throw(w)` arm would read
+/// that `Int` as the `String` in `w`.
+fn nominal_diags(decls: String, row: String, body: String) -> Array[String] with Exception {
+  let head = String::concat("fn f() -> Int with Exception[Int] { throw(7) }\n", decls)
+  let sig = String::concat("fn g() -> Int with Exception[", String::concat(row, "] {\n  handle { f() } with { Exception::Throw(m) => {\n"))
+  row_checked_diags(String::concat(head, String::concat(sig, String::concat(body, "\n  } }\n}\n"))))
+}
+
+/// A field or payload is not shown by the type's arguments: `Why` has none,
+/// and `Why::Because(m)` holds the caught value. This was accepted, and a
+/// caller's `Exception[Why]::Throw(w)` arm read the `Int` 7 as a `String`.
+test "an enum payload built from an erased binder is not a known kind" {
+  let why = "enum Why {\n  Because(String)\n}\n"
+  assert(charged_erased(nominal_diags(why, "Why", "    throw(Why::Because(m))")))
+  assert(charged_erased(nominal_diags(why, "Option[Why]", "    throw(Some(Why::Because(m)))")))
+  assert(charged_erased(nominal_diags(why, "Why", "    let _n = String::length(m)\n    let w = Why::Because(m)\n    throw(w)")))
+}
+
+test "a struct literal built from an erased binder is not a known kind" {
+  let w = "struct W {\n  s: String\n}\n"
+  assert(charged_erased(nominal_diags(w, "W", "    throw(W::{ s: m })")))
+  let boxed = "struct Box[T] {\n  v: T\n}\n"
+  assert(charged_erased(nominal_diags(boxed, "Box[String]", "    throw(Box::{ v: m })")))
+}
+
+/// The fields are not looked into: a declared type built from the binder
+/// records no kind even when no field could hold a `String`. The kinded arm
+/// or the erased row is the edit.
+test "a declared type with no String field built from an erased binder is not a known kind" {
+  let code = "enum Code {\n  C(Int)\n}\n"
+  assert(charged_erased(nominal_diags(code, "Code", "    throw(Code::C(String::length(m)))")))
+}
+
+/// Controls: a declared value that does not carry the binder keeps its kind,
+/// and so does one built under the kinded arm.
+test "a declared value that does not carry an erased binder keeps its kind" {
+  let why = "enum Why {\n  Because(String)\n}\n"
+  inspect(nominal_diags(why, "Why", "    let _n = String::length(m)\n    throw(Why::Because(\"other\"))"), "[]")
+  let src = "fn f() -> Int with Exception[String] { throw(\"x\") }\nenum Why {\n  Because(String)\n}\nfn g() -> Int with Exception[Why] {\n  handle { f() } with { Exception[String]::Throw(m) => throw(Why::Because(m)) }\n}\n"
+  inspect(row_checked_diags(src), "[]")
+}
+
+//# A rebinding of the binder's spelling (#3551 review)
+
+/// A `let` that rebinds `m` to a value of its own throws a `String` of its
+/// own: it shadows the carrier for its scope.
+test "a let that shadows an erased binder throws its own kind" {
+  inspect(rethrow_diags("    let m = \"other\"\n    throw(m)"), "[]")
+  inspect(rethrow_diags("    let mut m = \"other\"\n    m = String::concat(m, \"!\")\n    throw(m)"), "[]")
+}
+
+test "a match or for binder that shadows an erased binder throws its own kind" {
+  inspect(rethrow_diags("    match Some(\"other\") {\n      Some(m) => throw(m),\n      None => throw(\"none\")\n    }"), "[]")
+  inspect(rethrow_diags("    for m in [\"a\", \"b\"] {\n      throw(m)\n    }\n    0"), "[]")
+}
+
+/// A lambda bound by `let` receives only its direct calls' arguments.
+test "a lambda parameter that shadows an erased binder throws its own kind" {
+  inspect(rethrow_diags("    let k = (m: String) -> throw(m)\n    k(\"other\")"), "[]")
+  inspect(rethrow_diags("    let _n = String::length(m)\n    let k = (s: String) -> throw(s)\n    k(\"other\")"), "[]")
+}
+
+/// The shadow ends with its block: the arm's `m` after it is the caught value.
+test "an erased binder used after a shadowing block is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let c = true\n    if c {\n      let m = \"other\"\n      let _n = String::length(m)\n    }\n    throw(m)")))
+}
+
+/// A rebinding whose value comes from a carrier is a carrier.
+test "a rebinding derived from an erased binder is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let m = id(m)\n    throw(m)")))
+  assert(charged_erased(rethrow_diags("    match Some(m) {\n      Some(m) => throw(m),\n      None => throw(\"none\")\n    }")))
+  assert(charged_erased(rethrow_diags("    let k = () -> m\n    let m = \"other\"\n    throw(k())")))
+  assert(charged_erased(rethrow_diags("    let mut x = \"a\"\n    x = m\n    let m = \"other\"\n    throw(x)")))
+}
+
+/// A nested handler that resumes with the caught value hands it to a
+/// `perform`, whose result names no carrier.
+test "a perform resumed with an erased binder is not a String throw" {
+  let src = "effect Ask {\n  Get() -> String\n}\nfn f() -> Int with Exception[Int] { throw(7) }\nfn g() -> Int with Exception[String] {\n  handle { f() } with { Exception::Throw(m) => handle {\n    let v = perform Ask::Get()\n    throw(v)\n  } with {\n    Ask::Get() => resume(m)\n  } }\n}\n"
+  assert(charged_erased(row_checked_diags(src)))
+}
+
+/// A lambda that may receive the caught value: called with it directly,
+/// aliased, applied where it is written, or reached through a container.
+test "a lambda parameter that may receive an erased binder is not a String throw" {
+  assert(charged_erased(rethrow_diags("    let k = (m: String) -> throw(m)\n    k(m)")))
+  assert(charged_erased(rethrow_diags("    let k = (s: String) -> throw(s)\n    let k2 = k\n    k2(m)")))
+  assert(charged_erased(rethrow_diags("    ((s: String) -> throw(s))(m)")))
+  assert(charged_erased(rethrow_diags("    let xs: Array[String] = []\n    Array::push(xs, m)\n    let m = Array::get(xs, 0)\n    throw(m)")))
+}
+
+//# A carrier stored through a projection (#3551 review)
+
+/// `g` rethrows, from an erased arm, a value read back from `outer` after
+/// `body` stored the binder `m` somewhere `outer` reaches. `store` writes its
+/// `String` into the cell, so `outer.cell.value` holds whatever `f` threw.
+fn stored_diags(body: String) -> Array[String] with Exception {
+  let head = "fn f() -> Int with Exception[Int] { throw(7) }\nstruct Cell {\n  mut value: String\n}\nstruct Outer {\n  cell: Cell;\n  cells: Array[Cell]\n}\nfn store(c: Cell, v: String) -> Unit {\n  c.value = v\n}\nfn Cell::put(c: Cell, v: String) -> Unit {\n  c.value = v\n}\nfn cell_of(o: Outer) -> Cell {\n  o.cell\n}\n"
+  let g = String::concat("fn g(outer: Outer) -> Int with Exception[String] {\n  handle { f() } with { Exception::Throw(m) => {\n", String::concat(body, "\n  } }\n}\n"))
+  row_checked_diags(String::concat(head, g))
+}
+
+test "an erased binder stored beside a projection is not a String throw" {
+  assert(charged_erased(stored_diags("    store(outer.cell, m)\n    throw(outer.cell.value)")))
+  assert(charged_erased(stored_diags("    store(outer.cells[0], m)\n    throw(outer.cells[0].value)")))
+  assert(charged_erased(stored_diags("    store(cell_of(outer), m)\n    throw(outer.cell.value)")))
+}
+
+test "an erased binder assigned through a projection is not a String throw" {
+  assert(charged_erased(stored_diags("    outer.cell.value = m\n    throw(outer.cell.value)")))
+  assert(charged_erased(stored_diags("    outer.cells[0].value = m\n    throw(outer.cells[0].value)")))
+}
+
+test "an erased binder passed to a projected receiver is not a String throw" {
+  assert(charged_erased(stored_diags("    outer.cell.put(m)\n    throw(outer.cell.value)")))
+}
+
+/// What a store target was bound from, iterated over, matched on or called
+/// with is a store target too.
+test "an erased binder stored through an alias of a projection is not a String throw" {
+  assert(charged_erased(stored_diags("    let c = outer.cell\n    store(c, m)\n    throw(outer.cell.value)")))
+  assert(charged_erased(stored_diags("    let o = outer\n    o.cell.value = m\n    throw(outer.cell.value)")))
+  assert(charged_erased(stored_diags("    let get = () -> outer.cell\n    store(get(), m)\n    throw(outer.cell.value)")))
+  assert(charged_erased(stored_diags("    let put = (c: Cell) -> store(c, m)\n    put(outer.cell)\n    throw(outer.cell.value)")))
+  assert(charged_erased(stored_diags("    for c in outer.cells {\n      store(c, m)\n    }\n    throw(Array::get(outer.cells, 0).value)")))
+  assert(charged_erased(stored_diags("    match outer {\n      Outer::{ cell, cells } => store(cell, m)\n    }\n    throw(outer.cell.value)")))
+}
+
+/// Controls: a store of a value of its own, or a read of a cell nothing
+/// stored the binder into, keeps its kind.
+test "a projection nothing stored an erased binder into keeps its kind" {
+  inspect(stored_diags("    store(outer.cell, \"x\")\n    throw(outer.cell.value)"), "[]")
+  inspect(stored_diags("    let _n = String::length(m)\n    throw(outer.cell.value)"), "[]")
+}
+
+//# A carrier that escapes the walk (#3551 review)
+
+/// `g` rethrows, from an erased arm, after `body` handed the binder `m` to
+/// code the walk does not follow: the top-level `remember`, which keeps it in
+/// the global `saved` that `recall` reads, or a parameter of `g`.
+fn escape_diags(body: String) -> Array[String] with Exception {
+  let head = "let saved: Array[String] = []\nfn remember(s: String) -> Unit {\n  Array::push(saved, s)\n}\nfn recall() -> String {\n  Array::get(saved, 0)\n}\nfn f() -> Int with Exception[Int] { throw(7) }\n"
+  let g = String::concat("fn g(slot: (Option[String]) -> String, sink: (String) -> Unit, keep: Array[String], view: Array[String]) -> Int with Exception[String] {\n  handle { f() } with { Exception::Throw(m) => {\n", String::concat(body, "\n  } }\n}\n"))
+  row_checked_diags(String::concat(head, g))
+}
+
+test "an erased binder kept by a top-level function is not a String throw" {
+  assert(charged_erased(escape_diags("    remember(m)\n    throw(recall())")))
+  assert(charged_erased(escape_diags("    let k = (s: String) -> remember(s)\n    k(m)\n    throw(recall())")))
+  assert(charged_erased(escape_diags("    remember(m)\n    let v = recall()\n    throw(v)")))
+}
+
+test "an erased binder kept by a closure bound outside the arm is not a String throw" {
+  assert(charged_erased(escape_diags("    let _ = slot(Some(m))\n    throw(slot(None))")))
+  assert(charged_erased(escape_diags("    sink(m)\n    throw(Array::get(view, 0))")))
+}
+
+/// A store into a binding of the enclosing code may be read through another.
+test "an erased binder stored into an outer binding is not a String throw" {
+  assert(charged_erased(escape_diags("    Array::push(keep, m)\n    throw(Array::get(view, 0))")))
+}
+
+/// An operation of a program effect is handled outside the arm, even one
+/// spelled like the exception's own throw.
+test "an erased binder performed into a program effect is not a String throw" {
+  let src = "effect ExceptionLog {\n  Throw(String) -> Unit\n  Get() -> String\n}\nfn f() -> Int with Exception[Int] { throw(7) }\nfn g() -> Int with Exception[String] + ExceptionLog {\n  handle { f() } with { Exception::Throw(m) => {\n    perform ExceptionLog::Throw(m)\n    throw(perform ExceptionLog::Get())\n  } }\n}\n"
+  assert(charged_erased(row_checked_diags(src)))
+}
+
+/// Escape is judged for the whole arm: the read may run after the store on
+/// a later iteration.
+test "a read before the escape is not a String throw" {
+  assert(charged_erased(escape_diags("    let mut i = 0\n    while i < 2 {\n      if i == 1 {\n        throw(recall())\n      }\n      remember(m)\n      i = i + 1\n    }\n    0")))
+}
+
+/// Controls: a value of its own thrown after an escape, and state read back
+/// when nothing escaped, keep their kind.
+test "a value of its own thrown after an escape keeps its kind" {
+  inspect(escape_diags("    remember(m)\n    throw(\"logged\")"), "[]")
+  inspect(escape_diags("    remember(m)\n    throw(String::concat(\"a\", \"b\"))"), "[]")
+}
+
+test "state read back without an escape keeps its kind" {
+  inspect(escape_diags("    let _n = String::length(String::concat(\"ctx: \", m))\n    throw(recall())"), "[]")
+  inspect(escape_diags("    let xs: Array[String] = []\n    Array::push(xs, m)\n    throw(Array::get(view, 0))"), "[]")
+}

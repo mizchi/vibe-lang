@@ -1,0 +1,246 @@
+// #3540: a closure that performs what a `handle` answers may be used inside
+// that handle -- called, called through another closure, applied in place,
+// handed to a function that calls it -- and a closure that performs nothing
+// the handle answers may leave it. The refused shapes are the
+// fixtures/typecheck/handle_bound_closure_*_reject.vibe rows.
+effect Ask {
+  Get() -> Int
+}
+
+fn apply(f: () -> Int) -> Int {
+  f() + 100
+}
+
+fn called_inside() -> Int {
+  handle {
+    let h = () -> perform Ask::Get() + 1
+    h() + h()
+  } with { Ask::Get() => resume(5) }
+}
+
+fn called_through_closure() -> Int {
+  handle {
+    let h = () -> perform Ask::Get() + 1
+    let k = () -> h() * 10
+    k()
+  } with { Ask::Get() => resume(5) }
+}
+
+fn applied_in_place() -> Int {
+  handle {
+    (() -> perform Ask::Get() + 1)()
+  } with { Ask::Get() => resume(5) }
+}
+
+fn handed_to_a_caller() -> Int {
+  handle {
+    apply(() -> perform Ask::Get() + 1)
+  } with { Ask::Get() => resume(5) }
+}
+
+// A suspend arm (it takes `resume` as a value) answers the closure's perform
+// while the body runs. Its own effect: one effect is handled either by
+// suspend arms or by tail-resumptive ones throughout a program.
+effect Pull {
+  Next() -> Int
+}
+
+fn suspend_arm() -> Int {
+  handle {
+    let h = () -> perform Pull::Next() + 1
+    h() * 2
+  } with { Pull::Next() => {
+    let k = resume
+    k(41)
+  } }
+}
+
+// The closure handles `Ask` itself, so it needs nothing from the handle
+// around it.
+fn self_handled() -> () -> Int {
+  handle {
+    () -> handle {
+      perform Ask::Get() + 1
+    } with { Ask::Get() => resume(20) }
+  } with { Ask::Get() => resume(5) }
+}
+
+// A pure closure is the handle's value, and the exception arm's value is a
+// closure too: neither throws.
+fn pure_value(fail: Bool) -> () -> Int {
+  handle {
+    if fail {
+      throw("no")
+    } else {
+      ()
+    }
+    () -> 3
+  } with { Exception[String]::Throw(_) => () -> 0 }
+}
+
+fn thrown_inside() -> Int {
+  handle {
+    let h = () -> {
+      throw("x")
+      1
+    }
+    h()
+  } with { Exception[String]::Throw(_) => 0 }
+}
+
+// The handle's value holds a function, but every performing closure in the
+// body stays inside: one applied in place (through parentheses), one bound by
+// `let` and only called, one handed straight to a call that returns an
+// `Int`. Measured: `(() -> perform ..)()` beside a handle whose value is an
+// `AsyncIter` was refused by the first version of #3540's check.
+struct Holder {
+  f: () -> Int
+}
+
+fn holder_beside_bound_closures() -> Holder {
+  handle {
+    let h = () -> perform Ask::Get() + 1
+    let n = (() -> perform Ask::Get())() + h() + apply(() -> perform Ask::Get())
+    Holder::{ f: () -> n }
+  } with { Ask::Get() => resume(5) }
+}
+
+fn pair_beside_called_closure() -> (Int, () -> Int) {
+  handle {
+    let h = (x: Int) -> perform Ask::Get() + x
+    let f = () -> 3
+    (h(1), f)
+  } with { Ask::Get() => resume(5) }
+}
+
+// A throwing function reached through a local alias, called inside the
+// handle; the pure closure beside it leaves.
+fn maybe(fail: Bool) -> Int with Exception[String] {
+  if fail {
+    throw("no")
+  } else {
+    ()
+  }
+  7
+}
+
+fn alias_called_inside(fail: Bool) -> (Int, () -> Int) {
+  handle {
+    let f = maybe
+    let h = () -> f(fail) + 1
+    (h(), () -> 3)
+  } with { Exception[String]::Throw(_) => (0, () -> 0) }
+}
+
+// A method that performs what the handle answers: one returning a value
+// (`get`), and one whose returned closure carries the row in its type
+// (`rowed`), so the caller of that closure supplies the handler.
+struct Factory {
+  k: Int
+}
+
+fn Factory::get(self: Factory) -> Int with Ask {
+  perform Ask::Get() + self.k
+}
+
+fn Factory::rowed(self: Factory) -> (() -> Int with Ask) with Ask {
+  let base = perform Ask::Get()
+  () -> perform Ask::Get() + self.k + base
+}
+
+fn drive(f: () -> Int with Ask) -> Int {
+  handle {
+    f()
+  } with { Ask::Get() => resume(7) }
+}
+
+fn method_results() -> (Int, Int) {
+  let fac = Factory::{ k: 1 }
+  let n = handle {
+    fac.get()
+  } with { Ask::Get() => resume(5) }
+  let g = handle {
+    fac.rowed()
+  } with { Ask::Get() => resume(100) }
+  (n, drive(g))
+}
+
+// A function that keeps the closure it is handed, at a parameter whose
+// type carries the row: the closure takes the row, so whoever calls the kept
+// value later passes the handler (`drive`, answering 7).
+let kept: Array[() -> Int with Ask] = []
+
+fn keep_rowed(f: () -> Int with Ask) -> Unit {
+  Array::push(kept, f)
+}
+
+fn kept_with_its_row() -> (Int, Int, Int) {
+  let n = handle {
+    keep_rowed(() -> perform Ask::Get() + 1)
+    let h = () -> perform Ask::Get() + 2
+    keep_rowed(h)
+    perform Ask::Get()
+  } with { Ask::Get() => resume(5) }
+  (n, drive(Array::get(kept, 0)), drive(Array::get(kept, 1)))
+}
+
+// A function that may throw and returns a declared type whose field holds a
+// closure: an exception row counts the functions a result type spells, not
+// those inside a declared type's fields (compiler state and `MutMap`s hold
+// callbacks there), and this one does not throw.
+struct Table {
+  fs: Array[(Int) -> Int]
+}
+
+fn load(n: Int) -> Table with Exception[String] {
+  if n < 0 {
+    throw("neg")
+  } else {
+    ()
+  }
+  Table::{ fs: [(x: Int) -> x + n] }
+}
+
+fn table_from_a_throwing_call() -> Int {
+  let t = handle {
+    load(2)
+  } with { Exception[String]::Throw(_) => Table::{ fs: [] } }
+  let f = Array::get(t.fs, 0)
+  f(3)
+}
+
+test "a handle-bound closure called inside its handle" {
+  inspect(called_inside(), "12")
+  inspect(called_through_closure(), "60")
+  inspect(applied_in_place(), "6")
+  inspect(handed_to_a_caller(), "106")
+  inspect(suspend_arm(), "84")
+}
+
+test "a function value leaves beside closures that stay inside" {
+  let held = holder_beside_bound_closures()
+  let f = held.f
+  inspect(f(), "116")
+  let (a, g) = pair_beside_called_closure()
+  inspect(a, "6")
+  inspect(g(), "3")
+}
+
+test "a closure that needs nothing from the handle leaves it" {
+  let g = self_handled()
+  inspect(g(), "21")
+  let p = pure_value(false)
+  inspect(p(), "3")
+  let q = pure_value(true)
+  inspect(q(), "0")
+  inspect(thrown_inside(), "0")
+  let (a, g) = alias_called_inside(false)
+  inspect(a, "8")
+  inspect(g(), "3")
+  let (z, h) = alias_called_inside(true)
+  inspect(z, "0")
+  inspect(h(), "0")
+  inspect(method_results(), "(6, 108)")
+  inspect(kept_with_its_row(), "(5, 8, 9)")
+  inspect(table_from_a_throwing_call(), "5")
+}

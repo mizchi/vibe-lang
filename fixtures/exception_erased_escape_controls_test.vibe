@@ -1,0 +1,118 @@
+// #3551 review controls: once the erased arm's binder reaches a callee the
+// carrier walk does not follow, a throw that reads state back is a throw of
+// no known kind (fixtures/typecheck/exception_erased_rethrow_*_reject.vibe).
+// What stays accepted, with the answers it gives: rethrowing the binder under
+// the erased row, matching on it, handing it to a builtin or to a function of
+// the program and then throwing a value of its own, keeping it in a local of
+// the arm, and the same store and read under a KINDED arm.
+
+let saved: Array[String] = []
+
+fn remember(s: String) -> Unit {
+  Array::push(saved, s)
+}
+
+fn recall() -> String {
+  Array::get(saved, Array::length(saved) - 1)
+}
+
+fn fail_code() -> Int with Exception[Int] {
+  throw(7)
+}
+
+fn fail_text() -> Int with Exception[String] {
+  throw("boom")
+}
+
+/// The binder rethrown as written, under the erased row.
+fn rethrow_erased() -> Int with Exception {
+  handle {
+    fail_code()
+  } with { Exception::Throw(m) => throw(m) }
+}
+
+/// Matched on, then a String of its own thrown.
+fn matched() -> Int with Exception[String] {
+  handle {
+    fail_text()
+  } with { Exception::Throw(m) => match m {
+    "boom" => throw("was boom"),
+    _ => throw("other")
+  } }
+}
+
+/// Handed to builtins, then a String of its own thrown.
+fn via_builtin() -> Int with Exception[String] {
+  handle {
+    fail_text()
+  } with { Exception::Throw(m) => {
+    let _n = String::length(String::concat("ctx: ", m))
+    throw("after builtin")
+  } }
+}
+
+/// Handed to a function of the program, then a literal thrown.
+fn via_program_fn() -> Int with Exception[String] {
+  handle {
+    fail_text()
+  } with { Exception::Throw(m) => {
+    remember(m)
+    throw("logged")
+  } }
+}
+
+/// Kept in a local array of the arm, then a String of its own thrown.
+fn via_local() -> Int with Exception[String] {
+  handle {
+    fail_text()
+  } with { Exception::Throw(m) => {
+    let xs: Array[String] = []
+    Array::push(xs, m)
+    throw(String::concat("kept ", "one"))
+  } }
+}
+
+/// The same store and read under the kinded arm: the payload is a `String`.
+fn kinded_store_and_read() -> Int with Exception[String] {
+  handle {
+    fail_text()
+  } with { Exception[String]::Throw(e) => {
+    remember(e)
+    throw(recall())
+  } }
+}
+
+fn catch_text(r: () -> Int with Exception[String]) -> String {
+  handle {
+    let _ = r()
+    "none"
+  } with { Exception[String]::Throw(s) => s }
+}
+
+test "an erased binder rethrown under the erased row reaches an erased arm" {
+  let r = handle {
+    let _ = rethrow_erased()
+    "none"
+  } with { Exception::Throw(m) => "\{m}" }
+  inspect(r, "7")
+}
+
+test "a String of its own thrown after a match on the binder keeps its kind" {
+  inspect(catch_text(matched), "was boom")
+}
+
+test "a String of its own thrown after a builtin call keeps its kind" {
+  inspect(catch_text(via_builtin), "after builtin")
+}
+
+test "a literal thrown after a program call keeps its kind" {
+  inspect(catch_text(via_program_fn), "logged")
+}
+
+test "a String of its own thrown after a local store keeps its kind" {
+  inspect(catch_text(via_local), "kept one")
+}
+
+test "a kinded arm's binder stored and read back keeps its kind" {
+  inspect(catch_text(kinded_store_and_read), "boom")
+}

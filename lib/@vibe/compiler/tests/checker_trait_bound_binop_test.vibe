@@ -1,7 +1,7 @@
 //# Imports
 
 import ./checker_parity_test_support.vibe {
-  check_source_err, check_source_ok
+  check_source_err, check_source_err_contains, check_source_ok
 }
 
 import @vibe/builtin {
@@ -82,10 +82,16 @@ test "952: ord_clamp-shaped [T: Ord] fn accepts String AND Int call sites in one
 /// generalize then exported an unbounded (U, U) -> Bool, so `bad(true, false)`
 /// slipped past the call-site bound check. The bounds of BOTH operands' vars
 /// are now re-recorded on the survivor.
+///
+/// #3536: `a < b` makes `T` and `U` one type, so the declaration itself is
+/// refused now -- a caller could otherwise pick two different types for them.
+/// The one-formal spelling keeps the bound on both operands.
 test "952 review: one-sided [T: Ord, U] keeps the Ord bound on the unified var" {
   assert(check_source_err("fn bad[T: Ord, U](a: T, b: U) -> Bool { a < b }\nlet _e = () -> { bad(true, false) }"))
-  assert(check_source_ok("fn bad[T: Ord, U](a: T, b: U) -> Bool { a < b }\nlet _e = () -> { bad(1, 2) }"))
-  assert(check_source_ok("fn bad[T: Ord, U](a: T, b: U) -> Bool { a < b }\nlet _e = () -> { bad(\"a\", \"b\") }"))
+  assert(check_source_err_contains("fn bad[T: Ord, U](a: T, b: U) -> Bool { a < b }\nlet _e = () -> { bad(1, 2) }", "write one type parameter in place of both `T` and `U`"))
+  assert(check_source_err("fn bad[T: Ord](a: T, b: T) -> Bool { a < b }\nlet _e = () -> { bad(true, false) }"))
+  assert(check_source_ok("fn good[T: Ord](a: T, b: T) -> Bool { a < b }\nlet _e = () -> { good(1, 2) }"))
+  assert(check_source_ok("fn good[T: Ord](a: T, b: T) -> Bool { a < b }\nlet _e = () -> { good(\"a\", \"b\") }"))
 }
 
 /// Concrete survivor: unifying the bounded var against a concrete operand

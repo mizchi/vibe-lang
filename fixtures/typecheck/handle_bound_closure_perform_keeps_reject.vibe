@@ -1,0 +1,26 @@
+// #3540: a closure that performs what a `handle` answers must not outlive
+// that handle. It is handed to an effect operation, whose handler -- outside
+// this handle -- keeps it. `g()` trapped after `vibe check` was clean.
+effect Ask {
+  Get() -> Int
+}
+
+effect Store {
+  Put(() -> Int) -> Unit
+}
+
+fn main() -> Unit allows Console {
+  let saved: Array[() -> Int] = []
+  handle {
+    handle {
+      perform Store::Put(() -> perform Ask::Get() + 1)
+    } with { Ask::Get() => resume(5) }
+  } with {
+    Store::Put(f) => {
+      Array::push(saved, f)
+      resume(())
+    }
+  }
+  let g = Array::get(saved, 0)
+  println("g=\{g()}")
+}

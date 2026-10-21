@@ -72,9 +72,11 @@ import ./checker_effects_throw_payload_kind.vibe {
   fn_binding_param_effects,
   instantiate_callee_label_at,
   is_entry_point_name,
+  is_kinded_handle_pseudo_label,
   is_program_entry_name,
   join_labels,
   kinded_handle_marker,
+  kinded_handle_owner_prefix,
   labels_union,
   lookup_fn_effs,
   lookup_program_fn_effs,
@@ -216,6 +218,19 @@ fn closure_arg_declared_base(arg: Expr, declared: Array[String], callee: String,
   }
 }
 
+/// #3540: where a kinded handle sits: `fn_name`, or -- when the handle is in
+/// a local lambda's body -- `#lambda:<name>` (`#lambda:` for an unnamed
+/// one), which the message renders as that lambda.
+fn kinded_handle_owner(fn_name: String, declared: Array[String]) -> String {
+  let mut owner = fn_name
+  for l in declared {
+    if String::starts_with(l, kinded_handle_owner_prefix()) {
+      owner = String::concat("#lambda:", String::substring(l, String::length(kinded_handle_owner_prefix()), String::length(l)))
+    }
+  }
+  owner
+}
+
 export fn make_contextual_row_error(fn_name: String, declared: Array[String], missing: Array[String], off: Int) -> EffectError {
   // #2985 review (Codex P0): under a kinded exception handler the body's
   // exception requirements are checked exactly (see kinded_handle_marker);
@@ -238,8 +253,20 @@ export fn make_contextual_row_error(fn_name: String, declared: Array[String], mi
   } else {
     no_str_labels()
   }
+  // #3540: a row variable missing there is one the kinded arm would catch
+  // the exceptions of (`kinded_handle_open_row_var`).
+  let missing_vars = no_str_labels()
+  if strict_kinded {
+    for ml in missing {
+      if label_is_effect_var(ml) && !effect_row_has_label(Some(missing_vars), ml) {
+        Array::push(missing_vars, ml)
+      }
+    }
+  }
   if Array::length(missing_exc) > 0 {
     EEKindedHandleCatchesAll(fn_name, join_labels(kinded_exception_labels(declared)), join_labels(sort_labels(missing_exc)), off)
+  } else if Array::length(missing_vars) > 0 {
+    EEKindedHandleOpenRow(kinded_handle_owner(fn_name, declared), join_labels(kinded_exception_labels(declared)), join_labels(sort_labels(missing_vars)), off)
   } else {
     make_contextual_row_error_plain(fn_name, labels_without_exception_family_marker(declared), missing, off)
   }
@@ -251,7 +278,7 @@ export fn labels_without_exception_family_marker(labels: Array[String]) -> Array
   let mut i = 0
   while i < Array::length(labels) {
     let l = Array::get(labels, i)
-    if l == kinded_handle_marker() {
+    if is_kinded_handle_pseudo_label(l) {
       ()
     } else {
       Array::push(out, l)

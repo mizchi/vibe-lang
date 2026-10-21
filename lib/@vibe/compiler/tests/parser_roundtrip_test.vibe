@@ -286,3 +286,22 @@ test "export let" {
 test "export enum" {
   assert(roundtrip("export enum Color { Red; Blue }"))
 }
+
+fn format_or_empty(source: String) -> String {
+  handle {
+    format_once(source)
+  } with { Exception::Throw(_) => "" }
+}
+
+/// The parser binds a guarded match's scrutinee to a name no source can spell.
+/// Printed text is lexed again (the merged module source), so the printer
+/// spells it `__mg`, or `__mg_N` for the first N the printed program does not
+/// already use, and the text parses again.
+test "a guarded match's temporary prints as a name the program does not use" {
+  let out = format_or_empty("fn f(__mg: Int, __mg_1: Int, o: Option[Int]) -> Int { match o { Some(v) if v > 0 => __mg, _ => __mg_1 } }")
+  assert(String::contains(out, "let __mg_2 = o;"))
+  assert(!String::contains(out, "'"))
+  assert(format_or_empty(out) != "")
+  let plain = format_or_empty("fn g(o: Option[Int]) -> Int { match o { Some(v) if v > 0 => v, _ => 0 } }")
+  assert(String::contains(plain, "let __mg = o;"))
+}

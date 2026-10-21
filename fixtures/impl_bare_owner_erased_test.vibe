@@ -1,0 +1,62 @@
+// #3551 review: an impl method may still name its OWN target bare where the
+// trait erases the target's formals (`impl AsyncIterator for AsyncIter`).
+// The bare target reads as the target applied to those formals, so it is
+// accepted where the trait says `Self`. Any other generic head is written
+// with its arguments.
+trait Step[T] {
+  step(Self) -> Option[(T, Self)]
+}
+
+struct Cursor[T] {
+  items: Array[T];
+  at: Int
+}
+
+impl Step for Cursor {
+  step(self) -> Option[(T, Cursor)] {
+    if self.at < Array::length(self.items) {
+      Some((Array::get(self.items, self.at), Cursor::{
+        items: self.items,
+        at: self.at + 1
+      }))
+    } else {
+      None
+    }
+  }
+}
+
+struct Victim[A] {
+  v: A
+}
+
+trait Gen[A] {
+  f(Self, Victim[Int]) -> Int
+}
+
+struct P {
+  n: Int
+}
+
+impl Gen for P {
+  f(self, x: Victim[Int]) -> Int {
+    x.v + self.n
+  }
+}
+
+fn drain(c: Cursor[Int]) -> Int {
+  match Cursor::step(c) {
+    Some(p) => {
+      let (_, rest) = p
+      1 + drain(rest)
+    },
+    None => 0
+  }
+}
+
+test "a bare owner steps through its own trait" {
+  inspect(drain(Cursor::{ items: [1, 2, 3], at: 0 }), "3")
+}
+
+test "a foreign head written with its arguments" {
+  inspect(P::f(P::{ n: 1 }, Victim::{ v: 41 }), "42")
+}

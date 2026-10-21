@@ -30,8 +30,10 @@ import @vibe/compiler/codegen/common_base {
   gc_slot_log_reset_above,
   gc_slot_map_get,
   gc_slot_map_reset_above,
+  map_get_miss_message,
   resolve_func,
   resolve_local,
+  str_table_fat_or_zero,
   str_table_index_of
 }
 
@@ -139,6 +141,22 @@ export fn gc_resolve_builtin_last(ft: FuncTable, name: String) -> Int {
     }
   }
   found
+}
+
+/// #3547: the gc lane's `Map::get` / `m[k]` miss trap. It prints the pooled
+/// message through `print_str` first, as `abort(msg)` does on this lane and
+/// `cc_map_get_miss_trap` does on linear. A pool without the message keeps the
+/// bare trap rather than failing the build.
+fn gc_map_get_miss_trap(buf: Bytes, ctx: CompileCtxGc) -> Unit {
+  let msg_fat = str_table_fat_or_zero(ctx.str_table, map_get_miss_message())
+  let ps_idx = gc_resolve_builtin_last(ctx.func_table, "print_str")
+  if msg_fat != 0 && ps_idx >= 0 {
+    emit_i64_const(buf, msg_fat)
+    emit_call_resolved(buf, ctx, ps_idx)
+  } else {
+    ()
+  }
+  bytebuf_push(buf, 0)
 }
 
 /// #3068: gc mirror of the linear lane's `ts_offset_refuses_render`
@@ -1121,7 +1139,7 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_end(buf)
     // #2990: not found traps, as on the linear lane (see
     // `cc_map_get_linear_scan`). `Map::has_key` is the guard.
-    bytebuf_push(buf, 0)
+    gc_map_get_miss_trap(buf, ctx)
     emit_end(buf)
     nl + 4
   }

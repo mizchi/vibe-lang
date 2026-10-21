@@ -16,6 +16,8 @@ import @vibe/compiler/checker {
   CheckedProgram,
   check_program_double_call_result_located_observation,
   check_program_type_table,
+  declaring_module_path_clear,
+  declaring_module_path_set,
   detect_redundant_namespace_imports,
   detect_top_level_let_star,
   detect_unbound_nonunit_returns,
@@ -41,7 +43,17 @@ import @vibe/compiler/runtime/checked_module_cache {
 }
 
 import @vibe/compiler/core {
-  BindingOrigin, EnvValueBinding, Expr, Stmt, Type, TypeDef, TypeEnv, is_contract_ext, str_lt, unstable_package_note
+  BindingOrigin,
+  EnvValueBinding,
+  Expr,
+  Stmt,
+  Type,
+  TypeDef,
+  TypeEnv,
+  is_contract_ext,
+  is_owned_head_source_candidate,
+  str_lt,
+  unstable_package_note
 }
 
 import @vibe/compiler/codegen {
@@ -852,7 +864,28 @@ export fn collect_all_diagnostics_for_path(input_path: String, source: String) -
   let pkg_version = handle {
     extract_package_version(source)
   } with { Exception::Throw(_) => "" }
-  collect_all_diagnostics_on(input_path, pin_blanked, pkg_version)
+  // #3551 review: a declaration rule that depends on the module's own path
+  // (`owned_head_shape_decl_error`) answers here as on the module walks. This
+  // lane reads no environment and no file but this one, so it can tell
+  // neither the library roots nor which contract the package resolver
+  // selects: the shipped file is recognised at the workspace's own package
+  // locations (`lib/`, `.vibe/store/`), the ones the `vibe` launcher's
+  // project-relative paths name (`is_owned_head_source_candidate`). Anywhere
+  // else the declaration is refused loudly, never trusted on its path's tail.
+  // The lanes that compile -- `vibe check` without the flag, build, run, test
+  // -- require the selected location (`is_owned_head_source_location`).
+  let no_library_roots: Array[String] = []
+  declaring_module_path_set(input_path, is_owned_head_source_candidate(input_path, no_library_roots))
+  // A check that throws must not leave this module named as the one being
+  // checked: the cells are process-global.
+  let found = handle {
+    collect_all_diagnostics_on(input_path, pin_blanked, pkg_version)
+  } with { Exception::Throw(message) => {
+    declaring_module_path_clear()
+    throw(message)
+  } }
+  declaring_module_path_clear()
+  found
 }
 
 /// #2314, the LSP half of #2280: a `.vpkg` is a list of BODYLESS declarations,

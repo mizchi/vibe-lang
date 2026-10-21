@@ -343,6 +343,14 @@ fn main allows Console {
   println("\{String::byte_at(s, 5)}")
 }
 VEOF
+# #3547: `m[k]` on a missing key trapped with only a backtrace.
+cat > "$oobdir/map_get.vibe" <<'VEOF'
+fn main allows Console {
+  let m = Map::from_pairs([("a", 1)])
+  println("before")
+  println("\{m["b"]}")
+}
+VEOF
 oob_compile_one() {
   local src="$1" out="$2"
   # Production RC: this lane's VIBE_RC=0 pin would compile bump, which has
@@ -362,6 +370,7 @@ oob_compile_one "$oobdir/arr_set.vibe" "$oobdir/arr_set.wasm"
 oob_compile_one "$oobdir/bytes_get.vibe" "$oobdir/bytes_get.wasm"
 oob_compile_one "$oobdir/bytes_set.vibe" "$oobdir/bytes_set.wasm"
 oob_compile_one "$oobdir/str_byte_at.vibe" "$oobdir/str_byte_at.wasm"
+oob_compile_one "$oobdir/map_get.vibe" "$oobdir/map_get.wasm"
 oob_run_one() {
   VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$1" 2>&1
 }
@@ -394,6 +403,8 @@ oob_bytes_set_out="$(oob_run_one "$oobdir/bytes_set.wasm")"
 oob_bytes_set_rc=$?
 oob_str_out="$(oob_run_one "$oobdir/str_byte_at.wasm")"
 oob_str_rc=$?
+oob_map_out="$(oob_run_one "$oobdir/map_get.wasm")"
+oob_map_rc=$?
 set -e
 # The expected location carries the DIRECTORY the source was compiled from,
 # not just its file name: `vibe.dbgfiles` holds the path the compiler opened
@@ -405,6 +416,28 @@ oob_check "Array::set" "Array::set: index 10 out of bounds for length 3" "$oobdi
 oob_check "Bytes::get" "Bytes::get: index 9 out of bounds for length 3" "$oobdir/bytes_get.vibe:4" "$oob_bytes_get_out" "$oob_bytes_get_rc"
 oob_check "Bytes::set" "Bytes::set: index 9 out of bounds for length 3" "$oobdir/bytes_set.vibe:4" "$oob_bytes_set_out" "$oob_bytes_set_rc"
 oob_check "String::byte_at" "String::byte_at: index 5 out of bounds for length 3" "$oobdir/str_byte_at.vibe:4" "$oob_str_out" "$oob_str_rc"
+oob_check "Map::get" "Map::get: key not found" "$oobdir/map_get.vibe:4" "$oob_map_out" "$oob_map_rc"
+# #3547: the same miss on the wasm-gc lane (`vibe test`/`vibe run` with
+# VIBE_TEST_BACKEND=gc / --backend gc) trapped with only a backtrace after the
+# linear lane gained the message. That lane carries no production linemap, so
+# only the message is asserted. The selector is inline (#2248).
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$oobdir/map_get.vibe" "$oobdir/map_get_gc.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$oobdir/map_get_gc.wasm" ]; then
+  echo "[compiler-gate] FAIL: Map::get miss sample did not compile on the gc lane" >&2
+  cat "$oobdir/map_get_gc.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+set +e
+oob_map_gc_out="$(oob_run_one "$oobdir/map_get_gc.wasm")"
+oob_map_gc_rc=$?
+set -e
+if [ "$oob_map_gc_rc" -eq 0 ] || ! printf '%s\n' "$oob_map_gc_out" | grep -qF 'Map::get: key not found (check with `Map::has_key` first)'; then
+  echo "[compiler-gate] FAIL: Map::get miss on the gc lane did not trap with its message (#3547)" >&2
+  printf '%s\n' "$oob_map_gc_out" >&2
+  exit 1
+fi
 # Stripped mapping: OOB line and wasm frame remain; no fabricated path:line.
 node scripts/wasm_custom_section.js strip "$oobdir/arr_get.wasm" "$oobdir/arr_get.stripped.wasm" vibe.linemap vibe.dbgfiles
 set +e
@@ -1179,6 +1212,57 @@ if ! grep -q "pin required" "$xdir/replay3.wasm.diag" 2>/dev/null; then
 fi
 rm -rf "$xdir" "$xroot"
 echo "[compiler-gate] VIBE_LIB external roots + freeze ok"
+
+# 6i-b. #3551 review: the region-first owned-head spelling (`struct
+#     TaskGroup[rg, e]`) is trusted only in `concurrent.vibe` beside the
+#     contract the package resolver SELECTS for `@vibe/concurrent/experimental`
+#     -- the first of its candidates that exists. A project of its own,
+#     compiled from its root, puts an ordinary file at a location the resolver
+#     could read: the workspace `lib/` or the store with no contract beside it
+#     (imported relatively from the root), or `lib/` beside a contract of its
+#     own that the store shadows (imported from inside that directory). No
+#     `@vibe/concurrent/experimental` import reads any of them, so each is a
+#     program module. Trusted as the shipped one, it let a bare `TaskGroup` read
+#     the `Int` 7 as a `String`: each compiled, and `_start` answered 14.
+echo "[compiler-gate] 6i-b owned-head spelling outside the selected package (#3551)"
+case "$stage2_wasm" in /*) oh_stage2="$stage2_wasm" ;; *) oh_stage2="$ROOT_DIR/$stage2_wasm" ;; esac
+for oh_layout in lib store shadowed; do
+  oh_root="$(mktemp -d)"
+  oh_import="./lib/@vibe/concurrent/experimental/concurrent.vibe"
+  oh_entry="main.vibe"
+  case "$oh_layout" in
+    lib) oh_dep="lib/@vibe/concurrent/experimental" ;;
+    store)
+      oh_dep=".vibe/store/@vibe/concurrent/experimental"
+      oh_import="./.vibe/store/@vibe/concurrent/experimental/concurrent.vibe"
+      ;;
+    shadowed)
+      oh_dep="lib/@vibe/concurrent/experimental"
+      oh_import="./concurrent.vibe"
+      oh_entry="$oh_dep/main.vibe"
+      mkdir -p "$oh_root/.vibe/store/@vibe/concurrent/experimental" "$oh_root/$oh_dep"
+      printf 'fn unused() -> Int\n' > "$oh_root/.vibe/store/@vibe/concurrent/experimental/index.vpkg"
+      printf 'export fn unused() -> Int { 0 }\n' > "$oh_root/.vibe/store/@vibe/concurrent/experimental/concurrent.vibe"
+      printf 'fn helper() -> Int\n' > "$oh_root/$oh_dep/index.vpkg"
+      ;;
+  esac
+  mkdir -p "$oh_root/$oh_dep"
+  printf 'export struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nexport fn helper() -> Int { 1 }\n' > "$oh_root/$oh_dep/concurrent.vibe"
+  printf 'import %s {\n  struct TaskGroup\n}\n\nfn as_str(g: TaskGroup) -> String {\n  g.first\n}\n\nexport let _start: () -> Int = () -> { String::length(as_str(TaskGroup::{ first: 7, second: 8 })) }\n' "$oh_import" > "$oh_root/$oh_entry"
+  ( cd "$oh_root" && VIBE_PREOPEN_DIR="$oh_root" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$oh_stage2" \
+    "$oh_entry" main.wasm _start >/dev/null 2>&1 ) || true
+  if [ -s "$oh_root/main.wasm" ]; then
+    echo "[compiler-gate] FAIL: $oh_dep/concurrent.vibe was trusted as the shipped owned-head module ($oh_layout, #3551)" >&2
+    rm -rf "$oh_root"; exit 1
+  fi
+  if ! grep -qF 'rename this struct or its type parameters `rg` and `e`: `TaskGroup[rg, e]`' "$oh_root/main.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: $oh_dep/concurrent.vibe ($oh_layout) was refused without the edit (#3551)" >&2
+    cat "$oh_root/main.wasm.diag" >&2 2>/dev/null; rm -rf "$oh_root"; exit 1
+  fi
+  rm -rf "$oh_root"
+done
+echo "[compiler-gate] owned-head spelling outside the selected package ok (refused)"
 
 # 6j. distribution pipeline (#754, ADR-0065 Phase 4): publish (version
 #     directive + semver gate) -> fetch cache (CAS keyed by package hash +

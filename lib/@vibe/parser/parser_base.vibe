@@ -194,10 +194,93 @@ fn expect_tk(tokens: Array[Token], pos: Int, expected: String) -> Int with Excep
   if is_tk(peek(tokens, pos), expected) {
     pos + 1
   } else {
-    let actual = tk_name(peek(tokens, pos))
+    // A `;` here is usually the lexer's line break (#3546), so name both.
+    let actual = match peek(tokens, pos) {
+      TSemicolon => "the end of the line (or `;`)",
+      other => tk_name(other)
+    }
     // #816: carry the failing TOKEN index; parse_program_located decodes it
     // to a real line:col (and strips it from the user-facing message).
     throw("expected \{expected} but got \{actual} at #\{pos}")
+  }
+}
+
+fn is_lowercase_start(n: String) -> Bool {
+  String::length(n) > 0 && String::byte_at(n, 0) >= 'a' && String::byte_at(n, 0) <= 'z'
+}
+
+/// The builtin namespaces a program calls as `Name::op` without importing
+/// anything. An import alias with one of these names shadowed the namespace.
+///
+/// The parser cannot import the compiler's builtin tables, so this is a copy:
+/// `lib/@vibe/compiler/tests/import_alias_namespace_test.vibe` walks every
+/// `Name::op` spelling of the builtin registry, the checker's by-name call
+/// arms and the builtin-shadow rename list, and fails naming any head missing
+/// here.
+let builtin_namespace_names: Array[String] = [
+  "Array",
+  "ArrayBuilder",
+  "Bool",
+  "ByteStream",
+  "Bytes",
+  "Char",
+  "Console",
+  "Double",
+  "Env",
+  "FixedArray",
+  "Float",
+  "FrozenArray",
+  "Fs",
+  "Future",
+  "HostResponse",
+  "HostStream",
+  "Http",
+  "Int",
+  "Int64Array",
+  "Map",
+  "MapBuilder",
+  "MutBytes",
+  "MutList",
+  "Path",
+  "Process",
+  "Profiler",
+  "Stderr",
+  "Stdin",
+  "StdinStream",
+  "Stdout",
+  "String",
+  "StringBuilder",
+  "StringMap",
+  "TaskGroup"
+]
+
+/// Whether `n` is one of `builtin_namespace_names`. The checker asks it too,
+/// for the import aliases the parser cannot classify (see
+/// `import_item_is_value`).
+export fn is_builtin_namespace_name(n: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(builtin_namespace_names) {
+    found = Array::get(builtin_namespace_names, i) == n
+    i = i + 1
+  }
+  found
+}
+
+/// Whether an import item brings in a VALUE rather than a type. An item with
+/// a kind keyword (`struct`, `enum`, `type`, `trait`, `effect`) is a type. A
+/// qualified item (`Record::make`) is a member -- a method or an operation --
+/// so a value however it is spelled, and a plain item is a value when it is
+/// spelled in lowercase (`pub_f`).
+///
+/// A plain CAPITALIZED item is undecided here: it is a type (`Record`) or a
+/// function (`MakeTag`), and only the providing module knows which. The parser
+/// lets it through and the checker refuses it under a builtin namespace's name
+/// once the import is resolved (`import_item_namespace_alias_errors`).
+fn import_item_is_value(kind: Option[ImportKind], name: String) -> Bool {
+  match kind {
+    Some(_) => false,
+    None => String::contains(name, "::") || is_lowercase_start(name)
   }
 }
 
@@ -984,6 +1067,13 @@ export fn parse_import_item_with_binder_context(tokens: Array[Token], pos: Int, 
         match peek(tokens, after) {
           TAs => match peek(tokens, after + 1) {
             TIdent(alias) => {
+              // A TYPE imported under a builtin's name is a source-owned type
+              // (`{ struct Box as StringMap }`, wit_gen_test); a VALUE under one
+              // shadows the namespace's operations. A qualified value
+              // (`Record::make as Array`) is a value too.
+              if is_builtin_namespace_name(alias) && import_item_is_value(kind, base) {
+                throw("choose another name than `\{alias}` for this import: `\{alias}` names the builtin `\{alias}::` operations, and an imported value under that name would take the `\{alias}::...` calls instead at #\{after + 1}")
+              }
               binder_capture_source(context, alias, after + 1, after + 1)
               (ImportItem::{ kind, name: base, alias: Some(alias) }, after + 2)
             },

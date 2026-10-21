@@ -403,6 +403,10 @@ let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
 let sum = f(x=10, y=20)   // => 30
 ```
 
+Labeled arguments are evaluated in **parameter order**, not in the order they
+are written: `f(y=g(), x=h())` calls `h()` before `g()`. Bind an argument
+first when its side effects must happen in a particular order.
+
 ### Optional arguments: `x: T = default` (#3120) and `x?: T` (#1500)
 
 A parameter with a **default** can be left out by the caller. The body sees
@@ -478,7 +482,7 @@ Iterator::fold(xs, 0, _ + _)
 |------|-----------|-------|
 | 1 | `.` `()` `[]` | field, call, index |
 | 2 | `-x` `!x` `~x` | unary (`~` is bit-not, #2344) |
-| 3 | `*` `/` `%` | |
+| 3 | `*` `/` `%` | `%` is `Int`-only; its sign follows the dividend (`-7 % 2 == -1`) |
 | 4 | `+` `-` | |
 | 5 | `<<` `>>` | >> is arithmetic (sign-extending) |
 | 6-8 | `&` `^` `\|` | bitwise AND, XOR, OR |
@@ -503,6 +507,12 @@ fn tail_value() -> Int {
   -1                 // prefix: the block's value is -1
 }
 ```
+
+Two expressions written on **one** line are refused (#3546): `let x = 1 2`
+used to bind `1` and drop the `2`, so a missing operator or comma
+(`let total = price quantity`) changed the program silently. Put a second
+statement on its own line or after `;`. A statement may still follow a
+block's closing `}` on the same line (`if c { n = 1 } n = n + 1`).
 
 Slice is a postfix `[]` form with four spellings:
 
@@ -1094,6 +1104,9 @@ let b2 = Box[Int]::{ v: 2 }               // explicit type args PIN the instanti
 // Bag[Int]::{ xs: [] })
 // struct derive(Ord) -> Point::compare(a, b) : Ordering   (lexicographic)
 // enum derive(Ord) -> E::compare(a, b) : Ordering   (variant order, then payload)
+// A `Double` field is ordered totally: NaN sorts after every number and is
+// `Equal` to another NaN, and `0.0` / `-0.0` are `Equal`. Derived `==` stays
+// IEEE (NaN equals nothing), so `compare` can sort what `==` cannot match.
 // `Ordering` is a prelude enum { Less; Equal; Greater } (#3042, ADR-0118):
 // no import, and a `match` on it must cover all three. `@vibe/builtin` adds
 // `Ordering::to_int` (-1 / 0 / 1) and `Ordering::reverse`.
@@ -1106,6 +1119,8 @@ let ord_text = match ord {
 // struct derive(Show) -> Point::to_string(p) : String ("Point { x: 1, y: 2 }")
 // enum derive(Show) -> E::to_string(v) : String ("B(3)" / "A")
 // derive(Hash) -> T::hash_key(v) (構造キー、to_string も併せて生成)
+// The key follows `==`, except that a `Double` is keyed as `compare` orders
+// it: every NaN shares one key, so a NaN key can be read back from a Map.
 // derive(Default) -> T::default() + `impl Default for T` 登録 (#1847) —
 //   derive した型はそのまま `[T: Default]` bound を満たす
 // (Eq は marker: 構造的 `==` は T::equals として常に生成される)
@@ -1438,6 +1453,18 @@ line suggesting the exact row to declare (`hint: add 'with Exception + Fs' to
 syntax — which is why they survived #1429 while the `hint:` line, being
 something you paste into your code, moved to the braceless spelling with
 everything else.
+
+**A call is charged the row of the function it calls, however the callee is
+spelled** (#3539): a top-level name, a callback parameter, or an expression --
+`mk()()`, `(s.f)()`, `(Array::get(fs, 0))()`, a `match` / `for` /
+destructuring binder, a method call `p.m()`. The row is read from the callee's
+inferred function type, so with `fn mk() -> (() -> Unit with Console)`, `fn
+pure_fn() -> Int { mk()(); 42 }` reports `missing { Console }`. A function
+value converts to a function type only when that type's row keeps every label
+the value carries: `with Console`, `with Exception` and `with Exception[K]`
+alike cannot go where `() -> Int` is expected (the message ends `effect would
+be dropped`), while a `with Exception` slot accepts a `with Exception[K]`
+value and a `with e` slot accepts any row.
 
 ### Standard provider and entry-execution policy (#1496)
 
@@ -1779,7 +1806,8 @@ Rules:
   the body may raise only `Exception[K]`. An erased or unresolved throw, an
   erased callee (`with Exception`), and a throw of another kind that the
   enclosing row would have let propagate are all refused there; the erased
-  `Exception::Throw(m)` arm still catches everything, with an untyped payload.
+  `Exception::Throw(m)` arm still catches everything, and reads its payload
+  as the thrown message (below).
   A closure literal passed straight to a callee is checked against the row
   the callee's PARAMETER declares: a row admitting the erased `Exception`
   (`TaskGroup::spawn`'s `() -> T with Exception + e`) takes any kind, and what
@@ -1788,7 +1816,14 @@ Rules:
   literal throw exactly `K`; a row with no exception label
   (`invoke[e](f: () -> Int with e) -> Int with e`) absorbs nothing, so the
   literal is as strict as the body -- and so is one handed to a callback
-  parameter or a builtin, or created and called in the body. An erased
+  parameter or a builtin, or created and called in the body. A row VARIABLE
+  of the enclosing signature is not run there either (#3540): in
+  `fn guarded(f: () -> Int with e) -> Int with e`, a kinded handle around
+  `f()` is refused, because a caller may fill `e` with another kind. Move the
+  handle to the caller, give the callback a closed row (`with
+  Exception[Int]`), or use the erased arm; a kind label beside the variable
+  (`with Exception[Int] + e`) matches the whole exception family, so that
+  variable is admitted. An erased
   `handle .. with Exception` nested inside is its own
   catch-all boundary. And a handle may have only ONE exception arm: the
   channel carries no kind and only the first exception arm is compiled, so
@@ -1797,8 +1832,41 @@ Rules:
 - A kinded arm binds its payload at the kind's type (#2963):
   `Exception[IoError]::Throw(e)` gives `e : IoError`, so `e` can be matched or
   passed on directly, and returning it where the handle produces an `Int` is a
-  type error. The erased `Exception::Throw(m)` binder is still untyped (it can
-  receive any kind).
+  type error.
+- The erased `Exception::Throw(m)` binder is the thrown MESSAGE, a `String`
+  (#3541). `println(m)` and `String::concat("failed: ", m)` compile, and so
+  does a use that accepts any type: rethrowing it with `throw(m)` or passing
+  it to a generic parameter. A use at another type (`m + 1`,
+  `let n: Int = m`, returning `m` where the handle produces an `Int`) is
+  refused with the edit: write ``Exception[Int]::Throw(m)``. Only the kinded
+  arm knows a payload of another type. The kind is not carried at run time,
+  so the erased arm cannot check what a callee declared `with Exception`
+  actually threw. Throw a value other than a `String` under a kinded row, and
+  catch it with the kinded arm.
+- A rethrow from the erased arm is a throw of no known kind, not of
+  `Exception[String]`. That holds for `throw(m)` and for any payload that
+  names `m`, or a name the arm derived from it, when the payload's type could
+  hold a `String`: `throw(id(m))`, `let m2 = m` then `throw(m2)`,
+  `throw(Some(m))`, `throw(String::concat("ctx: ", m))`, and a value read
+  back from where `m` may have been stored: after `store(outer.cell, m)` or
+  `outer.cell.value = m`, `throw(outer.cell.value)`. Once `m` reaches code
+  the checker does not follow -- a function or closure bound outside the arm
+  (`remember(m)`, `slot(Some(m))`, a parameter `sink(m)`), an effect
+  operation (`perform Keep::Put(m)`), or a binding of the enclosing code
+  (`Array::push(saved, m)`) -- any value read from the program's state
+  (`throw(recall())`, `throw(slot(None))`, `throw(cell.value)`) is of no
+  known kind too; a value of its own (`throw("failed")`) keeps its kind, and
+  a builtin (`String::concat("ctx: ", m)`) keeps `m` only in its result and
+  its arguments. So a function that
+  rethrows this way declares the erased `with Exception`, or catches with the
+  kinded arm `Exception[K]::Throw(m)`, whose rethrow keeps the kind `K`. A
+  value of a declared type built from `m` counts as one that could hold a
+  `String`, whatever its fields: `throw(Why::Because(m))`, `throw(W::{ s: m })`
+  and `throw(Some(Why::Because(m)))` are of no known kind too. A payload whose
+  type holds no `String` and is not a declared type
+  (`throw(String::length(m))`) is a value of that type, and so is a name
+  rebound to a value of its own: after `let m = "other"`, `throw(m)` throws
+  that `String`.
 
 Details and the v1 limits: [exception-effect.md](../../internal/design/exception-effect.md).
 
@@ -1854,7 +1922,7 @@ same way; `suberror` only says what the type is for.
   propagate -- a kinded arm catches everything its body raises, so an arm for
   `Exception[NotFound]` over a body that can also raise `Denied` is refused --
   and a handle has only one exception arm. The arm that takes every kind at
-  once is the erased `Exception::Throw(_)`, whose payload is untyped.
+  once is the erased `Exception::Throw(_)`, which does not read the payload.
 - `Exception[K]` requires `K` to be a TYPE in scope, in a row and in a handler
   arm alike: an undeclared name and an effectset name are both refused
   (``unknown type `IoErrors` in an exception kind``; write `with IoErrors` to
@@ -2607,7 +2675,9 @@ from `@vibe/core`.
 
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,
 `Int::is_even`, `Int::is_odd`, `Double::abs`, `Double::max`, `Double::min`,
-`Double::floor`, `Double::ceil`.
+`Double::floor`, `Double::ceil` -- library functions in `@vibe/builtin`, so
+import the ones you call (`import @vibe/builtin { Int::abs, Double::floor }`);
+without the import the call is `unknown name`.
 
 **Checked arithmetic** (#3127): `Int::checked_add`, `Int::checked_sub`,
 `Int::checked_mul`, `Int::checked_div`, `Int::checked_neg`, imported from
@@ -3225,6 +3295,37 @@ What still has no renderer is an unbounded formal, at either level:
 formal a method-bearing `Show` bound, or interpolate at a concrete type.
 A renderless struct is still refused by name (#1445).
 
+### A `let` bound to a call result is not generic (value restriction, #3537)
+
+A `let` generalizes its type only when the right-hand side is a syntactic
+value: a lambda, a name, a declared enum constructor applied to values, a
+tuple or an anonymous record. A call result, a named struct literal, an array
+literal and a `let mut` are **not** generalized, because each can hold mutable
+state shared by every use. A function whose name happens to be capitalized
+(`fn Make[T]()`) is a call like any other:
+
+```vibe skip
+fn make[T]() -> (T) -> Array[T] {
+  let xs = []
+  (x) -> {
+    Array::push(xs, x)
+    xs
+  }
+}
+
+fn main() -> Unit {
+  let f = make()
+  let _ = f(1)
+  // -- rejected: `f` is one closure over one array, already used at `Int`
+  let _ = f("s")
+}
+```
+
+Before #3537 this compiled and one runtime array held an `Int` and a `String`.
+The edit is to annotate the binding at the type you mean
+(`let f: (Int) -> Array[Int] = make()`, `let b: Bag[Int] = Bag::{ xs: [] }`),
+or to call `make()` once per type.
+
 ### A generic binder may not quantify a slot the lambda CAPTURED
 
 An explicit binder (`[T]`) makes a lambda generic per call. That is only sound
@@ -3345,6 +3446,50 @@ carries an effect row annotation … a call through a local binding or a closure
 parameter … is what this rejects". #2137 measured that: four of the shapes it
 named as rejected compile, and the two that fail fail for reasons it did not
 mention. The message was rewritten; this table replaced the enumeration.)
+
+### A closure that performs must not outlive its `handle` (#3540)
+
+An unannotated closure inherits the row of the place it is written (#761), and
+its type stays pure. Written inside a `handle`, it may perform what that handle
+answers -- but the handle answers only while its body runs. So a closure that
+performs (or throws) something the handle discharges may be called inside the
+handle, called through another closure there, or handed to a call there; it
+may not leave:
+
+```vibe skip
+// Rejected: `g` would perform `Ask` after the handle that answers it is gone.
+let g = handle {
+  let h = () -> perform Ask::Get() + 1
+  h
+} with {
+  Ask::Get() => resume(5)
+}
+```
+
+`vibe check` refuses it, naming the closure and the edit: call it inside the
+`handle` and keep only what it computes, or move the `handle` into the closure
+(`() -> handle { .. } with { .. }`). Before #3540 this compiled, and calling
+`g()` trapped (`unreachable`) or answered from the dead handler (`6`),
+depending on how the closure was lowered.
+
+A closure applied in place (`(() -> perform Ask::Get())()`) or bound by `let`
+and only ever called cannot leave, and is not looked at again. One handed
+straight to a function whose result type holds no function (`apply(() -> ..)`)
+can only be stored by that call: a write into a binding declared outside the
+body whose type can hold a function is refused (an assignment, a field write,
+`Array::push`, or any call given that binding). A closure that can go anywhere
+else also refuses a `return` whose declared type can hold a function, and the
+handle's value when its type can hold one (directly, or in a tuple, array,
+`Option`, struct, enum or map -- so an `AsyncIter`). The rule does not trace
+which value takes the route: once such a closure exists, any function value
+leaving through one of them is refused.
+A call that stores its argument in state it captured, or in a module-level
+binding, names no such binding and is not caught. A closure whose effect the
+enclosing function's result type declares (`fn mid() -> (() -> Int with Ask)`)
+takes that row instead (#1451), so its caller supplies the handler and it may
+leave -- when the result is that function type itself. A tuple or other
+composite of function types does not exempt the closures in it: the lowering
+gives the declared row only to a closure that is the result.
 
 ### 補間できるのは Show を持つ型だけ (#1445)
 

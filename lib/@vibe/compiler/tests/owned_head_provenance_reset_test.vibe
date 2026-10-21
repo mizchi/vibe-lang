@@ -1,0 +1,69 @@
+//# #3551 review: the module provenance a check sets (the path being checked,
+//# and whether it is the shipped `@vibe/concurrent/experimental`
+//# `concurrent.vibe`) is cleared when that check throws. A type error in the
+//# shipped module used to throw past the clear, and the process-global cells
+//# kept naming it as trusted after the check was over. The unnamed lanes do
+//# not read those cells (they refuse the spelling on their own, the second
+//# test), so nothing was accepted through them; the cells are scoped to the
+//# check that set them all the same.
+
+//# Imports
+
+import ../type_db.vibe {
+  db_new, db_set_source, db_typecheck
+}
+
+import @vibe/compiler/checker {
+  declaring_module_path, declaring_module_ships_owned_heads
+}
+
+import @vibe/compiler/entry/source_compile {
+  compile_source
+}
+
+//# Functions
+
+fn is_wasm(bytes: Bytes) -> Bool {
+  Bytes::length(bytes) > 4 && Bytes::get(bytes, 0) == 0 && Bytes::get(bytes, 1) == 97 && Bytes::get(bytes, 2) == 115 && Bytes::get(bytes, 3) == 109
+}
+
+/// A program `TaskGroup[rg, e]` written bare in a signature.
+fn leaking_source() -> String {
+  "struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nfn as_str(g: TaskGroup) -> String {\n  g.first\n}\n\nfn main() -> Int {\n  String::length(as_str(TaskGroup::{ first: 7, second: 8 }))\n}\n"
+}
+
+fn compile_answer(source: String) -> String {
+  handle {
+    if is_wasm(compile_source(source)) {
+      "wasm"
+    } else {
+      "not wasm"
+    }
+  } with { Exception::Throw(message) => message }
+}
+
+/// Checks the shipped module's location in a db whose contract selects it,
+/// with a type error in that module, and answers the error.
+fn failed_trusted_check() -> String with Env {
+  let dir = "lib/@vibe/concurrent/experimental"
+  let path = "\{dir}/concurrent.vibe"
+  let db = db_set_source(db_set_source(db_new(), "\{dir}/index.vpkg", "fn helper() -> Int\n"), path, "export fn helper() -> Int {\n  \"not an int\"\n}\n")
+  handle {
+    let _ = db_typecheck(db, path)
+    "checked"
+  } with { Exception::Throw(message) => message }
+}
+
+//# Misc
+
+test "a trusted module check that throws leaves no provenance behind" {
+  let failed = failed_trusted_check()
+  inspect(String::contains(failed, "return type mismatch"), "true")
+  inspect(declaring_module_ships_owned_heads(), "false")
+  inspect(declaring_module_path(), "")
+}
+
+test "an unnamed check after it still refuses the spelling" {
+  let _ = failed_trusted_check()
+  inspect(String::contains(compile_answer(leaking_source()), "rename this struct or its type parameters `rg` and `e`"), "true")
+}

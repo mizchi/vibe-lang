@@ -1110,8 +1110,15 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
       collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
       let mut hi = 0
       while hi < Array::length(arms) {
-        let (_, arm_expr) = Array::get(arms, hi)
+        // #3540: an arm's pattern binds its payload (`Throw(code) => ..`),
+        // exactly as a `match` arm's does. Without it a lambda holding an
+        // exception handle listed `code` as a capture, and the gc lane
+        // stopped with "`code` reached code generation unresolved".
+        let (arm_pat, arm_expr) = Array::get(arms, hi)
+        let saved = Array::length(bound)
+        collect_pattern_bindings(arm_pat, bound)
         collect_free_vars_expr_sc(arm_expr, bound, fn_names, encl, skip_inlined, out)
+        Array::truncate(bound, saved)
         hi = hi + 1
       }
       0

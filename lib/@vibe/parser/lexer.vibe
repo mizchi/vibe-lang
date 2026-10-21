@@ -913,12 +913,15 @@ fn skip_ws_with_newline(s: String, len: Int, i: Int) -> Int {
 /// synthetic statement separator:
 /// - before `(`/`[` after an expression, so they do not become postfix syntax;
 /// - before a line-leading PREFIX operator after an expression (#3041, below);
-/// - after `break`, whose optional payload is deliberately same-line only.
+/// - after `break`, whose optional payload is deliberately same-line only;
+/// - after a bare `continue`, before a line that begins a statement.
 ///
 /// Keeping this decision in one helper prevents `lex`, offset lexing, and the
-/// recovering lexer from drifting apart.
+/// recovering lexer from drifting apart. `impl_header` is the state
+/// `impl_header_after` threads through each of them; `after_clause_word` says
+/// the previous token was a `where` / `allows` that opened a clause.
 #zero_alloc
-fn needs_synthetic_semicolon(c: Int, nl_before: Bool, prev_tok: Token, tight_prefix: Bool) -> Bool {
+fn needs_synthetic_semicolon(c: Int, nl_before: Bool, prev_tok: Token, tight_prefix: Bool, tok: Token, impl_header: Bool, after_clause_word: Bool) -> Bool {
   if !nl_before {
     false
   } else {
@@ -928,8 +931,79 @@ fn needs_synthetic_semicolon(c: Int, nl_before: Bool, prev_tok: Token, tight_pre
       // separator look like the next pattern). Only separate a real token
       // that could otherwise become the optional payload.
       TBreak => c != '}' && c != ')' && c != ']' && c != ',' && c != ';',
-      _ => (c == '[' || c == '(' || tight_prefix) && is_expr_ending_tok(prev_tok)
+      // A bare `continue` completes a statement too, so a line that begins a
+      // statement after it is a new one, as is a line opening with `[` or a
+      // tight prefix operator (`continue` takes no operand). Only `(` keeps
+      // its existing reading as `continue`'s arguments.
+      TContinue => c == '[' || tight_prefix || starts_statement_tok(tok),
+      // #3546: a line that begins a statement after a line that ended an
+      // expression is a statement boundary. Marking it lets the parser tell
+      // two statements on separate lines from two expressions juxtaposed on
+      // ONE line (`let x = 1 2`), which it refuses. A `}` is left out: a
+      // statement may follow a block on its own line or on the same one.
+      TRBrace => (c == '[' || c == '(' || tight_prefix) && is_expr_ending_tok(prev_tok),
+      // A postfix `?` ends an expression too (`let v = o?` then a new line),
+      // so it gets the same boundaries as a name: without the `(` / `[` /
+      // prefix-operator ones, `o?` then `()` on the next line called the
+      // unwrapped value with no diagnostic. A `.field` / `.method` chain or a
+      // spaced binary operator on the next line still continues it.
+      TQuestion => c == '[' || c == '(' || tight_prefix || starts_statement_tok(tok),
+      // Inside an impl header no statement can start, so its lines continue
+      // it (`impl Tag` / `for Foo`, `impl [T: Tag]` / `Tag for Box[T]`).
+      // A name right after a `where` / `allows` that opened a clause is that
+      // clause (`after_clause_word`), so the line break between them
+      // continues the header. The same word used as a value does not.
+      _ => (c == '[' || c == '(' || tight_prefix || (!impl_header && !after_clause_word && starts_statement_tok(tok))) && is_expr_ending_tok(prev_tok)
     }
+  }
+}
+
+/// Whether the token after `tok` is still inside an impl header: from `impl`
+/// up to its `for`, or its `{` when it has no `for`. A header broken across
+/// lines before `for` or after its `[..]` binder puts a statement-starting
+/// token (`for`, a trait name) at the start of a line after a name or `]`,
+/// where `needs_synthetic_semicolon` would otherwise mark a statement
+/// boundary. Everything after `for` is a type, a `where` / `allows` clause or
+/// the body, which the general rule already handles; ending the state at
+/// `for` keeps a `for` LOOP in the body a statement.
+#zero_alloc
+fn impl_header_after(impl_header: Bool, tok: Token) -> Bool {
+  match tok {
+    TImpl => true,
+    TFor => false,
+    TLBrace => false,
+    TSemicolon => false,
+    _ => impl_header
+  }
+}
+
+/// A token that can only begin a new statement when it opens a line after an
+/// expression: a name, a literal, or a statement keyword. `where` and
+/// `allows` continue a declaration header, so they are not on the list
+/// (`contextual_ident_opens_statement` answers for them by what follows).
+#zero_alloc
+fn starts_statement_tok(tok: Token) -> Bool {
+  match tok {
+    TIdent(n) => n != "where" && n != "allows",
+    TInt(_) => true,
+    TFloat(_) => true,
+    TString(_) => true,
+    TStringInterp(_, _) => true,
+    TLet => true,
+    TReturn => true,
+    TIf => true,
+    TMatch => true,
+    TWhile => true,
+    TFor => true,
+    TLoop => true,
+    TGuard => true,
+    TThrow => true,
+    THandle => true,
+    TBreak => true,
+    TContinue => true,
+    TRegion => true,
+    TTaskGroup => true,
+    _ => false
   }
 }
 
@@ -950,6 +1024,37 @@ fn is_tight_prefix_op(tok: Token, source: String, len: Int, next: Int) -> Bool {
     _ => false
   }
   prefixable && next < len && !is_ws(String::char_code_at(source, next))
+}
+
+/// `where` and `allows` continue a declaration header only when a name or a
+/// `{` follows them (`allows Console`, `where { requires: .. }`). Spelled as
+/// an identifier they are followed by anything else (`allows()`,
+/// `where = 1`; at the end of the input there is nothing to call), so on a new
+/// line after an expression they open a statement like any other name. The
+/// result joins `needs_synthetic_semicolon`'s `tight_prefix` flag, which marks
+/// a line-leading token that opens a statement whatever precedes it.
+/// `where` or `allows`, the words a declaration header's clauses open.
+#zero_alloc
+fn is_contextual_clause_word(tok: Token) -> Bool {
+  match tok {
+    TIdent(n) => n == "where" || n == "allows",
+    _ => false
+  }
+}
+
+#zero_alloc
+fn contextual_ident_opens_statement(tok: Token, source: String, len: Int, next: Int) -> Bool {
+  match tok {
+    TIdent(n) => if n == "where" || n == "allows" {
+      // Whitespace and `//` comments between the word and what follows it
+      // are trivia here as everywhere else.
+      let i = skip_ws_with_newline(source, len, next)>>1
+      i < len && !is_alpha(String::char_code_at(source, i)) && String::char_code_at(source, i) != '{'
+    } else {
+      false
+    },
+    _ => false
+  }
 }
 
 fn concat_string_parts(parts: Array[String], tail: String) -> String {
@@ -1040,9 +1145,18 @@ fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[Str
         current_start = interp_end + 1
         current_parts_acc = empty_string_array()
         current_has_interp = true
+      } else if esc == 'u' {
+        let (text, after) = lex_unicode_escape(s, len, next + 1)
+        Array::push(current_parts_acc, chunk)
+        Array::push(current_parts_acc, text)
+        current_idx = after
+        current_start = after
       } else {
         let escaped = if esc == '"' {
           "\""
+        }
+        else if esc == '\'' {
+          "'"
         }
         else if esc == '\\' {
           "\\"
@@ -1059,7 +1173,7 @@ fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[Str
         else if esc == '0' {
           String::from_char_code(0)
         }
-        else throw("invalid escape sequence")
+        else throw(String::concat("invalid escape sequence `\\", String::concat(String::from_byte(esc), "`: a string supports \\n \\t \\r \\0 \\\" \\' \\\\ and \\u{hex}; write `\\\\` for a literal backslash")))
         Array::push(current_parts_acc, chunk)
         Array::push(current_parts_acc, escaped)
         current_idx = next + 1
@@ -1075,6 +1189,50 @@ fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[Str
     }
   }
   lex_ret(out_tok, out_next)
+}
+
+/// `\u{hex}` in a string literal: 1-6 hex digits naming a Unicode scalar
+/// value, written into the byte string as its UTF-8 encoding (a `String` is a
+/// byte string, ADR-0098). `brace` is the index just after the `u`; the answer
+/// is the encoded text and the index just after the closing `}`.
+fn lex_unicode_escape(s: String, len: Int, brace: Int) -> (String, Int) with Exception {
+  if brace >= len || String::char_code_at(s, brace) != '{' {
+    throw("write a Unicode escape with braces: `\\u{e9}`, 1 to 6 hex digits")
+  }
+  let mut i = brace + 1
+  let mut cp = 0
+  while i < len && is_hex_digit(String::char_code_at(s, i)) {
+    let c = String::char_code_at(s, i)
+    let digit = if c >= '0' && c <= '9' {
+      c - '0'
+    } else if c >= 'a' && c <= 'f' {
+      c - 'a' + 10
+    } else {
+      c - 'A' + 10
+    }
+    cp = cp * 16 + digit
+    i = i + 1
+  }
+  let ndigits = i - brace - 1
+  if ndigits < 1 || ndigits > 6 || i >= len || String::char_code_at(s, i) != '}' {
+    throw("write a Unicode escape as `\\u{` 1 to 6 hex digits `}`, such as `\\u{e9}`")
+  }
+  if cp > 1114111 || (cp >= 55296 && cp <= 57343) {
+    throw("`\\u{..}` must name a Unicode scalar value: at most 10FFFF, and not a surrogate (D800-DFFF)")
+  }
+  (utf8_encode(cp), i + 1)
+}
+
+fn utf8_encode(cp: Int) -> String {
+  if cp < 128 {
+    String::from_byte(cp)
+  } else if cp < 2048 {
+    String::concat(String::from_byte(192 + cp / 64), String::from_byte(128 + cp % 64))
+  } else if cp < 65536 {
+    String::concat(String::from_byte(224 + cp / 4096), String::concat(String::from_byte(128 + cp / 64 % 64), String::from_byte(128 + cp % 64)))
+  } else {
+    String::concat(String::from_byte(240 + cp / 262144), String::concat(String::from_byte(128 + cp / 4096 % 64), String::concat(String::from_byte(128 + cp / 64 % 64), String::from_byte(128 + cp % 64))))
+  }
 }
 
 fn lex_string(s: String, len: Int, i: Int) -> Token with Exception {
@@ -1154,6 +1312,11 @@ fn lex_decimal(s: String, len: Int, i: Int) -> Token with Exception {
   let int_end = scan_digits_end(s, len, i)
   if int_end == i {
     throw("expected digit")
+  }
+  // `1_000_000` lexed as `1` followed by the name `_000_000`, and the report
+  // was `unknown name: _000_000`.
+  if int_end + 1 < len && String::char_code_at(s, int_end) == '_' && is_digit(String::char_code_at(s, int_end + 1)) {
+    throw("remove the `_` from this number: a numeric literal has no digit separators (write `1000000`, not `1_000_000`)")
   }
   // Tuple field access `t.0.0`: a number immediately preceded by a single field
   // dot must NOT absorb a trailing `.<digit>` as a float decimal — that `.` is
@@ -1459,6 +1622,8 @@ export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[I
     let starts = Array::with_capacity(est)
     let ends = Array::with_capacity(est)
     let mut prev_tok = TEof
+    let mut impl_header = false
+    let mut prev_clause = false
     let first_skip = skip_ws_with_newline(source, len, skip_bom(source, len))
     let mut pos = first_skip>>1
     let mut nl_before = (first_skip&1) == 1
@@ -1466,7 +1631,7 @@ export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[I
       let c = String::char_code_at(source, pos)
       let tok = lex_one_token(source, len, pos)
       let next = lex_end()
-      if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next)) {
+      if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next) || contextual_ident_opens_statement(tok, source, len, next), tok, impl_header, prev_clause) {
         Array::push(b, TSemicolon)
         Array::push(starts, pos)
         Array::push(ends, pos)
@@ -1477,6 +1642,8 @@ export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[I
       Array::push(starts, pos)
       Array::push(ends, next)
       prev_tok = tok
+      impl_header = impl_header_after(impl_header, tok)
+      prev_clause = is_contextual_clause_word(tok) && !contextual_ident_opens_statement(tok, source, len, next)
       let skipped = skip_ws_with_newline(source, len, next)
       pos = skipped>>1
       nl_before = (skipped&1) == 1
@@ -1504,6 +1671,8 @@ export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[In
   let err_offsets = ArrayBuilder::new()
   let err_msgs = ArrayBuilder::new()
   let mut prev_tok = TEof
+  let mut impl_header = false
+  let mut prev_clause = false
   let first_skip = skip_ws_with_newline(source, len, skip_bom(source, len))
   let mut pos = first_skip>>1
   let mut nl_before = (first_skip&1) == 1
@@ -1520,7 +1689,7 @@ export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[In
     } }
     match res {
       Some((tok, next)) => {
-        if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next)) {
+        if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next) || contextual_ident_opens_statement(tok, source, len, next), tok, impl_header, prev_clause) {
           ArrayBuilder::push(b, TSemicolon)
           ArrayBuilder::push(starts, pos)
           ArrayBuilder::push(ends, pos)
@@ -1531,6 +1700,8 @@ export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[In
         ArrayBuilder::push(starts, pos)
         ArrayBuilder::push(ends, next)
         prev_tok = tok
+        impl_header = impl_header_after(impl_header, tok)
+        prev_clause = is_contextual_clause_word(tok) && !contextual_ident_opens_statement(tok, source, len, next)
         let skipped = skip_ws_with_newline(source, len, next)
         pos = skipped>>1
         nl_before = (skipped&1) == 1
@@ -1742,6 +1913,8 @@ export fn lex(source: String) -> Array[Token] with Exception {
     // Presized like lex_with_offsets.
     let b = Array::with_capacity(len / 5 + 16)
     let mut prev_tok = TEof
+    let mut impl_header = false
+    let mut prev_clause = false
     let first_skip = skip_ws_with_newline(source, len, skip_bom(source, len))
     let mut pos = first_skip>>1
     let mut nl_before = (first_skip&1) == 1
@@ -1757,13 +1930,15 @@ export fn lex(source: String) -> Array[Token] with Exception {
       // newline-preceded and follows an expression-ending token; the statement
       // parser already treats `;` as a separator. A same-line `(`/`[` (no
       // newline) still attaches as a call/subscript suffix.
-      if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next)) {
+      if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next) || contextual_ident_opens_statement(tok, source, len, next), tok, impl_header, prev_clause) {
         Array::push(b, TSemicolon)
       } else {
         ()
       }
       Array::push(b, tok)
       prev_tok = tok
+      impl_header = impl_header_after(impl_header, tok)
+      prev_clause = is_contextual_clause_word(tok) && !contextual_ident_opens_statement(tok, source, len, next)
       let skipped = skip_ws_with_newline(source, len, next)
       pos = skipped>>1
       nl_before = (skipped&1) == 1

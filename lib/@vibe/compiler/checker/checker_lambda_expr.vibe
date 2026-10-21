@@ -176,7 +176,7 @@ import ./checker_region_retention.vibe {
 }
 
 import ./checker_pinned_formal.vibe {
-  pinned_row_formal_errors
+  collapsed_formal_errors, pinned_row_formal_errors
 }
 
 import ./checker_throw_kind_of_type.vibe {
@@ -186,6 +186,7 @@ import ./checker_throw_kind_of_type.vibe {
   formals_source_arity,
   min_int,
   railway_expr_off,
+  report_bare_generic_heads_in_env,
   report_exception_kinds_in_row,
   report_formal_applications,
   report_unknown_type_names,
@@ -269,14 +270,16 @@ export fn tab_call_ty(tytab: Array[(Int, Type)], call_off: Int, ty: Type, captur
 /// perturbs the main type/subst flow — it only type-checks `obj` to learn its
 /// struct name, looks up that struct's `mut` field set, and pushes a single
 /// diagnostic to the real `errors` when the written field is not `mut`.
-export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
+export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> (Subst, Int) {
+  let mut out_s = s
+  let mut out_c = c
   if name == "__set_field" && Array::length(args) == 3 {
     // review-lint: allow-by-name-call-arm -- a `mut` check on the field-write sugar `obj.f = x`, which reaches here spelled `__set_field`; it types nothing, so it is not one of the #3179 call arms
     match Array::get(args, 1) {
       EString(field, _) => {
         let throwaway = array_empty()
         let throwtab = array_empty()
-        let (obj_ty, _, _) = ce(Array::get(args, 0), env, defs, s, c, throwaway, throwtab)
+        let (obj_ty, obj_s, obj_c) = ce(Array::get(args, 0), env, defs, s, c, throwaway, throwtab)
         // #829: also recognise an INSTANTIATED generic struct receiver
         // (`CtNamed(S, targs)`), so `mut`-field enforcement and the written-
         // value type check cover generic structs too.
@@ -322,13 +325,23 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
                   fi = fi + 1
                 }
                 if has_field {
-                  let (val_ty, val_s, _) = ce(Array::get(args, 2), env, defs, s, c, throwaway, throwtab)
+                  let (val_ty, val_s, val_c) = ce(Array::get(args, 2), env, defs, obj_s, obj_c, throwaway, throwtab)
                   // #829: instantiate a generic field's declared type from the
                   // receiver's type args so the written value is checked against
                   // the CONCRETE field type; a non-applied receiver keeps the
                   // raw (rigid) type, which check_assignable tolerates.
                   let inst_fty = inst_struct_field_ty(fty, s_tparams, recv_targs)
-                  let _ = check_assignable(subst_apply(s, inst_fty), subst_apply(s, val_ty), s, errors, String::concat("type mismatch writing field `", String::concat(field, "`")), tail_expr_off(Array::get(args, 2)))
+                  //
+                  // #3537: the write CONSTRAINS the receiver, so its
+                  // substitution is handed back to the call's own flow. A
+                  // receiver bound as a monotype (`let c = Cell::{ v: None }`,
+                  // not generalized) fixes its `T` at the first write; before,
+                  // this check's substitution was dropped, `c.v = Some("s")`
+                  // left `T` open, and a later read typed it `Int`. The two
+                  // throwaway checks thread their counter so no variable they
+                  // mint can collide with one the caller mints next.
+                  out_s = check_assignable(subst_apply(val_s, inst_fty), subst_apply(val_s, val_ty), val_s, errors, String::concat("type mismatch writing field `", String::concat(field, "`")), tail_expr_off(Array::get(args, 2)))
+                  out_c = val_c
                   // #3387 (Codex on #3407): a function written into a field is
                   // stored as the literal's is, so the generic effect it
                   // performs is compared with the field's row, or with the one
@@ -351,6 +364,7 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
   } else {
     ()
   }
+  (out_s, out_c)
 }
 
 /// Argument positions retained by a mutable operation, encoded as a two-bit
@@ -2189,6 +2203,106 @@ export fn map_literal_ground(t: Type) -> Bool {
 /// cannot tell that the value it stores belongs to the group.
 export let run_body_param_cell: Array[Type] = []
 
+/// #3547: the parameter types a call expects of the lambda literal it is
+/// about to check, one slot per parameter (`None` = no expectation), set
+/// immediately before that one argument is checked and taken by
+/// `check_lambda_expr` before anything else, so no nested lambda can see it.
+/// Without it an unannotated parameter is a fresh variable while the body is
+/// checked, and `+` on two such variables settles on `Int` before the call
+/// unifies the lambda with its parameter: `Array::fold(["a"], "", (acc, s) ->
+/// acc + s)` was refused as `(Int, Int) -> Int`.
+let lambda_param_seed_cell: Array[Array[Option[Type]]] = []
+
+fn take_lambda_param_seeds() -> Array[Option[Type]] {
+  if Array::length(lambda_param_seed_cell) == 0 {
+    []
+  } else {
+    let seeds = Array::get(lambda_param_seed_cell, 0)
+    Array::truncate(lambda_param_seed_cell, 0)
+    seeds
+  }
+}
+
+/// The expectations that are seeded: the scalars whose operators lower
+/// correctly when only the CHECKER knows the operand's type. `+` / `<` on a
+/// `String` ride the typed String-lowering channel (#2391), and `Int` /
+/// `Bool` / `Char` need no classification. `Double` is deliberately absent:
+/// its arithmetic is chosen by the lowering from the operand's SYNTAX (an
+/// annotation, a float literal), so an unannotated `(acc, s) -> acc + s`
+/// typed `Double` here compiled to an integer add over two boxed values and
+/// printed `0` for `1.5 + 2.0` (measured). Left unseeded, it stays refused,
+/// with the edit (`Array::fold`'s accumulator check) -- never silently wrong.
+fn lambda_seed_type_lowers(t: Type) -> Bool {
+  match t {
+    CtInt => true,
+    CtString => true,
+    CtBool => true,
+    CtChar => true,
+    _ => false
+  }
+}
+
+/// Record the expected types of the unannotated parameters of `arg`, when it
+/// is a non-generic lambda literal with exactly `expected.length` parameters.
+/// Only the expectations `lambda_seed_type_lowers` admits are kept.
+export fn seed_lambda_params(arg: Expr, expected: Array[Type], s: Subst) -> Unit {
+  Array::truncate(lambda_param_seed_cell, 0)
+  match arg {
+    EFn(tparams, _, params, _, _, _) => if Array::length(tparams) == 0 && Array::length(params) == Array::length(expected) {
+      let seeds: Array[Option[Type]] = []
+      let mut any = false
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, ann) = Array::get(params, i)
+        let want = subst_apply(s, Array::get(expected, i))
+        if (ann is None) && lambda_seed_type_lowers(want) {
+          Array::push(seeds, Some(want))
+          any = true
+        } else {
+          Array::push(seeds, None)
+        }
+        i = i + 1
+      }
+      if any {
+        Array::push(lambda_param_seed_cell, seeds)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// `seed_lambda_params` for an argument of a call whose parameter `ai` has a
+/// function type: the expectation is read after unifying the arguments to its
+/// left with their parameters in a scratch substitution (the call's own
+/// unification does the same, later).
+export fn seed_lambda_arg_from_call(arg: Expr, param_tys: Array[Type], arg_tys: Array[Type], s: Subst) -> Unit {
+  Array::truncate(lambda_param_seed_cell, 0)
+  let ai = Array::length(arg_tys)
+  if ai < Array::length(param_tys) && (arg is EFn(_, _, _, _, _, _)) {
+    let mut scratch = s
+    let mut j = 0
+    while j < ai {
+      match unify(Array::get(param_tys, j), Array::get(arg_tys, j), scratch) {
+        Some(su) => {
+          scratch = su
+        },
+        None => ()
+      }
+      j = j + 1
+    }
+    match subst_apply(scratch, Array::get(param_tys, ai)) {
+      CtFn(eps, _, _) => seed_lambda_params(arg, eps, scratch),
+      _ => ()
+    }
+  } else {
+    ()
+  }
+}
+
 fn take_run_body_param() -> Option[Type] {
   if Array::length(run_body_param_cell) == 0 {
     None
@@ -2204,6 +2318,8 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
   match expr {
     EFn(tparams, tbounds, params, ret_ty, effect, body) => {
       let run_body_param = take_run_body_param()
+      let param_seeds = take_lambda_param_seeds()
+      let efn_err_start = Array::length(errors)
       let (retention_rechecking, retention_override) = match take_retention_param_override() {
         Some(overrides) => (true, overrides),
         None => (false, array_empty())
@@ -2409,6 +2525,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
               ()
             } else {
               report_unknown_type_names(te, defs, tparams, fn_env, declared_row_binders, String::concat(String::concat("parameter `", name), "`"), errors)
+              report_bare_generic_heads_in_env(te, defs, tparams, fn_env, String::concat(String::concat("parameter `", name), "`"), errors)
               report_formal_applications(te, tparams, String::concat(String::concat("parameter `", name), "`"), errors)
             }
             (pt2, s1, c1)
@@ -2417,6 +2534,19 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
             let (tv, nc2) = fresh_var(c1)
             (tv, s1, nc2)
           }
+        }
+        // #3547: an unannotated parameter starts as the type the call
+        // expects of it (`take_lambda_param_seeds`).
+        let ns = if pi < Array::length(param_seeds) {
+          match Array::get(param_seeds, pi) {
+            Some(expected) => match unify(pt, expected, ns) {
+              Some(seeded) => seeded,
+              None => ns
+            },
+            None => ns
+          }
+        } else {
+          ns
         }
         // #3276: a `TaskGroup::run` body's group parameter carries the call's
         // region from the start, so every write in the body sees it. An
@@ -2509,6 +2639,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
         Some(rte) => {
           // #2125: see the parameter arm above.
           report_unknown_type_names(rte, defs, tparams, fn_env, declared_row_binders, "the return type", errors)
+          report_bare_generic_heads_in_env(rte, defs, tparams, fn_env, "the return type", errors)
           report_formal_applications(rte, tparams, "the return type", errors)
           env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, formal_shadow(rte, env, tparams)), fn_env))
         },
@@ -2700,6 +2831,14 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       // #3318: a formal the row names must stay generic in the body.
       if tplen > 0 {
         pinned_row_formal_errors(tparams, tparam_ids, effect, body, defs, s, s2_body, s2, s3, errors)
+        // #3536: two declared formals the body made one type. Judged only on
+        // an otherwise clean declaration, so a body error is not re-reported
+        // as the collapse it left behind.
+        if Array::length(errors) == efn_err_start {
+          collapsed_formal_errors(tparams, tparam_ids, body, s, s2_body, s2, s3, errors)
+        } else {
+          ()
+        }
       } else {
         ()
       }

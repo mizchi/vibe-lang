@@ -1,0 +1,58 @@
+//# #3557: a signature's row variable is quantified per call
+
+// `apply` declares no type parameter. Its `with e` used to be one variable
+// shared by every call in a body, so once `apply(one)` had fixed it as pure,
+// `apply(noisy)` was refused for dropping `Console`. Each call has its own row
+// now, and the second call's `Console` is still charged to the caller.
+fn apply(f: () -> Int with e) -> Int with e {
+  f()
+}
+
+fn one() -> Int {
+  1
+}
+
+fn noisy() -> Int with Console {
+  println("noisy")
+  40
+}
+
+struct Runner {
+  n: Int
+}
+
+fn Runner::run(r: Runner, f: () -> Int with e) -> Int with e {
+  f() + r.n
+}
+
+fn both() -> Int with Console {
+  let a = apply(one)
+  let b = apply(noisy)
+  a + b
+}
+
+fn both_as_value() -> Int with Console {
+  let g = apply
+  let a = g(one)
+  let b = g(noisy)
+  a + b
+}
+
+fn both_as_method() -> Int with Console {
+  let r = Runner::{ n: 100 }
+  let a = r.run(one)
+  let b = r.run(noisy)
+  a + b
+}
+
+test "a pure call and a Console call to one row-polymorphic function" allows Console {
+  inspect(both(), "41")
+}
+
+test "the same through a function taken as a value" allows Console {
+  inspect(both_as_value(), "41")
+}
+
+test "the same through a method call" allows Console {
+  inspect(both_as_method(), "241")
+}

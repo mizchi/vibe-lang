@@ -4,6 +4,7 @@ import @vibe/compiler/core {
   Expr,
   Pat,
   Stmt,
+  Type,
   TypeExpr,
   builtin_shadow_source_name,
   dce_keep_flags,
@@ -13,7 +14,8 @@ import @vibe/compiler/core {
   expr_children_push,
   expr_children_top,
   is_exception_effect_name,
-  is_exception_throw_operation
+  is_exception_throw_operation,
+  lookup_registry_builtin
 }
 
 import @vibe/core {
@@ -21,7 +23,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/lowering/effects/direct {
-  idp_note_program_decls, idp_pure_builtin_names
+  idp_is_pure_builtin_call, idp_note_program_decls, idp_pure_builtin_names
 }
 
 import @vibe/compiler/lowering/effects/queries {
@@ -33,6 +35,7 @@ import @vibe/compiler/lowering/effects/queries {
   edp_handle_statement_index,
   edp_handle_statement_indices,
   edp_has_unsafe_construct,
+  edp_pat_qname,
   edp_row_is_exactly,
   edp_rq_fold,
   edp_str_array_contains,
@@ -520,6 +523,8 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   idp_note_program_decls(stmts)
   // #3347: before anything reads a top-level binding's row.
   edp_stamp_alias_annotated_lets(stmts)
+  // #3540: before the effect list is read -- it may declare fresh copies.
+  edp_isolate_nested_arm_handlers(stmts)
   let effect_defs = edp_collect_effect_defs(stmts)
   // ADR-0076 追記34 V2 step 1: vacuous-handle elimination. An effect with
   // ZERO performs anywhere in the program has provably-dead handler arms
@@ -644,7 +649,8 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   // row, so the type-directed sweep gives it the dict its callee passes.
   edp_stamp_slot_rows(stmts, fn_defs)
   let keep = dce_keep_flags(stmts, roots)
-  let plans = edp_plan_migrations(stmts, effect_defs, fn_defs, keep, errs, fn_row_labels)
+  // #3540: an arm's own effects are migrated before the arm is spliced.
+  let plans = edp_order_plans_for_arm_performs(stmts, edp_plan_migrations(stmts, effect_defs, fn_defs, keep, errs, fn_row_labels), fn_defs, fn_row_labels, errs)
   // #3424: a function value at such a parameter that the stamp could not
   // give the row is called with a dict it has no parameter for -- when the
   // row's effect is migrated, so the call passes one.
@@ -1924,4 +1930,840 @@ fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[Str
     si = si + 1
   }
   found
+}
+
+/// #3540 (P0): the order the planned migrations are applied in.
+///
+/// A tail-resumptive arm is spliced into its handle's body -- at each
+/// `perform`, or as the dict closure built at a needing call -- and every
+/// `perform` the ARM makes is then resolved by whichever migration runs later,
+/// against the arm's NEW lexical position. A handler for that effect nested in
+/// the body sits between the two, so applying the arm's own effect first made
+/// it the arm's handler: `handle { handle { handle { perform Ask::Get() } with
+/// Log } with { Ask::Get() => { perform Log::Say("x"); resume(10) } } } with
+/// Log` printed through the INNER `Log` arm, while the arm's effects belong to
+/// the handlers around the `handle` (the checker types them there). Which
+/// answer a program got depended on the order its effects were declared in.
+///
+/// Migrating the arm's effect FIRST resolves the arm's performs where the arm
+/// is written, before it is copied anywhere, which is the handler semantics.
+/// So a plan for `E` waits for every planned `Y` that some arm of an `E`
+/// handle may perform while a `Y` handle nested in the handle's body may
+/// enclose a perform of `E` -- the only places the arm is copied into that
+/// handler's reach. A `Y` handle that cannot reach `E` (one that finished
+/// before the perform) orders nothing, so two such independent shapes do not
+/// make a false cycle. Plans with no dependency keep their order. A real cycle
+/// has no order that is right for both handles; it is refused with the edit
+/// rather than answered.
+fn edp_order_plans_for_arm_performs(stmts: Array[Stmt], plans: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], errs: Array[String]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+  if Array::length(plans) < 2 {
+    plans
+  } else {
+    let names = empty_str_array()
+    for plan in plans {
+      Array::push(names, plan.0)
+    }
+    // A callee spelled like a top-level function may be a local binding that
+    // shadows it: whole-program conservative, as edp_drop_shadowed_needing.
+    let binders = edp_collect_program_binders(stmts)
+    let fx = (fn_defs, row_labels, binders)
+    // (E, Y, offset of the arm's perform of Y): Y must be applied before E.
+    let edges: Array[(String, String, Int)] = []
+    for s in stmts {
+      match s {
+        SLet(_, _, _, _, expr) => edp_ao_collect_edges(expr, names, fx, edges),
+        SLetMut(_, _, expr) => edp_ao_collect_edges(expr, names, fx, edges),
+        SExpr(expr) => edp_ao_collect_edges(expr, names, fx, edges),
+        STest(_, expr) => edp_ao_collect_edges(expr, names, fx, edges),
+        SBench(_, expr) => edp_ao_collect_edges(expr, names, fx, edges),
+        _ => ()
+      }
+    }
+    if Array::length(edges) == 0 {
+      plans
+    } else {
+      let ordered = array_empty()
+      let done = empty_str_array()
+      let taken: Array[Bool] = []
+      while Array::length(taken) < Array::length(plans) {
+        Array::push(taken, false)
+      }
+      let mut progress = true
+      while Array::length(ordered) < Array::length(plans) && progress {
+        progress = false
+        let mut i = 0
+        while i < Array::length(plans) && !progress {
+          let plan = Array::get(plans, i)
+          if !Array::get(taken, i) && edp_ao_deps_done(plan.0, edges, names, done) {
+            Array::push(ordered, plan)
+            Array::push(done, plan.0)
+            Array::set(taken, i, true)
+            progress = true
+          } else ()
+          i = i + 1
+        }
+      }
+      if Array::length(ordered) < Array::length(plans) {
+        let cyc = empty_str_array()
+        let mut i = 0
+        while i < Array::length(plans) {
+          if !Array::get(taken, i) {
+            let plan = Array::get(plans, i)
+            Array::push(cyc, plan.0)
+            Array::push(ordered, plan)
+          } else ()
+          i = i + 1
+        }
+        // Point at an arm's `perform` inside the cycle.
+        let mut at = 0 - 1
+        for edge in edges {
+          let (from, to, off) = edge
+          if at < 0 && off >= 0 && edp_str_array_contains(cyc, from) && edp_str_array_contains(cyc, to) {
+            at = off
+          } else ()
+        }
+        Array::push(errs, String::concat(String::concat(String::concat("handler arms of the effects ", edp_join_and(cyc)), " each perform another of them while a `handle` for it is nested in the handled body over that perform, so no order of their handlers is right for both -- move the `perform` out of one of those arms (resume with a value and perform after the `handle`), or move the nested `handle` outside"), edp_ao_marker(at)))
+      } else ()
+      ordered
+    }
+  }
+}
+
+fn edp_ao_deps_done(e: String, edges: Array[(String, String, Int)], names: Array[String], done: Array[String]) -> Bool {
+  let mut ok = true
+  for edge in edges {
+    let (from, to, _) = edge
+    if from == e && to != e && edp_str_array_contains(names, to) && !edp_str_array_contains(done, to) {
+      ok = false
+    } else ()
+  }
+  ok
+}
+
+fn edp_ao_push_edge(edges: Array[(String, String, Int)], from: String, to: String, off: Int) -> Unit {
+  let mut seen = false
+  for edge in edges {
+    let (f, t, _) = edge
+    if f == from && t == to {
+      seen = true
+    } else ()
+  }
+  if !seen {
+    Array::push(edges, (from, to, off))
+  } else ()
+}
+
+fn edp_ao_collect_edges(expr: Expr, names: Array[String], fx: (Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[Array[String]], MutSet[String]), edges: Array[(String, String, Int)]) -> Unit {
+  match expr {
+    EHandle(body, arms) => {
+      let inner: Array[(String, Expr)] = []
+      edp_ao_nested_handles(body, names, inner)
+      if Array::length(inner) > 0 {
+        for arm in arms {
+          let (p, ab) = arm
+          let e = edp_effect_name_of(edp_pat_qname(p))
+          if edp_str_array_contains(names, e) {
+            for nested in inner {
+              let (y, ybody) = nested
+              if y != e && edp_ao_arm_may_perform(ybody, e, fx, false) && edp_ao_arm_may_perform(ab, y, fx, false) {
+                edp_ao_push_edge(edges, e, y, edp_ao_perform_offset(ab, y, fx))
+              } else ()
+            }
+          } else ()
+        }
+      } else ()
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    edp_ao_collect_edges(expr_child_at(i), names, fx, edges)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// Every `handle` inside `expr` with an arm of a planned effect, as (that
+/// effect, the handle's body): the body is what the handler encloses.
+fn edp_ao_nested_handles(expr: Expr, names: Array[String], out: Array[(String, Expr)]) -> Unit {
+  match expr {
+    EHandle(hbody, arms) => for arm in arms {
+      let (p, _) = arm
+      let e = edp_effect_name_of(edp_pat_qname(p))
+      if edp_str_array_contains(names, e) {
+        Array::push(out, (e, hbody))
+      } else ()
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    edp_ao_nested_handles(expr_child_at(i), names, out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// May evaluating `expr` perform effect `y`? Conservative: a call this walk
+/// cannot see through answers true -- a local closure (including one whose
+/// name shadows a top-level function), a computed callee, a row variable --
+/// and so does a local binding handed to a builtin that may call it
+/// (`hof_arg`).
+fn edp_ao_arm_may_perform(expr: Expr, y: String, fx: (Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[Array[String]], MutSet[String]), hof_arg: Bool) -> Bool {
+  let (fn_defs, row_labels, binders) = fx
+  match expr {
+    ECall(callee, args, _, _) => match callee {
+      EIdent(nm, _) => if nm == "perform" {
+        if edp_user_perform_effect_of(expr) == y {
+          true
+        } else {
+          // The operation is not a call to see through: its arguments are.
+          edp_ao_any_may_perform(edp_ao_perform_operands(args), y, fx, false)
+        }
+      } else if nm == "resume" || nm == "throw" || nm == "__to_string" {
+        edp_ao_any_may_perform(args, y, fx, false)
+      } else if MutSet::has(binders, nm) {
+        true
+      } else {
+        let fi = edp_ao_fn_index(fn_defs, nm)
+        if fi >= 0 {
+          if edp_ao_labels_reach(Array::get(row_labels, fi), y) {
+            true
+          } else {
+            edp_ao_any_may_perform(args, y, fx, false)
+          }
+        } else if idp_is_pure_builtin_call(nm) || edp_ao_is_ctor_spelling(nm) {
+          edp_ao_any_may_perform(args, y, fx, false)
+        } else {
+          match lookup_registry_builtin(nm) {
+            // A local handed to a builtin that takes a function may be called.
+            Some(t) => edp_ao_any_may_perform(args, y, fx, edp_ao_type_takes_fn(t)),
+            None => true
+          }
+        }
+      },
+      _ => true
+    },
+    EIdent(nm, _) => if MutSet::has(binders, nm) {
+      hof_arg
+    } else {
+      let fi = edp_ao_fn_index(fn_defs, nm)
+      fi >= 0 && edp_ao_labels_reach(Array::get(row_labels, fi), y)
+    },
+    _ => edp_ao_any_may_perform(expr_children(expr), y, fx, false)
+  }
+}
+
+fn edp_ao_perform_operands(args: Array[Expr]) -> Array[Expr] {
+  if Array::length(args) == 1 {
+    match Array::get(args, 0) {
+      ECall(EIdent(_, _), oargs, _, _) => oargs,
+      EIdent(_, _) => [],
+      other => [other]
+    }
+  } else {
+    args
+  }
+}
+
+/// `Some(..)`, `Shape::Circle(..)`: a constructor, whose last segment is
+/// capitalized (functions and methods are snake_case).
+fn edp_ao_is_ctor_spelling(nm: String) -> Bool {
+  let parts = String::split(nm, "::")
+  let last = Array::get(parts, Array::length(parts) - 1)
+  String::length(last) > 0 && String::byte_at(last, 0) >= 65 && String::byte_at(last, 0) <= 90
+}
+
+/// Does a builtin of type `t` take a function it may call? A registry row
+/// erases its type variables to CtUnknown, so only an explicit function type
+/// counts.
+fn edp_ao_type_takes_fn(t: Type) -> Bool {
+  match t {
+    CtFn(params, _, _) => {
+      let mut hit = false
+      for pt in params {
+        if edp_ao_type_has_fn(pt) {
+          hit = true
+        } else ()
+      }
+      hit
+    },
+    CtForAll(_, _, inner) => edp_ao_type_takes_fn(inner),
+    _ => true
+  }
+}
+
+fn edp_ao_type_has_fn(t: Type) -> Bool {
+  match t {
+    CtFn(_, _, _) => true,
+    CtUnknown => false,
+    CtVar(_) => false,
+    CtArray(e) => edp_ao_type_has_fn(e),
+    CtOption(e) => edp_ao_type_has_fn(e),
+    CtTuple(es) => {
+      let mut hit = false
+      for e in es {
+        if edp_ao_type_has_fn(e) {
+          hit = true
+        } else ()
+      }
+      hit
+    },
+    CtNamed(_, es) => {
+      let mut hit = false
+      for e in es {
+        if edp_ao_type_has_fn(e) {
+          hit = true
+        } else ()
+      }
+      hit
+    },
+    CtApplied(_, es) => {
+      let mut hit = false
+      for e in es {
+        if edp_ao_type_has_fn(e) {
+          hit = true
+        } else ()
+      }
+      hit
+    },
+    CtForAll(_, _, inner) => edp_ao_type_has_fn(inner),
+    _ => false
+  }
+}
+
+fn edp_ao_any_may_perform(es: Array[Expr], y: String, fx: (Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[Array[String]], MutSet[String]), hof_arg: Bool) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(es) && !hit {
+    hit = edp_ao_arm_may_perform(Array::get(es, i), y, fx, hof_arg)
+    i = i + 1
+  }
+  hit
+}
+
+fn edp_ao_fn_index(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], nm: String) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (_, _, _, fname, _, _) = Array::get(fn_defs, i)
+    if fname == nm {
+      found = i
+    } else ()
+    i = i + 1
+  }
+  found
+}
+
+fn edp_ao_labels_reach(labels: Array[String], y: String) -> Bool {
+  let mut hit = false
+  for label in labels {
+    if edp_effect_name_of(label) == y || (String::length(label) > 0 && String::byte_at(label, 0) >= 97 && String::byte_at(label, 0) <= 122) {
+      hit = true
+    } else ()
+  }
+  hit
+}
+
+/// The source offset of the call in `expr` that may perform `y` -- the
+/// innermost one, so the diagnostic points at the `perform` (its operation)
+/// or the call, not at an enclosing expression. -1 when none carries one.
+fn edp_ao_perform_offset(expr: Expr, y: String, fx: (Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[Array[String]], MutSet[String])) -> Int {
+  let kids = expr_children(expr)
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(kids) && found < 0 {
+    let k = Array::get(kids, i)
+    if edp_ao_arm_may_perform(k, y, fx, false) {
+      found = edp_ao_perform_offset(k, y, fx)
+    } else ()
+    i = i + 1
+  }
+  if found >= 0 {
+    found
+  } else {
+    match expr {
+      ECall(callee, args, _, _) => match callee {
+        EIdent(nm, off) => if nm == "perform" && Array::length(args) == 1 {
+          match Array::get(args, 0) {
+            ECall(EIdent(_, ooff), _, _, _) => ooff,
+            EIdent(_, ooff) => ooff,
+            _ => off
+          }
+        } else {
+          off
+        },
+        _ => 0 - 1
+      },
+      EIdent(_, off) => off,
+      _ => 0 - 1
+    }
+  }
+}
+
+fn edp_ao_marker(off: Int) -> String {
+  if off >= 0 {
+    String::concat(" [@off=", String::concat(Int::to_string(off), "]"))
+  } else {
+    ""
+  }
+}
+
+/// #3540: give a nested handler the arm of an enclosing `handle` must not
+/// reach a name of its own, when that is provably the same program.
+///
+/// `handle { handle { .. perform Ask::Get() .. } with Log } with { Ask::Get()
+/// => { perform Log::Say(..); .. } }`: the `Ask` arm is copied to the
+/// `perform`, inside the inner `Log` handler, and its `Log` must still reach
+/// the handler around the outer `handle`. The migration order can arrange
+/// that (`edp_order_plans_for_arm_performs`), but only once per effect for the
+/// whole program, so two independent functions needing the opposite orders
+/// were refused together. When everything the inner handler handles is a
+/// `perform` written directly in its body -- not inside a lambda, not through
+/// a call, not under a nested handler for the same effect -- renaming that
+/// handler and those performs to a fresh copy of the effect changes nothing it
+/// answers, and the copied arm's `perform` can no longer reach it, in any
+/// order. A handler this cannot prove that for is left alone and orders the
+/// migrations instead.
+fn edp_isolate_nested_arm_handlers(stmts: Array[Stmt]) -> Unit {
+  let decls: Array[Stmt] = []
+  let names = empty_str_array()
+  for s in stmts {
+    match s {
+      SEffectDef(_, name, _, _) => if !edp_str_array_contains(names, name) {
+        Array::push(names, name)
+        Array::push(decls, s)
+      } else (),
+      _ => ()
+    }
+  }
+  // Which statements hold a handle nested in another effect's handle body:
+  // an allocation-free walk, so a program with none pays nothing more.
+  let needs: Array[Int] = []
+  if Array::length(names) >= 2 {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      let hit = match Array::get(stmts, i) {
+        SLet(_, _, _, _, expr) => edp_iso_has_nested_pair(expr, names),
+        SLetMut(_, _, expr) => edp_iso_has_nested_pair(expr, names),
+        SExpr(expr) => edp_iso_has_nested_pair(expr, names),
+        STest(_, expr) => edp_iso_has_nested_pair(expr, names),
+        SBench(_, expr) => edp_iso_has_nested_pair(expr, names),
+        _ => false
+      }
+      if hit {
+        Array::push(needs, i)
+      } else ()
+      i = i + 1
+    }
+  } else ()
+  if Array::length(needs) > 0 {
+    let fn_defs = edp_collect_fn_defs(stmts)
+    let es_names = array_empty()
+    let es_members_list = array_empty()
+    edp_es_collect_into(stmts, es_names, es_members_list)
+    let row_labels = edp_fn_row_label_table(fn_defs, es_names, es_members_list)
+    let fx = (fn_defs, row_labels, edp_collect_program_binders(stmts))
+    // Every effect name the program already spells -- declared (imported
+    // declarations are statements of the merged program too), handled,
+    // performed, or named in a row -- so a generated copy never takes one.
+    Array::truncate(edp_iso_taken, 0)
+    for nm in names {
+      Array::push(edp_iso_taken, nm)
+    }
+    for labels in row_labels {
+      for label in labels {
+        Array::push(edp_iso_taken, edp_effect_name_of(label))
+      }
+    }
+    for st in stmts {
+      match st {
+        SLet(_, _, _, _, expr) => edp_iso_note_effect_names(expr),
+        SLetMut(_, _, expr) => edp_iso_note_effect_names(expr),
+        SExpr(expr) => edp_iso_note_effect_names(expr),
+        STest(_, expr) => edp_iso_note_effect_names(expr),
+        SBench(_, expr) => edp_iso_note_effect_names(expr),
+        _ => ()
+      }
+    }
+    let fresh: Array[Stmt] = []
+    for i in needs {
+      match Array::get(stmts, i) {
+        SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, i, SLet(exported, is_rec, name, ty, edp_iso_expr(expr, [
+        ], names, decls, fx, fresh))),
+        SLetMut(name, ty, expr) => Array::set(stmts, i, SLetMut(name, ty, edp_iso_expr(expr, [
+        ], names, decls, fx, fresh))),
+        SExpr(expr) => Array::set(stmts, i, SExpr(edp_iso_expr(expr, [], names, decls, fx, fresh))),
+        STest(tn, expr) => Array::set(stmts, i, STest(tn, edp_iso_expr(expr, [], names, decls, fx, fresh))),
+        SBench(bn, expr) => Array::set(stmts, i, SBench(bn, edp_iso_expr(expr, [
+        ], names, decls, fx, fresh))),
+        _ => ()
+      }
+    }
+    for d in fresh {
+      Array::push(stmts, d)
+    }
+  } else ()
+}
+
+/// Effect names `edp_iso_fresh_name` must not reuse.
+let edp_iso_taken: Array[String] = []
+
+/// `<effect>__nested_<n>` for the first `n` no effect of the program (and
+/// no copy made earlier) is named. A user effect spelled the same way would
+/// otherwise share the copy's operation table and its handlers (#3540).
+fn edp_iso_fresh_name(y: String) -> String {
+  let mut k = 1
+  let mut name = String::concat(String::concat(y, "__nested_"), Int::to_string(k))
+  while edp_str_array_contains(edp_iso_taken, name) {
+    k = k + 1
+    name = String::concat(String::concat(y, "__nested_"), Int::to_string(k))
+  }
+  Array::push(edp_iso_taken, name)
+  name
+}
+
+/// Note the effect of every handler arm and `perform` in `expr`.
+fn edp_iso_note_effect_names(expr: Expr) -> Unit {
+  match expr {
+    EHandle(_, arms) => for arm in arms {
+      let (p, _) = arm
+      Array::push(edp_iso_taken, edp_effect_name_of(edp_pat_qname(p)))
+    },
+    ECall(EIdent(nm, _), _, _, _) => if nm == "perform" {
+      Array::push(edp_iso_taken, edp_user_perform_effect_of(expr))
+    } else (),
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    edp_iso_note_effect_names(expr_child_at(i))
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// The one declared effect every arm of a handle names, or "".
+fn edp_iso_uniform_effect(arms: Array[(Pat, Expr)], names: Array[String]) -> String {
+  let mut eff = ""
+  let mut ok = Array::length(arms) > 0
+  for arm in arms {
+    let (p, _) = arm
+    let e = edp_effect_name_of(edp_pat_qname(p))
+    if !edp_str_array_contains(names, e) {
+      ok = false
+    } else if eff == "" {
+      eff = e
+    } else if eff != e {
+      ok = false
+    } else ()
+  }
+  if ok {
+    eff
+  } else {
+    ""
+  }
+}
+
+/// Is there a handle of a declared effect inside the BODY of a handle of
+/// another declared effect? Read-only, so statements with none are untouched.
+fn edp_iso_has_nested_pair(expr: Expr, names: Array[String]) -> Bool {
+  let here = match expr {
+    EHandle(body, arms) => {
+      let outer: Array[String] = []
+      for arm in arms {
+        let (p, _) = arm
+        let e = edp_effect_name_of(edp_pat_qname(p))
+        if edp_str_array_contains(names, e) {
+          Array::push(outer, e)
+        } else ()
+      }
+      let inner: Array[(String, Expr)] = []
+      if Array::length(outer) > 0 {
+        edp_ao_nested_handles(body, names, inner)
+      } else ()
+      let mut hit = false
+      for nested in inner {
+        let (y, _) = nested
+        for e in outer {
+          if e != y {
+            hit = true
+          } else ()
+        }
+      }
+      hit
+    },
+    _ => false
+  }
+  if here {
+    true
+  } else {
+    // Allocation-free: this walks every statement of a program declaring two
+    // effects, the compiler's own included.
+    let mark = expr_children_push(expr)
+    let top = expr_children_top()
+    let mut hit = false
+    let mut i = mark
+    while i < top && !hit {
+      hit = edp_iso_has_nested_pair(expr_child_at(i), names)
+      i = i + 1
+    }
+    expr_children_pop(mark)
+    hit
+  }
+}
+
+/// `stack` holds (effect, arms) for every handle whose BODY encloses `expr`.
+fn edp_iso_expr(expr: Expr, stack: Array[(String, Array[(Pat, Expr)])], names: Array[String], decls: Array[Stmt], fx: (Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[Array[String]], MutSet[String]), fresh: Array[Stmt]) -> Expr {
+  match expr {
+    EHandle(body, arms) => {
+      let inner_stack = Array::concat(stack, [])
+      for arm in arms {
+        let (p, _) = arm
+        let e = edp_effect_name_of(edp_pat_qname(p))
+        if edp_str_array_contains(names, e) {
+          Array::push(inner_stack, (e, arms))
+        } else ()
+      }
+      let body2 = edp_iso_expr(body, inner_stack, names, decls, fx, fresh)
+      let arms2 = for arm in arms {
+        let (p, ab) = arm
+        (p, edp_iso_expr(ab, stack, names, decls, fx, fresh))
+      }
+      let y = edp_iso_uniform_effect(arms, names)
+      let mut shadowing = false
+      if y != "" {
+        for frame in stack {
+          let (e, earms) = frame
+          if !shadowing && e != y && edp_ao_arm_may_perform(body, e, fx, false) {
+            for earm in earms {
+              let (_, eab) = earm
+              if edp_ao_arm_may_perform(eab, y, fx, false) {
+                shadowing = true
+              } else ()
+            }
+          } else ()
+        }
+      } else ()
+      if shadowing {
+        let fname = edp_iso_fresh_name(y)
+        let body3 = edp_iso_rename(body2, y, fname)
+        if edp_iso_still_reaches(body3, y, fx) {
+          EHandle(body2, arms2)
+        } else {
+          for d in decls {
+            match d {
+              SEffectDef(exported, dn, tps, ops) => if dn == y {
+                Array::push(fresh, SEffectDef(exported, fname, tps, ops))
+              } else (),
+              _ => ()
+            }
+          }
+          EHandle(body3, for arm in arms2 {
+            let (p, ab) = arm
+            (edp_iso_rename_pat(p, y, fname), ab)
+          })
+        }
+      } else {
+        EHandle(body2, arms2)
+      }
+    },
+    _ => edp_iso_map(expr, (c: Expr) -> edp_iso_expr(c, stack, names, decls, fx, fresh))
+  }
+}
+
+fn edp_iso_rename_qname(q: String, y: String, fname: String) -> String {
+  String::concat(fname, String::substring(q, String::length(y), String::length(q)))
+}
+
+fn edp_iso_rename_pat(p: Pat, y: String, fname: String) -> Pat {
+  match p {
+    PCtor(q, subs) => if edp_effect_name_of(q) == y {
+      PCtor(edp_iso_rename_qname(q, y, fname), subs)
+    } else {
+      p
+    },
+    _ => p
+  }
+}
+
+/// Rename every `perform` of `y` the enclosing handler answers: not under a
+/// nested handler for `y`, and not inside a lambda (which
+/// `edp_iso_still_reaches` then reports, so the rename is dropped).
+fn edp_iso_rename(expr: Expr, y: String, fname: String) -> Expr {
+  match expr {
+    ECall(EIdent(pnm, poff), pargs, off, res) => if pnm == "perform" && Array::length(pargs) == 1 && edp_user_perform_effect_of(expr) == y {
+      let op2 = match Array::get(pargs, 0) {
+        ECall(EIdent(q, qoff), oargs, ooff, ores) => ECall(EIdent(edp_iso_rename_qname(q, y, fname), qoff), for a in oargs {
+          edp_iso_rename(a, y, fname)
+        }, ooff, ores),
+        EIdent(q, qoff) => EIdent(edp_iso_rename_qname(q, y, fname), qoff),
+        other => other
+      }
+      ECall(EIdent(pnm, poff), [op2], off, res)
+    } else {
+      edp_iso_map(expr, (c: Expr) -> edp_iso_rename(c, y, fname))
+    },
+    EHandle(b, arms) => if edp_iso_handles(arms, y) {
+      EHandle(b, for arm in arms {
+        let (p, ab) = arm
+        (p, edp_iso_rename(ab, y, fname))
+      })
+    } else {
+      edp_iso_map(expr, (c: Expr) -> edp_iso_rename(c, y, fname))
+    },
+    EFn(_, _, _, _, _, _) => expr,
+    _ => edp_iso_map(expr, (c: Expr) -> edp_iso_rename(c, y, fname))
+  }
+}
+
+fn edp_iso_handles(arms: Array[(Pat, Expr)], y: String) -> Bool {
+  let mut hit = false
+  for arm in arms {
+    let (p, _) = arm
+    if edp_effect_name_of(edp_pat_qname(p)) == y {
+      hit = true
+    } else ()
+  }
+  hit
+}
+
+/// After the rename, can the handler's body still reach `y` -- a `perform`
+/// the rename did not reach, a lambda, or any call that may perform it? The
+/// walk uses the complete child list, so a node the rebuild does not know
+/// still counts.
+fn edp_iso_still_reaches(expr: Expr, y: String, fx: (Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[Array[String]], MutSet[String])) -> Bool {
+  if !edp_iso_has_handle_for(expr, y) {
+    // No nested handler for `y` below: the plain question, renamed performs
+    // no longer naming `y`.
+    edp_ao_arm_may_perform(expr, y, fx, false)
+  } else {
+    match expr {
+      EHandle(_, arms) => if edp_iso_handles(arms, y) {
+        let mut hit = false
+        for arm in arms {
+          let (_, ab) = arm
+          if edp_iso_still_reaches(ab, y, fx) {
+            hit = true
+          } else ()
+        }
+        hit
+      } else {
+        edp_iso_any_still_reaches(expr_children(expr), y, fx)
+      },
+      ECall(callee, args, off, res) => {
+        // The call itself, with the arguments that hold a nested handler
+        // blanked; those arguments are asked separately.
+        let masked = for a in args {
+          if edp_iso_has_handle_for(a, y) {
+            EUnit
+          } else {
+            a
+          }
+        }
+        let held: Array[Expr] = []
+        for a in args {
+          if edp_iso_has_handle_for(a, y) {
+            Array::push(held, a)
+          } else ()
+        }
+        edp_ao_arm_may_perform(ECall(callee, masked, off, res), y, fx, false) || edp_iso_any_still_reaches(held, y, fx)
+      },
+      _ => edp_iso_any_still_reaches(expr_children(expr), y, fx)
+    }
+  }
+}
+
+fn edp_iso_has_handle_for(expr: Expr, y: String) -> Bool {
+  let here = match expr {
+    EHandle(_, arms) => edp_iso_handles(arms, y),
+    _ => false
+  }
+  if here {
+    true
+  } else {
+    let kids = expr_children(expr)
+    let mut hit = false
+    let mut i = 0
+    while i < Array::length(kids) && !hit {
+      hit = edp_iso_has_handle_for(Array::get(kids, i), y)
+      i = i + 1
+    }
+    hit
+  }
+}
+
+fn edp_iso_any_still_reaches(es: Array[Expr], y: String, fx: (Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[Array[String]], MutSet[String])) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(es) && !hit {
+    hit = edp_iso_still_reaches(Array::get(es, i), y, fx)
+    i = i + 1
+  }
+  hit
+}
+
+/// Rebuild `expr` with `f` applied to each direct child expression.
+fn edp_iso_map(expr: Expr, f: (Expr) -> Expr) -> Expr {
+  match expr {
+    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, f(body)),
+    ELet(n, v, b, off) => ELet(n, f(v), f(b), off),
+    ELetRec(n, v, b) => ELetRec(n, f(v), f(b)),
+    ELetMut(n, v, b, off) => ELetMut(n, f(v), f(b), off),
+    ESeq(a, b) => ESeq(f(a), f(b)),
+    EIf(c, t, el) => EIf(f(c), f(t), f(el)),
+    EMatch(sc, arms) => EMatch(f(sc), for a in arms {
+      let (pp, ex) = a
+      (pp, f(ex))
+    }),
+    EHandle(bd, arms) => EHandle(f(bd), for a in arms {
+      let (pp, ex) = a
+      (pp, f(ex))
+    }),
+    ECall(callee, args, off, res) => ECall(f(callee), for a in args {
+      f(a)
+    }, off, res),
+    EWhile(c, b) => EWhile(f(c), f(b)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, f(it), f(b)),
+    ELoop(pairs, b) => ELoop(for pr in pairs {
+      let (n, v) = pr
+      (n, f(v))
+    }, f(b)),
+    EBinOp(op, l, r, boff) => EBinOp(op, f(l), f(r), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, f(x)),
+    EAssign(n, v, c, toff) => EAssign(n, f(v), f(c), toff),
+    EAssignOp(n, op, v, c, toff) => EAssignOp(n, op, f(v), f(c), toff),
+    EReturn(x) => EReturn(f(x)),
+    EDot(o, fl, o1, o2) => EDot(f(o), fl, o1, o2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, f(v)),
+    EBreak(opt) => EBreak(match opt {
+      Some(x) => Some(f(x)),
+      None => None
+    }),
+    EContinue(args) => EContinue(for a in args {
+      f(a)
+    }),
+    ETuple(items) => ETuple(for a in items {
+      f(a)
+    }),
+    EArray(items) => EArray(for a in items {
+      f(a)
+    }),
+    ERecord(n, fields, tas) => ERecord(n, for fd in fields {
+      let (fn2, v) = fd
+      (fn2, f(v))
+    }, tas),
+    EMap(fields) => EMap(for fd in fields {
+      let (fn2, v) = fd
+      (fn2, f(v))
+    }),
+    ESpread(x) => ESpread(f(x)),
+    _ => expr
+  }
 }

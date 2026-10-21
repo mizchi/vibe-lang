@@ -6,7 +6,7 @@ test "capacity diagnostics follow allocator use and preserve existing pool entri
   for array_capacity in [false, true] {
     for bytes_capacity in [false, true] {
       let strings: Array[String] = ["existing", "Array::get: index "]
-      seed_builtin_diagnostic_strings(strings, array_capacity, bytes_capacity, false)
+      seed_builtin_diagnostic_strings(strings, array_capacity, bytes_capacity, false, false)
       assert(Array::get(strings, 0) == "existing")
       let text = String::join(strings, "|")
       assert(String::contains(text, "Array::with_capacity:") == array_capacity)
@@ -27,11 +27,21 @@ test "capacity diagnostics follow allocator use and preserve existing pool entri
 
 test "shadow and bounds diagnostics are not duplicated by repeated setup" {
   let strings: Array[String] = []
-  seed_builtin_diagnostic_strings(strings, false, false, true)
-  seed_builtin_diagnostic_strings(strings, false, false, true)
+  seed_builtin_diagnostic_strings(strings, false, false, false, true)
+  seed_builtin_diagnostic_strings(strings, false, false, false, true)
   assert(Array::length(strings) == 12)
   let text = String::join(strings, "|")
   assert(String::contains(text, "dup of freed value at site "))
   assert(String::contains(text, "drop of freed value at site "))
   assert(String::contains(text, "String::concat operand is not a live string: ptr="))
+}
+
+/// #3547: the `Map::get` miss message is pooled only for a program that reads
+/// a map, so a module without one pays no bytes for it.
+test "the map miss message follows map use" {
+  for map_get in [false, true] {
+    let strings: Array[String] = []
+    seed_builtin_diagnostic_strings(strings, false, false, map_get, false)
+    assert(String::contains(String::join(strings, "|"), "Map::get: key not found") == map_get)
+  }
 }

@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/checker {
-  check_program, validate_source_file_exports
+  check_program, validate_source_file_exports, validate_source_file_owned_heads
 }
 
 import @vibe/core {
@@ -39,6 +39,8 @@ import @vibe/compiler/core {
   export_plan_renames_for,
   import_value_rename_locals,
   is_builtin_iterator_serialized_boundary_path,
+  is_owned_head_source_location_env_fs,
+  linked_unit,
   namespace_entry_import_shadows,
   namespace_private_value_stmts,
   namespace_private_value_stmts_after_renames,
@@ -46,6 +48,7 @@ import @vibe/compiler/core {
   path_set_add,
   path_set_contains,
   path_set_new,
+  refuse_linked_impl_overlaps,
   resolve_import_path,
   resolve_import_path_candidates,
   resolve_import_path_probe,
@@ -274,6 +277,10 @@ fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], fil
     // hook sits here, in the one collector both `compile_file_wasi_only` and
     // `compile_file_wasi_library` reach, rather than at either entry.
     validate_source_file_exports(path, stmts)
+    // #3551 review: the same per-file door for a struct spelled like a shipped
+    // region-first head. The merged program is checked with no module path,
+    // so only here can the shipped module be told from a program's own.
+    validate_source_file_owned_heads(path, is_owned_head_source_location_env_fs(path), stmts)
     let base_dir = dir_of_path(path)
     let mut i = 0
     while i < Array::length(stmts) {
@@ -385,10 +392,12 @@ fn validate_retained_entry_source_names(stmts: Array[Stmt], retained_originals: 
 
 fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], merged: Array[Stmt]) -> ExportRenamePlan with Env + Exception + Fs {
   let plan = build_export_rename_plan(file_paths, file_stmts, entry_path)
+  let units = []
   let mut fi = 0
   while fi < Array::length(file_paths) {
     let path = Array::get(file_paths, fi)
     let stmts = Array::get(file_stmts, fi)
+    let unit_start = Array::length(merged)
     let namespaced_stmts = transformed_file_stmts(entry_path, path, stmts, plan)
     let import_renames = if stmts_have_import_deep(stmts) {
       collect_import_value_renames(plan, path, stmts)
@@ -421,8 +430,11 @@ fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], fil
     } else {
       append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
     }
+    // #3544: this lane keeps no source text, so the refusal names paths only.
+    Array::push(units, linked_unit(path, "", unit_start, Array::length(merged)))
     fi = fi + 1
   }
+  refuse_linked_impl_overlaps(merged, units)
   plan
 }
 

@@ -80,11 +80,11 @@ compile-checks against the current compiler.
   63-bit two's complement — ADR-0006, #1877; a shift count of 63 or more, or a
   negative one, saturates: `<<` gives `0`, `>>` gives the sign; `Double::to_int`
   saturates to `Int::max_value` / `Int::min_value` and maps NaN to `0` — #2978),
-  `Float` (32-bit), `Double`
-  (64-bit), `String` (a **byte** string with byte-offset indexing, ADR-0098),
+  `Double` (64-bit), `String` (a **byte** string with byte-offset indexing, ADR-0098),
   `Char` (an `Int` alias), `Bool`, `Unit`.
-- Literals: integers (decimal / `0x` hex), floats (`1.5f` / `3.14`), strings
-  (interpolation `\{expr}`), chars `'A'`, `true`/`false`, `()`.
+- Literals: integers (decimal / `0x` hex), doubles (`3.14`), strings
+  (interpolation `\{expr}`), chars `'A'`, `true`/`false`, `()`. `Float` and
+  its `1.5f` literal are not frozen (§6.1).
 - Composite types: tuples `(A, B)`, `Array[T]`, `StringMap[V]` (the builtin
   map; `Map[K, V]`'s generality is not frozen — see §3), record, struct,
   enum, function types `(A) -> B`, effectful `(A) -> B with E`, generics `[T]`,
@@ -300,7 +300,9 @@ spelling at all — `Option::Some` reports `unknown name`, so write `Some`.
 - **Declaration members are separated by `;`**: `struct P { x: Int; y: Int }`,
   `enum E { A; B }`. A `,` there is a parse error naming the edit, and a bare
   newline is not a separator either (ADR-0107).
-- Traits are nominal. A trait may declare methods (`Iterator[T]`'s
+- Traits are nominal. Nested conditional impls, one impl declared in two
+  modules, and higher-kinded parameters are outside the freeze for
+  0.1.0 (§6.1). A trait may declare methods (`Iterator[T]`'s
   `iter_length` / `iter_get`; `Eq`'s `equals` since #2523) or be a marker
   (`Ord`). Supertraits `trait Ord: Eq`, conjunctive bounds `[T: A + B]`,
   conditional impls `impl [T: Eq] Eq for Array[T]`.
@@ -580,6 +582,84 @@ that.
   `scripts/builtin_parity_classification.tsv` and enforced at the gate.
 
 ---
+
+### 6.1 Moved out of the freeze by the pre-release bug hunt (#3535)
+
+The 2026-10-18 bug hunt ran programs against main's stage2 (`9273a30`). Each
+surface below gave a silently wrong answer, or failed to compile, in a way
+that could not be fixed safely before `0.1.0`, and none is needed to write an
+ordinary program. They stay usable but are **not frozen** for `0.1.0`.
+
+- **`Float`** (`1.5f` literals, `Float` annotations, `Double::to_float` /
+  `Float::to_double`). It is documented as 32-bit but computes as a 64-bit
+  double, so `16777217.0f == 16777216.0f` is `false` (#3543). Use `Double`.
+- **`derive (Hash)` and the `Map::*_by` operations keyed on it.** The derived
+  key is length-prefixed and tagged, so two different values no longer share
+  a key, and `-0.0` and `0.0` share one as `==` says they should (#3544).
+  The one exception is NaN: every NaN shares one key, because `==` calls a
+  NaN unequal even to itself and a key that followed it could never be read
+  back. A `Double` is keyed exactly as a derived `compare` orders it (two
+  NaNs are `Equal` there, and so are the zeros). A
+  field the key cannot encode is refused at the derive, naming the edit: a
+  declared type with no `hash_key` of its own, a type whose written
+  `hash_key` is not `(T) -> String` with no effect row, a type parameter of a
+  generic type, and a builtin with no key such as `Map` or a function
+  (#3551). A field spelled through a type alias is keyed as the type the
+  alias names. The key format is new and may change. Key a map by a `String`
+  you build yourself when the format matters.
+- **Trait impls beyond one module and one level of generics.** A conditional
+  impl (`impl [T: X] Y for Box[T]`) now works at a nested instantiation
+  (`Box[Box[Int]]`, #3547), and two modules' impls of one trait whose targets
+  share a type are refused by `vibe check` and at build time, as one file
+  refuses them: the same target (#3544), or targets that overlap (`Box[T]`
+  and `Box[Int]`, `Box[T]` and `Box[U]`, an alias and the type it names,
+  #3551). The frozen subset is an impl in the
+  module that declares the type, used at one level of conditional impl. An
+  impl method's signature is checked against its trait (#3538), except a
+  method the trait does not declare in a plain (non-applied) impl.
+- **Higher-kinded type parameters (`F[_]`).** They work in the hunt's probes,
+  but they sit on the same unchecked impl machinery, and their diagnostics
+  have no position (#3548).
+- **Kinded exception arms (`Exception[K]::Throw(e)`) over a row-polymorphic
+  callee**, and a handler arm that performs another effect. Such an arm can
+  catch a kind it does not name, and the arm's own effects reach handlers
+  inside the handled body rather than outside it (#3540). The erased
+  `Exception::Throw(m)` arm, a kinded arm over a concrete body, and an arm
+  that only computes and resumes are unaffected.
+- **First-class `resume`** (`let k = resume`, a continuation stored and called
+  later) and the suspend-shaped handlers built on it. The hunt found no wrong
+  answer, but which bodies compile is decided by a lowering, not by the type
+  system (see the cheatsheet's "A `handle` that type-checks can still fail to
+  compile"). Its spelling is expected to change with native continuations.
+  Tail `resume(v)` is frozen.
+
+### 6.2 Known soundness gaps in the frozen core (0.1.0)
+
+The policy is that vibe is never silently wrong. These gaps break that inside
+the frozen surface, and `0.1.0` ships with them. (The hunt closed five more
+before the tag: a generic body making two type parameters one type and a
+bare generic type in a signature or a declaration (#3536), a generic call
+result or struct literal generalized by `let` (#3537), an impl method that
+disagrees with its
+trait (#3538), effect rows not charged through a call expression (#3539),
+and `Double` interpolation through a binder or an index (#3542).)
+They are listed so a reader can stay clear of them. Each one is an open P0 bug, and closing it can
+reject programs that compile today. Each is fixed as a compatible change,
+because those programs are already wrong.
+
+- **A closure created inside a `handle` can outlive it with a pure type**
+  (#3540). Do not return or store a closure that performs the handled effect.
+- **The erased `Exception::Throw(m)` binder is assumed to be a `String`**
+  (#3541). Using it at another type is refused, but the kind is not carried
+  at run time, so a non-`String` value thrown under a bare `with Exception`
+  row (or under a kinded row and caught by the erased arm) reaches `m` as a
+  `String`. A rethrow from the arm that may carry `m` is of no known kind, so
+  it is never advertised as `Exception[String]`, nor as a declared type built
+  from `m` (`Exception[Why]` for `Why::Because(m)`). But `m` passed out of the
+  arm, as the handle's value or through a `String` variable declared outside
+  it, is still a `String` to whatever reads it next, a `throw` included.
+  Throw a value other than a `String` under a kinded row, and catch it with
+  the kinded arm (`Exception[K]::Throw(e)`).
 
 ## 7. Operating the freeze
 

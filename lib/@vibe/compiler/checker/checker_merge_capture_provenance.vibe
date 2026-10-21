@@ -36,6 +36,7 @@ import @vibe/compiler/core {
   is_builtin_type_name,
   is_effect_inst_label,
   let_rec_binding_anchor,
+  occurs_in,
   subst_apply,
   subst_bounds_for,
   trait_defined,
@@ -68,6 +69,10 @@ import ./checker_region_retention_arms.vibe {
   retention_arms_bind, retention_assigned_values_into, retention_decl_value, retention_pat_names_into, retention_result_items
 }
 
+import ./checker_erased_throw_carriers.vibe {
+  ErasedCarriers, erased_arm_carriers, erased_carriers_mention
+}
+
 import ./checker_resolve.vibe {
   resolve_type_expr_shadowed
 }
@@ -77,7 +82,7 @@ import @vibe/compiler/checker/traits {
 }
 
 import @vibe/compiler/checker/effects {
-  throw_payload_site_key
+  call_callee_spelling, clear_call_callee_types, throw_payload_site_key
 }
 
 import ./checker_escape.vibe {
@@ -1698,8 +1703,239 @@ export fn reset_return_provenance_index() -> Unit {
 /// `checker_stmt.vibe` before the effects pass reads it.
 export let throw_payload_sites: Array[(String, Type)] = []
 
+/// #3539: the callee's type at each call that may carry an effect row,
+/// keyed by the call's offset and the callee's spelling
+/// (`call_callee_spelling`). The effects pass charges the row it resolves to
+/// at a call whose callee it cannot name (see `call_callee_row_labels`).
+/// Reset with the throw sites; the types are raw, read under the final
+/// substitution.
+export let call_callee_sites: Array[(Int, String, Type)] = []
+
+/// Record `ty` as the callee type of the call at `call_off`. Only a function
+/// type whose row names a label a program can see, or a type still unsolved
+/// here, can resolve to a row, so nothing else is kept; neither is an
+/// unlocated call, whose offset no walk can find again.
+export fn record_call_callee_type(call_off: Int, callee: Expr, ty: Type) -> Unit {
+  if call_off >= 0 {
+    let keep = match ty {
+      CtFn(_, _, Some(row)) => row_names_visible_label(row),
+      CtVar(_) => true,
+      _ => false
+    }
+    if keep {
+      Array::push(call_callee_sites, (call_off, call_callee_spelling(callee), ty))
+    } else if fn_has_rowed_param(ty) {
+      Array::push(call_callee_param_sites, (call_off, call_callee_spelling(callee), ty))
+    }
+  }
+}
+
+/// #3540: the callee types `call_callee_sites` does not keep -- a function
+/// with no row of its own -- whose parameters include a function type with a
+/// row. The handle-escape check reads a parameter's row there: a closure
+/// handed to such a parameter takes that row, and whoever calls it passes
+/// the handler. Reset with `call_callee_sites`.
+export let call_callee_param_sites: Array[(Int, String, Type)] = []
+
+fn fn_has_rowed_param(ty: Type) -> Bool {
+  match ty {
+    CtFn(params, _, _) => {
+      let mut found = false
+      for p in params {
+        match p {
+          CtFn(_, _, Some(row)) => if row_names_visible_label(row) {
+            found = true
+          },
+          _ => ()
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn row_names_visible_label(row: String) -> Bool {
+  if !String::starts_with(String::trim(row), "#") {
+    true
+  } else {
+    let mut found = false
+    for raw in String::split(row, ",") {
+      let l = String::trim(raw)
+      if String::length(l) > 0 && !String::starts_with(l, "#") {
+        found = true
+      }
+    }
+    found
+  }
+}
+
+/// #3541: the type variables an ERASED exception arm (`Exception::Throw(m)`)
+/// binds its payload to. The arm pins an open one to `String`, the thrown
+/// message, but the value it holds is whatever was thrown: rethrowing `m`
+/// is a throw of an erased kind, not of `String`. Reset with the throw sites.
+export let erased_throw_binder_vars: Array[Int] = []
+
+/// #3551 review: the ERASED arms whose body is being typed, innermost last:
+/// the arm's binder variable and the identifiers in its body that may hold
+/// the binder's value (`erased_arm_carriers`). Pushed and popped around the
+/// arm body by `erased_throw_arm_enter` / `erased_throw_arm_leave`; reset
+/// with the throw sites.
+export let erased_throw_active_arms: Array[(Int, ErasedCarriers)] = []
+
+/// Enter an erased arm whose binder `binder` is the variable `var_id`.
+/// `outer_state(name, off)` answers whether a name bound outside the arm is
+/// a binding of the program rather than a builtin (`erased_arm_carriers`).
+/// Answers the mark `erased_throw_arm_leave` takes.
+export fn erased_throw_arm_enter(var_id: Int, binder: String, body: Expr, outer_state: (String, Int) -> Bool) -> Int {
+  let mark = Array::length(erased_throw_active_arms)
+  Array::push(erased_throw_active_arms, (var_id, erased_arm_carriers(binder, body, outer_state)))
+  mark
+}
+
+/// Leave the erased arms entered since `mark`.
+export fn erased_throw_arm_leave(mark: Int) -> Unit {
+  if Array::length(erased_throw_active_arms) > mark {
+    Array::truncate(erased_throw_active_arms, mark)
+  }
+}
+
+/// The type a `throw` records for its payload. `bound` is the payload name's
+/// type as the env binds it, before any substitution; `s` is the
+/// substitution right after the payload was typed.
+///
+/// A payload that may hold an erased arm's binder records no known kind. The
+/// binder is typed `String`, but its value is whatever was thrown. Recording
+/// `String` would let the enclosing function advertise `Exception[String]`
+/// for an `Int`, and a caller's `Exception[String]::Throw(s)` arm would read
+/// that `Int` as a `String`. The binder rethrown as written (`throw(m)`) is
+/// one such payload. An expression that carries the binder without a type of
+/// its own is another (#3551 review): `throw(id(m))`,
+/// `throw(if c { m } else { m })`, `let m2 = m` then `throw(m2)`, a closure
+/// or a container holding it. Its type is the binder's variable while that is
+/// open, and plain `String` once an earlier use pinned it, so the type alone
+/// would answer by the order of the uses. Such a payload is therefore also
+/// judged by the identifiers it mentions: inside an active erased arm, a
+/// payload that mentions a binding that may hold the binder's value, and
+/// whose type could hold a `String`, records no kind. That is judged by
+/// binding, not by spelling: after `let m = "other"`, `throw(m)` throws a
+/// `String` of its own. A payload whose type holds no `String` (an `Int`
+/// such as `String::length(m)`) is a new value of its own type. A declared
+/// type counts as one that may hold a `String` whatever its fields, so
+/// `Why::Because(m)` records no kind either.
+export fn throw_payload_recorded_type(payload: Expr, bound: Option[Type], pt: Type, s: Subst) -> Type {
+  let direct = match payload {
+    EIdent(_, _) => match bound {
+      Some(CtVar(id)) => erased_int_in(erased_throw_binder_vars, id),
+      _ => false
+    },
+    _ => false
+  }
+  if direct || erased_rethrow_carries_binder(payload, subst_apply(s, pt), s) {
+    erased_rethrow_payload_type
+  } else {
+    pt
+  }
+}
+
+/// The type `throw_payload_recorded_type` records for a payload of no known
+/// kind. Not `CtUnknown`, whose kind is merely unresolved: the effects pass
+/// then asks the payload's syntax, which answers `String` for
+/// `throw(String::concat("ctx: ", m))` or an alias annotated `String`.
+/// `publish_throw_site_kinds` turns it into `erased_rethrow_site_kind`, which
+/// the effects pass takes as final.
+let erased_rethrow_payload_type: Type = CtNamed("#erased-rethrow", [])
+
+/// Whether `t` is the type a payload of no known kind is recorded at.
+export fn type_is_erased_rethrow(t: Type) -> Bool {
+  match t {
+    CtNamed(n, args) => n == "#erased-rethrow" && Array::length(args) == 0,
+    _ => false
+  }
+}
+
+fn erased_rethrow_carries_binder(payload: Expr, pt_now: Type, s: Subst) -> Bool {
+  let mut carries = false
+  for arm in erased_throw_active_arms {
+    let (var_id, carriers) = arm
+    if !carries {
+      // The payload's type still is, or holds, the binder's open variable.
+      carries = match subst_apply(s, CtVar(var_id)) {
+        CtVar(open_id) => occurs_in(open_id, pt_now),
+        _ => false
+      }
+    }
+    if !carries && type_may_hold_string(pt_now) {
+      carries = erased_carriers_mention(payload, carriers)
+    }
+  }
+  carries
+}
+
+/// Whether a value of type `t` may be, or hold, a `String`. An unresolved
+/// part may still be one.
+///
+/// A declared type (an enum, a struct, a named or applied type) always may
+/// (#3551 review). Its type arguments do not show its fields: `enum Why {
+/// Because(String) }` has none, yet `Why::Because(m)` holds the caught value,
+/// and a caller's `Exception[Why]::Throw(w)` arm would read an `Int` thrown
+/// under `Exception[Int]` as the `String` in `w`. The fields are not looked
+/// into, so a declared type whose fields hold no `String` counts too.
+fn type_may_hold_string(t: Type) -> Bool {
+  match t {
+    CtString => true,
+    CtVar(_) => true,
+    CtUnknown => true,
+    CtTuple(items) => types_may_hold_string(items),
+    CtArray(e) => type_may_hold_string(e),
+    CtOption(e) => type_may_hold_string(e),
+    CtFn(params, ret, _) => type_may_hold_string(ret) || types_may_hold_string(params),
+    CtEnum(_) => true,
+    CtStruct(_) => true,
+    CtNamed(_, _) => true,
+    CtApplied(_, _) => true,
+    CtForAll(_, _, body) => type_may_hold_string(body),
+    CtRecord(fields) => {
+      let mut found = false
+      for field in fields {
+        let (_, ft) = field
+        if type_may_hold_string(ft) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn types_may_hold_string(ts: Array[Type]) -> Bool {
+  let mut found = false
+  for t in ts {
+    if type_may_hold_string(t) {
+      found = true
+    }
+  }
+  found
+}
+
+fn erased_int_in(xs: Array[Int], x: Int) -> Bool {
+  let mut found = false
+  for v in xs {
+    if v == x {
+      found = true
+    }
+  }
+  found
+}
+
 export fn reset_throw_payload_sites() -> Unit {
   Array::truncate(throw_payload_sites, 0)
+  Array::truncate(erased_throw_binder_vars, 0)
+  Array::truncate(erased_throw_active_arms, 0)
+  Array::truncate(call_callee_sites, 0)
+  Array::truncate(call_callee_param_sites, 0)
+  clear_call_callee_types()
   // #3033: a module's kind resolutions never answer for the next module.
   exception_kind_resolutions_clear()
 }

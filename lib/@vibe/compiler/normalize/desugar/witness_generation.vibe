@@ -48,6 +48,7 @@ import ./trait_bounds.vibe {
   decode_array_elem_recv_index,
   decode_constructor_recv_index,
   dtd_eq_witness_trait,
+  dtd_trait_entails,
   find_dict_for_trait,
   is_array_elem_recv_index,
   is_constructor_recv_index,
@@ -229,6 +230,11 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
                   None => {
                     match actual_target {
                       TyName("Array") => throw(String::concat("add an explicit `Array[Element]` annotation to the array binding or parameter before this trait call: the element type needed for `", String::concat(btrait, "` is not available here"))),
+                      // #3547: a bounded generic impl's own witness needs
+                      // the type argument. Returning None here left the
+                      // call one dictionary short, which the wasm validator
+                      // rejected after a clean check.
+                      TyName(head) => throw("annotate the argument's full type before this trait call (for example `let x: " + head + "[Int] = ..`): the type argument `" + type_param + "` of `" + head + "` needed for its `" + trait_ref_name(btrait) + "` witness is not available here"),
                       _ => ()
                     }
                     subok = false
@@ -286,6 +292,51 @@ fn build_concrete_dict(cname: String, trait_name: String, traits: Array[(String,
   build_concrete_dict_for_target(target, trait_name, traits, gens, struct_sets, var_types, fn_returns, Some(arg_expr))
 }
 
+/// The in-scope witness of `tparam` for `trait_name`: the caller's own
+/// dictionary parameter for that trait, or -- #3547 -- one projected out of
+/// the dictionary of a SUB-trait bound. Under `[T: Loud]` with `trait Loud:
+/// Name`, `Name::name(x)` asks for `T`'s `Name` witness; `Loud`'s dictionary
+/// carries every `Name` method (the sigs are flattened down), so the `Name`
+/// dictionary is a record of those fields read from it. Before this the
+/// lookup missed and the pass tried to build a concrete `Name` dictionary for
+/// the formal `T`, refusing a program the checker accepted. A trait with type
+/// arguments is not projected: its dictionary struct is named by them.
+fn dict_for_trait_in_scope(dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], tparam: String, trait_name: String) -> Option[Expr] {
+  match find_dict_for_trait(dict_binds, tparam, trait_name) {
+    Some(dict_pname) => Some(EIdent(dict_pname, -1)),
+    None => if Array::length(trait_ref_args(trait_name)) > 0 {
+      None
+    } else match lookup_trait_sigs(traits, trait_ref_name(trait_name)) {
+      None => None,
+      Some(sigs) => {
+        let mut out: Option[Expr] = None
+        for bind in dict_binds {
+          let (tp, tr, dict_pname, methods) = bind
+          if (out is None) && tp == tparam && trait_ref_name(tr) != trait_ref_name(trait_name) && dtd_trait_entails(tr, trait_name) {
+            let fields: Array[(String, Expr)] = []
+            let mut complete = true
+            for m in method_names_of_sigs(sigs) {
+              if str_array_contains(methods, m) {
+                Array::push(fields, (m, EDot(EIdent(dict_pname, -1), m, -1, -1)))
+              } else {
+                complete = false
+              }
+            }
+            if complete {
+              out = Some(ERecord("", fields, empty_ty_args()))
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+        }
+        out
+      }
+    }
+  }
+}
+
 /// #3287: the dictionary for a formal the callee receives NESTED
 /// (`a: Option[T]`). The formal's type is read by matching each carrying
 /// parameter's annotation against the argument (`nested_recv_binding`).
@@ -313,8 +364,8 @@ fn synth_nested_dict(type_param: String, trait_name: String, callee_type_params:
     Some(t) => {
       let nm = impl_target_head(t)
       let concrete_trait = specialize_applied_trait_for_target(trait_name, callee_type_params, t, gens)
-      match find_dict_for_trait(dict_binds, nm, concrete_trait) {
-        Some(dict_pname) => Some(EIdent(dict_pname, -1)),
+      match dict_for_trait_in_scope(dict_binds, traits, nm, concrete_trait) {
+        Some(dict) => Some(dict),
         None => build_concrete_dict_for_target(t, concrete_trait, traits, gens, struct_sets, var_types, fn_returns, None)
       }
     },
@@ -357,8 +408,8 @@ export fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String
       // Enclosing formal forwarded into a nested lambda: the witness is
       // already in `dict_binds` under the outer spelling, not inferred from
       // this call's arguments.
-      match find_dict_for_trait(dict_binds, type_param, trait_name) {
-        Some(dict_pname) => Array::push(dicts, EIdent(dict_pname, -1)),
+      match dict_for_trait_in_scope(dict_binds, traits, type_param, trait_name) {
+        Some(dict) => Array::push(dicts, dict),
         None => {
           ok = false
         }
@@ -391,8 +442,8 @@ export fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String
             None => TyName(nm)
           }
           let concrete_trait = specialize_applied_trait_for_target(resolved_trait, callee_type_params, target, gens)
-          match find_dict_for_trait(dict_binds, nm, concrete_trait) {
-            Some(dict_pname) => Array::push(dicts, EIdent(dict_pname, -1)),
+          match dict_for_trait_in_scope(dict_binds, traits, nm, concrete_trait) {
+            Some(dict) => Array::push(dicts, dict),
             None => {
               match build_concrete_dict_for_target(target, concrete_trait, traits, gens, struct_sets, var_types, fn_returns, Some(recv_arg)) {
                 Some(dict) => Array::push(dicts, dict),

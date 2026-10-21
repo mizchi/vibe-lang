@@ -1,0 +1,139 @@
+// #3547: a handler arm with `return` sends its handle through the lowering
+// that runs the arm where the `handle` is, whenever the body reaches the
+// effect through a call. An assignment to a mutable bound OUTSIDE the handle,
+// followed by such a call, was refused there ("captures `resume` as a value
+// ... not directly on the handle body's spine") although the same body
+// without the assignment, or with a direct `perform` after it, compiled.
+// Each answer below is what the program means: the arm's `return` leaves the
+// enclosing function, and a resuming arm reads the value assigned before it.
+effect Ask {
+  Get() -> Int
+}
+
+fn ask() -> Int with Ask {
+  perform Ask::Get()
+}
+
+// The shape from the issue: an assignment, then a call in tail position.
+fn assign_then_call() -> Int {
+  let mut i = 0
+  handle {
+    i = 1
+    ask()
+  } with { Ask::Get() => return 42 }
+}
+
+// The call under a `let`.
+fn assign_then_let_call() -> Int {
+  let mut i = 0
+  handle {
+    i = 1
+    let v = ask()
+    v
+  } with { Ask::Get() => return 42 }
+}
+
+// The call inside an operand.
+fn assign_then_call_operand() -> Int {
+  let mut i = 0
+  handle {
+    i = 1
+    ask() + 0
+  } with { Ask::Get() => return 42 }
+}
+
+// The `return` leaves `f`: the handle's value is never multiplied.
+fn return_leaves_function() -> Int {
+  let mut i = 0
+  let r = handle {
+    i = i + 1
+    ask()
+  } with { Ask::Get() => return 40 + i }
+  r * 10
+}
+
+// A compound assignment before the call.
+fn op_assign_then_call() -> Int {
+  let mut i = 5
+  let r = handle {
+    i += 2
+    ask() + i
+  } with { Ask::Get() => if i > 100 {
+    return -1
+  } else {
+    resume(i * 10)
+  } }
+  r * 1000 + i
+}
+
+// A resuming arm reads the value assigned before the call, and a write made
+// after the resume is visible once the handle is done.
+fn resume_reads_assigned() -> Int {
+  let mut i = 0
+  let r = handle {
+    i = 2
+    let v = ask()
+    i = i + v
+    i
+  } with { Ask::Get() => if i > 100 {
+    return -1
+  } else {
+    resume(i * 10)
+  } }
+  r * 1000 + i
+}
+
+// The arm resumes once, then returns from the second call.
+fn resume_then_return() -> Int {
+  let mut i = 0
+  handle {
+    i = 3
+    let v = ask()
+    i = i + v
+    ask() + i
+  } with { Ask::Get() => if i > 5 {
+    return -i
+  } else {
+    resume(i * 10)
+  } }
+}
+
+// An assignment then a call on every iteration of a `while` loop.
+fn while_assign_then_call() -> Int {
+  let mut n = 0
+  let mut s = 0
+  handle {
+    while n < 10 {
+      n = n + 1
+      s = s + ask()
+    }
+    s
+  } with { Ask::Get() => if n > 2 {
+    return s * 100 + n
+  } else {
+    resume(n)
+  } }
+}
+
+test "assignment then a performing call" {
+  inspect(assign_then_call(), "42")
+  inspect(assign_then_let_call(), "42")
+  inspect(assign_then_call_operand(), "42")
+}
+
+test "the arm's return leaves the function" {
+  inspect(return_leaves_function(), "41")
+}
+
+test "a compound assignment then a performing call" {
+  inspect(op_assign_then_call(), "77007")
+}
+
+test "a resuming arm sees the assigned value" {
+  inspect(resume_reads_assigned(), "22022")
+  inspect(resume_then_return(), "-33")
+}
+
+test "assignment then a call in a while loop" {
+  inspect(while_assign_then_call(), "303")
+}

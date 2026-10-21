@@ -6,6 +6,8 @@ import ./typecheck_fs_local_type_member_markers.vibe {
 
 import @vibe/compiler/core {
   ExportRenamePlan,
+  LinkedUnit,
+  Source,
   Stmt,
   Type,
   TypeEnv,
@@ -24,14 +26,19 @@ import @vibe/compiler/core {
   env_lookup_flat,
   export_plan_fingerprint_text,
   export_plan_renames_for,
+  external_lib_roots,
   import_value_rename_locals,
   is_builtin_iterator_serialized_boundary_path,
+  is_owned_head_source_location,
+  linked_unit,
   merged_source_boundary_names,
   namespace_entry_import_shadows,
   namespace_private_value_stmts,
   namespace_private_value_stmts_after_renames,
   namespace_rename_originals_reset,
+  normalize_path,
   record_namespace_rename_originals_for_file,
+  refuse_linked_impl_overlaps,
   reject_user_iterator_serialized_boundaries,
   resolve_import_path,
   resolve_import_path_candidates,
@@ -47,6 +54,8 @@ import @vibe/core {
 
 import @vibe/compiler/checker {
   check_program_with_projected_import_env_typed_lowering_located_observation,
+  declaring_module_path_clear,
+  declaring_module_path_set,
   retention_summaries_clear,
   retention_summaries_for_path,
   typing_semantics_seed
@@ -476,6 +485,27 @@ fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, St
   }
 }
 
+/// #3551 review: whether the module at `path` ships the region-first owned
+/// heads, on the walk whose files are the db's sources. The package resolver
+/// selects the first of `@vibe/concurrent/experimental`'s candidates that
+/// EXISTS, and here a file exists when the db holds it, so the shipped module
+/// is `concurrent.vibe` beside the first contract candidate the db holds.
+fn db_module_ships_owned_heads(rdb: RippleDb, path: String) -> Bool with Env {
+  if String::ends_with(normalize_path(path), "@vibe/concurrent/experimental/concurrent.vibe") {
+    handle {
+      is_owned_head_source_location(path, external_lib_roots())
+    } with { Source::Read(p) => resume(match ripple_get_source(rdb, p) {
+      Some(source) => source,
+      None => ""
+    }); Source::Exists(p) => resume(match ripple_get_source(rdb, p) {
+      Some(_) => true,
+      None => false
+    }) }
+  } else {
+    false
+  }
+}
+
 /// #2449: the in-memory module walk's check, with the typed-lowering tables
 /// published per module the way the FS lane publishes them
 /// (`check_module_impl` in typecheck_fs.vibe).
@@ -503,10 +533,20 @@ fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, St
 /// while `vibe check` on the same pair was clean. `db_typecheck` is published
 /// from `@vibe/compiler/type_db`, so that divergence was part of the public
 /// surface.
-fn check_module_publishing_typed_lowering_offsets(path: String, fingerprint: String, source: String, stmts: Array[Stmt], import_env: TypeEnv) -> TypeEnv with Exception {
+fn check_module_publishing_typed_lowering_offsets(path: String, ships_owned_heads: Bool, fingerprint: String, source: String, stmts: Array[Stmt], import_env: TypeEnv) -> TypeEnv with Exception {
   // #3360: this module publishes what its exported functions keep.
   retention_summaries_for_path(path)
-  let (checked, offsets, eq_offs, eq_keys) = check_program_with_projected_import_env_typed_lowering_located_observation(stmts, import_env)
+  declaring_module_path_set(path, ships_owned_heads)
+  // A check that throws must not leave this module named as the one being
+  // checked: the cells are process-global.
+  let (checked, offsets, eq_offs, eq_keys) = handle {
+    check_program_with_projected_import_env_typed_lowering_located_observation(stmts, import_env)
+  } with { Exception::Throw(message) => {
+    declaring_module_path_clear()
+    retention_summaries_clear()
+    throw(message)
+  } }
+  declaring_module_path_clear()
   retention_summaries_clear()
   publish_module_typed_lowering_offsets(path, fingerprint, offsets, eq_offs, eq_keys)
   module_typed_lowering_bind_source(path, fingerprint, source)
@@ -566,7 +606,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
             let stmts = parse_program_with_path(path, source)
             let final_parse_count = parse_count_after_deps + 1
             let (import_env, reexport_declarations) = build_import_envs(stmts, dir_of_path(path), env_cache_after_deps, interfaces)
-            let full_checked_env = check_module_publishing_typed_lowering_offsets(path, fingerprint, source, stmts, import_env)
+            let full_checked_env = check_module_publishing_typed_lowering_offsets(path, db_module_ships_owned_heads(db_after_deps, path), fingerprint, source, stmts, import_env)
             let checked_env = checked_module_public_env_for_path(path, stmts, full_checked_env, reexport_declarations)
             dependency_interface_set_publish(interfaces, path, checked_env)
             let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
@@ -577,7 +617,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
             let stmts = parse_program_with_path(path, source)
             let final_parse_count = parse_count_after_deps + 1
             let (import_env, reexport_declarations) = build_import_envs(stmts, dir_of_path(path), env_cache_after_deps, interfaces)
-            let full_checked_env = check_module_publishing_typed_lowering_offsets(path, fingerprint, source, stmts, import_env)
+            let full_checked_env = check_module_publishing_typed_lowering_offsets(path, db_module_ships_owned_heads(db_after_deps, path), fingerprint, source, stmts, import_env)
             let checked_env = checked_module_public_env_for_path(path, stmts, full_checked_env, reexport_declarations)
             dependency_interface_set_publish(interfaces, path, checked_env)
             let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
@@ -696,20 +736,22 @@ fn parse_merge_sources(sources: Array[(String, String)]) -> (Array[String], Arra
   (file_paths, file_stmts)
 }
 
-/// One (sub)list of sources merged under a whole-program rename plan.
-/// `collision_sources` spans the whole program so a collision-def import that
-/// crosses a group boundary still resolves.
-fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, String)], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, collision_sources: Array[(String, String)]) -> String with Env + Exception {
+/// One (sub)list of sources merged under a whole-program rename plan,
+/// appended to `merged`, with each file's share recorded in `units` for the
+/// impl-overlap check. `collision_sources` spans the whole program so a
+/// collision-def import that crosses a group boundary still resolves. The
+/// caller runs the check once the WHOLE program is in `merged` (#3544, #3551).
+fn append_merged_sources_with_plan(merged: Array[Stmt], units: Array[LinkedUnit], entry_path: String, sources: Array[(String, String)], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, collision_sources: Array[(String, String)]) -> Unit with Env + Exception {
   // #2205: no reset here -- db_grouped_merged_source calls this once per
   // cache-missing GROUP, and a per-call reset would discard the mappings of
   // every earlier group (Codex round 4 on #2213). The whole-merge entry
   // points (build_merged_source, db_grouped_merged_source) reset instead.
-  let merged = empty_stmt_array()
   let source_count = Array::length(sources)
   let mut si = 0
   while si < source_count {
     let path = Array::get(file_paths, si)
     let stmts = Array::get(file_stmts, si)
+    let unit_start = Array::length(merged)
     let is_entry_source = if entry_path == "" {
       si == source_count - 1
     } else {
@@ -744,9 +786,10 @@ fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, Str
     } else {
       append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
     }
+    let (_, unit_source) = Array::get(sources, si)
+    Array::push(units, linked_unit(path, unit_source, unit_start, Array::length(merged)))
     si = si + 1
   }
-  print_program(merged)
 }
 
 fn build_merged_source(entry_path: String, sources: Array[(String, String)]) -> String with Env + Exception {
@@ -763,7 +806,12 @@ fn build_merged_source(entry_path: String, sources: Array[(String, String)]) -> 
     entry_path
   }
   let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
-  build_merged_source_with_plan(entry_path, sources, file_paths, file_stmts, plan, sources)
+  let merged = empty_stmt_array()
+  let units: Array[LinkedUnit] = []
+  append_merged_sources_with_plan(merged, units, entry_path, sources, file_paths, file_stmts, plan, sources)
+  // #3544: two modules' impls of one method name would collapse to one here.
+  refuse_linked_impl_overlaps(merged, units)
+  print_program(merged)
 }
 
 fn join_group_sources(group_sources: Array[String]) -> String {
@@ -839,33 +887,62 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
       }
       let plan = build_export_rename_plan(flat_paths, flat_stmts, plan_entry)
       let plan_fp = compact_string_fingerprint(export_plan_fingerprint_text(plan))
+      let group_fingerprints = empty_strings()
+      let mut gfi = 0
+      while gfi < Array::length(groups) {
+        let (group_name, sources) = Array::get(groups, gfi)
+        let fingerprint = compact_string_fingerprint(String::concat(build_merge_fingerprint(plan_entry, sources), String::concat("#", plan_fp)))
+        Array::push(group_fingerprints, fingerprint)
+        let grouped_next = String::concat(grouped_fingerprint, String::concat("|", String::concat(group_name, String::concat("=", fingerprint))))
+        grouped_fingerprint = compact_string_fingerprint(grouped_next)
+        gfi = gfi + 1
+      }
+      let grouped_cache_key = "merged-groups"
+      // #3544 / #3551 review: two impls of one method in DIFFERENT groups
+      // collapse in the joined text exactly as within one group, so the
+      // impl-overlap check reads the whole program -- every group's
+      // statements laid out in one array -- not each group alone. An earlier
+      // call that produced this exact joined program ran the check on it
+      // (a refusal caches nothing), so a hit on the whole program skips it;
+      // otherwise a group whose text comes from the cache is linked again
+      // for the check, since only its text was kept.
+      let program_checked = lookup_source_cache(merged_cache, grouped_cache_key, grouped_fingerprint) is Some(_)
+      let program = empty_stmt_array()
+      let units: Array[LinkedUnit] = []
+      let linked_groups = empty_string_triples()
       let mut flat_idx = 0
       let mut i = 0
       while i < Array::length(groups) {
         let (group_name, sources) = Array::get(groups, i)
         let group_start = flat_idx
         flat_idx = flat_idx + Array::length(sources)
-        let fingerprint = compact_string_fingerprint(String::concat(build_merge_fingerprint(plan_entry, sources), String::concat("#", plan_fp)))
-        let grouped_next = String::concat(grouped_fingerprint, String::concat("|", String::concat(group_name, String::concat("=", fingerprint))))
-        grouped_fingerprint = compact_string_fingerprint(grouped_next)
+        let fingerprint = Array::get(group_fingerprints, i)
         let cache_key = String::concat("merged-group|", group_name)
         match lookup_source_cache(merged_cache, cache_key, fingerprint) {
           Some(source) => {
-            // #2205: the cached TEXT already contains the mangled names, but
-            // the merge that records (mangled -> original) for derive(Show)
-            // never runs on a hit -- replay just the metadata from the
-            // already-parsed stmts so rendering matches a cold cache. The
-            // entry file keeps its private names in the merge, so it is
-            // skipped here too.
-            let mut ri = 0
-            while ri < Array::length(sources) {
-              let rpath = Array::get(flat_paths, group_start + ri)
-              if rpath == plan_entry {
-                ()
-              } else {
-                record_namespace_rename_originals_for_file(rpath, Array::get(flat_stmts, group_start + ri))
+            if !program_checked && lookup_source_cache(linked_groups, cache_key, fingerprint) is None {
+              // The merge records the rename metadata the replay below would.
+              let group_paths = Array::slice(flat_paths, group_start, group_start + Array::length(sources))
+              let group_stmts = Array::slice(flat_stmts, group_start, group_start + Array::length(sources))
+              append_merged_sources_with_plan(program, units, plan_entry, sources, group_paths, group_stmts, plan, flat_sources)
+              Array::push(linked_groups, StringTriple(cache_key, fingerprint, ""))
+            } else {
+              // #2205: the cached TEXT already contains the mangled names, but
+              // the merge that records (mangled -> original) for derive(Show)
+              // never runs on a hit -- replay just the metadata from the
+              // already-parsed stmts so rendering matches a cold cache. The
+              // entry file keeps its private names in the merge, so it is
+              // skipped here too.
+              let mut ri = 0
+              while ri < Array::length(sources) {
+                let rpath = Array::get(flat_paths, group_start + ri)
+                if rpath == plan_entry {
+                  ()
+                } else {
+                  record_namespace_rename_originals_for_file(rpath, Array::get(flat_stmts, group_start + ri))
+                }
+                ri = ri + 1
               }
-              ri = ri + 1
             }
             Array::push(group_sources, source)
           },
@@ -878,12 +955,13 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
               let group_paths = Array::slice(flat_paths, group_start, group_start + Array::length(sources))
               let group_stmts = Array::slice(flat_stmts, group_start, group_start + Array::length(sources))
               // #740: pass the WHOLE-merge plan entry, not "" — the empty
-              // entry made build_merged_source_with_plan treat the last
-              // file of EVERY GROUP as the entry (exports unrenamed), so
-              // group tails (ripple.vibe, desugar_trait_dict.vibe, ...)
-              // were missing their `_exp_` defs while callers referenced
-              // them.
-              let source = build_merged_source_with_plan(plan_entry, sources, group_paths, group_stmts, plan, flat_sources)
+              // entry made the merge treat the last file of EVERY GROUP as
+              // the entry (exports unrenamed), so group tails (ripple.vibe,
+              // desugar_trait_dict.vibe, ...) were missing their `_exp_`
+              // defs while callers referenced them.
+              let group_start_stmt = Array::length(program)
+              append_merged_sources_with_plan(program, units, plan_entry, sources, group_paths, group_stmts, plan, flat_sources)
+              let source = print_program(Array::slice(program, group_start_stmt, Array::length(program)))
               Array::push(new_group_cache_entries, StringTriple(cache_key, fingerprint, source))
               merge_count_acc = merge_count_acc + 1
               Array::push(group_sources, source)
@@ -892,9 +970,13 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
         }
         i = i + 1
       }
+      if program_checked {
+        ()
+      } else {
+        refuse_linked_impl_overlaps(program, units)
+      }
       let next_merged_cache = append_source_cache_entries(merged_cache, new_group_cache_entries)
       let next_merge_count = merge_count_acc
-      let grouped_cache_key = "merged-groups"
       match lookup_source_cache(next_merged_cache, grouped_cache_key, grouped_fingerprint) {
         Some(source) =>
         (source, grouped_fingerprint, wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, next_merged_cache, module_source_cache, artifact_cache, parse_count, next_merge_count, module_source_count, codegen_count))),

@@ -1,0 +1,114 @@
+// #3544: a derived `hash_key` is an injective encoding of the value, not its
+// `to_string` rendering. Rendered, a `String` field prints verbatim, so two
+// structs `==` calls different (`S { a: "p, b: q", b: "r" }` and
+// `S { a: "p", b: "q, b: r" }`) shared one key and one Map entry; and the two
+// zeros `==` equates (`0.0`, `-0.0`) rendered `0` / `-0` and landed in two.
+// `to_string` itself is unchanged.
+//
+// A `Double` is keyed as derived `compare` orders it, not as IEEE `==`: every
+// NaN shares ONE key (#3551 review). `==` calls a NaN unequal even to itself,
+// so a key that followed `==` could never be read back -- `set_by` under NaN
+// followed by `get_by` under the same value would miss.
+
+import @vibe/core { get_by, has_by, map_key_to_string, set_by }
+
+struct S {
+  a: String;
+  b: String
+} derive(Eq, Hash)
+
+struct D {
+  v: Double
+} derive(Eq, Hash, Ord)
+
+fn nan() -> Double {
+  0.0 / 0.0
+}
+
+fn same_order(a: D, b: D) -> Bool {
+  match D::compare(a, b) {
+    Equal => true,
+    _ => false
+  }
+}
+
+struct Inner {
+  s: String
+} derive(Eq, Hash)
+
+struct Outer {
+  i: Inner;
+  t: (String, Int);
+  o: Option[String];
+  xs: Array[String]
+} derive(Eq, Hash)
+
+enum E {
+  P(String, String);
+  Q(String)
+} derive(Eq, Hash)
+
+test "string fields are injective" {
+  let x = S::{ a: "p, b: q", b: "r" }
+  let y = S::{ a: "p", b: "q, b: r" }
+  inspect(x == y, content = "false")
+  inspect(S::hash_key(x) == S::hash_key(y), content = "false")
+  let m = set_by(Map::new(), x, 1)
+  inspect(has_by(m, y), content = "false")
+  inspect(has_by(m, S::{ a: "p, b: q", b: "r" }), content = "true")
+  inspect(S::to_string(x), content = "S { a: p, b: q, b: r }")
+}
+
+test "signed zero shares a key" {
+  let z = D::{ v: 0.0 }
+  let nz = D::{ v: -0.0 }
+  inspect(z == nz, content = "true")
+  inspect(D::hash_key(z) == D::hash_key(nz), content = "true")
+  inspect(D::hash_key(D::{ v: 1.5 }) == D::hash_key(D::{ v: 2.5 }), content = "false")
+  inspect(D::hash_key(D::{ v: 0.1 + 0.2 }) == D::hash_key(D::{ v: 0.3 }), content = "false")
+  inspect(D::to_string(nz), content = "D { v: -0 }")
+  // A bare `Double` key: the builtin `impl Hash for Double` folds the zeros too.
+  inspect(map_key_to_string(0.0) == map_key_to_string(-0.0), content = "true")
+  inspect(has_by(set_by(Map::new(), -0.0, 1), 0.0), content = "true")
+  inspect(map_key_to_string(1.5) == map_key_to_string(2.5), content = "false")
+}
+
+test "every NaN shares one key, as compare calls them Equal" {
+  let a = D::{ v: nan() }
+  let b = D::{ v: -nan() }
+  // `==` is IEEE: a NaN equals nothing, itself included.
+  inspect(a == a, content = "false")
+  inspect(a == b, content = "false")
+  // The key follows `compare`, which keeps NaN reflexive.
+  inspect(same_order(a, b), content = "true")
+  inspect(D::hash_key(a) == D::hash_key(b), content = "true")
+  inspect(D::hash_key(a) == D::hash_key(D::{ v: 1.0 }), content = "false")
+  let m = set_by(set_by(Map::new(), a, 1), b, 2)
+  inspect(Map::size(m), content = "1")
+  inspect(has_by(m, a), content = "true")
+  let got = match get_by(m, a) {
+    Some(n) => n,
+    None => -1
+  }
+  inspect(got, content = "2")
+  // The zeros agree with `compare` too.
+  inspect(same_order(D::{ v: 0.0 }, D::{ v: -0.0 }), content = "true")
+  // A bare `Double` key behaves the same way.
+  inspect(map_key_to_string(nan()) == map_key_to_string(-nan()), content = "true")
+}
+
+test "nested shapes are injective" {
+  let a = Outer::{ i: Inner::{ s: "x" }, t: ("a", 1), o: Some("q"), xs: ["a, b"] }
+  let b = Outer::{ i: Inner::{ s: "x" }, t: ("a", 1), o: Some("q"), xs: ["a", "b"] }
+  inspect(Outer::hash_key(a) == Outer::hash_key(b), content = "false")
+  let c = Outer::{ i: Inner::{ s: "x" }, t: ("a", 1), o: Some("q"), xs: ["a", "b"] }
+  inspect(Outer::hash_key(b) == Outer::hash_key(c), content = "true")
+  let d = Outer::{ i: Inner::{ s: "x" }, t: ("a", 1), o: None, xs: [] }
+  let e = Outer::{ i: Inner::{ s: "x" }, t: ("a", 1), o: Some("None"), xs: [] }
+  inspect(Outer::hash_key(d) == Outer::hash_key(e), content = "false")
+}
+
+test "enum payloads are injective" {
+  inspect(E::hash_key(E::P("a, b", "c")) == E::hash_key(E::P("a", "b, c")), content = "false")
+  inspect(E::hash_key(E::Q("x")) == E::hash_key(E::Q("x")), content = "true")
+}

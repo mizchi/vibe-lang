@@ -1,0 +1,481 @@
+//# Imports
+
+import @vibe/compiler/contract {
+  contract_facade_marker, vpkg_shared_import_marker, vpkg_types_module_marker
+}
+
+import @vibe/compiler/core {
+  Stmt, linked_impl_overlap_error, linked_unit
+}
+
+import @vibe/compiler/loader {
+  vpkg_types_module_path_prefix
+}
+
+import @vibe/compiler/runtime {
+  db_grouped_merged_source, db_new
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Helpers
+
+/// Lay `modules` (path, source) out as one linked program, unit by unit, and
+/// answer the overlap refusal (or `ok`).
+fn link_verdict(modules: Array[(String, String)]) -> String with Exception {
+  let merged: Array[Stmt] = []
+  let units = []
+  for entry in modules {
+    let (path, source) = entry
+    let start = Array::length(merged)
+    for stmt in parse_program(lex(source)) {
+      Array::push(merged, stmt)
+    }
+    Array::push(units, linked_unit(path, source, start, Array::length(merged)))
+  }
+  match linked_impl_overlap_error(merged, units) {
+    Some(msg) => msg,
+    None => "ok"
+  }
+}
+
+/// Merge `groups` through the grouped runtime merge (the lane the compiler's
+/// self-compile takes) and answer its refusal, or `ok`.
+fn grouped_verdict(groups: Array[(String, Array[(String, String)])]) -> String with Env {
+  handle {
+    let _ = db_grouped_merged_source(db_new(), groups)
+    "ok"
+  } with { Exception::Throw(msg) => msg }
+}
+
+let trait_src = "export trait Name {\n  name(Self) -> String\n}\n"
+
+let impl_a = "impl Name for Int {\n  name(x: Int) -> String { \"from-a\" }\n}\n"
+
+let impl_b = "fn helper() -> Int { 1 }\n\nimpl Name for Int {\n  name(x: Int) -> String { \"from-b\" }\n}\n"
+
+//# Tests
+
+/// #3544: two modules each implementing one trait for one type put two
+/// `Int::name` definitions into the linked program; the refusal names both
+/// positions and leads with the edit.
+test "two modules implementing one trait for one type are refused" {
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", impl_a),
+    ("tb.vibe", impl_b)
+  ]), content = "tb.vibe: line 3:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+}
+
+/// One module's impls are the checker's business, and a module reached twice
+/// is merged once: neither is a cross-module overlap.
+test "impls within one unit and distinct targets are accepted" {
+  inspect(link_verdict([("tr.vibe", trait_src), ("ta.vibe", impl_a)]), content = "ok")
+  let impl_bool = "impl Name for Bool {\n  name(x: Bool) -> String { \"bool\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", impl_a),
+    ("tc.vibe", impl_bool)
+  ]), content = "ok")
+}
+
+/// Two different traits whose methods share a name collapse the same way.
+test "different traits binding one method name are refused" {
+  let label = "export trait Label {\n  name(Self) -> String\n}\n\nimpl Label for Int {\n  name(x: Int) -> String { \"label\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", impl_a),
+    ("tl.vibe", label)
+  ]), content = "tl.vibe: line 5:1: remove one of these: `impl Label for Int` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+}
+
+/// A derive is the impl it registers: with an impl of the same trait it is the
+/// overlap one module may not hold either.
+test "a derive and an impl in another module are refused" {
+  let decl = "export struct P {\n  x: Int\n} derive(Show)\n"
+  let other = "impl Show for P {\n  to_string(p: P) -> String { \"p\" }\n}\n"
+  inspect(link_verdict([("p.vibe", decl), ("q.vibe", other)]), content = "q.vibe: line 1:1: remove one of these: `impl Show for P` here and `derive (Show) on P` in p.vibe: line 1:8 both define `P::to_string` -- the derive gives way to the impl, so the deriving module, and every caller of the method, would silently run the impl; one module may not hold both either")
+}
+
+/// #3551: a plain definition of a derived method is the override one module
+/// accepts -- the derive generates nothing when the program defines the
+/// method, so one definition remains whatever the import order.
+test "a plain definition overriding a derive in another module is accepted" {
+  let decl = "export struct P {\n  x: Int\n} derive(Show, Hash)\n"
+  let other = "export fn P::to_string(p: P) -> String {\n  \"custom\"\n}\n"
+  inspect(link_verdict([("p.vibe", decl), ("q.vibe", other)]), content = "ok")
+  inspect(link_verdict([("q.vibe", other), ("p.vibe", decl)]), content = "ok")
+  // The derive still binds what is not overridden: `P::hash_key`.
+  let impl_hash = "impl Hash for P {\n  hash_key(p: P) -> String { \"k\" }\n}\n"
+  inspect(link_verdict([
+    ("p.vibe", decl),
+    ("q.vibe", other),
+    ("r.vibe", impl_hash)
+  ]), content = "r.vibe: line 1:1: remove one of these: `impl Hash for P` here and `derive (Hash) on P` in p.vibe: line 1:8 both define `P::hash_key` -- the derive gives way to the impl, so the deriving module, and every caller of the method, would silently run the impl; one module may not hold both either")
+}
+
+/// #3551: a unit holding an impl for `Int` does not make every `Int::..`
+/// definition in it an impl method. A plain `fn Int::name` after an
+/// intervening statement collides with another unit's `impl Name for Int`.
+test "a plain definition in a unit that also holds an impl for the owner is refused" {
+  let mixed = "export trait Bar {\n  n(Self) -> Int\n}\n\nimpl Bar for Int {\n  n(x: Int) -> Int { 1 }\n}\n\nlet gap = 1\n\nfn Int::name(x: Int) -> String {\n  \"plain\"\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", impl_a),
+    ("tm.vibe", mixed)
+  ]), content = "tm.vibe: line 11:1: remove one of these: `a definition` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  // Its own impl's method stays the impl's: no overlap with itself.
+  inspect(link_verdict([("tr.vibe", trait_src), ("tm.vibe", mixed)]), content = "ok")
+}
+
+/// A plain definition reusing an impl method's name collapses too.
+test "a plain definition of an impl method name in another module is refused" {
+  let plain = "export fn Int::name(x: Int) -> String {\n  \"plain\"\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", impl_a),
+    ("tp.vibe", plain)
+  ]), content = "tp.vibe: line 1:8: remove one of these: `a definition` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+}
+
+/// #3551 review: no unit is exempt by the path it carries. Exempting the
+/// loader's paths (a contract's, and the generated types module's) let an
+/// ordinary module at such a path skip the check: one imported from
+/// `.vibe/build/vpkg_types/types_spoof.vibe` built `from-spoof from-spoof`,
+/// and `from-b from-b` with the imports swapped. A real facade states no impl
+/// (a contract cannot), so reading it binds nothing.
+test "a unit at a loader path is checked like any other" {
+  for path in [
+    String::concat(vpkg_types_module_path_prefix, "spoof.vibe"),
+    "pkg/index.vpkg",
+    "pkg/index.vibei"
+  ] {
+    inspect(link_verdict([
+      ("tr.vibe", trait_src),
+      (path, impl_a),
+      ("tb.vibe", impl_b)
+    ]), content = "tb.vibe: line 3:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in \{path}: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  }
+}
+
+/// #3551 review: no unit is exempt by its text. Every marker line the loader
+/// writes is an ordinary comment a module may open with, and the shared-import
+/// one heads every real sibling of a package whose contract shares an import
+/// (#897). Exempted by the text, each of these linked silently (measured:
+/// `from-a from-a`, and `from-b from-b` with the imports swapped). Such a unit
+/// is named without a line: the loader's prepended lines would shift it.
+test "a module opening with a loader marker line is still checked" {
+  let refusal = "tb.vibe: line 3:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in ta.vibe both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one"
+  for marker in [
+    contract_facade_marker,
+    vpkg_shared_import_marker,
+    vpkg_types_module_marker
+  ] {
+    inspect(link_verdict([
+      ("tr.vibe", trait_src),
+      ("ta.vibe", String::concat(marker, impl_a)),
+      ("tb.vibe", impl_b)
+    ]), content = refusal)
+  }
+}
+
+/// A contract's types module is the one site of the type family it defines
+/// (#1879), so its derives are the program's: a sibling's plain definition
+/// overrides one, and an impl of the same trait elsewhere is the overlap. The
+/// module is named without a line -- its text is generated.
+test "a generated types module's derives are the program's derives" {
+  let decl = String::concat(vpkg_types_module_marker, "export struct P {\n  x: Int\n} derive(Show)\n")
+  let generated = String::concat(vpkg_types_module_path_prefix, "k1_Ab9.vibe")
+  let plain = "export fn P::to_string(p: P) -> String {\n  \"custom\"\n}\n"
+  inspect(link_verdict([(generated, decl), ("pkg/impl.vibe", plain)]), content = "ok")
+  let other = "impl Show for P {\n  to_string(p: P) -> String { \"p\" }\n}\n"
+  inspect(link_verdict([(generated, decl), ("q.vibe", other)]), content = "q.vibe: line 1:1: remove one of these: `impl Show for P` here and `derive (Show) on P` in \{generated} both define `P::to_string` -- the derive gives way to the impl, so the deriving module, and every caller of the method, would silently run the impl; one module may not hold both either")
+}
+
+let tag_src = "export trait Tag {\n  tag(Self) -> Int\n}\n"
+
+/// #3551 review: a binding in an impl's run is the impl's method only when the
+/// impl's trait, or a supertrait, declares it. `fn P::to_string` right after
+/// `impl Tag for P` was recorded as the impl's because it shares the `P::`
+/// prefix, so another module's `derive (Show)` on `P` was refused -- though
+/// the derive pass gives way to that definition and the program holds one
+/// `P::to_string` in either import order.
+test "a definition after an impl whose trait does not declare it is plain" {
+  let decl = "export struct P {\n  x: Int\n} derive(Show)\n"
+  let tagged = "impl Tag for P {\n  tag(p: P) -> Int { 1 }\n}\n\nfn P::to_string(p: P) -> String {\n  \"custom\"\n}\n"
+  inspect(link_verdict([
+    ("tag.vibe", tag_src),
+    ("p.vibe", decl),
+    ("q.vibe", tagged)
+  ]), content = "ok")
+  inspect(link_verdict([
+    ("tag.vibe", tag_src),
+    ("q.vibe", tagged),
+    ("p.vibe", decl)
+  ]), content = "ok")
+  // It is still the one `P::to_string` the program may hold.
+  let shown = "impl Show for P {\n  to_string(p: P) -> String { \"p\" }\n}\n"
+  inspect(link_verdict([
+    ("tag.vibe", tag_src),
+    ("q.vibe", tagged),
+    ("r.vibe", shown)
+  ]), content = "r.vibe: line 1:1: remove one of these: `impl Show for P` here and `a definition` in q.vibe: line 5:1 both define `P::to_string` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  // A method the trait declares stays the impl's.
+  inspect(link_verdict([
+    ("tag.vibe", tag_src),
+    ("q.vibe", tagged),
+    ("q2.vibe", "impl Tag for P {\n  tag(p: P) -> Int { 2 }\n}\n")
+  ]), content = "q2.vibe: line 1:1: remove one of these: `impl Tag for P` here and `impl Tag for P` in q.vibe: line 1:1 both define `P::tag` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  // And a builtin trait the program declares as a marker dispatches the
+  // method its derive generates: `impl Show for P { to_string }` is the impl's.
+  let marker_show = "export trait Show\n"
+  inspect(link_verdict([
+    ("show.vibe", marker_show),
+    ("p.vibe", decl),
+    ("r.vibe", shown)
+  ]), content = "r.vibe: line 1:1: remove one of these: `impl Show for P` here and `derive (Show) on P` in p.vibe: line 1:8 both define `P::to_string` -- the derive gives way to the impl, so the deriving module, and every caller of the method, would silently run the impl; one module may not hold both either")
+}
+
+let child_src = "export trait Base {\n  get(Self) -> String\n}\n\nexport trait Child: Base {}\n"
+
+/// #3551 review: a binding in another trait's namespace inside an impl's run
+/// -- the supertrait operation `Base::get` the checker synthesizes after
+/// `impl Child for Int` -- used to end the run, so the `Int::get` after it was
+/// read as a plain definition rather than the impl's method. With the method
+/// on both sides after such a binding, neither was checked at all (two plain
+/// definitions; measured end to end: `from-a from-a`, and `from-b from-b` with
+/// the imports swapped).
+test "a supertrait binding inside an impl's run does not end it" {
+  let fallback_a = "impl Child for Int\n\nfn Base::tag(x: Int) -> Int {\n  7\n}\n\nfn Int::get(x: Int) -> String {\n  \"from-a\"\n}\n"
+  let fallback_b = "impl Child for Int\n\nfn Base::tag(x: Int) -> Int {\n  8\n}\n\nfn Int::get(x: Int) -> String {\n  \"from-b\"\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", child_src),
+    ("ta.vibe", fallback_a),
+    ("tb.vibe", fallback_b)
+  ]), content = "tb.vibe: line 1:1: remove one of these: `impl Child for Int` here and `impl Child for Int` in ta.vibe: line 1:1 both define `Int::get` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  // The synthesized operation's shape: it is the impl's method, not a plain
+  // definition, so the refusal names both impls.
+  let synthesized = "impl Child for Int\nlet rec Base::get = (x: Int) -> String { \"op\" }\nlet rec Int::get = (x: Int) -> String { \"from-a\" }\n"
+  let written = "impl Child for Int {\n  get(x: Int) -> String { \"from-b\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", child_src),
+    ("ta.vibe", synthesized),
+    ("tb.vibe", written)
+  ]), content = "tb.vibe: line 1:1: remove one of these: `impl Child for Int` here and `impl Child for Int` in ta.vibe: line 1:1 both define `Int::get` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  // One such impl in the program is no overlap.
+  inspect(link_verdict([("tr.vibe", child_src), ("ta.vibe", fallback_a)]), content = "ok")
+}
+
+/// #3551 review: a bodyless impl (or a block omitting a method) dispatches to
+/// the unit's `P::m` wherever it is declared, as the checker pairs it. With a
+/// statement between the impl and that definition, the run ended before it, so
+/// no impl bound `Int::name`; both modules' definitions read as plain and were
+/// never compared (measured end to end: `from-a from-a`, and `from-b from-b`
+/// with the imports swapped).
+test "a fallback away from its bodyless impl is the impl's method" {
+  let fallback_a = "impl Name for Int\n\nfn helper_a() -> Int {\n  1\n}\n\nfn Int::name(x: Int) -> String {\n  \"from-a\"\n}\n"
+  let fallback_b = "impl Name for Int\n\nfn helper_b() -> Int {\n  2\n}\n\nfn Int::name(x: Int) -> String {\n  \"from-b\"\n}\n"
+  let refusal = "tb.vibe: line 1:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one"
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", fallback_a),
+    ("tb.vibe", fallback_b)
+  ]), content = refusal)
+  // Against a written block, and against a plain definition, in either order.
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("tb.vibe", impl_b),
+    ("ta.vibe", fallback_a)
+  ]), content = "ta.vibe: line 1:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in tb.vibe: line 3:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  let plain = "export fn Int::name(x: Int) -> String {\n  \"plain\"\n}\n"
+  let plain_refusal = "tp.vibe: line 1:8: remove one of these: `a definition` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one"
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", fallback_a),
+    ("tp.vibe", plain)
+  ]), content = plain_refusal)
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("tp.vibe", plain),
+    ("ta.vibe", fallback_a)
+  ]), content = plain_refusal)
+  // One such impl in the program is no overlap.
+  inspect(link_verdict([("tr.vibe", trait_src), ("ta.vibe", fallback_a)]), content = "ok")
+}
+
+/// The fallback may precede the impl, and the block may write the trait's
+/// other methods: the method the block omits is still the unit's `P::m`.
+test "a fallback before an impl whose block omits the method is the impl's" {
+  let two_src = "export trait Two {\n  name(Self) -> String\n  size(Self) -> Int\n}\n"
+  let before = "fn Int::name(x: Int) -> String {\n  \"from-a\"\n}\n\nimpl Two for Int {\n  size(x: Int) -> Int { 1 }\n}\n"
+  // Another module's bodyless `impl Name for Int` with a distant fallback:
+  // neither `Int::name` sits in an impl's run.
+  let other = "impl Name for Int\n\nlet gap = 1\n\nfn Int::name(x: Int) -> String {\n  \"from-b\"\n}\n"
+  inspect(link_verdict([
+    ("two.vibe", two_src),
+    ("tr.vibe", trait_src),
+    ("ta.vibe", before),
+    ("tb.vibe", other)
+  ]), content = "tb.vibe: line 1:1: remove one of these: `impl Name for Int` here and `impl Two for Int` in ta.vibe: line 5:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+  // A definition the trait does not dispatch is no fallback: still plain, so
+  // another module's derive gives way to it.
+  let decl = "export struct P {\n  x: Int\n} derive(Show)\n"
+  let unrelated = "fn P::to_string(p: P) -> String {\n  \"custom\"\n}\n\nimpl Tag for P\n\nlet gap = 1\n\nfn P::tag(p: P) -> Int {\n  1\n}\n"
+  inspect(link_verdict([
+    ("tag.vibe", tag_src),
+    ("p.vibe", decl),
+    ("q.vibe", unrelated)
+  ]), content = "ok")
+}
+
+/// A derive gives way to a plain definition only: a bodyless `impl Show for
+/// P` whose `P::to_string` sits behind another statement is an impl, the
+/// overlap one module may not hold beside `derive (Show)` either.
+test "a bodyless impl's distant fallback does not override a derive" {
+  let decl = "export struct P {\n  x: Int\n} derive(Show)\n"
+  let bodyless = "impl Show for P\n\nlet gap = 1\n\nfn P::to_string(p: P) -> String {\n  \"custom\"\n}\n"
+  inspect(link_verdict([("p.vibe", decl), ("q.vibe", bodyless)]), content = "q.vibe: line 1:1: remove one of these: `impl Show for P` here and `derive (Show) on P` in p.vibe: line 1:8 both define `P::to_string` -- the derive gives way to the impl, so the deriving module, and every caller of the method, would silently run the impl; one module may not hold both either")
+}
+
+/// #3551 review: the grouped merge links each source group on its own and
+/// joins the texts afterwards, so a check per group never saw two impls in
+/// different groups together, and the joined program kept whichever came
+/// first. The check runs over the whole program: every group's units.
+test "the grouped merge refuses impls overlapping across source groups" {
+  let main_src = "import ./tr.vibe { trait Name }\n\nfn main() -> String {\n  Name::name(1)\n}\n"
+  let refusal = "tb.vibe: line 3:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one"
+  inspect(grouped_verdict([
+    ("tr", [("tr.vibe", trait_src)]),
+    ("a", [("ta.vibe", impl_a)]),
+    ("b", [("tb.vibe", impl_b)]),
+    ("main", [("main.vibe", main_src)])
+  ]), content = refusal)
+  // One group holding both is refused as before; distinct targets are not.
+  inspect(grouped_verdict([
+    ("tr", [("tr.vibe", trait_src)]),
+    ("ab", [("ta.vibe", impl_a), ("tb.vibe", impl_b)]),
+    ("main", [("main.vibe", main_src)])
+  ]), content = refusal)
+  let impl_bool = "impl Name for Bool {\n  name(x: Bool) -> String { \"bool\" }\n}\n"
+  inspect(grouped_verdict([
+    ("tr", [("tr.vibe", trait_src)]),
+    ("a", [("ta.vibe", impl_a)]),
+    ("c", [("tc.vibe", impl_bool)]),
+    ("main", [("main.vibe", main_src)])
+  ]), content = "ok")
+  // A group listed twice is merged twice but is one module: not an overlap.
+  inspect(grouped_verdict([
+    ("tr", [("tr.vibe", trait_src)]),
+    ("a", [("ta.vibe", impl_a)]),
+    ("a", [("ta.vibe", impl_a)]),
+    ("main", [("main.vibe", main_src)])
+  ]), content = "ok")
+}
+
+/// The same through a warm cache: each group's text was merged, and cached,
+/// by an earlier call that never held the other impl. Serving both texts from
+/// the cache must not skip the check on the program they are joined into.
+test "the grouped merge refuses an overlap between groups cached by separate calls" {
+  let main_src = "import ./tr.vibe { trait Name }\n\nfn main() -> String {\n  Name::name(1)\n}\n"
+  let tr = ("tr", [("tr.vibe", trait_src)])
+  let ga = ("a", [("ta.vibe", impl_a)])
+  let gb = ("b", [("tb.vibe", impl_b)])
+  let gm = ("main", [("main.vibe", main_src)])
+  let verdict = handle {
+    let (_, _, db1) = db_grouped_merged_source(db_new(), [tr, ga, gm])
+    let (_, _, db2) = db_grouped_merged_source(db1, [tr, gb, gm])
+    let _ = db_grouped_merged_source(db2, [tr, ga, gb, gm])
+    "ok"
+  } with { Exception::Throw(msg) => msg }
+  inspect(verdict, content = "tb.vibe: line 3:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
+}
+
+let box_src = "export trait Name {\n  name(Self) -> String\n}\n\nexport struct Box[T] {\n  v: T\n}\n"
+
+let impl_box_generic = "impl [T] Name for Box[T] {\n  name(x: Box[T]) -> String { \"generic\" }\n}\n"
+
+let impl_box_int = "impl Name for Box[Int] {\n  name(x: Box[Int]) -> String { \"int\" }\n}\n"
+
+/// #3551 review: `impl [T] Name for Box[T]` and `impl Name for Box[Int]` bind
+/// differently encoded method names, so comparing names let both through, and
+/// both modules' `Box[Int]` calls ran one of them (measured: `from-int
+/// from-int`). The instance sets are compared, as the checker compares them
+/// inside one file, in either order.
+test "a generic impl and a specialized impl in two modules are refused" {
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("ga.vibe", impl_box_generic),
+    ("gb.vibe", impl_box_int)
+  ]), content = "gb.vibe: line 1:1: remove one of these, or narrow one so their targets no longer overlap: `impl Name for Box[Int]` here and `impl [T] Name for Box[T]` in ga.vibe: line 1:1 both implement `Name` for the same types -- a linked program dispatches each such type to only one of them, so a caller in either module would silently run the other module's impl")
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("gb.vibe", impl_box_int),
+    ("ga.vibe", impl_box_generic)
+  ]), content = "ga.vibe: line 1:1: remove one of these, or narrow one so their targets no longer overlap: `impl [T] Name for Box[T]` here and `impl Name for Box[Int]` in gb.vibe: line 1:1 both implement `Name` for the same types -- a linked program dispatches each such type to only one of them, so a caller in either module would silently run the other module's impl")
+}
+
+/// Every spelling the checker resolves to one instance set: formals named
+/// apart (measured: `from-generic` or `from-generic-u` by import order), a
+/// type alias, an implicit-parameter target, and a derive's impl.
+test "overlapping impl targets spelled apart are refused" {
+  let renamed = "impl [U] Name for Box[U] {\n  name(x: Box[U]) -> String { \"generic-u\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("ga.vibe", impl_box_generic),
+    ("gu.vibe", renamed)
+  ]), content = "gu.vibe: line 1:1: remove one of these, or narrow one so their targets no longer overlap: `impl [U] Name for Box[U]` here and `impl [T] Name for Box[T]` in ga.vibe: line 1:1 both implement `Name` for the same types -- a linked program dispatches each such type to only one of them, so a caller in either module would silently run the other module's impl")
+  let alias = "type IB = Box[Int]\n\nimpl Name for IB {\n  name(x: IB) -> String { \"alias\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("ga.vibe", impl_box_generic),
+    ("gi.vibe", alias)
+  ]), content = "gi.vibe: line 3:1: remove one of these, or narrow one so their targets no longer overlap: `impl Name for IB` here and `impl [T] Name for Box[T]` in ga.vibe: line 1:1 both implement `Name` for the same types -- a linked program dispatches each such type to only one of them, so a caller in either module would silently run the other module's impl")
+  let implicit = "impl [T] Name for Box {\n  name(x: Box[T]) -> String { \"implicit\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("gm.vibe", implicit),
+    ("gb.vibe", impl_box_int)
+  ]), content = "gb.vibe: line 1:1: remove one of these, or narrow one so their targets no longer overlap: `impl Name for Box[Int]` here and `impl [T] Name for Box` in gm.vibe: line 1:1 both implement `Name` for the same types -- a linked program dispatches each such type to only one of them, so a caller in either module would silently run the other module's impl")
+  let derived = "export struct Bx[T] {\n  v: T\n} derive(Show)\n"
+  let shown = "impl Show for Bx[Int] {\n  to_string(x: Bx[Int]) -> String { \"custom\" }\n}\n"
+  inspect(link_verdict([("p.vibe", derived), ("q.vibe", shown)]), content = "q.vibe: line 1:1: remove one of these, or narrow one so their targets no longer overlap: `impl Show for Bx[Int]` here and `derive (Show) on Bx` in p.vibe: line 1:8 both implement `Show` for the same types -- a linked program dispatches each such type to only one of them, so a caller in either module would silently run the other module's impl")
+}
+
+/// Targets whose instance sets are disjoint, a generic impl in one module
+/// only, and impls of different traits are not overlaps; neither are two
+/// units that each declare their own trait of one name, which the checker
+/// keeps apart as two instance scopes.
+test "disjoint impl targets across modules are accepted" {
+  let impl_box_string = "impl Name for Box[String] {\n  name(x: Box[String]) -> String { \"string\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("gb.vibe", impl_box_int),
+    ("gs.vibe", impl_box_string)
+  ]), content = "ok")
+  let user = "export fn use_it() -> String {\n  Name::name(Box::{ v: 1 })\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("ga.vibe", impl_box_generic),
+    ("gc.vibe", user)
+  ]), content = "ok")
+  let pair = "export struct Pair[A, B] {\n  a: A;\n  b: B\n}\n"
+  let same = "impl [T] Name for Pair[T, T] {\n  name(x: Pair[T, T]) -> String { \"same\" }\n}\n"
+  let mixed = "impl Name for Pair[Int, String] {\n  name(x: Pair[Int, String]) -> String { \"mixed\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("pr.vibe", pair),
+    ("ps.vibe", same),
+    ("pm.vibe", mixed)
+  ]), content = "ok")
+  let label = "export trait Label {\n  label(Self) -> String\n}\n\nimpl Label for Box[Int] {\n  label(x: Box[Int]) -> String { \"label\" }\n}\n"
+  inspect(link_verdict([
+    ("tr.vibe", box_src),
+    ("ga.vibe", impl_box_generic),
+    ("tl.vibe", label)
+  ]), content = "ok")
+  let marker = "export trait Zero\n\nimpl Zero for Int\n"
+  let declared = "export trait Zero {\n  zero() -> Self\n}\n\nimpl Zero for Int {\n  zero() -> Int { 0 }\n}\n"
+  inspect(link_verdict([("z1.vibe", marker), ("z2.vibe", declared)]), content = "ok")
+}

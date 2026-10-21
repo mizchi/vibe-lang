@@ -67,16 +67,18 @@ import @vibe/compiler/normalize {
 }
 
 import @vibe/parser {
-  BinderAuthorityNode, LocatedProgramBinderAuthority, SourceBinder
+  BinderAuthorityNode, LocatedProgramBinderAuthority, SourceBinder, is_builtin_namespace_name
 }
 
 import ./checker_stmt_push_source_scope_names.vibe {
+  aliased_builtin_import_type,
   duplicate_import_value_note,
   duplicate_value_decl_note,
   es_append_imported_tables,
   es_collect_tables,
   es_index_of,
   es_string_array_contains,
+  import_keeps_builtin_signature,
   top_stmt_expr_off
 }
 
@@ -321,7 +323,28 @@ export fn bind_stmt_imports(env: TypeEnv, names: Array[ImportItem]) -> TypeEnv {
         resolved
       }
     }
-    let acc_with_name = env_bind(acc, bound_name, ty)
+    // #3542: a builtin operation imported under its own spelling stays the
+    // builtin's -- binding its `CtUnknown` marker would hide the signature.
+    let keeps_builtin = match ty {
+      CtUnknown => alias == None && import_keeps_builtin_signature(name),
+      _ => false
+    }
+    // Under an alias there is no builtin of that spelling to fall back to, so
+    // the alias is bound to the builtin's signature instead of the marker.
+    let bound_ty = match ty {
+      CtUnknown => if alias == None {
+        ty
+      } else match aliased_builtin_import_type(name) {
+        Some(sig) => sig,
+        None => ty
+      },
+      _ => ty
+    }
+    let acc_with_name = if keeps_builtin {
+      acc
+    } else {
+      env_bind(acc, bound_name, bound_ty)
+    }
     acc = match env_lookup_flat(env_bindings, fn_return_env_name(name)) {
       Some(ret_ty) => env_bind(acc_with_name, fn_return_env_name(bound_name), ret_ty),
       None => acc_with_name
@@ -440,6 +463,50 @@ fn builtin_layout_head_target(name: String) -> String {
     "Array"
   } else if name == "MutBytes" {
     "Bytes"
+  } else {
+    ""
+  }
+}
+
+/// The path of the module being checked, as the lane checking it names it, for
+/// a rule that depends on where a declaration lives
+/// (`owned_head_shape_decl_error`). Set around the check by every lane that
+/// checks one named module -- the module walks that publish an interface and
+/// the buffer lane (`vibe check --single-file`, the editor) -- and empty on a
+/// lane that names none.
+let declaring_module_path_cell: Array[String] = []
+
+/// Whether the module being checked is the file that ships the region-first
+/// owned heads' declarations, as the lane that names it resolves packages
+/// (`is_owned_head_source_location`). The path alone cannot say: a program
+/// may give its own module a path that ends like the shipped one's.
+let declaring_module_ships_cell: Array[Bool] = []
+
+/// Before the module at `path` is checked. `ships_owned_heads` is the lane's
+/// answer to `is_owned_head_source_location` for that path.
+export fn declaring_module_path_set(path: String, ships_owned_heads: Bool) -> Unit {
+  Array::truncate(declaring_module_path_cell, 0)
+  Array::push(declaring_module_path_cell, path)
+  Array::truncate(declaring_module_ships_cell, 0)
+  Array::push(declaring_module_ships_cell, ships_owned_heads)
+}
+
+/// After that module's check.
+export fn declaring_module_path_clear() -> Unit {
+  Array::truncate(declaring_module_path_cell, 0)
+  Array::truncate(declaring_module_ships_cell, 0)
+}
+
+/// Whether the module being checked ships the region-first owned heads; false
+/// when the lane named no module.
+export fn declaring_module_ships_owned_heads() -> Bool {
+  Array::length(declaring_module_ships_cell) > 0 && Array::get(declaring_module_ships_cell, 0)
+}
+
+/// The module being checked, or "" when the lane named none.
+export fn declaring_module_path() -> String {
+  if Array::length(declaring_module_path_cell) > 0 {
+    Array::get(declaring_module_path_cell, 0)
   } else {
     ""
   }
@@ -995,6 +1062,51 @@ fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, built
 export fn import_item_kind_errors(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, path: String) -> Array[String] {
   let errors = array_empty()
   check_import_item_kinds(items, initial_env, builtin_authority, path, errors)
+  errors
+}
+
+/// Whether `item` carries no kind keyword (`struct`, `enum`, `type`, `trait`,
+/// `effect`).
+fn import_item_has_no_kind(item: ImportItem) -> Bool {
+  match item.kind {
+    Some(_) => false,
+    None => true
+  }
+}
+
+/// Whether the providing module declares `item` as a value -- a function or a
+/// `let` -- rather than a type, trait or effect. The kind asked for is
+/// irrelevant to the answer: `imported_decl_kind` reports "value" only when
+/// no declaration of any other kind has the name.
+fn imported_item_is_value(item: ImportItem, initial_env: TypeEnv, builtin_authority: Bool) -> Bool {
+  match imported_decl_kind(item, ImportType, initial_env, builtin_authority) {
+    Some(kind) => kind == "value",
+    None => false
+  }
+}
+
+/// An imported VALUE aliased to a builtin namespace's name (`MakeTag as
+/// Array`) is refused: the alias rewrite turns `Array::length(xs)` into
+/// `MakeTag::length(xs)`, which nothing binds, and the program reached code
+/// generation unresolved. The parser refuses the spellings it can classify (a
+/// lowercase or qualified item); a plain capitalized item is a type or a
+/// function, and only the providing module's environment says which, so it is
+/// judged here. A type under a builtin's name stays legal (`Record as
+/// Future`, `struct Box as StringMap`). `(from '<path>')` is what
+/// `engine_locate_import_alias_namespace_msg` anchors on.
+export fn import_item_namespace_alias_errors(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, path: String) -> Array[String] {
+  let errors = array_empty()
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    match item.alias {
+      Some(alias) => if import_item_has_no_kind(item) && is_builtin_namespace_name(alias) && imported_item_is_value(item, initial_env, builtin_authority) {
+        Array::push(errors, "choose another name than `\{alias}` for this import of `\{item.name}` (from '\{path}'): `\{alias}` names the builtin `\{alias}::` operations, and `\{item.name}` is a value, so it would take the `\{alias}::...` calls instead")
+      },
+      None => ()
+    }
+    i = i + 1
+  }
   errors
 }
 

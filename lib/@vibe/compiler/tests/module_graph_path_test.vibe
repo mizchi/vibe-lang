@@ -1,7 +1,13 @@
 //# Imports
 
 import @vibe/compiler/core {
-  parse_vibe_lib_roots, resolve_import_path_candidates
+  Source,
+  is_owned_head_source_candidate,
+  is_owned_head_source_location,
+  owned_head_source_candidates,
+  owned_head_source_location,
+  parse_vibe_lib_roots,
+  resolve_import_path_candidates
 }
 
 //# Misc
@@ -46,4 +52,103 @@ test "@scope candidates: store first, workspace lib/ second (#751)" {
   assert(Array::get(cands, 1) == ".vibe/store/@scope/name/index.vibei")
   assert(Array::get(cands, 2) == "lib/@scope/name/index.vpkg")
   assert(Array::get(cands, 3) == "lib/@scope/name/index.vibei")
+}
+
+/// #3551 review: the shipped region-first owned heads' declaration file may
+/// sit wherever the package resolver could read `@vibe/concurrent/experimental`:
+/// the workspace store, the workspace `lib/`, then each library root.
+test "the owned-head source file's candidate locations are the package resolver's" {
+  inspect(owned_head_source_candidates(["/opt/vibe/lib/"]), "[.vibe/store/@vibe/concurrent/experimental/concurrent.vibe, lib/@vibe/concurrent/experimental/concurrent.vibe, /opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe]")
+}
+
+/// A path is a candidate only when it names one of those locations; ending
+/// like one is not enough, since a relative import's path is the program's
+/// choice.
+test "a path that only ends like the owned-head source file is not a candidate" {
+  let roots = ["/opt/vibe/lib"]
+  let answers: Array[String] = []
+  for path in [
+    "lib/@vibe/concurrent/experimental/concurrent.vibe",
+    "./lib/@vibe/concurrent/experimental/concurrent.vibe",
+    "/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe",
+    "@vibe/concurrent/experimental/concurrent.vibe",
+    "app/@vibe/concurrent/experimental/concurrent.vibe",
+    "app/lib/@vibe/concurrent/experimental/concurrent.vibe",
+    "/home/u/p/@vibe/concurrent/experimental/concurrent.vibe",
+    "/opt/vibe/lib/x/@vibe/concurrent/experimental/concurrent.vibe",
+    "lib/@vibe/concurrent/experimental/other.vibe"
+  ] {
+    Array::push(answers, "\{path}: \{is_owned_head_source_candidate(path, roots)}")
+  }
+  inspect(String::join(answers, "\n"), "lib/@vibe/concurrent/experimental/concurrent.vibe: true\n./lib/@vibe/concurrent/experimental/concurrent.vibe: true\n/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe: true\n@vibe/concurrent/experimental/concurrent.vibe: false\napp/@vibe/concurrent/experimental/concurrent.vibe: false\napp/lib/@vibe/concurrent/experimental/concurrent.vibe: false\n/home/u/p/@vibe/concurrent/experimental/concurrent.vibe: false\n/opt/vibe/lib/x/@vibe/concurrent/experimental/concurrent.vibe: false\nlib/@vibe/concurrent/experimental/other.vibe: false")
+}
+
+fn names_existing(existing: Array[String], path: String) -> Bool {
+  let mut found = false
+  for p in existing {
+    if p == path {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// `owned_head_source_location` and `is_owned_head_source_location` with
+/// exactly `existing` on the filesystem.
+fn owned_head_answers(existing: Array[String]) -> String {
+  let roots = ["/opt/vibe/lib"]
+  handle {
+    let answers: Array[String] = [
+      "selected: \{owned_head_source_location(roots)}"
+    ]
+    for path in [
+      ".vibe/store/@vibe/concurrent/experimental/concurrent.vibe",
+      "lib/@vibe/concurrent/experimental/concurrent.vibe",
+      "./lib/@vibe/concurrent/experimental/concurrent.vibe",
+      "/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe"
+    ] {
+      Array::push(answers, "\{path}: \{is_owned_head_source_location(path, roots)}")
+    }
+    String::join(answers, "\n")
+  } with { Source::Read(_) => resume(""); Source::Exists(p) => resume(names_existing(existing, p)) }
+}
+
+/// #3551 review: being a candidate location is not being the shipped file.
+/// A program may put an ordinary file at
+/// `.vibe/store/@vibe/concurrent/experimental/concurrent.vibe` (or the
+/// workspace `lib/` one) with no contract beside it and import it relatively;
+/// no `@vibe/concurrent/experimental` import ever reads it, so it is a program
+/// module. Before, every candidate location was trusted: such a file's
+/// `TaskGroup[rg, e]` let a bare `TaskGroup` read the `Int` 7 as a `String`.
+test "with no contract beside it, no candidate location is the shipped file" {
+  inspect(owned_head_answers([
+    ".vibe/store/@vibe/concurrent/experimental/concurrent.vibe",
+    "lib/@vibe/concurrent/experimental/concurrent.vibe"
+  ]), "selected: \n.vibe/store/@vibe/concurrent/experimental/concurrent.vibe: false\nlib/@vibe/concurrent/experimental/concurrent.vibe: false\n./lib/@vibe/concurrent/experimental/concurrent.vibe: false\n/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe: false")
+}
+
+/// The shipped file is the one beside the contract the resolver SELECTS: the
+/// first candidate that exists, in its order (store, workspace `lib/`, then
+/// each root; `.vpkg` before `.vibei`). A later candidate with a contract of
+/// its own is shadowed, and is a program module.
+test "the shipped file is the one beside the contract the resolver selects" {
+  let answers: Array[String] = []
+  for existing in [
+    ["lib/@vibe/concurrent/experimental/index.vpkg"],
+    ["lib/@vibe/concurrent/experimental/index.vibei"],
+    [
+      ".vibe/store/@vibe/concurrent/experimental/index.vpkg",
+      "lib/@vibe/concurrent/experimental/index.vpkg"
+    ],
+    ["/opt/vibe/lib/@vibe/concurrent/experimental/index.vpkg"],
+    [
+      "lib/@vibe/concurrent/experimental/index.vpkg",
+      "/opt/vibe/lib/@vibe/concurrent/experimental/index.vpkg"
+    ]
+  ] {
+    Array::push(answers, owned_head_answers(existing))
+  }
+  inspect(String::join(answers, "\n--\n"), "selected: lib/@vibe/concurrent/experimental/concurrent.vibe\n.vibe/store/@vibe/concurrent/experimental/concurrent.vibe: false\nlib/@vibe/concurrent/experimental/concurrent.vibe: true\n./lib/@vibe/concurrent/experimental/concurrent.vibe: true\n/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe: false\n--\nselected: lib/@vibe/concurrent/experimental/concurrent.vibe\n.vibe/store/@vibe/concurrent/experimental/concurrent.vibe: false\nlib/@vibe/concurrent/experimental/concurrent.vibe: true\n./lib/@vibe/concurrent/experimental/concurrent.vibe: true\n/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe: false\n--\nselected: .vibe/store/@vibe/concurrent/experimental/concurrent.vibe\n.vibe/store/@vibe/concurrent/experimental/concurrent.vibe: true\nlib/@vibe/concurrent/experimental/concurrent.vibe: false\n./lib/@vibe/concurrent/experimental/concurrent.vibe: false\n/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe: false\n--\nselected: /opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe\n.vibe/store/@vibe/concurrent/experimental/concurrent.vibe: false\nlib/@vibe/concurrent/experimental/concurrent.vibe: false\n./lib/@vibe/concurrent/experimental/concurrent.vibe: false\n/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe: true\n--\nselected: lib/@vibe/concurrent/experimental/concurrent.vibe\n.vibe/store/@vibe/concurrent/experimental/concurrent.vibe: false\nlib/@vibe/concurrent/experimental/concurrent.vibe: true\n./lib/@vibe/concurrent/experimental/concurrent.vibe: true\n/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe: false")
 }

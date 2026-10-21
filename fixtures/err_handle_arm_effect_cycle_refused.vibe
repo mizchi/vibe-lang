@@ -1,0 +1,56 @@
+// #3540: an arm's effects are migrated before the arm is copied into its
+// handle's body, so they reach the handlers around the `handle`. Here an `Ask`
+// arm performs `Log` while a nested `Log` handler encloses the `Ask` perform,
+// AND a `Log` arm performs `Ask` while a nested `Ask` handler encloses the
+// `Log` perform. Each nested handler reaches its own effect through a call,
+// so it cannot be renamed apart from the arm (a nested handler whose effect is
+// performed only directly in its body is, and then needs no order). The
+// migration order is chosen once per effect, and no order is right for both,
+// so the build is refused with the edit rather than answering one of them
+// through the nested handler.
+effect Ask {
+  Get() -> Int
+}
+
+effect Log {
+  Say(Int) -> Unit
+}
+
+fn log_then_ask() -> Int with Ask + Log {
+  perform Log::Say(0)
+  perform Ask::Get()
+}
+
+fn ask_then_log() -> Int with Ask + Log {
+  let v = perform Ask::Get()
+  perform Log::Say(v)
+  1
+}
+
+fn first() -> Int {
+  handle {
+    handle {
+      handle {
+        log_then_ask() + 1
+      } with { Log::Say(_) => resume(()) }
+    } with { Ask::Get() => {
+      perform Log::Say(1)
+      resume(10)
+    } }
+  } with { Log::Say(_) => resume(()) }
+}
+
+fn second() -> Int {
+  handle {
+    handle {
+      handle {
+        ask_then_log()
+      } with { Ask::Get() => resume(100) }
+    } with { Log::Say(_) => {
+      let _ = perform Ask::Get()
+      resume(())
+    } }
+  } with { Ask::Get() => resume(7) }
+}
+
+export let _start: () -> Int = () -> first() + second()

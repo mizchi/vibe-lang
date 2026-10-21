@@ -36,8 +36,11 @@ import @vibe/compiler/cache {
   compact_source_fingerprint_memo, typing_module_fingerprint
 }
 import @vibe/compiler/checker {
+  aliased_builtin_import_type,
   env_param_name_rows,
   import_item_kind_errors,
+  import_item_namespace_alias_errors,
+  import_keeps_builtin_signature,
   is_retention_summary_marker,
   param_name_rows_have,
   param_names_marker,
@@ -670,7 +673,9 @@ fn engine_foreign_type_declaration_collisions(item: ImportItem, raw_path: String
 /// #3026, the trait half: importing a trait retains the dependency's impls of
 /// it (`prepend_dependency_trait_nodes`). An impl whose target names a type the
 /// importer declares locally would let the LOCAL type satisfy the dependency's
-/// impl -- and dispatch into code compiled for the dependency's layout.
+/// impl -- and dispatch into code compiled for the dependency's layout. The
+/// same holds for a type the trait's method signatures name: an impl in this
+/// module is held to them.
 fn engine_foreign_trait_impl_collisions(dep_env: TypeEnv, mappings: Array[(String, String)], raw_path: String, resolved: String, dep_types: Array[String], local_types: Array[String], unresolved: Array[String], reported: Array[String]) -> Unit {
   if Array::length(local_types) > 0 && Array::length(mappings) > 0 && !engine_is_vpkg_types_stub_path(resolved) {
     let mut cur = dep_env
@@ -707,7 +712,21 @@ fn engine_foreign_trait_impl_collisions(dep_env: TypeEnv, mappings: Array[(Strin
         EnvMutCell(_, _, rest) => {
           cur = rest
         },
-        EnvTraitDef(_, _, _, _, rest, _, _) => {
+        // An imported trait's method signatures name the dependency's types
+        // as well. An impl here is checked against them, so a local type of
+        // the same spelling would let `impl Tr for P { make(x: Hidden) .. }`
+        // take the LOCAL `Hidden` where the dependency's callers pass theirs
+        // (#3551 review; measured: a field of one read through the other).
+        EnvTraitDef(name, _, _, methods, rest, params, method_gens) => {
+          match engine_trait_projection_mapping(mappings, name) {
+            // Every such name is the dependency's (it never sees this
+            // module), whichever module declared it; the formals are not
+            // among them.
+            Some(_) => for n in engine_trait_method_reference_names(methods, params, method_gens) {
+              engine_report_foreign_type_name(n, name, raw_path, local_types, unresolved, reported)
+            },
+            None => ()
+          }
           cur = rest
         },
         EnvTypeDefs(_, _, rest) => {
@@ -1782,6 +1801,15 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
     Array::push(unresolved, Array::get(kind_errors, kei))
     kei = kei + 1
   }
+  // A capitalized function aliased to a builtin namespace (`MakeTag as
+  // Array`): the parser cannot tell it from a type, this module's
+  // declarations can.
+  let alias_errors = import_item_namespace_alias_errors(kind_items, dep_env, raw_path == "@vibe/builtin", raw_path)
+  let mut aei = 0
+  while aei < Array::length(alias_errors) {
+    Array::push(unresolved, Array::get(alias_errors, aei))
+    aei = aei + 1
+  }
   // Explicit trait aliases must be known before values are bound: a selected
   // value can mention the trait before its `trait X as Local` row appears.
   let trait_mappings = engine_dependency_trait_projection_mappings(dep_env, dep_bindings, dep_traits, dep_upper_slots, names, unresolved)
@@ -1841,9 +1869,42 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
           CtUnknown
         }
       }
+      // An ALIASED builtin operation (`Double::floor as floor`) has no builtin
+      // of the alias's spelling to fall back to, so the alias is bound to the
+      // builtin's own signature rather than to the publication's marker, which
+      // left every call untyped (`let s: String = floor(2.5)` checked clean).
+      let aliased_builtin = if alias == None || surface_only_item {
+        None
+      } else {
+        aliased_builtin_import_type(name)
+      }
       let with_name = match imported_ty {
+        // #3542: a builtin operation the dependency publishes without a body
+        // (`export { Double::floor }`) travels as a `CtUnknown` marker
+        // (`engine_prepend_explicit_builtin_value_markers`). Bound under its
+        // own spelling, that marker SHADOWED the builtin's signature: the call
+        // typed as unknown, so `let s: String = Double::floor(2.5)` checked
+        // clean and its Double result interpolated as a box address. Importing
+        // the builtin under its own name means the builtin, so leave its
+        // lookup to the builtin table, exactly as when it is not imported.
+        Some(CtUnknown) => if alias == None && import_keeps_builtin_signature(name) {
+          nacc
+        } else match aliased_builtin {
+          Some(sig) => env_bind_with_origin(nacc, bound_name, sig, binding_origin),
+          None => env_bind_with_origin(nacc, bound_name, ty, binding_origin)
+        },
         Some(_) => env_bind_with_origin(nacc, bound_name, ty, binding_origin),
-        None => if contains_str(dep_selectable_type_defs, name) || engine_trait_in_list(dep_traits, name) {
+        // The same when this lane holds no interface for the dependency (a
+        // program whose only import is `@vibe/builtin`): the `CtUnknown`
+        // below would shadow the builtin just the same.
+        None => if alias == None && import_keeps_builtin_signature(name) {
+          nacc
+        } else if aliased_builtin is Some {
+          match aliased_builtin {
+            Some(sig) => env_bind_with_origin(nacc, bound_name, sig, binding_origin),
+            None => nacc
+          }
+        } else if contains_str(dep_selectable_type_defs, name) || engine_trait_in_list(dep_traits, name) {
           // Declaration aliases travel in the separate publication projection
           // below. Retain the declaration's origin on its existing unknown
           // value-space marker so semantic checks can distinguish a projected

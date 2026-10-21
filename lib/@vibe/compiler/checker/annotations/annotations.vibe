@@ -799,7 +799,406 @@ fn structural_head_arity(name: String) -> Int {
 /// `structural_head_arity` recognizes has arity 1. A head added there with
 /// another arity must derive the hint from `want` instead.
 fn structural_arity_error(name: String, given: Int, want: Int, where_label: String) -> String {
-  String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("`", name), "` takes "), Int::to_string(want)), " type argument, but "), Int::to_string(given)), " were given in "), String::concat(where_label, String::concat(String::concat(" -- write `", name), "[T]` with a single element type")))
+  "write `\{name}[T]` with a single element type: `\{name}` takes \{Int::to_string(want)} type argument, but \{Int::to_string(given)} were given in \{where_label}"
+}
+
+/// #3536: how many type arguments a head written in an annotation takes when
+/// it is a program declaration (struct, enum, alias), `Map`, or one of the
+/// structural builtins, or -1 for any other head. A caller that counts the
+/// arguments still exempts a compiler-owned head with region slots, which
+/// may leave them out (`TaskHandle[Int]`).
+fn declared_generic_head_arity(name: String, defs: Array[TypeDef]) -> Int {
+  match find_typedef(defs, name) {
+    Some(td) => match td {
+      TDEnum(_, params, _) => Array::length(params),
+      TDStruct(_, _, _, params) => Array::length(params),
+      TDAlias(_, params, _) => Array::length(params),
+      _ => 0 - 1
+    },
+    None => if name == "Map" {
+      2
+    } else {
+      structural_head_arity(name)
+    }
+  }
+}
+
+/// Whether argument `i` of the head `name` is a type-constructor slot, which
+/// takes a bare constructor (`F[_]` of `enum K[T, F[_]]`).
+fn type_argument_takes_constructor(name: String, i: Int, defs: Array[TypeDef], shadow: Array[String]) -> Bool {
+  if string_array_has(shadow, name) || shadow_type_constructor_arity(shadow, name) >= 0 {
+    false
+  } else {
+    match find_typedef(defs, name) {
+      Some(td) => {
+        let formals = type_def_formals(td)
+        i < Array::length(formals) && type_param_arity(Array::get(formals, i)) > 0
+      },
+      None => false
+    }
+  }
+}
+
+fn plural_type_arguments(n: Int) -> String {
+  if n == 1 {
+    "1 type argument"
+  } else {
+    "\{Int::to_string(n)} type arguments"
+  }
+}
+
+fn type_argument_placeholders(n: Int) -> String {
+  let names = ["T", "U", "V", "W"]
+  let parts: Array[String] = []
+  let mut i = 0
+  while i < n {
+    Array::push(parts, if i < Array::length(names) {
+      Array::get(names, i)
+    } else {
+      "T\{Int::to_string(i)}"
+    })
+    i = i + 1
+  }
+  String::join(parts, ", ")
+}
+
+fn bare_generic_head_error(name: String, want: Int, where_label: String) -> String {
+  "write `\{name}[\{type_argument_placeholders(want)}]` with the type arguments it holds: `\{name}` takes \{plural_type_arguments(want)}, but none were given in \{where_label}"
+}
+
+/// #3536: report a generic head written without its arguments in a function
+/// signature (`fn mk() -> Array`, `fn get(b: Box) -> Int`) or in a
+/// declaration's type (a struct field, an enum or error payload, an effect
+/// operation, an extern, a type alias body). There it resolved to a wildcard
+/// that every use unified with anything, so `["s"]` came back as an
+/// `Array[Int]` and `b.value` read a `String` as an `Int`. A `let`
+/// annotation is not judged: there a bare head is a partial annotation the
+/// value fills in (#3493).
+///
+/// `in_scope` answers whether a name is a type formal or an impl's erased
+/// formal visible at the signature: a head that is one is not a generic
+/// declaration, and an impl's method may name its own target bare when every
+/// formal of the target is erased there (`impl AsyncIterator for AsyncIter`).
+/// Only a type-constructor argument slot (`K[Array[Int], Option]`) takes a
+/// bare constructor.
+export fn report_bare_generic_heads(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], in_scope: (String) -> Bool, where_label: String, errors: Array[String]) -> Unit {
+  bare_generic_heads_walk(te, defs, shadow, in_scope, where_label, errors, false)
+}
+
+fn bare_generic_heads_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], in_scope: (String) -> Bool, where_label: String, errors: Array[String], constructor_slot: Bool) -> Unit {
+  match te {
+    TyName(name) => {
+      let skipped = constructor_slot || string_array_has(shadow, name) || shadow_type_constructor_arity(shadow, name) >= 0 || in_scope(name)
+      let owned = bare_owned_head_want(name, defs)
+      let want = if skipped {
+        0
+      } else if owned >= 0 {
+        owned
+      } else match resolve_builtin(name) {
+        Some(_) => 0,
+        None => declared_generic_head_arity(name, defs)
+      }
+      if want > 0 && !bare_head_erased_by_impl(name, defs, in_scope) {
+        Array::push(errors, bare_generic_head_error(name, want, where_label))
+      } else {
+        ()
+      }
+    },
+    TyUnit => (),
+    TyApp(name, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        bare_generic_heads_walk(Array::get(args, i), defs, shadow, in_scope, where_label, errors, type_argument_takes_constructor(name, i, defs, shadow))
+        i = i + 1
+      }
+    },
+    TyTuple(items) => for item in items {
+      bare_generic_heads_walk(item, defs, shadow, in_scope, where_label, errors, false)
+    },
+    TyFn(params, ret, _) => {
+      for param in params {
+        bare_generic_heads_walk(param, defs, shadow, in_scope, where_label, errors, false)
+      }
+      bare_generic_heads_walk(ret, defs, shadow, in_scope, where_label, errors, false)
+    }
+  }
+}
+
+/// How many type arguments a bare compiler-owned head `name` is missing in a
+/// signature, or -1 when the head is not judged here (not compiler-owned, or
+/// `Map` / a structural head, which the caller judges itself). A program
+/// declaration of the name answers through its own formals
+/// (`declared_generic_head_arity`) unless `owned_head_slots_elidable` says it
+/// is the compiler's own declaration, whose region and row slots the call
+/// still supplies.
+fn bare_owned_head_want(name: String, defs: Array[TypeDef]) -> Int {
+  if owned_head_slots_elidable(name, defs) {
+    bare_owned_head_payload_arity(name)
+  } else {
+    0 - 1
+  }
+}
+
+/// Whether `name` may leave its region and row slots to the call, in a bare
+/// spelling (`TaskGroup`) and in an applied one (`TaskHandle[Int]`). That
+/// holds for the compiler-owned head itself -- no program declaration;
+/// `@vibe/concurrent`'s contract declares it bodyless -- and for the one
+/// source declaration of it the compiler ships, `@vibe/concurrent/experimental`'s
+/// `struct TaskGroup[rg, e]` / `TaskHandle[rg, e, T]` / `Sender[rg, e, T]` /
+/// `Receiver[rg, e, T]`, recognised by that exact region-first shape
+/// (`owned_head_shipped_shape`). The shape stands for provenance only because
+/// no other module may declare it: `owned_head_shape_decl_error` refuses it
+/// everywhere but the shipped file, so a program's own `struct TaskGroup[rg,
+/// e] { first: rg }` is refused where it is declared instead of being read
+/// here as the compiler's, which left `rg` unbound and `first` readable at any
+/// type.
+///
+/// The NAME alone grants nothing. A type alias is expanded in place, so a
+/// left-out argument stays a rigid formal that unifies with anything:
+/// `type Future[T, U] = (T, U)` written `Future[Int]` accepted `(1, 2)` and
+/// handed its `2` on as a `String`. A program struct of another shape
+/// (`struct MutList[T, U]` written `MutList[Int]`) lost a field type the same
+/// way. Both are held to their own formals.
+fn owned_head_slots_elidable(name: String, defs: Array[TypeDef]) -> Bool {
+  if name == "Map" || structural_head_arity(name) >= 0 {
+    false
+  } else match compiler_owned_type_arity(name) {
+    None => false,
+    Some(_) => match find_typedef(defs, name) {
+      None => true,
+      Some(td) => match td {
+        TDStruct(_, _, _, formals) => owned_head_shipped_shape(name, formals),
+        _ => false
+      }
+    }
+  }
+}
+
+/// Whether `name[formals]` is spelled like the shipped declaration of a
+/// region-first compiler-owned head: that name, the compiler's arity, and the
+/// plain formals `rg` and `e` first.
+fn owned_head_shipped_shape(name: String, formals: Array[String]) -> Bool {
+  is_region_first_owned_head(name) && match compiler_owned_type_arity(name) {
+    Some(n) => Array::length(formals) == n && formal_is_plain(formals, 0, "rg") && formal_is_plain(formals, 1, "e"),
+    None => false
+  }
+}
+
+/// #3551 review: the refusal for a struct spelled like the shipped declaration
+/// of a region-first head (`owned_head_shipped_shape`) declared outside the
+/// module that ships it, or `None` when `name[formals]` is not that spelling.
+/// `owned_head_slots_elidable` reads that spelling as the compiler's own
+/// declaration and lets a signature leave its region and row to the call,
+/// which is sound only for the compiler's: a program's `struct TaskGroup[rg,
+/// e] { first: rg; second: e }` written bare left both formals unbound, so
+/// `fn f(g: TaskGroup) -> String { g.first }` checked clean and read an `Int`
+/// field as a `String`. A struct of that name with other formals (`struct
+/// Sender[T]`) is the program's own and is held to them.
+///
+/// Where the declaration lives is the caller's to say: the checker asks
+/// through `owned_head_shape_decl_error`, and a lane that holds a unit's
+/// statements before they are checked asks here directly -- for a raw source
+/// string, which is never the shipped file, and for each file of a merged
+/// closure, before the merge erases which file declared what.
+export fn owned_head_shape_refusal(name: String, formals: Array[String]) -> Option[String] {
+  if owned_head_shipped_shape(name, formals) {
+    let written = array_empty()
+    for f in formals {
+      Array::push(written, type_param_name(f))
+    }
+    let shape = String::join(written, ", ")
+    Some("rename this struct or its type parameters `rg` and `e`: `\{name}[\{shape}]` is spelled like `@vibe/concurrent`'s own `\{name}`, whose region and row a call supplies, so a `\{name}` written without them would leave this struct's `rg` and `e` unbound and its fields readable at any type")
+  } else {
+    None
+  }
+}
+
+/// #3551 review: `owned_head_shape_refusal` for a struct the checker is
+/// declaring, in any module but the shipped one.
+///
+/// `module_path` is the module being checked, or "" on a lane that names no
+/// module. Those lanes vet the declaration before the check instead: a raw
+/// source string is refused outright (`validate_user_source_stmts`), a merged
+/// closure file by file before it is flattened
+/// (`validate_source_file_owned_heads`), and every module a build compiles is
+/// checked by a lane that names it.
+///
+/// `ships_owned_heads` is the naming lane's answer to whether that module is
+/// the shipped file: the one the package resolver reads for
+/// `@vibe/concurrent/experimental` (`is_owned_head_source_location`). The lane
+/// answers because it knows the library roots it resolves packages against
+/// and which of the contract candidates exist, so which one the resolver
+/// selects. A path that merely ends like the shipped file's -- a program's own
+/// `./@vibe/concurrent/experimental/concurrent.vibe`, or a file at a candidate
+/// location with no selected contract beside it -- is not it.
+export fn owned_head_shape_decl_error(name: String, formals: Array[String], module_path: String, ships_owned_heads: Bool, errors: Array[String]) -> Unit {
+  if String::length(module_path) > 0 && !ships_owned_heads {
+    match owned_head_shape_refusal(name, formals) {
+      Some(message) => Array::push(errors, message),
+      None => ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// The compiler-owned heads that carry their region and row slots FIRST
+/// (`TaskHandle[rg, e, T]`) -- the only ones a shipped source package
+/// declares as a struct.
+fn is_region_first_owned_head(name: String) -> Bool {
+  name == "TaskGroup" || name == "TaskHandle" || name == "Sender" || name == "Receiver"
+}
+
+/// Whether formal `i` of `formals` is the plain (arity-0) formal `want`.
+fn formal_is_plain(formals: Array[String], i: Int, want: String) -> Bool {
+  i < Array::length(formals) && type_param_name(Array::get(formals, i)) == want && type_param_arity(Array::get(formals, i)) == 0
+}
+
+/// How many PAYLOAD type arguments a bare compiler-owned head leaves out, or
+/// -1 when `name` is not compiler-owned. Only region and row slots may be
+/// elided -- the call supplies them -- so `TaskGroup[rg, e]` and
+/// `MutBytes[r]` are complete when written bare. Every other compiler-owned
+/// head also holds an element type, and its bare spelling resolved to a
+/// wildcard each caller unified with anything: `fn mk() -> ArrayBuilder`
+/// handed a builder of `String` to a caller that froze it as `Array[Int]`,
+/// and `fn add(l: MutList)` pushed a `String` into a `MutList[Int]`.
+fn bare_owned_head_payload_arity(name: String) -> Int {
+  if name == "TaskGroup" || name == "MutBytes" {
+    0
+  } else if name == "TaskHandle" || name == "Sender" || name == "Receiver" || name == "MutList" {
+    1
+  } else if name == "MutMap" {
+    2
+  } else match compiler_owned_type_arity(name) {
+    Some(n) => n,
+    None => 0 - 1
+  }
+}
+
+/// Whether a bare `name` in an impl method's signature is the impl's OWN
+/// target with every formal erased there (`impl AsyncIterator for AsyncIter`
+/// writing `AsyncIter`), which `expand_erased_owner_heads` reads as the
+/// target applied to those formals. Only the owner qualifies (#3551 review):
+/// a formal's spelling is no provenance, so another declaration whose formals
+/// merely share the trait's names (`struct Victim[A]` under `trait Gen[A]`)
+/// written bare got no arity diagnostic, unified with the trait's
+/// `Victim[Int]` by name, and left `x.v` free to read an `Int` as a `String`.
+/// `in_scope("#erased.#owner.<name>")` answers whether `name` is the owner
+/// (`trait_erased_type_param_env`).
+fn bare_head_erased_by_impl(name: String, defs: Array[TypeDef], in_scope: (String) -> Bool) -> Bool {
+  match find_typedef(defs, name) {
+    Some(td) => {
+      let formals = type_def_formals(td)
+      let mut all = Array::length(formals) > 0 && in_scope(String::concat("#erased.#owner.", name))
+      for formal in formals {
+        if type_param_arity(formal) > 0 || !in_scope(String::concat("#erased.", type_param_name(formal))) {
+          all = false
+        } else {
+          ()
+        }
+      }
+      all
+    },
+    None => false
+  }
+}
+
+/// The impl owner written bare in an impl method's signature, applied to its
+/// formals: `AsyncIter` reads as `AsyncIter[T]`, the trait's erased `T`
+/// (#3551 review). Left bare it was a wildcard that unified with any
+/// application, so `impl Gen for Q { f(self, x: Q) -> String { x.v } }`
+/// under `f(Self, Q[Int]) -> String` read the `Int` field as a `String`;
+/// applied, it is held to the trait's `Q[Int]` like the written `Q[A]`. Any
+/// other head is left alone, for `report_bare_generic_heads` to judge.
+export fn expand_erased_owner_heads(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], in_scope: (String) -> Bool) -> TypeExpr {
+  expand_erased_owner_walk(te, defs, shadow, in_scope, false)
+}
+
+fn expand_erased_owner_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], in_scope: (String) -> Bool, constructor_slot: Bool) -> TypeExpr {
+  match te {
+    TyName(name) => if constructor_slot || string_array_has(shadow, name) || shadow_type_constructor_arity(shadow, name) >= 0 || in_scope(name) || !bare_head_erased_by_impl(name, defs, in_scope) {
+      te
+    } else match find_typedef(defs, name) {
+      Some(td) => TyApp(name, for formal in type_def_formals(td) {
+        TyName(type_param_name(formal))
+      }),
+      None => te
+    },
+    TyUnit => te,
+    TyApp(name, args) => {
+      let out: Array[TypeExpr] = []
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, expand_erased_owner_walk(Array::get(args, i), defs, shadow, in_scope, type_argument_takes_constructor(name, i, defs, shadow)))
+        i = i + 1
+      }
+      TyApp(name, out)
+    },
+    TyTuple(items) => TyTuple(for item in items {
+      expand_erased_owner_walk(item, defs, shadow, in_scope, false)
+    }),
+    TyFn(params, ret, eff) => TyFn(for param in params {
+      expand_erased_owner_walk(param, defs, shadow, in_scope, false)
+    }, expand_erased_owner_walk(ret, defs, shadow, in_scope, false), eff)
+  }
+}
+
+fn declared_arity_error(name: String, given: Int, want: Int, where_label: String) -> String {
+  let given_text = if given == 1 {
+    "1 was"
+  } else {
+    "\{Int::to_string(given)} were"
+  }
+  "write `\{name}[\{type_argument_placeholders(want)}]`: `\{name}` takes \{plural_type_arguments(want)}, but \{given_text} given in \{where_label}"
+}
+
+/// A compiler-owned head applied to a count it does not take (#3551 review).
+/// `payload` is how many arguments it takes with its region (and row) slots
+/// left to the call, `full` how many it takes with them written out; a head
+/// without such slots has `payload == full`.
+fn owned_head_arity_error(name: String, given: Int, payload: Int, full: Int, where_label: String) -> String {
+  let given_text = if given == 1 {
+    "1 was"
+  } else {
+    "\{Int::to_string(given)} were"
+  }
+  let short = if payload == 0 {
+    name
+  } else {
+    "\{name}[\{type_argument_placeholders(payload)}]"
+  }
+  let takes = if payload == 0 {
+    "no type arguments"
+  } else {
+    plural_type_arguments(payload)
+  }
+  if full == payload {
+    if payload == 0 {
+      "write `\{name}` without type arguments: `\{name}` takes no type arguments, but \{given_text} given in \{where_label}"
+    } else {
+      declared_arity_error(name, given, payload, where_label)
+    }
+  } else {
+    let region_first = is_region_first_owned_head(name)
+    let slots = if region_first {
+      "region and row"
+    } else {
+      "region"
+    }
+    let payload_text = type_argument_placeholders(payload)
+    let full_args = if region_first {
+      if payload == 0 {
+        "rg, e"
+      } else {
+        "rg, e, \{payload_text}"
+      }
+    } else if payload == 0 {
+      "r"
+    } else {
+      "\{payload_text}, r"
+    }
+    "write `\{short}`, or `\{name}[\{full_args}]` with its \{slots} written out: `\{name}` takes \{takes} besides its \{slots}, but \{given_text} given in \{where_label}"
+  }
 }
 
 fn shadow_type_constructor_arity(shadow: Array[String], name: String) -> Int {
@@ -963,6 +1362,42 @@ fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
       let want = structural_head_arity(name)
       if want >= 0 && Array::length(args) != want && !string_array_has(shadow, name) && find_typedef(defs, name) is None {
         Array::push(errors, structural_arity_error(name, Array::length(args), want, where_label))
+      } else {
+        ()
+      }
+      // #3536: a declared generic applied to the wrong number of arguments
+      // (`type Bx[T] = Array[T]` written `Bx[Int, String]`) dropped or
+      // invented the difference silently. A compiler-owned head with region
+      // slots may leave them out (`TaskHandle[Int]`), so it is not counted --
+      // the compiler's own declaration only, not a program alias or struct
+      // that reuses the name (`owned_head_slots_elidable`).
+      let declared = declared_generic_head_arity(name, defs)
+      let region_elidable = owned_head_slots_elidable(name, defs)
+      let head_is_formal = string_array_has(shadow, name) || shadow_type_constructor_arity(shadow, name) >= 0
+      if declared >= 0 && !region_elidable && structural_head_arity(name) < 0 && Array::length(args) != declared && !head_is_formal {
+        Array::push(errors, declared_arity_error(name, Array::length(args), declared, where_label))
+      } else {
+        ()
+      }
+      // #3551 review: the compiler's own heads are counted too. With no
+      // `TypeDef` behind them they were never counted at all, so
+      // `ArrayBuilder[String, Int]` stayed an unresolved application that
+      // accepted an `ArrayBuilder[Int]` and froze it into an `Array[String]`.
+      // The complete spelling is always legal, and a head with region (and
+      // row) slots may also leave exactly those to the call
+      // (`TaskHandle[Int]`, `MutList[Int]`) -- no other count is.
+      if region_elidable && !head_is_formal {
+        let given = Array::length(args)
+        let full = match compiler_owned_type_arity(name) {
+          Some(n) => n,
+          None => 0 - 1
+        }
+        let payload = bare_owned_head_payload_arity(name)
+        if full >= 0 && given != full && given != payload {
+          Array::push(errors, owned_head_arity_error(name, given, payload, full, where_label))
+        } else {
+          ()
+        }
       } else {
         ()
       }

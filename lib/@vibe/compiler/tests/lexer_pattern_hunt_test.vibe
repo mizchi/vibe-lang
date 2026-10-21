@@ -1,0 +1,29 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+//# Tests
+
+/// A pattern binds each name once. `(x, x)` used to bind the later position,
+/// so `match (1, 2) { (x, x) => x }` answered 2.
+test "a name bound twice in one pattern is refused" {
+  assert(check_source_err_contains("fn f(t: (Int, Int)) -> Int { match t { (x, x) => x } }\nfn main() -> Int { f((1, 2)) }", "rename one of the two `x`"))
+  assert(check_source_err_contains("fn f(o: Option[(Int, Int)]) -> Int { match o { Some((a, a)) => a, None => 0 } }\nfn main() -> Int { 0 }", "rename one of the two `a`"))
+  assert(check_source_ok("fn f(t: (Int, Int)) -> Int { match t { (a, b) if a == b => a, (a, _) => a } }\nfn main() -> Int { f((1, 2)) }"))
+}
+
+/// The supported escapes are named in the refusal, and `\'` and `\u{..}`
+/// are among them.
+test "string escapes: the refusal names the escape, and \\' and \\u{..} are accepted" {
+  assert(check_source_err_contains("fn f() -> String { \"a\\qb\" }\nfn main() -> Int { 0 }", "invalid escape sequence `\\q`"))
+  assert(check_source_ok("fn f() -> String { \"it\\'s \\u{e9}\\u{1F600}\\u{41}\" }\nfn main() -> Int { 0 }"))
+  assert(check_source_err_contains("fn f() -> String { \"\\u{110000}\" }\nfn main() -> Int { 0 }", "Unicode scalar value"))
+  assert(check_source_err_contains("fn f() -> String { \"\\u41\" }\nfn main() -> Int { 0 }", "with braces"))
+}
+
+/// `1_000_000` lexed as `1` followed by the name `_000_000`.
+test "a digit separator is refused with the edit" {
+  assert(check_source_err_contains("fn f() -> Int { 1_000_000 }\nfn main() -> Int { f() }", "no digit separators"))
+}

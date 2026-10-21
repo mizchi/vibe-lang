@@ -1,0 +1,50 @@
+//# `Map::get` on a lane whose string pool lacks the miss message (#3547)
+//
+// The miss path prints `Map::get: key not found ...` before its trap when the
+// lane pooled that message and has `print_str`; otherwise it keeps the bare
+// trap. The module lane (`compile_module`) builds an EMPTY string table, so the
+// lookup of the message has to answer "absent" there rather than throw
+// `string not in table` and fail the build (#3551 review).
+
+import ./codegen_test_support.vibe {
+  compile_source
+}
+
+fn compile_or_message(source: String) -> String {
+  handle {
+    let bytes = compile_source(source)
+    // The linear scan's miss path with no message: `br 0`, `end` (loop),
+    // `end` (block), `unreachable`, `end` (result block). A printed message
+    // would put `i64.const` + `call` between the two ends and the trap.
+    if bytes_contain(bytes, [12, 0, 11, 11, 0, 11]) {
+      "bare trap"
+    } else {
+      "compiled, no bare trap"
+    }
+  } with { Exception::Throw(m) => String::concat("throw: ", m) }
+}
+
+fn bytes_contain(bytes: Bytes, seq: Array[Int]) -> Bool {
+  let n = Bytes::length(bytes)
+  let k = Array::length(seq)
+  let mut i = 0
+  let mut found = false
+  while !found && i + k <= n {
+    let mut j = 0
+    while j < k && Bytes::get(bytes, i + j) == Array::get(seq, j) {
+      j = j + 1
+    }
+    if j == k {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "the module lane compiles Map::get with no pooled miss message and keeps the bare trap" {
+  // The lane's function table holds only the program's own functions, so the
+  // program supplies the `eq` the linear scan calls.
+  let source = "fn eq(a: Int, b: Int) -> Bool {\n  a == b\n}\nfn get_one(m: Map[Int, Int]) -> Int {\n  Map::get(m, 1)\n}"
+  inspect(compile_or_message(source), content = "bare trap")
+}

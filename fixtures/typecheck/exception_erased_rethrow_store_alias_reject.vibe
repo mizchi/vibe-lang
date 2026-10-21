@@ -1,0 +1,24 @@
+// #3551 review: `Array::push(saved, m)` stores the erased arm's binder into
+// an array the enclosing code also holds as `view`, so
+// `throw(Array::get(view, 0))` rethrows the value `Exception::Throw(m)`
+// caught -- `f`'s `Int` -- and is a throw of no known kind, which the
+// declared `Exception[String]` does not cover. The walk followed the store
+// by the spelling `saved` only, charged the throw as a `String` one, and
+// `main` printed `len=14`. The edit is the kinded arm
+// (`Exception[Int]::Throw(m)`) or the erased `with Exception` row.
+fn f() -> Int with Exception[Int] {
+  throw(7)
+}
+
+fn g(saved: Array[String], view: Array[String]) -> Int with Exception[String] {
+  handle { f() } with { Exception::Throw(m) => {
+    Array::push(saved, m)
+    throw(Array::get(view, 0))
+  } }
+}
+
+fn main allows Console {
+  let saved: Array[String] = []
+  let r = handle { g(saved, saved) } with { Exception[String]::Throw(s) => String::length(s) }
+  println("len=\{r}")
+}

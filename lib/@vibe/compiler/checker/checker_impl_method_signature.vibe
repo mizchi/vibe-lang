@@ -1,0 +1,1664 @@
+// lib/@vibe/compiler/checker/checker_impl_method_signature.vibe -- an impl
+// method's signature against the trait that declares it (#3538).
+
+import @vibe/core {
+  struct MutMap
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  compiler_owned_type_arity,
+  find_typedef,
+  is_builtin_type_name,
+  subst_apply,
+  trait_definition,
+  trait_method_sig_binders_deep,
+  trait_supers,
+  type_to_string,
+  unify
+}
+
+import @vibe/compiler/checker/type_relations {
+  row_labels
+}
+
+import @vibe/ast {
+  impl_method_binding_name, impl_method_owner, impl_target_head, trait_ref_args, trait_ref_name, type_param_arity, type_param_name
+}
+
+import @vibe/parser {
+  print_type_expr
+}
+
+import ./checker_resolve.vibe {
+  resolve_type_expr_shadowed
+}
+
+import ./checker_throw_kind_of_type.vibe {
+  trait_reference_display
+}
+
+//# Provenance
+
+/// Where an impl method came from: the impl's type parameters, its trait key,
+/// and its target, as the `SImpl` the parser emitted ahead of it; the trait
+/// method the binding implements; and whether it is a FALLBACK -- a
+/// `<Type>::<method>` function declared outside the impl block, which the
+/// impl's witness dictionary picks up because the block has no body for that
+/// method (`build_concrete_dict_for_target`).
+export struct ImplMethodOrigin {
+  tparams: Array[String];
+  // The impl's bounds on its formals (`impl [T: Show] ..`), which every
+  // instantiation's witness is built with.
+  bounds: Array[(String, Array[String])];
+  trait_key: String;
+  target: TypeExpr;
+  method: String;
+  fallback: Bool
+}
+
+/// Every impl method of one statement list, by binding name. A plain `P::m`
+/// can serve several impls of `P` at once (its own block's, and every impl
+/// whose block has no body for `m`), so a name maps to a list.
+export struct ImplMethodOrigins {
+  by_name: MutMap[String, Array[ImplMethodOrigin]]
+}
+
+fn push_origin(out: MutMap[String, Array[ImplMethodOrigin]], name: String, origin: ImplMethodOrigin) -> Unit {
+  match MutMap::get(out, name) {
+    Some(list) => Array::push(list, origin),
+    None => MutMap::set(out, name, [origin])
+  }
+}
+
+/// One `SImpl` and the method bindings its block wrote.
+struct ImplBlock {
+  tparams: Array[String];
+  bounds: Array[(String, Array[String])];
+  trait_key: String;
+  target: TypeExpr;
+  written: Array[String]
+}
+
+/// Index every impl method in `stmts` (from `from`) by its binding name.
+///
+/// `parse_impl_methods` lowers `impl Tr for T { m(..) { .. } }` to the
+/// `SImpl` marker followed by one `let <owner>::m = (..) -> ..` per method.
+/// The checker schedules statements in its own order, so the pairing is read
+/// here, from the list as parsed: a binding is a block's method only when it
+/// directly follows its `SImpl` (or a sibling method, or one of the trait's
+/// operation bindings) and carries exactly the name `impl_method_binding_name`
+/// gives it. A qualified free function `fn P::m(..)` never qualifies as a
+/// block's method, whatever its name.
+///
+/// It may still BE the method, though: an impl whose block has no body for
+/// `m` (a bodyless `impl Tr for P`, or a block that omits `m`) dispatches to
+/// `P::m` wherever it is declared. Every such `P::m` -- before the impl, after
+/// it, or behind any other statement -- is recorded as a fallback origin of
+/// each impl of `P` that did not write `m` itself, so it is held to that
+/// impl's trait like a method in the block.
+export fn collect_impl_method_origins(stmts: Array[Stmt], from: Int, env: TypeEnv) -> ImplMethodOrigins {
+  let local_traits: Array[String] = []
+  for st in stmts {
+    match st {
+      STrait(_, tname, _, _, _, _) => Array::push(local_traits, tname),
+      _ => ()
+    }
+  }
+  let out: MutMap[String, Array[ImplMethodOrigin]] = MutMap::new_string()
+  let blocks: Array[ImplBlock] = []
+  let by_head: MutMap[String, Array[Int]] = MutMap::new_string()
+  let mut k = from
+  while k < Array::length(stmts) {
+    match Array::get(stmts, k) {
+      SImpl(tparams, tbounds, trait_key, target) => {
+        let prefix = String::concat(impl_method_owner(tparams, trait_key, target), "::")
+        // Trait operation bindings (`let Tr::m = ..`, synthesized ahead of
+        // checking) may sit between the marker and its methods -- not only
+        // this trait's: a supertrait's (`let Base::get` after `impl Child`)
+        // and those of a trait a method-level bound names land there too.
+        // Measured: before any trait's bindings were skipped, every method of
+        // `impl Child for P` (with `trait Child: Base`) and of an impl with a
+        // method-level generic escaped this check.
+        let written: Array[String] = []
+        let mut j = k + 1
+        let mut more = true
+        while more && j < Array::length(stmts) {
+          match Array::get(stmts, j) {
+            SLet(_, _, qname, _, _) => if String::starts_with(qname, prefix) && String::length(qname) > String::length(prefix) {
+              push_origin(out, qname, ImplMethodOrigin::{
+                tparams: tparams,
+                bounds: tbounds,
+                trait_key: trait_key,
+                target: target,
+                method: String::substring(qname, String::length(prefix), String::length(qname)),
+                fallback: false
+              })
+              Array::push(written, qname)
+              j = j + 1
+            } else if names_trait_operation(qname, local_traits, env) {
+              j = j + 1
+            } else {
+              more = false
+            },
+            _ => {
+              more = false
+            }
+          }
+        }
+        let at = Array::length(blocks)
+        Array::push(blocks, ImplBlock::{
+          tparams: tparams,
+          bounds: tbounds,
+          trait_key: trait_key,
+          target: target,
+          written: written
+        })
+        let head = impl_target_head(target)
+        match MutMap::get(by_head, head) {
+          Some(list) => Array::push(list, at),
+          None => MutMap::set(by_head, head, [at])
+        }
+        k = j
+      },
+      _ => {
+        k = k + 1
+      }
+    }
+  }
+  if Array::length(blocks) > 0 {
+    collect_fallback_origins(stmts, from, blocks, by_head, out)
+  } else {
+    ()
+  }
+  ImplMethodOrigins::{ by_name: out }
+}
+
+/// Is `qname` a trait operation binding (`Tr::m` for a trait declared in this
+/// list or visible in `env`)?
+fn names_trait_operation(qname: String, local_traits: Array[String], env: TypeEnv) -> Bool {
+  let sep = String::index_of(qname, "::")
+  if sep > 0 {
+    let head = String::substring(qname, 0, sep)
+    string_list_has(local_traits, head) || (trait_definition(env, head) is Some)
+  } else {
+    false
+  }
+}
+
+/// Record every `P::m` in `stmts` as a fallback origin of each impl of `P`
+/// whose block did not write `m` (see `collect_impl_method_origins`).
+fn collect_fallback_origins(stmts: Array[Stmt], from: Int, blocks: Array[ImplBlock], by_head: MutMap[String, Array[Int]], out: MutMap[String, Array[ImplMethodOrigin]]) -> Unit {
+  let mut i = from
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, qname, _, _) => {
+        let sep = String::index_of(qname, "::")
+        if sep > 0 && String::index_of(qname, "$impl$") < 0 {
+          let method = String::substring(qname, sep + 2, String::length(qname))
+          match MutMap::get(by_head, String::substring(qname, 0, sep)) {
+            Some(list) => for at in list {
+              let block = Array::get(blocks, at)
+              let own = impl_method_binding_name(block.tparams, block.trait_key, block.target, method)
+              if !string_list_has(block.written, own) {
+                push_origin(out, qname, ImplMethodOrigin::{
+                  tparams: block.tparams,
+                  bounds: block.bounds,
+                  trait_key: block.trait_key,
+                  target: block.target,
+                  method: method,
+                  fallback: true
+                })
+              } else {
+                ()
+              }
+            },
+            None => ()
+          }
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The impls a method binding belongs to (empty for any other binding).
+export fn impl_method_origins_of(origins: ImplMethodOrigins, binding_name: String) -> Array[ImplMethodOrigin] {
+  match MutMap::get(origins.by_name, binding_name) {
+    Some(list) => list,
+    None => []
+  }
+}
+
+//# Diagnostics
+
+/// The located-diagnostic marker for a span inside an impl block. The parser
+/// gives an impl method's lambda no source offset, so the locator finds the
+/// span from the impl header (trait and owner), the method name and `part`:
+/// `name` (the method name), `param` (the parameter `param`), `binder` (the
+/// method's own type parameter `param`), `ret` (the declared return type) or
+/// `row` (the `with` clause).
+fn impl_method_marker(trait_head: String, owner: String, method: String, part: String, param: String) -> String {
+  String::join([
+    " [@impl-method=",
+    trait_head,
+    "|",
+    owner,
+    "|",
+    method,
+    "|",
+    part,
+    "|",
+    param,
+    "]"
+  ], "")
+}
+
+/// The tail of a diagnostic about `origin`'s method. A method in the block
+/// gets the impl-block locator marker; a fallback function is not in the
+/// block, so it says why it is held to the trait and is located on its own
+/// declaration (`fn P::m`).
+fn origin_marker(origin: ImplMethodOrigin, trait_head: String, owner: String, trait_disp: String, method: String, part: String, param: String) -> String {
+  if origin.fallback {
+    String::join([
+      " (`impl ",
+      trait_disp,
+      " for ",
+      print_type_expr(origin.target),
+      "` has no body for `",
+      method,
+      "`, so the trait dispatches to this function)",
+      " [@fn=",
+      owner,
+      "::",
+      method,
+      "]"
+    ], "")
+  } else {
+    impl_method_marker(trait_head, owner, method, part, param)
+  }
+}
+
+/// Does `ty` mention one of `names` (an impl's formals, rigid here)?
+fn mentions_formal(ty: Type, names: Array[String]) -> Bool {
+  match ty {
+    CtNamed(name, args) => if Array::length(args) == 0 && string_list_has(names, name) {
+      true
+    } else {
+      let mut hit = false
+      for a in args {
+        if !hit && mentions_formal(a, names) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    CtArray(elem) => mentions_formal(elem, names),
+    CtOption(elem) => mentions_formal(elem, names),
+    CtTuple(items) => {
+      let mut hit = false
+      for item in items {
+        if !hit && mentions_formal(item, names) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    CtFn(params, ret, _) => {
+      let mut hit = mentions_formal(ret, names)
+      for p in params {
+        if !hit && mentions_formal(p, names) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+/// How an impl method's position fails to be generic over the trait method's
+/// own type parameter, which decides the edit the diagnostic leads with.
+enum GenericMiss {
+  // The method writes another type there (`x: Int`), or leaves its typing to
+  // fix one: change the annotation (declaring the binder first when the
+  // method has none of that name).
+  WrittenOther;
+  // The method writes one of its own binders there (`x: X`), and its body
+  // fixes that binder (`x + 1`): the edit is in the body.
+  BodyFixed;
+  // The method writes the IMPL's formal there (`x: T` in `impl [T] W for
+  // Box[T]`), which the receiver fixes: the method needs a binder of its own.
+  ImplFormal(String);
+  // The method writes one of its own binders there that another of the
+  // trait's generics already took (`two[Y](self, x: Y, z: Y)` under
+  // `two: [X, Z](Self, X, Z) -> X`): the position needs a binder of its own.
+  // The payload is the trait generic it is tied to.
+  Shared(String)
+}
+
+/// Classify a failed position by its written annotation and by `has`, what
+/// the method's typing fixed there.
+fn generic_miss_of(written: Option[TypeExpr], own_names: Array[String], impl_names: Array[String], has: Type, method_names: Array[String], method_rigid: Array[String]) -> GenericMiss {
+  match written {
+    Some(TyName(n)) => if string_list_has(own_names, n) {
+      if string_list_has(impl_names, n) {
+        ImplFormal(n)
+      } else {
+        match shared_method_generic(has, method_names, method_rigid) {
+          Some(other) => Shared(other),
+          None => BodyFixed
+        }
+      }
+    } else {
+      WrittenOther
+    },
+    _ => WrittenOther
+  }
+}
+
+/// The trait generic, in the trait's spelling, that `has` is the rigid
+/// stand-in of, if any.
+fn shared_method_generic(has: Type, method_names: Array[String], method_rigid: Array[String]) -> Option[String] {
+  match has {
+    CtNamed(n, args) => if Array::length(args) == 0 {
+      let mut found: Option[String] = None
+      let mut i = 0
+      while i < Array::length(method_rigid) {
+        if Array::get(method_rigid, i) == n {
+          found = Some(Array::get(method_names, i))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// A binder name for the suggested edit that none of `taken` spells.
+fn fresh_binder_name(taken: Array[String]) -> String {
+  let candidates = ["Y", "Z", "U", "V", "A", "B"]
+  let mut pick = ""
+  for c in candidates {
+    if String::length(pick) == 0 && !string_list_has(taken, c) {
+      pick = c
+    } else {
+      ()
+    }
+  }
+  if String::length(pick) > 0 {
+    pick
+  } else {
+    "Fresh"
+  }
+}
+
+/// The diagnostic for an impl method that is not generic over the trait
+/// method's OWN type parameters: `write(self, x: Int) -> Int` under
+/// `write: [X](Self, X) -> X`. A caller through the trait picks `X`, so the
+/// one method receives every type there. `param` names the offending
+/// parameter (empty for the return type), `has` is what the method's typing
+/// fixed there, `want` the trait's type, `miss` how the position missed, and
+/// `tail` the origin marker. `unbound` lists the generics the method declares
+/// no binder for, which a `WrittenOther` edit declares first; `taken` is
+/// every name a suggested fresh binder must avoid.
+fn method_generic_message(shown: String, trait_disp: String, method: String, method_names: Array[String], unbound: Array[String], taken: Array[String], sparams: Array[TypeExpr], sret: TypeExpr, param: String, miss: GenericMiss, has: Type, want: Type, tail: String) -> String {
+  let formals = String::join(method_names, ", ")
+  let has_text = type_to_string(has)
+  let position = if String::length(param) > 0 {
+    String::join(["parameter `", param, "` of ", shown], "")
+  } else {
+    String::concat("the return type of ", shown)
+  }
+  let edit = match miss {
+    WrittenOther => {
+      let declare_first = if Array::length(unbound) > 0 {
+        String::join([
+          "declare ",
+          shown,
+          " generic over `",
+          String::join(unbound, ", "),
+          "` and "
+        ], "")
+      } else {
+        ""
+      }
+      String::join([
+        declare_first,
+        "change ",
+        position,
+        " to `",
+        type_to_string(want),
+        "`"
+      ], "")
+    },
+    BodyFixed => if String::length(param) > 0 {
+      String::join([
+        "keep ",
+        position,
+        " generic over `",
+        formals,
+        "`, which its body uses as `",
+        has_text,
+        "`"
+      ], "")
+    } else {
+      String::join([
+        "keep ",
+        position,
+        " generic over `",
+        formals,
+        "`, which its body fixes to `",
+        has_text,
+        "`"
+      ], "")
+    },
+    Shared(other) => {
+      let fresh = fresh_binder_name(taken)
+      let at = if String::length(param) > 0 {
+        String::join(["take `", param, ": ", fresh, "`"], "")
+      } else {
+        String::join(["return `", fresh, "`"], "")
+      }
+      String::join([
+        "declare another type parameter on ",
+        shown,
+        " (`",
+        fresh,
+        "`) and ",
+        at,
+        " instead of the one it shares with `",
+        other,
+        "`"
+      ], "")
+    },
+    ImplFormal(formal) => {
+      let fresh = fresh_binder_name(taken)
+      let at = if String::length(param) > 0 {
+        String::join(["take `", param, ": ", fresh, "`"], "")
+      } else {
+        String::join(["return `", fresh, "`"], "")
+      }
+      String::join([
+        "declare ",
+        shown,
+        " generic over a type parameter of its own (`[",
+        fresh,
+        "]`) and ",
+        at,
+        " instead of the impl's `",
+        formal,
+        "`, which the receiver fixes"
+      ], "")
+    }
+  }
+  let only = match miss {
+    ImplFormal(formal) => String::join(["the impl's `", formal, "`"], ""),
+    Shared(other) => String::join(["the type chosen for `", other, "`"], ""),
+    _ => String::join(["`", has_text, "`"], "")
+  }
+  let verb = if String::length(param) > 0 {
+    "receives"
+  } else {
+    "must return"
+  }
+  String::join([
+    edit,
+    ": trait `",
+    trait_disp,
+    "` declares `",
+    signature_text(method, sparams, sret),
+    "` generic over `",
+    formals,
+    "`, and a caller through the trait chooses `",
+    formals,
+    "`, so the method ",
+    verb,
+    " every type there, not only ",
+    only,
+    tail
+  ], "")
+}
+
+/// Every binder name in scope at the impl method, which a suggested fresh
+/// binder must avoid.
+fn binder_names_taken(own_names: Array[String], impl_names: Array[String], method_names: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  for n in own_names {
+    Array::push(out, n)
+  }
+  for n in impl_names {
+    Array::push(out, n)
+  }
+  for n in method_names {
+    Array::push(out, n)
+  }
+  out
+}
+
+/// The method generics, in the trait's spelling, that the impl method binds
+/// under no name of its own: `X` for a generic impl's `write(self, x: Int)`
+/// (its binders are the impl's formals; the trait's binder is attached only
+/// to a plain impl's method). A renamed rigid spelling (`T'`) is never bound.
+fn unbound_method_names(method_rigid: Array[String], method_names: Array[String], own_names: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(method_names) {
+    let name = Array::get(method_names, i)
+    if Array::get(method_rigid, i) != name || !string_list_has(own_names, name) {
+      Array::push(out, name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Bind the impl method's own typing of one written annotation so that every
+/// impl formal it names (`x: T` in `impl [T] W for Box[T]`) is the RIGID
+/// formal. The method's other binders become `CtUnknown` and stay free. An
+/// annotation this cannot line up with the method's type is left alone.
+fn pin_written_impl_formals(written: Option[TypeExpr], actual: Type, own_names: Array[String], impl_names: Array[String], defs: Array[TypeDef], s: Subst) -> Subst {
+  match written {
+    Some(te) => {
+      let pinned = keep_impl_formals(resolve_type_expr_shadowed(te, defs, own_names), own_names, impl_names)
+      match unify(pinned, actual, s) {
+        Some(next) => next,
+        None => s
+      }
+    },
+    None => s
+  }
+}
+
+/// `ty` with each binder of `own_names` replaced: an impl formal stays as its
+/// rigid name, any other binder becomes `CtUnknown`.
+fn keep_impl_formals(ty: Type, own_names: Array[String], impl_names: Array[String]) -> Type {
+  match ty {
+    CtNamed(name, args) => if Array::length(args) == 0 && string_list_has(own_names, name) {
+      if string_list_has(impl_names, name) {
+        ty
+      } else {
+        CtUnknown
+      }
+    } else {
+      CtNamed(name, for a in args {
+        keep_impl_formals(a, own_names, impl_names)
+      })
+    },
+    CtArray(elem) => CtArray(keep_impl_formals(elem, own_names, impl_names)),
+    CtOption(elem) => CtOption(keep_impl_formals(elem, own_names, impl_names)),
+    CtTuple(items) => CtTuple(for item in items {
+      keep_impl_formals(item, own_names, impl_names)
+    }),
+    CtFn(params, ret, eff) => CtFn(for p in params {
+      keep_impl_formals(p, own_names, impl_names)
+    }, keep_impl_formals(ret, own_names, impl_names), eff),
+    CtApplied(_, _) => CtUnknown,
+    CtConstructor(_, _) => CtUnknown,
+    CtForAll(_, _, _) => CtUnknown,
+    _ => ty
+  }
+}
+
+/// The diagnostic for a FALLBACK `P::m` that does not hold at every
+/// instantiation of a generic impl: `fn Box::name(self: Box[Int])` under a
+/// bodyless `impl [T] Name for Box[T]`. The witness for `Box[String]` would
+/// dispatch to it too, handing it a value of another representation. `param`
+/// names the offending parameter (empty for the return type), `has` is what
+/// the function declares there, and `narrow` is the concrete target the impl
+/// could be narrowed to (empty when the position is not the receiver).
+fn fallback_generic_message(origin: ImplMethodOrigin, owner: String, method: String, trait_disp: String, impl_names: Array[String], param: String, has: Type, want: Type, narrow: String) -> String {
+  let formals = String::join(impl_names, ", ")
+  let (wants, takes) = if String::length(param) > 0 {
+    (String::join(["taking `", param, ": ", type_to_string(want), "`"], ""), String::join([
+      "takes `",
+      param,
+      ": ",
+      type_to_string(has),
+      "`, not `",
+      param,
+      ": ",
+      type_to_string(want),
+      "`"
+    ], ""))
+  } else {
+    (String::join(["returning `", type_to_string(want), "`"], ""), String::join([
+      "returns `",
+      type_to_string(has),
+      "`, not `",
+      type_to_string(want),
+      "`"
+    ], ""))
+  }
+  let narrowed = if String::length(narrow) > 0 {
+    String::join(["`impl ", trait_disp, " for ", narrow, "`"], "")
+  } else {
+    "a concrete target"
+  }
+  String::join([
+    "declare `",
+    owner,
+    "::",
+    method,
+    "` generic over the impl's type parameters (`fn ",
+    owner,
+    "::",
+    method,
+    "[",
+    formals,
+    "]`, ",
+    wants,
+    "), or narrow the impl to ",
+    narrowed,
+    ": `impl [",
+    formals,
+    "] ",
+    trait_disp,
+    " for ",
+    print_type_expr(origin.target),
+    "` has no body for `",
+    method,
+    "`, so the trait calls this function at every instantiation, but it ",
+    takes,
+    " [@fn=",
+    owner,
+    "::",
+    method,
+    "]"
+  ], "")
+}
+
+/// A labeled (`x~`) or optional (`x?`) parameter keeps its marker on the
+/// name; the diagnostic names the bare parameter.
+fn param_base(raw_name: String) -> String {
+  let len = String::length(raw_name)
+  if len > 0 {
+    let last = String::char_code_at(raw_name, len - 1)
+    if last == 126 || last == 63 {
+      String::substring(raw_name, 0, len - 1)
+    } else {
+      raw_name
+    }
+  } else {
+    raw_name
+  }
+}
+
+fn signature_text(method: String, params: Array[TypeExpr], ret: TypeExpr) -> String {
+  let parts: Array[String] = []
+  for p in params {
+    Array::push(parts, print_type_expr(p))
+  }
+  String::join([
+    method,
+    "(",
+    String::join(parts, ", "),
+    ") -> ",
+    print_type_expr(ret)
+  ], "")
+}
+
+fn plural_parameters(n: Int) -> String {
+  if n == 1 {
+    "1 parameter"
+  } else {
+    String::concat(__to_string(n), " parameters")
+  }
+}
+
+//# Expected types
+
+fn string_list_has(names: Array[String], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    found = Array::get(names, i) == wanted
+    i = i + 1
+  }
+  found
+}
+
+/// The pieces that turn a trait signature into the impl's expected one.
+struct ExpectedScope {
+  defs: Array[TypeDef];
+  self_ty: Type;
+  // Names that stand for something this check cannot decide: an unapplied
+  // or kinded trait parameter, a kinded method-level generic. They become
+  // `CtUnknown`, which matches anything.
+  open_names: Array[String];
+  // Trait parameters the impl head applies (`impl Iter[Int] for P`).
+  applied_names: Array[String];
+  applied_types: Array[Type];
+  // The impl's own formals, kept rigid.
+  impl_names: Array[String];
+  // The trait method's own (unkinded) generics (`write: [X](Self, X) -> X`),
+  // kept rigid as well, each under the spelling at the same index of
+  // `method_rigid` (the name itself, unless an impl formal already uses it).
+  method_names: Array[String];
+  method_rigid: Array[String]
+}
+
+fn method_rigid_index(scope: ExpectedScope, name: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(scope.method_names) && found < 0 {
+    if Array::get(scope.method_names, i) == name {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn applied_index(scope: ExpectedScope, name: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(scope.applied_names) && found < 0 {
+    if Array::get(scope.applied_names, i) == name {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Is `name` a type this module can name? Anything else is typically a type
+/// the trait's own module declares and this one does not import; the
+/// refusal then says to import it (`unselected_type_names`).
+fn known_type_name(scope: ExpectedScope, name: String) -> Bool {
+  match find_typedef(scope.defs, name) {
+    Some(_) => true,
+    None => is_builtin_type_name(name) || match compiler_owned_type_arity(name) {
+      Some(_) => true,
+      None => false
+    }
+  }
+}
+
+/// The nominal names in `ty` this module can neither declare nor import
+/// (`known_type_name`), less `Self` and the rigid formals.
+fn unselected_type_names_into(scope: ExpectedScope, ty: Type, out: Array[String]) -> Unit {
+  match ty {
+    CtNamed(name, args) => {
+      if name == "Self" || string_list_has(scope.impl_names, name) || string_list_has(scope.method_rigid, name) || known_type_name(scope, name) || string_list_has(out, name) {
+        ()
+      } else {
+        Array::push(out, name)
+      }
+      for a in args {
+        unselected_type_names_into(scope, a, out)
+      }
+      ()
+    },
+    CtArray(elem) => unselected_type_names_into(scope, elem, out),
+    CtOption(elem) => unselected_type_names_into(scope, elem, out),
+    CtTuple(items) => {
+      for item in items {
+        unselected_type_names_into(scope, item, out)
+      }
+      ()
+    },
+    CtFn(params, ret, _) => {
+      for p in params {
+        unselected_type_names_into(scope, p, out)
+      }
+      unselected_type_names_into(scope, ret, out)
+    },
+    CtRecord(fields) => {
+      for field in fields {
+        let (_, fty) = field
+        unselected_type_names_into(scope, fty, out)
+      }
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// The second half of a refusal whose expected type names a type this module
+/// does not import: where that type comes from, and what to do when it
+/// cannot be imported.
+fn unselected_type_hint(scope: ExpectedScope, want: Type, trait_disp: String) -> String {
+  let names: Array[String] = []
+  unselected_type_names_into(scope, want, names)
+  if Array::length(names) == 0 {
+    ""
+  } else {
+    let shown = String::join(["`", String::join(names, "`, `"), "`"], "")
+    String::join([
+      "; ",
+      shown,
+      " is named by trait `",
+      trait_disp,
+      "`'s signature but not in scope here: import it to write it, or, if it is not exported, leave the position unannotated so the method is generic over it"
+    ], "")
+  }
+}
+
+fn fill_expected(scope: ExpectedScope, ty: Type) -> Type {
+  match ty {
+    CtNamed(name, args) => if name == "Self" && Array::length(args) == 0 {
+      scope.self_ty
+    } else if string_list_has(scope.open_names, name) {
+      CtUnknown
+    } else if method_rigid_index(scope, name) >= 0 {
+      if Array::length(args) == 0 {
+        let rigid = Array::get(scope.method_rigid, method_rigid_index(scope, name))
+        CtNamed(rigid, [])
+      } else {
+        CtUnknown
+      }
+    } else {
+      let at = applied_index(scope, name)
+      if at >= 0 {
+        if Array::length(args) == 0 {
+          Array::get(scope.applied_types, at)
+        } else {
+          CtUnknown
+        }
+      } else if string_list_has(scope.impl_names, name) {
+        if Array::length(args) == 0 {
+          ty
+        } else {
+          CtUnknown
+        }
+      } else {
+        // A name this module does not declare or import stays the rigid
+        // nominal type it is: the trait's module means its own `Hidden`,
+        // and an impl written for `Int` there is handed one (#3551 review;
+        // measured: `make(x: Int)` under `make(Hidden) -> Self` read the
+        // `Hidden`'s address as the `Int`). Nothing this module writes
+        // resolves to that spelling -- a local type of the same name is
+        // refused at the import -- so only a position the impl leaves
+        // generic meets it.
+        CtNamed(name, for a in args {
+          fill_expected(scope, a)
+        })
+      }
+    },
+    CtArray(elem) => CtArray(fill_expected(scope, elem)),
+    CtOption(elem) => CtOption(fill_expected(scope, elem)),
+    CtTuple(items) => CtTuple(for item in items {
+      fill_expected(scope, item)
+    }),
+    CtFn(params, ret, eff) => CtFn(for p in params {
+      fill_expected(scope, p)
+    }, fill_expected(scope, ret), eff),
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (fname, fty) = field
+      (fname, fill_expected(scope, fty))
+    }),
+    // A higher-kinded application, a bare constructor and a quantified type
+    // are not compared here: the kinded binders they come from have no
+    // value-level spelling this check could hold the impl to.
+    CtApplied(_, _) => CtUnknown,
+    CtConstructor(_, _) => CtUnknown,
+    CtForAll(_, _, _) => CtUnknown,
+    _ => ty
+  }
+}
+
+/// The impl method's own type with `Self` read as the impl's target. An impl
+/// method of a trait with a method-level generic is checked with its
+/// receiver typed `Self` (measured: `write_object(self, x: X)` under
+/// `impl Logger for B` has `self: Self`), which names the target, not a type
+/// of its own.
+fn self_as(ty: Type, self_ty: Type) -> Type {
+  match ty {
+    CtNamed(name, args) => if name == "Self" && Array::length(args) == 0 {
+      self_ty
+    } else {
+      CtNamed(name, for a in args {
+        self_as(a, self_ty)
+      })
+    },
+    CtArray(elem) => CtArray(self_as(elem, self_ty)),
+    CtOption(elem) => CtOption(self_as(elem, self_ty)),
+    CtTuple(items) => CtTuple(for item in items {
+      self_as(item, self_ty)
+    }),
+    CtFn(params, ret, eff) => CtFn(for p in params {
+      self_as(p, self_ty)
+    }, self_as(ret, self_ty), eff),
+    _ => ty
+  }
+}
+
+fn method_declared_here(methods: Array[(String, Array[TypeExpr], TypeExpr)], method: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(methods) && !found {
+    let (mname, _, _) = Array::get(methods, i)
+    found = mname == method
+    i = i + 1
+  }
+  found
+}
+
+/// Does no parameter in `tparams` take arguments of its own (`F[_]`)?
+fn all_plain_params(tparams: Array[String]) -> Bool {
+  let mut plain = true
+  for tp in tparams {
+    if type_param_arity(tp) > 0 {
+      plain = false
+    } else {
+      ()
+    }
+  }
+  plain
+}
+
+/// The type parameters of the trait that DECLARES `method`, found the way
+/// `trait_method_sig_binders_deep` finds the signature: `trait_key` itself,
+/// then its supertraits in order.
+fn declaring_trait_params(env: TypeEnv, trait_key: String, method: String) -> Option[Array[String]] {
+  match trait_definition(env, trait_key) {
+    None => None,
+    Some(def) => {
+      let (supers, methods, tparams, _) = def
+      if method_declared_here(methods, method) {
+        Some(tparams)
+      } else {
+        let mut found: Option[Array[String]] = None
+        for sup in supers {
+          if found is None {
+            found = declaring_trait_params(env, sup, method)
+          } else {
+            ()
+          }
+        }
+        found
+      }
+    }
+  }
+}
+
+//# Binder bounds
+
+/// The bounds the trait that DECLARES `method` puts on that method's own
+/// generics (`write: [X: Show](Self, X)`), found the way
+/// `declaring_trait_params` finds its formals.
+fn declaring_method_bounds(env: TypeEnv, trait_key: String, method: String) -> Array[(String, Array[String])] {
+  let out: Array[(String, Array[String])] = []
+  match trait_definition(env, trait_key) {
+    None => (),
+    Some(def) => {
+      let (supers, methods, _, method_gens) = def
+      if method_declared_here(methods, method) {
+        for g in method_gens {
+          let (mname, _, gbounds) = g
+          if mname == method {
+            for b in gbounds {
+              Array::push(out, b)
+            }
+          } else {
+            ()
+          }
+        }
+      } else {
+        let mut done = false
+        for sup in supers {
+          if !done && (declaring_trait_params(env, sup, method) is Some) {
+            for b in declaring_method_bounds(env, sup, method) {
+              Array::push(out, b)
+            }
+            done = true
+          } else {
+            ()
+          }
+        }
+      }
+    }
+  }
+  out
+}
+
+/// Every trait `bounds` puts on the binder spelled `name`.
+fn bounds_on(bounds: Array[(String, Array[String])], name: String) -> Array[String] {
+  let out: Array[String] = []
+  for b in bounds {
+    let (key, traits) = b
+    if type_param_name(key) == name {
+      for t in traits {
+        Array::push(out, t)
+      }
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// Does a value known to satisfy every trait in `have` satisfy `wanted`?
+/// It does when one of them is `wanted` or extends it, transitively: a
+/// `Loud` witness carries `trait Loud: Show`'s `Show`.
+fn bound_implied(env: TypeEnv, wanted: String, have: Array[String], seen: Array[String]) -> Bool {
+  let mut hit = false
+  for h in have {
+    if hit || string_list_has(seen, h) {
+      ()
+    } else if h == wanted {
+      hit = true
+    } else {
+      Array::push(seen, h)
+      hit = bound_implied(env, wanted, trait_supers(env, h), seen)
+    }
+  }
+  hit
+}
+
+/// `X: A + B`, or the bare `X` when there are no bounds.
+fn binder_text(name: String, traits: Array[String]) -> String {
+  if Array::length(traits) == 0 {
+    name
+  } else {
+    String::join([name, ": ", String::join(traits, " + ")], "")
+  }
+}
+
+/// What `check_binder_bounds` reads: the method's own binders with their
+/// written bounds and quantified ids (`own_tparams[i]` is `scheme_ids[i]`),
+/// the trait method's generics under their rigid spellings, the bounds the
+/// declaring trait puts on them, and the impl's formals.
+struct BinderScope {
+  own_tparams: Array[String];
+  own_bounds: Array[(String, Array[String])];
+  scheme_ids: Array[Int];
+  method_names: Array[String];
+  method_rigid: Array[String];
+  method_bounds: Array[(String, Array[String])];
+  impl_names: Array[String]
+}
+
+/// A bound on one of the method's own binders must be implied by what a
+/// caller through the trait supplies for it. The trait's witness dispatches
+/// to this one function, and the caller (`T::write(t, v)` under `[T: W]`)
+/// chooses the trait method's generic with only the bounds the TRAIT
+/// declares on it, so a stronger bound here is evidence nobody passes: under
+/// `write: [X](Self, X)`, `write[Y: Render](self, x: Y)` would run
+/// `Y::render` on a type with no `Render` (measured: a clean check, then a
+/// module the wasm validator rejected). A weaker or equal bound is fine, and
+/// so is one the trait's bound extends.
+///
+/// The same holds for a binder that stands for one of the impl's formals (a
+/// fallback generic over them, `fn Box::name[U: Show](self: Box[U])`): every
+/// instantiation of the impl dispatches to it, and the impl promises only the
+/// bounds it declares on that formal.
+///
+/// A binder fixed to a concrete type, or not reached by the signature, is not
+/// judged here; `subst` is the probe substitution after the signature
+/// matched, which maps each binder's id to the rigid name it met.
+fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: String, owner: String, trait_disp: String, method: String, scope: BinderScope, subst: Subst, errors: Array[String]) -> Unit {
+  let shown = String::join(["`", owner, "::", method, "`"], "")
+  let mut i = 0
+  while i < Array::length(scope.own_tparams) && i < Array::length(scope.scheme_ids) {
+    let tp = Array::get(scope.own_tparams, i)
+    let name = type_param_name(tp)
+    let wanted = bounds_on(scope.own_bounds, name)
+    if type_param_arity(tp) == 0 && Array::length(wanted) > 0 {
+      match subst_apply(subst, CtVar(Array::get(scope.scheme_ids, i))) {
+        CtNamed(met, met_args) => if Array::length(met_args) == 0 {
+          let mut at = 0 - 1
+          let mut mi = 0
+          while mi < Array::length(scope.method_rigid) {
+            if at < 0 && Array::get(scope.method_rigid, mi) == met {
+              at = mi
+            } else {
+              ()
+            }
+            mi = mi + 1
+          }
+          if at >= 0 {
+            let tname = Array::get(scope.method_names, at)
+            let have = bounds_on(scope.method_bounds, tname)
+            for w in wanted {
+              if bound_implied(env, w, have, []) {
+                ()
+              } else {
+                let grown: Array[String] = []
+                for h in have {
+                  Array::push(grown, h)
+                }
+                Array::push(grown, w)
+                let chosen = if Array::length(have) == 0 {
+                  String::join([
+                    "may choose any type for `",
+                    tname,
+                    "`, since the trait declares no bound on it"
+                  ], "")
+                } else {
+                  String::join([
+                    "may choose any type for `",
+                    tname,
+                    "` that satisfies `",
+                    String::join(have, " + "),
+                    "`"
+                  ], "")
+                }
+                Array::push(errors, String::join([
+                  "drop the `",
+                  w,
+                  "` bound from `",
+                  name,
+                  "` in ",
+                  shown,
+                  ", or add it to trait `",
+                  trait_disp,
+                  "`'s `",
+                  method,
+                  "[",
+                  binder_text(tname, grown),
+                  "]`: a caller through the trait ",
+                  chosen,
+                  ", so nothing provides `",
+                  w,
+                  "` for `",
+                  name,
+                  "`",
+                  origin_marker(origin, trait_head, owner, trait_disp, method, "binder", name)
+                ], ""))
+              }
+            }
+          } else if string_list_has(scope.impl_names, met) {
+            let have = bounds_on(origin.bounds, met)
+            for w in wanted {
+              if bound_implied(env, w, have, []) {
+                ()
+              } else {
+                let grown: Array[String] = []
+                for h in have {
+                  Array::push(grown, h)
+                }
+                Array::push(grown, w)
+                let promised = if Array::length(have) == 0 {
+                  String::join(["declares no bound on `", met, "`"], "")
+                } else {
+                  String::join([
+                    "promises only `",
+                    String::join(have, " + "),
+                    "` for `",
+                    met,
+                    "`"
+                  ], "")
+                }
+                Array::push(errors, String::join([
+                  "drop the `",
+                  w,
+                  "` bound from `",
+                  name,
+                  "` in ",
+                  shown,
+                  ", or add it to the impl's `",
+                  met,
+                  "` (`[",
+                  binder_text(met, grown),
+                  "]` on `impl ",
+                  trait_disp,
+                  " for ",
+                  print_type_expr(origin.target),
+                  "`): the trait calls this function at every instantiation of the impl, and the impl ",
+                  promised,
+                  ", so nothing provides `",
+                  w,
+                  "` for `",
+                  name,
+                  "`",
+                  origin_marker(origin, trait_head, owner, trait_disp, method, "binder", name)
+                ], ""))
+              }
+            }
+          } else {
+            ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+//# Check
+
+/// #3538: hold an impl method to the signature its trait declares.
+///
+/// A call through the trait (`Name::name(p, 1)`, or `T::name` under a bound)
+/// is checked against the TRAIT's signature and then dispatched to the impl's
+/// function, so an impl that disagrees with it is never checked at all: a
+/// `String` parameter received an `Int` (`String::length` of it printed
+/// `24690`), a `-> Int` return was read as a `String`, an extra parameter
+/// trapped, and an impl's `with Console` let a pure generic caller print.
+///
+/// Refused here, each with the edit: a method the trait does not declare (in
+/// an applied impl; see the `None` arm for a plain one); a different number
+/// of parameters; a parameter or return type the trait's
+/// signature (with `Self`, applied trait arguments and the impl's formals
+/// substituted) does not admit; and a `with` clause, because a trait method
+/// declares no effects, so a caller through the trait authorizes none.
+///
+/// The same holds for a FALLBACK origin: a `P::m` declared outside the block
+/// of an impl that has no body for `m`, which the witness dispatches to just
+/// the same. The impl's own formals stay rigid there as well: every
+/// instantiation's witness dispatches to that one function, so a fallback
+/// for `impl [T] Tr for Box[T]` must be generic over `Box[T]` itself, not
+/// written for one `Box[Int]`.
+///
+/// The trait method's own generics are rigid too: under `write: [X](Self, X)
+/// -> X` a caller through the trait chooses `X`, so the method must be generic
+/// over it (`write(self, x: X) -> X`), not written for `x: Int`.
+///
+/// What is NOT compared, and stays as it was: a position that mentions a trait
+/// parameter the impl head leaves unapplied (it is erased, and the impl may
+/// spell it as anything), a kinded parameter or a higher-kinded application,
+/// a kinded method-level generic, a type this module cannot name, and every
+/// position of an impl whose own formals are kinded. Those are `CtUnknown` on
+/// the expected side, so they never refuse a program.
+///
+/// `vt` is the method's inferred type before generalization and `s` its
+/// substitution; the unification here is a probe and is discarded, so the
+/// method's own typing is unchanged.
+export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: Type, s: Subst, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> Unit {
+  let owner_prefix = String::concat(impl_method_owner(origin.tparams, origin.trait_key, origin.target), "::")
+  let method = origin.method
+  let owner = impl_target_head(origin.target)
+  let trait_head = trait_ref_name(origin.trait_key)
+  let trait_disp = trait_reference_display(origin.trait_key)
+  let shown = String::join(["`", owner, "::", method, "`"], "")
+  match trait_definition(env, origin.trait_key) {
+    None => (),
+    Some(def) => {
+      let (_, _, trait_tparams, _) = def
+      match trait_method_sig_binders_deep(env, origin.trait_key, method) {
+        // A method the trait does not declare. Refused only where the binding
+        // name proves it was written inside the impl block: an applied impl's
+        // owner (`Box$impl$..`) is a name no declaration can spell. A plain
+        // impl's method is `let P::m = ..`, the same statement `fn P::m` lowers
+        // to, and a free function right after the block would be refused with
+        // it -- so that case stays accepted until the parser records which
+        // bindings an impl block produced.
+        None => if !origin.fallback && String::contains(owner_prefix, "$impl$") {
+          Array::push(errors, String::join([
+            "remove method `",
+            method,
+            "` from `impl ",
+            trait_disp,
+            " for ",
+            print_type_expr(origin.target),
+            "`, or declare it in trait `",
+            trait_head,
+            "`: the trait declares no method `",
+            method,
+            "`, so nothing can call it through the trait",
+            origin_marker(origin, trait_head, owner, trait_disp, method, "name", "")
+          ], ""))
+        } else {
+          ()
+        },
+        Some(found) => {
+          let (sparams, sret, binders) = found
+          // Only a method body is checked: a non-function binding that shares
+          // the owner prefix (`let P::k = ..` after a body-less impl) is not
+          // an implementation of anything.
+          let (own_tparams, own_bounds, params, written_ret, eff) = match val {
+            EFn(tps, bs, ps, r, e, _) => (tps, bs, ps, r, e),
+            _ => return
+          }
+          let declares = String::join([
+            ": trait `",
+            trait_disp,
+            "` declares `",
+            signature_text(method, sparams, sret),
+            "`"
+          ], "")
+          let n_impl = Array::length(params)
+          let n_trait = Array::length(sparams)
+          if n_impl > n_trait {
+            let (extra_raw, _) = Array::get(params, n_trait)
+            let extra = param_base(extra_raw)
+            Array::push(errors, String::join([
+              "remove parameter `",
+              extra,
+              "` from ",
+              shown,
+              declares,
+              ", which takes ",
+              plural_parameters(n_trait),
+              origin_marker(origin, trait_head, owner, trait_disp, method, "param", extra)
+            ], ""))
+          } else if n_impl < n_trait {
+            Array::push(errors, String::join([
+              "add ",
+              plural_parameters(n_trait - n_impl),
+              " to ",
+              shown,
+              declares,
+              ", which takes ",
+              plural_parameters(n_trait),
+              origin_marker(origin, trait_head, owner, trait_disp, method, "name", "")
+            ], ""))
+          } else {
+            // The row: a trait method declares no effects.
+            let labels = row_labels(eff)
+            if Array::length(labels) > 0 {
+              let row = String::join(labels, ", ")
+              Array::push(errors, String::join([
+                "remove `with ",
+                row,
+                "` from ",
+                shown,
+                declares,
+                ", which performs no effects; a caller through the trait does not authorize `",
+                row,
+                "`",
+                origin_marker(origin, trait_head, owner, trait_disp, method, "row", "")
+              ], ""))
+            } else {
+              ()
+            }
+            let kinded_impl = {
+              let mut k = false
+              for tp in origin.tparams {
+                if type_param_arity(tp) > 0 {
+                  k = true
+                } else {
+                  ()
+                }
+              }
+              k
+            }
+            if !kinded_impl {
+              let impl_names: Array[String] = []
+              for tp in origin.tparams {
+                Array::push(impl_names, type_param_name(tp))
+              }
+              // Trait parameters the impl head applies are substituted when
+              // none is kinded. The signature names the formals of the trait
+              // that DECLARES the method; for an inherited one those are the
+              // supertrait's, and a call through a bound on this trait
+              // (`[T: Child[Int]]` calling `Base`'s `get`) gives them this
+              // trait's arguments by position (`resolve_trait_method_ident`),
+              // so they are mapped the same way here. A declaring formal past
+              // the applied arguments stays open.
+              let applied_args = trait_ref_args(origin.trait_key)
+              // Unless the declaring trait is found, no binder is known to be
+              // the method's own, and all of them stay open.
+              let (decl_known, decl_tparams) = match declaring_trait_params(env, origin.trait_key, method) {
+                Some(ps) => (true, ps),
+                None => (false, [])
+              }
+              let n_applied = if Array::length(applied_args) < Array::length(decl_tparams) {
+                Array::length(applied_args)
+              } else {
+                Array::length(decl_tparams)
+              }
+              let applied_names: Array[String] = []
+              let applied_types: Array[Type] = []
+              let substitutable = n_applied > 0 && Array::length(applied_args) == Array::length(trait_tparams) && all_plain_params(trait_tparams) && all_plain_params(decl_tparams)
+              if substitutable {
+                let mut ai = 0
+                while ai < n_applied {
+                  Array::push(applied_names, type_param_name(Array::get(decl_tparams, ai)))
+                  ai = ai + 1
+                }
+              } else {
+                ()
+              }
+              // The trait method's own generics stay RIGID, like the impl's
+              // formals. A caller through the trait picks them (`T::write(t,
+              // s)` with `X = String`) and the witness dispatches to this one
+              // method, so it must hold for every choice: `write(self, x:
+              // Int) -> Int` under `write: [X](Self, X) -> X` was handed a
+              // `String` when `X` was open (measured: `x + self.k` printed
+              // `hello` and two NUL bytes). The method is checked with the
+              // binder attached (`inject_trait_method_generics`, or its own
+              // `write[Y]`), so a generic implementation has unification
+              // variables there, which meet the rigid `X`. A kinded method
+              // generic stays open.
+              let decl_names: Array[String] = []
+              for tp in decl_tparams {
+                Array::push(decl_names, type_param_name(tp))
+              }
+              let open_names: Array[String] = []
+              let method_names: Array[String] = []
+              let method_rigid: Array[String] = []
+              for b in binders {
+                let bname = type_param_name(b)
+                if string_list_has(applied_names, bname) {
+                  ()
+                } else if decl_known && !string_list_has(decl_names, bname) && type_param_arity(b) == 0 {
+                  Array::push(method_names, bname)
+                  // An impl formal of the same spelling is a different type.
+                  Array::push(method_rigid, if string_list_has(impl_names, bname) {
+                    String::concat(bname, "'")
+                  } else {
+                    bname
+                  })
+                } else {
+                  Array::push(open_names, bname)
+                }
+              }
+              // The impl's formals stay RIGID for a fallback too. The witness
+              // of every instantiation dispatches to the one `P::m`
+              // (`build_concrete_dict_for_target`), so it must hold for all
+              // of them: `fn Box::name(self: Box[Int])` under a bodyless
+              // `impl [T] Name for Box[T]` was handed a `Box[String]` when
+              // they were left open (measured: `self.v + 1` answered
+              // `137438953475`). A fallback generic over its own formals
+              // (`fn Box::name[U](self: Box[U])`) has unification variables
+              // there, which meet the rigid `T`.
+              let shadow: Array[String] = ["Self"]
+              for b in binders {
+                Array::push(shadow, type_param_name(b))
+              }
+              for n in impl_names {
+                Array::push(shadow, n)
+              }
+              let raw_self = resolve_type_expr_shadowed(origin.target, defs, impl_names)
+              let pre_scope = ExpectedScope::{
+                defs: defs,
+                self_ty: CtUnknown,
+                open_names: open_names,
+                applied_names: [],
+                applied_types: [],
+                impl_names: impl_names,
+                method_names: [],
+                method_rigid: []
+              }
+              // A bare generic head (`impl [T] Len2 for Array`) names every
+              // instantiation, so `Self` is left open. A declared head resolves
+              // to `CtConstructor`; a builtin one to its zero-argument spelling.
+              let bare_builtin_head = match origin.target {
+                TyName(tn) => match compiler_owned_type_arity(tn) {
+                  Some(arity) => arity > 0,
+                  None => false
+                },
+                _ => false
+              }
+              let self_ty = if bare_builtin_head {
+                CtUnknown
+              } else {
+                match raw_self {
+                  CtConstructor(_, _) => CtUnknown,
+                  CtApplied(_, _) => CtUnknown,
+                  _ => fill_expected(pre_scope, raw_self)
+                }
+              }
+              if substitutable {
+                for a in applied_args {
+                  Array::push(applied_types, fill_expected(pre_scope, resolve_type_expr_shadowed(a, defs, impl_names)))
+                }
+              } else {
+                ()
+              }
+              let scope = ExpectedScope::{
+                defs: defs,
+                self_ty: self_ty,
+                open_names: open_names,
+                applied_names: applied_names,
+                applied_types: applied_types,
+                impl_names: impl_names,
+                method_names: method_names,
+                method_rigid: method_rigid
+              }
+              // The quantified ids are the method's own binders, in order
+              // (`own_tparams`); `check_binder_bounds` reads their bounds
+              // once the signature has matched.
+              let no_ids: Array[Int] = []
+              let (scheme_ids, actual) = match subst_apply(s, vt) {
+                CtForAll(ids, _, body) => (ids, body),
+                other => (no_ids, other)
+              }
+              match actual {
+                CtFn(aparams, aret, _) => if Array::length(aparams) == n_trait {
+                  let errors_before = Array::length(errors)
+                  let mut cur = s
+                  // A method in a generic impl's block is checked with the
+                  // impl's formals as unification variables, so `x: T` would
+                  // meet a rigid method generic `X` and pass. Each written
+                  // annotation that names an impl formal pins it to the rigid
+                  // formal first: `T` is the impl's, not the caller's choice.
+                  let own_names: Array[String] = []
+                  for tp in own_tparams {
+                    Array::push(own_names, type_param_name(tp))
+                  }
+                  if Array::length(method_names) > 0 {
+                    let mut wi = 0
+                    while wi < n_trait {
+                      let (_, written) = Array::get(params, wi)
+                      cur = pin_written_impl_formals(written, Array::get(aparams, wi), own_names, impl_names, defs, cur)
+                      wi = wi + 1
+                    }
+                    cur = pin_written_impl_formals(written_ret, aret, own_names, impl_names, defs, cur)
+                  } else {
+                    ()
+                  }
+                  let mut pi = 0
+                  while pi < n_trait {
+                    let want = fill_expected(scope, resolve_type_expr_shadowed(Array::get(sparams, pi), defs, shadow))
+                    match unify(want, self_as(Array::get(aparams, pi), self_ty), cur) {
+                      Some(next) => {
+                        cur = next
+                      },
+                      None => {
+                        let (raw, _) = Array::get(params, pi)
+                        let pname = param_base(raw)
+                        let has = self_as(subst_apply(cur, Array::get(aparams, pi)), self_ty)
+                        if mentions_formal(want, method_rigid) {
+                          let (_, written) = Array::get(params, pi)
+                          let miss = generic_miss_of(written, own_names, impl_names, has, method_names, method_rigid)
+                          Array::push(errors, method_generic_message(shown, trait_disp, method, method_names, unbound_method_names(method_rigid, method_names, own_names), binder_names_taken(own_names, impl_names, method_names), sparams, sret, pname, miss, has, want, origin_marker(origin, trait_head, owner, trait_disp, method, "param", pname)))
+                        } else if origin.fallback && mentions_formal(want, impl_names) {
+                          let narrow = match Array::get(sparams, pi) {
+                            TyName(sn) => if sn == "Self" {
+                              type_to_string(has)
+                            } else {
+                              ""
+                            },
+                            _ => ""
+                          }
+                          Array::push(errors, fallback_generic_message(origin, owner, method, trait_disp, impl_names, pname, has, want, narrow))
+                        } else {
+                          Array::push(errors, String::join([
+                            "change parameter `",
+                            pname,
+                            "` of ",
+                            shown,
+                            " to `",
+                            type_to_string(want),
+                            "`",
+                            declares,
+                            unselected_type_hint(scope, want, trait_disp),
+                            origin_marker(origin, trait_head, owner, trait_disp, method, "param", pname)
+                          ], ""))
+                        }
+                      }
+                    }
+                    pi = pi + 1
+                  }
+                  let want_ret = fill_expected(scope, resolve_type_expr_shadowed(sret, defs, shadow))
+                  let after_ret = match unify(want_ret, self_as(aret, self_ty), cur) {
+                    Some(next) => next,
+                    None => {
+                      if mentions_formal(want_ret, method_rigid) {
+                        let has_ret = self_as(subst_apply(cur, aret), self_ty)
+                        let miss = generic_miss_of(written_ret, own_names, impl_names, has_ret, method_names, method_rigid)
+                        Array::push(errors, method_generic_message(shown, trait_disp, method, method_names, unbound_method_names(method_rigid, method_names, own_names), binder_names_taken(own_names, impl_names, method_names), sparams, sret, "", miss, has_ret, want_ret, origin_marker(origin, trait_head, owner, trait_disp, method, "ret", "")))
+                      } else if origin.fallback && mentions_formal(want_ret, impl_names) {
+                        let has_ret = self_as(subst_apply(cur, aret), self_ty)
+                        Array::push(errors, fallback_generic_message(origin, owner, method, trait_disp, impl_names, "", has_ret, want_ret, ""))
+                      } else {
+                        Array::push(errors, String::join([
+                          "change the return type of ",
+                          shown,
+                          " to `",
+                          type_to_string(want_ret),
+                          "`",
+                          declares,
+                          unselected_type_hint(scope, want_ret, trait_disp),
+                          origin_marker(origin, trait_head, owner, trait_disp, method, "ret", "")
+                        ], ""))
+                      }
+                      cur
+                    }
+                  }
+                  // The signature matched, so each of the method's own
+                  // binders now reads as the trait binder (or impl formal) it
+                  // stands for, and its bounds can be held to that one's.
+                  if Array::length(errors) == errors_before {
+                    let binders = BinderScope::{
+                      own_tparams: own_tparams,
+                      own_bounds: own_bounds,
+                      scheme_ids: scheme_ids,
+                      method_names: method_names,
+                      method_rigid: method_rigid,
+                      method_bounds: declaring_method_bounds(env, origin.trait_key, method),
+                      impl_names: impl_names
+                    }
+                    check_binder_bounds(origin, env, trait_head, owner, trait_disp, method, binders, after_ret, errors)
+                  } else {
+                    ()
+                  }
+                } else {
+                  ()
+                },
+                _ => ()
+              }
+            } else {
+              ()
+            }
+          }
+        }
+      }
+    }
+  }
+}

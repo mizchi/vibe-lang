@@ -31,6 +31,8 @@ import @vibe/compiler/core {
   env_bind,
   env_lookup,
   expr_children,
+  find_enum_typedef,
+  find_typedef,
   generalize,
   generalize_except,
   instantiate,
@@ -62,7 +64,7 @@ import @vibe/compiler/checker/patterns {
 }
 
 import ./checker_resolve.vibe {
-  collect_unknown_type_names
+  collect_unknown_type_names, subst_type_params
 }
 
 import @vibe/compiler/checker/traits {
@@ -82,7 +84,7 @@ import ./checker_builtin_arg_head_rest.vibe {
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
-  env_has_active_region
+  env_has_active_region, row_variable_labels
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -756,7 +758,119 @@ export fn env_reachable_tvars(val: Expr, env: TypeEnv, s: Subst, self_name: Opti
   out
 }
 
-/// #2459 / #2461: the two independent reasons not to generalize a `let`.
+/// #3537: true when evaluating `e` may ALLOCATE or RUN something, so the value
+/// it produces is not a syntactic value and its free type variables must not
+/// be generalized (the ML value restriction). Syntactic values are names,
+/// literals, lambdas (a lambda body runs per call, so it is never walked),
+/// tuples and anonymous records of values, and constructor applications
+/// (`Some(v)`, `Wrap::W(v)`) to values -- enum payloads are immutable.
+/// Whether a callee IS a constructor is read from the declarations
+/// (`callee_is_declared_ctor`), never from its spelling: `fn MakeTag[T]()` is
+/// an ordinary function whatever its first letter.
+///
+/// A call to anything but a constructor is expansive: its result may close
+/// over a container it allocated (`fn make[T]() -> (T) -> Array[T]`). So is a
+/// named struct literal: a struct may declare `mut` fields or hold an array,
+/// and `Bag::{ xs: [] }` is ONE struct whatever its type says. An array
+/// literal is a mutable container, and `let mut`, loops, handlers and
+/// assignment run code. Map literals are functional (#996) and are judged by
+/// their values.
+fn expr_is_expansive(e: Expr, defs: Array[TypeDef]) -> Bool {
+  match e {
+    EFn(_, _, _, _, _, _) => false,
+    ECall(callee, args, _, _) => {
+      let ctor = match callee {
+        EIdent(name, _) => callee_is_declared_ctor(name, defs),
+        _ => false
+      }
+      if ctor {
+        let mut found = false
+        for arg in args {
+          if !found && expr_is_expansive(arg, defs) {
+            found = true
+          }
+        }
+        found
+      } else {
+        true
+      }
+    },
+    ERecord(name, _, _) => if name == "" {
+      expr_children_expansive(e, defs)
+    } else {
+      true
+    },
+    EArray(_) => true,
+    ELetMut(_, _, _, _) => true,
+    EAssign(_, _, _, _) => true,
+    EAssignOp(_, _, _, _, _) => true,
+    EHandle(_, _) => true,
+    EWhile(_, _) => true,
+    ELoop(_, _) => true,
+    EForIn(_, _, _, _) => true,
+    _ => expr_children_expansive(e, defs)
+  }
+}
+
+fn expr_children_expansive(e: Expr, defs: Array[TypeDef]) -> Bool {
+  let mut found = false
+  for kid in expr_children(e) {
+    if !found && expr_is_expansive(kid, defs) {
+      found = true
+    }
+  }
+  found
+}
+
+/// #3537: true when the callee `name` resolves to an ENUM CONSTRUCTOR, read
+/// from the declarations in scope (`defs` carries local and imported enums).
+/// `Some` is the builtin `Option`'s. A qualified `Enum::Variant` must name a
+/// variant its enum (through an alias, too) actually declares; a bare name
+/// must be a variant of some enum -- a function cannot share a constructor's
+/// name (the checker asks for it to be renamed), so a declared variant name
+/// is never a function. Anything not found is treated as a call, which only
+/// generalizes less.
+fn callee_is_declared_ctor(name: String, defs: Array[TypeDef]) -> Bool {
+  if name == "Some" || name == "Option::Some" {
+    true
+  } else {
+    let cut = String::last_index_of(name, "::")
+    if cut >= 0 {
+      let head = String::substring(name, 0, cut)
+      let member = String::substring(name, cut + 2, String::length(name))
+      match find_enum_typedef(defs, head) {
+        Some(TDEnum(_, _, variants)) => enum_variants_have(variants, member),
+        _ => false
+      }
+    } else {
+      let mut found = false
+      for d in defs {
+        if !found {
+          match d {
+            TDEnum(_, _, variants) => if enum_variants_have(variants, name) {
+              found = true
+            },
+            _ => ()
+          }
+        }
+      }
+      found
+    }
+  }
+}
+
+fn enum_variants_have(variants: Array[(String, Array[Type])], name: String) -> Bool {
+  let mut found = false
+  for v in variants {
+    let (vname, _) = v
+    if vname == name {
+      found = true
+    }
+  }
+  found
+}
+
+/// #2459 / #2461 / #3537: the independent reasons not to generalize a `let`.
 ///
 /// (A) The VALUE RESTRICTION: the binding HOLDS a mutable container, so its
 ///     element variable must stay a monotype -- `let xs = []` is one array,
@@ -774,7 +888,92 @@ export fn env_reachable_tvars(val: Expr, env: TypeEnv, s: Subst, self_name: Opti
 /// slot (#2459). A function value holds a container only when it CAPTURED one,
 /// which is (B)'s question, not (A)'s -- so the `CtFn` case is decided by
 /// environment reachability and every other case by (A) as before.
+///
+/// (C) The SYNTACTIC value restriction (#3537): a right-hand side that is not
+///     a syntactic value (`expr_is_expansive`) generalizes nothing. (A) and
+///     (B) read the TYPE and the ENVIRONMENT, and neither can see a container
+///     the right-hand side allocated and then hid behind a closure or a
+///     struct: `let f = make()` with `fn make[T]() -> (T) -> Array[T]`
+///     captured its array inside `make`, out of (B)'s reach, and `Bag[T]` has
+///     no array in its type for (A) to find. Annotating the binding
+///     (`let f: (Int) -> Array[Int] = make()`) states the one type it has.
 export fn let_generalize(val: Expr, vt: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, self_name: Option[String]) -> Type {
+  let gen = let_generalize_vars(val, vt, env, defs, s, self_name)
+  // #3557: an alias of a scheme keeps its rows quantified. The lookup of
+  // `apply` freshened them for this binding alone, so `let g = apply` is as
+  // polymorphic in its row as `apply` itself.
+  match val {
+    EIdent(name, _) => match env_lookup(env, name) {
+      Some(CtForAll(_, _, _)) => quantify_own_rows(gen),
+      _ => gen
+    },
+    _ => gen
+  }
+}
+
+/// #3557: a function's own row variables are quantified with it.
+///
+/// `instantiate` gives every use of a scheme fresh row variables, but only a
+/// `CtForAll` is instantiated, and a function declaring no type parameter
+/// generalized to a plain `CtFn`. Its `with e` was then ONE variable shared by
+/// every call in a body: after `apply(one)` fixed it as pure, `apply(noisy)`
+/// on the next line was refused for dropping `Console`, while the same
+/// function with a `[T]` binder accepted both. A scheme with no type variable
+/// quantifies exactly its rows.
+///
+/// Callers apply it only where the row variables are the binding's own: a
+/// top-level declaration (nothing encloses it to bind them) and an alias of a
+/// scheme (whose rows the lookup has just freshened). A local lambda's
+/// `with e` may be its enclosing function's, so it is left alone.
+export fn quantify_own_rows(t: Type) -> Type {
+  match t {
+    CtFn(_, _, _) => if type_names_row_variable(t) {
+      CtForAll(array_empty(), array_empty(), t)
+    } else {
+      t
+    },
+    _ => t
+  }
+}
+
+/// Does `t` name a row variable (`with e`, or an instantiated `$N`) in any
+/// function type it contains? The positions `instantiate` renames.
+fn type_names_row_variable(t: Type) -> Bool {
+  match t {
+    CtFn(params, ret, row) => if Array::length(row_variable_labels(row)) > 0 || type_names_row_variable(ret) {
+      true
+    } else {
+      types_name_row_variable(params)
+    },
+    CtArray(elem) => type_names_row_variable(elem),
+    CtOption(elem) => type_names_row_variable(elem),
+    CtTuple(items) => types_name_row_variable(items),
+    CtNamed(_, args) => types_name_row_variable(args),
+    CtRecord(fields) => {
+      let mut found = false
+      for field in fields {
+        let (_, ft) = field
+        if !found && type_names_row_variable(ft) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn types_name_row_variable(items: Array[Type]) -> Bool {
+  let mut found = false
+  for item in items {
+    if !found && type_names_row_variable(item) {
+      found = true
+    }
+  }
+  found
+}
+
+fn let_generalize_vars(val: Expr, vt: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, self_name: Option[String]) -> Type {
   let vt_resolved = subst_apply(s, vt)
   if Array::length(collect_tvars(vt_resolved)) == 0 {
     // Nothing to quantify; skip the right-hand-side walk entirely. Most
@@ -793,9 +992,164 @@ export fn let_generalize(val: Expr, vt: Type, env: TypeEnv, defs: Array[TypeDef]
     }
     if restricted {
       vt
+    } else if expr_is_expansive(val, defs) {
+      // #3537: (C) the ML value restriction. A value the right-hand side
+      // COMPUTED may hold state its type can no longer show: `make()` returns
+      // a closure over one array, and `Bag::{ xs: [] }` is one struct with one
+      // array, yet their types (`(T) -> Array[T]`, `Bag[T]`) are as generic as
+      // a fresh value's. Quantifying such a variable re-instantiates it at
+      // every use, so one runtime container is read at two types. Only a
+      // variable no value of the type can hold -- a phantom parameter's
+      // (`Marker[Future[a]]` of `enum Marker[T] { Tag(Int) }`) -- is still
+      // generalized.
+      let kept = array_empty()
+      for id in env_ids {
+        Array::push(kept, id)
+      }
+      expansive_held_tvars_into(vt_resolved, defs, 0, kept)
+      if esc_ids_cover(collect_tvars(vt_resolved), kept) {
+        vt
+      } else {
+        generalize_except(s, vt, kept)
+      }
     } else {
       generalize_except(s, vt, env_ids)
     }
+  }
+}
+
+fn esc_ids_cover(ids: Array[Int], kept: Array[Int]) -> Bool {
+  let mut all = true
+  for id in ids {
+    if all && !esc_int_has(kept, id) {
+      all = false
+    }
+  }
+  all
+}
+
+/// Declarations being walked by `expansive_decl_param_held`, keyed
+/// `name#index`, so a recursive declaration answers from its other fields.
+let expansive_held_walk: Array[String] = []
+
+/// #3537: the type variables of `t` that a VALUE of type `t` can hold. Every
+/// variable counts except one reached only through a declared type's phantom
+/// parameter -- a parameter none of its fields or payloads mention, so no
+/// value of it is ever stored. An undeclared head (`Map`, `MutMap`, `Future`)
+/// keeps every argument, and a function type keeps everything it mentions,
+/// its row included.
+fn expansive_held_tvars_into(t: Type, defs: Array[TypeDef], depth: Int, out: Array[Int]) -> Unit {
+  if depth > 16 {
+    for id in collect_tvars(t) {
+      Array::push(out, id)
+    }
+    ()
+  } else {
+    match t {
+      CtNamed(n, targs) => match find_typedef(defs, n) {
+        Some(_) => {
+          let mut i = 0
+          while i < Array::length(targs) {
+            if expansive_decl_param_held(n, i, defs, depth + 1) {
+              expansive_held_tvars_into(Array::get(targs, i), defs, depth + 1, out)
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+        },
+        None => {
+          for arg in targs {
+            expansive_held_tvars_into(arg, defs, depth + 1, out)
+          }
+          ()
+        }
+      },
+      CtTuple(elems) => {
+        for elem in elems {
+          expansive_held_tvars_into(elem, defs, depth + 1, out)
+        }
+        ()
+      },
+      CtOption(e) => expansive_held_tvars_into(e, defs, depth + 1, out),
+      CtArray(e) => expansive_held_tvars_into(e, defs, depth + 1, out),
+      CtRecord(fields) => {
+        for field in fields {
+          let (_, ft) = field
+          expansive_held_tvars_into(ft, defs, depth + 1, out)
+        }
+        ()
+      },
+      _ => {
+        for id in collect_tvars(t) {
+          Array::push(out, id)
+        }
+        ()
+      }
+    }
+  }
+}
+
+/// Whether declaration `n` stores its `idx`-th type parameter: its fields
+/// (or payloads, or alias body) are instantiated with a probe variable in that
+/// position and asked whether a value of them holds the probe.
+fn expansive_decl_param_held(n: String, idx: Int, defs: Array[TypeDef], depth: Int) -> Bool {
+  let key = String::concat(String::concat(n, "#"), Int::to_string(idx))
+  let mut seen = false
+  for walking in expansive_held_walk {
+    if walking == key {
+      seen = true
+    }
+  }
+  if seen {
+    false
+  } else {
+    Array::push(expansive_held_walk, key)
+    let held = match find_typedef(defs, n) {
+      Some(td) => {
+        let (tparams, field_tys) = match td {
+          TDStruct(_, fields, _, tps) => (tps, for f in fields {
+            let (_, ft) = f
+            ft
+          }),
+          TDEnum(_, tps, variants) => {
+            let all: Array[Type] = []
+            for variant in variants {
+              let (_, payload) = variant
+              for pt in payload {
+                Array::push(all, pt)
+              }
+            }
+            (tps, all)
+          },
+          TDAlias(_, aps, body) => (aps, [body]),
+          _ => (array_empty(), array_empty())
+        }
+        if idx >= Array::length(tparams) {
+          true
+        } else {
+          let probe_id = -3537
+          let probe: Array[Type] = []
+          let mut pj = 0
+          while pj < Array::length(tparams) {
+            Array::push(probe, if pj == idx {
+              CtVar(probe_id)
+            } else {
+              CtInt
+            })
+            pj = pj + 1
+          }
+          let found = array_empty()
+          for ft in field_tys {
+            expansive_held_tvars_into(subst_type_params(ft, tparams, probe), defs, depth + 1, found)
+          }
+          esc_int_has(found, probe_id)
+        }
+      },
+      None => true
+    }
+    Array::truncate(expansive_held_walk, Array::length(expansive_held_walk) - 1)
+    held
   }
 }
 

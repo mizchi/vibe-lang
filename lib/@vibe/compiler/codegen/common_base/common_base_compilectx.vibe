@@ -85,6 +85,32 @@ export fn str_table_lite(strs: Array[String], offsets: Array[Int], lengths: Arra
   }
 }
 
+/// The slot of `s` in `st` -- the first one that holds it -- or -1 when the
+/// table does not hold it. Never throws: for a caller with a fallback when a
+/// lane's table was not seeded with `s` (the lite module path's table is empty).
+export fn str_table_slot_or_neg(st: StrTable, s: String) -> Int {
+  if MutMap::size(st.index) > 0 {
+    match MutMap::get(st.index, s) {
+      Some(i) => i,
+      None => 0 - 1
+    }
+  } else {
+    let strs = st.strs
+    let len = Array::length(strs)
+    let mut i = 0
+    let mut found = 0 - 1
+    while i < len {
+      if String::equals(Array::get(strs, i), s) {
+        found = i
+        i = len
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  }
+}
+
 /// #3126: the raw `(ptr << 32) | len` constant of `s` in the string table, or 0 when
 /// `s` is empty or was not seeded. Never throws: a missing location is a
 /// shorter message, not a failed build.
@@ -92,24 +118,7 @@ export fn str_table_fat_or_zero(st: StrTable, s: String) -> Int {
   if String::length(s) == 0 {
     0
   } else {
-    let idx = if MutMap::size(st.index) > 0 {
-      match MutMap::get(st.index, s) {
-        Some(i) => i,
-        None => 0 - 1
-      }
-    } else {
-      let mut found = 0 - 1
-      let mut i = 0
-      while i < Array::length(st.strs) {
-        if String::equals(Array::get(st.strs, i), s) {
-          found = i
-          i = Array::length(st.strs)
-        } else {
-          i = i + 1
-        }
-      }
-      found
-    }
+    let idx = str_table_slot_or_neg(st, s)
     if idx < 0 {
       0
     } else {
@@ -121,29 +130,11 @@ export fn str_table_fat_or_zero(st: StrTable, s: String) -> Int {
 /// The slot of `s` in `st` -- the first one that holds it -- or a thrown
 /// "string not in table" (the message str_table_lookup throws).
 export fn str_table_index_of(st: StrTable, s: String) -> Int with Exception {
-  if MutMap::size(st.index) > 0 {
-    match MutMap::get(st.index, s) {
-      Some(i) => i,
-      None => throw(String::concat("string not in table: ", s))
-    }
-  } else {
-    let strs = st.strs
-    let len = Array::length(strs)
-    let mut i = 0
-    let mut found = -1
-    while i < len {
-      if String::equals(Array::get(strs, i), s) {
-        found = i
-        i = len
-      } else {
-        i = i + 1
-      }
-    }
-    if found < 0 {
-      throw(String::concat("string not in table: ", s))
-    }
-    found
+  let found = str_table_slot_or_neg(st, s)
+  if found < 0 {
+    throw(String::concat("string not in table: ", s))
   }
+  found
 }
 
 export struct LambdaTable {

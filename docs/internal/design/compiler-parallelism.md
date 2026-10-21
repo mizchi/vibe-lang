@@ -100,6 +100,11 @@ ModuleJob
   deps       its direct dependencies, in declaration order
   dep_fps    each dependency's fingerprint, in the same order
   dep_envs   each dependency's checked environment, in the same order
+  ships_owned_heads
+             whether the module is the file the package resolver selects for
+             `@vibe/concurrent/experimental` (the one module that may declare
+             the region-first owned heads); answered by whoever builds the job,
+             which can see the filesystem
 
 ModuleOutcome            (opaque)
   Checked(ModuleArtifact)

@@ -1,0 +1,43 @@
+// #3551: a `derive (Hash)` field spelled through a type alias is keyed as the
+// type the alias names. The alias name reached neither the array encoding nor
+// any key of its own, so the field was rendered with `__to_string`, which
+// prints an array's address: two equal, separately allocated arrays gave two
+// keys (`3:236` and `3:292`) and `Map::set_by` / `get_by` missed. A local
+// alias, a generic one, and one imported from another module are all keyed by
+// content.
+
+import @vibe/core {
+  has_by, set_by
+}
+
+import ./modules/derive_hash_alias_owner.vibe {
+  type Scores
+}
+
+type Values = Array[Int]
+
+type Opt[T] = Option[T]
+
+struct S {
+  xs: Values;
+  o: Opt[String];
+  scores: Scores
+} derive (Eq, Hash)
+
+fn make(n: Int) -> S {
+  let xs: Array[Int] = []
+  Array::push(xs, n)
+  Array::push(xs, 2)
+  let scores: Array[Double] = []
+  Array::push(scores, 0.5)
+  S::{ xs: xs, o: Some("p"), scores: scores }
+}
+
+test "an aliased array field is keyed by content" {
+  let a = make(1)
+  let b = make(1)
+  inspect(S::hash_key(a) == S::hash_key(b), content = "true")
+  inspect(S::hash_key(a) == S::hash_key(make(3)), content = "false")
+  inspect(S::hash_key(a), content = "#2:1:11:2S1:p#1:3:0.5")
+  inspect(has_by(set_by(Map::new(), a, 1), b), content = "true")
+}

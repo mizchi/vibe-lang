@@ -1,0 +1,112 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+//# Tests
+
+/// #3546: two expressions juxtaposed on one line were read as two
+/// statements, so `let x = 1 2` bound 1 and dropped the 2, and a missing
+/// operator (`price quantity`) changed the program silently.
+test "two expressions on one line are refused" {
+  assert(check_source_err_contains("fn f() -> Int {\n  let x = 1 2\n  x\n}\nfn main() -> Int { f() }", "two expressions on one line"))
+  assert(check_source_err_contains("fn f(price: Int, quantity: Int) -> Int {\n  let total = price quantity\n  total\n}\nfn main() -> Int { f(2, 3) }", "two expressions on one line"))
+  assert(check_source_err_contains("fn f() -> Int {\n  let mut n = 0\n  n = 1 2\n  n\n}\nfn main() -> Int { f() }", "two expressions on one line"))
+}
+
+/// What stays accepted: one statement per line, `;` on one line, a statement
+/// after a block's `}`, a block on the next line, and a line continued by an
+/// operator.
+test "statements on separate lines, after `;` or after a block are accepted" {
+  assert(check_source_ok("fn f() -> Int {\n  let x = 1\n  let y = x\n  y\n}\nfn main() -> Int { f() }"))
+  assert(check_source_ok("fn f() -> Int {\n  let x = 1; let y = 2\n  x + y\n}\nfn main() -> Int { f() }"))
+  assert(check_source_ok("fn f(c: Bool) -> Int {\n  let mut n = 0\n  if c { n = 1 } n = n + 1\n  n\n}\nfn main() -> Int { f(true) }"))
+  assert(check_source_ok("fn f() -> Int {\n  let mut y = 0\n  {\n    y = 2\n  }\n  y\n}\nfn main() -> Int { f() }"))
+  assert(check_source_ok("fn f(o: Option[Int]) -> Option[Int] {\n  let v = o?\n  let w = v\n  Some(w)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f(a: Int) -> Int {\n  let x = a\n    + 1\n  x\n}\nfn main() -> Int { f(1) }"))
+}
+
+/// A match arm's `if` guard may open the line after its pattern. The line
+/// boundary the lexer marks before a statement-starting `if` used to land
+/// between the pattern and the guard, and the arm failed with `expected =>`.
+test "a match arm guard on the line after its pattern is accepted" {
+  assert(check_source_ok("fn f(o: Option[Int]) -> Int {\n  match o {\n    Some(x)\n      if x > 0 => x,\n    Some(_) => 0,\n    None => -1\n  }\n}\nfn main() -> Int { f(Some(3)) }"))
+  assert(check_source_ok("fn g(n: Int) -> Int {\n  match n {\n    k\n      if k > 0 => k,\n    _ => 0\n  }\n}\nfn main() -> Int { g(3) }"))
+  // A statement `if` after a whole match still starts its own statement.
+  assert(check_source_ok("fn h(n: Int) -> Int {\n  let mut r = match n {\n    0 => 1,\n    _ => 2\n  }\n  if r > 1 { r = 3 }\n  r\n}\nfn main() -> Int { h(0) }"))
+}
+
+/// An impl header may break before `for`, or after its `[..]` binder. Both
+/// lines continue the header: the line boundary the lexer marks before a
+/// statement-starting `for` or name used to land inside it, and the header
+/// failed with `expected for`.
+test "an impl header continued on the next line is accepted" {
+  let tr = "trait Tag {\n  tag(Self) -> Int\n}\n"
+  assert(check_source_ok(String::concat(tr, "struct Foo { n: Int }\nimpl Tag\n  for Foo {\n  tag(self: Foo) -> Int { self.n }\n}\nfn main() -> Int { 0 }")))
+  assert(check_source_ok(String::concat(tr, "struct Foo { n: Int }\nimpl Tag\n  for Foo\n{\n  tag(self: Foo) -> Int { self.n }\n}\nfn main() -> Int { 0 }")))
+  assert(check_source_ok("trait Conv[A] {\n  conv(Self) -> A\n}\nstruct Foo { n: Int }\nimpl Conv[Int]\n  for Foo {\n  conv(self: Foo) -> Int { self.n }\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok(String::concat(tr, "struct Box[T] { v: T }\nimpl [T: Tag]\n  Tag for Box[T] {\n  tag(self: Box[T]) -> Int { T::tag(self.v) }\n}\nfn main() -> Int { 0 }")))
+  assert(check_source_ok(String::concat(tr, "struct Foo { n: Int }\nimpl Tag for\n  Foo {\n  tag(self: Foo) -> Int { self.n }\n}\nfn main() -> Int { 0 }")))
+  // A `for` loop after an expression on the previous line still starts its
+  // own statement, inside an impl and outside one.
+  assert(check_source_ok(String::concat(tr, "struct Foo { n: Int }\nimpl Tag\n  for Foo {\n  tag(self: Foo) -> Int {\n    let mut s = self.n\n    let xs = [1, 2]\n    for x in xs {\n      s = s + x\n    }\n    s\n  }\n}\nfn main() -> Int { 0 }")))
+  assert(check_source_ok("fn f(xs: Array[Int]) -> Int {\n  let mut s = 0\n  let y = 1\n  for x in xs {\n    s = s + x\n  }\n  s + y\n}\nfn main() -> Int { f([1]) }"))
+  // ...and two expressions on one line inside an impl body are still refused.
+  assert(check_source_err_contains(String::concat(tr, "struct Foo { n: Int }\nimpl Tag\n  for Foo {\n  tag(self: Foo) -> Int {\n    let x = 1 2\n    x\n  }\n}\nfn main() -> Int { 0 }"), "two expressions on one line"))
+}
+
+/// A postfix `?` ends an expression like a name does, so a next line that
+/// opens with `(`, `[` or a tight prefix operator begins a new statement.
+/// Before, `o?` then `()` called the unwrapped value, `[0]` indexed it and
+/// `-1` subtracted from it, with no diagnostic: the callback ran.
+test "a line after a postfix `?` that opens with `(`, `[` or a prefix operator is a new statement" {
+  assert(check_source_ok("fn f(o: Option[() -> Int]) -> Option[() -> Int] {\n  let v = o?\n  ()\n  Some(v)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f(o: Option[Array[Int]]) -> Option[Array[Int]] {\n  let v = o?\n  [0]\n  Some(v)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f(o: Option[Bool]) -> Option[Bool] {\n  let v = o?\n  -1\n  Some(v)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f(o: Option[Int]) -> Option[Int] {\n  o?\n  (0)\n  Some(1)\n}\nfn main() -> Int { 0 }"))
+}
+
+/// A bare `continue` completes its statement: a statement on the next line
+/// is a new one, not a second expression on the `continue` line (#3551
+/// review). Before, `continue` then `let x = 1` was refused as "two
+/// expressions on one line".
+test "a statement on the line after a bare `continue` is accepted" {
+  assert(check_source_ok("fn f(n: Int) -> Int {\n  let mut i = 0\n  let mut s = 0\n  while i < n {\n    i = i + 1\n    continue\n    let x = 1\n    s = s + x\n  }\n  s\n}\nfn main() -> Int { f(3) }"))
+  assert(check_source_ok("fn f(n: Int) -> Int {\n  let mut i = 0\n  while i < n {\n    i = i + 1\n    continue\n    i = i + 1\n  }\n  i\n}\nfn main() -> Int { f(3) }"))
+  assert(check_source_ok("fn f(n: Int) -> Int {\n  let mut i = 0\n  while i < n {\n    i = i + 1\n    if i == 2 {\n      continue\n    }\n  }\n  i\n}\nfn main() -> Int { f(3) }"))
+  // ...and two expressions on the `continue` line itself are still refused.
+  assert(check_source_err_contains("fn f(n: Int) -> Int {\n  let mut i = 0\n  while i < n {\n    i = i + 1\n    continue 1\n  }\n  i\n}\nfn main() -> Int { f(3) }", "two expressions on one line"))
+}
+
+/// `where` and `allows` are contextual: a name after them continues a
+/// declaration header, anything else makes them an ordinary identifier, which
+/// opens a statement on a new line (#3551 review). Before, every line-leading
+/// `allows` or `where` continued the previous line, so `allows()` after a call
+/// was refused as "two expressions on one line".
+test "a line-leading `allows` or `where` used as an identifier opens a statement" {
+  assert(check_source_ok("fn allows() -> Int { 1 }\nfn f() -> Int {\n  let x = 2\n  allows()\n}\nfn main() -> Int { f() }"))
+  assert(check_source_ok("fn where() -> Int { 1 }\nfn f() -> Int {\n  let x = 2\n  where()\n}\nfn main() -> Int { f() }"))
+  assert(check_source_ok("fn f() -> Int {\n  let mut allows = 1\n  let y = allows\n  allows = y + 1\n  allows\n}\nfn main() -> Int { f() }"))
+  // The word used as a value ends its own statement at the line break.
+  assert(check_source_ok("fn f(allows: Int) -> Int {\n  allows\n  1\n}\nfn main() -> Int { f(2) }"))
+  assert(check_source_ok("fn f(where: Int) -> Int {\n  where\n  -1\n}\nfn main() -> Int { f(2) }"))
+  // ...and a clause on the next line still continues its header.
+  assert(check_source_ok("fn main() -> Unit\n  allows Console {\n  println(\"x\")\n}"))
+  assert(check_source_ok("fn add(x: Int, y: Int) -> Int\n  where { requires: x >= 0, ensures: result >= x } {\n  x + y\n}\nfn main() -> Int { add(1, 2) }"))
+  // A `//` comment between the word and its clause is trivia.
+  assert(check_source_ok("fn main() -> Unit\n  allows // what main may do\n  Console {\n  println(\"x\")\n}"))
+  assert(check_source_ok("fn add(x: Int, y: Int) -> Int\n  where // the contract\n  { requires: x >= 0 } {\n  x + y\n}\nfn main() -> Int { add(1, 2) }"))
+}
+
+/// What a postfix `?` still continues: a `.field` chain, an operator at the
+/// start of the next line with a space after it, and a call or an index on
+/// the same line as the `?`.
+test "a postfix `?` still continues into a chain or an operator on the next line" {
+  let p = "struct P { n: Int }\n"
+  assert(check_source_ok(String::concat(p, "fn f(o: Option[P]) -> Option[Int] {\n  let v = o?\n    .n\n  Some(v)\n}\nfn main() -> Int { 0 }")))
+  assert(check_source_ok("fn f(o: Option[Int]) -> Option[Bool] {\n  let v = o?\n    == 1\n  Some(v)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f(o: Option[Int]) -> Option[Bool] {\n  let v = o?\n    - 1 > 0\n  Some(v)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f(o: Option[() -> Int]) -> Option[Int] {\n  let v = o?()\n  Some(v)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn f(o: Option[Array[Int]]) -> Option[Int] {\n  let v = o?[0]\n  Some(v)\n}\nfn main() -> Int { 0 }"))
+}

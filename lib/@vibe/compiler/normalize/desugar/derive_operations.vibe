@@ -13,7 +13,7 @@ import @vibe/core {
 }
 
 import ./equality_aliases.vibe {
-  eq_subst_ty
+  eq_expand_alias_ty, eq_subst_ty
 }
 
 import ./equality_registry.vibe {
@@ -26,6 +26,10 @@ import ./equality_requests.vibe {
 
 import ./formal_scope.vibe {
   is_scalar_type_name
+}
+
+import ./hash_key_signature.vibe {
+  hash_key_definitions, hash_key_fact_marker, hash_key_fact_pattern
 }
 
 import ./lambda_hoist.vibe {
@@ -141,6 +145,20 @@ export fn collect_explicit_derived_op_names(stmts: Array[Stmt]) -> Array[String]
     }
     i = i + 1
   }
+  // #3551: a module that derives `Hash` over another module's type sees that
+  // type's written `hash_key` only by this name, so what the definition takes
+  // rides along -- the parameter of a callable one, which may be one
+  // application (`Box[Int]`), and why an unusable one cannot be called
+  // (`hash_key_signature.vibe`).
+  let (written, unusable) = hash_key_definitions(stmts)
+  for row in written {
+    let (owner, vars, param) = row
+    Array::push(out, hash_key_fact_pattern(owner, vars, param))
+  }
+  for row in unusable {
+    let (owner, problem) = row
+    Array::push(out, hash_key_fact_marker(owner, problem))
+  }
   out
 }
 
@@ -227,6 +245,11 @@ export fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -
     // renderer rather than leave it to the representation.
     TyName("Bool") => EIf(val, EString("true", -1), EString("false", -1)),
     TyName("Double") => ECall(builtin_ref("Double::to_string"), [val], -1, []),
+    // #3542: the checker's other spellings of `Double` (`resolve_builtin`).
+    // A `Float` field fell to `__to_string`, which printed the box address.
+    TyName("Float") => ECall(builtin_ref("Double::to_string"), [val], -1, []),
+    TyName("f64") => ECall(builtin_ref("Double::to_string"), [val], -1, []),
+    TyName("f32") => ECall(builtin_ref("Double::to_string"), [val], -1, []),
     TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
       ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([val], 0, 1), -1, [
       ])
@@ -631,23 +654,6 @@ export fn gen_enum_show_fn(ename: String, variants: Array[(String, Array[TypeExp
   SLet(false, false, qualified_name(ename, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, EMatch(EIdent("self", -1), arms)))
 }
 
-/// `let T::hash_key = (self: T) -> String { T::to_string(self) }` (#694 Layer 1).
-/// `derive(Hash)` makes a type usable as a Map key via the method-bearing `Hash`
-/// trait (`hash_key(Self) -> String`): `map_key_to_string = [K: Hash](key) ->
-/// K::hash_key(key)` threads the witness (#684), and at a concrete call site
-/// `get_by(m, T::{..})` the synthesized `HashDict::{ hash_key: T::hash_key }`
-/// resolves here. The key is the structural `to_string` (now fully recursive via
-/// `show_for_typed`), so two distinct-but-field-equal values hash to one entry.
-export fn gen_hash_key_fn(tname: String) -> Stmt {
-  let body = ECall(EIdent(qualified_name(tname, "to_string"), -1), Array::slice([
-    EIdent("self", -1)
-  ], 0, 1), -1, [])
-  let params = Array::slice([("self", Some(TyName(tname)))], 0, 1)
-  let no_tp = array_empty()
-  let no_tb = array_empty()
-  SLet(false, false, qualified_name(tname, "hash_key"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
-}
-
 /// Append any `Array[e]` element types referenced by a TypeExpr to `acc`
 /// (dedup by type-key), so a Show/Hash-deriving type with an `Array[t]` field or
 /// payload gets a generated `__arr_to_string__<key>` helper. (#694 Layer 2.)
@@ -669,28 +675,91 @@ export fn collect_show_array_elems(ty: TypeExpr, acc: Array[TypeExpr], keys: Arr
   }
 }
 
+/// A field or payload binder in a generated `compare` is a bare name whose
+/// type does not reach the `<` lowering, so a raw `<` on a boxed `Double` or a
+/// `String` compared the two references: equal values answered `Less` and the
+/// order of unequal ones followed allocation order. Mark the operand the way
+/// typed equality does (`Double::to_float` makes it floatish), and give a
+/// `String` an operand the lowering classifies as a string. The checker
+/// refuses `derive (Ord)` over every other non-nominal field type
+/// (`collect_derive_field_errors`), so no other shape reaches the operator.
+/// Every spelling the checker resolves to `Double` (`resolve_builtin`) is
+/// boxed the same way, so `f64` and `f32` are marked as well.
+fn ord_operand(fty: TypeExpr, e: Expr) -> Expr {
+  if ord_is_double(fty) {
+    ECall(builtin_ref("Double::to_float"), [e], -1, [])
+  } else {
+    match fty {
+      TyName("String") => ECall(builtin_ref("String::concat"), [
+        e,
+        EString("", -1)
+      ], -1, []),
+      _ => e
+    }
+  }
+}
+
+/// Every spelling the checker resolves to `Double` (`resolve_builtin`).
+fn ord_is_double(fty: TypeExpr) -> Bool {
+  match fty {
+    TyName(n) => n == "Double" || n == "Float" || n == "f64" || n == "f32",
+    _ => false
+  }
+}
+
+/// What a `Double` field answers when neither `<` nor `>` holds. For two
+/// numbers that is equality, so `rest` decides. A NaN is neither less nor
+/// greater than anything, so without this arm `compare` answered `Equal` for
+/// NaN against any number and let a later field decide. The derived order is
+/// total instead: NaN sorts after every number and is `Equal` to another NaN
+/// (the order of Java's `Double.compare`, without its `-0.0 < 0.0`, so the
+/// two zeros stay `Equal` as they are under `==`). `x == x` is false exactly
+/// for NaN; the operands are the marked ones, so it is the float comparison.
+fn ord_nan_last(l: Expr, r: Expr, rest: Expr) -> Expr {
+  let l_num = EBinOp("==", l, l, -1)
+  let r_num = EBinOp("==", r, r, -1)
+  EIf(EBinOp("==", l, r, -1), rest, EIf(l_num, ordering_ctor("Less"), EIf(r_num, ordering_ctor("Greater"), rest)))
+}
+
 /// Compare two operands of declared type `fty` and answer `rest` when they are
 /// `Equal`, otherwise their `Ordering` (#3042). Aggregate (declared
-/// struct/enum) operands recurse through `T::compare`; scalars and type
-/// parameters use the runtime structural `<` / `>` (codegen handles them).
-fn compare_then_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, rest: Expr, known_types: Array[String]) -> Expr {
-  let by_operator = EIf(EBinOp("<", lhs, rhs, -1), ordering_ctor("Less"), EIf(EBinOp(">", lhs, rhs, -1), ordering_ctor("Greater"), rest))
+/// struct/enum) operands recurse through `T::compare`, applied (`Box[Int]`)
+/// or not; scalars use the runtime structural `<` / `>` (codegen handles
+/// them). A type alias is expanded first: its name reaches neither
+/// `known_types` nor `ord_operand`, so `type Score = Double` compared the two
+/// boxes by address.
+fn compare_then_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, rest: Expr, known_types: Array[String]) -> Expr {
+  let fty = eq_expand_alias_ty(fty0)
+  let l = ord_operand(fty, lhs)
+  let r = ord_operand(fty, rhs)
+  let undecided = if ord_is_double(fty) {
+    ord_nan_last(l, r, rest)
+  } else rest
+  let by_operator = EIf(EBinOp("<", l, r, -1), ordering_ctor("Less"), EIf(EBinOp(">", l, r, -1), ordering_ctor("Greater"), undecided))
   match fty {
     TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
-      let arms = array_empty()
-      let equal_binds = array_empty()
-      Array::push(arms, (PCtor("Equal", equal_binds), rest))
-      // Fresh per comparison: a nested field's arm must not capture an
-      // enclosing field's binder.
-      let decided = String::concat("__ord", idx_str(eq_tuple_uid_next()))
-      Array::push(arms, (PBind(decided), EIdent(decided, -1)))
-      EMatch(ECall(EIdent(qualified_name(n, "compare"), -1), Array::slice([
-        lhs,
-        rhs
-      ], 0, 2), -1, []), arms)
+      compare_through_nominal(n, lhs, rhs, rest)
+    } else by_operator,
+    TyApp(n, _) => if str_array_contains(known_types, n) {
+      compare_through_nominal(n, lhs, rhs, rest)
     } else by_operator,
     _ => by_operator
   }
+}
+
+/// `match T::compare(lhs, rhs) { Equal => rest, decided => decided }`: a
+/// declared struct or enum field is ordered by its own `compare`, never by
+/// the `<` lowering, which would compare the two references.
+fn compare_through_nominal(n: String, lhs: Expr, rhs: Expr, rest: Expr) -> Expr {
+  let arms = array_empty()
+  let equal_binds = array_empty()
+  Array::push(arms, (PCtor("Equal", equal_binds), rest))
+  // Fresh per comparison: a nested field's arm must not capture an
+  // enclosing field's binder.
+  let decided = String::concat("__ord", idx_str(eq_tuple_uid_next()))
+  Array::push(arms, (PBind(decided), EIdent(decided, -1)))
+  EMatch(ECall(EIdent(qualified_name(n, "compare"), -1), Array::slice([lhs, rhs], 0, 2), -1, [
+  ]), arms)
 }
 
 /// `let E::compare = (a: E, b: E) -> Ordering { ... }` (#3042, ADR-0118)

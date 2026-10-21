@@ -1,0 +1,47 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+//# Tests
+
+/// `derive (Ord)` compared a field it has no typed comparison for with a raw
+/// `<` on references: equal arrays, options, tuples and type-parameter values
+/// answered `Less`, and unequal ones came out in allocation order. Such a
+/// derive is refused now, naming the edit.
+test "derive (Ord) over a container, tuple or type parameter is refused" {
+  assert(check_source_err_contains("struct I { w: Array[Int] } derive(Ord)\nfn main() -> Int { 0 }", "write `I::compare` yourself"))
+  assert(check_source_err_contains("struct O { w: Option[Int] } derive(Ord)\nfn main() -> Int { 0 }", "write `O::compare` yourself"))
+  assert(check_source_err_contains("struct T { w: (Int, Int) } derive(Ord)\nfn main() -> Int { 0 }", "write `T::compare` yourself"))
+  assert(check_source_err_contains("struct G[A] { w: A } derive(Ord)\nfn main() -> Int { 0 }", "type parameter `A`"))
+  assert(check_source_err_contains("enum E { K(Array[String]) } derive(Ord)\nfn main() -> Int { 0 }", "write `E::compare` yourself"))
+}
+
+test "derive (Ord) over scalars, strings, doubles and declared types is accepted" {
+  assert(check_source_ok("struct P { name: String; w: Double; n: Int; c: Char; b: Bool; f: Float } derive(Ord)\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("struct In { n: Int } derive(Ord)\nenum E { K(String); L(In) } derive(Ord)\nstruct Rec { next: Rec } derive(Ord)\nfn main() -> Int { 0 }"))
+}
+
+/// The allow-list is judged after a local alias is expanded, and a builtin
+/// name outside the scalar set (`StringBuilder`, `i64`) is refused rather than
+/// compared by address.
+test "derive (Ord) over an alias of a container or an opaque builtin is refused" {
+  assert(check_source_err_contains("type Values = Array[Int]\nstruct S { v: Values } derive(Ord)\nfn main() -> Int { 0 }", "write `S::compare` yourself"))
+  assert(check_source_err_contains("type AL[V] = Array[V]\nstruct S { v: AL[Int] } derive(Ord)\nfn main() -> Int { 0 }", "write `S::compare` yourself"))
+  assert(check_source_err_contains("struct W { s: StringBuilder } derive(Ord)\nfn main() -> Int { 0 }", "write `W::compare` yourself"))
+  assert(check_source_err_contains("struct W { s: i64 } derive(Ord)\nfn main() -> Int { 0 }", "write `W::compare` yourself"))
+}
+
+test "derive (Ord) over a scalar alias, an applied nominal or f64 is accepted" {
+  assert(check_source_ok("type Score = Double\nstruct S { v: Score } derive(Ord)\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("struct Box[T] { n: Int } derive(Ord)\nstruct O { b: Box[Int] } derive(Ord)\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("struct D { v: f64; w: f32; i: i32 } derive(Ord)\nfn main() -> Int { 0 }"))
+}
+
+/// A program that writes `Owner::compare` gets no generated comparator, so
+/// the refusal's own suggested repair has to compile.
+test "a written compare lifts the field restriction" {
+  assert(check_source_ok("struct I { w: Array[Int] } derive(Ord)\nfn I::compare(a: I, b: I) -> Ordering { Equal }\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("struct In { n: Int }\nstruct O { i: In } derive(Ord)\nfn O::compare(a: O, b: O) -> Ordering { Equal }\nfn main() -> Int { 0 }"))
+}

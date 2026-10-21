@@ -1,0 +1,33 @@
+// #3540: a closure that performs what a `handle` answers must not outlive
+// that handle -- even in a struct field whose declared type carries the row
+// (`f: () -> Int with Ask`). The lowering gives a declared row only to a
+// closure that is the function's result (or an argument at a rowed
+// parameter), not to a closure written in a struct literal's field: with
+// this check off, `drive(o.f)` trapped (`null function or function
+// signature mismatch`) rather than asking `drive`'s handler. The same field
+// trapped with no `handle` at all; that is the lowering's gap, and this
+// refusal keeps the handle from adding a second route into it.
+effect Ask {
+  Get() -> Int
+}
+
+struct Out {
+  f: () -> Int with Ask
+}
+
+fn mk() -> Out {
+  handle {
+    Out::{ f: () -> perform Ask::Get() + 1 }
+  } with { Ask::Get() => resume(5) }
+}
+
+fn drive(f: () -> Int with Ask) -> Int {
+  handle {
+    f()
+  } with { Ask::Get() => resume(7) }
+}
+
+fn main() -> Unit allows Console {
+  let o = mk()
+  println("r=\{drive(o.f)}")
+}

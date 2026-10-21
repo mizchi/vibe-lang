@@ -5,6 +5,7 @@ import @vibe/compiler/core {
   Expr,
   Pat,
   Stmt,
+  Subst,
   Type,
   TypeDef,
   TypeEnv,
@@ -20,7 +21,9 @@ import @vibe/compiler/core {
   is_entry_runtime_managed_effect,
   is_exception_label,
   is_exception_throw_operation,
-  is_legacy_console_provider
+  is_legacy_console_provider,
+  subst_apply,
+  subst_eff_binding
 }
 
 import @vibe/core {
@@ -41,6 +44,7 @@ import ./checker_effects_mutability_expr_into.vibe {
   effect_row_has_label,
   effect_row_labels,
   effect_row_parse,
+  label_is_effect_var,
   no_str_labels,
   row_declared_formal,
   row_formal_scope,
@@ -456,6 +460,41 @@ export fn kinded_handle_marker() -> String {
 /// exception exemption of the direct and transitive disciplines is off.
 export fn under_kinded_handle(labels: Array[String]) -> Bool {
   effect_row_has_label(Some(labels), kinded_handle_marker())
+}
+
+/// #3540: the pseudo-label that admits row variable `v` in the body of a
+/// handle with a kinded arm. Without it such a body may not run `v` at all: a
+/// caller can fill an open `with e` with any exception kind, and the arm,
+/// which catches every exception at run time, would read that payload at its
+/// own kind. A variable is admitted only when every callback or local
+/// closure row in scope that carries it also names an exception label
+/// (`with Exception[K] + e`): the exception family is then matched by that
+/// label, so the variable holds no exception (#3033).
+export fn kinded_pinned_row_var_marker(v: String) -> String {
+  String::concat("#kinded-pinned:", v)
+}
+
+/// #3540: the pseudo-label naming the local lambda that holds a kinded
+/// handle (its `let` name, or "" for an unnamed one), so a diagnostic points
+/// at the lambda rather than at the function around it. A handle in a
+/// top-level function's own body carries none.
+export fn kinded_handle_owner_marker(name: String) -> String {
+  String::concat(kinded_handle_owner_prefix(), name)
+}
+
+export fn kinded_handle_owner_prefix() -> String {
+  "#kinded-owner:"
+}
+
+/// A pseudo-label of a kinded handle's body (the marker, a pinned row
+/// variable, the owning lambda); none is a row item a reader can write.
+export fn is_kinded_handle_pseudo_label(l: String) -> Bool {
+  String::starts_with(l, "#kinded-")
+}
+
+/// #3540: is `v` a row variable this kinded handle's body may not run?
+export fn kinded_handle_open_row_var(labels: Array[String], v: String) -> Bool {
+  label_is_effect_var(v) && under_kinded_handle(labels) && !effect_row_has_label(Some(labels), kinded_pinned_row_var_marker(v))
 }
 
 /// The exception EFFECT labels (`Exception`, `Exception[K]`; not the `::Throw`
@@ -899,6 +938,14 @@ export fn throw_payload_site_key(off: Int, payload: Expr) -> String {
 /// can only keep a refusal, never admit a wrong kind.
 let throw_site_kind_cell: Array[MutMap[String, String]] = [MutMap::new_string()]
 
+/// #3551 review: the kind the checker records for a throw whose payload may
+/// carry the value an ERASED arm (`Exception::Throw(m)`) caught. It is of no
+/// known kind, and the payload's syntax is not asked: `throw(String::concat(
+/// "ctx: ", m))` or an annotated `let e: String = m` would answer `String`
+/// for a value that is whatever was thrown. A collision with any other kind
+/// keeps this one.
+export let erased_rethrow_site_kind: String = "#erased-rethrow"
+
 export fn set_throw_site_kinds(sites: Array[(String, String)]) -> Unit {
   let m = MutMap::new_string()
   let mut i = 0
@@ -906,13 +953,161 @@ export fn set_throw_site_kinds(sites: Array[(String, String)]) -> Unit {
     let (k, kind) = Array::get(sites, i)
     match MutMap::get(m, k) {
       Some(prev) => if prev != kind {
-        MutMap::set(m, k, "")
+        if prev == erased_rethrow_site_kind || kind == erased_rethrow_site_kind {
+          MutMap::set(m, k, erased_rethrow_site_kind)
+        } else {
+          MutMap::set(m, k, "")
+        }
       },
       None => MutMap::set(m, k, kind)
     }
     i = i + 1
   }
   Array::set(throw_site_kind_cell, 0, m)
+}
+
+/// #3539: the type the checker inferred for the CALLEE of each call, keyed
+/// by the call's offset (`ECall`'s own offset) and the callee's spelling
+/// (`call_callee_spelling`). The effects walk is syntactic: it reads the row
+/// of a callee it can NAME -- a top-level function, a builtin, a callback
+/// parameter, a local closure literal or alias. A call through anything else
+/// (`mk()()`, `(s.f)()`, `xs[0]()`, a `match` / `for` / destructuring binder,
+/// `let g: T = mk()`, a method `p.m()`) used to charge nothing, so the row of
+/// the function actually called was dropped. This table hands the walk the
+/// callee's function type; its row is read under the program's final
+/// substitution (`set_call_callee_types`) only for a call the walk could not
+/// name. Unlocated calls (offset < 0) are never recorded.
+let call_callee_types_cell: Array[(MutMap[Int, Array[Int]], Array[(Int, String, Type)], Subst)] = [
+  (MutMap::new_int(), array_empty(), SubstEmpty)
+]
+
+export fn set_call_callee_types(rows: Array[(Int, String, Type)], s: Subst) -> Unit {
+  let index: MutMap[Int, Array[Int]] = MutMap::new_int()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (off, _, _) = Array::get(rows, i)
+    match MutMap::get(index, off) {
+      Some(at) => Array::push(at, i),
+      None => MutMap::set(index, off, [i])
+    }
+    i = i + 1
+  }
+  Array::set(call_callee_types_cell, 0, (index, rows, s))
+}
+
+export fn clear_call_callee_types() -> Unit {
+  Array::set(call_callee_types_cell, 0, (MutMap::new_int(), array_empty(), SubstEmpty))
+}
+
+/// The spelling a call's callee is recorded under: the name of a named
+/// callee, the field or method of a dotted one, and "" for anything else.
+/// A `$source_span` wrapper (a parenthesized callee) is looked through.
+export fn call_callee_spelling(callee: Expr) -> String {
+  match callee {
+    EIdent(n, _) => n,
+    EDot(_, m, _, _) => m,
+    ECall(EIdent(w, _), wargs, _, _) => if w == "$source_span" && Array::length(wargs) > 0 {
+      call_callee_spelling(Array::get(wargs, 0))
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
+/// The effect labels of the callee's inferred function type at the call at
+/// `off`, or an empty array when the checker recorded no function type
+/// there. Compiler-internal labels (`#...`) are left out; row variables are
+/// kept, for the caller to judge. When two recorded calls share the key, the
+/// union is answered: a collision can only add a requirement, never hide one.
+export fn call_callee_row_labels(off: Int, spelling: String) -> Array[String] {
+  let out = no_str_labels()
+  if off >= 0 {
+    let (index, rows, s) = Array::get(call_callee_types_cell, 0)
+    match MutMap::get(index, off) {
+      Some(at) => {
+        let mut i = 0
+        while i < Array::length(at) {
+          let (_, sp, ty) = Array::get(rows, Array::get(at, i))
+          if sp == spelling {
+            match subst_apply(s, ty) {
+              CtFn(_, _, row) => {
+                let labels = effect_row_labels(effect_row_parse(row))
+                let mut li = 0
+                while li < Array::length(labels) {
+                  let l = Array::get(labels, li)
+                  if !String::starts_with(l, "#") && !str_labels_contain(out, l) {
+                    Array::push(out, l)
+                  }
+                  li = li + 1
+                }
+              },
+              _ => ()
+            }
+          }
+          i = i + 1
+        }
+      },
+      None => ()
+    }
+  }
+  out
+}
+
+/// #3551 review: the SOURCE row variables (`e`) of the callee's function type
+/// at the call at `off`, read from the type the checker recorded at that call.
+///
+/// `call_callee_row_labels` cannot answer this. It reads the row under the
+/// program's final substitution, which is shared by every declaration, and a
+/// source variable is spelled alike in all of them: measured, the enclosing
+/// `e` of `factory(f)()` read back as pure there, because some declaration
+/// had bound its own `e`. So a source variable is taken as recorded, and a
+/// fresh `$N` is followed one link at a time (`subst_eff_binding`) only until
+/// it reaches one -- a `$N` is minted once, so its links are this call's.
+export fn call_callee_recorded_row_vars(off: Int, spelling: String) -> Array[String] {
+  let out = no_str_labels()
+  if off >= 0 {
+    let (index, rows, s) = Array::get(call_callee_types_cell, 0)
+    match MutMap::get(index, off) {
+      Some(at) => for k in at {
+        let (_, sp, ty) = Array::get(rows, k)
+        if sp == spelling {
+          match ty {
+            CtFn(_, _, Some(row)) => recorded_row_vars_into(effect_row_labels(effect_row_parse(Some(row))), s, out),
+            _ => ()
+          }
+        }
+      },
+      None => ()
+    }
+  }
+  out
+}
+
+/// The source variables `labels` stand for: each `e` as written, and each
+/// fresh `$N` followed through its own bindings (bounded, so a cyclic chain
+/// cannot spin). A concrete label is not a variable and is left out.
+fn recorded_row_vars_into(labels: Array[String], s: Subst, out: Array[String]) -> Unit {
+  let work = Array::slice(labels, 0, Array::length(labels))
+  let mut steps = 0
+  while Array::length(work) > 0 && steps < 256 {
+    let n = Array::length(work)
+    let l = String::trim(Array::get(work, n - 1))
+    Array::truncate(work, n - 1)
+    steps = steps + 1
+    if label_is_effect_var(l) {
+      if !str_labels_contain(out, l) {
+        Array::push(out, l)
+      }
+    } else if String::length(l) >= 2 && String::char_code_at(l, 0) == 36 {
+      match subst_eff_binding(s, l) {
+        Some(bound) => for part in String::split(bound, ",") {
+          Array::push(work, part)
+        },
+        None => ()
+      }
+    }
+  }
 }
 
 /// #3053: a generic callee's formal bindings at each call, keyed by the
@@ -1011,6 +1206,7 @@ export fn clear_checker_published_tables() -> Unit {
   set_shadowed_builtin_type_names([])
   set_row_nominal_types([])
   Array::set(call_formal_marked_bindings_cell, 0, MutMap::new_string())
+  clear_call_callee_types()
 }
 
 /// Test hook: a label as the call at `key` instantiates it.
@@ -1228,7 +1424,9 @@ export fn throw_required_label(op_name: String, opargs: Array[Expr], binds: TkEn
     // spelling kinds are compared in. The syntax answers only what the
     // checker left unresolved (another lane, or a site whose key collided).
     let typed = throw_site_kind(call_off, payload)
-    let kind = if String::length(typed) > 0 {
+    let kind = if typed == erased_rethrow_site_kind {
+      ""
+    } else if String::length(typed) > 0 {
       typed
     } else {
       throw_payload_kind(payload, binds)
@@ -1468,7 +1666,7 @@ fn row_labels_pasteable(labels: Array[String]) -> Array[String] {
   let mut i = 0
   while i < Array::length(labels) {
     let l = Array::get(labels, i)
-    if String::contains(l, "]::") || l == kinded_handle_marker() {
+    if String::contains(l, "]::") || is_kinded_handle_pseudo_label(l) {
       ()
     } else {
       Array::push(out, l)

@@ -13,7 +13,7 @@ import ./parser_source_span.vibe {
 }
 
 import @vibe/ast {
-  Expr, Pat, TypeExpr, builtin_ref, builtin_ref_at, index_write_callee, trait_ref_key
+  Expr, Pat, TypeExpr, builtin_ref, builtin_ref_at, index_write_callee, match_scrutinee_temp, trait_ref_key
 }
 
 import ./intern.vibe {
@@ -290,20 +290,73 @@ enum BlockStep {
 /// guard's Bool-check and codegen come for free via `EIf`. `scrut` must be a
 /// re-evaluable reference (the caller binds the scrutinee to a temp), so the
 /// nested match never re-runs a side-effecting scrutinee.
+///
+/// `prior` holds the UNGUARDED arms before `i`. The fallthrough match is only
+/// reached by a value that matched `pat`, so a value that an earlier unguarded
+/// arm takes never gets there -- but the checker judges the fallthrough match
+/// on its own, as a match over the whole scrutinee type. Without the earlier
+/// arms, `Circle(r) => .., Rect(w, h) if w == h => .., Rect(w, h) => .., Empty
+/// => ..` was refused with "variant `Circle` ... is not handled". So when the
+/// remaining arms have no catch-all, the earlier unguarded arms are appended
+/// to the fallthrough (they are dead there, and well-typed, being the arms as
+/// written). An earlier GUARDED arm is not appended: its guard may fail too,
+/// so it does not cover anything, and a pattern only guarded arms reach is
+/// still reported as not handled.
+/// #3547: a written single-arm `match` whose arm is a Bool literal or `Some` /
+/// `None` can never be exhaustive, yet it has the shape of the partial-let
+/// desugar (`let Some(v) = o`), which the checker tolerates, so it compiled and
+/// trapped with a bare `unreachable`. Binding its scrutinee to the match
+/// temporary, as a guarded match does, puts it under the checker's flat
+/// Option / Bool exhaustiveness check.
+/// The temporary is `match_scrutinee_temp()`, a name the lexer cannot produce,
+/// so no source name is captured by it (a parameter `__mg` read in an arm
+/// answered the scrutinee while the temporary was spelled `__mg`) and the
+/// checker's test for it cannot mistake a program's own name for it (a
+/// partial `let Some(x) = __mg_1` was judged as a guard's fall-through).
+fn single_arm_needs_check(arms: Array[(Pat, Expr, Expr)]) -> Bool {
+  let (p, _, _) = Array::get(arms, 0)
+  refutable_option_or_bool_pat(p)
+}
+
+fn refutable_option_or_bool_pat(p: Pat) -> Bool {
+  match p {
+    PBool(_) => true,
+    PCtor(n, _) => n == "Some" || n == "None",
+    POr(l, r) => refutable_option_or_bool_pat(l) || refutable_option_or_bool_pat(r),
+    _ => false
+  }
+}
+
 fn desugar_guarded(arms: Array[(Pat, Expr, Expr)], i: Int, scrut: Expr, context: Option[ParserBinderContext]) -> Array[(Pat, Expr)] {
+  desugar_guarded_from(arms, i, scrut, empty_arms(), context)
+}
+
+fn desugar_guarded_from(arms: Array[(Pat, Expr, Expr)], i: Int, scrut: Expr, prior: Array[(Pat, Expr)], context: Option[ParserBinderContext]) -> Array[(Pat, Expr)] {
   if i >= Array::length(arms) {
     empty_arms()
   } else {
     let (pat, arm_guard, body) = Array::get(arms, i)
-    let rest = desugar_guarded(arms, i + 1, scrut, context)
     let no_guard = match arm_guard {
       EBool(bv) => bv,
       _ => false
     }
+    let next_prior = if no_guard {
+      let pb = ArrayBuilder::new()
+      let mut q = 0
+      while q < Array::length(prior) {
+        ArrayBuilder::push(pb, Array::get(prior, q))
+        q = q + 1
+      }
+      ArrayBuilder::push(pb, (pat, body))
+      ArrayBuilder::freeze(pb)
+    } else {
+      prior
+    }
+    let rest = desugar_guarded_from(arms, i + 1, scrut, next_prior, context)
     let arm_body = if no_guard {
       body
     } else {
-      EIf(arm_guard, body, EMatch(scrut, rest))
+      EIf(arm_guard, body, EMatch(scrut, guard_fallthrough_arms(rest, prior)))
     }
     let out = ArrayBuilder::new()
     ArrayBuilder::push(out, (pat, arm_body))
@@ -313,6 +366,48 @@ fn desugar_guarded(arms: Array[(Pat, Expr, Expr)], i: Int, scrut: Expr, context:
       j = j + 1
     }
     ArrayBuilder::freeze(out)
+  }
+}
+
+/// The arms of a failed guard's fallthrough match: the remaining arms, then
+/// -- only when none of those is a catch-all -- the earlier unguarded arms
+/// (see desugar_guarded). With a catch-all among the remaining arms the
+/// result is exactly the remaining arms, so a match that already compiled
+/// lowers to the same code as before.
+fn guard_fallthrough_arms(rest: Array[(Pat, Expr)], prior: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+  let mut has_catchall = false
+  let mut k = 0
+  while k < Array::length(rest) {
+    let (rp, _) = Array::get(rest, k)
+    if guard_pat_is_catchall(rp) {
+      has_catchall = true
+    }
+    k = k + 1
+  }
+  if has_catchall || Array::length(prior) == 0 {
+    rest
+  } else {
+    let out = ArrayBuilder::new()
+    let mut j = 0
+    while j < Array::length(rest) {
+      ArrayBuilder::push(out, Array::get(rest, j))
+      j = j + 1
+    }
+    let mut p = 0
+    while p < Array::length(prior) {
+      ArrayBuilder::push(out, Array::get(prior, p))
+      p = p + 1
+    }
+    ArrayBuilder::freeze(out)
+  }
+}
+
+fn guard_pat_is_catchall(pat: Pat) -> Bool {
+  match pat {
+    PWild => true,
+    PBind(_) => true,
+    POr(l, r) => guard_pat_is_catchall(l) || guard_pat_is_catchall(r),
+    _ => false
   }
 }
 
@@ -411,6 +506,21 @@ fn parse_arm_assign_tail(tokens: Array[Token], body: Expr, at: Int, parse_recur:
   }
 }
 
+/// Where an arm's `if` guard starts: `pa`, or one past the lexer's synthetic
+/// line `;` when the guard opens the next line (`Some(x)` then `if x > 0 =>`).
+/// The lexer marks a line that begins with `if` after an expression-ending
+/// token as a statement boundary (#3546), but between a pattern and its `=>`
+/// no statement can end, so the `;` belongs to the guard's line break.
+fn arm_guard_start(tokens: Array[Token], pa: Int) -> Int {
+  match peek(tokens, pa) {
+    TSemicolon => match peek(tokens, pa + 1) {
+      TIf => pa + 1,
+      _ => pa
+    },
+    _ => pa
+  }
+}
+
 /// #666: parse all match arms into `b` as (pattern, guard|EBool(true), body).
 /// A negative return encodes `-end - 1` when any arm carries a guard, avoiding
 /// an allocation-only mutable Bool cell on the ordinary no-capture path.
@@ -418,13 +528,14 @@ fn collect_match_arms(tokens: Array[Token], starts: Array[Int], pos: Int, b: Arr
   let pat_mark = binder_capture_mark(context)
   let (pat, pa) = parse_pattern_with_binder_context(tokens, pos, context)
   let pat_rows = binder_capture_take_from(context, pat_mark)
-  let arm_has_guard = match peek(tokens, pa) {
+  let guard_at = arm_guard_start(tokens, pa)
+  let arm_has_guard = match peek(tokens, guard_at) {
     TIf => true,
     _ => false
   }
   let guard_mark = binder_capture_mark(context)
-  let (arm_guard, after_g) = match peek(tokens, pa) {
-    TIf => parse_recur(tokens, pa + 1, 0, context),
+  let (arm_guard, after_g) = match peek(tokens, guard_at) {
+    TIf => parse_recur(tokens, guard_at + 1, 0, context),
     _ => (EBool(true), pa)
   }
   let guard_rows = if arm_has_guard {
@@ -1083,9 +1194,47 @@ fn reject_same_line_paren(tokens: Array[Token], pos: Int) -> Unit with Exception
   }
 }
 
+/// #3546: a statement followed by another on the SAME line. The lexer marks
+/// a statement that opens a new line with a synthetic `;`, so what reaches
+/// here without one -- and not after a block's `}` -- was written on the
+/// line of the expression before it: `let x = 1 2` bound 1 and dropped the 2,
+/// and `let total = price quantity` dropped `quantity`.
+fn reject_same_line_statement(tokens: Array[Token], pos: Int) -> Unit with Exception {
+  let ends_block = pos > 0 && match Array::get(tokens, pos - 1) {
+    TRBrace => true,
+    _ => false
+  }
+  // A `{` opens a block statement, which the lexer does not mark on its own
+  // line (a declaration's `{` may also open one), so it is let through.
+  // An `else` here belongs to a construct with its own diagnostic (the
+  // retired `let PAT = e else { .. }`, #1283), so it is left to that one.
+  // A `with` opens a suffix handler over the rest of the block.
+  let separated = match peek(tokens, pos) {
+    TSemicolon => true,
+    TRBrace => true,
+    TEof => true,
+    TLBrace => true,
+    TElse => true,
+    TWith => true,
+    _ => false
+  }
+  let after_question = pos > 0 && match Array::get(tokens, pos - 1) {
+    TQuestion => true,
+    _ => false
+  }
+  if !ends_block && !separated {
+    if after_question {
+      // `c ? a : b` reads `c?` as the railway `?` and then meets `a`.
+      throw("unexpected token after `?`: vibe has no `c ? a : b` conditional -- write `if c { a } else { b }` at #\{pos}")
+    }
+    throw("two expressions on one line: put the second on its own line or after `;`, or add the operator or `,` between them at #\{pos}")
+  }
+}
+
 fn parse_block_value_only(tokens: Array[Token], value_pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   let val_pair = parse_recur(tokens, value_pos, 0, context)
   reject_same_line_paren(tokens, val_pair.1)
+  reject_same_line_statement(tokens, val_pair.1)
   (val_pair.0, skip_semi(tokens, val_pair.1))
 }
 
@@ -1772,6 +1921,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
             // Reading it as a second statement silently dropped the call.
             TLParen => throw(same_line_paren_message(next)),
             _ => {
+              reject_same_line_statement(tokens, next)
               ArrayBuilder::push(steps, StepSeq(e))
               p = next
             }
@@ -1843,10 +1993,10 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
       TRBrace => (EMatch(scrutinee, empty_arms()), br + 1),
       _ => {
         // #666: collect arms as (pattern, guard|EBool(true), body). If any arm
-        // carries a guard, bind the scrutinee to a temp `__mg` (so a failed
-        // guard can re-match it without re-evaluating a side-effecting
-        // scrutinee) and desugar guards into nested EIf/EMatch. Otherwise emit
-        // a plain EMatch.
+        // carries a guard, bind the scrutinee to the temp
+        // `match_scrutinee_temp()` (so a failed guard can re-match it without
+        // re-evaluating a side-effecting scrutinee) and desugar guards into
+        // nested EIf/EMatch. Otherwise emit a plain EMatch.
         let ab = ArrayBuilder::new()
         let row_b = match context {
           Some(_) => Some(ArrayBuilder::new()),
@@ -1860,21 +2010,31 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
           encoded_end
         }
         let arms3 = ArrayBuilder::freeze(ab)
+        let checked_single = !has_guard && Array::length(arms3) == 1 && single_arm_needs_check(arms3)
+        let mg = match_scrutinee_temp()
         if has_guard {
           match row_b {
             Some(rows) => {
               let arm_rows = ArrayBuilder::freeze(rows)
-              binder_capture_insert_synthetic_at(context, match_mark, "__mg")
+              binder_capture_insert_synthetic_at(context, match_mark, mg)
               binder_capture_append(context, desugar_guarded_rows(arms3, arm_rows, 0))
             },
             None => ()
           }
-          let final_arms = desugar_guarded(arms3, 0, EIdent("__mg", 0 - 1), context)
-          (ELet("__mg", scrutinee, EMatch(EIdent("__mg", 0 - 1), final_arms), -1), endpos)
+          let final_arms = desugar_guarded(arms3, 0, EIdent(mg, 0 - 1), context)
+          (ELet(mg, scrutinee, EMatch(EIdent(mg, 0 - 1), final_arms), -1), endpos)
         } else {
           let arm_rows = match row_b {
             Some(rows) => Some(ArrayBuilder::freeze(rows)),
             None => None
+          }
+          if checked_single {
+            match row_b {
+              Some(_) => binder_capture_insert_synthetic_at(context, match_mark, mg),
+              None => ()
+            }
+          } else {
+            ()
           }
           let plain = ArrayBuilder::new()
           let mut k = 0
@@ -1891,7 +2051,11 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
             ArrayBuilder::push(plain, (p, bd))
             k = k + 1
           }
-          (EMatch(scrutinee, ArrayBuilder::freeze(plain)), endpos)
+          if checked_single {
+            (ELet(mg, scrutinee, EMatch(EIdent(mg, 0 - 1), ArrayBuilder::freeze(plain)), -1), endpos)
+          } else {
+            (EMatch(scrutinee, ArrayBuilder::freeze(plain)), endpos)
+          }
         }
       }
     }

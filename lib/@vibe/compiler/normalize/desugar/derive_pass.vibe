@@ -1,7 +1,7 @@
 // Derive pass.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr
+  Expr, Pat, Stmt, TypeExpr, namespace_rename_original
 }
 
 import @vibe/core {
@@ -20,10 +20,13 @@ import ./derive_operations.vibe {
   gen_enum_compare_fn,
   gen_enum_default_fn,
   gen_enum_show_fn,
-  gen_hash_key_fn,
   qualified_name,
   show_inline_merge_arr_elems,
   top_level_fn_exists
+}
+
+import ./hash_key_generation.vibe {
+  collect_hash_key_types, gen_enum_hash_key_fn, gen_struct_hash_key_fn, hash_note_unkeyed_field, hk_type_text
 }
 
 import ./equality_generation.vibe {
@@ -39,7 +42,7 @@ import ./equality_shape_queries.vibe {
 }
 
 import ./formal_scope.vibe {
-  subst_field_formals, subst_variant_formals, type_param_names_reset
+  arr_helper_tparams, subst_field_formals, subst_variant_formals, type_param_names_reset
 }
 
 import ./name_encoding.vibe {
@@ -54,8 +57,212 @@ import ./show_generation.vibe {
   gen_arr_to_string_fn, gen_show_fn
 }
 
+import ./state.vibe {
+  dtd_show_refusals
+}
+
 import ./typed_equality.vibe {
   eq_for_typed
+}
+
+/// The innermost element of `Array[..[Array[e]]..]`.
+fn show_array_innermost(t: TypeExpr) -> TypeExpr {
+  match t {
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      show_array_innermost(Array::get(args, 0))
+    } else {
+      t
+    },
+    _ => t
+  }
+}
+
+/// Is `t`, after peeling `Array` layers, a bare type parameter of the
+/// declaration? Its `__arr_to_string__` helper would have to render an erased
+/// formal, which is refused.
+fn show_array_of_bare_formal(t: TypeExpr) -> Bool {
+  match show_array_innermost(t) {
+    TyName(n) => Array::length(arr_helper_tparams(TyName(n))) > 0,
+    _ => false
+  }
+}
+
+/// The source spelling of a re-spelled declaration formal (`__Vfp_T` -> `T`).
+fn show_formal_source_name(t: TypeExpr) -> String {
+  match show_array_innermost(t) {
+    TyName(n) => if String::starts_with(n, "__Vfp_") {
+      n[6: String::length(n)]
+    } else {
+      n
+    },
+    _ => "T"
+  }
+}
+
+/// Does `fty` hold an `Array` (at any depth, through `Option` / tuples / type
+/// arguments) whose innermost element is a bare formal? Returns that array
+/// type, or None.
+fn show_field_formal_array(fty: TypeExpr) -> Option[TypeExpr] {
+  match fty {
+    TyApp("Array", _) => if show_array_of_bare_formal(fty) {
+      Some(fty)
+    } else {
+      None
+    },
+    TyApp(_, args) => show_field_formal_array_of(args),
+    TyTuple(ts) => show_field_formal_array_of(ts),
+    _ => None
+  }
+}
+
+fn show_field_formal_array_of(ts: Array[TypeExpr]) -> Option[TypeExpr] {
+  let mut out: Option[TypeExpr] = None
+  for t in ts {
+    if out is None {
+      out = show_field_formal_array(t)
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// #3547: a `derive (Show)` / `derive (Hash)` type with a field (or payload)
+/// holding `Array[T]` of its own type parameter. Its derived renderer is one
+/// function for every instantiation, so the array's elements have no renderer
+/// there; the generated helper used to be refused while its own body was
+/// rewritten, with the compiler's spelling of the formal and helper
+/// (`pass an explicit renderer '(__Vfp_T) -> String' ...
+/// [@fn=__arr_to_string____Vfp_T]`) and nothing naming the type. The refusal
+/// now names the type, the field and the edit. The helper is not generated.
+fn show_note_formal_array_field(tname: String, fname: String, fty: TypeExpr) -> Unit {
+  match show_field_formal_array(fty) {
+    Some(arr) => {
+      let shown = namespace_rename_original(tname)
+      let formal = show_formal_source_name(arr)
+      let msg = "write `" + shown + "::to_string` yourself, or remove `Show` / `Hash` from the `derive` of `" + shown + "`: its derived renderer is shared by every instantiation, so the elements of `" + fname + ": Array[" + formal + "]` (a type parameter of `" + shown + "`) have no renderer there [@fn=" + shown + "]"
+      if !str_array_contains(dtd_show_refusals, msg) {
+        Array::push(dtd_show_refusals, msg)
+      } else {
+        ()
+      }
+    },
+    None => ()
+  }
+}
+
+/// A builtin handle the derived renderer has no arm for: it reaches
+/// `__to_string`, which prints the handle's address. A program-declared type
+/// of the same name renders through its own `to_string`, so it is left alone.
+fn show_opaque_handle_head(n: String, known_types: Array[String]) -> Bool {
+  (n == "Map" || n == "StringMap" || n == "ArrayBuilder" || n == "MapBuilder" || n == "StringBuilder") && !str_array_contains(known_types, n)
+}
+
+/// The first builtin handle the derived renderer of a field of type `t`
+/// would print, or `""`. Walks what that renderer renders: `Option` /
+/// `Result` / `Array` arguments, tuples, and a generic struct or enum whose
+/// `derive (Show)` or `derive (Hash)` generates its renderer, at its instantiation (its fields and payloads with the
+/// arguments substituted, so a phantom parameter is never read). A
+/// non-generic declared type is judged at its own `derive`, and a type
+/// whose `to_string` is written by hand is trusted. `seen` guards a
+/// recursive generic; `depth` bounds a non-regular one.
+fn show_opaque_handle_in(stmts: Array[Stmt], t0: TypeExpr, known_types: Array[String], seen: Array[String], depth: Int) -> String {
+  let t = eq_expand_alias_ty(t0)
+  match t {
+    TyName(n) => if show_opaque_handle_head(n, known_types) {
+      n
+    } else {
+      ""
+    },
+    TyApp(n, args) => if show_opaque_handle_head(n, known_types) {
+      n
+    } else if n == "Option" || n == "Result" || n == "Array" {
+      show_opaque_handle_in_any(stmts, args, known_types, seen, depth)
+    } else if depth >= 16 || str_array_contains(seen, hk_type_text(t)) || dtd_source_op_defined(stmts, qualified_name(n, "to_string")) {
+      ""
+    } else {
+      Array::push(seen, hk_type_text(t))
+      show_opaque_handle_in_any(stmts, derived_renderer_generic_parts(stmts, n, args), known_types, seen, depth + 1)
+    },
+    TyTuple(ts) => show_opaque_handle_in_any(stmts, ts, known_types, seen, depth),
+    _ => ""
+  }
+}
+
+/// The field and payload types the derived renderer of the generic struct or
+/// enum `n` renders at `n[args]`, the arguments substituted -- empty when `n`
+/// is not a generic declaration whose `derive` (`Show` or `Hash`) generates
+/// that renderer.
+fn derived_renderer_generic_parts(stmts: Array[Stmt], n: String, args: Array[TypeExpr]) -> Array[TypeExpr] {
+  let parts: Array[TypeExpr] = []
+  for st in stmts {
+    match st {
+      SStruct(_, sname, fields, derives, _, formals) => if sname == n && Array::length(formals) > 0 && (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) {
+        for field in fields {
+          let (_, fty) = field
+          Array::push(parts, eq_subst_ty(fty, formals, args))
+        }
+      } else {
+        ()
+      },
+      SEnum(_, ename, formals, variants, derives) => if ename == n && Array::length(formals) > 0 && (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) {
+        for variant in variants {
+          let (_, ftypes) = variant
+          for p in ftypes {
+            Array::push(parts, eq_subst_ty(p, formals, args))
+          }
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  parts
+}
+
+fn show_opaque_handle_in_any(stmts: Array[Stmt], ts: Array[TypeExpr], known_types: Array[String], seen: Array[String], depth: Int) -> String {
+  let mut found = ""
+  let mut i = 0
+  while i < Array::length(ts) && found == "" {
+    found = show_opaque_handle_in(stmts, Array::get(ts, i), known_types, seen, depth)
+    i = i + 1
+  }
+  found
+}
+
+/// #3551 review: a `derive (Show)` type with a field (or enum payload,
+/// `fname` = `V.0`) holding a builtin handle (`m: StringMap[Int]`, also inside
+/// `Option` / `Array` / a tuple / a derived generic's instantiation). The
+/// derived renderer routed it through `__to_string`, so `"\{s}"` printed
+/// `S { m: <address> }` with `vibe check` clean; the interpolation check sees
+/// only the nominal's type arguments, and `S` has none. A Hash-only derive
+/// (`via_show` false) generates the same renderer, so with `S::hash_key`
+/// written its field printed the same address. Refused at the
+/// derive, leading with the edit, whether or not the value is ever rendered:
+/// no instantiation of the derived renderer can render the field.
+fn show_note_opaque_field(stmts: Array[Stmt], tname: String, fname: String, fty: TypeExpr, known_types: Array[String], via_show: Bool) -> Unit {
+  let head = show_opaque_handle_in(stmts, fty, known_types, [], 0)
+  if head != "" {
+    let shown = namespace_rename_original(tname)
+    let edit = if via_show {
+      "write `" + shown + "::to_string` yourself, or remove `Show` from the `derive` of `" + shown + "`: field `"
+    } else {
+      "write `" + shown + "::to_string` yourself: `derive (Hash)` also derives the renderer an interpolation of `" + shown + "` calls, and field `"
+    }
+    let msg = edit + fname + "` holds `" + hk_type_text(fty) + "`; `" + head + "` is a handle with no text form, so the derived renderer would print its memory address. A renderer you write can show what you read out of it (its keys, a value you look up, a frozen array) [@fn=" + shown + "]"
+    if !str_array_contains(dtd_show_refusals, msg) {
+      Array::push(dtd_show_refusals, msg)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+import ./equality_aliases.vibe {
+  eq_expand_alias_ty, eq_subst_ty
 }
 
 import ./typed_row_queries.vibe {
@@ -114,6 +321,8 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   let gen = empty_stmt_list()
   let own_end = dtd_own_end(stmts)
   let known_types = collect_decl_type_names(stmts)
+  // #3544: the types whose `hash_key` a derived key may call for a field.
+  let hash_types = collect_hash_key_types(stmts)
   // #2136: the type variables a generated `Array[e]` helper has to bind. Filled
   // here because this is the first pass that generates one, and read again by
   // `emit_recorded_arr_equals`, which runs later in the same
@@ -135,25 +344,58 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // stable Map-key string is its structural representation (#638), so
         // generate `to_string` for Show OR Hash.
         if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(name, "to_string")) {
+          if str_array_contains(derives, "Show") {
+            for field in fields {
+              let (fname, fty) = field
+              show_note_opaque_field(stmts, name, fname, fty, known_types, true)
+            }
+          } else {
+            ()
+          }
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_show_fn(name, fields, known_types))
           derived_renderer_record(name)
         } else {
           ()
         }
-        // #694 Layer 1: `derive(Hash)` -> structural `T::hash_key` (delegates to
-        // the recursive `to_string`), so the method-bearing `Hash` witness at a
-        // `get_by(m, T::{..})` call site resolves to a stable structural key.
+        // #694 Layer 1: `derive(Hash)` -> structural `T::hash_key`, so the
+        // method-bearing `Hash` witness at a `get_by(m, T::{..})` call site
+        // resolves to a stable structural key. #3544: an injective encoding of
+        // its own, not the `to_string` rendering (hash_key_generation.vibe).
+        // #3551: a field the derived key cannot key is refused, whether or not
+        // a `to_string` is written -- the key does not call it. Noted before
+        // the key is generated, so this refusal is the one reported, not a
+        // renderer's for the same field.
         if str_array_contains(derives, "Hash") && !dtd_source_op_defined(stmts, qualified_name(name, "hash_key")) {
+          for field in fields {
+            let (fname, fty) = field
+            hash_note_unkeyed_field(name, fname, fty, known_types, hash_types)
+          }
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_hash_key_fn(name))
+          Array::push(gen, gen_struct_hash_key_fn(name, fields, known_types, hash_types))
+        } else {
+          ()
+        }
+        // #3551 review: a Hash-only derive generates the same renderer, and
+        // interpolating the value calls it. Noted after the key, so a field the
+        // derived key refuses keeps that refusal.
+        if str_array_contains(derives, "Hash") && !str_array_contains(derives, "Show") && !dtd_source_op_defined(stmts, qualified_name(name, "to_string")) {
+          for field in fields {
+            let (fname, fty) = field
+            show_note_opaque_field(stmts, name, fname, fty, known_types, false)
+          }
         } else {
           ()
         }
         if str_array_contains(derives, "Show") || str_array_contains(derives, "Hash") {
           let mut fi = 0
           while fi < Array::length(fields) {
-            let (_, fty) = Array::get(fields, fi)
+            let (fname, fty) = Array::get(fields, fi)
+            if !dtd_source_op_defined(stmts, qualified_name(name, "to_string")) {
+              show_note_formal_array_field(name, fname, fty)
+            } else {
+              ()
+            }
             collect_show_array_elems(fty, arr_elems, arr_keys)
             fi = fi + 1
           }
@@ -187,24 +429,63 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // #2141: same re-spelling as the SStruct arm, for payload types.
         let variants = subst_variant_formals(variants0, decl_tparams)
         if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(ename, "to_string")) {
+          if str_array_contains(derives, "Show") {
+            for variant in variants {
+              let (vname, ftypes) = variant
+              let mut pi = 0
+              while pi < Array::length(ftypes) {
+                show_note_opaque_field(stmts, ename, namespace_rename_original(vname) + "." + idx_str(pi), Array::get(ftypes, pi), known_types, true)
+                pi = pi + 1
+              }
+            }
+          } else {
+            ()
+          }
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_enum_show_fn(ename, variants, known_types))
           derived_renderer_record(ename)
         } else {
           ()
         }
+        // #3551: as in the SStruct arm, noted before the key is generated.
         if str_array_contains(derives, "Hash") && !dtd_source_op_defined(stmts, qualified_name(ename, "hash_key")) {
+          for variant in variants {
+            let (vname, ftypes) = variant
+            let mut pi = 0
+            while pi < Array::length(ftypes) {
+              hash_note_unkeyed_field(ename, namespace_rename_original(vname) + "." + idx_str(pi), Array::get(ftypes, pi), known_types, hash_types)
+              pi = pi + 1
+            }
+          }
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_hash_key_fn(ename))
+          Array::push(gen, gen_enum_hash_key_fn(ename, variants, known_types, hash_types))
+        } else {
+          ()
+        }
+        // #3551 review: as in the SStruct arm, after the key.
+        if str_array_contains(derives, "Hash") && !str_array_contains(derives, "Show") && !dtd_source_op_defined(stmts, qualified_name(ename, "to_string")) {
+          for variant in variants {
+            let (vname, ftypes) = variant
+            let mut pi = 0
+            while pi < Array::length(ftypes) {
+              show_note_opaque_field(stmts, ename, namespace_rename_original(vname) + "." + idx_str(pi), Array::get(ftypes, pi), known_types, false)
+              pi = pi + 1
+            }
+          }
         } else {
           ()
         }
         if str_array_contains(derives, "Show") || str_array_contains(derives, "Hash") {
           let mut vi = 0
           while vi < Array::length(variants) {
-            let (_, ftypes) = Array::get(variants, vi)
+            let (vname, ftypes) = Array::get(variants, vi)
             let mut ti = 0
             while ti < Array::length(ftypes) {
+              if !dtd_source_op_defined(stmts, qualified_name(ename, "to_string")) {
+                show_note_formal_array_field(ename, namespace_rename_original(vname) + "." + idx_str(ti), Array::get(ftypes, ti))
+              } else {
+                ()
+              }
               collect_show_array_elems(Array::get(ftypes, ti), arr_elems, arr_keys)
               ti = ti + 1
             }
@@ -317,7 +598,10 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   let mut ei2 = 0
   while ei2 < Array::length(arr_elems) {
     let et2 = Array::get(arr_elems, ei2)
-    if !top_level_fn_exists(stmts, arr_to_string_name(et2)) {
+    if show_array_of_bare_formal(et2) {
+      // Refused above (`show_note_formal_array_field`).
+      ()
+    } else if !top_level_fn_exists(stmts, arr_to_string_name(et2)) {
       dtd_fresh_reset_for_decl()
       Array::push(gen, gen_arr_to_string_fn(et2, known_types))
     } else {

@@ -45,7 +45,7 @@ import ./equality_aliases.vibe {
 }
 
 import ./state.vibe {
-  dtd_eq_injected
+  dtd_eq_generic_structs, dtd_eq_injected
 }
 
 import ./trait_bounds.vibe {
@@ -185,8 +185,18 @@ export fn infer_impl_target_expr(arg: Expr, struct_sets: Array[(String, Array[St
           // formal -- otherwise the `[T: Eq]` witness is built for the bare
           // head and compares the erased field by reference.
           match generic_record_inferred_args(name, rfields, struct_sets, var_types, fn_returns) {
-            Some(args) => Some(TyApp(name, args)),
-            None => Some(TyName(name))
+            Some(args) => if args_name_bare_generic(args) {
+              match generic_record_impl_target_args(name, rfields, struct_sets, var_types, fn_returns) {
+                Some(better) => Some(TyApp(name, better)),
+                None => Some(TyApp(name, args))
+              }
+            } else {
+              Some(TyApp(name, args))
+            },
+            None => match generic_record_impl_target_args(name, rfields, struct_sets, var_types, fn_returns) {
+              Some(args) => Some(TyApp(name, args)),
+              None => Some(TyName(name))
+            }
           }
         }
       } else {
@@ -220,6 +230,94 @@ export fn infer_impl_target_expr(arg: Expr, struct_sets: Array[(String, Array[St
       }
     }
   }
+}
+
+/// #3547: the type arguments of a generic struct literal read as WITNESS
+/// targets, for the literals `generic_record_inferred_args` cannot describe.
+/// That reader goes through the rendering shape, which has no spelling for a
+/// generic struct without `derive (Show)`, so `Box::{ v: Box::{ v: 1 } }`
+/// typed as the bare head `Box`, and the witness of a bounded generic impl
+/// (`impl [T: Desc] Desc for Box[T]`) could not read its element type: the
+/// call was emitted one dictionary short and failed wasm validation. Each
+/// formal is read off the first field declared exactly that formal, by this
+/// same reader, so nesting recurses; any formal with no such field, or whose
+/// field's value does not describe itself, gives None.
+fn generic_record_impl_target_args(name: String, rfields: Array[(String, Expr)], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Array[TypeExpr]] {
+  let mut out: Option[Array[TypeExpr]] = None
+  let mut found = false
+  for decl in dtd_eq_generic_structs {
+    if !found && decl.0 == name {
+      found = true
+      let args: Array[TypeExpr] = []
+      let mut ok = true
+      for formal in decl.1 {
+        if ok {
+          match record_formal_impl_target(formal, decl.2, rfields, struct_sets, var_types, fn_returns) {
+            Some(t) => Array::push(args, t),
+            None => {
+              ok = false
+            }
+          }
+        } else {
+          ()
+        }
+      }
+      out = if ok {
+        Some(args)
+      } else {
+        None
+      }
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// Does an argument list read off the rendering shape name a generic struct by
+/// its bare head (`Box` for `Box[Int]`)? The shape spells a generic struct
+/// without `derive (Show)` that way, which loses the argument a nested
+/// witness needs.
+fn args_name_bare_generic(args: Array[TypeExpr]) -> Bool {
+  let mut found = false
+  for a in args {
+    match a {
+      TyName(n) => for decl in dtd_eq_generic_structs {
+        if decl.0 == n {
+          found = true
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+fn record_formal_impl_target(formal: String, dfields: Array[(String, TypeExpr)], rfields: Array[(String, Expr)], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  let mut out: Option[TypeExpr] = None
+  for dfield in dfields {
+    if out is None {
+      match dfield.1 {
+        TyName(tn) => if tn == formal {
+          for rfield in rfields {
+            if (out is None) && rfield.0 == dfield.0 {
+              out = infer_impl_target_expr(rfield.1, struct_sets, var_types, fn_returns)
+            } else {
+              ()
+            }
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    }
+  }
+  out
 }
 
 fn infer_impl_target_key(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {

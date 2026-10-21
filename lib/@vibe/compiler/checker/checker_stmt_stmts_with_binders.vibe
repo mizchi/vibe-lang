@@ -4,6 +4,10 @@ import @vibe/compiler/checker/traits {
   bound_entails_send, closure_bare_callee_names, closure_free_names
 }
 
+import @vibe/compiler/checker/annotations {
+  owned_head_shape_decl_error
+}
+
 import @vibe/core {
   array_empty, struct MutMap
 }
@@ -53,8 +57,12 @@ import @vibe/compiler/core {
   unify
 }
 
+import ./checker_impl_method_signature.vibe {
+  check_impl_method_signature, collect_impl_method_origins, impl_method_origins_of
+}
+
 import ./checker_closure_capture_row.vibe {
-  tail_expr_off
+  quantify_own_rows, tail_expr_off
 }
 
 import ./checker_row_effect_inst.vibe {
@@ -81,6 +89,7 @@ import ./checker.vibe {
   constructor_dependency_row,
   efn_head_bound_commit,
   efn_head_bound_mark,
+  expand_impl_owner_bare_heads,
   interp_is_shim_body,
   interp_shim_marker,
   let_generalize,
@@ -93,6 +102,7 @@ import ./checker.vibe {
   refuse_generalized_field_reads,
   refuse_unpublishable_exception_row,
   reject_resume_outside_handler,
+  report_decl_bare_generic_heads,
   report_formal_applications_across,
   report_map_key_types,
   report_unknown_type_names,
@@ -155,6 +165,8 @@ import ./checker_stmt_imported_decl_kind.vibe {
   collect_deferred_type_name_sentinels,
   collect_trait_dict_erasures,
   decl_report_shadow,
+  declaring_module_path,
+  declaring_module_ships_owned_heads,
   deferred_names_for_decl,
   duplicate_ctor_errors,
   duplicate_value_decl_errors,
@@ -165,6 +177,7 @@ import ./checker_stmt_imported_decl_kind.vibe {
 }
 
 import ./checker_stmt_labeled_name_check_expr.vibe {
+  alias_decl_is_recursive,
   alias_expansion_node_limit,
   bind_annotation_return,
   bind_fn_return,
@@ -530,7 +543,9 @@ fn hoisted_fn_scheme(value: Expr, defs: Array[TypeDef], c: Int) -> (Type, Int) {
     EFn(tparams, tbounds, params, ret, eff, _body) => {
       let tplen = Array::length(tparams)
       if tplen == 0 || hoist_has_hkt_formal(tparams, params, ret) {
-        (hoisted_fn_signature(value, defs), c)
+        // #3557: a caller above the declaration gets its own row per call
+        // too.
+        (quantify_own_rows(hoisted_fn_signature(value, defs)), c)
       } else {
         let ids = array_empty()
         let vars = array_empty()
@@ -1220,6 +1235,9 @@ fn forward_restore_root_order(capture: Option[CheckerStatementCapture], start: I
 
 export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool, validate_completed_decls: Bool) -> (TypeEnv, Subst, Int) {
   let mut stmts = reorder_type_decls_first(raw_stmts, i)
+  // #3538: impl methods are paired with their `SImpl` in PARSE order, which
+  // the scheduling below does not keep.
+  let impl_origins = collect_impl_method_origins(raw_stmts, i, env)
   // #3343: the root list's declarations, so a call inside a region can find
   // the body of the function it names wherever that function is declared.
   let retention_saved = if validate_completed_decls {
@@ -1525,6 +1543,9 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           EFn(_, _, _, _, _, _) => CtBool,
           _ => CtUnit
         })
+        // An impl method naming its own target bare is typed at the target
+        // applied to its erased formals (#3551 review).
+        let val = expand_impl_owner_bare_heads(val, defs, val_env)
         let head_bound_mark = efn_head_bound_mark()
         let (vt, checked_s, nc) = if is_rec && recursive_end == 0 {
           check_expr_capture(val, env_bind(val_env, name, CtUnknown), defs, s, c, errors, tytab, role_lane_capture, "Primary")
@@ -1561,6 +1582,13 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           }
         } else {
           ()
+        }
+        // #3538: an impl method is called through its trait's signature, so it
+        // must have that signature.
+        // A plain `P::m` is also the method of every impl of `P` whose block
+        // has no body for `m`, wherever it is declared.
+        for origin in impl_method_origins_of(impl_origins, name) {
+          check_impl_method_signature(origin, val, vt, ns0, env, defs, errors)
         }
         attach_unlocated_decl_name_marker(errors, err_before, name)
         // The value must be assignable to a declared annotation (previously
@@ -1668,7 +1696,13 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         } else {
           type_exception_rows_resolved(t_published)
         }
-        let env1 = bind_function_dependency_contracts(env_bind(env, name, published), name, val)
+        // #3557: a declaration's own `with e` is quantified per call, type
+        // parameters or not.
+        let bound = match val {
+          EFn(_, _, _, _, _, _) => quantify_own_rows(published),
+          _ => published
+        }
+        let env1 = bind_function_dependency_contracts(env_bind(env, name, bound), name, val)
         capture_statement_root_type(capture, statement_path, "SLet", vt)
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
@@ -2039,6 +2073,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
       SStruct(exported, name, field_defs, derives, mut_fields, tparams) => {
         validate_derives(derives, errors)
         builtin_spelling_decl_error("struct", name, Array::length(tparams), errors)
+        owned_head_shape_decl_error(name, tparams, declaring_module_path(), declaring_module_ships_owned_heads(), errors)
         let resolved_fields = array_empty()
         let field_tes = array_empty()
         // #2125: this struct's slot is already claimed before its own field
@@ -2159,6 +2194,14 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
       },
       STypeAlias(exported, name, params, te) => {
         builtin_spelling_decl_error("type alias", name, Array::length(params), errors)
+        // #3536: an alias is expanded in place, so one that reaches itself
+        // (`type A = B` / `type B = A`) names no type at all. It resolved to
+        // a wildcard and accepted every value.
+        if alias_decl_is_recursive(stmts, name, params, te) {
+          Array::push(errors, "type alias `\{name}` refers to itself, and an alias is expanded in place, so it names no type -- declare a `struct` or `enum` to hold the recursive part, or point the alias at an existing type")
+        } else {
+          ()
+        }
         // #2290: map-key and builtin-arity validation is deferred to
         // check_completed_decl_map_keys. At this point a later alias is not
         // in `defs`, so judging ownership here made valid programs depend on
@@ -2187,7 +2230,9 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         }, env_bind(env, name, t)), s, c)
       },
       SExternLet(name, te) => {
-        report_map_key_types(te, defs, array_empty(), String::concat(String::concat("extern declaration `", name), "`"), errors)
+        let where_label = String::concat(String::concat("extern declaration `", name), "`")
+        report_map_key_types(te, defs, array_empty(), where_label, errors)
+        report_decl_bare_generic_heads(te, defs, array_empty(), where_label, errors)
         let t = resolve_type_expr(te, defs)
         let env1 = env_bind(env, name, t)
         (bind_annotation_return(env1, name, Some(te), defs), s, c)
@@ -2503,9 +2548,14 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
                   } else {
                     ()
                   }
-                  cur_env = bind_function_dependency_contracts(env_bind(cur_env, name, published), name, value)
+                  // #3557: see the non-recursive arm.
+                  let bound = match value {
+                    EFn(_, _, _, _, _, _) => quantify_own_rows(published),
+                    _ => published
+                  }
+                  cur_env = bind_function_dependency_contracts(env_bind(cur_env, name, bound), name, value)
                   cur_env = bind_value_or_annotation_return(cur_env, name, value, None, defs)
-                  note_toplevel_generic_binding(name, value, Some(published), outer_env)
+                  note_toplevel_generic_binding(name, value, Some(bound), outer_env)
                 },
                 None => ()
               },

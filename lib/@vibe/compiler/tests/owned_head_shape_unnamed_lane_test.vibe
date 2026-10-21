@@ -1,0 +1,173 @@
+//# #3551 review: a struct spelled like a shipped region-first owned head
+//# (`struct TaskGroup[rg, e]`) is refused on the lanes that check a program
+//# with no module path. The checker refuses it by the module path the lane
+//# names, and these lanes name none: a raw source string (`compile_source`,
+//# `compile_source_wasi*`, `compile_source_gc_only`, the CLI's direct
+//# single-file mode) and a merged closure (`compile_file_wasi_only`,
+//# `compile_file_wasi_library`). Before, they accepted
+//# `fn as_str(g: TaskGroup) -> String { g.first }` and the program printed the
+//# `Int` 7 as fourteen NUL bytes. A raw string is never the shipped module, so
+//# it is refused outright; a merged closure is vetted file by file, by path,
+//# before it is flattened.
+
+//# Imports
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/entry/source_compile {
+  compile_source, compile_source_wasi, compile_source_wasi_mode
+}
+
+import @vibe/compiler/entry/source_compile/wasi_only {
+  compile_file_wasi_library,
+  compile_file_wasi_only,
+  compile_source_wasi_only,
+  compile_source_wasi_only_coverage,
+  compile_source_wasi_only_rc,
+  compile_source_wasi_only_rc_shadow
+}
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+
+//# Functions
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = array_empty()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::byte_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+fn is_wasm(bytes: Bytes) -> Bool {
+  Bytes::length(bytes) > 4 && Bytes::get(bytes, 0) == 0 && Bytes::get(bytes, 1) == 97 && Bytes::get(bytes, 2) == 115 && Bytes::get(bytes, 3) == 109
+}
+
+/// The leak: a program `TaskGroup[rg, e]` written bare in a signature.
+fn leaking_source() -> String {
+  "struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nfn as_str(g: TaskGroup) -> String {\n  g.first\n}\n\nfn main() -> Int {\n  String::length(as_str(TaskGroup::{ first: 7, second: 8 }))\n}\n"
+}
+
+fn refusal() -> String {
+  "rename this struct or its type parameters `rg` and `e`: `TaskGroup[rg, e]` is spelled like `@vibe/concurrent`'s own `TaskGroup`, whose region and row a call supplies, so a `TaskGroup` written without them would leave this struct's `rg` and `e` unbound and its fields readable at any type"
+}
+
+fn raw_compile(lane: Int, source: String) -> String {
+  handle {
+    let bytes = if lane == 0 {
+      compile_source(source)
+    } else if lane == 1 {
+      compile_source_wasi(source, "main")
+    } else if lane == 2 {
+      compile_source_wasi_mode(source, "main", "mvp")
+    } else if lane == 3 {
+      compile_source_wasi_only(source, "main")
+    } else if lane == 4 {
+      compile_source_wasi_only_coverage(source, "main")
+    } else if lane == 5 {
+      compile_source_wasi_only_rc(source, "main")
+    } else if lane == 6 {
+      compile_source_wasi_only_rc_shadow(source, "main")
+    } else {
+      compile_source_gc_only(source, "main")
+    }
+    if is_wasm(bytes) {
+      "wasm"
+    } else {
+      "not wasm"
+    }
+  } with { Exception::Throw(message) => message }
+}
+
+fn write_file(path: String, source: String) -> Unit with Fs {
+  Fs::write_bytes(path, string_to_bytes(source))
+}
+
+//# Misc
+
+test "a raw source declaring a shipped region-first head's spelling is refused with the edit" {
+  inspect(raw_compile(5, leaking_source()), refusal())
+}
+
+/// Each raw-source lane, by the answer it gives the same program.
+test "every raw-source lane refuses it" {
+  let answers = array_empty()
+  let mut lane = 0
+  while lane < 8 {
+    let got = raw_compile(lane, leaking_source())
+    let verdict = if got == refusal() {
+      "refused"
+    } else {
+      got
+    }
+    Array::push(answers, "\{lane}: \{verdict}")
+    lane = lane + 1
+  }
+  inspect(String::join(answers, "\n"), "0: refused\n1: refused\n2: refused\n3: refused\n4: refused\n5: refused\n6: refused\n7: refused")
+}
+
+test "a raw source declares the name with other formals and is held to them" {
+  let source = "struct TaskGroup[A, B] {\n  first: A;\n  second: B\n}\n\nfn first_of(g: TaskGroup[Int, String]) -> Int {\n  g.first\n}\n\nfn main() -> Int {\n  first_of(TaskGroup::{ first: 7, second: \"x\" })\n}\n"
+  inspect(raw_compile(5, source), "wasm")
+}
+
+test "the merged entry lane refuses the spelling in an imported program module" {
+  let dir = "/tmp/vibe_owned_head_shape_merged"
+  Fs::mkdir_p(dir)
+  write_file(String::concat(dir, "/dep.vibe"), "export struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nexport fn as_str(g: TaskGroup) -> String {\n  g.first\n}\n")
+  write_file(String::concat(dir, "/main.vibe"), "import ./dep.vibe { TaskGroup, as_str }\nexport fn answer() -> Int {\n  String::length(as_str(TaskGroup::{ first: 7, second: 8 }))\n}\n")
+  let got = handle {
+    let _ = compile_file_wasi_only(String::concat(dir, "/main.vibe"), "answer")
+    "accepted"
+  } with { Exception::Throw(m) => m }
+  inspect(got, String::concat(refusal(), String::concat(" (in ", String::concat(dir, "/dep.vibe)"))))
+}
+
+/// #3551 review: a program module whose path merely ends like the shipped
+/// module's (`./@vibe/concurrent/experimental/concurrent.vibe`) is a program
+/// module. Before, the path's tail exempted it and the program compiled.
+test "the merged entry lane refuses the spelling under a path that only ends like the shipped one" {
+  let dir = "/tmp/vibe_owned_head_shape_suffix"
+  let dep_dir = String::concat(dir, "/@vibe/concurrent/experimental")
+  Fs::mkdir_p(dep_dir)
+  let dep = String::concat(dep_dir, "/concurrent.vibe")
+  write_file(dep, "export struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nexport fn as_str(g: TaskGroup) -> String {\n  g.first\n}\n")
+  write_file(String::concat(dir, "/main.vibe"), "import ./@vibe/concurrent/experimental/concurrent.vibe { TaskGroup, as_str }\nexport fn answer() -> Int {\n  String::length(as_str(TaskGroup::{ first: 7, second: 8 }))\n}\n")
+  let got = handle {
+    let _ = compile_file_wasi_only(String::concat(dir, "/main.vibe"), "answer")
+    "accepted"
+  } with { Exception::Throw(m) => m }
+  inspect(got, String::concat(refusal(), String::concat(" (in ", String::concat(dep, ")"))))
+}
+
+test "the library lane refuses the spelling" {
+  let dir = "/tmp/vibe_owned_head_shape_library"
+  Fs::mkdir_p(dir)
+  let path = String::concat(dir, "/dep.vibe")
+  write_file(path, "export struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nexport fn as_str(g: TaskGroup) -> String {\n  g.first\n}\n")
+  let got = handle {
+    let _ = compile_file_wasi_library(path)
+    "accepted"
+  } with { Exception::Throw(m) => m }
+  inspect(got, String::concat(refusal(), String::concat(" (in ", String::concat(path, ")"))))
+}
+
+/// The module that ships the declarations is vetted by its path and compiles
+/// on the same lane.
+test "the library lane still compiles the shipped module" {
+  let got = handle {
+    if is_wasm(compile_file_wasi_library("lib/@vibe/concurrent/experimental/concurrent.vibe")) {
+      "wasm"
+    } else {
+      "not wasm"
+    }
+  } with { Exception::Throw(m) => m }
+  inspect(got, "wasm")
+}

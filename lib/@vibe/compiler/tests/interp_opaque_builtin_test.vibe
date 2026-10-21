@@ -1,0 +1,32 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+//# Tests
+
+/// `"\{m}"` on a `StringMap` or an `ArrayBuilder` printed the handle's
+/// address while `vibe check` stayed clean.
+test "interpolating a StringMap or an ArrayBuilder is refused" {
+  assert(check_source_err_contains("fn f() -> String { let m = Map::from_pairs([(\"a\", 1)])\n \"m=\\{m}\" }\nfn main() -> Int { 0 }", "cannot interpolate a `StringMap` value"))
+  assert(check_source_err_contains("fn f() -> String { let b = ArrayBuilder::new()\n ArrayBuilder::push(b, 1)\n \"b=\\{b}\" }\nfn main() -> Int { 0 }", "cannot interpolate a `ArrayBuilder` value"))
+}
+
+/// The handle inside a container the renderer descends printed its address
+/// too: `Some(m)` rendered `Some(244)` and `[b]` rendered `[300]`.
+test "a StringMap or an ArrayBuilder inside a rendered container is refused" {
+  assert(check_source_err_contains("fn f() -> String { let m = Map::from_pairs([(\"a\", 1)])\n let o = Some(m)\n \"o=\\{o}\" }\nfn main() -> Int { 0 }", "cannot interpolate a `StringMap` value"))
+  assert(check_source_err_contains("fn f() -> String { let m = Map::from_pairs([(\"a\", 1)])\n let t = (1, m)\n \"t=\\{t}\" }\nfn main() -> Int { 0 }", "cannot interpolate a `StringMap` value"))
+  assert(check_source_err_contains("fn f() -> String { let b = ArrayBuilder::new()\n ArrayBuilder::push(b, 1)\n let bs = [b]\n \"bs=\\{bs}\" }\nfn main() -> Int { 0 }", "cannot interpolate a `ArrayBuilder` value"))
+}
+
+/// A phantom parameter is never rendered, so a handle there is no reason
+/// to refuse.
+test "a handle in a phantom type argument still interpolates" {
+  assert(check_source_ok("struct Tag[T] {\n  n: Int\n} derive (Show)\nfn f() -> String { let t: Tag[StringMap[Int]] = Tag::{ n: 1 }\n \"t=\\{t}\" }\nfn main() -> Int { 0 }"))
+}
+
+test "what is read out of a map still interpolates" {
+  assert(check_source_ok("fn f() -> String { let m = Map::from_pairs([(\"a\", 1)])\n let ks = Map::keys(m)\n \"n=\\{Map::size(m)} ks=\\{ks}\" }\nfn main() -> Int { 0 }"))
+}

@@ -1,0 +1,59 @@
+// #3551 review: a `derive (Hash)` field whose key comes from an impl for one
+// application of a generic type (`impl Hash for Box[Int]`) is keyed by that
+// impl's method.
+//
+// The method's binding is named for the applied target (`Box$impl$...`), and
+// the derive stored that encoded name as the owner of the key, so a field of
+// head `Box` never found it: `struct Outer { b: Box[Int] } derive (Hash)` was
+// refused as having no key -- also for a type and impl in another module
+// (`Pack`). The impl keys only the application it is written for; a
+// `Box[String]` field is refused
+// (`typecheck/derive_hash_applied_impl_other_arg_reject.vibe`).
+
+import @vibe/core {
+  has_by, set_by
+}
+
+import ./modules/derive_hash_applied_impl_owner.vibe {
+  struct Pack
+}
+
+struct Box[T] {
+  v: T
+} derive (Show)
+
+impl Hash for Box[Int] {
+  hash_key(self) -> {
+    let b: Box[Int] = self
+    "b" + Int::to_string(b.v)
+  }
+}
+
+impl Hash for Box[Bool] {
+  hash_key(self) -> String {
+    let b: Box[Bool] = self
+    if b.v {
+      "yes"
+    } else {
+      "no"
+    }
+  }
+}
+
+struct Outer {
+  b: Box[Int];
+  c: Box[Bool];
+  d: Pack[Int]
+} derive (Hash)
+
+fn make(n: Int, flag: Bool) -> Outer {
+  Outer::{ b: Box::{ v: n }, c: Box::{ v: flag }, d: Pack::{ v: n + 1 } }
+}
+
+test "a field keyed by an applied impl's hash_key" {
+  inspect(Outer::hash_key(make(7, true)), content = "2:b73:yes2:p8")
+  inspect(Outer::hash_key(make(7, false)), content = "2:b72:no2:p8")
+  inspect(Outer::hash_key(make(7, true)) == Outer::hash_key(make(8, true)), content = "false")
+  inspect(has_by(set_by(Map::new(), make(1, true), 1), make(1, true)), content = "true")
+  inspect(has_by(set_by(Map::new(), make(1, true), 1), make(1, false)), content = "false")
+}
