@@ -60,14 +60,16 @@ type LiveDemo = { editor: monaco.editor.IStandaloneCodeEditor; run: () => Promis
 const liveDemos = new Map<HTMLElement, LiveDemo>();
 
 function demoFontSize(): number {
-  return Math.max(11, Math.round(deck.clientWidth * 0.0138));
+  const width = document.body.classList.contains("view-all") ? 1280 : deck.clientWidth;
+  return Math.max(11, Math.round(width * 0.0138));
 }
 
 function mountDemo(host: HTMLElement): LiveDemo {
   const existing = liveDemos.get(host);
   if (existing) return existing;
-  const demo: Demo | undefined = DEMOS[host.dataset.demo!];
-  if (!demo) throw new Error(`slides: unknown demo ${host.dataset.demo}`);
+  const found: Demo | undefined = DEMOS[host.dataset.demo!];
+  if (!found) throw new Error(`slides: unknown demo ${host.dataset.demo}`);
+  const demo: Demo = found;
   host.innerHTML = `
     <div class="editor-wrap"><div class="editor"></div></div>
     <div class="side">
@@ -152,6 +154,7 @@ function editorHasFocus(): boolean {
 }
 
 document.addEventListener("keydown", (event) => {
+  if (document.body.classList.contains("view-all")) return;
   if (editorHasFocus() || event.metaKey || event.ctrlKey || event.altKey) return;
   switch (event.key) {
     case "ArrowRight":
@@ -193,7 +196,9 @@ document.addEventListener("keydown", (event) => {
 window.addEventListener("resize", () => {
   for (const { editor } of liveDemos.values()) editor.updateOptions({ fontSize: demoFontSize() });
 });
-window.addEventListener("hashchange", () => show(Number(location.hash.slice(1)) - 1 || 0));
+window.addEventListener("hashchange", () => {
+  if (!document.body.classList.contains("view-all")) show(Number(location.hash.slice(1)) - 1 || 0);
+});
 
 // Test hook for tests/slides-smoke.mjs: which slide holds which demo, and
 // what its unedited source must print.
@@ -205,6 +210,14 @@ window.addEventListener("hashchange", () => show(Number(location.hash.slice(1)) 
   })),
 );
 
-show(Number(location.hash.slice(1)) - 1 || 0);
+// `?view=all` stacks every slide at a fixed 1280x720 frame: the print view,
+// and the only form in which a page gate (vlmkit) can read the whole deck.
+if (new URLSearchParams(location.search).get("view") === "all") {
+  document.body.classList.add("view-all");
+  slideEls.forEach((el) => el.classList.add("active"));
+  for (const host of deck.querySelectorAll<HTMLElement>(".demo[data-demo]")) mountDemo(host);
+} else {
+  show(Number(location.hash.slice(1)) - 1 || 0);
+}
 compilerState.textContent = `selfhost vibec (wasm) · ${import.meta.env.VITE_VIBE_BUILD_LABEL ?? "local"}`;
 compilerState.classList.add("ready");

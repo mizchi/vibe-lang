@@ -55,13 +55,10 @@ fn main allows Console {
   rows: {
     source: String.raw`
 fn risky(x: Int) -> Int with Exception {
-  if x == 0 {
-    throw("division by zero")
-  }
+  if x == 0 { throw("division by zero") }
   100 / x
 }
 
-// row variable e: pure if f is pure, throws if f throws
 fn twice(f~: (Int) -> Int with e, x~: Int) -> Int with e {
   f(f(x))
 }
@@ -109,10 +106,7 @@ fn main allows Console {
   },
   eq: {
     source: String.raw`
-struct Pt {
-  x: Int,
-  y: Int
-}
+struct Pt { x: Int, y: Int }
 
 fn main allows Console {
   let a = [Pt::{ x: 1, y: 2 }, Pt::{ x: 3, y: 4 }]
@@ -207,11 +201,11 @@ export const SLIDES: Slide[] = [
           </ul>
           <p class="muted">参考にしたもの</p>
           <div class="chips">
-            <span class="chip">MoonBit — wasm first</span>
-            <span class="chip">Koka — effect system</span>
+            <span class="chip">MoonBit (wasm first)</span>
+            <span class="chip">Koka (effect system)</span>
             <span class="chip">Verse</span>
-            <span class="chip">Rust — Book / 診断</span>
-            <span class="chip">Deno — permissions</span>
+            <span class="chip">Rust (Book・診断)</span>
+            <span class="chip">Deno (permissions)</span>
           </div>
         </div>
         <div class="card">
@@ -273,7 +267,7 @@ export const SLIDES: Slide[] = [
         <div class="card">
           <h3>型と診断を LLM の評価ループ向けに</h3>
           <ul>
-            <li>最悪の壊れ方は <strong>黙って間違うこと</strong> (P0) — クラッシュ (P1) より上</li>
+            <li>最悪の壊れ方は <strong>黙って間違うこと</strong> (P0)。クラッシュ (P1) より悪い</li>
             <li>診断は <strong>直し方</strong> から始める。pass 名や ADR 番号を出さない</li>
             <li>LSP ではなく <strong>CLI</strong> で IDE 相当の問い合わせ</li>
           </ul>
@@ -317,7 +311,7 @@ export const SLIDES: Slide[] = [
       <div class="cols">
         <div>
           <ul class="small">
-            <li>拒否された capability のコードは <strong>wasm に入らない</strong> — <code>Http</code> に届かないプログラムはネットワークのランタイムを要求しない</li>
+            <li>拒否された capability のコードは <strong>wasm に入らない</strong>。<code>Http</code> に届かないプログラムはネットワークのランタイムを要求しない</li>
             <li>実行中に権限は変わらない</li>
             <li>省略可能な権限は <code>perform?</code> で <code>Attempt</code> を受ける</li>
           </ul>
@@ -344,7 +338,7 @@ export const SLIDES: Slide[] = [
         <li><code>foo.bar()</code> のメッセージパッシングは無い</li>
         <li><code>.</code> の補完は人間用。LLM には<strong>型名を省略しない方が読める</strong></li>
         <li><code>Foo::bar(foo)</code> か <code>foo |&gt; Foo::bar()</code>。<code>foo.prop</code> はフィールドアクセスだけ</li>
-        <li>import はファイルスコープで明示 — JS / Python のように、書いたものだけがスコープに現れる</li>
+        <li>import はファイルスコープで明示。JS / Python と同じく、書いた名前だけがスコープに現れる</li>
       </ul>
       <pre class="code" data-src="syntax"></pre>`,
     notes: "5:45 (30s) メソッド呼び出しを捨てた理由: . 補完は人間用。LLM には型名が書いてある方が読める。",
@@ -399,7 +393,7 @@ export const SLIDES: Slide[] = [
           <li><strong>Lean</strong> で難しい部分を実装してテストオラクルに
             <div class="small muted">effect row の健全性 / モジュールシステム / スレッド実行モデル</div></li>
           <li>「バグを潰して」</li>
-          <li>Rust Book を参考に <strong>Vibe Book</strong> — 例は全部 CI で実行。サブエージェントにルーブリックで使いやすさを採点させる</li>
+          <li>Rust Book を参考に <strong>Vibe Book</strong> を書いた。例は全部 CI で実行。サブエージェントにルーブリックで使いやすさを採点させる</li>
         </ul>
         <div class="card small">
           <h3>Timeline (2026)</h3>
@@ -436,7 +430,7 @@ export const SLIDES: Slide[] = [
         <li>MoonBit も LLVM も要らない。必要なのは wasm ランナーだけ</li>
         <li>罠: <code>vibe test</code> は既定で <strong>seed</strong> がコンパイルする → コンパイラの変更を「どのコンパイラが答えたか」分からないまま検証してしまう</li>
       </ul>
-      <p class="quote small">44 行の変更で seed の自己ビルドが <strong>wasm32 の 4GiB 上限</strong>を突破 — pass 3 で 3.89GiB、残り 119MB だった (#3439)</p>`,
+      <p class="quote small">44 行の変更で seed の自己ビルドが <strong>wasm32 の 4GiB 上限</strong>を突破。pass 3 で 3.89GiB、残り 119MB だった (#3439)</p>`,
     notes: "8:15 (35s) seed → stage3 の fixpoint。4GiB の話で笑いを取る。",
   },
   {
@@ -483,7 +477,7 @@ export const SLIDES: Slide[] = [
           </ul>
           <h3 style="margin-top:1cqw">対策</h3>
           <ul class="small">
-            <li>ゲートは <strong>失敗できることを証明してから</strong>信用する (red test 必須)</li>
+            <li>CI の検査は<strong>わざと壊した入力で落ちることを確かめてから</strong>信用する</li>
             <li>Lean のオラクルが checker との差分を 3 件発見</li>
           </ul>
         </div>
@@ -506,9 +500,9 @@ export const SLIDES: Slide[] = [
         <div>
           <ul class="small">
             <li><code>[1, 2] == [1, 2]</code> が文脈で答えを変えた: 裸だと参照比較、struct の中だと構造比較、tuple の中だとまた参照比較 (#1526)</li>
-            <li><code>fn bare[T: Eq](a: T, b: T)</code> で <code>bare(1.5, 1.5)</code> が <strong>false</strong> — <code>Double</code> は箱を比べていた (#2895)</li>
+            <li><code>fn bare[T: Eq](a: T, b: T)</code> で <code>bare(1.5, 1.5)</code> が <strong>false</strong>。<code>Double</code> は値ではなく箱を比べていた (#2895)</li>
             <li><code>Eq</code> はメソッドの無いマーカー trait だった → <code>equals</code> を持たせて witness 経由でディスパッチ (#2523)</li>
-            <li>型が届かない <code>==</code> は「参照の同一性で答える」のではなく <strong>注釈を求めてビルドを止める</strong></li>
+            <li>型が届かない <code>==</code> は参照の同一性で答えずに、<strong>注釈を求めてビルドを止める</strong></li>
           </ul>
         </div>
         <div class="card">
@@ -537,7 +531,7 @@ export const SLIDES: Slide[] = [
         <div class="card">
           <h3>よかったもの</h3>
           <ul>
-            <li><strong>wasmtime guest profiler</strong> — wasm のままプロファイル</li>
+            <li><strong>wasmtime guest profiler</strong> で wasm のままプロファイル</li>
             <li>Fuel で命令数を数える (ベンチのぶれ対策)</li>
             <li>OxCaml の <code>#zero_alloc</code></li>
             <li>Lean のオラクル</li>
@@ -558,7 +552,7 @@ export const SLIDES: Slide[] = [
     className: "title",
     html: `
       <div class="logo">vibe<span>-lang</span></div>
-      <div class="tagline">関数のシグネチャが、その関数に<strong>できること</strong>を言う。<br>それを wasm の上で、自分自身でコンパイルする。</div>
+      <div class="tagline">関数のシグネチャがその関数に<strong>できること</strong>を言う。<br>それを wasm の上で、自分自身でコンパイルする。</div>
       <div class="meta">github.com/mizchi/vibe-lang · The Vibe Book: mizchi.github.io/vibe-lang</div>`,
     notes: "11:50 (10s) まとめ。リポジトリと Book の URL。",
   },
