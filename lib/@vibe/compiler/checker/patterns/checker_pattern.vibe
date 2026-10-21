@@ -23,7 +23,7 @@ import @vibe/compiler/checker/traits {
 }
 
 import @vibe/compiler/checker/resolution {
-  subst_type_params
+  elided_owned_head_field_refusal, subst_type_params
 }
 
 //# Functions
@@ -606,7 +606,15 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
           acc_env
         } else {
           let (fname, fpat) = Array::get(fields, i)
-          let next_env = check_pattern(fpat, cp_struct_field_ty(defs, scrutinee_ty, fname), acc_env, defs, errors)
+          // #3572: as for a field read (`field_read_type`).
+          let field_ty = match elided_owned_head_field_refusal(defs, scrutinee_ty, fname) {
+            Some(message) => {
+              Array::push(errors, message)
+              CtUnknown
+            },
+            None => cp_struct_field_ty(defs, scrutinee_ty, fname)
+          }
+          let next_env = check_pattern(fpat, field_ty, acc_env, defs, errors)
           bind_fields(i + 1, next_env)
         }
       }

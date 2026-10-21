@@ -63,6 +63,10 @@ import ./checker_resolve.vibe {
   subst_type_params
 }
 
+import @vibe/compiler/checker/resolution {
+  elided_owned_head_field_refusal
+}
+
 import @vibe/compiler/checker/traits {
   check_spawnable_captures
 }
@@ -1746,6 +1750,22 @@ export fn inst_struct_field_ty(ft: Type, tparams: Array[String], targs: Array[Ty
     subst_type_params(ft, tparams, targs)
   } else {
     ft
+  }
+}
+
+/// #3572: `ft`, the type of field `field` of `recv`, unless `recv` is a
+/// compiler-owned head written without its region and row (`TaskGroup`,
+/// `TaskHandle[Int]`), whose formals that spelling never binds: then the
+/// refusal, located by `marker`, is pushed and the field types as unknown.
+/// A read, a write and a call through the field ask here; a struct pattern
+/// asks `elided_owned_head_field_refusal` itself.
+export fn owned_head_field_ty(defs: Array[TypeDef], recv: Type, field: String, ft: Type, errors: Array[String], marker: String) -> Type {
+  match elided_owned_head_field_refusal(defs, recv, field) {
+    Some(message) => {
+      Array::push(errors, String::concat(message, marker))
+      CtUnknown
+    },
+    None => ft
   }
 }
 

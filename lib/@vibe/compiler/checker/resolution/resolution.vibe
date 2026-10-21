@@ -28,6 +28,45 @@ export fn subst_type_params(ty: Type, params: Array[String], args: Array[Type]) 
   resolve_type_alias_params(ty, params, args)
 }
 
+/// #3572: the refusal for reaching field `field` -- a read, a write, a call
+/// through it or a struct pattern -- of a value typed by a compiler-owned
+/// region-first head written without its region and row (`TaskGroup`,
+/// `TaskHandle[Int]`), or `None` when `recv` is not that. Leaving those slots
+/// to the call is legal in a signature, but the struct's formals are then
+/// never bound in the body: a field type that mentions them was read raw, so
+/// `fn leak(g: TaskGroup) -> String { let w = g._region_witness; w(7) }`
+/// checked clean and handed an `Int` on as a `String`. Every field of these
+/// structs is the shipped implementation's own, which spells the heads out
+/// in full, so the read is refused whatever the field's type.
+export fn elided_owned_head_field_refusal(defs: Array[TypeDef], recv: Type, field: String) -> Option[String] {
+  // The bare spelling reaches here as `CtStruct(name)`, an applied one with
+  // the payload alone as `CtNamed(name, payload)`.
+  let (name, given) = match recv {
+    CtNamed(n, targs) => (n, Array::length(targs)),
+    CtStruct(n) => (n, 0),
+    _ => ("", 0 - 1)
+  }
+  if name == "TaskGroup" || name == "TaskHandle" || name == "Sender" || name == "Receiver" {
+    match find_typedef(defs, name) {
+      // Only the shipped `[rg, e, ..]` shape: a program struct of the name
+      // with other formals is held to them where it is written (#3536).
+      Some(TDStruct(_, _, _, tparams)) => if Array::length(tparams) >= 2 && type_param_name(Array::get(tparams, 0)) == "rg" && type_param_name(Array::get(tparams, 1)) == "e" && given != Array::length(tparams) {
+        let written = array_empty()
+        for p in tparams {
+          Array::push(written, type_param_name(p))
+        }
+        let full = String::join(written, ", ")
+        Some("write `\{name}[\{full}]` with its region and row to reach `\{field}` (`fn f[\{full}](x: \{name}[\{full}])`), or use `\{name}`'s functions instead: a `\{name}` written without them leaves the field's type unbound here, so `\{field}` could be read or written at any type")
+      } else {
+        None
+      },
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
 fn is_shadowed_tyvar(shadow: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
