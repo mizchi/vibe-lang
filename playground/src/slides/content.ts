@@ -23,7 +23,7 @@ fn main allows Console {
   println("compiled by vibe, in this browser tab")
 }`,
     expect: "inspired by Rust\ninspired by MoonBit\ninspired by Koka\ninspired by Verse\ncompiled by vibe, in this browser tab\n",
-    hint: "右の出力は、このページに埋め込んだ <b>セルフホストの vibe コンパイラ (wasm)</b> がこのタブでコンパイルし、生成された wasm を実行した結果。",
+    hint: "上の出力は、このページに埋め込んだ <b>セルフホストの vibe コンパイラ (wasm)</b> がこのタブでコンパイルし、生成された wasm を実行した結果。",
   },
   effects: {
     source: String.raw`
@@ -33,9 +33,7 @@ effect Log {
 
 fn work(x: Int) -> Int with Log {
   perform Log::Emit("start: \{x}")
-  let y = x * 2
-  perform Log::Emit("doubled: \{y}")
-  y
+  x * 2
 }
 
 fn main allows Console {
@@ -49,7 +47,7 @@ fn main allows Console {
   }
   println("result = \{r}")
 }`,
-    expect: "[log] start: 21\n[log] doubled: 42\nresult = 42\n",
+    expect: "[log] start: 21\nresult = 42\n",
     hint: "<code>work</code> はログの出し先を知らない。<code>handle</code> が実装を与える。<br>試す: ハンドラ腕の <code>println</code> を消す → テスト用の無音ハンドラになる。",
   },
   rows: {
@@ -130,7 +128,9 @@ fn main allows Console {
     Talk::{ title: "kawasima", minutes: 12 },
     Talk::{ title: "mizchi", minutes: 12 },
   ]
-  let total = talks |> Array::map(_, (t) -> t.minutes) |> Array::fold(_, 0, _ + _)
+  let total = talks
+    |> Array::map(_, (t) -> t.minutes)
+    |> Array::fold(_, 0, _ + _)
   let n = "  vibe  " |> String::trim |> String::length
   println("total = \{total} min, n = \{n}")
 }`,
@@ -302,26 +302,21 @@ export const SLIDES: Slide[] = [
     html: `
       <h2><span class="kicker">Authority</span>権限はビルドの最初に一度だけ決まる</h2>
       <div class="flow">
-        <div class="node hot"><b>build</b><span>--allow-* / --deny-*<br>const-fold + DCE</span></div>
+        <div class="node hot"><b>build</b><span><code>--allow-*</code> / <code>--deny-*</code> を const-fold + DCE</span></div>
         <div class="arrow">→</div>
-        <div class="node"><b>apply</b><span>feature level を宣言<br>(v8 / web-baseline)</span></div>
+        <div class="node"><b>apply</b><span>必要な feature level (<code>v8</code> / <code>web-baseline</code>) を宣言</span></div>
         <div class="arrow">→</div>
-        <div class="node"><b>instantiate</b><span>付与されない必須 cap は<br>main の前に停止</span></div>
+        <div class="node"><b>instantiate</b><span>必須の権限が無ければ main の前に止める</span></div>
       </div>
       <div class="cols">
         <div>
           <ul class="small">
             <li>拒否された capability のコードは <strong>wasm に入らない</strong>。<code>Http</code> に届かないプログラムはネットワークのランタイムを要求しない</li>
-            <li>実行中に権限は変わらない</li>
+            <li>ホスト (Rust + Wasmtime / Browser / Node) は imports を外付けする。実行時の権限はそこで止める</li>
             <li>省略可能な権限は <code>perform?</code> で <code>Attempt</code> を受ける</li>
           </ul>
         </div>
         <pre class="code" data-src="optional"></pre>
-      </div>
-      <div class="hosts">
-        <div class="host"><b>CLI</b><span>Rust + Wasmtime</span></div>
-        <div class="host"><b>Browser</b><span>imports を JS で外付け</span></div>
-        <div class="host"><b>Node.js</b><span>imports を JS で外付け</span></div>
       </div>`,
     notes: "4:40 (35s) 権限はビルド時に一度。拒否した cap は const-fold + DCE で wasm から消える。ホストは imports を外付け。",
   },
@@ -417,13 +412,13 @@ export const SLIDES: Slide[] = [
     html: `
       <h2><span class="kicker">Self-hosting</span>seed → stage1 → stage2 → stage3</h2>
       <div class="flow">
-        <div class="node"><b>seed</b><span>pin された compiler.wasm<br>(sha256 検証)</span></div>
+        <div class="node"><b>seed</b><span>pin された compiler.wasm (sha256 検証)</span></div>
         <div class="arrow">→</div>
-        <div class="node"><b>stage1</b><span>seed が今のソースを<br>コンパイル</span></div>
+        <div class="node"><b>stage1</b><span>seed が今のソースをコンパイル</span></div>
         <div class="arrow">→</div>
-        <div class="node hot"><b>stage2</b><span>stage1 が自分を<br>コンパイル = 本番</span></div>
+        <div class="node hot"><b>stage2</b><span>stage1 が自分をコンパイル。これが本番</span></div>
         <div class="arrow">→</div>
-        <div class="node"><b>stage3</b><span>stage2 と <strong>バイト一致</strong><br>(fixpoint)</span></div>
+        <div class="node"><b>stage3</b><span>stage2 と<strong>バイト一致</strong> (fixpoint)</span></div>
       </div>
       <ul class="small">
         <li>新しい構文をコンパイラ自身で使うには、先に seed がその構文を理解する状態を tag してから bump する</li>
@@ -447,21 +442,19 @@ export const SLIDES: Slide[] = [
           <ul class="small">
             <li>GitHub Actions のランナー次第で、無関係な PR が <strong>20〜64% 遅く</strong>見える</li>
             <li>VM 割り当てだけでなくハードも違う (AVX512 がある時と無い時)</li>
-            <li>較正係数を入れても ±15〜40% 揺れる → <strong>wall-time をやめて wasmtime の fuel (実行命令数)</strong> で判定。±2%</li>
-            <li>ヒープも決定的に、許容誤差ゼロで比較</li>
+            <li>較正しても ±15〜40% 揺れる → <strong>wasmtime の fuel (実行命令数)</strong> で判定。±2%</li>
           </ul>
         </div>
         <div class="card">
           <h3>セルフビルドが重い / メモリが漏れまくる</h3>
           <ul class="small">
             <li>cold セルフコンパイルのヒープ 1,203MB → <strong>953MB</strong> (#3579, 10/21)</li>
-            <li>release-check は 126 タスクで 55 分</li>
-            <li>リークの実例: <code>let rec</code> クロージャが評価ごとに 24B、片側分岐の消費で反復ごとに 80B</li>
-            <li>→ <strong>Perceus</strong> (参照カウント) + <strong>FBIP</strong> (in-place 再利用)。再利用はコンストラクタ 8,879 箇所中 1,830 で成立…でも壁時計はほぼ変わらず</li>
+            <li>リーク: <code>let rec</code> クロージャが評価ごとに 24B、反復ごとに 80B</li>
+            <li><strong>Perceus</strong> (参照カウント) + <strong>FBIP</strong> (in-place 再利用) を入れた。でも壁時計はほぼ変わらず</li>
           </ul>
         </div>
       </div>
-      <p class="small muted">linear と wasm-gc の 2 本立ても重い: Int のオーバーフローで 2 つのレーンが<strong>黙って別の値</strong>を返していた (62/63/64bit でラップ位置が違う, #1877)</p>`,
+      <p class="small">linear と wasm-gc の 2 本立ても重い。Int のオーバーフローで 2 つのレーンが<strong>黙って別の値</strong>を返していた (#1877)</p>`,
     notes: "8:55 (45s) ベンチが揺れる → fuel に切り替え。ヒープ 953MB。Perceus + FBIP。",
   },
   {
@@ -484,10 +477,9 @@ export const SLIDES: Slide[] = [
         <div class="card">
           <h3>変な実装が放置される</h3>
           <ul class="small">
-            <li>String interning していない → 全シンボルを文字列比較して爆発。線形走査 + 防御的コピーを 3 回別々に「修正」</li>
-            <li>型システムの穴を <strong>大量の実行時アサーション</strong>で止めようとする → <code>trap: unreachable</code> をビルドエラーへ</li>
-            <li>構文だけで判定する検査に、26 回のレビューで抜け道 63 個 → <strong>57 関数・1,970 行を削除</strong>して型検査器に一本化</li>
-            <li>初期のエフェクトハンドラは resume のたびに本体を<strong>最初から再実行</strong>していた (replay 方式)</li>
+            <li>String interning が無く、全シンボルを文字列比較して爆発</li>
+            <li>型システムの穴を<strong>大量の実行時アサーション</strong>で塞ごうとする</li>
+            <li>構文だけで判定する検査に抜け道 63 個 → <strong>1,970 行を削除</strong>して型検査器に一本化</li>
           </ul>
         </div>
       </div>`,
@@ -496,21 +488,12 @@ export const SLIDES: Slide[] = [
   {
     html: `
       <h2><span class="kicker">Pain 3</span>黙って間違う <code>==</code></h2>
-      <div class="cols wide-left">
-        <div>
-          <ul class="small">
-            <li><code>[1, 2] == [1, 2]</code> が文脈で答えを変えた: 裸だと参照比較、struct の中だと構造比較、tuple の中だとまた参照比較 (#1526)</li>
-            <li><code>fn bare[T: Eq](a: T, b: T)</code> で <code>bare(1.5, 1.5)</code> が <strong>false</strong>。<code>Double</code> は値ではなく箱を比べていた (#2895)</li>
-            <li><code>Eq</code> はメソッドの無いマーカー trait だった → <code>equals</code> を持たせて witness 経由でディスパッチ (#2523)</li>
-            <li>型が届かない <code>==</code> は参照の同一性で答えずに、<strong>注釈を求めてビルドを止める</strong></li>
-          </ul>
-        </div>
-        <div class="card">
-          <h3>方針</h3>
-          <p class="small">壊れ方の優先度は<br><strong>黙って間違う (P0) &gt; 落ちる (P1) &gt; 機能追加 (P2)</strong></p>
-          <p class="small">「動いてるように見える」が一番高くつく。LLM の評価ループはそれを見抜けない。</p>
-        </div>
-      </div>
+      <p>優先度は <strong>黙って間違う (P0) &gt; 落ちる (P1) &gt; 機能追加 (P2)</strong></p>
+      <ul class="small">
+        <li><code>[1, 2] == [1, 2]</code> の答えが文脈で変わった。裸と tuple の中では参照比較、struct の中では構造比較 (#1526)</li>
+        <li><code>[T: Eq]</code> の <code>bare(1.5, 1.5)</code> が <strong>false</strong>。<code>Double</code> の箱を比べていた (#2895)</li>
+        <li>今は、型が届かない <code>==</code> では<strong>注釈を求めてビルドを止める</strong></li>
+      </ul>
       <div class="demo" data-demo="eq"></div>`,
     notes: "10:25 (40s) == の話。r で実行して true を見せる。P0 > P1 の方針。",
   },

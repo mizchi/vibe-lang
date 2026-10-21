@@ -97,6 +97,7 @@ function mountDemo(host: HTMLElement): LiveDemo {
     tabSize: 2,
     padding: { top: 6 },
     bracketPairColorization: { enabled: false },
+    wordWrap: "on",
     guides: { indentation: false },
   });
   const runButton = host.querySelector<HTMLButtonElement>("button.run")!;
