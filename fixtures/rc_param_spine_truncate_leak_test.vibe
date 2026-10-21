@@ -43,7 +43,7 @@
 //   | `if c { p.a } else { q.a }`                     | shadow trap  |   236 B |
 //   | `if c { mkq(i).a } else { p.a }` and mixed arms | memory fault |   324 B |
 //   | two arrays truncated in a loop that tallies     |  3,520,172 B |   348 B |
-//   | this fixture, with its controls                 | memory fault | 2,196 B |
+//   | this fixture, with its controls                 | memory fault | 3,252 B |
 //
 // `keep(ks, if c { a } else { b })` in a loop and the branch-view `for` body
 // are correctness controls rather than leaks: both faulted or trapped under
@@ -201,6 +201,20 @@ fn for_branch_view(stmts: Array[Array[Int]], rels: Array[Int]) -> Array[Array[In
   }
 }
 
+// The same view handed back after a statement: the body is an assignment
+// whose continuation is the branch.
+fn for_assign_view(stmts: Array[Array[Int]]) -> Array[Array[Int]] {
+  let mut n = 0
+  for stmt in stmts {
+    n = n + 1
+    if Array::length(stmt) > 1 {
+      [Array::get(stmt, 0) + n * 0]
+    } else {
+      stmt
+    }
+  }
+}
+
 // A branch handed to an owning parameter inside a loop: a bare `a` gets a
 // retain per iteration, but `if c { a } else { b }` did not, so every call
 // after the first stored a reference the caller no longer held (a memory
@@ -249,9 +263,11 @@ fn main() -> Int {
       [1]
     }
     Array::push(views, for_branch_view([[v], [v, 1]], rels))
+    Array::push(views, for_assign_view([[v], [v, 1]]))
     v = v + 1
   }
-  // Every kept row starts with [v] and then [v] or [v, 1]: 2 * (0 + 1 + 2 + 3).
+  // Every kept row starts with [v] and then [v] or [v, 1], twice per v:
+  // 4 * (0 + 1 + 2 + 3).
   let mut sv = 0
   let mut w = 0
   while w < Array::length(views) {
@@ -259,7 +275,7 @@ fn main() -> Int {
     sv = sv + Array::get(Array::get(row, 0), 0) + Array::get(Array::get(row, 1), 0)
     w = w + 1
   }
-  acc = acc + sv - 12
+  acc = acc + sv - 24
   let kb: Array[Array[Int]] = []
   let n3 = loop_branch_arg(kb, [4], [5, 1], true) + loop_branch_arg(kb, [6], [7, 1], false)
   // kb holds [4] three times, then [7, 1] three times; n3 is 1+2+3 + 4+5+6.

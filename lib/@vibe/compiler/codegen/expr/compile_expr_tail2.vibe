@@ -205,7 +205,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call_cc_ladder_names.vibe {
-  cc_is_borrowed_projection, cc_is_owned_temp
+  cc_is_borrowed_projection, cc_is_owned_temp, cc_retain_view_tails_unlogged
 }
 
 import ./compile_call.vibe {
@@ -234,52 +234,6 @@ fn cet2_is_ref_cell_read(e: Expr, ctx: CompileCtx) -> Bool {
   match e {
     EIdent(n, _) => array_contains_str(ctx.ref_cell_names, n),
     _ => false
-  }
-}
-
-/// A collected `for` owns every value it pushes, and a body value that is a
-/// view -- the element binding, a projection, a borrow-returning read, a ref
-/// cell read -- is retained before the push. That test reads the body's TOP
-/// node only, so a view handed back through a branch or a block
-/// (`for x in xs { if c { fresh(x) } else { x } }`) was pushed unretained,
-/// and the result array held elements the iterable alone owned: freed with
-/// it, a use-after-free once the iterable was released. Wrap each such tail
-/// of a compound body in the retain marker (compile_call: the value plus a
-/// guarded dup). A body that is itself a view is left to the top-node test.
-fn cet2_retain_view_tails(e: Expr, ctx: CompileCtx) -> Expr {
-  match e {
-    EIf(c, t, el) => EIf(c, cet2_retain_view_leaf(t, ctx), cet2_retain_view_leaf(el, ctx)),
-    EMatch(scrut, arms) => {
-      let out = Array::slice(arms, 0, 0)
-      let mut ai = 0
-      while ai < Array::length(arms) {
-        let (ap, ab) = Array::get(arms, ai)
-        Array::push(out, (ap, cet2_retain_view_leaf(ab, ctx)))
-        ai = ai + 1
-      }
-      EMatch(scrut, out)
-    },
-    ELet(n, v, b, soff) => ELet(n, v, cet2_retain_view_leaf(b, ctx), soff),
-    ELetMut(n, v, b, soff) => ELetMut(n, v, cet2_retain_view_leaf(b, ctx), soff),
-    ELetRec(n, v, b) => ELetRec(n, v, cet2_retain_view_leaf(b, ctx)),
-    ESeq(a, b) => ESeq(a, cet2_retain_view_leaf(b, ctx)),
-    _ => e
-  }
-}
-
-fn cet2_retain_view_leaf(e: Expr, ctx: CompileCtx) -> Expr {
-  match e {
-    EIf(_, _, _) => cet2_retain_view_tails(e, ctx),
-    EMatch(_, _) => cet2_retain_view_tails(e, ctx),
-    ELet(_, _, _, _) => cet2_retain_view_tails(e, ctx),
-    ELetMut(_, _, _, _) => cet2_retain_view_tails(e, ctx),
-    ELetRec(_, _, _) => cet2_retain_view_tails(e, ctx),
-    ESeq(_, _) => cet2_retain_view_tails(e, ctx),
-    _ => if cc_is_borrowed_projection(e, ctx) || cet2_is_ref_cell_read(e, ctx) || cc_is_borrow_ret_call(e, ctx) || cc_is_loop_borrowed_ident(e, ctx) {
-      ECall(EIdent("__loop_tail_retain", -1), [e], -1, [])
-    } else {
-      e
-    }
   }
 }
 
@@ -710,8 +664,14 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   // #3141: and the same loop-body boundary for `break` / `continue`.
   let xmark = Array::length(ctx.rc_exit_stack_names)
   rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, "", 100, 0 - 1, 0 - 1)
+  // A collected `for` owns every value it pushes, and the top-node retain
+  // below reads only a body that IS a view. A view handed back through a
+  // branch, a block or an assignment's continuation (`for x in xs { if c {
+  // fresh(x) } else { x } }`) was pushed unretained: the result shared the
+  // element with the iterable, and releasing the iterable freed it. Retain
+  // each view tail of a compound body (the result spine `rs_map` walks).
   let body_c = if collect && ctx.enable_rc {
-    cet2_retain_view_tails(body, ctx)
+    cc_retain_view_tails_unlogged(body, local_names, ctx)
   } else {
     body
   }

@@ -546,11 +546,22 @@ fn cc_is_cell_read_path(e: Expr, shadow: Array[String], ctx: CompileCtx) -> Bool
 /// account for, so a leaf reading one is left alone. A loop-borrowed name is
 /// logged for the epilogue's compensating drop, as the per-site check logs it.
 fn cc_retain_view_tails(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Expr {
+  cc_retain_view_tails_logged(e, local_names, ctx, true)
+}
+
+/// `cc_retain_view_tails` for a position that does not log a loop-borrowed
+/// name for the epilogue's compensating drop: a collected `for` body, whose
+/// top-node retain never did (compile_forin_loop).
+export fn cc_retain_view_tails_unlogged(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Expr {
+  cc_retain_view_tails_logged(e, local_names, ctx, false)
+}
+
+fn cc_retain_view_tails_logged(e: Expr, local_names: Array[String], ctx: CompileCtx, log_loop: Bool) -> Expr {
   if rs_has_tail(e) {
     rs_map(e, array_empty(), (x: Expr, shadow: Array[String]) -> Expr {
       if cc_tail_is_view(x, shadow, local_names, ctx) {
         match x {
-          EIdent(n, _) => if cc_is_loop_borrowed_ident(x, ctx) {
+          EIdent(n, _) => if log_loop && cc_is_loop_borrowed_ident(x, ctx) {
             Array::push(ctx.loop_consumed_names, n)
           } else {
             ()

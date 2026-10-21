@@ -588,7 +588,7 @@ echo "[compiler-gate] RC branch-dup and for-iterable leak guard ok (heap_used=$b
 # of `xs` and declined the truncate release (tr_derive), and a second annotated
 # array of a body was not recognized as fresh (tr_fresh_array_value). The
 # fixture faulted before; its leaking shapes alone measured 9,093,556 B at
-# N=20000, and the whole fixture measures 2,196 B after -- the arrays its
+# N=20000, and the whole fixture measures 3,252 B after -- the arrays its
 # controls keep -- which is why the bound is 4,000. A branch argument to an
 # owning parameter inside a loop is pinned too: it got no per-iteration
 # retain (cc_own_cell_compound_args), which the callee's leak used to hide. The controls keep a branch-consumed parameter and field arms past

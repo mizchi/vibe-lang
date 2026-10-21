@@ -260,7 +260,8 @@ Freeing a parameter on every path exposed a gap that its leak had hidden: a
 collected `for` retained its body value only when the whole body was a view,
 so `for x in xs { if c { f(x) } else { x } }` pushed `x` unretained, and the
 result shared elements with `xs` that only `xs` owned. Each view tail of a
-compound body is now retained (`cet2_retain_view_tails`). A compound argument
+compound body is now retained (`cc_retain_view_tails_unlogged`, the result spine
+`rs_map` walks, assignments and handlers included). A compound argument
 in an owning position had the same gap: `keep(ks, if c { a } else { b })`
 in a loop passed `a` without the per-iteration retain a bare `a` gets, and
 faulted on the plain lane. `cc_own_cell_compound_args` retains every view
