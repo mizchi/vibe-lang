@@ -45,6 +45,10 @@ import @vibe/compiler/codegen/common_extractors {
   array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, str_table_lookup
 }
 
+import @vibe/compiler/codegen/builtin_bodies {
+  gen_arr_get_body
+}
+
 import @vibe/compiler/codegen/wasm_emit {
   emit_block_i64,
   emit_block_void,
@@ -133,18 +137,13 @@ import @vibe/compiler/codegen/wasm_emit {
 
 //# Functions
 
+/// `Array::get` on an array in linear memory (`Bytes::to_array`,
+/// `String::split`, ...); a native gc array takes `array.get` instead. The
+/// block layout is the bump lane's, so this IS the linear lane's untagged
+/// body (#3543), bounds check included: this lane's copy had none, so an
+/// out-of-range index read the memory past the array, and an index of 2^32
+/// read element 0. `oob_abort_idx < 0`: no `__rt_oob_abort` here, so an
+/// out-of-range index is a bare `unreachable` trap.
 export fn gc_gen_arr_get_body() -> Bytes {
-  let b = bytebuf_new()
-  emit_local_get(b, 0)
-  emit_i32_wrap_i64(b)
-  emit_i32_load(b, 2, 8)
-  emit_local_set(b, 2)
-  emit_local_get(b, 2)
-  emit_local_get(b, 1)
-  emit_i32_wrap_i64(b)
-  emit_i32_const(b, 3)
-  bytebuf_push(b, 116)
-  emit_i32_add(b)
-  emit_i64_load(b, 3, 0)
-  b
+  gen_arr_get_body(false, 0 - 1, 0 - 1)
 }

@@ -46,7 +46,7 @@ import @vibe/compiler/codegen/common_extractors {
 }
 
 import @vibe/compiler/codegen/builtin_bodies {
-  gen_str_substring_body
+  gen_str_char_code_at_body, gen_str_substring_body
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -150,20 +150,12 @@ export fn gc_gen_str_substring_body() -> Bytes {
   gen_str_substring_body(false)
 }
 
+/// #3543: `String::byte_at` is the linear lane's untagged body, as
+/// `String::substring` is above (same packed string layout). This lane's copy
+/// had no bounds check, so `byte_at("abc", 5)` read the byte past the string
+/// and an index of 2^32 read byte 0. Bare-trap form: no `__rt_oob_abort` here.
 export fn gc_gen_str_char_code_at_body() -> Bytes {
-  let b = bytebuf_new()
-  emit_local_get(b, 0)
-  emit_i64_const(b, 32)
-  emit_i64_shr_s(b)
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 2)
-  emit_local_get(b, 2)
-  emit_local_get(b, 1)
-  emit_i32_wrap_i64(b)
-  emit_i32_add(b)
-  emit_i32_load8_u(b, 0, 0)
-  emit_i64_extend_i32_u(b)
-  b
+  gen_str_char_code_at_body(false, 0 - 1, 0 - 1)
 }
 
 export fn gc_gen_str_from_char_code_body() -> Bytes {

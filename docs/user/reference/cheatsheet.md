@@ -2603,7 +2603,10 @@ different, currently nonexistent function.
 `0..length`, and an `end` before `start` gives the empty slice -- nothing traps:
 `"abcdef"[2:10]` is `"cdef"`, `Array::slice([3, 1, 2], -1, 2)` is `[3, 1]`,
 `Array::slice([3, 1, 2], 2, 1)` is `[]`. A single-element read is the opposite:
-`Array::get(xs, -1)` traps with `index -1 out of bounds for length 3`.
+`Array::get(xs, -1)` traps with `index -1 out of bounds for length 3`, and so
+does an index of 2^32 or more, on every lane: the check compares the whole
+`Int`. It used to read only the low 32 bits, so `Array::get(xs, 4294967296)`
+answered `xs[0]` (#3543).
 
 **A shift count saturates at 63** (#2978): `x << n` is `0` and `x >> n` is the
 sign (`0` or `-1`) for any `n >= 63` and for a negative `n`, on every lane. It
