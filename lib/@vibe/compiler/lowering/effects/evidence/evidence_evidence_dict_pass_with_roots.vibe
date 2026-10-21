@@ -523,6 +523,16 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   idp_note_program_decls(stmts)
   // #3347: before anything reads a top-level binding's row.
   edp_stamp_alias_annotated_lets(stmts)
+  // #3581: resolve lexical collisions before any purity/reachability query.
+  // A row-typed callback may shadow a PURE function as well as a needing
+  // one. Otherwise vacuity can erase its handler, or migration can omit the
+  // callback's dictionary because the global spelling was classified inert.
+  let user_edpsh = empty_str_array()
+  let edp_renamed = if Array::length(edp_collect_effect_defs(stmts)) > 0 {
+    edp_alpha_rename_shadowed(stmts, edp_collect_fn_defs(stmts), user_edpsh)
+  } else {
+    false
+  }
   // #3540: before the effect list is read -- it may declare fresh copies.
   edp_isolate_nested_arm_handlers(stmts)
   let effect_defs = edp_collect_effect_defs(stmts)
@@ -629,22 +639,11 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
     vhi = vhi + 1
   }
   let fn_defs = edp_collect_fn_defs(stmts)
-  // V2 step 2: α-rename local binders that shadow a needing function's
-  // name (fresh `__edpsh_N_<name>`), so edp_drop_shadowed_needing finds
-  // nothing to drop and the shadowed-needing class migrates like any
-  // other program instead of falling back to the (now removed) replay
-  // engine. See edp_alpha_rename_shadowed's doc comment. `user_edpsh` /
-  // `edp_renamed` feed the culprit diagnostic below: only names the walk
-  // actually generated may be un-mangled back to their original spelling.
-  let user_edpsh = empty_str_array()
-  // #1875 R2: every fn row parsed once (interned by spelling) -- both the
-  // alpha-rename seed and the migration planner query this table instead of
-  // re-splitting every row string per declared effect.
+  // Parse each function row once for the migration planner.
   let edp_es_names = array_empty()
   let edp_es_members_list = array_empty()
   edp_es_collect_into(stmts, edp_es_names, edp_es_members_list)
   let fn_row_labels = edp_fn_row_label_table(fn_defs, edp_es_names, edp_es_members_list)
-  let edp_renamed = edp_alpha_rename_shadowed(stmts, effect_defs, fn_defs, user_edpsh, fn_row_labels)
   // #3370: a row-free closure literal at a row-typed parameter takes that
   // row, so the type-directed sweep gives it the dict its callee passes.
   edp_stamp_slot_rows(stmts, fn_defs)
@@ -838,7 +837,7 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   errs
 }
 
-/// Returns true iff the rename walk actually ran (some needing name was
+/// Returns true iff the rename walk actually ran (some function name was
 /// shadowed), and in that case fills `user_prefixed` with every
 /// `__edpsh_`-prefixed name the program contained BEFORE renaming — i.e. the
 /// user-authored ones. edp_ar_fresh never re-issues a name from that census,
@@ -1079,59 +1078,28 @@ export fn edp_bind_census(stmts: Array[Stmt], names: Array[String]) -> Array[Boo
   out
 }
 
-fn edp_alpha_rename_shadowed(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], user_prefixed: Array[String], row_labels: Array[Array[String]]) -> Bool {
+fn edp_alpha_rename_shadowed(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], user_prefixed: Array[String]) -> Bool {
   let seed = empty_str_array()
-  // #2386: one shadow census (edp_bc_stmts) for every needing name of every
-  // effect, then the seed is read off it in the same (effect, needing) order
-  // the per-name program walks pushed it in.
-  let needing_tabs: Array[Array[String]] = []
+  // One census covers every top-level function, including pure functions.
+  // Only names actually rebound in a body enter the reconstructing rename.
+  let names = edp_all_fn_names(fn_defs)
   let asked: MutMap[String, Int] = MutMap::new_string()
   let marked: Array[Int] = []
-  let mut ei = 0
-  while ei < Array::length(effect_defs) {
-    let (ename, _) = Array::get(effect_defs, ei)
-    let needing = edp_needing_names_tab(fn_defs, row_labels, ename)
-    Array::push(needing_tabs, needing)
-    let mut ni = 0
-    while ni < Array::length(needing) {
-      let nm = Array::get(needing, ni)
-      if MutMap::has(asked, nm) {
-        ()
-      } else {
-        MutMap::set(asked, nm, Array::length(marked))
-        Array::push(marked, 0)
-      }
-      ni = ni + 1
-    }
-    ei = ei + 1
+  let mut i = 0
+  while i < Array::length(names) {
+    MutMap::set(asked, Array::get(names, i), i)
+    Array::push(marked, 0)
+    i = i + 1
   }
   if Array::length(marked) > 0 {
     edp_bc_stmts(stmts, asked, marked)
-  } else {
-    ()
   }
-  ei = 0
-  while ei < Array::length(needing_tabs) {
-    let needing = Array::get(needing_tabs, ei)
-    let mut ni = 0
-    while ni < Array::length(needing) {
-      let nm = Array::get(needing, ni)
-      if edp_str_array_contains(seed, nm) {
-        ()
-      } else {
-        let shadowed = match MutMap::get(asked, nm) {
-          Some(slot) => Array::get(marked, slot) == 1,
-          None => false
-        }
-        if shadowed {
-          Array::push(seed, nm)
-        } else {
-          ()
-        }
-      }
-      ni = ni + 1
+  i = 0
+  while i < Array::length(names) {
+    if Array::get(marked, i) == 1 {
+      Array::push(seed, Array::get(names, i))
     }
-    ei = ei + 1
+    i = i + 1
   }
   if Array::length(seed) == 0 {
     false

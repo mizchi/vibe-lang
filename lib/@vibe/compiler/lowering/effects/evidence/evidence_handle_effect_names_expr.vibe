@@ -39,6 +39,7 @@ import @vibe/compiler/lowering/effects/queries {
   edp_rq_fold,
   edp_split_qualified,
   edp_str_array_contains,
+  edp_strip_tilde,
   scps_pat_binds_resume,
   scps_ty_has_fn
 }
@@ -1061,7 +1062,7 @@ fn edp_tally_node_binders(expr: Expr, bcount: MutMap[String, Int]) -> Unit {
       let mut i = 0
       while i < Array::length(params) {
         let (pn, _) = Array::get(params, i)
-        edp_tally(bcount, pn)
+        edp_tally(bcount, edp_strip_tilde(pn))
         i = i + 1
       }
     },
@@ -1279,7 +1280,7 @@ fn edp_collect_binders(expr: Expr, out: Array[String]) -> Unit {
       let mut i = 0
       while i < Array::length(params) {
         let (pn, _) = Array::get(params, i)
-        Array::push(out, pn)
+        Array::push(out, edp_strip_tilde(pn))
         i = i + 1
       }
     },
@@ -1362,6 +1363,96 @@ fn edp_name_bodies_all_pure(name: String, names: Array[String], bodies: Array[Ex
   ok
 }
 
+/// Count every reference to a closed owner and the direct calls whose
+/// selected argument names one uniquely bound inert function. Equal counts
+/// prove the owner never escapes, and no caller can supply another value.
+fn edp_inert_param_uses(expr: Expr, owner: String, pos: Int, inert: MutSet[String], bcount: MutMap[String, Int], counts: Array[Int]) -> Unit {
+  match expr {
+    EIdent(nm, _) => if nm == owner {
+      Array::set(counts, 0, Array::get(counts, 0) + 1)
+    },
+    ECall(EIdent(nm, _), args, _, _) => if nm == owner && pos < Array::length(args) {
+      match Array::get(args, pos) {
+        EIdent(arg, _) => if MutSet::has(inert, arg) && MutMap::get(bcount, arg) == Some(1) {
+          Array::set(counts, 1, Array::get(counts, 1) + 1)
+        },
+        _ => ()
+      }
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut child = mark
+  while child < top {
+    edp_inert_param_uses(expr_child_at(child), owner, pos, inert, bcount, counts)
+    child = child + 1
+  }
+  expr_children_pop(mark)
+}
+
+fn edp_inert_param_uses_stmts(stmts: Array[Stmt], owner: String, pos: Int, inert: MutSet[String], bcount: MutMap[String, Int], counts: Array[Int]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, _, expr) => edp_inert_param_uses(expr, owner, pos, inert, bcount, counts),
+      SLetMut(_, _, expr) => edp_inert_param_uses(expr, owner, pos, inert, bcount, counts),
+      SExpr(expr) => edp_inert_param_uses(expr, owner, pos, inert, bcount, counts),
+      STest(_, expr) => edp_inert_param_uses(expr, owner, pos, inert, bcount, counts),
+      SBench(_, expr) => edp_inert_param_uses(expr, owner, pos, inert, bcount, counts),
+      SLetPat(_, expr) => edp_inert_param_uses(expr, owner, pos, inert, bcount, counts),
+      SExample(_, expr) => edp_inert_param_uses(expr, owner, pos, inert, bcount, counts),
+      SFnDecl(_, _, expr, _, _) => edp_inert_param_uses(expr, owner, pos, inert, bcount, counts),
+      SModule(_, _, inner) => edp_inert_param_uses_stmts(inner, owner, pos, inert, bcount, counts),
+      _ => ()
+    }
+  }
+  ()
+}
+
+/// Renaming a parameter can remove an inert spelling the old lowering read
+/// as a global function. Recover that fact from its checked pure function
+/// type, or, for an unannotated closure-conversion capture, from ALL calls to
+/// its private owner. Never infer purity from the old spelling itself.
+fn edp_append_renamed_inert_params(stmts: Array[Stmt], pure_fns: Array[String], inert: MutSet[String], bcount: MutMap[String, Int]) -> Bool {
+  let mut grew = false
+  for stmt in stmts {
+    match stmt {
+      SLet(exported, _, owner, _, EFn(_, _, params, _, _, _)) => {
+        let mut pos = 0
+        while pos < Array::length(params) {
+          let (marked, ty) = Array::get(params, pos)
+          let name = if String::ends_with(marked, "~") {
+            String::substring(marked, 0, String::length(marked) - 1)
+          } else {
+            marked
+          }
+          if String::starts_with(name, "__edpsh_") && !MutSet::has(inert, name) && MutMap::get(bcount, name) == Some(1) {
+            let safe = match ty {
+              Some(TyFn(_, _, None)) => true,
+              None => if !exported && MutMap::get(bcount, owner) == Some(1) {
+                let counts = [0, 0]
+                edp_inert_param_uses_stmts(stmts, owner, pos, inert, bcount, counts)
+                Array::get(counts, 0) > 0 && Array::get(counts, 0) == Array::get(counts, 1)
+              } else {
+                false
+              },
+              _ => false
+            }
+            if safe {
+              Array::push(pure_fns, name)
+              MutSet::insert(inert, name)
+              grew = true
+            }
+          }
+          pos = pos + 1
+        }
+      },
+      _ => ()
+    }
+  }
+  grew
+}
+
 export fn edp_append_visible_pure_lambda_names(stmts: Array[Stmt], pure_fns: Array[String]) -> Unit {
   let names = empty_str_array()
   let bodies: Array[Expr] = []
@@ -1394,7 +1485,7 @@ export fn edp_append_visible_pure_lambda_names(stmts: Array[Stmt], pure_fns: Arr
   }
   let mut grew = true
   while grew {
-    grew = false
+    grew = edp_append_renamed_inert_params(stmts, pure_fns, pure_names, bcount)
     let mut j = 0
     while j < Array::length(names) {
       let nm = Array::get(names, j)

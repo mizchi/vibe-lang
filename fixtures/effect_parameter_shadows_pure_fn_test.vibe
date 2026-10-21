@@ -1,0 +1,76 @@
+// #3581: lexical callback bindings keep their evidence calling convention.
+effect Log {
+  Say(String) -> Int
+}
+
+fn say(m: String) -> String {
+  m
+}
+
+fn run(say: (String) -> Int with Log) -> Int with Log {
+  say("direct") - 3
+}
+
+fn handled(say: (String) -> Int with Log) -> Int {
+  handle {
+    say("local")
+  } with { Log::Say(m) => resume(String::length(m) + 20) }
+}
+
+fn nested() -> Int with Log {
+  let f = (say: (String) -> Int with Log) -> Int with Log {
+    say("nested") - 2
+  }
+  f((m: String) -> Int with Log {
+    perform Log::Say(m)
+  })
+}
+
+test "an effectful parameter shadows a pure top-level function" {
+  let r = handle {
+    run((m: String) -> Int with Log {
+      perform Log::Say(m)
+    })
+  } with { Log::Say(m) => resume(String::length(m) + 10) }
+  inspect(r, content = "13")
+  inspect(say("top-level"), content = "top-level")
+}
+
+test "a handle over the shadowing parameter is not erased as pure" {
+  inspect(handled((m: String) -> Int with Log {
+    perform Log::Say(m)
+  }), content = "25")
+}
+
+test "a nested lambda parameter keeps its own dictionary" {
+  let r = handle {
+    nested()
+  } with { Log::Say(m) => resume(String::length(m) + 30) }
+  inspect(r, content = "34")
+}
+
+fn run_labeled(say~: (String) -> Int with Log, offset~: Int) -> Int with Log {
+  say("labeled") - offset
+}
+
+test "a labeled callback keeps its lexical name after argument reordering" {
+  let r = handle {
+    run_labeled(offset = 4, say = (m: String) -> Int with Log {
+      perform Log::Say(m)
+    })
+  } with { Log::Say(m) => resume(String::length(m) + 40) }
+  inspect(r, content = "43")
+}
+
+fn pure_callback(say: (String) -> Int) -> Int with Log {
+  say("pure") + perform Log::Say("side")
+}
+
+test "a pure callback that shadows the same global keeps its own value" {
+  let r = handle {
+    pure_callback((m: String) -> Int {
+      String::length(m) + 70
+    })
+  } with { Log::Say(_) => resume(3) }
+  inspect(r, content = "77")
+}
