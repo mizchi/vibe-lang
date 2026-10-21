@@ -72,6 +72,20 @@ export const vibeMonarchLanguage: monaco.languages.IMonarchLanguage = {
     "from",
     "record",
     "map",
+    "effect",
+    "effectset",
+    "perform",
+    "resume",
+    "allows",
+    "is",
+    "guard",
+    "region",
+    "opaque",
+    "taskgroup",
+    "async",
+    "await",
+    "example",
+    "where",
   ],
 
   builtinConstants: ["true", "false"],
@@ -119,6 +133,9 @@ export const vibeMonarchLanguage: monaco.languages.IMonarchLanguage = {
     root: [
       // comments
       [/\/\/.*$/, "comment"],
+
+      // declaration directives (`#zero_alloc`, `#cfg(...)`)
+      [/#[a-z_][a-zA-Z0-9_]*/, "annotation"],
 
       // strings
       [/r"/, "string", "@rawstring"],

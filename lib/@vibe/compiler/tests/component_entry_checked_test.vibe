@@ -1,0 +1,62 @@
+// The vibec component (the browser playground's compiler) answers the same
+// question as `vibe check`: an ill-typed closure is a located diagnostic, not
+// a module that runs. Before this, `compile_cli_request` compiled every closure
+// unchecked, so `let x: Int = "s"` printed `s` in the playground, and with the
+// Exception-row cell left at its unchecked default a `main` missing
+// `Exception` compiled into a module that threw.
+
+import ../cli_direct_component_entry.vibe {
+  compile_cli_request
+}
+
+fn hex_of(s: String) -> String {
+  let digits = "0123456789abcdef"
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(s) {
+    let b = String::char_code_at(s, i)
+    StringBuilder::push(out, digits[b / 16: b / 16 + 1])
+    StringBuilder::push(out, digits[b % 16: b % 16 + 1])
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+fn payload(src: String) -> String {
+  hex_of(String::concat("main.vibe", String::concat(String::from_char_code(0), src)))
+}
+
+fn payload_with(src: String, dep_path: String, dep: String) -> String {
+  let nul = String::from_char_code(0)
+  hex_of(String::join(["main.vibe", src, dep_path, dep], nul))
+}
+
+fn diagnostic(src: String) -> String with Env {
+  compile_cli_request(payload(src), "error-mode:mvp:main")
+}
+
+test "a binding type mismatch is a located diagnostic" {
+  let d = diagnostic("fn main allows Console {\n  let x: Int = \"s\"\n  println(\"\\{x}\")\n}\n")
+  inspect(String::contains(d, "line 2:"), "true")
+  inspect(String::contains(d, "binding type mismatch"), "true")
+}
+
+test "a main missing Exception is refused with the edit" {
+  let d = diagnostic("fn f(b: Int) -> Int with Exception {\n  if b == 0 { throw(\"zero\") }\n  b\n}\n\nfn main allows Console {\n  println(\"\\{f(0)}\")\n}\n")
+  inspect(String::contains(d, "missing { Exception }"), "true")
+  inspect(String::contains(d, "allows Console + Exception"), "true")
+}
+
+test "a well-typed program compiles" {
+  let src = "fn main allows Console {\n  println(\"ok\")\n}\n"
+  inspect(diagnostic(src), "")
+  let len = compile_cli_request(payload(src), "len-mode:mvp:main")
+  inspect(String::length(len) > 0 && len != "0", "true")
+}
+
+test "an error inside an imported file keeps that file's location" {
+  let dep = "export fn bad() -> Int {\n  let x: Int = \"s\"\n  x\n}\n"
+  let src = "import ./dep.vibe { bad }\n\nfn main allows Console {\n  println(\"\\{bad()}\")\n}\n"
+  let d = compile_cli_request(payload_with(src, "dep.vibe", dep), "error-mode:mvp:main")
+  inspect(d, "dep.vibe: line 2:16-19: binding type mismatch for a local let: expected Int, got String")
+}

@@ -18,8 +18,13 @@ bash scripts/vibec_browser_poc.sh      # the above + jco transpile + in-memory c
   - Sources are passed **inline**, as a hex payload of NUL-separated
     (path, source) pairs.
   - The output wasm comes back in hex chunks.
-  - The compile path's effect row carries neither Env nor Fs, so it never
-    reaches a host import at run time.
+  - The closure is type-checked before it is compiled, the same check
+    `vibe check` runs, so an ill-typed program comes back as a located
+    diagnostic. Every payload file is in the check's db, so a package contract
+    (`index.vpkg`) the resolver probes for exists the way it would on disk.
+  - The compile path's effect row carries no Fs, so it never reaches an `fs_*`
+    import at run time. It carries `Env`, because the check reads the library
+    roots; inside the component that read sees the stub's "unset".
 - **componentization**: `scripts/vibec_componentize.vibex` (the same
   script-tool pattern as vibe-opt) calls
   `comp_emit_component_wasm_string_handler_stubbed`. That lifts the core to the
@@ -28,8 +33,8 @@ bash scripts/vibec_browser_poc.sh      # the above + jco transpile + in-memory c
     `vibe.fs_*` imports. Stubs inside the component absorb them:
     - `env-get` returns the empty string (unset);
     - `fs_*` is `unreachable`.
-  - The compile surface's row guarantees these are dynamically unreachable. A
-    violation shows up immediately as a trap.
+  - The compile surface's row guarantees the `fs_*` stubs are dynamically
+    unreachable. A violation shows up immediately as a trap.
   - The serve-handler path still rejects them strictly.
 
 ## WIT world (compile surface)
