@@ -1260,6 +1260,26 @@ for ll_rc in 1 0; do
     echo "[compiler-gate] VIBE_RC=$ll_rc dictionary-only impl build compiled; SKIP run: wasmtime not available"
   fi
 done
+# #3577: `--debug` changes code generation only, so it refuses what the
+# release build refuses. The debug lane ran no checker: this program built,
+# and the wasm printed `st`.
+cat > "$lldir/debug_type_error.vibe" <<'VIBE'
+fn main() -> Unit allows Console {
+  let x: Int = "s"
+  println("\{x + 1}")
+}
+VIBE
+rm -f "$lldir/debug_type_error.wasm"
+dbg_te_rc=0
+dbg_te_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  build --debug "$lldir/debug_type_error.vibe" -o "$lldir/debug_type_error.wasm" --entry main 2>&1)" || dbg_te_rc=$?
+if [ "$dbg_te_rc" -eq 0 ] || [ -e "$lldir/debug_type_error.wasm" ] \
+  || ! printf '%s\n' "$dbg_te_out" | grep -q 'binding type mismatch for a local let: expected Int, got String'; then
+  echo "[compiler-gate] FAIL: build --debug did not refuse a type error the release build refuses (rc=$dbg_te_rc) (#3577)" >&2
+  printf '%s\n' "$dbg_te_out" >&2; exit 1
+fi
+echo '[compiler-gate] build --debug refuses a type error ok (#3577)'
 rm -rf "$lldir"
 
 # 15b-3c'. #3067: `String::substring` clamps its indices on every lane. The gc
