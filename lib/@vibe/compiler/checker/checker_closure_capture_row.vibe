@@ -944,6 +944,53 @@ export fn quantify_own_rows(t: Type) -> Type {
   }
 }
 
+/// `quantify_own_rows` for the value `val` of the binding `self_name`, also
+/// leaving unquantified a type whose row variables a name `val` captures
+/// carries. A parameter naming such a variable does not make it the
+/// binding's own: `let choose = (other) -> if c { shared } else { other }`
+/// types as `(Cell[$N]) -> Cell[$N]` with `$N` the row of the top-level
+/// `shared`, and quantifying it let two calls see that one cell at two rows
+/// (Codex review on #3594). Read the way `env_reachable_tvars` reads type
+/// variables for the value restriction.
+export fn quantify_own_rows_of(t: Type, val: Expr, env: TypeEnv, s: Subst, self_name: String) -> Type {
+  if rows_reach_capture(t, val, env, s, self_name) {
+    t
+  } else {
+    quantify_own_rows(t)
+  }
+}
+
+fn rows_reach_capture(t: Type, val: Expr, env: TypeEnv, s: Subst, self_name: String) -> Bool {
+  let mine: Array[String] = array_empty()
+  collect_row_variable_names(subst_apply(s, t), mine)
+  if Array::length(mine) == 0 {
+    false
+  } else {
+    let names = closure_free_names(val, array_empty())
+    for callee in closure_bare_callee_names(val) {
+      if !checker_string_array_has(names, callee) {
+        Array::push(names, callee)
+      }
+    }
+    let captured: Array[String] = array_empty()
+    for name in names {
+      if name != self_name {
+        match env_lookup(env, name) {
+          Some(ty) => collect_row_variable_names(subst_apply(s, ty), captured),
+          None => ()
+        }
+      }
+    }
+    let mut hit = false
+    for v in mine {
+      if checker_string_array_has(captured, v) {
+        hit = true
+      }
+    }
+    hit
+  }
+}
+
 /// Is every row variable `t` names also named by one of `params`?
 fn rows_all_named_by(t: Type, params: Array[Type]) -> Bool {
   let all: Array[String] = array_empty()
