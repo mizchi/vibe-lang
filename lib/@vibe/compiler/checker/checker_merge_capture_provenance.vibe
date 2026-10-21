@@ -1724,7 +1724,34 @@ export fn record_call_callee_type(call_off: Int, callee: Expr, ty: Type) -> Unit
     }
     if keep {
       Array::push(call_callee_sites, (call_off, call_callee_spelling(callee), ty))
+    } else if fn_has_rowed_param(ty) {
+      Array::push(call_callee_param_sites, (call_off, call_callee_spelling(callee), ty))
     }
+  }
+}
+
+/// #3540: the callee types `call_callee_sites` does not keep -- a function
+/// with no row of its own -- whose parameters include a function type with a
+/// row. The handle-escape check reads a parameter's row there: a closure
+/// handed to such a parameter takes that row, and whoever calls it passes
+/// the handler. Reset with `call_callee_sites`.
+export let call_callee_param_sites: Array[(Int, String, Type)] = []
+
+fn fn_has_rowed_param(ty: Type) -> Bool {
+  match ty {
+    CtFn(params, _, _) => {
+      let mut found = false
+      for p in params {
+        match p {
+          CtFn(_, _, Some(row)) => if row_names_visible_label(row) {
+            found = true
+          },
+          _ => ()
+        }
+      }
+      found
+    },
+    _ => false
   }
 }
 
@@ -1907,6 +1934,7 @@ export fn reset_throw_payload_sites() -> Unit {
   Array::truncate(erased_throw_binder_vars, 0)
   Array::truncate(erased_throw_active_arms, 0)
   Array::truncate(call_callee_sites, 0)
+  Array::truncate(call_callee_param_sites, 0)
   clear_call_callee_types()
   // #3033: a module's kind resolutions never answer for the next module.
   exception_kind_resolutions_clear()
