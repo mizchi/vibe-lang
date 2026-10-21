@@ -30,7 +30,9 @@
 //     function the result type spells, or one inside a declared type's
 //     fields when the callee is a declaration whose body creates a closure
 //     that throws and can leave it -- read from the body for this module's,
-//     from the fact its module published for an imported one, #3593; for
+//     from the fact its module published for an imported one, #3593, or
+//     when the callee names no declaration to read -- a parameter, a call's
+//     result, a field -- #3599; for
 //     a row variable the call instantiates to the effect, a closure that
 //     performs that variable, such as one calling a parameter whose row it
 //     is, #3594) --
@@ -552,9 +554,22 @@ fn hce_message(what: String, set: String, route: String, off: Int) -> String {
   } else {
     String::concat(performs, ", and this `handle` answers it")
   }
-  let edit = String::concat("call ", String::concat(what, String::concat(" inside this `handle` and keep only what it computes, or move the `handle` into the closure (`() -> handle { .. } with { .. }`) -- ", String::concat(what, String::concat(" ", verb)))))
+  // #3599: for a callee with no body to read, `what` is `any closure in
+  // what <callee> returns`, and the reason says the throw is assumed.
+  let reason = if String::starts_with(what, hce_unread_prefix()) && throws && Array::length(named) == 0 {
+    let callee = what[String::length(hce_unread_prefix()): String::length(what) - String::length(" returns")]
+    String::concat(callee, " has no body this check can read, so a closure in what it returns may throw, and this `handle` catches it")
+  } else {
+    String::concat(what, String::concat(" ", verb))
+  }
+  let edit = String::concat("call ", String::concat(what, String::concat(" inside this `handle` and keep only what it computes, or move the `handle` into the closure (`() -> handle { .. } with { .. }`) -- ", reason)))
   let why = String::concat(" only while the handled body runs, so ", String::concat(route, " leaves it with no handler to call"))
   String::concat(edit, String::concat(why, off_marker(off)))
+}
+
+/// How a value produced by a callee with no body to read is named.
+fn hce_unread_prefix() -> String {
+  "any closure in what "
 }
 
 /// The row labels of `ty` when it is a function type; none otherwise.
@@ -1405,7 +1420,20 @@ fn hce_note_call(callee: Expr, args: Array[Expr], off: Int, pos: Int, st: HceWal
         None => {
           let spelling = call_callee_spelling(callee)
           match hce_site_type(st, off, spelling, s) {
-            Some(ty) => hce_note_callee(st, ty, spelling, hce_method_decl(callee, ty, env, s), off, pos, env, defs, s),
+            Some(ty) => {
+              let decl = hce_method_decl(callee, ty, env, s)
+              // A function-typed field is named as written (`fac.mk`): its
+              // own name may be a declaration's too (#3599).
+              let shown = match callee {
+                EDot(EIdent(recv, _), m, _, _) => if decl == "" {
+                  String::concat(recv, String::concat(".", m))
+                } else {
+                  spelling
+                },
+                _ => spelling
+              }
+              hce_note_callee(st, ty, shown, decl, off, pos, env, defs, s)
+            },
             None => hce_note_unsure(off, spelling)
           }
         }
@@ -1491,6 +1519,7 @@ fn hce_note_callee(st: HceWalk, ty: Type, spelling: String, decl: String, at: In
   if Array::length(found) > 0 {
     let mut performed = ""
     let mut bound = ""
+    let mut guessed = false
     for label in found {
       performed = hce_set_union(performed, label)
       // An exception row counts the function values the result type spells
@@ -1511,9 +1540,20 @@ fn hce_note_callee(st: HceWalk, ty: Type, spelling: String, decl: String, at: In
         for d in hce_set_items(decl) {
           if !made && (hce_holds_fn_without(ret, label, defs, array_empty()) || retention_decl_value(d) is None) && (hce_decl_makes_bound(d, label, env, defs, s) || hce_decl_makes_bound_via_var(d, ty, label, env, defs, s)) {
             made = true
+            guessed = hce_decl_unread(d)
           } else {
             ()
           }
+        }
+        // #3599: a callee that names no declaration -- a parameter, a local
+        // bound to a call's result, a function-typed field -- has no body to
+        // read, so a closure inside a declared type's field of its result is
+        // taken to throw.
+        if !made && decl == "" && hce_holds_fn_without(ret, label, defs, array_empty()) {
+          made = true
+          guessed = true
+        } else {
+          ()
         }
         made
       } else {
@@ -1531,10 +1571,17 @@ fn hce_note_callee(st: HceWalk, ty: Type, spelling: String, decl: String, at: In
     hce_count_perform(st, performed, at)
     match hce_fn_result(ty) {
       Some(_) => if bound != "" {
-        let what = if spelling == "" {
+        let callee = if spelling == "" {
+          "this call's callee"
+        } else {
+          String::concat("`", String::concat(spelling, "`"))
+        }
+        let what = if guessed {
+          String::concat(hce_unread_prefix(), String::concat(callee, " returns"))
+        } else if spelling == "" {
           "the closure this call returns"
         } else {
-          String::concat("the closure `", String::concat(spelling, "` returns"))
+          String::concat("the closure ", String::concat(callee, " returns"))
         }
         Array::push(st.producers, (what, at, bound, pos))
       } else {
@@ -1756,12 +1803,12 @@ fn hce_decl_makes_bound(name: String, label: String, env: TypeEnv, defs: Array[T
       // Exception[Int] = mk`), or a choice between them (`let make = if c {
       // () -> .. } else { mk }`). One whose value may also come from
       // something it does not read may be any, and answers yes
-      // (`hce_unknown_decl`); one that reads nothing at all (a call's result)
-      // is not followed, like a local of that kind.
+      // (`hce_unknown_decl`), and so does one that reads nothing at all (a
+      // call's result), like a local of that kind (#3599).
       Some(val) => {
         let lits: Array[Expr] = array_empty()
         let srcs: Array[String] = array_empty()
-        if !hce_decl_sources(val, lits, srcs) && (Array::length(lits) > 0 || Array::length(srcs) > 0) {
+        if !hce_decl_sources(val, lits, srcs) {
           Array::push(srcs, hce_unknown_decl())
         } else {
           ()
@@ -1801,6 +1848,19 @@ fn hce_decl_makes_bound(name: String, label: String, env: TypeEnv, defs: Array[T
       // published (`hce_bind_module_summaries`).
       None => hce_imported_makes_bound(name, label, env)
     }
+  }
+}
+
+/// #3599: is `name` a top-level binding of this module whose value names no
+/// function the check can read (`let g = pick(3)`)?
+fn hce_decl_unread(name: String) -> Bool {
+  match retention_decl_value(name) {
+    Some(val) => {
+      let lits: Array[Expr] = array_empty()
+      let srcs: Array[String] = array_empty()
+      !hce_decl_sources(val, lits, srcs) && Array::length(lits) == 0 && Array::length(srcs) == 0
+    },
+    None => false
   }
 }
 

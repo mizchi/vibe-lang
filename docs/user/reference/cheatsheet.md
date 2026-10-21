@@ -3512,11 +3512,22 @@ imported (#3593), reached as a method (`fac.mk()`), through a top-level or
 local alias (`let g = mk`, annotated or chosen by an `if`, #3596), as a
 literal a top-level binding chooses (`let make = if c { () -> .. } else { ..
 }`), or as a row-polymorphic builder whose row the call fills
-(`forward[e](g: () -> Int with e) -> Box with e`). A function reached only
-through a value nothing names -- a parameter (`fn run(g: () -> Box with
-Exception[Int])`) or a call's result (`let g = pick(3)`) -- is not read, and
-its closure still leaves unseen; that is a known gap of `0.1.0`
-(stable-surface §6.2).
+(`forward[e](g: () -> Int with e) -> Box with e`). A callee that names no
+declaration -- a parameter (`fn run(g: () -> Box with Exception[Int])`), a
+binding of a call's result (`let g = pick(3)`), a function-typed field -- has
+no body to read, so when its row names the exception the handle catches and
+its result can hold a function in a declared type's field, that closure is
+taken to throw (#3599). The same routes decide: calling the field closure
+inside the handle and keeping only what it computes is accepted; returning
+the builder's result as the handle's value is refused, with the edit:
+
+```vibe skip
+// Rejected: `g` is a parameter, so the closure in its `Box` may throw
+// after this handle is gone.
+fn run(g: () -> Box with Exception[Int]) -> Box {
+  handle { g() } with { Exception[Int]::Throw(c) => Box::{ f: () -> c } }
+}
+```
 
 ### 補間できるのは Show を持つ型だけ (#1445)
 
