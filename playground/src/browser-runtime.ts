@@ -5,17 +5,17 @@ function sourcePayload(source: string): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function compiledBytes(payload: string): Uint8Array {
-  const lengthText = compile(payload, "len-mode:mvp:_start");
+function compiledBytes(payload: string, entry: string): Uint8Array {
+  const lengthText = compile(payload, `len-mode:mvp:${entry}`);
   const length = Number(lengthText);
   if (!Number.isSafeInteger(length) || length <= 8) {
-    const diagnostic = compile(payload, "error-mode:mvp:_start");
-    throw new Error(diagnostic || "Compilation failed. Check the source and its exported _start function.");
+    const diagnostic = compile(payload, `error-mode:mvp:${entry}`);
+    throw new Error(diagnostic || `Compilation failed. Check the source and its ${entry} entry point.`);
   }
   const bytes = new Uint8Array(length);
   let offset = 0;
   for (let chunk = 0; offset < length; chunk++) {
-    const hex = compile(payload, `hex-chunk-mode:mvp:_start:${chunk}`);
+    const hex = compile(payload, `hex-chunk-mode:mvp:${entry}:${chunk}`);
     if (!hex || hex.length % 2 !== 0 || offset + hex.length / 2 > length) {
       throw new Error(`Compiler returned an invalid wasm chunk at ${offset}.`);
     }
@@ -28,8 +28,10 @@ function compiledBytes(payload: string): Uint8Array {
   return bytes;
 }
 
-export async function compileAndRun(source: string): Promise<string> {
-  const bytes = compiledBytes(sourcePayload(source));
+// `entry` names the function the compiler roots the module at: `_start` for
+// the playground presets, `main` for `fn main allows ...` programs.
+export async function compileAndRun(source: string, entry = "_start"): Promise<string> {
+  const bytes = compiledBytes(sourcePayload(source), entry);
   let instance: WebAssembly.Instance | undefined;
   let stdout = "";
   const decoder = new TextDecoder();
@@ -74,8 +76,8 @@ export async function compileAndRun(source: string): Promise<string> {
   };
   const module = await WebAssembly.compile(bytes.buffer as ArrayBuffer);
   instance = await WebAssembly.instantiate(module, imports);
-  const start = instance.exports._start;
-  if (typeof start !== "function") throw new Error("Compiled program has no _start export.");
+  const start = instance.exports[entry];
+  if (typeof start !== "function") throw new Error(`Compiled program has no ${entry} export.`);
   start();
   return stdout;
 }

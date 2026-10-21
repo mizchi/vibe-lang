@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { defineConfig } from "vite";
 
 export default defineConfig({
@@ -9,6 +10,12 @@ export default defineConfig({
   },
   build: {
     target: "esnext",
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, "index.html"),
+        slides: resolve(__dirname, "slides.html"),
+      },
+    },
   },
   optimizeDeps: {
     exclude: ["web-tree-sitter"],
