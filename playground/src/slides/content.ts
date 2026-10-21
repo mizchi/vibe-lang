@@ -48,7 +48,7 @@ fn main allows Console {
   println("result = \{r}")
 }`,
     expect: "[log] start: 21\nresult = 42\n",
-    hint: "<code>work</code> はログの出し先を知らない。<code>handle</code> が実装を与える。<br>試す: ハンドラ腕の <code>println</code> を消す → テスト用の無音ハンドラになる。",
+    hint: "<code>work</code> はログの出し先を知らない。<code>handle</code> が実装を与える。",
   },
   caps: {
     source: String.raw`
@@ -60,7 +60,7 @@ fn main allows Console {
   greet("自作言語を自慢する会")
 }`,
     expect: "hi 自作言語を自慢する会\n",
-    hint: "試す: ① <code>greet</code> の <code>with Console</code> を消す ② <code>allows</code> を <code>with</code> に書き換える ③ <code>greet</code> の中で <code>Fs::read_file(\"secret\")</code> を呼ぶ。<br>診断は <b>直し方</b> から始まる。",
+    hint: "試す: <code>main</code> の <code>allows</code> を <code>with</code> にする。診断は<b>直し方</b>から始まる。",
   },
   zero_alloc: {
     source: String.raw`
@@ -74,11 +74,11 @@ fn main allows Console {
   println("hot = \{hot(14, 14)}")
 }`,
     expect: "hot = 42\n",
-    hint: "試す: <code>hot</code> の本体を <code>Array::length([a, b])</code> にする → ヒープ確保がコンパイルエラーになる。推移的に呼ぶ関数も検査される。",
+    hint: "試す: 本体を <code>Array::length([a, b])</code> にする → 確保がコンパイルエラーになる。",
   },
   eq: {
     source: String.raw`
-struct Pt { x: Int, y: Int }
+struct Pt { x: Int; y: Int }
 
 fn main allows Console {
   let a = [Pt::{ x: 1, y: 2 }, Pt::{ x: 3, y: 4 }]
@@ -87,11 +87,11 @@ fn main allows Console {
   println("tuples: \{(1.5, "a") == (1.5, "a")}")
 }`,
     expect: "arrays: true\ntuples: true\n",
-    hint: "試す: <code>let same = (p, q) -&gt; p == q</code> を足す → 型の分からない <code>==</code> は<b>注釈を求めてエラー</b>になる。",
+    hint: "試す: <code>let same = (p, q) -&gt; p == q</code> を足す → 注釈を求めるエラーになる。",
   },
   pipe: {
     source: String.raw`
-struct Talk { title: String, minutes: Int }
+struct Talk { title: String; minutes: Int }
 
 fn main allows Console {
   let talks = [
@@ -106,7 +106,7 @@ fn main allows Console {
   println("total = \{total} min, n = \{n}")
 }`,
     expect: "total = 36 min, n = 4\n",
-    hint: "<code>|&gt;</code> は左の値を第 1 引数に、<code>_</code> はその位置に差し込む。<code>_ + _</code> は 2 引数ラムダの略記。",
+    hint: "<code>_</code> は差し込む位置。<code>_ + _</code> は 2 引数ラムダ。",
   },
 };
 
@@ -202,7 +202,7 @@ export const SLIDES: Slide[] = [
         </div>
       </div>
       <p class="quote">設計の迷いどころのプロンプト: <strong>「迷ったら wasm / wasi のプリミティブとして自然な方」</strong></p>
-      <p class="small">wasm-gc の ref 配列には <code>v128</code> が乗らない → codegen は <strong>linear memory と wasm-gc の 2 本立て</strong>。値は tagged i64、<code>String</code> はバイト列 (byte offset で添字)。WIT 境界に出られる型は nominal に決まる。</p>`,
+      <p>wasm-gc の配列には <code>v128</code> が乗らない → codegen は <strong>linear memory と wasm-gc の 2 本立て</strong></p>`,
     notes: "1:25 (40s) 動機1: wasm first。SIMD、ブラウザで開発、component model。wasm-gc の配列に v128 が乗らないので 2 本立て。",
   },
   {
@@ -230,7 +230,7 @@ export const SLIDES: Slide[] = [
   },
   {
     className: "section",
-    html: `<h1><small>FEATURES</small>黙ってやらせない</h1><p>失敗・権限・確保・比較を、型と診断で表に出す。<span class="muted">ここからはスライド内でライブコンパイル</span></p>`,
+    html: `<h1><small>FEATURES</small>黙ってやらない</h1><p>失敗・権限・確保・比較を、型と診断で表に出す。ここからはライブでコンパイル</p>`,
     notes: "2:40 (10s) ここから「黙ってやらせない」4 つ。ライブで。",
   },
   {
@@ -252,7 +252,7 @@ export const SLIDES: Slide[] = [
     html: `
       <h2><span class="kicker">Authority</span>権限はビルドの最初に一度だけ決まる</h2>
       <div class="flow">
-        <div class="node hot"><b>build</b><span><code>--allow-*</code> / <code>--deny-*</code> を const-fold + DCE</span></div>
+        <div class="node hot"><b>build</b><span><code>--allow-*</code> / <code>--deny-*</code> を <code>const-fold</code> + DCE</span></div>
         <div class="arrow">→</div>
         <div class="node"><b>apply</b><span>必要な feature level (<code>v8</code> / <code>web-baseline</code>) を宣言</span></div>
         <div class="arrow">→</div>
@@ -310,28 +310,25 @@ export const SLIDES: Slide[] = [
       <div class="cols">
         <ul class="small">
           <li><strong>MoonBit でプロトタイプ</strong>
-            <div class="small muted">経験的に、言語はホストした言語に似ていく</div></li>
+            <div class="muted">経験的に、言語はホストした言語に似ていく</div></li>
           <li>一通り動いてから parser → codegen → CLI の順にセルフホスト化</li>
           <li>適当に論文を突っ込む</li>
           <li><strong>Lean</strong> で難しい部分を実装してテストオラクルに
-            <div class="small muted">effect row の健全性 / モジュールシステム / スレッド実行モデル</div></li>
+            <div class="muted">effect row の健全性 / モジュールシステム / スレッド実行モデル</div></li>
           <li>「バグを潰して」</li>
           <li>Rust Book を参考に <strong>Vibe Book</strong> を書いた。例は全部 CI で実行。サブエージェントにルーブリックで使いやすさを採点させる</li>
         </ul>
-        <div class="card small">
-          <h3>Timeline (2026)</h3>
-          <table class="facts">
-            <tr><td class="num">02-03</td><td>初コミット。名前は <code>xsh</code> (シェル言語)、MoonBit 実装</td></tr>
-            <tr><td class="num">03-01</td><td>vibe で書いた parser / evaluator が自分のソースを読めた</td></tr>
-            <tr><td class="num">04-14</td><td>v0.0.1 (MoonBit ホスト最後のリリース)</td></tr>
-            <tr><td class="num">06-28</td><td>MoonBit 実装 <code>src/</code> (7.3MB) を削除 → selfhost-only</td></tr>
-            <tr><td class="num">09-21</td><td>v0.1.0-rc.1 … 今は 0.1.0 直前</td></tr>
-          </table>
-          <div class="cols three" style="margin-top:1cqw;gap:1cqw">
-            <div><div class="big-number">2,035</div><div class="label">PRs (8.5ヶ月)</div></div>
-            <div><div class="big-number">1,547</div><div class="label">issues</div></div>
-            <div><div class="big-number">264</div><div class="label">P0 = 黙って誤る</div></div>
+        <div class="card">
+          <div class="cols three" style="gap:1cqw">
+            <div><div class="big-number">2,035</div><div class="label">PR (8.5ヶ月)</div></div>
+            <div><div class="big-number">1,547</div><div class="label">issue</div></div>
+            <div><div class="big-number">264</div><div class="label">P0 (黙って誤る)</div></div>
           </div>
+          <table class="facts" style="margin-top:1.2cqw">
+            <tr><td class="num">2026-02</td><td>MoonBit で書き始める</td></tr>
+            <tr><td class="num">2026-06</td><td>MoonBit 実装を削除、セルフホストだけに</td></tr>
+            <tr><td class="num">2026-10</td><td>0.1.0 直前</td></tr>
+          </table>
         </div>
       </div>`,
     notes: "6:50 (45s) MoonBit でプロトタイプ → 部分ごとにセルフホスト。Lean をオラクルに。8.5ヶ月で PR 2,035、P0 264 件を自分で数えている。",
@@ -368,16 +365,16 @@ export const SLIDES: Slide[] = [
         <div class="card">
           <h3>ベンチが信用できない</h3>
           <ul class="small">
-            <li>GitHub Actions のランナー次第で、無関係な PR が <strong>20〜64% 遅く</strong>見える</li>
+            <li>CI のランナー次第で、無関係な PR が <strong>最大 64% 遅く</strong>見える</li>
             <li>VM 割り当てだけでなくハードも違う (AVX512 がある時と無い時)</li>
-            <li>較正しても ±15〜40% 揺れる → <strong>wasmtime の fuel (実行命令数)</strong> で判定。±2%</li>
+            <li>→ wall-time をやめて <strong>wasmtime の fuel (実行命令数)</strong> で判定する</li>
           </ul>
         </div>
         <div class="card">
           <h3>セルフビルドが重い / メモリが漏れまくる</h3>
           <ul class="small">
-            <li>cold セルフコンパイルのヒープ 1,203MB → <strong>953MB</strong> (#3579, 10/21)</li>
-            <li>リーク: <code>let rec</code> クロージャが評価ごとに 24B、反復ごとに 80B</li>
+            <li>セルフコンパイルのヒープは今も <strong>953MB</strong></li>
+            <li>メモリが漏れまくる</li>
             <li><strong>Perceus</strong> (参照カウント) + <strong>FBIP</strong> (in-place 再利用)。再利用は 8,879 箇所中 1,830 で成立、でも壁時計はほぼ変わらず</li>
           </ul>
         </div>

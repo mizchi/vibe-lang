@@ -78,6 +78,9 @@ export async function compileAndRun(source: string, entry = "_start"): Promise<s
   instance = await WebAssembly.instantiate(module, imports);
   const start = instance.exports[entry];
   if (typeof start !== "function") throw new Error(`Compiled program has no ${entry} export.`);
-  start();
+  // A named entry such as `main` takes its closure environment as an i64;
+  // a top-level entry has none, so pass 0 the way scripts/wasm_vibe_host_runner.js does.
+  if (start.length > 0) start(0n);
+  else start();
   return stdout;
 }
