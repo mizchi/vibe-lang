@@ -117,6 +117,7 @@ import ./checker_builtin_arg_head_rest.vibe {
   owned_head_field_ty,
   receiver_head_kind,
   receiver_struct_field_type,
+  tuple_projection_fn_type,
   type_name_prefix,
   unify_call_args
 }
@@ -2480,7 +2481,12 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   // #829: also resolve the field through an INSTANTIATED generic
                   // struct receiver (`CtNamed(S, targs)`), so `it.pull(x)` on
                   // `LazyIter[Int]` checks against the concrete field signature.
-                  let field_fn = receiver_struct_field_type(defs, subst_apply(s3, obj_ty), method)
+                  // #3568: a tuple projection (`(t.0)()`) calls the element
+                  // the same way, and is charged that element's row.
+                  let field_fn = match receiver_struct_field_type(defs, subst_apply(s3, obj_ty), method) {
+                    Some(ft) => Some(ft),
+                    None => tuple_projection_fn_type(obj_ty, method, s3)
+                  }
                   // #3572: a call through the field reaches it as a read does.
                   let _ = owned_head_field_ty(defs, subst_apply(s3, obj_ty), method, CtUnknown, errors, if qcall_field_off >= 0 {
                     off_marker_len(qcall_field_off, String::length(method))
