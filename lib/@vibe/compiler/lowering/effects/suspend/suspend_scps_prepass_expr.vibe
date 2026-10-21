@@ -1827,27 +1827,37 @@ let scps_cur_stmt: Array[Int] = []
 /// running). Anything this cannot see through answers true; the driver then
 /// lowers the handle or it is refused with the edit, never answered wrongly.
 fn scps_arm_throw_needs_driver(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, String)]) -> Bool {
+  // Per effect, the operations whose arm may throw. Only a perform of one of
+  // THOSE runs a throwing arm, so only their reachability matters: in a
+  // handle over `A` and `B` whose `A` arm throws, a `B` perform under an
+  // inner exception handler runs `B`'s arm there, which cannot throw.
   let effs = array_empty_str()
-  let mut throws = false
+  let eff_ops: Array[Array[String]] = []
   for a in arms {
     let (p, ab) = a
     match p {
-      PCtor(q, _) => if !is_exception_throw_handler_name(q) {
+      PCtor(q, _) => if !is_exception_throw_handler_name(q) && scps_arm_may_throw(ab, ab, ctx, scope) {
         let ci = String::index_of(q, "::")
         let qe = if ci > 0 {
           String::substring(q, 0, ci)
         } else {
           q
         }
-        if !edp_str_array_contains(effs, qe) {
-          Array::push(effs, qe)
-        } else {
-          ()
+        let mut slot = 0 - 1
+        let mut i = 0
+        while i < Array::length(effs) {
+          if Array::get(effs, i) == qe {
+            slot = i
+          } else {
+            ()
+          }
+          i = i + 1
         }
-        if !throws && scps_arm_may_throw(ab, ab, ctx, scope) {
-          throws = true
+        if slot < 0 {
+          Array::push(effs, qe)
+          Array::push(eff_ops, [q])
         } else {
-          ()
+          Array::push(Array::get(eff_ops, slot), q)
         }
       } else {
         ()
@@ -1855,36 +1865,27 @@ fn scps_arm_throw_needs_driver(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array
       _ => ()
     }
   }
-  if !throws {
-    false
-  } else {
-    let mut hit = false
-    for eff in effs {
-      if !hit {
-        let (declared, decl_ops) = scps_effect_decl_ops(ctx, eff)
-        if !declared {
-          hit = true
-        } else {
-          let ops = array_empty_str()
-          for o in decl_ops {
-            let (opname, _) = o
-            Array::push(ops, String::concat(String::concat(eff, "::"), opname))
-          }
-          let needing = scps_needing_for(ctx, eff)
-          if scps_catch_reaches(body, body, eff, ops, needing, ctx, scope) {
-            hit = true
-          } else if scps_reaches_arm_indirectly(body, body, eff, ops, needing, ctx, scope, false) && scps_program_may_catch_elsewhere(ctx) {
-            hit = true
-          } else {
-            ()
-          }
-        }
+  let mut hit = false
+  let mut ei = 0
+  while ei < Array::length(effs) && !hit {
+    let eff = Array::get(effs, ei)
+    let (declared, _) = scps_effect_decl_ops(ctx, eff)
+    if !declared {
+      hit = true
+    } else {
+      let ops = Array::get(eff_ops, ei)
+      let needing = scps_needing_for(ctx, eff)
+      if scps_catch_reaches(body, body, eff, ops, needing, ctx, scope) {
+        hit = true
+      } else if scps_reaches_arm_indirectly(body, body, eff, ops, needing, ctx, scope, false) && scps_program_may_catch_elsewhere(ctx) {
+        hit = true
       } else {
         ()
       }
     }
-    hit
+    ei = ei + 1
   }
+  hit
 }
 
 /// May evaluating this arm expression throw? `root` is the arm, whose own

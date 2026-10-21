@@ -209,3 +209,31 @@ test "an arm calling a local lambda" {
   inspect(throwing_local_call(log), "-6")
   inspect(log, "[outer caught from a local]")
 }
+
+// A handle over two effects whose `Note` arm throws: only a perform of
+// `Note` runs that arm, so an exception handler around a perform of `Ask`
+// does not matter. This was refused, because every handled effect was checked
+// once any arm could throw.
+effect Note {
+  Put() -> Int
+}
+
+fn two_effects(log: Array[String]) -> Int {
+  handle {
+    handle {
+      let x = handle {
+        perform Ask::Get() + 1
+      } with { Exception[Int]::Throw(code) => code * 2 }
+      x + perform Note::Put()
+    } with { Note::Put() => throw("from Note"); Ask::Get() => resume(5) }
+  } with { Exception[String]::Throw(m) => {
+    Array::push(log, "outer caught \{m}")
+    -7
+  } }
+}
+
+test "only a throwing arm's own effect is checked" {
+  let log: Array[String] = []
+  inspect(two_effects(log), "-7")
+  inspect(log, "[outer caught from Note]")
+}
