@@ -125,7 +125,7 @@ function mountDemo(host: HTMLElement): LiveDemo {
       return;
     }
     try {
-      const stdout = await compileAndRun(editor.getValue(), demo.entry ?? "main");
+      const stdout = await compileAndRun(editor.getValue(), demo.entry ?? "main", demo.files ?? {});
       output.className = "output";
       output.textContent = stdout === "" ? "(no output)" : stdout;
     } catch (error) {

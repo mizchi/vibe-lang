@@ -3,10 +3,23 @@
 // vibe source that `tests/slides-smoke.mjs` compiles in the browser and checks
 // against `expect`, so a demo cannot rot silently before the talk.
 
+import concurrentContract from "../../../lib/@vibe/concurrent/experimental/index.vpkg?raw";
+import concurrentSource from "../../../lib/@vibe/concurrent/experimental/concurrent.vibe?raw";
+
+// @vibe/concurrent as the compiler finds it in the repo: the contract the
+// resolver probes for, and the module beside it that declares TaskGroup.
+const CONCURRENT_PATH = "lib/@vibe/concurrent/experimental/concurrent.vibe";
+const CONCURRENT: Record<string, string> = {
+  "lib/@vibe/concurrent/experimental/index.vpkg": concurrentContract,
+  [CONCURRENT_PATH]: concurrentSource,
+};
+
 export type Slide = { className?: string; html: string; notes?: string };
 export type Demo = {
   source: string;
   entry?: string;
+  // Files sent with the source, by the path the source imports them from.
+  files?: Record<string, string>;
   // Exact stdout the unedited source must print (checked by the smoke test).
   expect: string;
   hint?: string;
@@ -71,6 +84,106 @@ fn main allows Console {
 }`,
     expect: "hot = 42\n",
     hint: "本体を <code>Array::length([a, b])</code> にすると、アロケーションでコンパイルエラーになる",
+  },
+  emit: {
+    source: String.raw`
+effect Emit { Line(String) -> Unit }
+
+fn fizz(upto: Int) -> Unit with Emit {
+  let mut i = 1
+  while i <= upto {
+    let s = if i % 3 == 0 { "Fizz" } else { "\{i}" }
+    perform Emit::Line(s)
+    i = i + 1
+  }
+}
+
+fn main allows Console {
+  handle { fizz(4) } with {
+    Emit::Line(s) => { println(s); resume(()) }
+  }
+  let mut n = 0
+  handle { fizz(9) } with {
+    Emit::Line(_) => { n = n + 1; resume(()) }
+  }
+  println("lines = \{n}")
+}`,
+    expect: "1\n2\nFizz\n4\nlines = 9\n",
+    hint: "<code>fizz</code> は出力先を知らない。handler を差し替えると、同じ関数が表示にも集計にもなる。<code>resume(())</code> を消すとエラー",
+  },
+  tasks: {
+    source: String.raw`
+import ./${CONCURRENT_PATH} {
+  TaskGroup, TaskHandle
+}
+
+fn main allows Console + Exception {
+  let total = TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn(g, () -> {
+      println("task a")
+      1
+    })
+    let b = TaskGroup::spawn(g, () -> {
+      println("task b")
+      2
+    })
+    println("after spawn")
+    TaskHandle::join(b) + TaskHandle::join(a)
+  })
+  println("total = \{total}")
+}`,
+    files: CONCURRENT,
+    expect: "after spawn\ntask a\ntask b\ntotal = 3\n",
+    hint: "<code>spawn</code> しただけでは動かない。<code>join</code> で待ったときに、キューの順に動く。何回やっても同じ順番",
+  },
+  suspend: {
+    source: String.raw`
+import ./${CONCURRENT_PATH} {
+  TaskGroup, TaskHandle, sleep_wait
+}
+
+fn main allows Console + Exception + Async {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> {
+      println("a1")
+      sleep_wait(10)
+      println("a2")
+      1
+    })
+    let _ = TaskGroup::spawn_suspend(g, () -> {
+      println("b1")
+      let va = TaskHandle::result_wait(a)
+      println("b2 saw a = \{va}")
+    })
+    TaskGroup::pump_all(g)
+  })
+}`,
+    files: CONCURRENT,
+    expect: "a1\nb1\na2\nb2 saw a = 1\n",
+    hint: "<code>sleep_wait</code> で止まると、ほかのタスクが動く。時計は読まない",
+  },
+  region: {
+    source: String.raw`
+#zero_alloc
+fn sum_to(n: Int) -> Int {
+  region r {
+    let l = MutList::empty(r)
+    let mut i = 0
+    let mut acc = 0
+    while i < n {
+      MutList::push(l, i)
+      acc = acc + i
+      i = i + 1
+    }
+    acc
+  }
+}
+
+fn main allows Console {
+  println("sum = \{sum_to(10)}")
+}`,
+    expect: "sum = 45\n",
+    hint: "region の確保はヒープに数えない。<code>#zero_alloc(strict)</code> にすると region もエラー。最後の <code>acc</code> を <code>l</code> にすると、region の外に出るのでエラー",
   },
   eq: {
     source: String.raw`
@@ -268,12 +381,18 @@ export const SLIDES: Slide[] = [
   },
   {
     html: `
+      <h2><span class="kicker">Effects</span>handler を差し替える</h2>
+      <div class="demo" data-demo="emit"></div>`,
+    notes: "3:00 (30s) 自分で effect を定義する。同じ fizz を、表示する handler と数える handler で動かす",
+  },
+  {
+    html: `
       <h2><span class="kicker">Capabilities</span><code>with</code> と <code>allows</code></h2>
       <div class="demo" data-demo="caps"></div>
       <pre class="code console diag">$ vibe check greet.vibe     <span class="out"># allows を with に書き換えた</span>
 <span class="out">\`fn main\` is an entry point and grants its row, so the keyword is \`allows\`:</span>
 <span class="out">write \`fn main allows Console\`</span></pre>`,
-    notes: "3:00 (45s) allows を with に書き換える → 下の診断がそのまま出る",
+    notes: "3:30 (45s) allows を with に書き換える → 下の診断がそのまま出る",
   },
   {
     html: `
@@ -293,13 +412,32 @@ export const SLIDES: Slide[] = [
         </div>
         <pre class="code" data-src="optional"></pre>
       </div>`,
-    notes: "3:45 (30s) 権限はビルド時に一度だけ決める。使わない権限のコードは DCE で wasm から消える。足りなければ起動前に止める",
+    notes: "4:15 (30s) 権限はビルド時に一度だけ決める。使わない権限のコードは DCE で wasm から消える。足りなければ起動前に止める",
   },
   {
     html: `
       <h2><span class="kicker">Allocation</span><code>#zero_alloc</code> (OxCaml から移植)</h2>
       <div class="demo" data-demo="zero_alloc"></div>`,
-    notes: "4:15 (25s) 本体を Array::length([a, b]) にしてエラーを見せる",
+    notes: "4:45 (25s) 本体を Array::length([a, b]) にしてエラーを見せる",
+  },
+  {
+    html: `
+      <h2><span class="kicker">Allocation</span><code>region</code></h2>
+      <div class="demo" data-demo="region"></div>`,
+    notes: "5:10 (25s) region の中の確保はまとめて捨てる。zero_alloc は通る。strict にすると落ちる。l を返すと外に出るので落ちる",
+  },
+  {
+    html: `
+      <h2><span class="kicker">Concurrency</span><code>TaskGroup</code></h2>
+      <p class="small">スレッドはまだ無い。1 スレッドの協調スケジューラ。<code>Send</code> と region の検査は今から効かせてる</p>
+      <div class="demo" data-demo="tasks"></div>`,
+    notes: "5:35 (30s) スレッドはまだ無い。協調スケジューラ。spawn だけでは動かず join で動く。xs = [1, 2, 3] を捕まえるとエラー (Array は Send じゃない)",
+  },
+  {
+    html: `
+      <h2><span class="kicker">Async</span>止まるタスク</h2>
+      <div class="demo" data-demo="suspend"></div>`,
+    notes: "6:05 (25s) spawn_suspend のタスクは sleep_wait で止まって、ほかのタスクに譲る。a1 b1 a2 b2 の順",
   },
   {
     html: `
@@ -311,7 +449,7 @@ export const SLIDES: Slide[] = [
         <li>import はファイルスコープで明示。書いたものだけがスコープに出てくる</li>
       </ul>
       <div class="demo" data-demo="pipe"></div>`,
-    notes: "4:40 (35s) メソッド呼び出しを捨てた理由。型名があると LLM が読みやすいと思ってる (測ってない)。r でパイプ",
+    notes: "6:30 (35s) メソッド呼び出しを捨てた理由。型名があると LLM が読みやすいと思ってる (測ってない)。r でパイプ",
   },
   {
     html: `
@@ -322,12 +460,12 @@ export const SLIDES: Slide[] = [
         <li><code>vibe grep</code> は AST パターンを型や effect row で絞れる。<code>vibe mutate</code> でテストの効き目も測る</li>
         <li>CLI で答えられないと、LLM が毎回 grep で探し回る。見つけたらその場で CLI を直す</li>
       </ul>`,
-    notes: "5:15 (30s) LSP じゃなくて CLI。空出力なら clean。答えられない質問は CLI を直す",
+    notes: "7:05 (30s) LSP じゃなくて CLI。空出力なら clean。答えられない質問は CLI を直す",
   },
   {
     className: "section",
     html: `<h1><small>HOW</small>作り方</h1>`,
-    notes: "5:45 (5s) 作り方",
+    notes: "7:35 (5s) 作り方",
   },
   {
     html: `
@@ -352,7 +490,7 @@ export const SLIDES: Slide[] = [
           </table>
         </div>
       </div>`,
-    notes: "5:50 (35s) MoonBit でプロトタイプ → 部分ごとにセルフホスト。Lean をオラクルに。「バグを潰して」",
+    notes: "7:40 (35s) MoonBit でプロトタイプ → 部分ごとにセルフホスト。Lean をオラクルに。「バグを潰して」",
   },
   {
     html: `
@@ -372,12 +510,12 @@ export const SLIDES: Slide[] = [
         <li>罠。<code>vibe test</code> は既定だと seed がコンパイルする。コンパイラを直したのに、直す前のコンパイラで検証してた</li>
       </ul>
       <p class="quote small">seed の自己ビルドは pass 3 の時点で 3.89GiB、<strong>wasm32 の 4GiB</strong> まで残り 119MB。そこに 44 行足したら超えた (#3439)</p>`,
-    notes: "6:25 (35s) seed → stage3。vibe test が seed で答える罠。4GiB の話",
+    notes: "8:15 (35s) seed → stage3。vibe test が seed で答える罠。4GiB の話",
   },
   {
     className: "section",
     html: `<h1><small>PAIN</small>大変だったこと</h1><p>バグの優先度は <strong>黙って間違う (P0) &gt; 落ちる (P1) &gt; 機能追加 (P2)</strong></p>`,
-    notes: "7:00 (10s) 大変だったこと。優先度は 黙って間違う > 落ちる > 機能追加。まず数字",
+    notes: "8:50 (10s) 大変だったこと。優先度は 黙って間違う > 落ちる > 機能追加。まず数字",
   },
   {
     html: `
@@ -409,7 +547,7 @@ export const SLIDES: Slide[] = [
         </div>
       </div>
       ${SOURCE}`,
-    notes: "7:05 (35s) bug 841 件を修正の場所で数えた。件数は checker と codegen、黙って間違う率は desugar",
+    notes: "9:00 (35s) bug 841 件を修正の場所で数えた。件数は checker と codegen、黙って間違う率は desugar",
   },
   {
     html: `
@@ -457,7 +595,7 @@ export const SLIDES: Slide[] = [
         <li>権限まわりはほぼバグらなかった</li>
       </ul>
       ${SOURCE}`,
-    notes: "7:40 (35s) バグが多いのは組み合わせ。クロージャ × effect row × ジェネリクス。== と String は P0 率も高い。権限まわりはほぼバグらなかった",
+    notes: "9:35 (35s) バグが多いのは組み合わせ。クロージャ × effect row × ジェネリクス。== と String は P0 率も高い。権限まわりはほぼバグらなかった",
   },
   {
     html: `
@@ -480,7 +618,7 @@ export const SLIDES: Slide[] = [
         </div>
       </div>
       <p class="small">Int のオーバーフローの結果が linear と wasm-gc で違ってた (#1877)</p>`,
-    notes: "8:15 (35s) ベンチが揺れるので fuel に切り替えた。ヒープ 953MB。FBIP は効いたけど壁時計は変わらず",
+    notes: "10:10 (35s) ベンチが揺れるので fuel に切り替えた。ヒープ 953MB。FBIP は効いたけど壁時計は変わらず",
   },
   {
     html: `
@@ -505,7 +643,7 @@ export const SLIDES: Slide[] = [
           </ul>
         </div>
       </div>`,
-    notes: "8:50 (45s) 安いモデルだとバグの生成 > 修正。interning なし、実行時アサーション、replay 方式のハンドラ",
+    notes: "10:45 (45s) 安いモデルだとバグの生成 > 修正。interning なし、実行時アサーション、replay 方式のハンドラ",
   },
   {
     html: `
@@ -516,7 +654,7 @@ export const SLIDES: Slide[] = [
         <li>今は、型が分からない <code>==</code> はビルドエラーにして、型注釈を書かせる</li>
       </ul>
       <div class="demo" data-demo="eq"></div>`,
-    notes: "9:35 (40s) == が黙って間違ってた (昔は false)。r で実行、今は両方 true",
+    notes: "11:30 (40s) == が黙って間違ってた (昔は false)。r で実行、今は両方 true",
   },
   {
     html: `
@@ -527,7 +665,7 @@ export const SLIDES: Slide[] = [
         <div class="card"><h3>WIT</h3><p class="small">ジェネリクスがない。WIT に出せる型はこっちで決め打ちしてる</p></div>
       </div>
       <p>よかったのは wasmtime の guest profiler と fuel。気になってる言語は bend-lang</p>`,
-    notes: "10:15 (35s) wasm に足りないもの。スレッド、wasm-gc の配列に v128 が無いので両対応、WIT のジェネリクス",
+    notes: "12:10 (35s) wasm に足りないもの。スレッド、wasm-gc の配列に v128 が無いので両対応、WIT のジェネリクス",
   },
   {
     className: "closing",
@@ -538,6 +676,6 @@ export const SLIDES: Slide[] = [
         <li>皆さんも自作言語をセルフホストしましょう</li>
       </ul>
       <p class="muted">github.com/mizchi/vibe-lang · The Vibe Book: mizchi.github.io/vibe-lang</p>`,
-    notes: "10:50 (30s) 0.1.0 触ってください。皆さんもセルフホストしましょう",
+    notes: "12:45 (30s) 0.1.0 触ってください。皆さんもセルフホストしましょう",
   },
 ];
