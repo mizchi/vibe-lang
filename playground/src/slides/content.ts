@@ -141,7 +141,7 @@ function bars(rows: Bar[], max: number, unit: string): string {
     .join("")}</div>`;
 }
 
-const SOURCE = `<p class="source">mizchi/vibe-lang の issue 1,549 件 (bug 841) とコミット 6,934 件、2026-10-21 時点。bug は修正コミットが触ったソースに割り当て (bug の 51% が対応付く)。</p>`;
+const SOURCE = `<p class="source">mizchi/vibe-lang の issue 1,549 件 (bug 841) とコミット 6,934 件、2026-10-21 時点。bug は修正コミットが触ったファイルで数えた。紐付けできたのは半分くらい。</p>`;
 
 export const SLIDES: Slide[] = [
   {
@@ -155,7 +155,7 @@ export const SLIDES: Slide[] = [
   },
   {
     html: `
-      <h2><span class="kicker">Numbers</span>数字</h2>
+      <h2><span class="kicker">In numbers</span>数字</h2>
       <div class="stats">
         <div class="stat"><div class="big-number">260 日</div><div class="label">開発期間 (2026-02-03 〜)</div></div>
         <div class="stat"><div class="big-number">6,934</div><div class="label">コミット</div></div>
@@ -176,7 +176,7 @@ export const SLIDES: Slide[] = [
         <div>
           <ul>
             <li>静的型付きの関数型言語。WebAssembly にコンパイルする</li>
-            <li>エフェクトは戻り値で包まずに、関数の型 (<strong>effect row</strong>) に書く</li>
+            <li>エフェクトは Result で包まないで、関数の型 (<strong>effect row</strong>) に書く (Koka 風)</li>
             <li><strong>権限 (capability)</strong> もエフェクトとして型に書いて、ビルド時に決める</li>
             <li>コンパイラは vibe で書いてて、wasm で動く</li>
           </ul>
@@ -246,11 +246,11 @@ export const SLIDES: Slide[] = [
           </ul>
         </div>
         <div class="card">
-          <h3>LSP じゃなくて CLI</h3>
+          <h3>LLM 向けの診断と CLI</h3>
           <ul>
-            <li>落ちるならまだいい。<strong>黙って間違う</strong>のが一番困る。LLM は気づかずに先に進む</li>
-            <li>診断は直し方から書く。pass 名や ADR 番号は出さない</li>
-            <li>IDE 相当の問い合わせは CLI で (<code>vibe symbols</code>、<code>vibe grep</code>)</li>
+            <li>LLM は落ちれば直すけど、<strong>黙って間違う</strong>とそのまま先に進む。これが一番困る</li>
+            <li>エラーメッセージには直し方を書く。コンパイラの内部用語は出さない</li>
+            <li>IDE 相当の問い合わせは LSP じゃなくて CLI で (<code>vibe symbols</code>、<code>vibe grep</code>)</li>
           </ul>
         </div>
       </div>`,
@@ -278,25 +278,23 @@ export const SLIDES: Slide[] = [
   },
   {
     html: `
-      <h2><span class="kicker">Authority</span>ビルド時の権限</h2>
+      <h2><span class="kicker">Capabilities</span>ビルド時の権限</h2>
       <div class="flow">
-        <div class="node hot"><b>build</b><span><code>--allow-*</code> / <code>--deny-*</code> を <code>const-fold</code> + DCE</span></div>
+        <div class="node hot"><b>ビルド時</b><span><code>--allow-*</code> / <code>--deny-*</code> で権限を決めて、使わないコードは DCE で消す</span></div>
         <div class="arrow">→</div>
-        <div class="node"><b>apply</b><span>必要な feature level (<code>v8</code> / <code>web-baseline</code>) を宣言</span></div>
-        <div class="arrow">→</div>
-        <div class="node"><b>instantiate</b><span>必須の権限が無ければ main の前に止める</span></div>
+        <div class="node"><b>起動前</b><span>必須の権限が無ければ main の前に止める</span></div>
       </div>
       <div class="cols">
         <div>
           <ul class="small">
-            <li>拒否した権限のコードは wasm に入らない。<code>Http</code> を使わないプログラムは、ネットワークのランタイムを要求しない</li>
+            <li><code>Http</code> を使わなければ、ネットワーク周りのコードは wasm に入らない</li>
             <li>ホスト (Rust + Wasmtime / ブラウザ / Node.js) は imports を外付けする。実行時の権限はここで止める</li>
-            <li>省略可能な権限は <code>perform?</code> で <code>Attempt</code> を受け取る</li>
+            <li>省略可能な権限は <code>perform?</code> で受けて、無いときの分岐を書く</li>
           </ul>
         </div>
         <pre class="code" data-src="optional"></pre>
       </div>`,
-    notes: "3:45 (30s) 権限はビルド時に一度だけ。拒否した権限のコードは DCE で wasm から消える",
+    notes: "3:45 (30s) 権限はビルド時に一度だけ決める。使わない権限のコードは DCE で wasm から消える。足りなければ起動前に止める",
   },
   {
     html: `
@@ -379,8 +377,8 @@ export const SLIDES: Slide[] = [
   },
   {
     className: "section",
-    html: `<h1><small>PAIN</small>大変だったこと</h1>`,
-    notes: "7:00 (5s) 大変だったこと。まず数字",
+    html: `<h1><small>PAIN</small>大変だったこと</h1><p>バグの優先度は <strong>黙って間違う (P0) &gt; 落ちる (P1) &gt; 機能追加 (P2)</strong></p>`,
+    notes: "7:00 (10s) 大変だったこと。優先度は 黙って間違う > 落ちる > 機能追加。まず数字",
   },
   {
     html: `
@@ -457,7 +455,7 @@ export const SLIDES: Slide[] = [
           )}
         </div>
       </div>
-      <p>バグが多かったのは機能単体より組み合わせ (クロージャ × effect row × ジェネリクス)。lowering の時点で型が分かってない <code>==</code> は半分以上が P0。権限まわりはほとんどバグらなかった</p>
+      <p>バグが多かったのは機能単体より組み合わせ (クロージャ × effect row × ジェネリクス)。<code>==</code> のバグは半分以上が黙って間違う系だった。権限まわりはほとんどバグらなかった</p>
       ${SOURCE}`,
     notes: "7:40 (35s) バグが多いのは組み合わせ。クロージャ × effect row × ジェネリクス。== と String は P0 率も高い。権限まわりはほぼバグらなかった",
   },
@@ -491,7 +489,7 @@ export const SLIDES: Slide[] = [
         <div class="card">
           <h3>バグが生まれる速度 &gt; 潰れる速度</h3>
           <ul class="small">
-            <li>ある PR (#2725) のレビューで P1 が 4 件出て、3 件はその PR 自身が入れたバグだった</li>
+            <li>ある PR のレビューで落ちるバグ (P1) が 4 件出て、3 件はその PR 自身が入れたものだった (#2725)</li>
             <li>bug 841 件、うち P0 (黙って間違う) 266 件</li>
             <li>CI が通っても信用しない。わざと壊して落ちるのを見てから</li>
             <li>Lean のオラクルが型検査器との食い違いを 3 件見つけた</li>
@@ -512,10 +510,9 @@ export const SLIDES: Slide[] = [
   {
     html: `
       <h2><span class="kicker">Pain 3</span><code>==</code></h2>
-      <p>優先度は <strong>黙って間違う (P0) &gt; 落ちる (P1) &gt; 機能追加 (P2)</strong></p>
       <ul class="small">
         <li><code>[1, 2] == [1, 2]</code> の答えが文脈で変わってた。そのまま書くと参照比較、struct の中だと構造比較 (#1526)</li>
-        <li><code>[T: Eq]</code> で <code>bare(1.5, 1.5)</code> が <strong>false</strong>。<code>Double</code> の箱を比べてた (#2895)</li>
+        <li>ジェネリクス越しの <code>1.5 == 1.5</code> が <strong>false</strong>。<code>Double</code> の箱を比べてた (#2895)</li>
         <li>今は、型が分からない <code>==</code> はビルドエラーにして、型注釈を書かせる</li>
       </ul>
       <div class="demo" data-demo="eq"></div>`,
@@ -523,7 +520,7 @@ export const SLIDES: Slide[] = [
   },
   {
     html: `
-      <h2><span class="kicker">Spec gaps</span>足りない仕様</h2>
+      <h2><span class="kicker">Spec gaps</span>wasm に足りないもの</h2>
       <div class="cols three">
         <div class="card"><h3>スレッド</h3><p class="small">結局どれ。今は <code>TaskGroup</code> の構造化並行性と shared-nothing でやってる。wasm threads が来たら乗り換えられるようにはしてる</p></div>
         <div class="card"><h3>wasm-gc と SIMD</h3><p class="small">wasm-gc の ref 型だと、配列に <code>v128</code> が使えない。両対応を続けるのがしんどい</p></div>
@@ -536,12 +533,12 @@ export const SLIDES: Slide[] = [
     className: "closing",
     html: `
       <h2><span class="kicker">Next</span>これから</h2>
-      <p class="quote"><code>[1, 2] == [1, 2]</code> の答えすら文脈で変わってた。だから自分は、言語の側で黙って間違えさせないことにした</p>
       <ul>
+        <li>スレッドと 256bit lane はまだ。wasm 側待ち</li>
         <li>0.1.0 をもうすぐ出すので、触ってみてください</li>
         <li>皆さんも自作言語をセルフホストしましょう</li>
       </ul>
       <p class="muted">github.com/mizchi/vibe-lang · The Vibe Book: mizchi.github.io/vibe-lang</p>`,
-    notes: "10:50 (30s) == の話から。0.1.0 触ってください。皆さんもセルフホストしましょう",
+    notes: "10:50 (30s) スレッドと 256bit lane は wasm 待ち。0.1.0 触ってください。皆さんもセルフホストしましょう",
   },
 ];
