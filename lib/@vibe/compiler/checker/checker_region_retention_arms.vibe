@@ -2,7 +2,7 @@
 // expression's value can come from, for the retention and provenance checks.
 
 import @vibe/compiler/core {
-  Expr, Pat, expr_children
+  Expr, Pat, Type, expr_children
 }
 
 /// The value of every top-level `let` / `fn` of the module being checked, by
@@ -221,4 +221,53 @@ fn retention_expr_names_any(e: Expr, names: Array[String]) -> Bool {
     }
   }
   hit
+}
+
+export fn retention_is_function_type(ty: Type) -> Bool {
+  match ty {
+    CtFn(_, _, _) => true,
+    CtForAll(_, _, body) => retention_is_function_type(body),
+    _ => false
+  }
+}
+
+/// #3596: the names a conditional `let` of a function may stand for: each
+/// branch of an `if` or a `match`, or a block's tail, that names one
+/// (`let g = if c { mk } else { mk_ok }`). An arm whose pattern binds the
+/// spelling names its own binder and is skipped; a branch of any other form
+/// names nothing.
+export fn retention_branch_sources(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    EIdent(src, _) => Array::push(out, src),
+    EIf(_, a, b) => {
+      retention_branch_sources(a, out)
+      retention_branch_sources(b, out)
+    },
+    EMatch(_, arms) => {
+      for arm in arms {
+        let bound: Array[String] = []
+        retention_pat_names_into(arm.0, bound)
+        let found: Array[String] = []
+        retention_branch_sources(arm.1, found)
+        for src in found {
+          let mut hidden = false
+          for b in bound {
+            if b == src {
+              hidden = true
+            }
+          }
+          if !hidden {
+            Array::push(out, src)
+          }
+        }
+        ()
+      }
+      ()
+    },
+    ESeq(_, b) => retention_branch_sources(b, out),
+    ECall(EIdent(wrapper, _), wargs, _, _) => if wrapper == "$source_span" && Array::length(wargs) > 0 {
+      retention_branch_sources(Array::get(wargs, 0), out)
+    },
+    _ => ()
+  }
 }
