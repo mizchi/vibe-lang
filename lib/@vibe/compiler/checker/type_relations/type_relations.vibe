@@ -13,6 +13,7 @@ import @vibe/compiler/core {
   is_hkt_app,
   is_runtime_scheduled_effect,
   occurs_in,
+  owned_head_payload_span,
   subst_apply,
   subst_bind_value,
   subst_lookup,
@@ -1466,6 +1467,7 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
       let stdin_stream_conflict = stdin_stream_nominal_conflict(expected_zonked, actual_zonked)
       let nominal_conflict = nominal_head_conflict(expected_zonked, actual_zonked)
       let rigid_applied_conflict = rigid_applied_mismatch(expected_zonked, actual_zonked)
+      let owned_payload_conflict = owned_head_payload_conflict(expected, actual_zonked, s)
       // A body that instantiated `T := Box[Int]` publishes that named type,
       // and `f(1)` is then Box vs Int. `type_is_ground` is false for every
       // `CtNamed` and `head_kind` of a named type is 0, so the existing
@@ -1473,7 +1475,7 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
       // scalar: Array vs FixedArray (zlib Huffman) is a different pair and
       // stays on the historical tolerate path.
       let named_vs_scalar = (type_fully_concrete(expected) && is_fully_concrete_named(expected_zonked) && is_builtin_scalar(actual_zonked)) || (is_builtin_scalar(expected_zonked) && is_fully_concrete_named(actual_zonked))
-      if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict || (named_vs_scalar && !structural) {
+      if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict || owned_payload_conflict || (named_vs_scalar && !structural) {
         Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(expected_zonked), String::concat(", got ", String::concat(type_for_mismatch(actual_zonked), assignable_marker(off)))))))
         s
       } else if structural {
@@ -1536,6 +1538,80 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
   }
   Array::truncate(assignable_span_end, 0)
   result
+}
+
+/// #3588: true when a compiler-owned head with region and row slots
+/// (`owned_head_payload_span`) meets itself with a payload argument that is
+/// concrete on both sides and differs -- `TaskHandle[rg, e, String]` against
+/// `TaskHandle[Int]`, either spelling on either side, and nested inside an
+/// `Array` / `Option` / tuple / function / same-name application. The region
+/// and row positions are rigid formals in a signature, which kept the whole
+/// pair on the tolerated path, but no instantiation of them reconciles a
+/// `String` payload with an `Int` one. `expected` is read as written, so a
+/// payload that only became concrete through this check's own substitution
+/// is not trusted (see `detect_narrowed_generic_mismatch_for`'s caller).
+fn owned_head_payload_conflict(expected: Type, actual: Type, s: Subst) -> Bool {
+  match expected {
+    CtNamed(en, eargs) => match actual {
+      CtNamed(an, aargs) => if en != an {
+        false
+      } else match owned_head_payload_span(en, Array::length(eargs)) {
+        Some((estart, count)) => match owned_head_payload_span(an, Array::length(aargs)) {
+          Some((astart, acount)) => if count != acount {
+            false
+          } else {
+            let mut i = 0
+            let mut conflict = false
+            while i < count && !conflict {
+              let e = Array::get(eargs, estart + i)
+              let a = Array::get(aargs, astart + i)
+              conflict = if type_fully_concrete(e) && type_fully_concrete(a) {
+                unify(e, a, s) is None
+              } else {
+                owned_head_payload_conflict(e, a, s)
+              }
+              i = i + 1
+            }
+            conflict
+          },
+          None => false
+        },
+        None => owned_head_payload_conflict_pairwise(eargs, aargs, s)
+      },
+      _ => false
+    },
+    CtArray(e) => match actual {
+      CtArray(a) => owned_head_payload_conflict(e, a, s),
+      _ => false
+    },
+    CtOption(e) => match actual {
+      CtOption(a) => owned_head_payload_conflict(e, a, s),
+      _ => false
+    },
+    CtTuple(es) => match actual {
+      CtTuple(acts) => owned_head_payload_conflict_pairwise(es, acts, s),
+      _ => false
+    },
+    CtFn(eps, er, _) => match actual {
+      CtFn(aps, ar, _) => owned_head_payload_conflict(er, ar, s) || owned_head_payload_conflict_pairwise(eps, aps, s),
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn owned_head_payload_conflict_pairwise(es: Array[Type], acts: Array[Type], s: Subst) -> Bool {
+  if Array::length(es) != Array::length(acts) {
+    false
+  } else {
+    let mut i = 0
+    let mut conflict = false
+    while i < Array::length(es) && !conflict {
+      conflict = owned_head_payload_conflict(Array::get(es, i), Array::get(acts, i), s)
+      i = i + 1
+    }
+    conflict
+  }
 }
 
 /// #1001: the type's outer constructor's nominal name, when it is one that can

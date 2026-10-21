@@ -1,0 +1,53 @@
+// #3588 control: the elided and complete spellings of one compiler-owned
+// head still meet wherever their payloads agree -- an elided handle where an
+// elided or a complete one is declared, a complete one where an elided one
+// is, a bare `TaskGroup` against `TaskGroup[rg, e]`, and a `Sender[Int]`
+// against `Sender[rg, e, Int]`.
+import @vibe/concurrent { TaskGroup, TaskHandle, TaskError, Channel, Sender, Receiver, SendError, ChannelConfigError }
+
+fn keep(h: TaskHandle[Int]) -> TaskHandle[Int] {
+  h
+}
+
+fn widen[rg, e](h: TaskHandle[Int]) -> TaskHandle[rg, e, Int] {
+  h
+}
+
+fn narrow[rg, e](h: TaskHandle[rg, e, Int]) -> TaskHandle[Int] {
+  h
+}
+
+fn group[rg, e](g: TaskGroup) -> TaskGroup[rg, e] {
+  g
+}
+
+fn spawn_seven(g: TaskGroup) -> TaskHandle[Int] {
+  TaskGroup::spawn(g, () -> 7)
+}
+
+fn wait(h: TaskHandle[Int]) -> Int with Exception[TaskError] {
+  TaskHandle::join(h)
+}
+
+fn sender[rg, e](s: Sender[Int]) -> Sender[rg, e, Int] {
+  s
+}
+
+fn main() -> Unit allows Console + Exception[TaskError] + Exception[SendError] + Exception[ChannelConfigError] {
+  let r = TaskGroup::run((n) -> {
+    let a = wait(keep(spawn_seven(n)))
+    let b = TaskHandle::join(widen(TaskGroup::spawn(n, () -> 8)))
+    let c = wait(narrow(TaskGroup::spawn(group(n), () -> 9)))
+    a + b + c
+  })
+  let total = TaskGroup::run((n) -> {
+    let (tx, rx) = Channel::bounded(n, 4)
+    Sender::send(sender(tx), 5)
+    Sender::release(tx)
+    match Receiver::recv(rx) {
+      Some(v) => v + 1,
+      None => 0
+    }
+  })
+  println("r=\{r} total=\{total}")
+}
