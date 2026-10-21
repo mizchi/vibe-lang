@@ -244,6 +244,29 @@ dup budget, and its marks are withheld when another binding of the plan has
 its name: codegen gives a `PaPathDrop` to every `let` of the row's name. A
 path short by two or more still leaks the rest.
 
+A parameter is the same case: its planned dups are taken at function entry
+(`pf_param`), so `fn f(v) { if c { keep(v) }; use(v) }` leaked one per call
+that skipped the consume. It merges like a `let` whose scope is the whole
+body, and its path drop is a flag local the function epilogue reads
+(`linked_compile_function_bodies`, `compile_lambda`), for an owned heap
+parameter only -- a borrowed one's reference is the caller's. A body with any
+exit declines its parameters, because codegen releases parameters at an exit
+from its own table, which reads no path flag. So does a parameter consumed
+inside a loop: codegen retains it at each such call site and gives the
+epilogue a drop for the loop sites (#725, #1085), which the merge's budget
+does not model.
+
+Freeing a parameter on every path exposed a gap that its leak had hidden: a
+collected `for` retained its body value only when the whole body was a view,
+so `for x in xs { if c { f(x) } else { x } }` pushed `x` unretained, and the
+result shared elements with `xs` that only `xs` owned. Each view tail of a
+compound body is now retained (`cc_retain_view_tails_unlogged`, the result spine
+`rs_map` walks, assignments and handlers included). A compound argument
+in an owning position had the same gap: `keep(ks, if c { a } else { b })`
+in a loop passed `a` without the per-iteration retain a bare `a` gets, and
+faulted on the plain lane. `cc_own_cell_compound_args` retains every view
+tail of such an argument now, not only a captured cell read.
+
 ## Ownership contracts of builtin lowerings
 
 ### Array higher-order builtins (#2671)
@@ -297,12 +320,21 @@ projection is a view into a source that keeps it alive.
   field, a collected `for` body, a lambda's return -- retain only a
   `cc_is_borrowed_projection`, so an owned read moves in.
 
-A spine that ends in one is still read as a view (`value_spine_borrowed`,
-`pv_spine_is_view`): `let v = if c { f().a } else { g().a }` keeps the
-binding borrow-bound and leaks the read's reference, the safe side, because
-the plan and codegen must agree on that answer. The drop-guided reuse path
-(`compile_match`) cannot import the predicate without a cycle and retains an
-owned read as well, which leaks it the same way.
+A `let` bound to an `if` / `match` whose scope-end drop is planned owns what
+each arm hands it: `retain_wrap_branch_tails` retains every arm that is a view
+-- a borrow-returning call, a borrow-bound name, and any projection but an
+owned read -- and an owned read moves in. Once no view arm is left
+(`value_has_borrowed_branch_tail` of the rewritten value), the binding is an
+ordinary owned one. The projection arm used to be retained only inside a loop,
+so `let v = if c { p.a } else { q.a }` outside one released `p.a` under `p`:
+a use-after-free the shadow lane traps on, and a memory fault once an arm was
+an owned read (`if c { mk(i).a } else { p.a }`). The same `if` under a
+wrapper (`let v = { let s = k(); match s { .. } }`) is still read as a view by
+both sides (`value_spine_borrowed`, `pv_spine_is_view`), which leaks an owned
+read's reference, the safe side, because the plan and codegen must agree on
+that answer. The drop-guided reuse path (`compile_match`) cannot import the
+predicate without a cycle and retains an owned read as well, which leaks it
+the same way.
 
 ### Unannotated lambda parameters (#2681)
 

@@ -147,3 +147,20 @@ test "an inner merge's mark makes the outer maximal arm mark too" {
   let rest = String::substring(plan, first + 1, String::length(plan))
   assert(String::contains(rest, "run t consume_mark:"))
 }
+
+test "a parameter consumed on one branch gets a mark and a path drop" {
+  // Its dups are taken at function entry, like a let's at its declaration.
+  let src = String::concat(prelude, String::concat("let keep: (Node, Bool) -> Node = (t, c) -> {\n  let u = if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}\nlet run: (Bool) -> Node = (c) -> keep(Pair(Leaf(1), Leaf(2)), c)", epilogue))
+  let plan = plan_of(src)
+  assert(String::contains(plan, "keep t dup 1"))
+  assert(String::contains(plan, "keep t consume_mark:"))
+  assert(String::contains(plan, "keep t path_drop 1"))
+}
+
+test "a parameter of a body with an exit gets no path drop" {
+  // Codegen releases parameters at an exit from a table of its own.
+  let src = String::concat(prelude, String::concat("let keep: (Node, Bool) -> Node = (t, c) -> {\n  if !c {\n    return Leaf(9)\n  } else {\n    ()\n  }\n  let u = if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}\nlet run: (Bool) -> Node = (c) -> keep(Pair(Leaf(1), Leaf(2)), c)", epilogue))
+  let plan = plan_of(src)
+  assert(!String::contains(plan, "keep t path_drop"))
+  assert(!String::contains(plan, "keep t consume_mark:"))
+}

@@ -75,3 +75,17 @@ test "an array a lambda captures is declined" {
   let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[1, 2]]\n  let f = () -> Array::length(xs)\n  Array::truncate(xs, 0)\n  f()\n}", epilogue)
   assert(!String::contains(plan_of(src), "truncate_release"))
 }
+
+test "a tally of the array's length is not a view of it" {
+  // `acc = acc + Array::length(xs)` and `let n = Array::length(xs)` hold an
+  // Int. Counting them as views declined every loop that tallied its array.
+  let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[0, 0]]\n  let mut acc = 0\n  let mut r = 0\n  while r < 3 {\n    Array::push(xs, [r, r])\n    let n = Array::length(xs)\n    acc = acc + n + Array::length(xs) - 1\n    Array::truncate(xs, 0)\n    r = r + 1\n  }\n  acc\n}", epilogue)
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run xs truncate_release:0 1"))
+  assert(!String::contains(plan, "view_pin"))
+}
+
+test "an assignment of an element is still a view" {
+  let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[0, 0]]\n  let mut cur = [1]\n  cur = Array::get(xs, 0)\n  Array::truncate(xs, 0)\n  Array::length(cur)\n}", epilogue)
+  assert(!String::contains(plan_of(src), "truncate_release"))
+}

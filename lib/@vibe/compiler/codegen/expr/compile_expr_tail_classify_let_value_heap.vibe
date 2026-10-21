@@ -1579,9 +1579,20 @@ export fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], inner: A
     } else {
       e
     },
+    // A projection off a NAMED binding reads a field that binding still
+    // owns, in a loop or not: the bare `let v = p.a` retains it at the bind
+    // site (classify_let_value_heap), and a branch tail must too, or the
+    // planned drop releases a reference the binding never acquired --
+    // `let v = if c { p.a } else { q.a }` freed `p.a` under `p` once per
+    // call (VIBE_RC=shadow: "drop of freed value"). A root bound inside the
+    // branch retains its own projection at that binder's scope end
+    // (`scope_tail_proj_root`), and a projection off a fresh call result
+    // already holds a reference (cc_is_owned_projection). Any other
+    // projection off an unnamed source (`Array::get(xs, 0).a`) is a view of
+    // that source and is retained like a named one.
     EDot(_, _, _, _) => {
       let root = proj_root_ident(e)
-      if String::length(root) > 0 && array_contains_str(ctx.loop_borrowed_names, root) && !array_contains_str(ctx.ref_cell_names, root) {
+      if !cc_is_owned_projection(e, ctx) && !array_contains_str(ctx.ref_cell_names, root) && (String::length(root) == 0 || array_contains_str(ctx.loop_borrowed_names, root) || !array_contains_str(inner, root)) {
         ECall(EIdent("__loop_tail_retain", -1), [e], -1, [])
       } else {
         e
@@ -1632,7 +1643,9 @@ export fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], inner: A
 export fn value_has_borrowed_branch_tail(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Bool {
   match e {
     EIdent(x, _) => array_contains_str(ctx.loop_borrowed_names, x) && !array_contains_str(ctx.ref_cell_names, x) && !array_contains_str(inner, x),
-    EDot(_, _, _, _) => true,
+    // A read off a fresh call result is owned (cc_is_owned_projection): the
+    // lowering retains the field before releasing the temporary.
+    EDot(_, _, _, _) => !cc_is_owned_projection(e, ctx),
     // #3108 review: a callee a local or a branch-local binding shadows is
     // that binding, not the borrow-returning function of the same spelling.
     ECall(_, _, _, _) => call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner),
@@ -1769,14 +1782,21 @@ export fn path_value_owned(e: Expr, local_names: Array[String], bound: Array[Str
     ETuple(_) => true,
     EArray(_) => true,
     ERecord(_, _, _) => true,
-    ECall(callee, _, _, _) => match callee {
-      EIdent(cn, _) => if is_ctor_call(e, ctx.ctor_table) {
+    ECall(callee, args, _, _) => match callee {
+      // A branch tail the retain rewrite wrapped (retain_wrap_branch_tails)
+      // took a reference of its own for the binding.
+      EIdent(cn, off) => if cn == "__loop_tail_retain" && off < 0 && Array::length(args) == 1 {
+        true
+      } else if is_ctor_call(e, ctx.ctor_table) {
         true
       } else {
         find_local_slot(local_names, cn) < 0 && !array_contains_str(bound, cn) && bsearch_leftmost(ctx.heap_ret_names, cn) >= 0 && !is_borrow_ret_builtin(cn) && bsearch_leftmost(ctx.borrow_ret_names, cn) < 0 && bsearch_leftmost(ctx.borrow_view_ret, cn) < 0
       },
       _ => false
     },
+    // A read off a fresh call result holds a reference of its own
+    // (cc_is_owned_projection); any other projection is a view.
+    EDot(_, _, _, _) => cc_is_owned_projection(e, ctx),
     EIf(_, t, el) => path_value_owned(t, local_names, bound, ctx) && path_value_owned(el, local_names, bound, ctx),
     // An arm-less match produces no value on any path, so there is nothing to
     // own; `&&` over zero arms would answer true.
@@ -1992,17 +2012,6 @@ fn arms_have_borrowed_tail(arms: Array[(Pat, Expr)], local_names: Array[String],
   found
 }
 
-fn arms_tail_call_borrow(arms: Array[(Pat, Expr)], local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Bool {
-  let mut found = false
-  let mut ai = 0
-  while ai < Array::length(arms) && !found {
-    let (apat, abody) = Array::get(arms, ai)
-    found = branch_tail_calls_borrow(abody, local_names, with_pattern_binders(inner, apat), ctx)
-    ai = ai + 1
-  }
-  found
-}
-
 /// #3108 review: the names a branch binds on the way down to its tail -- a
 /// `let` / `let mut` in the arm, a match pattern's binders. A tail call whose
 /// callee is one of them calls the LOCAL binding, not the top-level
@@ -2061,36 +2070,5 @@ export fn cet_strip_owned_markers(e: Expr) -> Expr {
     EAssign(n, v, b, target_off) => EAssign(n, v, cet_strip_owned_markers(b), target_off),
     EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, v, cet_strip_owned_markers(b), target_off),
     _ => e
-  }
-}
-
-/// #3103: does any if/match branch tail of `e` call a borrow-returning
-/// function -- a tail retain_wrap_branch_tails' `ECall` arm retains?
-export fn branch_tail_calls_borrow(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Bool {
-  match e {
-    ECall(_, _, _, _) => call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner),
-    EIf(_, t, el) => branch_tail_calls_borrow(t, local_names, inner, ctx) || branch_tail_calls_borrow(el, local_names, inner, ctx),
-    EMatch(_, arms) => {
-      let mut found = false
-      let mut ai = 0
-      while ai < Array::length(arms) {
-        let (apat, abody) = Array::get(arms, ai)
-        if branch_tail_calls_borrow(abody, local_names, with_pattern_binders(inner, apat), ctx) {
-          found = true
-          ai = Array::length(arms)
-        } else {
-          ai = ai + 1
-        }
-      }
-      found
-    },
-    EHandle(hb, harms) => branch_tail_calls_borrow(hb, local_names, inner, ctx) || arms_tail_call_borrow(harms, local_names, inner, ctx),
-    ELet(n, _, b, _) => branch_tail_calls_borrow(b, local_names, with_name(inner, n), ctx),
-    ELetMut(n, _, b, _) => branch_tail_calls_borrow(b, local_names, with_name(inner, n), ctx),
-    ELetRec(n, _, b) => branch_tail_calls_borrow(b, local_names, with_name(inner, n), ctx),
-    ESeq(_, b) => branch_tail_calls_borrow(b, local_names, inner, ctx),
-    EAssign(_, _, b, _) => branch_tail_calls_borrow(b, local_names, inner, ctx),
-    EAssignOp(_, _, _, b, _) => branch_tail_calls_borrow(b, local_names, inner, ctx),
-    _ => false
   }
 }

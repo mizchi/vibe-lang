@@ -607,7 +607,10 @@ export fn plan_reuse_pairs(body: Expr, actions: Array[PerceusAction]) -> Unit {
 //      let bodies, sequences, if branches and loop bodies), so no temporary
 //      is live across it -- only bindings are;
 //   4. every binding enclosing a truncate whose value derives from `x`
-//      (transitively, by mention) is an immutable `let`, and is PINNED: it
+//      (transitively: its value mentions a derived name, unless it only
+//      reads one into an Int or a Bool -- `Array::length(x)`, a comparison,
+//      arithmetic over such reads; see `tr_result_safe`) is an immutable
+//      `let`, and is PINNED: it
 //      takes a reference of its own at its bind site and releases it at its
 //      scope end (dup-on-escape). Any other derived binder kind -- `let mut`,
 //      `for`, a match or handler arm -- declines the array;
@@ -644,12 +647,15 @@ fn tr_receiver_builtin(f: String) -> Bool {
 
 /// A local `let x: T = e` reaches here as the parser's ascription wrapper
 /// `((__asc: T) -> __asc)(e)` (ascribe_wrap), which hands back `e` itself.
+/// Any identity lambda is accepted, not only that spelling: the shadow pass
+/// renames the second wrapper of a body (`__shadow_0___asc`), and matching the
+/// spelling declined every annotated array but the first in a function.
 fn tr_fresh_array_value(e: Expr) -> Bool {
   match e {
     EArray(_) => true,
     ECall(callee, args, _, _) => match callee {
       EIdent(f, _) => f == "Array::with_capacity",
-      EFn(_, _, params, _, _, body) => Array::length(params) == 1 && Array::length(args) == 1 && (Array::get(params, 0)).0 == "__asc" && tr_is_ident(body, "__asc") && tr_fresh_array_value(Array::get(args, 0)),
+      EFn(_, _, params, _, _, body) => Array::length(params) == 1 && Array::length(args) == 1 && tr_is_ident(body, (Array::get(params, 0)).0) && tr_fresh_array_value(Array::get(args, 0)),
       _ => false
     },
     _ => false
@@ -771,34 +777,50 @@ export fn tr_add_pat(d: Array[String], p: Pat) -> Unit {
 }
 
 /// Rules 4 and 6, the derivation half: grow `d` (seeded with the array) by
-/// every binder whose value mentions a derived name, in one preorder pass --
-/// a binder's value can only mention binders enclosing it, which are visited
-/// first. Returns false on a carrier rule 6 forbids.
+/// every binder whose value may be a pointer into a derived name
+/// (`tr_result_safe` fails), in one preorder pass -- a binder's value can only
+/// mention binders enclosing it, which are visited first. A binder or a
+/// carrier whose value only READS one -- `Array::length(xs)`, a comparison,
+/// arithmetic over such reads -- holds an Int or a Bool and derives nothing:
+/// counting `acc = acc + Array::length(xs)` as a carrier declined every loop
+/// that tallied its array. Returns false on a carrier rule 6 forbids.
 export fn tr_derive(e: Expr, d: Array[String]) -> Bool {
   match e {
     ELet(n, v, b, _) => {
-      if tr_mentions(v, d) {
+      // The value's own binders first: `tr_result_safe` reads a spine
+      // name (`{ let t = Array::get(xs, 0); t }`, a match payload) as a view
+      // only once it is in `d`.
+      let ok = tr_derive(v, d)
+      if !tr_result_safe(v, d) {
         tr_add(d, n)
       } else {
         ()
       }
-      tr_derive(v, d) && tr_derive(b, d)
+      ok && tr_derive(b, d)
     },
     ELetMut(n, v, b, _) => {
-      if tr_mentions(v, d) {
+      // The value's own binders first: `tr_result_safe` reads a spine
+      // name (`{ let t = Array::get(xs, 0); t }`, a match payload) as a view
+      // only once it is in `d`.
+      let ok = tr_derive(v, d)
+      if !tr_result_safe(v, d) {
         tr_add(d, n)
       } else {
         ()
       }
-      tr_derive(v, d) && tr_derive(b, d)
+      ok && tr_derive(b, d)
     },
     ELetRec(n, v, b) => {
-      if tr_mentions(v, d) {
+      // The value's own binders first: `tr_result_safe` reads a spine
+      // name (`{ let t = Array::get(xs, 0); t }`, a match payload) as a view
+      // only once it is in `d`.
+      let ok = tr_derive(v, d)
+      if !tr_result_safe(v, d) {
         tr_add(d, n)
       } else {
         ()
       }
-      tr_derive(v, d) && tr_derive(b, d)
+      ok && tr_derive(b, d)
     },
     EForIn(n, _, it, body) => {
       if tr_mentions(it, d) {
@@ -855,18 +877,18 @@ export fn tr_derive(e: Expr, d: Array[String]) -> Bool {
       }
       ok && tr_derive(body, d)
     },
-    EAssign(_, v, b, _) => !tr_mentions(v, d) && tr_derive(b, d),
-    EAssignOp(_, _, v, b, _) => !tr_mentions(v, d) && tr_derive(b, d),
-    EReturn(v) => !tr_mentions(v, d),
+    EAssign(_, v, b, _) => tr_derive(v, d) && tr_result_safe(v, d) && tr_derive(b, d),
+    EAssignOp(_, _, v, b, _) => tr_derive(v, d) && tr_result_safe(v, d) && tr_derive(b, d),
+    EReturn(v) => tr_derive(v, d) && tr_result_safe(v, d),
     EBreak(ov) => match ov {
-      Some(v) => !tr_mentions(v, d),
+      Some(v) => tr_derive(v, d) && tr_result_safe(v, d),
       None => true
     },
     EContinue(vs) => {
       let mut ok = true
       let mut i = 0
       while ok && i < Array::length(vs) {
-        ok = !tr_mentions(Array::get(vs, i), d)
+        ok = tr_derive(Array::get(vs, i), d) && tr_result_safe(Array::get(vs, i), d)
         i = i + 1
       }
       ok
@@ -911,8 +933,11 @@ export fn tr_result_safe(e: Expr, d: Array[String]) -> Bool {
     },
     EWhile(_, _) => true,
     EForIn(_, _, _, _) => true,
-    EBinOp(op, _, _, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || !tr_mentions(e, d),
-    EUnaryOp(op, _) => op == "!" || op == "~" || !tr_mentions(e, d),
+    // Arithmetic (`+` on Int, Double or String) produces a value of its
+    // own, or at most one of its operands: it is safe when both operands
+    // are, so `acc + Array::length(xs) - 1` is an Int, not a view of `xs`.
+    EBinOp(op, l, r, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || (tr_result_safe(l, d) && tr_result_safe(r, d)),
+    EUnaryOp(op, x) => op == "!" || op == "~" || tr_result_safe(x, d),
     ECall(callee, _, _, _) => match callee {
       EIdent(f, _) => f == "Array::length" || !tr_mentions(e, d),
       _ => !tr_mentions(e, d)

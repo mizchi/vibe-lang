@@ -1,0 +1,291 @@
+// RC guard: a parameter consumed on one branch, a `let` bound to an `if`
+// whose arm reads a field, and a truncate in a loop that tallies its array.
+//
+// A parameter's planned dups are taken at the function's entry, on every
+// path, so `if c { sink(v) }; use(v)` held the dup on the path that skipped
+// the consume. The plain-`let` form of this was fixed by pe_dup_merge
+// (perceus_pctx); a parameter now joins it, and the function epilogue
+// releases the reference a path still holds, guarded on a flag the marked
+// consumes set (linked_compile_function_bodies, compile_lambda).
+//
+// `let v = if c { p.a } else { q.a }` is bound to a field that `p` or `q`
+// still owns, and the plan releases `v` at its scope end. The bare
+// `let v = p.a` retains the field at the bind site; the branch arms were
+// retained only inside a loop, so outside one `v`'s drop freed the field
+// under its owner -- a use-after-free, not a leak: VIBE_RC=shadow trapped on
+// "drop of freed value", and a mixed `if c { mkq(i).a } else { p.a }` read
+// freed memory and faulted on the plain RC lane. Every arm that reads a field
+// is now retained (retain_wrap_branch_tails), and once every view arm is, the
+// binding is an owned one.
+//
+// `Array::truncate` releases what it removes only when the plan proves no
+// view of the array survives it, and it counted any binding or assignment
+// that MENTIONED the array as a possible view: `acc = acc + Array::length(xs)`
+// declined every loop that tallied its array (tr_derive, tr_result_safe). And
+// it recognized an annotated `let ys: T = []` as fresh by the spelling of the
+// ascription wrapper, which the shadow pass renames for the second one in a
+// body, so only the first annotated array of a function ever released
+// (tr_fresh_array_value).
+//
+// Releasing parameters on every path exposed two old under-retains that their
+// leak had hidden, both pinned below: a collected `for` body that hands back
+// the element through a branch, and a branch passed to an owning parameter
+// inside a loop.
+//
+// Measured at N=20000, on the compiler before these changes and after:
+//
+//   | shape                                           | before       | after   |
+//   |-------------------------------------------------|-------------:|--------:|
+//   | parameter consumed on one branch                |  1,173,324 B |   112 B |
+//   | parameter, two consumes against one             |  1,760,020 B |   112 B |
+//   | parameter, `match` with consumes on two arms    |  1,760,020 B |   112 B |
+//   | lambda parameter consumed on one branch         |    880,020 B |   112 B |
+//   | `if c { p.a } else { q.a }`                     | shadow trap  |   236 B |
+//   | `if c { mkq(i).a } else { p.a }` and mixed arms | memory fault |   324 B |
+//   | two arrays truncated in a loop that tallies     |  3,520,172 B |   348 B |
+//   | this fixture, with its controls                 | memory fault | 3,252 B |
+//
+// `keep(ks, if c { a } else { b })` in a loop and the branch-view `for` body
+// are correctness controls rather than leaks: both faulted or trapped under
+// shadow before, and the fixture's answer depends on them.
+//
+// The controls keep consumed values and arm values past their scope -- a
+// parameter pushed on one branch, a field arm pushed after its owner is
+// gone -- so a release on a path that still holds the value frees it under
+// the array that keeps it, and VIBE_RC=shadow traps. The gate compiles this
+// under VIBE_RC=1 and bounds __heap_ptr growth, and runs it under
+// VIBE_RC=shadow (tests/gates/mid/retired_v128_intrinsics_stay_retired.sh,
+// 40e7). `main` returns 0: every shape adds 0.
+struct H {
+  inner: Array[Int]
+}
+
+struct Q {
+  a: Array[Int];
+  n: Int
+}
+
+fn mka(i: Int) -> Array[Int] {
+  [i, i + 1, i + 2]
+}
+
+fn mkq(i: Int) -> Q {
+  Q::{ a: [i, i + 1, i + 2], n: i }
+}
+
+// Takes its argument: stores it into a record that it then drops.
+fn sink(v: Array[Int]) -> Int {
+  let h = H::{ inner: v }
+  Array::get(h.inner, 0)
+}
+
+fn param_one_branch(v: Array[Int], i: Int) -> Int {
+  let a = if i % 3 == 0 {
+    sink(v) - i
+  } else {
+    0
+  }
+  (a + Array::get(v, 2) - (i + 2)) * 0
+}
+
+fn param_two_against_one(v: Array[Int], i: Int) -> Int {
+  let a = if i % 2 == 0 {
+    sink(v) + sink(v)
+  } else {
+    sink(v)
+  }
+  (a + Array::get(v, 1)) * 0
+}
+
+fn param_match_arms(v: Array[Int], i: Int) -> Int {
+  let a = match i % 3 {
+    0 => sink(v),
+    1 => sink(v) * 2,
+    _ => 0
+  }
+  (a + Array::get(v, 0)) * 0
+}
+
+fn lambda_param(i: Int) -> Int {
+  let f = (v: Array[Int], k: Int) -> Int {
+    let a = if k % 2 == 0 {
+      sink(v)
+    } else {
+      0
+    }
+    (a + Array::get(v, 0)) * 0
+  }
+  f(mka(i), i)
+}
+
+fn field_arms(i: Int) -> Int {
+  let p = mkq(i)
+  let q = mkq(i + 1)
+  let v = if i % 2 == 0 {
+    p.a
+  } else {
+    q.a
+  }
+  (Array::get(v, 0) - i - i % 2) * 0
+}
+
+fn mixed_arms(i: Int) -> Int {
+  let p = mkq(i)
+  let v = if i % 2 == 0 {
+    mkq(i).a
+  } else {
+    p.a
+  }
+  let w = if i % 3 == 0 {
+    p.a
+  } else {
+    mka(i)
+  }
+  (Array::get(v, 0) + Array::get(w, 1) - 2 * i - 1) * 0
+}
+
+fn truncate_tally(n: Int) -> Int {
+  let xs: Array[Array[Int]] = []
+  let ys: Array[Array[Int]] = []
+  let mut acc = 0
+  let mut i = 0
+  while i < n {
+    Array::push(xs, mka(i))
+    Array::push(ys, mka(i + 1))
+    acc = acc + Array::length(xs) + Array::length(ys) - 2
+    Array::truncate(xs, 0)
+    Array::truncate(ys, 0)
+    i = i + 1
+  }
+  acc
+}
+
+// Controls: the consumed parameter, and an arm's field, outlive the call.
+fn param_kept(ks: Array[Array[Int]], v: Array[Int], i: Int) -> Int {
+  if i % 2 == 0 {
+    Array::push(ks, v)
+  } else {
+    ()
+  }
+  Array::get(v, 2) - (i + 2)
+}
+
+fn field_kept(ks: Array[Array[Int]], i: Int) -> Int {
+  let p = mkq(i)
+  let q = mkq(i + 10)
+  let v = if i % 2 == 0 {
+    p.a
+  } else {
+    q.a
+  }
+  Array::push(ks, v)
+  Array::get(v, 0) - i - 10 * (i % 2)
+}
+
+// A collected `for` whose body hands back the element through a branch:
+// the element used to be pushed unretained, which went unseen while the
+// parameter's unspent dup kept the iterable alive forever. Released now, the
+// iterable took the element with it (rewrite_string_binops_stmts, which
+// returns its parameter on one branch and rebuilds it on the other).
+fn for_branch_view(stmts: Array[Array[Int]], rels: Array[Int]) -> Array[Array[Int]] {
+  if Array::length(rels) == 0 {
+    stmts
+  } else {
+    for stmt in stmts {
+      if Array::length(stmt) > 1 {
+        [Array::get(stmt, 0)]
+      } else {
+        stmt
+      }
+    }
+  }
+}
+
+// The same view handed back after a statement: the body is an assignment
+// whose continuation is the branch.
+fn for_assign_view(stmts: Array[Array[Int]]) -> Array[Array[Int]] {
+  let mut n = 0
+  for stmt in stmts {
+    n = n + 1
+    if Array::length(stmt) > 1 {
+      [Array::get(stmt, 0) + n * 0]
+    } else {
+      stmt
+    }
+  }
+}
+
+// A branch handed to an owning parameter inside a loop: a bare `a` gets a
+// retain per iteration, but `if c { a } else { b }` did not, so every call
+// after the first stored a reference the caller no longer held (a memory
+// fault on the plain lane before). Its leak in the callee kept this hidden
+// in the compiler's own checker (record_decl_exception_kinds).
+fn keep(ks: Array[Array[Int]], v: Array[Int]) -> Int {
+  Array::push(ks, v)
+  Array::length(ks)
+}
+
+fn loop_branch_arg(ks: Array[Array[Int]], a: Array[Int], b: Array[Int], c: Bool) -> Int {
+  let mut i = 0
+  let mut n = 0
+  while i < 3 {
+    n = n + keep(ks, if c {
+      a
+    } else {
+      b
+    })
+    i = i + 1
+  }
+  n
+}
+
+fn main() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 20000 {
+    acc = acc + param_one_branch(mka(i), i) + param_two_against_one(mka(i), i) + param_match_arms(mka(i), i) + lambda_param(i)
+    acc = acc + field_arms(i) + mixed_arms(i)
+    i = i + 1
+  }
+  acc = acc + truncate_tally(20000)
+  let ks: Array[Array[Int]] = []
+  let mut j = 0
+  while j < 4 {
+    acc = acc + param_kept(ks, mka(j), j) + field_kept(ks, j)
+    j = j + 1
+  }
+  let views: Array[Array[Array[Int]]] = []
+  let mut v = 0
+  while v < 4 {
+    let rels: Array[Int] = if v % 2 == 0 {
+      []
+    } else {
+      [1]
+    }
+    Array::push(views, for_branch_view([[v], [v, 1]], rels))
+    Array::push(views, for_assign_view([[v], [v, 1]]))
+    v = v + 1
+  }
+  // Every kept row starts with [v] and then [v] or [v, 1], twice per v:
+  // 4 * (0 + 1 + 2 + 3).
+  let mut sv = 0
+  let mut w = 0
+  while w < Array::length(views) {
+    let row = Array::get(views, w)
+    sv = sv + Array::get(Array::get(row, 0), 0) + Array::get(Array::get(row, 1), 0)
+    w = w + 1
+  }
+  acc = acc + sv - 24
+  let kb: Array[Array[Int]] = []
+  let n3 = loop_branch_arg(kb, [4], [5, 1], true) + loop_branch_arg(kb, [6], [7, 1], false)
+  // kb holds [4] three times, then [7, 1] three times; n3 is 1+2+3 + 4+5+6.
+  acc = acc + n3 - 21 + Array::get(Array::get(kb, 0), 0) + Array::get(Array::get(kb, 5), 0) - 11
+  // ks holds mka(0), mkq(0).a, mkq(11).a, mka(2), mkq(2).a, mkq(13).a.
+  let mut s = 0
+  let mut m = 0
+  while m < Array::length(ks) {
+    s = s + Array::get(Array::get(ks, m), 0)
+    m = m + 1
+  }
+  acc + s - 28 + Array::length(ks) - 6
+}

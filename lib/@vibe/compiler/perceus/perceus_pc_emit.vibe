@@ -49,9 +49,11 @@ import ./perceus_pctx.vibe {
   pe_push_for,
   pe_stores_tuple,
   pe_throw_payload,
+  pf_dsplit_bad,
   pf_exit_owner,
   pf_let,
   pf_mut_assigned,
+  pf_param,
   pf_split,
   ps_get,
   ps_has
@@ -74,6 +76,15 @@ fn pe_use(ctx: PCtx, scope: PScope, name: String, use_offset: Int) -> Int {
     let move_here = ctx.move_use_id == id && !Array::get(ctx.scalar, id) && !Array::get(ctx.view_call_let, id) && !pe_has_live_view_of(ctx, id)
     // #3141: an owning occurrence consumes one reference the binding holds.
     pe_cons_bump(ctx, id)
+    // A parameter consumed inside a loop is accounted by codegen's own rules
+    // (a retain at each call site, an epilogue drop for the loop sites, #725
+    // and #1085) that a branch merge's budget does not model, so its merges
+    // keep today's rows: a leak, where an unmodelled release would free.
+    if id < ctx.loop_floor && pe_flag_has(ctx, id, pf_param) {
+      pe_flag_or(ctx, id, pf_dsplit_bad)
+    } else {
+      ()
+    }
     if move_here {
       ctx.move_hit = true
       ctx.move_use_id = 0 - 1

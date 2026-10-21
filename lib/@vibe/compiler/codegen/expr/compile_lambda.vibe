@@ -1480,7 +1480,34 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   } else {
     ()
   }
-  let final_lam_nl = compile_fn(lam_buf, result_body, lam_locals, lam_nl, lam_ctx, -1)
+  // A parameter consumed on some paths only (`pe_dup_merge`): its dups were
+  // taken above, so the epilogue releases one on a path that ran none of its
+  // marked consumes, as linked_compile's function epilogue does.
+  let lam_ppd_params = array_empty()
+  let lam_ppd_flags = array_empty()
+  let mut lam_body_nl = lam_nl
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && Array::length(lam_path_drops) > 0 {
+    let mut ppi = 0
+    while ppi < Array::length(norm_params) {
+      let (ppn, ppt) = Array::get(norm_params, ppi)
+      if array_contains_str(lam_path_drops, ppn) && param_is_heap_in_body(ppn, ppt, fn_body) && Array::length(lam_locals) == lam_body_nl {
+        Array::push(lam_locals, "__path_flag")
+        emit_i64_const(lam_buf, 0)
+        emit_local_set(lam_buf, lam_body_nl)
+        Array::push(lam_ctx.rc_path_flag_names, ppn)
+        Array::push(lam_ctx.rc_path_flag_locals, lam_body_nl)
+        Array::push(lam_ppd_params, ppi)
+        Array::push(lam_ppd_flags, lam_body_nl)
+        lam_body_nl = lam_body_nl + 1
+      } else {
+        ()
+      }
+      ppi = ppi + 1
+    }
+  } else {
+    ()
+  }
+  let final_lam_nl = compile_fn(lam_buf, result_body, lam_locals, lam_body_nl, lam_ctx, -1)
   if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
     let mut tj = 0
     while tj < Array::length(norm_params) {
@@ -1492,6 +1519,16 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
         ()
       }
       tj = tj + 1
+    }
+    let mut ppk = 0
+    while ppk < Array::length(lam_ppd_params) {
+      emit_local_get(lam_buf, Array::get(lam_ppd_flags, ppk))
+      emit_i64_eqz(lam_buf)
+      emit_if_void(lam_buf)
+      emit_local_get(lam_buf, Array::get(lam_ppd_params, ppk))
+      emit_call(lam_buf, ctx.rc_drop_func_idx)
+      emit_end(lam_buf)
+      ppk = ppk + 1
     }
   }
   // #1259 step 7. The function index this lambda gets -- and, a few lines

@@ -26,7 +26,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  emit_i64_extend_i32_u, md_borrow_mask_of, md_builtin_borrow_mask
+  emit_i64_extend_i32_u, md_borrow_mask_of, md_builtin_borrow_mask, proj_root_ident
 }
 
 import @vibe/compiler/perceus {
@@ -536,14 +536,38 @@ fn cc_is_cell_read_path(e: Expr, shadow: Array[String], ctx: CompileCtx) -> Bool
   }
 }
 
-/// Retain every cell read on a result path (`rs_map`) of a COMPOUND argument.
-/// A bare cell read or projection is left to the per-site checks
-/// (`cc_is_ref_cell_read`, `cc_is_projection`); wrapping it here would hide it
-/// from them without changing the count.
-fn cc_retain_cell_tails(e: Expr, ctx: CompileCtx) -> Expr {
+/// Retain every VIEW on a result path (`rs_map`) of a COMPOUND argument: a
+/// cell read, a loop-borrowed or borrow-bound name, a borrowed projection, a
+/// borrow-returning call -- what the per-site checks retain when the argument
+/// is that leaf itself (`cc_is_ref_cell_read`, `cc_is_loop_borrowed_ident`,
+/// `cc_is_borrowed_projection`, `cc_is_borrow_ret_call`). A bare leaf is left
+/// to those checks; wrapping it here would hide it from them without changing
+/// the count. A name bound inside the argument is its own binding's to
+/// account for, so a leaf reading one is left alone. A loop-borrowed name is
+/// logged for the epilogue's compensating drop, as the per-site check logs it.
+fn cc_retain_view_tails(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Expr {
+  cc_retain_view_tails_logged(e, local_names, ctx, true)
+}
+
+/// `cc_retain_view_tails` for a position that does not log a loop-borrowed
+/// name for the epilogue's compensating drop: a collected `for` body, whose
+/// top-node retain never did (compile_forin_loop).
+export fn cc_retain_view_tails_unlogged(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Expr {
+  cc_retain_view_tails_logged(e, local_names, ctx, false)
+}
+
+fn cc_retain_view_tails_logged(e: Expr, local_names: Array[String], ctx: CompileCtx, log_loop: Bool) -> Expr {
   if rs_has_tail(e) {
     rs_map(e, array_empty(), (x: Expr, shadow: Array[String]) -> Expr {
-      if cc_is_cell_read_path(x, shadow, ctx) {
+      if cc_tail_is_view(x, shadow, local_names, ctx) {
+        match x {
+          EIdent(n, _) => if log_loop && cc_is_loop_borrowed_ident(x, ctx) {
+            Array::push(ctx.loop_consumed_names, n)
+          } else {
+            ()
+          },
+          _ => ()
+        }
         ECall(EIdent("__loop_tail_retain", -1), [x], -1, [])
       } else {
         x
@@ -551,6 +575,21 @@ fn cc_retain_cell_tails(e: Expr, ctx: CompileCtx) -> Expr {
     }, rs_keep_bind)
   } else {
     e
+  }
+}
+
+/// The leaf test of `cc_retain_view_tails`. `shadow` holds the names bound
+/// between the argument's root and this leaf.
+fn cc_tail_is_view(x: Expr, shadow: Array[String], local_names: Array[String], ctx: CompileCtx) -> Bool {
+  if cc_is_cell_read_path(x, shadow, ctx) {
+    true
+  } else {
+    match x {
+      EIdent(n, _) => !array_contains_str(shadow, n) && cc_is_loop_borrowed_ident(x, ctx),
+      EDot(_, _, _, _) => cc_is_borrowed_projection(x, ctx) && !array_contains_str(shadow, proj_root_ident(x)),
+      ECall(EIdent(f, _), _, _, _) => !array_contains_str(shadow, f) && find_local_slot(local_names, f) < 0 && cc_is_borrow_ret_call(x, ctx),
+      _ => false
+    }
   }
 }
 
@@ -564,8 +603,16 @@ fn cc_retain_cell_tails(e: Expr, ctx: CompileCtx) -> Expr {
 /// local or is not a name at all is a closure, which owns every argument. A
 /// borrowed position is left alone -- retaining there would add a reference
 /// nothing releases.
+///
+/// Every other view on such a tail had the same gap: `f(te, if c { errors }
+/// else { scratch })` inside a loop passed the loop-carried `errors` without
+/// the per-iteration retain a bare `errors` gets, so each call after the first
+/// released a reference the caller no longer held. It went unseen while the
+/// callee leaked that parameter (`report_exception_kinds_in_type_expr` under
+/// `record_decl_exception_kinds`), and became a use-after-free once it did
+/// not (`cc_retain_view_tails`).
 export fn cc_own_cell_compound_args(callee: Expr, args: Array[Expr], local_names: Array[String], ctx: CompileCtx) -> Array[Expr] {
-  if !ctx.enable_rc || Array::length(ctx.ref_cell_names) == 0 {
+  if !ctx.enable_rc || !cc_any_compound_arg(args) {
     args
   } else {
     let mask = match callee {
@@ -583,12 +630,22 @@ export fn cc_own_cell_compound_args(callee: Expr, args: Array[Expr], local_names
       if cc_bmask_has(mask, i) {
         Array::push(out, a)
       } else {
-        Array::push(out, cc_retain_cell_tails(a, ctx))
+        Array::push(out, cc_retain_view_tails(a, local_names, ctx))
       }
       i = i + 1
     }
     out
   }
+}
+
+fn cc_any_compound_arg(args: Array[Expr]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(args) {
+    found = rs_has_tail(Array::get(args, i))
+    i = i + 1
+  }
+  found
 }
 
 /// #3130 review: which argument positions of a callee BORROW (bit i set) --

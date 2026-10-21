@@ -575,6 +575,58 @@ fi
 rm -rf "$bddir"
 echo "[compiler-gate] RC branch-dup and for-iterable leak guard ok (heap_used=$bd_used B at N=20000)"
 
+# 40e7. A parameter consumed on one branch is released on the others, a
+# `let` bound to an `if` whose arm reads a field retains that arm, and a
+# truncate in a loop that tallies its array releases what it removes. A
+# parameter's planned dups are taken at function entry, so a path that skipped
+# its consume kept one (pe_dup_merge now covers parameters; the function and
+# lambda epilogues release under a path flag). `let v = if c { p.a } else
+# { q.a }` was dropped at scope end without its arm ever being retained
+# outside a loop -- a use-after-free the shadow lane traps on, and a memory
+# fault for `if c { mkq(i).a } else { p.a }` on the plain lane
+# (retain_wrap_branch_tails). `acc = acc + Array::length(xs)` counted as a view
+# of `xs` and declined the truncate release (tr_derive), and a second annotated
+# array of a body was not recognized as fresh (tr_fresh_array_value). The
+# fixture faulted before; its leaking shapes alone measured 9,093,556 B at
+# N=20000, and the whole fixture measures 3,252 B after -- the arrays its
+# controls keep -- which is why the bound is 4,000. A branch argument to an
+# owning parameter inside a loop is pinned too: it got no per-iteration
+# retain (cc_own_cell_compound_args), which the callee's leak used to hide. The controls keep a branch-consumed parameter and field arms past
+# their owners, so the shadow run is what proves no path released a value it
+# still held.
+echo "[compiler-gate] 40e7/40 RC parameter-branch, field-arm and truncate-tally guard"
+psdir="_build/_gate_rc_param_spine_truncate"
+rm -rf "$psdir"; mkdir -p "$psdir"
+for ps_mode in 1 shadow; do
+  VIBE_RC="$ps_mode" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/rc_param_spine_truncate_leak_test.vibe" "$psdir/rc_$ps_mode.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$psdir/rc_$ps_mode.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_param_spine_truncate fixture did not compile under VIBE_RC=$ps_mode" >&2
+    cat "$psdir/rc_$ps_mode.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+done
+ps_shadow_json="$(node scripts/measure_heap.mjs "$psdir/rc_shadow.wasm" main 2>&1 || true)"
+ps_shadow_result="$(printf '%s' "$ps_shadow_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ "$ps_shadow_result" != "0" ]; then
+  echo "[compiler-gate] FAIL: rc_param_spine_truncate under VIBE_RC=shadow did not return 0 (a path released a value it still held): $ps_shadow_json" >&2; exit 1
+fi
+ps_json="$(node scripts/measure_heap.mjs "$psdir/rc_1.wasm" main 2>/dev/null)"
+ps_used="$(printf '%s' "$ps_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+ps_result="$(printf '%s' "$ps_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ -z "$ps_used" ]; then
+  echo "[compiler-gate] FAIL: could not measure rc_param_spine_truncate heap ($ps_json)" >&2; exit 1
+fi
+if [ "$ps_result" != "0" ]; then
+  echo "[compiler-gate] FAIL: rc_param_spine_truncate wrong result $ps_result (want 0)" >&2; exit 1
+fi
+if [ "$ps_used" -ge 4000 ]; then
+  echo "[compiler-gate] FAIL: rc_param_spine_truncate heap_used=$ps_used >= 4000 (a parameter's branch dup is held on the paths that skip it, or a truncate tally keeps what it removes; its leaking shapes measured 9093556 at N=20000 before)" >&2; exit 1
+fi
+rm -rf "$psdir"
+echo "[compiler-gate] RC parameter-branch, field-arm and truncate-tally guard ok (heap_used=$ps_used B at N=20000)"
+
 # 40e2. #2760: the retain must NOT fire when the wrapper binds the borrow's own
 # source -- the inner ELet lowering already promoted it, and a second retain
 # leaks the element on every assignment. Found in review on #2783, not by a
