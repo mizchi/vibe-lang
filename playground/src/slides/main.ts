@@ -172,6 +172,9 @@ function editorHasFocus(): boolean {
 document.addEventListener("keydown", (event) => {
   if (document.body.classList.contains("view-all")) return;
   if (editorHasFocus() || event.metaKey || event.ctrlKey || event.altKey) return;
+  // Space and Enter belong to a focused control (Run / Reset); arrows still navigate.
+  const active = document.activeElement;
+  if ((event.key === " " || event.key === "Enter") && active instanceof HTMLElement && active.closest("button, a, input, select, textarea")) return;
   switch (event.key) {
     case "ArrowRight":
     case "ArrowDown":
