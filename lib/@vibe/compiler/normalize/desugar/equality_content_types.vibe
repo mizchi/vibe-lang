@@ -60,6 +60,7 @@ import ./state.vibe {
   dtd_eq_witness_inline_stack,
   dtd_show_generic_enum_stack,
   dtd_show_generic_enums,
+  dtd_show_generic_source_renderers,
   dtd_show_generic_structs,
   dtd_show_inline_arr_elems,
   dtd_show_inline_stack,
@@ -157,6 +158,7 @@ export fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_unsafe_types, 0)
   Array::truncate(dtd_eq_generic_structs, 0)
   Array::truncate(dtd_show_generic_structs, 0)
+  Array::truncate(dtd_show_generic_source_renderers, 0)
   Array::truncate(dtd_show_generic_enums, 0)
   Array::truncate(dtd_struct_field_decls, 0)
   Array::truncate(dtd_show_generic_enum_stack, 0)
@@ -201,7 +203,13 @@ export fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
         if Array::length(decl_tparams) > 0 {
           Array::push(dtd_eq_generic_types, sname)
           Array::push(dtd_eq_generic_structs, (sname, decl_tparams, fields))
-          if str_array_contains(derives, "Show") {
+          let written_show = dtd_source_op_defined(stmts, qualified_name(sname, "to_string"))
+          if written_show {
+            Array::push(dtd_show_generic_source_renderers, sname)
+          }
+          // Hash also generates a renderer. Preserve a Hash-only type
+          // that supplied its own operation instead.
+          if str_array_contains(derives, "Show") || (str_array_contains(derives, "Hash") && !written_show) {
             Array::push(dtd_show_generic_structs, (sname, decl_tparams, fields))
           } else {
             ()
@@ -231,7 +239,11 @@ export fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
           } else {
             ()
           }
-          if str_array_contains(enum_derives, "Show") && ename != "Option" && ename != "Result" {
+          let written_show = dtd_source_op_defined(stmts, qualified_name(ename, "to_string"))
+          if written_show {
+            Array::push(dtd_show_generic_source_renderers, ename)
+          }
+          if (str_array_contains(enum_derives, "Show") || (str_array_contains(enum_derives, "Hash") && !written_show)) && ename != "Option" && ename != "Result" {
             Array::push(dtd_show_generic_enums, (ename, decl_tparams, variants))
           } else {
             ()

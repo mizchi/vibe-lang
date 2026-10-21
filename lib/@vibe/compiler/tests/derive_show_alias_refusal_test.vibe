@@ -1,0 +1,42 @@
+import @vibe/compiler/normalize {
+  desugar_trait_dicts
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn verdict(source: String) -> String {
+  handle {
+    desugar_trait_dicts(parse_program(lex(source)))
+    "ok"
+  } with { Exception::Throw(message) => message }
+}
+
+test "an aliased formal array names the owning type and field" {
+  let msg = verdict("type Values[T] = Array[T]\nstruct S[T] { v: Values[T] } derive(Show)")
+  assert(String::contains(msg, "write `S::to_string` yourself"))
+  assert(String::contains(msg, "v: Array[T]"))
+  assert(!String::contains(msg, "__arr_to_string__"))
+}
+
+test "aliases of function and Bytes fields cannot fall back to addresses" {
+  assert(String::contains(verdict("type Callback = (Int) -> Int\nstruct S { v: Callback } derive(Show)"), "a function value"))
+  assert(String::contains(verdict("type Blob = Bytes\nstruct S { v: Option[Blob] } derive(Show)"), "a `Bytes` value"))
+}
+
+test "a generic renderer that reads an aliased function remains refused" {
+  let msg = verdict("type Callback = (Int) -> Int\nstruct Box[T] { v: T } derive(Show)\nstruct S { v: Box[Callback] } derive(Show)")
+  assert(String::contains(msg, "a function value"))
+}
+
+test "an aliased Map remains refused with the edit" {
+  let msg = verdict("type Counts = Map[String, Int]\nstruct S { v: Option[Counts] } derive(Show)")
+  assert(String::contains(msg, "write `S::to_string` yourself"))
+  assert(String::contains(msg, "Map"))
+}
+
+test "written renderer guards reset with the program" {
+  let msg = verdict("type Callback = (Int) -> Int\nstruct Label[T] { text: String } derive(Show)\nfn Label::to_string[T](l: Label[T]) -> String { \"manual\" }\nstruct S { v: Label[Callback] } derive(Show)")
+  assert(String::contains(msg, "a function value"))
+  assert(verdict("type Callback = (Int) -> Int\nstruct Label[T] { text: String } derive(Show)\nstruct S { v: Label[Callback] } derive(Show)") == "ok")
+}
