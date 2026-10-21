@@ -34,6 +34,13 @@ function compiledBytes(payload: string, entry: string): Uint8Array {
 
 const MAX_SLEEP_MS = 5000;
 
+// `Process::exit` from the guest (an uncaught exception's boundary uses it too).
+class GuestExit extends Error {
+  constructor(readonly code: number) {
+    super(`program exited with code ${code}`);
+  }
+}
+
 // `entry` names the function the compiler roots the module at: `_start` for
 // the playground presets, `main` for `fn main allows ...` programs.
 export async function compileAndRun(
@@ -62,6 +69,17 @@ export async function compileAndRun(
     }
     return decoder.decode(bytes.subarray(pointer, pointer + length));
   }
+  // stderr shares the output pane; each stderr line is marked so it is not
+  // mistaken for stdout, however many writes it took.
+  let stderrLineOpen = false;
+  function writeStderr(text: string): void {
+    for (const piece of text.split(/(?<=\n)/)) {
+      if (piece === "") continue;
+      if (!stderrLineOpen) stdout += "[stderr] ";
+      stdout += piece;
+      stderrLineOpen = !piece.endsWith("\n");
+    }
+  }
   const imports = {
     wasi_snapshot_preview1: {
       fd_write(_fd: number, iovs: number, count: number, _written: number): number {
@@ -72,6 +90,7 @@ export async function compileAndRun(
           const pointer = view.getUint32(iovs + index * 8, true);
           const length = view.getUint32(iovs + index * 8 + 4, true);
           stdout += decoder.decode(new Uint8Array(exported.buffer, pointer, length));
+          stderrLineOpen = false;
           written += length;
         }
         view.setUint32(_written, written, true);
@@ -81,17 +100,18 @@ export async function compileAndRun(
     vibe: {
       stdout_write_stream(packed: bigint): void {
         stdout += guestString(packed);
+        stderrLineOpen = false;
       },
       stdout_write_char(code: bigint): void {
         stdout += String.fromCharCode(Number(code & 0xffffn));
+        stderrLineOpen = false;
       },
-      // stderr shares the output pane, marked so it is not mistaken for stdout.
       stderr_write_stream(packed: bigint): bigint {
-        stdout += `[stderr] ${guestString(packed)}`;
+        writeStderr(guestString(packed));
         return 0n;
       },
       stderr_write_char(code: bigint): bigint {
-        stdout += String.fromCharCode(Number(code & 0xffffn));
+        writeStderr(String.fromCharCode(Number(code & 0xffffn)));
         return 0n;
       },
       // `sleep(ms)` blocks the instance (a parked task group waits here for
@@ -109,8 +129,9 @@ export async function compileAndRun(
         }
         return 0n;
       },
+      // Unwinds the guest; the output it wrote so far is still returned.
       process_exit(code: bigint): bigint {
-        throw new Error(`program exited with code ${Number(code)}`);
+        throw new GuestExit(Number(code));
       },
     },
   };
@@ -120,7 +141,12 @@ export async function compileAndRun(
   if (typeof start !== "function") throw new Error(`Compiled program has no ${entry} export.`);
   // A named entry such as `main` takes its closure environment as an i64;
   // a top-level entry has none, so pass 0 the way scripts/wasm_vibe_host_runner.js does.
-  if (start.length > 0) start(0n);
-  else start();
+  try {
+    if (start.length > 0) start(0n);
+    else start();
+  } catch (error) {
+    if (!(error instanceof GuestExit)) throw error;
+    if (error.code !== 0) stdout += `${stdout === "" || stdout.endsWith("\n") ? "" : "\n"}[exit ${error.code}]\n`;
+  }
   return stdout;
 }
