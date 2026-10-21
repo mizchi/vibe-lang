@@ -247,11 +247,66 @@ export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit
     v = v + 1
   }
   // Heads whose instance sets meet, whatever their methods are named.
-  if found is None {
+  let head_found = if found is None {
     head_overlap_error(linked_impl_heads(merged, units, linked_type_decls(merged)), units)
   } else {
     found
   }
+  if head_found is None {
+    plain_definition_overlap_error(merged, units, in_impl, traits.names)
+  } else {
+    head_found
+  }
+}
+
+/// #3571: two units' PLAIN definitions of one type-qualified name, no impl
+/// involved. The merge namespaces a module's private plain names and its
+/// private types apart, but a `fn Int::shout` (or `fn Pt::shout` on a type
+/// another module declares) keeps its spelling, exported or not: it is found
+/// by its receiver type, by name -- a dot call `n.shout()`, interpolation's
+/// `P::to_string`, `==`'s `P::equals`, a derive override -- so it is one name
+/// across the program. Two modules that each write one put two definitions
+/// into the linked program, and every caller, in either module, ran whichever
+/// the import order merged first: measured, `from-a from-a`, and `from-b
+/// from-b` with the imports swapped, private or exported alike. A binding an
+/// impl made is the impl checks' business above, and a trait-namespace
+/// binding is left to them too.
+fn plain_definition_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit], in_impl: Array[Bool], trait_names: MutMap[String, Bool]) -> Option[String] {
+  let first_unit: MutMap[String, Int] = MutMap::new_string()
+  let mut found: Option[String] = None
+  let mut u = 0
+  while u < Array::length(units) && found is None {
+    let unit = Array::get(units, u)
+    let mut k = unit.start
+    while k < unit.end && found is None {
+      let name = definition_name(Array::get(merged, k))
+      if String::index_of(name, "::") > 0 && !Array::get(in_impl, k) && !names_trait_binding(name, trait_names) {
+        match MutMap::get(first_unit, name) {
+          Some(prev) => if prev != u {
+            found = Some(plain_overlap_message(name, Array::get(units, prev), unit))
+          } else {
+            ()
+          },
+          None => MutMap::set(first_unit, name, u)
+        }
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    u = u + 1
+  }
+  found
+}
+
+fn plain_overlap_message(name: String, first_unit: LinkedUnit, second_unit: LinkedUnit) -> String {
+  let shown = namespace_rename_original(name)
+  let (fl, fc) = definition_position(unit_located_text(first_unit), shown)
+  let (sl, sc) = definition_position(unit_located_text(second_unit), shown)
+  let here = position_text(second_unit.path, sl, sc)
+  let there = position_text(first_unit.path, fl, fc)
+  let member = String::substring(shown, String::index_of(shown, "::") + 2, String::length(shown))
+  String::concat(here, String::concat(": rename `", String::concat(shown, String::concat("` here or in ", String::concat(there, String::concat(", or make one of them a plain function (`fn ", String::concat(member, String::concat("`), which stays private to its module -- both modules define `", String::concat(shown, "`, and a type-qualified function is one name across the linked program even when it is not exported, so the program keeps only one of them, chosen by import order, and every caller, in either module, would silently run that one")))))))))
 }
 
 /// One impl head of the linked program, as the checker's coherence test

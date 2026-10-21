@@ -479,3 +479,30 @@ test "disjoint impl targets across modules are accepted" {
   let declared = "export trait Zero {\n  zero() -> Self\n}\n\nimpl Zero for Int {\n  zero() -> Int { 0 }\n}\n"
   inspect(link_verdict([("z1.vibe", marker), ("z2.vibe", declared)]), content = "ok")
 }
+
+/// #3571: two units' PLAIN definitions of one type-qualified name, no impl
+/// anywhere. The merge keeps a private `fn Int::shout` spelled as written, so
+/// both reached the linked program and the first merged ran for every caller
+/// (`from-a from-a`). Refused whether either is exported or not.
+test "two units defining one type-qualified function are refused" {
+  let private_a = "fn Int::shout(x: Int) -> String {\n  \"from-a\"\n}\n"
+  let private_b = "fn helper() -> Int { 1 }\n\nfn Int::shout(x: Int) -> String {\n  \"from-b\"\n}\n"
+  let exported_b = "export fn Int::shout(x: Int) -> String {\n  \"from-b\"\n}\n"
+  inspect(link_verdict([("ta.vibe", private_a), ("tb.vibe", private_b)]), content = "tb.vibe: line 3:1: rename `Int::shout` here or in ta.vibe: line 1:1, or make one of them a plain function (`fn shout`), which stays private to its module -- both modules define `Int::shout`, and a type-qualified function is one name across the linked program even when it is not exported, so the program keeps only one of them, chosen by import order, and every caller, in either module, would silently run that one")
+  inspect(link_verdict([("ta.vibe", private_a), ("te.vibe", exported_b)]), content = "te.vibe: line 1:8: rename `Int::shout` here or in ta.vibe: line 1:1, or make one of them a plain function (`fn shout`), which stays private to its module -- both modules define `Int::shout`, and a type-qualified function is one name across the linked program even when it is not exported, so the program keeps only one of them, chosen by import order, and every caller, in either module, would silently run that one")
+  inspect(link_verdict([("te.vibe", exported_b), ("tb.vibe", private_b)]), content = "tb.vibe: line 3:1: rename `Int::shout` here or in te.vibe: line 1:8, or make one of them a plain function (`fn shout`), which stays private to its module -- both modules define `Int::shout`, and a type-qualified function is one name across the linked program even when it is not exported, so the program keeps only one of them, chosen by import order, and every caller, in either module, would silently run that one")
+  // On a type a third unit declares.
+  let pt = "export struct Pt {\n  x: Int\n}\n"
+  let pt_a = "fn Pt::shout(p: Pt) -> String {\n  \"a\"\n}\n"
+  let pt_b = "fn Pt::shout(p: Pt) -> String {\n  \"b\"\n}\n"
+  inspect(link_verdict([("pt.vibe", pt), ("pa.vibe", pt_a), ("pb.vibe", pt_b)]), content = "pb.vibe: line 1:1: rename `Pt::shout` here or in pa.vibe: line 1:1, or make one of them a plain function (`fn shout`), which stays private to its module -- both modules define `Pt::shout`, and a type-qualified function is one name across the linked program even when it is not exported, so the program keeps only one of them, chosen by import order, and every caller, in either module, would silently run that one")
+}
+
+/// One definition per name is the program's: a single unit's `fn Int::shout`
+/// called from another, distinct names on one type, and two units' plain
+/// unqualified helpers (which the merge namespaces apart) are all accepted.
+test "one definition of a type-qualified function is accepted" {
+  let def = "export fn Int::shout(x: Int) -> String {\n  \"a\"\n}\n\nfn helper() -> Int { 1 }\n"
+  let user = "fn helper() -> Int { 2 }\n\nfn Int::whisper(x: Int) -> String {\n  \"w\"\n}\n\nexport fn use_it() -> String {\n  Int::shout(helper())\n}\n"
+  inspect(link_verdict([("ta.vibe", def), ("tu.vibe", user)]), content = "ok")
+}

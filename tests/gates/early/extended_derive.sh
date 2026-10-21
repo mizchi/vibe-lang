@@ -408,6 +408,17 @@ ur_refused fixtures/err_derive_show_bytes_field_refused.vibe 'a derived renderer
 ur_refused fixtures/err_impl_overlap_cross_module_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_b.vibe: line 7:1'
 ur_refused fixtures/err_impl_overlap_entry_vs_dep_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/err_impl_overlap_entry_vs_dep_refused.vibe: line 13:1'
 ur_refused fixtures/err_impl_overlap_cross_module_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' gc
+# #3571: two modules' PLAIN `fn Int::shout` -- private or exported, on a
+# builtin or on a type a third module declares, or the entry's and an
+# import's -- kept their spelling through the merge, and the build ran
+# whichever the import order merged first (`from-a from-a`). Refused, naming
+# both definitions and the rename. The green side (the plain `fn shout` the
+# message names) rides the unit lane:
+# fixtures/qualified_fn_overlap_plain_edit_test.vibe.
+ur_refused fixtures/err_qualified_fn_overlap_cross_module_refused.vibe 'both modules define `Int::shout`' 'rename `Int::shout` here or in fixtures/modules/qualified_fn_overlap_a.vibe: line 3:1' linear 'fixtures/modules/qualified_fn_overlap_b.vibe: line 3:1'
+ur_refused fixtures/err_qualified_fn_overlap_cross_module_refused.vibe 'both modules define `Int::shout`' 'or make one of them a plain function (`fn shout`)' gc
+ur_refused fixtures/err_qualified_fn_overlap_foreign_type_refused.vibe 'both modules define `Pt::shout`' 'rename `Pt::shout` here or in fixtures/modules/qualified_fn_overlap_pt_a.vibe: line 8:1' linear 'fixtures/modules/qualified_fn_overlap_pt_b.vibe: line 7:1'
+ur_refused fixtures/err_qualified_fn_overlap_entry_vs_dep_refused.vibe 'both modules define `Int::shout`' 'rename `Int::shout` here or in fixtures/modules/qualified_fn_overlap_a.vibe: line 3:1' linear 'fixtures/err_qualified_fn_overlap_entry_vs_dep_refused.vibe: line 9:1'
 # #3551: a plain `fn Int::name` in a module that also holds an impl for `Int`
 # (after an intervening statement) is a definition, not that impl's method.
 # It used to be exempted by the owner prefix and built `from-a from-a`. The
