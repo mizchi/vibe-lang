@@ -26,6 +26,11 @@ fn payload(src: String) -> String {
   hex_of(String::concat("main.vibe", String::concat(String::from_char_code(0), src)))
 }
 
+fn payload_with(src: String, dep_path: String, dep: String) -> String {
+  let nul = String::from_char_code(0)
+  hex_of(String::join(["main.vibe", src, dep_path, dep], nul))
+}
+
 fn diagnostic(src: String) -> String with Env {
   compile_cli_request(payload(src), "error-mode:mvp:main")
 }
@@ -47,4 +52,11 @@ test "a well-typed program compiles" {
   inspect(diagnostic(src), "")
   let len = compile_cli_request(payload(src), "len-mode:mvp:main")
   inspect(String::length(len) > 0 && len != "0", "true")
+}
+
+test "an error inside an imported file keeps that file's location" {
+  let dep = "export fn bad() -> Int {\n  let x: Int = \"s\"\n  x\n}\n"
+  let src = "import ./dep.vibe { bad }\n\nfn main allows Console {\n  println(\"\\{bad()}\")\n}\n"
+  let d = compile_cli_request(payload_with(src, "dep.vibe", dep), "error-mode:mvp:main")
+  inspect(d, "dep.vibe: line 2:16-19: binding type mismatch for a local let: expected Int, got String")
 }

@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/entry/compiler/fs_compile {
-  compile_with_closure_sources_wasi_mode_cached
+  collect_inline_sources_ordered, compile_with_closure_sources_wasi_mode_cached, prepare_modules_cached
 }
 
 import @vibe/compiler/checker {
@@ -9,7 +9,7 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/runtime {
-  db_new, db_set_source, locate_type_error_lines
+  TypeDb, db_new, db_set_source, locate_type_error_lines, locate_type_error_lines_except_paths
 }
 
 import ./cli_support.vibe {
@@ -213,6 +213,38 @@ fn remember_compiled_bytes(cache_key: String, bytes: Bytes) -> Int {
   byte_len
 }
 
+/// Type-checks the closure one module at a time, dependencies first, so an
+/// error is reported against the file it is in: `dep.vibe: line 2:16-19: ..`
+/// for an imported file, as `vibe check` prints it, and a bare `line ..` for
+/// the entry. Checking the whole closure at once throws a dependency's error
+/// without its path, and locating it against the entry source points at the
+/// wrong file. The db caches each module, so later steps reuse earlier checks.
+fn check_closure_by_module(db: TypeDb, main_path: String, main_source: String, sources: Array[(String, String)]) -> TypeDb with Env + Exception {
+  let ordered = collect_inline_sources_ordered(main_path, main_source, sources)
+  let mut checked = db
+  let mut k = 0
+  while k < Array::length(ordered) {
+    let (path, text) = Array::get(ordered, k)
+    let current = checked
+    checked = handle {
+      prepare_modules_cached(current, path, text, ordered)
+    } with { Exception::Throw(error) => {
+      let located = locate_type_error_lines(text, error)
+      if path == main_path {
+        throw(String::join(located, "\n"))
+      } else {
+        let prefixed = array_empty()
+        for line in located {
+          Array::push(prefixed, String::concat(path, String::concat(": ", line)))
+        }
+        throw(String::join(prefixed, "\n"))
+      }
+    } }
+    k = k + 1
+  }
+  checked
+}
+
 fn ensure_compiled(source: String, entry_name: String, mode: String) -> Int with Env + Exception {
   let cache_key = cache_key_for(source, entry_name, mode)
   if cache_key_matches(cache_key) {
@@ -234,21 +266,26 @@ fn ensure_compiled(source: String, entry_name: String, mode: String) -> Int with
         i = i + 2
       }
       // Checked, as `vibe check` / `vibe run` are: an ill-typed program is a
-      // diagnostic here too, never a module that runs. The first error is
-      // located against the entry source, where a playground edit lands.
+      // diagnostic here too, never a module that runs. A type error names its
+      // file (`check_closure_by_module`); what the compile step itself
+      // refuses afterwards is located against the entry source, except an
+      // error already prefixed with an imported file's path.
       // Every payload file is in the db, not only the ones the entry reaches:
       // a package's contract (`index.vpkg`) is never imported as a module, but
       // the resolver asks whether it exists, as it would of a real directory.
       let mut db = db_new()
+      let imported_paths = array_empty()
       let mut si = 0
       while si < Array::length(sources) {
         let (path, text) = Array::get(sources, si)
         db = db_set_source(db, path, text)
+        Array::push(imported_paths, path)
         si = si + 1
       }
+      let checked = check_closure_by_module(db, normalized_main_path, main_source, sources)
       let (bytes, _) = handle {
-        compile_with_closure_sources_wasi_mode_cached(db, main_source, normalized_main_path, sources, entry_name, mode)
-      } with { Exception::Throw(error) => throw(String::join(locate_type_error_lines(main_source, error), "\n")) }
+        compile_with_closure_sources_wasi_mode_cached(checked, main_source, normalized_main_path, sources, entry_name, mode)
+      } with { Exception::Throw(error) => throw(String::join(locate_type_error_lines_except_paths(main_source, error, imported_paths), "\n")) }
       remember_compiled_bytes(cache_key, bytes)
     }
   }
