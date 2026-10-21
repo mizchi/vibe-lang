@@ -190,6 +190,22 @@ export fn effect_error_to_string(err: EffectError) -> String {
         body
       }
     },
+    EEErasedValueOtherKind(fname, value, offending, off) => {
+      let first = String::trim(Array::get(String::split(offending, ","), 0))
+      let where_ = erased_error_place(fname)
+      let edit = String::concat("declare `", String::concat(value, String::concat("` `with ", String::concat(first, "` instead of the erased `with Exception`, and the parameter, annotation or field it is passed to with that kind (or a row variable, `with e`)"))))
+      let why = String::concat(": the row of `", String::concat(value, String::concat("` is the erased `with Exception`, but it raises { ", String::concat(offending, String::concat(" }, and in ", String::concat(where_, " it is used as a value whose row does not name that kind; a function value typed with the erased row raises only messages (`String`) to the code that calls it, so an erased arm `Exception::Throw(m)` would read the payload as a `String`"))))))
+      let more = String::concat("\nhint: a call `", String::concat(value, String::concat("(..)` and an unannotated alias `let f = ", String::concat(value, String::concat("` keep the kinds, and a receiver declared `with Exception + ", String::concat(first, String::concat("` takes `", String::concat(value, "` as it is"))))))))
+      erased_error_at(String::concat(edit, String::concat(why, more)), off)
+    },
+    EEErasedClosureOtherKind(fname, offending, off) => {
+      let first = String::trim(Array::get(String::split(offending, ","), 0))
+      let where_ = erased_error_place(fname)
+      let edit = String::concat("write `with ", String::concat(first, "` in this closure's function type (or throw a `String`)"))
+      let why = String::concat(": its row is the erased `with Exception`, which raises only messages (`String`) to the code that calls the closure, but in ", String::concat(where_, String::concat(" its body raises { ", String::concat(offending, " }"))))
+      let more = "\nhint: the kind is not carried at run time, so an erased arm `Exception::Throw(m)` around a call of the closure would read the payload as a `String`; the row is the parameter's, the annotation's or the field's the closure is written for, or its own"
+      erased_error_at(String::concat(edit, String::concat(why, more)), off)
+    },
     EEKindedHandleOpenRow(fname, handler, vars, off) => {
       let block = entry_block_display_name(fname)
       // A handle in a local lambda's body names that lambda (#3540).
@@ -2221,5 +2237,27 @@ export fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: AfeLocals) -> Option
     EHandle(body, arms) => afe_handle_head(body, arms, env, locals),
     ELoop(inits, body) => afe_loop_head(inits, body, env, locals),
     _ => None
+  }
+}
+
+/// #3601: where an erased-row diagnostic happened, as its message names it.
+fn erased_error_place(fname: String) -> String {
+  let block = entry_block_display_name(fname)
+  if fname == "#lambda:" || String::length(fname) == 0 {
+    "this expression"
+  } else if String::starts_with(fname, "#lambda:") {
+    String::concat("the lambda '", String::concat(String::substring(fname, 8, String::length(fname)), "'"))
+  } else if String::length(block) > 0 {
+    block
+  } else {
+    String::concat("'", String::concat(fname, "'"))
+  }
+}
+
+fn erased_error_at(body: String, off: Int) -> String {
+  if off >= 0 {
+    String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+  } else {
+    body
   }
 }

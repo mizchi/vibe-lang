@@ -1,0 +1,128 @@
+// #3601 controls: an erased `with Exception` row carries the kinds its body
+// throws to an importer, and a function value carries them where the row it
+// is typed with names them. fixtures/typecheck/exception_erased_{row_import,
+// value,closure,kinded_value}_*_reject.vibe hold the refusals. What stays
+// accepted, with the answers it gives: an imported function that throws only
+// messages under an arm that reads its binder, an imported kinded function
+// under its kinded arm, an imported function that lets an `Int` out under an
+// arm that leaves its payload unread, a callback that throws a message, a
+// callback written for a kinded parameter, a function value passed where
+// the parameter's row names the kind or a row variable, and a callback handed
+// to a callee that handles what it raises (`TaskGroup::spawn_suspend`'s
+// shape: its own row lets no exception out).
+import ./modules/exception_erased_row_dep.vibe {
+  fail, fail_code, fail_text
+}
+
+fn run(f: () -> Int with Exception) -> Int with Exception {
+  f()
+}
+
+fn run_code(f: () -> Int with Exception[Int]) -> Int with Exception[Int] {
+  f()
+}
+
+fn run_either(f: () -> Int with Exception + Exception[Int]) -> Int with Exception + Exception[Int] {
+  f()
+}
+
+fn run_any[e](f: () -> Int with e) -> Int with e {
+  f()
+}
+
+fn bad() -> Int with Exception {
+  throw(7)
+}
+
+fn shield(f: () -> Int with Exception) -> Int {
+  handle {
+    f()
+  } with { Exception::Throw(_) => 0 - 2 }
+}
+
+fn imported_message() -> Int {
+  handle {
+    fail_text()
+  } with { Exception::Throw(m) => String::length(m) }
+}
+
+fn imported_kinded() -> Int {
+  handle {
+    fail_code()
+  } with { Exception[Int]::Throw(c) => c + 1 }
+}
+
+fn imported_unread() -> Int {
+  handle {
+    fail() + fail()
+  } with { Exception::Throw(_) => 100 }
+}
+
+fn callback_message() -> Int {
+  handle {
+    run(() -> throw("seven"))
+  } with { Exception::Throw(m) => String::length(m) }
+}
+
+fn callback_kinded() -> Int {
+  handle {
+    run_code(() -> throw(7))
+  } with { Exception[Int]::Throw(c) => c + 1 }
+}
+
+fn value_where_kind_named() -> Int {
+  handle {
+    run_either(bad) + run_either(fail)
+  } with { Exception::Throw(_) => 200 }
+}
+
+fn value_through_row_variable() -> Int {
+  handle {
+    run_any(bad) + run_any(fail)
+  } with { Exception::Throw(_) => 300 }
+}
+
+test "an imported erased row that throws messages reads the message" {
+  inspect(imported_message(), "5")
+}
+
+test "an imported kinded row reaches its kinded arm" {
+  inspect(imported_kinded(), "8")
+}
+
+test "an imported erased row that lets an Int out reaches an unread arm" {
+  inspect(imported_unread(), "100")
+}
+
+test "a callback that throws a message reaches an erased arm that reads it" {
+  inspect(callback_message(), "5")
+}
+
+test "a callback written for a kinded parameter reaches the kinded arm" {
+  inspect(callback_kinded(), "8")
+}
+
+test "a function value goes where its row's kinds are named" {
+  inspect(value_where_kind_named(), "200")
+  inspect(value_through_row_variable(), "300")
+}
+
+test "a callee that handles what a callback raises takes any kind" {
+  inspect(shield(bad), "-2")
+  inspect(shield(fail), "-2")
+  inspect(shield(() -> Int with Exception {
+    throw(7)
+  }), "-2")
+  inspect(shield(() -> throw(7)), "-2")
+}
+
+test "a let-bound closure with an erased row keeps its kinds for its calls" {
+  let local = () -> Int with Exception {
+    throw(7)
+  }
+  let r = handle {
+    local()
+  } with { Exception::Throw(_) => 400 }
+  inspect(r, "400")
+  inspect(shield(local), "-2")
+}

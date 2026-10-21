@@ -129,10 +129,34 @@ effect Exception[E] {
   erased `with Exception` row carries the kinds its body throws: each kind
   other than the message that a named function's erased row authorizes is
   recorded (`erased_row_leaks`), added to the row its callers read, and the
-  module is walked again until nothing new leaks. Not seen (#3541): a function
-  imported from another module (its published row is the written one), and a
-  callback or lambda whose own row is erased. The kinded row and arm are the
-  typed path for such a value.
+  module is walked again until nothing new leaks; a top-level alias of such a
+  function is charged with it. The kinds a module's functions let out are
+  bound into its environment after the effect check (`erased_kinds_marker`),
+  and the published interface carries them to importers, re-exports, renamed
+  imports and type companions; an importer charges a call with them (#3601).
+  A function VALUE is typed only by the row it is given, and an erased row
+  there carries only messages to the code that calls it (#3601). A closure
+  literal written for an erased function-type row (a field's, the enclosing
+  result's, its own, or a parameter's of a callee whose own row has the
+  erased label) is walked with the enclosing exception labels dropped and the
+  erased label covering only messages (`erased_slot_marker`). One bound by
+  `let` records what its own erased row lets out against the binding
+  (`erased_local_marker`, `erased_local_leaks`), and a call through the
+  binding is charged it on the module's next walk; one applied where it is
+  written takes the enclosing body's exception labels (`erased_iife_marker`).
+  A named function whose erased row lets another kind out may be used as a
+  value only as a call, an unannotated alias, or an argument whose parameter
+  row names the kind or a row variable, or whose callee's own row lets no
+  exception out (`erased_value_flow_errors`). Such a callee handles what the
+  callback raises (`TaskGroup::spawn_suspend` reads the payload through
+  `__exn_kind`), so a literal handed to it keeps its own row
+  (`erased_arg_kept_marker`). The type check refuses a function type naming
+  `Exception[K]`, `K` not `String`, where a function type whose row is erased
+  without that kind or a row variable is expected (`erased_kind_lost`). Not
+  seen: a callee whose row lets no exception out that keeps the callback and
+  calls it later, and a closure literal passed to a callee that is itself a
+  function value, whose parameter rows the walk cannot read. The kinded row
+  and arm are the typed path for such a value.
 - A rethrow from the erased arm records no kind, so it needs the erased row
   (#3541, #3551 review). That covers `throw(m)` and any payload that may carry
   `m`. While the arm body is typed, the checker knows the arm's carrier

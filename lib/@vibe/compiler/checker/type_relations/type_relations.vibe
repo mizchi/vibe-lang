@@ -5,6 +5,7 @@ import @vibe/compiler/core {
   compiler_owned_type_arity,
   effect_var_spelling,
   exception_effect_labels_equal,
+  exception_kinds_same,
   exception_label_kind,
   find_typedef,
   instantiate,
@@ -1191,6 +1192,149 @@ fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
   }
 }
 
+/// #3601: is `row` a function-type row whose exceptions reach the code that
+/// calls the function as messages only -- an erased exception label, no
+/// kinded one of `kind`, and no row variable a call could fill with it?
+fn row_loses_exception_kind(row: Option[String], kind: String) -> Bool {
+  let labels = row_labels(row)
+  let mut erased = false
+  let mut keeps = false
+  for l in labels {
+    if is_exception_label(l) {
+      let k = exception_label_kind(l)
+      if String::length(k) == 0 {
+        erased = true
+      } else if exception_kinds_same(k, kind) {
+        keeps = true
+      }
+    } else if (String::length(l) == 1 && String::char_code_at(l, 0) >= 97 && String::char_code_at(l, 0) <= 122) || (String::length(l) >= 2 && String::char_code_at(l, 0) == 36) {
+      keeps = true
+    }
+  }
+  erased && !keeps
+}
+
+/// #3601: the first exception kind other than the message that `actual`, a
+/// function value (or one nested in an array, option, tuple or type
+/// argument), raises and that the slot `expected` would carry only as a
+/// message: the slot's row is the erased `with Exception`, which an erased
+/// arm `Exception::Throw(m)` around a call reads as a `String`. Parameters
+/// are compared the other way round, as `effect_row_dropped` does.
+fn erased_kind_lost(expected: Type, actual: Type) -> Option[String] {
+  match expected {
+    CtFn(eparams, eret, eeff) => match actual {
+      CtFn(aparams, aret, aeff) => {
+        let mut lost = None
+        for l in row_labels(aeff) {
+          if lost == None && is_exception_label(l) && String::index_of(l, "::") < 0 {
+            let k = exception_label_kind(l)
+            if String::length(k) > 0 && !exception_kinds_same(k, "String") && row_loses_exception_kind(eeff, k) {
+              lost = Some(l)
+            }
+          }
+        }
+        if lost == None && Array::length(eparams) == Array::length(aparams) {
+          let mut pi = 0
+          while pi < Array::length(eparams) && lost == None {
+            lost = erased_kind_lost(Array::get(aparams, pi), Array::get(eparams, pi))
+            pi = pi + 1
+          }
+        }
+        if lost == None {
+          erased_kind_lost(eret, aret)
+        } else {
+          lost
+        }
+      },
+      _ => None
+    },
+    CtArray(ee) => match actual {
+      CtArray(ae) => erased_kind_lost(ee, ae),
+      _ => None
+    },
+    CtOption(ee) => match actual {
+      CtOption(ae) => erased_kind_lost(ee, ae),
+      _ => None
+    },
+    CtTuple(ees) => match actual {
+      CtTuple(aes) => if Array::length(ees) == Array::length(aes) {
+        let mut lost = None
+        let mut i = 0
+        while i < Array::length(ees) && lost == None {
+          lost = erased_kind_lost(Array::get(ees, i), Array::get(aes, i))
+          i = i + 1
+        }
+        lost
+      } else {
+        None
+      },
+      _ => None
+    },
+    CtNamed(en, eargs) => match actual {
+      CtNamed(an, aargs) => if en == an && Array::length(eargs) == Array::length(aargs) {
+        let mut lost = None
+        let mut i = 0
+        while i < Array::length(eargs) && lost == None {
+          lost = erased_kind_lost(Array::get(eargs, i), Array::get(aargs, i))
+          i = i + 1
+        }
+        lost
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
+/// Whether `t` mentions a function type whose row names the exception effect
+/// at all: the cheap test that lets `check_assignable_for` skip
+/// `erased_kind_lost` for nearly every assignment.
+fn type_mentions_exception_fn_row(t: Type) -> Bool {
+  match t {
+    CtFn(ps, r, eff) => {
+      let mut found = match eff {
+        Some(row) => String::contains(row, "Exception") || String::contains(row, "Error"),
+        None => false
+      }
+      for p in ps {
+        if !found && type_mentions_exception_fn_row(p) {
+          found = true
+        }
+      }
+      found || type_mentions_exception_fn_row(r)
+    },
+    CtArray(e) => type_mentions_exception_fn_row(e),
+    CtOption(e) => type_mentions_exception_fn_row(e),
+    CtTuple(es) => {
+      let mut found = false
+      for e in es {
+        if !found && type_mentions_exception_fn_row(e) {
+          found = true
+        }
+      }
+      found
+    },
+    CtNamed(_, args) => {
+      let mut found = false
+      for e in args {
+        if !found && type_mentions_exception_fn_row(e) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// The #3601 report: `actual` raises `lbl`'s kind, which the slot `expected`
+/// carries only as a message.
+fn erased_kind_lost_error(what: String, expected: Type, actual: Type, lbl: String, off: Int) -> String {
+  String::concat(what, String::concat(": write `with ", String::concat(lbl, String::concat("` in the expected type ", String::concat(type_for_reader(expected), String::concat(": a value of type ", String::concat(type_for_reader(actual), String::concat(" raises `", String::concat(exception_label_kind(lbl), String::concat("`, and a function typed with the erased `with Exception` raises only messages (`String`) to the code that calls it, so an erased arm `Exception::Throw(m)` would read the payload as a `String`", assignable_marker(off)))))))))))
+}
+
 /// Unify `expected` with `actual`, REPORTING only a genuine STRUCTURAL mismatch
 /// (the checker historically swallowed these, accepting ill-typed programs).
 /// `unify` already accepts `CtUnknown`/`CtVar` freely; on failure we retry with
@@ -1419,7 +1563,19 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
 /// cold self-compile, for calls that almost always agree.
 export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: Array[String], what_head: String, what_tail: String, off: Int) -> Subst {
   let result = match unify(expected, actual, s) {
-    Some(su) => su,
+    Some(su) => {
+      // #3601: a function value whose row names an exception kind, given to
+      // a slot whose erased row would carry it only as a message.
+      if type_mentions_exception_fn_row(expected) {
+        let ez = subst_apply(su, expected)
+        let az = subst_apply(su, actual)
+        match erased_kind_lost(ez, az) {
+          Some(lbl) => Array::push(errors, erased_kind_lost_error(String::concat(what_head, what_tail), ez, az, lbl, off)),
+          None => ()
+        }
+      }
+      su
+    },
     None => {
       // #3518: the effect-stripped retry's substitution is the answer when it
       // succeeds. Discarding it left every type variable that only this
@@ -1490,6 +1646,10 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
         // unhandled wasm exception at runtime. Report exactly that shape;
         // pure→effectful subsumption and Error/Async/effect-var differences
         // stay tolerated (see effect_row_dropped).
+        match erased_kind_lost(subst_apply(s, expected), subst_apply(s, actual)) {
+          Some(lbl) => Array::push(errors, erased_kind_lost_error(String::concat(what_head, what_tail), subst_apply(s, expected), subst_apply(s, actual), lbl, off)),
+          None => ()
+        }
         match effect_row_dropped(subst_apply(s, expected), subst_apply(s, actual)) {
           Some(lbl) => {
             Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": effect row mismatch: a value of type ", String::concat(type_for_reader(subst_apply(s, actual)), String::concat(" cannot be used where ", String::concat(type_for_reader(subst_apply(s, expected)), String::concat(" is expected (the { ", String::concat(lbl, String::concat(" } effect would be dropped — no handler could ever run)", assignable_marker(off))))))))))

@@ -1847,10 +1847,27 @@ Rules:
   function declared with the erased `with Exception` raises the kinds its body
   throws, so `fn h() -> Int with Exception { throw(5) }` counts as raising
   `Exception[Int]` there. An arm that leaves its payload unread
-  (`Exception::Throw(_)`) still catches every kind. Not seen yet (#3541): a
-  function imported from another module, and a callback or lambda with an
-  erased row of its own. Throw a value other than a `String` under a kinded
-  row, and catch it with the kinded arm.
+  (`Exception::Throw(_)`) still catches every kind. A function imported from
+  another module counts the same way: its module publishes the kinds its
+  erased row lets out (#3601).
+- A function VALUE is typed only by the row it is given, and an erased
+  `with Exception` there raises only messages to the code that calls it
+  (#3601). So a closure literal written for a field or result typed
+  `with Exception` may throw only messages, and so may one passed for such a
+  parameter of a callee whose own row lets exceptions out
+  (`fn run(f: () -> Int with Exception) -> Int with Exception`); a closure
+  bound by `let`, or applied where it is written, is charged at its calls
+  like a named function. A function whose erased row lets another kind out
+  (`fn bad() -> Int with Exception { throw(7) }`) may be called, aliased with
+  an unannotated `let g = bad`, or passed where the parameter's row names the
+  kind or a row variable; any other use as a value is refused. A
+  `with Exception[Int]` function is refused wherever an erased function type
+  is expected. A callee whose own row raises no exception handles what a
+  callback raises (`TaskGroup::spawn_suspend`) and takes any kind. Name the
+  kind where the value goes (`with Exception[Int]`,
+  `with Exception + Exception[Int]`, or a row variable `with e`). Throw a
+  value other than a `String` under a kinded row, and catch it with the
+  kinded arm.
 - A rethrow from the erased arm is a throw of no known kind, not of
   `Exception[String]`. That holds for `throw(m)` and for any payload that
   names `m`, or a name the arm derived from it, when the payload's type could

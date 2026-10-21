@@ -131,9 +131,18 @@ import ./checker_effects_throw_payload_kind.vibe {
   collect_handle_effects,
   effect_name_of_op,
   entry_block_display_name,
+  erased_arg_kept_marker,
   erased_arm_read_binder,
+  erased_iife_marker,
+  erased_local_key,
+  erased_local_leaks_for,
+  erased_local_marker,
   erased_reads_marker,
+  erased_root_marker,
+  erased_slot_declared,
+  erased_slot_marker,
   exception_effect_labels,
+  exception_family_of,
   instantiate_callee_label,
   instantiate_callee_label_marked,
   is_program_entry_name,
@@ -150,6 +159,7 @@ import ./checker_effects_throw_payload_kind.vibe {
   program_fn_exists,
   program_fn_index,
   requirement_marked_cell,
+  row_is_erased_slot,
   row_mismatch_roots,
   row_scope_pop,
   source_definition_shadows_builtin,
@@ -1692,13 +1702,20 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
             // binding is charged that row (local_fn_overlay_labels).
             Some(row) => {
               pe_push(stack, stack_ci, callee, ci)
-              pe_push(stack, stack_ci, Array::get(args, 0), pe_ctx(ctxs, labels_union(declared, closure_row_extra_labels(row)), in_handle, ov_names, ov_effs, kinds))
+              pe_push(stack, stack_ci, Array::get(args, 0), pe_ctx(ctxs, labels_union(erased_slot_body_declared(declared, row), closure_row_extra_labels(row)), in_handle, ov_names, ov_effs, kinds))
             },
             None => {
               // A callee that is not a name (a field, a call result) is one
               // this pass cannot see, so a closure literal handed to it stays
               // as strict as the body (closure_arg_declared).
-              pe_push(stack, stack_ci, callee, ci)
+              // #3601: a literal applied where it is written runs right here
+              // (`erased_iife_marker`).
+              match callee {
+                EFn(_, _, _, _, _, _) => pe_push(stack, stack_ci, callee, pe_ctx(ctxs, labels_union(declared, [
+                  erased_iife_marker()
+                ]), in_handle, ov_names, ov_effs, kinds)),
+                _ => pe_push(stack, stack_ci, callee, ci)
+              }
               let mut bi = 0
               while bi < Array::length(args) {
                 pe_push(stack, stack_ci, Array::get(args, bi), ci)
@@ -1736,7 +1753,41 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
         // directly as a call ARGUMENT is relaxed, at the call site and only
         // when the callee's signature shows it discharges the throws
         // (closure_arg_declared).
-        let body_declared = effect_row_inherit(effect_row_parse(effect), labels_union(declared, current_ret_fn_rows()))
+        // #3601: a literal whose own row is the erased one carries only
+        // messages to whoever calls it (`erased_slot_marker`), and so does one
+        // returned for an erased function row of the enclosing result.
+        // A literal handed to a callee that handles what it raises keeps its
+        // own row as written (`erased_arg_kept_marker`).
+        let kept_arg = effect_row_has_label(Some(declared), erased_arg_kept_marker())
+        let applied_here = effect_row_has_label(Some(declared), erased_iife_marker())
+        let body_declared = match effect_row_parse(effect) {
+          Some(_) => {
+            let own = effect_row_labels(effect_row_parse(effect))
+            let bound_name = Array::get(lambda_owner_pending, 0)
+            if row_is_erased_slot(own) && applied_here {
+              labels_union(own, exception_family_of(declared))
+            } else if row_is_erased_slot(own) && !kept_arg {
+              // A literal bound by `let` is called through its binding, which
+              // is charged what it lets out (`erased_local_marker`); any other
+              // is a value whose row alone its callers read.
+              if String::length(bound_name) > 0 {
+                labels_union(own, [erased_local_marker(fn_name, bound_name)])
+              } else {
+                labels_union(own, [erased_slot_marker()])
+              }
+            } else {
+              own
+            }
+          },
+          None => {
+            let ret_rows = current_ret_fn_rows()
+            if row_is_erased_slot(ret_rows) && effect_row_has_label(Some(declared), erased_root_marker(fn_name)) {
+              labels_union(erased_slot_declared(declared, ret_rows), closure_row_extra_labels(ret_rows))
+            } else {
+              labels_without(labels_without(labels_union(declared, ret_rows), erased_arg_kept_marker()), erased_iife_marker())
+            }
+          }
+        }
         // #885: extend the callback-parameter overlay with THIS function's own
         // function-typed parameters (if any carry a declared effect), scoped to
         // its body. New entries are appended AHEAD of the inherited overlay so
@@ -1923,7 +1974,8 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
         // non-recursive), so only the body's overlay needs the new binding
         // shadowed out. #1361: the same place registers a local closure's own
         // declared row, so calling it from the body leaks that row.
-        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
+        // #3601: plus what its erased row lets out (`erased_local_leaks`).
+        let (body_ov_names, body_ov_effs) = overlay_add_erased_local_leaks(overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index), fn_name, name, val)
         // #1344 follow-up: the local's payload kind is its initializer's, read
         // in the OUTER scope for the same non-recursive reason.
         let body_kinds = throw_kind_bind(kinds, name, throw_payload_kind(val, kinds))
@@ -2051,7 +2103,10 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
           // literal only: any OTHER field expression (a call that performs, say)
           // keeps the enclosing `declared` and stays checked as before.
           let field_declared = match fval {
-            EFn(_, _, _, _, _, _) => labels_union(declared, struct_field_rows_for(rec_sname, fname)),
+            EFn(_, _, _, _, _, _) => {
+              let field_row = struct_field_rows_for(rec_sname, fname)
+              labels_union(erased_slot_body_declared(declared, field_row), field_row)
+            },
             _ => declared
           }
           pe_push(stack, stack_ci, fval, pe_ctx(ctxs, field_declared, in_handle, ov_names, ov_effs, kinds))
@@ -2093,4 +2148,50 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
   Array::truncate(row_formal_scope, scope_depth)
   Array::truncate(lambda_owner_stack, owner_depth)
   errors
+}
+
+/// #3601: the labels a closure literal written for a slot whose function row
+/// is `row` (an annotation, a field) is walked under: the slot's erased row
+/// when it is one (`erased_slot_declared`), else the enclosing labels.
+fn erased_slot_body_declared(declared: Array[String], row: Array[String]) -> Array[String] {
+  if row_is_erased_slot(row) {
+    erased_slot_declared(declared, row)
+  } else {
+    declared
+  }
+}
+
+/// `labels` without `label`.
+fn labels_without(labels: Array[String], label: String) -> Array[String] {
+  if effect_row_has_label(Some(labels), label) {
+    let out = no_str_labels()
+    for l in labels {
+      if l != label {
+        Array::push(out, l)
+      }
+    }
+    out
+  } else {
+    labels
+  }
+}
+
+/// #3601: the overlay after `let name = val` with the kinds a closure
+/// literal `val`'s erased row lets out (`erased_local_leaks`) added to the
+/// binding's entry, so a call through it is charged them.
+fn overlay_add_erased_local_leaks(overlay: (Array[String], Array[Array[String]]), fn_name: String, name: String, val: Expr) -> (Array[String], Array[Array[String]]) {
+  let (names, effs) = overlay
+  match val {
+    EFn(_, _, _, _, _, _) => {
+      let kinds = erased_local_leaks_for(erased_local_key(fn_name, name))
+      if Array::length(kinds) > 0 && Array::length(names) > 0 && Array::get(names, 0) == name {
+        let out_effs = Array::slice(effs, 0, Array::length(effs))
+        Array::set(out_effs, 0, labels_union(Array::get(effs, 0), kinds))
+        (names, out_effs)
+      } else {
+        overlay
+      }
+    },
+    _ => overlay
+  }
 }

@@ -40,6 +40,7 @@ import @vibe/compiler/cache {
 import @vibe/compiler/checker {
   aggregate_export_names,
   collect_builtin_shadowing_names,
+  env_erased_kinds_rows,
   env_param_name_rows,
   env_retention_summary_rows,
   export_local_nonvalue_kind,
@@ -69,6 +70,7 @@ import @vibe/compiler/core {
   env_type_defs,
   env_value_binding,
   env_with_show_wrapper_facts,
+  erased_kinds_marker,
   is_contract_ext
 }
 import @vibe/compiler/runtime/eval_loader {
@@ -769,7 +771,23 @@ export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_c
       ()
     }
   }
-  env_with_show_wrapper_facts(engine_bind_retention_summary_markers(publication_env, engine_bind_param_name_markers(stmts, publication_env, published_env)), exported_wrappers, exported_unknown)
+  env_with_show_wrapper_facts(engine_bind_erased_kinds_markers(publication_env, engine_bind_retention_summary_markers(publication_env, engine_bind_param_name_markers(stmts, publication_env, published_env))), exported_wrappers, exported_unknown)
+}
+/// #3601: the kinds other than the message each published function's erased
+/// `with Exception` row lets out, for an importer that calls it. A function
+/// of this module carries what its effect check charged; a re-exported one
+/// carries what its own import brought in.
+fn engine_bind_erased_kinds_markers(publication_env: TypeEnv, published: TypeEnv) -> TypeEnv {
+  let mut acc = published
+  for row in env_erased_kinds_rows(publication_env) {
+    let (fname, ty) = row
+    if engine_env_has_value(published, fname) {
+      acc = env_bind(acc, erased_kinds_marker(fname), ty)
+    } else {
+      ()
+    }
+  }
+  acc
 }
 /// #3360: the summary of what each published function keeps of its
 /// arguments, for an importer that calls it inside a region. A function of

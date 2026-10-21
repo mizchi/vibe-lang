@@ -68,9 +68,12 @@ import @vibe/compiler/core {
   env_type_defs,
   env_value_binding,
   env_with_show_wrapper_facts,
+  erased_kinds_marker,
+  erased_kinds_marker_target,
   find_typedef,
   is_alias_constructor,
   is_builtin_iterator_serialized_boundary_path,
+  is_erased_kinds_marker,
   is_exception_effect_name,
   resolve_builtin
 }
@@ -1760,6 +1763,15 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
   } else {
     ()
   }
+  // #3601: the kinds other than the message each of the dependency's
+  // functions lets out through its erased row, read once.
+  let dep_erased_kind_rows: Array[(String, Type)] = []
+  for entry in dep_bindings {
+    let (bname, bty) = entry
+    if is_erased_kinds_marker(bname) {
+      Array::push(dep_erased_kind_rows, (erased_kinds_marker_target(bname), bty))
+    }
+  }
   engine_builtin_shadow_diagnostics_into(dep_bindings, resolved, unresolved)
   let dep_traits = view.traits
   let dep_upper_slots = view.upper_slots
@@ -1946,7 +1958,16 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
           None => with_params
         }
       }
-      bind_names(j + 1, with_retention)
+      // #3601: and what its erased row lets out beyond the message.
+      let with_erased_kinds = if Array::length(dep_erased_kind_rows) == 0 {
+        with_retention
+      } else {
+        match env_lookup_flat(dep_erased_kind_rows, name) {
+          Some(t) => env_bind(with_retention, erased_kinds_marker(bound_name), t),
+          None => with_retention
+        }
+      }
+      bind_names(j + 1, with_erased_kinds)
     }
   }
   for item in declaration_names {
