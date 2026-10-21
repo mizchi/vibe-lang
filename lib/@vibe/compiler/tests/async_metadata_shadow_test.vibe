@@ -1,0 +1,47 @@
+import @vibe/compiler/core {
+  Expr, Pat, TypeEnv, TypeExpr
+}
+import @vibe/compiler/checker/effects {
+  afe_bind_params, afe_bind_value, afe_binds_local, afe_expr_head_name, afe_mask_pat_binders, afe_match_arm_locals, afe_no_locals
+}
+
+test "payload shadowing keeps the outer branch and hides old annotations" {
+  let outer = afe_bind_params(afe_no_locals(), [
+    ("it", Some(TyApp("Option", [TyName("Outer")])))
+  ], EnvEmpty)
+  let pattern = PCtor("Some", [PBind("child")])
+  let original = afe_match_arm_locals(EIdent("it", -1), pattern, EnvEmpty, outer)
+  assert(afe_expr_head_name(EIdent("child", -1), EnvEmpty, original) == Some("Outer"))
+  let masked = afe_mask_pat_binders(outer, PBind("it"))
+  assert(afe_binds_local(masked, "it"))
+  let inner = afe_match_arm_locals(EIdent("it", -1), pattern, EnvEmpty, masked)
+  assert(afe_expr_head_name(EIdent("child", -1), EnvEmpty, inner) == None)
+  let other = afe_mask_pat_binders(outer, PBind("it_more"))
+  let preserved = afe_match_arm_locals(EIdent("it", -1), pattern, EnvEmpty, other)
+  assert(afe_expr_head_name(EIdent("child", -1), EnvEmpty, preserved) == Some("Outer"))
+  let masked_again = afe_mask_pat_binders(masked, PBind("it"))
+  let still_hidden = afe_match_arm_locals(EIdent("it", -1), pattern, EnvEmpty, masked_again)
+  assert(afe_expr_head_name(EIdent("child", -1), EnvEmpty, still_hidden) == None)
+}
+
+test "rebinding removes tuple array and callback-return metadata only for that name" {
+  let value = ERecord("Outer", [], [])
+  let tuple = afe_bind_value(afe_no_locals(), "it", ETuple([value]), EnvEmpty)
+  let field = EDot(EIdent("it", -1), "0", -1, -1)
+  assert(afe_expr_head_name(field, EnvEmpty, tuple) == Some("Outer"))
+  let tuple_masked = afe_mask_pat_binders(tuple, PBind("it"))
+  assert(afe_expr_head_name(field, EnvEmpty, tuple_masked) == None)
+  let array = afe_bind_value(afe_no_locals(), "it", EArray([value]), EnvEmpty)
+  let read = ECall(EIdent("Array::get", -1), [EIdent("it", -1), EInt(0)], -1, [])
+  assert(afe_expr_head_name(read, EnvEmpty, array) == Some("Outer"))
+  let array_masked = afe_bind_value(array, "it", EInt(0), EnvEmpty)
+  assert(afe_expr_head_name(read, EnvEmpty, array_masked) == None)
+  let callback = EFn([], [], [], Some(TyName("Outer")), None, value)
+  let callable = afe_bind_value(afe_no_locals(), "it", callback, EnvEmpty)
+  let call = ECall(EIdent("it", -1), [], -1, [])
+  assert(afe_expr_head_name(call, EnvEmpty, callable) == Some("Outer"))
+  let unknown = EFn([], [], [], None, None, EInt(0))
+  let callback_masked = afe_bind_value(callable, "it", unknown, EnvEmpty)
+  assert(afe_expr_head_name(call, EnvEmpty, callback_masked) == None)
+  assert(afe_expr_head_name(call, EnvEmpty, callable) == Some("Outer"))
+}

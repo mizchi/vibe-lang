@@ -1866,11 +1866,30 @@ export fn effect_inst_labels(row: Option[String]) -> Array[(String, Int)] {
   out
 }
 
+// These raw types cannot reach a function row in effect_inst_value_check.
+// Keep the aggregate and function paths conservative; substitutions are still
+// applied by the callers that previously applied them.
+fn effect_inst_leaf_slot(ty: Type) -> Bool {
+  match ty {
+    CtFn(_, _, _) => false,
+    CtTuple(items) => Array::length(items) == 0,
+    CtArray(_) => false,
+    CtOption(_) => false,
+    CtRecord(fields) => Array::length(fields) == 0,
+    CtNamed(_, args) => Array::length(args) == 0,
+    CtApplied(_, _) => false,
+    _ => true
+  }
+}
+
 /// #3341: compare the instantiations a function value records
 /// (`#einst:` labels) with the row of the parameter it is passed to. The
 /// parameter's row is read in the callee's scope (`callback_row_instantiations`),
 /// so a formal it names is the type this call gives it.
 export fn effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, callee: Option[(Type, Type)], callee_name: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  if effect_inst_leaf_slot(param_ty) {
+    return s
+  }
   let subject = if String::length(callee_name) > 0 {
     "the function passed to `\{callee_name}`"
   } else {
@@ -1961,6 +1980,9 @@ export fn effect_inst_rowless_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, s
 /// parameter's row is read in the receiver's struct
 /// (`struct_field_row_instantiations`).
 export fn field_effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, recv: Type, field: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  if effect_inst_leaf_slot(param_ty) {
+    return s
+  }
   effect_inst_value_check(env, arg, arg_ty, param_ty, s, (row: String) -> Array[Type] {
     struct_field_row_instantiations(row, recv, defs)
   }, "the function passed to `\{field}`", "the parameter's row", defs, errors, 1)
@@ -1970,6 +1992,9 @@ export fn field_effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, par
 /// literal's field, after the value's type is checked against the field's:
 /// both the field's row and a row the field's type does not name.
 export fn struct_field_effect_inst_check(env: TypeEnv, value: Expr, value_ty: Type, field_ty: Type, s: Subst, recv: Type, field: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  if effect_inst_leaf_slot(field_ty) {
+    return s
+  }
   effect_inst_value_check(env, value, value_ty, field_ty, s, (row: String) -> Array[Type] {
     struct_field_row_instantiations(row, recv, defs)
   }, "the function stored in `\{field}`", "the field's row", defs, errors, 0)
@@ -1980,6 +2005,9 @@ export fn struct_field_effect_inst_check(env: TypeEnv, value: Expr, value_ty: Ty
 /// this scope, so only the names it resolves to exactly are read
 /// (`callback_type_exact`).
 export fn effect_inst_annotation_check(env: TypeEnv, value: Expr, value_ty: Type, want_ty: Type, s: Subst, subject: String, slot: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  if effect_inst_leaf_slot(want_ty) {
+    return s
+  }
   effect_inst_value_check(env, value, value_ty, want_ty, s, (row: String) -> Array[Type] {
     if String::contains(row, "$") {
       callback_row_instantiations(row, None, defs)
@@ -1990,6 +2018,9 @@ export fn effect_inst_annotation_check(env: TypeEnv, value: Expr, value_ty: Type
 }
 
 fn effect_inst_value_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, read: (String) -> Array[Type], subject: String, slot: String, defs: Array[TypeDef], errors: Array[String], mode: Int) -> Subst {
+  if effect_inst_leaf_slot(param_ty) {
+    return s
+  }
   match (param_ty, arg_ty) {
     (CtTuple(wants), CtTuple(haves)) => {
       let children = match arg {

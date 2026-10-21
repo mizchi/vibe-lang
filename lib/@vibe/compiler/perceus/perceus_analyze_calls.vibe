@@ -15,6 +15,7 @@ import @vibe/compiler/core {
   TypeExpr,
   borrow_ret_builtin_names,
   bsearch_leftmost,
+  expr_any_node,
   expr_children,
   is_exception_throw_operation,
   sort_perm_by_names,
@@ -1875,44 +1876,62 @@ export fn top_level_scope_refs(scope: Array[Expr]) -> Array[Array[String]] {
   out
 }
 
+fn local_heap_param_candidate(e: Expr) -> Bool {
+  match e {
+    ELet(_, EFn(_, _, params, _, _, _), _, _) => params_have_unannotated(params),
+    ELetRec(_, EFn(_, _, params, _, _, _), _) => params_have_unannotated(params),
+    _ => false
+  }
+}
+
 export fn elaborate_rw(e: Expr, hctx: HeapInferCtx) -> Expr {
+  // Only a directly bound lambda with a missing annotation can change.
+  // Leave the other declarations' immutable trees in place.
+  if expr_any_node(e, local_heap_param_candidate) {
+    elaborate_rw_impl(e, hctx)
+  } else {
+    e
+  }
+}
+
+fn elaborate_rw_impl(e: Expr, hctx: HeapInferCtx) -> Expr {
   match e {
     ELet(n, v, b, soff) => {
-      let v2 = elaborate_rw(v, hctx)
+      let v2 = elaborate_rw_impl(v, hctx)
       let v3 = fill_lambda_params(n, v2, b, hctx)
-      ELet(n, v3, elaborate_rw(b, hctx), soff)
+      ELet(n, v3, elaborate_rw_impl(b, hctx), soff)
     },
     ELetRec(n, v, b) => {
-      let v2 = elaborate_rw(v, hctx)
+      let v2 = elaborate_rw_impl(v, hctx)
       let v3 = fill_lambda_params(n, v2, b, hctx)
-      ELetRec(n, v3, elaborate_rw(b, hctx))
+      ELetRec(n, v3, elaborate_rw_impl(b, hctx))
     },
-    ELetMut(n, v, b, soff) => ELetMut(n, elaborate_rw(v, hctx), elaborate_rw(b, hctx), soff),
-    EAssign(n, v, c, target_off) => EAssign(n, elaborate_rw(v, hctx), elaborate_rw(c, hctx), target_off),
-    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, elaborate_rw(v, hctx), elaborate_rw(c, hctx), target_off),
-    ESeq(a, b) => ESeq(elaborate_rw(a, hctx), elaborate_rw(b, hctx)),
-    EIf(c, t, el) => EIf(elaborate_rw(c, hctx), elaborate_rw(t, hctx), elaborate_rw(el, hctx)),
-    EWhile(c, b) => EWhile(elaborate_rw(c, hctx), elaborate_rw(b, hctx)),
-    EForIn(n, ix, it, b) => EForIn(n, ix, elaborate_rw(it, hctx), elaborate_rw(b, hctx)),
+    ELetMut(n, v, b, soff) => ELetMut(n, elaborate_rw_impl(v, hctx), elaborate_rw_impl(b, hctx), soff),
+    EAssign(n, v, c, target_off) => EAssign(n, elaborate_rw_impl(v, hctx), elaborate_rw_impl(c, hctx), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, elaborate_rw_impl(v, hctx), elaborate_rw_impl(c, hctx), target_off),
+    ESeq(a, b) => ESeq(elaborate_rw_impl(a, hctx), elaborate_rw_impl(b, hctx)),
+    EIf(c, t, el) => EIf(elaborate_rw_impl(c, hctx), elaborate_rw_impl(t, hctx), elaborate_rw_impl(el, hctx)),
+    EWhile(c, b) => EWhile(elaborate_rw_impl(c, hctx), elaborate_rw_impl(b, hctx)),
+    EForIn(n, ix, it, b) => EForIn(n, ix, elaborate_rw_impl(it, hctx), elaborate_rw_impl(b, hctx)),
     EFn(tps, bounds, params, ret, eff, fb) =>
-    EFn(tps, bounds, params, ret, eff, elaborate_rw(fb, hctx)),
+    EFn(tps, bounds, params, ret, eff, elaborate_rw_impl(fb, hctx)),
     ECall(callee, args, off, callee_resolution) => {
       let new_args = Array::slice(args, 0, 0)
       let mut i = 0
       while i < Array::length(args) {
-        Array::push(new_args, elaborate_rw(Array::get(args, i), hctx))
+        Array::push(new_args, elaborate_rw_impl(Array::get(args, i), hctx))
         i = i + 1
       }
-      ECall(elaborate_rw(callee, hctx), new_args, off, callee_resolution)
+      ECall(elaborate_rw_impl(callee, hctx), new_args, off, callee_resolution)
     },
-    EBinOp(op, l, r, boff) => EBinOp(op, elaborate_rw(l, hctx), elaborate_rw(r, hctx), boff),
-    EUnaryOp(op, o) => EUnaryOp(op, elaborate_rw(o, hctx)),
-    EDot(o, f, off, fdoff) => EDot(elaborate_rw(o, hctx), f, off, fdoff),
+    EBinOp(op, l, r, boff) => EBinOp(op, elaborate_rw_impl(l, hctx), elaborate_rw_impl(r, hctx), boff),
+    EUnaryOp(op, o) => EUnaryOp(op, elaborate_rw_impl(o, hctx)),
+    EDot(o, f, off, fdoff) => EDot(elaborate_rw_impl(o, hctx), f, off, fdoff),
     ETuple(xs) => {
       let ys = Array::slice(xs, 0, 0)
       let mut i = 0
       while i < Array::length(xs) {
-        Array::push(ys, elaborate_rw(Array::get(xs, i), hctx))
+        Array::push(ys, elaborate_rw_impl(Array::get(xs, i), hctx))
         i = i + 1
       }
       ETuple(ys)
@@ -1921,7 +1940,7 @@ export fn elaborate_rw(e: Expr, hctx: HeapInferCtx) -> Expr {
       let ys = Array::slice(xs, 0, 0)
       let mut i = 0
       while i < Array::length(xs) {
-        Array::push(ys, elaborate_rw(Array::get(xs, i), hctx))
+        Array::push(ys, elaborate_rw_impl(Array::get(xs, i), hctx))
         i = i + 1
       }
       EArray(ys)
@@ -1931,37 +1950,37 @@ export fn elaborate_rw(e: Expr, hctx: HeapInferCtx) -> Expr {
       let mut i = 0
       while i < Array::length(arms) {
         let (p, ab) = Array::get(arms, i)
-        Array::push(new_arms, (p, elaborate_rw(ab, hctx)))
+        Array::push(new_arms, (p, elaborate_rw_impl(ab, hctx)))
         i = i + 1
       }
-      EMatch(elaborate_rw(s, hctx), new_arms)
+      EMatch(elaborate_rw_impl(s, hctx), new_arms)
     },
     EHandle(b, arms) => {
       let new_arms = Array::slice(arms, 0, 0)
       let mut i = 0
       while i < Array::length(arms) {
         let (p, ab) = Array::get(arms, i)
-        Array::push(new_arms, (p, elaborate_rw(ab, hctx)))
+        Array::push(new_arms, (p, elaborate_rw_impl(ab, hctx)))
         i = i + 1
       }
-      EHandle(elaborate_rw(b, hctx), new_arms)
+      EHandle(elaborate_rw_impl(b, hctx), new_arms)
     },
     ELoop(ps, b) => {
       let new_ps = Array::slice(ps, 0, 0)
       let mut i = 0
       while i < Array::length(ps) {
         let (pn, iv) = Array::get(ps, i)
-        Array::push(new_ps, (pn, elaborate_rw(iv, hctx)))
+        Array::push(new_ps, (pn, elaborate_rw_impl(iv, hctx)))
         i = i + 1
       }
-      ELoop(new_ps, elaborate_rw(b, hctx))
+      ELoop(new_ps, elaborate_rw_impl(b, hctx))
     },
     ERecord(rn, fs, targs) => {
       let new_fs = Array::slice(fs, 0, 0)
       let mut i = 0
       while i < Array::length(fs) {
         let (fn0, fv) = Array::get(fs, i)
-        Array::push(new_fs, (fn0, elaborate_rw(fv, hctx)))
+        Array::push(new_fs, (fn0, elaborate_rw_impl(fv, hctx)))
         i = i + 1
       }
       ERecord(rn, new_fs, targs)
@@ -1971,24 +1990,24 @@ export fn elaborate_rw(e: Expr, hctx: HeapInferCtx) -> Expr {
       let mut i = 0
       while i < Array::length(fs) {
         let (fn0, fv) = Array::get(fs, i)
-        Array::push(new_fs, (fn0, elaborate_rw(fv, hctx)))
+        Array::push(new_fs, (fn0, elaborate_rw_impl(fv, hctx)))
         i = i + 1
       }
       EMap(new_fs)
     },
-    ELabeledArg(l, k, x) => ELabeledArg(l, k, elaborate_rw(x, hctx)),
-    EReturn(x) => EReturn(elaborate_rw(x, hctx)),
-    ESpread(x) => ESpread(elaborate_rw(x, hctx)),
+    ELabeledArg(l, k, x) => ELabeledArg(l, k, elaborate_rw_impl(x, hctx)),
+    EReturn(x) => EReturn(elaborate_rw_impl(x, hctx)),
+    ESpread(x) => ESpread(elaborate_rw_impl(x, hctx)),
     EBreak(o) =>
     match o {
-      Some(x) => EBreak(Some(elaborate_rw(x, hctx))),
+      Some(x) => EBreak(Some(elaborate_rw_impl(x, hctx))),
       None => EBreak(None)
     },
     EContinue(xs) => {
       let ys = Array::slice(xs, 0, 0)
       let mut i = 0
       while i < Array::length(xs) {
-        Array::push(ys, elaborate_rw(Array::get(xs, i), hctx))
+        Array::push(ys, elaborate_rw_impl(Array::get(xs, i), hctx))
         i = i + 1
       }
       EContinue(ys)

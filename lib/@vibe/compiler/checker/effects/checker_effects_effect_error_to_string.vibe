@@ -740,12 +740,83 @@ fn afe_bind_annotation_payloads(locals: AfeLocals, name: String, te: TypeExpr, e
   }
 }
 
+// Compare an internal metadata key without allocating prefix/name joins.
+fn afe_metadata_key_is(key: String, prefix: String, name: String) -> Bool {
+  let start = String::length(prefix)
+  let len = String::length(name)
+  if String::length(key) != start + len || !String::starts_with(key, prefix) {
+    return false
+  }
+  let mut i = 0
+  while i < len {
+    if String::char_code_at(key, start + i) != String::char_code_at(name, i) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn afe_metadata_key_bit(key: String, name: String, wanted: Int) -> Int {
+  if !String::starts_with(key, "__") {
+    return 0
+  }
+  if (wanted&1) != 0 && afe_metadata_key_is(key, "__ctorpay$Some$", name) {
+    1
+  }
+  else if (wanted&2) != 0 && afe_metadata_key_is(key, "__ctorpay$Ok$", name) {
+    2
+  }
+  else if (wanted&4) != 0 && afe_metadata_key_is(key, "__ctorpay$Err$", name) {
+    4
+  }
+  else if (wanted&8) != 0 && afe_metadata_key_is(key, "__tupshape$", name) {
+    8
+  }
+  else if (wanted&16) != 0 && afe_metadata_key_is(key, "__arrelem$", name) {
+    16
+  }
+  else if (wanted&32) != 0 && afe_metadata_key_is(key, "__local_fn_return$", name) {
+    32
+  }
+  else {
+    0
+  }
+}
+
+// Metadata lookup has no TypeEnv fallback. An absent key needs no mask.
+// Inspect only the nearest entry for each key, retaining existing masks and
+// reusing a recorded key when an actual head must be hidden. This bounds the
+// new masks to six even across repeated same-named bindings.
+fn afe_mask_metadata(locals: AfeLocals, name: String, wanted: Int) -> AfeLocals {
+  let mut cur = locals
+  let mut out = locals
+  let mut seen = 0
+  let mut done = false
+  while !done && (seen&wanted) != wanted {
+    match cur {
+      AlNil => done = true,
+      AlBind(key, _, rest) => {
+        let bit = afe_metadata_key_bit(key, name, wanted)
+        if bit != 0 && (seen&bit) == 0 {
+          out = AlMask(key, out)
+          seen = seen|bit
+        } else ()
+        cur = rest
+      },
+      AlMask(key, rest) => {
+        seen = seen|afe_metadata_key_bit(key, name, wanted)
+        cur = rest
+      }
+    }
+  }
+  out
+}
+
 /// A rebinding of `name` without an annotation hides the payload heads an
 /// outer annotated binding of the same name recorded.
 fn afe_clear_annotation_payloads(locals: AfeLocals, name: String) -> AfeLocals {
-  let no_some = afe_bind_local(locals, afe_ctor_payload_key(name, "Some"), None)
-  let no_ok = afe_bind_local(no_some, afe_ctor_payload_key(name, "Ok"), None)
-  afe_bind_local(no_ok, afe_ctor_payload_key(name, "Err"), None)
+  afe_mask_metadata(locals, name, 7)
 }
 
 fn afe_ctor_payload_key(name: String, ctor: String) -> String {
@@ -1183,7 +1254,7 @@ fn afe_bind_shapes(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> 
 /// the one the shapes are added to (`acc`).
 fn afe_bind_shapes_from(acc: AfeLocals, outer: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
   let locals = outer
-  let without = afe_bind_local(afe_bind_local(acc, afe_tuple_shape_key(name), None), afe_array_elem_key(name), None)
+  let without = afe_mask_metadata(acc, name, 24)
   match val {
     ETuple(items) => if Array::length(items) > 0 {
       let parts = array_empty()
@@ -1223,7 +1294,10 @@ fn afe_fn_return_head(val: Expr, env: TypeEnv) -> Option[String] {
 }
 
 fn afe_bind_local_fn_return(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
-  afe_bind_local(locals, afe_local_fn_return_key(name), afe_fn_return_head(val, env))
+  match afe_fn_return_head(val, env) {
+    Some(head) => AlBind(afe_local_fn_return_key(name), head, locals),
+    None => afe_mask_metadata(locals, name, 32)
+  }
 }
 
 export fn afe_bind_value(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
@@ -1345,7 +1419,7 @@ fn afe_match_arm_locals_onto(scrut: Expr, pat: Pat, env: TypeEnv, outer: AfeLoca
 /// match-bound `await` called in a row-free lambda demanded `Async`).
 export fn afe_mask_pat_binders(locals: AfeLocals, pat: Pat) -> AfeLocals {
   match pat {
-    PBind(name) => afe_clear_annotation_payloads(afe_bind_local(afe_bind_local(locals, afe_tuple_shape_key(name), None), name, None), name),
+    PBind(name) => afe_mask_metadata(afe_bind_local(locals, name, None), name, 15),
     PCtor(_, sub) => afe_mask_pats_binders(locals, sub),
     PTuple(items) => afe_mask_pats_binders(locals, items),
     POr(a, b) => afe_mask_pat_binders(afe_mask_pat_binders(locals, a), b),
