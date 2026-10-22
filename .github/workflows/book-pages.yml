@@ -1,7 +1,10 @@
-# Deploy The Vibe Book to GitHub Pages.
+# Deploy The Vibe Book to GitHub Pages, with the talk deck under /slides/.
 #
 # The book generator resolves the current standard-library closure, so the
 # script builds a current stage2 from the pinned seed before compiling it.
+# The deck (playground/slides.html) compiles in the browser with a vibec
+# component built from that same stage2, so it is served from the same
+# artifact: a repository has one Pages site, and /slides/ is its own URL.
 # Deploy only from main so a PR cannot overwrite the live site. PRs still
 # build the artifact so a broken generator fails the PR.
 name: book-pages
@@ -15,6 +18,9 @@ on:
       - "lib/@vibex/book/**"
       - "scripts/vibe_book.sh"
       - "scripts/vibe_book.vibex"
+      - "playground/**"
+      - "scripts/build_playground_compiler.sh"
+      - "scripts/build_vibec.sh"
       - ".github/workflows/book-pages.yml"
   pull_request:
     paths:
@@ -22,6 +28,9 @@ on:
       - "lib/@vibex/book/**"
       - "scripts/vibe_book.sh"
       - "scripts/vibe_book.vibex"
+      - "playground/**"
+      - "scripts/build_playground_compiler.sh"
+      - "scripts/build_vibec.sh"
       - ".github/workflows/book-pages.yml"
   workflow_dispatch:
 
@@ -54,6 +63,31 @@ jobs:
         run: bash scripts/vibe_book.sh
       - name: Require index.html
         run: test -s _build/book/index.html
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+      - name: Build the talk deck
+        # vibe_book.sh just built the newest generation; the deck's in-browser
+        # compiler is built from that stage2, not from the seed.
+        run: |
+          stage2=""
+          for gen in $(ls -td _build/selfhost/generations/*/); do
+            if [ -s "${gen}stage2.wasm" ]; then stage2="$PWD/${gen}stage2.wasm"; break; fi
+          done
+          test -n "$stage2"
+          pnpm --dir playground install --frozen-lockfile
+          PLAYGROUND_STAGE2="$stage2" VITE_BASE=./ VITE_VIBE_BUILD_LABEL="${GITHUB_SHA::7}" \
+            pnpm --dir playground build
+      - name: Place the deck at /slides/
+        # The deck is the page at /slides/; the playground page it is built
+        # alongside is not published here.
+        run: |
+          rm -rf _build/book/slides
+          mkdir -p _build/book/slides
+          cp -R playground/dist/. _build/book/slides/
+          rm _build/book/slides/index.html
+          mv _build/book/slides/slides.html _build/book/slides/index.html
+          test -s _build/book/slides/index.html
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'
         with:
