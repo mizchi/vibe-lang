@@ -133,8 +133,24 @@ export const DEMOS: Record<string, Sample[]> = {
   ]),
 };
 
-// Static code blocks (colourised, not editable). None at the moment.
-export const CODE: Record<string, string> = {};
+// Static code blocks (colourised, not editable).
+export const CODE: Record<string, string> = {
+  // What `vibe new` writes (runtime/vibe, `new`).
+  scaffold: String.raw`
+fn main allows Console {
+  println("42")
+}`,
+};
+
+// Measured: `vibe new hello` then `vibe run main.vibex` in the new project.
+const INSTALL = String.raw`<span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
+<span class="prompt">$</span> . "$HOME/.vibe/env"
+<span class="prompt">$</span> vibe new hello
+<span class="out">created hello (run: vibe run hello/main.vibex)</span>
+<span class="prompt">$</span> cd hello
+<span class="prompt">$</span> vibe run main.vibex
+<span class="out">42</span>
+<span class="prompt">$</span> vibe check main.vibex      <span class="out"># 空出力なら clean</span>`;
 
 // d2 figures, laid out by TALA from ./figures/*.d2 (`pnpm figures` re-renders
 // them; the SVGs are committed so a build needs no d2).
@@ -185,6 +201,19 @@ export const SLIDES: Slide[] = [
   },
   {
     html: `
+      <h2><span class="kicker">Getting started</span>インストールして動かす</h2>
+      <pre class="code console">${INSTALL}</pre>
+      <div class="cols wide-left">
+        <ul class="small">
+          <li>今はソースからビルドするので <code>git</code>、<code>cargo</code>、Node.js が要る (数分)。リリース後は <code>| bash -s -- --version latest</code> でビルド済みを取ってくる</li>
+          <li><code>vibe new</code> は <code>main.vibex</code>、<code>index.vpkg</code> (マニフェスト)、<code>.gitignore</code> を作る。<code>.vibex</code> は <code>fn main</code> を 1 つ持つ実行用のファイル</li>
+        </ul>
+        <pre class="code" data-src="scaffold"></pre>
+      </div>`,
+    notes: "0:15 (25s) インストールは 1 行。vibe new で main.vibex ができて、vibe run で動く。ドキュメントは The Vibe Book",
+  },
+  {
+    html: `
       <h2><span class="kicker">In numbers</span>数字</h2>
       <div class="stats">
         <div class="stat"><div class="big-number">260 日</div><div class="label">開発期間 (2026-02-03 〜)</div></div>
@@ -197,7 +226,7 @@ export const SLIDES: Slide[] = [
         <div class="stat"><div class="big-number">19 分</div><div class="label">PR 1 回の CI (30 ジョブ、合計 130 分)</div></div>
       </div>
       <p class="source">2026-10-21 時点の main。行数は生成物を除く。stdlib は別に 8.0 万行、Lean 1.0 万行、Rust 1.2 万行。CI はこの発表資料の PR の実測で、stage2 はキャッシュから。</p>`,
-    notes: "0:15 (30s) 数字。260 日で 6,934 コミット、コンパイラ 34 万行、テスト 25 万行。CI は 1 回 19 分",
+    notes: "0:40 (30s) 数字。260 日で 6,934 コミット、コンパイラ 34 万行、テスト 25 万行。CI は 1 回 19 分",
   },
   {
     html: `
@@ -215,7 +244,7 @@ export const SLIDES: Slide[] = [
         <span class="chip">Deno (permissions)</span>
         <span class="chip muted">必須: v128 / js-string / WASI p3 / exnref</span>
       </div>`,
-    notes: "0:45 (25s) 図の左から。コンパイラ自身が wasm。ホストが import を外付けするので CLI、ブラウザ、Node で同じ wasm が動く",
+    notes: "1:10 (25s) 図の左から。コンパイラ自身が wasm。ホストが import を外付けするので CLI、ブラウザ、Node で同じ wasm が動く",
   },
   {
     html: `
@@ -239,7 +268,7 @@ export const SLIDES: Slide[] = [
         </div>
       </div>
       <p class="quote">設計で迷ったときのプロンプトは<strong>「迷ったら wasm / wasi のプリミティブとして自然な方」</strong></p>`,
-    notes: "1:10 (30s) wasm first。SIMD、ブラウザで開発、component model",
+    notes: "1:35 (30s) wasm first。SIMD、ブラウザで開発、component model",
   },
   {
     html: `
@@ -261,12 +290,12 @@ export const SLIDES: Slide[] = [
           </ul>
         </div>
       </div>`,
-    notes: "1:40 (25s) AI first。黙って間違うのが一番まずい。LLM の評価ループは気づけない",
+    notes: "2:05 (25s) AI first。黙って間違うのが一番まずい。LLM の評価ループは気づけない",
   },
   {
     className: "section",
     html: `<h1><small>FEATURES</small>型に書くもの</h1><p>effect system の基本は Koka と同じ。ここからは vibe で決めたことと、その実物</p>`,
-    notes: "2:05 (5s) effect system の説明はしない。vibe で決めたことだけ。サンプルは数字キーで切り替え",
+    notes: "2:30 (5s) effect system の説明はしない。vibe で決めたことだけ。サンプルは数字キーで切り替え",
   },
   {
     html: `
@@ -280,13 +309,13 @@ export const SLIDES: Slide[] = [
         </ul>
         ${figure("effects")}
       </div>`,
-    notes: "2:10 (35s) 図。代数的エフェクトは handle で消える、権限は main の allows まで残ってホストの import になる。resume は one-shot の末尾だけ",
+    notes: "2:35 (35s) 図。代数的エフェクトは handle で消える、権限は main の allows まで残ってホストの import になる。resume は one-shot の末尾だけ",
   },
   {
     html: `
       <h2><span class="kicker">Effects</span>サンプル</h2>
       <div class="demo" data-demo="effects"></div>`,
-    notes: "2:45 (45s) 1 resume、2 handler 差し替え。7〜a は拒否される例。a は payload パターンが黙って全部マッチするのを止めてる",
+    notes: "3:10 (45s) 1 resume、2 handler 差し替え。7〜a は拒否される例。a は payload パターンが黙って全部マッチするのを止めてる",
   },
   {
     html: `
@@ -296,13 +325,13 @@ export const SLIDES: Slide[] = [
         <li>使わない権限のコードは wasm に入らない。ホストは import を外付けするだけ</li>
         <li>省略できる権限は <code>perform?</code> で受けて、無いときの分岐を書く (Effects サンプルの 5)</li>
       </ul>`,
-    notes: "3:30 (30s) 権限はビルド時に一度だけ決める。--deny-http なら Http のコードは DCE で消える。足りなければ main の前で止める",
+    notes: "3:55 (30s) 権限はビルド時に一度だけ決める。--deny-http なら Http のコードは DCE で消える。足りなければ main の前で止める",
   },
   {
     html: `
       <h2><span class="kicker">Allocation</span><code>#zero_alloc</code> (OxCaml から移植) と <code>region</code></h2>
       <div class="demo" data-demo="memory"></div>`,
-    notes: "4:00 (40s) 1 → 2 で配列リテラルが拒否される。3 は呼んだ先。4 region は数えない、5 strict で拒否、6 外に返すと拒否",
+    notes: "4:25 (40s) 1 → 2 で配列リテラルが拒否される。3 は呼んだ先。4 region は数えない、5 strict で拒否、6 外に返すと拒否",
   },
   {
     html: `
@@ -312,13 +341,13 @@ export const SLIDES: Slide[] = [
         <li>スレッドはまだ無い。1 スレッドの協調スケジューラで、順番は毎回同じ</li>
         <li>でも shared-nothing の検査 (<code>Send</code> と region) は今から効かせてる。wasm threads が来たら並列に載せ替える</li>
       </ul>`,
-    notes: "4:40 (25s) スレッドは無い。協調スケジューラ。Send と region の検査は先に入れてある",
+    notes: "5:05 (25s) スレッドは無い。協調スケジューラ。Send と region の検査は先に入れてある",
   },
   {
     html: `
       <h2><span class="kicker">Concurrency</span>サンプル</h2>
       <div class="demo" data-demo="concurrency"></div>`,
-    notes: "5:05 (40s) 1 spawn/join の順番、5 止まるタスク、7 と 8 は拒否",
+    notes: "5:30 (40s) 1 spawn/join の順番、5 止まるタスク、7 と 8 は拒否",
   },
   {
     html: `
@@ -328,7 +357,7 @@ export const SLIDES: Slide[] = [
         <li>import はファイルスコープで明示。書いたものだけがスコープに出てくる</li>
       </ul>
       <div class="demo" data-demo="syntax"></div>`,
-    notes: "5:45 (35s) メソッド呼び出しを捨てた理由。1 パイプ、7 バイト文字列、8 63bit Int",
+    notes: "6:10 (35s) メソッド呼び出しを捨てた理由。1 パイプ、7 バイト文字列、8 63bit Int",
   },
   {
     html: `
@@ -339,12 +368,12 @@ export const SLIDES: Slide[] = [
         <li><code>vibe grep</code> は AST パターンを型や effect row で絞れる。<code>vibe mutate</code> でテストの効き目も測る</li>
         <li>CLI で答えられないと、LLM が毎回 grep で探し回る。見つけたらその場で CLI を直す</li>
       </ul>`,
-    notes: "6:20 (30s) LSP じゃなくて CLI。空出力なら clean。答えられない質問は CLI を直す",
+    notes: "6:45 (30s) LSP じゃなくて CLI。空出力なら clean。答えられない質問は CLI を直す",
   },
   {
     className: "section",
     html: `<h1><small>HOW</small>作り方</h1>`,
-    notes: "6:50 (5s) 作り方",
+    notes: "7:15 (5s) 作り方",
   },
   {
     html: `
@@ -369,7 +398,7 @@ export const SLIDES: Slide[] = [
           </table>
         </div>
       </div>`,
-    notes: "6:55 (35s) MoonBit でプロトタイプ → 部分ごとにセルフホスト。Lean をオラクルに。「バグを潰して」",
+    notes: "7:20 (35s) MoonBit でプロトタイプ → 部分ごとにセルフホスト。Lean をオラクルに。「バグを潰して」",
   },
   {
     html: `
@@ -380,12 +409,12 @@ export const SLIDES: Slide[] = [
         <li>罠。<code>vibe test</code> は既定だと seed がコンパイルする。コンパイラを直したのに、直す前のコンパイラで検証してた</li>
       </ul>
       <p class="quote small">seed の自己ビルドは pass 3 の時点で 3.89GiB、<strong>wasm32 の 4GiB</strong> まで残り 119MB。そこに 44 行足したら超えた (#3439)</p>`,
-    notes: "7:30 (35s) seed → stage3。vibe test が seed で答える罠。4GiB の話",
+    notes: "7:55 (35s) seed → stage3。vibe test が seed で答える罠。4GiB の話",
   },
   {
     className: "section",
     html: `<h1><small>PAIN</small>大変だったこと</h1><p>バグの優先度は <strong>黙って間違う (P0) &gt; 落ちる (P1) &gt; 機能追加 (P2)</strong></p>`,
-    notes: "8:05 (10s) 大変だったこと。優先度は 黙って間違う > 落ちる > 機能追加。まず数字",
+    notes: "8:30 (10s) 大変だったこと。優先度は 黙って間違う > 落ちる > 機能追加。まず数字",
   },
   {
     html: `
@@ -417,7 +446,7 @@ export const SLIDES: Slide[] = [
         </div>
       </div>
       ${SOURCE}`,
-    notes: "8:15 (35s) bug 841 件を修正の場所で数えた。件数は checker と codegen、黙って間違う率は desugar",
+    notes: "8:40 (35s) bug 841 件を修正の場所で数えた。件数は checker と codegen、黙って間違う率は desugar",
   },
   {
     html: `
@@ -465,7 +494,7 @@ export const SLIDES: Slide[] = [
         <li>権限まわりはほぼバグらなかった</li>
       </ul>
       ${SOURCE}`,
-    notes: "8:50 (35s) バグが多いのは組み合わせ。クロージャ × effect row × ジェネリクス。== と String は P0 率も高い。権限まわりはほぼバグらなかった",
+    notes: "9:15 (35s) バグが多いのは組み合わせ。クロージャ × effect row × ジェネリクス。== と String は P0 率も高い。権限まわりはほぼバグらなかった",
   },
   {
     html: `
@@ -488,7 +517,7 @@ export const SLIDES: Slide[] = [
         </div>
       </div>
       <p class="small">Int のオーバーフローの結果が linear と wasm-gc で違ってた (#1877)</p>`,
-    notes: "9:25 (35s) ベンチが揺れるので fuel に切り替えた。ヒープ 953MB。FBIP は効いたけど壁時計は変わらず",
+    notes: "9:50 (35s) ベンチが揺れるので fuel に切り替えた。ヒープ 953MB。FBIP は効いたけど壁時計は変わらず",
   },
   {
     html: `
@@ -513,7 +542,7 @@ export const SLIDES: Slide[] = [
           </ul>
         </div>
       </div>`,
-    notes: "10:00 (45s) 安いモデルだとバグの生成 > 修正。interning なし、実行時アサーション、replay 方式のハンドラ",
+    notes: "10:25 (45s) 安いモデルだとバグの生成 > 修正。interning なし、実行時アサーション、replay 方式のハンドラ",
   },
   {
     html: `
@@ -523,13 +552,13 @@ export const SLIDES: Slide[] = [
         <li>ジェネリクス越しの <code>1.5 == 1.5</code> が <strong>false</strong>。<code>Double</code> の箱を比べてた</li>
       </ul>
       ${figure("equality", "wide")}`,
-    notes: "10:45 (30s) == が黙って間違ってた。型を見ない desugar を通ると lowering に型が届かない。今は届かなければビルドエラー",
+    notes: "11:10 (30s) == が黙って間違ってた。型を見ない desugar を通ると lowering に型が届かない。今は届かなければビルドエラー",
   },
   {
     html: `
       <h2><span class="kicker">Pain 3</span><code>==</code> の今</h2>
       <div class="demo" data-demo="equality"></div>`,
-    notes: "11:15 (20s) 1 と 2 は今は true。3 は答える代わりに注釈を求める",
+    notes: "11:40 (20s) 1 と 2 は今は true。3 は答える代わりに注釈を求める",
   },
   {
     html: `
@@ -539,7 +568,7 @@ export const SLIDES: Slide[] = [
         <li>wasm-gc の ref 型の配列には <code>v128</code> が置けない。なので codegen は linear と wasm-gc の両対応で、これを続けるのがしんどい</li>
         <li>よかったのは wasmtime の guest profiler と fuel。気になってる言語は bend-lang</li>
       </ul>`,
-    notes: "11:35 (35s) wasm に足りないもの。スレッド、wasm-gc の配列に v128 が無いので両対応、WIT のジェネリクス",
+    notes: "12:00 (35s) wasm に足りないもの。スレッド、wasm-gc の配列に v128 が無いので両対応、WIT のジェネリクス",
   },
   {
     className: "closing",
@@ -550,6 +579,6 @@ export const SLIDES: Slide[] = [
         <li>皆さんも自作言語をセルフホストしましょう</li>
       </ul>
       <p class="muted">github.com/mizchi/vibe-lang · The Vibe Book: mizchi.github.io/vibe-lang</p>`,
-    notes: "12:10 (30s) 0.1.0 触ってください。皆さんもセルフホストしましょう",
+    notes: "12:35 (30s) 0.1.0 触ってください。皆さんもセルフホストしましょう",
   },
 ];
