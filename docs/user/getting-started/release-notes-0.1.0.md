@@ -22,9 +22,9 @@ a list of fixes. The work once prepared under the name
 ## Changes in 0.1.0-rc.4
 
 This candidate carries the fixes from the pre-release bug hunt (#3535). Each
-finding below type-checked cleanly before and then ran a wrong program,
-trapped, or read the wrong memory; each is now refused at compile time with
-the edit that fixes it, or answers correctly.
+fix below closes a program that type-checked cleanly and then ran wrong,
+trapped, or read the wrong memory. Such a program is now refused at compile
+time with the edit that fixes it, or it answers correctly.
 
 - **Handles and closures.** A throwing closure is refused when it leaves
   the `Exception` handle that catches it as the handle's value, either
@@ -56,10 +56,15 @@ the edit that fixes it, or answers correctly.
 - **Derives and generics.** Fixes to `derive (Show)` / `derive (Eq)`, impl
   overlap detection, generic renderers, and effect dictionaries for
   shadowing callbacks (#3551, #3587, #3592, #3597).
-- **The stable surface.** `Float`, `derive (Hash)` keys, trait impls beyond
-  one module, higher-kinded parameters, kinded arms over a row-polymorphic
-  callee, and first-class `resume` are moved out of the 0.1.0 freeze. See
-  [stable-surface §6.1](../reference/stable-surface.md).
+
+The hunt also triaged surfaces that are not part of these fixes. Some showed
+wrong answers that could not be fixed safely before 0.1.0; others gave no
+wrong answer but rest on machinery the hunt could not vouch for. They are
+moved out of the 0.1.0 freeze rather than repaired: `Float`, `derive (Hash)`
+keys, trait impls beyond one module, higher-kinded parameters, kinded arms
+over a row-polymorphic callee, and first-class `resume`. See
+[stable-surface §6.1](../reference/stable-surface.md) for the reason given
+for each.
 
 ## Changes in 0.1.0-rc.3
 
