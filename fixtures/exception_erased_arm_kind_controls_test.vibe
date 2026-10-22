@@ -79,3 +79,44 @@ test "a rethrown message reaches an outer erased arm as a String" {
   } with { Exception::Throw(m) => m }
   inspect(r, "boom")
 }
+
+test "a recursive local closure over messages reads the message" {
+  let rec count = (n: Int) -> Int with Exception {
+    if n > 0 {
+      count(n - 1)
+    } else {
+      throw("done")
+    }
+  }
+  let r = handle {
+    count(2)
+  } with { Exception::Throw(m) => String::length(m) }
+  inspect(r, "4")
+}
+
+test "a recursive local closure's kind reaches a kinded arm" {
+  let rec count = (n: Int) -> Int with Exception {
+    if n > 0 {
+      count(n - 1)
+    } else {
+      throw(7)
+    }
+  }
+  let r = handle {
+    count(2)
+  } with { Exception[Int]::Throw(c) => c }
+  inspect(r, "7")
+}
+
+fn run_cb(f: () -> Int with e) -> Int with e {
+  f()
+}
+
+test "a message-only literal through a row-variable callback reads the message" {
+  let r = handle {
+    run_cb(() -> Int with Exception {
+      throw("boom")
+    })
+  } with { Exception::Throw(m) => String::length(m) }
+  inspect(r, "4")
+}

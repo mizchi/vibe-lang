@@ -141,10 +141,17 @@ import ./checker_effects_throw_payload_kind.vibe {
 /// `callee_lets_erased_out`) through a parameter typed with the erased row is
 /// walked under `erased_slot_declared`; any other literal argument carries
 /// `erased_arg_kept_marker`, so its own erased row is not judged as a value
-/// the module keeps.
+/// the module keeps. A literal for a parameter whose row variable the
+/// callee's own row lets out (`run[e](f: () -> Int with e) -> Int with e`)
+/// carries no marker either: the call fills that variable from the literal's
+/// row, so an erased row there is a value its callers read.
 export fn closure_arg_declared(arg: Expr, declared: Array[String], callee: String, lexical_callee: Option[Array[String]], index: Int) -> Array[String] {
   let base0 = closure_arg_declared_base(arg, declared, callee, lexical_callee, index)
-  let base = if under_erased_slot(base0) {
+  let lets_var_out = match lexical_callee {
+    Some(_) => false,
+    None => callee_lets_param_var_out(callee, index)
+  }
+  let base = if under_erased_slot(base0) || lets_var_out {
     base0
   } else {
     labels_union(base0, [erased_arg_kept_marker()])
@@ -493,6 +500,29 @@ export fn callee_lets_erased_out(callee: String) -> Bool {
   match MutMap::get(Array::get(callee_sig_index, 0), callee) {
     Some(si) => row_has_erased_exception(Array::get(callee_sig_effs, si)),
     None => true
+  }
+}
+
+/// #3605 review: does the named callee `callee`'s own row name a row variable
+/// that its parameter `index`'s function row carries?
+fn callee_lets_param_var_out(callee: String, index: Int) -> Bool {
+  match MutMap::get(Array::get(callee_sig_index, 0), callee) {
+    Some(si) => {
+      let prows = Array::get(callee_sig_param_effs, si)
+      if index < Array::length(prows) {
+        let own = Array::get(callee_sig_effs, si)
+        let mut out = false
+        for l in Array::get(prows, index) {
+          if label_is_effect_var(l) && str_list_has(own, l) {
+            out = true
+          }
+        }
+        out
+      } else {
+        false
+      }
+    },
+    None => false
   }
 }
 
