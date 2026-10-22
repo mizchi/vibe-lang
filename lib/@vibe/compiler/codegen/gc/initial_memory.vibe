@@ -1,0 +1,24 @@
+// heap_start is the aligned end of static data and, when present, the region
+// control words, save table and arena. Active data must fit at instantiation;
+// the allocator's memory.grow check cannot repair an undersized initial memory.
+export fn gc_initial_memory_pages(heap_start: Int, with_region: Bool) -> Int with Exception {
+  // Offsets and the heap global use emit_i32_const's signed LEB encoder.
+  // Positive values at or above 2 GiB are not valid i32 immediates there.
+  // Refuse before emitting invalid Wasm rather than accepting a wasm32 address
+  // the current encoder cannot represent. This also bounds page arithmetic.
+  if heap_start < 0 || heap_start >= 2147483648 {
+    throw("reduce static string data: the wasm-gc static layout exceeds the supported signed i32 address range")
+  }
+  let pages = (heap_start + 65535) / 65536
+  let nonempty_pages = if pages == 0 {
+    1
+  } else {
+    pages
+  }
+  // Preserve the region lane's existing spare page above its reserved arena.
+  if with_region {
+    nonempty_pages + 1
+  } else {
+    nonempty_pages
+  }
+}

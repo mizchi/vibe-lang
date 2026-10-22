@@ -1,0 +1,114 @@
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+import @vibe/compiler/codegen/gc {
+  gc_initial_memory_pages
+}
+import @vibe/process {
+  process_sh_capture
+}
+import @vibex/wasm_parser {
+  module_data, module_globals, module_memories
+}
+
+fn gc_memory_payload(n0: Int) -> String {
+  let builder = StringBuilder::new()
+  let mut n = n0
+  let mut chunk = "x"
+  while n > 0 {
+    if n % 2 == 1 {
+      StringBuilder::push(builder, chunk)
+    }
+    n = n / 2
+    if n > 0 {
+      chunk = chunk + chunk
+    }
+  }
+  StringBuilder::freeze(builder)
+}
+
+fn gc_memory_probe(n: Int, with_region: Bool) -> Unit with Exception + Fs + Process + Console {
+  let payload = gc_memory_payload(n)
+  let region_body = if with_region {
+    "region r { let xs = MutList::empty(r); MutList::push(xs, 73); assert(MutList::length(xs) == 1) }; "
+  } else {
+    ""
+  }
+  let source = "fn main() -> Unit allows Console { " + region_body + "println(\"" + payload + "\"); println(\"ok\") }"
+  let wasm = compile_source_gc_only(source, "main")
+  let memories = module_memories(wasm)
+  assert(Array::length(memories) == 1)
+  let (pages, _) = Array::get(memories, 0)
+  let segments = module_data(wasm)
+  assert(Array::length(segments) > 0)
+  let mut max_end = 0
+  for segment in segments {
+    let (mode, memory, opcode, offset, _, size) = segment
+    // Every segment emitted by this backend is active on memory zero.
+    assert((mode == 0 || mode == 2) && memory == 0 && opcode == 65)
+    assert(offset >= 0 && offset + size <= pages * 65536)
+    if offset + size > max_end {
+      max_end = offset + size
+    }
+  }
+  let globals = module_globals(wasm)
+  let (value_type, mutability, opcode, heap_start) = Array::get(globals, 0)
+  assert(value_type == 127 && mutability == 1 && opcode == 65)
+  let aligned_end = ((max_end + 7) / 8) * 8
+  if with_region {
+    // Control words + 64 save slots, then the existing 256 KiB arena.
+    assert(heap_start == aligned_end + 8 + 64 * 4 + 262144)
+    assert(pages == (heap_start + 65535) / 65536 + 1)
+  } else {
+    // Payload, the shared newline, and "ok", starting at byte 64.
+    assert(max_end == n + 67)
+    assert(heap_start == aligned_end)
+    assert(pages == (aligned_end + 65535) / 65536)
+  }
+  Fs::mkdir_p("_build/vibe_test")
+  let label = if with_region {
+    "region_"
+  } else {
+    "plain_"
+  }
+  let path = "_build/vibe_test/gc_initial_memory_" + label + Int::to_string(n) + ".wasm"
+  Fs::write_bytes(path, wasm)
+  let result = process_sh_capture("bash scripts/run_wasm_vibe_host_runner.sh " + path)
+  inspect(result.exit_code, content = "0")
+  assert(result.stdout == payload + "\nok\n")
+}
+
+test "GC static data covers both sides of the first and second page boundaries" {
+  // Actual data ends: 67, 65535, 65536, 65537, 131072, 131073.
+  for n in [0, 65468, 65469, 65470, 131005, 131006] {
+    gc_memory_probe(n, false)
+  }
+}
+
+test "GC static data retains the region control and arena reservation" {
+  gc_memory_probe(0, true)
+  gc_memory_probe(131006, true)
+}
+
+test "GC initial memory rounds page ends and preserves the region spare page" {
+  let plain: Array[Int] = []
+  let region_pages: Array[Int] = []
+  for end in [0, 64, 65535, 65536, 65537, 131072, 131073, 2147483640] {
+    Array::push(plain, gc_initial_memory_pages(end, false))
+    Array::push(region_pages, gc_initial_memory_pages(end, true))
+  }
+  inspect(plain, content = "[1, 1, 1, 1, 2, 2, 3, 32768]")
+  inspect(region_pages, content = "[2, 2, 2, 2, 3, 3, 4, 32769]")
+}
+
+test "GC initial memory refuses static addresses the i32 encoder cannot emit" {
+  for end in [-1, 2147483648, 4294967295, 4294967296] {
+    for with_region in [false, true] {
+      let message = handle {
+        let _ = gc_initial_memory_pages(end, with_region)
+        "accepted"
+      } with { Exception::Throw(message) => message }
+      inspect(message, content = "reduce static string data: the wasm-gc static layout exceeds the supported signed i32 address range")
+    }
+  }
+}
