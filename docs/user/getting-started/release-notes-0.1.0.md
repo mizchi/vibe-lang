@@ -5,8 +5,8 @@
 > release *is*, as opposed to what changed in it, is
 > [spec/0-1.md](../../spec/0-1.md).
 
-The previous stable release is `v0.0.1` (2026-04-14); `v0.1.0-rc.1`,
-`v0.1.0-rc.2` and `v0.1.0-rc.3` were published as pre-releases. This candidate also fixes
+The previous stable release is `v0.0.1` (2026-04-14); `v0.1.0-rc.1` to
+`v0.1.0-rc.4` were published as pre-releases. `0.1.0-rc.3` also fixed
 RC ownership of store views, local closure captures, recursive closures, and
 closures returned from `Option` payloads (#3215, #3203, #3110, #3240); makes
 qualified constructor patterns through
@@ -18,6 +18,58 @@ Between `v0.0.1` and 0.1.0 the language was
 rewritten in itself, so these notes describe a different compiler rather than
 a list of fixes. The work once prepared under the name
 "0.3.0 GA" is part of this release.
+
+## Changes in 0.1.0-rc.4
+
+This candidate carries the fixes from the pre-release bug hunt (#3535). Each
+fix below closes a program that type-checked cleanly and then ran wrong,
+trapped, or read the wrong memory. Such a program is now refused at compile
+time with the edit that fixes it, or it answers correctly.
+
+- **Handles and closures.** A throwing closure is refused when it leaves
+  the `Exception` handle that catches it as the handle's value, either
+  directly or held in a struct or enum field. The function that builds the
+  closure may be declared in the same module or imported, reached as a
+  method or through an alias, chosen by a top-level `if`, row-polymorphic,
+  or a parameter or call result whose body the check cannot read (#3540,
+  #3584, #3593, #3596, #3599). A closure performing two handled effects is
+  refused when it leaves through a parameter that names only one (#3585).
+  One route is still not seen: a call that stores the closure in state it
+  captured, or in a module-level binding. See
+  [stable-surface §6.2](../reference/stable-surface.md).
+- **Effect rows.** A struct's row parameter carries a real row argument,
+  including through nested structs and generic signatures, so a generic
+  callee that reaches its row only through a struct is charged to its
+  caller (#3589). A declared row variable authorizes only itself, so
+  `with Console + e` no longer drops `Console` (#3595). Rows reach callers
+  through projections, owned handles and generic arguments (#3587).
+- **Exceptions.** An erased `Exception::Throw(m)` arm that reads `m` now
+  catches only `String` messages, and a bare `with Exception` row carries
+  the non-`String` kinds its body throws to its callers (#3541). Two routes
+  remain open and are listed in the stable surface, §6.2 (#3601).
+- **Indexing.** An element access at an index of 2^32 or more, or a
+  non-empty range reaching past the end, now traps as out of bounds instead
+  of wrapping into range. This covers `Array::get` / `set` / `xs[i]`,
+  `String::byte_at` and `Bytes::get` / `set` / `slice` / `blit` / `fill`, on
+  every backend (#3543). Operations that already clamped keep doing so: an
+  empty range answers empty wherever it starts, `Array::slice` and
+  `String::substring` clamp an end past the length, and `Array::truncate`
+  never grows the array.
+- **The wasm-gc lane.** String comparison by content, dropping unused
+  builtins before emission, and memory sizing for static data (#3600,
+  #3602, #3603).
+- **Derives and generics.** Fixes to `derive (Show)` / `derive (Eq)`, impl
+  overlap detection, generic renderers, and effect dictionaries for
+  shadowing callbacks (#3551, #3587, #3592, #3597).
+
+The hunt also triaged surfaces that are not part of these fixes. Some showed
+wrong answers that could not be fixed safely before 0.1.0; others gave no
+wrong answer but rest on machinery the hunt could not vouch for. They are
+moved out of the 0.1.0 freeze rather than repaired: `Float`, `derive (Hash)`
+keys, trait impls beyond one module, higher-kinded parameters, kinded arms
+over a row-polymorphic callee, and first-class `resume`. See
+[stable-surface §6.1](../reference/stable-surface.md) for the reason given
+for each.
 
 ## Changes in 0.1.0-rc.3
 
