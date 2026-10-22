@@ -1,0 +1,133 @@
+import @vibe/compiler/entry/source_compile/wasi_only {
+  compile_source_wasi_only_rc
+}
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_generated_stmts_gc_only, compile_source_gc_only
+}
+import @vibe/compiler/core {
+  apply_export_renames_stmts
+}
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+import @vibe/process {
+  process_sh_capture
+}
+
+fn grouped_handler_run(label: String, source: String, expected: String) -> Unit with Exception + Fs + Process + Console {
+  Fs::mkdir_p("_build/vibe_test/grouped_handlers")
+  for lane in ["rc", "gc"] {
+    let first = if lane == "gc" {
+      compile_source_gc_only(source, "main")
+    } else {
+      compile_source_wasi_only_rc(source, "main")
+    }
+    let second = if lane == "gc" {
+      compile_source_gc_only(source, "main")
+    } else {
+      compile_source_wasi_only_rc(source, "main")
+    }
+    assert(Bytes::compare(first, second) == 0)
+    let path = "_build/vibe_test/grouped_handlers/" + label + "-" + lane + ".wasm"
+    Fs::write_bytes(path, first)
+    let result = process_sh_capture("runtime/viberun/target/release/viberun " + path)
+    if result.exit_code != 0 || result.stdout != expected {
+      throw(label + ":" + lane + ": expected " + expected + ", got " + result.stdout + result.stderr)
+    }
+  }
+  ()
+}
+
+test "grouped handler arms execute once per operation" {
+  grouped_handler_run("arm-state-once", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console {\n let state: Array[Int] = [0]\n let r = handle { b_guarded() + b_guarded() + perform A::Op() } with {\n  A::Op() => { Array::set(state, 0, Array::get(state, 0) + 1); resume(100) };\n  B::Op() => { Array::set(state, 0, Array::get(state, 0) + 10); resume(5) }\n }\n println(\"\\{r}\"); println(\"\\{Array::get(state, 0)}\")\n}\n", "112\n21\n")
+}
+
+test "grouped handlers thread each dictionary through callback parameters" {
+  grouped_handler_run("callback-parameter", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn work() -> Int with A + B { b_guarded() + perform A::Op() }\nfn run_both(f: () -> Int with A + B) -> Int { handle { f() } with { A::Op() => resume(100); B::Op() => resume(5) } }\nfn main() -> Unit allows Console { let r = run_both(work); println(\"\\{r}\") }\n", "106\n")
+}
+
+test "Exception arms may precede user effect arms" {
+  grouped_handler_run("exception-first", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console { let r = handle { b_guarded() + perform A::Op() } with { Exception[String]::Throw(m) => -1; A::Op() => resume(100); B::Op() => resume(5) }; println(\"\\{r}\") }\n", "106\n")
+}
+
+test "grouped handlers preserve generic effect payloads" {
+  grouped_handler_run("generic-effect", "effect A[T] { Op(T) -> T }\neffect B { Op() -> Int }\nfn a_guarded() -> Int with A[Int] { perform A::Op(3) }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console {\n let r = handle { a_guarded() + b_guarded() } with { A::Op(n) => resume(n + 100); B::Op() => resume(5) }\n println(\"\\{r}\")\n}\n", "109\n")
+}
+
+test "grouped handlers migrate callees for both effects" {
+  grouped_handler_run("grouped-both-calls", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn a_guarded() -> Int with A { perform A::Op() + 2 }\nfn main() -> Unit allows Console { let r = handle { a_guarded() + b_guarded() } with { A::Op() => resume(100); B::Op() => resume(5) }; println(\"\\{r}\") }\n", "108\n")
+}
+
+test "grouped handlers migrate a callee of the second effect" {
+  grouped_handler_run("grouped-original", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console { let r = handle { let x = b_guarded(); x + perform A::Op() } with { A::Op() => resume(100); B::Op() => resume(5) }; println(\"\\{r}\") }\n", "106\n")
+}
+
+test "grouped handlers do not depend on arm order" {
+  grouped_handler_run("grouped-reversed", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console { let r = handle { let x = b_guarded(); x + perform A::Op() } with { B::Op() => resume(5); A::Op() => resume(100) }; println(\"\\{r}\") }\n", "106\n")
+}
+
+test "sibling arms use the original outer handler context" {
+  grouped_handler_run("grouped-sibling-contexts", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console {\n let x = handle { handle { perform A::Op() } with { A::Op() => resume(perform B::Op() + 1); B::Op() => resume(5) } } with { B::Op() => resume(20) }\n let y = handle { handle { perform B::Op() } with { A::Op() => resume(100); B::Op() => resume(perform A::Op() + 2) } } with { A::Op() => resume(30) }\n println(\"\\{x}\"); println(\"\\{y}\")\n}\n", "21\n32\n")
+}
+
+test "ordinary row closures use their callers handler context" {
+  grouped_handler_run("hoisted-sibling-contexts", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console {\n let x = handle {\n  let armA = () -> Int with B { perform B::Op() + 1 }\n  handle { handle { perform A::Op() } with { A::Op() => resume(armA()) } } with { B::Op() => resume(5) }\n } with { B::Op() => resume(20) }\n let y = handle {\n  let armB = () -> Int with A { perform A::Op() + 2 }\n  handle { handle { perform B::Op() } with { A::Op() => resume(100) } } with { B::Op() => resume(armB()) }\n } with { A::Op() => resume(30) }\n println(\"\\{x}\"); println(\"\\{y}\")\n}\n", "6\n32\n")
+}
+
+test "grouped handlers preserve an unused Exception arm" {
+  grouped_handler_run("mixed-exception", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console { let r = handle { if false { throw(\"bad\"); 0 } else { b_guarded() + perform A::Op() } } with { A::Op() => resume(100); B::Op() => resume(5); Exception[String]::Throw(m) => -1 }; println(\"\\{r}\") }\n", "106\n")
+}
+
+test "grouped handlers preserve a reached Exception arm" {
+  grouped_handler_run("mixed-exception-reached", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console { let r = handle { let a = perform A::Op(); let b = b_guarded(); if a + b > 0 { throw(\"bad\"); 0 } else { 0 } } with { A::Op() => resume(100); B::Op() => resume(5); Exception[String]::Throw(m) => -1 }; println(\"\\{r}\") }\n", "-1\n")
+}
+
+test "grouped dictionaries use declaration order with distinct signatures" {
+  grouped_handler_run("multi-operation", "effect A { Num(Int) -> Int; Text(String) -> String }\neffect B { Op() -> Int }\nfn num() -> Int with A { perform A::Num(3) }\nfn text() -> String with A { perform A::Text(\"x\") }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console {\n let r = handle { println(text()); num() + b_guarded() } with { A::Text(s) => resume(\"ok:\" + s); B::Op() => resume(5); A::Num(n) => resume(n + 100) }\n println(\"\\{r}\") }\n", "ok:x\n109\n")
+}
+
+test "nested single effect handlers retain their ordinary result" {
+  grouped_handler_run("nested-equivalent", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console { let r = handle { handle { let x = b_guarded(); x + perform A::Op() } with { A::Op() => resume(100) } } with { B::Op() => resume(5) }; println(\"\\{r}\") }\n", "106\n")
+}
+
+test "nested grouped handlers shadow the same outer effects" {
+  grouped_handler_run("nested-mixed-same-effects", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console { let r = handle {\n let inner = handle { b_guarded() + perform A::Op() } with { A::Op() => resume(100); B::Op() => resume(5) }\n inner + b_guarded() + perform A::Op()\n } with { A::Op() => resume(1000); B::Op() => resume(50) }; println(\"\\{r}\") }\n", "1157\n")
+}
+
+test "nested single effect handlers cover inner arm effects" {
+  grouped_handler_run("nested-sibling-contexts", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console {\n let x = handle { handle { handle { perform A::Op() } with { A::Op() => resume(perform B::Op() + 1) } } with { B::Op() => resume(5) } } with { B::Op() => resume(20) }\n let y = handle { handle { handle { perform B::Op() } with { A::Op() => resume(100) } } with { B::Op() => resume(perform A::Op() + 2) } } with { A::Op() => resume(30) }\n println(\"\\{x}\"); println(\"\\{y}\")\n}\n", "6\n32\n")
+}
+
+test "callee calls inside sibling arms use their outer dictionaries" {
+  grouped_handler_run("sibling-callee-contexts", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn a_guarded() -> Int with A { perform A::Op() + 2 }\nfn main() -> Unit allows Console {\n let x = handle { handle { perform A::Op() } with { A::Op() => resume(b_guarded() + 1); B::Op() => resume(5) } } with { B::Op() => resume(20) }\n let y = handle { handle { perform B::Op() } with { A::Op() => resume(100); B::Op() => resume(a_guarded() + 2) } } with { A::Op() => resume(30) }\n println(\"\\{x}\"); println(\"\\{y}\") }\n", "22\n34\n")
+}
+
+test "grouped handlers migrate three effect dictionaries" {
+  grouped_handler_run("three-effects", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\neffect C { Op() -> Int }\nfn c_guarded() -> Int with C { perform C::Op() + 2 }\nfn main() -> Unit allows Console { let r = handle { perform A::Op() + b_guarded() + c_guarded() } with { B::Op() => resume(20); A::Op() => resume(100); C::Op() => resume(3) }; println(\"\\{r}\") }\n", "126\n")
+}
+
+test "a vacuous first effect does not erase another live effect" {
+  grouped_handler_run("vacuous-first", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console { let r = handle { b_guarded() } with { A::Op() => resume(100); B::Op() => resume(5) }; println(\"\\{r}\") }\n", "6\n")
+}
+
+test "a grouped dictionary binding cannot capture a generated AST identifier" {
+  let source = "effect A { Op() -> Int } effect B { Op() -> Int } let sentinel = 7; fn b_guarded() -> Int with B { perform B::Op() + 1 } fn main() -> Unit allows Console { let r = handle { b_guarded() + perform A::Op() + sentinel } with { A::Op() => resume(100); B::Op() => resume(5) }; println(\"\\{r}\") }"
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
+  let renamed = apply_export_renames_stmts(stmts, [("sentinel", "$edp_group_A")])
+  let bytes = compile_generated_stmts_gc_only(renamed, "main")
+  Fs::mkdir_p("_build/vibe_test/grouped_handlers")
+  let path = "_build/vibe_test/grouped_handlers/generated-collision.wasm"
+  Fs::write_bytes(path, bytes)
+  let result = process_sh_capture("runtime/viberun/target/release/viberun " + path)
+  inspect(result.exit_code, content = "0")
+  inspect(result.stdout, content = "113\n")
+}
+
+test "issue 3583 retains an outer typed Exception handler" {
+  grouped_handler_run("exact-issue-3583", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn b_guarded() -> Int with B { perform B::Op() + 1 }\nfn main() -> Unit allows Console {\n  let r = handle {\n    handle { let x = b_guarded(); x + perform A::Op() } with {\n      A::Op() => resume(100);\n      B::Op() => resume(5)\n    }\n  } with { Exception[String]::Throw(m) => { println(\"outer caught \\{m}\"); -1 } }\n  println(\"r=\\{r}\")\n}\n", "r=106\n")
+}
+
+test "independent grouped handlers support opposite arm orders" {
+  grouped_handler_run("opposite-group-orders", "effect A { Op() -> Int }\neffect B { Op() -> Int }\nfn a_guarded() -> Int with A { perform A::Op() }\nfn b_guarded() -> Int with B { perform B::Op() }\nfn main() -> Unit allows Console {\n let x = handle {\n  handle { a_guarded() } with {\n   A::Op() => resume(perform B::Op() + 1);\n   B::Op() => resume(5)\n  }\n } with { B::Op() => resume(20) }\n let y = handle {\n  handle { b_guarded() } with {\n   B::Op() => resume(perform A::Op() + 2);\n   A::Op() => resume(100)\n  }\n } with { A::Op() => resume(30) }\n println(\"\\{x}\"); println(\"\\{y}\")\n}\n", "21\n32\n")
+}

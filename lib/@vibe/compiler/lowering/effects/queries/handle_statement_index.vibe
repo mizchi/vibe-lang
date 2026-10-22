@@ -10,31 +10,34 @@ import ./queries.vibe {
 
 fn edp_index_handle_expr(expr: Expr, statement: Int, index: Array[(String, Array[Int])]) -> Unit {
   match expr {
-    EHandle(_, arms) => if Array::length(arms) > 0 {
-      let (pat, _) = Array::get(arms, 0)
-      let (effect, _) = edp_split_qualified(edp_pat_qname(pat))
-      match effect {
-        Some(name) => {
-          let mut found = false
-          let mut i = 0
-          while i < Array::length(index) && !found {
-            let (key, statements) = Array::get(index, i)
-            if key == name {
-              let n = Array::length(statements)
-              if n == 0 || Array::get(statements, n - 1) != statement {
-                Array::push(statements, statement)
+    EHandle(_, arms) => {
+      for arm in arms {
+        let (pat, _) = arm
+        let (effect, _) = edp_split_qualified(edp_pat_qname(pat))
+        match effect {
+          Some(name) => {
+            let mut found = false
+            let mut i = 0
+            while i < Array::length(index) && !found {
+              let (key, statements) = Array::get(index, i)
+              if key == name {
+                let n = Array::length(statements)
+                if n == 0 || Array::get(statements, n - 1) != statement {
+                  Array::push(statements, statement)
+                } else ()
+                found = true
               } else ()
-              found = true
+              i = i + 1
+            }
+            if !found {
+              Array::push(index, (name, [statement]))
             } else ()
-            i = i + 1
-          }
-          if !found {
-            Array::push(index, (name, [statement]))
-          } else ()
-        },
-        None => ()
+          },
+          None => ()
+        }
       }
-    } else (),
+      ()
+    },
     _ => ()
   }
   let mark = expr_children_push(expr)
@@ -47,7 +50,7 @@ fn edp_index_handle_expr(expr: Expr, statement: Int, index: Array[(String, Array
   expr_children_pop(mark)
 }
 
-/// Statement candidates for every first-arm effect label, in source order.
+/// Statement candidates for every handled effect label, in source order.
 /// This reads the same five statement forms and expression descendants as
 /// RQHandlesEffect. It stores ordinals rather than mutable expression values.
 /// Reuse requires stable statement order and rewrites that never introduce a
