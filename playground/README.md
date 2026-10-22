@@ -28,6 +28,10 @@ require other host capabilities need an appropriate browser host adapter.
 compiler as the playground, so every live demo compiles in the tab. Open
 `/slides.html` under `pnpm dev`, or after `pnpm build` with `pnpm exec vite preview`.
 
+The `book-pages` workflow publishes the deck next to The Vibe Book, at
+`/slides/` of the Pages site (https://mizchi.github.io/vibe-lang/slides/), with
+its compiler built from the same stage2 as the book.
+
 - `→` / `Space` / `PageDown` next, `←` / `PageUp` previous, `Home` / `End`.
 - `r` compiles and runs the demo on the current slide; `⌘/Ctrl + Enter` does
   the same inside an editor, and `Esc` returns focus to the deck.
