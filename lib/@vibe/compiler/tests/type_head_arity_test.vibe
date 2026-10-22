@@ -192,13 +192,13 @@ test "the legal applied spellings of compiler-owned heads are accepted" {
 /// where it is declared.
 test "a program struct spelled like a shipped region-first head is refused" {
   let src = "struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nfn as_str(g: TaskGroup) -> String {\n  g.first\n}\n"
-  inspect(collect_all_diagnostics_for_path("main.vibe", src), "[rename this struct or its type parameters `rg` and `e`: `TaskGroup[rg, e]` is spelled like `@vibe/concurrent`'s own `TaskGroup`, whose region and row a call supplies, so a `TaskGroup` written without them would leave this struct's `rg` and `e` unbound and its fields readable at any type]")
+  inspect(collect_all_diagnostics_for_path("main.vibe", src), "[rename this struct or its type parameters `rg` and `e`: `TaskGroup[rg, e]` is spelled like `@vibe/concurrent`'s own `TaskGroup`, whose region and row a call supplies, so a `TaskGroup` written without them would leave this struct's `rg` and `e` unbound and its fields readable at any type, line 7:5-10: write `TaskGroup[rg, e]` with its region and row to reach `first` (`fn f[rg, e](x: TaskGroup[rg, e])`), or use `TaskGroup`'s functions instead: a `TaskGroup` written without them leaves the field's type unbound here, so `first` could be read or written at any type]")
 }
 
 /// The applied spelling of a program `TaskHandle[rg, e, T]`.
 test "a program TaskHandle spelled like the shipped one is refused" {
   let src = "struct TaskHandle[rg, e, T] {\n  tag: rg;\n  v: T\n}\n\nfn tag_of(h: TaskHandle[Int]) -> String {\n  h.tag\n}\n"
-  inspect(collect_all_diagnostics_for_path("main.vibe", src), "[rename this struct or its type parameters `rg` and `e`: `TaskHandle[rg, e, T]` is spelled like `@vibe/concurrent`'s own `TaskHandle`, whose region and row a call supplies, so a `TaskHandle` written without them would leave this struct's `rg` and `e` unbound and its fields readable at any type]")
+  inspect(collect_all_diagnostics_for_path("main.vibe", src), "[rename this struct or its type parameters `rg` and `e`: `TaskHandle[rg, e, T]` is spelled like `@vibe/concurrent`'s own `TaskHandle`, whose region and row a call supplies, so a `TaskHandle` written without them would leave this struct's `rg` and `e` unbound and its fields readable at any type, line 7:5-8: write `TaskHandle[rg, e, T]` with its region and row to reach `tag` (`fn f[rg, e, T](x: TaskHandle[rg, e, T])`), or use `TaskHandle`'s functions instead: a `TaskHandle` written without them leaves the field's type unbound here, so `tag` could be read or written at any type]")
 }
 
 /// The module that ships the declaration may write it.
@@ -234,7 +234,8 @@ test "a program module whose path only ends like the shipped one is refused" {
     "/tmp/p/@vibe/concurrent/experimental/concurrent.vibe"
   ] {
     let got = collect_all_diagnostics_for_path(path, src)
-    let verdict = if Array::length(got) == 1 && String::starts_with(Array::get(got, 0), "rename this struct or its type parameters `rg` and `e`: `TaskGroup[rg, e]`") {
+    // #3572: the field read through the bare spelling is refused as well.
+    let verdict = if Array::length(got) >= 1 && String::starts_with(Array::get(got, 0), "rename this struct or its type parameters `rg` and `e`: `TaskGroup[rg, e]`") {
       "refused"
     } else {
       "\{got}"

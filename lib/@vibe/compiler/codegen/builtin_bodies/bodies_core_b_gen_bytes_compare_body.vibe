@@ -50,6 +50,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i8x16_splat,
   emit_if_i64,
   emit_if_void,
+  emit_index_ge_u32_len,
   emit_local_get,
   emit_local_set,
   emit_local_tee,
@@ -603,22 +604,23 @@ export fn static_str_eq_body() -> Bytes {
 
 export fn gen_str_char_code_at_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: Int) -> Bytes {
   let b = bytebuf_new()
-  // #811: bounds check — idx (untagged, i32-wrapped) must be < length (the
-  // fat pointer's low 32 bits). ge_u catches negative indices too (they wrap
-  // to huge unsigned values). OOB reads previously returned adjacent memory.
+  // #811: bounds check — idx (untagged) must be < length (the fat pointer's
+  // low 32 bits). ge_u catches negative indices too (they are huge unsigned
+  // values). OOB reads previously returned adjacent memory.
   // #2199: before the trap, call __rt_oob_abort with this operation's prefix
   // plus the signed index and the length, so the abort line names the
   // operation and both values. oob_abort_idx < 0 emits the historical
   // bare-trap form (the static twin pins that shape).
+  // #3543: the index is compared in i64 (it used to be i32-wrapped too, so
+  // an index of 2^32 read byte 0).
   emit_local_get(b, 1)
   if enable_rc {
     emit_i64_const(b, 1)
     emit_i64_shr_s(b)
   }
-  emit_i32_wrap_i64(b)
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
-  bytebuf_push(b, 79)
+  emit_index_ge_u32_len(b)
   emit_if_void(b)
   if oob_abort_idx >= 0 {
     emit_i64_const(b, oob_prefix_fat)
@@ -719,16 +721,18 @@ export fn gen_string_ends_with_body(enable_rc: Bool, str_len_idx: Int, str_subst
 }
 
 let static_arr_get_body_bytes: Bytes = Bytes::from_array([
+  // #3543 bounds-check prefix: local.get 1; local.get 0; i32.wrap;
+  // i32.load len; i64.extend_i32_u; i64.ge_u (the index stays i64)
   32,
   1,
-  167,
   32,
   0,
   167,
   40,
   2,
   4,
-  79,
+  173,
+  90,
   4,
   64,
   0,

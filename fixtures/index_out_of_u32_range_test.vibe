@@ -1,0 +1,69 @@
+// #3543: an index, offset or count of 2^32 or more used to be narrowed to
+// i32 before the bounds check, so it wrapped into range: `Array::get(xs,
+// 4294967296)` answered xs[0], `Array::set` overwrote it, and `Bytes::slice(b,
+// 2^32, 2^32 + 2)` answered b[0..2]. The checks now compare in i64.
+//
+// This file pins the side that ANSWERS: the in-range boundary still reads and
+// writes, and the operations defined to clamp or to do nothing keep doing so
+// for a huge argument. The side that must TRAP (Array::get / set / `xs[i]`,
+// String::byte_at, Bytes::get / set / slice / blit at 2^32, and a negative
+// -2^32) is pinned by the early gate row `4e2`, on the linear and gc lanes.
+//
+// `id` keeps every index a runtime value, so no constant folding answers it.
+fn id(x: Int) -> Int {
+  x
+}
+
+test "the last in-range index still reads and writes" {
+  let xs = [10, 20, 30]
+  inspect(Array::get(xs, id(2)), "30")
+  inspect(xs[id(0)], "10")
+  Array::set(xs, id(2), 33)
+  inspect(Array::get(xs, 2), "33")
+  inspect(String::byte_at("abc", id(2)), "99")
+  let b = Bytes::from_array([1, 2, 3])
+  inspect(Bytes::get(b, id(2)), "3")
+  Bytes::set(b, id(0), 9)
+  inspect(Bytes::get(b, 0), "9")
+}
+
+test "a Bytes slice and blit up to the length are whole" {
+  let b = Bytes::from_array([1, 2, 3])
+  inspect(Bytes::length(Bytes::slice(b, id(0), id(3))), "3")
+  inspect(Bytes::get(Bytes::slice(b, id(1), id(3)), 1), "3")
+  inspect(Bytes::length(Bytes::slice(b, id(3), id(3))), "0")
+  let d = Bytes::new()
+  Bytes::blit(d, b, id(1), id(3))
+  inspect(Bytes::length(d), "2")
+  inspect(Bytes::get(d, 0), "2")
+}
+
+test "an empty Bytes range at 2^32 is empty, as it is below" {
+  let b = Bytes::from_array([1, 2, 3])
+  inspect(Bytes::length(Bytes::slice(b, id(4294967296), id(4294967296))), "0")
+  let d = Bytes::new()
+  Bytes::blit(d, b, id(4294967296), id(4294967296))
+  inspect(Bytes::length(d), "0")
+}
+
+test "a slice end of 2^32 or more clamps to the length" {
+  inspect(String::substring("abc", id(1), id(4294967296) + 1), "bc")
+  inspect(Array::length(Array::slice([10, 20, 30], id(1), id(4294967296) + 1)), "2")
+}
+
+test "truncating to 2^32 or more keeps every element" {
+  let xs = [10, 20, 30]
+  Array::truncate(xs, id(4294967296) + 1)
+  inspect(Array::length(xs), "3")
+}
+
+test "Bytes::fill pushes exactly count bytes, and none for a count <= 0" {
+  let d = Bytes::new()
+  Bytes::fill(d, 65, id(2))
+  inspect(Bytes::length(d), "2")
+  // -2^32 + 1 has the low 32 bits of 1: the gc lane pushed one byte.
+  Bytes::fill(d, 65, id(-4294967295))
+  inspect(Bytes::length(d), "2")
+  Bytes::fill(d, 65, id(0))
+  inspect(Bytes::length(d), "2")
+}

@@ -120,9 +120,19 @@ effect Exception[E] {
   the message names the kinded arm. `String` is the payload type measured in
   practice: 715 erased arms bind their payload, and the compiler's own
   sources read it as the message. An opaque payload type would refuse all of
-  them. The kind is not carried at run time, so a non-`String` value thrown
-  through an erased `with Exception` row still reaches this binder.
-  The kinded row and arm are the typed path for such a value.
+  them. The kind is not carried at run time, so an arm that reads its binder
+  may catch only messages (`String`, or a throw of unresolved kind): its
+  body is walked with the enclosing row's exception labels dropped and the
+  erased label covering only those (`erased_reads_marker`), and another kind
+  is refused with the kinded arm as the edit. An arm that leaves its payload
+  unread (`_`, or a name its body never mentions) catches every kind. An
+  erased `with Exception` row carries the kinds its body throws: each kind
+  other than the message that a named function's erased row authorizes is
+  recorded (`erased_row_leaks`), added to the row its callers read, and the
+  module is walked again until nothing new leaks. Not seen (#3541): a function
+  imported from another module (its published row is the written one), and a
+  callback or lambda whose own row is erased. The kinded row and arm are the
+  typed path for such a value.
 - A rethrow from the erased arm records no kind, so it needs the erased row
   (#3541, #3551 review). That covers `throw(m)` and any payload that may carry
   `m`. While the arm body is typed, the checker knows the arm's carrier
@@ -171,7 +181,8 @@ effect Exception[E] {
   or an alias annotated `String`.
 - A handle has **at most one exception arm**: the channel carries no kind and
   only the first arm would be compiled, so two kinded arms side by side are
-  refused. Match on the payload inside one arm, or nest handles.
+  refused. Nest handles, one per kind, or put the kinds in one enum and match
+  on it inside its kinded arm.
 
 The decision is closed exhaustiveness (#1344's "Option A"). An open
 `ExceptionKind` trait, open subclasses and dynamic downcasts are not part of

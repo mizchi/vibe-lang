@@ -1827,8 +1827,9 @@ Rules:
   `handle .. with Exception` nested inside is its own
   catch-all boundary. And a handle may have only ONE exception arm: the
   channel carries no kind and only the first exception arm is compiled, so
-  `Exception[A]::Throw` next to `Exception[B]::Throw` is refused -- match on
-  the payload inside one erased arm, or nest handles.
+  `Exception[A]::Throw` next to `Exception[B]::Throw` is refused -- nest
+  handles, one per kind, or put the kinds in one enum and match on it inside
+  its kinded arm.
 - A kinded arm binds its payload at the kind's type (#2963):
   `Exception[IoError]::Throw(e)` gives `e : IoError`, so `e` can be matched or
   passed on directly, and returning it where the handle produces an `Int` is a
@@ -1840,9 +1841,16 @@ Rules:
   `let n: Int = m`, returning `m` where the handle produces an `Int`) is
   refused with the edit: write ``Exception[Int]::Throw(m)``. Only the kinded
   arm knows a payload of another type. The kind is not carried at run time,
-  so the erased arm cannot check what a callee declared `with Exception`
-  actually threw. Throw a value other than a `String` under a kinded row, and
-  catch it with the kinded arm.
+  so an arm that reads `m` may catch only messages: over a body that raises
+  another kind (`handle { f() } with { Exception::Throw(m) => .. }` with
+  `fn f() -> Int with Exception[Int]`) it is refused with the same edit. A
+  function declared with the erased `with Exception` raises the kinds its body
+  throws, so `fn h() -> Int with Exception { throw(5) }` counts as raising
+  `Exception[Int]` there. An arm that leaves its payload unread
+  (`Exception::Throw(_)`) still catches every kind. Not seen yet (#3541): a
+  function imported from another module, and a callback or lambda with an
+  erased row of its own. Throw a value other than a `String` under a kinded
+  row, and catch it with the kinded arm.
 - A rethrow from the erased arm is a throw of no known kind, not of
   `Exception[String]`. That holds for `throw(m)` and for any payload that
   names `m`, or a name the arm derived from it, when the payload's type could
@@ -2595,7 +2603,10 @@ different, currently nonexistent function.
 `0..length`, and an `end` before `start` gives the empty slice -- nothing traps:
 `"abcdef"[2:10]` is `"cdef"`, `Array::slice([3, 1, 2], -1, 2)` is `[3, 1]`,
 `Array::slice([3, 1, 2], 2, 1)` is `[]`. A single-element read is the opposite:
-`Array::get(xs, -1)` traps with `index -1 out of bounds for length 3`.
+`Array::get(xs, -1)` traps with `index -1 out of bounds for length 3`, and so
+does an index of 2^32 or more, on every lane: the check compares the whole
+`Int`. It used to read only the low 32 bits, so `Array::get(xs, 4294967296)`
+answered `xs[0]` (#3543).
 
 **A shift count saturates at 63** (#2978): `x << n` is `0` and `x >> n` is the
 sign (`0` or `-1`) for any `n >= 63` and for a negative `n`, on every lane. It
@@ -3490,6 +3501,33 @@ takes that row instead (#1451), so its caller supplies the handler and it may
 leave -- when the result is that function type itself. A tuple or other
 composite of function types does not exempt the closures in it: the lowering
 gives the declared row only to a closure that is the result.
+
+A closure can also leave inside the value a call returns, held in a field of
+a declared struct or enum (`Box::{ f: () -> throw(7) }`), where the result's
+type shows only the pure field type. When the handle's value is such a type,
+`vibe check` reads the body of the function the handled call reaches, and
+refuses the handle if that function builds a closure performing what the
+handle discharges (#3584). The function may be declared in the same module or
+imported (#3593), reached as a method (`fac.mk()`), through a top-level or
+local alias (`let g = mk`, annotated or chosen by an `if`, #3596), as a
+literal a top-level binding chooses (`let make = if c { () -> .. } else { ..
+}`), or as a row-polymorphic builder whose row the call fills
+(`forward[e](g: () -> Int with e) -> Box with e`). A callee that names no
+declaration -- a parameter (`fn run(g: () -> Box with Exception[Int])`), a
+binding of a call's result (`let g = pick(3)`), a function-typed field -- has
+no body to read, so when its row names the exception the handle catches and
+its result can hold a function in a declared type's field, that closure is
+taken to throw (#3599). The same routes decide: calling the field closure
+inside the handle and keeping only what it computes is accepted; returning
+the builder's result as the handle's value is refused, with the edit:
+
+```vibe skip
+// Rejected: `g` is a parameter, so the closure in its `Box` may throw
+// after this handle is gone.
+fn run(g: () -> Box with Exception[Int]) -> Box {
+  handle { g() } with { Exception[Int]::Throw(c) => Box::{ f: () -> c } }
+}
+```
 
 ### 補間できるのは Show を持つ型だけ (#1445)
 

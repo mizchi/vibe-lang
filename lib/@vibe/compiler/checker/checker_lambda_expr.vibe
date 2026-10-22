@@ -103,6 +103,7 @@ import ./checker_builtin_arg_head_rest.vibe {
   bind_builtin_arg_var,
   collect_internal_provenance,
   inst_struct_field_ty,
+  owned_head_field_ty,
   param_marker_index,
   type_has_param_marker,
   type_name_prefix
@@ -325,6 +326,8 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
                   fi = fi + 1
                 }
                 if has_field {
+                  // #3572: a write reaches the field as a read does.
+                  let _ = owned_head_field_ty(defs, subst_apply(s, obj_ty), field, CtUnknown, errors, off_marker(tail_expr_off(Array::get(args, 2))))
                   let (val_ty, val_s, val_c) = ce(Array::get(args, 2), env, defs, obj_s, obj_c, throwaway, throwtab)
                   // #829: instantiate a generic field's declared type from the
                   // receiver's type args so the written value is checked against
@@ -1806,7 +1809,7 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
             }
           }
           match find_field(0) {
-            Some(ft) => ft,
+            Some(ft) => owned_head_field_ty(defs, resolved, field, ft, errors, field_read_marker(field, field_off, dot_off)),
             None => {
               Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", sname))), if field_off >= 0 {
                 off_marker_len(field_off, String::length(field))
@@ -1868,7 +1871,7 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
             }
           }
           match find_field_g(0) {
-            Some(ft) => inst_struct_field_ty(ft, gtparams, gargs),
+            Some(ft) => owned_head_field_ty(defs, resolved, field, inst_struct_field_ty(ft, gtparams, gargs), errors, field_read_marker(field, field_off, dot_off)),
             None => {
               Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", gname))), if field_off >= 0 {
                 off_marker_len(field_off, String::length(field))

@@ -1,0 +1,76 @@
+// Structural rendering follows stored values, including implicit Hash renderers.
+type Many[T] = Array[T]
+type Callback = (Int) -> Int
+
+struct Label[T] { text: String } derive (Show)
+struct Phantom { v: Label[Many[Callback]] } derive (Show)
+struct HashLabel[T] { text: String } derive (Hash)
+fn HashLabel::hash_key[T](l: HashLabel[T]) -> String {
+  l.text
+}
+struct HashPhantom { v: HashLabel[Many[Callback]] } derive (Show)
+trait Pick {
+  pick(Self) -> Bool
+}
+impl Pick for Int {
+  pick(n: Int) -> Bool {
+    n == 7
+  }
+}
+fn pick_by[T: Pick](n: T) -> Bool {
+  Pick::pick(n)
+}
+
+struct Keyed[T] { v: T } derive (Hash)
+fn Keyed::hash_key[T](k: Keyed[T]) -> String {
+  "key"
+}
+struct WithKeyed { v: Keyed[Bool] } derive (Show)
+enum Flag[T] {
+  Value(T);
+  Empty
+} derive (Hash)
+fn Flag::hash_key[T](f: Flag[T]) -> String {
+  "flag"
+}
+struct WithFlag { v: Flag[Bool] } derive (Show)
+
+struct Manual[T] { v: T } derive (Hash)
+fn Manual::hash_key[T](m: Manual[T]) -> String {
+  "manual-key"
+}
+fn Manual::to_string[T](m: Manual[T]) -> String {
+  "manual"
+}
+struct WithManual { v: Manual[Bool] } derive (Show)
+enum ManualFlag[T] {
+  M(T)
+} derive (Hash)
+fn ManualFlag::hash_key[T](m: ManualFlag[T]) -> String {
+  "manual-enum-key"
+}
+fn ManualFlag::to_string[T](m: ManualFlag[T]) -> String {
+  "manual-enum"
+}
+struct WithManualFlag { v: ManualFlag[Bool] } derive (Show)
+
+test "a phantom aliased function array requires no renderer" {
+  let label: Label[Many[Callback]] = Label::{ text: "kept" }
+  inspect("\{Phantom::{ v: label }}", content = "Phantom { v: Label { text: kept } }")
+  let hashed: HashLabel[Many[Callback]] = HashLabel::{ text: "kept" }
+  inspect("\{HashPhantom::{ v: hashed }}", content = "HashPhantom { v: HashLabel { text: kept } }")
+}
+
+test "implicit Hash renderers retain concrete struct and enum payload types" {
+  inspect("\{Keyed::{ v: true }}", content = "Keyed { v: true }")
+  inspect("\{Flag::Value(true)}", content = "Value(true)")
+  inspect("\{Keyed::{ v: pick_by(7) }}", content = "Keyed { v: true }")
+  inspect("\{Flag::Value(pick_by(7))}", content = "Value(true)")
+  inspect("\{WithKeyed::{ v: Keyed::{ v: true } }}", content = "WithKeyed { v: Keyed { v: true } }")
+  inspect("\{WithFlag::{ v: Flag::Value(true) }}", content = "WithFlag { v: Value(true) }")
+}
+
+test "a Hash-only handwritten renderer retains its operation" {
+  inspect("\{WithManual::{ v: Manual::{ v: true } }}", content = "WithManual { v: manual }")
+  inspect("\{WithManualFlag::{ v: ManualFlag::M(true) }}", content = "WithManualFlag { v: manual-enum }")
+}

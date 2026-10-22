@@ -1,0 +1,63 @@
+// #3594 controls: a row-polymorphic builder whose field closure calls its
+// argument. Handed a function that does not throw, the closure performs
+// nothing the handle answers and may leave it; one that throws may be
+// called inside the handle. fixtures/typecheck/handle_bound_closure_exception_field_row_var*_reject.vibe
+// hold the refusals.
+import ./modules/handle_bound_closure_row_var_dep.vibe {
+  Box, fallback, forward
+}
+
+struct Cell {
+  f: () -> Int
+}
+
+fn forward_here[e](g: () -> Int with e) -> Cell with e {
+  Cell::{ f: () -> g() }
+}
+
+fn quiet() -> Int {
+  5
+}
+
+fn noisy() -> Int with Exception[Int] {
+  throw(7)
+}
+
+fn pure_here() -> Int {
+  let b = handle {
+    forward_here(quiet)
+  } with { Exception[Int]::Throw(c) => Cell::{ f: () -> c } }
+  let f = b.f
+  f()
+}
+
+fn called_inside_here() -> Int {
+  handle {
+    let b = forward_here(noisy)
+    let f = b.f
+    f()
+  } with { Exception[Int]::Throw(c) => c + 100 }
+}
+
+fn pure_imported() -> Int {
+  let b: Box = handle {
+    forward(quiet)
+  } with { Exception[Int]::Throw(c) => fallback(c) }
+  let f = b.f
+  f()
+}
+
+fn called_inside_imported() -> Int {
+  handle {
+    let b = forward(noisy)
+    let f = b.f
+    f()
+  } with { Exception[Int]::Throw(c) => c + 200 }
+}
+
+test "a row-polymorphic field closure that does not outlive its handler answers" {
+  inspect(pure_here(), content = "5")
+  inspect(called_inside_here(), content = "107")
+  inspect(pure_imported(), content = "5")
+  inspect(called_inside_imported(), content = "207")
+}

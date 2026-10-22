@@ -107,7 +107,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 }
 
 import ./checker_region_retention_arms.vibe {
-  retention_decls, retention_result_items
+  hce_decl_facts, retention_alias_names, retention_decls, retention_is_function_type, retention_result_items
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -229,6 +229,7 @@ fn retention_collect_decls(stmts: Array[Stmt]) -> Unit {
 export fn retention_begin_module(stmts: Array[Stmt]) -> (Array[(String, Expr)], Array[(Expr, String, Bool)], Array[TypeEnv]) {
   let saved = (Array::slice(retention_decls, 0, Array::length(retention_decls)), Array::slice(retention_closures, 0, Array::length(retention_closures)), Array::slice(retention_module_env_cell, 0, Array::length(retention_module_env_cell)))
   Array::truncate(retention_decls, 0)
+  Array::truncate(hce_decl_facts, 0)
   Array::truncate(retention_closures, 0)
   Array::truncate(retention_module_env_cell, 0)
   Array::truncate(retention_arg_lambdas, 0)
@@ -243,6 +244,7 @@ export fn retention_begin_module(stmts: Array[Stmt]) -> (Array[(String, Expr)], 
 export fn retention_end_module(saved: (Array[(String, Expr)], Array[(Expr, String, Bool)], Array[TypeEnv])) -> Unit {
   let (decls, closures, module_env) = saved
   Array::truncate(retention_decls, 0)
+  Array::truncate(hce_decl_facts, 0)
   for d in decls {
     Array::push(retention_decls, d)
   }
@@ -1803,12 +1805,12 @@ export fn retention_bind_param_callee(env: TypeEnv, name: String, callee: String
 
 //# Local bindings
 
-fn retention_marker(name: String) -> String {
+export fn retention_marker(name: String) -> String {
   String::concat("#retain_body:", name)
 }
 
 /// The name a `let` aliases: a bare name, or one under an annotation.
-fn retention_alias_source(val: Expr) -> String {
+export fn retention_alias_source(val: Expr) -> String {
   match val {
     EIdent(src, _) => src,
     ECall(callee, args, _, _) => if Array::length(args) == 1 {
@@ -1830,8 +1832,9 @@ fn retention_alias_source(val: Expr) -> String {
 /// `spawn_caps_marker` does: a closure literal's body (`c:` and its index in
 /// the module's closure table), or the name a function-typed alias stands
 /// for (`a:` and the name, resolved in the alias's own scope when a call
-/// needs it). A later binding of the same name sits in front of the marker
-/// and hides it. Nothing is recorded for any other value.
+/// needs it; `o:` and the names a conditional alias's branches name). A
+/// later binding of the same name sits in front of the marker and hides it.
+/// Nothing is recorded for any other value.
 export fn retention_bind_let(env: TypeEnv, name: String, val: Expr, ty: Type, is_rec: Bool) -> TypeEnv {
   match let_rhs_closure_literal(val) {
     Some(lit) => {
@@ -1841,11 +1844,17 @@ export fn retention_bind_let(env: TypeEnv, name: String, val: Expr, ty: Type, is
     },
     None => if retention_is_function_type(ty) {
       let src = retention_alias_source(val)
-      if src == "" {
-        env
-      } else {
+      let branches = retention_alias_names(val)
+      if src != "" {
         env_bind(env, retention_marker(name), CtNamed(String::concat("a:", src), [
         ]))
+      } else if Array::length(branches) > 0 {
+        // #3596: what a branch names (`if c { mk } else { mk_ok }`), for the
+        // handle-escape check; a call through it is not followed here.
+        env_bind(env, retention_marker(name), CtNamed(String::concat("o:", String::join(branches, ",")), [
+        ]))
+      } else {
+        env
       }
     } else {
       env
@@ -1853,19 +1862,11 @@ export fn retention_bind_let(env: TypeEnv, name: String, val: Expr, ty: Type, is
   }
 }
 
-fn retention_is_function_type(ty: Type) -> Bool {
-  match ty {
-    CtFn(_, _, _) => true,
-    CtForAll(_, _, body) => retention_is_function_type(body),
-    _ => false
-  }
-}
-
 /// 1 when `name` resolves to a binding made inside a body -- a function
 /// body (`__capture_boundary__`) or a top-level statement's value or test
 /// body (`#interp.top.fn`) lies behind it -- 2 when it resolves at module
 /// level, 0 when the chain has no binding of it.
-fn retention_name_scope(env: TypeEnv, name: String) -> Int {
+export fn retention_name_scope(env: TypeEnv, name: String) -> Int {
   let mut cur = env
   let mut found = false
   let mut scope = 0
@@ -1928,7 +1929,7 @@ fn retention_name_scope(env: TypeEnv, name: String) -> Int {
 /// under the binding of `bound_name` that its marker sits in front of. An
 /// alias copies the marker, so the closure's own binding is found by the
 /// marker's payload, not by the name the call spells.
-fn retention_closure_scope(env: TypeEnv, bound_name: String, text: String) -> Option[TypeEnv] {
+export fn retention_closure_scope(env: TypeEnv, bound_name: String, text: String) -> Option[TypeEnv] {
   let marker = retention_marker(bound_name)
   let mut cur = env
   let mut armed = false

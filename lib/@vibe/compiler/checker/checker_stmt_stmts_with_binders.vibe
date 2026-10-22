@@ -57,12 +57,16 @@ import @vibe/compiler/core {
   unify
 }
 
+import ./checker_builtin_arg_head_rest.vibe {
+  repin_row_formal_args
+}
+
 import ./checker_impl_method_signature.vibe {
-  check_impl_method_signature, collect_impl_method_origins, impl_method_origins_of
+  check_impl_method_signature, check_impl_supertrait_method_overlap, collect_impl_method_origins, impl_method_origins_of
 }
 
 import ./checker_closure_capture_row.vibe {
-  quantify_own_rows, tail_expr_off
+  quantify_own_rows, quantify_own_rows_of, tail_expr_off
 }
 
 import ./checker_row_effect_inst.vibe {
@@ -75,6 +79,10 @@ import ./checker_eq_generalized_site.vibe {
 
 import ./checker_region_retention.vibe {
   retention_begin_module, retention_bind_module_summaries, retention_end_module, retention_note_module_env
+}
+
+import ./checker_handle_closure_escape.vibe {
+  hce_bind_module_summaries, hce_deferred_mark, hce_drop_deferred, hce_run_deferred
 }
 
 import ./checker.vibe {
@@ -489,7 +497,11 @@ fn hoist_has_hkt_formal(tparams: Array[String], params: Array[(String, Option[Ty
 /// signatures); an unannotated slot stays `CtUnknown`.
 fn hoisted_scheme_slot(annotation: Option[TypeExpr], tparams: Array[String], vars: Array[Type], defs: Array[TypeDef]) -> Type {
   match annotation {
-    Some(type_expr) => subst_type_params(resolve_type_expr_shadowed(type_expr, defs, tparams), tparams, vars),
+    Some(type_expr) => {
+      let resolved = resolve_type_expr_shadowed(type_expr, defs, tparams)
+      // #3589: as the declaration's own check leaves it (`resolve_tparams_in`).
+      repin_row_formal_args(resolved, subst_type_params(resolved, tparams, vars), defs)
+    },
     _ => CtUnknown
   }
 }
@@ -748,6 +760,50 @@ fn generic_forward_referenced_names(stmts: Array[Stmt], idx: Int) -> Array[Strin
   }
 }
 
+/// #3589: `defs` with the fields of each struct declared in `stmts` from
+/// `start` resolved, for the hoist. A struct's slot holds no fields until its
+/// own statement is checked, so a signature hoisted before it could not tell
+/// which of its parameters are rows (`row_formal_arg_positions`), and a
+/// caller above the declaration was checked against a scheme whose
+/// `Holder[e]` was a type variable unrelated to the row `with e`.
+fn hoist_row_defs(stmts: Array[Stmt], start: Int, defs: Array[TypeDef]) -> Array[TypeDef] {
+  let out: Array[TypeDef] = []
+  let mut i = start
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, field_defs, _, mut_fields, tparams) => if has_row_spelled_formal(tparams) {
+        let fields: Array[(String, Type)] = []
+        for fd in field_defs {
+          let (fname, fte) = fd
+          Array::push(fields, (fname, resolve_type_expr_shadowed(fte, defs, tparams)))
+        }
+        Array::push(out, TDStruct(name, fields, mut_fields, tparams))
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if Array::length(out) == 0 {
+    defs
+  } else {
+    for d in defs {
+      Array::push(out, d)
+    }
+    out
+  }
+}
+
+fn has_row_spelled_formal(tparams: Array[String]) -> Bool {
+  let mut found = false
+  for tp in tparams {
+    let n = type_param_name(tp)
+    if String::length(n) == 1 && String::char_code_at(n, 0) >= 97 && String::char_code_at(n, 0) <= 122 {
+      found = true
+    }
+  }
+  found
+}
+
 fn hoisted_value_type(annotation: Option[TypeExpr], value: Expr, defs: Array[TypeDef], c: Int) -> (Type, Int) {
   match annotation {
     Some(type_expr) => (resolve_type_expr(type_expr, defs), c),
@@ -763,11 +819,12 @@ fn hoisted_value_type(annotation: Option[TypeExpr], value: Expr, defs: Array[Typ
 fn hoist_merged_source_values(stmts: Array[Stmt], start: Int, env: TypeEnv, defs: Array[TypeDef], c: Int) -> (TypeEnv, Int) {
   let mut out = env
   let mut next_c = c
+  let hdefs = hoist_row_defs(stmts, start, defs)
   let mut i = start
   while i < Array::length(stmts) && !(Array::get(stmts, i) is SReExportSourceBoundary(_, _)) {
     match Array::get(stmts, i) {
       SLet(_, _, name, annotation, value) => {
-        let (ty, nc) = hoisted_value_type(annotation, value, defs, next_c)
+        let (ty, nc) = hoisted_value_type(annotation, value, hdefs, next_c)
         next_c = nc
         out = env_bind(out, name, ty)
       },
@@ -1245,6 +1302,9 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   } else {
     None
   }
+  // #3584: the handles whose escape check read a declaration before its
+  // body was checked are asked again at the end of the module.
+  let hce_mark = hce_deferred_mark()
   let completed_decl_error_insert_at = Array::length(errors)
   let observation_checkpoint = checker_observation_checkpoint(capture, role_lane_capture, tytab)
   let root_capture_start = match capture {
@@ -1301,10 +1361,11 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     header_prefix = header_prefix + 1
   }
   let mut hoist_i = idx
+  let hdefs = hoist_row_defs(stmts, idx, defs)
   while hoist_i < Array::length(stmts) {
     match Array::get(stmts, hoist_i) {
       SLet(_, _, hname, hann, hval) => {
-        let (ht, hnc) = hoisted_value_type(hann, hval, defs, cur_c)
+        let (ht, hnc) = hoisted_value_type(hann, hval, hdefs, cur_c)
         Array::push(original_headers, Some(ht))
         cur_c = hnc
         cur_env = env_bind(cur_env, hname, ht)
@@ -1699,7 +1760,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // #3557: a declaration's own `with e` is quantified per call, type
         // parameters or not.
         let bound = match val {
-          EFn(_, _, _, _, _, _) => quantify_own_rows(published),
+          EFn(_, _, _, _, _, _) => quantify_own_rows_of(published, val, env, ns, name),
           _ => published
         }
         let env1 = bind_function_dependency_contracts(env_bind(env, name, bound), name, val)
@@ -2392,6 +2453,9 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           Some(existing_target) => Array::push(errors, String::concat("overlapping impls for `", String::concat(trait_reference_display(trait_name), String::concat("`: existing target `", String::concat(type_to_string(existing_target), String::concat("` overlaps new target `", String::concat(type_to_string(target), "`"))))))),
           None => ()
         }
+        // #3562: the same overlap, for a supertrait's method written in a
+        // subtrait impl.
+        check_impl_supertrait_method_overlap(impl_origins, tparams, trait_name, target_expr, target, env, defs, errors)
         // A generic impl `impl [T] Trait for C[T]` (type parameters present) is
         // registered as `EnvTraitImplGen` so trait resolution can match the
         // family `C[..]` against a concrete `C[K]`. A plain impl stays a
@@ -2550,7 +2614,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
                   }
                   // #3557: see the non-recursive arm.
                   let bound = match value {
-                    EFn(_, _, _, _, _, _) => quantify_own_rows(published),
+                    EFn(_, _, _, _, _, _) => quantify_own_rows_of(published, value, cur_env, cur_s, name),
                     _ => published
                   }
                   cur_env = bind_function_dependency_contracts(env_bind(cur_env, name, bound), name, value)
@@ -2639,6 +2703,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
       let recheck_errors = array_empty()
       let recheck_c = next_type_def_binder_id(recheck_binders, c)
       restore_checker_observation(observation_checkpoint, capture, role_lane_capture, tytab)
+      hce_drop_deferred(hce_mark)
       let (rechecked_env, rechecked_s, rechecked_c) = check_stmts_with_binders(raw_stmts, i, env, recheck_defs, recheck_binders, local_defs_start, SubstEmpty, recheck_c, recheck_errors, tytab, statement_parent_path, capture, role_lane_capture, imports_already_projected, false)
       // First-pass statement diagnostics may have judged a compiler-owned
       // spelling before a nested declaration claimed it. Replace that whole
@@ -2661,7 +2726,11 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   // modules that import it, found while this module's tables are in place.
   let final_env = match retention_saved {
     Some(saved) => {
-      let summarized = retention_bind_module_summaries(stmts, cur_env, defs, cur_s, cur_c, check_expr_capture)
+      hce_run_deferred(hce_mark, cur_s, errors)
+      let retained = retention_bind_module_summaries(stmts, cur_env, defs, cur_s, cur_c, check_expr_capture)
+      // #3593: and which of them return a throwing closure in a field.
+      let summarized = hce_bind_module_summaries(stmts, retained, defs, cur_s)
+      hce_drop_deferred(hce_mark)
       retention_end_module(saved)
       summarized
     },

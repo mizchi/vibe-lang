@@ -62,8 +62,9 @@ value becomes the value of the whole `handle` — that is why `safe` is
 `-1` and `fine` is `25`. There is no `resume` in an `Exception` arm.
 
 Written without a type argument, `Exception` is erased: it accepts any
-`Exception[E]`, and its payload arrives as a string. When you want the
-error type preserved, write `Exception[E]` — see
+`Exception[E]`. An erased arm that reads its payload gets it as a string,
+so the checker lets it catch only strings; `Exception::Throw(_)` catches
+anything. When you want the error type preserved, write `Exception[E]` — see
 [the exception effect](../../docs/internal/design/exception-effect.md).
 
 ## Declaring your own effect

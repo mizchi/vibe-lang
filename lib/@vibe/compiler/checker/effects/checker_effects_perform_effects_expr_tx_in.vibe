@@ -9,6 +9,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  compiler_owned_type_arity,
   env_cache_read_snapshot,
   env_lookup,
   expr_child_at,
@@ -130,6 +131,8 @@ import ./checker_effects_throw_payload_kind.vibe {
   collect_handle_effects,
   effect_name_of_op,
   entry_block_display_name,
+  erased_arm_read_binder,
+  erased_reads_marker,
   exception_effect_labels,
   instantiate_callee_label,
   instantiate_callee_label_marked,
@@ -963,9 +966,59 @@ export fn build_param_overlay(params: Array[(String, Option[TypeExpr])], fn_name
     } else {
       ()
     }
+    // #3589: a row variable passed to a struct parameter's type
+    // (`h: Holder[q]`) is this signature's own, like a callback's `with q`:
+    // a call through `h.run` runs it, so the body is charged it.
+    let row_args = no_str_labels()
+    match ptype {
+      Some(te) => type_arg_row_vars_into(te, row_args),
+      None => ()
+    }
+    if Array::length(row_args) > 0 {
+      Array::push(names, String::concat(row_arg_owner_prefix(), base_name))
+      Array::push(effs, row_args)
+    }
     i = i + 1
   }
   (names, effs)
+}
+
+/// The overlay entry under which a struct parameter's row variables are
+/// recorded (`build_param_overlay`). The `#` keeps every lookup by name and
+/// every walk over callbacks away from it; only `overlay_owns_row_var` reads
+/// it.
+fn row_arg_owner_prefix() -> String {
+  "#rowarg:"
+}
+
+/// The row variables `te` passes as a type argument (`Holder[q]`), outside
+/// a compiler-owned head (`TaskGroup[rg, e]`), whose row slot keeps its own
+/// handling.
+fn type_arg_row_vars_into(te: TypeExpr, out: Array[String]) -> Unit {
+  match te {
+    TyApp(head, args) => {
+      let owned = match compiler_owned_type_arity(head) {
+        Some(_) => true,
+        None => false
+      }
+      for a in args {
+        match a {
+          TyName(n) => if !owned && label_is_effect_var(n) && !str_labels_contain(out, n) {
+            Array::push(out, n)
+          },
+          _ => type_arg_row_vars_into(a, out)
+        }
+      }
+      ()
+    },
+    TyTuple(items) => {
+      for a in items {
+        type_arg_row_vars_into(a, out)
+      }
+      ()
+    },
+    _ => ()
+  }
 }
 
 /// A `let apply: [T](f: (T) -> T with e, x: T) -> T = (f, x) -> { f(x) }`
@@ -1085,7 +1138,9 @@ fn overlay_owns_row_var(ov_names: Array[String], ov_effs: Array[Array[String]], 
   let mut i = 0
   while i < Array::length(ov_names) && i < Array::length(ov_effs) && !found {
     let n = Array::get(ov_names, i)
-    if !String::starts_with(n, "#") && str_labels_contain(Array::get(ov_effs, i), v) {
+    if String::starts_with(n, row_arg_owner_prefix()) && str_labels_contain(Array::get(ov_effs, i), v) {
+      found = true
+    } else if !String::starts_with(n, "#") && str_labels_contain(Array::get(ov_effs, i), v) {
       match overlay_alias_target(ov_names, ov_effs, n) {
         Some(_) => (),
         None => found = true
@@ -1826,7 +1881,20 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
             kinded_handle_marker()
           ]), labels_union(kinded_pinned_row_var_labels(declared, ov_names, ov_effs), kinded_handle_owner_labels()))
         } else if Array::length(exc_arms) > 0 {
-          labels_union(labels_without_exception_family_marker(declared), discharged)
+          // #3541: an erased arm that reads its binder reads it as the thrown
+          // message, a `String`, and the kind is not carried at run time. So
+          // its body may raise only messages: the enclosing row's exception
+          // labels are dropped (the arm catches those kinds too) and the
+          // erased label covers `String` and unresolved kinds only. An arm
+          // that leaves its payload unread catches every kind.
+          let read_binder = erased_arm_read_binder(arms)
+          if String::length(read_binder) > 0 {
+            labels_union(labels_union(labels_without_exception_family(declared), discharged), [
+              erased_reads_marker(read_binder)
+            ])
+          } else {
+            labels_union(labels_without_exception_family_marker(declared), discharged)
+          }
         } else {
           labels_union(declared, discharged)
         }

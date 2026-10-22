@@ -51,14 +51,24 @@ import ./types_types_equal.vibe {
   collect_tvars,
   int_bounds_has_id,
   int_bounds_lookup,
+  owned_head_payload_span,
   parse_trait_bound_vid,
   resolve_builtin,
   resolve_effect_opt_preserving_open,
+  resolve_row_type_arg,
+  row_var_type_arg,
   subst_apply,
   trait_is_subtrait,
   type_application_view,
   types_equal,
   unify_effects
+}
+
+fn is_row_var_type_arg(t: Type) -> Bool {
+  match row_var_type_arg(t) {
+    Some(_) => true,
+    None => false
+  }
 }
 
 fn int_array_has_id(ids: Array[Int], id: Int) -> Bool {
@@ -123,7 +133,12 @@ fn subst_apply_except_go(s: Subst, ty: Type, keep: Array[Int]) -> Type {
       let ra = array_empty()
       let mut i = 0
       while i < Array::length(args) {
-        Array::push(ra, subst_apply_except_go(s, Array::get(args, i), keep))
+        let a = Array::get(args, i)
+        Array::push(ra, match row_var_type_arg(a) {
+          // #3589: a row argument resolves as the row of a `CtFn` does here.
+          Some(v) => resolve_row_type_arg(a, resolve_effect_opt_preserving_open(s, Some(v))),
+          None => subst_apply_except_go(s, a, keep)
+        })
         i = i + 1
       }
       zonk_hkt(CtNamed(name, ra))
@@ -480,6 +495,36 @@ export fn subst_bounds_for(s: Subst, id: Int) -> Array[String] {
   ArrayBuilder::freeze(out)
 }
 
+/// #3588: two spellings of one compiler-owned head, one with its region and
+/// row slots left to the call (`TaskHandle[Int]`) and one in full
+/// (`TaskHandle[rg, e, String]`), unify through their payload positions
+/// (`owned_head_payload_span`); the elided slots are unbound and constrain
+/// nothing. Any other arity mismatch fails, as before. Failing here used to
+/// leave the payload uncompared: the checker tolerates a failed `CtNamed`
+/// pair, so `TaskHandle[Int]` returned as a `TaskHandle[rg, e, String]`
+/// checked clean and `join` read the task's `Int` as a `String`.
+fn unify_owned_elided(a: Type, b: Type, s: Subst) -> Option[Subst] {
+  match a {
+    CtNamed(an, aargs) => match b {
+      CtNamed(bn, bargs) => if an != bn {
+        None
+      } else match owned_head_payload_span(an, Array::length(aargs)) {
+        Some((astart, acount)) => match owned_head_payload_span(bn, Array::length(bargs)) {
+          Some((bstart, bcount)) => if acount == bcount {
+            unify_type_arrays(Array::slice(aargs, astart, astart + acount), Array::slice(bargs, bstart, bstart + bcount), s)
+          } else {
+            None
+          },
+          None => None
+        },
+        None => None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
 /// `Some(result)` means application decomposition handled the pair. Outer
 /// `None` means ordinary first-order unification should continue.
 fn unify_type_applications(a: Type, b: Type, s: Subst) -> Option[Option[Subst]] {
@@ -489,7 +534,7 @@ fn unify_type_applications(a: Type, b: Type, s: Subst) -> Option[Option[Subst]] 
         let (ahead, aargs) = ap
         let (bhead, bargs) = bp
         if Array::length(aargs) != Array::length(bargs) {
-          Some(None)
+          Some(unify_owned_elided(a, b, s))
         } else match unify(ahead, bhead, s) {
           None => Some(None),
           Some(head_subst) => {
@@ -747,10 +792,18 @@ export fn unify(a: Type, b: Type, s: Subst) -> Option[Subst] {
                       Some(s)
                     } else None,
                     CtNamed(b_name, b_args) => if a_name != b_name {
-                      None
+                      // #3589: a struct's row argument is a row, so a row
+                      // variable there unifies like the row of a function
+                      // type: `Holder[$4]` against `Holder[Console]` binds
+                      // `$4` to `Console`.
+                      if Array::length(a_args) == 0 && Array::length(b_args) == 0 && (is_row_var_type_arg(ta) || is_row_var_type_arg(tb)) {
+                        unify_effects(Some(a_name), Some(b_name), s)
+                      } else {
+                        None
+                      }
                     }
                     else if Array::length(a_args) != Array::length(b_args) {
-                      None
+                      unify_owned_elided(ta, tb, s)
                     }
                     else {
                       let ul_len3 = Array::length(a_args)

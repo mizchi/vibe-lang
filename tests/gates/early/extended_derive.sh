@@ -408,6 +408,28 @@ ur_refused fixtures/err_derive_show_bytes_field_refused.vibe 'a derived renderer
 ur_refused fixtures/err_impl_overlap_cross_module_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_b.vibe: line 7:1'
 ur_refused fixtures/err_impl_overlap_entry_vs_dep_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/err_impl_overlap_entry_vs_dep_refused.vibe: line 13:1'
 ur_refused fixtures/err_impl_overlap_cross_module_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' gc
+# #3571: two modules' PLAIN `fn Int::shout` -- private or exported, on a
+# builtin or on a type a third module declares, or the entry's and an
+# import's -- kept their spelling through the merge, and the build ran
+# whichever the import order merged first (`from-a from-a`). Refused, naming
+# both definitions and the rename. The green side (the plain `fn shout` the
+# message names) rides the unit lane:
+# fixtures/qualified_fn_overlap_plain_edit_test.vibe.
+ur_refused fixtures/err_qualified_fn_overlap_cross_module_refused.vibe 'both modules define `Int::shout`' 'rename `Int::shout` here or in fixtures/modules/qualified_fn_overlap_a.vibe: line 3:1' linear 'fixtures/modules/qualified_fn_overlap_b.vibe: line 3:1'
+ur_refused fixtures/err_qualified_fn_overlap_cross_module_refused.vibe 'both modules define `Int::shout`' 'or make one of them a plain function (`fn shout`)' gc
+ur_refused fixtures/err_qualified_fn_overlap_foreign_type_refused.vibe 'both modules define `Pt::shout`' 'rename `Pt::shout` here or in fixtures/modules/qualified_fn_overlap_pt_a.vibe: line 8:1' linear 'fixtures/modules/qualified_fn_overlap_pt_b.vibe: line 7:1'
+ur_refused fixtures/err_qualified_fn_overlap_entry_vs_dep_refused.vibe 'both modules define `Int::shout`' 'rename `Int::shout` here or in fixtures/modules/qualified_fn_overlap_a.vibe: line 3:1' linear 'fixtures/err_qualified_fn_overlap_entry_vs_dep_refused.vibe: line 9:1'
+# #3587: a supertrait method written in a subtrait impl (`equals` in `impl [T]
+# Key for Box[T]`, `trait Key: Eq`) in one module, beside another module's
+# `impl Eq` for `Box` or another subtrait impl writing `equals` -- modules that
+# never see each other's impls -- ran different `equals` through `[U: Eq]` and
+# `[T: Key]` (`eq=true key=false`). Refused at link time, naming both impls.
+# The green side (disjoint targets) rides the unit lane:
+# fixtures/eq_subtrait_equals_disjoint_targets_test.vibe.
+ur_refused fixtures/err_eq_subtrait_equals_dep_beside_entry_impl_refused.vibe 'both implement `Eq::equals` for `Box`' 'remove `equals` from `impl [T] Key for Box[T]` in fixtures/modules/eq_subtrait_dep_key_equals.vibe: line 12:1, or remove `impl [T] Eq for Box[T]` here' linear 'fixtures/err_eq_subtrait_equals_dep_beside_entry_impl_refused.vibe: line 12:1'
+ur_refused fixtures/err_eq_subtrait_equals_sibling_impl_refused.vibe 'both implement `Eq::equals` for `Box`' 'remove `equals` from `impl [T] Key for Box[T]` in fixtures/modules/eq_subtrait_sib_key.vibe: line 7:1, or remove `impl [T] Eq for Box[T]` here' linear 'fixtures/modules/eq_subtrait_sib_eq.vibe: line 7:1'
+ur_refused fixtures/err_eq_subtrait_equals_sibling_impl_refused.vibe 'both implement `Eq::equals` for `Box`' 'remove `equals` from `impl [T] Key for Box[T]`' gc
+ur_refused fixtures/err_eq_subtrait_equals_two_sibling_subtraits_refused.vibe 'both implement `Eq::equals` for `Box`' 'remove `equals` from `impl [T] Mark for Box[T]` here or from `impl [T] Key for Box[T]` in fixtures/modules/eq_subtrait_sib_key.vibe: line 7:1' linear 'fixtures/modules/eq_subtrait_sib_mark.vibe: line 12:1'
 # #3551: a plain `fn Int::name` in a module that also holds an impl for `Int`
 # (after an intervening statement) is a definition, not that impl's method.
 # It used to be exempted by the owner prefix and built `from-a from-a`. The
@@ -1260,6 +1282,26 @@ for ll_rc in 1 0; do
     echo "[compiler-gate] VIBE_RC=$ll_rc dictionary-only impl build compiled; SKIP run: wasmtime not available"
   fi
 done
+# #3577: `--debug` changes code generation only, so it refuses what the
+# release build refuses. The debug lane ran no checker: this program built,
+# and the wasm printed `st`.
+cat > "$lldir/debug_type_error.vibe" <<'VIBE'
+fn main() -> Unit allows Console {
+  let x: Int = "s"
+  println("\{x + 1}")
+}
+VIBE
+rm -f "$lldir/debug_type_error.wasm"
+dbg_te_rc=0
+dbg_te_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  build --debug "$lldir/debug_type_error.vibe" -o "$lldir/debug_type_error.wasm" --entry main 2>&1)" || dbg_te_rc=$?
+if [ "$dbg_te_rc" -eq 0 ] || [ -e "$lldir/debug_type_error.wasm" ] \
+  || ! printf '%s\n' "$dbg_te_out" | grep -q 'binding type mismatch for a local let: expected Int, got String'; then
+  echo "[compiler-gate] FAIL: build --debug did not refuse a type error the release build refuses (rc=$dbg_te_rc) (#3577)" >&2
+  printf '%s\n' "$dbg_te_out" >&2; exit 1
+fi
+echo '[compiler-gate] build --debug refuses a type error ok (#3577)'
 rm -rf "$lldir"
 
 # 15b-3c'. #3067: `String::substring` clamps its indices on every lane. The gc

@@ -18,6 +18,7 @@ import @vibe/compiler/core {
   exception_kinds_compatible,
   exception_label_kind,
   exception_throw_label_for_kind,
+  expr_children_into,
   is_entry_runtime_managed_effect,
   is_exception_label,
   is_exception_throw_operation,
@@ -486,10 +487,137 @@ export fn kinded_handle_owner_prefix() -> String {
   "#kinded-owner:"
 }
 
-/// A pseudo-label of a kinded handle's body (the marker, a pinned row
-/// variable, the owning lambda); none is a row item a reader can write.
+/// A pseudo-label of a handle's body (the kinded marker, a pinned row
+/// variable, the owning lambda, the erased-arm markers below); none is a row
+/// item a reader can write.
 export fn is_kinded_handle_pseudo_label(l: String) -> Bool {
-  String::starts_with(l, "#kinded-")
+  String::starts_with(l, "#kinded-") || String::starts_with(l, erased_handle_marker_prefix())
+}
+
+fn erased_handle_marker_prefix() -> String {
+  "#erased-handle:"
+}
+
+/// #3541: the pseudo-label of a named function's own body (not of a handle
+/// in it, nor of a lambda with a row of its own). An exception of another kind
+/// than the message that its erased `with Exception` row lets out is recorded
+/// against the function (`erased_row_leaks`), and a caller charges it like a
+/// label of that row: the erased row carries the kinds its body throws.
+export fn erased_root_marker(fn_name: String) -> String {
+  String::concat(erased_handle_marker_prefix(), String::concat("root:", fn_name))
+}
+
+/// #3541: (function, `Exception[K]`) for every kind other than the thrown
+/// message that a named function's erased `with Exception` row authorized.
+/// Filled by `decl_authorizes_effect` during a walk, read and reset by the
+/// module's effect check.
+export let erased_row_leaks: Array[(String, String)] = []
+
+/// Record that the erased label of `labels` authorized `Exception[kind]`, when
+/// `labels` is a named function's own body (`erased_root_marker`).
+export fn record_erased_row_leak(labels: Array[String], kind: String) -> Unit {
+  let prefix = String::concat(erased_handle_marker_prefix(), "root:")
+  for l in labels {
+    if String::starts_with(l, prefix) {
+      let owner = String::substring(l, String::length(prefix), String::length(l))
+      let label = String::concat("Exception[", String::concat(kind, "]"))
+      let mut seen = false
+      for leak in erased_row_leaks {
+        let (o, k) = leak
+        if o == owner && k == label {
+          seen = true
+        }
+      }
+      if !seen {
+        Array::push(erased_row_leaks, (owner, label))
+      }
+    }
+  }
+  ()
+}
+
+/// #3541: the pseudo-label of the body of an erased handle whose arm
+/// `Exception::Throw(m)` reads `m`, the thrown message. It names the binder so
+/// a refusal can name the kinded arm to write.
+export fn erased_reads_marker(binder: String) -> String {
+  String::concat(erased_handle_marker_prefix(), String::concat("reads:", binder))
+}
+
+/// The binder `erased_reads_marker` names in `labels`, or "" when the row is
+/// not such a body.
+export fn erased_reads_binder(labels: Array[String]) -> String {
+  let prefix = String::concat(erased_handle_marker_prefix(), "reads:")
+  let mut found = ""
+  for l in labels {
+    if String::starts_with(l, prefix) {
+      found = String::substring(l, String::length(prefix), String::length(l))
+    }
+  }
+  found
+}
+
+/// Does the erased exception label of `labels` cover only the thrown message?
+/// Only in the body of an erased arm that reads its binder; everywhere else
+/// it covers every kind.
+export fn erased_covers_only_messages(labels: Array[String]) -> Bool {
+  String::length(erased_reads_binder(labels)) > 0
+}
+
+/// #3541: the binder an ERASED exception arm (`Exception::Throw(m)`) reads
+/// in its body, or "" when the handle has no such arm or the arm leaves its
+/// payload unread (`_`, or a name its body never mentions). A payload pattern
+/// other than a name counts as read. The mention is judged by spelling, so a
+/// shadowing binding of the same name counts as a read: that only refuses
+/// more.
+export fn erased_arm_read_binder(arms: Array[(Pat, Expr)]) -> String {
+  let mut found = ""
+  for arm in arms {
+    let (pat, body) = arm
+    match pat {
+      PCtor(name, binds) => {
+        let idx = String::index_of(name, "::")
+        if idx > 0 && is_exception_label(name) && String::length(exception_label_kind(name)) == 0 && Array::length(binds) == 1 {
+          match Array::get(binds, 0) {
+            PWild => (),
+            PBind(b) => if expr_mentions_name(body, b) {
+              found = b
+            },
+            _ => {
+              found = "the payload"
+            }
+          }
+        }
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+fn expr_mentions_name(root: Expr, name: String) -> Bool {
+  let stack = Array::slice([root], 0, 1)
+  let mut found = false
+  while Array::length(stack) > 0 && !found {
+    let n = Array::length(stack)
+    let e = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match e {
+      EIdent(x, _) => if x == name {
+        found = true
+      },
+      EStringInterp(parts) => {
+        for part in parts {
+          if String::contains(part, name) {
+            found = true
+          }
+        }
+        ()
+      },
+      _ => ()
+    }
+    expr_children_into(e, stack)
+  }
+  found
 }
 
 /// #3540: is `v` a row variable this kinded handle's body may not run?

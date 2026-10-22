@@ -1476,6 +1476,57 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
     }
     si = si + 1
   }
+  // #3568: a row variable in a field's row that the declaration does not
+  // bind (`struct Holder { run: () -> Int with r }`).
+  let mut ri = 0
+  while ri < Array::length(stmts) && !reported {
+    let (kind, dname, formals, tes) = match Array::get(stmts, ri) {
+      SStruct(_, sname, sfields, _, _, stparams) => ("struct", sname, stparams, for f in sfields {
+        let (_, fte) = f
+        fte
+      }),
+      SEnum(_, ename, eparams, variants, _) => {
+        let payloads: Array[TypeExpr] = []
+        for v in variants {
+          let (_, vtes) = v
+          for t in vtes {
+            Array::push(payloads, t)
+          }
+        }
+        ("enum", ename, eparams, payloads)
+      },
+      _ => ("", "", array_empty(), array_empty())
+    }
+    let bound: Array[String] = []
+    for f in formals {
+      Array::push(bound, type_param_name(f))
+    }
+    let unbound: Array[String] = []
+    for t in tes {
+      unbound_decl_row_vars(t, bound, unbound)
+    }
+    // #3589: an enum's row parameter is not carried by its values (a
+    // constructor types as the bare enum), so a call through a function
+    // taken out of `Job[e]` was charged nothing. Refused until it is.
+    let enum_row = if kind == "enum" {
+      enum_payload_row_formal(tes, bound, unbound)
+    } else {
+      ""
+    }
+    if String::length(enum_row) > 0 {
+      reported = true
+      Array::push(errors, enum_row_formal_message(dname, enum_row) + " (in a payload of enum '" + dname + "') [@fn=" + dname + "]")
+    } else if Array::length(unbound) > 0 {
+      reported = true
+      let where_kind = if kind == "struct" {
+        "a field of struct"
+      } else {
+        "a payload of enum"
+      }
+      Array::push(errors, unbound_decl_row_var_message(kind, dname, formals, Array::get(unbound, 0)) + " (in " + where_kind + " '" + dname + "') [@fn=" + dname + "]")
+    }
+    ri = ri + 1
+  }
   let mut i = 0
   while i < Array::length(stmts) && !reported {
     match Array::get(stmts, i) {
@@ -1581,6 +1632,93 @@ fn struct_formal_row_message(sname: String, formal: String) -> String {
   // `formal` reached here as an unknown effect, so it starts with A-Z.
   let row_var = String::from_char_code(String::char_code_at(formal, 0) + 32)
   "write `struct " + sname + "[" + row_var + "]` and `with " + row_var + "` if the row is meant to vary: a row parameter is a single lowercase letter, so `" + formal + "` (a type parameter of `" + sname + "`) is read in a field's row as an effect named `" + formal + "`, and no effect `" + formal + "` is declared"
+}
+
+/// #3568: the effect row variables a field type (or an enum payload) leaves
+/// unbound. A row variable in a stored function's row belongs to the
+/// declaration only when the declaration binds it (`struct Holder[r]`);
+/// otherwise nothing ties it to the row of the value stored there, and a call
+/// through the field charged its caller nothing. A variable that also occurs
+/// in a parameter of an enclosing function type is fixed by that call's
+/// argument, so it is bound there; so is everything reached only through a
+/// parameter.
+fn unbound_decl_row_vars(te: TypeExpr, bound: Array[String], out: Array[String]) -> Unit {
+  match te {
+    TyFn(ps, r, eff) => {
+      let param_rows: Array[String] = []
+      for p in ps {
+        fek_rows_in_texpr(p, param_rows)
+      }
+      let inner = Array::slice(bound, 0, Array::length(bound))
+      for pr in param_rows {
+        for l in row_text_labels(pr) {
+          Array::push(inner, l)
+        }
+      }
+      match eff {
+        Some(row) => for l in row_text_labels(row) {
+          let v = String::trim(l)
+          if uel_is_row_var(v) && !uel_contains(inner, v) && !uel_contains(out, v) {
+            Array::push(out, v)
+          }
+        },
+        None => ()
+      }
+      unbound_decl_row_vars(r, inner, out)
+    },
+    TyApp(_, args) => for a in args {
+      unbound_decl_row_vars(a, bound, out)
+    },
+    TyTuple(items) => for a in items {
+      unbound_decl_row_vars(a, bound, out)
+    },
+    _ => ()
+  }
+}
+
+/// #3589: a row variable an enum payload's function row names -- one the
+/// enum declares as a parameter, or one it does not bind (`unbound`) -- or ""
+/// when the payload rows name none.
+fn enum_payload_row_formal(tes: Array[TypeExpr], bound: Array[String], unbound: Array[String]) -> String {
+  let mut found = if Array::length(unbound) > 0 {
+    Array::get(unbound, 0)
+  } else {
+    ""
+  }
+  let rows: Array[String] = []
+  for t in tes {
+    fek_rows_in_texpr(t, rows)
+  }
+  for row in rows {
+    for l in row_text_labels(row) {
+      let v = String::trim(l)
+      if String::length(found) == 0 && uel_is_row_var(v) && uel_contains(bound, v) {
+        found = v
+      }
+    }
+  }
+  found
+}
+
+/// The refusal for an enum payload whose function row names row variable
+/// `v`.
+fn enum_row_formal_message(dname: String, v: String) -> String {
+  "write the effects the payload's function performs (`with Console`), or hold the function in a struct with a row parameter (`struct " + dname + "[" + v + "] { run: () -> Int with " + v + " }`) -- the effect row variable `" + v + "` is not carried by a value of enum `" + dname + "`, so a call through a function taken out of it would not be charged its effects"
+}
+
+/// A row variable as a declaration spells it: one lowercase letter.
+fn uel_is_row_var(l: String) -> Bool {
+  String::length(l) == 1 && String::char_code_at(l, 0) >= 97 && String::char_code_at(l, 0) <= 122
+}
+
+/// The refusal for row variable `v` that `kind` declaration `dname` does not
+/// bind, naming the parameter list that binds it.
+fn unbound_decl_row_var_message(kind: String, dname: String, formals: Array[String], v: String) -> String {
+  let mut list = ""
+  for f in formals {
+    list = list + type_param_name(f) + ", "
+  }
+  "add `" + v + "` as a parameter: `" + kind + " " + dname + "[" + list + v + "]` -- the effect row variable `" + v + "` is not bound by `" + dname + "`, so a call through a function stored there would not be charged its effects"
 }
 
 fn uel_contains(xs: Array[String], x: String) -> Bool {

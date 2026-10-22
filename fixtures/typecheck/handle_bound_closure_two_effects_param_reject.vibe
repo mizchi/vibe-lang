@@ -1,0 +1,40 @@
+// #3585: a closure that performs two effects one `handle` answers is handed
+// to a function that keeps it, through a parameter whose row carries only
+// one of them. The later caller passes an `Ask` handler, but the `Log`
+// perform still reached this handle after it was gone, and `vibe check` was
+// clean. fixtures/handle_bound_closure_inside_test.vibe keeps one at a
+// parameter that carries both.
+effect Ask {
+  Get() -> Int
+}
+
+effect Log {
+  Put(n: Int) -> Unit
+}
+
+let kept: Array[() -> Int with Ask] = []
+
+fn keep(f: () -> Int with Ask) -> Unit {
+  Array::push(kept, f)
+}
+
+fn drive(f: () -> Int with Ask) -> Int {
+  handle {
+    f()
+  } with { Ask::Get() => resume(9) }
+}
+
+fn main() -> Unit allows Console {
+  let n = handle {
+    keep(() -> {
+      let v = perform Ask::Get()
+      perform Log::Put(v)
+      v
+    })
+    1
+  } with {
+    Ask::Get() => resume(5);
+    Log::Put(_) => resume(())
+  }
+  println("\{n} \{drive(Array::get(kept, 0))}")
+}
