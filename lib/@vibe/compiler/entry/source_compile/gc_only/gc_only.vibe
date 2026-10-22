@@ -1,16 +1,17 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex_with_offsets, parse_program, parse_program_located
+  lex_with_offsets, parse_program, parse_program_located, rewrite_string_binops_stmts
 }
 
 import @vibe/core {
   array_empty
 }
 import @vibe/compiler/checker {
-  check_program_double_call_result_observation,
+  check_program_scalar_lowering_observation,
   checked_int_bool_and_unrenderable_render_offsets,
   merge_unrenderable_render_offsets,
+  typed_lowering_binop_anchor,
   validate_user_source_exports_excluding,
   validate_user_source_stmts
 }
@@ -165,7 +166,7 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // declarations) and no uniqueness filter (the extraction poisons an
   // offset claimed by binops of different types; with the same type,
   // rewriting both is correct).
-  let (checked, gc_float_call_offsets, gc_eq_offsets, gc_eq_keys) = match check_program_double_call_result_observation(stmts) {
+  let (checked, gc_float_call_offsets, string_rels, string_pluses, gc_eq_offsets, gc_eq_keys) = match check_program_scalar_lowering_observation(stmts) {
     Some(observation) => observation,
     None => throw("internal compiler error: incomplete GC call-result type observation")
   }
@@ -178,6 +179,15 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
     validate_user_source_exports_excluding(stmts, checked.final_env, lowered_test_names)
   } else {
     ()
+  }
+  // #3545: retain the checker's String operand facts before erasure. Runtime
+  // String producers need not be recognizable by the syntactic classifier.
+  // Float VALUE offsets and the other typed rows retain their old contracts.
+  let string_rewritten = rewrite_string_binops_stmts(stmts, string_rels, string_pluses, typed_lowering_binop_anchor)
+  let mut string_i = 0
+  while string_i < Array::length(stmts) {
+    Array::set(stmts, string_i, Array::get(string_rewritten, string_i))
+    string_i = string_i + 1
   }
   // #3144 round 4: move a program's own `Array::length` / `Map::keys` / ...
   // aside HERE, right after the source-level check and export validation (the
