@@ -1,7 +1,7 @@
 // Slides for "自作プログラミング言語を自慢する会" (2026-10-22).
-// Slide prose is Japanese because the talk is; every `DEMOS` entry is real
-// vibe source that `tests/slides-smoke.mjs` compiles in the browser and checks
-// against `expect`, so a demo cannot rot silently before the talk.
+// Slide prose is Japanese because the talk is; every gallery sample is a real
+// .vibe file that `tests/slides-smoke.mjs` compiles in the browser and checks
+// against `expect` / `refuse`, so a demo cannot rot silently before the talk.
 
 import concurrentContract from "../../../lib/@vibe/concurrent/experimental/index.vpkg?raw";
 import concurrentSource from "../../../lib/@vibe/concurrent/experimental/concurrent.vibe?raw";
@@ -15,220 +15,137 @@ const CONCURRENT: Record<string, string> = {
 };
 
 export type Slide = { className?: string; html: string; notes?: string };
-export type Demo = {
+
+// One sample of a gallery. `source` is a real .vibe file under ./samples; the
+// smoke test runs every sample in Chromium and holds it to `expect` (stdout)
+// or `refuse` (a substring of the compile error it must be refused with).
+export type Sample = {
+  title: string;
   source: string;
   entry?: string;
   // Files sent with the source, by the path the source imports them from.
   files?: Record<string, string>;
-  // Exact stdout the unedited source must print (checked by the smoke test).
-  expect: string;
+  expect?: string;
+  refuse?: string;
   hint?: string;
 };
 
-export const DEMOS: Record<string, Demo> = {
-  hello: {
-    source: String.raw`
-fn main allows Console {
-  let langs = ["Rust", "MoonBit", "Koka", "Verse"]
-  for lang in langs {
-    println("inspired by \{lang}")
-  }
-  println("compiled by vibe, in this browser tab")
-}`,
-    expect: "inspired by Rust\ninspired by MoonBit\ninspired by Koka\ninspired by Verse\ncompiled by vibe, in this browser tab\n",
-    hint: "上の出力は、このタブの中で vibe コンパイラ (wasm) が今コンパイルして実行したもの",
-  },
-  effects: {
-    source: String.raw`
-fn safe_div(a: Int, b: Int) -> Int with Exception {
-  if b == 0 { throw("division by zero") }
-  a / b
-}
+const SAMPLE_SOURCES = import.meta.glob<string>("./samples/*/*.vibe", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
 
-fn main allows Console {
-  let r = handle {
-    safe_div(84, 2) + safe_div(1, 0)
-  } with {
-    Exception::Throw(msg) => {
-      println("caught: \{msg}")
-      -1
+type SampleMeta = Omit<Sample, "source"> & { file: string };
+
+function gallery(dir: string, metas: SampleMeta[]): Sample[] {
+  return metas.map(({ file, ...meta }) => {
+    const source = SAMPLE_SOURCES[`./samples/${dir}/${file}`];
+    if (source === undefined) throw new Error(`slides: no sample ${dir}/${file}`);
+    if ((meta.expect === undefined) === (meta.refuse === undefined)) {
+      throw new Error(`slides: ${dir}/${file} needs exactly one of expect / refuse`);
     }
-  }
-  println("r = \{r}")
-}`,
-    expect: "caught: division by zero\nr = -1\n",
-    hint: "失敗しうる関数には <code>with Exception</code> と書く。<code>handle</code> を外して直接呼ぶと、<code>main</code> の row に <code>Exception</code> が足りないと言われる",
-  },
-  caps: {
-    source: String.raw`
-fn greet(name: String) -> Unit with Console {
-  println("hi \{name}")
+    return { ...meta, source };
+  });
 }
 
-fn main allows Console {
-  greet("自作言語を自慢する会")
-}`,
-    expect: "hi 自作言語を自慢する会\n",
-    hint: "<code>main</code> の <code>allows</code> を <code>with</code> にしてみる。エラーの 1 行目が直し方になってる",
-  },
-  zero_alloc: {
-    source: String.raw`
-#zero_alloc
-fn hot(a: Int, b: Int) -> Int {
-  let s = a + b
-  s * 2 - a
-}
+const concurrent = (metas: SampleMeta[]) => metas.map((m) => ({ ...m, files: CONCURRENT }));
 
-fn main allows Console {
-  println("hot = \{hot(14, 14)}")
-}`,
-    expect: "hot = 42\n",
-    hint: "本体を <code>Array::length([a, b])</code> にすると、アロケーションでコンパイルエラーになる",
-  },
-  emit: {
-    source: String.raw`
-effect Emit { Line(String) -> Unit }
-
-fn fizz(upto: Int) -> Unit with Emit {
-  let mut i = 1
-  while i <= upto {
-    let s = if i % 3 == 0 { "Fizz" } else { "\{i}" }
-    perform Emit::Line(s)
-    i = i + 1
-  }
-}
-
-fn main allows Console {
-  handle { fizz(4) } with {
-    Emit::Line(s) => { println(s); resume(()) }
-  }
-  let mut n = 0
-  handle { fizz(9) } with {
-    Emit::Line(_) => { n = n + 1; resume(()) }
-  }
-  println("lines = \{n}")
-}`,
-    expect: "1\n2\nFizz\n4\nlines = 9\n",
-    hint: "<code>fizz</code> は出力先を知らない。handler を差し替えると、同じ関数が表示にも集計にもなる。<code>resume(())</code> を消すとエラー",
-  },
-  tasks: {
-    source: String.raw`
-import ./${CONCURRENT_PATH} {
-  TaskGroup, TaskHandle
-}
-
-fn main allows Console + Exception {
-  let total = TaskGroup::run((g) -> {
-    let a = TaskGroup::spawn(g, () -> {
-      println("task a")
-      1
-    })
-    let b = TaskGroup::spawn(g, () -> {
-      println("task b")
-      2
-    })
-    println("after spawn")
-    TaskHandle::join(b) + TaskHandle::join(a)
-  })
-  println("total = \{total}")
-}`,
-    files: CONCURRENT,
-    expect: "after spawn\ntask a\ntask b\ntotal = 3\n",
-    hint: "<code>spawn</code> しただけでは動かない。<code>join</code> で待ったときに、キューの順に動く。何回やっても同じ順番",
-  },
-  suspend: {
-    source: String.raw`
-import ./${CONCURRENT_PATH} {
-  TaskGroup, TaskHandle, sleep_wait
-}
-
-fn main allows Console + Exception + Async {
-  TaskGroup::run((g) -> {
-    let a = TaskGroup::spawn_suspend(g, () -> {
-      println("a1")
-      sleep_wait(10)
-      println("a2")
-      1
-    })
-    let _ = TaskGroup::spawn_suspend(g, () -> {
-      println("b1")
-      let va = TaskHandle::result_wait(a)
-      println("b2 saw a = \{va}")
-    })
-    TaskGroup::pump_all(g)
-  })
-}`,
-    files: CONCURRENT,
-    expect: "a1\nb1\na2\nb2 saw a = 1\n",
-    hint: "<code>sleep_wait</code> で止まると、その間にほかのタスクが動く",
-  },
-  region: {
-    source: String.raw`
-#zero_alloc
-fn sum_to(n: Int) -> Int {
-  region r {
-    let l = MutList::empty(r)
-    let mut i = 0
-    let mut acc = 0
-    while i < n {
-      MutList::push(l, i)
-      acc = acc + i
-      i = i + 1
-    }
-    acc
-  }
-}
-
-fn main allows Console {
-  println("sum = \{sum_to(10)}")
-}`,
-    expect: "sum = 45\n",
-    hint: "region の確保はヒープに数えない。<code>#zero_alloc(strict)</code> にすると region もエラー。最後の <code>acc</code> を <code>l</code> にすると、region の外に出るのでエラー",
-  },
-  eq: {
-    source: String.raw`
-struct Pt { x: Int; y: Int }
-
-fn main allows Console {
-  let a = [Pt::{ x: 1, y: 2 }, Pt::{ x: 3, y: 4 }]
-  let b = [Pt::{ x: 1, y: 2 }, Pt::{ x: 3, y: 4 }]
-  println("arrays: \{a == b}")
-  println("tuples: \{(1.5, "a") == (1.5, "a")}")
-}`,
-    expect: "arrays: true\ntuples: true\n",
-    hint: "<code>let same = (p, q) -&gt; p == q</code> を足すと、注釈を求めるエラーになる",
-  },
-  pipe: {
-    source: String.raw`
-struct Talk { title: String; minutes: Int }
-
-fn main allows Console {
-  let talks = [
-    Talk::{ title: "gfx", minutes: 12 },
-    Talk::{ title: "kawasima", minutes: 12 },
-    Talk::{ title: "mizchi", minutes: 12 },
-  ]
-  let total = talks
-    |> Array::map(_, (t) -> t.minutes)
-    |> Array::fold(_, 0, _ + _)
-  let n = "  vibe  " |> String::trim |> String::length
-  println("total = \{total} min, n = \{n}")
-}`,
-    expect: "total = 36 min, n = 4\n",
-    hint: "<code>_</code> は差し込む位置。<code>_ + _</code> は 2 引数のラムダ",
-  },
+export const DEMOS: Record<string, Sample[]> = {
+  effects: gallery("effects", [
+    { file: "1_resume.vibe", title: "resume", expect: "v = 42\n",
+      hint: "<code>answer_of</code> は値の出どころを知らない。handler が <code>resume</code> した値で続きが走る" },
+    { file: "2_handlers.vibe", title: "handler を差し替える", expect: "1\n2\nFizz\n4\nlines = 9\n",
+      hint: "<code>fizz</code> は出力先を知らない。表示する handler と数える handler で同じ関数を動かす" },
+    { file: "3_row_variable.vibe", title: "row 変数", expect: "apply_twice = 40\n",
+      hint: "<code>f</code> の row が <code>e</code>。純粋な <code>f</code> なら純粋、throw する <code>f</code> なら <code>Exception</code> を運ぶ" },
+    { file: "4_typed_exception.vibe", title: "Exception[E]", expect: "7\nempty\nnot a digit: x\n",
+      hint: "型付きの例外。arm は payload を名前で受けて <code>match</code> する" },
+    { file: "5_optional_capability.vibe", title: "perform?", expect: "not granted\n",
+      hint: "省略できる権限。許可されてなければ <code>NotGranted</code> に落ちる。このタブには <code>Fs</code> が無い" },
+    { file: "6_effectset.vibe", title: "effectset", expect: "bundled\n",
+      hint: "権限の束に名前を付ける" },
+    { file: "7_missing_row.vibe", title: "row が足りない", refuse: "missing { Exception }",
+      hint: "throw しうる関数を <code>handle</code> なしで呼ぶと、<code>main</code> の row に足りないと言われる。hint が直し方" },
+    { file: "8_no_resume.vibe", title: "resume が無い", refuse: "must pass its value back with resume(...)",
+      hint: "arm の最後は <code>resume</code> か <code>return</code> / <code>throw</code>。値だけ返すと、続けるのか止めるのか分からないので拒否" },
+    { file: "9_with_on_main.vibe", title: "main に with", refuse: "so the keyword is `allows`",
+      hint: "entry は row を与える側なので <code>allows</code>。エラーの 1 行目が直し方" },
+    { file: "a_payload_pattern.vibe", title: "payload で分岐", refuse: "bind the payload to a name",
+      hint: "arm は operation でしか選ばれない。payload のパターンを書くと全部その arm に落ちるので、黙って間違う前に拒否" },
+  ]),
+  memory: gallery("memory", [
+    { file: "1_zero_alloc.vibe", title: "#zero_alloc", expect: "hot = 42\n",
+      hint: "ヒープに確保しない関数。呼んだ先まで見る" },
+    { file: "2_zero_alloc_refused.vibe", title: "配列リテラル", refuse: "may allocate: array literal",
+      hint: "配列を作った時点で拒否" },
+    { file: "3_transitive.vibe", title: "呼んだ先で確保", refuse: "call to 'pair' which may allocate",
+      hint: "呼んだ関数の中の確保も見つけて、どこで確保したかまで言う" },
+    { file: "4_region.vibe", title: "region", expect: "sum = 45\n",
+      hint: "region の中の確保はまとめて捨てる。ヒープの確保には数えない" },
+    { file: "5_region_strict.vibe", title: "strict", refuse: "region/arena allocation",
+      hint: "<code>#zero_alloc(strict)</code> は region の確保も拒否" },
+    { file: "6_region_escape.vibe", title: "region の外へ", refuse: "region escapes its scope",
+      hint: "region の値を外に返すと拒否" },
+  ]),
+  concurrency: gallery("concurrency", concurrent([
+    { file: "1_spawn_join.vibe", title: "spawn / join", expect: "after spawn\ntask a\ntask b\ntotal = 3\n",
+      hint: "<code>spawn</code> しただけでは動かない。<code>join</code> で待ったときにキューの順で動く。毎回同じ順番" },
+    { file: "2_channel.vibe", title: "Channel", expect: "sum = 6\n",
+      hint: "容量 1 のチャネル。<code>recv</code> は閉じて空になると <code>None</code>" },
+    { file: "3_parallel_map.vibe", title: "Parallel::map", expect: "[30, 10, 20]\n",
+      hint: "結果は入力の順。終わった順は観測できない" },
+    { file: "4_failure.vibe", title: "失敗", expect: "caught Failed(boom)\nr = 0\n",
+      hint: "タスクが throw すると group ごと失敗して、<code>join</code> が <code>TaskError</code> を投げ直す" },
+    { file: "5_suspend.vibe", title: "止まるタスク", expect: "a1\nb1\na2\nb2 saw a = 1\n",
+      hint: "<code>spawn_suspend</code> のタスクは <code>sleep_wait</code> で止まって、ほかのタスクに譲る" },
+    { file: "6_future.vibe", title: "Future", expect: "resolved later\ntotal = 80\n",
+      hint: "<code>await</code> で待つのは <code>Async</code> effect。<code>main</code> が <code>allows Async</code> する" },
+    { file: "7_send_refused.vibe", title: "Send じゃない", refuse: "is neither Send nor a same-nursery endpoint",
+      hint: "<code>Array</code> は <code>Send</code> じゃないのでタスクに捕まえられない" },
+    { file: "8_escape_refused.vibe", title: "handle の持ち出し", refuse: "inside this TaskGroup::run body",
+      hint: "<code>TaskHandle</code> を <code>run</code> の外に返すと拒否。その group はもう終わってる" },
+  ])),
+  syntax: gallery("syntax", [
+    { file: "1_pipe.vibe", title: "パイプ", expect: "total = 36 min, n = 4\n",
+      hint: "<code>_</code> は差し込む位置。<code>_ + _</code> は 2 引数のラムダ" },
+    { file: "2_enum_match.vibe", title: "enum と match", expect: "area(Circle(2)) = 12\narea(Rect(6, 7)) = 42\n" },
+    { file: "3_guards.vibe", title: "ガード", expect: "classify(0) = zero\nclassify(2) = small\nclassify(-5) = negative\nclassify(99) = big\n",
+      hint: "or パターンと <code>if</code> ガード" },
+    { file: "4_optional_arg.vibe", title: "省略できる引数", expect: "hi x1\nhi x3\n",
+      hint: "<code>times?</code> は <code>Option</code> で受ける" },
+    { file: "5_let_star.vibe", title: "let*", expect: "halves_or_zero(4, 6) = 5\nhalves_or_zero(4, 3) = 0\n",
+      hint: "<code>Option</code> の早期脱出" },
+    { file: "6_trait_bound.vibe", title: "trait", expect: "size_of = 3\n",
+      hint: "<code>T::measure</code> は witness 経由で呼ぶ。メソッド呼び出しは無い" },
+    { file: "7_byte_string.vibe", title: "バイト文字列", expect: "bytes = 11\nhead  = vibe\ntail  = 言語\n",
+      hint: "<code>String</code> はバイト列。長さもスライスもバイト単位で、wasm のメモリそのまま" },
+    { file: "8_int_wrap.vibe", title: "63bit Int", expect: "max     = 4611686018427387903\nmax + 1 = -4611686018427387904\n~0      = -1, ~5 = -6\n",
+      hint: "<code>Int</code> は 63bit。どのバックエンドでも同じように wrap する" },
+  ]),
+  equality: gallery("equality", [
+    { file: "1_structural.vibe", title: "中身で比べる", expect: "arrays: true\ntuples: true\n",
+      hint: "<code>==</code> はどこに書いても中身を比べる" },
+    { file: "2_bound.vibe", title: "[T: Eq]", expect: "Double: true\nString: true, false\n",
+      hint: "ジェネリクス越しの <code>1.5 == 1.5</code> は昔 <code>false</code> だった" },
+    { file: "3_generalized_refused.vibe", title: "注釈を求める", refuse: "annotate `p`, `q` with concrete types",
+      hint: "型の分からない <code>==</code> は、参照で比べて答えるのをやめてビルドエラーにした" },
+  ]),
 };
 
-export const CODE: Record<string, string> = {
-  optional: String.raw`
-fn main allows Console + Fs::read_file? {
-  match perform? Fs::read_file("config.json") {
-    NotGranted => println("not granted"),
-    Errored(_) => println("errored"),
-    Granted(_) => println("granted")
-  }
-}`,
-};
+// Static code blocks (colourised, not editable). None at the moment.
+export const CODE: Record<string, string> = {};
+
+// d2 figures, laid out by TALA from ./figures/*.d2 (`pnpm figures` re-renders
+// them; the SVGs are committed so a build needs no d2).
+const FIGURE_SVGS = import.meta.glob<string>("./figures/*.svg", { query: "?raw", import: "default", eager: true });
+function figure(name: string, className = ""): string {
+  const svg = FIGURE_SVGS[`./figures/${name}.svg`];
+  if (svg === undefined) throw new Error(`slides: no figure ${name}`);
+  // d2 pins the drawing to the top left (xMinYMin); centre it in the space it gets.
+  const centred = svg.replace(/<\?xml[^>]*>/, "").replace('preserveAspectRatio="xMinYMin meet"', 'preserveAspectRatio="xMidYMid meet"');
+  return `<div class="figure ${className}">${centred}</div>`;
+}
 
 const CLI = String.raw`<span class="prompt">$</span> vibe check app.vibe            <span class="out"># empty = compiles</span>
 <span class="prompt">$</span> vibe symbols app.vibe
@@ -285,41 +202,20 @@ export const SLIDES: Slide[] = [
   {
     html: `
       <h2><span class="kicker">What</span>vibe</h2>
-      <div class="cols wide-left grow">
-        <div>
-          <ul>
-            <li>静的型付きの関数型言語。WebAssembly にコンパイルする</li>
-            <li>エフェクトは Result で包まないで、関数の型 (<strong>effect row</strong>) に書く (Koka 風)</li>
-            <li><strong>権限 (capability)</strong> もエフェクトとして型に書いて、ビルド時に決める</li>
-            <li>コンパイラは vibe で書いてて、wasm で動く</li>
-          </ul>
-          <p class="muted">参考にしたもの</p>
-          <div class="chips">
-            <span class="chip">MoonBit (wasm first)</span>
-            <span class="chip">Koka (effect system)</span>
-            <span class="chip">Verse</span>
-            <span class="chip">Rust (Book・診断)</span>
-            <span class="chip">Deno (permissions)</span>
-          </div>
-        </div>
-        <div class="card">
-          <h3>必須の wasm 機能</h3>
-          <ul>
-            <li><code>v128</code> SIMD</li>
-            <li><code>js-string</code> builtins</li>
-            <li>WASI p3 / component model</li>
-            <li>exception handling (<code>exnref</code>)</li>
-          </ul>
-          <p class="small muted">CLI は Rust + Wasmtime。imports を外付けすればブラウザと Node.js でも動く</p>
-        </div>
+      <ul>
+        <li>静的型付きの関数型言語。WebAssembly にコンパイルして、コンパイラも vibe で書いてて wasm で動く</li>
+        <li>effect row に<strong>権限 (capability)</strong> も乗せて、ビルド時に決める</li>
+      </ul>
+      ${figure("architecture", "wide")}
+      <div class="chips">
+        <span class="chip">MoonBit (wasm first)</span>
+        <span class="chip">Koka (effect system)</span>
+        <span class="chip">Verse</span>
+        <span class="chip">Rust (Book・診断)</span>
+        <span class="chip">Deno (permissions)</span>
+        <span class="chip muted">必須: v128 / js-string / WASI p3 / exnref</span>
       </div>`,
-    notes: "0:45 (25s) row にエフェクトも権限も乗る。参考にした言語。必須の wasm 機能",
-  },
-  {
-    html: `
-      <h2><span class="kicker">Live</span>このタブでコンパイル</h2>
-      <div class="demo" data-demo="hello"></div>`,
-    notes: "1:10 (20s) r で実行。compile+run の ms を読む",
+    notes: "0:45 (25s) 図の左から。コンパイラ自身が wasm。ホストが import を外付けするので CLI、ブラウザ、Node で同じ wasm が動く",
   },
   {
     html: `
@@ -343,7 +239,7 @@ export const SLIDES: Slide[] = [
         </div>
       </div>
       <p class="quote">設計で迷ったときのプロンプトは<strong>「迷ったら wasm / wasi のプリミティブとして自然な方」</strong></p>`,
-    notes: "1:30 (30s) wasm first。SIMD、ブラウザで開発、component model",
+    notes: "1:10 (30s) wasm first。SIMD、ブラウザで開発、component model",
   },
   {
     html: `
@@ -353,7 +249,6 @@ export const SLIDES: Slide[] = [
           <h3>権限を制御したい</h3>
           <ul>
             <li>AI に書かせたコードが何をするか、シグネチャを見ればわかるようにしたい</li>
-            <li>Deno のパーミッション × Koka のエフェクト</li>
             <li>呼び出す側はただの関数呼び出しのまま</li>
           </ul>
         </div>
@@ -362,94 +257,78 @@ export const SLIDES: Slide[] = [
           <ul>
             <li>LLM は落ちれば直すけど、<strong>黙って間違う</strong>とそのまま先に進む。これが一番困る</li>
             <li>エラーメッセージには直し方を書く。コンパイラの内部用語は出さない</li>
-            <li>IDE 相当の問い合わせは LSP じゃなくて CLI で (<code>vibe symbols</code>、<code>vibe grep</code>)</li>
+            <li>IDE 相当の問い合わせは LSP じゃなくて CLI で</li>
           </ul>
         </div>
       </div>`,
-    notes: "2:00 (25s) AI first。黙って間違うのが一番まずい。LLM の評価ループは気づけない",
+    notes: "1:40 (25s) AI first。黙って間違うのが一番まずい。LLM の評価ループは気づけない",
   },
   {
     className: "section",
-    html: `<h1><small>FEATURES</small>型に書くもの</h1><p>失敗・権限・アロケーションは型に書く。書いてないとコンパイルが通らない</p>`,
-    notes: "2:25 (5s) 型に書くもの 3 つ。比較の話は後半。ここからライブでコンパイル",
+    html: `<h1><small>FEATURES</small>型に書くもの</h1><p>effect system の基本は Koka と同じ。ここからは vibe で決めたことと、その実物</p>`,
+    notes: "2:05 (5s) effect system の説明はしない。vibe で決めたことだけ。サンプルは数字キーで切り替え",
   },
   {
     html: `
-      <h2><span class="kicker">Effects</span>effect row</h2>
-      <div class="demo" data-demo="effects"></div>`,
-    notes: "2:30 (30s) r で実行。handle を外すとコンパイルが止まる",
-  },
-  {
-    html: `
-      <h2><span class="kicker">Effects</span>handler を差し替える</h2>
-      <div class="demo" data-demo="emit"></div>`,
-    notes: "3:00 (30s) 自分で effect を定義する。同じ fizz を、表示する handler と数える handler で動かす",
-  },
-  {
-    html: `
-      <h2><span class="kicker">Capabilities</span><code>with</code> と <code>allows</code></h2>
-      <div class="demo" data-demo="caps"></div>
-      <pre class="code console diag">$ vibe check greet.vibe     <span class="out"># allows を with に書き換えた</span>
-<span class="out">\`fn main\` is an entry point and grants its row, so the keyword is \`allows\`:</span>
-<span class="out">write \`fn main allows Console\`</span></pre>`,
-    notes: "3:30 (45s) allows を with に書き換える → 下の診断がそのまま出る",
-  },
-  {
-    html: `
-      <h2><span class="kicker">Capabilities</span>ビルド時の権限</h2>
-      <div class="flow">
-        <div class="node hot"><b>ビルド時</b><span><code>--allow-*</code> / <code>--deny-*</code> で権限を決めて、使わないコードは DCE で消す</span></div>
-        <div class="arrow">→</div>
-        <div class="node"><b>起動前</b><span>必須の権限が無ければ main の前に止める</span></div>
-      </div>
-      <div class="cols">
-        <div>
-          <ul class="small">
-            <li><code>Http</code> を使わなければ、ネットワーク周りのコードは wasm に入らない</li>
-            <li>ホスト (Rust + Wasmtime / ブラウザ / Node.js) は imports を外付けする。実行時の権限はここで止める</li>
-            <li>省略可能な権限は <code>perform?</code> で受けて、無いときの分岐を書く</li>
-          </ul>
-        </div>
-        <pre class="code" data-src="optional"></pre>
+      <h2><span class="kicker">Effects</span>vibe の effect で決めたこと</h2>
+      <div class="cols wide-right grow">
+        <ul class="small">
+          <li>代数的エフェクトと権限が<strong>同じ row</strong>に乗る。権限は handle しないで、entry の <code>allows</code> まで残る</li>
+          <li><code>resume</code> は 1 回、arm の最後だけ</li>
+          <li><code>handle</code> は中の <code>perform</code> が全部見えないといけない</li>
+          <li>row の書き忘れは、直し方付きで拒否</li>
+        </ul>
+        ${figure("effects")}
       </div>`,
-    notes: "4:15 (30s) 権限はビルド時に一度だけ決める。使わない権限のコードは DCE で wasm から消える。足りなければ起動前に止める",
+    notes: "2:10 (35s) 図。代数的エフェクトは handle で消える、権限は main の allows まで残ってホストの import になる。resume は one-shot の末尾だけ",
   },
   {
     html: `
-      <h2><span class="kicker">Allocation</span><code>#zero_alloc</code> (OxCaml から移植)</h2>
-      <div class="demo" data-demo="zero_alloc"></div>`,
-    notes: "4:45 (25s) 本体を Array::length([a, b]) にしてエラーを見せる",
+      <h2><span class="kicker">Effects</span>サンプル</h2>
+      <div class="demo" data-demo="effects"></div>`,
+    notes: "2:45 (45s) 1 resume、2 handler 差し替え。7〜a は拒否される例。a は payload パターンが黙って全部マッチするのを止めてる",
   },
   {
     html: `
-      <h2><span class="kicker">Allocation</span><code>region</code></h2>
-      <div class="demo" data-demo="region"></div>`,
-    notes: "5:10 (25s) region の中の確保はまとめて捨てる。zero_alloc は通る。strict にすると落ちる。l を返すと外に出るので落ちる",
+      <h2><span class="kicker">Capabilities</span>権限はビルド時に一度だけ決める</h2>
+      ${figure("capabilities", "wide")}
+      <ul class="small">
+        <li>使わない権限のコードは wasm に入らない。ホストは import を外付けするだけ</li>
+        <li>省略できる権限は <code>perform?</code> で受けて、無いときの分岐を書く (Effects サンプルの 5)</li>
+      </ul>`,
+    notes: "3:30 (30s) 権限はビルド時に一度だけ決める。--deny-http なら Http のコードは DCE で消える。足りなければ main の前で止める",
+  },
+  {
+    html: `
+      <h2><span class="kicker">Allocation</span><code>#zero_alloc</code> (OxCaml から移植) と <code>region</code></h2>
+      <div class="demo" data-demo="memory"></div>`,
+    notes: "4:00 (40s) 1 → 2 で配列リテラルが拒否される。3 は呼んだ先。4 region は数えない、5 strict で拒否、6 外に返すと拒否",
   },
   {
     html: `
       <h2><span class="kicker">Concurrency</span><code>TaskGroup</code></h2>
-      <p class="small">スレッドはまだ無い。1 スレッドの協調スケジューラ。<code>Send</code> と region の検査は今から効かせてる</p>
-      <div class="demo" data-demo="tasks"></div>`,
-    notes: "5:35 (30s) スレッドはまだ無い。協調スケジューラ。spawn だけでは動かず join で動く。xs = [1, 2, 3] を捕まえるとエラー (Array は Send じゃない)",
+      ${figure("taskgroup", "wide")}
+      <ul class="small">
+        <li>スレッドはまだ無い。1 スレッドの協調スケジューラで、順番は毎回同じ</li>
+        <li>でも shared-nothing の検査 (<code>Send</code> と region) は今から効かせてる。wasm threads が来たら並列に載せ替える</li>
+      </ul>`,
+    notes: "4:40 (25s) スレッドは無い。協調スケジューラ。Send と region の検査は先に入れてある",
   },
   {
     html: `
-      <h2><span class="kicker">Async</span>止まるタスク</h2>
-      <div class="demo" data-demo="suspend"></div>`,
-    notes: "6:05 (25s) spawn_suspend のタスクは sleep_wait で止まって、ほかのタスクに譲る。a1 b1 a2 b2 の順",
+      <h2><span class="kicker">Concurrency</span>サンプル</h2>
+      <div class="demo" data-demo="concurrency"></div>`,
+    notes: "5:05 (40s) 1 spawn/join の順番、5 止まるタスク、7 と 8 は拒否",
   },
   {
     html: `
       <h2><span class="kicker">Syntax</span>メソッド呼び出しなし</h2>
       <ul class="small">
-        <li><code>foo.bar()</code> のメッセージパッシングはいらない</li>
-        <li><code>.</code> の補完は人間用。LLM には型名が書いてあるほうが読みやすいと思ってる。まだ測ってない</li>
-        <li><code>Foo::bar(foo)</code> か <code>foo |&gt; Foo::bar()</code>。<code>foo.prop</code> はフィールドアクセスだけ</li>
+        <li><code>Foo::bar(foo)</code> か <code>foo |&gt; Foo::bar()</code>。<code>foo.prop</code> はフィールドアクセスだけ。LLM には型名が書いてあるほうが読みやすいと思ってる (まだ測ってない)</li>
         <li>import はファイルスコープで明示。書いたものだけがスコープに出てくる</li>
       </ul>
-      <div class="demo" data-demo="pipe"></div>`,
-    notes: "6:30 (35s) メソッド呼び出しを捨てた理由。型名があると LLM が読みやすいと思ってる (測ってない)。r でパイプ",
+      <div class="demo" data-demo="syntax"></div>`,
+    notes: "5:45 (35s) メソッド呼び出しを捨てた理由。1 パイプ、7 バイト文字列、8 63bit Int",
   },
   {
     html: `
@@ -460,12 +339,12 @@ export const SLIDES: Slide[] = [
         <li><code>vibe grep</code> は AST パターンを型や effect row で絞れる。<code>vibe mutate</code> でテストの効き目も測る</li>
         <li>CLI で答えられないと、LLM が毎回 grep で探し回る。見つけたらその場で CLI を直す</li>
       </ul>`,
-    notes: "7:05 (30s) LSP じゃなくて CLI。空出力なら clean。答えられない質問は CLI を直す",
+    notes: "6:20 (30s) LSP じゃなくて CLI。空出力なら clean。答えられない質問は CLI を直す",
   },
   {
     className: "section",
     html: `<h1><small>HOW</small>作り方</h1>`,
-    notes: "7:35 (5s) 作り方",
+    notes: "6:50 (5s) 作り方",
   },
   {
     html: `
@@ -490,32 +369,23 @@ export const SLIDES: Slide[] = [
           </table>
         </div>
       </div>`,
-    notes: "7:40 (35s) MoonBit でプロトタイプ → 部分ごとにセルフホスト。Lean をオラクルに。「バグを潰して」",
+    notes: "6:55 (35s) MoonBit でプロトタイプ → 部分ごとにセルフホスト。Lean をオラクルに。「バグを潰して」",
   },
   {
     html: `
       <h2><span class="kicker">Self-hosting</span>セルフホスト</h2>
-      <div class="flow">
-        <div class="node"><b>seed</b><span>pin した compiler.wasm (sha256 で検証)</span></div>
-        <div class="arrow">→</div>
-        <div class="node"><b>stage1</b><span>seed が今のソースをコンパイル</span></div>
-        <div class="arrow">→</div>
-        <div class="node hot"><b>stage2</b><span>stage1 が自分をコンパイル。これが本番</span></div>
-        <div class="arrow">→</div>
-        <div class="node"><b>stage3</b><span>stage2 と<strong>バイト一致</strong>すれば fixpoint</span></div>
-      </div>
+      ${figure("selfhost", "wide")}
       <ul class="small">
-        <li>新しい構文をコンパイラ自身で使うには、先に seed がその構文を読める状態で tag を打って bump する</li>
         <li>MoonBit も LLVM もいらない。wasm ランナーだけで動く</li>
         <li>罠。<code>vibe test</code> は既定だと seed がコンパイルする。コンパイラを直したのに、直す前のコンパイラで検証してた</li>
       </ul>
       <p class="quote small">seed の自己ビルドは pass 3 の時点で 3.89GiB、<strong>wasm32 の 4GiB</strong> まで残り 119MB。そこに 44 行足したら超えた (#3439)</p>`,
-    notes: "8:15 (35s) seed → stage3。vibe test が seed で答える罠。4GiB の話",
+    notes: "7:30 (35s) seed → stage3。vibe test が seed で答える罠。4GiB の話",
   },
   {
     className: "section",
     html: `<h1><small>PAIN</small>大変だったこと</h1><p>バグの優先度は <strong>黙って間違う (P0) &gt; 落ちる (P1) &gt; 機能追加 (P2)</strong></p>`,
-    notes: "8:50 (10s) 大変だったこと。優先度は 黙って間違う > 落ちる > 機能追加。まず数字",
+    notes: "8:05 (10s) 大変だったこと。優先度は 黙って間違う > 落ちる > 機能追加。まず数字",
   },
   {
     html: `
@@ -547,7 +417,7 @@ export const SLIDES: Slide[] = [
         </div>
       </div>
       ${SOURCE}`,
-    notes: "9:00 (35s) bug 841 件を修正の場所で数えた。件数は checker と codegen、黙って間違う率は desugar",
+    notes: "8:15 (35s) bug 841 件を修正の場所で数えた。件数は checker と codegen、黙って間違う率は desugar",
   },
   {
     html: `
@@ -595,7 +465,7 @@ export const SLIDES: Slide[] = [
         <li>権限まわりはほぼバグらなかった</li>
       </ul>
       ${SOURCE}`,
-    notes: "9:35 (35s) バグが多いのは組み合わせ。クロージャ × effect row × ジェネリクス。== と String は P0 率も高い。権限まわりはほぼバグらなかった",
+    notes: "8:50 (35s) バグが多いのは組み合わせ。クロージャ × effect row × ジェネリクス。== と String は P0 率も高い。権限まわりはほぼバグらなかった",
   },
   {
     html: `
@@ -618,7 +488,7 @@ export const SLIDES: Slide[] = [
         </div>
       </div>
       <p class="small">Int のオーバーフローの結果が linear と wasm-gc で違ってた (#1877)</p>`,
-    notes: "10:10 (35s) ベンチが揺れるので fuel に切り替えた。ヒープ 953MB。FBIP は効いたけど壁時計は変わらず",
+    notes: "9:25 (35s) ベンチが揺れるので fuel に切り替えた。ヒープ 953MB。FBIP は効いたけど壁時計は変わらず",
   },
   {
     html: `
@@ -643,29 +513,33 @@ export const SLIDES: Slide[] = [
           </ul>
         </div>
       </div>`,
-    notes: "10:45 (45s) 安いモデルだとバグの生成 > 修正。interning なし、実行時アサーション、replay 方式のハンドラ",
+    notes: "10:00 (45s) 安いモデルだとバグの生成 > 修正。interning なし、実行時アサーション、replay 方式のハンドラ",
   },
   {
     html: `
       <h2><span class="kicker">Pain 3</span><code>==</code></h2>
       <ul class="small">
-        <li><code>[1, 2] == [1, 2]</code> の答えが文脈で変わってた。そのまま書くと参照比較、struct の中だと構造比較 (#1526)</li>
-        <li>ジェネリクス越しの <code>1.5 == 1.5</code> が <strong>false</strong>。<code>Double</code> の箱を比べてた (#2895)</li>
-        <li>今は、型が分からない <code>==</code> はビルドエラーにして、型注釈を書かせる</li>
+        <li><code>[1, 2] == [1, 2]</code> の答えが文脈で変わってた。そのまま書くと参照比較、struct の中だと構造比較</li>
+        <li>ジェネリクス越しの <code>1.5 == 1.5</code> が <strong>false</strong>。<code>Double</code> の箱を比べてた</li>
       </ul>
-      <div class="demo" data-demo="eq"></div>`,
-    notes: "11:30 (40s) == が黙って間違ってた (昔は false)。r で実行、今は両方 true",
+      ${figure("equality", "wide")}`,
+    notes: "10:45 (30s) == が黙って間違ってた。型を見ない desugar を通ると lowering に型が届かない。今は届かなければビルドエラー",
+  },
+  {
+    html: `
+      <h2><span class="kicker">Pain 3</span><code>==</code> の今</h2>
+      <div class="demo" data-demo="equality"></div>`,
+    notes: "11:15 (20s) 1 と 2 は今は true。3 は答える代わりに注釈を求める",
   },
   {
     html: `
       <h2><span class="kicker">Spec gaps</span>wasm に足りないもの</h2>
-      <div class="cols three">
-        <div class="card"><h3>スレッド</h3><p class="small">結局どれ。今は <code>TaskGroup</code> の構造化並行性と shared-nothing でやってる。wasm threads が来たら乗り換えられるようにはしてる</p></div>
-        <div class="card"><h3>wasm-gc と SIMD</h3><p class="small">wasm-gc の ref 型だと、配列に <code>v128</code> が使えない。なので codegen は linear と wasm-gc の両対応で、これを続けるのがしんどい</p></div>
-        <div class="card"><h3>WIT</h3><p class="small">ジェネリクスがない。WIT に出せる型はこっちで決め打ちしてる</p></div>
-      </div>
-      <p>よかったのは wasmtime の guest profiler と fuel。気になってる言語は bend-lang</p>`,
-    notes: "12:10 (35s) wasm に足りないもの。スレッド、wasm-gc の配列に v128 が無いので両対応、WIT のジェネリクス",
+      ${figure("backends", "wide")}
+      <ul class="small">
+        <li>wasm-gc の ref 型の配列には <code>v128</code> が置けない。なので codegen は linear と wasm-gc の両対応で、これを続けるのがしんどい</li>
+        <li>よかったのは wasmtime の guest profiler と fuel。気になってる言語は bend-lang</li>
+      </ul>`,
+    notes: "11:35 (35s) wasm に足りないもの。スレッド、wasm-gc の配列に v128 が無いので両対応、WIT のジェネリクス",
   },
   {
     className: "closing",
@@ -676,6 +550,6 @@ export const SLIDES: Slide[] = [
         <li>皆さんも自作言語をセルフホストしましょう</li>
       </ul>
       <p class="muted">github.com/mizchi/vibe-lang · The Vibe Book: mizchi.github.io/vibe-lang</p>`,
-    notes: "12:45 (30s) 0.1.0 触ってください。皆さんもセルフホストしましょう",
+    notes: "12:10 (30s) 0.1.0 触ってください。皆さんもセルフホストしましょう",
   },
 ];

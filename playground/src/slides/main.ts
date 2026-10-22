@@ -1,7 +1,7 @@
 import * as monaco from "monaco-editor";
 import { compileAndRun } from "../browser-runtime.js";
 import { vibeLanguageConfig, vibeMonarchLanguage } from "../vibe-monarch.js";
-import { CODE, DEMOS, SLIDES, type Demo } from "./content.js";
+import { CODE, DEMOS, SLIDES, type Sample } from "./content.js";
 
 monaco.languages.register({ id: "vibe", extensions: [".vibe"] });
 monaco.languages.setLanguageConfiguration("vibe", vibeLanguageConfig);
@@ -57,7 +57,12 @@ for (const pre of deck.querySelectorAll<HTMLPreElement>("pre.code[data-src]")) {
   });
 }
 
-type LiveDemo = { editor: monaco.editor.IStandaloneCodeEditor; run: () => Promise<void> };
+type LiveDemo = {
+  editor: monaco.editor.IStandaloneCodeEditor;
+  run: () => Promise<void>;
+  select: (index: number) => void;
+  count: number;
+};
 const liveDemos = new Map<HTMLElement, LiveDemo>();
 
 function demoFontSize(): number {
@@ -65,25 +70,34 @@ function demoFontSize(): number {
   return Math.max(11, Math.round(width * 0.0138));
 }
 
+const IDLE = "⌘/Ctrl + Enter で実行";
+
 function mountDemo(host: HTMLElement): LiveDemo {
   const existing = liveDemos.get(host);
   if (existing) return existing;
-  const found: Demo | undefined = DEMOS[host.dataset.demo!];
-  if (!found) throw new Error(`slides: unknown demo ${host.dataset.demo}`);
-  const demo: Demo = found;
+  const found: Sample[] | undefined = DEMOS[host.dataset.demo!];
+  if (!found || found.length === 0) throw new Error(`slides: unknown demo ${host.dataset.demo}`);
+  const samples: Sample[] = found;
+  // A gallery lists its samples as numbered tabs; the digit keys pick one too.
+  const tabs = samples.length > 1
+    ? `<div class="tabs">${samples
+        .map((s, i) => `<button type="button" data-index="${i}" class="${s.refuse ? "refuse" : ""}">${i + 1}. ${s.title}</button>`)
+        .join("")}</div>`
+    : "";
   host.innerHTML = `
     <div class="editor-wrap"><div class="editor"></div></div>
     <div class="side">
+      ${tabs}
       <div class="toolbar">
         <button class="run" type="button">▶ Run</button>
         <button class="reset" type="button">Reset</button>
         <span class="timing"></span>
       </div>
-      <pre class="output idle">⌘/Ctrl + Enter で実行</pre>
-      ${demo.hint ? `<div class="hint">${demo.hint}</div>` : ""}
+      <pre class="output idle">${IDLE}</pre>
+      <div class="hint"></div>
     </div>`;
   const editor = monaco.editor.create(host.querySelector<HTMLElement>(".editor")!, {
-    value: demo.source.trim(),
+    value: samples[0].source.trim(),
     language: "vibe",
     theme: "vibe-book",
     automaticLayout: true,
@@ -104,7 +118,25 @@ function mountDemo(host: HTMLElement): LiveDemo {
   const runButton = host.querySelector<HTMLButtonElement>("button.run")!;
   const output = host.querySelector<HTMLPreElement>(".output")!;
   const timing = host.querySelector<HTMLSpanElement>(".timing")!;
+  const hint = host.querySelector<HTMLDivElement>(".hint")!;
+  let index = 0;
+  function reset() {
+    editor.setValue(samples[index].source.trim());
+    output.className = "output idle";
+    output.textContent = IDLE;
+    timing.textContent = "";
+  }
+  function select(next: number) {
+    if (next < 0 || next >= samples.length) return;
+    index = next;
+    for (const tab of host.querySelectorAll<HTMLButtonElement>(".tabs button")) {
+      tab.classList.toggle("active", Number(tab.dataset.index) === index);
+    }
+    hint.innerHTML = samples[index].hint ?? "";
+    reset();
+  }
   async function run() {
+    const sample = samples[index];
     runButton.disabled = true;
     output.className = "output idle";
     output.textContent = "compiling in this tab…";
@@ -112,20 +144,23 @@ function mountDemo(host: HTMLElement): LiveDemo {
     const started = performance.now();
     if (PREVIEW) {
       // A build without the browser compiler (VITE_SLIDES_PREVIEW=1): the only
-      // honest answer is the output the smoke test checks for the unedited source.
-      if (editor.getValue().trim() !== demo.source.trim()) {
+      // honest answer is what the smoke test checks for the unedited source.
+      if (editor.getValue().trim() !== sample.source.trim()) {
         output.className = "output error";
-        output.textContent = "プレビュー版にはコンパイラが入っていないので、編集したコードは実行できません。Reset で元のコードに戻すと、CI で確認済みの出力を表示します。";
+        output.textContent = "プレビュー版にはコンパイラが入っていないので、編集したコードは実行できません。Reset で元のコードに戻すと、CI で確認済みの結果を表示します。";
+      } else if (sample.refuse !== undefined) {
+        output.className = "output error";
+        output.textContent = `${sample.refuse} …\n(プレビュー: 元のコードについて CI で確認済みのエラー)`;
       } else {
         output.className = "output";
-        output.textContent = `${demo.expect}\n(プレビュー: 元のコードについて CI で確認済みの出力)`;
+        output.textContent = `${sample.expect}\n(プレビュー: 元のコードについて CI で確認済みの出力)`;
       }
       timing.textContent = "";
       runButton.disabled = false;
       return;
     }
     try {
-      const stdout = await compileAndRun(editor.getValue(), demo.entry ?? "main", demo.files ?? {});
+      const stdout = await compileAndRun(editor.getValue(), sample.entry ?? "main", sample.files ?? {});
       output.className = "output";
       output.textContent = stdout === "" ? "(no output)" : stdout;
     } catch (error) {
@@ -137,15 +172,14 @@ function mountDemo(host: HTMLElement): LiveDemo {
     }
   }
   runButton.addEventListener("click", () => void run());
-  host.querySelector<HTMLButtonElement>("button.reset")!.addEventListener("click", () => {
-    editor.setValue(demo.source.trim());
-    output.className = "output idle";
-    output.textContent = "⌘/Ctrl + Enter で実行";
-    timing.textContent = "";
-  });
+  host.querySelector<HTMLButtonElement>("button.reset")!.addEventListener("click", reset);
+  for (const tab of host.querySelectorAll<HTMLButtonElement>(".tabs button")) {
+    tab.addEventListener("click", () => select(Number(tab.dataset.index)));
+  }
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => void run());
   editor.addCommand(monaco.KeyCode.Escape, () => (document.activeElement as HTMLElement | null)?.blur());
-  const live = { editor, run };
+  select(0);
+  const live = { editor, run, select, count: samples.length };
   liveDemos.set(host, live);
   return live;
 }
@@ -202,6 +236,13 @@ document.addEventListener("keydown", (event) => {
     case "n":
       notesEl.hidden = !notesEl.hidden;
       break;
+    case "1": case "2": case "3": case "4": case "5": case "6": case "7": case "8": case "9": case "0": {
+      // Pick a sample of the current slide's gallery without the mouse; 0 is the tenth.
+      const host = slideEls[current].querySelector<HTMLElement>(".demo[data-demo]");
+      if (!host) return;
+      mountDemo(host).select(event.key === "0" ? 9 : Number(event.key) - 1);
+      break;
+    }
     case "f":
       if (document.fullscreenElement) void document.exitFullscreen();
       else void document.documentElement.requestFullscreen();
@@ -225,13 +266,18 @@ window.addEventListener("hashchange", () => {
 });
 
 // Test hook for tests/slides-smoke.mjs: which slide holds which demo, and
-// what its unedited source must print.
+// what each unedited sample must print, or the error it must be refused with.
 (window as unknown as { __slideDemos: unknown }).__slideDemos = slideEls.flatMap((el, index) =>
-  Array.from(el.querySelectorAll<HTMLElement>(".demo[data-demo]"), (host) => ({
-    slide: index + 1,
-    id: host.dataset.demo!,
-    expect: DEMOS[host.dataset.demo!].expect,
-  })),
+  Array.from(el.querySelectorAll<HTMLElement>(".demo[data-demo]")).flatMap((host) =>
+    DEMOS[host.dataset.demo!].map((sample, sampleIndex) => ({
+      slide: index + 1,
+      id: host.dataset.demo!,
+      sample: sampleIndex,
+      title: sample.title,
+      expect: sample.expect,
+      refuse: sample.refuse,
+    })),
+  ),
 );
 
 // `?view=all` stacks every slide at a fixed 1280x720 frame: the print view,
