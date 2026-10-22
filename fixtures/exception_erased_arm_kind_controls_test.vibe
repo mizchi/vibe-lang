@@ -120,3 +120,28 @@ test "a message-only literal through a row-variable callback reads the message" 
   } with { Exception::Throw(m) => String::length(m) }
   inspect(r, "4")
 }
+
+fn leaks_int() -> Int with Exception {
+  throw(7)
+}
+
+test "an annotated aggregate whose element row names the kind takes a leaky function" {
+  let fs: Array[() -> Int with Exception + Exception[Int]] = [leaks_int]
+  let pair: (() -> Int with Exception + Exception[Int], Int) = (leaks_int, 1)
+  let opt: Option[() -> Int with Exception + Exception[Int]] = Some(leaks_int)
+  let r = handle {
+    let f = Array::get(fs, 0)
+    f()
+  } with { Exception::Throw(_) => 100 }
+  let (g, n) = pair
+  let s = handle {
+    g() + n
+  } with { Exception::Throw(_) => 200 }
+  let t = match opt {
+    Some(h) => handle {
+      h()
+    } with { Exception::Throw(_) => 300 },
+    None => 0
+  }
+  inspect(r + s + t, "600")
+}

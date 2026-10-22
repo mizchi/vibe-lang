@@ -667,21 +667,6 @@ fn erased_flow_kinds(scope: ErasedFlowScope, leaky: Array[(String, Array[String]
   out
 }
 
-/// The `EIdent` a value expression is, through a local annotation
-/// (`((__asc: T) -> __asc)(f)`), with that annotation's function row.
-fn erased_flow_ascribed(val: Expr) -> Option[(String, Int, Option[Array[String]])] {
-  match afe_ascribed_name_type(val) {
-    Some(te) => match val {
-      ECall(_, args, _, _) => match Array::get(args, 0) {
-        EIdent(n, off) => Some((n, off, type_expr_fn_row(te))),
-        _ => None
-      },
-      _ => None
-    },
-    None => None
-  }
-}
-
 /// #3601: a function whose erased `with Exception` row lets out a kind other
 /// than the message carries that kind only where the checker reads its row:
 /// a call of it, an unannotated alias (`let g = fail`), and an argument whose
@@ -711,11 +696,15 @@ fn erased_value_flow_errors(stmts: Array[Stmt], imported: Array[(String, Array[S
             }
             erased_flow_walk(name, fbody, erased_flow_scope_hide(empty, names), leaky, errors)
           },
-          EIdent(src, off) => match ty {
+          // An unannotated alias (`let g = fail`) keeps the kinds.
+          EIdent(_, _) => match ty {
             None => (),
-            Some(te) => erased_flow_slot(name, src, off, type_expr_fn_row(te), empty, leaky, errors)
+            Some(te) => erased_flow_typed(name, body, te, empty, leaky, errors)
           },
-          _ => erased_flow_walk(name, body, empty, leaky, errors)
+          _ => match ty {
+            None => erased_flow_walk(name, body, empty, leaky, errors),
+            Some(te) => erased_flow_typed(name, body, te, empty, leaky, errors)
+          }
         },
         SLetMut(name, _, body) => erased_flow_walk(name, body, empty, leaky, errors),
         STest(tname, body) => erased_flow_walk(String::concat("__test_", tname), body, empty, leaky, errors),
@@ -743,6 +732,58 @@ fn erased_flow_slot(fn_name: String, src: String, off: Int, row: Option[Array[St
   }
 }
 
+/// The value and the annotation of an ascription (`let x: T = v` in a body).
+fn erased_flow_ascription(e: Expr) -> Option[(Expr, TypeExpr)] {
+  match e {
+    ECall(EFn(_, _, params, _, _, EIdent(body_name, _)), args, _, _) => if Array::length(params) == 1 && Array::length(args) == 1 && body_name == "__asc" {
+      match Array::get(params, 0) {
+        ("__asc", Some(ann)) => Some((Array::get(args, 0), ann)),
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// `v` written for a slot typed `te`: a name is judged against the slot's
+/// function row, and an array, tuple or `Some` literal hands each element the
+/// matching part of `te` (#3605 review), so
+/// `let fs: Array[() -> Int with Exception + Exception[Int]] = [bad]` reads
+/// the element's row. Anything else is walked as usual.
+fn erased_flow_typed(fn_name: String, v: Expr, te0: TypeExpr, scope: ErasedFlowScope, leaky: Array[(String, Array[String])], errors: Array[EffectError]) -> Unit {
+  let te = match dh_expand_type_alias(te0) {
+    Some(x) => x,
+    None => te0
+  }
+  match (v, te) {
+    (EIdent(src, off), _) => erased_flow_slot(fn_name, src, off, type_expr_fn_row(te), scope, leaky, errors),
+    (EArray(elems), TyApp("Array", targs)) => if Array::length(targs) == 1 {
+      for el in elems {
+        erased_flow_typed(fn_name, el, Array::get(targs, 0), scope, leaky, errors)
+      }
+    } else {
+      erased_flow_walk(fn_name, v, scope, leaky, errors)
+    },
+    (ETuple(elems), TyTuple(ts)) => if Array::length(elems) == Array::length(ts) {
+      let mut i = 0
+      while i < Array::length(elems) {
+        erased_flow_typed(fn_name, Array::get(elems, i), Array::get(ts, i), scope, leaky, errors)
+        i = i + 1
+      }
+    } else {
+      erased_flow_walk(fn_name, v, scope, leaky, errors)
+    },
+    (ECall(EIdent("Some", _), args, _, _), TyApp("Option", targs)) => if Array::length(args) == 1 && Array::length(targs) == 1 {
+      erased_flow_typed(fn_name, Array::get(args, 0), Array::get(targs, 0), scope, leaky, errors)
+    } else {
+      erased_flow_walk(fn_name, v, scope, leaky, errors)
+    },
+    _ => erased_flow_walk(fn_name, v, scope, leaky, errors)
+  }
+}
+
 fn erased_flow_walk(fn_name: String, root: Expr, root_scope: ErasedFlowScope, leaky: Array[(String, Array[String])], errors: Array[EffectError]) -> Unit {
   let stack: Array[Expr] = Array::slice([root], 0, 1)
   let scopes: Array[ErasedFlowScope] = Array::slice([root_scope], 0, 1)
@@ -758,8 +799,8 @@ fn erased_flow_walk(fn_name: String, root: Expr, root_scope: ErasedFlowScope, le
     }
     match e {
       EIdent(name, off) => erased_flow_slot(fn_name, name, off, Some(no_str_labels()), scope, leaky, errors),
-      ECall(callee, args, _, _) => match erased_flow_ascribed(e) {
-        Some((src, off, row)) => erased_flow_slot(fn_name, src, off, row, scope, leaky, errors),
+      ECall(callee, args, _, _) => match erased_flow_ascription(e) {
+        Some((v, te)) => erased_flow_typed(fn_name, v, te, scope, leaky, errors),
         None => match callee {
           EIdent(cname, _) => {
             // A local binding of the callee's spelling hides the program's
