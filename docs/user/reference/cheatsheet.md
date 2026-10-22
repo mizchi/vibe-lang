@@ -1819,12 +1819,15 @@ Rules:
   parameter or a builtin, or created and called in the body. A row VARIABLE
   of the enclosing signature is not run there either (#3540): in
   `fn guarded(f: () -> Int with e) -> Int with e`, a kinded handle around
-  `f()` is refused, because a caller may fill `e` with another kind. Move the
-  handle to the caller, give the callback a closed row (`with
-  Exception[Int]`), or use the erased arm; a kind label beside the variable
-  (`with Exception[Int] + e`) matches the whole exception family, so that
-  variable is admitted. An erased
-  `handle .. with Exception` nested inside is its own
+  `f()` is refused, because a caller may fill `e` with another kind. The same
+  holds for a function reached through a parameter's type (`fs: Array[() ->
+  Int with e]`, an `Option`, a tuple, a struct's row argument, a callback's
+  result). Move the handle to the caller, give the callback a closed row
+  (`with Exception[Int]`), or use the erased arm; a kind label beside the
+  variable (`with Exception[Int] + e`) matches the whole exception family, so
+  that variable is admitted when every parameter carrying it is written that
+  way, and such a slot refuses a `with Exception` value as the closed row
+  does. An erased `handle .. with Exception` nested inside is its own
   catch-all boundary. And a handle may have only ONE exception arm: the
   channel carries no kind and only the first exception arm is compiled, so
   `Exception[A]::Throw` next to `Exception[B]::Throw` is refused -- nest

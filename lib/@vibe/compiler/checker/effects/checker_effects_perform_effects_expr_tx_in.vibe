@@ -988,9 +988,85 @@ export fn build_param_overlay(params: Array[(String, Option[TypeExpr])], fn_name
       Array::push(names, String::concat(row_arg_owner_prefix(), base_name))
       Array::push(effs, row_args)
     }
+    // #3540: a function row nested in a parameter's type (`Array[() -> Int
+    // with e]`, `Option[..]`, a tuple, a callback's result) carries the
+    // signature's row variable too. Only a kinded handle reads these entries
+    // (`overlay_nests_row_var`, `kinded_pinned_row_var_labels`).
+    match ptype {
+      Some(te) => {
+        let nested: Array[Array[String]] = []
+        nested_fn_rows_into(te, true, nested)
+        for row in nested {
+          Array::push(names, String::concat(row_nest_owner_prefix(), base_name))
+          Array::push(effs, row)
+        }
+      },
+      None => ()
+    }
     i = i + 1
   }
   (names, effs)
+}
+
+/// The overlay entry under which a function row nested in a parameter's type
+/// is recorded, one entry per row (`build_param_overlay`). Like
+/// `row_arg_owner_prefix`, the `#` keeps lookups by name away from it.
+fn row_nest_owner_prefix() -> String {
+  "#rownest:"
+}
+
+/// The rows holding a row variable of the function types nested in `te`:
+/// inside a type argument, a tuple, or a function type's parameters or
+/// result. A top-level function type's own row is the callback entry, so it
+/// is left out (`top`).
+fn nested_fn_rows_into(te: TypeExpr, top: Bool, out: Array[Array[String]]) -> Unit {
+  match te {
+    TyFn(ps, ret, eff) => {
+      if !top {
+        let labels = effect_row_labels(effect_row_parse(eff))
+        let mut has_var = false
+        for l in labels {
+          if label_is_effect_var(l) {
+            has_var = true
+          }
+        }
+        if has_var {
+          Array::push(out, labels)
+        }
+      }
+      for p in ps {
+        nested_fn_rows_into(p, false, out)
+      }
+      nested_fn_rows_into(ret, false, out)
+    },
+    TyApp(_, args) => {
+      for a in args {
+        nested_fn_rows_into(a, false, out)
+      }
+      ()
+    },
+    TyTuple(items) => {
+      for a in items {
+        nested_fn_rows_into(a, false, out)
+      }
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// #3540: does a function row nested in a parameter's type carry `v`
+/// (`row_nest_owner_prefix`)?
+fn overlay_nests_row_var(ov_names: Array[String], ov_effs: Array[Array[String]], v: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(ov_names) && i < Array::length(ov_effs) && !found {
+    if String::starts_with(Array::get(ov_names, i), row_nest_owner_prefix()) && str_labels_contain(Array::get(ov_effs, i), v) {
+      found = true
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// The overlay entry under which a struct parameter's row variables are
@@ -1226,6 +1302,18 @@ fn kinded_pinned_row_var_labels(declared: Array[String], ov_names: Array[String]
               }
             }
           }
+        } else if String::starts_with(n, row_nest_owner_prefix()) && str_labels_contain(row, v) {
+          // A function row nested in a parameter's type is a carrier like a
+          // callback's own row.
+          carriers = carriers + 1
+          if Array::length(exception_effect_labels(row)) == 0 {
+            unpinned = true
+          }
+        } else if String::starts_with(n, row_arg_owner_prefix()) && str_labels_contain(row, v) {
+          // A row argument (`Holder[e]`) names no exception label beside the
+          // variable, so a field's function may raise any kind through it.
+          carriers = carriers + 1
+          unpinned = true
         }
         i = i + 1
       }
@@ -1249,7 +1337,11 @@ fn kinded_pinned_row_var_labels(declared: Array[String], ov_names: Array[String]
 fn charge_typed_own_row_vars(call_off: Int, spelling: String, ov_names: Array[String], ov_effs: Array[Array[String]], declared: Array[String], in_handle: Bool, missing: Array[String]) -> Unit {
   let own = no_str_labels()
   for v in call_callee_recorded_row_vars(call_off, spelling) {
-    if overlay_owns_row_var(ov_names, ov_effs, v) {
+    // #3540: in the body of a kinded handle a variable reached through a
+    // function nested in a parameter's type (`fs[0]()` over `fs: Array[() ->
+    // Int with e]`) is run too, and the arm would catch whatever kind a
+    // caller fills it with.
+    if overlay_owns_row_var(ov_names, ov_effs, v) || (under_kinded_handle(declared) && overlay_nests_row_var(ov_names, ov_effs, v)) {
       Array::push(own, v)
     }
   }

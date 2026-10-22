@@ -105,9 +105,12 @@ effect Exception[E] {
   the checker allows the body to raise only `K`. An erased or unresolved throw,
   a callee declared with the erased `Exception`, and a throw of another kind
   are all refused under a kinded arm. So is running a row variable of the
-  enclosing signature (a callback's `with e`, #3540): a caller may fill it with
-  any kind, so the handle belongs at the caller, unless a kind label beside the
-  variable (`with Exception[K] + e`) has taken the whole exception family. A
+  enclosing signature (a callback's `with e`, or a function row nested in a
+  parameter's type, #3540): a caller may fill it with any kind, so the handle
+  belongs at the caller, unless a kind label beside the variable (`with
+  Exception[K] + e`) has taken the whole exception family in every parameter
+  that carries it. Such a slot refuses an erased `with Exception` value, as
+  the closed `with Exception[K]` slot does. A
   closure literal handed straight to a
   callee is judged against the row the callee's parameter declares; an erased
   `handle .. with Exception` nested inside is its own catch-all boundary.

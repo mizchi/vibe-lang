@@ -1049,6 +1049,26 @@ fn row_is_kinded_exception_only(row: Option[String]) -> Bool {
   kinded && !open_row
 }
 
+/// #3540: does `row` name an exception kind and no erased exception label,
+/// beside a row variable (`with Exception[Int] + e`)?
+fn row_names_kind_beside_variable(row: Option[String]) -> Bool {
+  let mut kinded = false
+  let mut erased = false
+  let mut variable = false
+  for l in row_labels(row) {
+    if is_exception_label(l) {
+      if String::length(exception_label_kind(l)) > 0 {
+        kinded = true
+      } else {
+        erased = true
+      }
+    } else if (String::length(l) == 1 && String::char_code_at(l, 0) >= 97 && String::char_code_at(l, 0) <= 122) || (String::length(l) >= 2 && String::char_code_at(l, 0) == 36) {
+      variable = true
+    }
+  }
+  kinded && !erased && variable
+}
+
 fn row_contains_label(row: Option[String], lbl: String) -> Bool {
   let labels = row_labels(row)
   let mut i = 0
@@ -1106,8 +1126,12 @@ fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
           // slot promises only its own, and a kinded handler trusting the
           // slot reads a foreign payload at the wrong type. The #640
           // exemption covers erased labels dropped into rows that say
-          // nothing about kinds; it does not cover this.
-          let narrowed = is_exception_label(lbl) && String::length(exception_label_kind(lbl)) == 0 && row_is_kinded_exception_only(eeff)
+          // nothing about kinds; it does not cover this. #3540: nor does a
+          // row VARIABLE beside the kind (`with Exception[Int] + e`): the
+          // kind label matches the whole exception family, so the variable
+          // is not filled with the erased label, and a kinded handle around
+          // the call trusts that it holds no exception.
+          let narrowed = is_exception_label(lbl) && String::length(exception_label_kind(lbl)) == 0 && (row_is_kinded_exception_only(eeff) || row_names_kind_beside_variable(eeff))
           if narrowed || (!effect_label_is_exempt(lbl) && !row_contains_label(eeff, lbl)) {
             dropped = Some(lbl)
             done = true
