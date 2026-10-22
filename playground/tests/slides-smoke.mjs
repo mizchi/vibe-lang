@@ -64,9 +64,44 @@ try {
       failures.push(`${label}: expected ${JSON.stringify(demo.expect)}, got ${JSON.stringify(actual)}`);
     }
   }
+  // A phone reads the deck as one scrolling page: every slide shown, nothing
+  // wider than the screen (code blocks, tables and figures scroll inside
+  // themselves), and a demo still runs there.
+  const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  phone.on("pageerror", (error) => pageErrors.push(`phone: ${String(error)}`));
+  await phone.goto(`${base}slides.html`);
+  await phone.locator("#compiler-state.ready").waitFor({ state: "attached", timeout: 30000 });
+  const layout = await phone.evaluate(() => ({
+    read: document.body.classList.contains("read"),
+    hidden: Array.from(document.querySelectorAll(".slide")).filter((el) => el.getBoundingClientRect().height === 0).length,
+    pageWidth: document.documentElement.scrollWidth,
+    width: document.documentElement.clientWidth,
+  }));
+  if (!layout.read) failures.push("phone: the deck did not switch to reading mode");
+  if (layout.hidden > 0) failures.push(`phone: ${layout.hidden} slide(s) not shown`);
+  if (layout.pageWidth > layout.width) failures.push(`phone: page is ${layout.pageWidth}px wide on a ${layout.width}px screen`);
+  // Only a page laid out for the phone can run its demo; otherwise the
+  // failures above already say why.
+  if (layout.read && layout.hidden === 0) {
+    const first = demos[0];
+    const phoneHost = phone.locator(`.demo[data-demo="${first.id}"]`).first();
+    await phoneHost.scrollIntoViewIfNeeded();
+    await phoneHost.locator("button.run").click({ timeout: 10000 });
+    await phone.waitForFunction(
+      (id) => {
+        const output = document.querySelector(`.demo[data-demo="${id}"] .output`);
+        return output && !output.classList.contains("idle");
+      },
+      first.id,
+      { timeout: 30000 },
+    );
+    const phoneOutput = await phoneHost.locator(".output").textContent();
+    const phoneExpected = first.refuse ?? first.expect;
+    if (!phoneOutput.includes(phoneExpected)) failures.push(`phone: ${first.id}#1 printed ${JSON.stringify(phoneOutput)}`);
+  }
   if (pageErrors.length > 0) failures.push(`page errors: ${pageErrors.join("; ")}`);
-  if (failures.length > 0) throw new Error(`slides: ${failures.length} demo(s) failed\n${failures.join("\n")}`);
-  console.log(`slides: ${demos.length} samples ran in Chromium (${demos.filter((d) => d.refuse !== undefined).length} refused as recorded)`);
+  if (failures.length > 0) throw new Error(`slides: ${failures.length} check(s) failed\n${failures.join("\n")}`);
+  console.log(`slides: ${demos.length} samples ran in Chromium (${demos.filter((d) => d.refuse !== undefined).length} refused as recorded); phone reading mode ok`);
 } finally {
   await browser?.close();
   server.kill("SIGTERM");

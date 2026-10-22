@@ -160,7 +160,10 @@ function figure(name: string, className = ""): string {
   if (svg === undefined) throw new Error(`slides: no figure ${name}`);
   // d2 pins the drawing to the top left (xMinYMin); centre it in the space it gets.
   const centred = svg.replace(/<\?xml[^>]*>/, "").replace('preserveAspectRatio="xMinYMin meet"', 'preserveAspectRatio="xMidYMid meet"');
-  return `<div class="figure ${className}">${centred}</div>`;
+  // On a phone the figure keeps a readable scale and scrolls sideways (slides.css).
+  const width = /viewBox="[\d.]+ [\d.]+ ([\d.]+) /.exec(svg)?.[1];
+  if (width === undefined) throw new Error(`slides: figure ${name} has no viewBox`);
+  return `<div class="figure ${className}" style="--fig-w: ${width}">${centred}</div>`;
 }
 
 const CLI = String.raw`<span class="prompt">$</span> vibe check app.vibe            <span class="out"># empty = compiles</span>
@@ -200,6 +203,19 @@ export const SLIDES: Slide[] = [
     notes: "0:00 (15s) 挨拶。バイブコーディングのためのサンドボックス言語を作ってる。このスライドの中でコンパイラが動いてる",
   },
   {
+    className: "policy",
+    html: `
+      <h2><span class="kicker">Policy</span>大方針</h2>
+      <ol class="takeaways">
+        <li><strong>wasm ランタイムの上で自分自身をコンパイルできる</strong></li>
+        <li>最重要 KPI は、セルフコンパイルするときの<strong>速度・サイズ・メモリ消費</strong></li>
+        <li>迷ったら「<strong>AI としてのあなたが自然に思う仕様</strong>」を選ぶ。または wasm のプリミティブとして自然なもの</li>
+      </ol>
+      <p class="quote">仮説: AI の自己改善ループが成立していると仮定して、一生回せば<strong>AI にとって最適な言語</strong>が完成するのでは？</p>
+      <p class="muted">これで一年近く回してる</p>`,
+    notes: "大方針。wasm の上でセルフホスト、KPI はセルフコンパイルの速度・サイズ・メモリ。迷ったら AI が自然に思う仕様か、wasm のプリミティブとして自然なもの。AI の自己改善ループを一生回したら AI にとって最適な言語ができるのでは、という仮説で一年近く回してる",
+  },
+  {
     html: `
       <h2><span class="kicker">Getting started</span>インストールして動かす</h2>
       <pre class="code console">${INSTALL}</pre>
@@ -216,6 +232,8 @@ export const SLIDES: Slide[] = [
     html: `
       <h2><span class="kicker">In numbers</span>数字</h2>
       <div class="stats">
+        <div class="stat release"><div class="big-number">v0.1.0-rc.4</div><div class="label">現在のバージョン (2026-10-22 の pre-release)</div></div>
+        <div class="stat release"><div class="big-number">未解決バグ 27 件</div><div class="label">全体で bug 849 件、うち 822 件を修正済み (2026-10-22)</div></div>
         <div class="stat"><div class="big-number">260 日</div><div class="label">開発期間 (2026-02-03 〜)</div></div>
         <div class="stat"><div class="big-number">6,934</div><div class="label">コミット</div></div>
         <div class="stat"><div class="big-number">2,035</div><div class="label">PR</div></div>
@@ -225,8 +243,8 @@ export const SLIDES: Slide[] = [
         <div class="stat"><div class="big-number">9.6 万行</div><div class="label">CI の検査用シェルスクリプト</div></div>
         <div class="stat"><div class="big-number">19 分</div><div class="label">PR 1 回の CI (30 ジョブ、合計 130 分)</div></div>
       </div>
-      <p class="source">2026-10-21 時点の main。行数は生成物を除く。stdlib は別に 8.0 万行、Lean 1.0 万行、Rust 1.2 万行。CI はこの発表資料の PR の実測で、stage2 はキャッシュから。</p>`,
-    notes: "0:40 (30s) 数字。260 日で 6,934 コミット、コンパイラ 34 万行、テスト 25 万行。CI は 1 回 19 分",
+      <p class="source">2026-10-21 時点の main。行数は生成物を除く。stdlib は別に 8.0 万行、Lean 1.0 万行、Rust 1.2 万行。CI はこの発表資料の PR の実測で、stage2 はキャッシュから。未解決バグは 2026-10-22 の bug ラベル全体。</p>`,
+    notes: "0:40 (30s) 数字。今は v0.1.0-rc.4。bug は全部で 849 件、未解決は 27 件。260 日で 6,934 コミット、コンパイラ 34 万行、テスト 25 万行。CI は 1 回 19 分",
   },
   {
     html: `
@@ -574,11 +592,14 @@ export const SLIDES: Slide[] = [
     className: "closing",
     html: `
       <h2><span class="kicker">Next</span>これから</h2>
-      <ul>
-        <li>0.1.0 をもうすぐ出すので、触ってみてください</li>
-        <li>皆さんも自作言語をセルフホストしましょう</li>
-      </ul>
+      <ol class="milestones">
+        <li><b>0.1.0</b><span>クリティカルなバグを潰したリリース。もうすぐ出すので、触ってみてください</span></li>
+        <li><b>0.2.0</b><span>マルチスレッドを有効化</span></li>
+        <li><b>0.3.0</b><span>MoonBit と Bend を参考にした形式仕様を導入</span></li>
+      </ol>
+      <p>ネイティブ対応の予定はない。そのかわり vibe に特化した専用の wasm エンジンを書くかもしれない</p>
+      <p>皆さんも自作言語をセルフホストしましょう</p>
       <p class="muted">github.com/mizchi/vibe-lang · The Vibe Book: mizchi.github.io/vibe-lang</p>`,
-    notes: "12:35 (30s) 0.1.0 触ってください。皆さんもセルフホストしましょう",
+    notes: "12:35 (30s) マイルストーン。0.1.0 はクリティカルなバグを潰したリリースで、もうすぐ出る。0.2.0 でマルチスレッド、0.3.0 で MoonBit と Bend を参考にした形式仕様。ネイティブはやらない。vibe 専用の wasm エンジンは書くかも。皆さんもセルフホストしましょう",
   },
 ];

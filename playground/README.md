@@ -28,6 +28,12 @@ require other host capabilities need an appropriate browser host adapter.
 compiler as the playground, so every live demo compiles in the tab. Open
 `/slides.html` under `pnpm dev`, or after `pnpm build` with `pnpm exec vite preview`.
 
+On a screen narrower than 760px (a phone) the deck is one scrolling page
+instead of a 16:9 stage: every slide is shown and laid out for the width, the
+keys are off, and each demo's editor is built when it scrolls near the screen.
+Figures keep a readable scale and scroll sideways. `pnpm smoke:slides` also
+checks this layout at 390×844.
+
 The `book-pages` workflow publishes the deck next to The Vibe Book, at
 `/slides/` of the Pages site (https://mizchi.github.io/vibe-lang/slides/), with
 its compiler built from the same stage2 as the book.

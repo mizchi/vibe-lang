@@ -65,8 +65,12 @@ type LiveDemo = {
 };
 const liveDemos = new Map<HTMLElement, LiveDemo>();
 
+// A printed page is always the 1280x720 frame, whatever screen prints it.
+let printing = false;
+
 function demoFontSize(): number {
-  const width = document.body.classList.contains("view-all") ? 1280 : deck.clientWidth;
+  if (document.body.classList.contains("read") && !printing) return 13;
+  const width = printing || document.body.classList.contains("view-all") ? 1280 : deck.clientWidth;
   return Math.max(11, Math.round(width * 0.0138));
 }
 
@@ -215,7 +219,7 @@ function editorHasFocus(): boolean {
 }
 
 document.addEventListener("keydown", (event) => {
-  if (document.body.classList.contains("view-all")) return;
+  if (document.body.classList.contains("view-all") || document.body.classList.contains("read")) return;
   if (editorHasFocus() || event.metaKey || event.ctrlKey || event.altKey) return;
   // Space and Enter belong to a focused control (Run / Reset); arrows still navigate.
   const active = document.activeElement;
@@ -265,15 +269,24 @@ document.addEventListener("keydown", (event) => {
 });
 
 // Printing shows every slide, so every demo needs its editor, not just the visited ones.
+function resizeEditors() {
+  for (const { editor } of liveDemos.values()) editor.updateOptions({ fontSize: demoFontSize() });
+}
 window.addEventListener("beforeprint", () => {
+  printing = true;
   for (const host of deck.querySelectorAll<HTMLElement>(".demo[data-demo]")) mountDemo(host);
+  resizeEditors();
+});
+window.addEventListener("afterprint", () => {
+  printing = false;
+  resizeEditors();
 });
 
-window.addEventListener("resize", () => {
-  for (const { editor } of liveDemos.values()) editor.updateOptions({ fontSize: demoFontSize() });
-});
+window.addEventListener("resize", resizeEditors);
 window.addEventListener("hashchange", () => {
-  if (!document.body.classList.contains("view-all")) show(Number(location.hash.slice(1)) - 1 || 0);
+  const index = Number(location.hash.slice(1)) - 1 || 0;
+  if (document.body.classList.contains("read")) slideEls[index]?.scrollIntoView();
+  else if (!document.body.classList.contains("view-all")) show(index);
 });
 
 // Test hook for tests/slides-smoke.mjs: which slide holds which demo, and
@@ -293,12 +306,50 @@ window.addEventListener("hashchange", () => {
 
 // `?view=all` stacks every slide at a fixed 1280x720 frame: the print view,
 // and the only form in which a page gate (vlmkit) can read the whole deck.
+// On a phone the 16:9 stage is too small to read, so the deck becomes one
+// scrolling page (body.read): every slide shown, keys off, and each demo's
+// editor built only when it scrolls near the screen.
+const narrow = window.matchMedia("(max-width: 760px)");
+const nearScreen = new IntersectionObserver(
+  (entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      nearScreen.unobserve(entry.target);
+      mountDemo(entry.target as HTMLElement);
+    }
+  },
+  { rootMargin: "600px 0px" },
+);
+
+function applyLayout() {
+  if (narrow.matches) {
+    // Keep the reader where the presenter was, and the other way round.
+    const wasStage = !document.body.classList.contains("read");
+    document.body.classList.add("read");
+    slideEls.forEach((el) => el.classList.add("active"));
+    for (const host of deck.querySelectorAll<HTMLElement>(".demo[data-demo]")) {
+      if (!liveDemos.has(host)) nearScreen.observe(host);
+    }
+    if (wasStage && current > 0) slideEls[current].scrollIntoView();
+  } else {
+    if (document.body.classList.contains("read")) {
+      const top = slideEls.findIndex((el) => el.getBoundingClientRect().bottom > 0);
+      document.body.classList.remove("read");
+      current = Math.max(0, top);
+    }
+    show(current);
+  }
+  resizeEditors();
+}
+
 if (new URLSearchParams(location.search).get("view") === "all") {
   document.body.classList.add("view-all");
   slideEls.forEach((el) => el.classList.add("active"));
   for (const host of deck.querySelectorAll<HTMLElement>(".demo[data-demo]")) mountDemo(host);
 } else {
-  show(Number(location.hash.slice(1)) - 1 || 0);
+  current = Math.max(0, Math.min(SLIDES.length - 1, Number(location.hash.slice(1)) - 1 || 0));
+  applyLayout();
+  narrow.addEventListener("change", applyLayout);
 }
 compilerState.textContent = PREVIEW
   ? "preview: compiler not bundled"
