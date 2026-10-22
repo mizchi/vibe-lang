@@ -6,8 +6,8 @@
 ## Version ladder
 
 The repository's first stable version tag was `v0.0.1`
-(2026-04-14, from the retired MoonBit host). `v0.1.0-rc.1`, `v0.1.0-rc.2` and
-`v0.1.0-rc.3` were published as pre-releases. Older labels such as "0.1.0
+(2026-04-14, from the retired MoonBit host). `v0.1.0-rc.1` to `v0.1.0-rc.4`
+were published as pre-releases. Older labels such as "0.1.0
 sign-off", "0.2.0" and "0.3.0 GA" in planning documents did not denote
 published releases. The ladder below numbers releases by what actually ships.
 
@@ -17,7 +17,8 @@ published releases. The ladder below numbers releases by what actually ships.
 | `0.0.x` | Everything since: the selfhost cutover and all development, including the content once prepared as "0.3.0 GA" | never released |
 | `0.1.0-rc.1` | The first candidate to publish assets | published 2026-09-21 as a pre-release; superseded |
 | `0.1.0-rc.2` | The second candidate | published 2026-09-28 as a pre-release; superseded |
-| `0.1.0-rc.3` | The third candidate; prebuilt installs take the CLI compiler built from the release's own source (#3252) | published 2026-09-30 as a pre-release |
+| `0.1.0-rc.3` | The third candidate; prebuilt installs take the CLI compiler built from the release's own source (#3252) | published 2026-09-30 as a pre-release; superseded |
+| `0.1.0-rc.4` | The fourth candidate; carries the fixes from the pre-release bug hunt (#3535) | published 2026-10-22 as a pre-release |
 | **`0.1.0`** | **The first release usable by anyone but the author** | the tag and the verification of the published install remain in #2834; see [release-notes-0.1.0.md](../../user/getting-started/release-notes-0.1.0.md) |
 | `0.2.0` | Structured concurrency, a type system aimed at formalization, a dedicated agent harness | after 0.1.0 |
 | `1.0.0` | Maturity. Not a synonym for the first public release | unscheduled |
@@ -56,7 +57,7 @@ workflow, which is the only reason the first candidate with assets is rc.1.
 
 A candidate also names one commit. Once main moves past that commit, the
 candidate describes a tree nobody is going to ship, and a candidate exists to
-be hunted for bugs. rc.2 and rc.3 each moved the line for that reason, not
+be hunted for bugs. rc.2, rc.3 and rc.4 each moved the line for that reason, not
 because the previous candidate failed.
 
 The rule this section encodes: **every new candidate costs a number, so cut

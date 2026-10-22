@@ -1,16 +1,17 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex_with_offsets, parse_program, parse_program_located
+  lex_with_offsets, parse_program, parse_program_located, rewrite_string_binops_stmts
 }
 
 import @vibe/core {
   array_empty
 }
 import @vibe/compiler/checker {
-  check_program_double_call_result_observation,
+  check_program_scalar_lowering_observation,
   checked_int_bool_and_unrenderable_render_offsets,
   merge_unrenderable_render_offsets,
+  typed_lowering_binop_anchor,
   validate_user_source_exports_excluding,
   validate_user_source_stmts
 }
@@ -29,8 +30,10 @@ import @vibe/compiler/codegen/gc {
   gc_direct_abi_pre_erasure_generic_names,
   gc_float_returning_names_pre_erasure,
   gc_merged_offset_space_reset,
+  gc_prune_source_functions,
   gc_prune_unreachable_functions,
   gc_rename_builtin_shadow_defs,
+  gc_source_dce_roots,
   gc_to_string_resolves_to_show_wrapper,
   gc_top_level_function_names
 }
@@ -163,7 +166,7 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // declarations) and no uniqueness filter (the extraction poisons an
   // offset claimed by binops of different types; with the same type,
   // rewriting both is correct).
-  let (checked, gc_float_call_offsets, gc_eq_offsets, gc_eq_keys) = match check_program_double_call_result_observation(stmts) {
+  let (checked, gc_float_call_offsets, string_rels, string_pluses, gc_eq_offsets, gc_eq_keys) = match check_program_scalar_lowering_observation(stmts) {
     Some(observation) => observation,
     None => throw("internal compiler error: incomplete GC call-result type observation")
   }
@@ -176,6 +179,15 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
     validate_user_source_exports_excluding(stmts, checked.final_env, lowered_test_names)
   } else {
     ()
+  }
+  // #3545: retain the checker's String operand facts before erasure. Runtime
+  // String producers need not be recognizable by the syntactic classifier.
+  // Float VALUE offsets and the other typed rows retain their old contracts.
+  let string_rewritten = rewrite_string_binops_stmts(stmts, string_rels, string_pluses, typed_lowering_binop_anchor)
+  let mut string_i = 0
+  while string_i < Array::length(stmts) {
+    Array::set(stmts, string_i, Array::get(string_rewritten, string_i))
+    string_i = string_i + 1
   }
   // #3144 round 4: move a program's own `Array::length` / `Map::keys` / ...
   // aside HERE, right after the source-level check and export validation (the
@@ -202,6 +214,10 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // Double alias is indistinguishable from that alias and is misclassified.
   let gc_float_ret_fn_names = gc_float_returning_names_pre_erasure(stmts)
   let gc_pre_hoist_fn_names = gc_top_level_function_names(stmts)
+  // #3545: remember source roots before synthesis makes unused trait
+  // dictionaries look like ordinary initializers. The GC-owned collector also
+  // retains all exact test/bench names and normalizes a builtin-shadow entry.
+  let gc_source_roots = gc_source_dce_roots(stmts, effective_entry, lowered_test_names, generated_test_artifact)
   // Same effective order as the linear lane: check the source contract first,
   // lower trait witnesses while generic binders are still present, then erase
   // those binders for codegen. GC previously lowered inside
@@ -237,6 +253,9 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // printed the argument's address where linear refused the build.
   let (gc_int_only, gc_bool_render_offsets, gc_unrenderable) = checked_int_bool_and_unrenderable_render_offsets(checked)
   let gc_int_render_offsets = merge_unrenderable_render_offsets(gc_int_only, gc_unrenderable)
+  // Decide offset uniqueness over the complete graph above. Removing a dead
+  // occurrence first could make a collided key look unique for the wrong type.
+  gc_prune_source_functions(stmts, gc_source_roots)
   let emitted = compile_wasi_module_gc(stmts, effective_entry, generated_test_artifact, gc_to_string_is_wrapper, direct_abi_generic_names, gc_float_ret_fn_names, unique_gc_float_call_offsets, gc_int_render_offsets, gc_bool_render_offsets)
   gc_prune_unreachable_functions(emitted, effective_entry)
 }
