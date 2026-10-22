@@ -26,14 +26,17 @@ finding below type-checked cleanly before and then ran a wrong program,
 trapped, or read the wrong memory; each is now refused at compile time with
 the edit that fixes it, or answers correctly.
 
-- **Handles and closures.** A closure that throws can no longer escape the
-  `Exception` handle that catches it. This covers a closure returned
+- **Handles and closures.** A throwing closure is refused when it leaves
+  the `Exception` handle that catches it as the handle's value, either
   directly or held in a struct or enum field. The function that builds the
   closure may be declared in the same module or imported, reached as a
   method or through an alias, chosen by a top-level `if`, row-polymorphic,
   or a parameter or call result whose body the check cannot read (#3540,
-  #3584, #3593, #3596, #3599). A closure performing two handled effects no
-  longer escapes through a parameter that names only one (#3585).
+  #3584, #3593, #3596, #3599). A closure performing two handled effects is
+  refused when it leaves through a parameter that names only one (#3585).
+  One route is still not seen: a call that stores the closure in state it
+  captured, or in a module-level binding. See
+  [stable-surface §6.2](../reference/stable-surface.md).
 - **Effect rows.** A struct's row parameter carries a real row argument,
   including through nested structs and generic signatures, so a generic
   callee that reaches its row only through a struct is charged to its
