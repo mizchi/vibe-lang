@@ -68,7 +68,10 @@ import ./checker_effects_mutability_expr_into.vibe {
 import ./checker_effects_throw_payload_kind.vibe {
   collect_handle_effects,
   effect_name_of_op,
+  erased_arg_kept_marker,
+  erased_iife_marker,
   erased_reads_binder,
+  erased_slot_declared,
   exception_effect_labels,
   fn_binding_effects,
   fn_binding_param_effects,
@@ -85,7 +88,9 @@ import ./checker_effects_throw_payload_kind.vibe {
   make_row_mismatch,
   no_param_effs,
   program_fn_index,
+  row_is_erased_slot,
   sort_labels,
+  under_erased_slot,
   under_kinded_handle
 }
 
@@ -132,8 +137,30 @@ import ./checker_effects_throw_payload_kind.vibe {
 /// is charged to this call below as usual. Exception kinds keep the exact
 /// treatment above, and a row variable is resolved from the arguments by the
 /// call's own check, so neither is added here.
+///
+/// #3601: a literal the callee may let its exceptions out of (see
+/// `callee_lets_erased_out`) through a parameter typed with the erased row is
+/// walked under `erased_slot_declared`; any other literal argument carries
+/// `erased_arg_kept_marker`, so its own erased row is not judged as a value
+/// the module keeps. A literal for a parameter whose row variable the
+/// callee's own row lets out (`run[e](f: () -> Int with e) -> Int with e`)
+/// carries `erased_iife_marker` instead: the call fills that variable from
+/// the literal's row, so what its erased row lets out reaches this call's
+/// caller, and it is charged to the enclosing body as if the literal were
+/// applied here (`TaskGroup::run` calls its body before it returns).
 export fn closure_arg_declared(arg: Expr, declared: Array[String], callee: String, lexical_callee: Option[Array[String]], index: Int) -> Array[String] {
-  let base = closure_arg_declared_base(arg, declared, callee, lexical_callee, index)
+  let base0 = closure_arg_declared_base(arg, declared, callee, lexical_callee, index)
+  let lets_var_out = match lexical_callee {
+    Some(_) => false,
+    None => callee_lets_param_var_out(callee, index)
+  }
+  let base = if under_erased_slot(base0) {
+    base0
+  } else if lets_var_out {
+    labels_union(base0, [erased_iife_marker()])
+  } else {
+    labels_union(base0, [erased_arg_kept_marker()])
+  }
   match arg {
     EFn(_, _, _, _, _, _) => match lexical_callee {
       Some(_) => base,
@@ -179,6 +206,13 @@ fn closure_arg_declared_base(arg: Expr, declared: Array[String], callee: String,
                 labels_union(labels_union(labels_without_exception_family(declared), [
                   kinded_handle_marker()
                 ]), kinds)
+              } else if row_is_erased_slot(prow) && row_has_erased_exception(Array::get(callee_sig_effs, si)) {
+                // #3601: the parameter's erased row carries only messages, and
+                // the callee's own erased row lets what the closure raises out
+                // to its caller, so the closure's body may raise only messages
+                // and the kinds the row names. A callee whose row lets no
+                // exception out handles them itself (`TaskGroup::spawn_suspend`).
+                erased_slot_declared(declared, prow)
               } else {
                 declared
               }
@@ -276,7 +310,19 @@ export fn make_contextual_row_error(fn_name: String, declared: Array[String], mi
       }
     }
   }
-  if Array::length(missing_other_kinds) > 0 {
+  // #3601: in a closure literal whose own row is the erased one, a kind
+  // other than the message is missing (`erased_slot_marker`).
+  let slot_other_kinds = no_str_labels()
+  if under_erased_slot(declared) && String::length(reads_binder) == 0 && !strict_kinded {
+    for ml in missing {
+      if is_exception_label(ml) && String::length(exception_label_kind(ml)) > 0 {
+        Array::push(slot_other_kinds, ml)
+      }
+    }
+  }
+  if Array::length(slot_other_kinds) > 0 {
+    EEErasedClosureOtherKind(kinded_handle_owner(fn_name, declared), join_labels(sort_labels(labels_union(no_str_labels(), slot_other_kinds))), off)
+  } else if Array::length(missing_other_kinds) > 0 {
     EEErasedArmReadsOtherKind(kinded_handle_owner(fn_name, declared), reads_binder, join_labels(sort_labels(labels_union(no_str_labels(), missing_other_kinds))), off)
   } else if Array::length(missing_exc) > 0 {
     EEKindedHandleCatchesAll(fn_name, join_labels(kinded_exception_labels(declared)), join_labels(sort_labels(missing_exc)), off)
@@ -451,6 +497,55 @@ export fn set_callee_sigs_from(loc_names: Array[String], loc_effs: Array[Array[S
     j = j + 1
   }
   Array::set(callee_sig_index, 0, program_fn_index(names))
+}
+
+/// #3601: may the named callee `callee` let the exceptions of a callback out
+/// to its caller through its own erased row? An unknown callee may.
+export fn callee_lets_erased_out(callee: String) -> Bool {
+  match MutMap::get(Array::get(callee_sig_index, 0), callee) {
+    Some(si) => row_has_erased_exception(Array::get(callee_sig_effs, si)),
+    None => true
+  }
+}
+
+/// #3605 review: does the named callee `callee`'s own row name a row variable
+/// that its parameter `index`'s function row carries?
+fn callee_lets_param_var_out(callee: String, index: Int) -> Bool {
+  match MutMap::get(Array::get(callee_sig_index, 0), callee) {
+    Some(si) => {
+      let prows = Array::get(callee_sig_param_effs, si)
+      if index < Array::length(prows) {
+        let own = Array::get(callee_sig_effs, si)
+        let mut out = false
+        for l in Array::get(prows, index) {
+          if label_is_effect_var(l) && str_list_has(own, l) {
+            out = true
+          }
+        }
+        out
+      } else {
+        false
+      }
+    },
+    None => false
+  }
+}
+
+/// #3601: the row the named callee `callee` declares for parameter `index`
+/// (empty for a parameter that is not a function), or None when the callee
+/// or the parameter is not known here.
+export fn callee_param_row(callee: String, index: Int) -> Option[Array[String]] {
+  match MutMap::get(Array::get(callee_sig_index, 0), callee) {
+    Some(si) => {
+      let prows = Array::get(callee_sig_param_effs, si)
+      if index < Array::length(prows) {
+        Some(Array::get(prows, index))
+      } else {
+        None
+      }
+    },
+    None => None
+  }
 }
 
 /// `param_type_effect_labels` over a checked `Type`: the row a function-typed

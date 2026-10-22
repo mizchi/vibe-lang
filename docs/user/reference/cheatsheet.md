@@ -1819,12 +1819,15 @@ Rules:
   parameter or a builtin, or created and called in the body. A row VARIABLE
   of the enclosing signature is not run there either (#3540): in
   `fn guarded(f: () -> Int with e) -> Int with e`, a kinded handle around
-  `f()` is refused, because a caller may fill `e` with another kind. Move the
-  handle to the caller, give the callback a closed row (`with
-  Exception[Int]`), or use the erased arm; a kind label beside the variable
-  (`with Exception[Int] + e`) matches the whole exception family, so that
-  variable is admitted. An erased
-  `handle .. with Exception` nested inside is its own
+  `f()` is refused, because a caller may fill `e` with another kind. The same
+  holds for a function reached through a parameter's type (`fs: Array[() ->
+  Int with e]`, an `Option`, a tuple, a struct's row argument, a callback's
+  result). Move the handle to the caller, give the callback a closed row
+  (`with Exception[Int]`), or use the erased arm; a kind label beside the
+  variable (`with Exception[Int] + e`) matches the whole exception family, so
+  that variable is admitted when every parameter carrying it is written that
+  way, and such a slot refuses a `with Exception` value as the closed row
+  does. An erased `handle .. with Exception` nested inside is its own
   catch-all boundary. And a handle may have only ONE exception arm: the
   channel carries no kind and only the first exception arm is compiled, so
   `Exception[A]::Throw` next to `Exception[B]::Throw` is refused -- nest
@@ -1847,10 +1850,31 @@ Rules:
   function declared with the erased `with Exception` raises the kinds its body
   throws, so `fn h() -> Int with Exception { throw(5) }` counts as raising
   `Exception[Int]` there. An arm that leaves its payload unread
-  (`Exception::Throw(_)`) still catches every kind. Not seen yet (#3541): a
-  function imported from another module, and a callback or lambda with an
-  erased row of its own. Throw a value other than a `String` under a kinded
-  row, and catch it with the kinded arm.
+  (`Exception::Throw(_)`) still catches every kind. A function imported from
+  another module counts the same way: its module publishes the kinds its
+  erased row lets out (#3601).
+- A function VALUE is typed only by the row it is given, and an erased
+  `with Exception` there raises only messages to the code that calls it
+  (#3601). So a closure literal written for a field or result typed
+  `with Exception` may throw only messages, and so may one passed for such a
+  parameter of a callee whose own row lets exceptions out
+  (`fn run(f: () -> Int with Exception) -> Int with Exception`); a closure
+  bound by `let` or `let rec`, or applied where it is written, is charged at
+  its calls like a named function, and so is one passed for a parameter whose
+  row variable the callee's row lets out (`fn run(f: () -> Int with e) -> Int
+  with e`, `TaskGroup::run`), which is charged at that call. A function whose erased row lets another kind out
+  (`fn bad() -> Int with Exception { throw(7) }`) may be called, aliased with
+  an unannotated `let g = bad`, or passed where the parameter's row names the
+  kind or is a row variable with no erased `Exception` beside it; any other
+  use as a value is refused (in `with Exception + e` a call matches the
+  value's exception to `Exception` and leaves `e` empty). A
+  `with Exception[Int]` function is refused wherever an erased function type
+  is expected. A callee whose own row raises no exception handles what a
+  callback raises (`TaskGroup::spawn_suspend`) and takes any kind. Name the
+  kind where the value goes (`with Exception[Int]`,
+  `with Exception + Exception[Int]`, or a bare row variable `with e`). Throw a
+  value other than a `String` under a kinded row, and catch it with the
+  kinded arm.
 - A rethrow from the erased arm is a throw of no known kind, not of
   `Exception[String]`. That holds for `throw(m)` and for any payload that
   names `m`, or a name the arm derived from it, when the payload's type could

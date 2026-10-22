@@ -621,11 +621,21 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   but they sit on the same unchecked impl machinery, and their diagnostics
   have no position (#3548).
 - **Kinded exception arms (`Exception[K]::Throw(e)`) over a row-polymorphic
-  callee**, and a handler arm that performs another effect. Such an arm can
-  catch a kind it does not name, and the arm's own effects reach handlers
-  inside the handled body rather than outside it (#3540). The erased
-  `Exception::Throw(m)` arm, a kinded arm over a concrete body, and an arm
-  that only computes and resumes are unaffected.
+  callee**, and a handler arm that performs another effect (#3540). The hunt
+  found such an arm catching a kind it does not name, and an arm's own effects
+  reaching handlers inside the handled body. Both are closed: an arm's effects
+  reach the handlers around its `handle`, and a kinded handle whose body runs
+  a row variable of the enclosing signature is refused. That covers a
+  callback (`f: () -> Int with e`) and a function reached through a
+  parameter's type (an array, option, tuple or struct element, or a
+  callback's result). Move the handle to the caller, give the function a
+  closed kinded row, or use the erased `Exception::Throw(m)` arm. The
+  variable is admitted only when every parameter that carries it names a kind
+  beside it (`with Exception[K] + e`), and such a slot refuses a value with
+  the erased `with Exception` row. The refusal is made at the handle, not per
+  call, so it also refuses a caller that would pass the arm's own kind, and it
+  may be relaxed. The erased arm, a kinded arm over a concrete body, and an
+  arm that only computes and resumes are unaffected.
 - **First-class `resume`** (`let k = resume`, a continuation stored and called
   later) and the suspend-shaped handlers built on it. The hunt found no wrong
   answer, but which bodies compile is decided by a lowering, not by the type
@@ -661,14 +671,26 @@ because those programs are already wrong.
   leave and trap when called. Do not store a closure that performs the
   handled effect.
 - **The erased `Exception::Throw(m)` binder is assumed to be a `String`**
-  (#3541). An arm that reads `m` is refused over a body that raises another
-  kind, including a kind that a function of the same module lets out through
-  its erased `with Exception` row. The kind is not carried at run time, and
-  two routes are not seen: a function imported from another module and
-  declared `with Exception` that throws another kind, and a callback or a
-  lambda with an erased row of its own (`f: () -> Int with Exception`) that
-  does. Throw a value other than a `String` under a kinded row, and catch it
-  with the kinded arm (`Exception[K]::Throw(e)`).
+  (#3541, #3601). An arm that reads `m` is refused over a body that raises
+  another kind, including a kind that a function lets out through its erased
+  `with Exception` row, whether the function is in the same module or
+  imported (its module publishes the kinds). A function value is typed only
+  by the row it is given, and an erased row there carries only messages: a
+  closure literal written for a field or result typed `with Exception`, or
+  for such a parameter of a callee whose own row lets exceptions out, may
+  throw only messages (one bound by `let` or `let rec`, applied where it is
+  written, or passed for a parameter whose row variable the callee's row lets
+  out, is charged at its calls like a named function), and a function whose row
+  names or lets out another kind may be passed there only where the
+  receiving row names that kind or is a row variable with no erased
+  `Exception` beside it. A callee whose own row raises no
+  exception handles what a callback raises (`TaskGroup::spawn_suspend`), so it
+  takes any kind. The kind is not carried at run time. Two routes are not
+  seen: such a callee that keeps the callback and calls it after it returns,
+  and a closure literal passed to a callee that is itself a function value (a
+  callback parameter or a local closure), whose parameter rows the check
+  cannot read. Throw a value other than a `String` under a kinded row, and
+  catch it with the kinded arm (`Exception[K]::Throw(e)`).
 
 ## 7. Operating the freeze
 

@@ -11,7 +11,10 @@ import @vibe/compiler/core {
   TypeExpr,
   canonical_builtin_name,
   entry_cache_safe_effects,
+  exception_kinds_same,
+  exception_label_kind,
   expr_children,
+  is_exception_label,
   is_exception_throw_operation
 }
 
@@ -33,6 +36,8 @@ import ./checker_effects_decl_authorizes_effect.vibe {
 
 import ./checker_effects_dh_call_to_binding.vibe {
   build_perform_fn_effs,
+  callee_lets_erased_out,
+  callee_param_row,
   check_entry_declared_effects,
   dh_call_to_binding,
   dh_collect_performed_effects,
@@ -86,7 +91,8 @@ import ./checker_effects_mutability_expr_into.vibe {
   set_ret_fn_rows,
   shadowed_builtin_type_names_cell,
   sig_type_effect_labels,
-  str_list_has
+  str_list_has,
+  struct_field_rows_for
 }
 
 import ./checker_effects_perform_effects_expr_tx_in.vibe {
@@ -108,9 +114,19 @@ import ./checker_effects_throw_payload_kind.vibe {
   clear_checker_published_tables,
   collect_handle_effects,
   effect_name_of_op,
+  env_erased_kinds_rows,
+  erased_kinds_labels,
+  erased_kinds_toplevel_name,
+  erased_local_key,
+  erased_local_leaks,
+  erased_local_leaks_for,
+  erased_local_leaks_grew,
   erased_root_marker,
+  erased_row_charged,
+  erased_row_charged_for,
   erased_row_leaks,
   fn_binding_effects,
+  join_labels,
   labels_union,
   lookup_fn_effs,
   lookup_program_fn_effs,
@@ -119,6 +135,7 @@ import ./checker_effects_throw_payload_kind.vibe {
   program_fn_exists,
   program_fn_index,
   set_throw_kind_table,
+  sort_labels,
   throw_kind_bind_params,
   tparam_names
 }
@@ -273,7 +290,12 @@ export fn check_perform_effects_stmts_env_published(stmts: Array[Stmt], env: Typ
 
 /// `check_perform_effects_stmts_env_published` with `env_sigs` =
 /// `env_fn_sigs(env)` already built by the caller.
-export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env: TypeEnv, env_sigs: (Array[String], Array[Array[String]], Array[Array[Array[String]]])) -> Array[EffectError] {
+export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env: TypeEnv, written_env_sigs: (Array[String], Array[Array[String]], Array[Array[Array[String]]])) -> Array[EffectError] {
+  // #3601: an imported function whose erased row lets out another kind than
+  // the message carries it, as its module published it
+  // (`erased_kinds_marker`); a call charges it like a label of that row.
+  let imported_kinds = imported_erased_kinds(env, stmts)
+  let env_sigs = env_sigs_with_erased_kinds(written_env_sigs, imported_kinds)
   // Build the call-graph effect map (parallel arrays) from every top-level
   // binding's declared row — locals first, then the env's (imported)
   // bindings (#812) — then run the per-stmt check WITH transitive
@@ -328,13 +350,26 @@ export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env
   // No round cap: a row only grows, and only by a kind the program throws,
   // so the loop ends; a cap stopped a chain longer than it before the
   // outermost leak was charged (Codex review on #3594).
+  // #3601: every leak charged is also kept (`erased_row_charged`): the module
+  // publishes it for its importers, and a use of such a function as a value
+  // is judged by it (`erased_value_flow_errors`).
+  // A let-bound closure literal's leaks (`erased_local_leaks`) are charged
+  // to calls through its binding on the next walk.
   Array::truncate(erased_row_leaks, 0)
+  Array::truncate(erased_row_charged, 0)
+  Array::truncate(erased_local_leaks, 0)
+  Array::set(erased_local_leaks_grew, 0, false)
+  let aliases = toplevel_alias_pairs(stmts)
   let mut errors = check_perform_effects_module_walk(stmts, fn_names, fn_effs, fn_index, fn_param_effs)
-  while charge_erased_row_leaks(fn_effs, fn_index, local_count) {
+  while charge_erased_row_leaks(fn_effs, fn_index, local_count, aliases, imported_kinds) || Array::get(erased_local_leaks_grew, 0) {
     Array::truncate(erased_row_leaks, 0)
+    Array::set(erased_local_leaks_grew, 0, false)
     errors = check_perform_effects_module_walk(stmts, fn_names, fn_effs, fn_index, fn_param_effs)
   }
   Array::truncate(erased_row_leaks, 0)
+  if Array::length(errors) == 0 {
+    append_eff_errs(errors, erased_value_flow_errors(stmts, imported_kinds))
+  }
   // #1347: only once the rows themselves check out — on a program with real
   // row errors every reachability answer is suspect, and a second diagnostic
   // per handle would bury the first.
@@ -348,22 +383,582 @@ export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env
 
 /// #3541: add each recorded leak to the row a caller reads for its local
 /// function (the first `local_count` entries). Answers whether a row grew.
-fn charge_erased_row_leaks(fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], local_count: Int) -> Bool {
+/// #3601: a top-level alias of such a function (`let h = fail`, `aliases`)
+/// is charged its source's leaks too: its row was copied from the source's
+/// written one before any leak was known.
+fn charge_erased_row_leaks(fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], local_count: Int, aliases: Array[(String, String)], imported: Array[(String, Array[String])]) -> Bool {
   let mut grew = false
   for leak in erased_row_leaks {
     let (owner, label) = leak
-    match MutMap::get(fn_index, owner) {
-      Some(at) => if at < local_count {
-        let row = Array::get(fn_effs, at)
-        if !effect_row_has_label(Some(row), label) {
-          Array::set(fn_effs, at, labels_union(row, [label]))
+    if charge_erased_row_leak(fn_effs, fn_index, local_count, owner, label) {
+      grew = true
+    }
+  }
+  let mut alias_grew = true
+  while alias_grew {
+    alias_grew = false
+    for pair in aliases {
+      let (name, src) = pair
+      for label in erased_kinds_of(src, imported) {
+        if charge_erased_row_leak(fn_effs, fn_index, local_count, name, label) {
           grew = true
+          alias_grew = true
         }
-      },
-      None => ()
+      }
     }
   }
   grew
+}
+
+/// Charge `label` to the local function `owner`, recording it in
+/// `erased_row_charged`. Answers whether its row grew.
+fn charge_erased_row_leak(fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], local_count: Int, owner: String, label: String) -> Bool {
+  match MutMap::get(fn_index, owner) {
+    Some(at) => if at < local_count {
+      let mut known = false
+      for row in erased_row_charged {
+        let (o, l) = row
+        if o == owner && l == label {
+          known = true
+        }
+      }
+      if !known {
+        Array::push(erased_row_charged, (owner, label))
+      }
+      let row = Array::get(fn_effs, at)
+      if !effect_row_has_label(Some(row), label) {
+        Array::set(fn_effs, at, labels_union(row, [label]))
+        true
+      } else {
+        false
+      }
+    } else {
+      false
+    },
+    None => false
+  }
+}
+
+/// The kinds `name`'s erased row lets out: charged in this module, or
+/// published by the module it is imported from.
+fn erased_kinds_of(name: String, imported: Array[(String, Array[String])]) -> Array[String] {
+  let out = erased_row_charged_for(name)
+  if Array::length(out) == 0 {
+    for row in imported {
+      let (n, labels) = row
+      if n == name {
+        for l in labels {
+          Array::push(out, l)
+        }
+      }
+    }
+  }
+  out
+}
+
+/// The unannotated top-level aliases of `stmts` (`let h = f`), as (alias,
+/// source).
+fn toplevel_alias_pairs(stmts: Array[Stmt]) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, None, EIdent(src, _)) => if name != src {
+        Array::push(out, (name, src))
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// #3601: the kinds each imported function's erased row lets out, as its
+/// module published them. A top-level binding of `stmts` hides an import of
+/// its name: a call, an alias or a value use of that name reaches the local
+/// one, which is charged only what its own body lets out (Codex on #3605).
+fn imported_erased_kinds(env: TypeEnv, stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  let out: Array[(String, Array[String])] = []
+  let rows = env_erased_kinds_rows(env)
+  if Array::length(rows) > 0 {
+    let locals = no_str_labels()
+    for stmt in stmts {
+      let n = erased_kinds_toplevel_name(stmt)
+      if String::length(n) > 0 {
+        Array::push(locals, n)
+      }
+    }
+    for row in rows {
+      let (name, ty) = row
+      let labels = erased_kinds_labels(ty)
+      if Array::length(labels) > 0 && !str_list_has(locals, name) {
+        Array::push(out, (name, labels))
+      }
+    }
+  }
+  out
+}
+
+/// `sigs` with each function in `kinds` charged its published kinds.
+fn env_sigs_with_erased_kinds(sigs: (Array[String], Array[Array[String]], Array[Array[Array[String]]]), kinds: Array[(String, Array[String])]) -> (Array[String], Array[Array[String]], Array[Array[Array[String]]]) {
+  if Array::length(kinds) == 0 {
+    sigs
+  } else {
+    let (names, effs, peffs) = sigs
+    let index = MutMap::with_capacity_string(Array::length(kinds) * 2 + 4)
+    let mut ki = 0
+    while ki < Array::length(kinds) {
+      let (name, _) = Array::get(kinds, ki)
+      MutMap::set(index, name, ki)
+      ki = ki + 1
+    }
+    let out_effs: Array[Array[String]] = []
+    let mut i = 0
+    while i < Array::length(names) {
+      let row = Array::get(effs, i)
+      match MutMap::get(index, Array::get(names, i)) {
+        Some(at) => {
+          let (_, labels) = Array::get(kinds, at)
+          Array::push(out_effs, labels_union(row, labels))
+        },
+        None => Array::push(out_effs, row)
+      }
+      i = i + 1
+    }
+    (names, out_effs, peffs)
+  }
+}
+
+//# A function whose erased row lets out another kind, used as a value (#3601)
+
+/// The function values whose erased `with Exception` row lets out a kind
+/// other than the message: the module's own (`erased_row_charged`) and the
+/// imported ones (`imported`), as (name, labels).
+fn erased_leaky_functions(imported: Array[(String, Array[String])]) -> Array[(String, Array[String])] {
+  let out: Array[(String, Array[String])] = []
+  let seen = no_str_labels()
+  for row in erased_row_charged {
+    let (name, _) = row
+    if !str_list_has(seen, name) {
+      Array::push(seen, name)
+      Array::push(out, (name, erased_row_charged_for(name)))
+    }
+  }
+  for row in imported {
+    let (name, _) = row
+    if !str_list_has(seen, name) {
+      Array::push(seen, name)
+      Array::push(out, row)
+    }
+  }
+  out
+}
+
+/// Does a function-type row `row` carry each of `labels` (`Exception[K]`)?
+/// It does when it names the kind, or has a row variable a call instantiates
+/// from the value's own row.
+/// A row variable beside the erased `Exception` label does not count: a
+/// call matches the value's erased exception to that label and leaves the
+/// variable empty (#3033), so the caller reads only messages (Codex on
+/// #3605).
+fn row_carries_erased_kinds(row: Array[String], labels: Array[String]) -> Bool {
+  let mut has_var = false
+  let mut erased = false
+  for l in row {
+    if label_is_effect_var(l) {
+      has_var = true
+    } else if is_exception_label(l) && String::length(exception_label_kind(l)) == 0 {
+      erased = true
+    }
+  }
+  if has_var && !erased {
+    true
+  } else {
+    let mut all = true
+    for want in labels {
+      let kind = exception_label_kind(want)
+      let mut found = false
+      for l in row {
+        if is_exception_label(l) && String::length(exception_label_kind(l)) > 0 && exception_kinds_same(exception_label_kind(l), kind) {
+          found = true
+        }
+      }
+      if !found {
+        all = false
+      }
+    }
+    all
+  }
+}
+
+/// The row of a function type, or None for any other type.
+fn type_expr_fn_row(te: TypeExpr) -> Option[Array[String]] {
+  let expanded = match dh_expand_type_alias(te) {
+    Some(x) => x,
+    None => te
+  }
+  match expanded {
+    TyFn(_, _, eff) => Some(effect_row_labels(effect_row_parse(eff))),
+    _ => None
+  }
+}
+
+/// One scope of the value-flow walk: the names a local binding hides, and
+/// the local aliases of a function that lets out other kinds.
+struct ErasedFlowScope {
+  hidden: Array[String];
+  aliases: Array[(String, Array[String])]
+}
+
+fn erased_flow_scope_hide(scope: ErasedFlowScope, names: Array[String]) -> ErasedFlowScope {
+  if Array::length(names) == 0 {
+    scope
+  } else {
+    let hidden = Array::slice(scope.hidden, 0, Array::length(scope.hidden))
+    for n in names {
+      Array::push(hidden, n)
+    }
+    let aliases: Array[(String, Array[String])] = []
+    for a in scope.aliases {
+      let (an, _) = a
+      if !str_list_has(names, an) {
+        Array::push(aliases, a)
+      }
+    }
+    ErasedFlowScope::{ hidden: hidden, aliases: aliases }
+  }
+}
+
+fn erased_flow_scope_alias(scope: ErasedFlowScope, name: String, labels: Array[String]) -> ErasedFlowScope {
+  let hidden: Array[String] = []
+  for n in scope.hidden {
+    if n != name {
+      Array::push(hidden, n)
+    }
+  }
+  let aliases: Array[(String, Array[String])] = Array::slice([(name, labels)], 0, 1)
+  for a in scope.aliases {
+    let (an, _) = a
+    if an != name {
+      Array::push(aliases, a)
+    }
+  }
+  ErasedFlowScope::{ hidden: hidden, aliases: aliases }
+}
+
+/// The kinds the value named `name` lets out in `scope`, or none.
+fn erased_flow_kinds(scope: ErasedFlowScope, leaky: Array[(String, Array[String])], name: String) -> Array[String] {
+  let mut out = no_str_labels()
+  let mut decided = false
+  for a in scope.aliases {
+    let (an, labels) = a
+    if !decided && an == name {
+      out = labels
+      decided = true
+    }
+  }
+  if !decided && !str_list_has(scope.hidden, name) {
+    for row in leaky {
+      let (n, labels) = row
+      if !decided && n == name {
+        out = labels
+        decided = true
+      }
+    }
+  }
+  out
+}
+
+/// #3601: a function whose erased `with Exception` row lets out a kind other
+/// than the message carries that kind only where the checker reads its row:
+/// a call of it, an unannotated alias (`let g = fail`), and an argument whose
+/// parameter row names the kind or a row variable. Anywhere else -- an
+/// argument for a parameter typed with the erased row, an annotation, a field,
+/// an element -- the value is typed with the erased row alone, which carries
+/// only messages, and an erased arm that reads its binder would read the
+/// payload as a `String`. Such a use is refused with the edit.
+fn erased_value_flow_errors(stmts: Array[Stmt], imported: Array[(String, Array[String])]) -> Array[EffectError] {
+  let errors = array_empty()
+  let leaky = erased_leaky_functions(imported)
+  // A let-bound closure literal that lets a kind out is such a value too,
+  // in a module with no such named function (Codex on #3605).
+  if Array::length(leaky) > 0 || Array::length(erased_local_leaks) > 0 {
+    let empty = ErasedFlowScope::{
+      hidden: no_str_labels(),
+      aliases: array_empty()
+    }
+    for stmt in stmts {
+      match stmt {
+        SLet(_, _, name, ty, body) => match body {
+          EFn(_, _, params, _, _, fbody) => {
+            let names = no_str_labels()
+            for p in params {
+              let (pn, _) = p
+              Array::push(names, effect_param_base_name(pn))
+            }
+            erased_flow_walk(name, fbody, erased_flow_scope_hide(empty, names), leaky, errors)
+          },
+          // An unannotated alias (`let g = fail`) keeps the kinds.
+          EIdent(_, _) => match ty {
+            None => (),
+            Some(te) => erased_flow_typed(name, body, te, empty, leaky, errors)
+          },
+          _ => match ty {
+            None => erased_flow_walk(name, body, empty, leaky, errors),
+            Some(te) => erased_flow_typed(name, body, te, empty, leaky, errors)
+          }
+        },
+        SLetMut(name, _, body) => erased_flow_walk(name, body, empty, leaky, errors),
+        STest(tname, body) => erased_flow_walk(String::concat("__test_", tname), body, empty, leaky, errors),
+        SBench(bname, body) => erased_flow_walk(String::concat("__bench_", bname), body, empty, leaky, errors),
+        SExpr(e) => erased_flow_walk("", e, empty, leaky, errors),
+        _ => ()
+      }
+    }
+  }
+  errors
+}
+
+/// `src` (at `off`) handed to a slot whose function row is `row` (None: not
+/// known here).
+fn erased_flow_slot(fn_name: String, src: String, off: Int, row: Option[Array[String]], scope: ErasedFlowScope, leaky: Array[(String, Array[String])], errors: Array[EffectError]) -> Unit {
+  let kinds = erased_flow_kinds(scope, leaky, src)
+  if Array::length(kinds) > 0 {
+    let carried = match row {
+      Some(r) => row_carries_erased_kinds(r, kinds),
+      None => false
+    }
+    if !carried {
+      Array::push(errors, EEErasedValueOtherKind(fn_name, src, join_labels(sort_labels(kinds)), off))
+    }
+  }
+}
+
+/// The value and the annotation of an ascription (`let x: T = v` in a body).
+fn erased_flow_ascription(e: Expr) -> Option[(Expr, TypeExpr)] {
+  match e {
+    ECall(EFn(_, _, params, _, _, EIdent(body_name, _)), args, _, _) => if Array::length(params) == 1 && Array::length(args) == 1 && body_name == "__asc" {
+      match Array::get(params, 0) {
+        ("__asc", Some(ann)) => Some((Array::get(args, 0), ann)),
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// `v` written for a slot typed `te`: a name is judged against the slot's
+/// function row, and an array, tuple or `Some` literal hands each element the
+/// matching part of `te` (#3605 review), so
+/// `let fs: Array[() -> Int with Exception + Exception[Int]] = [bad]` reads
+/// the element's row. Anything else is walked as usual.
+fn erased_flow_typed(fn_name: String, v: Expr, te0: TypeExpr, scope: ErasedFlowScope, leaky: Array[(String, Array[String])], errors: Array[EffectError]) -> Unit {
+  let te = match dh_expand_type_alias(te0) {
+    Some(x) => x,
+    None => te0
+  }
+  match (v, te) {
+    (EIdent(src, off), _) => erased_flow_slot(fn_name, src, off, type_expr_fn_row(te), scope, leaky, errors),
+    (EArray(elems), TyApp("Array", targs)) => if Array::length(targs) == 1 {
+      for el in elems {
+        erased_flow_typed(fn_name, el, Array::get(targs, 0), scope, leaky, errors)
+      }
+    } else {
+      erased_flow_walk(fn_name, v, scope, leaky, errors)
+    },
+    (ETuple(elems), TyTuple(ts)) => if Array::length(elems) == Array::length(ts) {
+      let mut i = 0
+      while i < Array::length(elems) {
+        erased_flow_typed(fn_name, Array::get(elems, i), Array::get(ts, i), scope, leaky, errors)
+        i = i + 1
+      }
+    } else {
+      erased_flow_walk(fn_name, v, scope, leaky, errors)
+    },
+    (ECall(EIdent("Some", _), args, _, _), TyApp("Option", targs)) => if Array::length(args) == 1 && Array::length(targs) == 1 {
+      erased_flow_typed(fn_name, Array::get(args, 0), Array::get(targs, 0), scope, leaky, errors)
+    } else {
+      erased_flow_walk(fn_name, v, scope, leaky, errors)
+    },
+    _ => erased_flow_walk(fn_name, v, scope, leaky, errors)
+  }
+}
+
+fn erased_flow_walk(fn_name: String, root: Expr, root_scope: ErasedFlowScope, leaky: Array[(String, Array[String])], errors: Array[EffectError]) -> Unit {
+  let stack: Array[Expr] = Array::slice([root], 0, 1)
+  let scopes: Array[ErasedFlowScope] = Array::slice([root_scope], 0, 1)
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let e = Array::get(stack, n - 1)
+    let scope = Array::get(scopes, n - 1)
+    Array::truncate(stack, n - 1)
+    Array::truncate(scopes, n - 1)
+    let push = (x: Expr, s: ErasedFlowScope) -> {
+      Array::push(stack, x)
+      Array::push(scopes, s)
+    }
+    match e {
+      EIdent(name, off) => erased_flow_slot(fn_name, name, off, Some(no_str_labels()), scope, leaky, errors),
+      ECall(callee, args, _, _) => match erased_flow_ascription(e) {
+        Some((v, te)) => erased_flow_typed(fn_name, v, te, scope, leaky, errors),
+        None => match callee {
+          EIdent(cname, _) => {
+            // A local binding of the callee's spelling hides the program's
+            // parameter rows.
+            let mut known = !str_list_has(scope.hidden, cname)
+            for a in scope.aliases {
+              let (an, _) = a
+              if an == cname {
+                known = false
+              }
+            }
+            let mut ai = 0
+            while ai < Array::length(args) {
+              match Array::get(args, ai) {
+                EIdent(a, aoff) => {
+                  // A callee whose own row lets no exception out handles
+                  // what the value raises (`callee_lets_erased_out`).
+                  let row = if known {
+                    match callee_param_row(cname, ai) {
+                      Some(r) => if callee_lets_erased_out(cname) {
+                        Some(r)
+                      } else {
+                        Some(Array::slice(["e"], 0, 1))
+                      },
+                      None => None
+                    }
+                  } else {
+                    None
+                  }
+                  erased_flow_slot(fn_name, a, aoff, row, scope, leaky, errors)
+                },
+                arg => push(arg, scope)
+              }
+              ai = ai + 1
+            }
+          },
+          _ => {
+            push(callee, scope)
+            for arg in args {
+              push(arg, scope)
+            }
+          }
+        }
+      },
+      ELet(name, val, body, _) => {
+        match val {
+          EIdent(src, _) => {
+            let kinds = erased_flow_kinds(scope, leaky, src)
+            if Array::length(kinds) > 0 {
+              push(body, erased_flow_scope_alias(scope, name, kinds))
+            } else {
+              push(body, erased_flow_scope_hide(scope, [name]))
+            }
+          },
+          // A closure literal whose erased row lets kinds out
+          // (`erased_local_leaks`) is such a value too.
+          EFn(_, _, _, _, _, _) => {
+            push(val, scope)
+            let kinds = erased_local_leaks_for(erased_local_key(fn_name, name))
+            if Array::length(kinds) > 0 {
+              push(body, erased_flow_scope_alias(scope, name, kinds))
+            } else {
+              push(body, erased_flow_scope_hide(scope, [name]))
+            }
+          },
+          _ => {
+            push(val, scope)
+            push(body, erased_flow_scope_hide(scope, [name]))
+          }
+        }
+      },
+      ELetMut(name, val, body, _) => {
+        match val {
+          EIdent(src, _) => {
+            let kinds = erased_flow_kinds(scope, leaky, src)
+            if Array::length(kinds) > 0 {
+              push(body, erased_flow_scope_alias(scope, name, kinds))
+            } else {
+              push(body, erased_flow_scope_hide(scope, [name]))
+            }
+          },
+          _ => {
+            push(val, scope)
+            push(body, erased_flow_scope_hide(scope, [name]))
+          }
+        }
+      },
+      // A recursive closure literal is such a value on both sides.
+      ELetRec(name, val, body) => {
+        let kinds = match val {
+          EFn(_, _, _, _, _, _) => erased_local_leaks_for(erased_local_key(fn_name, name)),
+          _ => no_str_labels()
+        }
+        let inner = if Array::length(kinds) > 0 {
+          erased_flow_scope_alias(scope, name, kinds)
+        } else {
+          erased_flow_scope_hide(scope, [name])
+        }
+        push(val, inner)
+        push(body, inner)
+      },
+      EFn(_, _, params, _, _, body) => {
+        let names = no_str_labels()
+        for p in params {
+          let (pn, _) = p
+          Array::push(names, effect_param_base_name(pn))
+        }
+        push(body, erased_flow_scope_hide(scope, names))
+      },
+      EMatch(scrut, arms) => {
+        push(scrut, scope)
+        for arm in arms {
+          let (pat, body) = arm
+          let bound = no_str_labels()
+          collect_pat_binds_into(pat, bound)
+          push(body, erased_flow_scope_hide(scope, bound))
+        }
+      },
+      EHandle(body, arms) => {
+        push(body, scope)
+        for arm in arms {
+          let (pat, abody) = arm
+          let bound = no_str_labels()
+          collect_pat_binds_into(pat, bound)
+          push(abody, erased_flow_scope_hide(scope, bound))
+        }
+      },
+      EForIn(name, index_name, iter, body) => {
+        push(iter, scope)
+        let names = Array::slice([name], 0, 1)
+        match index_name {
+          Some(i) => Array::push(names, i),
+          None => ()
+        }
+        push(body, erased_flow_scope_hide(scope, names))
+      },
+      ELoop(states, body) => {
+        let names = no_str_labels()
+        for st in states {
+          let (sn, sv) = st
+          Array::push(names, sn)
+          push(sv, scope)
+        }
+        push(body, erased_flow_scope_hide(scope, names))
+      },
+      ERecord(sname, fields, _) => for f in fields {
+        let (fname, fe) = f
+        match fe {
+          EIdent(src, off) => erased_flow_slot(fn_name, src, off, Some(struct_field_rows_for(sname, fname)), scope, leaky, errors),
+          _ => push(fe, scope)
+        }
+      },
+      _ => for c in expr_children(e) {
+        push(c, scope)
+      }
+    }
+  }
+  ()
 }
 
 /// One walk of the module's statements under the program table.

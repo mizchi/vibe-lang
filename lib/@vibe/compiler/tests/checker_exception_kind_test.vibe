@@ -195,9 +195,16 @@ test "a kinded exception row cannot be laundered through a mismatched fn slot" {
   assert(String::contains(Array::get(diags, 0), "effect would be dropped"))
 }
 
-test "an erased slot accepts a kinded value, but a kinded slot refuses an erased one" {
+test "an erased slot refuses a kinded value, and a kinded slot refuses an erased one" {
   let into_erased = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with Exception[IoError] {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with Exception) -> Int with Exception {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(boom)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
-  assert(eq(Array::length(checked_diags(into_erased)), 0))
+  // #3601: an erased function-type row raises only messages to its callers,
+  // so `boom`'s `IoError` would reach an erased arm typed as a `String`.
+  let erased_diags = checked_diags(into_erased)
+  assert(eq(Array::length(erased_diags), 1))
+  assert(String::contains(Array::get(erased_diags, 0), "write `with Exception[IoError]` in the expected type () -> Int with Exception"))
+  // Naming the kind beside the erased label is the edit, and it checks.
+  let into_both = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with Exception[IoError] {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with Exception + Exception[IoError]) -> Int with Exception + Exception[IoError] {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(boom)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
+  assert(eq(Array::length(checked_diags(into_both)), 0))
   let into_kinded = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with Exception {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with Exception[IoError]) -> Int with Exception[IoError] {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(boom)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   // The mirror of #3015: `boom` may raise any kind, and `take`'s row -- which
   // its callers trust -- promises only `IoError`, so the narrowing is refused.

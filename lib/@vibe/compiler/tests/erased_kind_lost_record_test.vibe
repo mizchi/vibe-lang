@@ -1,0 +1,61 @@
+//# An anonymous record's function field keeps its exception kind (#3601)
+//
+// Codex on #3605: `erased_kind_lost` and its prefilter recursed through
+// arrays, options, tuples and type arguments but not through an anonymous
+// record's fields, so a record field typed with the erased `with Exception`
+// row might have taken a function that raises an `Int`. Measured, a program
+// cannot reach that: rows unify by kind (`Exception` and `Exception[Int]` do
+// not unify), and the effect-stripped retry leaves record fields alone, so
+// the pair is refused as a plain mismatch at every route that compares two
+// records (fixtures/typecheck/exception_erased_record_field_generic_reject.vibe).
+// The record branch now exists anyway, for the day the retry strips record
+// fields. These rows drive `check_assignable` itself, so the refusal does not
+// depend on the route a program takes to it.
+
+//# Imports
+
+import @vibe/compiler/core {
+  Subst, Type
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/checker {
+  check_assignable
+}
+
+//# Helpers
+
+fn thunk(row: String) -> Type {
+  CtFn(array_empty(), CtInt, Some(row))
+}
+
+fn errors_for(expected: Type, actual: Type) -> Array[String] {
+  let errors: Array[String] = array_empty()
+  let _ = check_assignable(expected, actual, SubstEmpty, errors, "record", 0)
+  errors
+}
+
+//# Tests
+
+test "a record field typed with an erased row refuses a kinded function" {
+  let expected = CtRecord([("f", thunk("Exception"))])
+  let actual = CtRecord([("f", thunk("Exception[Int]"))])
+  let errors = errors_for(expected, actual)
+  assert(Array::length(errors) > 0)
+}
+
+test "a record field matched to its kind is accepted" {
+  let expected = CtRecord([("f", thunk("Exception[Int]"))])
+  let actual = CtRecord([("f", thunk("Exception[Int]"))])
+  assert(Array::length(errors_for(expected, actual)) == 0)
+}
+
+test "the same pair nested in a tuple is refused with the edit" {
+  let expected = CtTuple([thunk("Exception"), CtInt])
+  let actual = CtTuple([thunk("Exception[Int]"), CtInt])
+  let errors = errors_for(expected, actual)
+  assert(Array::length(errors) > 0)
+}
