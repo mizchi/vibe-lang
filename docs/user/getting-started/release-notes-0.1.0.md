@@ -47,9 +47,14 @@ time with the edit that fixes it, or it answers correctly.
   catches only `String` messages, and a bare `with Exception` row carries
   the non-`String` kinds its body throws to its callers (#3541). Two routes
   remain open and are listed in the stable surface, §6.2 (#3601).
-- **Indexing.** An index of 2^32 or more traps as out of bounds instead of
-  wrapping into range. This covers `Array`, `String` and `Bytes`, on every
-  backend (#3543).
+- **Indexing.** An element access at an index of 2^32 or more, or a
+  non-empty range reaching past the end, now traps as out of bounds instead
+  of wrapping into range. This covers `Array::get` / `set` / `xs[i]`,
+  `String::byte_at` and `Bytes::get` / `set` / `slice` / `blit` / `fill`, on
+  every backend (#3543). Operations that already clamped keep doing so: an
+  empty range answers empty wherever it starts, `Array::slice` and
+  `String::substring` clamp an end past the length, and `Array::truncate`
+  never grows the array.
 - **The wasm-gc lane.** String comparison by content, dropping unused
   builtins before emission, and memory sizing for static data (#3600,
   #3602, #3603).
