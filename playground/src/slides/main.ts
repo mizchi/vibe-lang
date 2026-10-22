@@ -120,7 +120,13 @@ function mountDemo(host: HTMLElement): LiveDemo {
   const timing = host.querySelector<HTMLSpanElement>(".timing")!;
   const hint = host.querySelector<HTMLDivElement>(".hint")!;
   let index = 0;
+  // Bumped by every run and every reset (a sample switch resets): a run whose
+  // number is no longer current finished for a source that is not on screen,
+  // and its result is dropped.
+  let generation = 0;
   function reset() {
+    generation++;
+    runButton.disabled = false;
     editor.setValue(samples[index].source.trim());
     output.className = "output idle";
     output.textContent = IDLE;
@@ -137,10 +143,12 @@ function mountDemo(host: HTMLElement): LiveDemo {
   }
   async function run() {
     const sample = samples[index];
+    const mine = ++generation;
     runButton.disabled = true;
     output.className = "output idle";
     output.textContent = "compiling in this tab…";
     await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+    if (mine !== generation) return;
     const started = performance.now();
     if (PREVIEW) {
       // A build without the browser compiler (VITE_SLIDES_PREVIEW=1): the only
@@ -159,17 +167,20 @@ function mountDemo(host: HTMLElement): LiveDemo {
       runButton.disabled = false;
       return;
     }
+    let className = "output";
+    let text: string;
     try {
       const stdout = await compileAndRun(editor.getValue(), sample.entry ?? "main", sample.files ?? {});
-      output.className = "output";
-      output.textContent = stdout === "" ? "(no output)" : stdout;
+      text = stdout === "" ? "(no output)" : stdout;
     } catch (error) {
-      output.className = "output error";
-      output.textContent = String(error instanceof Error ? error.message : error);
-    } finally {
-      timing.textContent = `compile+run ${Math.round(performance.now() - started)} ms`;
-      runButton.disabled = false;
+      className = "output error";
+      text = String(error instanceof Error ? error.message : error);
     }
+    if (mine !== generation) return;
+    output.className = className;
+    output.textContent = text;
+    timing.textContent = `compile+run ${Math.round(performance.now() - started)} ms`;
+    runButton.disabled = false;
   }
   runButton.addEventListener("click", () => void run());
   host.querySelector<HTMLButtonElement>("button.reset")!.addEventListener("click", reset);
