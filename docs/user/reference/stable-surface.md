@@ -677,10 +677,10 @@ because those programs are already wrong.
   imported (its module publishes the kinds). A function value is typed only
   by the row it is given, and an erased row there carries only messages: a
   closure literal written for a field or result typed `with Exception`, or
-  for such a parameter of a callee whose own row lets exceptions out (or for
-  a parameter whose row variable the callee's row lets out), may throw only
-  messages (one bound by `let` or `let rec`, or applied where it is written,
-  is charged at its calls like a named function), and a function whose row
+  for such a parameter of a callee whose own row lets exceptions out, may
+  throw only messages (one bound by `let` or `let rec`, applied where it is
+  written, or passed for a parameter whose row variable the callee's row lets
+  out, is charged at its calls like a named function), and a function whose row
   names or lets out another kind may be passed there only where the
   receiving row names that kind or is a row variable with no erased
   `Exception` beside it. A callee whose own row raises no

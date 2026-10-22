@@ -69,6 +69,7 @@ import ./checker_effects_throw_payload_kind.vibe {
   collect_handle_effects,
   effect_name_of_op,
   erased_arg_kept_marker,
+  erased_iife_marker,
   erased_reads_binder,
   erased_slot_declared,
   exception_effect_labels,
@@ -143,16 +144,20 @@ import ./checker_effects_throw_payload_kind.vibe {
 /// `erased_arg_kept_marker`, so its own erased row is not judged as a value
 /// the module keeps. A literal for a parameter whose row variable the
 /// callee's own row lets out (`run[e](f: () -> Int with e) -> Int with e`)
-/// carries no marker either: the call fills that variable from the literal's
-/// row, so an erased row there is a value its callers read.
+/// carries `erased_iife_marker` instead: the call fills that variable from
+/// the literal's row, so what its erased row lets out reaches this call's
+/// caller, and it is charged to the enclosing body as if the literal were
+/// applied here (`TaskGroup::run` calls its body before it returns).
 export fn closure_arg_declared(arg: Expr, declared: Array[String], callee: String, lexical_callee: Option[Array[String]], index: Int) -> Array[String] {
   let base0 = closure_arg_declared_base(arg, declared, callee, lexical_callee, index)
   let lets_var_out = match lexical_callee {
     Some(_) => false,
     None => callee_lets_param_var_out(callee, index)
   }
-  let base = if under_erased_slot(base0) || lets_var_out {
+  let base = if under_erased_slot(base0) {
     base0
+  } else if lets_var_out {
+    labels_union(base0, [erased_iife_marker()])
   } else {
     labels_union(base0, [erased_arg_kept_marker()])
   }
