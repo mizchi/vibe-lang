@@ -65,9 +65,12 @@ type LiveDemo = {
 };
 const liveDemos = new Map<HTMLElement, LiveDemo>();
 
+// A printed page is always the 1280x720 frame, whatever screen prints it.
+let printing = false;
+
 function demoFontSize(): number {
-  if (document.body.classList.contains("read")) return 13;
-  const width = document.body.classList.contains("view-all") ? 1280 : deck.clientWidth;
+  if (document.body.classList.contains("read") && !printing) return 13;
+  const width = printing || document.body.classList.contains("view-all") ? 1280 : deck.clientWidth;
   return Math.max(11, Math.round(width * 0.0138));
 }
 
@@ -266,13 +269,20 @@ document.addEventListener("keydown", (event) => {
 });
 
 // Printing shows every slide, so every demo needs its editor, not just the visited ones.
+function resizeEditors() {
+  for (const { editor } of liveDemos.values()) editor.updateOptions({ fontSize: demoFontSize() });
+}
 window.addEventListener("beforeprint", () => {
+  printing = true;
   for (const host of deck.querySelectorAll<HTMLElement>(".demo[data-demo]")) mountDemo(host);
+  resizeEditors();
+});
+window.addEventListener("afterprint", () => {
+  printing = false;
+  resizeEditors();
 });
 
-window.addEventListener("resize", () => {
-  for (const { editor } of liveDemos.values()) editor.updateOptions({ fontSize: demoFontSize() });
-});
+window.addEventListener("resize", resizeEditors);
 window.addEventListener("hashchange", () => {
   const index = Number(location.hash.slice(1)) - 1 || 0;
   if (document.body.classList.contains("read")) slideEls[index]?.scrollIntoView();
@@ -329,7 +339,7 @@ function applyLayout() {
     }
     show(current);
   }
-  for (const { editor } of liveDemos.values()) editor.updateOptions({ fontSize: demoFontSize() });
+  resizeEditors();
 }
 
 if (new URLSearchParams(location.search).get("view") === "all") {
