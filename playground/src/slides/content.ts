@@ -117,7 +117,7 @@ export const DEMOS: Record<string, Sample[]> = {
     { file: "5_let_star.vibe", title: "let*", expect: "halves_or_zero(4, 6) = 5\nhalves_or_zero(4, 3) = 0\n",
       hint: "<code>Option</code> の早期脱出" },
     { file: "6_trait_bound.vibe", title: "trait", expect: "size_of = 3\n",
-      hint: "<code>T::measure</code> は witness 経由で呼ぶ。メソッド呼び出しは無い" },
+      hint: "<code>T::measure</code> は witness 経由で呼ぶ。<code>x.measure()</code> とは書かない" },
     { file: "7_byte_string.vibe", title: "バイト文字列", expect: "bytes = 11\nhead  = vibe\ntail  = 言語\n",
       hint: "<code>String</code> はバイト列。長さもスライスもバイト単位で、wasm のメモリそのまま" },
     { file: "8_int_wrap.vibe", title: "63bit Int", expect: "max     = 4611686018427387903\nmax + 1 = -4611686018427387904\n~0      = -1, ~5 = -6\n",
@@ -194,10 +194,10 @@ export const SLIDES: Slide[] = [
     className: "title",
     html: `
       <div class="logo">vibe<span>-lang</span></div>
-      <div class="tagline"><strong>黙って間違えない</strong>言語を作ってる<br>wasm の上でセルフホストしてる関数型言語</div>
+      <div class="tagline"><strong>バイブコーディングのための</strong>サンドボックス言語<br>wasm の上でセルフホストしてる関数型言語</div>
       <div class="meta">mizchi · 自作プログラミング言語を自慢する会 · 2026-10-22<br>
       <span class="small">このスライドの中で vibe のコンパイラ (wasm) が動いてる · github.com/mizchi/vibe-lang</span></div>`,
-    notes: "0:00 (15s) 挨拶。黙って間違えない言語を作ってる。このスライドの中でコンパイラが動いてる",
+    notes: "0:00 (15s) 挨拶。バイブコーディングのためのサンドボックス言語を作ってる。このスライドの中でコンパイラが動いてる",
   },
   {
     html: `
@@ -351,13 +351,13 @@ export const SLIDES: Slide[] = [
   },
   {
     html: `
-      <h2><span class="kicker">Syntax</span>メソッド呼び出しなし</h2>
+      <h2><span class="kicker">Syntax</span>関数は型名つきで呼ぶ</h2>
       <ul class="small">
         <li><code>Foo::bar(foo)</code> か <code>foo |&gt; Foo::bar()</code>。<code>foo.prop</code> はフィールドアクセスだけ。LLM には型名が書いてあるほうが読みやすいと思ってる (まだ測ってない)</li>
         <li>import はファイルスコープで明示。書いたものだけがスコープに出てくる</li>
       </ul>
       <div class="demo" data-demo="syntax"></div>`,
-    notes: "6:10 (35s) メソッド呼び出しを捨てた理由。1 パイプ、7 バイト文字列、8 63bit Int",
+    notes: "6:10 (35s) foo.bar() を書かせない理由。1 パイプ、7 バイト文字列、8 63bit Int",
   },
   {
     html: `
