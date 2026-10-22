@@ -28,6 +28,14 @@ vibe run <file.vibex> [-- args]
 call trace, an interactive breakpoint, a heap report and per-line allocation
 attribution; `vibe help` lists them with their exact output.
 
+`VIBE_BACKEND=gc` compiles the entry with the experimental wasm-gc backend
+instead of the default linear (RC) one; `linear` or unset keeps the default,
+and any other value is refused. `--trace` and `--break` take precedence: they
+are instrumentation builds of the linear backend. An entry that declares an
+optional grant (`allows Fs?`) is refused under `VIBE_BACKEND=gc`: that backend
+does not apply `--allow-*` grants to `perform?` yet, so it would answer
+`NotGranted` where the default backend answers `Granted`.
+
 ### compile / build
 
 `build` is an alias of `compile`: both read the same arguments and produce the

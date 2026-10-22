@@ -416,6 +416,18 @@ fn user_backend_kind(var: String) -> String with Exception + Env {
   }
 }
 
+/// The uninstrumented artifact kind for `vibe run` / `vibe build`:
+/// `VIBE_BACKEND` = `linear` (default) | `gc`.
+///
+/// #3545: both verbs hard-coded the linear kind, so `VIBE_BACKEND=gc vibe run`
+/// ran the RC artifact -- byte-identical output, trap offsets included --
+/// while the documentation said the variable selects wasm-gc. The `--trace` /
+/// `--break` instrumentation kinds keep precedence over it, as in the adapter
+/// (`fs_lane_request`).
+export fn user_artifact_backend_kind() -> String with Exception + Env {
+  user_backend_kind("VIBE_BACKEND")
+}
+
 export fn write_wasm(output_path: String, bytes: Bytes) -> Unit with Fs {
   ensure_parent_dir(output_path)
   Fs::write_bytes(output_path, bytes)
@@ -1070,6 +1082,27 @@ fn preflight_entry_authority(src: String, allows: Array[String], denies: Array[S
   }
 }
 
+/// #3545: the wasm-gc lane does not carry the launcher's grants into the
+/// optional-capability lowering, so every `perform?` there answers
+/// `NotGranted` -- under `--allow-fs` the linear lane answers `Granted` for the
+/// same program. Authority must not depend on the backend (ADR-0088), so a gc
+/// run of an entry that declares an optional grade is refused rather than
+/// answered differently.
+fn refuse_gc_optional_entry_authority(src: String) -> Unit with Exception + Fs {
+  let labels = entry_declared_authority(parse_user_entry_file(src))
+  let mut i = 0
+  while i < Array::length(labels) {
+    let label = Array::get(labels, i)
+    let n = String::length(label)
+    if n > 0 && String::byte_at(label, n - 1) == 63 {
+      throw("VIBE_BACKEND=gc cannot run `main`: it declares the optional grant `\{label}`, and the wasm-gc backend does not apply `--allow-*` grants to `perform?` yet (every one would answer `NotGranted`). Run without VIBE_BACKEND=gc, or make the grant required.")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
 fn parse_run_flags(args: Array[String]) -> (String, String, Bool, String, Bool, String, Bool, String, String, String, Array[String]) with Exception {
   let mut src = ""
   let mut trace = false
@@ -1202,7 +1235,12 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -
     } else if break_spec != "" || allocsite {
       "break"
     } else {
-      "mvp"
+      user_artifact_backend_kind()
+    }
+    if kind == "gc" {
+      refuse_gc_optional_entry_authority(src)
+    } else {
+      ()
     }
     let bytes = compile_user_artifact(src, "main", kind, optional_grants_from_flags(allows, denies))
     write_user_run_executable(out, bytes, kind)
