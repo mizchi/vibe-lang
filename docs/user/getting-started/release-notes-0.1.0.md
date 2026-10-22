@@ -5,8 +5,8 @@
 > release *is*, as opposed to what changed in it, is
 > [spec/0-1.md](../../spec/0-1.md).
 
-The previous stable release is `v0.0.1` (2026-04-14); `v0.1.0-rc.1`,
-`v0.1.0-rc.2` and `v0.1.0-rc.3` were published as pre-releases. This candidate also fixes
+The previous stable release is `v0.0.1` (2026-04-14); `v0.1.0-rc.1` to
+`v0.1.0-rc.4` were published as pre-releases. `0.1.0-rc.3` also fixed
 RC ownership of store views, local closure captures, recursive closures, and
 closures returned from `Option` payloads (#3215, #3203, #3110, #3240); makes
 qualified constructor patterns through
@@ -18,6 +18,45 @@ Between `v0.0.1` and 0.1.0 the language was
 rewritten in itself, so these notes describe a different compiler rather than
 a list of fixes. The work once prepared under the name
 "0.3.0 GA" is part of this release.
+
+## Changes in 0.1.0-rc.4
+
+This candidate carries the fixes from the pre-release bug hunt (#3535). Each
+finding below type-checked cleanly before and then ran a wrong program,
+trapped, or read the wrong memory; each is now refused at compile time with
+the edit that fixes it, or answers correctly.
+
+- **Handles and closures.** A closure that throws can no longer escape the
+  `Exception` handle that catches it. This covers a closure returned
+  directly or held in a struct or enum field. The function that builds the
+  closure may be declared in the same module or imported, reached as a
+  method or through an alias, chosen by a top-level `if`, row-polymorphic,
+  or a parameter or call result whose body the check cannot read (#3540,
+  #3584, #3593, #3596, #3599). A closure performing two handled effects no
+  longer escapes through a parameter that names only one (#3585).
+- **Effect rows.** A struct's row parameter carries a real row argument,
+  including through nested structs and generic signatures, so a generic
+  callee that reaches its row only through a struct is charged to its
+  caller (#3589). A declared row variable authorizes only itself, so
+  `with Console + e` no longer drops `Console` (#3595). Rows reach callers
+  through projections, owned handles and generic arguments (#3587).
+- **Exceptions.** An erased `Exception::Throw(m)` arm that reads `m` now
+  catches only `String` messages, and a bare `with Exception` row carries
+  the non-`String` kinds its body throws to its callers (#3541). Two routes
+  remain open and are listed in the stable surface, §6.2 (#3601).
+- **Indexing.** An index of 2^32 or more traps as out of bounds instead of
+  wrapping into range. This covers `Array`, `String` and `Bytes`, on every
+  backend (#3543).
+- **The wasm-gc lane.** String comparison by content, dropping unused
+  builtins before emission, and memory sizing for static data (#3600,
+  #3602, #3603).
+- **Derives and generics.** Fixes to `derive (Show)` / `derive (Eq)`, impl
+  overlap detection, generic renderers, and effect dictionaries for
+  shadowing callbacks (#3551, #3587, #3592, #3597).
+- **The stable surface.** `Float`, `derive (Hash)` keys, trait impls beyond
+  one module, higher-kinded parameters, kinded arms over a row-polymorphic
+  callee, and first-class `resume` are moved out of the 0.1.0 freeze. See
+  [stable-surface §6.1](../reference/stable-surface.md).
 
 ## Changes in 0.1.0-rc.3
 
