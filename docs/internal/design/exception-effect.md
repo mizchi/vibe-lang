@@ -134,6 +134,9 @@ effect Exception[E] {
   bound into its environment after the effect check (`erased_kinds_marker`),
   and the published interface carries them to importers, re-exports, renamed
   imports and type companions; an importer charges a call with them (#3601).
+  A top-level declaration hides an import of its name, and with it the
+  imported function's kinds: the declaration is charged and published only
+  what its own body lets out.
   A function VALUE is typed only by the row it is given, and an erased row
   there carries only messages to the code that calls it (#3601). A closure
   literal written for an erased function-type row (a field's, the enclosing
@@ -146,13 +149,16 @@ effect Exception[E] {
   written takes the enclosing body's exception labels (`erased_iife_marker`).
   A named function whose erased row lets another kind out may be used as a
   value only as a call, an unannotated alias, or an argument whose parameter
-  row names the kind or a row variable, or whose callee's own row lets no
+  row names the kind or is a row variable with no erased `Exception` beside
+  it (in `with Exception + e` a call matches the value's exception to
+  `Exception` and leaves `e` empty, #3033), or whose callee's own row lets no
   exception out (`erased_value_flow_errors`). Such a callee handles what the
   callback raises (`TaskGroup::spawn_suspend` reads the payload through
   `__exn_kind`), so a literal handed to it keeps its own row
   (`erased_arg_kept_marker`). The type check refuses a function type naming
   `Exception[K]`, `K` not `String`, where a function type whose row is erased
-  without that kind or a row variable is expected (`erased_kind_lost`). Not
+  without that kind is expected, a row variable beside the erased label
+  included (`erased_kind_lost`). Not
   seen: a callee whose row lets no exception out that keeps the callback and
   calls it later, and a closure literal passed to a callee that is itself a
   function value, whose parameter rows the walk cannot read. The kinded row

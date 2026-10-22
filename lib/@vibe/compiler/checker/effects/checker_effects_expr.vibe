@@ -116,6 +116,7 @@ import ./checker_effects_throw_payload_kind.vibe {
   effect_name_of_op,
   env_erased_kinds_rows,
   erased_kinds_labels,
+  erased_kinds_toplevel_name,
   erased_local_key,
   erased_local_leaks,
   erased_local_leaks_for,
@@ -293,7 +294,7 @@ export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env
   // #3601: an imported function whose erased row lets out another kind than
   // the message carries it, as its module published it
   // (`erased_kinds_marker`); a call charges it like a label of that row.
-  let imported_kinds = imported_erased_kinds(env)
+  let imported_kinds = imported_erased_kinds(env, stmts)
   let env_sigs = env_sigs_with_erased_kinds(written_env_sigs, imported_kinds)
   // Build the call-graph effect map (parallel arrays) from every top-level
   // binding's declared row — locals first, then the env's (imported)
@@ -471,14 +472,26 @@ fn toplevel_alias_pairs(stmts: Array[Stmt]) -> Array[(String, String)] {
 }
 
 /// #3601: the kinds each imported function's erased row lets out, as its
-/// module published them.
-fn imported_erased_kinds(env: TypeEnv) -> Array[(String, Array[String])] {
+/// module published them. A top-level binding of `stmts` hides an import of
+/// its name: a call, an alias or a value use of that name reaches the local
+/// one, which is charged only what its own body lets out (Codex on #3605).
+fn imported_erased_kinds(env: TypeEnv, stmts: Array[Stmt]) -> Array[(String, Array[String])] {
   let out: Array[(String, Array[String])] = []
-  for row in env_erased_kinds_rows(env) {
-    let (name, ty) = row
-    let labels = erased_kinds_labels(ty)
-    if Array::length(labels) > 0 {
-      Array::push(out, (name, labels))
+  let rows = env_erased_kinds_rows(env)
+  if Array::length(rows) > 0 {
+    let locals = no_str_labels()
+    for stmt in stmts {
+      let n = erased_kinds_toplevel_name(stmt)
+      if String::length(n) > 0 {
+        Array::push(locals, n)
+      }
+    }
+    for row in rows {
+      let (name, ty) = row
+      let labels = erased_kinds_labels(ty)
+      if Array::length(labels) > 0 && !str_list_has(locals, name) {
+        Array::push(out, (name, labels))
+      }
     }
   }
   out
@@ -542,14 +555,21 @@ fn erased_leaky_functions(imported: Array[(String, Array[String])]) -> Array[(St
 /// Does a function-type row `row` carry each of `labels` (`Exception[K]`)?
 /// It does when it names the kind, or has a row variable a call instantiates
 /// from the value's own row.
+/// A row variable beside the erased `Exception` label does not count: a
+/// call matches the value's erased exception to that label and leaves the
+/// variable empty (#3033), so the caller reads only messages (Codex on
+/// #3605).
 fn row_carries_erased_kinds(row: Array[String], labels: Array[String]) -> Bool {
   let mut has_var = false
+  let mut erased = false
   for l in row {
     if label_is_effect_var(l) {
       has_var = true
+    } else if is_exception_label(l) && String::length(exception_label_kind(l)) == 0 {
+      erased = true
     }
   }
-  if has_var {
+  if has_var && !erased {
     true
   } else {
     let mut all = true
@@ -673,7 +693,9 @@ fn erased_flow_ascribed(val: Expr) -> Option[(String, Int, Option[Array[String]]
 fn erased_value_flow_errors(stmts: Array[Stmt], imported: Array[(String, Array[String])]) -> Array[EffectError] {
   let errors = array_empty()
   let leaky = erased_leaky_functions(imported)
-  if Array::length(leaky) > 0 {
+  // A let-bound closure literal that lets a kind out is such a value too,
+  // in a module with no such named function (Codex on #3605).
+  if Array::length(leaky) > 0 || Array::length(erased_local_leaks) > 0 {
     let empty = ErasedFlowScope::{
       hidden: no_str_labels(),
       aliases: array_empty()
@@ -760,7 +782,7 @@ fn erased_flow_walk(fn_name: String, root: Expr, root_scope: ErasedFlowScope, le
                       Some(r) => if callee_lets_erased_out(cname) {
                         Some(r)
                       } else {
-                        Some(labels_union(r, ["e"]))
+                        Some(Array::slice(["e"], 0, 1))
                       },
                       None => None
                     }

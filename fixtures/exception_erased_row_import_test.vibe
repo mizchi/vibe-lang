@@ -7,11 +7,21 @@
 // under its kinded arm, an imported function that lets an `Int` out under an
 // arm that leaves its payload unread, a callback that throws a message, a
 // callback written for a kinded parameter, a function value passed where
-// the parameter's row names the kind or a row variable, and a callback handed
+// the parameter's row names the kind or is a bare row variable, and a callback handed
 // to a callee that handles what it raises (`TaskGroup::spawn_suspend`'s
-// shape: its own row lets no exception out).
+// shape: its own row lets no exception out). A module that imports a leaky
+// function and declares one of its own name publishes the local one's kinds
+// (fixtures/modules/exception_erased_row_shadow_{mid,export_mid}.vibe).
 import ./modules/exception_erased_row_dep.vibe {
   fail, fail_code, fail_text
+}
+
+import ./modules/exception_erased_row_shadow_mid.vibe {
+  shadow_alias, shadow_call, shadow_value
+}
+
+import ./modules/exception_erased_row_shadow_export_mid.vibe {
+  fail as own_fail
 }
 
 fn run(f: () -> Int with Exception) -> Int with Exception {
@@ -58,6 +68,25 @@ fn imported_unread() -> Int {
   } with { Exception::Throw(_) => 100 }
 }
 
+fn shadowing_local_message() -> Int {
+  let c = handle {
+    shadow_call()
+  } with { Exception::Throw(m) => String::length(m) }
+  let v = handle {
+    shadow_value()
+  } with { Exception::Throw(m) => String::length(m) * 10 }
+  let a = handle {
+    shadow_alias()
+  } with { Exception::Throw(m) => String::length(m) * 100 }
+  c + v + a
+}
+
+fn shadowing_export_message() -> Int {
+  handle {
+    own_fail()
+  } with { Exception::Throw(m) => String::length(m) }
+}
+
 fn callback_message() -> Int {
   handle {
     run(() -> throw("seven"))
@@ -92,6 +121,14 @@ test "an imported kinded row reaches its kinded arm" {
 
 test "an imported erased row that lets an Int out reaches an unread arm" {
   inspect(imported_unread(), "100")
+}
+
+test "a local function that hides an imported leaky one publishes its own kinds" {
+  // `own` is 3 bytes: the call, the value use and the alias each reach the
+  // local `fail`, which throws only messages.
+  inspect(shadowing_local_message(), "333")
+  // `mine`: the exported local `fail`, not the imported one it hides.
+  inspect(shadowing_export_message(), "4")
 }
 
 test "a callback that throws a message reaches an erased arm that reads it" {

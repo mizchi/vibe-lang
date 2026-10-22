@@ -638,25 +638,53 @@ export fn erased_kinds_labels(ty: Type) -> Array[String] {
 /// function of `stmts` whose erased row lets out a kind other than the
 /// message (`erased_row_charged`), so a module importing it charges a call
 /// with that kind. Clears the record.
+/// A top-level binding of this module hides an import of its name, so one
+/// that lets nothing out beyond the message is bound an EMPTY marker when an
+/// imported one of its name is in `env`: the nearest marker is then this
+/// module's own answer, and the publication does not hand the imported
+/// function's kinds to the local one (Codex on #3605).
 export fn env_bind_erased_kinds(env: TypeEnv, stmts: Array[Stmt]) -> TypeEnv {
   let mut out = env
-  if Array::length(erased_row_charged) > 0 {
+  let imported = env_erased_kinds_rows(env)
+  if Array::length(erased_row_charged) > 0 || Array::length(imported) > 0 {
     let done = no_str_labels()
     for stmt in stmts {
-      match stmt {
-        SLet(_, _, name, _, _) => if !str_labels_contain(done, name) {
-          Array::push(done, name)
-          let labels = erased_row_charged_for(name)
-          if Array::length(labels) > 0 {
-            out = env_bind(out, erased_kinds_marker(name), erased_kinds_type(labels))
-          }
-        },
-        _ => ()
+      let name = erased_kinds_toplevel_name(stmt)
+      if String::length(name) > 0 && !str_labels_contain(done, name) {
+        Array::push(done, name)
+        let labels = erased_row_charged_for(name)
+        if Array::length(labels) > 0 {
+          out = env_bind(out, erased_kinds_marker(name), erased_kinds_type(labels))
+        } else if erased_kinds_rows_name(imported, name) {
+          out = env_bind(out, erased_kinds_marker(name), erased_kinds_type(no_str_labels()))
+        }
       }
     }
   }
   Array::truncate(erased_row_charged, 0)
   out
+}
+
+/// The name a top-level statement binds in the module's value namespace, or
+/// "" when it binds none: a local binding of that name hides an imported
+/// function's `erased_kinds_marker`.
+export fn erased_kinds_toplevel_name(stmt: Stmt) -> String {
+  match stmt {
+    SLet(_, _, n, _, _) => n,
+    SLetMut(n, _, _) => n,
+    SExternLet(n, _) => n,
+    SFnDecl(_, n, _, _, _) => n,
+    _ => ""
+  }
+}
+
+fn erased_kinds_rows_name(rows: Array[(String, Type)], name: String) -> Bool {
+  let mut found = false
+  for row in rows {
+    let (n, _) = row
+    found = found || n == name
+  }
+  found
 }
 
 /// Every `erased_kinds_marker` bound in `env`, as (function name, payload),

@@ -1860,12 +1860,14 @@ Rules:
   like a named function. A function whose erased row lets another kind out
   (`fn bad() -> Int with Exception { throw(7) }`) may be called, aliased with
   an unannotated `let g = bad`, or passed where the parameter's row names the
-  kind or a row variable; any other use as a value is refused. A
+  kind or is a row variable with no erased `Exception` beside it; any other
+  use as a value is refused (in `with Exception + e` a call matches the
+  value's exception to `Exception` and leaves `e` empty). A
   `with Exception[Int]` function is refused wherever an erased function type
   is expected. A callee whose own row raises no exception handles what a
   callback raises (`TaskGroup::spawn_suspend`) and takes any kind. Name the
   kind where the value goes (`with Exception[Int]`,
-  `with Exception + Exception[Int]`, or a row variable `with e`). Throw a
+  `with Exception + Exception[Int]`, or a bare row variable `with e`). Throw a
   value other than a `String` under a kinded row, and catch it with the
   kinded arm.
 - A rethrow from the erased arm is a throw of no known kind, not of

@@ -1193,8 +1193,12 @@ fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
 }
 
 /// #3601: is `row` a function-type row whose exceptions reach the code that
-/// calls the function as messages only -- an erased exception label, no
-/// kinded one of `kind`, and no row variable a call could fill with it?
+/// calls the function as messages only -- an erased exception label and no
+/// kinded one of `kind`? A row variable beside the erased label does not
+/// keep the kind: a call matches the value's exception to that label and
+/// leaves the variable empty (#3033), so the caller reads only messages
+/// (Codex on #3605). A row with a variable and no erased label is not erased
+/// at all.
 fn row_loses_exception_kind(row: Option[String], kind: String) -> Bool {
   let labels = row_labels(row)
   let mut erased = false
@@ -1207,8 +1211,6 @@ fn row_loses_exception_kind(row: Option[String], kind: String) -> Bool {
       } else if exception_kinds_same(k, kind) {
         keeps = true
       }
-    } else if (String::length(l) == 1 && String::char_code_at(l, 0) >= 97 && String::char_code_at(l, 0) <= 122) || (String::length(l) >= 2 && String::char_code_at(l, 0) == 36) {
-      keeps = true
     }
   }
   erased && !keeps
@@ -1284,6 +1286,26 @@ fn erased_kind_lost(expected: Type, actual: Type) -> Option[String] {
       },
       _ => None
     },
+    // An anonymous record's fields, paired by name (Codex on #3605). Today a
+    // record whose field rows differ does not unify, and the effect-stripped
+    // retry leaves record fields unstripped, so the pair is refused as a
+    // plain mismatch before this runs; the branch keeps the answer when
+    // either of those changes.
+    CtRecord(efs) => match actual {
+      CtRecord(afs) => match retry_record_pairs(efs, afs) {
+        Some((ets, ats)) => {
+          let mut lost = None
+          let mut i = 0
+          while i < Array::length(ets) && lost == None {
+            lost = erased_kind_lost(Array::get(ets, i), Array::get(ats, i))
+            i = i + 1
+          }
+          lost
+        },
+        None => None
+      },
+      _ => None
+    },
     _ => None
   }
 }
@@ -1320,6 +1342,16 @@ fn type_mentions_exception_fn_row(t: Type) -> Bool {
       let mut found = false
       for e in args {
         if !found && type_mentions_exception_fn_row(e) {
+          found = true
+        }
+      }
+      found
+    },
+    CtRecord(fields) => {
+      let mut found = false
+      for f in fields {
+        let (_, ft) = f
+        if !found && type_mentions_exception_fn_row(ft) {
           found = true
         }
       }

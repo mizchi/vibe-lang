@@ -671,7 +671,8 @@ because those programs are already wrong.
   throw only messages (one bound by `let`, or applied where it is written, is
   charged at its calls like a named function), and a function whose row
   names or lets out another kind may be passed there only where the
-  receiving row names that kind or a row variable. A callee whose own row raises no
+  receiving row names that kind or is a row variable with no erased
+  `Exception` beside it. A callee whose own row raises no
   exception handles what a callback raises (`TaskGroup::spawn_suspend`), so it
   takes any kind. The kind is not carried at run time. Two routes are not
   seen: such a callee that keeps the callback and calls it after it returns,
