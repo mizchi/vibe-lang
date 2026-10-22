@@ -60,9 +60,10 @@ fine = 25
 値が `handle` 全体の値になり、だから `safe` は `-1`、`fine` は `25` に
 なります。`Exception` の腕に `resume` はありません。
 
-型引数なしの `Exception` は消去された形で、どの `Exception[E]` も受け取り、
-payload は文字列として届きます。エラー型を保ちたいときは `Exception[E]` と
-書きます — [exception effect](../../docs/internal/design/exception-effect.md) を参照。
+型引数なしの `Exception` は消去された形で、どの `Exception[E]` も受け取り
+ます。payload を読む消去された腕には payload が文字列として届くので、
+チェッカーはその腕に文字列だけを捕まえさせます。`Exception::Throw(_)` は何で
+も捕まえます。エラー型を保ちたいときは `Exception[E]` と書きます — [exception effect](../../docs/internal/design/exception-effect.md) を参照。
 
 ## 自分のエフェクトを宣言する
 

@@ -1,0 +1,81 @@
+// #3541 controls: the erased `Exception::Throw(m)` arm reads `m` as the
+// thrown message, a `String`, so a body that raises another kind under an arm
+// that reads its binder, and a non-`String` throw under the erased
+// `with Exception` row, are refused
+// (fixtures/typecheck/exception_erased_{arm,row,slot}_*_reject.vibe). What
+// stays accepted, with the answers it gives: an erased arm over a body that
+// raises only messages, the kinded arm over another kind, an erased arm that
+// leaves its payload unread over any kind, and a row naming the kind beside
+// the erased label.
+
+fn fail_text() -> Int with Exception[String] {
+  throw("boom")
+}
+
+fn fail_erased() -> Int with Exception {
+  throw("erased boom")
+}
+
+fn fail_code() -> Int with Exception[Int] {
+  throw(7)
+}
+
+/// Both labels: the kinded one carries the `Int`, the erased one the message.
+fn fail_either(code: Bool) -> Int with Exception + Exception[Int] {
+  if code {
+    fail_code()
+  } else {
+    fail_erased()
+  }
+}
+
+/// Only messages reach the erased arm, which reads one.
+fn read_message() -> String {
+  handle {
+    let _ = fail_text()
+    let _ = fail_erased()
+    "none"
+  } with { Exception::Throw(m) => String::concat("caught: ", m) }
+}
+
+/// The kinded arm binds the `Int` at its own type.
+fn read_code() -> Int {
+  handle { fail_code() } with { Exception[Int]::Throw(c) => c + 1 }
+}
+
+/// An arm that leaves its payload unread catches every kind.
+fn ignore_any(code: Bool) -> Int {
+  handle { fail_either(code) } with { Exception::Throw(_) => 100 }
+}
+
+/// So does one whose binder its body never mentions.
+fn ignore_named() -> Int {
+  handle { fail_code() } with { Exception::Throw(_unused) => 200 }
+}
+
+/// The erased binder rethrown under the erased row, over a message.
+fn rethrow_message() -> Int with Exception {
+  handle { fail_text() } with { Exception::Throw(m) => throw(m) }
+}
+
+test "an erased arm over messages reads the message" {
+  inspect(read_message(), "caught: boom")
+}
+
+test "a kinded arm reads its kind" {
+  inspect(read_code(), "8")
+}
+
+test "an unread erased arm catches every kind" {
+  inspect(ignore_any(true), "100")
+  inspect(ignore_any(false), "100")
+  inspect(ignore_named(), "200")
+}
+
+test "a rethrown message reaches an outer erased arm as a String" {
+  let r = handle {
+    let _ = rethrow_message()
+    "none"
+  } with { Exception::Throw(m) => m }
+  inspect(r, "boom")
+}

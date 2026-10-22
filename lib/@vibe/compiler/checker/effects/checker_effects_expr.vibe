@@ -108,6 +108,8 @@ import ./checker_effects_throw_payload_kind.vibe {
   clear_checker_published_tables,
   collect_handle_effects,
   effect_name_of_op,
+  erased_root_marker,
+  erased_row_leaks,
   fn_binding_effects,
   labels_union,
   lookup_fn_effs,
@@ -187,7 +189,10 @@ fn check_perform_effects_binding_tx(fn_name: String, written_ty: Option[TypeExpr
       // #3095: the declaration's own `[S]` scopes over its header and body.
       Array::truncate(row_formal_scope, 0)
       Array::push(row_formal_scope, tparam_names(tparams))
-      let errs = check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(lowered_test_ambient_effects(fn_name), labels_union(sig_labels, effect_row_labels(effect_row_parse(eff)))), false, fn_names, fn_effs, fn_index, fn_param_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
+      // #3541: the function's own body, where an erased row's leak is its own.
+      let errs = check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(labels_union(lowered_test_ambient_effects(fn_name), labels_union(sig_labels, effect_row_labels(effect_row_parse(eff)))), [
+        erased_root_marker(fn_name)
+      ]), false, fn_names, fn_effs, fn_index, fn_param_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
       Array::truncate(row_formal_scope, 0)
       errs
     },
@@ -286,6 +291,7 @@ export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env
   // annotated through one is read with the alias's row.
   set_dh_type_aliases(stmts)
   build_perform_fn_effs(stmts, env, fn_names, fn_effs, fn_param_effs)
+  let local_count = Array::length(fn_names)
   // The callee-signature table is the same local rows plus EVERY env
   // function; build it before the program table appends its env half.
   set_callee_sigs_from(fn_names, fn_effs, fn_param_effs, env_sigs)
@@ -314,6 +320,54 @@ export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env
   // what each throw site actually throws.
   set_throw_kind_table(env)
   set_entry_user_effect_operations(stmts)
+  // #3541: an erased `with Exception` row carries the kinds its body throws.
+  // A walk records each kind other than the message that a function's erased
+  // row lets out (`erased_row_leaks`); it is added to that function's row as
+  // its callers read it, and the module is walked again, until nothing new
+  // leaks. A program whose erased rows carry only messages is walked once.
+  // No round cap: a row only grows, and only by a kind the program throws,
+  // so the loop ends; a cap stopped a chain longer than it before the
+  // outermost leak was charged (Codex review on #3594).
+  Array::truncate(erased_row_leaks, 0)
+  let mut errors = check_perform_effects_module_walk(stmts, fn_names, fn_effs, fn_index, fn_param_effs)
+  while charge_erased_row_leaks(fn_effs, fn_index, local_count) {
+    Array::truncate(erased_row_leaks, 0)
+    errors = check_perform_effects_module_walk(stmts, fn_names, fn_effs, fn_index, fn_param_effs)
+  }
+  Array::truncate(erased_row_leaks, 0)
+  // #1347: only once the rows themselves check out — on a program with real
+  // row errors every reachability answer is suspect, and a second diagnostic
+  // per handle would bury the first.
+  if Array::length(errors) == 0 {
+    append_eff_errs(errors, check_dead_handles_stmts(stmts, fn_names, fn_effs, fn_index))
+  } else {
+    ()
+  }
+  errors
+}
+
+/// #3541: add each recorded leak to the row a caller reads for its local
+/// function (the first `local_count` entries). Answers whether a row grew.
+fn charge_erased_row_leaks(fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], local_count: Int) -> Bool {
+  let mut grew = false
+  for leak in erased_row_leaks {
+    let (owner, label) = leak
+    match MutMap::get(fn_index, owner) {
+      Some(at) => if at < local_count {
+        let row = Array::get(fn_effs, at)
+        if !effect_row_has_label(Some(row), label) {
+          Array::set(fn_effs, at, labels_union(row, [label]))
+          grew = true
+        }
+      },
+      None => ()
+    }
+  }
+  grew
+}
+
+/// One walk of the module's statements under the program table.
+fn check_perform_effects_module_walk(stmts: Array[Stmt], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
   let errors = user_provider_collision_errors(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
@@ -338,14 +392,6 @@ export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env
     i = i + 1
   }
   Array::set(shadowed_builtin_type_names_cell, 0, Array::get(shadowed_builtin_type_names_cell, 1))
-  // #1347: only once the rows themselves check out — on a program with real
-  // row errors every reachability answer is suspect, and a second diagnostic
-  // per handle would bury the first.
-  if Array::length(errors) == 0 {
-    append_eff_errs(errors, check_dead_handles_stmts(stmts, fn_names, fn_effs, fn_index))
-  } else {
-    ()
-  }
   errors
 }
 

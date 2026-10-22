@@ -1,0 +1,48 @@
+// #3585: a closure performing two effects one `handle` answers may be kept
+// at a parameter whose row carries both: whoever calls the kept value passes
+// both handlers. The refused shapes are the
+// handle_bound_closure_two_effects_*_reject rows. (A closure handed to a
+// two-effect row traps when it runs, #3583, so this row is checked, not
+// run.)
+effect Ask {
+  Get() -> Int
+}
+
+effect Log {
+  Put(n: Int) -> Unit
+}
+
+let kept: Array[() -> Int with Ask + Log] = []
+
+fn keep(f: () -> Int with Ask + Log) -> Unit {
+  Array::push(kept, f)
+}
+
+fn kept_with_both_rows() -> Int {
+  handle {
+    keep(() -> {
+      let v = perform Ask::Get()
+      perform Log::Put(v)
+      v + 1
+    })
+    let h = () -> {
+      perform Log::Put(1)
+      perform Ask::Get()
+    }
+    keep(h)
+    perform Ask::Get()
+  } with {
+    Ask::Get() => resume(5);
+    Log::Put(_) => resume(())
+  }
+}
+
+// A closure performing `Ask` under a handle that answers only `Log`: the
+// handle has nothing of its to answer, so it may leave.
+fn outlives_the_other_handle() -> (() -> Int with Ask) {
+  handle {
+    let g: () -> Int with Ask = () -> perform Ask::Get() + 1
+    perform Log::Put(0)
+    g
+  } with { Log::Put(_) => resume(()) }
+}

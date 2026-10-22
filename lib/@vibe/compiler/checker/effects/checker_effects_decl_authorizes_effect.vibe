@@ -10,6 +10,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   canonical_builtin_name,
+  erased_exception_covers_kind,
   exception_effect_labels_equal,
   exception_kinds_compatible,
   exception_kinds_same,
@@ -44,6 +45,7 @@ import ./checker_effects_throw_payload_kind.vibe {
   console_authorizes_legacy,
   effect_name_of_op,
   entry_user_effect_operations,
+  erased_covers_only_messages,
   exception_effect_labels,
   fn_binding_effects,
   is_kinded_handle_pseudo_label,
@@ -51,6 +53,7 @@ import ./checker_effects_throw_payload_kind.vibe {
   kinded_handle_marker,
   kinded_handle_open_row_var,
   labels_union,
+  record_erased_row_leak,
   requirement_marked_for,
   row_base_membership,
   row_label_args_differ,
@@ -162,35 +165,60 @@ export fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Boo
     // callee declared `with Exception` -- and the function then raised a kind
     // it does not declare. The erased spelling `with Exception` stays gradual.
     let strict = effect_row_has_label(Some(labels), kinded_handle_marker()) || row_is_kinded_exception_only(labels)
+    // #3541: in the body of an erased arm that reads its binder, the erased
+    // label covers only the thrown message (`erased_covers_only_messages`).
+    let only_messages = erased_covers_only_messages(labels)
     let mut alias_found = false
+    let mut kinded_found = false
     let mut alias_i = 0
     while alias_i < Array::length(labels) {
       let declared_label = Array::get(labels, alias_i)
       let declared_kind = exception_label_kind(declared_label)
       let covers = if strict {
         String::length(required_kind) > 0 && String::length(declared_kind) > 0 && exception_kinds_same(declared_kind, required_kind)
+      } else if String::length(declared_kind) == 0 && only_messages {
+        erased_exception_covers_kind(required_kind)
       } else {
         exception_kinds_compatible(declared_kind, required_kind)
       }
       if is_exception_label(declared_label) && covers {
         alias_found = true
+        if String::length(declared_kind) > 0 {
+          kinded_found = true
+        }
       }
       alias_i = alias_i + 1
     }
-    alias_found
-  } else if row_base_membership(labels, eff_name) {
-    true
-  } else {
-    let mut i = 0
-    let mut has_effect_var = false
-    while i < Array::length(labels) {
-      if label_is_effect_var(Array::get(labels, i)) {
-        has_effect_var = true
-      }
-      i = i + 1
+    // #3541: a kind other than the message let out by a named function's
+    // erased row is charged to its callers (`record_erased_row_leak`).
+    if alias_found && !kinded_found && !erased_exception_covers_kind(required_kind) {
+      record_erased_row_leak(labels, required_kind)
     }
-    has_effect_var
+    alias_found
+  } else {
+    // #3595: a declared row VARIABLE authorizes only itself (the exact
+    // membership above). It used to authorize every label, so
+    // `fn m1(f: () -> Int with Console + e) -> Int with e { f() }` was
+    // accepted -- and every call site instantiates `e` from what the
+    // arguments add beyond the parameter's concrete labels, so a pure caller
+    // of `m1(noisy)` was charged nothing while `noisy` printed. The variable
+    // stands for what the CALLER supplies; a concrete label the body
+    // performs is the body's to declare. The one requirement it still
+    // covers is an exception of UNRESOLVED kind (`throw(payload)` re-raising
+    // what a handle caught from a `with e` callback, `TaskGroup::run`): the
+    // payload may be the caller's own, which only `e` names.
+    row_base_membership(labels, eff_name) || (is_exception_label(eff_name) && String::length(exception_label_kind(eff_name)) == 0 && row_has_effect_var(labels))
   }
+}
+
+fn row_has_effect_var(labels: Array[String]) -> Bool {
+  let mut found = false
+  for l in labels {
+    if label_is_effect_var(l) {
+      found = true
+    }
+  }
+  found
 }
 
 /// A DIRECT `perform EffName::Op` is authorized if the declared row names
@@ -222,6 +250,9 @@ export fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
       let lab = Array::get(labels, i)
       let equal = if strict {
         is_exception_label(lab) && is_exception_label(op_name) && String::length(exception_label_kind(op_name)) > 0 && String::length(exception_label_kind(lab)) > 0 && exception_kinds_same(exception_label_kind(lab), exception_label_kind(op_name))
+      } else if lab != op_name && is_exception_label(lab) && is_exception_label(op_name) && String::length(exception_label_kind(lab)) == 0 && erased_covers_only_messages(labels) {
+        // #3541: as in `decl_authorizes_effect`.
+        erased_exception_covers_kind(exception_label_kind(op_name))
       } else {
         exception_effect_labels_equal(lab, op_name)
       }

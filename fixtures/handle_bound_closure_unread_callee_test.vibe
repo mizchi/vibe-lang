@@ -1,0 +1,111 @@
+// #3599 controls: a builder with no body the check can read (a parameter, a
+// call's result) is taken to return a closure that throws what the handle
+// catches only when its row names that exception and its result can hold a
+// function in a declared type's field, and only a route out of the handle is
+// refused. These stay accepted: the field closure called inside the handle,
+// a builder whose row does not name the exception, a pure builder, and a
+// throwing builder whose result holds no function.
+// fixtures/typecheck/handle_bound_closure_exception_field_{param,call_result}_reject.vibe
+// hold the refusals.
+effect Ask {
+  Get() -> Int
+}
+
+struct Box {
+  f: () -> Int
+}
+
+fn throwing() -> Box with Exception[Int] {
+  Box::{ f: () -> throw(7) }
+}
+
+fn safe() -> Box {
+  Box::{ f: () -> 3 }
+}
+
+fn asking() -> Box with Ask {
+  Box::{ f: () -> 4 }
+}
+
+fn count() -> Int with Exception[Int] {
+  throw(9)
+}
+
+fn pick(n: Int) -> () -> Box with Exception[Int] {
+  if n > 0 {
+    throwing
+  } else {
+    throwing
+  }
+}
+
+// The field closure is called inside the handle; only an `Int` leaves.
+fn called_inside(g: () -> Box with Exception[Int]) -> Int {
+  handle {
+    let b = g()
+    let f = b.f
+    f()
+  } with { Exception[Int]::Throw(c) => c + 100 }
+}
+
+fn result_called_inside() -> Int {
+  let g = pick(1)
+  handle {
+    let b = g()
+    let f = b.f
+    f() + 1
+  } with { Exception[Int]::Throw(c) => c + 200 }
+}
+
+// The builder's row names `Ask`, which the enclosing function passes on;
+// this handle catches only `Exception[Int]`.
+fn other_row(g: () -> Box with Ask, n: Int) -> Box with Ask {
+  handle {
+    if n > 0 {
+      g()
+    } else {
+      throw(n)
+    }
+  } with { Exception[Int]::Throw(c) => Box::{ f: () -> c } }
+}
+
+fn pure_builder(g: () -> Box, n: Int) -> Box {
+  handle {
+    if n > 0 {
+      g()
+    } else {
+      throw(n)
+    }
+  } with { Exception[Int]::Throw(c) => Box::{ f: () -> c } }
+}
+
+// The builder throws, but its result holds no function.
+fn no_function(g: () -> Int with Exception[Int]) -> Int {
+  handle {
+    g()
+  } with { Exception[Int]::Throw(c) => c + 300 }
+}
+
+test "a field closure of an unread builder called inside the handle" {
+  inspect(called_inside(throwing), "107")
+  inspect(result_called_inside(), "207")
+}
+
+test "an unread builder whose row does not name the caught exception" {
+  let n = handle {
+    let b = other_row(asking, 1)
+    let f = b.f
+    f()
+  } with { Ask::Get() => resume(0) }
+  inspect(n, "4")
+  let p = pure_builder(safe, 1)
+  let pf = p.f
+  inspect(pf(), "3")
+  let q = pure_builder(safe, 0 - 5)
+  let qf = q.f
+  inspect(qf(), "-5")
+}
+
+test "an unread throwing builder whose result holds no function" {
+  inspect(no_function(count), "309")
+}

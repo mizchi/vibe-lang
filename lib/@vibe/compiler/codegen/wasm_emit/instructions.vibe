@@ -384,6 +384,41 @@ export fn emit_i64_lt_s(buf: Bytes) -> Unit {
   bytebuf_push(buf, op_i64_lt_s)
 }
 
+let op_i64_ge_u = 90
+
+export fn emit_i64_ge_u(buf: Bytes) -> Unit {
+  bytebuf_push(buf, op_i64_ge_u)
+}
+
+/// #3543: the out-of-bounds test of a bounds-checked builtin, `index >= len`,
+/// with the UNTAGGED i64 index under the u32 length (an i32) on the stack.
+/// Leaves the i32 condition. The compare is unsigned and done in i64, so a
+/// negative index and one of 2^32 or more are both out of range: narrowing
+/// the index to i32 first (`i32.wrap_i64` then `i32.ge_u`) wrapped 2^32 to
+/// 0 and read or wrote element 0. Same size as the narrowed form.
+export fn emit_index_ge_u32_len(buf: Bytes) -> Unit {
+  // i64.extend_i32_u (0xAD)
+  bytebuf_push(buf, 173)
+  emit_i64_ge_u(buf)
+}
+
+/// #3543: narrow the i64 index on the stack to the i32 operand of a native
+/// `array.get` / `array.set`, which bounds-checks only the i32. An index that
+/// does not fit in a u32 (2^32 or more, or negative) becomes 0xFFFFFFFF, which
+/// no array length reaches, so the engine traps instead of wrapping it into
+/// range. `scratch` is an i64 local; in-range indices are unchanged.
+export fn emit_index_to_u32_saturating(buf: Bytes, scratch: Int) -> Unit {
+  emit_local_tee(buf, scratch)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, -1)
+  emit_local_get(buf, scratch)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_u(buf)
+  emit_i64_eqz(buf)
+  // select (0x1B): the wrapped index when the high half is zero, else -1
+  bytebuf_push(buf, 27)
+}
+
 export fn emit_ref_func(buf: Bytes, func_idx: Int) -> Unit {
   bytebuf_push_opcode_u32(buf, 210, func_idx)
 }
