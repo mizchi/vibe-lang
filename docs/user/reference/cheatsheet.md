@@ -1858,9 +1858,11 @@ Rules:
   (#3601). So a closure literal written for a field or result typed
   `with Exception` may throw only messages, and so may one passed for such a
   parameter of a callee whose own row lets exceptions out
-  (`fn run(f: () -> Int with Exception) -> Int with Exception`); a closure
-  bound by `let`, or applied where it is written, is charged at its calls
-  like a named function. A function whose erased row lets another kind out
+  (`fn run(f: () -> Int with Exception) -> Int with Exception`), or for a
+  parameter whose row variable the callee's row lets out
+  (`fn run(f: () -> Int with e) -> Int with e`); a closure bound by `let` or
+  `let rec`, or applied where it is written, is charged at its calls like a
+  named function. A function whose erased row lets another kind out
   (`fn bad() -> Int with Exception { throw(7) }`) may be called, aliased with
   an unannotated `let g = bad`, or passed where the parameter's row names the
   kind or is a row variable with no erased `Exception` beside it; any other
