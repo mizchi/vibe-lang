@@ -1,0 +1,56 @@
+import @vibe/compiler/checker {
+  check_program_double_call_result_observation, check_program_scalar_lowering_observation
+}
+import @vibe/compiler/syntax {
+  lex, lex_with_offsets, parse_program, parse_program_located
+}
+import @vibe/ast {
+  Stmt
+}
+
+fn scalar_observation_stmts(source: String, located: Bool) -> Array[Stmt] with Exception {
+  if located {
+    let (tokens, starts, _) = lex_with_offsets(source)
+    parse_program_located(tokens, starts, source)
+  } else {
+    parse_program(lex(source))
+  }
+}
+
+fn scalar_observation_compare(source: String, located: Bool) -> (Int, Int, Int, Int) with Exception {
+  let (old_floats, old_eq_offsets, old_eq_keys) = match check_program_double_call_result_observation(scalar_observation_stmts(source, located)) {
+    Some((_, floats, offsets, keys)) => (floats, offsets, keys),
+    None => throw("legacy observation capture was incomplete")
+  }
+  let (new_floats, rels, pluses, new_eq_offsets, new_eq_keys) = match check_program_scalar_lowering_observation(scalar_observation_stmts(source, located)) {
+    Some((_, floats, rels, pluses, offsets, keys)) => (floats, rels, pluses, offsets, keys),
+    None => throw("scalar observation capture was incomplete")
+  }
+  assert(old_floats == new_floats)
+  assert(old_eq_offsets == new_eq_offsets)
+  assert(old_eq_keys == new_eq_keys)
+  (Array::length(new_floats), Array::length(rels), Array::length(pluses), Array::length(new_eq_keys))
+}
+
+test "scalar observations preserve Double projection render arguments" {
+  // make() returns Packet, so p.x has no Double CALL result. Its Double
+  // VALUE offset must come from the render argument half of the legacy union.
+  let source = "struct Packet { x: Double; items: Array[Int] } fn make() -> Packet { Packet::{ x: 1.25, items: [1, 2] } } test \"t\" { let p = make(); inspect(p.x, \"1.25\"); inspect(p.items == [1, 2], \"true\") }"
+  let (floats, _, _, eq_rows) = scalar_observation_compare(source, true)
+  assert(floats > 0)
+  assert(eq_rows > 0)
+}
+
+test "scalar observations add String anchors without replacing legacy rows" {
+  let source = "test \"t\" { let a = String::from_byte(66); inspect(a < \"A\", \"false\"); inspect(a + \"A\", \"BA\") }"
+  let (_, rels, pluses, eq_rows) = scalar_observation_compare(source, true)
+  inspect(rels, content = "1")
+  inspect(pluses, content = "1")
+  assert(eq_rows > 0)
+}
+
+test "scalar observations retain the unlocated AST contract" {
+  let source = "fn value() -> Double { 1.25 } test \"t\" { let p = value(); inspect(p == value(), \"true\"); let xs: Array[Int] = [1, 2]; inspect(xs == [1, 2], \"true\") }"
+  let _ = scalar_observation_compare(source, false)
+  ()
+}

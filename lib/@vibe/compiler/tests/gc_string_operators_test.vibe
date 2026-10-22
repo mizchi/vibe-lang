@@ -1,0 +1,62 @@
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_generated_stmts_gc_only, compile_source_gc_only
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+import @vibe/process {
+  process_sh_capture
+}
+
+fn gc_operator_run(label: String, source: String, expected: String, unlocated: Bool) -> Unit with Exception + Fs + Process + Console {
+  let wasm = if unlocated {
+    compile_generated_stmts_gc_only(parse_program(lex(source)), "main")
+  } else {
+    compile_source_gc_only(source, "main")
+  }
+  Fs::mkdir_p("_build/vibe_test")
+  let path = "_build/vibe_test/gc_string_operators_" + label + ".wasm"
+  Fs::write_bytes(path, wasm)
+  let result = process_sh_capture("bash scripts/run_wasm_vibe_host_runner.sh " + path)
+  inspect(result.exit_code, content = "0")
+  assert(result.stdout == expected)
+}
+
+// The source-only GC entry has no polymorphic println prelude. Observe Bool
+// results through String branches, keeping rendering out of the operator test.
+test "GC orders runtime byte strings by content in every direction" {
+  let source = "fn main() -> Unit allows Console { let a = String::from_byte(66); let b = String::from_byte(65); if a < b { println(\"true\") } else { println(\"false\") }; if a > b { println(\"true\") } else { println(\"false\") }; if a <= b { println(\"true\") } else { println(\"false\") }; if a >= b { println(\"true\") } else { println(\"false\") }; if a < a { println(\"true\") } else { println(\"false\") }; if a <= a { println(\"true\") } else { println(\"false\") } }"
+  gc_operator_run("bytes", source, "false\ntrue\nfalse\ntrue\nfalse\ntrue\n", false)
+}
+
+test "GC orders String results from numeric rendering and split" {
+  let source = "fn main() -> Unit allows Console { if Int::to_string(9) < Int::to_string(1) { println(\"true\") } else { println(\"false\") }; let parts = String::split(\"b,a\", \",\"); if parts[0] < parts[1] { println(\"true\") } else { println(\"false\") } }"
+  gc_operator_run("results", source, "false\nfalse\n", false)
+}
+
+test "GC concatenates runtime strings through chained operators" {
+  let source = "fn main() -> Unit allows Console { let a = String::from_byte(66); let b = String::from_byte(65); println(a + b); println((a + b) + (b + a)) }"
+  gc_operator_run("concat", source, "BA\nBAAB\n", false)
+}
+
+test "GC String and Int interpolation retain their own operator types" {
+  let source = "fn main() -> Unit allows Console { let a = String::from_byte(66); let b = String::from_byte(65); let x = 9; let y = 1; println(\"\\{a + b}\"); println(\"\\{x + y}\"); if x < y { println(\"true\") } else { println(\"false\") } }"
+  gc_operator_run("interpolation", source, "BA\n10\nfalse\n", false)
+}
+
+test "GC intrinsic String addition preserves a user concat operation" {
+  let source = "fn String::concat(a: String, b: String) -> String { \"user concat\" } fn main() -> Unit allows Console { let a = String::from_byte(66); let b = String::from_byte(65); println(String::concat(a, b)); println(a + b) }"
+  gc_operator_run("shadow", source, "user concat\nBA\n", false)
+}
+
+test "GC typed operators preserve Double call results and equality" {
+  let source = "fn value() -> Double { 1.25 } fn main() -> Unit allows Console { if value() + 0.75 == 2.0 { println(\"ok:sum\") } else { println(\"bad:sum\") }; if value() == value() { println(\"ok:eq\") } else { println(\"bad:eq\") } }"
+  gc_operator_run("double", source, "ok:sum\nok:eq\n", false)
+}
+
+test "GC generated unlocated graphs retain Double and array equality" {
+  let double_source = "fn value() -> Double { 1.25 } fn main() -> Unit allows Console { if value() == value() { println(\"ok:eq\") } else { println(\"bad:eq\") } }"
+  gc_operator_run("unlocated_double", double_source, "ok:eq\n", true)
+  let array_source = "fn main() -> Unit allows Console { let a: Array[Int] = [1, 2]; let b: Array[Int] = [1, 2]; if a == b { println(\"ok:array\") } else { println(\"bad:array\") } }"
+  gc_operator_run("unlocated_array", array_source, "ok:array\n", true)
+}

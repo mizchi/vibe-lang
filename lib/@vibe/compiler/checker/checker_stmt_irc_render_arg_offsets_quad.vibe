@@ -748,22 +748,25 @@ fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Opti
       // (the record site's `anchor_off >= 0` guard), and an offset claimed
       // by two binops with different types is poisoned at extraction --
       // with the SAME type, rewriting both is correct.
-      let (eq_only_offs, eq_only_keys) = eq_binop_type_keys_from_capture(checked, capture)
-      // #3066: the render rows ride the same channel.
       let (row_offs, row_keys) = checked_render_rows(checked)
-      let (eq_render_offs, eq_render_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
-      // #3133: the index-receiver rows ride the same channel.
-      let (index_offs, index_keys) = index_receiver_rows_from_capture(checked, capture)
-      let (eq_index_offs, eq_index_keys) = append_render_rows(eq_render_offs, eq_render_keys, index_offs, index_keys)
-      // #3148: and the `for` iterand rows.
-      let (forin_offs, forin_keys) = forin_receiver_rows_from_capture(checked, capture)
-      let (eq_offs, eq_keys) = append_render_rows(eq_index_offs, eq_index_keys, forin_offs, forin_keys)
+      let (eq_offs, eq_keys) = typed_eq_render_receiver_rows(checked, capture, row_offs, row_keys)
       // #2424: the Double table is the union of the call results above and
       // the render/`eq` ARGUMENTS the checker typed Double (tag 4 on the
       // modular channel) -- see union_double_render_arg_offsets.
       Some((checked, union_double_render_arg_offsets(checked, out), primary_calls, located_primary_calls, eq_offs, eq_keys))
     }
   }
+}
+
+// Preserve the same equality, rendering, index and iterand facts in every
+// observer. Callers that already extracted render rows reuse that extraction.
+fn typed_eq_render_receiver_rows(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture, row_offs: Array[Int], row_keys: Array[String]) -> (Array[Int], Array[String]) {
+  let (eq_only_offs, eq_only_keys) = eq_binop_type_keys_from_capture(checked, capture)
+  let (eq_render_offs, eq_render_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
+  let (index_offs, index_keys) = index_receiver_rows_from_capture(checked, capture)
+  let (eq_index_offs, eq_index_keys) = append_render_rows(eq_render_offs, eq_render_keys, index_offs, index_keys)
+  let (forin_offs, forin_keys) = forin_receiver_rows_from_capture(checked, capture)
+  append_render_rows(eq_index_offs, eq_index_keys, forin_offs, forin_keys)
 }
 
 /// #2424: fold the Double render/`eq` ARGUMENT offsets (tag 4 on the modular
@@ -923,15 +926,7 @@ fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: Type
       // TypeExpr's impl_target_key), so they cannot ride the Int-encoded
       // table -- they come back as their own pair of parallel arrays, under
       // the same located-channel refusal as the tables above.
-      let (eq_only_offs, eq_only_keys) = eq_binop_type_keys_from_capture(checked, capture)
-      // #3066: the render rows from the walk above, on the same channel.
-      let (eq_render_offs, eq_render_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
-      // #3133: the index-receiver rows ride the same channel.
-      let (index_offs, index_keys) = index_receiver_rows_from_capture(checked, capture)
-      let (eq_index_offs, eq_index_keys) = append_render_rows(eq_render_offs, eq_render_keys, index_offs, index_keys)
-      // #3148: and the `for` iterand rows.
-      let (forin_offs, forin_keys) = forin_receiver_rows_from_capture(checked, capture)
-      let (eq_offs, eq_keys) = append_render_rows(eq_index_offs, eq_index_keys, forin_offs, forin_keys)
+      let (eq_offs, eq_keys) = typed_eq_render_receiver_rows(checked, capture, row_offs, row_keys)
       for row in resolved_callee_capture_rows() {
         Array::push(enc, row)
       }
@@ -947,6 +942,26 @@ export fn check_program_double_call_result_observation(stmts: Array[Stmt]) -> Op
   match check_program_double_call_result_observation_impl(stmts) {
     None => None,
     Some((checked, out, _, _, eq_offs, eq_keys)) => Some((checked, out, eq_offs, eq_keys))
+  }
+}
+
+/// Whole-program scalar lowering from one check: the legacy Double VALUE
+/// offsets (call results plus render/eq arguments), String relational/+ anchors,
+/// and the equality/render/receiver rows. Keep the non-located observer's
+/// contract: an unlocated AST may have empty offset tables without refusing an
+/// otherwise valid program. None still means the capture did not line up.
+export fn check_program_scalar_lowering_observation(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int], Array[Int], Array[Int], Array[Int], Array[String])] with Exception {
+  resolved_callee_capture_reset()
+  let capture = reset_double_call_capture()
+  let checked = check_program_type_defs_observation_impl(stmts, None, Some(capture)).checked_program
+  match double_call_result_offsets_from_capture(checked, capture) {
+    None => None,
+    Some((out, _, _)) => {
+      let (rels, pluses) = string_binop_offsets_from_capture(checked, capture)
+      let (row_offs, row_keys) = checked_render_rows(checked)
+      let (eq_offs, eq_keys) = typed_eq_render_receiver_rows(checked, capture, row_offs, row_keys)
+      Some((checked, union_double_render_arg_offsets(checked, out), rels, pluses, eq_offs, eq_keys))
+    }
   }
 }
 
