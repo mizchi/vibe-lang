@@ -337,3 +337,19 @@ test "return control: annotated-program-shadow" {
 test "return control: return-through-region" {
   grouped_handler_run("return-through-region", "fn invoke(f:(Int)->Int)->Int{region r {let b=MutBytes::empty(r);MutBytes::push(b,65);let v=f(5);v+MutBytes::length(b)}} effect B { Yield()->Int; Finish()->Int } fn work()->Int{let saved:Array[(Int)->Int]=[];let early=handle{let b=perform B::Yield();perform B::Finish()+b}with{B::Finish()=>return 7;B::Yield()=>{Array::push(saved,resume);0}};let resumed=invoke(Array::get(saved,0));99} fn main()->Unit allows Console{println(\"\\{work()}\")} ", "7\n")
 }
+
+test "independent matching handlers in retained-arm" {
+  grouped_handler_run("nested-retained-arm", "effect A { Op()->Int } effect B { Op()->Int } fn a()->Int with A {perform A::Op()} fn main()->Unit allows Console{let r=handle{a()+perform B::Op()}with{B::Op()=>resume(handle{a()}with{A::Op()=>resume(7)});A::Op()=>resume(100)};println(\"\\{r}\")}", "107\n")
+}
+
+test "independent matching handlers in retained-arm-outer-scope" {
+  grouped_handler_run("nested-retained-arm-outer-scope", "effect A { Op()->Int } effect B { Op()->Int } fn a()->Int with A {perform A::Op()} fn main()->Unit allows Console{let r=handle{handle{a()+perform B::Op()}with{B::Op()=>resume((handle{a()}with{A::Op()=>resume(7)})+a());A::Op()=>resume(100)}}with{A::Op()=>resume(1000)};println(\"\\{r}\")}", "1107\n")
+}
+
+test "independent matching handlers in own-arm" {
+  grouped_handler_run("nested-own-arm", "effect A { Op()->Int } effect B { Op()->Int } fn a()->Int with A {perform A::Op()} fn main()->Unit allows Console{let r=handle{a()}with{A::Op()=>resume(handle{a()}with{A::Op()=>resume(7)})};println(\"\\{r}\")}", "7\n")
+}
+
+test "retained nested handlers do not depend on effect declaration order" {
+  grouped_handler_run("nested-retained-reversed-declarations", "effect B { Op()->Int } effect A { Op()->Int } fn a()->Int with A {perform A::Op()} fn main()->Unit allows Console{let r=handle{a()+perform B::Op()}with{B::Op()=>resume(handle{a()}with{A::Op()=>resume(7)});A::Op()=>resume(100)};println(\"\\{r}\")}", "107\n")
+}

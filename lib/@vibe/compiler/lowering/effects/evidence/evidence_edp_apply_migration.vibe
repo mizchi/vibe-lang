@@ -1735,13 +1735,18 @@ fn edp_rh_extend(needing: Array[String], params: Array[(String, Option[TypeExpr]
 /// top-level function's parameters refused the program.
 fn edp_collect_handle_sites_scoped(expr: Expr, ename: String, td_mode: Bool, es_names: Array[String], es_members_list: Array[Array[String]], extra: Array[String], sites: Array[(Expr, Array[(Pat, Expr)])], site_extra: Array[Array[String]]) -> Unit {
   match expr {
-    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
-      Array::push(sites, (body, arms))
-      Array::push(site_extra, extra)
-    } else {
-      // As `edp_collect_handle_sites_expr`: a foreign handle's arms are not
-      // walked here.
-      edp_collect_handle_sites_scoped(body, ename, td_mode, es_names, es_members_list, extra, sites, site_extra)
+    EHandle(body, arms) => {
+      if edp_handle_matches_effect(arms, ename) {
+        Array::push(sites, (body, arms))
+        Array::push(site_extra, extra)
+      } else {
+        edp_collect_handle_sites_scoped(body, ename, td_mode, es_names, es_members_list, extra, sites, site_extra)
+      }
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        edp_collect_handle_sites_scoped(Array::get(arms, ai).1, ename, td_mode, es_names, es_members_list, extra, sites, site_extra)
+        ai = ai + 1
+      }
     },
     EFn(_, _, params, _, _, b) => {
       let inner = if td_mode {
@@ -1763,7 +1768,11 @@ fn edp_collect_handle_sites_scoped(expr: Expr, ename: String, td_mode: Bool, es_
 fn edp_find_rewrite_handles(expr: Expr, ename: String, needing: Array[String]) -> Expr {
   match expr {
     EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
-      edp_rewrite_handle_site(body, arms, ename, needing)
+      // Arms run outside this handle's evidence scope. Lower their own
+      // matching handlers independently before constructing this dictionary.
+      edp_rewrite_handle_site(body, for arm in arms {
+        (arm.0, edp_find_rewrite_handles(arm.1, ename, needing))
+      }, ename, needing)
     } else {
       EHandle(edp_find_rewrite_handles(body, ename, needing), for a in arms {
         let (p, ex) = a
