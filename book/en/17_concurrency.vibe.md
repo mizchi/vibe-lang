@@ -370,8 +370,10 @@ total = 3
 `a` suspends at its sleep and `b` runs until it waits for `a`; then `a`
 finishes and wakes `b`. A suspendable task's closure needs no row of its own:
 `spawn_suspend` expects an `Async` closure, and the task may use the entry's
-capabilities (`Console` here). Sleeps overlap rather than add up, and no wall
-clock is read.
+capabilities (`Console` here). A row written on the closure is the task's
+whole row, and `spawn_suspend` accepts only `Async + Exception` there, so a
+task that prints leaves the row off. Sleeps overlap rather than add up, and no
+wall clock is read.
 
 ## Futures and async iteration
 
