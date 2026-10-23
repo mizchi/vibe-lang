@@ -5,7 +5,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  builtin_ref, impl_target_key
+  builtin_ref, impl_target_key, type_param_name
 }
 
 import @vibe/core {
@@ -616,6 +616,18 @@ export fn resolve_alias_head(fn_returns: Array[(String, String)], head: String) 
   cur
 }
 
+fn decl_formal_named(tparams: Array[String], name: String) -> Bool {
+  let mut found = false
+  for tp in tparams {
+    if type_param_name(tp) == name {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
 /// (`Holder.s` -> `HostStream`) for every declared struct field whose
 /// annotation has a head name. Appended to fn_returns so `infer_arg_type_name`
 /// can type a projection (`h.s`).
@@ -623,7 +635,7 @@ export fn collect_struct_field_types(stmts: Array[Stmt], out: Array[(String, Str
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(_, sname, fields, _, _, _) => {
+      SStruct(_, sname, fields, _, _, tparams) => {
         let mut j = 0
         while j < Array::length(fields) {
           let (fname, fty) = Array::get(fields, j)
@@ -632,7 +644,12 @@ export fn collect_struct_field_types(stmts: Array[Stmt], out: Array[(String, Str
             TyApp(n, _) => n,
             _ => ""
           }
-          if String::length(head) > 0 {
+          // #3613: a field declared with the struct's own type parameter has
+          // no head of its own -- the receiver's type argument is its type.
+          // Recording the parameter's spelling made `p.a` on `p: Pair[U]` read
+          // as a `T`, which a same-spelled formal of the enclosing binder
+          // then answered for.
+          if String::length(head) > 0 && !decl_formal_named(tparams, head) {
             Array::push(out, (struct_field_type_key(sname, fname), head))
           } else {
             ()

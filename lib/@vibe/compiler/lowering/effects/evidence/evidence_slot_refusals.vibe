@@ -231,6 +231,41 @@ fn edp_slot_consequence(callee: String) -> String {
   }
 }
 
+/// #3611: a closure written at a field whose row names the struct's type
+/// parameter (`f: () -> Int with Box[T]`) where the pass cannot read the
+/// type argument: the literal writes none and is not bound under an
+/// annotation that does, or (`written`) one is a type a row item cannot
+/// spell (a tuple, a function). `params` lists the parameters the row names.
+export fn edp_refuse_field_type_args(sname: String, fname: String, row: String, params: String, written: Bool) -> Unit {
+  let edit = if written {
+    "name the type argument of `\{sname}` with a `type` alias (`type Pair = (Int, Int)`, then `\{sname}[Pair]`): an effect row's type argument is spelled as a named type"
+  } else {
+    "write the type arguments of `\{sname}` on the literal (`\{sname}[..]::{ .. }`) or annotate the binding it is assigned to (`let x: \{sname}[..] = ..`)"
+  }
+  let why = "the field `\{fname}` is declared `with \{row}`, which names the type parameter \{params}, and the compiler gives the closure in that field its row only from type arguments written there"
+  Array::push(edp_slot_refusal_rows, row)
+  Array::push(edp_slot_refusal_msgs, "\{edit}: \{why}. Without the row it takes no handler argument, and a call through the field passes one, so the call traps")
+}
+
+/// Codex on #3620: a row-free closure literal bound by `let` and stored by
+/// name in a row-typed field, which the stamp cannot give the field's row
+/// because the name is also used elsewhere (a direct call, another row, a
+/// field whose type arguments are not written). Written on the literal, the
+/// row is the closure's own and every use takes it (measured for a written,
+/// an annotated and an inferred field).
+export fn edp_refuse_unstamped_field_literal(name: String, callee: String, row: String) -> Unit {
+  Array::push(edp_slot_refusal_rows, row)
+  Array::push(edp_slot_refusal_msgs, "write the effect row on the closure `\{name}` where it is bound (`let \{name} = (..) -> T with \{row} { .. }`), or write the closure in the field itself: `\{name}` is stored as \{edp_slot_site(callee)}, and it is also used where the compiler cannot give it that row. \{edp_slot_consequence(callee)}")
+}
+
+/// Codex on #3620: a local alias of a row-free closure literal stored in a
+/// row-typed field. The literal is bound under another name, and the alias's
+/// binding is a use of that name the stamp cannot give the row.
+export fn edp_refuse_aliased_field_literal(alias: String, src: String, callee: String, row: String) -> Unit {
+  Array::push(edp_slot_refusal_rows, row)
+  Array::push(edp_slot_refusal_msgs, "store `\{src}` in the field rather than its alias `\{alias}`, or write the effect row on the closure `\{src}` where it is bound (`let \{src} = (..) -> T with \{row} { .. }`): `\{alias}` is stored as \{edp_slot_site(callee)}, and the compiler gives a closure that row only where the closure is stored by its own name. \{edp_slot_consequence(callee)}")
+}
+
 /// A closure literal whose local helpers could not be copied into it.
 /// `local` is a local it calls; `opaque` says it is not a `let`-bound closure
 /// literal (a parameter, a `let mut`). No row written on the closure lets the
@@ -392,27 +427,48 @@ export fn edp_expr_passes_value_to_slot(e: Expr, slot_callees: MutSet[String]) -
 /// (`TaskGroup::spawn_suspend`).
 export fn edp_slot_row_stampable(row: String) -> Bool {
   let mut ok = String::length(String::trim(row)) > 0
-  for item in String::split(row, "+") {
-    for part in String::split(item, ",") {
-      let label = String::trim(part)
-      let bracket = String::index_of(label, "[")
-      let head = if bracket > 0 {
-        String::substring(label, 0, bracket)
-      } else {
-        label
-      }
-      if String::length(head) == 0 {
-        ()
-      } else if String::byte_at(head, 0) >= 97 && String::byte_at(head, 0) <= 122 {
-        ok = false
-      } else if is_runtime_scheduled_effect(head) {
-        ok = false
-      } else {
-        ()
-      }
+  for label in edp_row_top_labels(row) {
+    let bracket = String::index_of(label, "[")
+    let head = if bracket > 0 {
+      String::substring(label, 0, bracket)
+    } else {
+      label
+    }
+    if String::length(head) == 0 {
+      ()
+    } else if String::byte_at(head, 0) >= 97 && String::byte_at(head, 0) <= 122 {
+      ok = false
+    } else if is_runtime_scheduled_effect(head) {
+      ok = false
+    } else {
+      ()
     }
   }
   ok
+}
+
+/// The labels of `row`: the pieces between the `+` / `,` separators at bracket
+/// depth zero, so `Pair[A, B]` stays one label (#3620 review).
+export fn edp_row_top_labels(row: String) -> Array[String] {
+  let out: Array[String] = []
+  let n = String::length(row)
+  let mut depth = 0
+  let mut start = 0
+  let mut i = 0
+  while i < n {
+    let c = String::byte_at(row, i)
+    if c == 91 || c == 40 {
+      depth = depth + 1
+    } else if c == 93 || c == 41 {
+      depth = depth - 1
+    } else if depth == 0 && (c == 43 || c == 44) {
+      Array::push(out, String::trim(String::substring(row, start, i)))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  Array::push(out, String::trim(String::substring(row, start, n)))
+  out
 }
 
 /// The row of a non-generic type alias that names a function type with a

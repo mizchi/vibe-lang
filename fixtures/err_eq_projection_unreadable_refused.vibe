@@ -1,0 +1,31 @@
+//# #3613: `==` on a field projection inside a generic body, off a receiver
+//# whose type arguments this pass cannot read. `get_pair(h)` is a generic
+//# call, and its result declares only the callee's own formal, so nothing
+//# here says what `Pair`'s `T` is at `get_pair(h).a`. Without a type the
+//# comparison would fall to the raw `==`, which reads a boxed `Double` by
+//# reference: measured before the refusal, this compiled clean and answered
+//# `false` for two equal values. The build names the edit instead -- bind the
+//# field with its complete type (`let a: U = get_pair(h).a`), which compares
+//# through `U`'s witness.
+
+struct Pair[T] {
+  a: T;
+  b: T
+}
+
+struct Holder[W] {
+  p: Pair[W]
+}
+
+fn get_pair[X](h: Holder[X]) -> Pair[X] {
+  h.p
+}
+
+fn via_call[U: Eq](h: Holder[U]) -> Bool {
+  get_pair(h).a == get_pair(h).b
+}
+
+test "equal fields" {
+  let h: Holder[Double] = Holder::{ p: Pair::{ a: 1.5, b: 1.5 } }
+  inspect(via_call(h), content="true")
+}

@@ -1,0 +1,210 @@
+//# #3613: `==` on a field projection inside a generic body. `p.a` on
+//# `p: Pair[U]` holds a `U`, so it compares through `U`'s `Eq` witness.
+//#
+//# Before the fix the projection was typed by the field's DECLARATION, which
+//# names the struct's own parameter (`T` of `struct Pair[T]`), not the
+//# binder's formal that the receiver instantiates it with. A binder spelling
+//# its formal differently got no witness at all and compared by reference:
+//# a boxed `Double` or a `derive (Eq)` struct answered `false` for equal
+//# values, and `!=` answered `true`. A binder whose formals reuse the struct's
+//# parameter names in another order reached the WRONG witness (`crossed_a`
+//# compared two `Double`s with `String`'s `equals`, `crossed_b` two `Pt`s with
+//# `Double`'s). Forwarding a projection to a `[T: Eq]` call failed to build,
+//# asking for an `impl Eq for T`. Only the binder spelled like the struct
+//# (`fn g[T: Eq](p: Pair[T])`) answered right, by accident.
+
+struct Pair[T] {
+  a: T;
+  b: T
+}
+
+struct Cross[A, B] {
+  a: A;
+  b: B
+}
+
+struct Outer[V] {
+  inner: Pair[V];
+  tag: Int
+}
+
+struct Holder[W] {
+  p: Pair[W]
+}
+
+struct Pt {
+  x: Int;
+  ys: Array[Int]
+} derive (Eq)
+
+fn same[T: Eq](x: T, y: T) -> Bool {
+  x == y
+}
+
+fn eq_fields[U: Eq](p: Pair[U]) -> Bool {
+  p.a == p.b
+}
+
+fn ne_fields[U: Eq](p: Pair[U]) -> Bool {
+  p.a != p.b
+}
+
+fn eq_same_spelling[T: Eq](p: Pair[T]) -> Bool {
+  p.a == p.b
+}
+
+fn eq_array_fields[U: Eq](p: Pair[Array[U]]) -> Bool {
+  p.a == p.b
+}
+
+fn crossed_a[B: Eq, A: Eq](c: Cross[B, A], d: Cross[B, A]) -> Bool {
+  c.a == d.a
+}
+
+fn crossed_b[B: Eq, A: Eq](c: Cross[B, A], d: Cross[B, A]) -> Bool {
+  c.b == d.b
+}
+
+fn eq_nested[U: Eq](o: Outer[U]) -> Bool {
+  o.inner.a == o.inner.b
+}
+
+fn eq_call_result[U: Eq](mk: () -> Pair[U]) -> Bool {
+  mk().a == mk().b
+}
+
+// A literal that writes its type arguments is typed by them, so a field read
+// straight off it holds the binder's formal (Codex on #3620). Before, the
+// literal read as its bare head and the comparison was refused.
+fn eq_literal_fields[U: Eq](x: U, y: U) -> Bool {
+  Pair[U]::{ a: x, b: y }.a == Pair[U]::{ a: x, b: y }.b
+}
+
+fn eq_literal_crossed[B: Eq, A: Eq](x: B, y: A, z: B) -> Bool {
+  Cross[B, A]::{ a: x, b: y }.a == Cross[B, A]::{ a: z, b: y }.a
+}
+
+fn get_pair[X](h: Holder[X]) -> Pair[X] {
+  h.p
+}
+
+// The edit `err_eq_projection_unreadable_refused.vibe` names: a generic
+// call's result does not show its type arguments, so bind the field first.
+fn eq_bound_first[U: Eq](h: Holder[U]) -> Bool {
+  let a: U = get_pair(h).a
+  let b: U = get_pair(h).b
+  a == b
+}
+
+fn forward[U: Eq](p: Pair[U]) -> Bool {
+  same(p.a, p.b)
+}
+
+fn forward_crossed[B: Eq, A: Eq](c: Cross[B, A], d: Cross[B, A]) -> Bool {
+  same(c.a, d.a)
+}
+
+// `<` has no witness: an `Ord` bound is refused at any instantiation the
+// builtin `<` cannot compare by content (a `Double` among them), and the
+// projection does not change that. At a `String` it dispatches at run time,
+// including off a call result whose type arguments are not readable here.
+fn lt_fields[U: Ord](p: Pair[U]) -> Bool {
+  p.a < p.b
+}
+
+fn lt_call_result[U: Ord](h: Holder[U]) -> Bool {
+  get_pair(h).a < get_pair(h).b
+}
+
+test "a boxed Double field compares by content" {
+  inspect(eq_fields(Pair::{ a: 1.5, b: 1.5 }), content="true")
+  inspect(eq_fields(Pair::{ a: 1.5, b: 2.5 }), content="false")
+  inspect(ne_fields(Pair::{ a: 1.5, b: 1.5 }), content="false")
+  inspect(ne_fields(Pair::{ a: 1.5, b: 2.5 }), content="true")
+}
+
+test "a String field compares by content" {
+  inspect(eq_fields(Pair::{ a: "x" + "y", b: "xy" }), content="true")
+  inspect(eq_fields(Pair::{ a: "xy", b: "yx" }), content="false")
+}
+
+test "a derive (Eq) struct field compares through its witness" {
+  inspect(eq_fields(Pair::{ a: Pt::{ x: 1, ys: [2] }, b: Pt::{ x: 1, ys: [2] } }), content="true")
+  inspect(eq_fields(Pair::{ a: Pt::{ x: 1, ys: [2] }, b: Pt::{ x: 1, ys: [3] } }), content="false")
+}
+
+test "the binder spelled like the struct parameter" {
+  inspect(eq_same_spelling(Pair::{ a: 1.5, b: 1.5 }), content="true")
+  inspect(eq_same_spelling(Pair::{ a: 1.5, b: 2.5 }), content="false")
+}
+
+test "an Array field over the formal" {
+  inspect(eq_array_fields(Pair::{ a: [1.5, 2.5], b: [1.5, 2.5] }), content="true")
+  inspect(eq_array_fields(Pair::{ a: [1.5, 2.5], b: [1.5, 3.5] }), content="false")
+}
+
+test "crossed parameter names reach the right witness" {
+  inspect(crossed_a(Cross::{ a: 1.5, b: "s" }, Cross::{ a: 1.5, b: "t" }), content="true")
+  inspect(crossed_a(Cross::{ a: 1.5, b: "s" }, Cross::{ a: 2.5, b: "s" }), content="false")
+  inspect(crossed_b(Cross::{ a: 1.5, b: Pt::{ x: 1, ys: [2] } }, Cross::{ a: 2.5, b: Pt::{ x: 1, ys: [2] } }), content="true")
+  inspect(crossed_b(Cross::{ a: 1.5, b: Pt::{ x: 1, ys: [2] } }, Cross::{ a: 1.5, b: Pt::{ x: 1, ys: [3] } }), content="false")
+}
+
+test "a nested projection" {
+  let same_pair: Outer[Double] = Outer::{ inner: Pair::{ a: 1.5, b: 1.5 }, tag: 0 }
+  let other_pair: Outer[Double] = Outer::{ inner: Pair::{ a: 1.5, b: 2.5 }, tag: 0 }
+  inspect(eq_nested(same_pair), content="true")
+  inspect(eq_nested(other_pair), content="false")
+}
+
+test "a projection off a call result" {
+  inspect(eq_call_result(() -> Pair[Double] { Pair::{ a: 1.5, b: 1.5 } }), content="true")
+  inspect(eq_call_result(() -> Pair[Double] { Pair::{ a: 1.5, b: 2.5 } }), content="false")
+}
+
+test "a projection off a literal that writes its type arguments" {
+  inspect(eq_literal_fields(1.5, 1.5), content="true")
+  inspect(eq_literal_fields(1.5, 2.5), content="false")
+  inspect(eq_literal_fields(Pt::{ x: 1, ys: [2] }, Pt::{ x: 1, ys: [2] }), content="true")
+  inspect(eq_literal_fields(Pt::{ x: 1, ys: [2] }, Pt::{ x: 1, ys: [3] }), content="false")
+  inspect(eq_literal_crossed(1.5, "s", 1.5), content="true")
+  inspect(eq_literal_crossed(1.5, "s", 2.5), content="false")
+}
+
+test "a field bound with its type off a generic call result" {
+  let same_pair: Holder[Double] = Holder::{ p: Pair::{ a: 1.5, b: 1.5 } }
+  let other_pair: Holder[Double] = Holder::{ p: Pair::{ a: 1.5, b: 2.5 } }
+  inspect(eq_bound_first(same_pair), content="true")
+  inspect(eq_bound_first(other_pair), content="false")
+}
+
+test "a projection forwarded to a bounded call" {
+  inspect(forward(Pair::{ a: 1.5, b: 1.5 }), content="true")
+  inspect(forward(Pair::{ a: 1.5, b: 2.5 }), content="false")
+  inspect(forward_crossed(Cross::{ a: 1.5, b: "s" }, Cross::{ a: 1.5, b: "t" }), content="true")
+  inspect(forward_crossed(Cross::{ a: 1.5, b: "s" }, Cross::{ a: 2.5, b: "s" }), content="false")
+}
+
+test "a local generic lambda" {
+  let eq_local = [U: Eq](p: Pair[U]) -> Bool {
+    p.a == p.b
+  }
+  inspect(eq_local(Pair::{ a: 1.5, b: 1.5 }), content="true")
+  inspect(eq_local(Pair::{ a: 1.5, b: 2.5 }), content="false")
+  inspect(eq_local(Pair::{ a: Pt::{ x: 1, ys: [2] }, b: Pt::{ x: 1, ys: [2] } }), content="true")
+}
+
+test "`<` through an Ord bound still dispatches at run time" {
+  inspect(lt_fields(Pair::{ a: "bbb", b: "aaa" }), content="false")
+  inspect(lt_fields(Pair::{ a: "aaa", b: "bbb" }), content="true")
+  inspect(lt_fields(Pair::{ a: 2, b: 10 }), content="true")
+  let strings: Holder[String] = Holder::{ p: Pair::{ a: "bbb", b: "aaa" } }
+  inspect(lt_call_result(strings), content="false")
+}
+
+test "a concrete receiver" {
+  let p: Pair[Double] = Pair::{ a: 1.5, b: 1.5 }
+  inspect(p.a == p.b, content="true")
+  let q: Pair[String] = Pair::{ a: "bbb", b: "aaa" }
+  inspect(q.a < q.b, content="false")
+}

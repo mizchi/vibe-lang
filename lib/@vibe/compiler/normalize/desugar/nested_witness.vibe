@@ -12,7 +12,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_target_from_key
+  impl_target_from_key, type_param_name
 }
 
 import @vibe/core {
@@ -294,6 +294,18 @@ fn receiver_type(e: Expr, struct_sets: Array[(String, Array[String])], var_types
   }
 }
 
+fn mentions_any_formal(t: TypeExpr, formals: Array[String]) -> Bool {
+  let mut found = false
+  for f in formals {
+    if ty_mentions_name(t, type_param_name(f)) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
 fn declared_field_type(rt: TypeExpr, field: String) -> Option[TypeExpr] {
   let (head, args) = match rt {
     TyName(n) => (n, array_empty()),
@@ -306,11 +318,15 @@ fn declared_field_type(rt: TypeExpr, field: String) -> Option[TypeExpr] {
     if sname == head && is_none(result) {
       for f in fields {
         if f.0 == field && is_none(result) {
-          result = Some(if Array::length(formals) > 0 && Array::length(formals) == Array::length(args) {
-            eq_subst_ty(f.1, formals, args)
+          result = if Array::length(formals) > 0 && Array::length(formals) == Array::length(args) {
+            Some(eq_subst_ty(f.1, formals, args))
+          } else if mentions_any_formal(f.1, formals) {
+            // #3613: the declaration's own parameter is not the field's type
+            // at this receiver, whose arguments are not readable here.
+            None
           } else {
-            f.1
-          })
+            Some(f.1)
+          }
         } else {
           ()
         }

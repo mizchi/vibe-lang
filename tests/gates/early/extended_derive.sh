@@ -550,6 +550,10 @@ ur_refused fixtures/err_eq_nested_witness_fn_unreadable_refused.vibe 'the type `
 # spells; its witness was left out and the call failed wasm validation.
 ur_refused fixtures/err_impl_bodyless_fallback_formal_unreadable_refused.vibe 'the `Eq` witness for `U` is read only from that parameter' 'spell `U` in the type of `Tag::name`'"'"'s `Self` parameter'
 ur_refused fixtures/err_eq_witness_missing_refused.vibe 'the `Eq` witness for `T` does not reach this comparison' 'compare at a concrete type, or pass the comparison in as a parameter'
+# #3613: a projected field typed by its struct's parameter, off a receiver
+# whose type arguments are not readable, would compare by reference.
+ur_refused fixtures/err_eq_projection_unreadable_refused.vibe 'a field its struct declares with a type parameter, from a value whose type arguments are not known here' 'bind the field with its complete type first (`let v: <type> = <value>.a`)' linear 'fixtures/err_eq_projection_unreadable_refused.vibe: line 25:17'
+ur_refused fixtures/err_eq_projection_unreadable_refused.vibe 'a field its struct declares with a type parameter, from a value whose type arguments are not known here' 'bind the field with its complete type first (`let v: <type> = <value>.a`)' gc 'fixtures/err_eq_projection_unreadable_refused.vibe: line 25:17'
 # #3297: a comparison whose complete type does not reach the ladder, known
 # only by its generic head or by an `Ok` / `Err` payload typed by a formal.
 # The derived comparator, or the raw payload match, would compare that
@@ -1423,6 +1427,17 @@ run_test_block_fixtures "String order on builtin results (linear, bump)" fixture
 run_test_block_fixtures_gc "String order on builtin results (gc)" fixtures/gc_string_order_builtin_results_test.vibe
 run_test_block_fixtures_rc "String order on builtin results (linear, RC)" fixtures/gc_string_order_builtin_results_test.vibe
 echo '[compiler-gate] String order on builtin results ok'
+
+# 15b-9. #3601: the gc lane checks the MERGED program with its test blocks
+#        already lowered to `__test_*` bindings under a synthesized `_start`,
+#        so the erased-row leak tracking sees shapes the linear lane's
+#        per-module check never does. A test block's leak was charged to
+#        `_start` (`missing { Exception[Int] }` for `shield(() -> throw(7))`)
+#        and the import fixture compiled on linear only. The linear lane runs
+#        these through the unit runner; this is their gc run.
+echo '[compiler-gate] 15b-9/15 erased Exception rows on the gc lane (#3601)'
+run_test_block_fixtures_gc "erased Exception rows (gc)" fixtures/exception_erased_*_test.vibe
+echo '[compiler-gate] erased Exception rows on the gc lane ok'
 
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
 #      type-directed sentinel that the pre-check desugar lowers by the operand's

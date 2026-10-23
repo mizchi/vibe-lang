@@ -277,7 +277,6 @@ import ./typed_rendering.vibe {
   dtd_head_is_leaked_formal,
   dtd_interp_expands_itself,
   dtd_typed_eq_admitted_ty,
-  dtd_typed_eq_residual,
   dtd_typed_render_raw_shape_for,
   dtd_typed_render_row_arg,
   dtd_typed_render_row_is_unknown,
@@ -299,7 +298,7 @@ import ./witness_generation.vibe {
 }
 
 import ./witnessed_equality.vibe {
-  dtd_eq_operand_formals, dtd_eq_witnessed_compare, opt_expr_is_some, opt_expr_or_unit
+  dtd_eq_operand_formals, dtd_eq_projection_residual, dtd_eq_witnessed_compare, opt_expr_is_some, opt_expr_or_unit
 }
 
 /// Render one sub-expression by re-entering the interpolation rewrite on a
@@ -2318,10 +2317,11 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                           // #2441: an inferred head name with no actionable
                           // rung (e.g. `Array` with an unknown element) falls
                           // to the typed channel before staying raw.
-                          dtd_typed_eq_residual(op, rl, rr, boff)
+                          // #3613: a projection of unreadable type refuses.
+                          dtd_eq_projection_residual(op, l, r, rl, rr, boff, struct_sets, var_types, fn_returns)
                         }
                       },
-                      None => dtd_typed_eq_residual(op, rl, rr, boff)
+                      None => dtd_eq_projection_residual(op, l, r, rl, rr, boff, struct_sets, var_types, fn_returns)
                     }
                   }
                 }
@@ -2881,12 +2881,13 @@ export fn rewrite_stmt(stmt: Stmt, gens: Array[DictGen], traits: Array[(String, 
         EFn(tparams, bounds, params, ret, eff, fbody) => {
           let binds = dict_binds_of(threaded, traits)
           let new_params = thread_dict_params(threaded, params)
-          let seeded = dtd_mask_shadowed_params(seed_var_types(params, tparams, toplevel_vars), params, fn_returns)
           // #2141 (Codex P1 on #2183): this dict-threaded path unwraps the
           // EFn itself, so rewrite_expr's EFn arm never pushes the binder
           // frame for it -- a `[T: Trait]` formal colliding with an imported
           // `struct T` still dispatched `T::equals` on erased operands.
           scope_formals_push(tparams, bounds, false)
+          // Mark the annotation's own formals before projecting its fields.
+          let seeded = dtd_mask_shadowed_params(seed_var_types(params, tparams, toplevel_vars), params, fn_returns)
           // A parameter of a threaded generic's spelling is a local value
           // inside this body; a call through it takes no dictionary.
           let new_body = rewrite_expr(fbody, gens_masked_by(gens, param_names(params)), traits, struct_sets, binds, seeded, fn_returns)

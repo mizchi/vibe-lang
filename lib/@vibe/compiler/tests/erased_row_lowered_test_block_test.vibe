@@ -1,0 +1,126 @@
+//# A test block's erased Exception grant charges nothing to the gc lane's `_start`
+
+// The wasm-gc lane lowers `test "x" { .. }` to `let __test_x = () -> { .. }`
+// and synthesizes a `_start` that calls each one, BEFORE the effect check
+// (entry/source_compile/gc_only). The binding walk tagged that body as a named
+// function's own (`erased_root_marker`), so a kind its ambient erased
+// `Exception` grant let out -- `shield(() -> throw(7))`: the closure literal
+// throws its `Int` into the block's body -- was recorded as the block's leak
+// and charged to `_start`, which declares no row. The fixture
+// `fixtures/exception_erased_row_import_test.vibe` compiled on linear and was
+// refused on gc alone (`effect row mismatch for '_start': missing
+// { Exception[Int] }`). A test block is an entry, as its unlowered `STest`
+// is: what it lets out fails the test and reaches no caller.
+
+//# Imports
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+
+import @vibe/compiler/checker/effects {
+  swap_lowered_test_block_names, typing_semantics_seed
+}
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+import @vibe/compiler/checker {
+  set_error_row_checked
+}
+
+//# Misc
+
+/// Every diagnostic of the unlowered (linear) check, with the exception row
+/// discipline switched on (the CLI turns it on; this calls the checker
+/// directly).
+fn linear_diags(src: String) -> Array[String] with Exception {
+  set_error_row_checked(true)
+  collect_all_diagnostics(src)
+}
+
+/// The gc lane's verdict under the same discipline: `ok`, or the message it
+/// refused the program with.
+fn gc_verdict(src: String) -> String {
+  set_error_row_checked(true)
+  handle {
+    let bytes = compile_source_gc_only(src, "__no_entry__")
+    if Bytes::length(bytes) > 8 {
+      "ok"
+    } else {
+      "empty module"
+    }
+  } with { Exception::Throw(m) => m }
+}
+
+fn shield_program(rest: String) -> String {
+  "fn shield(f: () -> Int with Exception) -> Int {\n  handle {\n    f()\n  } with { Exception::Throw(_) => 0 - 2 }\n}\n\n\{rest}"
+}
+
+//# Tests
+
+test "a closure literal throwing an Int into a test block compiles on both lanes" {
+  let src = shield_program("test \"t\" {\n  assert_eq(shield(() -> throw(7)), 0 - 2)\n}\n")
+  inspect(linear_diags(src), "[]")
+  inspect(gc_verdict(src), "ok")
+}
+
+test "a bench block is an entry too" {
+  let src = shield_program("bench \"b\" {\n  let _ = shield(() -> throw(7))\n}\n")
+  inspect(linear_diags(src), "[]")
+  inspect(gc_verdict(src), "ok")
+}
+
+test "a named function's erased row still charges its leak to its caller" {
+  // The control: the marker is dropped for lowered blocks only. `leaky` lets
+  // an `Int` out through its erased row, and `caller`'s erased arm reads it
+  // as the message.
+  let src = "fn leaky() -> Int with Exception {\n  throw(7)\n}\n\nfn caller() -> Int {\n  handle {\n    leaky()\n  } with { Exception::Throw(m) => String::length(m) }\n}\n\ntest \"t\" {\n  assert_eq(caller(), 0)\n}\n"
+  inspect(linear_diags(src), "[line 7:5: write `Exception[Int]::Throw(m)` to catch it: the erased arm `Exception::Throw(m)` reads `m` as the thrown message, a `String`, and the kind is not carried at run time, but in 'caller' the handled body raises { Exception[Int] }\nhint: a kinded arm binds the payload at its own type; for several kinds, nest one handle per kind, or leave the payload unread (`Exception::Throw(_)`), which catches every kind. A callee declared with the erased `with Exception` raises the kinds its body throws]")
+  inspect(gc_verdict(src), "write `Exception[Int]::Throw(m)` to catch it: the erased arm `Exception::Throw(m)` reads `m` as the thrown message, a `String`, and the kind is not carried at run time, but in 'caller' the handled body raises { Exception[Int] }\nhint: a kinded arm binds the payload at its own type; for several kinds, nest one handle per kind, or leave the payload unread (`Exception::Throw(_)`), which catches every kind. A callee declared with the erased `with Exception` raises the kinds its body throws [@off=85]")
+}
+
+test "ordinary functions named like test blocks retain their exception leak" {
+  for prefix in ["__test_", "__bench_"] {
+    let name = prefix + "leaky"
+    let src = "fn " + name + "() -> Int with Exception { throw(7) } fn caller() -> Int { handle { " + name + "() } with { Exception::Throw(m) => String::length(m) } } test \"unrelated\" { assert_eq(caller(), 0) }"
+    let linear = String::join(linear_diags(src), "\n")
+    assert(String::contains(linear, "write `Exception[Int]::Throw(m)`"))
+    assert(String::contains(gc_verdict(src), "write `Exception[Int]::Throw(m)`"))
+  }
+}
+
+test "ordinary functions named like test blocks receive no ambient grant" {
+  for prefix in ["__test_", "__bench_"] {
+    let src = "fn " + prefix + "leaky() -> Int { throw(7) }"
+    let linear = String::join(linear_diags(src), "\n")
+    assert(String::contains(linear, "missing { Exception[Int] }"))
+    assert(String::contains(gc_verdict(src), "missing { Exception[Int] }"))
+  }
+}
+
+test "a later check never inherits a gc test grant after success or refusal" {
+  let plain = "fn __test_leaky() -> Int { throw(7) }"
+  inspect(gc_verdict("test \"leaky\" { throw(7) }"), "ok")
+  assert(String::contains(String::join(linear_diags(plain), "\n"), "missing { Exception[Int] }"))
+  assert(String::contains(gc_verdict(plain), "missing { Exception[Int] }"))
+  assert(gc_verdict("test \"leaky\" { let n: Int = true } ") != "ok")
+  assert(String::contains(String::join(linear_diags(plain), "\n"), "missing { Exception[Int] }"))
+  assert(String::contains(gc_verdict(plain), "missing { Exception[Int] }"))
+}
+
+test "lowered test authority has its own typing identity and restores its scope" {
+  let ordinary = typing_semantics_seed()
+  let previous = swap_lowered_test_block_names(["__test_x"])
+  let test_identity = typing_semantics_seed()
+  let first = swap_lowered_test_block_names(["__bench_x"])
+  let bench_identity = typing_semantics_seed()
+  swap_lowered_test_block_names(first)
+  let restored_test = typing_semantics_seed()
+  swap_lowered_test_block_names(previous)
+  inspect(test_identity != ordinary, "true")
+  inspect(bench_identity != test_identity, "true")
+  inspect(restored_test == test_identity, "true")
+  inspect(typing_semantics_seed() == ordinary, "true")
+}

@@ -1,0 +1,265 @@
+// #3611: a closure literal written at a struct field whose row names one of
+// the struct's own type parameters (`f: () -> Int with Box[T]`) takes the row
+// instantiated at the literal's type arguments. #3610 (#3582) skipped such a
+// field, so the literal kept the row-free calling convention while a call
+// through the field passed the handler, and the program trapped ("null
+// function or function signature mismatch") after a clean `vibe check`. The
+// type arguments are read where they are written: on the literal
+// (`Holder[String]::{ .. }`) or on the annotation of the binding it is
+// assigned to. Where they are only inferred the build is refused with that
+// edit (fixtures/typecheck/closure_field_generic_row_inferred_refused.vibe).
+
+effect Box[T] {
+  Put(T) -> Unit
+}
+
+struct Holder[T] {
+  f: () -> Int with Box[T]
+}
+
+fn drive(f: () -> Int with Box[String]) -> Int {
+  let mut n = 0
+  let r = handle {
+    f()
+  } with {
+    Box::Put(s) => {
+      n = n + String::length(s)
+      resume(())
+    }
+  }
+  r + n * 10
+}
+
+fn drive_int(f: () -> Int with Box[Int]) -> Int {
+  let mut n = 0
+  let r = handle {
+    f()
+  } with {
+    Box::Put(k) => {
+      n = n + k
+      resume(())
+    }
+  }
+  r + n * 10
+}
+
+test "type arguments written on the literal" {
+  let h = Holder[String]::{ f: () -> {
+    perform Box::Put("xy")
+    1
+  } }
+  inspect(drive(h.f), "21")
+}
+
+test "type arguments on a local annotation" {
+  let h: Holder[String] = Holder::{ f: () -> {
+    perform Box::Put("abc")
+    2
+  } }
+  inspect(drive(h.f), "32")
+}
+
+let top: Holder[String] = Holder::{ f: () -> {
+  perform Box::Put("abcd")
+  3
+} }
+
+test "type arguments on a top-level annotation" {
+  inspect(drive(top.f), "43")
+}
+
+type StrHolder = Holder[String]
+
+test "type arguments on an annotation spelled through an alias" {
+  let h: StrHolder = Holder::{ f: () -> {
+    perform Box::Put("abcde")
+    4
+  } }
+  inspect(drive(h.f), "54")
+}
+
+struct Two[A, B] {
+  a: A;
+  f: () -> Int with Box[B]
+}
+
+test "the row names the second of two type parameters" {
+  let t = Two[Int, String]::{ a: 100, f: () -> {
+    perform Box::Put("abcdef")
+    1
+  } }
+  inspect(drive(t.f) + t.a, "161")
+}
+
+type IntPair = (Int, Int)
+
+fn drive_pair(f: () -> Int with Box[IntPair]) -> Int {
+  let mut n = 0
+  let r = handle {
+    f()
+  } with {
+    Box::Put(p) => {
+      n = n + p.0 * p.1
+      resume(())
+    }
+  }
+  r + n * 10
+}
+
+test "a tuple type argument named by an alias" {
+  let h = Holder[IntPair]::{ f: () -> {
+    perform Box::Put((2, 3))
+    1
+  } }
+  inspect(drive_pair(h.f), "61")
+}
+
+test "a literal that performs nothing" {
+  let h = Holder[String]::{ f: () -> 5 }
+  inspect(drive(h.f), "5")
+}
+
+fn six() -> Int {
+  6
+}
+
+test "a row-free top-level function in the field" {
+  let h = Holder[String]::{ f: six }
+  inspect(drive(h.f), "6")
+}
+
+test "another instantiation of the same struct" {
+  let h = Holder[Int]::{ f: () -> {
+    perform Box::Put(4)
+    perform Box::Put(3)
+    7
+  } }
+  inspect(drive_int(h.f), "77")
+}
+
+fn mk_holder() -> Holder[String] {
+  Holder[String]::{ f: () -> {
+    perform Box::Put("q")
+    8
+  } }
+}
+
+test "a literal returned from a function" {
+  inspect(drive(mk_holder().f), "18")
+}
+
+fn mk_generic[U](x: U) -> Holder[U] {
+  Holder[U]::{ f: () -> {
+    perform Box::Put(x)
+    9
+  } }
+}
+
+test "type arguments that are an enclosing function's type parameter" {
+  inspect(drive(mk_generic("hello").f), "59")
+  inspect(drive_int(mk_generic(2).f), "29")
+}
+
+struct Pair[T] {
+  g: () -> Int with Box[T];
+  plain: () -> Int with Box[String];
+  tag: T
+}
+
+test "a generic row field beside a concrete row field" {
+  let p = Pair[Int]::{ g: () -> {
+    perform Box::Put(5)
+    1
+  }, plain: () -> {
+    perform Box::Put("abc")
+    2
+  }, tag: 100 }
+  inspect(drive_int(p.g) + drive(p.plain) + p.tag, "183")
+}
+
+struct Nested[T] {
+  f: () -> Int with Box[Array[T]]
+}
+
+fn drive_arr(f: () -> Int with Box[Array[Int]]) -> Int {
+  let mut n = 0
+  let r = handle {
+    f()
+  } with {
+    Box::Put(xs) => {
+      n = n + Array::length(xs)
+      resume(())
+    }
+  }
+  r + n * 10
+}
+
+test "a type parameter nested in the row's type argument" {
+  let h = Nested[Int]::{ f: () -> {
+    perform Box::Put([1, 2, 3])
+    4
+  } }
+  inspect(drive_arr(h.f), "34")
+}
+
+// Codex on #3620: a closure literal bound by `let` and named in the field
+// takes the field's row at its binding when every use of the name is such a
+// field. It was compiled without the row while `drive` passed the handler,
+// and the call trapped ("null function or function signature mismatch").
+test "a local literal named in the field" {
+  let g = () -> 10
+  let h = Holder[String]::{ f: g }
+  inspect(drive(h.f), "10")
+}
+
+test "a local literal named in two fields" {
+  let g = () -> 11
+  let h = Holder[String]::{ f: g }
+  let h2: Holder[String] = Holder::{ f: g }
+  inspect(drive(h.f) + drive(h2.f), "22")
+}
+
+test "a local literal named in a concrete row field" {
+  let g = () -> 12
+  let p = Pair[Int]::{ g: () -> 1, plain: g, tag: 0 }
+  inspect(drive(p.plain), "12")
+}
+
+fn mk_local() -> Holder[String] with Box[String] {
+  let g = () -> {
+    perform Box::Put("abc")
+    13
+  }
+  Holder[String]::{ f: g }
+}
+
+test "a performing local literal named in the field" {
+  let h = handle {
+    mk_local()
+  } with {
+    Box::Put(_) => resume(())
+  }
+  inspect(drive(h.f), "43")
+}
+
+// Codex on #3620: a use of an inner binding that shadows the literal's name
+// is not a use of the literal.
+test "a local literal whose name is shadowed after the field" {
+  let g = () -> 15
+  let h = Holder[String]::{ f: g }
+  let g = 1
+  inspect(drive(h.f) + g, "16")
+}
+
+// The edit the refusal names when the name has another use, or when the
+// record's type arguments are inferred: a row written on the literal is the
+// closure's own.
+test "a local literal that writes its row" {
+  let g = () -> Int with Box[String] {
+    perform Box::Put("ab")
+    14
+  }
+  let h = Holder::{ f: g }
+  let h2 = Holder[String]::{ f: g }
+  inspect(drive(h.f) + drive(h2.f), "68")
+}

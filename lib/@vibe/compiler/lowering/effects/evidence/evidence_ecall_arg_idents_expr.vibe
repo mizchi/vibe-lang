@@ -74,12 +74,23 @@ import ./evidence_free_names.vibe {
 }
 
 import ./evidence_declared_slots.vibe {
+  edp_ascribed_record_targs,
+  edp_drop_local_aliases,
   edp_expr_builds_row_field,
+  edp_field_literal_mark,
+  edp_field_literal_pending,
   edp_field_slot,
   edp_field_slot_callee,
+  edp_local_alias_mark,
+  edp_note_field_literal,
+  edp_note_local_alias,
   edp_note_program_aliases,
   edp_note_row_field_structs,
+  edp_record_targs_under,
+  edp_refuse_unread_field_row,
   edp_result_slot,
+  edp_rows_agree,
+  edp_settle_field_literal,
   edp_tuple_result_types
 }
 
@@ -247,7 +258,18 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
     }
     match body {
       Some(e) => if edp_expr_passes_literal_arg(e, pure_names) || edp_expr_passes_value_to_slot(e, slot_callees) || edp_expr_builds_row_field(e) {
-        let stamped = edp_stamp_expr(e, stmts, fn_index, [], pure_names)
+        // #3611: an annotated top-level record takes the annotation's
+        // type arguments into its fields' rows.
+        let ann = match stmt {
+          SLet(_, _, _, ty, _) => ty,
+          SLetMut(_, ty, _) => ty,
+          _ => None
+        }
+        let top: Array[String] = []
+        let stamped = match e {
+          ERecord(_, _, _) => edp_stamp_record(e, edp_record_targs_under(stmts, ann, e), stmts, fn_index, top, pure_names),
+          _ => edp_stamp_expr(e, stmts, fn_index, top, pure_names)
+        }
         match stmt {
           SLet(exported, is_rec, nm, ty, _) => Array::set(stmts, i, SLet(exported, is_rec, nm, ty, stamped)),
           SLetMut(nm, ty, _) => Array::set(stmts, i, SLetMut(nm, ty, stamped)),
@@ -1486,7 +1508,12 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[In
   match e {
     ECall(callee, args, off, res) => match edp_alias_ascribed_literal(callee, args, stmts, scope) {
       Some(lit) => edp_stamp_expr(lit, stmts, fn_index, scope, pure_names),
-      None => edp_stamp_call(callee, args, off, res, stmts, fn_index, scope, pure_names)
+      None => match edp_ascribed_record_targs(stmts, callee, args) {
+        Some(targs) => ECall(callee, [
+          edp_stamp_record(Array::get(args, 0), targs, stmts, fn_index, scope, pure_names)
+        ], off, res),
+        None => edp_stamp_call(callee, args, off, res, stmts, fn_index, scope, pure_names)
+      }
     },
     EFn(tps, tbs, params, ret, eff, body) => {
       let base = Array::length(scope)
@@ -1526,11 +1553,15 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[In
         _ => ()
       }
       let hslot = Array::length(scope)
+      let fmark = edp_field_literal_mark()
+      let amark = edp_local_alias_mark()
+      edp_note_local_alias(n, hslot, edp_local_lit_of(v2, scope))
       let b2 = edp_stamp_scoped(b, [n], stmts, fn_index, scope, pure_names)
+      edp_drop_local_aliases(amark)
       Array::truncate(edp_local_lit_names, mark)
       Array::truncate(edp_local_lit_slots, mark)
       Array::truncate(edp_local_lit_vals, mark)
-      ELet(n, v2, edp_wrap_snapshots(b2, hslot), off)
+      edp_let_field_literal(n, v2, b, edp_wrap_snapshots(b2, hslot), off, hslot, fmark, scope)
     },
     ELetRec(n, v, b) => ELetRec(n, edp_stamp_scoped(v, [n], stmts, fn_index, scope, pure_names), edp_stamp_scoped(b, [
       n
@@ -1600,25 +1631,72 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[In
     EArray(items) => EArray(for a in items {
       edp_stamp_expr(a, stmts, fn_index, scope, pure_names)
     }),
-    // #3582: a field whose declared type carries a row is a slot like a
-    // parameter of that type: whoever reads the field calls it with the dict.
-    ERecord(n, fields, tas) => ERecord(n, for f in fields {
-      let (fn2, v) = f
-      let v2 = edp_stamp_expr(v, stmts, fn_index, scope, pure_names)
-      match edp_field_slot(n, fn2) {
-        Some(slot) => {
-          edp_set_slot_callee(edp_field_slot_callee(n, fn2), true)
-          (fn2, edp_stamp_slot_arg_at(v2, scope, pure_names, Some(slot)))
-        },
-        None => (fn2, v2)
-      }
-    }, tas),
+    ERecord(_, _, tas) => edp_stamp_record(e, tas, stmts, fn_index, scope, pure_names),
     EMap(fields) => EMap(for f in fields {
       let (fn2, v) = f
       (fn2, edp_stamp_expr(v, stmts, fn_index, scope, pure_names))
     }),
     ESpread(x) => ESpread(edp_stamp_expr(x, stmts, fn_index, scope, pure_names)),
     _ => e
+  }
+}
+
+/// #3582: the record `e` with each value at a field whose declared type
+/// carries a row stamped like an argument at a parameter of that type:
+/// whoever reads the field calls it with the dict. `targs` are the struct's
+/// type arguments the record is built at (#3611, `edp_record_targs_under`).
+fn edp_stamp_record(e: Expr, targs: Array[TypeExpr], stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  match e {
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      let v2 = edp_stamp_expr(v, stmts, fn_index, scope, pure_names)
+      match edp_field_slot(n, fn2, targs) {
+        Some(slot) => {
+          edp_set_slot_callee(edp_field_slot_callee(n, fn2), true)
+          edp_note_field_literal(edp_local_lit_of(v2, scope), slot.1, edp_field_slot_callee(n, fn2))
+          (fn2, edp_stamp_slot_arg_at(v2, scope, pure_names, Some(slot)))
+        },
+        None => {
+          edp_refuse_unread_field_row(n, fn2, targs, v2, scope, pure_names, edp_local_lit_of(v2, scope))
+          (fn2, v2)
+        }
+      }
+    }, tas),
+    _ => e
+  }
+}
+
+/// Codex on #3620: the name `v` spells, with its `scope` index and the closure
+/// literal bound there by `let`, if any.
+fn edp_local_lit_of(v: Expr, scope: Array[String]) -> (String, Int, Option[Expr]) {
+  match v {
+    EIdent(an, _) => {
+      let slot = edp_scope_last_index(scope, an)
+      (an, slot, edp_local_lit_at(an, slot))
+    },
+    _ => ("", 0 - 1, None)
+  }
+}
+
+/// Codex on #3620: the `let` of a row-free closure literal stored by name in
+/// a row-typed field (`edp_note_field_literal`) takes that row when every use
+/// of it is such a field; otherwise it stays as written and the build is
+/// refused (`edp_settle_field_literal`).
+fn edp_let_field_literal(n: String, v: Expr, b0: Expr, b: Expr, off: Int, slot: Int, mark: Int, scope: Array[String]) -> Expr {
+  match v {
+    EFn(tps, tbs, ps, ret, None, lb) => if edp_field_literal_pending(slot, mark) {
+      let row = edp_settle_field_literal(n, slot, mark, edp_free_use_count(b0, n), edp_literal_calls_local(v, lb, scope))
+      if row != "" {
+        let v2 = EFn(tps, tbs, ps, ret, Some(row), lb)
+        let (n2, b2) = edp_unique_row_lit_name(n, v2, b)
+        ELet(n2, v2, b2, off)
+      } else {
+        ELet(n, v, b, off)
+      }
+    } else {
+      ELet(n, v, b, off)
+    },
+    _ => ELet(n, v, b, off)
   }
 }
 
@@ -1710,18 +1788,6 @@ fn edp_slot_row_or_empty(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]
       None => ""
     }
   }
-}
-
-fn edp_rows_agree(rows: Array[String]) -> Bool {
-  let mut ok = Array::length(rows) > 0
-  for r in rows {
-    if r == "" || r != Array::get(rows, 0) {
-      ok = false
-    } else {
-      ()
-    }
-  }
-  ok
 }
 
 fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], scope: Array[String], pure_names: MutSet[String]) -> Expr {
