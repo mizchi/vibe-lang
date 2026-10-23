@@ -5,7 +5,7 @@ import ./parser_source_span.vibe {
 }
 
 import @vibe/ast {
-  Expr, ImportItem, Pat, Stmt, TypeExpr, impl_method_binding_name, index_write_callee
+  Expr, ImportItem, Pat, Stmt, TypeExpr, impl_method_binding_name, impl_self_as_target, impl_self_spellable, index_write_callee
 }
 
 import ./intern.vibe {
@@ -733,7 +733,28 @@ fn parse_impl_methods(tokens: Array[Token], starts: Array[Int], pos: Int, simpl:
             done = true
           },
           TIdent(mname) => {
-            let (efn, p2) = parse_impl_with_binder_context(tokens, method_starts, p + 1, 0, context)
+            let (efn_written, p2) = parse_impl_with_binder_context(tokens, method_starts, p + 1, 0, context)
+            // #3573: `Self` in the method's signature is the impl's target.
+            let efn = match source_expr(efn_written) {
+              EFn(mtp, mtb, mparams, mret, meff, mbody) => if impl_self_spellable(impl_tparams, impl_target, mtp) {
+                let as_target = (te: TypeExpr) -> TypeExpr {
+                  impl_self_as_target(te, impl_target)
+                }
+                source_rewrap_expr(efn_written, EFn(mtp, mtb, for mp in mparams {
+                  let (pname, pann) = mp
+                  (pname, match pann {
+                    Some(te) => Some(as_target(te)),
+                    None => None
+                  })
+                }, match mret {
+                  Some(te) => Some(as_target(te)),
+                  None => None
+                }, meff, mbody))
+              } else {
+                efn_written
+              },
+              _ => efn_written
+            }
             let efn2 = if Array::length(impl_tparams) > 0 {
               match source_expr(efn) {
                 EFn(mtp, mtb, mparams, mret, meff, mbody) => source_rewrap_expr(efn, EFn(Array::concat(impl_tparams, mtp), Array::concat(impl_tbounds, mtb), mparams, mret, meff, mbody)),

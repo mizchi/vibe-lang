@@ -59,7 +59,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_encode_name, impl_method_owner_head, trait_ref_name, type_param_arity, type_param_name
+  impl_method_owner_head, trait_ref_name, type_param_arity, type_param_name
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -134,7 +134,12 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 }
 
 import ./checker_infer_binop_type.vibe {
-  TypedOccurrenceRoleLaneCapture, append_legacy_typed_occurrence, param_types_are_spawn_shaped, record_receiver_kind, resolve_tparams_in
+  TypedOccurrenceRoleLaneCapture,
+  append_legacy_typed_occurrence,
+  impl_self_type_key,
+  param_types_are_spawn_shaped,
+  record_receiver_kind,
+  resolve_tparams_in
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -185,6 +190,8 @@ import ./checker_throw_kind_of_type.vibe {
   bind_trait_bound_tparams,
   formal_application_error,
   formals_source_arity,
+  impl_key_matches,
+  impl_self_target_is_type,
   min_int,
   railway_expr_off,
   report_bare_generic_heads_in_env,
@@ -1678,33 +1685,8 @@ fn impl_method_target(chain: TypeEnv, full: TypeEnv, type_name: String, owner_fu
   }
 }
 
-/// Does the impl recorded under key `tn` (a bare trait name, or the
-/// `$trait$`-prefixed applied key) belong to the trait `trait_name` names
-/// AND, when the binding's owner carries an `$impl$` segment, to THAT impl?
-/// `EnvTraitDef` holds the trait's head name while an impl holds the key it
-/// was written with -- `impl Iter[Int] for PairIter` records the applied key,
-/// and `trait_defined` compares the same way (measured: comparing the raw key
-/// refused `fixtures/iterator_trait_alias_operations_test.vibe`'s `self.first`
-/// as an open receiver). The owner segment was built by `impl_method_owner`
-/// from the same key, so `impl_encode_name(tn)` between `$impl$` and `$`
-/// identifies the impl exactly; an owner with no segment is a plain impl of a
-/// bare trait for an unapplied target, and the head is all there is to match.
-fn impl_key_matches(tn: String, trait_name: String, owner_full: String) -> Bool {
-  if trait_ref_name(tn) != trait_name {
-    false
-  } else {
-    let seg = String::index_of(owner_full, "$impl$")
-    if seg < 0 {
-      true
-    } else {
-      let encoded = String::concat("$impl$", String::concat(impl_encode_name(tn), "$"))
-      String::index_of(owner_full, encoded) >= 0
-    }
-  }
-}
-
-/// `env_has_trait_impl_for`, answering the impl's recorded target type and
-/// matching the trait by `impl_key_matches`.
+/// The recorded target of the impl of `trait_name` for `type_name` that the
+/// binding owner `owner_full` belongs to (`impl_key_matches`).
 fn env_trait_impl_target_for(env: TypeEnv, trait_name: String, type_name: String, owner_full: String) -> Option[Type] {
   match env {
     EnvEmpty => None,
@@ -1725,6 +1707,30 @@ fn env_trait_impl_target_for(env: TypeEnv, trait_name: String, type_name: String
     EnvTypeDefs(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
     EnvCached(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
     EnvFlat(_) => None
+  }
+}
+
+/// #3573: check an impl method's value with `Self` read as its impl's target
+/// (`resolve_tparams_in`), so `mk(self: Self) -> Self` in `impl W for P` is
+/// held to `P` -- it returned a `Q` and compiled clean, `Self` being a
+/// wildcard -- and so is a body's `let other: Self = ..`. The impl is found by
+/// provenance, as for `resolve_impl_self_field_reads`; any other binding gets
+/// `env` back unchanged.
+export fn bind_impl_self_type(env: TypeEnv, binding_name: String, defs: Array[TypeDef]) -> TypeEnv {
+  let sep = String::index_of(binding_name, "::")
+  if sep < 0 {
+    env
+  } else {
+    let owner_full = String::substring(binding_name, 0, sep)
+    let method = String::substring(binding_name, sep + 2, String::length(binding_name))
+    match impl_method_target(env, env, impl_method_owner_head(owner_full), owner_full, method) {
+      Some(target) => if impl_self_target_is_type(target, defs) {
+        env_bind(env, impl_self_type_key, target)
+      } else {
+        env
+      },
+      None => env
+    }
   }
 }
 

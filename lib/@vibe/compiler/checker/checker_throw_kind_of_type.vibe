@@ -34,6 +34,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   apply_type_constructor,
+  compiler_owned_type_arity,
   env_bind,
   env_lookup,
   env_type_defs,
@@ -53,13 +54,21 @@ import @vibe/compiler/core {
   subst_bounds_for,
   trait_decl_params,
   trait_method_sig_binders_deep,
+  trait_method_sig_deep,
   type_constructor_name,
   type_to_string,
   unify
 }
 
 import @vibe/ast {
-  impl_method_owner_head, trait_ref_args, trait_ref_from_key, trait_ref_key, trait_ref_name, type_param_arity, type_param_name
+  impl_encode_name,
+  impl_method_owner_head,
+  trait_ref_args,
+  trait_ref_from_key,
+  trait_ref_key,
+  trait_ref_name,
+  type_param_arity,
+  type_param_name
 }
 
 import @vibe/parser {
@@ -135,57 +144,216 @@ fn trait_methods_declare(methods: Array[(String, Array[TypeExpr], TypeExpr)], me
   found
 }
 
-/// True when `env` records an impl of `trait_name` for the type named
-/// `type_name` -- the binder that licenses the trait's erased parameters
-/// inside that impl's methods.
-fn env_has_trait_impl_for(env: TypeEnv, trait_name: String, type_name: String) -> Bool {
-  match env {
-    EnvEmpty => false,
-    EnvBind(_, _, rest) => env_has_trait_impl_for(rest, trait_name, type_name),
-    EnvTraitDef(_, _, _, _, rest, _, _) => env_has_trait_impl_for(rest, trait_name, type_name),
-    EnvTraitImpl(tn, target, rest) => (tn == trait_name && type_constructor_name(target) == type_name) || env_has_trait_impl_for(rest, trait_name, type_name),
-    EnvTraitImplGen(tn, _, _, target, rest) => (tn == trait_name && type_constructor_name(target) == type_name) || env_has_trait_impl_for(rest, trait_name, type_name),
-    EnvShowWrappers(_, _, rest) => env_has_trait_impl_for(rest, trait_name, type_name),
-    EnvMutCell(_, _, rest) => env_has_trait_impl_for(rest, trait_name, type_name),
-    EnvTypeDefs(_, _, rest) => env_has_trait_impl_for(rest, trait_name, type_name),
-    EnvCached(_, _, rest) => env_has_trait_impl_for(rest, trait_name, type_name),
-    EnvFlat(_) => false
+/// Does the impl recorded under key `tn` (a bare trait name, or the
+/// `$trait$`-prefixed applied key) belong to the trait `trait_name` names
+/// AND, when the binding's owner carries an `$impl$` segment, to THAT impl?
+/// `EnvTraitDef` holds the trait's head name while an impl holds the key it
+/// was written with -- `impl Iter[Int] for PairIter` records the applied key,
+/// and `trait_defined` compares the same way (measured: comparing the raw key
+/// refused `fixtures/iterator_trait_alias_operations_test.vibe`'s `self.first`
+/// as an open receiver, and, #3573, gave no applied impl's methods the
+/// erasures below). The owner segment was built by `impl_method_owner` from
+/// the same key, so `impl_encode_name(tn)` between `$impl$` and `$`
+/// identifies the impl exactly; an owner with no segment is a plain impl of a
+/// bare trait for an unapplied target, and the head is all there is to match.
+export fn impl_key_matches(tn: String, trait_name: String, owner_full: String) -> Bool {
+  if trait_ref_name(tn) != trait_name {
+    false
+  } else {
+    let seg = String::index_of(owner_full, "$impl$")
+    if seg < 0 {
+      true
+    } else {
+      let encoded = String::concat("$impl$", String::concat(impl_encode_name(tn), "$"))
+      String::index_of(owner_full, encoded) >= 0
+    }
   }
 }
 
-fn collect_impl_erased_type_params(chain: TypeEnv, full: TypeEnv, type_name: String, method_name: String, out: Array[String]) -> Unit {
+/// The key of the impl of `trait_name` for the type named `type_name` that
+/// the binding owner `owner_full` belongs to (`impl_key_matches`), when `env`
+/// records one -- the binder that licenses the trait's erased parameters
+/// inside that impl's methods.
+fn env_trait_impl_key_for(env: TypeEnv, trait_name: String, type_name: String, owner_full: String) -> Option[String] {
+  match env {
+    EnvEmpty => None,
+    EnvBind(_, _, rest) => env_trait_impl_key_for(rest, trait_name, type_name, owner_full),
+    EnvTraitDef(_, _, _, _, rest, _, _) => env_trait_impl_key_for(rest, trait_name, type_name, owner_full),
+    EnvTraitImpl(tn, target, rest) => if impl_key_matches(tn, trait_name, owner_full) && type_constructor_name(target) == type_name {
+      Some(tn)
+    } else {
+      env_trait_impl_key_for(rest, trait_name, type_name, owner_full)
+    },
+    EnvTraitImplGen(tn, _, _, target, rest) => if impl_key_matches(tn, trait_name, owner_full) && type_constructor_name(target) == type_name {
+      Some(tn)
+    } else {
+      env_trait_impl_key_for(rest, trait_name, type_name, owner_full)
+    },
+    EnvShowWrappers(_, _, rest) => env_trait_impl_key_for(rest, trait_name, type_name, owner_full),
+    EnvMutCell(_, _, rest) => env_trait_impl_key_for(rest, trait_name, type_name, owner_full),
+    EnvTypeDefs(_, _, rest) => env_trait_impl_key_for(rest, trait_name, type_name, owner_full),
+    EnvCached(_, _, rest) => env_trait_impl_key_for(rest, trait_name, type_name, owner_full),
+    EnvFlat(_) => None
+  }
+}
+
+/// #3573: whether an impl's recorded target is ONE type `Self` can stand for.
+/// A bare generic head (`impl [T] Len for Array`, `impl Mappable[Option] for
+/// Option`, an owner whose formals the trait erases) names a family, so its
+/// `Self` is left as it was.
+export fn impl_self_target_is_type(target: Type, defs: Array[TypeDef]) -> Bool {
+  match target {
+    CtUnknown => false,
+    CtConstructor(_, _) => false,
+    CtApplied(_, _) => false,
+    CtNamed(name, args) => if Array::length(args) > 0 {
+      !Array::any(args, (a) -> !impl_self_target_is_type(a, defs))
+    } else {
+      let builtin_generic = match compiler_owned_type_arity(name) {
+        Some(arity) => arity > 0,
+        None => false
+      }
+      let declared_generic = match find_typedef(defs, name) {
+        Some(TDStruct(_, _, _, formals)) => Array::length(formals) > 0,
+        Some(TDEnum(_, formals, _)) => Array::length(formals) > 0,
+        Some(TDAlias(_, formals, _)) => Array::length(formals) > 0,
+        _ => false
+      }
+      !builtin_generic && !declared_generic
+    },
+    CtArray(e) => impl_self_target_is_type(e, defs),
+    CtOption(e) => impl_self_target_is_type(e, defs),
+    CtTuple(items) => !Array::any(items, (i) -> !impl_self_target_is_type(i, defs)),
+    _ => true
+  }
+}
+
+/// #3573: the edit for `Owner::method` when that name is unbound because the
+/// method belongs to an impl that binds its methods under its own key -- an
+/// applied impl (`impl It[Int] for P`) or one for an applied target (`impl
+/// Tr for Box[Int]`). Two such impls may define the same method for one
+/// owner, so neither binds `P::pass`, and the trait's dispatcher is the
+/// spelling that reaches them. Empty for any other name.
+export fn impl_method_spelling_hint(name: String, env: TypeEnv) -> String {
+  let sep = String::index_of(name, "::")
+  if sep <= 0 || String::index_of(name, "$") >= 0 {
+    ""
+  } else {
+    impl_method_spelling_hint_walk(env, env, String::substring(name, 0, sep), String::substring(name, sep + 2, String::length(name)))
+  }
+}
+
+fn impl_method_spelling_hint_at(full: TypeEnv, tn: String, target: Type, owner: String, method: String) -> String {
+  let applied_target = match target {
+    CtNamed(_, args) => Array::length(args) > 0,
+    _ => false
+  }
+  let keyed = Array::length(trait_ref_args(tn)) > 0 || applied_target
+  let trait_head = trait_ref_name(tn)
+  let declares = match trait_method_sig_deep(full, trait_head, method) {
+    Some(_) => true,
+    None => false
+  }
+  if keyed && declares && type_constructor_name(target) == owner {
+    String::join([
+      " -- `impl ",
+      trait_reference_display(tn),
+      " for ",
+      type_to_string(target),
+      "` defines `",
+      method,
+      "` but binds no `",
+      owner,
+      "::",
+      method,
+      "`; call it through the trait: `",
+      trait_head,
+      "::",
+      method,
+      "(..)`"
+    ], "")
+  } else {
+    ""
+  }
+}
+
+fn impl_method_spelling_hint_walk(chain: TypeEnv, full: TypeEnv, owner: String, method: String) -> String {
+  match chain {
+    EnvEmpty => "",
+    EnvBind(_, _, rest) => impl_method_spelling_hint_walk(rest, full, owner, method),
+    EnvTraitDef(_, _, _, _, rest, _, _) => impl_method_spelling_hint_walk(rest, full, owner, method),
+    EnvTraitImpl(tn, target, rest) => {
+      let here = impl_method_spelling_hint_at(full, tn, target, owner, method)
+      if here == "" {
+        impl_method_spelling_hint_walk(rest, full, owner, method)
+      } else {
+        here
+      }
+    },
+    EnvTraitImplGen(tn, _, _, target, rest) => {
+      let here = impl_method_spelling_hint_at(full, tn, target, owner, method)
+      if here == "" {
+        impl_method_spelling_hint_walk(rest, full, owner, method)
+      } else {
+        here
+      }
+    },
+    EnvShowWrappers(_, _, rest) => impl_method_spelling_hint_walk(rest, full, owner, method),
+    EnvMutCell(_, _, rest) => impl_method_spelling_hint_walk(rest, full, owner, method),
+    EnvTypeDefs(_, _, rest) => impl_method_spelling_hint_walk(rest, full, owner, method),
+    EnvCached(_, _, rest) => impl_method_spelling_hint_walk(rest, full, owner, method),
+    EnvFlat(_) => ""
+  }
+}
+
+fn collect_impl_erased_type_params(chain: TypeEnv, full: TypeEnv, type_name: String, owner_full: String, method_name: String, out: Array[String]) -> Unit {
   match chain {
     EnvEmpty => (),
-    EnvBind(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
+    EnvBind(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, owner_full, method_name, out),
     EnvTraitDef(trait_name, params, _, methods, rest, header_params, _) => {
-      if trait_methods_declare(methods, method_name) && env_has_trait_impl_for(full, trait_name, type_name) {
-        let mut pi = 0
-        while pi < Array::length(params) {
-          Array::push(out, Array::get(params, pi))
-          pi = pi + 1
-        }
-        let mut hi = 0
-        while hi < Array::length(header_params) {
-          Array::push(out, Array::get(header_params, hi))
-          hi = hi + 1
-        }
-        // `Self` is erased the same way (Codex round 4 on #2147): the
-        // trait-dict desugar copies the trait signature's parameter types onto
-        // the lowered impl-method lambda, so a genuine impl method's `self`
-        // parameter arrives annotated `Self` with no binder of its own.
-        // Outside this provenance `Self` is a wildcard and is reported.
-        Array::push(out, "Self")
+      let impl_key = if trait_methods_declare(methods, method_name) {
+        env_trait_impl_key_for(full, trait_name, type_name, owner_full)
       } else {
-        ()
+        None
       }
-      collect_impl_erased_type_params(rest, full, type_name, method_name, out)
+      match impl_key {
+        Some(key) => {
+          // An applied impl (`impl It[Int] for P`) fills the trait's own
+          // parameters, so nothing erases them there: its methods write
+          // `Int`, and `A` names nothing.
+          if Array::length(trait_ref_args(key)) == 0 {
+            let mut pi = 0
+            while pi < Array::length(params) {
+              Array::push(out, Array::get(params, pi))
+              pi = pi + 1
+            }
+            let mut hi = 0
+            while hi < Array::length(header_params) {
+              Array::push(out, Array::get(header_params, hi))
+              hi = hi + 1
+            }
+          } else {
+            ()
+          }
+          // `Self` is erased the same way (Codex round 4 on #2147): the
+          // trait-dict desugar copies the trait signature's parameter types
+          // onto the lowered impl-method lambda, so a genuine impl method's
+          // `self` parameter arrives annotated `Self` with no binder of its
+          // own. Outside this provenance `Self` is a wildcard and is reported.
+          // A `Self` the method WRITES in its signature is the impl's target
+          // by now (`impl_self_as_target`, #3573).
+          Array::push(out, "Self")
+        },
+        None => ()
+      }
+      collect_impl_erased_type_params(rest, full, type_name, owner_full, method_name, out)
     },
-    EnvTraitImpl(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
-    EnvTraitImplGen(_, _, _, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
-    EnvShowWrappers(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
-    EnvMutCell(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
-    EnvTypeDefs(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
-    EnvCached(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
+    EnvTraitImpl(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, owner_full, method_name, out),
+    EnvTraitImplGen(_, _, _, _, rest) => collect_impl_erased_type_params(rest, full, type_name, owner_full, method_name, out),
+    EnvShowWrappers(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, owner_full, method_name, out),
+    EnvMutCell(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, owner_full, method_name, out),
+    EnvTypeDefs(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, owner_full, method_name, out),
+    EnvCached(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, owner_full, method_name, out),
     EnvFlat(_) => ()
   }
 }
@@ -210,10 +378,11 @@ export fn trait_erased_type_param_env(env: TypeEnv, binding_name: String) -> Typ
   if sep < 0 {
     env
   } else {
-    let type_name = impl_method_owner_head(String::substring(binding_name, 0, sep))
+    let owner_full = String::substring(binding_name, 0, sep)
+    let type_name = impl_method_owner_head(owner_full)
     let method_name = String::substring(binding_name, sep + 2, String::length(binding_name))
     let names = array_empty()
-    collect_impl_erased_type_params(env, env, type_name, method_name, names)
+    collect_impl_erased_type_params(env, env, type_name, owner_full, method_name, names)
     // The impl's own target, under a name no type can spell: only it may be
     // written bare where its formals are erased (`bare_head_erased_by_impl`).
     if Array::length(names) > 0 {
