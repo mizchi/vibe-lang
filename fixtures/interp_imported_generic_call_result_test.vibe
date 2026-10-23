@@ -1,0 +1,74 @@
+// #3570: interpolating the result of a call to an imported generic function
+// whose bound threads a witness dictionary (`get_by[K: Hash, V]`).
+//
+// The renderer expands a composite result in place -- `match <call> { Some(v)
+// => .., None => .. }` for an `Option`, a destructuring `match` for a tuple,
+// a `let` plus a loop for an `Array` -- and placed the call there as written,
+// without the rewrite that adds the dictionary argument. The call
+// reached codegen one argument short, and `vibe run` failed on invalid wasm
+// (`failed to compile: wasm[0]::function[N]::main`). Binding the call first
+// worked, because the subject was then a name.
+
+import @vibe/core { get_by, has_by, set_by }
+import ./_interp_imported_generic_call_result_dep.vibe { count_eq, find_eq, positions_eq }
+
+fn first[T](xs: Array[T]) -> Option[T] {
+  if Array::length(xs) > 0 {
+    Some(Array::get(xs, 0))
+  } else {
+    None
+  }
+}
+
+fn sample() -> Map[String, Int] {
+  let m0: Map[String, Int] = Map::new()
+  set_by(m0, "k", 1)
+}
+
+test "get_by interpolated directly" {
+  let m1 = sample()
+  inspect("\{get_by(m1, "k")}", "Some(1)")
+  inspect("\{get_by(m1, "missing")}", "None")
+  inspect("v=\{get_by(m1, "k")}!", "v=Some(1)!")
+}
+
+test "get_by interpolated directly with no annotation on the map" {
+  let m1 = set_by(Map::new(), "k", 7)
+  inspect("\{get_by(m1, "k")}", "Some(7)")
+}
+
+test "inspect on a get_by call" {
+  let m1 = sample()
+  inspect(get_by(m1, "k"), "Some(1)")
+  inspect(get_by(m1, "missing"), "None")
+}
+
+test "imported bounded generic returning Option" {
+  inspect("\{find_eq([1, 2, 3], 2)}", "Some(2)")
+  inspect("\{find_eq([1, 2, 3], 9)}", "None")
+  inspect(find_eq(["a", "b"], "b"), "Some(b)")
+}
+
+test "imported bounded generic returning Array" {
+  inspect("\{positions_eq([1, 2, 1, 3], 1)}", "[0, 2]")
+  inspect(positions_eq(["a", "b"], "z"), "[]")
+}
+
+test "imported bounded generic returning a tuple" {
+  inspect("\{count_eq([4, 4, 5], 4)}", "(2, 3)")
+}
+
+test "controls that already worked" {
+  let m1 = sample()
+  let r = get_by(m1, "k")
+  inspect("\{r}", "Some(1)")
+  let msg = match get_by(m1, "k") {
+    Some(v) => "hit \{v}",
+    None => "miss"
+  }
+  inspect(msg, "hit 1")
+  inspect("\{has_by(m1, "k")}", "true")
+  inspect("\{first([5, 6])}", "Some(5)")
+  let none: Array[Int] = []
+  inspect("\{first(none)}", "None")
+}
