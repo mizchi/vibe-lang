@@ -70,6 +70,7 @@ import @vibe/compiler/core {
   lookup_registry_builtin,
   rewrite_import_alias_stmt,
   subst_apply,
+  subst_bounds_for,
   trait_defined,
   trait_definition,
   trait_impl_declared_for_ctor,
@@ -84,7 +85,7 @@ import @vibe/compiler/checker/type_relations {
 }
 
 import ./checker_merge_capture_provenance.vibe {
-  call_callee_sites, type_is_erased_rethrow
+  call_callee_sites, formals_standing_for_var, type_is_erased_rethrow
 }
 
 import ./checker.vibe {
@@ -345,12 +346,13 @@ export fn push_error_strings(msgs: Array[String], errors: Array[String]) -> Unit
 export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Array[String]) -> Unit {
   let pairs = collect_subst_bounds_pairs(s)
   let n = Array::length(pairs)
+  let unsent: Array[(Int, String, String, Int)] = []
   let mut i = 0
   while i < n {
     let (vid, bounds) = Array::get(pairs, i)
     let resolved = subst_apply(s, CtVar(vid))
     match resolved {
-      CtVar(_) => (),
+      CtVar(rep) => note_unsent_formals(env, s, vid, rep, bounds, unsent),
       CtUnknown => (),
       _ => {
         let bn = Array::length(bounds)
@@ -405,7 +407,71 @@ export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], err
     }
     i = i + 1
   }
+  for entry in unsent {
+    let (_, spelled, bound, site_vid) = entry
+    let shown = trait_reference_display(bound)
+    let edit = String::concat("declare the bound on its binder: `[", String::concat(spelled, String::concat(": ", String::concat(shown, "]`"))))
+    let why = String::concat("` is a type parameter with no `Send` bound, so its callers are never asked for one and any value -- an `Array`, `Bytes`, a closure, a `mut` field -- would cross here; ", edit)
+    Array::push(errors, String::concat("no impl `", String::concat(shown, String::concat("` for `", String::concat(spelled, String::concat("`: `", String::concat(spelled, String::concat(why, bound_var_site_marker(site_vid)))))))))
+  }
   reset_bound_var_sites()
+}
+
+/// #3554: a bound that requires `Send` (`Send` itself, or a trait extending
+/// it) whose variable resolved to another VARIABLE used to be skipped as
+/// unresolved. Inside a generic body that variable can be a type parameter --
+/// formals are unification variables there -- and one with no `Send` bound of
+/// its own is not Send: `fn r[T](x: T) { need(x) }` with `fn need[U: Send]`
+/// let any `T` across, because `r`'s callers are never asked. Each such
+/// formal is recorded once, at the earliest call (pairs come newest first).
+fn note_unsent_formals(env: TypeEnv, s: Subst, vid: Int, rep: Int, bounds: Array[String], unsent: Array[(Int, String, String, Int)]) -> Unit {
+  let mut wanted = ""
+  for b in bounds {
+    if wanted == "" && bound_entails_send(env, b) {
+      wanted = b
+    } else {
+      ()
+    }
+  }
+  if wanted != "" {
+    for formal in formals_standing_for_var(rep, s) {
+      let (fvid, spelled) = formal
+      if !bounds_entail_send(env, subst_bounds_for(s, fvid)) {
+        let mut at = 0 - 1
+        let mut k = 0
+        while k < Array::length(unsent) {
+          let (uvid, _, _, _) = Array::get(unsent, k)
+          if uvid == fvid {
+            at = k
+          } else {
+            ()
+          }
+          k = k + 1
+        }
+        if at >= 0 {
+          Array::set(unsent, at, (fvid, spelled, wanted, vid))
+        } else {
+          Array::push(unsent, (fvid, spelled, wanted, vid))
+        }
+      } else {
+        ()
+      }
+    }
+  } else {
+    ()
+  }
+}
+
+fn bounds_entail_send(env: TypeEnv, bounds: Array[String]) -> Bool {
+  let mut found = false
+  for b in bounds {
+    if bound_entails_send(env, b) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
 }
 
 /// #1340 (ADR-0071): validate a generic-instantiation row item

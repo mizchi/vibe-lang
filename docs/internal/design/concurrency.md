@@ -443,9 +443,11 @@ Not Send:
 - closures;
 - a type with an unresolved type variable, even when every resolved part is
   `Send`: an unannotated `Result::Ok(1)` leaves `E` open and is refused;
-- a type parameter with no `Send` bound -- refused today where a spawned
-  closure captures it; inside its generic body it still satisfies a `T: Send`
-  bound (`Channel::bounded` included), which #3554 tracks;
+- a type parameter with no `Send` bound (nor one that extends `Send`) --
+  refused where a spawned closure captures it, and where its generic body
+  hands it to a `T: Send` bound (`Channel::bounded`, `TaskGroup::spawn`, a
+  program's own `[U: Send]`): its callers are never asked, so the message
+  names the bound to declare on its binder (`[T: Send]`);
 - any named type with no visible declaration -- host resources, opaque
   handles, and the builtin `Map`.
 

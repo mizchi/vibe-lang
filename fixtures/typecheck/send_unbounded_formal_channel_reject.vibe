@@ -1,0 +1,22 @@
+// #3554: inside a generic body, a type parameter with no `Send` bound used to
+// satisfy the `T: Send` that `Channel::bounded` asks for, so `relay`'s callers
+// were never asked and an `Array` crossed the channel. The bound belongs on
+// `relay`'s own binder.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle, Channel, Sender, Receiver
+}
+
+fn relay[T](x: T) -> Option[T] with Exception {
+  TaskGroup::run((g) -> {
+    let (tx, rx) = Channel::bounded(g, 1)
+    Sender::send(tx, x)
+    Receiver::recv(rx)
+  })
+}
+
+fn main() -> Int allows Exception {
+  match relay([1, 2, 3]) {
+    Some(xs) => Array::length(xs),
+    None => 0
+  }
+}
