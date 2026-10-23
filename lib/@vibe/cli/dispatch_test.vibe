@@ -33,6 +33,7 @@ import ../compiler {
   selfhost_cli_run_plan_args,
   selfhost_cli_test_plan_args,
   selfhost_cli_user_dispatch_args,
+  test_artifact_rel,
   user_dispatch_is_verb
 }
 
@@ -1145,6 +1146,51 @@ test "user test plan expands a directory to *_test.vibe files" {
   assert(String::starts_with(plan, "vibe-host-action-v1\nrun-tests\n"))
   assert(String::contains(plan, "/tmp/vibe_user_dispatch_test_plan_dir/cwd_test.vibe"))
   assert(!String::contains(plan, "/tmp/vibe_user_dispatch_test_plan_dir\t"))
+}
+
+// #3505: `vibe test ./a_test.vibe` and `vibe test .` died on
+// `fs_mkdir_p '<build>/test/.'`, because the artifact path was the source
+// spelling joined as written. Plain spellings keep the artifact they had.
+test "test_artifact_rel normalizes dot segments and keeps plain spellings" {
+  assert_eq(test_artifact_rel("a_test.vibe"), "a_test")
+  assert_eq(test_artifact_rel("sub/b_test.vibe"), "sub/b_test")
+  assert_eq(test_artifact_rel("/tmp/a_test.vibe"), "_abs/tmp/a_test")
+  assert_eq(test_artifact_rel("./a_test.vibe"), "a_test")
+  assert_eq(test_artifact_rel(".//a_test.vibe"), "a_test")
+  assert_eq(test_artifact_rel("./sub/b_test.vibe"), "sub/b_test")
+  assert_eq(test_artifact_rel("sub/./b_test.vibe"), "sub/b_test")
+  assert_eq(test_artifact_rel("/tmp/./x/a_test.vibe"), "_abs/tmp/x/a_test")
+  // `..` must not climb out of `<build>/test/`.
+  assert_eq(test_artifact_rel("../a_test.vibe"), "_up/a_test")
+  assert_eq(test_artifact_rel("../../../a_test.vibe"), "_up/_up/_up/a_test")
+  assert_eq(test_artifact_rel("sub/../a_test.vibe"), "sub/_up/a_test")
+}
+
+test "user test plan writes a normalized artifact path for dot and dot-dot spellings" {
+  let dir = "/tmp/vibe_user_dispatch_dot_dir"
+  Fs::mkdir_p(String::concat(dir, "/sub/_up"))
+  let body = string_to_bytes("test \"n\" {\n  assert_eq(1, 1)\n}\n")
+  Fs::write_bytes(String::concat(dir, "/dot_test.vibe"), body)
+  Fs::write_bytes(String::concat(dir, "/sub/_up/dot_test.vibe"), body)
+  let plan_path = "/tmp/vibe_user_dispatch_dot_plan.txt"
+  let status = selfhost_cli_test_plan_args([
+    "test",
+    "/tmp/vibe_user_dispatch_dot_dir/./dot_test.vibe",
+    "/tmp/vibe_user_dispatch_dot_dir/sub/../dot_test.vibe",
+    "/tmp/vibe_user_dispatch_dot_dir/sub/_up/dot_test.vibe"
+  ], plan_path)
+  assert(status == 0)
+  let plan = Fs::read_file(plan_path)
+  // The record keeps the source as spelled; only the artifact is normalized.
+  assert(String::contains(plan, "/./dot_test.vibe\t"))
+  assert(String::contains(plan, "/sub/../dot_test.vibe\t"))
+  assert(!String::contains(plan, "/./dot_test.wasm"))
+  assert(!String::contains(plan, "/../dot_test.wasm"))
+  assert(String::contains(plan, "/test/_abs/tmp/vibe_user_dispatch_dot_dir/dot_test.wasm\n"))
+  assert(String::contains(plan, "/test/_abs/tmp/vibe_user_dispatch_dot_dir/sub/_up/dot_test.wasm\n"))
+  // A real `sub/_up/` directory meets `sub/..` at one artifact; the later
+  // source gets its own instead of overwriting the earlier one's wasm.
+  assert(String::contains(plan, "/test/_abs/tmp/vibe_user_dispatch_dot_dir/sub/_up/dot_test~2.wasm\n"))
 }
 
 test "user compile parse defaults to the build-dir artifact" {

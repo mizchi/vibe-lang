@@ -4,6 +4,8 @@ import @vibe/compiler/core {
   Source,
   is_owned_head_source_candidate,
   is_owned_head_source_location,
+  nearest_vpkg_path_fs,
+  normalize_path,
   owned_head_source_candidates,
   owned_head_source_location,
   parse_vibe_lib_roots,
@@ -11,6 +13,35 @@ import @vibe/compiler/core {
 }
 
 //# Misc
+
+// #3505: a `..` that climbs above a RELATIVE path's start is kept. It used to
+// be dropped, so an entry spelled `../x_test.vibe` resolved its own
+// `import ./y.vibe` to `y.vibe` -- a different file, or a missing one.
+test "normalize_path keeps a leading .. on a relative path and drops it on an absolute one" {
+  assert_eq(normalize_path("a/./b//c.vibe"), "a/b/c.vibe")
+  assert_eq(normalize_path("./a.vibe"), "a.vibe")
+  assert_eq(normalize_path("a/../b.vibe"), "b.vibe")
+  assert_eq(normalize_path("../y.vibe"), "../y.vibe")
+  assert_eq(normalize_path("../sub/./y.vibe"), "../sub/y.vibe")
+  assert_eq(normalize_path("../../a/../y.vibe"), "../../y.vibe")
+  assert_eq(normalize_path("a/../../y.vibe"), "../y.vibe")
+  assert_eq(normalize_path("/../y.vibe"), "/y.vibe")
+  assert_eq(normalize_path("/a/../../y.vibe"), "/y.vibe")
+}
+
+// #3505: the owner of `./pkg/x_test.vibe` must be the same contract path as
+// the owner of the normalized `pkg/y.vibe` it imports. The two strings
+// differed, and the import was refused as a package-boundary crossing.
+test "nearest_vpkg_path_fs answers one owner for every spelling of a path" {
+  let root = "/tmp/vibe_nearest_vpkg_dot_test"
+  Fs::mkdir_p(String::concat(root, "/pkg/sub"))
+  Fs::write_file(String::concat(root, "/pkg/index.vpkg"), "name = @local/pkg\n")
+  let want = String::concat(root, "/pkg/index.vpkg")
+  assert_eq(nearest_vpkg_path_fs(String::concat(root, "/pkg/y.vibe")), want)
+  assert_eq(nearest_vpkg_path_fs(String::concat(root, "/pkg/./y.vibe")), want)
+  assert_eq(nearest_vpkg_path_fs(String::concat(root, "/pkg/sub/../y.vibe")), want)
+  assert_eq(nearest_vpkg_path_fs(String::concat(root, "/./pkg/sub/x.vibe")), want)
+}
 
 test "parse_vibe_lib_roots: VIBE_LIB wins and splits on ':' (#751)" {
   let roots = parse_vibe_lib_roots("/a/lib:/b/vendor/", "/home/u/.vibe", "/home/u")

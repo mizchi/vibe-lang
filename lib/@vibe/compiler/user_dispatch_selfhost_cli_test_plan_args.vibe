@@ -1290,6 +1290,80 @@ export fn selfhost_cli_user_run_args(args: Array[String]) -> Int with Exception 
   selfhost_cli_run_plan_args(args, Env::get("VIBE_HOST_ACTION_OUT"))
 }
 
+/// Where `vibe test` puts the artifact for `src`, relative to
+/// `<build>/test/` and without the `.wasm` suffix (#3505).
+///
+/// The source spelling is NOT a usable artifact path as written. `./a_test.vibe`
+/// (and every path `vibe test .` expands to) produced
+/// `<build>/test/./a_test.wasm`, whose parent `<build>/test/.` the host's
+/// `mkdir_p` cannot create on a fresh build directory, so the run died with a
+/// wasm backtrace; `sub/./b_test.vibe` and `.//a_test.vibe` did the same. A
+/// `..` segment escaped the test directory instead: `../../../a_test.vibe`
+/// wrote its wasm into the project tree.
+///
+/// So the stem is split on `/`: empty and `.` segments are dropped, a `..`
+/// segment becomes `_up` (resolving it against the previous segment would make
+/// `link/../x` and `x` share an artifact even when `link` is a symlink), and an
+/// absolute source lives under `_abs/`, as it always has. Plain relative
+/// spellings map exactly as before.
+export fn test_artifact_rel(src: String) -> String {
+  let parts = String::split(strip_vibe_suffix(src), "/")
+  let acc = StringBuilder::new()
+  if path_is_absolute(src) {
+    StringBuilder::push(acc, "_abs")
+  } else {
+    ()
+  }
+  let mut first = !path_is_absolute(src)
+  let mut i = 0
+  while i < Array::length(parts) {
+    let seg = Array::get(parts, i)
+    if seg == "" || seg == "." {
+      ()
+    } else {
+      if first {
+        first = false
+      } else {
+        StringBuilder::push(acc, "/")
+      }
+      if seg == ".." {
+        StringBuilder::push(acc, "_up")
+      } else {
+        StringBuilder::push(acc, seg)
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+/// The artifact path for the `index`-th source of one `vibe test` invocation.
+/// Two DIFFERENT spellings can still meet at one artifact (`../a_test.vibe` and
+/// a real `_up/a_test.vibe`, or `/tmp/a_test.vibe` and `_abs/tmp/a_test.vibe`),
+/// and then the second compile overwrote the first before either ran -- one
+/// file's tests reported under the other's name. A later collision gets the
+/// source's index as a suffix instead. The same spelling twice is the same
+/// file, so it keeps the shared artifact.
+fn test_artifact_out(build_dir: String, src: String, index: Int, seen_srcs: Array[String], seen_outs: Array[String]) -> String {
+  let base = String::concat(build_dir, String::concat("/test/", test_artifact_rel(src)))
+  let plain = String::concat(base, ".wasm")
+  let mut clash = false
+  let mut j = 0
+  while j < Array::length(seen_outs) {
+    if Array::get(seen_outs, j) == plain && Array::get(seen_srcs, j) != src {
+      clash = true
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  if clash {
+    String::concat(base, String::concat("~", String::concat(__to_string(index), ".wasm")))
+  } else {
+    plain
+  }
+}
+
 export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env + Stderr {
   let mut update = false
   let mut no_cache = false
@@ -1336,19 +1410,19 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
     // Line 5: how many files the host may run concurrently (`--jobs N`).
     StringBuilder::push(acc, __to_string(jobs))
     StringBuilder::push(acc, "\n")
+    let seen_srcs: Array[String] = []
+    let seen_outs: Array[String] = []
     let mut fi = 0
     while fi < Array::length(expanded) {
       let src = Array::get(expanded, fi)
       // An absolute source lives under `test/_abs/...`: with `/tmp/a_test.vibe`
       // and a project-relative `tmp/a_test.vibe` in one invocation, the plain
       // join gave both the same artifact path and the second compile
-      // overwrote the first before either ran (Codex review of #2858).
-      let artifact_rel = if path_is_absolute(src) {
-        String::concat("_abs", strip_vibe_suffix(src))
-      } else {
-        strip_vibe_suffix(src)
-      }
-      let out = String::concat(default_build_dir(), String::concat("/test/", String::concat(artifact_rel, ".wasm")))
+      // overwrote the first before either ran (Codex review of #2858). `.`
+      // and `..` segments are normalized away (#3505, `test_artifact_rel`).
+      let out = test_artifact_out(default_build_dir(), src, fi, seen_srcs, seen_outs)
+      Array::push(seen_srcs, src)
+      Array::push(seen_outs, out)
       let meta = String::concat(out, ".testmeta")
       ensure_parent_dir(out)
       // A file that does not compile is one FAILED record, not the end of the

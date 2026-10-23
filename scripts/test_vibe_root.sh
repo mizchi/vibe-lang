@@ -338,6 +338,60 @@ else
 fi
 pass "vibe grep --file-list=/--resume-out resolve against the invoking directory; a missing entry AND a missing list file are named; CRLF lists work; --list-files round-trips into --file-list"
 
+# --- 4d. dot spellings of a test path (#3505) --------------------------------
+# `./a_test.vibe` names the same file as `a_test.vibe`, and every path `vibe
+# test .` expands to starts with `./`. The artifact path used to be the source
+# spelling joined as written, so a fresh build directory died on
+# `fs_mkdir_p '<build>/test/.'` (a wasm backtrace, no test run), and a `..`
+# wrote the wasm outside <build>/test/ -- `../../../a_test.vibe` into the
+# project tree itself. Each case starts from an EMPTY build directory: an
+# existing `<build>/test/` let `mkdir_p` succeed and hid the crash.
+#
+# The files IMPORT, because the compiler mishandled the same spellings too:
+# an entry `./pkg/c_test.vibe` and its `import ./h.vibe` (resolved to the
+# normalized `pkg/h.vibe`) answered two different owner strings for one
+# index.vpkg, so the import was refused as a package-boundary crossing -- which
+# is what `vibe test .` does to every test in a package. And an entry
+# `../a_test.vibe` resolved `import ./helper.vibe` to `helper.vibe`, because a
+# `..` above the start of a relative path was dropped.
+dots="$WORK/dots"
+mkdir -p "$dots/sub" "$dots/pkg"
+printf 'export fn one() -> Int {\n  1\n}\n' > "$dots/helper.vibe"
+printf 'import ./helper.vibe { one }\ntest "a" {\n  assert(one() == 1)\n}\n' > "$dots/a_test.vibe"
+printf 'test "b" {\n  assert(true)\n}\n' > "$dots/sub/b_test.vibe"
+printf 'name = @local/pkg\nversion = 0.1.0\ndescription =\n  #|dot-path package\ndeps = {}\n\ngenerated_hash =\n' > "$dots/pkg/index.vpkg"
+printf 'export fn two() -> Int {\n  2\n}\n' > "$dots/pkg/h.vibe"
+printf 'import ./h.vibe { two }\ntest "c" {\n  assert(two() == 2)\n}\n' > "$dots/pkg/c_test.vibe"
+dot_case() {
+  local where="$1" want_files="$2" want_artifact="$3"; shift 3
+  rm -rf "$dots/.vibe" "$dots/sub/.vibe" "$dots/pkg/.vibe"
+  got="$(cd "$where" && vibe test "$@" 2>&1)" || fail "vibe test $* (from ${where#"$WORK"/}) failed: $got"
+  case "$got" in *"wasm backtrace"*) fail "vibe test $* trapped: $got" ;; esac
+  case "$got" in *"[vibe-test] $want_files passed, 0 failed ($want_files files"*) ;;
+    *) fail "vibe test $* (from ${where#"$WORK"/}): expected $want_files passing files, got: $got" ;; esac
+  [ -s "$want_artifact" ] || fail "vibe test $*: no artifact at ${want_artifact#"$WORK"/}; found: $(find "$dots" -name '*.wasm' | tr '\n' ' ')"
+  local stray
+  stray="$(find "$dots" -name '*.wasm' ! -path '*/.vibe/build/test/*' | tr '\n' ' ')"
+  [ -z "$stray" ] || fail "vibe test $* wrote a wasm outside <build>/test/: $stray"
+}
+dot_case "$dots" 1 "$dots/.vibe/build/test/a_test.wasm" a_test.vibe
+dot_case "$dots" 1 "$dots/.vibe/build/test/a_test.wasm" ./a_test.vibe
+dot_case "$dots" 1 "$dots/.vibe/build/test/a_test.wasm" .//a_test.vibe
+dot_case "$dots" 1 "$dots/.vibe/build/test/sub/b_test.wasm" sub/./b_test.vibe
+dot_case "$dots" 1 "$dots/.vibe/build/test/sub/b_test.wasm" ./sub/
+dot_case "$dots" 1 "$dots/.vibe/build/test/pkg/c_test.wasm" ./pkg/c_test.vibe
+dot_case "$dots" 1 "$dots/.vibe/build/test/pkg/c_test.wasm" ./pkg
+dot_case "$dots" 3 "$dots/.vibe/build/test/pkg/c_test.wasm" .
+dot_case "$dots" 3 "$dots/.vibe/build/test/a_test.wasm" ./
+dot_case "$dots" 1 "$dots/.vibe/build/test/_abs$dots/a_test.wasm" "$dots/./a_test.vibe"
+dot_case "$dots/pkg" 1 "$dots/pkg/.vibe/build/test/c_test.wasm" ./c_test.vibe
+dot_case "$dots/pkg" 1 "$dots/pkg/.vibe/build/test/c_test.wasm" .
+dot_case "$dots/sub" 1 "$dots/sub/.vibe/build/test/_up/a_test.wasm" ../a_test.vibe
+dot_case "$dots/sub" 1 "$dots/sub/.vibe/build/test/_up/pkg/c_test.wasm" ../pkg/c_test.vibe
+dot_case "$dots/sub" 3 "$dots/sub/.vibe/build/test/_up/sub/b_test.wasm" ..
+dot_case "$dots/sub" 3 "$dots/sub/.vibe/build/test/_up/a_test.wasm" ../
+pass "vibe test accepts ./, ., ../, .., a trailing / and an absolute path, imports included; artifacts stay under <build>/test/"
+
 # --- 5. vibe clean ----------------------------------------------------------
 mkdir -p "$app/.vibe/store/@x/y"
 got="$(cd "$app/sub" && vibe clean)"

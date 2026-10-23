@@ -22,6 +22,32 @@ fi
 
 echo "[vibe-test-smoke] ok (pass-file=0, fail-file!=0)"
 
+# #3505: a `./`-spelled path (and every path `find ./dir` prints) flattened to
+# a result file starting with `.`, which the summary's `*.res` glob skipped: a
+# failing `./fail_test.vibe` printed FAIL, then `0 passed, 0 failed` and exit
+# 0. The summary line is asserted too, so a dropped result cannot hide behind a
+# right exit code.
+work_rel="${WORK#"$ROOT_DIR"/}"
+assert_dot_spelling() {
+  local want_rc="$1" want_summary="$2" out rc; shift 2
+  out="$WORK/dot_spelling.out"
+  set +e
+  VIBE_TEST_QUIET_COMPILER_NOTE=1 bash "$ROOT_DIR/scripts/vibe_test.sh" "$@" >"$out" 2>&1
+  rc=$?
+  set -e
+  if { [ "$want_rc" = 0 ] && [ "$rc" -ne 0 ]; } || { [ "$want_rc" != 0 ] && [ "$rc" -eq 0 ]; } \
+     || ! grep -qF "$want_summary" "$out"; then
+    echo "[vibe-test-smoke] FAIL: vibe_test.sh $* -- expected exit ${want_rc/1/non-zero} and '$want_summary', got exit $rc:" >&2
+    cat "$out" >&2
+    exit 1
+  fi
+}
+assert_dot_spelling 1 "[vibe-test] 0 passed, 1 failed (1 files" "./$work_rel/fail_test.vibe"
+assert_dot_spelling 1 "[vibe-test] 0 passed, 1 failed (1 files" "$work_rel/./fail_test.vibe"
+assert_dot_spelling 0 "[vibe-test] 1 passed, 0 failed (1 files, 2 tests)" "./$work_rel/pass_test.vibe"
+assert_dot_spelling 1 "[vibe-test] 1 passed, 1 failed (2 files" "./$work_rel"
+echo "[vibe-test-smoke] ok (./ and /./ spellings keep their results, #3505)"
+
 # #2153: coverage success means this invocation wrote a report. Simulate a
 # compiler and runner that both return success without writing their outputs;
 # a stale report from an earlier run must be removed and cannot satisfy the
