@@ -16,6 +16,10 @@ import @vibe/core {
   struct MutMap, struct MutSet
 }
 
+import ./evidence_fn_statement_index.vibe {
+  edp_indexed_params_of_fn
+}
+
 import ./evidence_returned_scan_expr.vibe {
   edp_row_mentions_any
 }
@@ -172,7 +176,7 @@ fn edp_result_alias_tuple(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] 
 /// `te` with each parameter in `names` replaced by the matching `args`. A
 /// function type whose row mentions a parameter becomes `TyUnit`, so it gives
 /// no slot: its row is known only at an instantiation this pass cannot read.
-fn edp_type_expr_subst(te: TypeExpr, names: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+export fn edp_type_expr_subst(te: TypeExpr, names: Array[String], args: Array[TypeExpr]) -> TypeExpr {
   match te {
     TyName(n) => {
       let mut out = te
@@ -745,7 +749,7 @@ export fn edp_declared_value_has_row(value: Expr, slot: Int, stmts: Array[Stmt],
 }
 
 /// The slot the field `fname` of `sname` declares, its row as written.
-fn edp_field_slot_declared(sname: String, fname: String) -> Option[(Int, String)] {
+export fn edp_field_slot_declared(sname: String, fname: String) -> Option[(Int, String)] {
   let mut out: Option[(Int, String)] = None
   if Array::length(edp_row_field_structs) > 0 {
     match MutMap::get(Array::get(edp_row_field_structs, 0), sname) {
@@ -875,7 +879,7 @@ export fn edp_slot_wrapper(name: String, arity: Int, row: String) -> Expr {
 }
 
 // Rows contain source tokens, whereas kinded binders use encoded AST keys.
-fn edp_unkeyed_tparams(params: Array[String]) -> Array[String] {
+export fn edp_unkeyed_tparams(params: Array[String]) -> Array[String] {
   let mut keyed = false
   for param in params {
     if type_param_name(param) != param {
@@ -889,4 +893,68 @@ fn edp_unkeyed_tparams(params: Array[String]) -> Array[String] {
   } else {
     params
   }
+}
+
+/// The arity and row of the function type a top-level function's parameter
+/// `pos` declares, when that type carries a row.
+export fn edp_slot_fn_type(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], callee: String, pos: Int) -> Option[(Int, String)] {
+  match edp_indexed_params_of_fn(stmts, fn_index, callee) {
+    Some(params) => if pos < Array::length(params) {
+      let (_, pty) = Array::get(params, pos)
+      match pty {
+        Some(TyFn(ptys, _, Some(row))) => if edp_slot_row_stampable(row) {
+          Some((Array::length(ptys), row))
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+/// The row a top-level function's parameter `pos` declares on its function
+/// type, or None.
+export fn edp_slot_row(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], callee: String, pos: Int) -> Option[String] {
+  match edp_indexed_params_of_fn(stmts, fn_index, callee) {
+    Some(params) => if pos < Array::length(params) {
+      let (_, pty) = Array::get(params, pos)
+      match pty {
+        Some(TyFn(_, _, Some(row))) => if edp_slot_row_stampable(row) {
+          Some(row)
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+/// Record convention proofs are unnecessary when no field declares a row.
+export fn edp_has_row_fields() -> Bool {
+  Array::length(edp_row_field_structs) > 0 && MutMap::size(Array::get(edp_row_field_structs, 0)) > 0
+}
+
+// A type ascription changes the type view, never the value's origin or ABI.
+export fn edp_identity_value(value: Expr) -> Expr {
+  let mut current = value
+  let mut done = false
+  while !done {
+    match current {
+      ECall(EFn(_, _, params, _, _, body), args, _, _) => if Array::length(args) == 1 && edp_is_identity_ascription(params, body) {
+        current = Array::get(args, 0)
+      } else {
+        done = true
+      },
+      _ => done = true
+    }
+  }
+  current
 }

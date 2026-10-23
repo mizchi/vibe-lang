@@ -1,0 +1,233 @@
+// Nominal record views used only to prove a projected callback's convention.
+// A view is captured at its lexical binding slot, so aliases survive shadowing.
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+import ./evidence_declared_slots.vibe {
+  edp_field_slot_declared, edp_has_row_fields, edp_type_expr_subst, edp_unkeyed_tparams
+}
+import ./evidence_slot_refusals.vibe {
+  edp_parameter_type
+}
+import ./evidence_scan_view_expr.vibe {
+  edp_scope_last_index
+}
+import @vibe/compiler/lowering/effects/queries {
+  edp_is_identity_ascription
+}
+
+let edp_record_views: Array[(Int, TypeExpr, Bool)] = []
+
+export fn edp_record_views_reset() -> Unit {
+  Array::truncate(edp_record_views, 0)
+}
+
+export fn edp_drop_record_views(mark: Int) -> Unit {
+  Array::truncate(edp_record_views, mark)
+}
+
+export fn edp_bind_record_view(slot: Int, value: Expr, scope: Array[String], stmts: Array[Stmt]) -> Int {
+  let mark = Array::length(edp_record_views)
+  if edp_has_row_fields() {
+    match edp_record_value_view(value, scope, stmts, 32) {
+      Some((ty, factory)) => Array::push(edp_record_views, (slot, ty, factory)),
+      None => ()
+    }
+  }
+  mark
+}
+
+// Resolve aliases to a nominal record, or a function's declared record result.
+// Fuel bounds alias cycles and recursive global initializers.
+fn edp_record_type_view(ty: TypeExpr, stmts: Array[Stmt], fuel: Int) -> Option[(TypeExpr, Bool)] {
+  if fuel <= 0 {
+    return None
+  }
+  match ty {
+    TyFn(_, result, _) => match edp_record_type_view(result, stmts, fuel - 1) {
+      Some((record, false)) => Some((record, true)),
+      _ => None
+    },
+    _ => {
+      let (head, args) = match ty {
+        TyName(n) => (n, []),
+        TyApp(n, ts) => (n, ts),
+        _ => ("", [])
+      }
+      if head == "" {
+        return None
+      }
+      let mut out: Option[(TypeExpr, Bool)] = None
+      for st in stmts {
+        match st {
+          SStruct(_, n, _, _, _, _) => if n == head {
+            out = Some((ty, false))
+          },
+          STypeAlias(_, n, names, body) => if n == head && Array::length(names) == Array::length(args) {
+            out = edp_record_type_view(edp_type_expr_subst(body, edp_unkeyed_tparams(names), args), stmts, fuel - 1)
+          },
+          _ => ()
+        }
+      }
+      out
+    }
+  }
+}
+
+fn edp_record_field_type(ty: TypeExpr, field: String, stmts: Array[Stmt]) -> Option[TypeExpr] {
+  let (head, args) = match ty {
+    TyName(n) => (n, []),
+    TyApp(n, ts) => (n, ts),
+    _ => ("", [])
+  }
+  let mut out: Option[TypeExpr] = None
+  for st in stmts {
+    match st {
+      SStruct(_, n, fields, _, _, names) => if n == head {
+        for item in fields {
+          if item.0 == field && Array::length(names) == Array::length(args) {
+            out = Some(edp_type_expr_subst(item.1, edp_unkeyed_tparams(names), args))
+          }
+        }
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+fn edp_record_annotated_view(ann: Option[TypeExpr], value: Expr, scope: Array[String], stmts: Array[Stmt], fuel: Int) -> Option[(TypeExpr, Bool)] {
+  let declared = match ann {
+    Some(ty) => edp_record_type_view(ty, stmts, fuel),
+    None => None
+  }
+  match declared {
+    Some(_) => declared,
+    None => edp_record_value_view(value, scope, stmts, fuel)
+  }
+}
+
+fn edp_record_value_view(value: Expr, scope: Array[String], stmts: Array[Stmt], fuel: Int) -> Option[(TypeExpr, Bool)] {
+  if fuel <= 0 {
+    return None
+  }
+  match value {
+    ERecord(n, _, args) => edp_record_type_view(TyApp(n, args), stmts, fuel - 1),
+    EIdent(n, _) => {
+      let slot = edp_scope_last_index(scope, n)
+      let mut out: Option[(TypeExpr, Bool)] = None
+      if slot >= 0 {
+        for item in edp_record_views {
+          if item.0 == slot {
+            out = Some((item.1, item.2))
+          }
+        }
+        match out {
+          Some(_) => out,
+          None => match edp_parameter_type(slot) {
+            Some(ty) => edp_record_type_view(ty, stmts, fuel - 1),
+            None => None
+          }
+        }
+      } else {
+        // A global initializer has its own scope, never the reader's locals.
+        for st in stmts {
+          match st {
+            SLet(_, _, name, ann, expr) => if name == n {
+              out = edp_record_annotated_view(ann, expr, [], stmts, fuel - 1)
+            },
+            SLetMut(name, ann, expr) => if name == n {
+              out = edp_record_annotated_view(ann, expr, [], stmts, fuel - 1)
+            },
+            _ => ()
+          }
+        }
+        out
+      }
+    },
+    EFn(_, _, _, Some(result), _, _) => match edp_record_type_view(result, stmts, fuel - 1) {
+      Some((ty, false)) => Some((ty, true)),
+      _ => None
+    },
+    ECall(callee, args, _, _) => {
+      let ann = match callee {
+        EFn(_, _, params, _, _, body) => if Array::length(args) == 1 && edp_is_identity_ascription(params, body) {
+          Array::get(params, 0).1
+        } else {
+          None
+        },
+        _ => None
+      }
+      match ann {
+        Some(_) => edp_record_annotated_view(ann, Array::get(args, 0), scope, stmts, fuel - 1),
+        None => match edp_record_value_view(callee, scope, stmts, fuel - 1) {
+          Some((ty, true)) => Some((ty, false)),
+          _ => None
+        }
+      }
+    },
+    EDot(object, field, _, _) => match edp_record_value_view(object, scope, stmts, fuel - 1) {
+      Some((ty, false)) => match edp_record_field_type(ty, field, stmts) {
+        Some(field_ty) => edp_record_type_view(field_ty, stmts, fuel - 1),
+        None => None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
+// 1: declared row, 0: declared row-free callback, -1: no usable record view.
+export fn edp_projection_row_kind(object: Expr, field: String, scope: Array[String], stmts: Array[Stmt]) -> Int {
+  match edp_record_value_view(object, scope, stmts, 32) {
+    Some((ty, false)) => {
+      let head = match ty {
+        TyName(n) => n,
+        TyApp(n, _) => n,
+        _ => ""
+      }
+      match edp_field_slot_declared(head, field) {
+        Some(_) => 1,
+        None => match edp_record_field_type(ty, field, stmts) {
+          Some(field_ty) => if edp_record_row_free_type(field_ty, stmts, 32) {
+            0
+          } else {
+            -1
+          },
+          None => -1
+        }
+      }
+    },
+    _ => -1
+  }
+}
+
+// A missing view is not evidence of a row-free function. Follow only declared
+// aliases, and stop at a concrete function type with no effect annotation.
+fn edp_record_row_free_type(ty: TypeExpr, stmts: Array[Stmt], fuel: Int) -> Bool {
+  if fuel <= 0 {
+    return false
+  }
+  match ty {
+    TyFn(_, _, None) => true,
+    _ => {
+      let (head, args) = match ty {
+        TyName(n) => (n, []),
+        TyApp(n, xs) => (n, xs),
+        _ => ("", [])
+      }
+      let mut found = false
+      if head != "" {
+        for st in stmts {
+          match st {
+            STypeAlias(_, n, names, body) => if n == head && Array::length(names) == Array::length(args) {
+              found = edp_record_row_free_type(edp_type_expr_subst(body, edp_unkeyed_tparams(names), args), stmts, fuel - 1)
+            },
+            _ => ()
+          }
+        }
+      }
+      found
+    }
+  }
+}

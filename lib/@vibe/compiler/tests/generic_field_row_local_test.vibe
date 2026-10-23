@@ -121,3 +121,163 @@ test "a declared local factory result preserves the callback row" {
 test "a factory parameter's declared result preserves the callback row" {
   local_field_run_source("factory-param", local_field_source("let make=()->(()->Int with Box[String]){()->1};println(\"\\{wrap(make)}\")") + "fn wrap(make:()->(()->Int with Box[String]))->Int{let h=Holder::{f:make()};drive(h.f)}", "1\n")
 }
+
+test "projected callback convention: field-copy" {
+  local_field_run_source("field-copy", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let a=Holder[String]::{f:()->1};let b=Holder::{f:a.f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "projected callback convention: record-alias-copy" {
+  local_field_run_source("record-alias-copy", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let a=Holder[String]::{f:()->1};let alias=a;let b=Holder::{f:alias.f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "projected callback convention: alias-before-shadow" {
+  local_field_run_source("alias-before-shadow", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let a=Holder[String]::{f:()->1};let alias=a;let a=Raw::{f:()->2};let b=Holder::{f:alias.f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "projected callback convention: annotated-record-alias" {
+  local_field_run_source("annotated-record-alias", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} type H=Holder[String] fn main()->Unit allows Console{let a:H=Holder::{f:()->1};let b=Holder::{f:a.f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "projected callback convention: record-parameter-copy" {
+  local_field_run_source("record-parameter-copy", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn copy(a:Holder[String])->Int{let b=Holder::{f:a.f};drive(b.f)} fn main()->Unit allows Console{let a=Holder[String]::{f:()->1};println(\"\\{copy(a)}\")}", "1\n")
+}
+
+test "projected callback convention: global-record-copy" {
+  local_field_run_source("global-record-copy", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} let top:Holder[String]=Holder::{f:()->1}; fn main()->Unit allows Console{let b=Holder::{f:top.f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "projected callback convention: literal-projection" {
+  local_field_run_source("literal-projection", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let b=Holder::{f:Holder[String]::{f:()->1}.f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "projected callback convention: nested-projection" {
+  local_field_run_source("nested-projection", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Outer{inner:Holder[String]} fn main()->Unit allows Console{let a=Outer::{inner:Holder[String]::{f:()->1}};let b=Holder::{f:a.inner.f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "projected callback convention: shadowed-row-free-record" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let a=Holder[String]::{f:()->1};let a=Raw::{f:()->1};let b=Holder::{f:a.f};println(\"\\{drive(b.f)}\")}", lane)
+      "compiled without a projected row proof"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "write the type arguments of `Holder`"))
+  }
+  ()
+}
+
+test "projected callback convention: row-free-field-copy" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let a=Raw::{f:()->1};let b=Holder::{f:a.f};println(\"\\{drive(b.f)}\")}", lane)
+      "compiled without a projected row proof"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "write the type arguments of `Holder`"))
+  }
+  ()
+}
+
+test "projected callback convention: global-factory" {
+  local_field_run_source("global-factory", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn make()->Holder[String]{Holder[String]::{f:()->1}} fn main()->Unit allows Console{let b=Holder::{f:make().f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "projected callback convention: local-factory" {
+  local_field_run_source("local-factory", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let make=()->Holder[String]{Holder[String]::{f:()->1}};let alias=make;let b=Holder::{f:alias().f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "projected callback convention: record-factory-param" {
+  local_field_run_source("record-factory-param", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn copy(make:()->Holder[String])->Int{let b=Holder::{f:make().f};drive(b.f)} fn main()->Unit allows Console{println(\"\\{copy(()->Holder[String]{Holder[String]::{f:()->1}})}\")}", "1\n")
+}
+
+test "projected callback convention: nested-alias" {
+  local_field_run_source("nested-alias", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} type H=Holder[String] struct Outer{inner:H} fn main()->Unit allows Console{let a=Outer::{inner:Holder[String]::{f:()->1}};let b=Holder::{f:a.inner.f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "projected callback convention: receiver-annotated-alias" {
+  local_field_run_source("receiver-annotated-alias", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} type H=Holder[String] fn main()->Unit allows Console{let a=Holder[String]::{f:()->1};let alias:H=a;let b=Holder::{f:alias.f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "projected callback convention: written-row-free-source" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let a=Raw::{f:()->1};let b=Holder[String]::{f:a.f};println(\"\\{drive(b.f)}\")}", lane)
+      "compiled without a projected row proof"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "declare the source field `f`"))
+  }
+  ()
+}
+
+test "projected callback convention: annotated-row-free-source" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let a=Raw::{f:()->1};let b:Holder[String]=Holder::{f:a.f};println(\"\\{drive(b.f)}\")}", lane)
+      "compiled without a projected row proof"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "declare the source field `f`"))
+  }
+  ()
+}
+
+test "projected callback convention: declared-source-row-edit" {
+  local_field_run_source("declared-source-row-edit", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int with Box[String]} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let a=Raw::{f:()->1};let b=Holder[String]::{f:a.f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "projected callback convention: no-record-rowful-alias" {
+  local_field_run_source("no-record-rowful-alias", "effect Box[T]{Put(T)->Unit} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let n=1;let g=()->Int with Box[String]{perform Box::Put(\"y\");n};let alias=g;println(\"\\{drive(alias)}\")}", "1\n")
+}
+
+test "an unused callback parameter does not require adapting its argument" {
+  local_field_run_source("unused-row-slot-param", "effect Ask{Get()->Int} fn slot(f:()->Int with Ask)->Int with Ask{1} fn wrap(g:()->Int)->Int with Ask{slot(g)} fn main()->Unit allows Console{println(\"\\{handle{perform Ask::Get();wrap(()->1)}with{Ask::Get()=>resume(2)}}\")}", "1\n")
+}
+
+test "callback alias convention: row-free-projection-alias" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let a=Raw::{f:()->1};let cb=a.f;let b=Holder[String]::{f:cb};println(\"\\{drive(b.f)}\")}", lane)
+      "compiled without the original callback convention"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "original definition"))
+  }
+  ()
+}
+
+test "callback alias convention: row-free-projection-alias-chain" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let a=Raw::{f:()->1};let cb=a.f;let alias=cb;let a=Holder[String]::{f:()->2};let b=Holder[String]::{f:alias};println(\"\\{drive(b.f)}\")}", lane)
+      "compiled without the original callback convention"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "original definition"))
+  }
+  ()
+}
+
+test "callback alias convention: ascribed-row-free-projection-alias" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let a=Raw::{f:()->1};let cb:()->Int=a.f;let b=Holder[String]::{f:cb};println(\"\\{drive(b.f)}\")}", lane)
+      "compiled without the original callback convention"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "original definition"))
+  }
+  ()
+}
+
+test "callback alias convention: rowful-projection-alias" {
+  local_field_run_source("rowful-projection-alias", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let a=Holder[String]::{f:()->1};let cb:()->Int with Box[String]=a.f;let alias=cb;let b=Holder::{f:alias};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "callback alias convention: no-record-row-free-alias" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let g=()->1;let alias=g;println(\"\\{drive(alias)}\")}", lane)
+      "compiled without the original callback convention"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "original definition"))
+  }
+  ()
+}
+
+test "callback alias convention: unused-no-record-alias" {
+  local_field_run_source("unused-no-record-alias", "effect Box[T]{Put(T)->Unit} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");1}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let g=()->1;let alias=g;println(\"\\{drive(alias)}\")}", "1\n")
+}

@@ -57,6 +57,7 @@ import ./evidence_slot_refusals.vibe {
   edp_callee_param_used,
   edp_drop_params_from,
   edp_expr_passes_value_to_slot,
+  edp_field_site_prefix,
   edp_fn_result_has_row,
   edp_join_and,
   edp_note_params,
@@ -65,6 +66,7 @@ import ./evidence_slot_refusals.vibe {
   edp_refuse_rowless_local_field,
   edp_refuse_rowless_method_result,
   edp_refuse_rowless_param,
+  edp_refuse_rowless_projection,
   edp_refuse_rowless_result,
   edp_refuse_tail_calls,
   edp_refuse_uncopied_literal,
@@ -94,6 +96,8 @@ import ./evidence_declared_slots.vibe {
   edp_field_literal_pending,
   edp_field_slot,
   edp_field_slot_callee,
+  edp_has_row_fields,
+  edp_identity_value,
   edp_local_alias_mark,
   edp_note_field_literal,
   edp_note_local_alias,
@@ -104,8 +108,14 @@ import ./evidence_declared_slots.vibe {
   edp_result_slot,
   edp_rows_agree,
   edp_settle_field_literal,
+  edp_slot_fn_type,
+  edp_slot_row,
   edp_slot_wrapper,
   edp_tuple_result_types
+}
+
+import ./evidence_record_views.vibe {
+  edp_bind_record_view, edp_drop_record_views, edp_projection_row_kind, edp_record_views_reset
 }
 
 /// Any top-level fn with a row-E-typed parameter?
@@ -232,6 +242,7 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
   Array::push(edp_snap_program, (stmts, fn_defs))
   edp_note_program_aliases(stmts)
   edp_note_row_field_structs(stmts)
+  edp_record_views_reset()
   edp_slot_refusals_reset()
   let slot_callees = edp_slot_callee_names(stmts, fn_defs)
   edp_note_slot_methods(slot_callees)
@@ -1384,48 +1395,7 @@ fn edp_local_lit_at(name: String, slot: Int) -> Option[Expr] {
   }
 }
 
-/// The arity and row of the function type a top-level function's parameter
-/// `pos` declares, when that type carries a row.
-fn edp_slot_fn_type(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], callee: String, pos: Int) -> Option[(Int, String)] {
-  match edp_indexed_params_of_fn(stmts, fn_index, callee) {
-    Some(params) => if pos < Array::length(params) {
-      let (_, pty) = Array::get(params, pos)
-      match pty {
-        Some(TyFn(ptys, _, Some(row))) => if edp_slot_row_stampable(row) {
-          Some((Array::length(ptys), row))
-        } else {
-          None
-        },
-        _ => None
-      }
-    } else {
-      None
-    },
-    None => None
-  }
-}
-
-/// The row a top-level function's parameter `pos` declares on its function
-/// type, or None.
-fn edp_slot_row(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], callee: String, pos: Int) -> Option[String] {
-  match edp_indexed_params_of_fn(stmts, fn_index, callee) {
-    Some(params) => if pos < Array::length(params) {
-      let (_, pty) = Array::get(params, pos)
-      match pty {
-        Some(TyFn(_, _, Some(row))) => if edp_slot_row_stampable(row) {
-          Some(row)
-        } else {
-          None
-        },
-        _ => None
-      }
-    } else {
-      None
-    },
-    None => None
-  }
-}
-
+/// Stamp callback slots while retaining lexical bindings and value provenance.
 fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], scope: Array[String], pure_names: MutSet[String]) -> Expr {
   match e {
     ECall(callee, args, off, res) => match edp_alias_ascribed_literal(callee, args, stmts, scope) {
@@ -1467,9 +1437,11 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[In
       // (`edp_local_slot_fn_type`, #3416), whether or not it has a row.
       let mark = Array::length(edp_local_lit_names)
       let rowful = edp_value_has_row(v2, scope, stmts, fn_index)
-      let tracked = match v2 {
+      let alias_value = edp_identity_value(v2)
+      let tracked = match alias_value {
         EFn(_, _, _, _, _, _) => true,
-        EIdent(_, _) => rowful || edp_value_is_row_free(v2, scope, pure_names),
+        EIdent(_, _) => rowful || edp_value_is_row_free(alias_value, scope, pure_names),
+        EDot(object, field, _, _) => rowful || (edp_has_row_fields() && edp_projection_row_kind(object, field, scope, stmts) == 0),
         _ => rowful
       }
       if tracked {
@@ -1483,12 +1455,13 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[In
       let hslot = Array::length(scope)
       let fmark = edp_field_literal_mark()
       let amark = edp_local_alias_mark()
-      let alias_value = edp_identity_value(v2)
       match alias_value {
         EIdent(_, _) => edp_note_local_alias(n, hslot, edp_local_lit_of(alias_value, scope)),
         _ => ()
       }
+      let rmark = edp_bind_record_view(hslot, v2, scope, stmts)
       let b2 = edp_stamp_scoped(b, [n], stmts, fn_index, scope, pure_names)
+      edp_drop_record_views(rmark)
       edp_drop_local_aliases(amark)
       Array::truncate(edp_local_lit_names, mark)
       Array::truncate(edp_local_lit_slots, mark)
@@ -1501,10 +1474,12 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[In
     ], stmts, fn_index, scope, pure_names)),
     ELetMut(n, v, b, off) => {
       let v2 = edp_stamp_expr(v, stmts, fn_index, scope, pure_names)
+      let rmark = edp_bind_record_view(Array::length(scope), v2, scope, stmts)
       let mmark = Array::length(edp_local_mut_slots)
       Array::push(edp_local_mut_slots, Array::length(scope))
       let b2 = edp_stamp_scoped(b, [n], stmts, fn_index, scope, pure_names)
       Array::truncate(edp_local_mut_slots, mmark)
+      edp_drop_record_views(rmark)
       ELetMut(n, v2, b2, off)
     },
     ESeq(a, b) => ESeq(edp_stamp_expr(a, stmts, fn_index, scope, pure_names), edp_stamp_expr(b, stmts, fn_index, scope, pure_names)),
@@ -1586,6 +1561,12 @@ fn edp_stamp_record(e: Expr, targs: Array[TypeExpr], stmts: Array[Stmt], fn_inde
       match edp_field_slot(n, fn2, targs) {
         Some(slot) => {
           edp_set_slot_callee(edp_field_slot_callee(n, fn2), true)
+          match edp_identity_value(v2) {
+            EDot(object, field, _, _) => if edp_projection_row_kind(object, field, scope, stmts) == 0 {
+              edp_refuse_rowless_projection(field, edp_field_slot_callee(n, fn2), slot.1)
+            },
+            _ => ()
+          }
           edp_note_field_literal(edp_local_lit_of(v2, scope), slot.1, edp_field_slot_callee(n, fn2))
           (fn2, edp_stamp_slot_arg_at(v2, scope, pure_names, Some(slot)))
         },
@@ -1641,7 +1622,14 @@ fn edp_let_field_literal(n: String, v: Expr, b0: Expr, b: Expr, off: Int, slot: 
 /// A literal's own concrete row is a calling-convention proof, including
 /// when the current local binding aliases that row-annotated literal.
 fn edp_value_has_row(value0: Expr, scope: Array[String], stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]]) -> Bool {
+  if !edp_has_row_fields() {
+    return false
+  }
   let value = edp_identity_value(value0)
+  match value {
+    EDot(object, field, _, _) => return edp_projection_row_kind(object, field, scope, stmts) == 1,
+    _ => ()
+  }
   let slot = match value {
     EIdent(name, _) => edp_scope_last_index(scope, name),
     ECall(EIdent(name, _), _, _, _) => edp_scope_last_index(scope, name),
@@ -1676,9 +1664,13 @@ fn edp_value_is_row_free(value: Expr, scope: Array[String], pure_names: MutSet[S
     EFn(_, _, _, _, None, _) => true,
     EIdent(name, _) => if edp_scope_has(scope, name) {
       match edp_local_lit_at(name, edp_scope_last_index(scope, name)) {
-        Some(EFn(_, _, _, _, None, _)) => true,
-        Some(EIdent(_, _)) => !Array::get(edp_local_lit_rows, edp_local_lit_index(name, edp_scope_last_index(scope, name))),
-        _ => false
+        Some(initializer) => match edp_identity_value(initializer) {
+          EFn(_, _, _, _, None, _) => true,
+          EIdent(_, _) => !Array::get(edp_local_lit_rows, edp_local_lit_index(name, edp_scope_last_index(scope, name))),
+          EDot(_, _, _, _) => !Array::get(edp_local_lit_rows, edp_local_lit_index(name, edp_scope_last_index(scope, name))),
+          _ => false
+        },
+        None => false
       }
     } else {
       MutSet::has(pure_names, name)
@@ -1820,13 +1812,11 @@ fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], st
     let a3 = match a2 {
       ELabeledArg(l, m, v) => if String::length(named) > 0 {
         let lpos = edp_param_index_by_label(stmts, fn_index, named, l)
-        edp_set_slot_callee(named, edp_callee_param_used(stmts, fn_index, named, lpos))
         ELabeledArg(l, m, edp_stamp_slot_arg(v, stmts, fn_index, scope, pure_names, named, lpos))
       } else {
         a2
       },
       other => if String::length(named) > 0 && !labeled {
-        edp_set_slot_callee(named, edp_callee_param_used(stmts, fn_index, named, ai + shift))
         edp_stamp_slot_arg(other, stmts, fn_index, scope, pure_names, named, ai + shift)
       } else if String::length(local_callee) > 0 && !labeled {
         edp_set_slot_callee(local_callee, true)
@@ -1887,7 +1877,16 @@ fn edp_stamp_slot_arg(a: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Arra
   if pos < 0 {
     a
   } else {
-    edp_stamp_slot_arg_at(a, scope, pure_names, edp_slot_fn_type(stmts, fn_index, callee, pos))
+    let slot = edp_slot_fn_type(stmts, fn_index, callee, pos)
+    match slot {
+      Some(_) => {
+        // Usage matters only for a refusal at a row-carrying slot. Scanning
+        // every ordinary parameter's body allocated 4 MB in selfcompile.
+        edp_set_slot_callee(callee, edp_callee_param_used(stmts, fn_index, callee, pos))
+        edp_stamp_slot_arg_at(a, scope, pure_names, slot)
+      },
+      None => a
+    }
   }
 }
 
@@ -1921,7 +1920,8 @@ fn edp_stamp_slot_arg_at(a: Expr, scope: Array[String], pure_names: MutSet[Strin
         if edp_scope_has(scope, an) {
           edp_refuse_rowless_param(an, edp_scope_last_index(scope, an), callee, row)
           match edp_local_lit_at(an, edp_scope_last_index(scope, an)) {
-            Some(EIdent(_, _)) => if edp_value_is_row_free(a, scope, pure_names) && !edp_field_alias_has_rowfree_literal(an, edp_scope_last_index(scope, an)) {
+            Some(EFn(_, _, _, _, _, _)) => (),
+            Some(_) => if edp_value_is_row_free(a, scope, pure_names) && (!String::starts_with(callee, edp_field_site_prefix()) || !edp_field_alias_has_rowfree_literal(an, edp_scope_last_index(scope, an))) {
               edp_refuse_rowless_local_field(an, callee, row)
             },
             _ => ()
@@ -2976,21 +2976,4 @@ fn edp_collect_ecall_arg_idents_arms(arms: Array[(Pat, Expr)], gname: String, ar
     }
     i = i + 1
   }
-}
-
-// A type ascription changes the type view, never the value's origin or ABI.
-fn edp_identity_value(value: Expr) -> Expr {
-  let mut current = value
-  let mut done = false
-  while !done {
-    match current {
-      ECall(EFn(_, _, params, _, _, body), args, _, _) => if Array::length(args) == 1 && edp_is_identity_ascription(params, body) {
-        current = Array::get(args, 0)
-      } else {
-        done = true
-      },
-      _ => done = true
-    }
-  }
-  current
 }
