@@ -1,0 +1,77 @@
+// #3591 controls: `derive (Show)` now judges every declared type it reaches
+// through `Option` / `Array` / `Result` / tuples / aliases / an inlined
+// generic, and refuses one that provides no `to_string`. These are the shapes
+// that must keep rendering: scalars and strings in wrappers, a nested type that
+// derives `Show`, an imported type that defines its own `to_string`
+// (`BigInt`), a generic that never stores its parameter (`Tagged`), and a
+// program `Result` that does not derive `Show` (the renderer opens it itself).
+import @vibe/core { struct Set, BigInt, BigInt::from_int }
+
+struct Inner {
+  x: Int
+} derive (Show)
+
+enum Kind {
+  Small;
+  Big(Inner)
+} derive (Show)
+
+struct Box[T] {
+  v: T
+} derive (Show)
+
+struct Tagged[T] {
+  n: Int
+} derive (Show)
+
+enum Result[T, F] {
+  Ok(T);
+  Err(F)
+}
+
+type Names = Array[String]
+
+struct Scalars {
+  a: Option[Int];
+  b: Array[String];
+  c: Option[Array[Int]];
+  d: (Int, Option[Bool])
+} derive (Show)
+
+struct Nested {
+  i: Option[Inner];
+  ks: Array[Kind];
+  pair: (Inner, Array[Option[Inner]]);
+  names: Option[Names]
+} derive (Show)
+
+struct Provided {
+  big: Array[BigInt];
+  boxed: Option[Box[BigInt]];
+  tagged: Tagged[Set[Int]]
+} derive (Show)
+
+enum Outcome {
+  Done(Result[Inner, String])
+} derive (Show)
+
+test "scalars and strings inside wrappers render" {
+  let s = Scalars::{ a: Some(1), b: ["x", "y"], c: Some([1, 2]), d: (3, None) }
+  inspect("\{s}", content = "Scalars { a: Some(1), b: [x, y], c: Some([1, 2]), d: (3, None) }")
+}
+
+test "nested types deriving Show render inside wrappers" {
+  let n = Nested::{ i: Some(Inner::{ x: 1 }), ks: [Small, Big(Inner::{ x: 2 })], pair: (Inner::{ x: 3 }, [None, Some(Inner::{ x: 4 })]), names: Some(["p"]) }
+  inspect("\{n}", content = "Nested { i: Some(Inner { x: 1 }), ks: [Small, Big(Inner { x: 2 })], pair: (Inner { x: 3 }, [None, Some(Inner { x: 4 })]), names: Some([p]) }")
+}
+
+test "types that provide to_string render inside wrappers" {
+  let p = Provided::{ big: [BigInt::from_int(5)], boxed: Some(Box::{ v: BigInt::from_int(7) }), tagged: Tagged::{ n: 3 } }
+  inspect("\{p}", content = "Provided { big: [5], boxed: Some(Box { v: 7 }), tagged: Tagged { n: 3 } }")
+}
+
+test "a program Result is opened by the renderer" {
+  let ok = Done(Ok(Inner::{ x: 1 }))
+  let err = Done(Err("no"))
+  inspect("\{ok} \{err}", content = "Done(Ok(Inner { x: 1 })) Done(Err(no))")
+}

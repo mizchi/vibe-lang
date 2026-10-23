@@ -928,17 +928,39 @@ export fn collect_derive_field_errors(stmts: Array[Stmt], env: TypeEnv, errors: 
   let declared_derives: Array[Array[String]] = []
   let defined: Array[String] = []
   let aliases: Array[(String, Array[String], TypeExpr)] = []
+  // #3591: this module's generic declarations, with the types their derived
+  // renderer renders (`dfe_check_show`).
+  let generics: Array[(String, Array[String], Array[TypeExpr], Array[String])] = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       STypeAlias(_, name, params, target) => Array::push(aliases, (name, params, target)),
-      SStruct(_, name, _, derives, _, _) => {
+      SStruct(_, name, fields, derives, _, tparams) => {
         Array::push(declared, name)
         Array::push(declared_derives, derives)
+        if Array::length(tparams) > 0 {
+          let parts = for field in fields {
+            field.1
+          }
+          Array::push(generics, (name, tparams, parts, derives))
+        } else {
+          ()
+        }
       },
-      SEnum(_, name, _, _, derives) => {
+      SEnum(_, name, tparams, variants, derives) => {
         Array::push(declared, name)
         Array::push(declared_derives, derives)
+        if Array::length(tparams) > 0 {
+          let parts: Array[TypeExpr] = []
+          for variant in variants {
+            for payload in variant.1 {
+              Array::push(parts, payload)
+            }
+          }
+          Array::push(generics, (name, tparams, parts, derives))
+        } else {
+          ()
+        }
       },
       SSuberror(_, name, _) => {
         Array::push(declared, name)
@@ -972,7 +994,7 @@ export fn collect_derive_field_errors(stmts: Array[Stmt], env: TypeEnv, errors: 
         let mut f = 0
         while f < Array::length(fields) {
           let (fname, fty) = Array::get(fields, f)
-          dfe_check(name, derives, tparams, String::concat("field `", String::concat(fname, "`")), fty, declared, declared_derives, defined, aliases, env, errors)
+          dfe_check(name, derives, tparams, String::concat("field `", String::concat(fname, "`")), fty, declared, declared_derives, defined, aliases, generics, env, errors)
           f = f + 1
         }
       },
@@ -982,7 +1004,7 @@ export fn collect_derive_field_errors(stmts: Array[Stmt], env: TypeEnv, errors: 
           let (vname, payloads) = Array::get(variants, v)
           let mut p = 0
           while p < Array::length(payloads) {
-            dfe_check(name, derives, tparams, String::concat("payload of `", String::concat(vname, "`")), Array::get(payloads, p), declared, declared_derives, defined, aliases, env, errors)
+            dfe_check(name, derives, tparams, String::concat("payload of `", String::concat(vname, "`")), Array::get(payloads, p), declared, declared_derives, defined, aliases, generics, env, errors)
             p = p + 1
           }
           v = v + 1
@@ -1014,7 +1036,7 @@ fn dfe_push_imported(declared: Array[String], declared_derives: Array[Array[Stri
 /// One field or payload of a deriving declaration. A derive whose operation
 /// the program writes itself (`fn Owner::compare`) generates nothing, so
 /// nothing about the field is asked of it (derive_pass skips it the same way).
-fn dfe_check(owner: String, derives: Array[String], tparams: Array[String], what: String, fty: TypeExpr, declared: Array[String], declared_derives: Array[Array[String]], defined: Array[String], aliases: Array[(String, Array[String], TypeExpr)], env: TypeEnv, errors: Array[String]) -> Unit {
+fn dfe_check(owner: String, derives: Array[String], tparams: Array[String], what: String, fty: TypeExpr, declared: Array[String], declared_derives: Array[Array[String]], defined: Array[String], aliases: Array[(String, Array[String], TypeExpr)], generics: Array[(String, Array[String], Array[TypeExpr], Array[String])], env: TypeEnv, errors: Array[String]) -> Unit {
   // The generated `compare` expands a local alias before it picks a
   // comparison (`compare_then_typed`), so the field is judged expanded too.
   let ord_fty = dfe_expand_aliases(fty, aliases, 32)
@@ -1032,7 +1054,227 @@ fn dfe_check(owner: String, derives: Array[String], tparams: Array[String], what
     None => ord_fty
   }
   dfe_check_head(owner, derives, tparams, "Ord", "compare", what, ord_head_fty, declared, declared_derives, defined, env, errors)
-  dfe_check_head(owner, derives, tparams, "Show", "to_string", what, fty, declared, declared_derives, defined, env, errors)
+  if struct_derives_has(derives, "Show") && !str_array_has(defined, String::concat(owner, "::to_string")) {
+    dfe_check_show(owner, derives, tparams, what, fty, declared, declared_derives, defined, aliases, generics, env, errors, array_empty(), 0)
+  } else {
+    ()
+  }
+}
+
+/// #3591: every declared nominal the derived renderer reaches for a field,
+/// judged the way a bare field is (`dfe_check_head`). The renderer
+/// (`show_for_typed`) opens `Option[..]`, `Array[..]`, `Result[.., ..]` and
+/// tuples itself, expands an alias, and inlines the derived renderer of a
+/// generic struct or enum at its instantiation; at every other declared
+/// nominal it calls `Head::to_string`. Only the field's own head was judged
+/// before, so `v: Option[Set[Int]]` (or `Array[MutMap[..]]`, `(Int, Set[Int])`)
+/// was reported clean and the build stopped with an internal compiler error,
+/// `Set::to_string` reached code generation unresolved. `seen` guards a
+/// recursive generic and `depth` bounds a non-regular one.
+fn dfe_check_show(owner: String, derives: Array[String], tparams: Array[String], what: String, fty: TypeExpr, declared: Array[String], declared_derives: Array[Array[String]], defined: Array[String], aliases: Array[(String, Array[String], TypeExpr)], generics: Array[(String, Array[String], Array[TypeExpr], Array[String])], env: TypeEnv, errors: Array[String], seen: Array[String], depth: Int) -> Unit {
+  let t = dfe_expand_aliases(fty, aliases, 32)
+  match t {
+    TyApp(n, args) => if ((n == "Option" || n == "Array") && Array::length(args) == 1) || (n == "Result" && Array::length(args) == 2) {
+      for arg in args {
+        dfe_check_show(owner, derives, tparams, what, arg, declared, declared_derives, defined, aliases, generics, env, errors, seen, depth)
+      }
+      ()
+    } else {
+      dfe_check_show_nominal(owner, derives, tparams, what, t, n, args, declared, declared_derives, defined, aliases, generics, env, errors, seen, depth)
+    },
+    TyName(n) => dfe_check_show_nominal(owner, derives, tparams, what, t, n, [], declared, declared_derives, defined, aliases, generics, env, errors, seen, depth),
+    TyTuple(ts) => {
+      for item in ts {
+        dfe_check_show(owner, derives, tparams, what, item, declared, declared_derives, defined, aliases, generics, env, errors, seen, depth)
+      }
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// A nominal (or an alias another module exports) the renderer reaches.
+fn dfe_check_show_nominal(owner: String, derives: Array[String], tparams: Array[String], what: String, t: TypeExpr, n: String, args: Array[TypeExpr], declared: Array[String], declared_derives: Array[Array[String]], defined: Array[String], aliases: Array[(String, Array[String], TypeExpr)], generics: Array[(String, Array[String], Array[TypeExpr], Array[String])], env: TypeEnv, errors: Array[String], seen: Array[String], depth: Int) -> Unit {
+  let imported_alias = if str_array_has(declared, n) || depth >= 16 {
+    None
+  } else {
+    dfe_imported_alias_resolved(env, tparams, t)
+  }
+  match imported_alias {
+    Some(resolved) => dfe_check_show(owner, derives, tparams, what, dfe_type_texpr(resolved), declared, declared_derives, defined, aliases, generics, env, errors, seen, depth + 1),
+    None => {
+      dfe_check_head(owner, derives, tparams, "Show", "to_string", what, t, declared, declared_derives, defined, env, errors)
+      // A `derive (Show)` / `derive (Hash)` generic is rendered inline at its
+      // instantiation, each field or payload with the arguments substituted,
+      // so what it holds is reached too (a phantom parameter is not read).
+      let key = dfe_type_key_text(t)
+      if n != owner && Array::length(args) > 0 && depth < 16 && !str_array_has(seen, key) {
+        match dfe_find_generic(generics, n, Array::length(args), defined, env) {
+          Some((params, parts)) => {
+            let next = for s in seen {
+              s
+            }
+            Array::push(next, key)
+            for part in parts {
+              dfe_check_show(owner, derives, tparams, what, dfe_subst(part, params, args), declared, declared_derives, defined, aliases, generics, env, errors, next, depth + 1)
+            }
+            ()
+          },
+          None => ()
+        }
+      } else {
+        ()
+      }
+    }
+  }
+}
+
+/// The generic struct or enum `n` of `arity` parameters whose derived renderer
+/// the desugar inlines at an instantiation (`show_generic_known`): its formals
+/// and the field or payload types that renderer renders. This module's own
+/// declaration is inlined when it derives `Show`, or `Hash` without a written
+/// `to_string`; an imported one when it provides a `to_string` and its
+/// module derived `Show` or `Hash` for it.
+fn dfe_find_generic(generics: Array[(String, Array[String], Array[TypeExpr], Array[String])], n: String, arity: Int, defined: Array[String], env: TypeEnv) -> Option[(Array[String], Array[TypeExpr])] {
+  let written = str_array_has(defined, String::concat(n, "::to_string"))
+  let mut found: Option[(Array[String], Array[TypeExpr])] = None
+  let mut local = false
+  let mut i = 0
+  while i < Array::length(generics) {
+    let (gn, params, parts, gderives) = Array::get(generics, i)
+    if gn == n && Array::length(params) == arity {
+      local = true
+      if struct_derives_has(gderives, "Show") || (struct_derives_has(gderives, "Hash") && !written) {
+        found = Some((params, parts))
+      } else {
+        ()
+      }
+      i = Array::length(generics)
+    } else {
+      i = i + 1
+    }
+  }
+  if local {
+    found
+  } else {
+    dfe_find_imported_generic(n, arity, env)
+  }
+}
+
+/// An imported generic declaration whose derived renderer is inlined. The
+/// imported TypeDef carries no derives, so the renderer's own type says it:
+/// the generated one takes the bare head (`(GBox) -> String`), while one the
+/// module writes spells the arguments (`(Tag[T]) -> String`) and is called,
+/// not inlined.
+fn dfe_find_imported_generic(n: String, arity: Int, env: TypeEnv) -> Option[(Array[String], Array[TypeExpr])] {
+  let derived = match env_lookup(env, String::concat(n, "::to_string")) {
+    Some(t) => dfe_is_derived_renderer_type(t, n),
+    None => false
+  }
+  if !derived {
+    None
+  } else {
+    let defs = env_type_defs(env)
+    let mut found: Option[(Array[String], Array[TypeExpr])] = None
+    let mut i = 0
+    while i < Array::length(defs) {
+      match Array::get(defs, i) {
+        TDStruct(sn, fields, _, params) => if sn == n && Array::length(params) == arity {
+          let parts = for field in fields {
+            dfe_type_texpr(field.1)
+          }
+          found = Some((params, parts))
+          i = Array::length(defs)
+        } else {
+          ()
+        },
+        TDEnum(en, params, variants) => if en == n && Array::length(params) == arity {
+          let parts: Array[TypeExpr] = array_empty()
+          for variant in variants {
+            for payload in variant.1 {
+              Array::push(parts, dfe_type_texpr(payload))
+            }
+          }
+          found = Some((params, parts))
+          i = Array::length(defs)
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// `(n) -> String` with `n` bare: the signature `derive (Show)` generates.
+fn dfe_is_derived_renderer_type(t: Type, n: String) -> Bool {
+  match t {
+    CtForAll(_, _, inner) => dfe_is_derived_renderer_type(inner, n),
+    CtFn(params, _, _) => if Array::length(params) == 1 {
+      match Array::get(params, 0) {
+        CtStruct(pn) => pn == n,
+        CtEnum(pn) => pn == n,
+        CtNamed(pn, pargs) => pn == n && Array::length(pargs) == 0,
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// A key naming an instantiation, for the recursion guard.
+fn dfe_type_key_text(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => n,
+    TyApp(n, args) => {
+      let parts = for a in args {
+        dfe_type_key_text(a)
+      }
+      String::concat(n, String::concat("[", String::concat(String::join(parts, ","), "]")))
+    },
+    TyTuple(ts) => {
+      let parts = for a in ts {
+        dfe_type_key_text(a)
+      }
+      String::concat("(", String::concat(String::join(parts, ","), ")"))
+    },
+    TyUnit => "()",
+    _ => "fn"
+  }
+}
+
+/// A resolved type (an imported alias's target) spelled as a type expression,
+/// so the renderer's walk reads it the same way. What has no spelling the walk
+/// could act on becomes an empty name, which no check reads.
+fn dfe_type_texpr(t: Type) -> TypeExpr {
+  match t {
+    CtInt => TyName("Int"),
+    CtDouble => TyName("Double"),
+    CtBool => TyName("Bool"),
+    CtString => TyName("String"),
+    CtChar => TyName("Char"),
+    CtUnit => TyUnit,
+    CtBytes => TyName("Bytes"),
+    CtTuple(ts) => TyTuple(for x in ts {
+      dfe_type_texpr(x)
+    }),
+    CtArray(e) => TyApp("Array", [dfe_type_texpr(e)]),
+    CtOption(e) => TyApp("Option", [dfe_type_texpr(e)]),
+    CtStruct(n) => TyName(n),
+    CtEnum(n) => TyName(n),
+    CtNamed(n, args) => if Array::length(args) == 0 {
+      TyName(n)
+    } else {
+      TyApp(n, for x in args {
+        dfe_type_texpr(x)
+      })
+    },
+    _ => TyName("")
+  }
 }
 
 /// The declared nominal at the head of `fty`, when the derive reaches its
