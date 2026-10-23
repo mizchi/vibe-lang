@@ -73,6 +73,17 @@ fn eq_call_result[U: Eq](mk: () -> Pair[U]) -> Bool {
   mk().a == mk().b
 }
 
+// A literal that writes its type arguments is typed by them, so a field read
+// straight off it holds the binder's formal (Codex on #3620). Before, the
+// literal read as its bare head and the comparison was refused.
+fn eq_literal_fields[U: Eq](x: U, y: U) -> Bool {
+  Pair[U]::{ a: x, b: y }.a == Pair[U]::{ a: x, b: y }.b
+}
+
+fn eq_literal_crossed[B: Eq, A: Eq](x: B, y: A, z: B) -> Bool {
+  Cross[B, A]::{ a: x, b: y }.a == Cross[B, A]::{ a: z, b: y }.a
+}
+
 fn get_pair[X](h: Holder[X]) -> Pair[X] {
   h.p
 }
@@ -149,6 +160,15 @@ test "a nested projection" {
 test "a projection off a call result" {
   inspect(eq_call_result(() -> Pair[Double] { Pair::{ a: 1.5, b: 1.5 } }), content="true")
   inspect(eq_call_result(() -> Pair[Double] { Pair::{ a: 1.5, b: 2.5 } }), content="false")
+}
+
+test "a projection off a literal that writes its type arguments" {
+  inspect(eq_literal_fields(1.5, 1.5), content="true")
+  inspect(eq_literal_fields(1.5, 2.5), content="false")
+  inspect(eq_literal_fields(Pt::{ x: 1, ys: [2] }, Pt::{ x: 1, ys: [2] }), content="true")
+  inspect(eq_literal_fields(Pt::{ x: 1, ys: [2] }, Pt::{ x: 1, ys: [3] }), content="false")
+  inspect(eq_literal_crossed(1.5, "s", 1.5), content="true")
+  inspect(eq_literal_crossed(1.5, "s", 2.5), content="false")
 }
 
 test "a field bound with its type off a generic call result" {
