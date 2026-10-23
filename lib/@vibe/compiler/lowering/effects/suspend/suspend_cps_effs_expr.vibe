@@ -1,3 +1,6 @@
+import ./suspend_group_targets.vibe {
+  scps_group_target
+}
 // lib/@vibe/compiler/lowering/effects/suspend/suspend.vibe — cps effs expr.
 
 import @vibe/ast {
@@ -114,8 +117,8 @@ fn scps_tys_are_plain_data(ts: Array[TypeExpr]) -> Bool {
 /// in a slot whose declared type is plain data it cannot be one (the checker
 /// has already matched the argument to that type), so it carries nothing the
 /// suspend lowering must see.
-export fn scps_plain_data_args_cleared(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String, args: Array[Expr]) -> Array[Expr] {
-  let (stmts, _, _, _, _, _) = ctx
+export fn scps_plain_data_args_cleared(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), name: String, args: Array[Expr]) -> Array[Expr] {
+  let (stmts, _, _, _, _, _, _) = ctx
   let mut params: Array[(String, Option[TypeExpr])] = []
   let mut i = 0
   while i < Array::length(stmts) {
@@ -208,10 +211,10 @@ export fn scps_is_safe_mut_builtin(nm: String) -> Bool {
 // handle site anywhere -- the "CPS-mode" effects. Only these can require
 // literal step-splitting.
 
-export fn scps_collect_cps_effs_expr(e: Expr, out: Array[String]) -> Unit {
+export fn scps_collect_cps_effs_expr(e: Expr, out: Array[String], groups: Array[(String, Array[String])]) -> Unit {
   match e {
     EHandle(b, arms) => {
-      scps_collect_cps_effs_expr(b, out)
+      scps_collect_cps_effs_expr(b, out, groups)
       let mut i = 0
       while i < Array::length(arms) {
         let (p, ex) = Array::get(arms, i)
@@ -220,7 +223,7 @@ export fn scps_collect_cps_effs_expr(e: Expr, out: Array[String]) -> Unit {
             PCtor(q, _) => {
               let ci = String::index_of(q, "::")
               if ci > 0 {
-                let qe = String::substring(q, 0, ci)
+                let qe = scps_group_target(arms, groups)
                 if edp_str_array_contains(out, qe) {
                   ()
                 } else {
@@ -235,104 +238,104 @@ export fn scps_collect_cps_effs_expr(e: Expr, out: Array[String]) -> Unit {
         } else {
           ()
         }
-        scps_collect_cps_effs_expr(ex, out)
+        scps_collect_cps_effs_expr(ex, out, groups)
         i = i + 1
       }
     },
-    EFn(_, _, _, _, _, b) => scps_collect_cps_effs_expr(b, out),
+    EFn(_, _, _, _, _, b) => scps_collect_cps_effs_expr(b, out, groups),
     ELet(_, v, b, _) => {
-      scps_collect_cps_effs_expr(v, out)
-      scps_collect_cps_effs_expr(b, out)
+      scps_collect_cps_effs_expr(v, out, groups)
+      scps_collect_cps_effs_expr(b, out, groups)
     },
     ELetMut(_, v, b, _) => {
-      scps_collect_cps_effs_expr(v, out)
-      scps_collect_cps_effs_expr(b, out)
+      scps_collect_cps_effs_expr(v, out, groups)
+      scps_collect_cps_effs_expr(b, out, groups)
     },
     ELetRec(_, v, b) => {
-      scps_collect_cps_effs_expr(v, out)
-      scps_collect_cps_effs_expr(b, out)
+      scps_collect_cps_effs_expr(v, out, groups)
+      scps_collect_cps_effs_expr(b, out, groups)
     },
     ESeq(a, b) => {
-      scps_collect_cps_effs_expr(a, out)
-      scps_collect_cps_effs_expr(b, out)
+      scps_collect_cps_effs_expr(a, out, groups)
+      scps_collect_cps_effs_expr(b, out, groups)
     },
     EIf(c, t, el) => {
-      scps_collect_cps_effs_expr(c, out)
-      scps_collect_cps_effs_expr(t, out)
-      scps_collect_cps_effs_expr(el, out)
+      scps_collect_cps_effs_expr(c, out, groups)
+      scps_collect_cps_effs_expr(t, out, groups)
+      scps_collect_cps_effs_expr(el, out, groups)
     },
     EMatch(s, arms) => {
-      scps_collect_cps_effs_expr(s, out)
+      scps_collect_cps_effs_expr(s, out, groups)
       let mut i = 0
       while i < Array::length(arms) {
         let (_, ex) = Array::get(arms, i)
-        scps_collect_cps_effs_expr(ex, out)
+        scps_collect_cps_effs_expr(ex, out, groups)
         i = i + 1
       }
     },
     ECall(callee, args, _, _) => {
-      scps_collect_cps_effs_expr(callee, out)
+      scps_collect_cps_effs_expr(callee, out, groups)
       let mut i = 0
       while i < Array::length(args) {
-        scps_collect_cps_effs_expr(Array::get(args, i), out)
+        scps_collect_cps_effs_expr(Array::get(args, i), out, groups)
         i = i + 1
       }
     },
     EWhile(c, b) => {
-      scps_collect_cps_effs_expr(c, out)
-      scps_collect_cps_effs_expr(b, out)
+      scps_collect_cps_effs_expr(c, out, groups)
+      scps_collect_cps_effs_expr(b, out, groups)
     },
     EForIn(_, _, it, b) => {
-      scps_collect_cps_effs_expr(it, out)
-      scps_collect_cps_effs_expr(b, out)
+      scps_collect_cps_effs_expr(it, out, groups)
+      scps_collect_cps_effs_expr(b, out, groups)
     },
     ELoop(pairs, b) => {
       let mut i = 0
       while i < Array::length(pairs) {
         let (_, v) = Array::get(pairs, i)
-        scps_collect_cps_effs_expr(v, out)
+        scps_collect_cps_effs_expr(v, out, groups)
         i = i + 1
       }
-      scps_collect_cps_effs_expr(b, out)
+      scps_collect_cps_effs_expr(b, out, groups)
     },
     EBinOp(_, l, r, _) => {
-      scps_collect_cps_effs_expr(l, out)
-      scps_collect_cps_effs_expr(r, out)
+      scps_collect_cps_effs_expr(l, out, groups)
+      scps_collect_cps_effs_expr(r, out, groups)
     },
-    EUnaryOp(_, x) => scps_collect_cps_effs_expr(x, out),
+    EUnaryOp(_, x) => scps_collect_cps_effs_expr(x, out, groups),
     EAssign(_, v, c, _) => {
-      scps_collect_cps_effs_expr(v, out)
-      scps_collect_cps_effs_expr(c, out)
+      scps_collect_cps_effs_expr(v, out, groups)
+      scps_collect_cps_effs_expr(c, out, groups)
     },
     EAssignOp(_, _, v, c, _) => {
-      scps_collect_cps_effs_expr(v, out)
-      scps_collect_cps_effs_expr(c, out)
+      scps_collect_cps_effs_expr(v, out, groups)
+      scps_collect_cps_effs_expr(c, out, groups)
     },
-    EReturn(x) => scps_collect_cps_effs_expr(x, out),
-    EDot(o, _, _, _) => scps_collect_cps_effs_expr(o, out),
-    ELabeledArg(_, _, v) => scps_collect_cps_effs_expr(v, out),
+    EReturn(x) => scps_collect_cps_effs_expr(x, out, groups),
+    EDot(o, _, _, _) => scps_collect_cps_effs_expr(o, out, groups),
+    ELabeledArg(_, _, v) => scps_collect_cps_effs_expr(v, out, groups),
     EBreak(opt) => match opt {
-      Some(x) => scps_collect_cps_effs_expr(x, out),
+      Some(x) => scps_collect_cps_effs_expr(x, out, groups),
       None => ()
     },
     EContinue(args) => {
       let mut i = 0
       while i < Array::length(args) {
-        scps_collect_cps_effs_expr(Array::get(args, i), out)
+        scps_collect_cps_effs_expr(Array::get(args, i), out, groups)
         i = i + 1
       }
     },
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        scps_collect_cps_effs_expr(Array::get(items, i), out)
+        scps_collect_cps_effs_expr(Array::get(items, i), out, groups)
         i = i + 1
       }
     },
     EArray(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        scps_collect_cps_effs_expr(Array::get(items, i), out)
+        scps_collect_cps_effs_expr(Array::get(items, i), out, groups)
         i = i + 1
       }
     },
@@ -340,7 +343,7 @@ export fn scps_collect_cps_effs_expr(e: Expr, out: Array[String]) -> Unit {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        scps_collect_cps_effs_expr(v, out)
+        scps_collect_cps_effs_expr(v, out, groups)
         i = i + 1
       }
     },
@@ -348,11 +351,11 @@ export fn scps_collect_cps_effs_expr(e: Expr, out: Array[String]) -> Unit {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        scps_collect_cps_effs_expr(v, out)
+        scps_collect_cps_effs_expr(v, out, groups)
         i = i + 1
       }
     },
-    ESpread(x) => scps_collect_cps_effs_expr(x, out),
+    ESpread(x) => scps_collect_cps_effs_expr(x, out, groups),
     _ => ()
   }
 }

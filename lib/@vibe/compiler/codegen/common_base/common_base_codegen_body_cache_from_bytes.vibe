@@ -1216,33 +1216,28 @@ export fn region_try_body_ld(ld: Int) -> Int {
   }
 }
 
-/// Open the #1937 unwind bracket. Caller compiles the body with
-/// `region_try_body_ld(ld)`, then `emit_region_try_epilogue`.
-///
-///   block (result i64)            ;; B_outer: body result
-///     block (result i64)          ;; B_catch: thrown payload
-///       try_table (result i64) [catch tag -> label 0]
+/// Restore the arena on every exception tag, including compiler-owned
+/// nonlocal return control. The exnref preserves the original payload/tag.
+/// The body still sees three enclosing labels (region_try_body_ld).
 export fn emit_region_try_prologue(buf: Bytes, catch_tag: Int) -> Unit {
   emit_block_i64(buf)
-  emit_block_i64(buf)
+  bytebuf_push(buf, 2)
+  bytebuf_push(buf, 105)
   bytebuf_push(buf, 31)
   bytebuf_push(buf, 126)
   leb128_encode_u32(buf, 1)
-  bytebuf_push(buf, 0)
-  leb128_encode_u32(buf, catch_tag)
+  bytebuf_push(buf, 3)
   leb128_encode_u32(buf, 0)
 }
 
-/// Close the #1937 unwind bracket. Success: end try_table, skip the catch,
-/// then `emit_region_exit` (result rides). Catch: payload rides through
-/// `emit_region_exit` (memory only) and is rethrown on the same tag.
+/// Normal results and exception references ride through the memory-only
+/// restore. Re-throw the reference rather than changing its exception tag.
 export fn emit_region_try_epilogue(buf: Bytes, region_ptr_addr: Int, catch_tag: Int) -> Unit {
   emit_end(buf)
   emit_br(buf, 1)
   emit_end(buf)
   emit_region_exit(buf, region_ptr_addr)
-  bytebuf_push(buf, 8)
-  leb128_encode_u32(buf, catch_tag)
+  bytebuf_push(buf, 10)
   emit_end(buf)
   emit_region_exit(buf, region_ptr_addr)
 }

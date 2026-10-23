@@ -1,0 +1,95 @@
+import @vibe/process {
+  process_sh_capture
+}
+import @vibe/compiler/core {
+  bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_string, bytebuf_to_bytes, leb128_encode_u32
+}
+import @vibe/compiler/codegen/common_base {
+  emit_region_enter, emit_region_try_epilogue, emit_region_try_prologue
+}
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_br,
+  emit_drop,
+  emit_end,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i64_const,
+  emit_i64_extend_i32_s,
+  emit_i64_ne,
+  emit_if_void
+}
+fn region_control_raw(values: Array[Int]) -> Bytes {
+  let b = bytebuf_new(); for v in values {
+    bytebuf_push(b, v)
+  }; b
+}
+fn region_control_module(tag: Int, nested: Bool, throws: Bool) -> Bytes {
+  let out = region_control_raw([0, 97, 115, 109, 1, 0, 0, 0])
+  bytebuf_push_section(out, 1, region_control_raw([
+    3,
+    96,
+    0,
+    1,
+    126,
+    96,
+    1,
+    126,
+    0,
+    96,
+    0,
+    0
+  ]))
+  bytebuf_push_section(out, 3, region_control_raw([2, 0, 2]))
+  bytebuf_push_section(out, 5, region_control_raw([1, 0, 1]))
+  bytebuf_push_section(out, 13, region_control_raw([2, 0, 1, 0, 1]))
+  let exports = region_control_raw([3]); bytebuf_push_string(exports, "main"); bytebuf_push(exports, 0); bytebuf_push(exports, 0)
+  bytebuf_push_string(exports, "_start"); bytebuf_push(exports, 0); bytebuf_push(exports, 1)
+  bytebuf_push_string(exports, "memory"); bytebuf_push(exports, 2); bytebuf_push(exports, 0)
+  bytebuf_push_section(out, 7, exports)
+  let body = region_control_raw([0])
+  emit_block_i64(body); emit_block_i64(body)
+  bytebuf_push(body, 31); bytebuf_push(body, 126); bytebuf_push(body, 1); bytebuf_push(body, 0); leb128_encode_u32(body, tag); bytebuf_push(body, 0)
+  emit_region_enter(body, 32); emit_region_try_prologue(body, 0)
+  if nested {
+    emit_region_enter(body, 32); emit_region_try_prologue(body, 0)
+  }
+  emit_i64_const(body, 7)
+  if throws {
+    bytebuf_push(body, 8); leb128_encode_u32(body, tag)
+  }
+  if nested {
+    emit_region_try_epilogue(body, 32, 0)
+  }
+  emit_region_try_epilogue(body, 32, 0)
+  emit_end(body); emit_br(body, 1); emit_end(body)
+  emit_drop(body)
+  emit_i32_const(body, 36); emit_i32_load(body, 2, 0); emit_i64_extend_i32_s(body)
+  emit_end(body); emit_end(body)
+  let code = region_control_raw([2]); leb128_encode_u32(code, Bytes::length(body)); Bytes::append(code, body)
+  let start = region_control_raw([0, 16, 0]); emit_i64_const(start, if throws {
+    0
+  } else {
+    7
+  }); emit_i64_ne(start); emit_if_void(start); bytebuf_push(start, 0); emit_end(start); emit_end(start)
+  leb128_encode_u32(code, Bytes::length(start)); Bytes::append(code, start)
+  bytebuf_push_section(out, 10, code)
+  bytebuf_to_bytes(out)
+}
+
+test "region unwinding restores depth without changing exception tags" {
+  Fs::mkdir_p("_build/vibe_test/region_control")
+  for item in [
+    ("normal", 1, false, false, "7\n"),
+    ("source", 0, false, true, "0\n"),
+    ("control", 1, false, true, "0\n"),
+    ("nested", 1, true, true, "0\n")
+  ] {
+    let bytes = region_control_module(item.1, item.2, item.3)
+    let path = "_build/vibe_test/region_control/" + item.0 + ".wasm"
+    Fs::write_bytes(path, bytes)
+    let result = process_sh_capture("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path)
+    assert(result.exit_code == 0)
+    assert(result.stdout == item.4)
+  }
+}

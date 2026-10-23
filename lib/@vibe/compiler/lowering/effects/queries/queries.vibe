@@ -487,19 +487,8 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
 fn edp_rq_handle_discharges(q: EdpReadQuery, arms: Array[(Pat, Expr)]) -> Bool {
   match q {
     RQLiteralNeeds(sctx) => {
-      let (effect, _, _, _, _) = sctx
-      if Array::length(arms) > 0 {
-        let (pat, _) = Array::get(arms, 0)
-        match pat {
-          PCtor(name, _) => {
-            let i = String::index_of(name, "::")
-            i > 0 && String::substring(name, 0, i) == effect
-          },
-          _ => false
-        }
-      } else {
-        false
-      }
+      let (_, ops, _, _, _) = sctx
+      scps_arms_discharge_ops(arms, ops)
     },
     _ => false
   }
@@ -528,7 +517,7 @@ export fn edp_rq_fold(q: EdpReadQuery, e: Expr) -> Int {
       ESeq(a, b) => edp_rq_two(q, a, b),
       EMatch(subject, arms) => edp_rq_after_arms(q, subject, arms, false),
       EHandle(body, arms) => if edp_rq_handle_discharges(q, arms) {
-        0
+        edp_rq_arms(q, arms, true)
       } else {
         edp_rq_after_arms(q, body, arms, true)
       },
@@ -1724,17 +1713,20 @@ export fn edp_pat_qname(pat: Pat) -> String {
 }
 
 export fn edp_handle_matches_effect(arms: Array[(Pat, Expr)], ename: String) -> Bool {
-  if Array::length(arms) == 0 {
-    false
-  } else {
-    let (p, _) = Array::get(arms, 0)
-    let qname = edp_pat_qname(p)
-    let (eff_opt, _) = edp_split_qualified(qname)
-    match eff_opt {
-      Some(e) => e == ename,
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, _) = Array::get(arms, i)
+    let (effect, _) = edp_split_qualified(edp_pat_qname(p))
+    let matches = match effect {
+      Some(name) => name == ename,
       None => false
     }
+    if matches {
+      return true
+    }
+    i = i + 1
   }
+  false
 }
 
 export fn edp_split_qualified(name: String) -> (Option[String], String) {
@@ -2163,4 +2155,23 @@ fn scps_pats_bind_name(ps: Array[Pat], x: String) -> Bool {
     i = i + 1
   }
   hit
+}
+
+/// A nested handler discharges this entire target only when it handles
+/// every effect represented by the target's source operation list.
+export fn scps_arms_discharge_ops(arms: Array[(Pat, Expr)], ops: Array[String]) -> Bool {
+  if Array::length(ops) == 0 {
+    return false
+  }
+  for op in ops {
+    let (effect, _) = edp_split_qualified(op)
+    let handled = match effect {
+      Some(name) => edp_handle_matches_effect(arms, name),
+      None => false
+    }
+    if !handled {
+      return false
+    }
+  }
+  true
 }

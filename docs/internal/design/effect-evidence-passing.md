@@ -800,8 +800,11 @@ handed to the let-short-circuit lowering, but only after asking that lowering
 itself (`scps_let_shortcircuit_bind`) whether it accepts the expression; a
 copy of its predicate could drift. The terminal of a short-circuit may be
 compound, because the bindings it generates sit inside the selected branch.
-The bypass is preserved. Refused: a selected right-hand side that returns,
-breaks or continues (`fixtures/err_effect_let_shortcircuit_return_suspend.vibe`).
+The bypass is preserved. A selected right-hand side may return from the
+owning source function through the control target described in addendum 57;
+`fixtures/effect_shortcircuit_return_suspend_test.vibe` checks both selection
+and bypass for `&&` and `||`, including statements after the handle. A
+`break` or `continue` that leaves an outer loop remains ineligible.
 Pinned by `fixtures/effect_compound_shortcircuit_suspend_test.vibe` and
 `fixtures/effect_shortcircuit_compound_rhs_test.vibe`.
 
@@ -811,7 +814,9 @@ A split body is rewritten into step-returning pieces, so a `return` left in it
 no longer leaves the function; it would hand its value to the driver as a step
 and trap at run time. All three split sites — a handled body, a needing
 function's clone, a closure literal — therefore refuse a body that still
-contains `return` after the hoists of addenda 55–57 (`scps_body_has_return`).
+contains `return` after the hoists and owner-target rewrite of addenda 55–57
+(`scps_body_has_return`). Source-owned returns in a capturing handle or its
+arms are rewritten to the owner's control target before pieces are lifted.
 A `return` inside a nested closure refers to that closure and is accepted
 (`fixtures/effect_resume_store_loop_nested_return.vibe`).
 
@@ -847,22 +852,29 @@ kept looping. Pinned by `fixtures/effect_return_in_loop_test.vibe`,
 `fixtures/effect_return_nested_loop_test.vibe` and
 `fixtures/effect_transfer_after_resume_test.vibe`.
 
-### Addendum 57 (追記57): `return` in a handled body goes out through a cell (#1536)
+### Addendum 57: `return` in a handled body targets its owning activation (#1536)
 
-In a handled body `return v` leaves the enclosing function, not the handle, so
-the hoist of addendum 55 does not apply. The flag and slot live outside the
-handle, the body records and finishes, and the code after the handle returns:
+In a handled body or handler arm, `return v` leaves the enclosing source
+function. A cell checked only after the handle misses a continuation resumed
+later in that function: it could fall through to `99` instead of returning `7`.
 
-```text
-let mut returned = false
-let mut slot = 0
-let r = handle { .. slot = v; returned = true; 0 .. } with { .. }
-if returned { return slot } else { REST }
-```
+Before lifting those bodies, the suspend pass gives the source function an
+activation-specific owner token and rewrites its returns to a compiler-owned
+control operation. Code generation carries the token and value on a dedicated
+Wasm exception tag. Only the matching owner scope catches it; source Exception
+handlers do not. Nested source functions keep their own targets. Exiting the
+owner normally or exceptionally deactivates its token, and a later invocation
+reports `vibe: return target is no longer active`.
 
-When the handle itself sits in a split body, the outer `return` is then an
-ordinary spine `return` for addendum 55. Pinned by
-`fixtures/effect_return_in_handle_body_test.vibe`.
+RC and shadow callers release their owned values once while this control
+unwinds. Region brackets restore their watermarks before rethrowing the original
+exception reference, preserving its tag and payload. The call annotation used
+for cleanup retains the original resolved builtin or program binding.
+
+Pinned by `fixtures/effect_return_in_handle_body_test.vibe`,
+`fixtures/effect_shortcircuit_return_suspend_test.vibe`,
+`lib/@vibe/compiler/tests/grouped_handler_evidence_test.vibe` and
+`lib/@vibe/compiler/tests/nonlocal_region_control_test.vibe`.
 
 ### Addendum 58 (追記58): a `for` over a proven Array or String becomes a `while` (#1536)
 

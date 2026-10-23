@@ -1,0 +1,68 @@
+import @vibe/compiler/core {
+  Expr
+}
+
+export fn scps_frame_scope(name: String, body: Expr) -> Expr {
+  ECall(EIdent("$scps_frame_scope", -2), [EIdent(name, -1), body], -1, [16])
+}
+export fn scps_frame_wrap(name: String, body: Expr) -> Expr {
+  ELet(name, ETuple([EBool(true)]), scps_frame_scope(name, body), -1)
+}
+// Called before a source-owned arm/body is lifted to a continuation. Nested
+// source functions keep their own return target.
+export fn scps_frame_rewrite_returns(e: Expr, name: String) -> Expr {
+  match e {
+    EReturn(value) => ECall(EIdent("$scps_frame_jump", -2), [
+      EIdent(name, -1),
+      scps_frame_rewrite_returns(value, name),
+      EString("vibe: return target is no longer active", -1)
+    ], -1, [17]),
+    EFn(_, _, _, _, _, _) => e,
+    ELet(n, v, b, o) => ELet(n, scps_frame_rewrite_returns(v, name), scps_frame_rewrite_returns(b, name), o),
+    ELetRec(n, v, b) => ELetRec(n, scps_frame_rewrite_returns(v, name), scps_frame_rewrite_returns(b, name)),
+    ELetMut(n, v, b, o) => ELetMut(n, scps_frame_rewrite_returns(v, name), scps_frame_rewrite_returns(b, name), o),
+    ESeq(a, b) => ESeq(scps_frame_rewrite_returns(a, name), scps_frame_rewrite_returns(b, name)),
+    EIf(c, t, f) => EIf(scps_frame_rewrite_returns(c, name), scps_frame_rewrite_returns(t, name), scps_frame_rewrite_returns(f, name)),
+    EMatch(v, arms) => EMatch(scps_frame_rewrite_returns(v, name), for arm in arms {
+      (arm.0, scps_frame_rewrite_returns(arm.1, name))
+    }),
+    EHandle(v, arms) => EHandle(scps_frame_rewrite_returns(v, name), for arm in arms {
+      (arm.0, scps_frame_rewrite_returns(arm.1, name))
+    }),
+    EWhile(c, b) => EWhile(scps_frame_rewrite_returns(c, name), scps_frame_rewrite_returns(b, name)),
+    ELoop(states, b) => ELoop(for item in states {
+      (item.0, scps_frame_rewrite_returns(item.1, name))
+    }, scps_frame_rewrite_returns(b, name)),
+    EForIn(n, i, v, b) => EForIn(n, i, scps_frame_rewrite_returns(v, name), scps_frame_rewrite_returns(b, name)),
+    ECall(c, args, o, r) => ECall(scps_frame_rewrite_returns(c, name), for a in args {
+      scps_frame_rewrite_returns(a, name)
+    }, o, r),
+    EBinOp(op, l, r, o) => EBinOp(op, scps_frame_rewrite_returns(l, name), scps_frame_rewrite_returns(r, name), o),
+    EUnaryOp(op, v) => EUnaryOp(op, scps_frame_rewrite_returns(v, name)),
+    EAssign(n, v, b, o) => EAssign(n, scps_frame_rewrite_returns(v, name), scps_frame_rewrite_returns(b, name), o),
+    EAssignOp(n, op, v, b, o) => EAssignOp(n, op, scps_frame_rewrite_returns(v, name), scps_frame_rewrite_returns(b, name), o),
+    EDot(v, f, a, b) => EDot(scps_frame_rewrite_returns(v, name), f, a, b),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, scps_frame_rewrite_returns(v, name)),
+    ETuple(es) => ETuple(for v in es {
+      scps_frame_rewrite_returns(v, name)
+    }),
+    EArray(es) => EArray(for v in es {
+      scps_frame_rewrite_returns(v, name)
+    }),
+    ERecord(n, fs, ts) => ERecord(n, for f in fs {
+      (f.0, scps_frame_rewrite_returns(f.1, name))
+    }, ts),
+    EMap(fs) => EMap(for f in fs {
+      (f.0, scps_frame_rewrite_returns(f.1, name))
+    }),
+    ESpread(v) => ESpread(scps_frame_rewrite_returns(v, name)),
+    EBreak(v) => EBreak(match v {
+      Some(x) => Some(scps_frame_rewrite_returns(x, name)),
+      None => None
+    }),
+    EContinue(args) => EContinue(for a in args {
+      scps_frame_rewrite_returns(a, name)
+    }),
+    _ => e
+  }
+}

@@ -1,0 +1,139 @@
+import @vibe/compiler/codegen/common_analysis {
+  return_control_expr_uses
+}
+import @vibe/compiler/core {
+  Expr
+}
+import ./common_base_codegen_body_cache_from_bytes.vibe {
+  emit_i64_load, emit_rc_dup_guarded
+}
+// Targeted lexical return control transport.
+import @vibe/compiler/core {
+  bytebuf_push, leb128_encode_u32
+}
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_br,
+  emit_call,
+  emit_else,
+  emit_end,
+  emit_i32_wrap_i64,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_store,
+  emit_if_i64,
+  emit_if_void,
+  emit_local_get,
+  emit_local_set
+}
+fn frame_pointer(buf: Bytes, local: Int, rc: Bool) -> Unit {
+  emit_local_get(buf, local)
+  if rc {
+    emit_i64_const(buf, -2); emit_i64_and(buf)
+  }
+  emit_i32_wrap_i64(buf)
+}
+export fn emit_frame_field(buf: Bytes, local: Int, index: Int, rc: Bool) -> Unit {
+  frame_pointer(buf, local, rc)
+  emit_i64_load(buf, 3, (if rc {
+    8
+  } else {
+    0
+  }) + index * 8)
+}
+export fn emit_frame_clear(buf: Bytes, local: Int, rc: Bool) -> Unit {
+  frame_pointer(buf, local, rc)
+  emit_i64_const(buf, 0)
+  emit_i64_store(buf, 3, if rc {
+    8
+  } else {
+    0
+  })
+}
+export fn emit_frame_check_payload(buf: Bytes, payload: Int, frame: Int, rc: Bool) -> Unit {
+  emit_frame_field(buf, payload, 0, rc)
+  emit_local_set(buf, frame)
+  emit_frame_field(buf, frame, 0, rc)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  // The caller emits the diagnostic and closes this conditional.
+}
+export fn emit_frame_scope_prologue(buf: Bytes, control_tag: Int) -> Unit {
+  emit_block_i64(buf)
+  // catch_all_ref branches with an exnref; retain it on the stack while
+  // deactivating this frame, then throw_ref preserves its original tag.
+  bytebuf_push(buf, 2); bytebuf_push(buf, 105)
+  emit_block_i64(buf)
+  bytebuf_push(buf, 31); bytebuf_push(buf, 126)
+  leb128_encode_u32(buf, 2)
+  bytebuf_push(buf, 0); leb128_encode_u32(buf, control_tag); leb128_encode_u32(buf, 0)
+  bytebuf_push(buf, 3); leb128_encode_u32(buf, 1)
+}
+fn frame_drop(buf: Bytes, local: Int, rc: Bool, drop_index: Int) -> Unit {
+  if rc && drop_index >= 0 {
+    emit_local_get(buf, local); emit_call(buf, drop_index)
+  }
+}
+export fn emit_frame_scope_epilogue(buf: Bytes, control_tag: Int, frame: Int, payload: Int, result: Int, rc: Bool, shadow: Bool, dup_index: Int, drop_index: Int, cookie: Int) -> Unit {
+  emit_end(buf)
+  emit_frame_clear(buf, frame, rc)
+  frame_drop(buf, frame, rc, drop_index)
+  emit_br(buf, 2)
+  emit_end(buf)
+  emit_local_set(buf, payload)
+  emit_frame_clear(buf, frame, rc)
+  emit_frame_field(buf, payload, 0, rc)
+  emit_local_get(buf, frame)
+  emit_i64_eq(buf)
+  emit_if_i64(buf)
+  emit_frame_field(buf, payload, 1, rc)
+  emit_local_set(buf, result)
+  if rc {
+    emit_rc_dup_guarded(buf, result, shadow, dup_index)
+  }
+  frame_drop(buf, payload, rc, drop_index)
+  frame_drop(buf, frame, rc, drop_index)
+  if cookie >= 0 {
+    emit_i64_const(buf, 0); emit_local_set(buf, cookie)
+  }
+  emit_local_get(buf, result)
+  emit_else(buf)
+  frame_drop(buf, frame, rc, drop_index)
+  emit_local_get(buf, payload)
+  bytebuf_push(buf, 8); leb128_encode_u32(buf, control_tag)
+  emit_end(buf)
+  emit_br(buf, 1)
+  emit_end(buf)
+  emit_frame_clear(buf, frame, rc)
+  frame_drop(buf, frame, rc, drop_index)
+  bytebuf_push(buf, 10)
+  emit_end(buf)
+}
+
+export fn frame_prepare_cookie(body: Expr, locals: Array[String], next: Int, state: Array[Int], enabled: Bool) -> Int {
+  while Array::length(state) < 4 {
+    Array::push(state, -1)
+  }
+  if enabled && return_control_expr_uses(body) {
+    Array::push(locals, "")
+    Array::set(state, 3, next)
+    next + 1
+  } else {
+    next
+  }
+}
+export fn frame_cookie(state: Array[Int]) -> Int {
+  if Array::length(state) >= 4 {
+    Array::get(state, 3)
+  } else {
+    -1
+  }
+}
+export fn frame_cookie_set(buf: Bytes, state: Array[Int], value: Int) -> Unit {
+  let cookie = frame_cookie(state)
+  if cookie >= 0 {
+    emit_i64_const(buf, value); emit_local_set(buf, cookie)
+  }
+}

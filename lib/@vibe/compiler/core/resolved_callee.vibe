@@ -29,6 +29,11 @@ export let builtin_array_with_capacity: Int = 13
 export let builtin_array_push: Int = 14
 export let builtin_array_set: Int = 15
 
+// Compiler-owned control forms are synthesized after checking. They are not
+// ordinary callable builtins and have no runtime function-table rows.
+export let builtin_frame_scope: Int = 16
+export let builtin_frame_jump: Int = 17
+
 // (source name, operation identity, arity, runtime alias).
 let builtin_operations: Array[(String, Int, Int, String)] = [
   ("MutBytes::empty", builtin_mutbytes_empty, 1, ""),
@@ -45,12 +50,14 @@ let builtin_operations: Array[(String, Int, Int, String)] = [
   ("MutList::truncate", builtin_mutlist_truncate, 2, "Array::truncate"),
   ("Array::with_capacity", builtin_array_with_capacity, 1, "Array::with_capacity"),
   ("Array::push", builtin_array_push, 2, "Array::push"),
-  ("Array::set", builtin_array_set, 3, "Array::set")
+  ("Array::set", builtin_array_set, 3, "Array::set"),
+  ("$scps_frame_scope", builtin_frame_scope, 2, ""),
+  ("$scps_frame_jump", builtin_frame_jump, 3, "")
 ]
 
 /// Source-name lookup belongs to the checker and explicit builtin factories.
 export fn resolved_builtin_operation_from_source(name: String) -> Int {
-  if !String::starts_with(name, "MutBytes::") && !String::starts_with(name, "MutList::") && !String::starts_with(name, "Array::") {
+  if !String::starts_with(name, "MutBytes::") && !String::starts_with(name, "MutList::") && !String::starts_with(name, "Array::") && !String::starts_with(name, "$scps_frame_") {
     0
   } else {
     let mut result = 0
@@ -68,9 +75,38 @@ export fn resolved_builtin_operation_from_source(name: String) -> Int {
   }
 }
 
+// Codegen-only per-call annotation: [marker, site id, original cell...].
+// It is attached to a fresh cell after normalization; shared checked calls
+// and the original binding/builtin answer remain unchanged.
+let return_call_marker: Int = -361604
+export fn return_call_site(resolution: Array[Int]) -> Int {
+  if Array::length(resolution) >= 2 && Array::get(resolution, 0) == return_call_marker && Array::get(resolution, 1) >= 0 {
+    Array::get(resolution, 1)
+  } else {
+    -1
+  }
+}
+export fn return_call_original(resolution: Array[Int]) -> Array[Int] {
+  if return_call_site(resolution) >= 0 {
+    Array::slice(resolution, 2, Array::length(resolution))
+  } else {
+    resolution
+  }
+}
+export fn return_call_resolve(resolution: Array[Int], site: Int) -> Array[Int] {
+  let original = return_call_original(resolution)
+  let out = [return_call_marker, site]
+  for item in original {
+    Array::push(out, item)
+  }
+  out
+}
 export fn resolved_callee_operation(resolution: Array[Int]) -> Int {
-  if Array::length(resolution) == 1 {
+  let n = Array::length(resolution)
+  if n == 1 {
     Array::get(resolution, 0)
+  } else if n == 3 && return_call_site(resolution) >= 0 {
+    Array::get(resolution, 2)
   } else {
     0
   }

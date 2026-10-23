@@ -2,7 +2,7 @@ import @vibe/compiler/core {
   Expr, Pat, Stmt, TypeExpr
 }
 import @vibe/compiler/lowering/effects/evidence {
-  edp_bind_census, edp_collect_fn_defs, edp_drop_self_discharging_needing, evidence_dict_pass
+  edp_bind_census, edp_collect_fn_defs, edp_collect_handle_sites, edp_drop_self_discharging_needing, evidence_dict_pass
 }
 
 test "the evidence census distinguishes a binding from a reference" {
@@ -324,3 +324,79 @@ test "a loop-state binder spelled like a pure top-level function stays opaque" {
   inspect(Array::length(evidence_dict_pass(loop_shadowing_pure_program(), "main")) > 0, content = "true")
 }
 
+fn opaque_grouped_handler(exception_first: Bool) -> Array[Stmt] {
+  let own = (PCtor("Ask::Get", []), ECall(EIdent("resume", -1), [EInt(7)], -1, [
+  ]))
+  let caught = (PCtor("Exception[String]::Throw", [PBind("message")]), EInt(-1))
+  let arms = if exception_first {
+    [caught, own]
+  } else {
+    [own, caught]
+  }
+  let perform = ECall(EIdent("perform", -1), [
+    ECall(EIdent("Ask::Get", -1), [], -1, [])
+  ], -1, [])
+  [
+    SEffectDef(false, "Ask", [], [("Get", [], TyName("Int"))]),
+    SLet(false, false, "main", None, EFn([], [], [], Some(TyName("Int")), None, ELet("local", EFn([
+    ], [], [], None, None, perform), EHandle(ECall(EIdent("local", 25), [], 25, [
+    ]), arms), -1)))
+  ]
+}
+
+test "survivor detection sees a user effect after Exception arms" {
+  let errors = evidence_dict_pass(opaque_grouped_handler(true), "main")
+  assert(Array::length(errors) > 0)
+  assert(String::contains(Array::get(errors, 0), "Ask"))
+  assert(String::contains(Array::get(errors, 0), "local"))
+}
+
+test "surviving grouped handler refusals do not depend on Exception arm order" {
+  let first = evidence_dict_pass(opaque_grouped_handler(true), "main")
+  let last = evidence_dict_pass(opaque_grouped_handler(false), "main")
+  assert(Array::length(first) > 0)
+  assert(Array::length(last) > 0)
+  inspect(first, content = __to_string(last))
+}
+
+test "handle census visits independent handlers in every arm" {
+  let inner = EHandle(EInt(0), [(PCtor("A::Op", []), EInt(7))])
+  let a = (PCtor("A::Op", []), EInt(1))
+  let b = (PCtor("B::Op", []), inner)
+  for arms in [[a, b], [b, a], [(PCtor("A::Op", []), inner)]] {
+    let stmts = [SExpr(EHandle(EInt(0), arms))]
+    assert(Array::length(edp_collect_handle_sites(stmts, "A")) == 2)
+  }
+  assert(Array::length(edp_collect_handle_sites([SExpr(EHandle(EInt(0), [b]))], "A")) == 1)
+}
+
+test "ineligible nested sibling handler prevents partial evidence arity changes" {
+  let read = ECall(EIdent("read", -1), [], -1, [])
+  let perform_a = ECall(EIdent("perform", -1), [
+    ECall(EIdent("A::Op", -1), [], -1, [])
+  ], -1, [])
+  let perform_b = ECall(EIdent("perform", -1), [
+    ECall(EIdent("B::Op", -1), [], -1, [])
+  ], -1, [])
+  // A row-variable callback is opaque to this concrete-effect migration.
+  let nested = EHandle(ESeq(perform_a, ECall(EIdent("opaque", -1), [], -1, [])), [
+    (PCtor("A::Op", []), ECall(EIdent("resume", -1), [EInt(7)], -1, []))
+  ])
+  let stmts = [
+    SEffectDef(false, "A", [], [("Op", [], TyName("Int"))]),
+    SEffectDef(false, "B", [], [("Op", [], TyName("Int"))]),
+    SLet(false, false, "read", None, EFn([], [], [], Some(TyName("Int")), Some("A"), perform_a)),
+    SLet(false, false, "main", None, EFn(["e"], [], [
+      ("opaque", Some(TyFn([], TyName("Int"), Some("e"))))
+    ], Some(TyName("Int")), Some("e"), EHandle(EBinOp("+", read, perform_b, -1), [
+      (PCtor("B::Op", []), ECall(EIdent("resume", -1), [nested], -1, [])),
+      (PCtor("A::Op", []), ECall(EIdent("resume", -1), [EInt(100)], -1, []))
+    ])))
+  ]
+  let errors = evidence_dict_pass(stmts, "main")
+  assert(Array::length(errors) > 0)
+  match Array::get(stmts, 2) {
+    SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => assert(Array::length(params) == 0),
+    _ => assert(false)
+  }
+}

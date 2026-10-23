@@ -1037,8 +1037,9 @@ export fn edp_apply_migration_with_index(stmts: Array[Stmt], ename: String, ops:
     ni = ni + 1
   }
   // Rewrite each handle site: synthesize a fresh evidence dict from its
-  // arms, splice direct performs the same way Phase 2 does, pass the dict
-  // at calls to needing functions, and drop the EHandle wrapper. Single
+  // arms and pass it at needing calls. A grouped site's dictionary is bound
+  // outside the residual handler, and direct performs call that binding, so
+  // sibling arms cannot catch each other's own effects. Single
   // pass over `stmts`, rewriting each matching EHandle node the moment it
   // is found -- see edp_find_rewrite_handles's doc comment for why this
   // replaced an earlier collect-then-re-find-by-equality design.
@@ -1352,21 +1353,56 @@ fn edp_rewrite_perform_via_dict(operand: Expr, ename: String, dict_pname: String
 
 // --- rewriting a handle site.
 
+// Discharge one effect while retaining the other arms of a grouped handler.
+// Probe the complete original expression, including arm binders and assignment
+// targets. Local freshness is deterministic and needs no shared pass counter.
+fn edp_group_fresh_name(body: Expr, arms: Array[(Pat, Expr)], ename: String) -> String {
+  let original = EHandle(body, arms)
+  let base = "$edp_group_" + ename
+  let mut name = base
+  let mut serial = 0
+  while edp_rq_fold(RQScpsBindsName(name), original) > 0 || edp_rq_fold(RQRefsName(name), original) > 0 {
+    serial = serial + 1
+    name = base + "_" + __to_string(serial)
+  }
+  name
+}
 fn edp_rewrite_handle_site(body: Expr, arms: Array[(Pat, Expr)], ename: String, needing: Array[String]) -> Expr {
-  let op_names = for a in arms {
-    let (p, _) = a
-    edp_pat_qname(p)
+  let own: Array[(Pat, Expr)] = []
+  let rest: Array[(Pat, Expr)] = []
+  for arm in arms {
+    if edp_handle_matches_effect([arm], ename) {
+      Array::push(own, arm)
+    } else {
+      Array::push(rest, arm)
+    }
   }
-  let bind_names = for a in arms {
-    let (p, _) = a
-    edp_pat_bind_names(p)
+  let op_names = for a in own {
+    let (p, _) = a; edp_pat_qname(p)
   }
-  let prepared_bodies = for a in arms {
-    let (_, ex) = a
-    edp_strip_tail_resume(ex)
+  let bind_names = for a in own {
+    let (p, _) = a; edp_pat_bind_names(p)
+  }
+  let prepared_bodies = for a in own {
+    let (_, ex) = a; edp_strip_tail_resume(ex)
   }
   let dict_literal = edp_build_dict_literal(ename, op_names, bind_names, prepared_bodies)
-  edp_rewrite_handle_body(body, ename, op_names, bind_names, prepared_bodies, dict_literal, needing)
+  if Array::length(rest) == 0 {
+    edp_rewrite_handle_body(body, ename, op_names, bind_names, prepared_bodies, dict_literal, needing)
+  } else {
+    let name = edp_group_fresh_name(body, arms, ename)
+    let dict_ref = EIdent(name, -1)
+    let forwarding = for a in own {
+      let (p, _) = a
+      let args = for n in edp_pat_bind_names(p) {
+        EIdent(n, -1)
+      }
+      ECall(EDot(dict_ref, edp_strip_effect_prefix(edp_pat_qname(p), ename), -1, -1), args, -1, [
+      ])
+    }
+    let rewritten = edp_rewrite_handle_body(body, ename, op_names, bind_names, forwarding, dict_ref, needing)
+    ELet(name, dict_literal, EHandle(rewritten, rest), -1)
+  }
 }
 
 /// The effect being migrated and its DECLARED operations `(name, arity)`,
@@ -1699,13 +1735,18 @@ fn edp_rh_extend(needing: Array[String], params: Array[(String, Option[TypeExpr]
 /// top-level function's parameters refused the program.
 fn edp_collect_handle_sites_scoped(expr: Expr, ename: String, td_mode: Bool, es_names: Array[String], es_members_list: Array[Array[String]], extra: Array[String], sites: Array[(Expr, Array[(Pat, Expr)])], site_extra: Array[Array[String]]) -> Unit {
   match expr {
-    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
-      Array::push(sites, (body, arms))
-      Array::push(site_extra, extra)
-    } else {
-      // As `edp_collect_handle_sites_expr`: a foreign handle's arms are not
-      // walked here.
-      edp_collect_handle_sites_scoped(body, ename, td_mode, es_names, es_members_list, extra, sites, site_extra)
+    EHandle(body, arms) => {
+      if edp_handle_matches_effect(arms, ename) {
+        Array::push(sites, (body, arms))
+        Array::push(site_extra, extra)
+      } else {
+        edp_collect_handle_sites_scoped(body, ename, td_mode, es_names, es_members_list, extra, sites, site_extra)
+      }
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        edp_collect_handle_sites_scoped(Array::get(arms, ai).1, ename, td_mode, es_names, es_members_list, extra, sites, site_extra)
+        ai = ai + 1
+      }
     },
     EFn(_, _, params, _, _, b) => {
       let inner = if td_mode {
@@ -1727,7 +1768,11 @@ fn edp_collect_handle_sites_scoped(expr: Expr, ename: String, td_mode: Bool, es_
 fn edp_find_rewrite_handles(expr: Expr, ename: String, needing: Array[String]) -> Expr {
   match expr {
     EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
-      edp_rewrite_handle_site(body, arms, ename, needing)
+      // Arms run outside this handle's evidence scope. Lower their own
+      // matching handlers independently before constructing this dictionary.
+      edp_rewrite_handle_site(body, for arm in arms {
+        (arm.0, edp_find_rewrite_handles(arm.1, ename, needing))
+      }, ename, needing)
     } else {
       EHandle(edp_find_rewrite_handles(body, ename, needing), for a in arms {
         let (p, ex) = a
