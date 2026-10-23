@@ -1,0 +1,84 @@
+// #3615: a `[T: Eq]` generic called at `String` returns a real `Bool`.
+//
+// The `Eq` witness for `String` is `(a, b) -> String::equals(a, b)`, and the
+// `String::equals` builtin is the raw `str_eq` helper that `==` also calls.
+// That helper answers an UNTAGGED 0/1; `==` tags it itself, a call by name did
+// not. On the RC lane (the default) a `Bool` is tagged (`true` is `1 << 1`), so
+// the raw `1` the call handed back was neither `true` nor an immediate:
+// `f("a", "a") == true` answered `false`, and as an element of an array, a
+// tuple or a `Some` it was read as a heap pointer when the aggregate was
+// released, which trapped `memory access out of bounds` in `__rt_rc_drop`.
+// The same held for a direct `String::equals(a, b)`, its value form, and an
+// `eq(a, b)` on two strings. `VIBE_TEST_BACKEND=gc` was already right: that
+// lane does not tag a `Bool`.
+
+struct Pt {
+  v: Int
+} derive (Eq)
+
+fn f[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}
+
+fn q[T: Eq](a: T) -> Bool {
+  T::equals(a, a)
+}
+
+fn g[T: Eq](a: T) -> Int {
+  1
+}
+
+fn h(a: String, b: String) -> Bool {
+  a == b
+}
+
+test "a String witness result held in an array" {
+  inspect([f("a", "a")], "[true]")
+  inspect([f("a", "b")], "[false]")
+}
+
+test "a String witness result held in a tuple" {
+  inspect((f("a", "a"), 1), "(true, 1)")
+}
+
+test "a String witness result held in Some" {
+  inspect(Some(f("a", "a")), "Some(true)")
+}
+
+test "a heap String through the witness" {
+  let s = String::concat("a", "b")
+  let t = String::concat("a", "b")
+  inspect([f(s, s), f(s, t), f(s, "ab"), f(s, "a")], "[true, true, true, false]")
+}
+
+test "T::equals through the witness" {
+  inspect([q("a")], "[true]")
+}
+
+test "the witness result compares equal to a Bool literal" {
+  inspect(f("a", "a") == true, "true")
+  inspect(f("a", "b") == false, "true")
+}
+
+test "String::equals called by name, as a value, and eq on strings" {
+  let s = String::concat("a", "b")
+  let by_value = String::equals
+  inspect([String::equals(s, s)], "[true]")
+  inspect(String::equals(s, "ab") == true, "true")
+  inspect([by_value(s, s), by_value(s, "a")], "[true, false]")
+  inspect([eq(s, s)], "[true]")
+  inspect(eq(s, "ab") == true, "true")
+}
+
+test "controls" {
+  let x = f("a", "a")
+  inspect(x, "true")
+  inspect("\{f("a", "a")}", "true")
+  inspect([f(1, 1)], "[true]")
+  inspect([f(1.5, 1.5)], "[true]")
+  inspect([f(true, true)], "[true]")
+  let p = Pt::{ v: 1 }
+  inspect([f(p, p)], "[true]")
+  inspect([g("a")], "[1]")
+  inspect([h("a", "a")], "[true]")
+}
