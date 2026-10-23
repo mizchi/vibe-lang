@@ -173,3 +173,22 @@ test "two aliases of one name from two modules: a row-free reading is refused" {
   let msg = refusals("type Thunk = () -> Int\nfn mk() -> Thunk {\n  () -> 9\n}\ntype Thunk = () -> Int with Box[String]\nfn go() -> Int {\n  run_str(mk())\n}\n")
   inspect(String::starts_with(msg, "declare the effect row on the function type `mk` returns"), "true")
 }
+
+test "a closure at a field whose row names the struct's type parameter needs the type arguments" {
+  // #3611: `f: () -> Int with Box[T]` gives a literal the row `Box[String]`
+  // only where `String` is written: on the literal or on the annotation of
+  // its binding. Inferred, the literal kept no handler parameter while a call
+  // through the field passed one, and the program trapped.
+  let holder = "struct Holder[T] {\n  f: () -> Int with Box[T]\n}\n"
+  let inferred = refusals(String::concat(holder, "fn go() -> Int {\n  let h = Holder::{ f: () -> 9 }\n  run_str(h.f)\n}\n"))
+  inspect(String::starts_with(inferred, "write the type arguments of `Holder` on the literal (`Holder[..]::{ .. }`) or annotate the binding it is assigned to"), "true")
+  inspect(String::contains(inferred, "the field `f` is declared `with Box[T]`, which names the type parameter `T`"), "true")
+  let returned = refusals(String::concat(holder, "fn mk() -> Holder[String] {\n  Holder::{ f: () -> 9 }\n}\nfn go() -> Int {\n  run_str(mk().f)\n}\n"))
+  inspect(String::starts_with(returned, "write the type arguments of `Holder`"), "true")
+  inspect(refusals(String::concat(holder, "fn go() -> Int {\n  let h = Holder[String]::{ f: () -> 9 }\n  run_str(h.f)\n}\n")), "clean")
+  inspect(refusals(String::concat(holder, "fn go() -> Int {\n  let h: Holder[String] = Holder::{ f: () -> 9 }\n  run_str(h.f)\n}\n")), "clean")
+  inspect(refusals(String::concat(holder, "fn go() -> Int {\n  let h = Holder::{ f: () -> Int with Box[String] { 9 } }\n  run_str(h.f)\n}\n")), "clean")
+  // A written argument a row item cannot spell asks for an alias that names it.
+  let tuple = refusals(String::concat(holder, "fn go() -> Int {\n  let h = Holder[(Int, Int)]::{ f: () -> 9 }\n  run_str(h.f)\n}\n"))
+  inspect(String::starts_with(tuple, "name the type argument of `Holder` with a `type` alias"), "true")
+}

@@ -74,11 +74,14 @@ import ./evidence_free_names.vibe {
 }
 
 import ./evidence_declared_slots.vibe {
+  edp_ascribed_record_targs,
   edp_expr_builds_row_field,
   edp_field_slot,
   edp_field_slot_callee,
   edp_note_program_aliases,
   edp_note_row_field_structs,
+  edp_record_targs_under,
+  edp_refuse_unread_field_row,
   edp_result_slot,
   edp_tuple_result_types
 }
@@ -247,7 +250,18 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
     }
     match body {
       Some(e) => if edp_expr_passes_literal_arg(e, pure_names) || edp_expr_passes_value_to_slot(e, slot_callees) || edp_expr_builds_row_field(e) {
-        let stamped = edp_stamp_expr(e, stmts, fn_index, [], pure_names)
+        // #3611: an annotated top-level record takes the annotation's
+        // type arguments into its fields' rows.
+        let ann = match stmt {
+          SLet(_, _, _, ty, _) => ty,
+          SLetMut(_, ty, _) => ty,
+          _ => None
+        }
+        let top: Array[String] = []
+        let stamped = match e {
+          ERecord(_, _, _) => edp_stamp_record(e, edp_record_targs_under(stmts, ann, e), stmts, fn_index, top, pure_names),
+          _ => edp_stamp_expr(e, stmts, fn_index, top, pure_names)
+        }
         match stmt {
           SLet(exported, is_rec, nm, ty, _) => Array::set(stmts, i, SLet(exported, is_rec, nm, ty, stamped)),
           SLetMut(nm, ty, _) => Array::set(stmts, i, SLetMut(nm, ty, stamped)),
@@ -1486,7 +1500,12 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[In
   match e {
     ECall(callee, args, off, res) => match edp_alias_ascribed_literal(callee, args, stmts, scope) {
       Some(lit) => edp_stamp_expr(lit, stmts, fn_index, scope, pure_names),
-      None => edp_stamp_call(callee, args, off, res, stmts, fn_index, scope, pure_names)
+      None => match edp_ascribed_record_targs(stmts, callee, args) {
+        Some(targs) => ECall(callee, [
+          edp_stamp_record(Array::get(args, 0), targs, stmts, fn_index, scope, pure_names)
+        ], off, res),
+        None => edp_stamp_call(callee, args, off, res, stmts, fn_index, scope, pure_names)
+      }
     },
     EFn(tps, tbs, params, ret, eff, body) => {
       let base = Array::length(scope)
@@ -1600,24 +1619,36 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[In
     EArray(items) => EArray(for a in items {
       edp_stamp_expr(a, stmts, fn_index, scope, pure_names)
     }),
-    // #3582: a field whose declared type carries a row is a slot like a
-    // parameter of that type: whoever reads the field calls it with the dict.
-    ERecord(n, fields, tas) => ERecord(n, for f in fields {
-      let (fn2, v) = f
-      let v2 = edp_stamp_expr(v, stmts, fn_index, scope, pure_names)
-      match edp_field_slot(n, fn2) {
-        Some(slot) => {
-          edp_set_slot_callee(edp_field_slot_callee(n, fn2), true)
-          (fn2, edp_stamp_slot_arg_at(v2, scope, pure_names, Some(slot)))
-        },
-        None => (fn2, v2)
-      }
-    }, tas),
+    ERecord(_, _, tas) => edp_stamp_record(e, tas, stmts, fn_index, scope, pure_names),
     EMap(fields) => EMap(for f in fields {
       let (fn2, v) = f
       (fn2, edp_stamp_expr(v, stmts, fn_index, scope, pure_names))
     }),
     ESpread(x) => ESpread(edp_stamp_expr(x, stmts, fn_index, scope, pure_names)),
+    _ => e
+  }
+}
+
+/// #3582: the record `e` with each value at a field whose declared type
+/// carries a row stamped like an argument at a parameter of that type:
+/// whoever reads the field calls it with the dict. `targs` are the struct's
+/// type arguments the record is built at (#3611, `edp_record_targs_under`).
+fn edp_stamp_record(e: Expr, targs: Array[TypeExpr], stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  match e {
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      let v2 = edp_stamp_expr(v, stmts, fn_index, scope, pure_names)
+      match edp_field_slot(n, fn2, targs) {
+        Some(slot) => {
+          edp_set_slot_callee(edp_field_slot_callee(n, fn2), true)
+          (fn2, edp_stamp_slot_arg_at(v2, scope, pure_names, Some(slot)))
+        },
+        None => {
+          edp_refuse_unread_field_row(n, fn2, targs, v2, scope, pure_names)
+          (fn2, v2)
+        }
+      }
+    }, tas),
     _ => e
   }
 }
