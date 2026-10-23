@@ -186,7 +186,10 @@ export fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, A
                 impl_params: info.type_params,
                 impl_target: Some(info.target),
                 constructor_recvs,
-                nested_recvs
+                nested_recvs,
+                param_types: for p in params {
+                  p.1
+                }
               }),
               None => Array::push(out, DictGen::{
                 name: fname,
@@ -197,7 +200,10 @@ export fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, A
                 impl_params: [],
                 impl_target: None,
                 constructor_recvs,
-                nested_recvs
+                nested_recvs,
+                param_types: for p in params {
+                  p.1
+                }
               })
             }
           } else {
@@ -383,19 +389,81 @@ export fn specialize_applied_trait_for_target(trait_name: String, callee_params:
   }
 }
 
-export fn generic_impl_bound_target(gens: Array[DictGen], method_name: String, type_param: String, actual: TypeExpr) -> Option[TypeExpr] {
+/// The type the witness method `method_name`'s threaded formal `type_param`
+/// stands for when the trait dispatches it at `actual`. `sig_params` are the
+/// trait method's declared value parameters.
+///
+/// #3569: the method's OWN annotations answer first. A bodyless impl's
+/// fallback (`impl [T: Eq] Name for Tag[T]` with `fn Tag::name[U: Eq](self:
+/// Tag[U])`) is an ordinary function: it carries no impl target, and its
+/// formals need not be spelled, or ordered, like the impl's
+/// (`fn Duo::same[B, A: Eq](self: Duo[B, A])` for `impl [A, B: Eq] .. for
+/// Duo[A, B]`). Answering None here left the dictionary unbuilt and the call
+/// through the trait one argument short, which the wasm validator rejected.
+/// Every parameter the trait declares as `Self` carries `actual`, so matching
+/// the method's annotation there against `actual` binds the method's own
+/// formals. (Only parameters: a formal that only the result carries is not
+/// threaded at all, and is refused where it is dispatched.) An impl method
+/// with a body binds the impl's formals, and falls back to the impl target as
+/// before.
+export fn generic_impl_bound_target(gens: Array[DictGen], method_name: String, type_param: String, sig_params: Array[TypeExpr], actual: TypeExpr) -> Option[TypeExpr] {
   match lookup_gen_entry(gens, method_name) {
-    Some(gen) => match gen.impl_target {
-      Some(target) => {
-        let bindings = []
-        if impl_target_pattern_matches(target, actual, gen.impl_params, bindings) {
-          impl_pattern_binding(bindings, type_param)
-        } else {
-          None
-        }
-      },
-      None => None
+    Some(gen) => match own_formal_target(gen, type_param, sig_params, actual) {
+      Some(found) => Some(found),
+      None => match gen.impl_target {
+        Some(target) => {
+          let bindings = []
+          if impl_target_pattern_matches(target, actual, gen.impl_params, bindings) {
+            impl_pattern_binding(bindings, type_param)
+          } else {
+            None
+          }
+        },
+        None => None
+      }
     },
     None => None
   }
+}
+
+fn is_self_type(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => n == "Self",
+    _ => false
+  }
+}
+
+/// `type_param`'s binding from matching a `Self`-position annotation of `gen`
+/// against `actual`, with `gen`'s own formals as the pattern variables.
+fn own_formal_target(gen: DictGen, type_param: String, sig_params: Array[TypeExpr], actual: TypeExpr) -> Option[TypeExpr] {
+  let formals = for tp in gen.type_params {
+    type_param_name(tp)
+  }
+  let anns: Array[TypeExpr] = []
+  let mut i = 0
+  while i < Array::length(sig_params) && i < Array::length(gen.param_types) {
+    if is_self_type(Array::get(sig_params, i)) {
+      match Array::get(gen.param_types, i) {
+        Some(ann) => Array::push(anns, ann),
+        None => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let mut out = None
+  for ann in anns {
+    if out is None {
+      let bindings = []
+      if impl_target_pattern_matches(ann, actual, formals, bindings) {
+        out = impl_pattern_binding(bindings, type_param)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  }
+  out
 }

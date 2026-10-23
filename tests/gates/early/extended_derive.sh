@@ -546,6 +546,9 @@ ur_refused fixtures/err_threaded_generic_exception_arm_value_refused.vibe 'its `
 # #3287: a call whose argument does not say what the nested formal is.
 ur_refused fixtures/err_eq_nested_witness_unreadable_refused.vibe 'the type `T` stands for is needed for its `Eq` witness and is not available here' 'annotate the argument this call reads `T` from'
 ur_refused fixtures/err_eq_nested_witness_fn_unreadable_refused.vibe 'the type `T` stands for is needed for its `Eq` witness and is not available here' 'annotate the argument this call reads `T` from'
+# #3569: a bodyless impl's fallback whose bounded formal no `Self` parameter
+# spells; its witness was left out and the call failed wasm validation.
+ur_refused fixtures/err_impl_bodyless_fallback_formal_unreadable_refused.vibe 'the `Eq` witness for `U` is read only from that parameter' 'spell `U` in the type of `Tag::name`'"'"'s `Self` parameter'
 ur_refused fixtures/err_eq_witness_missing_refused.vibe 'the `Eq` witness for `T` does not reach this comparison' 'compare at a concrete type, or pass the comparison in as a parameter'
 # #3297: a comparison whose complete type does not reach the ladder, known
 # only by its generic head or by an `Ok` / `Err` payload typed by a formal.
