@@ -564,9 +564,10 @@ ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a 
 # #3540: a handler arm's effects belong to the handlers around its `handle`.
 # Where the lowering that guarantees that cannot take the program, the build
 # is refused with the edit instead of answering through a nested handler.
-ur_refused fixtures/err_handle_arm_throw_inner_catch_refused.vibe 'an exception handler between the `perform` and this `handle` would catch it' 'resume with a value and `throw` after this `handle`' linear 'fixtures/err_handle_arm_throw_inner_catch_refused.vibe: line 21:28'
+# (An arm's throw beside a sibling `Exception` arm used to be refused here; since
+# #3583 the set lowers as nested handles the driver runs, and it answers `-5`
+# in fixtures/handle_two_effects_callee_test.vibe.)
 ur_refused fixtures/err_handle_arm_effect_cycle_refused.vibe 'handler arms of the effects `Ask` and `Log` each perform another of them' 'move the `perform` out of one of those arms' linear 'fixtures/err_handle_arm_effect_cycle_refused.vibe: line 37:15'
-ur_refused fixtures/err_handle_arm_throw_inner_catch_refused.vibe 'an exception handler between the `perform` and this `handle` would catch it' 'resume with a value and `throw` after this `handle`' gc 'fixtures/err_handle_arm_throw_inner_catch_refused.vibe: line 21:28'
 ur_refused fixtures/err_handle_arm_effect_cycle_refused.vibe 'handler arms of the effects `Ask` and `Log` each perform another of them' 'move the `perform` out of one of those arms' gc 'fixtures/err_handle_arm_effect_cycle_refused.vibe: line 37:15'
 # #3547: an arm's `return` (not a `resume` capture) sent this handle to the
 # lowering that cannot take a call inside a `for`; the refusal names the

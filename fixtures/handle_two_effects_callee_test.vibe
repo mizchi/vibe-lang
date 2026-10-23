@@ -217,3 +217,21 @@ test "a throw in the body abandons the body" {
   }
   inspect(r, "-1")
 }
+
+fn ask_with_int_catch() -> Int with Ask {
+  handle {
+    perform Ask::Ask() + 1
+  } with { Exception[Int]::Throw(code) => code * 2 }
+}
+
+// Was refused before the split (#3540, #2987): an arm's throw skips the
+// callee's `Exception[Int]` arm and the set's sibling arm, and reaches the
+// handler around the set.
+test "an arm's throw skips an inner kinded arm and the sibling arm" {
+  let r = handle {
+    handle {
+      ask_with_int_catch()
+    } with { Ask::Ask() => throw("mixed"); Exception[String]::Throw(_) => -4 }
+  } with { Exception[String]::Throw(_) => -5 }
+  inspect(r, "-5")
+}
