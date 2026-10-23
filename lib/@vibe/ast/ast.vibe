@@ -623,6 +623,46 @@ export fn impl_method_owner_head(owner: String) -> String {
   }
 }
 
+/// #3573: the trait key an `$impl$` owner segment carries (`impl_method_owner`
+/// encodes it between `$impl$` and the next `$`), or "" for an owner with no
+/// segment -- a plain impl, whose method binding names only the target head.
+export fn impl_method_owner_trait_key(owner: String) -> String {
+  let sep = String::index_of(owner, "$impl$")
+  if sep < 0 {
+    ""
+  } else {
+    match impl_decode_name(owner, sep + 6, '$') {
+      Some(decoded) => decoded.0,
+      None => ""
+    }
+  }
+}
+
+fn type_expr_mentions_name(te: TypeExpr, name: String) -> Bool {
+  match te {
+    TyName(n) => n == name,
+    TyApp(head, args) => head == name || Array::any(args, (a) -> type_expr_mentions_name(a, name)),
+    TyFn(params, ret, _) => Array::any(params, (p) -> type_expr_mentions_name(p, name)) || type_expr_mentions_name(ret, name),
+    TyTuple(items) => Array::any(items, (i) -> type_expr_mentions_name(i, name)),
+    TyUnit => false
+  }
+}
+
+/// #3573: whether `Self` in an impl method's signature can be spelled as the
+/// impl's target. An applied target (`Box[T]`, `Box[Int]`) is the type
+/// itself. A bare target is when the impl binds no formals of its own -- `impl
+/// [T] Len for Array` names every instantiation, so its `Self` has no
+/// spelling. Nor does a target whose name the method's own binder rebinds:
+/// written in the method, it would name the method's formal.
+export fn impl_self_spellable(impl_tparams: Array[String], target: TypeExpr, method_tparams: Array[String]) -> Bool {
+  let shape_ok = match target {
+    TyApp(_, _) => true,
+    TyName(name) => name != "" && Array::length(impl_tparams) == 0,
+    _ => false
+  }
+  shape_ok && !Array::any(method_tparams, (tp) -> type_expr_mentions_name(target, type_param_name(tp)))
+}
+
 /// Is this declared type exactly `Array[Int]`?
 ///
 /// #2348 part 2: the one place three passes ask the same question about an

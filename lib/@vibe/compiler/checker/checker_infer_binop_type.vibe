@@ -2403,6 +2403,30 @@ export fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeE
 /// instantiate it (the previous shallow lookup only handled the outermost name).
 export fn resolve_tparams_in(ty: Type, env: TypeEnv) -> Type {
   match ty {
+    // #3573: inside an impl method, `Self` is the impl's target -- in the
+    // signature and in a body annotation alike (`bind_impl_self_type`). The
+    // target is not itself searched for a `Self`: an impl target cannot
+    // spell one.
+    CtNamed(name, args) => if name == "Self" && Array::length(args) == 0 {
+      match env_lookup(env, impl_self_type_key) {
+        Some(target) => resolve_tparams_in(target, env),
+        None => resolve_tparams_in_core(ty, env)
+      }
+    } else {
+      resolve_tparams_in_core(ty, env)
+    },
+    _ => resolve_tparams_in_core(ty, env)
+  }
+}
+
+/// #3573: the env key under which an impl method's value is checked with its
+/// impl's target, so `Self` resolves to it (`resolve_tparams_in`). Bound only
+/// around the value, like `trait_erased_type_param_prefix`; no source can
+/// spell the name.
+export let impl_self_type_key: String = "#impl.self"
+
+fn resolve_tparams_in_core(ty: Type, env: TypeEnv) -> Type {
+  match ty {
     CtNamed(name, args) => {
       // #3589: a row variable passed to a struct's row parameter stays one.
       let pins = if row_formal_arg_candidate(name, args) {

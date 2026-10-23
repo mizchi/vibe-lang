@@ -105,20 +105,26 @@ fn constructor_substs_from_recvs(recvs: Array[(String, Int)], orig_args: Array[E
 /// arity of the dictionary slot that holds it. The first signature of that
 /// name wins, as in the flattened table the dictionary struct is built from.
 fn trait_method_arity(sigs: Array[(String, Array[TypeExpr], TypeExpr)], method: String) -> Int {
-  let mut arity = 0
+  Array::length(trait_method_params(sigs, method))
+}
+
+/// The value parameters the trait declares for `method`; the first signature
+/// of that name wins, as for `trait_method_arity`.
+fn trait_method_params(sigs: Array[(String, Array[TypeExpr], TypeExpr)], method: String) -> Array[TypeExpr] {
+  let mut out: Array[TypeExpr] = []
   let mut found = false
   let mut i = 0
   while !found && i < Array::length(sigs) {
     let (m, params, _) = Array::get(sigs, i)
     if m == method {
-      arity = Array::length(params)
+      out = params
       found = true
     } else {
       ()
     }
     i = i + 1
   }
-  arity
+  out
 }
 
 fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Option[Expr]) -> Option[Expr] with Exception {
@@ -210,7 +216,7 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
               let mut subok = true
               while bi < Array::length(threaded) {
                 let (type_param, btrait, _) = Array::get(threaded, bi)
-                let nested_target = match generic_impl_bound_target(gens, qm, type_param, actual_target) {
+                let nested_target = match generic_impl_bound_target(gens, qm, type_param, trait_method_params(sigs, m), actual_target) {
                   Some(target) => Some(target),
                   None => match arg_expr {
                     Some(value) => match first_array_elem(value) {
@@ -235,6 +241,11 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
                       // call one dictionary short, which the wasm validator
                       // rejected after a clean check.
                       TyName(head) => throw("annotate the argument's full type before this trait call (for example `let x: " + head + "[Int] = ..`): the type argument `" + type_param + "` of `" + head + "` needed for its `" + trait_ref_name(btrait) + "` witness is not available here"),
+                      // #3569: the type is known, but no `Self` position of
+                      // the method spells `type_param` (nor the impl target),
+                      // so nothing says which part of it the formal is.
+                      // Leaving the dictionary out emitted the call short.
+                      TyApp(head, _) => throw("spell `" + type_param + "` in the type of `" + qm + "`'s `Self` parameter (for example `self: " + head + "[" + type_param + "]`), or replace `" + type_param + "` with the concrete type it stands for: the trait calls `" + qm + "` with a `" + head + "`, and the `" + trait_ref_name(btrait) + "` witness for `" + type_param + "` is read only from that parameter"),
                       _ => ()
                     }
                     subok = false

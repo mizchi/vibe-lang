@@ -99,4 +99,30 @@ write_manifest; rm -rf "$work/out"
 VIBE_ENSURE_SEED_REBUILD_CMD="$rebuild_good" bash scripts/ensure_seed.sh --manifest "$work/seed.json" >/dev/null 2>&1 || fail "atomic: rerun failed"
 [ "$(ls "$work/out" | wc -l | tr -d ' ')" = "1" ] || fail "atomic: staging file left behind: $(ls "$work/out")"
 
-echo "[ensure-seed-test] ok (absent-tag opt-out fails fast, absent-tag matching rebuild installs, absent-tag mismatching rebuild refused, published-but-broken fatal without rebuild, unknown remote fatal without rebuild, atomic install)"
+# 7. A git hook exports GIT_INDEX_FILE for the commit in progress (#3617).
+#    The real rebuild checks the source commit out with `git worktree add`,
+#    which wrote that commit's tree through the inherited variable into the
+#    COMMITTING index. Point GIT_INDEX_FILE at a sentinel index of another
+#    repository and reach the real checkout (no rebuild hook): the source
+#    commit pins the missing tag itself, so the run stops right after the
+#    checkout, and the sentinel must be byte-identical afterwards.
+git init -q "$work/proj"
+mkdir -p "$work/proj/bootstrap"
+printf '{"schema":1,"seed":{"tag":"%s"}}\n' "$missing_tag" > "$work/proj/bootstrap/seed.json"
+git -C "$work/proj" add bootstrap/seed.json
+git -C "$work/proj" -c user.email=t@t -c user.name=t commit -q -m pins-itself
+proj_commit="$(git -C "$work/proj" rev-parse HEAD)"
+git init -q "$work/victim"
+printf 'victim\n' > "$work/victim/only_in_victim.txt"
+git -C "$work/victim" add only_in_victim.txt
+cp "$work/victim/.git/index" "$work/sentinel-index"
+sentinel_sha="$(sha256_of "$work/sentinel-index")"
+sed "s/0000000000000000000000000000000000000000/$proj_commit/" "$work/seed.json" > "$work/seed-hook.json"
+rm -rf "$work/out"
+if GIT_INDEX_FILE="$work/sentinel-index" VIBE_PROJECT_ROOT="$work/proj" bash scripts/ensure_seed.sh --manifest "$work/seed-hook.json" >"$work/7.log" 2>&1; then
+  fail "hook env: expected the pins-itself refusal, got success"
+fi
+grep -q "pins '$missing_tag' itself" "$work/7.log" || fail "hook env: the run did not reach the source checkout: $(cat "$work/7.log")"
+[ "$(sha256_of "$work/sentinel-index")" = "$sentinel_sha" ] || fail "hook env: the rebuild checkout wrote into the inherited GIT_INDEX_FILE (#3617)"
+
+echo "[ensure-seed-test] ok (absent-tag opt-out fails fast, absent-tag matching rebuild installs, absent-tag mismatching rebuild refused, published-but-broken fatal without rebuild, unknown remote fatal without rebuild, atomic install, hook index untouched)"

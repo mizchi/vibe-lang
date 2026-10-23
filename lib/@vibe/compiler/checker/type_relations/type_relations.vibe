@@ -1612,6 +1612,60 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
   check_assignable_for(expected, actual, s, errors, what, "", off)
 }
 
+/// #3598: where two alternatives of one value -- the branches of an `if`, the
+/// arms of a `match`, the elements of an array literal -- differ only in
+/// their function effect rows and the LATER one is the wider, the value's
+/// type is the later one. The alternatives used to be joined at the FIRST
+/// one's type, so `if c { () -> 1 } else { mk }` with `mk` throwing was
+/// refused as dropping `mk`'s row while the swapped spelling checked clean:
+/// a pure function stands where an effectful one is expected, not the other
+/// way round. Answers the substitution of checking `anchor` against a
+/// `later` slot when that check is clean and the forward one (`later` into
+/// an `anchor` slot) would be refused; otherwise `None`, and the caller
+/// reports through its usual `check_assignable`. Only the subtype order is
+/// used, never a union of rows, so the join is always one of the two types
+/// written: a branch whose row the context does not allow is still refused
+/// at that context (the annotation, the result type, the parameter).
+export fn branch_join_widens(anchor: Type, later: Type, s: Subst) -> Option[Subst] {
+  match unify(anchor, later, s) {
+    Some(_) => None,
+    None => match unify(strip_effects(anchor), strip_effects(later), s) {
+      None => None,
+      Some(_) => {
+        // The probes report into scratch arrays; a pending span end or
+        // enclosing path belongs to the caller's real report, so it is
+        // restored rather than consumed here.
+        let saved_end = if Array::length(assignable_span_end) > 0 {
+          Array::get(assignable_span_end, 0)
+        } else {
+          0
+        }
+        let saved_enclosing = if Array::length(assignable_enclosing) > 0 {
+          Array::get(assignable_enclosing, 0)
+        } else {
+          ""
+        }
+        let fwd: Array[String] = array_empty()
+        let _ = check_assignable_for(anchor, later, s, fwd, "", "", 0 - 1)
+        let out = if Array::length(fwd) == 0 {
+          None
+        } else {
+          let rev: Array[String] = array_empty()
+          let rev_s = check_assignable_for(later, anchor, s, rev, "", "", 0 - 1)
+          if Array::length(rev) == 0 {
+            Some(rev_s)
+          } else {
+            None
+          }
+        }
+        check_assignable_set_end(saved_end)
+        check_assignable_set_enclosing(saved_enclosing)
+        out
+      }
+    }
+  }
+}
+
 /// #2386: `check_assignable` with the report's subject split in two so the
 /// message is built only when a mismatch is reported. Every call site with a
 /// per-call subject (`"argument type mismatch for " ++ label`) used to build

@@ -312,6 +312,26 @@ export fn http_client_surface_to_raw(name: String) -> String {
   }
 }
 
+/// #3615: is `name` a generated BUILTIN declared `-> Bool` whose body returns
+/// the UNTAGGED 0/1 of a raw comparison?
+///
+/// `String::equals` is registered as the `str_eq` helper and `eq` as the
+/// `eq` helper. Both are also what the `==` lowering calls, and that lowering
+/// tags the result itself under RC, so their bodies stay raw (as do the
+/// builtin bodies -- `String::starts_with`, `String::index_of`, ... -- that
+/// call `str_eq` internally). Every other Bool builtin tags its own result.
+/// A call that reaches one of these two by NAME -- a direct
+/// `String::equals(a, b)`, its value form (eta-expanded to such a call), the
+/// `Eq` witness for `String` (`dtd_builtin_witness`), or an `eq(a, b)` whose
+/// operands are not provably scalar -- must tag like `==` does. Without it a
+/// `true` reached the program as raw `1`, which on the RC lane is neither
+/// `true` (`1 << 1`) nor an immediate: `String::equals(s, s) == true`
+/// answered `false`, and the same value held in an array, tuple or `Some`
+/// was read as a heap pointer by `__rt_rc_drop` and trapped out of bounds.
+fn cc_builtin_returns_raw_bool(name: String) -> Bool {
+  name == "String::equals" || name == "eq"
+}
+
 /// The call shape a callee takes once no special-case arm of
 /// `compile_call_core` applies: a direct call when the name resolves to a
 /// func_table entry that no in-scope local shadows (#875), else a closure
@@ -410,6 +430,13 @@ export fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr],
     emit_call(buf, fidx)
     if has_ret == 0 {
       emit_i64_const(buf, 0)
+    }
+    // #3615: see `cc_builtin_returns_raw_bool`.
+    if ctx.enable_rc && fn_idx_in_list >= ctx.num_user_funcs && cc_builtin_returns_raw_bool(Array::get(ctx.func_table.names, fn_idx_in_list)) {
+      emit_i64_const(buf, 1)
+      emit_i64_shl(buf)
+    } else {
+      ()
     }
     let mut ti = 0
     while ti < Array::length(tmp_drops) {

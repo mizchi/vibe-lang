@@ -5,7 +5,7 @@ import ./parser_source_span.vibe {
 }
 
 import @vibe/ast {
-  Expr, ImportItem, Pat, Stmt, TypeExpr, impl_method_binding_name, index_write_callee
+  Expr, ImportItem, Pat, Stmt, TypeExpr, impl_method_binding_name, impl_self_spellable, index_write_callee
 }
 
 import ./intern.vibe {
@@ -92,6 +92,41 @@ import ./parser_binder_context.vibe {
 //# Functions
 
 let parser_mode_block = 20
+
+/// #3573: `Self` in an impl method's signature read as the impl's target.
+/// Left as written, it was a wildcard: `mk(self: Self) -> Self` in `impl W for
+/// P` returned a `Q` and compiled clean, and in an applied impl (`impl It[Int]
+/// for P`) it was refused as an unknown type. A constructor application
+/// `Self[A]` takes the target as its head when the target is a bare name.
+fn impl_self_as_target(te: TypeExpr, target: TypeExpr) -> TypeExpr {
+  match te {
+    TyName(name) => if name == "Self" {
+      target
+    } else {
+      te
+    },
+    TyApp(head, args) => {
+      let mapped = for a in args {
+        impl_self_as_target(a, target)
+      }
+      match target {
+        TyName(tn) => if head == "Self" {
+          TyApp(tn, mapped)
+        } else {
+          TyApp(head, mapped)
+        },
+        _ => TyApp(head, mapped)
+      }
+    },
+    TyFn(params, ret, eff) => TyFn(for p in params {
+      impl_self_as_target(p, target)
+    }, impl_self_as_target(ret, target), eff),
+    TyTuple(items) => TyTuple(for i in items {
+      impl_self_as_target(i, target)
+    }),
+    TyUnit => TyUnit
+  }
+}
 
 fn empty_names() -> Array[String] {
   ArrayBuilder::freeze(ArrayBuilder::new())
@@ -733,7 +768,28 @@ fn parse_impl_methods(tokens: Array[Token], starts: Array[Int], pos: Int, simpl:
             done = true
           },
           TIdent(mname) => {
-            let (efn, p2) = parse_impl_with_binder_context(tokens, method_starts, p + 1, 0, context)
+            let (efn_written, p2) = parse_impl_with_binder_context(tokens, method_starts, p + 1, 0, context)
+            // #3573: `Self` in the method's signature is the impl's target.
+            let efn = match source_expr(efn_written) {
+              EFn(mtp, mtb, mparams, mret, meff, mbody) => if impl_self_spellable(impl_tparams, impl_target, mtp) {
+                let as_target = (te: TypeExpr) -> TypeExpr {
+                  impl_self_as_target(te, impl_target)
+                }
+                source_rewrap_expr(efn_written, EFn(mtp, mtb, for mp in mparams {
+                  let (pname, pann) = mp
+                  (pname, match pann {
+                    Some(te) => Some(as_target(te)),
+                    None => None
+                  })
+                }, match mret {
+                  Some(te) => Some(as_target(te)),
+                  None => None
+                }, meff, mbody))
+              } else {
+                efn_written
+              },
+              _ => efn_written
+            }
             let efn2 = if Array::length(impl_tparams) > 0 {
               match source_expr(efn) {
                 EFn(mtp, mtb, mparams, mret, meff, mbody) => source_rewrap_expr(efn, EFn(Array::concat(impl_tparams, mtp), Array::concat(impl_tbounds, mtb), mparams, mret, meff, mbody)),

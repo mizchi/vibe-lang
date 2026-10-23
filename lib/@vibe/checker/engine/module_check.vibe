@@ -1,5 +1,5 @@
 import @vibe/ast {
-  TypeExpr
+  TypeExpr, impl_method_owner_head, impl_method_owner_trait_key, trait_ref_name
 }
 import @vibe/compiler/core {
   BindingOrigin, EnvValueBinding, Expr, Stmt, Type, TypeDef
@@ -95,9 +95,52 @@ fn engine_locate_fn_name_marker(source: String, msg: String, mi: Int) -> String 
     if off >= 0 {
       String::concat(engine_offset_line_col_range_prefix(source, off, off + String::length(name)), stripped)
     } else {
-      engine_locate_type_error_heuristic(source, stripped)
+      let (s, e) = engine_impl_method_binding_span(source, name, stripped)
+      if s >= 0 {
+        String::concat(engine_offset_line_col_range_prefix(source, s, e), stripped)
+      } else {
+        engine_locate_type_error_heuristic(source, stripped)
+      }
     }
   }
+}
+
+/// #3573: an impl method's binding (`P::get`, or `P$impl$<trait>$<target>::
+/// pass` for an applied impl) is written nowhere as `fn` / `let`, so its
+/// `[@fn=]` marker found no anchor and ``unknown type `Self` in parameter
+/// `self` `` came out with no position. Locate it in the impl block instead:
+/// the parameter the message names, the return type, or the method name. The
+/// trait comes from the owner's `$impl$` segment; a plain impl's owner names
+/// none, and any impl of the owner that defines the method is taken.
+fn engine_impl_method_binding_span(source: String, name: String, msg: String) -> (Int, Int) {
+  let sep = String::index_of(name, "::")
+  if sep <= 0 {
+    return (0 - 1, 0 - 1)
+  }
+  let owner_full = String::substring(name, 0, sep)
+  let method = String::substring(name, sep + 2, String::length(name))
+  let key = impl_method_owner_trait_key(owner_full)
+  let trait_head = if key == "" {
+    ""
+  } else {
+    trait_ref_name(key)
+  }
+  let param_marker = " in parameter `"
+  let param_at = String::index_of(msg, param_marker)
+  let (part, param) = if param_at >= 0 {
+    let rest = String::substring(msg, param_at + String::length(param_marker), String::length(msg))
+    let close = String::index_of(rest, "`")
+    if close > 0 {
+      ("param", String::substring(rest, 0, close))
+    } else {
+      ("name", "")
+    }
+  } else if String::index_of(msg, " in the return type") >= 0 {
+    ("ret", "")
+  } else {
+    ("name", "")
+  }
+  engine_impl_method_span(source, trait_head, impl_method_owner_head(owner_full), method, part, param)
 }
 
 /// Decode (and ALWAYS strip) the ` [@off=N]` marker the checker may have
@@ -799,7 +842,8 @@ fn engine_impl_method_name_index(tokens: Array[Token], trait_head: String, owner
       TImpl => {
         let mut j = i + 1
         let mut depth = 0
-        let mut saw_trait = false
+        // An empty `trait_head` takes an impl of any trait (#3573).
+        let mut saw_trait = trait_head == ""
         let mut owner_ok = false
         let mut header_done = false
         while j < n && !header_done {

@@ -1,0 +1,53 @@
+//# #3573: `Self` names the impl's target in every impl.
+//
+// `self: Self` in an impl of a parameterized trait was refused as an unknown
+// type, with no position; in a plain impl it was accepted as a wildcard, so a
+// method declared `-> Self` could return another struct. These pin both
+// sides, the located diagnostics, and the spelling an applied impl's method is
+// reached by.
+
+import ./checker_parity_test_support.vibe {
+  check_source_error_message, check_source_located_err_contains, check_source_ok
+}
+
+let applied_head: String = "trait It[A] {\n  pass(Self, A) -> A\n}\nstruct P {\n  k: Int\n}\n"
+
+test "self: Self in an applied impl is accepted" {
+  let src = applied_head + "impl It[Int] for P {\n  pass(self: Self, a: Int) -> Int {\n    a + self.k\n  }\n}\nfn main() -> Int { It::pass(P::{ k: 1 }, 2) }\n"
+  assert(check_source_ok(src))
+}
+
+test "Self beside a method-level generic in an applied impl is accepted" {
+  let src = "trait Mk[A] {\n  mk[U](Self, A, U) -> (A, U)\n}\nstruct P {\n  k: Int\n}\nimpl Mk[Int] for P {\n  mk[U](self: Self, a: Int, u: U) -> (Int, U) {\n    (a + self.k, u)\n  }\n}\nfn main() -> Int {\n  let (a, _) = Mk::mk(P::{ k: 1 }, 2, true)\n  a\n}\n"
+  assert(check_source_ok(src))
+}
+
+test "an unknown type in an applied impl's method is located" {
+  let src = applied_head + "impl It[Int] for P {\n  pass(self: Selff, a: Int) -> Int {\n    a\n  }\n}\n"
+  assert(check_source_located_err_contains(src, "line 8:8-12: unknown type `Selff` in parameter `self`"))
+}
+
+test "an unknown type in a plain impl's method is located" {
+  let src = "trait W {\n  get(Self) -> Int\n}\nstruct P {\n  k: Int\n}\nimpl W for P {\n  get(self: Selff) -> Int {\n    1\n  }\n}\n"
+  assert(check_source_located_err_contains(src, "line 8:7-11: unknown type `Selff` in parameter `self`"))
+}
+
+test "a result declared Self is held to the target" {
+  let src = "trait W {\n  mk(Self) -> Self\n}\nstruct P {\n  k: Int\n}\nstruct Q {\n  k: Int\n}\nimpl W for P {\n  mk(self: Self) -> Self {\n    Q::{ k: 5 }\n  }\n}\n"
+  inspect(String::contains(check_source_error_message(src), "expected P, got Q"), content = "true")
+}
+
+test "a body annotation of Self is held to the target" {
+  let src = "trait W {\n  get(Self) -> Int\n}\nstruct P {\n  k: Int\n}\nstruct Q {\n  k: Int\n}\nimpl W for P {\n  get(self: Self) -> Int {\n    let other: Self = Q::{ k: 7 }\n    other.k\n  }\n}\n"
+  inspect(String::contains(check_source_error_message(src), "expected P, got Q"), content = "true")
+}
+
+test "Self in an applied impl is held to the target" {
+  let src = applied_head + "struct Q {\n  k: Int\n}\ntrait Bump[A] {\n  bump(Self, A) -> Self\n}\nimpl Bump[Int] for P {\n  bump(self: Self, a: Int) -> Self {\n    Q::{ k: a }\n  }\n}\n"
+  inspect(String::contains(check_source_error_message(src), "expected P, got Q"), content = "true")
+}
+
+test "an applied impl's method names the trait's spelling" {
+  let src = applied_head + "impl It[Int] for P {\n  pass(self, a: Int) -> Int {\n    a + self.k\n  }\n}\nfn main() -> Int { P::pass(P::{ k: 1 }, 2) }\n"
+  inspect(check_source_error_message(src), content = "unknown name: P::pass -- `impl It[Int] for P` defines `pass` but binds no `P::pass`; call it through the trait: `It::pass(..)`")
+}

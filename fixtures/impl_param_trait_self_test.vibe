@@ -1,0 +1,167 @@
+//# `Self` names the impl's target in every impl (#3573).
+//
+// `self: Self` in an impl of a PARAMETERIZED trait (`impl It[Int] for P`) was
+// refused as ``unknown type `Self` in parameter `self` `` -- with no position
+// -- while the same spelling in `impl W for P` compiled, and there `Self` was
+// a wildcard rather than `P`. The impl's methods now read `Self` as the
+// target in every impl: applied traits, a method-level generic, two applied
+// impls of one trait, and an applied target.
+
+trait It[A] {
+  pass(Self, A) -> A
+}
+
+struct R {
+  k: Int
+}
+
+// The issue's shape.
+impl It[Int] for R {
+  pass(self: Self, a: Int) -> Int {
+    a + self.k
+  }
+}
+
+struct P {
+  k: Int
+}
+
+impl It[Int] for P {
+  pass(self: Self, a: Int) -> Int {
+    a + self.k
+  }
+}
+
+// A second applied impl of the same trait for the same type.
+impl It[String] for P {
+  pass(self: Self, a: String) -> String {
+    "\{a}:\{self.k}"
+  }
+}
+
+// A method-level generic beside the trait's parameter.
+trait Mk[A] {
+  mk[U](Self, A, U) -> (A, U)
+}
+
+impl Mk[Int] for P {
+  mk[U](self: Self, a: Int, u: U) -> (Int, U) {
+    (a * 10 + self.k, u)
+  }
+}
+
+// `Self` in the result, and inside a structural type.
+trait Bump[A] {
+  bump(Self, A) -> Self
+  pair(Self, (Self, A)) -> Array[Self]
+}
+
+impl Bump[Int] for P {
+  bump(self: Self, a: Int) -> Self {
+    P::{ k: self.k + a }
+  }
+
+  pair(self: Self, other: (Self, Int)) -> Array[Self] {
+    let (q, n) = other
+    [self, P::{ k: q.k + n }]
+  }
+}
+
+// An applied target: `Self` is `Box[Int]`.
+trait Size {
+  size(Self) -> Int
+}
+
+struct Box[T] {
+  v: T
+}
+
+impl Size for Box[Int] {
+  size(self: Self) -> Int {
+    self.v + 100
+  }
+}
+
+// Controls: the spellings that already worked.
+trait Get {
+  get(Self) -> Int
+}
+
+struct Q {
+  k: Int
+}
+
+impl Get for P {
+  get(self: Self) -> Int {
+    self.k
+  }
+}
+
+impl Get for Q {
+  get(self: Q) -> Int {
+    self.k * 2
+  }
+}
+
+trait Un[A] {
+  un(Self, A) -> A
+}
+
+impl Un[Int] for Q {
+  un(self, a: Int) -> Int {
+    a - self.k
+  }
+}
+
+// Each applied impl is reached through its own bound. (A direct `It::pass`
+// call does not pick between two applied impls of one trait for one type.)
+fn via_int[T: It[Int]](t: T, a: Int) -> Int {
+  T::pass(t, a)
+}
+
+fn via_str[T: It[String]](t: T, a: String) -> String {
+  T::pass(t, a)
+}
+
+fn takes_mk[T: Mk[Int]](t: T) -> Int {
+  let (a, _) = T::mk(t, 4, "x")
+  a
+}
+
+test "self: Self in an applied impl is the target" {
+  inspect(It::pass(R::{ k: 1 }, 2), content = "3")
+  inspect(via_int(R::{ k: 1 }, 2), content = "3")
+}
+
+test "two applied impls of one trait each read Self as the target" {
+  inspect(via_int(P::{ k: 7 }, 5), content = "12")
+  inspect(via_str(P::{ k: 7 }, "s"), content = "s:7")
+}
+
+test "a method-level generic beside the trait parameter" {
+  let (a, u) = Mk::mk(P::{ k: 3 }, 2, "u")
+  inspect(a, content = "23")
+  inspect(u, content = "u")
+  let (b, flag) = Mk::mk(P::{ k: 1 }, 1, true)
+  inspect(b, content = "11")
+  inspect(flag, content = "true")
+  inspect(takes_mk(P::{ k: 2 }), content = "42")
+}
+
+test "Self in the result and inside structural types" {
+  let p: P = Bump::bump(P::{ k: 1 }, 41)
+  inspect(p.k, content = "42")
+  let ps: Array[P] = Bump::pair(P::{ k: 1 }, (P::{ k: 5 }, 3))
+  inspect(Array::length(ps), content = "2")
+  inspect(Array::get(ps, 1).k, content = "8")
+}
+
+test "Self in an impl for an applied target" {
+  inspect(Size::size(Box::{ v: 5 }), content = "105")
+}
+
+test "controls: a plain impl, an explicit target and an unannotated self" {
+  inspect(Get::get(P::{ k: 4 }), content = "4")
+  inspect(Get::get(Q::{ k: 4 }), content = "8")
+  inspect(Un::un(Q::{ k: 4 }, 10), content = "6")
+}

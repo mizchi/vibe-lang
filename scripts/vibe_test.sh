@@ -579,6 +579,20 @@ vt_worker() {
       ;;
     *) src_rel="$src" ;;
   esac
+  # #3505: `./x_test.vibe` (and every path `find ./dir` prints) flattened to
+  # `._x_test`, and the summary below globs `*.res`, which does not match a
+  # dot-file -- so the file's result vanished: a FAILING `./bad_test.vibe`
+  # printed FAIL, then `0 passed, 0 failed` and exit 0. Drop `.` segments and
+  # repeated slashes so a spelling names the artifact its plain form does; the
+  # summary also globs dot-files, for the `..` a path may still lead with.
+  while :; do
+    case "$src_rel" in
+      ./*) src_rel="${src_rel#./}" ;;
+      */./*) src_rel="${src_rel//\/.\//\/}" ;;
+      *//*) src_rel="${src_rel//\/\//\/}" ;;
+      *) break ;;
+    esac
+  done
   local flat; flat="$(echo "$src_rel" | tr '/' '_' | sed 's/\.vibe$//')"
   local out_rel="_build/vibe_test/$flat.wasm"
   local cov_out=""
@@ -764,6 +778,9 @@ cov_fn_hit=0
 cov_br_total=0
 cov_br_hit=0
 cov_files=0
+# dotglob: a result file whose flat name starts with `.` (`.._x_test.res` for
+# `../x_test.vibe`) is still a result (#3505). `.` and `..` never match.
+shopt -s dotglob
 for res in "$vt_results"/*.res; do
   [ -f "$res" ] || continue
   read -r r_status r_fh r_ft r_bh r_bt r_cov r_nt < "$res"

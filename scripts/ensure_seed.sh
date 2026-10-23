@@ -42,6 +42,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="${VIBE_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
 
+# A git hook runs with GIT_INDEX_FILE (and GIT_DIR / GIT_WORK_TREE) set for
+# the commit in progress. Every git command below names its repository with
+# -C; through the inherited variables, the rebuild's `git worktree add`
+# checked the source commit out into the COMMITTING index (#3617).
+unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_PREFIX
+
 die() { echo "ensure-seed: $*" >&2; exit 1; }
 
 sha256_file() {

@@ -1,0 +1,147 @@
+// #3569: a bodyless `impl` whose fallback `<Type>::<method>` declares its own
+// bounded formal (`fn Tag::name[U: Eq](self: Tag[U])`) must receive that
+// formal's witness when the method is reached through the trait dictionary.
+//
+// The witness builder could read a threaded formal's type only off an impl
+// method's target pattern. The fallback is an ordinary function with no impl
+// target, and its formals are its own (`U`, not the impl's `T`), so its
+// `Eq` witness got no type. The dictionary was not built, the call through `via` was
+// emitted one argument short, and the wasm validator rejected the module after
+// `vibe check` had certified it
+// (`viberun: from_file: failed to compile: wasm[0]::function[N]::main`).
+// The fallback's formal is now read from its own receiver annotation, matched
+// against the dispatched type.
+//
+// `impl [T] Name for Tag[T]` with this bounded fallback is not a runtime case:
+// the checker refuses it (nothing provides `Eq` for `U`), pinned by
+// `fixtures/typecheck/err_impl_method_fallback_formal_bound_stronger.vibe`.
+
+trait Name {
+  name(Self) -> Int
+}
+
+struct Tag[T] {
+  t: T
+}
+
+impl [T: Eq] Name for Tag[T]
+
+fn Tag::name[U: Eq](self: Tag[U]) -> Int {
+  2
+}
+
+struct Loose[T] {
+  t: T
+}
+
+impl Name for Loose[String]
+
+fn Loose::name[U: Eq](self: Loose[U]) -> Int {
+  3
+}
+
+struct Wide[T] {
+  t: T
+}
+
+impl [T: Eq + Show] Name for Wide[T]
+
+fn Wide::name[U: Eq](self: Wide[U]) -> Int {
+  5
+}
+
+trait Same {
+  same(Self) -> Bool
+}
+
+struct Pair[T] {
+  a: T;
+  b: T
+}
+
+impl [T: Eq] Same for Pair[T]
+
+// The operands are bound at `U` before the comparison: compared directly, a
+// projection (`self.a`) is typed by the struct's own spelling `T`, not by the
+// fallback's `U`, so it would not reach `U`'s witness -- a separate defect.
+fn Pair::same[U: Eq](self: Pair[U]) -> Bool {
+  let a: U = self.a
+  let b: U = self.b
+  a == b
+}
+
+// The fallback binds its formals in the opposite order from the impl, so the
+// impl's `B` is the fallback's `A`: its witness must be `Double`'s (the
+// second argument), not the `Int` the spelling `A` names in the impl.
+struct Duo[A, B] {
+  x: A;
+  y: B;
+  z: B
+}
+
+impl [A, B: Eq] Same for Duo[A, B]
+
+fn Duo::same[B, A: Eq](self: Duo[B, A]) -> Bool {
+  let y: A = self.y
+  let z: A = self.z
+  y == z
+}
+
+// Control: an unbounded fallback needs no dictionary.
+struct Plain[T] {
+  t: T
+}
+
+impl [T] Name for Plain[T]
+
+fn Plain::name[U](self: Plain[U]) -> Int {
+  4
+}
+
+fn via[T: Name](x: T) -> Int {
+  T::name(x)
+}
+
+fn via_same[T: Same](x: T) -> Bool {
+  T::same(x)
+}
+
+test "a bounded fallback is reached through the witness (#3569)" {
+  let t: Tag[String] = Tag::{ t: "a" }
+  inspect(via(t), "2")
+}
+
+test "a concrete impl with a bounded generic fallback is reached through the witness (#3569)" {
+  let l: Loose[String] = Loose::{ t: "a" }
+  inspect(via(l), "3")
+}
+
+test "an impl bound that implies the fallback's is reached through the witness (#3569)" {
+  let w: Wide[Int] = Wide::{ t: 1 }
+  inspect(via(w), "5")
+}
+
+test "a bounded fallback compares through its own witness (#3569)" {
+  let p: Pair[Double] = Pair::{ a: 1.5, b: 1.5 }
+  let q: Pair[Double] = Pair::{ a: 1.5, b: 2.5 }
+  let s: Pair[String] = Pair::{ a: "x", b: "x" }
+  inspect(via_same(p), "true")
+  inspect(via_same(q), "false")
+  inspect(via_same(s), "true")
+}
+
+test "a fallback formal is read from its receiver, not by the impl's spelling (#3569)" {
+  let d: Duo[Int, Double] = Duo::{ x: 1, y: 1.5, z: 1.5 }
+  let e: Duo[Int, Double] = Duo::{ x: 1, y: 1.5, z: 2.5 }
+  inspect(via_same(d), "true")
+  inspect(via_same(e), "false")
+}
+
+test "controls: a direct call and an unbounded fallback (#3569)" {
+  let t: Tag[String] = Tag::{ t: "a" }
+  let p: Pair[Double] = Pair::{ a: 1.5, b: 1.5 }
+  let n: Plain[String] = Plain::{ t: "a" }
+  inspect(Tag::name(t), "2")
+  inspect(Pair::same(p), "true")
+  inspect(via(n), "4")
+}

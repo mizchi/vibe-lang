@@ -225,7 +225,7 @@ test("balanced-token inventory classifies every production EFn site", () => {
   ]);
   const expected = new Map([
     ["expand_interp.vibe:resolve_expr", [2, "slot-preserving reconstruction"]],
-    ["parser.vibe:parse_impl_methods", [2, "deliberately ineligible"]],
+    ["parser.vibe:parse_impl_methods", [4, "deliberately ineligible"]],
     ["parser_expr.vibe:apply_generic_fn_annotation", [2, "slot-preserving reconstruction"]],
     ["parser_expr.vibe:apply_value_bracket_type_params", [3, "slot-preserving reconstruction"]],
     ["parser_expr.vibe:parse_fn_main_stmt", [1, "source-captured"]],
