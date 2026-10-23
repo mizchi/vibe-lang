@@ -213,6 +213,16 @@ fn closure_arg_declared_base(arg: Expr, declared: Array[String], callee: String,
                 // and the kinds the row names. A callee whose row lets no
                 // exception out handles them itself (`TaskGroup::spawn_suspend`).
                 erased_slot_declared(declared, prow)
+              } else if row_has_erased_exception(prow) && callee_row_holds_exceptions(Array::get(callee_sig_effs, si)) {
+                // #3619: the callee's own row lets no exception out and
+                // reaches its caller through no row variable, so whatever the
+                // closure raises through the parameter's erased row is
+                // handled by the callee, exactly as for a named function
+                // argument. Charging it to the enclosing body refused
+                // `shield(() -> throw(7))` where `shield(bad)` was accepted.
+                labels_union(labels_without_exception_family(declared), [
+                  "Exception"
+                ])
               } else {
                 declared
               }
@@ -506,6 +516,23 @@ export fn callee_lets_erased_out(callee: String) -> Bool {
     Some(si) => row_has_erased_exception(Array::get(callee_sig_effs, si)),
     None => true
   }
+}
+
+/// #3619: does a callee whose own row is `own` keep every exception its
+/// callbacks raise? It does when that row names no exception label (erased
+/// or kinded) and no row variable: nothing a callback raises can leave the
+/// callee, so the callee's handlers own all of it. A kinded row is excluded
+/// deliberately -- a callee declared `with Exception[String]` that calls an
+/// erased callback unhandled is accepted at its definition and would let an
+/// `Int` out under the `String` label.
+fn callee_row_holds_exceptions(own: Array[String]) -> Bool {
+  let mut holds = true
+  for l in own {
+    if is_exception_label(l) || label_is_effect_var(l) {
+      holds = false
+    }
+  }
+  holds
 }
 
 /// #3605 review: does the named callee `callee`'s own row name a row variable

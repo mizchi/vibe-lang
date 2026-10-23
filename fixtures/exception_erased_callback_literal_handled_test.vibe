@@ -1,0 +1,62 @@
+// #3619: a closure literal handed to a callee that handles every exception
+// its callback raises charges nothing to the function it is written in, as a
+// named function argument does. `t_int` and `t_str` were refused with
+// `missing { Exception[Int] }` / `missing { Exception[String] }`; only a
+// `test` block, whose built-in `Exception` permission absorbed the charge,
+// accepted the same call.
+fn shield(f: () -> Int with Exception) -> Int {
+  handle {
+    f()
+  } with { Exception::Throw(_) => 0 - 2 }
+}
+
+fn bad() -> Int with Exception {
+  throw(7)
+}
+
+fn t_named() -> Int {
+  shield(bad)
+}
+
+fn t_int() -> Int {
+  shield(() -> throw(7))
+}
+
+fn t_str() -> Int {
+  shield(() -> throw("x"))
+}
+
+fn may(n: Int) -> Int with Exception[Int] {
+  if n > 3 {
+    throw(n)
+  } else {
+    n
+  }
+}
+
+fn t_calls() -> Int {
+  shield(() -> may(9)) + shield(() -> {
+    let x = may(1)
+    x + 10
+  })
+}
+
+// Inside a kinded handle of the enclosing body, the literal's throws still go
+// to `shield`, not to the enclosing arm.
+fn t_in_handle() -> Int with Exception[Int] {
+  let a = handle {
+    shield(() -> throw("s")) + may(5)
+  } with { Exception[Int]::Throw(n) => n * 100 }
+  a + shield(() -> may(9))
+}
+
+test "a literal at a parameter the callee handles charges nothing" {
+  inspect(t_named(), "-2")
+  inspect(t_int(), "-2")
+  inspect(t_str(), "-2")
+  inspect(t_calls(), "9")
+  let r = handle {
+    t_in_handle()
+  } with { Exception[Int]::Throw(n) => n }
+  inspect(r, "498")
+}
