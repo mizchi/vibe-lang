@@ -1424,6 +1424,17 @@ run_test_block_fixtures_gc "String order on builtin results (gc)" fixtures/gc_st
 run_test_block_fixtures_rc "String order on builtin results (linear, RC)" fixtures/gc_string_order_builtin_results_test.vibe
 echo '[compiler-gate] String order on builtin results ok'
 
+# 15b-9. #3601: the gc lane checks the MERGED program with its test blocks
+#        already lowered to `__test_*` bindings under a synthesized `_start`,
+#        so the erased-row leak tracking sees shapes the linear lane's
+#        per-module check never does. A test block's leak was charged to
+#        `_start` (`missing { Exception[Int] }` for `shield(() -> throw(7))`)
+#        and the import fixture compiled on linear only. The linear lane runs
+#        these through the unit runner; this is their gc run.
+echo '[compiler-gate] 15b-9/15 erased Exception rows on the gc lane (#3601)'
+run_test_block_fixtures_gc "erased Exception rows (gc)" fixtures/exception_erased_*_test.vibe
+echo '[compiler-gate] erased Exception rows on the gc lane ok'
+
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
 #      type-directed sentinel that the pre-check desugar lowers by the operand's
 #      head type — `Option` (Some/None) or `Result` (Ok/Err, the default). The
