@@ -1,0 +1,73 @@
+// #3609: a function whose erased `with Exception` row lets out `Int` is taken
+// as it is by a receiver whose row names `Int`: the declared result of the
+// function whose final expression (or `return`) hands it back, and a
+// constructor payload typed by the annotation's type argument.
+
+fn leaks_int() -> Int with Exception {
+  throw(7)
+}
+
+fn make() -> () -> Int with Exception + Exception[Int] {
+  leaks_int
+}
+
+fn make_branch(c: Bool) -> () -> Int with Exception + Exception[Int] {
+  if c {
+    leaks_int
+  } else {
+    let g = () -> 1
+    g
+  }
+}
+
+fn make_return(c: Bool) -> () -> Int with Exception + Exception[Int] {
+  if c {
+    return leaks_int
+  }
+  () -> 2
+}
+
+enum Wrap[T] {
+  W(T)
+}
+
+enum Res[T, E] {
+  Ok(T)
+  Err(E)
+}
+
+enum Thunk {
+  Run(() -> Int with Exception + Exception[Int])
+}
+
+/// The erased arm leaves its payload unread, so it takes either kind.
+fn catch_int(f: () -> Int with Exception + Exception[Int]) -> Int {
+  handle {
+    f()
+  } with { Exception::Throw(_) => 100 }
+}
+
+test "a function result whose row names the kind takes a leaky function" {
+  inspect(catch_int(make()), "100")
+  inspect(catch_int(make_branch(true)), "100")
+  inspect(catch_int(make_branch(false)), "1")
+  inspect(catch_int(make_return(true)), "100")
+  inspect(catch_int(make_return(false)), "2")
+}
+
+test "a constructor payload typed by the annotation takes a leaky function" {
+  let w: Wrap[() -> Int with Exception + Exception[Int]] = W(leaks_int)
+  let a = match w {
+    W(f) => catch_int(f)
+  }
+  let r: Res[() -> Int with Exception + Exception[Int], String] = Ok(leaks_int)
+  let b = match r {
+    Ok(f) => catch_int(f),
+    Err(_) => 0
+  }
+  let t = Run(leaks_int)
+  let c = match t {
+    Run(f) => catch_int(f)
+  }
+  inspect(a + b + c, "300")
+}

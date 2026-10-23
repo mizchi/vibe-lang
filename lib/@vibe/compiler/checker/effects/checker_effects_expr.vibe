@@ -39,6 +39,7 @@ import ./checker_effects_dh_call_to_binding.vibe {
   callee_lets_erased_out,
   callee_param_row,
   check_entry_declared_effects,
+  dh_alias_subst,
   dh_call_to_binding,
   dh_collect_performed_effects,
   dh_declared_effects,
@@ -601,11 +602,114 @@ fn type_expr_fn_row(te: TypeExpr) -> Option[Array[String]] {
   }
 }
 
-/// One scope of the value-flow walk: the names a local binding hides, and
-/// the local aliases of a function that lets out other kinds.
+/// One scope of the value-flow walk: the names a local binding hides, the
+/// local aliases of a function that lets out other kinds, and the declared
+/// result of the innermost enclosing function (what a `return` hands its
+/// value to, #3609).
 struct ErasedFlowScope {
   hidden: Array[String];
-  aliases: Array[(String, Array[String])]
+  aliases: Array[(String, Array[String])];
+  ret: Option[TypeExpr]
+}
+
+fn erased_flow_scope_ret(scope: ErasedFlowScope, ret: Option[TypeExpr]) -> ErasedFlowScope {
+  ErasedFlowScope::{ hidden: scope.hidden, aliases: scope.aliases, ret: ret }
+}
+
+/// #3609: the program's enum constructors, `(ctor, enum, params, payloads)`,
+/// so a constructor's payload is judged against the slot type it is written
+/// for. Rebuilt by `erased_value_flow_errors` for every program.
+let erased_flow_ctor_tbl: Array[(String, String, Array[String], Array[TypeExpr])] = array_empty()
+
+fn erased_flow_set_ctors(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(erased_flow_ctor_tbl, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEnum(_, ename, params, variants, _) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (cname, payloads) = Array::get(variants, vi)
+          Array::push(erased_flow_ctor_tbl, (cname, ename, params, payloads))
+          vi = vi + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The payload types of constructor `cname` applied in a slot typed `te`
+/// (None: the slot's type is not known), with the enum's type parameters
+/// replaced by the slot's arguments. Without them a payload typed by a
+/// parameter keeps the parameter's name, which carries no row: the payload
+/// is then typed by the argument itself, so a function value there is typed
+/// with its own declared row. None for an unknown or ambiguous constructor.
+fn erased_flow_ctor_payloads(cname: String, te: Option[TypeExpr]) -> Option[Array[TypeExpr]] {
+  let parts = String::split(cname, "::")
+  let bare = Array::get(parts, Array::length(parts) - 1)
+  let (head, targs) = match te {
+    Some(TyApp(h, xs)) => (h, xs),
+    Some(TyName(h)) => (h, array_empty()),
+    _ => ("", array_empty())
+  }
+  let mut out = None
+  let mut seen = 0
+  for row in erased_flow_ctor_tbl {
+    let (c, ename, params, payloads) = row
+    if c == bare && (String::length(head) == 0 || ename == head) {
+      seen = seen + 1
+      out = if Array::length(params) == 0 {
+        Some(payloads)
+      } else if ename == head && Array::length(params) == Array::length(targs) {
+        let subst = array_empty()
+        for pt in payloads {
+          Array::push(subst, dh_alias_subst(pt, params, targs))
+        }
+        Some(subst)
+      } else {
+        Some(payloads)
+      }
+    }
+  }
+  if seen == 1 {
+    out
+  } else {
+    None
+  }
+}
+
+/// Whether `cname` is a program constructor that takes `arity` arguments.
+fn erased_flow_ctor_fits(cname: String, arity: Int) -> Bool {
+  match erased_flow_ctor_payloads(cname, None) {
+    Some(payloads) => Array::length(payloads) == arity,
+    None => false
+  }
+}
+
+/// Each argument of a constructor call judged against its payload type.
+fn erased_flow_ctor_args(fn_name: String, args: Array[Expr], payloads: Array[TypeExpr], scope: ErasedFlowScope, leaky: Array[(String, Array[String])], errors: Array[EffectError]) -> Unit {
+  let mut i = 0
+  while i < Array::length(args) {
+    erased_flow_typed(fn_name, Array::get(args, i), Array::get(payloads, i), scope, leaky, errors)
+    i = i + 1
+  }
+}
+
+/// A form whose value is one of its subexpressions' (a `let` body, a
+/// sequence's tail, a branch, an arm), so a slot type reaches through it.
+fn erased_flow_is_spine(e: Expr) -> Bool {
+  match e {
+    ELet(_, _, _, _) => true,
+    ELetMut(_, _, _, _) => true,
+    ELetRec(_, _, _) => true,
+    ESeq(_, _) => true,
+    EIf(_, _, _) => true,
+    EMatch(_, _) => true,
+    EHandle(_, _) => true,
+    _ => false
+  }
 }
 
 fn erased_flow_scope_hide(scope: ErasedFlowScope, names: Array[String]) -> ErasedFlowScope {
@@ -623,7 +727,7 @@ fn erased_flow_scope_hide(scope: ErasedFlowScope, names: Array[String]) -> Erase
         Array::push(aliases, a)
       }
     }
-    ErasedFlowScope::{ hidden: hidden, aliases: aliases }
+    ErasedFlowScope::{ hidden: hidden, aliases: aliases, ret: scope.ret }
   }
 }
 
@@ -641,7 +745,7 @@ fn erased_flow_scope_alias(scope: ErasedFlowScope, name: String, labels: Array[S
       Array::push(aliases, a)
     }
   }
-  ErasedFlowScope::{ hidden: hidden, aliases: aliases }
+  ErasedFlowScope::{ hidden: hidden, aliases: aliases, ret: scope.ret }
 }
 
 /// The kinds the value named `name` lets out in `scope`, or none.
@@ -681,20 +785,23 @@ fn erased_value_flow_errors(stmts: Array[Stmt], imported: Array[(String, Array[S
   // A let-bound closure literal that lets a kind out is such a value too,
   // in a module with no such named function (Codex on #3605).
   if Array::length(leaky) > 0 || Array::length(erased_local_leaks) > 0 {
+    erased_flow_set_ctors(stmts)
     let empty = ErasedFlowScope::{
       hidden: no_str_labels(),
-      aliases: array_empty()
+      aliases: array_empty(),
+      ret: None
     }
     for stmt in stmts {
       match stmt {
+        // The body's value is handed to the declared result (#3609).
         SLet(_, _, name, ty, body) => match body {
-          EFn(_, _, params, _, _, fbody) => {
+          EFn(_, _, params, ret, _, fbody) => {
             let names = no_str_labels()
             for p in params {
               let (pn, _) = p
               Array::push(names, effect_param_base_name(pn))
             }
-            erased_flow_walk(name, fbody, erased_flow_scope_hide(empty, names), leaky, errors)
+            erased_flow_walk_expect(name, fbody, ret, erased_flow_scope_ret(erased_flow_scope_hide(empty, names), ret), leaky, errors)
           },
           // An unannotated alias (`let g = fail`) keeps the kinds.
           EIdent(_, _) => match ty {
@@ -780,181 +887,238 @@ fn erased_flow_typed(fn_name: String, v: Expr, te0: TypeExpr, scope: ErasedFlowS
     } else {
       erased_flow_walk(fn_name, v, scope, leaky, errors)
     },
-    _ => erased_flow_walk(fn_name, v, scope, leaky, errors)
+    // A constructor's payload takes the matching type argument (#3609).
+    (ECall(EIdent(cname, _), args, _, _), _) => match erased_flow_ctor_payloads(cname, Some(te)) {
+      Some(payloads) => if Array::length(payloads) == Array::length(args) {
+        erased_flow_ctor_args(fn_name, args, payloads, scope, leaky, errors)
+      } else {
+        erased_flow_walk(fn_name, v, scope, leaky, errors)
+      },
+      None => erased_flow_walk(fn_name, v, scope, leaky, errors)
+    },
+    // A `let` body, a branch or an arm hands its value to the slot (#3609).
+    _ => if erased_flow_is_spine(v) {
+      erased_flow_walk_expect(fn_name, v, Some(te), scope, leaky, errors)
+    } else {
+      erased_flow_walk(fn_name, v, scope, leaky, errors)
+    }
   }
 }
 
 fn erased_flow_walk(fn_name: String, root: Expr, root_scope: ErasedFlowScope, leaky: Array[(String, Array[String])], errors: Array[EffectError]) -> Unit {
+  erased_flow_walk_expect(fn_name, root, None, root_scope, leaky, errors)
+}
+
+/// The walk, with `root`'s value handed to a slot typed `root_expect` (None:
+/// an unknown slot, judged as the empty row). The slot type follows the
+/// value through `let` bodies, sequence tails, branches and arms, and a
+/// `return` hands its value to the enclosing function's declared result.
+fn erased_flow_walk_expect(fn_name: String, root: Expr, root_expect: Option[TypeExpr], root_scope: ErasedFlowScope, leaky: Array[(String, Array[String])], errors: Array[EffectError]) -> Unit {
   let stack: Array[Expr] = Array::slice([root], 0, 1)
   let scopes: Array[ErasedFlowScope] = Array::slice([root_scope], 0, 1)
+  let expects: Array[Option[TypeExpr]] = Array::slice([root_expect], 0, 1)
   while Array::length(stack) > 0 {
     let n = Array::length(stack)
     let e = Array::get(stack, n - 1)
     let scope = Array::get(scopes, n - 1)
+    let expect = Array::get(expects, n - 1)
     Array::truncate(stack, n - 1)
     Array::truncate(scopes, n - 1)
-    let push = (x: Expr, s: ErasedFlowScope) -> {
+    Array::truncate(expects, n - 1)
+    let push_expect = (x: Expr, s: ErasedFlowScope, t: Option[TypeExpr]) -> {
       Array::push(stack, x)
       Array::push(scopes, s)
+      Array::push(expects, t)
     }
-    match e {
-      EIdent(name, off) => erased_flow_slot(fn_name, name, off, Some(no_str_labels()), scope, leaky, errors),
-      ECall(callee, args, _, _) => match erased_flow_ascription(e) {
-        Some((v, te)) => erased_flow_typed(fn_name, v, te, scope, leaky, errors),
-        None => match callee {
-          EIdent(cname, _) => {
-            // A local binding of the callee's spelling hides the program's
-            // parameter rows.
-            let mut known = !str_list_has(scope.hidden, cname)
-            for a in scope.aliases {
-              let (an, _) = a
-              if an == cname {
-                known = false
+    let push = (x: Expr, s: ErasedFlowScope) -> push_expect(x, s, None)
+    let typed_leaf = match expect {
+      Some(te) => if erased_flow_is_spine(e) {
+        false
+      } else {
+        erased_flow_typed(fn_name, e, te, scope, leaky, errors)
+        true
+      },
+      None => false
+    }
+    if !typed_leaf {
+      match e {
+        EIdent(name, off) => erased_flow_slot(fn_name, name, off, Some(no_str_labels()), scope, leaky, errors),
+        EReturn(v) => match scope.ret {
+          Some(rt) => erased_flow_typed(fn_name, v, rt, scope, leaky, errors),
+          None => push(v, scope)
+        },
+        ESeq(a, b) => {
+          push(a, scope)
+          push_expect(b, scope, expect)
+        },
+        EIf(c, t, f) => {
+          push(c, scope)
+          push_expect(t, scope, expect)
+          push_expect(f, scope, expect)
+        },
+        ECall(callee, args, _, _) => match erased_flow_ascription(e) {
+          Some((v, te)) => erased_flow_typed(fn_name, v, te, scope, leaky, errors),
+          None => match callee {
+            // A constructor's payloads are its declared types (#3609).
+            EIdent(cname, _) => if erased_flow_ctor_fits(cname, Array::length(args)) {
+              match erased_flow_ctor_payloads(cname, None) {
+                Some(payloads) => erased_flow_ctor_args(fn_name, args, payloads, scope, leaky, errors),
+                None => ()
               }
-            }
-            let mut ai = 0
-            while ai < Array::length(args) {
-              match Array::get(args, ai) {
-                EIdent(a, aoff) => {
-                  // A callee whose own row lets no exception out handles
-                  // what the value raises (`callee_lets_erased_out`).
-                  let row = if known {
-                    match callee_param_row(cname, ai) {
-                      Some(r) => if callee_lets_erased_out(cname) {
-                        Some(r)
-                      } else {
-                        Some(Array::slice(["e"], 0, 1))
-                      },
-                      None => None
+            } else {
+              // A local binding of the callee's spelling hides the program's
+              // parameter rows.
+              let mut known = !str_list_has(scope.hidden, cname)
+              for a in scope.aliases {
+                let (an, _) = a
+                if an == cname {
+                  known = false
+                }
+              }
+              let mut ai = 0
+              while ai < Array::length(args) {
+                match Array::get(args, ai) {
+                  EIdent(a, aoff) => {
+                    // A callee whose own row lets no exception out handles
+                    // what the value raises (`callee_lets_erased_out`).
+                    let row = if known {
+                      match callee_param_row(cname, ai) {
+                        Some(r) => if callee_lets_erased_out(cname) {
+                          Some(r)
+                        } else {
+                          Some(Array::slice(["e"], 0, 1))
+                        },
+                        None => None
+                      }
+                    } else {
+                      None
                     }
-                  } else {
-                    None
-                  }
-                  erased_flow_slot(fn_name, a, aoff, row, scope, leaky, errors)
-                },
-                arg => push(arg, scope)
+                    erased_flow_slot(fn_name, a, aoff, row, scope, leaky, errors)
+                  },
+                  arg => push(arg, scope)
+                }
+                ai = ai + 1
               }
-              ai = ai + 1
-            }
-          },
-          _ => {
-            push(callee, scope)
-            for arg in args {
-              push(arg, scope)
+            },
+            _ => {
+              push(callee, scope)
+              for arg in args {
+                push(arg, scope)
+              }
             }
           }
-        }
-      },
-      ELet(name, val, body, _) => {
-        match val {
-          EIdent(src, _) => {
-            let kinds = erased_flow_kinds(scope, leaky, src)
-            if Array::length(kinds) > 0 {
-              push(body, erased_flow_scope_alias(scope, name, kinds))
-            } else {
-              push(body, erased_flow_scope_hide(scope, [name]))
+        },
+        ELet(name, val, body, _) => {
+          match val {
+            EIdent(src, _) => {
+              let kinds = erased_flow_kinds(scope, leaky, src)
+              if Array::length(kinds) > 0 {
+                push_expect(body, erased_flow_scope_alias(scope, name, kinds), expect)
+              } else {
+                push_expect(body, erased_flow_scope_hide(scope, [name]), expect)
+              }
+            },
+            // A closure literal whose erased row lets kinds out
+            // (`erased_local_leaks`) is such a value too.
+            EFn(_, _, _, _, _, _) => {
+              push(val, scope)
+              let kinds = erased_local_leaks_for(erased_local_key(fn_name, name))
+              if Array::length(kinds) > 0 {
+                push_expect(body, erased_flow_scope_alias(scope, name, kinds), expect)
+              } else {
+                push_expect(body, erased_flow_scope_hide(scope, [name]), expect)
+              }
+            },
+            _ => {
+              push(val, scope)
+              push_expect(body, erased_flow_scope_hide(scope, [name]), expect)
             }
-          },
-          // A closure literal whose erased row lets kinds out
-          // (`erased_local_leaks`) is such a value too.
-          EFn(_, _, _, _, _, _) => {
-            push(val, scope)
-            let kinds = erased_local_leaks_for(erased_local_key(fn_name, name))
-            if Array::length(kinds) > 0 {
-              push(body, erased_flow_scope_alias(scope, name, kinds))
-            } else {
-              push(body, erased_flow_scope_hide(scope, [name]))
-            }
-          },
-          _ => {
-            push(val, scope)
-            push(body, erased_flow_scope_hide(scope, [name]))
           }
-        }
-      },
-      ELetMut(name, val, body, _) => {
-        match val {
-          EIdent(src, _) => {
-            let kinds = erased_flow_kinds(scope, leaky, src)
-            if Array::length(kinds) > 0 {
-              push(body, erased_flow_scope_alias(scope, name, kinds))
-            } else {
-              push(body, erased_flow_scope_hide(scope, [name]))
+        },
+        ELetMut(name, val, body, _) => {
+          match val {
+            EIdent(src, _) => {
+              let kinds = erased_flow_kinds(scope, leaky, src)
+              if Array::length(kinds) > 0 {
+                push_expect(body, erased_flow_scope_alias(scope, name, kinds), expect)
+              } else {
+                push_expect(body, erased_flow_scope_hide(scope, [name]), expect)
+              }
+            },
+            _ => {
+              push(val, scope)
+              push_expect(body, erased_flow_scope_hide(scope, [name]), expect)
             }
-          },
-          _ => {
-            push(val, scope)
-            push(body, erased_flow_scope_hide(scope, [name]))
           }
+        },
+        // A recursive closure literal is such a value on both sides.
+        ELetRec(name, val, body) => {
+          let kinds = match val {
+            EFn(_, _, _, _, _, _) => erased_local_leaks_for(erased_local_key(fn_name, name)),
+            _ => no_str_labels()
+          }
+          let inner = if Array::length(kinds) > 0 {
+            erased_flow_scope_alias(scope, name, kinds)
+          } else {
+            erased_flow_scope_hide(scope, [name])
+          }
+          push(val, inner)
+          push_expect(body, inner, expect)
+        },
+        EFn(_, _, params, ret, _, body) => {
+          let names = no_str_labels()
+          for p in params {
+            let (pn, _) = p
+            Array::push(names, effect_param_base_name(pn))
+          }
+          push_expect(body, erased_flow_scope_ret(erased_flow_scope_hide(scope, names), ret), ret)
+        },
+        EMatch(scrut, arms) => {
+          push(scrut, scope)
+          for arm in arms {
+            let (pat, body) = arm
+            let bound = no_str_labels()
+            collect_pat_binds_into(pat, bound)
+            push_expect(body, erased_flow_scope_hide(scope, bound), expect)
+          }
+        },
+        EHandle(body, arms) => {
+          push_expect(body, scope, expect)
+          for arm in arms {
+            let (pat, abody) = arm
+            let bound = no_str_labels()
+            collect_pat_binds_into(pat, bound)
+            push_expect(abody, erased_flow_scope_hide(scope, bound), expect)
+          }
+        },
+        EForIn(name, index_name, iter, body) => {
+          push(iter, scope)
+          let names = Array::slice([name], 0, 1)
+          match index_name {
+            Some(i) => Array::push(names, i),
+            None => ()
+          }
+          push(body, erased_flow_scope_hide(scope, names))
+        },
+        ELoop(states, body) => {
+          let names = no_str_labels()
+          for st in states {
+            let (sn, sv) = st
+            Array::push(names, sn)
+            push(sv, scope)
+          }
+          push(body, erased_flow_scope_hide(scope, names))
+        },
+        ERecord(sname, fields, _) => for f in fields {
+          let (fname, fe) = f
+          match fe {
+            EIdent(src, off) => erased_flow_slot(fn_name, src, off, Some(struct_field_rows_for(sname, fname)), scope, leaky, errors),
+            _ => push(fe, scope)
+          }
+        },
+        _ => for c in expr_children(e) {
+          push(c, scope)
         }
-      },
-      // A recursive closure literal is such a value on both sides.
-      ELetRec(name, val, body) => {
-        let kinds = match val {
-          EFn(_, _, _, _, _, _) => erased_local_leaks_for(erased_local_key(fn_name, name)),
-          _ => no_str_labels()
-        }
-        let inner = if Array::length(kinds) > 0 {
-          erased_flow_scope_alias(scope, name, kinds)
-        } else {
-          erased_flow_scope_hide(scope, [name])
-        }
-        push(val, inner)
-        push(body, inner)
-      },
-      EFn(_, _, params, _, _, body) => {
-        let names = no_str_labels()
-        for p in params {
-          let (pn, _) = p
-          Array::push(names, effect_param_base_name(pn))
-        }
-        push(body, erased_flow_scope_hide(scope, names))
-      },
-      EMatch(scrut, arms) => {
-        push(scrut, scope)
-        for arm in arms {
-          let (pat, body) = arm
-          let bound = no_str_labels()
-          collect_pat_binds_into(pat, bound)
-          push(body, erased_flow_scope_hide(scope, bound))
-        }
-      },
-      EHandle(body, arms) => {
-        push(body, scope)
-        for arm in arms {
-          let (pat, abody) = arm
-          let bound = no_str_labels()
-          collect_pat_binds_into(pat, bound)
-          push(abody, erased_flow_scope_hide(scope, bound))
-        }
-      },
-      EForIn(name, index_name, iter, body) => {
-        push(iter, scope)
-        let names = Array::slice([name], 0, 1)
-        match index_name {
-          Some(i) => Array::push(names, i),
-          None => ()
-        }
-        push(body, erased_flow_scope_hide(scope, names))
-      },
-      ELoop(states, body) => {
-        let names = no_str_labels()
-        for st in states {
-          let (sn, sv) = st
-          Array::push(names, sn)
-          push(sv, scope)
-        }
-        push(body, erased_flow_scope_hide(scope, names))
-      },
-      ERecord(sname, fields, _) => for f in fields {
-        let (fname, fe) = f
-        match fe {
-          EIdent(src, off) => erased_flow_slot(fn_name, src, off, Some(struct_field_rows_for(sname, fname)), scope, leaky, errors),
-          _ => push(fe, scope)
-        }
-      },
-      _ => for c in expr_children(e) {
-        push(c, scope)
       }
     }
   }
