@@ -425,13 +425,25 @@ fn interp_render_shaped(sub: Expr, sh: String, derived_only: Bool, gens: Array[D
   }
 }
 
+/// #3570: the subject a shape expansion places in its output as written (a
+/// `match` scrutinee, a `let` initializer). It is user code, so it takes the
+/// rewrite every other expression gets: a call to a bounded generic gains its
+/// witness argument there. Left raw, `"\{get_by(m, k)}"` reached codegen one
+/// argument short and the module was invalid wasm. A name is already final.
+fn interp_shape_subject(subject: Expr, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  match subject {
+    EIdent(_, _) => subject,
+    _ => rewrite_expr(subject, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  }
+}
+
 /// #1445 (#139): the tuple / array expansion for a composite shape. Supersedes
 /// interp_expand_var_tuple / interp_expand_var_array for anything that nests;
 /// those two stay for the shapes recorded by the older sentinels alone.
 fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   if sh == "{u}" {
     // #3075: a Unit position (`Option[Unit]`) printed `0`.
-    unit_render_expr(subject)
+    unit_render_expr(interp_shape_subject(subject, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
   } else if String::starts_with(sh, "(") {
     let parts = shape_split(shape_inner(sh))
     let n = Array::length(parts)
@@ -455,7 +467,7 @@ fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Arra
       }
       k = k + 1
     }
-    EMatch(subject, Array::slice([
+    EMatch(interp_shape_subject(subject, gens, traits, struct_sets, dict_binds, var_types, fn_returns), Array::slice([
       (PTuple(pats), concat2(acc, EString(")", -1)))
     ], 0, 1))
   } else if String::starts_with(sh, "{o:") {
@@ -465,7 +477,7 @@ fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Arra
     // rendered `[[], [0], [0]]`.
     let v = show_tmp_name()
     let payload = interp_render_shaped(EIdent(v, -1), String::substring(sh, 3, String::length(sh) - 1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-    EMatch(subject, Array::slice([
+    EMatch(interp_shape_subject(subject, gens, traits, struct_sets, dict_binds, var_types, fn_returns), Array::slice([
       (PCtor("Some", Array::slice([PBind(v)], 0, 1)), concat2(EString("Some(", -1), concat2(payload, EString(")", -1)))),
       (PCtor("None", array_empty()), EString("None", -1))
     ], 0, 2))
@@ -485,7 +497,7 @@ fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Arra
     let ev = show_tmp_name()
     let ok_piece = interp_render_shaped(EIdent(ov, -1), ok_sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
     let err_piece = interp_render_shaped(EIdent(ev, -1), err_sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-    EMatch(subject, Array::slice([
+    EMatch(interp_shape_subject(subject, gens, traits, struct_sets, dict_binds, var_types, fn_returns), Array::slice([
       (PCtor("Ok", Array::slice([PBind(ov)], 0, 1)), concat2(EString("Ok(", -1), concat2(ok_piece, EString(")", -1)))),
       (PCtor("Err", Array::slice([PBind(ev)], 0, 1)), concat2(EString("Err(", -1), concat2(err_piece, EString(")", -1))))
     ], 0, 2))
@@ -549,7 +561,7 @@ fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Arra
     let inner = ELetMut(iv, EInt(0), ELetMut(av, EString("[", -1), ESeq(loop_e, concat2(EIdent(av, -1), EString("]", -1))), -1), -1)
     match subject {
       EIdent(_, _) => inner,
-      _ => ELet(nm, subject, inner, -1)
+      _ => ELet(nm, interp_shape_subject(subject, gens, traits, struct_sets, dict_binds, var_types, fn_returns), inner, -1)
     }
   }
 }
