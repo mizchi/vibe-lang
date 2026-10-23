@@ -1,0 +1,152 @@
+// #3598: the alternatives of one value (`if` branches, `match` arms, array
+// elements) join at the WIDER function row whichever comes first. A pure
+// first branch used to fix the value's type as pure, so a later throwing
+// branch was refused as dropping its row while the swapped spelling checked
+// clean. Every value below is called inside a handler: the throwing
+// alternative is caught, the pure one answers its own result.
+fn mk() -> Int with Exception[Int] {
+  throw(7)
+}
+
+fn catch_int(f: () -> Int with Exception[Int]) -> Int {
+  handle {
+    f()
+  } with { Exception[Int]::Throw(n) => n + 100 }
+}
+
+let c = true
+
+let n = 0
+
+let pure_first_taken: () -> Int with Exception[Int] = if c {
+  () -> 1
+} else {
+  mk
+}
+
+let pure_first_throws: () -> Int with Exception[Int] = if !c {
+  () -> 1
+} else {
+  mk
+}
+
+let throw_first_taken: () -> Int with Exception[Int] = if c {
+  mk
+} else {
+  () -> 1
+}
+
+let throw_first_pure: () -> Int with Exception[Int] = if !c {
+  mk
+} else {
+  () -> 1
+}
+
+let match_pure_first: () -> Int with Exception[Int] = match n {
+  0 => () -> 2,
+  _ => mk
+}
+
+let match_pure_first_throws: () -> Int with Exception[Int] = match n {
+  1 => () -> 2,
+  _ => mk
+}
+
+let match_throw_first: () -> Int with Exception[Int] = match n {
+  0 => mk,
+  _ => () -> 2
+}
+
+fn pick(b: Bool) -> () -> Int with Exception[Int] {
+  if b {
+    () -> 3
+  } else {
+    mk
+  }
+}
+
+fn pick_match(k: Int) -> () -> Int with Exception[Int] {
+  match k {
+    0 => () -> 4,
+    1 => () -> 5,
+    _ => mk
+  }
+}
+
+fn local_if(b: Bool) -> Int with Exception[Int] {
+  let f: () -> Int with Exception[Int] = if b {
+    () -> 6
+  } else {
+    mk
+  }
+  f()
+}
+
+fn local_unannotated(b: Bool) -> Int with Exception[Int] {
+  let f = if b {
+    () -> 8
+  } else {
+    mk
+  }
+  f()
+}
+
+fn local_match(k: Int) -> Int with Exception[Int] {
+  let f: () -> Int with Exception[Int] = match k {
+    0 => () -> 9,
+    _ => mk
+  }
+  f()
+}
+
+test "top-level if, pure branch first" {
+  inspect(catch_int(pure_first_taken), "1")
+  inspect(catch_int(pure_first_throws), "107")
+}
+
+test "top-level if, throwing branch first" {
+  inspect(catch_int(throw_first_taken), "107")
+  inspect(catch_int(throw_first_pure), "1")
+}
+
+test "top-level match, either arm first" {
+  inspect(catch_int(match_pure_first), "2")
+  inspect(catch_int(match_pure_first_throws), "107")
+  inspect(catch_int(match_throw_first), "107")
+}
+
+test "a function's declared result" {
+  inspect(catch_int(pick(true)), "3")
+  inspect(catch_int(pick(false)), "107")
+  inspect(catch_int(pick_match(0)), "4")
+  inspect(catch_int(pick_match(1)), "5")
+  inspect(catch_int(pick_match(2)), "107")
+}
+
+test "a local let, annotated or not" {
+  inspect(catch_int(() -> local_if(true)), "6")
+  inspect(catch_int(() -> local_if(false)), "107")
+  inspect(catch_int(() -> local_unannotated(true)), "8")
+  inspect(catch_int(() -> local_unannotated(false)), "107")
+  inspect(catch_int(() -> local_match(0)), "9")
+  inspect(catch_int(() -> local_match(1)), "107")
+}
+
+test "a call argument" {
+  inspect(catch_int(if c {
+    () -> 10
+  } else {
+    mk
+  }), "10")
+  inspect(catch_int(if !c {
+    () -> 10
+  } else {
+    mk
+  }), "107")
+}
+
+test "array elements, pure first" {
+  let fs: Array[() -> Int with Exception[Int]] = [() -> 11, mk]
+  inspect(catch_int(Array::get(fs, 0)), "11")
+  inspect(catch_int(Array::get(fs, 1)), "107")
+}

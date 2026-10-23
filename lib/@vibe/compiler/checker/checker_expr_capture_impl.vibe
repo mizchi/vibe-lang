@@ -5,7 +5,7 @@ import @vibe/compiler/checker/annotations {
 }
 
 import @vibe/compiler/checker/type_relations {
-  check_assignable_set_type_defs, struct_param_is_row, type_is_ground, widen_struct_row_args
+  branch_join_widens, check_assignable_set_type_defs, struct_param_is_row, type_is_ground, widen_struct_row_args
 }
 
 import @vibe/compiler/checker/resume {
@@ -848,30 +848,36 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           CtUnit => (s3, CtUnit),
           _ => match ret {
             CtUnit => (s3, CtUnit),
-            _ => {
-              // #2198: a literal else-branch carries no offset, which left this
-              // diagnostic file-only. Keep the else anchor when it exists (pinned
-              // by diagnostic_anchor_test), else fall back to the then-branch
-              // tail, else to the condition -- coarser, but still on the `if`.
-              let else_off = railway_expr_off(else_e)
-              let branch_off = if else_off >= 0 {
-                else_off
-              } else {
-                let then_off = tail_expr_off(then_e)
-                if then_off >= 0 {
-                  then_off
+            _ => match branch_join_widens(rtt, ret, s3) {
+              // #3598: a pure then-branch beside an effectful else-branch
+              // joins at the else-branch's (wider) type, as the swapped
+              // spelling always did.
+              Some(widened_s) => (widened_s, join_char_branch(merge_value_effect_provenance(et, tt, widened_s), tt, widened_s)),
+              None => {
+                // #2198: a literal else-branch carries no offset, which left this
+                // diagnostic file-only. Keep the else anchor when it exists (pinned
+                // by diagnostic_anchor_test), else fall back to the then-branch
+                // tail, else to the condition -- coarser, but still on the `if`.
+                let else_off = railway_expr_off(else_e)
+                let branch_off = if else_off >= 0 {
+                  else_off
                 } else {
-                  railway_expr_off(cond)
+                  let then_off = tail_expr_off(then_e)
+                  if then_off >= 0 {
+                    then_off
+                  } else {
+                    railway_expr_off(cond)
+                  }
                 }
+                let else_end = string_lit_end(else_e)
+                if else_end > 0 {
+                  check_assignable_set_end(else_end)
+                } else {
+                  check_assignable_set_end(string_lit_end(then_e))
+                }
+                let joined_s = check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", branch_off)
+                (joined_s, join_char_branch(merge_value_effect_provenance(tt, et, joined_s), et, joined_s))
               }
-              let else_end = string_lit_end(else_e)
-              if else_end > 0 {
-                check_assignable_set_end(else_end)
-              } else {
-                check_assignable_set_end(string_lit_end(then_e))
-              }
-              let joined_s = check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", branch_off)
-              (joined_s, join_char_branch(merge_value_effect_provenance(tt, et, joined_s), et, joined_s))
             }
           }
         }
@@ -1141,7 +1147,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   // way a `Unit` branch makes an `if` a statement.
                   match subst_apply(si, result_ty) {
                     CtUnit => si,
-                    _ => check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", tail_expr_off(body))
+                    // #3598: an arm wider in its function rows than the
+                    // arms before it becomes the match's type.
+                    _ => match branch_join_widens(result_ty, r2, si) {
+                      Some(widened_s) => {
+                        result_ty = join_char_branch(merge_value_effect_provenance(arm_ty, result_ty, widened_s), result_ty, widened_s)
+                        widened_s
+                      },
+                      None => check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", tail_expr_off(body))
+                    }
                   }
                 }
               }
@@ -2505,8 +2519,18 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           if ai == 0 {
             elem_ty = it
           } else {
-            s1 = check_assignable(elem_ty, subst_apply(s1, it), s1, errors, "array elements have incompatible types", railway_expr_off(Array::get(items, ai)))
-            elem_ty = merge_value_effect_provenance(elem_ty, it, s1)
+            // #3598: an element wider in its function rows than the ones
+            // before it becomes the element type, as for `if` branches.
+            match branch_join_widens(elem_ty, subst_apply(s1, it), s1) {
+              Some(widened_s) => {
+                s1 = widened_s
+                elem_ty = merge_value_effect_provenance(it, elem_ty, s1)
+              },
+              None => {
+                s1 = check_assignable(elem_ty, subst_apply(s1, it), s1, errors, "array elements have incompatible types", railway_expr_off(Array::get(items, ai)))
+                elem_ty = merge_value_effect_provenance(elem_ty, it, s1)
+              }
+            }
           }
           ai = ai + 1
         }
