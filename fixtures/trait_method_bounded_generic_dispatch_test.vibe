@@ -1,0 +1,191 @@
+// #3580: a trait method generic over its OWN bounded type parameter
+// (`write[X: Render](Self, X)`) called through a trait BOUND. The dictionary
+// for `T: W` is built once per `Self` type, so it cannot hold `X`'s witness;
+// the call passes it, read from the argument, and the dictionary slot hands
+// it to the impl method. Before, the module failed wasm validation (a generic
+// impl) or the build was refused with an edit that does not apply (a struct
+// impl), while the same call at the concrete type worked.
+
+trait Render {
+  render(Self) -> String
+}
+
+struct Qt {
+  name: String
+}
+
+impl Render for Qt {
+  render(self) -> String {
+    "Qt(\{self.name})"
+  }
+}
+
+impl Render for Int {
+  render(self) -> String {
+    "i\{self}"
+  }
+}
+
+trait W {
+  write[X: Render](Self, X) -> String
+}
+
+// A generic impl whose method spells its own binder.
+impl [E] W for Array[E] {
+  write[Y: Render](self, x: Y) -> String {
+    "arr:" + Y::render(x)
+  }
+}
+
+// A struct impl that spells it.
+struct P {
+  n: Int
+}
+
+impl W for P {
+  write[Y: Render](self, x: Y) -> String {
+    "\{self.n}:" + Y::render(x)
+  }
+}
+
+// A struct impl that leaves it off: the trait's binder is attached.
+struct Bare {
+  n: Int
+}
+
+impl W for Bare {
+  write(self, x) -> String {
+    "bare:" + X::render(x)
+  }
+}
+
+// A generic impl that leaves it off.
+struct Box[T] {
+  v: T
+}
+
+impl [T] W for Box[T] {
+  write(self, x) -> String {
+    "box:" + X::render(x)
+  }
+}
+
+// An impl method that reads no witness still receives the slot.
+struct Quiet {
+  n: Int
+}
+
+impl W for Quiet {
+  write[Y](self, x: Y) -> String {
+    "quiet"
+  }
+}
+
+// An impl with a bounded formal of its own, next to the method's.
+struct Tag[E] {
+  e: E
+}
+
+impl [E: Render] W for Tag[E] {
+  write[Y: Render](self, x: Y) -> String {
+    E::render(self.e) + "/" + Y::render(x)
+  }
+}
+
+fn go[T: W](t: T) -> String {
+  T::write(t, Qt::{ name: "q" })
+}
+
+fn go_int[T: W](t: T) -> String {
+  T::write(t, 7)
+}
+
+fn go_ufcs[T: W](t: T) -> String {
+  t.write(Qt::{ name: "u" })
+}
+
+// The method's witness forwarded from the caller's own bound.
+fn go_fwd[T: W, V: Render](t: T, v: V) -> String {
+  T::write(t, v)
+}
+
+// A sub-trait bound reaches the inherited method's binder.
+trait W2: W {
+  tag(Self) -> Int
+}
+
+impl W2 for P {
+  tag(self) -> Int {
+    self.n
+  }
+}
+
+fn go_sub[T: W2](t: T) -> String {
+  T::write(t, Qt::{ name: "s" }) + "#\{T::tag(t)}"
+}
+
+// Two own formals, in binder order.
+trait Pair {
+  pair[A: Render, B: Render](Self, A, B) -> String
+}
+
+impl Pair for P {
+  pair[A: Render, B: Render](self, a: A, b: B) -> String {
+    A::render(a) + "," + B::render(b)
+  }
+}
+
+fn go_pair[T: Pair](t: T) -> String {
+  T::pair(t, 1, Qt::{ name: "b" })
+}
+
+test "a generic impl answers through the bound" {
+  let xs: Array[Int] = [1]
+  inspect(go(xs), content = "arr:Qt(q)")
+}
+
+test "a struct impl answers through the bound" {
+  inspect(go(P::{ n: 3 }), content = "3:Qt(q)")
+}
+
+test "each call passes its own witness" {
+  let p = P::{ n: 4 }
+  inspect(go(p) + " " + go_int(p), content = "4:Qt(q) 4:i7")
+}
+
+test "the binder left off answers" {
+  inspect(go(Bare::{ n: 1 }), content = "bare:Qt(q)")
+  inspect(go_int(Box::{ v: "s" }), content = "box:i7")
+}
+
+test "an impl method that reads no witness" {
+  inspect(go(Quiet::{ n: 1 }), content = "quiet")
+}
+
+test "the impl's bound and the method's together" {
+  inspect(go(Tag::{ e: 5 }), content = "i5/Qt(q)")
+}
+
+test "the UFCS spelling" {
+  let xs: Array[Int] = [2]
+  inspect(go_ufcs(xs), content = "arr:Qt(u)")
+}
+
+test "a forwarded witness" {
+  inspect(go_fwd(P::{ n: 9 }, 8), content = "9:i8")
+  inspect(go_fwd(P::{ n: 9 }, Qt::{ name: "f" }), content = "9:Qt(f)")
+}
+
+test "through a sub-trait bound" {
+  inspect(go_sub(P::{ n: 2 }), content = "2:Qt(s)#2")
+}
+
+test "two own formals" {
+  inspect(go_pair(P::{ n: 0 }), content = "i1,Qt(b)")
+}
+
+test "the trait operation and the concrete call agree" {
+  let p = P::{ n: 6 }
+  inspect(W::write(p, 3), content = "6:i3")
+  inspect(P::write(p, 3), content = "6:i3")
+}

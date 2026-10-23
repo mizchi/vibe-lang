@@ -294,7 +294,11 @@ import ./utilities.vibe {
 }
 
 import ./witness_generation.vibe {
-  synth_dicts
+  dict_binds_trait, method_witness_call_dicts, synth_dicts
+}
+
+import ./method_witnesses.vibe {
+  trait_method_witness_slots
 }
 
 import ./witnessed_equality.vibe {
@@ -1191,7 +1195,17 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         let (head, member) = parts
         let as_method = find_dict_for_method(dict_binds, head, member)
         match as_method {
-          Some(dict_pname) => EDot(EIdent(dict_pname, -1), member, -1, -1),
+          Some(dict_pname) => {
+            // #3580: a method with a bounded binder of its own takes those
+            // witnesses ahead of its arguments, from the call; a value has no
+            // call to read them from.
+            if Array::length(trait_method_witness_slots(traits, dict_binds_trait(dict_binds, dict_pname), member)) > 0 {
+              throw("call `" + name + "(..)` directly instead of taking it as a value, or wrap it in a lambda with concrete parameter types: `" + member + "` has bounded type parameters of its own, whose witnesses a call through the trait reads from its arguments")
+            } else {
+              ()
+            }
+            EDot(EIdent(dict_pname, -1), member, -1, -1)
+          },
           None => match qual_ctor_member(head, member, struct_sets, fn_returns) {
             Some(m) => EIdent(m, off),
             None => {
@@ -1641,7 +1655,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               match array_intrinsic {
                 Some(intrinsic) => ECall(iterator_array_intrinsic_callee(intrinsic, coff), rwargs, off, callee_resolution),
                 None => match as_method {
-                  Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1, -1), rwargs, off, callee_resolution),
+                  Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1, -1), concat_expr_arrays(method_witness_call_dicts(dict_binds, dict_pname, member_of(name), args, traits, struct_sets, var_types, fn_returns, gens), rwargs), off, callee_resolution),
                   None => match lookup_gen_entry(gens, name) {
                     Some(gen) => match synth_dicts_if(gen_prepends_dicts(gen), gen.type_params, gen.threaded, gen.constructor_recvs, gen.nested_recvs, gen.param_types, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                       Some(dicts) => ECall(EIdent(name, coff), concat_expr_arrays(dicts, rwargs), off, callee_resolution),
@@ -1705,7 +1719,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                 None => ()
               }
               match as_tparam_dict {
-                Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), m, -1, -1), prepend_expr(robj, rwargs), off, callee_resolution),
+                Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), m, -1, -1), concat_expr_arrays(method_witness_call_dicts(dict_binds, dict_pname, m, prepend_expr(obj, args), traits, struct_sets, var_types, fn_returns, gens), prepend_expr(robj, rwargs)), off, callee_resolution),
                 None => match as_recv_method {
                   // #1199 bug 2: `qual` (e.g. "Box::describe") can be a
                   // THREADED generic itself (`Box::describe[T: Hash](b:

@@ -1,0 +1,256 @@
+// Method witnesses: the dictionaries for a trait method's OWN bounded type
+// parameters (#3580).
+//
+// `trait W { write[X: Render](Self, X) -> String }` dispatched through a
+// bound, `T::write(t, v)`, reaches the impl method through `T`'s `W`
+// dictionary. The impl method takes `X`'s `Render` witness as a hidden
+// parameter, and the only place that knows `X` is the CALL: the dictionary is
+// built once per `Self` type, for every `X` at once. So the call passes one
+// witness per bounded formal of the method's binder (its "slots", in binder
+// order) ahead of its arguments, and the dictionary slot takes them as leading
+// parameters and hands each to the impl method where it expects it.
+//
+// Before this the dictionary builder treated the impl method's own formal as
+// one of the impl's: it went looking for `X` in the `Self` type, and either
+// refused with an edit that does not apply ("annotate the argument's full
+// type") or built the slot one witness short, which the wasm validator
+// rejected after a clean `vibe check`.
+
+import @vibe/compiler/lowering/trait_namespaces {
+  lookup_trait_sigs
+}
+
+import @vibe/compiler/core {
+  Stmt, TypeExpr
+}
+
+import @vibe/ast {
+  trait_ref_args, trait_ref_name, type_param_name
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./models.vibe {
+  DictGen
+}
+
+import ./state.vibe {
+  dtd_trait_method_binders, dtd_trait_supers
+}
+
+import ./trait_bounds.vibe {
+  impl_pattern_binding, impl_target_pattern_matches
+}
+
+import ./utilities.vibe {
+  dict_struct_name, empty_str_array, str_array_contains
+}
+
+/// Record every trait's per-method binders for this program. Only traits that
+/// give at least one method a binder of its own are kept, so a program without
+/// method generics pays nothing.
+export fn dtd_trait_method_binders_set(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(dtd_trait_method_binders, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, _, _, method_gens, _) => if Array::any(method_gens, (g) -> Array::length(g.1) > 0) {
+        Array::push(dtd_trait_method_binders, (tname, method_gens))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn declared_method_binder(trait_name: String, method: String) -> Option[(Array[String], Array[(String, Array[String])])] {
+  let mut out = None
+  let mut i = 0
+  while (out is None) && i < Array::length(dtd_trait_method_binders) {
+    let (tname, gens) = Array::get(dtd_trait_method_binders, i)
+    if tname == trait_name {
+      let mut j = 0
+      while (out is None) && j < Array::length(gens) {
+        let (mname, tps, bounds) = Array::get(gens, j)
+        if mname == method && Array::length(tps) > 0 {
+          out = Some((tps, bounds))
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn supers_of(name: String) -> Array[String] {
+  let mut out = empty_str_array()
+  for row in dtd_trait_supers {
+    let (tname, supers) = row
+    if tname == name {
+      out = supers
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// The binder `[X: B, ..]` of `method` as `trait_name` sees it: declared by
+/// the trait itself or, for a method `flatten_traits` copied down, by one of
+/// its supertraits. None when the method has no binder of its own.
+export fn trait_method_binder(trait_name: String, method: String) -> Option[(Array[String], Array[(String, Array[String])])] {
+  if Array::length(dtd_trait_method_binders) == 0 {
+    None
+  } else {
+    let pending = [trait_ref_name(trait_name)]
+    let seen = empty_str_array()
+    let mut out = None
+    while (out is None) && Array::length(pending) > 0 {
+      let cur = Array::get(pending, Array::length(pending) - 1)
+      Array::truncate(pending, Array::length(pending) - 1)
+      if !str_array_contains(seen, cur) {
+        Array::push(seen, cur)
+        out = declared_method_binder(cur, method)
+        let supers = supers_of(cur)
+        let mut si = 0
+        while si < Array::length(supers) {
+          Array::push(pending, trait_ref_name(Array::get(supers, si)))
+          si = si + 1
+        }
+      } else {
+        ()
+      }
+    }
+    out
+  }
+}
+
+/// The witnesses a call of `method` through a `trait_name` dictionary passes
+/// ahead of its arguments: one `(formal, bound trait)` per method-bearing
+/// bound of the method's own binder, in binder order. A marker bound has no
+/// dictionary and takes no slot, as in `build_gens`.
+export fn trait_method_witness_slots(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], trait_name: String, method: String) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  match trait_method_binder(trait_name, method) {
+    Some(binder) => {
+      let (_, bounds) = binder
+      let mut bi = 0
+      while bi < Array::length(bounds) {
+        let (tp, trs) = Array::get(bounds, bi)
+        let mut ti = 0
+        while ti < Array::length(trs) {
+          let tr = Array::get(trs, ti)
+          if lookup_trait_sigs(traits, tr) is Some {
+            Array::push(out, (type_param_name(tp), tr))
+          } else {
+            ()
+          }
+          ti = ti + 1
+        }
+        bi = bi + 1
+      }
+    },
+    None => ()
+  }
+  out
+}
+
+/// The hidden parameter a dictionary slot receives slot `i`'s witness in.
+export fn method_witness_param(i: Int) -> String {
+  "__mw" + __to_string(i)
+}
+
+/// `trait_name`'s signatures as its dictionary struct's field types: a method
+/// with witness slots takes the slot dictionaries first, as the call passes
+/// them.
+export fn method_witness_dict_sigs(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], trait_name: String, sigs: Array[(String, Array[TypeExpr], TypeExpr)]) -> Array[(String, Array[TypeExpr], TypeExpr)] {
+  for sig in sigs {
+    let (m, params, ret) = sig
+    (m, method_witness_field_params(trait_method_witness_slots(traits, trait_name, m), params), ret)
+  }
+}
+
+fn method_witness_field_params(slots: Array[(String, String)], params: Array[TypeExpr]) -> Array[TypeExpr] {
+  let out: Array[TypeExpr] = for slot in slots {
+    let (formal, tr) = slot
+    let targs = trait_ref_args(tr)
+    TyApp(dict_struct_name(tr), if Array::length(targs) > 0 {
+      targs
+    } else {
+      [TyName(formal)]
+    })
+  }
+  Array::concat(out, params)
+}
+
+/// The slot binds, shaped like `dict_binds` rows, so a slot dictionary is found
+/// (or projected for a super-trait bound) the way an in-scope one is.
+export fn method_witness_binds(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], slots: Array[(String, String)]) -> Array[(String, String, String, Array[String])] {
+  let out: Array[(String, String, String, Array[String])] = []
+  let mut i = 0
+  while i < Array::length(slots) {
+    let (formal, tr) = Array::get(slots, i)
+    let methods = match lookup_trait_sigs(traits, tr) {
+      Some(sigs) => for s in sigs {
+        s.0
+      },
+      None => empty_str_array()
+    }
+    Array::push(out, (formal, tr, method_witness_param(i), methods))
+    i = i + 1
+  }
+  out
+}
+
+/// Whether `type_param` is a binder the impl METHOD `gen` declares itself,
+/// rather than one of its impl's formals.
+export fn impl_method_declares_formal(gen: DictGen, type_param: String) -> Bool {
+  (gen.impl_target is Some) && !Array::any(gen.impl_params, (tp) -> type_param_name(tp) == type_param) && Array::any(gen.type_params, (tp) -> type_param_name(tp) == type_param)
+}
+
+/// Which of the trait method's own formals the impl method `gen`'s formal
+/// `type_param` stands for, read by matching each of the impl method's
+/// parameter annotations against the trait's declared parameter at the same
+/// position (`x: Y` against `X` binds `Y` to `X`). An impl may spell its
+/// binder differently from the trait, or leave it off and have the trait's
+/// injected; the checker has already related the two signatures. None for a
+/// formal of the impl itself (`E` of `impl [E] W for Array[E]`), which no
+/// method formal position binds.
+export fn impl_formal_method_formal(gen: DictGen, type_param: String, sig_params: Array[TypeExpr], method_formals: Array[String]) -> Option[String] {
+  let formals = for tp in gen.type_params {
+    type_param_name(tp)
+  }
+  let mut out = None
+  let mut i = 0
+  while (out is None) && i < Array::length(sig_params) && i < Array::length(gen.param_types) {
+    match Array::get(gen.param_types, i) {
+      Some(ann) => {
+        let bindings = array_empty()
+        if impl_target_pattern_matches(ann, Array::get(sig_params, i), formals, bindings) {
+          match impl_pattern_binding(bindings, type_param) {
+            Some(TyName(name)) => if str_array_contains(method_formals, name) {
+              out = Some(name)
+            } else {
+              ()
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}

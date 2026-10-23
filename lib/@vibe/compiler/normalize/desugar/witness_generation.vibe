@@ -9,7 +9,13 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_specialized_method_binding_name, impl_target_head, impl_target_key, trait_ref_args, trait_ref_from_key, trait_ref_name
+  impl_specialized_method_binding_name,
+  impl_target_head,
+  impl_target_key,
+  trait_ref_args,
+  trait_ref_from_key,
+  trait_ref_name,
+  type_param_name
 }
 
 import @vibe/core {
@@ -29,9 +35,19 @@ import ./generic_dispatch.vibe {
   call_arg_formal_bindings,
   generic_impl_bound_target,
   lookup_gen,
+  lookup_gen_entry,
   matching_generic_impl_method,
   narrow_applied_trait_candidates,
   specialize_applied_trait_for_target
+}
+
+import ./method_witnesses.vibe {
+  impl_formal_method_formal,
+  impl_method_declares_formal,
+  method_witness_binds,
+  method_witness_param,
+  trait_method_binder,
+  trait_method_witness_slots
 }
 
 import ./generic_equality.vibe {
@@ -59,7 +75,12 @@ import ./trait_bounds.vibe {
   decode_constructor_recv_index,
   dtd_eq_witness_trait,
   dtd_trait_entails,
+  encode_array_elem_recv_index,
+  encode_nested_recv_index,
+  find_array_elem_recv_index,
   find_dict_for_trait,
+  find_nested_recv_indices,
+  find_recv_index,
   impl_target_pattern_matches,
   is_array_elem_recv_index,
   is_constructor_recv_index,
@@ -139,6 +160,27 @@ fn trait_method_params(sigs: Array[(String, Array[TypeExpr], TypeExpr)], method:
   out
 }
 
+/// `field` behind a closure that first takes the slot witnesses, which it does
+/// not read, then the method's `arity` value parameters.
+fn method_witness_slot_closure(slots: Array[(String, String)], arity: Int, field: Expr) -> Expr {
+  let wparams: Array[(String, Option[TypeExpr])] = array_empty()
+  let callargs = empty_expr_array()
+  let mut si = 0
+  while si < Array::length(slots) {
+    Array::push(wparams, (method_witness_param(si), None))
+    si = si + 1
+  }
+  let mut wi = 0
+  while wi < arity {
+    let wname = String::concat("__w", __to_string(wi))
+    Array::push(wparams, (wname, None))
+    Array::push(callargs, EIdent(wname, -1))
+    wi = wi + 1
+  }
+  EFn(empty_str_array(), array_empty(), wparams, None, None, ECall(field, callargs, -1, [
+  ]))
+}
+
 fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Option[Expr]) -> Option[Expr] with Exception {
   let cname = impl_target_head(actual_target)
   match lookup_trait_sigs(traits, trait_ref_name(trait_name)) {
@@ -149,6 +191,19 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
       let mut failed = false
       while mi < Array::length(mnames) {
         let m = Array::get(mnames, mi)
+        // #3580: the witnesses for the method's own bounded formals arrive
+        // with each call, ahead of its arguments (see method_witnesses.vibe).
+        let slots = trait_method_witness_slots(traits, trait_name, m)
+        let slot_binds = method_witness_binds(traits, slots)
+        let method_formals = match trait_method_binder(trait_name, m) {
+          Some(binder) => for tp in binder.0 {
+            type_param_name(tp)
+          },
+          None => empty_str_array()
+        }
+        // Whether this method's field already takes the slot witnesses.
+        let mut slotted = false
+        let fields_before = Array::length(recfields)
         let plain_qm = dtd_program_fn_name(fn_returns, String::concat(cname, String::concat("::", m)))
         let specialized_qm = impl_specialized_method_binding_name(cname, trait_name, impl_target_key(actual_target), m)
         let qm = if specialized_qm != "" && fn_exists(fn_returns, specialized_qm) {
@@ -228,39 +283,63 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
               let mut subok = true
               while bi < Array::length(threaded) {
                 let (type_param, btrait, _) = Array::get(threaded, bi)
-                let nested_target = match generic_impl_bound_target(gens, qm, type_param, trait_method_params(sigs, m), actual_target) {
-                  Some(target) => Some(target),
-                  None => match arg_expr {
-                    Some(value) => match first_array_elem(value) {
-                      Some(elem) => infer_impl_target_expr(elem, struct_sets, var_types, fn_returns),
-                      None => None
-                    },
-                    None => None
-                  }
-                }
-                match nested_target {
-                  Some(target) => match build_concrete_dict_for_target(target, btrait, traits, gens, struct_sets, var_types, fn_returns, None) {
-                    Some(sd) => Array::push(callargs, sd),
-                    None => {
-                      subok = false
+                let own_formal = if Array::length(method_formals) == 0 {
+                  None
+                } else match lookup_gen_entry(gens, qm) {
+                  Some(gen) => match impl_formal_method_formal(gen, type_param, trait_method_params(sigs, m), method_formals) {
+                    Some(formal) => Some(formal),
+                    None => if impl_method_declares_formal(gen, type_param) {
+                      // The method's own formal, in no parameter: only the
+                      // result names it, and a call through the trait has
+                      // no argument to read its witness from.
+                      throw("call `" + cname + "::" + m + "(..)` at its concrete type, or give `" + trait_ref_name(trait_name) + "::" + m + "` a parameter of type `" + type_param + "`: a call through the trait reads the `" + trait_ref_name(btrait) + "` witness for the method's own type parameter `" + type_param + "` from an argument, and no parameter carries it")
+                    } else {
+                      None
                     }
                   },
+                  None => None
+                }
+                match own_formal {
+                  Some(formal) => match dict_for_trait_in_scope(slot_binds, traits, formal, btrait) {
+                    Some(dict) => Array::push(callargs, dict),
+                    None => throw("add `" + trait_ref_name(btrait) + "` to the bound on `" + formal + "` in `" + trait_ref_name(trait_name) + "::" + m + "`, or remove it from `" + type_param + "` in the impl's `" + m + "` for `" + cname + "`: a call through `" + trait_ref_name(trait_name) + "` passes only the witnesses the trait method's own binder names")
+                  },
                   None => {
-                    match actual_target {
-                      TyName("Array") => throw(String::concat("add an explicit `Array[Element]` annotation to the array binding or parameter before this trait call: the element type needed for `", String::concat(btrait, "` is not available here"))),
-                      // #3547: a bounded generic impl's own witness needs
-                      // the type argument. Returning None here left the
-                      // call one dictionary short, which the wasm validator
-                      // rejected after a clean check.
-                      TyName(head) => throw("annotate the argument's full type before this trait call (for example `let x: " + head + "[Int] = ..`): the type argument `" + type_param + "` of `" + head + "` needed for its `" + trait_ref_name(btrait) + "` witness is not available here"),
-                      // #3569: the type is known, but no `Self` position of
-                      // the method spells `type_param` (nor the impl target),
-                      // so nothing says which part of it the formal is.
-                      // Leaving the dictionary out emitted the call short.
-                      TyApp(head, _) => throw("spell `" + type_param + "` in the type of `" + qm + "`'s `Self` parameter (for example `self: " + head + "[" + type_param + "]`), or replace `" + type_param + "` with the concrete type it stands for: the trait calls `" + qm + "` with a `" + head + "`, and the `" + trait_ref_name(btrait) + "` witness for `" + type_param + "` is read only from that parameter"),
-                      _ => ()
+                    let nested_target = match generic_impl_bound_target(gens, qm, type_param, trait_method_params(sigs, m), actual_target) {
+                      Some(target) => Some(target),
+                      None => match arg_expr {
+                        Some(value) => match first_array_elem(value) {
+                          Some(elem) => infer_impl_target_expr(elem, struct_sets, var_types, fn_returns),
+                          None => None
+                        },
+                        None => None
+                      }
                     }
-                    subok = false
+                    match nested_target {
+                      Some(target) => match build_concrete_dict_for_target(target, btrait, traits, gens, struct_sets, var_types, fn_returns, None) {
+                        Some(sd) => Array::push(callargs, sd),
+                        None => {
+                          subok = false
+                        }
+                      },
+                      None => {
+                        match actual_target {
+                          TyName("Array") => throw(String::concat("add an explicit `Array[Element]` annotation to the array binding or parameter before this trait call: the element type needed for `", String::concat(btrait, "` is not available here"))),
+                          // #3547: a bounded generic impl's own witness needs
+                          // the type argument. Returning None here left the
+                          // call one dictionary short, which the wasm validator
+                          // rejected after a clean check.
+                          TyName(head) => throw("annotate the argument's full type before this trait call (for example `let x: " + head + "[Int] = ..`): the type argument `" + type_param + "` of `" + head + "` needed for its `" + trait_ref_name(btrait) + "` witness is not available here"),
+                          // #3569: the type is known, but no `Self` position of
+                          // the method spells `type_param` (nor the impl target),
+                          // so nothing says which part of it the formal is.
+                          // Leaving the dictionary out emitted the call short.
+                          TyApp(head, _) => throw("spell `" + type_param + "` in the type of `" + qm + "`'s `Self` parameter (for example `self: " + head + "[" + type_param + "]`), or replace `" + type_param + "` with the concrete type it stands for: the trait calls `" + qm + "` with a `" + head + "`, and the `" + trait_ref_name(btrait) + "` witness for `" + type_param + "` is read only from that parameter"),
+                          _ => ()
+                        }
+                        subok = false
+                      }
+                    }
                   }
                 }
                 bi = bi + 1
@@ -273,6 +352,12 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
                 // short for `same(Self, Self)`: the call failed wasm
                 // validation ("not enough arguments on the stack").
                 let wparams: Array[(String, Option[TypeExpr])] = array_empty()
+                let mut si = 0
+                while si < Array::length(slots) {
+                  Array::push(wparams, (method_witness_param(si), None))
+                  si = si + 1
+                }
+                slotted = true
                 let mut wi = 0
                 while wi < trait_method_arity(sigs, m) {
                   let wname = String::concat("__w", __to_string(wi))
@@ -289,6 +374,14 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
             },
             None => Array::push(recfields, (m, EIdent(qm, -1)))
           }
+        }
+        if Array::length(slots) > 0 && !slotted && Array::length(recfields) == fields_before + 1 {
+          // An impl method that reads none of the slot witnesses still
+          // receives them: the call through the trait always passes them.
+          let (_, field) = Array::get(recfields, fields_before)
+          Array::set(recfields, fields_before, (m, method_witness_slot_closure(slots, trait_method_arity(sigs, m), field)))
+        } else {
+          ()
         }
         mi = mi + 1
       }
@@ -650,5 +743,94 @@ export fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String
     Some(dicts)
   } else {
     None
+  }
+}
+
+/// The trait `dict_pname` (a dictionary in `dict_binds`) is a witness of, or
+/// "" when no row names it.
+export fn dict_binds_trait(dict_binds: Array[(String, String, String, Array[String])], dict_pname: String) -> String {
+  let mut out = ""
+  let mut i = 0
+  while out == "" && i < Array::length(dict_binds) {
+    let (_, tr, pname, _) = Array::get(dict_binds, i)
+    if pname == dict_pname {
+      out = tr
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #3580: the witnesses a call of `member` through the dictionary `dict_pname`
+/// passes ahead of its arguments -- one per slot of the trait method's own
+/// binder (`trait_method_witness_slots`), each read from the argument the
+/// trait's signature puts that formal in, exactly as a call of a bounded
+/// generic function reads it. `orig_args` include the receiver. Empty for a
+/// method without a binder of its own. A formal no argument carries (one only
+/// the result type mentions) is refused with the edit: the dictionary slot
+/// takes the witness, and leaving it out emits the call short, which the wasm
+/// validator rejects.
+export fn method_witness_call_dicts(dict_binds: Array[(String, String, String, Array[String])], dict_pname: String, member: String, orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Array[Expr] with Exception {
+  let trait_name = dict_binds_trait(dict_binds, dict_pname)
+  let slots: Array[(String, String)] = if trait_name == "" {
+    []
+  } else {
+    trait_method_witness_slots(traits, trait_name, member)
+  }
+  if Array::length(slots) == 0 {
+    empty_expr_array()
+  } else {
+    let sig_params = match lookup_trait_sigs(traits, trait_ref_name(trait_name)) {
+      Some(sigs) => trait_method_params(sigs, member),
+      None => array_empty()
+    }
+    let params: Array[(String, Option[TypeExpr])] = []
+    let mut pi = 0
+    while pi < Array::length(sig_params) {
+      Array::push(params, ("__mwarg" + __to_string(pi), Some(Array::get(sig_params, pi))))
+      pi = pi + 1
+    }
+    let display = trait_ref_name(trait_name) + "::" + member
+    let formals = empty_str_array()
+    let threaded: Array[(String, String, Int)] = []
+    let nested_recvs: Array[(String, Int, TypeExpr)] = []
+    let mut si = 0
+    while si < Array::length(slots) {
+      let (formal, tr) = Array::get(slots, si)
+      if !str_array_contains(formals, formal) {
+        Array::push(formals, formal)
+      } else {
+        ()
+      }
+      let ridx = find_recv_index(params, formal)
+      let widx = find_array_elem_recv_index(params, formal)
+      let nested = find_nested_recv_indices(params, formal)
+      if ridx >= 0 {
+        Array::push(threaded, (formal, tr, ridx))
+      } else if widx >= 0 {
+        Array::push(threaded, (formal, tr, encode_array_elem_recv_index(widx)))
+      } else if Array::length(nested) > 0 {
+        Array::push(threaded, (formal, tr, encode_nested_recv_index(Array::get(nested, 0))))
+        let mut ni = 0
+        while ni < Array::length(nested) {
+          let at = Array::get(nested, ni)
+          Array::push(nested_recvs, (formal, at, Array::get(sig_params, at)))
+          ni = ni + 1
+        }
+      } else {
+        throw("call the impl method at its concrete type (`<Type>::" + member + "(..)`), or give `" + display + "` a parameter of type `" + formal + "`: a call through the trait reads the `" + trait_ref_name(tr) + "` witness for the method's own type parameter `" + formal + "` from an argument, and no parameter carries it")
+      }
+      si = si + 1
+    }
+    let param_types: Array[Option[TypeExpr]] = []
+    for t in sig_params {
+      Array::push(param_types, Some(t))
+    }
+    match synth_dicts(formals, threaded, array_empty(), nested_recvs, param_types, orig_args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+      Some(dicts) => dicts,
+      None => throw("annotate the argument `" + display + "` reads its own type parameter from (for example `let v: Int = ..`): a call through the trait needs that argument's type for the witness, and it is not available here")
+    }
   }
 }
