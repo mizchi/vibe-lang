@@ -605,7 +605,10 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   `hash_key` is not `(T) -> String` with no effect row, a type parameter of a
   generic type, and a builtin with no key such as `Map` or a function
   (#3551). A field spelled through a type alias is keyed as the type the
-  alias names. The key format is new and may change. Key a map by a `String`
+  alias names. `derive (Hash)` also derives `to_string` when every field
+  has a renderer; when one does not (a field type with a `hash_key` but no
+  `Show`), the type keeps its key and has no renderer, so interpolating it
+  asks for `derive (Show)` (#3567). The key format is new and may change. Key a map by a `String`
   you build yourself when the format matters.
 - **Trait impls beyond one module and one level of generics.** A conditional
   impl (`impl [T: X] Y for Box[T]`) now works at a nested instantiation

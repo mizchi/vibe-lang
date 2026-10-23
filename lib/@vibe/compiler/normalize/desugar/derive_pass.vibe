@@ -58,7 +58,7 @@ import ./show_generation.vibe {
 }
 
 import ./state.vibe {
-  dtd_show_refusals
+  dtd_hash_renderless, dtd_show_refusals
 }
 
 import ./typed_equality.vibe {
@@ -345,8 +345,10 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         let fields = subst_field_formals(fields0, decl_tparams)
         // `derive(Hash)` also needs the structural `to_string`: a Hash type's
         // stable Map-key string is its structural representation (#638), so
-        // generate `to_string` for Show OR Hash.
-        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(name, "to_string")) {
+        // generate `to_string` for Show OR Hash. #3567: except where a field
+        // it would render has no renderer (`hash_renderless_types`); the key
+        // does not need one.
+        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(name, "to_string")) && !str_array_contains(dtd_hash_renderless, name) {
           if str_array_contains(derives, "Show") {
             for field in fields {
               let (fname, fty) = field
@@ -382,7 +384,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // #3551 review: a Hash-only derive generates the same renderer, and
         // interpolating the value calls it. Noted after the key, so a field the
         // derived key refuses keeps that refusal.
-        if str_array_contains(derives, "Hash") && !str_array_contains(derives, "Show") && !dtd_source_op_defined(stmts, qualified_name(name, "to_string")) {
+        if str_array_contains(derives, "Hash") && !str_array_contains(derives, "Show") && !dtd_source_op_defined(stmts, qualified_name(name, "to_string")) && !str_array_contains(dtd_hash_renderless, name) {
           for field in fields {
             let (fname, fty) = field
             show_note_opaque_field(stmts, name, fname, fty, known_types, false)
@@ -390,7 +392,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         } else {
           ()
         }
-        if str_array_contains(derives, "Show") || str_array_contains(derives, "Hash") {
+        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !str_array_contains(dtd_hash_renderless, name) {
           let mut fi = 0
           while fi < Array::length(fields) {
             let (fname, fty) = Array::get(fields, fi)
@@ -431,7 +433,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
       SEnum(_, ename, decl_tparams, variants0, derives) => {
         // #2141: same re-spelling as the SStruct arm, for payload types.
         let variants = subst_variant_formals(variants0, decl_tparams)
-        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(ename, "to_string")) {
+        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(ename, "to_string")) && !str_array_contains(dtd_hash_renderless, ename) {
           if str_array_contains(derives, "Show") {
             for variant in variants {
               let (vname, ftypes) = variant
@@ -466,7 +468,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
           ()
         }
         // #3551 review: as in the SStruct arm, after the key.
-        if str_array_contains(derives, "Hash") && !str_array_contains(derives, "Show") && !dtd_source_op_defined(stmts, qualified_name(ename, "to_string")) {
+        if str_array_contains(derives, "Hash") && !str_array_contains(derives, "Show") && !dtd_source_op_defined(stmts, qualified_name(ename, "to_string")) && !str_array_contains(dtd_hash_renderless, ename) {
           for variant in variants {
             let (vname, ftypes) = variant
             let mut pi = 0
@@ -478,7 +480,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         } else {
           ()
         }
-        if str_array_contains(derives, "Show") || str_array_contains(derives, "Hash") {
+        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !str_array_contains(dtd_hash_renderless, ename) {
           let mut vi = 0
           while vi < Array::length(variants) {
             let (vname, ftypes) = Array::get(variants, vi)

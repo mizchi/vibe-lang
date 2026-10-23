@@ -1,0 +1,128 @@
+// #3567: a `derive (Hash)` type whose field's type has a key but no renderer.
+// `derive (Hash)` also derives a renderer, so that interpolating the value
+// works, and that renderer rendered field `i` through `Inner::to_string`,
+// which `Inner` does not have. The key never calls the renderer, so a program
+// that only keyed `Outer` compiled under `vibe run` (which dropped the unused
+// renderer) and stopped under `vibe test` with an internal compiler error:
+// `Inner::to_string` reached code generation unresolved. The renderer is
+// withheld now; the key works on every lane. Interpolating such a value is
+// refused with the edit (`fixtures/err_derive_hash_renderless_interp_refused.vibe`).
+
+struct Inner {
+  n: Int
+}
+
+impl Hash for Inner {
+  hash_key(self: Inner) -> String {
+    "i" + Int::to_string(self.n)
+  }
+}
+
+struct Outer {
+  i: Inner
+} derive (Hash)
+
+// A field of a withheld type has no renderer either, so `Mid`'s is withheld
+// too; its key still keys `Outer` by `Outer`'s key.
+struct Mid {
+  o: Outer;
+  tag: String
+} derive (Hash)
+
+// Inside the containers the renderer opens: `Option`, `Array`, a tuple.
+struct Wrapped {
+  maybe: Option[Inner];
+  many: Array[Inner];
+  pair: (Int, Inner)
+} derive (Hash)
+
+enum Slot {
+  Empty;
+  Full(Inner)
+} derive (Hash)
+
+// Controls: a field type that has a renderer keeps the derived one.
+struct Shown {
+  n: Int
+} derive (Show, Hash)
+
+struct WithShown {
+  s: Shown
+} derive (Hash)
+
+struct Written {
+  n: Int
+}
+
+impl Hash for Written {
+  hash_key(self: Written) -> String {
+    "w" + Int::to_string(self.n)
+  }
+}
+
+fn Written::to_string(w: Written) -> String {
+  "W" + Int::to_string(w.n)
+}
+
+struct WithWritten {
+  w: Written
+} derive (Hash)
+
+struct Implemented {
+  n: Int
+}
+
+impl Hash for Implemented {
+  hash_key(self: Implemented) -> String {
+    "m" + Int::to_string(self.n)
+  }
+}
+
+impl Show for Implemented {
+  to_string(self: Implemented) -> String {
+    "M" + Int::to_string(self.n)
+  }
+}
+
+struct WithImplemented {
+  m: Implemented
+} derive (Hash)
+
+// A `derive (Show)` type holding one keeps its renderer too.
+struct Top {
+  wm: WithImplemented
+} derive (Show)
+
+test "the key of a field without a renderer" {
+  let k = Outer::hash_key(Outer::{ i: Inner::{ n: 3 } })
+  inspect(k, content = "2:i3")
+  inspect(k == Outer::hash_key(Outer::{ i: Inner::{ n: 4 } }), content = "false")
+}
+
+test "a field of a withheld type" {
+  let m = Mid::{ o: Outer::{ i: Inner::{ n: 7 } }, tag: "t" }
+  inspect(Mid::hash_key(m), content = "4:2:i71:t")
+}
+
+test "containers and enum payloads" {
+  let w = Wrapped::{
+    maybe: Some(Inner::{ n: 1 }),
+    many: [Inner::{ n: 2 }, Inner::{ n: 3 }],
+    pair: (4, Inner::{ n: 5 })
+  }
+  inspect(Wrapped::hash_key(w), content = "S2:i1#2:2:i22:i31:42:i5")
+  inspect(Slot::hash_key(Full(Inner::{ n: 6 })), content = "4:Full2:i6")
+  inspect(Slot::hash_key(Empty), content = "5:Empty")
+}
+
+test "a field with a renderer keeps the derived renderer" {
+  let a = WithShown::{ s: Shown::{ n: 1 } }
+  inspect("\{a}", content = "WithShown { s: Shown { n: 1 } }")
+  let b = WithWritten::{ w: Written::{ n: 2 } }
+  inspect("\{b}", content = "WithWritten { w: W2 }")
+  inspect(WithWritten::hash_key(b), content = "2:w2")
+  let c = WithImplemented::{ m: Implemented::{ n: 3 } }
+  inspect("\{c}", content = "WithImplemented { m: M3 }")
+  inspect(WithImplemented::to_string(c), content = "WithImplemented { m: M3 }")
+  inspect("\{Top::{ wm: c }}", content = "Top { wm: WithImplemented { m: M3 } }")
+}

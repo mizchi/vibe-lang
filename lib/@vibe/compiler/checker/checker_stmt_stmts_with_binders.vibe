@@ -1291,6 +1291,30 @@ fn forward_restore_root_order(capture: Option[CheckerStatementCapture], start: I
   }
 }
 
+/// #3567: the `derive (Hash)` types of the program being checked whose implied
+/// renderer is withheld, because a field it would render has no renderer.
+/// Filled by `collect_derive_field_errors` (`dfe_fill_hash_renderless`),
+/// which runs before the declarations are bound; read below, so no
+/// `T::to_string` is bound for them.
+let hash_renderer_withheld: Array[String] = []
+
+export fn hash_renderer_withheld_reset() -> Unit {
+  Array::truncate(hash_renderer_withheld, 0)
+}
+
+export fn hash_renderer_withheld_add(name: String) -> Unit {
+  Array::push(hash_renderer_withheld, name)
+}
+
+/// Is `T::to_string` withheld from the `derive (Hash)` type `name`?
+export fn derived_hash_renderer_withheld(name: String) -> Bool {
+  let mut found = false
+  for n in hash_renderer_withheld {
+    found = found || n == name
+  }
+  found
+}
+
 export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool, validate_completed_decls: Bool) -> (TypeEnv, Subst, Int) {
   let mut stmts = reorder_type_decls_first(raw_stmts, i)
   // #3538: impl methods are paired with their `SImpl` in PARSE order, which
@@ -2020,7 +2044,8 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         } else {
           env_eq_impl
         }
-        let env_show = if struct_derives_has(enum_derives, "Show") || struct_derives_has(enum_derives, "Hash") {
+        // #3567: not for a `derive (Hash)` enum whose renderer is withheld.
+        let env_show = if struct_derives_has(enum_derives, "Show") || (struct_derives_has(enum_derives, "Hash") && !derived_hash_renderer_withheld(name)) {
           let env_show_base = if struct_derives_has(enum_derives, "Show") {
             EnvTraitImpl("Show", ctor_result_type, env_ord)
           } else {
@@ -2193,7 +2218,8 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         } else {
           env1
         }
-        let env3 = if struct_derives_has(derives, "Show") || struct_derives_has(derives, "Hash") {
+        // #3567: not for a `derive (Hash)` struct whose renderer is withheld.
+        let env3 = if struct_derives_has(derives, "Show") || (struct_derives_has(derives, "Hash") && !derived_hash_renderer_withheld(name)) {
           let env_show_base = if struct_derives_has(derives, "Show") {
             EnvTraitImpl("Show", CtStruct(name), env2)
           } else {

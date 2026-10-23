@@ -5,7 +5,7 @@ import @vibe/compiler/core {
 }
 
 import ./derive_operations.vibe {
-  collect_decl_type_names, dtd_source_op_defined, qualified_name
+  collect_decl_type_names, dtd_source_op_defined, hash_renderless_types, qualified_name
 }
 
 import ./equality_aliases.vibe {
@@ -58,6 +58,7 @@ import ./state.vibe {
   dtd_eq_type_owners,
   dtd_eq_unsafe_types,
   dtd_eq_witness_inline_stack,
+  dtd_hash_renderless,
   dtd_show_generic_enum_stack,
   dtd_show_generic_enums,
   dtd_show_generic_source_renderers,
@@ -286,6 +287,39 @@ export fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
       _ => ()
     }
     j = j + 1
+  }
+  // #3567: a `derive (Hash)` type whose implied renderer is withheld is not
+  // rendered inline either. Judged after the scan above has entered every
+  // alias, since a field is judged through them.
+  Array::truncate(dtd_hash_renderless, 0)
+  for name in hash_renderless_types(stmts) {
+    Array::push(dtd_hash_renderless, name)
+  }
+  if Array::length(dtd_hash_renderless) > 0 {
+    let kept_structs = for row in dtd_show_generic_structs {
+      row
+    }
+    Array::truncate(dtd_show_generic_structs, 0)
+    for row in kept_structs {
+      if !str_array_contains(dtd_hash_renderless, row.0) {
+        Array::push(dtd_show_generic_structs, row)
+      } else {
+        ()
+      }
+    }
+    let kept_enums = for row in dtd_show_generic_enums {
+      row
+    }
+    Array::truncate(dtd_show_generic_enums, 0)
+    for row in kept_enums {
+      if !str_array_contains(dtd_hash_renderless, row.0) {
+        Array::push(dtd_show_generic_enums, row)
+      } else {
+        ()
+      }
+    }
+  } else {
+    ()
   }
   let mut ei = 0
   while ei < Array::length(enum_names) {

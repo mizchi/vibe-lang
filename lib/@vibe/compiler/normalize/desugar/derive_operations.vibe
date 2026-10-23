@@ -1004,6 +1004,167 @@ export fn collect_decl_type_names(stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
+/// #3567: the types whose `derive (Hash)` renderer is withheld.
+///
+/// A `derive (Hash)` type with neither `Show` nor a written `to_string` also
+/// gets a derived renderer, so that interpolating it works. That renderer
+/// renders a field of a declared type through the field type's `to_string`
+/// (`show_for_typed`). When the field's type has none, the call named no
+/// function. The key never calls the renderer (#3544), so the key compiled.
+/// But a lane that kept the unused renderer (`vibe test`) stopped with an
+/// internal compiler error (`Inner::to_string` reached code generation
+/// unresolved), and interpolating the value did so on every lane.
+///
+/// Such a type keeps its key and gets no renderer, like a type that derives
+/// nothing. Interpolating it is refused with the edit (`derive (Show)`). The
+/// checker withholds the same `T::to_string` (`dfe_hash_renderless`), so an
+/// explicit call or a `derive (Show)` type holding one is refused at check
+/// time.
+///
+/// The result is a least fixpoint: a field whose type is another withheld
+/// type has no renderer either.
+export fn hash_renderless_types(stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = array_empty()
+  let candidates: Array[(String, Array[String], Array[TypeExpr])] = array_empty()
+  for st in stmts {
+    match st {
+      SStruct(_, name, fields, derives, _, tparams) => if hr_renderer_is_hash_only(stmts, name, derives) {
+        Array::push(candidates, (name, tparams, for field in fields {
+          field.1
+        }))
+      } else {
+        ()
+      },
+      SEnum(_, name, tparams, variants, derives) => if hr_renderer_is_hash_only(stmts, name, derives) {
+        let parts: Array[TypeExpr] = array_empty()
+        for variant in variants {
+          for payload in variant.1 {
+            Array::push(parts, payload)
+          }
+        }
+        Array::push(candidates, (name, tparams, parts))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  let mut changed = Array::length(candidates) > 0
+  while changed {
+    changed = false
+    for candidate in candidates {
+      let (name, tparams, parts) = candidate
+      if !str_array_contains(out, name) && hr_any_missing(stmts, name, tparams, parts, out, array_empty(), 0) {
+        Array::push(out, name)
+        changed = true
+      } else {
+        ()
+      }
+    }
+  }
+  out
+}
+
+/// Is `name`'s renderer generated only because it derives `Hash`?
+fn hr_renderer_is_hash_only(stmts: Array[Stmt], name: String, derives: Array[String]) -> Bool {
+  str_array_contains(derives, "Hash") && !str_array_contains(derives, "Show") && !dtd_source_op_defined(stmts, qualified_name(name, "to_string"))
+}
+
+fn hr_any_missing(stmts: Array[Stmt], owner: String, tparams: Array[String], ts: Array[TypeExpr], renderless: Array[String], seen: Array[String], depth: Int) -> Bool {
+  let mut found = false
+  for t in ts {
+    if !found && hr_missing_renderer(stmts, owner, tparams, t, renderless, seen, depth) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// Does the derived renderer of `owner` reach, for a field of type `t0`, a
+/// declared type that has no renderer? Walks what `show_for_typed` renders:
+/// `Option` / `Array` / `Result` arguments and tuples open; a declared type is
+/// rendered through its own renderer, and a generic one that derives its
+/// renderer is rendered inline at its instantiation.
+fn hr_missing_renderer(stmts: Array[Stmt], owner: String, tparams: Array[String], t0: TypeExpr, renderless: Array[String], seen: Array[String], depth: Int) -> Bool {
+  let t = eq_expand_alias_ty(t0)
+  match t {
+    TyName(n) => if n == owner || str_array_contains(tparams, n) || is_scalar_type_name(n) {
+      false
+    } else {
+      hr_head_missing(stmts, owner, tparams, n, array_empty(), renderless, seen, depth)
+    },
+    TyApp(n, args) => if ((n == "Option" || n == "Array") && Array::length(args) == 1) || (n == "Result" && Array::length(args) == 2) {
+      hr_any_missing(stmts, owner, tparams, args, renderless, seen, depth)
+    } else if n == owner {
+      false
+    } else {
+      hr_head_missing(stmts, owner, tparams, n, args, renderless, seen, depth)
+    },
+    TyTuple(ts) => hr_any_missing(stmts, owner, tparams, ts, renderless, seen, depth),
+    _ => false
+  }
+}
+
+fn hr_head_missing(stmts: Array[Stmt], owner: String, tparams: Array[String], n: String, args: Array[TypeExpr], renderless: Array[String], seen: Array[String], depth: Int) -> Bool {
+  let key = type_key(TyApp(n, args))
+  if depth >= 16 || str_array_contains(seen, key) || dtd_source_op_defined(stmts, qualified_name(n, "to_string")) {
+    false
+  } else {
+    Array::push(seen, key)
+    match hr_find_decl(stmts, n) {
+      // Not a declaration here: the renderer does not call `n::to_string`.
+      None => false,
+      Some((derives, formals, parts)) => if str_array_contains(derives, "Show") || (str_array_contains(derives, "Hash") && !str_array_contains(renderless, n)) {
+        if Array::length(formals) > 0 && Array::length(formals) == Array::length(args) {
+          hr_any_missing(stmts, owner, tparams, for p in parts {
+            eq_subst_ty(p, formals, args)
+          }, renderless, seen, depth + 1)
+        } else {
+          false
+        }
+      } else {
+        true
+      }
+    }
+  }
+}
+
+/// The derives, type parameters and field / payload types of the struct or
+/// enum `n` declared in `stmts`.
+fn hr_find_decl(stmts: Array[Stmt], n: String) -> Option[(Array[String], Array[String], Array[TypeExpr])] {
+  let mut found: Option[(Array[String], Array[String], Array[TypeExpr])] = None
+  for st in stmts {
+    if found is None {
+      match st {
+        SStruct(_, name, fields, derives, _, tparams) => if name == n {
+          found = Some((derives, tparams, for field in fields {
+            field.1
+          }))
+        } else {
+          ()
+        },
+        SEnum(_, name, tparams, variants, derives) => if name == n {
+          let parts: Array[TypeExpr] = array_empty()
+          for variant in variants {
+            for payload in variant.1 {
+              Array::push(parts, payload)
+            }
+          }
+          found = Some((derives, tparams, parts))
+        } else {
+          ()
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    }
+  }
+  found
+}
+
 export fn empty_stmt_list() -> Array[Stmt] {
   array_empty()
 }

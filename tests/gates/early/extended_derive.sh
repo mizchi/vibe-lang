@@ -499,6 +499,13 @@ ur_refused fixtures/err_derive_hash_show_only_field_refused.vibe 'keys field `i`
 ur_refused fixtures/err_derive_hash_show_only_field_refused.vibe 'keys field `i` by the key of `Inner`' 'add `Hash` to the `derive` of `Inner`' gc
 ur_refused fixtures/err_derive_hash_generic_array_field_refused.vibe 'field `xs` holds `T`' 'write `Box::hash_key` yourself'
 ur_refused fixtures/err_derive_hash_generic_array_field_refused.vibe 'field `xs` holds `T`' 'write `Box::hash_key` yourself' gc
+# #3567: interpolating a `derive (Hash)` type whose field's type has no
+# renderer. Its implied renderer is withheld (the key does not need it), so the
+# interpolation is refused like that of a type that derives nothing, instead of
+# an internal compiler error. The key side rides the unit lane:
+# fixtures/derive_hash_field_without_show_test.vibe.
+ur_refused fixtures/err_derive_hash_renderless_interp_refused.vibe 'cannot interpolate a value of type `Outer`: it has no Show renderer' 'add `derive(Show)` to `Outer`'
+ur_refused fixtures/err_derive_hash_renderless_interp_refused.vibe 'cannot interpolate a value of type `Outer`: it has no Show renderer' 'add `derive(Show)` to `Outer`' gc
 # #3551: a `Map` field, keyed by the map's address (two equal maps, two keys),
 # and a field whose type's written `hash_key` takes an `Int` -- imported from
 # another module -- which the generated key called with the value anyway. The
