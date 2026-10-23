@@ -1,0 +1,390 @@
+// lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — handler sets that name several effects.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  canonical_exception_effect_name,
+  expr_child_at,
+  expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  is_exception_effect_name
+}
+
+import @vibe/compiler/lowering/effects/queries {
+  edp_effect_name_of, edp_pat_qname, edp_str_array_contains
+}
+
+import ./evidence_ecall_arg_idents_expr.vibe {
+  edp_join_and
+}
+
+/// #3583: the statements holding a `handle` whose arms name two or more
+/// effects (a handler set, ADR-0102). Read-only and allocation-free apart
+/// from the arm labels, so a program with none pays one walk.
+export fn edp_handler_set_statements(stmts: Array[Stmt]) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let hit = match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => edp_hs_has_set(expr),
+      SLetMut(_, _, expr) => edp_hs_has_set(expr),
+      SLetPat(_, expr) => edp_hs_has_set(expr),
+      SExpr(expr) => edp_hs_has_set(expr),
+      STest(_, expr) => edp_hs_has_set(expr),
+      SBench(_, expr) => edp_hs_has_set(expr),
+      _ => false
+    }
+    if hit {
+      Array::push(out, i)
+    } else ()
+    i = i + 1
+  }
+  out
+}
+
+/// #3583 (P0): lower every handler set in `indices` as single-effect handles,
+/// nested, before anything reads a handle.
+///
+/// Every consumer downstream -- vacuous-handle erasure, the migration planner,
+/// the site rewrite, the live-handle check and codegen -- takes a handle's
+/// effect from its FIRST arm. A set `handle { b_guarded() } with { A::Op() =>
+/// ..; B::Op() => .. }` was therefore an `A` site only: its rewrite spliced
+/// every arm at an inline `perform` (so `perform B::Op()` written in the body
+/// answered), but a call to a function needing `B` received no `B` evidence.
+/// With no other `B` handler that call trapped; with one around the set, the
+/// call answered through the OUTER handler -- silently the wrong arm. Splitting
+/// the set gives every effect a site of its own, so each migrates as usual.
+///
+/// The arms of a set run outside the WHOLE set (ADR-0102), while an inner
+/// handle of the split sits inside the outer one's body. So an effect whose
+/// arm may perform another effect of the set is nested OUTSIDE that effect,
+/// and its arm -- outside the inner handle -- still reaches the handlers
+/// around the set (the migration order of #3540 keeps that true once the
+/// arm is spliced). Otherwise the arms keep the order they were written in,
+/// first effect outermost, except that an effect whose arm may throw goes
+/// innermost (`edp_hs_split`). Two effects whose arms each perform the other have
+/// no nesting that is right for both, and are refused with the edit.
+///
+/// `Exception` arms are one more effect of the set: an arm that may throw
+/// puts its effect outside the catch, which is then a handler inside that
+/// effect's body -- the shape the suspend lowering runs through its driver
+/// (#3540), so the arm's throw is not caught by the set's own `Exception`
+/// arm. This is why the split runs first in `suspend_cps_pass`.
+///
+/// `may` answers whether an expression may perform an effect (conservative:
+/// a call it cannot see through answers true); `at` names the source offset
+/// of that perform, for the refusal's marker.
+export fn edp_split_handler_sets(stmts: Array[Stmt], indices: Array[Int], may: (Expr, String) -> Bool, at: (Expr, String) -> Int, errs: Array[String]) -> Unit {
+  let mut k = 0
+  while k < Array::length(indices) {
+    let i = Array::get(indices, k)
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, i, SLet(exported, is_rec, name, ty, edp_hs_expr(expr, may, at, errs))),
+      SLetMut(name, ty, expr) => Array::set(stmts, i, SLetMut(name, ty, edp_hs_expr(expr, may, at, errs))),
+      SLetPat(p, expr) => Array::set(stmts, i, SLetPat(p, edp_hs_expr(expr, may, at, errs))),
+      SExpr(expr) => Array::set(stmts, i, SExpr(edp_hs_expr(expr, may, at, errs))),
+      STest(tn, expr) => Array::set(stmts, i, STest(tn, edp_hs_expr(expr, may, at, errs))),
+      SBench(bn, expr) => Array::set(stmts, i, SBench(bn, edp_hs_expr(expr, may, at, errs))),
+      _ => ()
+    }
+    k = k + 1
+  }
+}
+
+/// The effect an arm handles: `Exception` for every exception spelling
+/// (`Exception[K]::Throw`, the legacy `Error`), so one catch keeps all of a
+/// set's exception arms together.
+fn edp_hs_arm_effect(p: Pat) -> String {
+  let e = edp_effect_name_of(edp_pat_qname(p))
+  if is_exception_effect_name(e) {
+    canonical_exception_effect_name(e)
+  } else {
+    e
+  }
+}
+
+/// The distinct effects of `arms`, in the order their first arm is written.
+fn edp_hs_effects(arms: Array[(Pat, Expr)]) -> Array[String] {
+  let out: Array[String] = []
+  for arm in arms {
+    let (p, _) = arm
+    let e = edp_hs_arm_effect(p)
+    if !edp_str_array_contains(out, e) {
+      Array::push(out, e)
+    } else ()
+  }
+  out
+}
+
+/// Do `arms` name two or more effects? An arm with no qualified operation
+/// (a legacy header's wildcard) names none, and its handle is left as written.
+fn edp_hs_is_set(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut first = ""
+  let mut hit = false
+  let mut bare = false
+  for arm in arms {
+    let (p, _) = arm
+    let e = edp_hs_arm_effect(p)
+    if e == "" {
+      bare = true
+    } else if first == "" {
+      first = e
+    } else if e != first {
+      hit = true
+    } else ()
+  }
+  hit && !bare
+}
+
+fn edp_hs_has_set(expr: Expr) -> Bool {
+  let here = match expr {
+    EHandle(_, arms) => edp_hs_is_set(arms),
+    _ => false
+  }
+  if here {
+    true
+  } else {
+    let mark = expr_children_push(expr)
+    let top = expr_children_top()
+    let mut hit = false
+    let mut i = mark
+    while i < top && !hit {
+      hit = edp_hs_has_set(expr_child_at(i))
+      i = i + 1
+    }
+    expr_children_pop(mark)
+    hit
+  }
+}
+
+/// Bottom-up, so a set in a body or an arm is split before the one around it.
+fn edp_hs_expr(expr: Expr, may: (Expr, String) -> Bool, at: (Expr, String) -> Int, errs: Array[String]) -> Expr {
+  match edp_iso_map(expr, (c: Expr) -> edp_hs_expr(c, may, at, errs)) {
+    EHandle(body, arms) => if edp_hs_is_set(arms) {
+      edp_hs_split(body, arms, may, at, errs)
+    } else {
+      EHandle(body, arms)
+    },
+    other => other
+  }
+}
+
+/// May `expr` throw: a `throw(..)` not yet lowered to its `perform`, or
+/// anything `may` says reaches the exception effect.
+fn edp_hs_may_throw(expr: Expr, may: (Expr, String) -> Bool) -> Bool {
+  may(expr, "Exception") || may(expr, "Error") || edp_hs_has_throw_call(expr)
+}
+
+fn edp_hs_has_throw_call(expr: Expr) -> Bool {
+  let here = match expr {
+    ECall(EIdent(nm, _), _, _, _) => nm == "throw",
+    _ => false
+  }
+  if here {
+    true
+  } else {
+    let kids = expr_children(expr)
+    let mut hit = false
+    let mut i = 0
+    while i < Array::length(kids) && !hit {
+      hit = edp_hs_has_throw_call(Array::get(kids, i))
+      i = i + 1
+    }
+    hit
+  }
+}
+
+fn edp_hs_marker(off: Int) -> String {
+  if off >= 0 {
+    String::concat(" [@off=", String::concat(Int::to_string(off), "]"))
+  } else {
+    ""
+  }
+}
+
+fn edp_hs_split(body: Expr, arms: Array[(Pat, Expr)], may: (Expr, String) -> Bool, at: (Expr, String) -> Int, errs: Array[String]) -> Expr {
+  let effs = edp_hs_effects(arms)
+  let n = Array::length(effs)
+  // (outer, inner, offset): an arm of `outer` may perform `inner`, so the
+  // handle for `outer` must enclose the one for `inner`.
+  let edges: Array[(Int, Int, Int)] = []
+  for arm in arms {
+    let (p, ab) = arm
+    let x = edp_hs_arm_effect(p)
+    let mut xi = 0
+    while Array::get(effs, xi) != x {
+      xi = xi + 1
+    }
+    let mut yi = 0
+    while yi < n {
+      let y = Array::get(effs, yi)
+      let reaches = if yi == xi {
+        false
+      } else if is_exception_effect_name(y) {
+        edp_hs_may_throw(ab, may)
+      } else {
+        may(ab, y)
+      }
+      if reaches {
+        let mut seen = false
+        for e in edges {
+          let (o, i, _) = e
+          if o == xi && i == yi {
+            seen = true
+          } else ()
+        }
+        if !seen {
+          Array::push(edges, (xi, yi, at(ab, y)))
+        } else ()
+      } else ()
+      yi = yi + 1
+    }
+  }
+  // An effect whose arm may throw goes as far in as the edges allow: its
+  // handle then encloses exactly the set's body, so whether that arm needs
+  // the suspend driver (#3540) is judged on the body as written, not on a
+  // body that the split wrapped in the other effects' handles.
+  let throws: Array[Bool] = []
+  for eff in effs {
+    let mut t = false
+    if !is_exception_effect_name(eff) {
+      for arm in arms {
+        let (p, ab) = arm
+        if !t && edp_hs_arm_effect(p) == eff && edp_hs_may_throw(ab, may) {
+          t = true
+        } else ()
+      }
+    } else ()
+    Array::push(throws, t)
+  }
+  // Outermost first: the first effect, in written order, that no unplaced
+  // effect has to enclose -- one whose arms do not throw, while there is one.
+  let order: Array[Int] = []
+  let placed: Array[Bool] = []
+  while Array::length(placed) < n {
+    Array::push(placed, false)
+  }
+  let mut progress = true
+  while Array::length(order) < n && progress {
+    progress = false
+    let mut pick = 0 - 1
+    let mut j = 0
+    while j < n {
+      if !Array::get(placed, j) {
+        let mut ready = true
+        for e in edges {
+          let (o, i, _) = e
+          if i == j && !Array::get(placed, o) {
+            ready = false
+          } else ()
+        }
+        if ready && (pick < 0 || Array::get(throws, pick) && !Array::get(throws, j)) {
+          pick = j
+        } else ()
+      } else ()
+      j = j + 1
+    }
+    if pick >= 0 {
+      Array::push(order, pick)
+      Array::set(placed, pick, true)
+      progress = true
+    } else ()
+  }
+  if Array::length(order) < n {
+    let cyc: Array[String] = []
+    let mut off = 0 - 1
+    let mut c = 0
+    while c < n {
+      if !Array::get(placed, c) {
+        Array::push(cyc, Array::get(effs, c))
+      } else ()
+      c = c + 1
+    }
+    for e in edges {
+      let (o, i, eoff) = e
+      if off < 0 && !Array::get(placed, o) && !Array::get(placed, i) {
+        off = eoff
+      } else ()
+    }
+    Array::push(errs, String::concat(String::concat(String::concat("the arms this handler set has for ", edp_join_and(cyc)), " each perform another of those effects, but the arms of a set run outside it, so no nesting of their handlers is right for all of them -- handle one of these effects in a `handle` of its own around this one, or move the `perform` out of the arm (resume with a value and perform after the `handle`)"), edp_hs_marker(off)))
+    EHandle(body, arms)
+  } else {
+    let mut out = body
+    let mut k = n - 1
+    while k >= 0 {
+      let eff = Array::get(effs, Array::get(order, k))
+      let group: Array[(Pat, Expr)] = []
+      for arm in arms {
+        let (p, _) = arm
+        if edp_hs_arm_effect(p) == eff {
+          Array::push(group, arm)
+        } else ()
+      }
+      out = EHandle(out, group)
+      k = k - 1
+    }
+    out
+  }
+}
+
+/// Rebuild `expr` with `f` applied to each direct child expression.
+export fn edp_iso_map(expr: Expr, f: (Expr) -> Expr) -> Expr {
+  match expr {
+    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, f(body)),
+    ELet(n, v, b, off) => ELet(n, f(v), f(b), off),
+    ELetRec(n, v, b) => ELetRec(n, f(v), f(b)),
+    ELetMut(n, v, b, off) => ELetMut(n, f(v), f(b), off),
+    ESeq(a, b) => ESeq(f(a), f(b)),
+    EIf(c, t, el) => EIf(f(c), f(t), f(el)),
+    EMatch(sc, arms) => EMatch(f(sc), for a in arms {
+      let (pp, ex) = a
+      (pp, f(ex))
+    }),
+    EHandle(bd, arms) => EHandle(f(bd), for a in arms {
+      let (pp, ex) = a
+      (pp, f(ex))
+    }),
+    ECall(callee, args, off, res) => ECall(f(callee), for a in args {
+      f(a)
+    }, off, res),
+    EWhile(c, b) => EWhile(f(c), f(b)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, f(it), f(b)),
+    ELoop(pairs, b) => ELoop(for pr in pairs {
+      let (n, v) = pr
+      (n, f(v))
+    }, f(b)),
+    EBinOp(op, l, r, boff) => EBinOp(op, f(l), f(r), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, f(x)),
+    EAssign(n, v, c, toff) => EAssign(n, f(v), f(c), toff),
+    EAssignOp(n, op, v, c, toff) => EAssignOp(n, op, f(v), f(c), toff),
+    EReturn(x) => EReturn(f(x)),
+    EDot(o, fl, o1, o2) => EDot(f(o), fl, o1, o2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, f(v)),
+    EBreak(opt) => EBreak(match opt {
+      Some(x) => Some(f(x)),
+      None => None
+    }),
+    EContinue(args) => EContinue(for a in args {
+      f(a)
+    }),
+    ETuple(items) => ETuple(for a in items {
+      f(a)
+    }),
+    EArray(items) => EArray(for a in items {
+      f(a)
+    }),
+    ERecord(n, fields, tas) => ERecord(n, for fd in fields {
+      let (fn2, v) = fd
+      (fn2, f(v))
+    }, tas),
+    EMap(fields) => EMap(for fd in fields {
+      let (fn2, v) = fd
+      (fn2, f(v))
+    }),
+    ESpread(x) => ESpread(f(x)),
+    _ => expr
+  }
+}

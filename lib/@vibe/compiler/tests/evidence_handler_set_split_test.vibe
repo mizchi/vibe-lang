@@ -1,0 +1,37 @@
+import @vibe/compiler/lowering/effects/evidence {
+  evidence_dict_pass
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+// #3583: a handler set naming several effects is lowered as nested
+// single-effect handles. The answers are in
+// `fixtures/handle_two_effects_callee_test.vibe`; this is the shape no
+// nesting can answer, refused with the edit, and the controls that compile.
+
+fn first_error(body: String) -> String with Exception {
+  let head = "effect A {\n  Op() -> Int\n}\neffect B {\n  Op() -> Int\n}\nfn a_guarded() -> Int with A {\n  perform A::Op() + 2\n}\nfn b_guarded() -> Int with B {\n  perform B::Op() + 1\n}\n"
+  let stmts = parse_program(lex(String::concat(head, String::concat("fn main() -> Int {\n", String::concat(body, "\n}\n")))))
+  let errs = evidence_dict_pass(stmts, "main")
+  if Array::length(errs) == 0 {
+    "clean"
+  } else {
+    Array::get(errs, 0)
+  }
+}
+
+test "a set whose arms each perform the other's effect is refused" {
+  let msg = first_error("handle {\n  a_guarded() + b_guarded()\n} with {\n  A::Op() => resume(perform B::Op());\n  B::Op() => resume(perform A::Op())\n}")
+  inspect(String::starts_with(msg, "the arms this handler set has for `A` and `B` each perform another of those effects"), "true")
+  inspect(String::contains(msg, "handle one of these effects in a `handle` of its own around this one"), "true")
+}
+
+test "a set whose arms perform each other's effect one way only compiles" {
+  inspect(first_error("handle {\n  handle {\n    a_guarded() + b_guarded()\n  } with {\n    A::Op() => resume(3);\n    B::Op() => resume(perform A::Op())\n  }\n} with { A::Op() => resume(9) }"), "clean")
+  inspect(first_error("handle {\n  handle {\n    a_guarded() + b_guarded()\n  } with {\n    A::Op() => resume(perform B::Op());\n    B::Op() => resume(5)\n  }\n} with { B::Op() => resume(7) }"), "clean")
+}
+
+test "a set with an Exception arm whose algebraic arms do not throw compiles" {
+  inspect(first_error("handle {\n  b_guarded() + a_guarded()\n} with {\n  Exception::Throw(_m) => -1;\n  B::Op() => resume(5);\n  A::Op() => resume(1)\n}"), "clean")
+}

@@ -1,0 +1,219 @@
+// #3583: one `handle` whose arms name two effects (a handler set, ADR-0102)
+// must give every effect of the set to the code it encloses -- a `perform`
+// written in the body AND a call to a function whose row carries the effect.
+// The lowering used to read the set's effect from its FIRST arm only, so a
+// callee needing the second effect got no handler: it trapped, or answered
+// through a handler around the set. The arms of a set run outside the whole
+// set, so a `perform` an arm makes reaches the handlers around it.
+
+effect A {
+  Op() -> Int
+}
+
+effect B {
+  Op() -> Int
+}
+
+effect Ask {
+  Ask() -> Int
+}
+
+effect Tell {
+  Tell(Int) -> Int
+}
+
+fn b_guarded() -> Int with B {
+  perform B::Op() + 1
+}
+
+fn a_guarded() -> Int with A {
+  perform A::Op() + 2
+}
+
+fn both() -> Int with A + B {
+  perform A::Op() * 1000 + perform B::Op()
+}
+
+fn ask_guarded() -> Int with Ask {
+  perform Ask::Ask() + 2
+}
+
+fn tell_twice(n: Int) -> Int with Tell {
+  perform Tell::Tell(n) + perform Tell::Tell(n)
+}
+
+fn outer_b() -> Int with B {
+  b_guarded() * 10
+}
+
+fn outer_mixed() -> Int with A + B {
+  a_guarded() + b_guarded()
+}
+
+fn b_then_throw() -> Int with B + Exception {
+  if perform B::Op() > 0 {
+    throw("boom")
+  } else {
+    0
+  }
+}
+
+test "a callee performing the second effect of the set (the issue's shape)" {
+  let r = handle {
+    let x = b_guarded()
+    x + perform A::Op()
+  } with {
+    A::Op() => resume(100);
+    B::Op() => resume(5)
+  }
+  inspect(r, "106")
+}
+
+test "distinct operation names" {
+  let r = handle {
+    let x = tell_twice(3)
+    x + perform Ask::Ask()
+  } with {
+    Ask::Ask() => resume(40);
+    Tell::Tell(n) => resume(n * 2)
+  }
+  inspect(r, "52")
+}
+
+test "a callee performing the first effect of the set" {
+  let r = handle {
+    a_guarded() + perform B::Op()
+  } with {
+    A::Op() => resume(100);
+    B::Op() => resume(5)
+  }
+  inspect(r, "107")
+}
+
+test "a callee performing both effects of the set" {
+  let r = handle {
+    both()
+  } with {
+    A::Op() => resume(7);
+    B::Op() => resume(5)
+  }
+  inspect(r, "7005")
+}
+
+test "callees reaching the effects through further callees" {
+  // outer_b: (5 + 1) * 10 = 60; outer_mixed: (100 + 2) + (5 + 1) = 108.
+  let r = handle {
+    outer_b() + outer_mixed()
+  } with {
+    A::Op() => resume(100);
+    B::Op() => resume(5)
+  }
+  inspect(r, "168")
+}
+
+test "a callee's perform is answered by the set, not by a handler around it" {
+  let r = handle {
+    handle {
+      b_guarded()
+    } with {
+      A::Op() => resume(100);
+      B::Op() => resume(5)
+    }
+  } with { B::Op() => resume(7) }
+  inspect(r, "6")
+}
+
+test "an inline perform of the set's second-written effect is answered by the set" {
+  let r = handle {
+    handle {
+      perform Ask::Ask() + perform Tell::Tell(1)
+    } with {
+      Tell::Tell(n) => resume(n * 2);
+      Ask::Ask() => resume(40)
+    }
+  } with { Ask::Ask() => resume(1000) }
+  inspect(r, "42")
+}
+
+test "an arm's perform of the other effect reaches the handler around the set" {
+  // a_guarded: 7 * 10 + 2 = 72 (the A arm asks the OUTER B); b_guarded: 5 + 1.
+  let r = handle {
+    handle {
+      a_guarded() + b_guarded()
+    } with {
+      A::Op() => resume(perform B::Op() * 10);
+      B::Op() => resume(5)
+    }
+  } with { B::Op() => resume(7) }
+  inspect(r, "78")
+}
+
+test "the second-written arm's perform of the first effect reaches the handler around the set" {
+  // Ask and Tell rather than A and B: the test above already orders A's
+  // handlers outside B's, and the opposite order for the same pair in one
+  // program is refused (#3540). ask_guarded: 3 + 2; tell_twice(2): each Tell
+  // asks the OUTER Ask, 9 * 2 twice.
+  let r = handle {
+    handle {
+      ask_guarded() + tell_twice(2)
+    } with {
+      Ask::Ask() => resume(3);
+      Tell::Tell(n) => resume(perform Ask::Ask() * n)
+    }
+  } with { Ask::Ask() => resume(9) }
+  inspect(r, "41")
+}
+
+test "an Exception arm written first does not hide the algebraic arms" {
+  let r = handle {
+    b_guarded() + perform A::Op()
+  } with {
+    Exception::Throw(_m) => -1;
+    B::Op() => resume(5);
+    A::Op() => resume(100)
+  }
+  inspect(r, "106")
+}
+
+test "a throw from a callee reaches the set's Exception arm" {
+  let r = handle {
+    b_then_throw()
+  } with {
+    B::Op() => resume(5);
+    Exception::Throw(_m) => -1
+  }
+  inspect(r, "-1")
+}
+
+test "an arm's throw is not caught by the set's own Exception arm" {
+  let log: Array[String] = []
+  let r = handle {
+    handle {
+      b_guarded()
+    } with {
+      B::Op() => throw("from arm");
+      Exception[String]::Throw(_m) => -4
+    }
+  } with { Exception[String]::Throw(m) => {
+    Array::push(log, "outer caught \{m}")
+    -5
+  } }
+  inspect(r, "-5")
+  inspect(log, "[outer caught from arm]")
+}
+
+test "a throw in the body abandons the body" {
+  let r = handle {
+    let v = perform B::Op()
+    if v > 0 {
+      throw("boom")
+    } else {
+      ()
+    }
+    v + 1000
+  } with {
+    B::Op() => resume(5);
+    Exception::Throw(_m) => -1
+  }
+  inspect(r, "-1")
+}
