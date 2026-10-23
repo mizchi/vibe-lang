@@ -75,12 +75,15 @@ import ./evidence_free_names.vibe {
 
 import ./evidence_declared_slots.vibe {
   edp_ascribed_record_targs,
+  edp_drop_local_aliases,
   edp_expr_builds_row_field,
   edp_field_literal_mark,
   edp_field_literal_pending,
   edp_field_slot,
   edp_field_slot_callee,
+  edp_local_alias_mark,
   edp_note_field_literal,
+  edp_note_local_alias,
   edp_note_program_aliases,
   edp_note_row_field_structs,
   edp_record_targs_under,
@@ -1551,7 +1554,10 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[In
       }
       let hslot = Array::length(scope)
       let fmark = edp_field_literal_mark()
+      let amark = edp_local_alias_mark()
+      edp_note_local_alias(n, hslot, edp_local_lit_of(v2, scope))
       let b2 = edp_stamp_scoped(b, [n], stmts, fn_index, scope, pure_names)
+      edp_drop_local_aliases(amark)
       Array::truncate(edp_local_lit_names, mark)
       Array::truncate(edp_local_lit_slots, mark)
       Array::truncate(edp_local_lit_vals, mark)
@@ -1651,7 +1657,7 @@ fn edp_stamp_record(e: Expr, targs: Array[TypeExpr], stmts: Array[Stmt], fn_inde
           (fn2, edp_stamp_slot_arg_at(v2, scope, pure_names, Some(slot)))
         },
         None => {
-          edp_refuse_unread_field_row(n, fn2, targs, v2, scope, pure_names, edp_local_lit_of(v2, scope).2)
+          edp_refuse_unread_field_row(n, fn2, targs, v2, scope, pure_names, edp_local_lit_of(v2, scope))
           (fn2, v2)
         }
       }
@@ -1679,7 +1685,7 @@ fn edp_local_lit_of(v: Expr, scope: Array[String]) -> (String, Int, Option[Expr]
 fn edp_let_field_literal(n: String, v: Expr, b0: Expr, b: Expr, off: Int, slot: Int, mark: Int, scope: Array[String]) -> Expr {
   match v {
     EFn(tps, tbs, ps, ret, None, lb) => if edp_field_literal_pending(slot, mark) {
-      let row = edp_settle_field_literal(n, slot, mark, edp_count_ident_uses(b0, n), edp_literal_calls_local(v, lb, scope))
+      let row = edp_settle_field_literal(n, slot, mark, edp_free_use_count(b0, n), edp_literal_calls_local(v, lb, scope))
       if row != "" {
         let v2 = EFn(tps, tbs, ps, ret, Some(row), lb)
         let (n2, b2) = edp_unique_row_lit_name(n, v2, b)

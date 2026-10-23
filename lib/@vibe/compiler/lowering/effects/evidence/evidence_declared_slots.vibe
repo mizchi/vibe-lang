@@ -18,6 +18,7 @@ import ./evidence_returned_scan_expr.vibe {
 
 import ./evidence_slot_refusals.vibe {
   edp_field_site_prefix,
+  edp_refuse_aliased_field_literal,
   edp_refuse_field_type_args,
   edp_refuse_uncopied_literal,
   edp_refuse_unstamped_field_literal,
@@ -516,10 +517,14 @@ export fn edp_ascribed_record_targs(stmts: Array[Stmt], callee: Expr, args: Arra
 
 /// #3611: refuse a value the stamp would give a field's row -- a row-free
 /// literal, a row-free top-level function, the name of a row-free literal
-/// bound by `let` (`lit`, Codex on #3620) -- when that row names a type
-/// parameter `targs` does not instantiate. Any other value is left to the
-/// rules a field without a readable row already has.
-export fn edp_refuse_unread_field_row(sname: String, fname: String, targs: Array[TypeExpr], v: Expr, scope: Array[String], pure_names: MutSet[String], lit: Option[Expr]) -> Unit {
+/// bound by `let` or a local alias of one (`lit`, Codex on #3620) -- when
+/// that row names a type parameter `targs` does not instantiate. Any other
+/// value is left to the rules a field without a readable row already has.
+export fn edp_refuse_unread_field_row(sname: String, fname: String, targs: Array[TypeExpr], v: Expr, scope: Array[String], pure_names: MutSet[String], lit0: (String, Int, Option[Expr])) -> Unit {
+  let lit = match edp_local_alias_at(lit0.0, lit0.1) {
+    Some(al) => Some(al.1),
+    None => lit0.2
+  }
   let row = edp_field_row_unread(sname, fname, targs)
   if row != "" {
     let stamped = match v {
@@ -565,14 +570,73 @@ let edp_field_lit_slots: Array[Int] = []
 let edp_field_lit_rows: Array[String] = []
 let edp_field_lit_callees: Array[String] = []
 
+/// Codex on #3620: the local aliases of a closure literal bound by `let`
+/// (`let alias = g`, transitively) around the walk: each alias's name and
+/// `scope` index, the literal's name, and the literal.
+let edp_local_alias_names: Array[String] = []
+let edp_local_alias_slots: Array[Int] = []
+let edp_local_alias_srcs: Array[String] = []
+let edp_local_alias_vals: Array[Expr] = []
+
+export fn edp_local_alias_mark() -> Int {
+  Array::length(edp_local_alias_names)
+}
+
+export fn edp_drop_local_aliases(mark: Int) -> Unit {
+  Array::truncate(edp_local_alias_names, mark)
+  Array::truncate(edp_local_alias_slots, mark)
+  Array::truncate(edp_local_alias_srcs, mark)
+  Array::truncate(edp_local_alias_vals, mark)
+}
+
+/// The literal's name and the literal `name` bound at `slot` is an alias of.
+fn edp_local_alias_at(name: String, slot: Int) -> Option[(String, Expr)] {
+  let mut i = Array::length(edp_local_alias_names)
+  let mut out = None
+  while i > 0 {
+    i = i - 1
+    if Array::get(edp_local_alias_names, i) == name && Array::get(edp_local_alias_slots, i) == slot {
+      out = Some((Array::get(edp_local_alias_srcs, i), Array::get(edp_local_alias_vals, i)))
+      i = 0
+    }
+  }
+  out
+}
+
+/// Note `let n = v` at `slot` when `v` -- (name, `scope` index, the literal
+/// bound there) -- names a closure literal or an alias of one.
+export fn edp_note_local_alias(n: String, slot: Int, v: (String, Int, Option[Expr])) -> Unit {
+  let hit = match v.2 {
+    Some(lit) => Some((v.0, lit)),
+    None => edp_local_alias_at(v.0, v.1)
+  }
+  match hit {
+    Some(al) => {
+      Array::push(edp_local_alias_names, n)
+      Array::push(edp_local_alias_slots, slot)
+      Array::push(edp_local_alias_srcs, al.0)
+      Array::push(edp_local_alias_vals, al.1)
+    },
+    None => ()
+  }
+}
+
 /// Where a binding's body starts noting field uses.
 export fn edp_field_literal_mark() -> Int {
   Array::length(edp_field_lit_names)
 }
 
 /// Note a field of row `row` holding `lit` -- (name, `scope` index, the
-/// literal bound there) -- when that is a row-free closure literal.
+/// literal bound there) -- when that is a row-free closure literal. A local
+/// alias of one is refused: its literal is bound elsewhere, under a name the
+/// alias's binding is itself a use of.
 export fn edp_note_field_literal(lit: (String, Int, Option[Expr]), row: String, callee: String) -> Unit {
+  match edp_local_alias_at(lit.0, lit.1) {
+    Some(al) => if edp_is_rowfree_literal(Some(al.1)) {
+      edp_refuse_aliased_field_literal(lit.0, al.0, callee, row)
+    },
+    None => ()
+  }
   if edp_is_rowfree_literal(lit.2) {
     Array::push(edp_field_lit_names, lit.0)
     Array::push(edp_field_lit_slots, lit.1)
