@@ -150,6 +150,81 @@ for backend in linear gc; do
   run_entry "$backend" entry_module_value 0 "20" ""
 done
 
+# #3532: a throw that reaches the entry through an erased cleanup arm that
+# re-throws its binder (`TaskGroup::run` has one) must still be reported as
+# the original throw rendered it. The re-throw used to publish an empty kind,
+# so the boundary printed the payload's heap address:
+# `vibe: uncaught error: 1764`.
+cat >"$WORK/entry_task_failed.vibe" <<'EOF'
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn main allows Console + Exception {
+  let r = TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn(g, () -> {
+      throw("boom")
+      1
+    })
+    TaskHandle::join(a)
+  })
+  println("r = \{r}")
+}
+EOF
+cat >"$WORK/entry_task_cancelled.vibe" <<'EOF'
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn main allows Console + Exception {
+  let r = TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn(g, () -> 1)
+    TaskHandle::cancel(a)
+    TaskHandle::join(a)
+  })
+  println("r = \{r}")
+}
+EOF
+cat >"$WORK/entry_rethrow.vibe" <<'EOF'
+enum Bad {
+  Bad(String)
+} derive (Show)
+
+fn guarded[T, e](body: () -> T with e) -> T with e {
+  handle {
+    body()
+  } with { Exception::Throw(p) => {
+    let _ = handle {
+      throw("cleanup failed")
+      0
+    } with { Exception::Throw(_) => 1 }
+    throw(p)
+  } }
+}
+
+fn fail() -> Int with Exception[Bad] {
+  throw(Bad("x"))
+}
+
+fn main allows Console + Exception[Bad] {
+  println("before")
+  let v = guarded(() -> fail())
+  println("v = \{v}")
+}
+EOF
+
+# The two `@vibe/concurrent` programs run on linear only: `compile_core`'s gc
+# lane compiles a single file and so cannot resolve the import. The
+# import-free `entry_rethrow` pins the same re-throw on both lanes.
+compile_core linear entry_task_failed
+compile_core linear entry_task_cancelled
+run_entry linear entry_task_failed 1 "" "vibe: uncaught error: Failed(boom)"
+run_entry linear entry_task_cancelled 1 "" "vibe: uncaught error: Cancelled"
+for backend in linear gc; do
+  compile_core "$backend" entry_rethrow
+  run_entry "$backend" entry_rethrow 1 "before" "vibe: uncaught error: Bad(x)"
+done
+
 if command -v wasmtime >/dev/null 2>&1; then
   cat >"$WORK/component.vibe" <<'EOF'
 let run: () -> Int with Async + Exception = () -> {

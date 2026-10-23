@@ -125,8 +125,14 @@ import ./exceptions.vibe {
   exn_kind_read_expr,
   exn_kind_suppressed,
   exn_kind_write_expr,
+  exn_kind_write_value,
   exn_msg_read_expr,
   exn_msg_write_expr,
+  exn_rethrow_enter,
+  exn_rethrow_leave,
+  exn_rethrow_restore,
+  exn_rethrow_saved_kind_name,
+  exn_rethrow_saved_msg_name,
   is_exception_kind_read,
   is_exception_message_read,
   is_perform_throw_shape,
@@ -1572,25 +1578,35 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         // the wrapper expansions are `Some(..)`/`Ok(..)`/`Err(..)`/`None`. A
         // user-written formatter could legitimately return "" -- and is no
         // longer called from here at all.
-        let render_vars = if kind == "" {
-          var_types
+        //
+        // #3532: a payload that is an enclosing exception arm's own binder is
+        // a re-throw. Its arm saved what the original throw published
+        // (`exn_rethrow_enter`), so it writes that back instead of rendering
+        // the binder here, where an erased arm leaves it with no type.
+        let rethrow = exn_rethrow_restore(perform_throw_payload(args))
+        let (kind_write, msg_write) = if rethrow >= 0 {
+          (exn_kind_write_value(EIdent(exn_rethrow_saved_kind_name(rethrow), -1)), exn_msg_write_expr(EIdent(exn_rethrow_saved_msg_name(rethrow), -1)))
         } else {
-          extend_var_types(var_types, pname, Some(kind))
+          let render_vars = if kind == "" {
+            var_types
+          } else {
+            extend_var_types(var_types, pname, Some(kind))
+          }
+          let render_target = interp_show_target(EIdent(pname, -1), true, struct_sets, render_vars, fn_returns)
+          let rendered = if render_target != "" {
+            Some(ECall(EIdent(render_target, -1), Array::slice([
+              EIdent(pname, -1)
+            ], 0, 1), -1, []))
+          } else {
+            interp_expand(EIdent(pname, -1), true, gens, traits, struct_sets, dict_binds, render_vars, fn_returns)
+          }
+          (exn_kind_write_expr(kind), exn_msg_write_expr(if interp_has_repl(rendered) {
+            interp_take_repl(rendered)
+          } else {
+            EString("", -1)
+          }))
         }
-        let render_target = interp_show_target(EIdent(pname, -1), true, struct_sets, render_vars, fn_returns)
-        let rendered = if render_target != "" {
-          Some(ECall(EIdent(render_target, -1), Array::slice([
-            EIdent(pname, -1)
-          ], 0, 1), -1, []))
-        } else {
-          interp_expand(EIdent(pname, -1), true, gens, traits, struct_sets, dict_binds, render_vars, fn_returns)
-        }
-        let msg_write = exn_msg_write_expr(if interp_has_repl(rendered) {
-          interp_take_repl(rendered)
-        } else {
-          EString("", -1)
-        })
-        ELet(pname, perform_throw_payload(rwargs), ESeq(exn_kind_write_expr(kind), ESeq(msg_write, ECall(callee, perform_throw_with_payload(rwargs, EIdent(pname, -1)), off, callee_resolution))), -1)
+        ELet(pname, perform_throw_payload(rwargs), ESeq(kind_write, ESeq(msg_write, ECall(callee, perform_throw_with_payload(rwargs, EIdent(pname, -1)), off, callee_resolution))), -1)
       } else {
         let rwargs = for a in args {
           rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
@@ -1944,7 +1960,10 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         } else {
           var_types
         }, p, fn_returns), resume_binders, fn_returns))
-        Array::push(out, (p, rewrite_expr(b, gens_masked_by(gens, arm_names), traits, struct_sets, dict_binds, arm_vars, fn_returns)))
+        // #3532: an exception arm saves the cell for a re-throw of its binder.
+        let rethrow_ctx = exn_rethrow_enter(p, b)
+        let rb = rewrite_expr(b, gens_masked_by(gens, arm_names), traits, struct_sets, dict_binds, arm_vars, fn_returns)
+        Array::push(out, (p, exn_rethrow_leave(rethrow_ctx, rb)))
         i = i + 1
       }
       EHandle(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
