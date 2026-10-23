@@ -5,7 +5,7 @@ import ./parser_source_span.vibe {
 }
 
 import @vibe/ast {
-  Expr, ImportItem, Pat, Stmt, TypeExpr, impl_method_binding_name, impl_self_as_target, impl_self_spellable, index_write_callee
+  Expr, ImportItem, Pat, Stmt, TypeExpr, impl_method_binding_name, impl_self_spellable, index_write_callee
 }
 
 import ./intern.vibe {
@@ -92,6 +92,41 @@ import ./parser_binder_context.vibe {
 //# Functions
 
 let parser_mode_block = 20
+
+/// #3573: `Self` in an impl method's signature read as the impl's target.
+/// Left as written, it was a wildcard: `mk(self: Self) -> Self` in `impl W for
+/// P` returned a `Q` and compiled clean, and in an applied impl (`impl It[Int]
+/// for P`) it was refused as an unknown type. A constructor application
+/// `Self[A]` takes the target as its head when the target is a bare name.
+fn impl_self_as_target(te: TypeExpr, target: TypeExpr) -> TypeExpr {
+  match te {
+    TyName(name) => if name == "Self" {
+      target
+    } else {
+      te
+    },
+    TyApp(head, args) => {
+      let mapped = for a in args {
+        impl_self_as_target(a, target)
+      }
+      match target {
+        TyName(tn) => if head == "Self" {
+          TyApp(tn, mapped)
+        } else {
+          TyApp(head, mapped)
+        },
+        _ => TyApp(head, mapped)
+      }
+    },
+    TyFn(params, ret, eff) => TyFn(for p in params {
+      impl_self_as_target(p, target)
+    }, impl_self_as_target(ret, target), eff),
+    TyTuple(items) => TyTuple(for i in items {
+      impl_self_as_target(i, target)
+    }),
+    TyUnit => TyUnit
+  }
+}
 
 fn empty_names() -> Array[String] {
   ArrayBuilder::freeze(ArrayBuilder::new())
