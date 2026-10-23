@@ -408,27 +408,48 @@ export fn edp_expr_passes_value_to_slot(e: Expr, slot_callees: MutSet[String]) -
 /// (`TaskGroup::spawn_suspend`).
 export fn edp_slot_row_stampable(row: String) -> Bool {
   let mut ok = String::length(String::trim(row)) > 0
-  for item in String::split(row, "+") {
-    for part in String::split(item, ",") {
-      let label = String::trim(part)
-      let bracket = String::index_of(label, "[")
-      let head = if bracket > 0 {
-        String::substring(label, 0, bracket)
-      } else {
-        label
-      }
-      if String::length(head) == 0 {
-        ()
-      } else if String::byte_at(head, 0) >= 97 && String::byte_at(head, 0) <= 122 {
-        ok = false
-      } else if is_runtime_scheduled_effect(head) {
-        ok = false
-      } else {
-        ()
-      }
+  for label in edp_row_top_labels(row) {
+    let bracket = String::index_of(label, "[")
+    let head = if bracket > 0 {
+      String::substring(label, 0, bracket)
+    } else {
+      label
+    }
+    if String::length(head) == 0 {
+      ()
+    } else if String::byte_at(head, 0) >= 97 && String::byte_at(head, 0) <= 122 {
+      ok = false
+    } else if is_runtime_scheduled_effect(head) {
+      ok = false
+    } else {
+      ()
     }
   }
   ok
+}
+
+/// The labels of `row`: the pieces between the `+` / `,` separators at bracket
+/// depth zero, so `Pair[A, B]` stays one label (#3620 review).
+export fn edp_row_top_labels(row: String) -> Array[String] {
+  let out: Array[String] = []
+  let n = String::length(row)
+  let mut depth = 0
+  let mut start = 0
+  let mut i = 0
+  while i < n {
+    let c = String::byte_at(row, i)
+    if c == 91 || c == 40 {
+      depth = depth + 1
+    } else if c == 93 || c == 41 {
+      depth = depth - 1
+    } else if depth == 0 && (c == 43 || c == 44) {
+      Array::push(out, String::trim(String::substring(row, start, i)))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  Array::push(out, String::trim(String::substring(row, start, n)))
+  out
 }
 
 /// The row of a non-generic type alias that names a function type with a
