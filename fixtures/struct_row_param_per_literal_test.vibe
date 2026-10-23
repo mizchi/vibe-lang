@@ -1,0 +1,41 @@
+// #3574: each `Job::{ .. }` literal gets its own row argument, so a literal
+// with more effects after a pure one is accepted; and a signature's own row
+// variable may be passed to the struct's row parameter without a binder
+// (`j: Job[e]` beside `with e`), as it may be written in `f: () -> Int with e`.
+struct Job[e] {
+  run: () -> Int with e
+}
+
+fn quiet() -> Int {
+  1
+}
+
+fn noisy() -> Int with Console {
+  println("noisy")
+  10
+}
+
+fn go(j: Job[e]) -> Int with e {
+  (j.run)()
+}
+
+fn go_explicit[e](j: Job[e]) -> Int with e {
+  (j.run)()
+}
+
+fn pure_side() -> Int {
+  let j1 = Job::{ run: quiet }
+  go(j1) + go_explicit(j1) + (j1.run)()
+}
+
+fn mixed() -> Int with Console {
+  let j1 = Job::{ run: quiet }
+  let j2 = Job::{ run: noisy }
+  (j1.run)() + (j2.run)() + go(j2) + go_explicit(j1) + go(Job::{ run: quiet }) + go(Job::{
+    run: noisy
+  })
+}
+
+test "a struct's row parameter is instantiated per literal" allows Console {
+  inspect(pure_side() + mixed(), "36")
+}

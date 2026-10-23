@@ -2218,6 +2218,34 @@ let apply: [T](f~: (T) -> T with e, x~: T) -> T with e = (f~, x~) -> {
 }
 ```
 
+A row variable is filled at each call, wherever the signature writes it:
+
+- beside concrete labels, it takes what the argument performs beyond them.
+  `call(work)` below binds `e := Fs` for a `work` with `Console + Fs`, and
+  `e := Env` for one with only `Env`; the caller is charged `Console + e` as
+  filled (#3575).
+- as a struct's row argument, with or without a binder: `j: Job[e]` beside
+  `with e` is the signature's own `e`, and each `Job::{ .. }` literal has its
+  own row (#3574).
+- on a local lambda with an explicit binder (`let call = [e](f: () -> Int
+  with e) -> Int with e { .. }`), the variable is the lambda's own and is
+  filled per call. Without the binder, a local lambda's `with e` is the
+  enclosing function's (#3576).
+
+```vibe
+fn call(f: () -> Int with Console + e) -> Int with Console + e {
+  f()
+}
+
+struct Job[e] {
+  run: () -> Int with e
+}
+
+fn go(j: Job[e]) -> Int with e {
+  (j.run)()
+}
+```
+
 ### resource 宣言 (ADR-0075 Phase 2 / #1343)
 
 ```vibe skip

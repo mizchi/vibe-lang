@@ -14,6 +14,7 @@ import @vibe/compiler/core {
   is_hkt_app,
   is_runtime_scheduled_effect,
   occurs_in,
+  open_row_widening,
   owned_head_payload_span,
   subst_apply,
   subst_bind_value,
@@ -1666,12 +1667,33 @@ export fn branch_join_widens(anchor: Type, later: Type, s: Subst) -> Option[Subs
   }
 }
 
+/// #3575: a function value given to a slot whose row is open (`with Console +
+/// e`) widens the slot's variable by what the value performs beyond the
+/// slot's concrete labels, when the value lacks one of those labels (`with
+/// Env`): a function with fewer effects stands where more are allowed, and
+/// unification, which asks for equal rows, cannot find `e := Env`
+/// (`open_row_widening`). The slot's variable must reach the code that runs
+/// the value, so it is bound rather than left open.
+fn widen_open_fn_row(expected: Type, actual: Type, s: Subst) -> Subst {
+  match expected {
+    CtFn(_, _, eeff) => match actual {
+      CtFn(_, _, aeff) => match open_row_widening(eeff, aeff, s) {
+        Some(widened) => widened,
+        None => s
+      },
+      _ => s
+    },
+    _ => s
+  }
+}
+
 /// #2386: `check_assignable` with the report's subject split in two so the
 /// message is built only when a mismatch is reported. Every call site with a
 /// per-call subject (`"argument type mismatch for " ++ label`) used to build
 /// the string first: ~25 ms of `__rt_str_concat` under `unify_call_args` in a
 /// cold self-compile, for calls that almost always agree.
-export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: Array[String], what_head: String, what_tail: String, off: Int) -> Subst {
+export fn check_assignable_for(expected: Type, actual: Type, s0: Subst, errors: Array[String], what_head: String, what_tail: String, off: Int) -> Subst {
+  let s = widen_open_fn_row(expected, actual, s0)
   let result = match unify(expected, actual, s) {
     Some(su) => {
       // #3601: a function value whose row names an exception kind, given to

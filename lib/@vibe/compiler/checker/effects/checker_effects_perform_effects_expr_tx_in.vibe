@@ -618,8 +618,9 @@ fn shadow_overlay(names: Array[String], effs: Array[Array[String]], name: String
   let mut i = 0
   while i < Array::length(names) {
     let entry = Array::get(names, i)
-    // #3155: an alias's target entry goes with the alias it describes.
-    if entry != name && !overlay_entry_is_alias_of(entry, name) {
+    // #3155: an alias's target entry goes with the alias it describes, and
+    // #3576: so does a lambda's own-row entry.
+    if entry != name && !overlay_entry_is_alias_of(entry, name) && !overlay_entry_is_own_row_of(entry, name) {
       Array::push(out_names, entry)
       Array::push(out_effs, Array::get(effs, i))
     } else {
@@ -755,6 +756,50 @@ fn alias_target_key(name: String) -> String {
 
 fn overlay_entry_is_alias_of(entry: String, name: String) -> Bool {
   String::length(entry) == String::length(name) + 7 && String::starts_with(entry, "#alias ") && String::ends_with(entry, name)
+}
+
+/// #3576: the row variables a local lambda's own explicit binder declares
+/// (`let call = [e](f: () -> Int with e) -> Int with e { .. }`), under a key
+/// no source name can spell. Such a variable is the lambda's, not the
+/// enclosing signature's: the checker quantifies it and instantiates it at
+/// each call, as it does a top-level function's. So the lambda's overlay
+/// entry leaves it out (a callback's `with e` is charged as written, #885),
+/// and a call charges what the checker's instantiation of the row there
+/// holds (`charge_typed_callee_row`). Before, the token itself was charged:
+/// `call(() -> 1)` asked the enclosing function to declare `with e`.
+fn own_row_key(name: String) -> String {
+  String::concat("#ownrow ", name)
+}
+
+fn overlay_entry_is_own_row_of(entry: String, name: String) -> Bool {
+  String::length(entry) == String::length(name) + 8 && String::starts_with(entry, "#ownrow ") && String::ends_with(entry, name)
+}
+
+/// The row variables `val`, bound by a local `let`, owns: those of a lambda's
+/// own row that its explicit binder names, or what the local it aliases owns.
+fn local_own_row_vars(val: Expr, ov_names: Array[String], ov_effs: Array[Array[String]]) -> Array[String] {
+  match val {
+    EFn(tparams, _, _, _, eff, _) => {
+      let out = no_str_labels()
+      if Array::length(tparams) > 0 {
+        let binders = tparam_names(tparams)
+        for lbl in effect_row_labels(effect_row_parse(eff)) {
+          if label_is_effect_var(lbl) && str_labels_contain(binders, lbl) && !str_labels_contain(out, lbl) {
+            Array::push(out, lbl)
+          }
+        }
+      }
+      out
+    },
+    EIdent(n, _) => match lookup_fn_effs(ov_names, ov_effs, n) {
+      Some(_) => match lookup_fn_effs(ov_names, ov_effs, own_row_key(n)) {
+        Some(vars) => vars,
+        None => no_str_labels()
+      },
+      None => no_str_labels()
+    },
+    _ => no_str_labels()
+  }
 }
 
 /// The top-level function a local alias names, read against the pre-shadow
@@ -927,15 +972,37 @@ export fn overlay_bind_local(names: Array[String], effs: Array[Array[String]], n
   // #1515: resolve an ALIAS against the pre-shadow overlay -- `let f = f`
   // rebinds to the OUTER `f`, so the lookup must see the entry the shadow is
   // about to remove.
-  let labels = local_fn_overlay_labels(val, names, effs, fn_names, fn_effs, fn_index)
+  let written = local_fn_overlay_labels(val, names, effs, fn_names, fn_effs, fn_index)
+  // #3576: a variable the lambda's own binder declares is not charged as
+  // written; see `own_row_key`. Only a row can name one.
+  let own_vars = if Array::length(written) == 0 {
+    written
+  } else {
+    local_own_row_vars(val, names, effs)
+  }
+  let labels = if Array::length(own_vars) == 0 {
+    written
+  } else {
+    let kept = no_str_labels()
+    for lbl in written {
+      if !str_labels_contain(own_vars, lbl) {
+        Array::push(kept, lbl)
+      }
+    }
+    kept
+  }
   // #1723: an empty row is still a lexical binding. Keeping an explicit
   // empty entry is what distinguishes "a pure local shadows this name" from
   // "no local binding; consult the top-level function table".
-  if Array::length(labels) == 0 && !local_binding_needs_overlay_entry(fn_index, name) {
+  if Array::length(labels) == 0 && Array::length(own_vars) == 0 && !local_binding_needs_overlay_entry(fn_index, name) {
     return shadowed
   }
   let out_names = [name]
   let out_effs = [labels]
+  if Array::length(own_vars) > 0 {
+    Array::push(out_names, own_row_key(name))
+    Array::push(out_effs, own_vars)
+  }
   // #3155: only a row can carry a variable to instantiate.
   if Array::length(labels) > 0 {
     match local_alias_target(val, names, effs, fn_index) {
@@ -1717,6 +1784,17 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
                   Array::set(requirement_marked_cell, 0, ("", ""))
                   Array::set(row_callback_scope_start_cell, 0, 1)
                   pi = pi + 1
+                }
+                // #3576: the row variables a local lambda's own binder
+                // declares are left out of `param_effs`; what this call
+                // instantiates them to is charged from its type below. (With
+                // no label left, the name counts as row-less, and the
+                // fallback after this match charges the type instead.)
+                if Array::length(param_effs) > 0 && match lookup_fn_effs(ov_names, ov_effs, own_row_key(name)) {
+                  Some(_) => true,
+                  None => false
+                } {
+                  alias_unresolved_row_var = true
                 }
                 // The alias's lexical row suppresses the generic fallback
                 // below, so the unresolved case is charged here: what the

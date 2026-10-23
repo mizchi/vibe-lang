@@ -13,7 +13,7 @@ import @vibe/compiler/checker/annotations {
 }
 
 import @vibe/compiler/checker/type_relations {
-  row_labels
+  row_labels, struct_row_param
 }
 
 import @vibe/compiler/checker/resume {
@@ -589,9 +589,23 @@ fn report_unknown_type_names_only(te: TypeExpr, defs: Array[TypeDef], shadow: Ar
   }
   let out = array_empty()
   collect_unknown_type_names_regionwise(te, defs, shadow, region_binders, out)
+  // #3574: a row variable the signature's own row declares, passed to a
+  // struct's row parameter (`j: Job[e]` beside `-> Int with e`), is that row
+  // variable, as `f: () -> Int with e` is. Each such occurrence is excused
+  // once; the same name anywhere else is still an unknown type.
+  // (With no row binder the empty `row_binders` stands in: nothing is taken
+  // from it.)
+  let row_slot_names = if Array::length(row_binders) > 0 && Array::length(out) > 0 {
+    let names = array_empty()
+    collect_struct_row_slot_names(te, defs, row_binders, names)
+    names
+  } else {
+    row_binders
+  }
   let mut i = 0
   while i < Array::length(out) {
     let name = Array::get(out, i)
+    let at_row_slot = take_string_once(row_slot_names, name)
     let is_type_formal = match env_lookup(env, name) {
       Some(t) => match t {
         CtVar(_) => true,
@@ -604,12 +618,62 @@ fn report_unknown_type_names_only(te: TypeExpr, defs: Array[TypeDef], shadow: Ar
       Some(_) => true,
       None => false
     }
-    if is_type_formal || trait_erased_by_impl {
+    if is_type_formal || trait_erased_by_impl || at_row_slot {
       ()
     } else {
       Array::push(errors, String::concat(String::concat(String::concat("unknown type `", name), "` in "), where_label))
     }
     i = i + 1
+  }
+}
+
+/// #3574: each bare name among `binders` that `te` passes to a row parameter
+/// of a declared struct, once per occurrence.
+fn collect_struct_row_slot_names(te: TypeExpr, defs: Array[TypeDef], binders: Array[String], out: Array[String]) -> Unit {
+  match te {
+    TyApp(head, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        match Array::get(args, i) {
+          TyName(n) => if checker_string_array_has(binders, n) && struct_row_param(defs, head, i) {
+            Array::push(out, n)
+          },
+          _ => collect_struct_row_slot_names(Array::get(args, i), defs, binders, out)
+        }
+        i = i + 1
+      }
+    },
+    TyTuple(items) => {
+      for item in items {
+        collect_struct_row_slot_names(item, defs, binders, out)
+      }
+      ()
+    },
+    TyFn(params, ret, _) => {
+      for p in params {
+        collect_struct_row_slot_names(p, defs, binders, out)
+      }
+      collect_struct_row_slot_names(ret, defs, binders, out)
+    },
+    _ => ()
+  }
+}
+
+/// Remove one occurrence of `name` from `names`; true when there was one.
+fn take_string_once(names: Array[String], name: String) -> Bool {
+  let mut at = 0 - 1
+  let mut i = 0
+  while i < Array::length(names) && at < 0 {
+    if Array::get(names, i) == name {
+      at = i
+    }
+    i = i + 1
+  }
+  if at < 0 {
+    false
+  } else {
+    Array::set(names, at, "")
+    true
   }
 }
 
