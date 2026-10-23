@@ -726,16 +726,14 @@ export fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Arra
 /// assertion in a test wanted `with Stdout` from a function with no row to
 /// declare.
 ///
-/// Keyed on the name because the alternative -- writing the row onto the
-/// synthesized function -- changes what CODEGEN reads, and the eligibility pass
-/// above reads exactly that. The two prefixes are compiler-synthesized and
-/// reserved; `cli_support.vibe`, `codegen/wasi/linked_compile.vibe` and
-/// `codegen/gc/backend_body.vibe` already key off them the same way. The test's
-/// own `with` row (#1508) is looked up under its original name, so
-/// `test "x" allows Http` keeps widening the grant after lowering.
+/// The gc driver supplies the exact synthesized-name list while checking the
+/// lowered program. User declarations may legally use either prefix; spelling
+/// alone grants no authority. The original block name still selects its row.
 export fn lowered_test_ambient_effects(fn_name: String) -> Array[String] {
   let n = String::length(fn_name)
-  if String::starts_with(fn_name, "__test_") {
+  if !is_lowered_test_block(fn_name) {
+    no_str_labels()
+  } else if String::starts_with(fn_name, "__test_") {
     test_ambient_effects(String::substring(fn_name, 7, n))
   } else if String::starts_with(fn_name, "__bench_") {
     test_ambient_effects(String::substring(fn_name, 8, n))
@@ -750,7 +748,21 @@ export fn lowered_test_ambient_effects(fn_name: String) -> Array[String] {
 /// erased `Exception` grant lets out is a failing test, not a kind its
 /// caller -- the synthesized `_start` runner -- has to declare.
 export fn is_lowered_test_block(fn_name: String) -> Bool {
-  String::starts_with(fn_name, "__test_") || String::starts_with(fn_name, "__bench_")
+  let names = Array::get(lowered_test_block_names, 0)
+  // The provenance list also includes the synthesized `_start` runner. It is
+  // a caller of the blocks and must retain ordinary function checking.
+  str_list_has(names, fn_name) && (String::starts_with(fn_name, "__test_") || String::starts_with(fn_name, "__bench_"))
+}
+
+let lowered_test_block_names: Array[Array[String]] = [array_empty()]
+
+/// Install the gc lowering's provenance for one check and return the previous
+/// scope. The caller restores it on success and exception, including nested
+/// compilations; a later source check never inherits another program's names.
+export fn swap_lowered_test_block_names(names: Array[String]) -> Array[String] {
+  let previous = Array::get(lowered_test_block_names, 0)
+  Array::set(lowered_test_block_names, 0, names)
+  previous
 }
 
 /// ADR-0088: every row a binding's TYPES write besides its own -- the rows of
@@ -932,11 +944,22 @@ export fn error_row_checked() -> Bool {
 /// Canonical cache identity for the actual process-wide checker mode. Direct
 /// callers that do not configure the cell are unchecked, matching
 /// error_row_checked(); CLI callers set the cell explicitly every invocation.
+/// A lowered-test scope changes the grants too, and is part of this identity.
 export fn typing_semantics_seed() -> String {
-  if error_row_checked() {
+  let mode = if error_row_checked() {
     "checked"
   } else {
     "unchecked"
+  }
+  let names = Array::get(lowered_test_block_names, 0)
+  if Array::length(names) == 0 {
+    mode
+  } else {
+    let mut identity = mode + "|lowered-test-blocks:"
+    for name in names {
+      identity = identity + Int::to_string(String::length(name)) + ":" + name
+    }
+    identity
   }
 }
 

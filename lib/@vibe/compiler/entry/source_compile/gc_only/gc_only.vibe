@@ -16,6 +16,10 @@ import @vibe/compiler/checker {
   validate_user_source_stmts
 }
 
+import @vibe/compiler/checker/effects {
+  swap_lowered_test_block_names
+}
+
 import @vibe/compiler/normalize {
   desugar_trait_dicts_with_typed_eq
 }
@@ -156,9 +160,9 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // top-level `fn`; `fixtures/effect_effectset_expansion.vibe` is that
   // shape and compiles on this lane only for this reason), while the
   // checker's ambient test-effect grant is keyed off the STest / SBench
-  // node this erases. #2107 closed the second half in the checker instead:
-  // `lowered_test_ambient_effects` recognizes these two prefixes, so the
-  // grant survives the lowering without changing what CODEGEN sees.
+  // node this erases. Carry the exact synthesized-name list into the check
+  // so its ambient grant survives without granting authority to a user's
+  // ordinary `__test_*` or `__bench_*` declaration.
   let (effective_entry, generated_test_artifact, lowered_test_names) = lower_test_blocks_gc(stmts, entry_name)
   // #2441: the same observation carries the typed-`==` rows. On this lane
   // they need no rename mapping (the check runs on the POST-merge,
@@ -166,7 +170,15 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // declarations) and no uniqueness filter (the extraction poisons an
   // offset claimed by binops of different types; with the same type,
   // rewriting both is correct).
-  let (checked, gc_float_call_offsets, string_rels, string_pluses, gc_eq_offsets, gc_eq_keys) = match check_program_scalar_lowering_observation(stmts) {
+  let previous_test_names = swap_lowered_test_block_names(lowered_test_names)
+  let observed = handle {
+    check_program_scalar_lowering_observation(stmts)
+  } with { Exception::Throw(message) => {
+    swap_lowered_test_block_names(previous_test_names)
+    throw(message)
+  } }
+  swap_lowered_test_block_names(previous_test_names)
+  let (checked, gc_float_call_offsets, string_rels, string_pluses, gc_eq_offsets, gc_eq_keys) = match observed {
     Some(observation) => observation,
     None => throw("internal compiler error: incomplete GC call-result type observation")
   }

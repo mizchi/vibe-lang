@@ -1,0 +1,109 @@
+import @vibe/compiler/core {
+  Expr, Stmt, builtin_frame_jump, builtin_frame_scope, expr_any_node, resolved_callee_operation, return_call_resolve, return_call_site
+}
+export fn return_control_node(e: Expr) -> Bool {
+  match e {
+    ECall(_, _, _, r) => {
+      let operation = resolved_callee_operation(r); operation == builtin_frame_scope || operation == builtin_frame_jump || return_call_site(r) >= 0
+    },
+    _ => false
+  }
+}
+export fn return_control_expr_uses(e: Expr) -> Bool {
+  expr_any_node(e, return_control_node)
+}
+export fn return_control_program_uses(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    if !found {
+      found = match stmt {
+        SLet(_, _, _, _, e) => return_control_expr_uses(e),
+        SLetMut(_, _, e) => return_control_expr_uses(e),
+        SExpr(e) => return_control_expr_uses(e),
+        STest(_, e) => return_control_expr_uses(e),
+        SBench(_, e) => return_control_expr_uses(e),
+        _ => false
+      }
+    }
+  }
+  found
+}
+export fn return_control_annotate_calls(e: Expr, counter: Array[Int]) -> Expr {
+  match e {
+    EReturn(value) => EReturn(return_control_annotate_calls(value, counter)),
+    EFn(ts, bs, ps, ret, eff, body) => EFn(ts, bs, ps, ret, eff, return_control_annotate_calls(body, counter)),
+    ELet(n, v, b, o) => ELet(n, return_control_annotate_calls(v, counter), return_control_annotate_calls(b, counter), o),
+    ELetRec(n, v, b) => ELetRec(n, return_control_annotate_calls(v, counter), return_control_annotate_calls(b, counter)),
+    ELetMut(n, v, b, o) => ELetMut(n, return_control_annotate_calls(v, counter), return_control_annotate_calls(b, counter), o),
+    ESeq(a, b) => ESeq(return_control_annotate_calls(a, counter), return_control_annotate_calls(b, counter)),
+    EIf(c, t, f) => EIf(return_control_annotate_calls(c, counter), return_control_annotate_calls(t, counter), return_control_annotate_calls(f, counter)),
+    EMatch(v, arms) => EMatch(return_control_annotate_calls(v, counter), for arm in arms {
+      (arm.0, return_control_annotate_calls(arm.1, counter))
+    }),
+    EHandle(v, arms) => EHandle(return_control_annotate_calls(v, counter), for arm in arms {
+      (arm.0, return_control_annotate_calls(arm.1, counter))
+    }),
+    EWhile(c, b) => EWhile(return_control_annotate_calls(c, counter), return_control_annotate_calls(b, counter)),
+    ELoop(states, b) => ELoop(for item in states {
+      (item.0, return_control_annotate_calls(item.1, counter))
+    }, return_control_annotate_calls(b, counter)),
+    EForIn(n, i, v, b) => EForIn(n, i, return_control_annotate_calls(v, counter), return_control_annotate_calls(b, counter)),
+    ECall(c, args, o, r) => {
+      let callee = return_control_annotate_calls(c, counter)
+      let is_perform = match c {
+        EIdent(n, _) => n == "perform",
+        _ => false
+      }
+      let values = if is_perform && Array::length(args) == 1 {
+        [
+          match Array::get(args, 0) {
+            ECall(op, ps, po, pr) => ECall(op, for p in ps {
+              return_control_annotate_calls(p, counter)
+            }, po, pr),
+            other => other
+          }
+        ]
+      } else {
+        for arg in args {
+          return_control_annotate_calls(arg, counter)
+        }
+      }
+      let operation = resolved_callee_operation(r)
+      let resolution = if operation == builtin_frame_scope || operation == builtin_frame_jump {
+        r
+      } else {
+        let site = Array::get(counter, 0)
+        Array::set(counter, 0, site + 1)
+        return_call_resolve(r, site)
+      }
+      ECall(callee, values, o, resolution)
+    },
+    EBinOp(op, l, r, o) => EBinOp(op, return_control_annotate_calls(l, counter), return_control_annotate_calls(r, counter), o),
+    EUnaryOp(op, v) => EUnaryOp(op, return_control_annotate_calls(v, counter)),
+    EAssign(n, v, b, o) => EAssign(n, return_control_annotate_calls(v, counter), return_control_annotate_calls(b, counter), o),
+    EAssignOp(n, op, v, b, o) => EAssignOp(n, op, return_control_annotate_calls(v, counter), return_control_annotate_calls(b, counter), o),
+    EDot(v, f, a, b) => EDot(return_control_annotate_calls(v, counter), f, a, b),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, return_control_annotate_calls(v, counter)),
+    ETuple(es) => ETuple(for v in es {
+      return_control_annotate_calls(v, counter)
+    }),
+    EArray(es) => EArray(for v in es {
+      return_control_annotate_calls(v, counter)
+    }),
+    ERecord(n, fs, ts) => ERecord(n, for f in fs {
+      (f.0, return_control_annotate_calls(f.1, counter))
+    }, ts),
+    EMap(fs) => EMap(for f in fs {
+      (f.0, return_control_annotate_calls(f.1, counter))
+    }),
+    ESpread(v) => ESpread(return_control_annotate_calls(v, counter)),
+    EBreak(v) => EBreak(match v {
+      Some(x) => Some(return_control_annotate_calls(x, counter)),
+      None => None
+    }),
+    EContinue(args) => EContinue(for a in args {
+      return_control_annotate_calls(a, counter)
+    }),
+    _ => e
+  }
+}

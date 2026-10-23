@@ -111,7 +111,7 @@ test "removed nested handler arms leave safe candidate supersets" {
   }, content = "true")
 }
 
-test "only the first arm determines the effect label including exception labels" {
+test "every qualified arm contributes a candidate effect including exception labels" {
   let stmts = [
     SExpr(EHandle(EInt(0), [
       (PCtor("Error::Throw", []), EInt(0)),
@@ -124,6 +124,45 @@ test "only the first arm determines the effect label including exception labels"
   ]
   let index = edp_handle_statement_index(stmts)
   inspect(edp_handle_statement_indices(index, "Error"), content = "[0]")
-  inspect(edp_handle_statement_indices(index, "Ask"), content = "[]")
+  inspect(edp_handle_statement_indices(index, "Ask"), content = "[0]")
   inspect(edp_handle_statement_indices(index, "Other"), content = "[]")
+}
+
+test "a grouped handler indexes each effect once and the query sees later arms" {
+  let expr = EHandle(EInt(7), [
+    (PCtor("Ask::Get", []), EInt(1)),
+    (PCtor("Other::Get", []), EInt(2)),
+    (PCtor("Ask::Next", []), EInt(3))
+  ])
+  let index = edp_handle_statement_index([SExpr(expr)])
+  inspect(edp_handle_statement_indices(index, "Ask"), content = "[0]")
+  inspect(edp_handle_statement_indices(index, "Other"), content = "[0]")
+  inspect(edp_rq_fold(RQHandlesEffect("Ask"), expr), content = "1")
+  inspect(edp_rq_fold(RQHandlesEffect("Other"), expr), content = "1")
+  inspect(edp_rq_fold(RQHandlesEffect("Missing"), expr), content = "0")
+}
+
+test "vacuous discharge removes only its own arms from a grouped handler" {
+  let stmts = [
+    SExpr(EHandle(EInt(7), [
+      (PCtor("Ask::Get", []), EInt(1)),
+      (PCtor("Other::Get", []), EInt(2)),
+      (PCtor("Ask::Next", []), EInt(3))
+    ]))
+  ]
+  let index = edp_handle_statement_index(stmts)
+  let names: MutSet[String] = MutSet::new_string()
+  edp_erase_effect_handles_with_index(stmts, "Ask", false, [], names, names, Some(edp_handle_statement_indices(index, "Ask")))
+  inspect(match Array::get(stmts, 0) {
+    SExpr(EHandle(EInt(7), arms)) => Array::length(arms) == 1 && match Array::get(arms, 0) {
+      (PCtor("Other::Get", binds), EInt(2)) => Array::length(binds) == 0,
+      _ => false
+    },
+    _ => false
+  }, content = "true")
+  edp_erase_effect_handles_with_index(stmts, "Other", false, [], names, names, Some(edp_handle_statement_indices(index, "Other")))
+  inspect(match Array::get(stmts, 0) {
+    SExpr(EInt(7)) => true,
+    _ => false
+  }, content = "true")
 }

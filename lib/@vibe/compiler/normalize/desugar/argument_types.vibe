@@ -21,7 +21,7 @@ import ./constructor_annotations.vibe {
 }
 
 import ./equality_aliases.vibe {
-  eq_subst_ty
+  eq_expand_alias_ty, eq_subst_ty
 }
 
 import ./equality_shape_queries.vibe {
@@ -136,7 +136,9 @@ export enum FieldProjection {
 }
 
 fn ty_mentions_decl_formal(t: TypeExpr, formals: Array[String]) -> Bool {
-  match t {
+  if Array::length(formals) == 0 {
+    false
+  } else match t {
     TyName(n) => {
       let mut found = false
       for f in formals {
@@ -221,7 +223,9 @@ fn projection_receiver_type(obj: Expr, struct_sets: Array[(String, Array[String]
       // equality shape; a `let` its impl target.
       let fsh = eq_formal_shape_of_name(var_types, n)
       if String::length(fsh) > 0 {
-        recorded_type_of_name(var_types, n, shape_to_eq_ty(fsh))
+        // This row already belongs to the current binding. Its expanded
+        // alias head need not equal the annotation's original spelling.
+        Some(shape_to_eq_ty(fsh))
       } else {
         match lookup_var_type(var_types, eq_shape_key(n)) {
           Some(sh) => if String::length(sh) > 0 {
@@ -273,19 +277,21 @@ export fn dtd_field_projection(obj: Expr, field: String, struct_sets: Array[(Str
   match projection_receiver_type(obj, struct_sets, var_types, fn_returns) {
     None => FieldUndeclared,
     Some(rt) => {
-      let (head, args) = match rt {
+      let (head, args) = match eq_expand_alias_ty(rt) {
         TyApp(n, xs) => (n, xs),
         TyName(n) => (n, []),
         _ => ("", [])
       }
       let mut result = FieldUndeclared
       let mut decided = false
-      for decl in dtd_struct_field_decls {
-        let (sname, formals, fields) = decl
-        if !decided && sname == head {
-          for fd in fields {
-            let (fname, fty) = fd
-            if !decided && fname == field {
+      let mut di = 0
+      while di < Array::length(dtd_struct_field_decls) && !decided {
+        let (sname, formals, fields) = Array::get(dtd_struct_field_decls, di)
+        if sname == head {
+          let mut fi = 0
+          while fi < Array::length(fields) && !decided {
+            let (fname, fty) = Array::get(fields, fi)
+            if fname == field {
               decided = true
               result = if !ty_mentions_decl_formal(fty, formals) {
                 FieldTyped(fty)
@@ -302,10 +308,12 @@ export fn dtd_field_projection(obj: Expr, field: String, struct_sets: Array[(Str
             } else {
               ()
             }
+            fi = fi + 1
           }
         } else {
           ()
         }
+        di = di + 1
       }
       result
     }
@@ -364,6 +372,25 @@ fn dtd_type_name_or_empty(e: Expr, struct_sets: Array[(String, Array[String])], 
   match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
     Some(t) => t,
     None => ""
+  }
+}
+
+/// The flat table excludes a struct's own formal heads. Its remaining heads
+/// do not change under substitution, so a named receiver needs no shape parse
+/// to answer this head-only query. Full equality still reads the field type.
+fn cached_field_head(obj: Expr, field: String, var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match obj {
+    EIdent(n, _) => if constructor_binding_is_masked(var_types, n) {
+      None
+    } else match lookup_var_type(var_types, n) {
+      Some(head) => if formal_in_scope(head) {
+        None
+      } else {
+        fn_return_type(fn_returns, struct_field_type_key(head, field))
+      },
+      None => None
+    },
+    _ => None
   }
 }
 
@@ -444,20 +471,22 @@ export fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[Strin
     // Measured: `let t = ("bbb", "aaa"); t.0 < t.1` answered by address, so
     // `a == b` and `a < b` could both be true for the same pair. The element
     // type is already recorded by `tuple_shape_bind`; this is the read side.
-    // #3613: a declared struct field is typed through `dtd_field_projection`,
-    // which substitutes a generic struct's parameters with the receiver's
-    // type arguments: `p.a` on `p: Pair[U]` is a `U`, not `Pair`'s own `T`.
-    // Arguments it cannot read give no answer, never the declaration's
-    // parameter name. The flat `Struct.field` table answers only for a
-    // receiver whose declaration that pass does not see.
+    // #3613: the flat table answers heads independent of type arguments.
+    // A head naming the struct's own formal is absent there: the full
+    // projection substitutes the receiver's arguments, so `p.a` on
+    // `p: Pair[U]` is `U`, rather than the declaration's `T`. Unreadable
+    // arguments never contribute a guessed formal name.
     EDot(obj, field, _, _) => match dtd_tuple_elem_type_name(obj, field, var_types) {
       Some(elem) => Some(elem),
-      None => match dtd_field_projection(obj, field, struct_sets, var_types, fn_returns) {
-        FieldTyped(t) => field_head_name(t),
-        FieldUnreadable(_) => None,
-        FieldUndeclared => match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
-          Some(otype) => fn_return_type(fn_returns, struct_field_type_key(otype, field)),
-          None => None
+      None => match cached_field_head(obj, field, var_types, fn_returns) {
+        Some(head) => Some(head),
+        None => match dtd_field_projection(obj, field, struct_sets, var_types, fn_returns) {
+          FieldTyped(t) => field_head_name(t),
+          FieldUnreadable(_) => None,
+          FieldUndeclared => match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+            Some(otype) => fn_return_type(fn_returns, struct_field_type_key(otype, field)),
+            None => None
+          }
         }
       }
     },

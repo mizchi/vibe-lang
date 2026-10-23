@@ -569,12 +569,12 @@ ur_refused fixtures/err_eq_formal_payload_refused.vibe 'compares values with a p
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'
 # #3540: a handler arm's effects belong to the handlers around its `handle`.
-# Where the lowering that guarantees that cannot take the program, the build
-# is refused with the edit instead of answering through a nested handler.
-# (An arm's throw beside a sibling `Exception` arm used to be refused here; since
-# #3583 the set lowers as nested handles the driver runs, and it answers `-5`
-# in fixtures/handle_two_effects_callee_test.vibe.)
+# The mixed Ask/Exception driver now supports the old refusal fixture; pin
+# the actual outer-handler answer on both backends. Cyclic arm effects below
+# remain refused with the edit rather than running through a nested handler.
+run_test_block_fixtures "mixed handler arm exception scope" fixtures/handler_arm_throw_inner_catch_test.vibe
 ur_refused fixtures/err_handle_arm_effect_cycle_refused.vibe 'handler arms of the effects `Ask` and `Log` each perform another of them' 'move the `perform` out of one of those arms' linear 'fixtures/err_handle_arm_effect_cycle_refused.vibe: line 37:15'
+run_test_block_fixtures_gc "mixed handler arm exception scope" fixtures/handler_arm_throw_inner_catch_test.vibe
 ur_refused fixtures/err_handle_arm_effect_cycle_refused.vibe 'handler arms of the effects `Ask` and `Log` each perform another of them' 'move the `perform` out of one of those arms' gc 'fixtures/err_handle_arm_effect_cycle_refused.vibe: line 37:15'
 # #3547: an arm's `return` (not a `resume` capture) sent this handle to the
 # lowering that cannot take a call inside a `for`; the refusal names the

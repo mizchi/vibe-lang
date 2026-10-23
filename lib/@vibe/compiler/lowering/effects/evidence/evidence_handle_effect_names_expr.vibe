@@ -1704,11 +1704,10 @@ fn edp_strip_tail_resume_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
 
 // --- the migration for one effect.
 
-/// Every top-level `EHandle` (searched via the same whole-program recursive
-/// descent as the eligibility/rewrite passes) whose arms discharge `ename`
-/// -- identified by the qualified prefix on the first arm's pattern, since a
-/// `handle ... with Effect { ... }` block's arms are always all for the same
-/// effect (ADR-0050).
+/// Every handle site (searched through the same whole-program descendants
+/// as eligibility and rewriting) whose arms include `ename`. A grouped site
+/// can belong to several migrations: each migration consumes only its own
+/// arms and preserves the remaining handlers and their original scope.
 /// ADR-0076 追記34 V2: `test`/`bench` blocks and top-level expressions are
 /// site-bearing statements too. They were invisible to collection (and to
 /// eligibility / apply, which mirror this stmt coverage) for as long as the
@@ -1757,8 +1756,8 @@ export fn edp_collect_handle_effect_names(stmts: Array[Stmt], out: Array[String]
 fn edp_collect_handle_effect_names_expr(expr: Expr, out: Array[String]) -> Unit {
   match expr {
     EHandle(body, arms) => {
-      if Array::length(arms) > 0 {
-        let (p, _) = Array::get(arms, 0)
+      for arm in arms {
+        let (p, _) = arm
         let qname = edp_pat_qname(p)
         let (eff_opt, _) = edp_split_qualified(qname)
         match eff_opt {
@@ -1769,8 +1768,6 @@ fn edp_collect_handle_effect_names_expr(expr: Expr, out: Array[String]) -> Unit 
           },
           None => ()
         }
-      } else {
-        ()
       }
       edp_collect_handle_effect_names_expr(body, out)
       let mut i = 0

@@ -142,8 +142,9 @@ fn operand_type(e: Expr, struct_sets: Array[(String, Array[String])], var_types:
 /// REFUSED rather than handed back to the ladder, whose rungs compare it with
 /// a raw `==`: by identity for a boxed `Double` or an aggregate (Codex on
 /// #3302). A marker `Eq` (inside `@vibe/builtin`) promises nothing, and a
-/// formal a nested binder rebinds keeps the ladder, as `dtd_eq_witness_dict`
-/// declines it.
+/// bare formal a nested binder rebinds keeps the existing ladder. A projected
+/// or recorded aggregate with such a formal is refused: its spelling does not
+/// identify which binder's dictionary to use.
 fn witnessed_operand(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Option[(TypeExpr, Array[(String, String)])] with Exception {
   match operand_type(e, struct_sets, var_types, fn_returns) {
     None => None,
@@ -158,6 +159,16 @@ fn witnessed_operand(e: Expr, struct_sets: Array[(String, Array[String])], var_t
         let table = array_empty()
         let mut complete = true
         for f in formals {
+          // A marked shape remembers a formal's spelling, not its binder.
+          // A shadowed spelling cannot identify the field's dictionary.
+          let projection = match e {
+            EDot(_, _, _, _) => true,
+            EIdent(n, _) => String::length(eq_formal_shape_of_name(var_types, n)) > 0,
+            _ => false
+          }
+          if projection && dtd_formal_is_shadowed(f) {
+            throw("rename the nested type parameter `" + f + "`, or pass the comparison in as a parameter: this field's `Eq` witness cannot be identified across binders with the same name, so `==` cannot compare by content")
+          }
           match dtd_eq_witness_dict(dict_binds, traits, f) {
             Some(dict) => Array::push(table, (f, dict)),
             None => {

@@ -1,3 +1,6 @@
+import @vibe/compiler/codegen/common_analysis {
+  return_control_annotate_calls, return_control_program_uses
+}
 // Canonical function normalization and lambda ranges, prepared once before
 // body emission. Consumers read these arrays; they are not a Send transport.
 import @vibe/compiler/core {
@@ -63,6 +66,8 @@ fn lc_body_free_names(e: Expr) -> Array[String] {
 // shadow a builtin value form. Statement indices include non-EFn thunks.
 export fn lc_prepare_function_plan(stmts: Array[Stmt], fn_stmt_indices: Array[Int], fn_names_list: Array[String], num_user_funcs: Int, const_int_names_list: Array[String], ctor_names_list: Array[String], enable_rc: Bool) -> LinkedFunctionPlan with Exception {
   // Fresh names must advance across the complete canonical function order.
+  let control = enable_rc && return_control_program_uses(stmts)
+  let control_sites = [0]
   let m_scrut_counter = [0]
   let uq_shadow_counter = [0]
   // #1259 step 7: the frozen plan, built BEFORE any body is emitted.
@@ -154,7 +159,11 @@ export fn lc_prepare_function_plan(stmts: Array[Stmt], fn_stmt_indices: Array[In
       let pb_seen = lc_body_free_names(get_slet_expr(pb_stmt))
       uniquify_shadowed_bindings_fresh(get_slet_expr(pb_stmt), uq_shadow_counter, pb_seen)
     }
-    Array::push(planned_bodies, pb_expr)
+    Array::push(planned_bodies, if control {
+      return_control_annotate_calls(pb_expr, control_sites)
+    } else {
+      pb_expr
+    })
     Array::push(source_types, get_slet_type(pb_stmt))
     Array::push(lambda_bases, lambda_base_acc)
     // A function DEFINITION is itself an EFn, and that outer EFn is the

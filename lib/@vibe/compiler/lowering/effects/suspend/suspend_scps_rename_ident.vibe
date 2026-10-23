@@ -1,3 +1,6 @@
+import ./suspend_group_targets.vibe {
+  scps_group_members, scps_group_op_name
+}
 // lib/@vibe/compiler/lowering/effects/suspend/suspend.vibe — scps rename ident.
 
 import @vibe/ast {
@@ -5,7 +8,16 @@ import @vibe/ast {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, Type, TypeExpr, builtin_callee_resolution, expr_children, lookup_registry_builtin
+  Expr,
+  Pat,
+  Stmt,
+  Type,
+  TypeExpr,
+  builtin_callee_resolution,
+  builtin_frame_jump,
+  expr_children,
+  lookup_registry_builtin,
+  resolved_callee_operation
 }
 
 import @vibe/core {
@@ -28,6 +40,7 @@ import @vibe/compiler/lowering/effects/queries {
   edp_rq_exprs,
   edp_rq_fold,
   edp_str_array_contains,
+  scps_arms_discharge_ops,
   scps_as_cps_local_call,
   scps_pat_binds_name,
   scps_ty_has_fn
@@ -49,8 +62,8 @@ export fn array_empty_ecfg() -> Array[(String, Array[String], Array[String])] {
   Array::slice([("", array_empty_str(), array_empty_str())], 0, 0)
 }
 
-export fn array_empty_scope() -> Array[(String, String)] {
-  Array::slice([("", "")], 0, 0)
+export fn array_empty_scope() -> Array[(String, String, Bool)] {
+  Array::slice([("", "", false)], 0, 0)
 }
 
 export fn array_empty_kind_scope() -> Array[(String, Int)] {
@@ -182,7 +195,8 @@ export fn scps_op_suffix(qname: String) -> String {
 }
 
 // --- program-fact helpers over the pass context. ctx = (stmts, effect
-// defs, fn defs, effectset names, effectset member lists, ctor names).
+// defs, fn defs, effectset names, effectset member lists, ctor names, and
+// explicit grouped-driver targets).
 
 export fn scps_collect_ctor_names(stmts: Array[Stmt]) -> Array[String] {
   let out = array_empty_str()
@@ -217,25 +231,26 @@ export fn scps_collect_ctor_names(stmts: Array[Stmt]) -> Array[String] {
 
 /// Declared ops of `eff` as (opname, arity); found=false when `eff` is not
 /// a declared effect in this program.
-export fn scps_effect_decl_ops(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), eff: String) -> (Bool, Array[(String, Int)]) {
-  let (_, effect_defs, _, _, _, _) = ctx
-  let out = Array::slice([("", 0)], 0, 0)
-  let mut found = false
-  let mut i = 0
-  while i < Array::length(effect_defs) {
-    let (name, ops) = Array::get(effect_defs, i)
-    if name == eff {
-      found = true
-      let mut oi = 0
-      while oi < Array::length(ops) {
-        let (opname, params, _) = Array::get(ops, oi)
-        Array::push(out, (opname, Array::length(params)))
-        oi = oi + 1
+export fn scps_effect_decl_ops(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), eff: String) -> (Bool, Array[(String, Int)]) {
+  let (_, effect_defs, _, _, _, _, groups) = ctx
+  let out: Array[(String, Int)] = []
+  let members = scps_group_members(groups, eff)
+  let mut found = true
+  for member in members {
+    let mut present = false
+    for def in effect_defs {
+      let (name, ops) = def
+      if name == member {
+        present = true
+        for op in ops {
+          let (opname, params, _) = op
+          Array::push(out, (scps_group_op_name(groups, eff, name + "::" + opname), Array::length(params)))
+        }
       }
-    } else {
-      ()
     }
-    i = i + 1
+    if !present {
+      found = false
+    }
   }
   (found, out)
 }
@@ -256,14 +271,22 @@ export fn scps_effect_decl_ops(ctx: (Array[Stmt], Array[(String, Array[(String, 
 /// `edp_drop_shadowed_needing`'s own established trade (see its doc comment):
 /// a needing function whose name is ALSO reused as a binder somewhere loses its
 /// needing status here, which costs eligibility, never correctness.
-export fn scps_needing_for(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), eff: String) -> Array[String] {
-  let (stmts, _, fn_defs, es_names, es_members_list, _) = ctx
-  edp_drop_shadowed_needing(edp_needing_names(fn_defs, eff, es_names, es_members_list), stmts)
+export fn scps_needing_for(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), eff: String) -> Array[String] {
+  let (stmts, _, fn_defs, es_names, es_members_list, _, groups) = ctx
+  let out: Array[String] = []
+  for member in scps_group_members(groups, eff) {
+    for name in edp_needing_names(fn_defs, member, es_names, es_members_list) {
+      if !edp_str_array_contains(out, name) {
+        Array::push(out, name)
+      }
+    }
+  }
+  edp_drop_shadowed_needing(out, stmts)
 }
 
 /// (is a known top-level fn, its declared row string -- "" for none).
-export fn scps_fn_row_of(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String) -> (Bool, String) {
-  let (_, _, fn_defs, _, _, _) = ctx
+export fn scps_fn_row_of(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), name: String) -> (Bool, String) {
+  let (_, _, fn_defs, _, _, _, _) = ctx
   let mut found = false
   let mut row = ""
   let mut i = 0
@@ -284,8 +307,8 @@ export fn scps_fn_row_of(ctx: (Array[Stmt], Array[(String, Array[(String, Array[
 ///
 /// Read off the `EFn` itself: fn_defs carries the BINDING's annotation in that
 /// slot (`let f: T = ..`), which is not the same thing and is normally absent.
-fn scps_fn_ret_ty(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String) -> Option[TypeExpr] {
-  let (stmts, _, _, _, _, _) = ctx
+fn scps_fn_ret_ty(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), name: String) -> Option[TypeExpr] {
+  let (stmts, _, _, _, _, _, _) = ctx
   let mut out = None
   let mut i = 0
   while i < Array::length(stmts) {
@@ -312,8 +335,8 @@ fn scps_fn_ret_ty(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExp
 /// single function-typed parameter (at any depth -- `Array[(Int) -> Int with e]`
 /// counts) breaks that argument, so those keep the existing rejection, as does
 /// a callee with an unannotated parameter or no definition in scope.
-export fn scps_callee_first_order(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String) -> Bool {
-  let (stmts, _, _, _, _, _) = ctx
+export fn scps_callee_first_order(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), name: String) -> Bool {
+  let (stmts, _, _, _, _, _, _) = ctx
   let mut found = false
   let mut ok = false
   let mut i = 0
@@ -379,17 +402,24 @@ export fn scps_row_has_var(row: String) -> Bool {
   }
 }
 
-export fn scps_row_contains(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), row: String, eff: String) -> Bool {
-  let (_, _, _, es_names, es_members_list, _) = ctx
+export fn scps_row_contains(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), row: String, eff: String) -> Bool {
+  let (_, _, _, es_names, es_members_list, _, groups) = ctx
   if row == "" {
-    false
-  } else {
-    edp_row_is_exactly(row, eff, es_names, es_members_list)
+    return false
   }
+  if row == eff {
+    return true
+  }
+  for member in scps_group_members(groups, eff) {
+    if edp_row_is_exactly(row, member, es_names, es_members_list) {
+      return true
+    }
+  }
+  false
 }
 
-export fn scps_is_ctor_name(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), nm: String) -> Bool {
-  let (_, _, _, _, _, ctor_names) = ctx
+export fn scps_is_ctor_name(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), nm: String) -> Bool {
+  let (_, _, _, _, _, ctor_names, _) = ctx
   edp_str_array_contains(ctor_names, nm)
 }
 
@@ -591,13 +621,13 @@ export let scps_no_names: Array[String] = []
 /// #3192: a call through a name that a `let` inside `e` binds to a
 /// step-compiled literal is one too (`scps_calls_step_local`).
 export fn scps_contains_susp(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> Bool {
-  let (eff, _, _, _, _) = sctx
-  edp_rq_fold(RQContainsSusp(sctx), e) > 0 || scps_calls_step_local(e, eff, scps_no_names, true, false)
+  let (eff, ops, _, _, _) = sctx
+  edp_rq_fold(RQContainsSusp(sctx), e) > 0 || scps_calls_step_local(e, eff, scps_no_names, true, false, ops)
 }
 
 export fn scps_exprs_contain_susp(es: Array[Expr], sctx: (String, Array[String], Array[String], Int, Array[String])) -> Bool {
-  let (eff, _, _, _, _) = sctx
-  edp_rq_exprs(RQContainsSusp(sctx), es) > 0 || scps_calls_step_local_exprs(es, eff, scps_no_names, true, false)
+  let (eff, ops, _, _, _) = sctx
+  edp_rq_exprs(RQContainsSusp(sctx), es) > 0 || scps_calls_step_local_exprs(es, eff, scps_no_names, true, false, ops)
 }
 
 /// #3192: does `e` call a name that a `let` / `let rec` binds to a closure
@@ -618,34 +648,34 @@ export fn scps_exprs_contain_susp(es: Array[Expr], sctx: (String, Array[String],
 /// closures exactly that way), but a call to a captured name bound outside it
 /// still counts. `skip_discharged` stops at a handle whose arms handle `eff`,
 /// the rule `RQLiteralNeeds` applies.
-export fn scps_calls_step_local(e: Expr, eff: String, names: Array[String], add: Bool, skip_discharged: Bool) -> Bool {
+export fn scps_calls_step_local(e: Expr, eff: String, names: Array[String], add: Bool, skip_discharged: Bool, ops: Array[String]) -> Bool {
   if !add && Array::length(names) == 0 {
     false
   } else {
     match e {
       ECall(callee, args, _, _) => match callee {
-        EIdent(nm, _) => edp_str_array_contains(names, nm) || scps_calls_step_local_exprs(args, eff, names, add, skip_discharged),
-        _ => scps_calls_step_local(callee, eff, names, add, skip_discharged) || scps_calls_step_local_exprs(args, eff, names, add, skip_discharged)
+        EIdent(nm, _) => edp_str_array_contains(names, nm) || scps_calls_step_local_exprs(args, eff, names, add, skip_discharged, ops),
+        _ => scps_calls_step_local(callee, eff, names, add, skip_discharged, ops) || scps_calls_step_local_exprs(args, eff, names, add, skip_discharged, ops)
       },
-      ELet(x, v, b, _) => scps_calls_step_local(v, eff, names, add, skip_discharged) || scps_calls_step_local(b, eff, scps_step_names_bind(names, x, add && scps_literal_returns_step(v, eff)), add, skip_discharged),
+      ELet(x, v, b, _) => scps_calls_step_local(v, eff, names, add, skip_discharged, ops) || scps_calls_step_local(b, eff, scps_step_names_bind(names, x, add && scps_literal_returns_step(v, eff)), add, skip_discharged, ops),
       ELetRec(x, v, b) => {
         let inner = scps_step_names_bind(names, x, add && scps_literal_returns_step(v, eff))
-        scps_calls_step_local(v, eff, inner, add, skip_discharged) || scps_calls_step_local(b, eff, inner, add, skip_discharged)
+        scps_calls_step_local(v, eff, inner, add, skip_discharged, ops) || scps_calls_step_local(b, eff, inner, add, skip_discharged, ops)
       },
-      ELetMut(x, v, b, _) => scps_calls_step_local(v, eff, names, add, skip_discharged) || scps_calls_step_local(b, eff, scps_step_names_bind(names, x, false), add, skip_discharged),
-      EFn(_, _, params, _, _, b) => scps_calls_step_local(b, eff, scps_step_names_mask_params(names, params), false, skip_discharged),
-      EMatch(s, arms) => scps_calls_step_local(s, eff, names, add, skip_discharged) || scps_calls_step_local_arms(arms, eff, names, add, skip_discharged),
-      EHandle(b, arms) => if skip_discharged && scps_arms_handle_eff(arms, eff) {
-        false
+      ELetMut(x, v, b, _) => scps_calls_step_local(v, eff, names, add, skip_discharged, ops) || scps_calls_step_local(b, eff, scps_step_names_bind(names, x, false), add, skip_discharged, ops),
+      EFn(_, _, params, _, _, b) => scps_calls_step_local(b, eff, scps_step_names_mask_params(names, params), false, skip_discharged, ops),
+      EMatch(s, arms) => scps_calls_step_local(s, eff, names, add, skip_discharged, ops) || scps_calls_step_local_arms(arms, eff, names, add, skip_discharged, ops),
+      EHandle(b, arms) => if skip_discharged && scps_arms_discharge_ops(arms, ops) {
+        scps_calls_step_local_arms(arms, eff, names, add, skip_discharged, ops)
       } else {
-        scps_calls_step_local(b, eff, names, add, skip_discharged) || scps_calls_step_local_arms(arms, eff, names, add, skip_discharged)
+        scps_calls_step_local(b, eff, names, add, skip_discharged, ops) || scps_calls_step_local_arms(arms, eff, names, add, skip_discharged, ops)
       },
       EForIn(nm, idx, it, b) => {
         let inner = match idx {
           Some(inm) => scps_step_names_bind(scps_step_names_bind(names, nm, false), inm, false),
           None => scps_step_names_bind(names, nm, false)
         }
-        scps_calls_step_local(it, eff, names, add, skip_discharged) || scps_calls_step_local(b, eff, inner, add, skip_discharged)
+        scps_calls_step_local(it, eff, names, add, skip_discharged, ops) || scps_calls_step_local(b, eff, inner, add, skip_discharged, ops)
       },
       ELoop(pairs, b) => {
         let mut hit = false
@@ -653,7 +683,7 @@ export fn scps_calls_step_local(e: Expr, eff: String, names: Array[String], add:
         let mut i = 0
         while i < Array::length(pairs) {
           let (nm, v) = Array::get(pairs, i)
-          if scps_calls_step_local(v, eff, names, add, skip_discharged) {
+          if scps_calls_step_local(v, eff, names, add, skip_discharged, ops) {
             hit = true
           } else {
             ()
@@ -661,54 +691,54 @@ export fn scps_calls_step_local(e: Expr, eff: String, names: Array[String], add:
           inner = scps_step_names_bind(inner, nm, false)
           i = i + 1
         }
-        hit || scps_calls_step_local(b, eff, inner, add, skip_discharged)
+        hit || scps_calls_step_local(b, eff, inner, add, skip_discharged, ops)
       },
-      ESeq(a, b) => scps_calls_step_local(a, eff, names, add, skip_discharged) || scps_calls_step_local(b, eff, names, add, skip_discharged),
-      EIf(c, t, el) => scps_calls_step_local(c, eff, names, add, skip_discharged) || scps_calls_step_local(t, eff, names, add, skip_discharged) || scps_calls_step_local(el, eff, names, add, skip_discharged),
-      EWhile(c, b) => scps_calls_step_local(c, eff, names, add, skip_discharged) || scps_calls_step_local(b, eff, names, add, skip_discharged),
-      EBinOp(_, l, r, _) => scps_calls_step_local(l, eff, names, add, skip_discharged) || scps_calls_step_local(r, eff, names, add, skip_discharged),
-      EUnaryOp(_, a) => scps_calls_step_local(a, eff, names, add, skip_discharged),
-      EAssign(_, v, b, _) => scps_calls_step_local(v, eff, names, add, skip_discharged) || scps_calls_step_local(b, eff, names, add, skip_discharged),
-      EAssignOp(_, _, v, b, _) => scps_calls_step_local(v, eff, names, add, skip_discharged) || scps_calls_step_local(b, eff, names, add, skip_discharged),
-      EReturn(a) => scps_calls_step_local(a, eff, names, add, skip_discharged),
-      EDot(o, _, _, _) => scps_calls_step_local(o, eff, names, add, skip_discharged),
-      ELabeledArg(_, _, v) => scps_calls_step_local(v, eff, names, add, skip_discharged),
+      ESeq(a, b) => scps_calls_step_local(a, eff, names, add, skip_discharged, ops) || scps_calls_step_local(b, eff, names, add, skip_discharged, ops),
+      EIf(c, t, el) => scps_calls_step_local(c, eff, names, add, skip_discharged, ops) || scps_calls_step_local(t, eff, names, add, skip_discharged, ops) || scps_calls_step_local(el, eff, names, add, skip_discharged, ops),
+      EWhile(c, b) => scps_calls_step_local(c, eff, names, add, skip_discharged, ops) || scps_calls_step_local(b, eff, names, add, skip_discharged, ops),
+      EBinOp(_, l, r, _) => scps_calls_step_local(l, eff, names, add, skip_discharged, ops) || scps_calls_step_local(r, eff, names, add, skip_discharged, ops),
+      EUnaryOp(_, a) => scps_calls_step_local(a, eff, names, add, skip_discharged, ops),
+      EAssign(_, v, b, _) => scps_calls_step_local(v, eff, names, add, skip_discharged, ops) || scps_calls_step_local(b, eff, names, add, skip_discharged, ops),
+      EAssignOp(_, _, v, b, _) => scps_calls_step_local(v, eff, names, add, skip_discharged, ops) || scps_calls_step_local(b, eff, names, add, skip_discharged, ops),
+      EReturn(a) => scps_calls_step_local(a, eff, names, add, skip_discharged, ops),
+      EDot(o, _, _, _) => scps_calls_step_local(o, eff, names, add, skip_discharged, ops),
+      ELabeledArg(_, _, v) => scps_calls_step_local(v, eff, names, add, skip_discharged, ops),
       EBreak(opt) => match opt {
-        Some(a) => scps_calls_step_local(a, eff, names, add, skip_discharged),
+        Some(a) => scps_calls_step_local(a, eff, names, add, skip_discharged, ops),
         None => false
       },
-      EContinue(args) => scps_calls_step_local_exprs(args, eff, names, add, skip_discharged),
-      ETuple(items) => scps_calls_step_local_exprs(items, eff, names, add, skip_discharged),
-      EArray(items) => scps_calls_step_local_exprs(items, eff, names, add, skip_discharged),
-      ERecord(_, fields, _) => scps_calls_step_local_pairs(fields, eff, names, add, skip_discharged),
-      EMap(fields) => scps_calls_step_local_pairs(fields, eff, names, add, skip_discharged),
-      ESpread(a) => scps_calls_step_local(a, eff, names, add, skip_discharged),
+      EContinue(args) => scps_calls_step_local_exprs(args, eff, names, add, skip_discharged, ops),
+      ETuple(items) => scps_calls_step_local_exprs(items, eff, names, add, skip_discharged, ops),
+      EArray(items) => scps_calls_step_local_exprs(items, eff, names, add, skip_discharged, ops),
+      ERecord(_, fields, _) => scps_calls_step_local_pairs(fields, eff, names, add, skip_discharged, ops),
+      EMap(fields) => scps_calls_step_local_pairs(fields, eff, names, add, skip_discharged, ops),
+      ESpread(a) => scps_calls_step_local(a, eff, names, add, skip_discharged, ops),
       _ => false
     }
   }
 }
 
-fn scps_calls_step_local_exprs(es: Array[Expr], eff: String, names: Array[String], add: Bool, skip_discharged: Bool) -> Bool {
+fn scps_calls_step_local_exprs(es: Array[Expr], eff: String, names: Array[String], add: Bool, skip_discharged: Bool, ops: Array[String]) -> Bool {
   let mut hit = false
   let mut i = 0
   while !hit && i < Array::length(es) {
-    hit = scps_calls_step_local(Array::get(es, i), eff, names, add, skip_discharged)
+    hit = scps_calls_step_local(Array::get(es, i), eff, names, add, skip_discharged, ops)
     i = i + 1
   }
   hit
 }
 
-fn scps_calls_step_local_pairs(fields: Array[(String, Expr)], eff: String, names: Array[String], add: Bool, skip_discharged: Bool) -> Bool {
+fn scps_calls_step_local_pairs(fields: Array[(String, Expr)], eff: String, names: Array[String], add: Bool, skip_discharged: Bool, ops: Array[String]) -> Bool {
   let mut hit = false
   let mut i = 0
   while !hit && i < Array::length(fields) {
-    hit = scps_calls_step_local(Array::get(fields, i).1, eff, names, add, skip_discharged)
+    hit = scps_calls_step_local(Array::get(fields, i).1, eff, names, add, skip_discharged, ops)
     i = i + 1
   }
   hit
 }
 
-fn scps_calls_step_local_arms(arms: Array[(Pat, Expr)], eff: String, names: Array[String], add: Bool, skip_discharged: Bool) -> Bool {
+fn scps_calls_step_local_arms(arms: Array[(Pat, Expr)], eff: String, names: Array[String], add: Bool, skip_discharged: Bool, ops: Array[String]) -> Bool {
   let mut hit = false
   let mut i = 0
   while !hit && i < Array::length(arms) {
@@ -720,7 +750,7 @@ fn scps_calls_step_local_arms(arms: Array[(Pat, Expr)], eff: String, names: Arra
       scps_pat_collect_binds(p, bound)
       scps_step_names_mask(names, bound)
     }
-    hit = scps_calls_step_local(body, eff, inner, add, skip_discharged)
+    hit = scps_calls_step_local(body, eff, inner, add, skip_discharged, ops)
     i = i + 1
   }
   hit
@@ -768,22 +798,6 @@ export fn scps_step_names_mask(names: Array[String], bound: Array[String]) -> Ar
     i = i + 1
   }
   out
-}
-
-/// Do these handler arms handle `eff` itself (the first arm names one of its
-/// operations)? `RQLiteralNeeds` reads a handle the same way.
-fn scps_arms_handle_eff(arms: Array[(Pat, Expr)], eff: String) -> Bool {
-  if Array::length(arms) == 0 {
-    false
-  } else {
-    match Array::get(arms, 0).0 {
-      PCtor(q, _) => {
-        let ci = String::index_of(q, "::")
-        ci > 0 && String::substring(q, 0, ci) == eff
-      },
-      _ => false
-    }
-  }
 }
 
 // --- loop widening (#1230): `while` and `let mut` on the spine.
@@ -1088,7 +1102,7 @@ fn scps_let_fn_ret_ty(e: Expr, name: String) -> Option[TypeExpr] {
   }
 }
 
-fn scps_local_binding_ret_ty(root: Expr, name: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Option[TypeExpr] {
+fn scps_local_binding_ret_ty(root: Expr, name: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> Option[TypeExpr] {
   // A name that is ALSO a top-level function stays refused. The binder probe is
   // scope-blind, so a single local binder sitting in a branch that does not
   // reach the call would be read while the call actually resolves to the
@@ -1106,7 +1120,7 @@ fn scps_local_binding_ret_ty(root: Expr, name: String, ctx: (Array[Stmt], Array[
   }
 }
 
-export fn scps_call_ret_ty(v: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), root: Expr) -> Option[TypeExpr] {
+export fn scps_call_ret_ty(v: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), root: Expr) -> Option[TypeExpr] {
   match v {
     ECall(callee, _, _, _) => match callee {
       EIdent(cn, _) => if scps_binds_name(root, cn) {
@@ -1148,7 +1162,7 @@ fn scps_builtin_ret_kind(name: String) -> String {
 /// Both go through the same scope-blind shadowing guard (#1714) -- a `::`
 /// qualified builtin can never be shadowed by a local binder, but an
 /// unqualified one can, so the guard covers the lookup rather than the caller.
-export fn scps_call_kind(v: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), root: Expr) -> String {
+export fn scps_call_kind(v: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), root: Expr) -> String {
   let declared = scps_call_ret_ty(v, ctx, root)
   if scps_ty_is_array(declared) {
     "array"
@@ -1184,7 +1198,7 @@ export fn scps_string_names_seed(params: Array[(String, Option[TypeExpr])]) -> A
   out
 }
 
-export fn scps_string_names_with(known: Array[String], nm: String, v: Expr, ty: Option[TypeExpr], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), root: Expr) -> Array[String] {
+export fn scps_string_names_with(known: Array[String], nm: String, v: Expr, ty: Option[TypeExpr], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), root: Expr) -> Array[String] {
   let out = array_empty_str()
   let mut i = 0
   while i < Array::length(known) {
@@ -1718,7 +1732,7 @@ fn scps_rename_pat_idents(ps: Array[Pat], x: String, nx: String) -> Array[Pat] {
   out
 }
 
-fn scps_names_top_level_fn(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String) -> Bool {
+fn scps_names_top_level_fn(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), name: String) -> Bool {
   let (is_fn, _) = scps_fn_row_of(ctx, name)
   is_fn
 }
@@ -1736,8 +1750,8 @@ fn scps_names_top_level_fn(ctx: (Array[Stmt], Array[(String, Array[(String, Arra
 /// binding in the program has that spelling: a top-level
 /// `let println = make_async_printer()` or a local of that name may hold a
 /// closure that suspends (Codex on #3534).
-export fn scps_builtin_is_effect_free(name: String, eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
-  let (stmts, _, _, _, _, _) = ctx
+export fn scps_builtin_is_effect_free(name: String, eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> Bool {
+  let (stmts, _, _, _, _, _, _) = ctx
   if edp_is_program_binder(name) || scps_top_level_binds(stmts, name) {
     false
   } else {
@@ -1762,7 +1776,7 @@ fn scps_top_level_binds(stmts: Array[Stmt], name: String) -> Bool {
   found
 }
 
-fn scps_registry_builtin_is_effect_free(name: String, eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+fn scps_registry_builtin_is_effect_free(name: String, eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> Bool {
   match lookup_registry_builtin(name) {
     Some(CtFn(params, _, brow)) => {
       let row = match brow {
@@ -1802,51 +1816,57 @@ fn scps_registry_builtin_is_effect_free(name: String, eff: String, ctx: (Array[S
 /// inline) -- so passing one into an accepted callee would launder a
 /// suspending closure through the plain-call convention. Everything not
 /// locally bound taints, except ctor references (Codex review on #1602).
-export fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+export fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> Bool {
   match e {
     EIdent(nm, _) => !edp_str_array_contains(locals, nm) && !scps_is_ctor_name(ctx, nm),
-    ECall(callee, args, _, _) => match callee {
-      EIdent(nm, _) => if nm == "perform" {
-        true
-      } else if edp_str_array_contains(needing, nm) || String::starts_with(nm, "__scps_") || String::starts_with(nm, "__Scps") {
-        true
-      } else if edp_is_program_binder(nm) {
-        // Some local binding in the program has this spelling -- an enclosing
-        // parameter the literal captures, say -- so the call may not reach
-        // the top-level function of that name at all, nor the builtin the
-        // spelling would otherwise name (Codex on #3059).
-        true
-      } else if idp_is_pure_builtin_call(nm) || scps_is_safe_mut_builtin(nm) || scps_is_ctor_name(ctx, nm) {
-        scps_inert_taint_exprs(args, eff, needing, locals, ctx)
-      } else if !scps_names_top_level_fn(ctx, nm) && scps_builtin_is_effect_free(nm, eff, ctx) {
-        // #3523: a host builtin that cannot reach `eff` (`println`).
-        scps_inert_taint_exprs(args, eff, needing, locals, ctx)
-      } else {
-        let (is_fn, row) = scps_fn_row_of(ctx, nm)
-        if is_fn && !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row) {
-          // #2065 wall 2: a callee whose declared row is CONCRETE and lacks
-          // `eff`, taking a parameter whose declared function type DOES carry
-          // `eff`, discharges what an argument in that position performs:
-          // `TaskGroup::spawn_suspend(g, () -> T with Async + Exception { .. })`
-          // is `Async`-free at this call site. Only that position is exempt.
-          // A parameter whose function type has no `eff` in its row is a
-          // laundering route, not a discharge
-          // (err_effect_closure_param_capture_launder.vibe), and every other
-          // argument is still scanned as an ordinary expression.
-          scps_inert_taint_exprs(scps_undischarged_args(ctx, nm, scps_plain_data_args_cleared(ctx, nm, args), eff), eff, needing, locals, ctx)
-        } else if is_fn && !scps_row_contains(ctx, row, eff) && scps_callee_first_order(ctx, nm) {
-          scps_inert_taint_exprs(scps_plain_data_args_cleared(ctx, nm, args), eff, needing, locals, ctx)
+    ECall(callee, args, _, resolution) => if resolved_callee_operation(resolution) == builtin_frame_jump {
+      // The compiler-owned control transfer cannot perform the target
+      // effect. Its payload still participates in the ordinary taint proof.
+      scps_inert_taint_exprs(args, eff, needing, locals, ctx)
+    } else {
+      match callee {
+        EIdent(nm, _) => if nm == "perform" {
+          true
+        } else if edp_str_array_contains(needing, nm) || String::starts_with(nm, "__scps_") || String::starts_with(nm, "__Scps") {
+          true
+        } else if edp_is_program_binder(nm) {
+          // Some local binding in the program has this spelling -- an enclosing
+          // parameter the literal captures, say -- so the call may not reach
+          // the top-level function of that name at all, nor the builtin the
+          // spelling would otherwise name (Codex on #3059).
+          true
+        } else if idp_is_pure_builtin_call(nm) || scps_is_safe_mut_builtin(nm) || scps_is_ctor_name(ctx, nm) {
+          scps_inert_taint_exprs(args, eff, needing, locals, ctx)
+        } else if !scps_names_top_level_fn(ctx, nm) && scps_builtin_is_effect_free(nm, eff, ctx) {
+          // #3523: a host builtin that cannot reach `eff` (`println`).
+          scps_inert_taint_exprs(args, eff, needing, locals, ctx)
+        } else {
+          let (is_fn, row) = scps_fn_row_of(ctx, nm)
+          if is_fn && !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row) {
+            // #2065 wall 2: a callee whose declared row is CONCRETE and lacks
+            // `eff`, taking a parameter whose declared function type DOES carry
+            // `eff`, discharges what an argument in that position performs:
+            // `TaskGroup::spawn_suspend(g, () -> T with Async + Exception { .. })`
+            // is `Async`-free at this call site. Only that position is exempt.
+            // A parameter whose function type has no `eff` in its row is a
+            // laundering route, not a discharge
+            // (err_effect_closure_param_capture_launder.vibe), and every other
+            // argument is still scanned as an ordinary expression.
+            scps_inert_taint_exprs(scps_undischarged_args(ctx, nm, scps_plain_data_args_cleared(ctx, nm, args), eff), eff, needing, locals, ctx)
+          } else if is_fn && !scps_row_contains(ctx, row, eff) && scps_callee_first_order(ctx, nm) {
+            scps_inert_taint_exprs(scps_plain_data_args_cleared(ctx, nm, args), eff, needing, locals, ctx)
+          } else {
+            true
+          }
+        },
+        // #3161: a type ascription (`let x: T = v`) runs only its argument.
+        EFn(_, _, aparams, _, _, abody) => if Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) {
+          scps_inert_taint(Array::get(args, 0), eff, needing, locals, ctx)
         } else {
           true
-        }
-      },
-      // #3161: a type ascription (`let x: T = v`) runs only its argument.
-      EFn(_, _, aparams, _, _, abody) => if Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) {
-        scps_inert_taint(Array::get(args, 0), eff, needing, locals, ctx)
-      } else {
-        true
-      },
-      _ => true
+        },
+        _ => true
+      }
     },
     EHandle(_, _) => true,
     EFn(_, _, fparams, _, ef, b) => match ef {
@@ -1908,8 +1928,8 @@ export fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals:
   }
 }
 
-fn scps_undischarged_args(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String, args: Array[Expr], eff: String) -> Array[Expr] {
-  let (stmts, _, _, _, _, _) = ctx
+fn scps_undischarged_args(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), name: String, args: Array[Expr], eff: String) -> Array[Expr] {
+  let (stmts, _, _, _, _, _, _) = ctx
   let mut params: Array[(String, Option[TypeExpr])] = []
   let mut i = 0
   while i < Array::length(stmts) {
@@ -1950,7 +1970,7 @@ fn scps_undischarged_args(ctx: (Array[Stmt], Array[(String, Array[(String, Array
   out
 }
 
-fn scps_inert_taint_exprs(es: Array[Expr], eff: String, needing: Array[String], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+fn scps_inert_taint_exprs(es: Array[Expr], eff: String, needing: Array[String], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(es) {
@@ -1964,7 +1984,7 @@ fn scps_inert_taint_exprs(es: Array[Expr], eff: String, needing: Array[String], 
   hit
 }
 
-fn scps_inert_taint_pairs(pairs: Array[(String, Expr)], eff: String, needing: Array[String], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+fn scps_inert_taint_pairs(pairs: Array[(String, Expr)], eff: String, needing: Array[String], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(pairs) {
@@ -1979,7 +1999,7 @@ fn scps_inert_taint_pairs(pairs: Array[(String, Expr)], eff: String, needing: Ar
   hit
 }
 
-export fn scps_inert_taint_arms(arms: Array[(Pat, Expr)], eff: String, needing: Array[String], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+export fn scps_inert_taint_arms(arms: Array[(Pat, Expr)], eff: String, needing: Array[String], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(arms) {
@@ -1994,4 +2014,24 @@ export fn scps_inert_taint_arms(arms: Array[(Pat, Expr)], eff: String, needing: 
     i = i + 1
   }
   hit
+}
+
+export fn scps_target_qnames(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), eff: String) -> Array[String] {
+  let (_, defs, _, _, _, _, groups) = ctx
+  let out: Array[String] = []
+  for member in scps_group_members(groups, eff) {
+    for def in defs {
+      let (name, ops) = def
+      if name == member {
+        for op in ops {
+          let (opname, _, _) = op; Array::push(out, name + "::" + opname)
+        }
+      }
+    }
+  }
+  out
+}
+export fn scps_target_op_name(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), eff: String, qname: String) -> String {
+  let (_, _, _, _, _, _, groups) = ctx
+  scps_group_op_name(groups, eff, qname)
 }

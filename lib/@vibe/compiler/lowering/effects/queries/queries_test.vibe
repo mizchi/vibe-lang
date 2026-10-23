@@ -73,3 +73,22 @@ test "collecting a new tree neither mutates a saved census nor installs it impli
   edp_argcond_note_binders([])
   assert(!edp_is_program_binder("new"))
 }
+
+fn grouped_query_perform(name: String) -> Expr {
+  ECall(EIdent("perform", -1), [ECall(EIdent(name, -1), [], -1, [])], -1, [])
+}
+
+test "literal needs skips a fully discharged group but inspects its arms" {
+  let ops = ["A::Get", "B::Get"]
+  let query = RQLiteralNeeds(("private group target", ops, [], 0, []))
+  let arms = [(PCtor("B::Get", []), EInt(2)), (PCtor("A::Get", []), EInt(1))]
+  inspect(edp_rq_fold(query, EHandle(grouped_query_perform("A::Get"), arms)), content = "0")
+  inspect(edp_rq_fold(query, EHandle(grouped_query_perform("B::Get"), [
+    (PCtor("A::Get", []), EInt(1))
+  ])), content = "1")
+  let sibling_performs = [
+    (PCtor("A::Get", []), grouped_query_perform("B::Get")),
+    (PCtor("B::Get", []), EInt(2))
+  ]
+  inspect(edp_rq_fold(query, EHandle(EInt(0), sibling_performs)), content = "1")
+}

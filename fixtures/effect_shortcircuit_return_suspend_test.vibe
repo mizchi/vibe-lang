@@ -1,0 +1,56 @@
+// A selected short-circuit RHS returns from the owning source function,
+// across the saved resume continuation. A bypassed RHS neither performs
+// the operation nor leaves the function early.
+effect Ask {
+  Get(Int) -> Bool
+}
+
+fn and_return(select: Bool, log: Array[Int]) -> Bool {
+  let result = handle {
+    let selected = select && {
+      let answer = perform Ask::Get(1)
+      return answer
+    }
+    selected
+  } with { Ask::Get(n) => {
+    Array::push(log, n)
+    let k = resume
+    k(n > 0)
+  } }
+  Array::push(log, 9)
+  result
+}
+
+fn or_return(select: Bool, log: Array[Int]) -> Bool {
+  let result = handle {
+    let selected = select || {
+      let answer = perform Ask::Get(-1)
+      return answer
+    }
+    selected
+  } with { Ask::Get(n) => {
+    Array::push(log, n)
+    let k = resume
+    k(n > 0)
+  } }
+  Array::push(log, 9)
+  result
+}
+
+test "and RHS return leaves its owner only when selected" {
+  let taken: Array[Int] = []
+  let bypass: Array[Int] = []
+  inspect(and_return(true, taken), "true")
+  inspect(taken, "[1]")
+  inspect(and_return(false, bypass), "false")
+  inspect(bypass, "[9]")
+}
+
+test "or RHS return leaves its owner only when selected" {
+  let taken: Array[Int] = []
+  let bypass: Array[Int] = []
+  inspect(or_return(false, taken), "false")
+  inspect(taken, "[-1]")
+  inspect(or_return(true, bypass), "true")
+  inspect(bypass, "[9]")
+}

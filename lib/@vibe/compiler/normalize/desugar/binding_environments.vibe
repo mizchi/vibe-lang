@@ -8,6 +8,10 @@ import @vibe/parser {
   lex, parse_type
 }
 
+import ./argument_types.vibe {
+  FieldProjection, dtd_field_projection
+}
+
 import ./binding_shape_inference.vibe {
   bind_shapes_into, infer_shape
 }
@@ -21,11 +25,15 @@ import ./equality_inference.vibe {
 }
 
 import ./equality_shape_queries.vibe {
-  eq_shape_key
+  eq_formal_shape_key, eq_formal_shape_of_name, eq_shape_key
 }
 
 import ./equality_type_shapes.vibe {
   ty_to_eq_shape
+}
+
+import ./generic_equality.vibe {
+  eq_ty_has_formal
 }
 
 import ./parameter_annotations.vibe {
@@ -100,6 +108,22 @@ export fn bind_let_env(var_types: Array[(String, String)], name: String, val: Ex
 /// environment again afterwards. Copying instead made a function's `let`s
 /// quadratic in the environment's length (~28 MB of the self-compile heap).
 export fn bind_let_env_into(out: Array[(String, String)], name: String, val: Expr, inferred: Option[String], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  // Read the RHS before this binding masks an outer name. Formal shapes
+  // stay in the witness-only channel when a receiver or field is aliased.
+  let formal_shape = if Array::length(dtd_scope_formals) == 0 {
+    ""
+  } else match val {
+    EIdent(n, _) => eq_formal_shape_of_name(out, n),
+    EDot(obj, field, _, _) => match dtd_field_projection(obj, field, struct_sets, out, fn_returns) {
+      FieldTyped(t) => if eq_ty_has_formal(t) {
+        ty_to_eq_shape(t)
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
   match inferred {
     Some(tname) => Array::push(out, (name, tname)),
     // #3434: a shadowing binding the renderer cannot type must not render
@@ -114,6 +138,9 @@ export fn bind_let_env_into(out: Array[(String, String)], name: String, val: Exp
   bind_impl_target_key_into(out, name, val, struct_sets, fn_returns)
   bind_shapes_into(out, name, val, struct_sets, fn_returns)
   eq_shape_bind_into(out, name, val, struct_sets, fn_returns)
+  if String::length(formal_shape) > 0 {
+    Array::push(out, (eq_formal_shape_key(name), formal_shape))
+  }
   out
 }
 

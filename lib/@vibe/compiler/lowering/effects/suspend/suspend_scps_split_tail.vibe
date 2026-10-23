@@ -1,3 +1,9 @@
+import @vibe/compiler/core {
+  builtin_frame_jump, resolved_callee_operation
+}
+import ./suspend_group_targets.vibe {
+  scps_group_members
+}
 // lib/@vibe/compiler/lowering/effects/suspend/suspend.vibe — scps split tail.
 
 import @vibe/ast {
@@ -105,6 +111,8 @@ import ./suspend_scps_rename_ident.vibe {
   scps_step_names_bind,
   scps_step_names_mask,
   scps_step_names_mask_params,
+  scps_target_op_name,
+  scps_target_qnames,
   scps_y_name
 }
 
@@ -120,7 +128,7 @@ import ./suspend_scps_rename_ident.vibe {
 /// split never has to cut through it. An `Async` entry that spawns
 /// suspendable tasks used to refuse EVERY nested handle, so a program could
 /// not catch an exception anywhere in the entry body.
-fn scps_nested_handle_inert(hb: Expr, harms: Array[(Pat, Expr)], eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+fn scps_nested_handle_inert(hb: Expr, harms: Array[(Pat, Expr)], eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> Bool {
   !scps_inert_taint(hb, eff, needing, array_empty_str(), ctx) && !scps_inert_taint_arms(harms, eff, needing, array_empty_str(), ctx)
 }
 
@@ -131,15 +139,16 @@ fn scps_nested_handle_inert(hb: Expr, harms: Array[(Pat, Expr)], eff: String, ne
 /// never re-enters its body, so it only has to be in force whenever the body
 /// runs: scps_split_handle installs it around the body's first segment and
 /// again around every resumed continuation.
-fn scps_abortive_handle_ok(hb: Expr, harms: Array[(Pat, Expr)], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
+fn scps_abortive_handle_ok(hb: Expr, harms: Array[(Pat, Expr)], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> Bool {
   let (eff, _, needing, _, _) = sctx
-  let own_prefix = String::concat(eff, "::")
+  let (_, _, _, _, _, _, groups) = ctx
+  let own_members = scps_group_members(groups, eff)
   let mut ok = Array::length(harms) > 0
   let mut i = 0
   while i < Array::length(harms) {
     let (p, ex) = Array::get(harms, i)
     match p {
-      PCtor(q, _) => if String::starts_with(q, own_prefix) || !String::contains(q, "::") {
+      PCtor(q, _) => if !String::contains(q, "::") || edp_str_array_contains(own_members, q[0: String::index_of(q, "::")]) {
         ok = false
       } else {
         ()
@@ -153,7 +162,7 @@ fn scps_abortive_handle_ok(hb: Expr, harms: Array[(Pat, Expr)], sctx: (String, A
     }
     i = i + 1
   }
-  ok && !scps_inert_taint_arms(scps_arms_unwrap_done(harms, eff), eff, needing, array_empty_str(), ctx) && scps_calls_ok(hb, sctx, ctx, scope)
+  ok && !scps_inert_taint_arms(scps_arms_unwrap_done(harms, eff), eff, needing, scps_safe_captures(scope), ctx) && scps_calls_ok(hb, sctx, ctx, scope)
 }
 
 /// The arms of an abortive handle this pass already split carry their value
@@ -191,7 +200,7 @@ fn scps_arms_unwrap_done(harms: Array[(Pat, Expr)], eff: String) -> Array[(Pat, 
 /// handled computation, so its value is the handle's value. A step that
 /// yields re-installs the handler around the continuation, so a throw after
 /// the yield is caught by the same arms.
-fn scps_split_handle(hb: Expr, harms: Array[(Pat, Expr)], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
+fn scps_split_handle(hb: Expr, harms: Array[(Pat, Expr)], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
   let (eff, _, _, _, _) = sctx
   let (bok, bstep) = scps_split_tail(hb, sctx, ctx, st)
   if !bok {
@@ -242,7 +251,7 @@ fn scps_split_handle(hb: Expr, harms: Array[(Pat, Expr)], sctx: (String, Array[S
 }
 
 /// `let x = <abortive handle> REST`: bubble the handle's step into REST.
-fn scps_split_handle_bind(v: Expr, x: String, b: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
+fn scps_split_handle_bind(v: Expr, x: String, b: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
   let (eff, _, _, _, _) = sctx
   match v {
     EHandle(hb, harms) => {
@@ -266,31 +275,35 @@ fn scps_as_split_handle(e: Expr, sctx: (String, Array[String], Array[String], In
   }
 }
 
-export fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
+export fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> Bool {
   let (eff, _, needing, _, _) = sctx
   match e {
-    ECall(callee, args, _, _) => match callee {
-      EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
-        match Array::get(args, 0) {
-          EIdent(_, _) => true,
-          ECall(opc, op_args, _, _) => match opc {
-            EIdent(_, _) => scps_exprs_calls_ok(op_args, sctx, ctx, scope),
+    ECall(callee, args, _, resolution) => if resolved_callee_operation(resolution) == builtin_frame_jump {
+      scps_exprs_calls_ok(args, sctx, ctx, scope)
+    } else {
+      match callee {
+        EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
+          match Array::get(args, 0) {
+            EIdent(_, _) => true,
+            ECall(opc, op_args, _, _) => match opc {
+              EIdent(_, _) => scps_exprs_calls_ok(op_args, sctx, ctx, scope),
+              _ => false
+            },
             _ => false
-          },
-          _ => false
-        }
-      } else if scps_named_call_with_args_ok(nm, args, sctx, ctx, scope) {
-        scps_exprs_calls_ok(args, sctx, ctx, scope)
-      } else {
-        false
-      },
-      // #3161: a type ascription -- how an annotated `let x: T = v` reaches
-      // this pass, `((__asc: T) -> __asc)(v)` -- runs nothing but its
-      // argument, so only the argument is judged. It was refused as a call
-      // through a closure, so no annotated `let` could sit in a suspending
-      // body.
-      EFn(_, _, aparams, _, _, abody) => Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) && scps_calls_ok(Array::get(args, 0), sctx, ctx, scope),
-      _ => false
+          }
+        } else if scps_named_call_with_args_ok(nm, args, sctx, ctx, scope) {
+          scps_exprs_calls_ok(args, sctx, ctx, scope)
+        } else {
+          false
+        },
+        // #3161: a type ascription -- how an annotated `let x: T = v` reaches
+        // this pass, `((__asc: T) -> __asc)(v)` -- runs nothing but its
+        // argument, so only the argument is judged. It was refused as a call
+        // through a closure, so no annotated `let` could sit in a suspending
+        // body.
+        EFn(_, _, aparams, _, _, abody) => Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) && scps_calls_ok(Array::get(args, 0), sctx, ctx, scope),
+        _ => false
+      }
     },
     ELet(nm, v, b, _) => {
       let vok = scps_calls_ok(v, sctx, ctx, scope)
@@ -361,7 +374,7 @@ export fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], In
   }
 }
 
-fn scps_exprs_calls_ok(es: Array[Expr], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
+fn scps_exprs_calls_ok(es: Array[Expr], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> Bool {
   let mut i = 0
   let mut ok = true
   while i < Array::length(es) {
@@ -375,7 +388,7 @@ fn scps_exprs_calls_ok(es: Array[Expr], sctx: (String, Array[String], Array[Stri
   ok
 }
 
-fn scps_fields_calls_ok(fields: Array[(String, Expr)], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
+fn scps_fields_calls_ok(fields: Array[(String, Expr)], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> Bool {
   let mut i = 0
   let mut ok = true
   while i < Array::length(fields) {
@@ -394,7 +407,7 @@ fn scps_fields_calls_ok(fields: Array[(String, Expr)], sctx: (String, Array[Stri
 /// shares both scps_named_call_with_args_ok and the exact lexical stack
 /// transitions (scps_let_kind), so it names the call scps_calls_ok refused and
 /// not an earlier one that call admitted on its arguments (#3161).
-fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> (Bool, String, Int) {
+fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> (Bool, String, Int) {
   let (eff, _, needing, _, _) = sctx
   match e {
     ECall(callee, args, off, _) => match callee {
@@ -542,7 +555,7 @@ fn scps_pick_off(ident_off: Int, call_off: Int) -> Int {
   }
 }
 
-fn scps_first_bad_call_info_pair(a: Expr, b: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> (Bool, String, Int) {
+fn scps_first_bad_call_info_pair(a: Expr, b: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> (Bool, String, Int) {
   let first = scps_first_bad_call_info(a, sctx, ctx, scope)
   let (found, _, _) = first
   if found {
@@ -552,7 +565,7 @@ fn scps_first_bad_call_info_pair(a: Expr, b: Expr, sctx: (String, Array[String],
   }
 }
 
-fn scps_first_bad_call_info_exprs(es: Array[Expr], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> (Bool, String, Int) {
+fn scps_first_bad_call_info_exprs(es: Array[Expr], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> (Bool, String, Int) {
   let mut i = 0
   let mut found = false
   let mut nm = ""
@@ -567,7 +580,7 @@ fn scps_first_bad_call_info_exprs(es: Array[Expr], sctx: (String, Array[String],
   (found, nm, off)
 }
 
-fn scps_first_bad_call_info_fields(fields: Array[(String, Expr)], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> (Bool, String, Int) {
+fn scps_first_bad_call_info_fields(fields: Array[(String, Expr)], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> (Bool, String, Int) {
   let mut i = 0
   let mut found = false
   let mut nm = ""
@@ -595,7 +608,7 @@ let scps_culprit_step_call: Array[String] = [""]
 /// Render the culprit fragments for a suspend-lowering ineligibility error:
 /// the leading edit (#3161: a captured name to give a plain-data type, or ""),
 /// the `(here: ..)` clause, and the location marker.
-export fn scps_culprit_parts(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> (String, String, String) {
+export fn scps_culprit_parts(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> (String, String, String) {
   Array::set(scps_culprit_capture, 0, "")
   Array::set(scps_culprit_step_call, 0, "")
   let (found, raw_nm, off) = scps_first_bad_call_info(e, sctx, ctx, scope)
@@ -656,7 +669,7 @@ export fn scps_culprit_parts(e: Expr, sctx: (String, Array[String], Array[String
 /// handed to it captures a name the scope cannot show to be plain data (the
 /// first such name). "" for every other refusal, so the diagnostic does not
 /// suggest an edit that would not fix it.
-fn scps_args_opaque_capture(name: String, args: Array[Expr], eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> String {
+fn scps_args_opaque_capture(name: String, args: Array[Expr], eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> String {
   let (is_fn, row) = scps_fn_row_of(ctx, name)
   if scps_local_class(scope, name) >= 0 || !is_fn || scps_row_contains(ctx, row, eff) || !scps_row_has_var(row) {
     ""
@@ -683,7 +696,7 @@ fn scps_args_opaque_capture(name: String, args: Array[Expr], eff: String, needin
 /// binders bind and that is not a constructor -- a capture, in the sense
 /// `scps_inert_taint` refuses. A callee name is not one: calls are judged on
 /// their own.
-fn scps_first_opaque_capture(e: Expr, locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> String {
+fn scps_first_opaque_capture(e: Expr, locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> String {
   match e {
     EIdent(nm, _) => if edp_str_array_contains(locals, nm) || scps_is_ctor_name(ctx, nm) {
       ""
@@ -726,7 +739,7 @@ fn scps_first_opaque_capture(e: Expr, locals: Array[String], ctx: (Array[Stmt], 
   }
 }
 
-fn scps_first_opaque_capture_all(es: Array[Expr], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> String {
+fn scps_first_opaque_capture_all(es: Array[Expr], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> String {
   let mut out = ""
   let mut i = 0
   while out == "" && i < Array::length(es) {
@@ -736,7 +749,7 @@ fn scps_first_opaque_capture_all(es: Array[Expr], locals: Array[String], ctx: (A
   out
 }
 
-fn scps_first_opaque_capture_arms(arms: Array[(Pat, Expr)], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> String {
+fn scps_first_opaque_capture_arms(arms: Array[(Pat, Expr)], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> String {
   let mut out = ""
   let mut i = 0
   while out == "" && i < Array::length(arms) {
@@ -756,7 +769,7 @@ fn scps_first_opaque_capture_arms(arms: Array[(Pat, Expr)], locals: Array[String
 /// closure literal, or a parameter whose row carries the effect), or one a
 /// `let` inside the literal binds. `name` would run that literal under the
 /// plain convention, so the call cannot be split. "" for every other refusal.
-fn scps_args_step_call(name: String, args: Array[Expr], eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> String {
+fn scps_args_step_call(name: String, args: Array[Expr], eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> String {
   let (is_fn, row) = scps_fn_row_of(ctx, name)
   if scps_local_class(scope, name) >= 0 || !is_fn || scps_row_contains(ctx, row, eff) || !scps_row_has_var(row) {
     ""
@@ -863,7 +876,7 @@ fn scps_first_step_call_arms(arms: Array[(Pat, Expr)], eff: String, names: Array
   out
 }
 
-export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
+export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
   let (eff, ops, _, site, cps_locals) = sctx
   if !scps_contains_susp(e, sctx) {
     (true, scps_mk_done(eff, e))
@@ -878,7 +891,7 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
         (false, e)
       } else {
         let tv = scps_local("__scps_tv", site)
-        (true, scps_mk_yield(eff, scps_op_suffix(Array::get(ops, tail_idx)), targs, tv, scps_mk_done(eff, EIdent(tv, -1))))
+        (true, scps_mk_yield(eff, scps_target_op_name(ctx, eff, Array::get(ops, tail_idx)), targs, tv, scps_mk_done(eff, EIdent(tv, -1))))
       }
     } else if tail_needing != "" {
       // tail call to a needing fn -- its clone already returns a step.
@@ -957,7 +970,7 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
                   (false, e)
                 } else {
                   let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
-                  (bok, scps_mk_yield(eff, scps_op_suffix(Array::get(ops, vp)), vargs, x, bexpr))
+                  (bok, scps_mk_yield(eff, scps_target_op_name(ctx, eff, Array::get(ops, vp)), vargs, x, bexpr))
                 }
               } else if vn != "" {
                 let vargs = scps_call_args(v)
@@ -1148,7 +1161,7 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
                 (false, e)
               } else {
                 let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
-                (bok, scps_mk_yield(eff, scps_op_suffix(Array::get(ops, ap)), aargs, scps_local("__scps_w", site), bexpr))
+                (bok, scps_mk_yield(eff, scps_target_op_name(ctx, eff, Array::get(ops, ap)), aargs, scps_local("__scps_w", site), bexpr))
               }
             } else if an != "" {
               let aargs = scps_call_args(a)
@@ -1376,7 +1389,7 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
 /// Split `while c { body } ; rest` (rest is EUnit when the loop is itself
 /// in tail position) into a recursive step-returning closure. See the
 /// rationale above.
-fn scps_split_while(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
+fn scps_split_while(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
   let (eff, s_ops, s_needing, s_site, s_cps) = sctx
   let orig = ESeq(EWhile(c, body), rest)
   // #1536: `break` / `continue` are now carried (see scps_split_while_ctl);
@@ -1457,7 +1470,7 @@ fn scps_split_while(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[String
 /// the parser desugars it (desugar_loop_body) into mutable parameter locals
 /// plus exactly this shape -- `while true` with bare `break` / `continue` --
 /// long before this pass runs, which is why there is no ELoop case here.
-fn scps_split_while_ctl(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
+fn scps_split_while_ctl(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
   let (eff, s_ops, s_needing, s_site, s_cps) = sctx
   let orig = ESeq(EWhile(c, body), rest)
   let lsite = scps_next_site(st)
@@ -1525,12 +1538,12 @@ export fn scps_stmt_expr_of(s: Stmt) -> Option[Expr] {
   }
 }
 
-export fn scps_collect_cps_effs(stmts: Array[Stmt]) -> Array[String] {
+export fn scps_collect_cps_effs(stmts: Array[Stmt], groups: Array[(String, Array[String])]) -> Array[String] {
   let out = array_empty_str()
   let mut i = 0
   while i < Array::length(stmts) {
     match scps_stmt_expr_of(Array::get(stmts, i)) {
-      Some(expr) => scps_collect_cps_effs_expr(expr, out),
+      Some(expr) => scps_collect_cps_effs_expr(expr, out, groups),
       None => ()
     }
     i = i + 1
@@ -1555,20 +1568,14 @@ export fn scps_lit_needs(e: Expr, sctx: (String, Array[String], Array[String], I
 // becomes its CPS clone). Runs over ALL statements -- a spawn call site
 // in user code carries no handle of its own.
 
-export fn scps_ecfg_for(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), eff: String) -> (String, Array[String], Array[String]) {
+export fn scps_ecfg_for(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), eff: String) -> (String, Array[String], Array[String]) {
   let (_, decl_ops) = scps_effect_decl_ops(ctx, eff)
-  let ops_qnames = array_empty_str()
-  let mut oi = 0
-  while oi < Array::length(decl_ops) {
-    let (opname, _) = Array::get(decl_ops, oi)
-    Array::push(ops_qnames, String::concat(String::concat(eff, "::"), opname))
-    oi = oi + 1
-  }
+  let ops_qnames = scps_target_qnames(ctx, eff)
   (eff, ops_qnames, scps_needing_for(ctx, eff))
 }
 
-fn scps_fn_def_index(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String) -> Int {
-  let (_, _, fn_defs, _, _, _) = ctx
+fn scps_fn_def_index(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), name: String) -> Int {
+  let (_, _, fn_defs, _, _, _, _) = ctx
   let mut def_idx = -1
   let mut fi = 0
   while fi < Array::length(fn_defs) {
@@ -1583,8 +1590,8 @@ fn scps_fn_def_index(ctx: (Array[Stmt], Array[(String, Array[(String, Array[Type
   def_idx
 }
 
-export fn scps_fn_def_params_at(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), def_idx: Int) -> Option[Array[(String, Option[TypeExpr])]] {
-  let (stmts, _, _, _, _, _) = ctx
+export fn scps_fn_def_params_at(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), def_idx: Int) -> Option[Array[(String, Option[TypeExpr])]] {
+  let (stmts, _, _, _, _, _, _) = ctx
   if def_idx < 0 || def_idx >= Array::length(stmts) {
     None
   } else {
@@ -1595,14 +1602,14 @@ export fn scps_fn_def_params_at(ctx: (Array[Stmt], Array[(String, Array[(String,
   }
 }
 
-export fn scps_fn_def_params(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String) -> Option[Array[(String, Option[TypeExpr])]] {
+export fn scps_fn_def_params(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), name: String) -> Option[Array[(String, Option[TypeExpr])]] {
   scps_fn_def_params_at(ctx, scps_fn_def_index(ctx, name))
 }
 
 // Prepass-only scope provenance. 0/1/2 retain the eligibility classes above;
 // 3 + statement index means this local is an immutable alias of that known
 // top-level function, so its parameter convention must survive the rename.
-export fn scps_prepass_alias_class(scope: Array[(String, Int)], target: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Int {
+export fn scps_prepass_alias_class(scope: Array[(String, Int)], target: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> Int {
   let local = scps_local_class(scope, target)
   if local >= 3 {
     local
