@@ -1687,16 +1687,83 @@ fn lc_boundary_has_reexport(locals: Array[String]) -> Bool {
   false
 }
 
-export fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool) -> Array[String] {
+fn lc_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool, exclude_derived_helpers: Bool, entry_source_roots: Bool) -> Array[String] {
   let roots = lc_fresh_string_array()
-  let derive_names = lc_derive_helper_names(stmts)
+  let derive_names = if exclude_derived_helpers {
+    lc_derive_helper_names(stmts)
+  } else {
+    lc_fresh_string_array()
+  }
   let fn_aliases = collect_top_level_fn_alias_renames(stmts)
+  // Own exports belong to the source segment containing the actual entry
+  // definition. Raw generated graphs need not put that source last. Repeated
+  // entries cannot establish ownership and retain ordinary export roots.
+  let mut entry_source_start = 0
+  let mut entry_source_end = Array::length(stmts)
+  let mut entry_found = false
+  let mut entry_ambiguous = false
+  if entry_source_roots {
+    let mut source_start = 0
+    let mut pos = 0
+    while pos < Array::length(stmts) {
+      let stmt = Array::get(stmts, pos)
+      let boundary = match stmt {
+        SReExportSourceBoundary(_, _) => true,
+        SImport(_, _) => match builtin_iterator_serialized_boundary_markers(stmt) {
+          Some(_) => true,
+          None => false
+        },
+        _ => false
+      }
+      if boundary {
+        if entry_found && entry_source_end == Array::length(stmts) && source_start == entry_source_start {
+          entry_source_end = pos
+        }
+        source_start = pos
+      }
+      let defines_entry = match stmt {
+        SLet(_, _, name, _, _) => name == entry_name,
+        SFnDecl(_, name, _, _, _) => name == entry_name,
+        SLetMut(name, _, _) => name == entry_name,
+        _ => false
+      }
+      if defines_entry {
+        if entry_found {
+          entry_ambiguous = true
+        } else {
+          entry_found = true
+          entry_source_start = source_start
+        }
+      }
+      pos = pos + 1
+    }
+  } else {
+    ()
+  }
+  // A boundary carries re-exported local names, not their resolved targets.
+  // If the entry republishes a dependency, retain the ordinary export roots
+  // rather than guessing which imported declaration that publication needs.
+  let entry_reexports = if entry_source_roots && entry_found {
+    match Array::get(stmts, entry_source_start) {
+      SReExportSourceBoundary(locals, _) => lc_boundary_has_reexport(locals),
+      SImport(_, _) => match builtin_iterator_serialized_boundary_markers(Array::get(stmts, entry_source_start)) {
+        Some(locals) => lc_boundary_has_reexport(locals),
+        None => false
+      },
+      _ => false
+    }
+  } else {
+    false
+  }
+  let filter_dependency_exports = entry_source_roots && entry_found && !entry_ambiguous && !entry_reexports
   let mut keep_all = keep_source_defs
   let mut scan = 0
   while scan < Array::length(stmts) {
     match Array::get(stmts, scan) {
       // An unmerged re-export can bind a renamed imported definition.
-      SReExport(_, _) => keep_all = true,
+      SReExport(_, _) => if !filter_dependency_exports || (scan >= entry_source_start && scan < entry_source_end) {
+        keep_all = true
+      },
       _ => ()
     }
     scan = scan + 1
@@ -1708,25 +1775,30 @@ export fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_
   let mut keep_segment = keep_all
   let mut i = 0
   while i < Array::length(stmts) {
+    // Source-owned bodies keep their existing backend validation, including
+    // uncalled Future operations (#3188). Only dependency definitions and
+    // helpers synthesized after this snapshot may disappear before emission.
+    let own_definition = entry_source_roots && entry_found && !entry_ambiguous && i >= entry_source_start && i < entry_source_end
+    let publish = !filter_dependency_exports || (i >= entry_source_start && i < entry_source_end)
     match Array::get(stmts, i) {
-      SReExportSourceBoundary(locals, _) => keep_segment = keep_source_defs || lc_boundary_has_reexport(locals),
+      SReExportSourceBoundary(locals, _) => keep_segment = keep_source_defs || (publish && lc_boundary_has_reexport(locals)),
       SImport(_, _) => match builtin_iterator_serialized_boundary_markers(Array::get(stmts, i)) {
-        Some(locals) => keep_segment = keep_source_defs || lc_boundary_has_reexport(locals),
+        Some(locals) => keep_segment = keep_source_defs || (publish && lc_boundary_has_reexport(locals)),
         None => ()
       },
       // Keep ordinary value initializers available to the direct codegen
       // lane's diagnostics. Function values are the definitions whose dead
       // bodies can safely be removed before they commit host imports.
-      SLet(exported, _, name, _, value) => if (keep_segment || (exported && lc_export_is_root(name, entry_name)) || match value {
+      SLet(exported, _, name, _, value) => if (own_definition || keep_segment || (publish && exported && lc_export_is_root(name, entry_name)) || match value {
         EFn(_, _, _, _, _, _) => false,
         EIdent(_, _) => !lc_fn_alias_name(fn_aliases, name),
         _ => true
-      }) && !lc_is_derive_helper_name(derive_names, name) {
+      }) && (!exclude_derived_helpers || !lc_is_derive_helper_name(derive_names, name)) {
         Array::push(roots, name)
       } else {
         ()
       },
-      SFnDecl(exported, name, _, _, _) => if (keep_segment || (exported && lc_export_is_root(name, entry_name))) && !lc_is_derive_helper_name(derive_names, name) {
+      SFnDecl(exported, name, _, _, _) => if (own_definition || keep_segment || (publish && exported && lc_export_is_root(name, entry_name))) && (!exclude_derived_helpers || !lc_is_derive_helper_name(derive_names, name)) {
         Array::push(roots, name)
       } else {
         ()
@@ -1738,7 +1810,7 @@ export fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_
         let mut j = 0
         while j < Array::length(names) {
           let name = Array::get(names, j)
-          if lc_export_is_root(name, entry_name) {
+          if publish && lc_export_is_root(name, entry_name) {
             Array::push(roots, name)
           } else {
             ()
@@ -1753,6 +1825,17 @@ export fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_
     i = i + 1
   }
   roots
+}
+
+export fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool) -> Array[String] {
+  lc_dce_roots(stmts, entry_name, keep_source_defs, true, false)
+}
+
+// Before synthesis, every declaration is source-owned. A handwritten exported
+// Type::to_string (or a re-exported helper) must not be excluded by spelling.
+// The export-strip, alias, initializer and source-boundary policies stay shared.
+export fn lc_source_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool, entry_source_roots: Bool) -> Array[String] {
+  lc_dce_roots(stmts, entry_name, keep_source_defs, false, entry_source_roots)
 }
 
 export fn lc_late_dce_wat_roots(roots: Array[String], stmts: Array[Stmt], iw_names: Array[String], iw_wats: Array[String]) -> Unit {

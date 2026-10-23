@@ -105,9 +105,12 @@ effect Exception[E] {
   the checker allows the body to raise only `K`. An erased or unresolved throw,
   a callee declared with the erased `Exception`, and a throw of another kind
   are all refused under a kinded arm. So is running a row variable of the
-  enclosing signature (a callback's `with e`, #3540): a caller may fill it with
-  any kind, so the handle belongs at the caller, unless a kind label beside the
-  variable (`with Exception[K] + e`) has taken the whole exception family. A
+  enclosing signature (a callback's `with e`, or a function row nested in a
+  parameter's type, #3540): a caller may fill it with any kind, so the handle
+  belongs at the caller, unless a kind label beside the variable (`with
+  Exception[K] + e`) has taken the whole exception family in every parameter
+  that carries it. Such a slot refuses an erased `with Exception` value, as
+  the closed `with Exception[K]` slot does. A
   closure literal handed straight to a
   callee is judged against the row the callee's parameter declares; an erased
   `handle .. with Exception` nested inside is its own catch-all boundary.
@@ -120,9 +123,49 @@ effect Exception[E] {
   the message names the kinded arm. `String` is the payload type measured in
   practice: 715 erased arms bind their payload, and the compiler's own
   sources read it as the message. An opaque payload type would refuse all of
-  them. The kind is not carried at run time, so a non-`String` value thrown
-  through an erased `with Exception` row still reaches this binder.
-  The kinded row and arm are the typed path for such a value.
+  them. The kind is not carried at run time, so an arm that reads its binder
+  may catch only messages (`String`, or a throw of unresolved kind): its
+  body is walked with the enclosing row's exception labels dropped and the
+  erased label covering only those (`erased_reads_marker`), and another kind
+  is refused with the kinded arm as the edit. An arm that leaves its payload
+  unread (`_`, or a name its body never mentions) catches every kind. An
+  erased `with Exception` row carries the kinds its body throws: each kind
+  other than the message that a named function's erased row authorizes is
+  recorded (`erased_row_leaks`), added to the row its callers read, and the
+  module is walked again until nothing new leaks; a top-level alias of such a
+  function is charged with it. The kinds a module's functions let out are
+  bound into its environment after the effect check (`erased_kinds_marker`),
+  and the published interface carries them to importers, re-exports, renamed
+  imports and type companions; an importer charges a call with them (#3601).
+  A top-level declaration hides an import of its name, and with it the
+  imported function's kinds: the declaration is charged and published only
+  what its own body lets out.
+  A function VALUE is typed only by the row it is given, and an erased row
+  there carries only messages to the code that calls it (#3601). A closure
+  literal written for an erased function-type row (a field's, the enclosing
+  result's, its own, or a parameter's of a callee whose own row has the
+  erased label) is walked with the enclosing exception labels dropped and the
+  erased label covering only messages (`erased_slot_marker`). One bound by
+  `let` records what its own erased row lets out against the binding
+  (`erased_local_marker`, `erased_local_leaks`), and a call through the
+  binding is charged it on the module's next walk; one applied where it is
+  written takes the enclosing body's exception labels (`erased_iife_marker`).
+  A named function whose erased row lets another kind out may be used as a
+  value only as a call, an unannotated alias, or an argument whose parameter
+  row names the kind or is a row variable with no erased `Exception` beside
+  it (in `with Exception + e` a call matches the value's exception to
+  `Exception` and leaves `e` empty, #3033), or whose callee's own row lets no
+  exception out (`erased_value_flow_errors`). Such a callee handles what the
+  callback raises (`TaskGroup::spawn_suspend` reads the payload through
+  `__exn_kind`), so a literal handed to it keeps its own row
+  (`erased_arg_kept_marker`). The type check refuses a function type naming
+  `Exception[K]`, `K` not `String`, where a function type whose row is erased
+  without that kind is expected, a row variable beside the erased label
+  included (`erased_kind_lost`). Not
+  seen: a callee whose row lets no exception out that keeps the callback and
+  calls it later, and a closure literal passed to a callee that is itself a
+  function value, whose parameter rows the walk cannot read. The kinded row
+  and arm are the typed path for such a value.
 - A rethrow from the erased arm records no kind, so it needs the erased row
   (#3541, #3551 review). That covers `throw(m)` and any payload that may carry
   `m`. While the arm body is typed, the checker knows the arm's carrier
@@ -171,7 +214,8 @@ effect Exception[E] {
   or an alias annotated `String`.
 - A handle has **at most one exception arm**: the channel carries no kind and
   only the first arm would be compiled, so two kinded arms side by side are
-  refused. Match on the payload inside one arm, or nest handles.
+  refused. Nest handles, one per kind, or put the kinds in one enum and match
+  on it inside its kinded arm.
 
 The decision is closed exhaustiveness (#1344's "Option A"). An open
 `ExceptionKind` trait, open subclasses and dynamic downcasts are not part of

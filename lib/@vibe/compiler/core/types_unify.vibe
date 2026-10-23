@@ -55,11 +55,20 @@ import ./types_types_equal.vibe {
   parse_trait_bound_vid,
   resolve_builtin,
   resolve_effect_opt_preserving_open,
+  resolve_row_type_arg,
+  row_var_type_arg,
   subst_apply,
   trait_is_subtrait,
   type_application_view,
   types_equal,
   unify_effects
+}
+
+fn is_row_var_type_arg(t: Type) -> Bool {
+  match row_var_type_arg(t) {
+    Some(_) => true,
+    None => false
+  }
 }
 
 fn int_array_has_id(ids: Array[Int], id: Int) -> Bool {
@@ -124,7 +133,12 @@ fn subst_apply_except_go(s: Subst, ty: Type, keep: Array[Int]) -> Type {
       let ra = array_empty()
       let mut i = 0
       while i < Array::length(args) {
-        Array::push(ra, subst_apply_except_go(s, Array::get(args, i), keep))
+        let a = Array::get(args, i)
+        Array::push(ra, match row_var_type_arg(a) {
+          // #3589: a row argument resolves as the row of a `CtFn` does here.
+          Some(v) => resolve_row_type_arg(a, resolve_effect_opt_preserving_open(s, Some(v))),
+          None => subst_apply_except_go(s, a, keep)
+        })
         i = i + 1
       }
       zonk_hkt(CtNamed(name, ra))
@@ -778,7 +792,15 @@ export fn unify(a: Type, b: Type, s: Subst) -> Option[Subst] {
                       Some(s)
                     } else None,
                     CtNamed(b_name, b_args) => if a_name != b_name {
-                      None
+                      // #3589: a struct's row argument is a row, so a row
+                      // variable there unifies like the row of a function
+                      // type: `Holder[$4]` against `Holder[Console]` binds
+                      // `$4` to `Console`.
+                      if Array::length(a_args) == 0 && Array::length(b_args) == 0 && (is_row_var_type_arg(ta) || is_row_var_type_arg(tb)) {
+                        unify_effects(Some(a_name), Some(b_name), s)
+                      } else {
+                        None
+                      }
                     }
                     else if Array::length(a_args) != Array::length(b_args) {
                       unify_owned_elided(ta, tb, s)

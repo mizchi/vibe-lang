@@ -57,6 +57,28 @@ fn guarded_outside(f: () -> Int with e) -> Int with e {
   } with { Exception[Int]::Throw(code) => code * 2 }
 }
 
+// A function nested in a parameter's type pins the variable the same way
+// when its own row names the kind beside it.
+fn guarded_pinned_array[e](fs: Array[() -> Int with Exception[Int] + e]) -> Int with e {
+  handle {
+    fs[0]() + 1
+  } with { Exception[Int]::Throw(code) => code * 2 }
+}
+
+// The erased arm over a variable reached through an array.
+fn guarded_array_erased(fs: Array[() -> Int with e]) -> Int with e {
+  handle {
+    fs[0]() + 1
+  } with { Exception::Throw(m) => String::length(m) }
+}
+
+// A kinded arm over a concrete body of its own kind.
+fn guarded_concrete(f: () -> Int with Exception[String]) -> Int {
+  handle {
+    f() + 1
+  } with { Exception[String]::Throw(m) => String::length(m) * 10 }
+}
+
 test "the erased arm over an open row catches every kind" {
   inspect(guarded_erased(thrower), content = "4")
   inspect(guarded_erased(() -> 41), content = "42")
@@ -89,4 +111,19 @@ test "the variable run outside the kinded handle" {
     guarded_outside(thrower)
   } with { Exception[String]::Throw(m) => String::length(m) }
   inspect(r, content = "4")
+}
+
+test "a kind label pins the variable of a function in an array" {
+  inspect(guarded_pinned_array([int_thrower]), content = "40")
+  inspect(guarded_pinned_array([() -> 5]), content = "6")
+}
+
+test "the erased arm over a variable reached through an array" {
+  inspect(guarded_array_erased([thrower]), content = "4")
+  inspect(guarded_array_erased([() -> 2]), content = "3")
+}
+
+test "a kinded arm over a concrete body of its kind" {
+  inspect(guarded_concrete(thrower), content = "40")
+  inspect(guarded_concrete(() -> 1), content = "2")
 }

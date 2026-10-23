@@ -20,17 +20,25 @@
 //     exception arm, a call (by name, through a local alias, or a method
 //     call) to a function whose row names it, or a call to another
 //     handle-bound local -- unless it is handed straight to a parameter
-//     whose function type's row names the effect or a row variable
-//     (`TaskGroup::spawn(g, () -> ..)`): it takes that row there, as does
-//     every closure written inside it, and whoever calls it passes the
-//     handler;
+//     whose function type's row names every such effect it performs, or a
+//     row variable (`TaskGroup::spawn(g, () -> ..)`): it takes that row
+//     there, as does every closure written inside it, and whoever calls it
+//     passes the handler;
 //   - the result of a call to a function whose row names the effect and
 //     whose result type can hold a function without that row (the closure
 //     it returns inherited the row of that call; for an exception row, a
-//     function the result type spells, not one inside a declared type's
-//     fields) -- called by name, through a local alias, or as a method
-//     (`factory.mk()`), whose type is the one the checker recorded at the
-//     call.
+//     function the result type spells, or one inside a declared type's
+//     fields when the callee is a declaration whose body creates a closure
+//     that throws and can leave it -- read from the body for this module's,
+//     from the fact its module published for an imported one, #3593, or
+//     when the callee names no declaration to read -- a parameter, a call's
+//     result, a field -- #3599; for
+//     a row variable the call instantiates to the effect, a closure that
+//     performs that variable, such as one calling a parameter whose row it
+//     is, #3594) --
+//     called by name, through a local alias, or as a method
+//     (`factory.mk()`, the `T::mk` it resolved to), whose type is the one
+//     the checker recorded at the call.
 //
 // An effect the enclosing declaration's result type gives the function
 // value it returns (#1451) is not bound here when the result is that
@@ -84,11 +92,13 @@
 import @vibe/compiler/core {
   Expr,
   Pat,
+  Stmt,
   Subst,
   Type,
   TypeDef,
   TypeEnv,
   canonical_exception_effect_name,
+  env_bind,
   env_lookup,
   expr_child_at,
   expr_children_pop,
@@ -122,6 +132,10 @@ import @vibe/compiler/checker/resolution {
   subst_type_params
 }
 
+import @vibe/compiler/checker/traits {
+  env_marker_before
+}
+
 import ./checker_throw_kind_of_type.vibe {
   railway_expr_off
 }
@@ -131,11 +145,19 @@ import ./checker_merge_capture_provenance.vibe {
 }
 
 import ./checker_region_retention_arms.vibe {
-  retention_decl_value
+  hce_decl_facts, retention_alias_names, retention_decl_value, retention_pat_names_into
+}
+
+import ./checker_builtin_arg_head_rest.vibe {
+  ascription_lambda_ann, type_name_prefix
+}
+
+import ./checker_region_retention_summary.vibe {
+  retention_summaries_enabled, retention_summary_marker
 }
 
 import ./checker_region_retention.vibe {
-  retention_local_closure
+  retention_closure_scope, retention_local_closure, retention_marker, retention_name_scope
 }
 
 import @vibe/core {
@@ -147,8 +169,10 @@ struct HceWalk {
   /// Bases of the effects whose performs count (`Ask`, `Exception`).
   mut labels: Array[String];
   /// Names bound inside the handled body, innermost last, each with the
-  /// effect base of the handle-bound value it holds ("" for a plain value).
-  scope: Array[(String, String)];
+  /// effect base of the handle-bound value it holds ("" for a plain value)
+  /// and the declarations a local alias of a function stands for (#3596;
+  /// comma-joined, "" for any other binding).
+  scope: Array[(String, String, String)];
   /// Every counted perform, in walk order: its offset and effect base.
   performs: Array[(Int, String)];
   /// Handle-bound values found: (description, offset, effect base, reach).
@@ -172,10 +196,10 @@ struct HceWalk {
   /// The routes out found: (what it is, offset, the reach a value needs to
   /// take it).
   routes: Array[(String, Int, Int)];
-  /// Calls handed a handle-bound value that may keep it: (what, offset).
-  /// Named only when no other route, nor the handle's value, explains the
-  /// refusal.
-  keeps: Array[(String, Int)];
+  /// Calls handed a handle-bound value that may keep it: (what, offset,
+  /// the effects the parameter does not take). Named only when no other
+  /// route, nor the handle's value, explains the refusal.
+  keeps: Array[(String, Int, String)];
   /// Where the handled body's rows begin in `call_callee_sites`.
   sites_from: Int;
   /// Every name a `let` in the handled body binds, wherever it sits.
@@ -187,6 +211,233 @@ struct HceWalk {
 /// name it binds is declared outside the body. `sites_from` is the length of
 /// `call_callee_sites` before the body was checked.
 export fn refuse_handle_bound_escape(body: Expr, arms: Array[(Pat, Expr)], body_ty: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, sites_from: Int, errors: Array[String]) -> Unit {
+  let unsure_before = Array::length(hce_unsure)
+  let errors_before = Array::length(errors)
+  hce_refuse(body, arms, body_ty, env, defs, s, sites_from, errors)
+  // A declaration read before its body was checked may have answered no
+  // for want of the callee types that body records (Codex on #3594): ask
+  // again once the module is checked (`hce_run_deferred`).
+  if Array::length(hce_final) == 0 && Array::length(errors) == errors_before && Array::length(hce_unsure) > unsure_before {
+    Array::push(hce_pending, (body, arms, body_ty, env, defs, s, sites_from))
+  } else {
+    ()
+  }
+  Array::truncate(hce_unsure, unsure_before)
+}
+
+/// `defs` and the declarations of other modules this one did not import by
+/// name (`import dep { mk }` with `mk() -> Box`), whose fields decide
+/// whether the handle's value can hold a function (#3593). Such a type
+/// reaches the importer only as a reference marker in `env`
+/// (`#typeref-def:Box`), whose identity spells its definition.
+fn hce_defs_with_env(defs: Array[TypeDef], env: TypeEnv) -> Array[TypeDef] {
+  let extra: Array[TypeDef] = array_empty()
+  for row in hce_reference_rows(env) {
+    let (name, identity) = row
+    if (find_typedef(defs, name) is None) && (find_typedef(extra, name) is None) {
+      match hce_reference_typedef(name, identity) {
+        Some(d) => Array::push(extra, d),
+        None => ()
+      }
+    } else {
+      ()
+    }
+  }
+  if Array::length(extra) == 0 {
+    defs
+  } else {
+    let out = Array::slice(defs, 0, Array::length(defs))
+    for d in extra {
+      Array::push(out, d)
+    }
+    out
+  }
+}
+
+let hce_reference_prefix: String = "#typeref-def:"
+
+/// Every type reference marker bound in `env`, as (type name, identity),
+/// nearest first.
+fn hce_reference_rows(env: TypeEnv) -> Array[(String, Type)] {
+  let rows: Array[(String, Type)] = array_empty()
+  let plen = String::length(hce_reference_prefix)
+  let mut current = env
+  let mut done = false
+  while !done {
+    match current {
+      EnvBind(name, binding, rest) => {
+        if String::starts_with(name, hce_reference_prefix) {
+          Array::push(rows, (name[plen: String::length(name)], binding.ty))
+        } else {
+          ()
+        }
+        current = rest
+      },
+      EnvFlat(bindings) => {
+        for entry in bindings {
+          let (name, binding) = entry
+          if String::starts_with(name, hce_reference_prefix) {
+            Array::push(rows, (name[plen: String::length(name)], binding.ty))
+          } else {
+            ()
+          }
+        }
+        done = true
+      },
+      EnvShowWrappers(_, _, rest) => current = rest,
+      EnvTraitDef(_, _, _, _, rest, _, _) => current = rest,
+      EnvTraitImpl(_, _, rest) => current = rest,
+      EnvTraitImplGen(_, _, _, _, rest) => current = rest,
+      EnvTypeDefs(_, _, rest) => current = rest,
+      EnvMutCell(_, _, rest) => current = rest,
+      EnvCached(_, _, rest) => current = rest,
+      EnvEmpty => done = true
+    }
+  }
+  rows
+}
+
+/// The declaration a type reference marker's identity spells: `(head,
+/// definition[, mutable fields])`, the head naming the kind and carrying the
+/// formals by position, which the definition refers to by those names.
+fn hce_reference_typedef(name: String, identity: Type) -> Option[TypeDef] {
+  match identity {
+    CtTuple(parts) => if Array::length(parts) >= 2 {
+      match Array::get(parts, 0) {
+        CtNamed(head, formals) => {
+          let params: Array[String] = array_empty()
+          for f in formals {
+            match f {
+              CtNamed(p, _) => Array::push(params, p),
+              _ => ()
+            }
+          }
+          match Array::get(parts, 1) {
+            CtRecord(items) => if String::starts_with(head, "#typeid.struct.") {
+              let muts: Array[String] = array_empty()
+              if Array::length(parts) >= 3 {
+                match Array::get(parts, 2) {
+                  CtTuple(ms) => for m in ms {
+                    match m {
+                      CtNamed(mn, _) => Array::push(muts, mn),
+                      _ => ()
+                    }
+                  },
+                  _ => ()
+                }
+              } else {
+                ()
+              }
+              Some(TDStruct(name, items, muts, params))
+            } else if String::starts_with(head, "#typeid.enum.") {
+              let variants: Array[(String, Array[Type])] = array_empty()
+              for v in items {
+                let (vname, payload) = v
+                match payload {
+                  CtTuple(ps) => Array::push(variants, (vname, ps)),
+                  _ => Array::push(variants, (vname, [payload]))
+                }
+              }
+              Some(TDEnum(name, params, variants))
+            } else if String::starts_with(head, "#typeid.type.") {
+              Some(TDAlias(name, params, CtRecord(items)))
+            } else {
+              None
+            },
+            target => if String::starts_with(head, "#typeid.type.") {
+              Some(TDAlias(name, params, target))
+            } else {
+              None
+            }
+          }
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// Handles whose answer leaned on a declaration read before its body was
+/// checked, to be asked again by `hce_run_deferred`.
+let hce_pending: Array[(Expr, Array[(Pat, Expr)], Type, TypeEnv, Array[TypeDef], Subst, Int)] = [
+]
+
+/// The module's final substitution while `hce_run_deferred` runs; empty
+/// otherwise.
+let hce_final: Array[Subst] = []
+
+/// One entry for each call a declaration's body was read through without
+/// the callee type its check records (see `hce_note_unsure`).
+let hce_unsure: Array[Int] = []
+
+/// Where the handles a module's check is about to defer begin.
+export fn hce_deferred_mark() -> Int {
+  Array::length(hce_pending)
+}
+
+/// Forget the handles deferred from `mark` on: the statements that deferred
+/// them are being checked again.
+export fn hce_drop_deferred(mark: Int) -> Unit {
+  if Array::length(hce_pending) > mark {
+    Array::truncate(hce_pending, mark)
+  } else {
+    ()
+  }
+}
+
+/// Ask again, now that every declaration of the module is checked and has
+/// recorded its callee types, about the handles deferred from `mark` on.
+/// `final_s` is the module's final substitution, which the types recorded
+/// after a handle was checked are read under.
+export fn hce_run_deferred(mark: Int, final_s: Subst, errors: Array[String]) -> Unit {
+  if Array::length(hce_pending) > mark {
+    let entries = Array::slice(hce_pending, mark, Array::length(hce_pending))
+    Array::truncate(hce_pending, mark)
+    Array::push(hce_final, final_s)
+    let found: Array[String] = array_empty()
+    for entry in entries {
+      let (body, arms, body_ty, env, defs, s, sites_from) = entry
+      hce_refuse(body, arms, body_ty, env, defs, s, sites_from, found)
+    }
+    Array::truncate(hce_final, Array::length(hce_final) - 1)
+    for msg in found {
+      if !hce_has(errors, msg) {
+        Array::push(errors, msg)
+      } else {
+        ()
+      }
+    }
+  } else {
+    ()
+  }
+}
+
+/// `ty`, read also under the module's final substitution while deferred
+/// handles are asked again.
+fn hce_late(ty: Type) -> Type {
+  if Array::length(hce_final) > 0 {
+    subst_apply(Array::get(hce_final, Array::length(hce_final) - 1), ty)
+  } else {
+    ty
+  }
+}
+
+/// A declaration's body (`hce_decl_makes_bound`) calls through `spelling`
+/// at `off`, and the checker recorded no callee type there. Before the
+/// module is checked that may be only because the body is not checked yet,
+/// so no answer read through it is final.
+fn hce_note_unsure(off: Int, spelling: String) -> Unit {
+  if Array::length(hce_decl_stack) > 0 && Array::length(hce_final) == 0 && hce_recorded_type(off, spelling) is None {
+    Array::push(hce_unsure, 1)
+  } else {
+    ()
+  }
+}
+
+fn hce_refuse(body: Expr, arms: Array[(Pat, Expr)], body_ty: Type, env: TypeEnv, defs0: Array[TypeDef], s: Subst, sites_from: Int, errors: Array[String]) -> Unit {
   // #1451: a closure literal also takes the rows the enclosing declaration's
   // result type declares for the function values it returns, and the caller
   // of such a value passes its own handler (`fn mid() -> (() -> Int with
@@ -204,6 +455,7 @@ export fn refuse_handle_bound_escape(body: Expr, arms: Array[(Pat, Expr)], body_
   }
   let labels = hce_without(hce_handled_bases(arms), returned_rows)
   if Array::length(labels) > 0 {
+    let defs = hce_defs_with_env(defs0, env)
     let body_names: Array[String] = array_empty()
     hce_collect_let_names(body, body_names)
     let st = hce_new(labels, false, sites_from, body_names)
@@ -247,8 +499,8 @@ export fn refuse_handle_bound_escape(body: Expr, arms: Array[(Pat, Expr)], body_
       } else if reach >= 2 && hce_holds_fn(subst_apply(s, body_ty), defs, array_empty()) {
         Array::push(errors, hce_message(what, label, "returning it as the handle's value", off))
       } else if Array::length(routes.keeps) > 0 {
-        let (kwhat, kat) = Array::get(routes.keeps, 0)
-        Array::push(errors, hce_message(what, label, kwhat, if kat >= 0 {
+        let (kwhat, kat, klabel) = Array::get(routes.keeps, 0)
+        Array::push(errors, hce_message(what, klabel, kwhat, if kat >= 0 {
           kat
         } else {
           off
@@ -282,15 +534,42 @@ fn hce_new(labels: Array[String], find_routes: Bool, sites_from: Int, body_names
   }
 }
 
-fn hce_message(what: String, label: String, route: String, off: Int) -> String {
-  let verb = if is_exception_effect_name(label) {
-    "throws, and this `handle` catches it"
-  } else {
-    String::concat("performs `", String::concat(label, "`, and this `handle` answers it"))
+fn hce_message(what: String, set: String, route: String, off: Int) -> String {
+  let named: Array[String] = array_empty()
+  let mut throws = false
+  for l in hce_set_items(set) {
+    if is_exception_effect_name(l) {
+      throws = true
+    } else {
+      Array::push(named, String::concat("`", String::concat(l, "`")))
+    }
   }
-  let edit = String::concat("call ", String::concat(what, String::concat(" inside this `handle` and keep only what it computes, or move the `handle` into the closure (`() -> handle { .. } with { .. }`) -- ", String::concat(what, String::concat(" ", verb)))))
+  let performs = String::concat("performs ", String::join(named, " and "))
+  let verb = if throws && Array::length(named) == 0 {
+    "throws, and this `handle` catches it"
+  } else if throws {
+    String::concat("throws and ", String::concat(performs, ", and this `handle` catches and answers them"))
+  } else if Array::length(named) > 1 {
+    String::concat(performs, ", and this `handle` answers them")
+  } else {
+    String::concat(performs, ", and this `handle` answers it")
+  }
+  // #3599: for a callee with no body to read, `what` is `any closure in
+  // what <callee> returns`, and the reason says the throw is assumed.
+  let reason = if String::starts_with(what, hce_unread_prefix()) && throws && Array::length(named) == 0 {
+    let callee = what[String::length(hce_unread_prefix()): String::length(what) - String::length(" returns")]
+    String::concat(callee, " has no body this check can read, so a closure in what it returns may throw, and this `handle` catches it")
+  } else {
+    String::concat(what, String::concat(" ", verb))
+  }
+  let edit = String::concat("call ", String::concat(what, String::concat(" inside this `handle` and keep only what it computes, or move the `handle` into the closure (`() -> handle { .. } with { .. }`) -- ", reason)))
   let why = String::concat(" only while the handled body runs, so ", String::concat(route, " leaves it with no handler to call"))
   String::concat(edit, String::concat(why, off_marker(off)))
+}
+
+/// How a value produced by a callee with no body to read is named.
+fn hce_unread_prefix() -> String {
+  "any closure in what "
 }
 
 /// The row labels of `ty` when it is a function type; none otherwise.
@@ -350,6 +629,54 @@ fn hce_has(items: Array[String], label: String) -> Bool {
   found
 }
 
+/// #3585: the effect bases a handle-bound value performs that the handle
+/// answers, written as one set (`Ask,Log`; "" for none). A destination's row
+/// discharges only the bases it names, and the value stays handle-bound
+/// while any is left.
+fn hce_set_items(set: String) -> Array[String] {
+  let out = array_empty()
+  if String::length(set) > 0 {
+    for l in String::split(set, ",") {
+      if String::length(l) > 0 {
+        hce_add(out, l)
+      } else {
+        ()
+      }
+    }
+  } else {
+    ()
+  }
+  out
+}
+
+fn hce_set_union(a: String, b: String) -> String {
+  if a == "" {
+    b
+  } else if b == "" {
+    a
+  } else {
+    let items = hce_set_items(a)
+    for l in hce_set_items(b) {
+      hce_add(items, l)
+    }
+    String::join(items, ",")
+  }
+}
+
+/// `set` without the bases the parameter type `pt` takes (see
+/// `hce_param_takes_row`).
+fn hce_set_untaken(set: String, pt: Type) -> String {
+  let left = array_empty()
+  for l in hce_set_items(set) {
+    if !hce_param_takes_row(pt, l) {
+      Array::push(left, l)
+    } else {
+      ()
+    }
+  }
+  String::join(left, ",")
+}
+
 /// `labels` without the bases of `row` (a row label may be an operation,
 /// `Ask::Get`, or a kinded exception, `Exception[String]`).
 fn hce_without(labels: Array[String], row: Array[String]) -> Array[String] {
@@ -378,16 +705,26 @@ fn hce_without(labels: Array[String], row: Array[String]) -> Array[String] {
 
 /// The first of `labels` a function type's row names, or "".
 fn hce_row_label(ty: Type, labels: Array[String]) -> String {
+  let found = hce_row_labels(ty, labels)
+  if Array::length(found) > 0 {
+    Array::get(found, 0)
+  } else {
+    ""
+  }
+}
+
+/// Every one of `labels` a function type's row names.
+fn hce_row_labels(ty: Type, labels: Array[String]) -> Array[String] {
+  let found = array_empty()
   match ty {
-    CtForAll(_, _, inner) => hce_row_label(inner, labels),
+    CtForAll(_, _, inner) => hce_row_labels(inner, labels),
     CtFn(_, _, Some(row)) => {
-      let mut found = ""
       for raw in String::split(row, ",") {
         let l = String::trim(raw)
-        if found == "" && String::length(l) > 0 && !String::starts_with(l, "#") && !label_is_effect_var(l) {
+        if String::length(l) > 0 && !String::starts_with(l, "#") && !label_is_effect_var(l) {
           let base = row_label_base(effect_name_of_op(l))
           if hce_has(labels, base) {
-            found = base
+            hce_add(found, base)
           } else {
             ()
           }
@@ -397,7 +734,7 @@ fn hce_row_label(ty: Type, labels: Array[String]) -> String {
       }
       found
     },
-    _ => ""
+    _ => found
   }
 }
 
@@ -416,7 +753,7 @@ fn hce_lookup(st: HceWalk, name: String) -> Int {
   if i < 0 {
     0
   } else {
-    let (_, label) = Array::get(st.scope, i)
+    let (_, label, _) = Array::get(st.scope, i)
     if label == "" {
       1
     } else {
@@ -429,7 +766,7 @@ fn hce_scope_index(st: HceWalk, name: String) -> Int {
   let mut i = Array::length(st.scope) - 1
   let mut found = 0 - 1
   while i >= 0 && found < 0 {
-    let (n, _) = Array::get(st.scope, i)
+    let (n, _, _) = Array::get(st.scope, i)
     if n == name {
       found = i
     } else {
@@ -446,13 +783,94 @@ fn hce_local_label(st: HceWalk, name: String) -> String {
   if i < 0 {
     ""
   } else {
-    let (_, label) = Array::get(st.scope, i)
+    let (_, label, _) = Array::get(st.scope, i)
     label
   }
 }
 
 fn hce_bind(st: HceWalk, name: String, label: String) -> Unit {
-  Array::push(st.scope, (hce_param_base(name), label))
+  Array::push(st.scope, (hce_param_base(name), label, ""))
+}
+
+/// #3596: the declarations the binding of `name` stands for, comma-joined
+/// (see `hce_alias_decls`): read from the handled body's binding when it
+/// binds `name`, else from the binding `env` holds.
+fn hce_name_decls(st: HceWalk, name: String, env: TypeEnv) -> String {
+  let i = hce_scope_index(st, name)
+  if i < 0 {
+    hce_outer_decls(env, name)
+  } else {
+    let (_, _, decls) = Array::get(st.scope, i)
+    decls
+  }
+}
+
+/// #3596: the declarations a `let` initializer `val` stands for when it
+/// names a function -- a plain alias (`let g = mk`, `let h = g`), or each
+/// branch of a conditional one (`let g = if c { mk } else { mk_ok }`) --
+/// comma-joined, "" when it names none. Read the way the marker of a `let`
+/// before the handle is (`retention_alias_names`, which sees through an
+/// annotation, parentheses and a block's tail); a branch that names no
+/// function beside one that does adds `hce_unknown_decl`.
+fn hce_alias_decls(val: Expr, st: HceWalk, env: TypeEnv) -> String {
+  let mut out = ""
+  for n in retention_alias_names(val) {
+    out = hce_set_union(out, if n == hce_unknown_decl() {
+      n
+    } else {
+      hce_name_decls(st, n, env)
+    })
+  }
+  out
+}
+
+/// The declaration an alias stands for when one of the places its value
+/// can come from names no function (`if c { mk } else { pick() }`): it may
+/// be any, so it is taken to create a closure that can leave it.
+fn hce_unknown_decl() -> String {
+  "?"
+}
+
+/// #3596: the declarations the binding of `name` visible in `env` stands
+/// for, comma-joined: `name` itself when it is bound at module level; what a
+/// local alias names -- through an alias of an alias, and each branch of a
+/// conditional one, each read where that alias was written (the marker
+/// `retention_bind_let` lays in front of it), so a later binding of the
+/// spelling hides it -- and none for any other local binding (a parameter,
+/// a closure literal, a call's result).
+///
+/// The chain is followed to its end, however long: each hop reads the
+/// environment below the alias's own binding (`retention_closure_scope`), a
+/// strict suffix of the one before, so it cannot cycle. A depth cap here
+/// answered "names none" for a finite chain one alias past it, and the call
+/// through the last alias went unrefused.
+fn hce_outer_decls(env: TypeEnv, name: String) -> String {
+  match env_marker_before(env, retention_marker(name), name) {
+    Some(CtNamed(text, _)) => if String::starts_with(text, "a:") || String::starts_with(text, "o:") {
+      match retention_closure_scope(env, name, text) {
+        Some(def_env) => {
+          let mut out = ""
+          for src in String::split(String::substring(text, 2, String::length(text)), ",") {
+            out = hce_set_union(out, if src == hce_unknown_decl() {
+              src
+            } else {
+              hce_outer_decls(def_env, src)
+            })
+          }
+          out
+        },
+        None => ""
+      }
+    } else {
+      ""
+    },
+    Some(_) => "",
+    None => if retention_name_scope(env, name) == 1 {
+      ""
+    } else {
+      name
+    }
+  }
 }
 
 /// A parameter is written `x`, `x~` (labeled) or `x?` (optional).
@@ -501,7 +919,7 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
   match e {
     EIdent(name, _) => if hce_lookup(st, name) == 2 {
       st.mentions = st.mentions + 1
-      st.mention_label = hce_local_label(st, name)
+      st.mention_label = hce_set_union(st.mention_label, hce_local_label(st, name))
     } else {
       ()
     },
@@ -520,8 +938,16 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
       Array::truncate(st.scope, mark)
       st.labels = saved
       if Array::length(st.performs) > before {
-        let (poff, plabel) = Array::get(st.performs, before)
-        Array::push(st.producers, ("the closure", poff, plabel, pos))
+        // Every effect the closure performs, not only the first (#3585).
+        let (poff, _) = Array::get(st.performs, before)
+        let mut set = ""
+        let mut qi = before
+        while qi < Array::length(st.performs) {
+          let (_, qlabel) = Array::get(st.performs, qi)
+          set = hce_set_union(set, qlabel)
+          qi = qi + 1
+        }
+        Array::push(st.producers, ("the closure", poff, set, pos))
       } else {
         ()
       }
@@ -626,10 +1052,30 @@ fn hce_walk(e: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) 
         } else {
           ()
         }
+        // #3594: reading a declaration for a row variable, a call handed a
+        // parameter that performs it (`() -> apply(g)`) may call it.
+        if hce_poly_walk(st) && !hce_callee_is_ctor(callee, defs) {
+          let handed = hce_arg_bound_label(arg, producers_before, st, env, defs, s)
+          if handed != "" {
+            hce_count_perform(st, handed, railway_expr_off(arg))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
         if st.find_routes {
           let label = hce_arg_bound_label(arg, producers_before, st, env, defs, s)
           if label != "" && hce_callee_may_keep(callee, off, arg, ai, Array::length(args), label, st, env, defs, s) {
-            Array::push(st.keeps, (hce_keep_route(callee), railway_expr_off(arg)))
+            let left = match hce_param_type(callee, off, arg, ai, Array::length(args), st, env, s) {
+              Some(pt) => hce_set_untaken(label, pt),
+              None => label
+            }
+            Array::push(st.keeps, (hce_keep_route(callee), railway_expr_off(arg), if left == "" {
+              label
+            } else {
+              left
+            }))
           } else {
             ()
           }
@@ -687,16 +1133,25 @@ fn hce_walk_let(name: String, val: Expr, rest: Expr, off: Int, st: HceWalk, env:
   }
   let producers_before = Array::length(st.producers)
   let mentions_before = st.mentions
+  let mentioned_before = st.mention_label
+  st.mention_label = ""
   st.pos = hce_let_reach()
   hce_walk(val, st, env, defs, s)
   let bound = if Array::length(st.producers) > producers_before {
-    let (_, _, plabel, _) = Array::get(st.producers, Array::length(st.producers) - 1)
-    plabel
+    let mut set = ""
+    let mut bi = producers_before
+    while bi < Array::length(st.producers) {
+      let (_, _, blabel, _) = Array::get(st.producers, bi)
+      set = hce_set_union(set, blabel)
+      bi = bi + 1
+    }
+    set
   } else if st.mentions > mentions_before {
     st.mention_label
   } else {
     ""
   }
+  st.mention_label = hce_set_union(mentioned_before, st.mention_label)
   let mut pi = producers_before
   let mut uses = 0 - 1
   while pi < Array::length(st.producers) {
@@ -733,7 +1188,12 @@ fn hce_walk_let(name: String, val: Expr, rest: Expr, off: Int, st: HceWalk, env:
     pi = pi + 1
   }
   Array::truncate(st.scope, mark)
-  hce_bind(st, name, bound)
+  let decls = if bound == "" && !recursive {
+    hce_alias_decls(val, st, env)
+  } else {
+    ""
+  }
+  Array::push(st.scope, (name, bound, decls))
   hce_walk(rest, st, env, defs, s)
   Array::truncate(st.scope, mark)
 }
@@ -912,13 +1372,34 @@ fn hce_note_call(callee: Expr, args: Array[Expr], off: Int, pos: Int, st: HceWal
         // A plain local holding a function (`let f = ask`, an alias of an
         // alias, a method value): the type the checker inferred for the
         // callee at this call (#3539).
+        // An alias of a declaration is followed to it (#3596).
         match hce_site_type(st, off, name, s) {
-          Some(ty) => hce_note_callee(st, ty, name, at, pos, defs, s),
-          None => ()
+          Some(ty) => hce_note_callee(st, ty, name, hce_name_decls(st, name, env), at, pos, env, defs, s),
+          None => hce_note_unsure(off, name)
         }
       } else if local == 0 && name != "perform" && Array::length(st.labels) > 0 {
         match env_lookup(env, name) {
-          Some(ty) => hce_note_callee(st, ty, name, at, pos, defs, s),
+          Some(ty) => {
+            // A declaration not inferred yet has no row to read.
+            match subst_apply(s, ty) {
+              CtVar(_) => hce_note_unsure(0 - 1, name),
+              _ => ()
+            }
+            // A row-polymorphic callee (`forward[e](g: () -> Int with e)`)
+            // performs what this call instantiates its row variables to: the
+            // type the checker recorded here.
+            let cty = if off >= 0 && hce_row_has_var(ty) {
+              match hce_site_type(st, off, name, s) {
+                Some(t) => t,
+                None => ty
+              }
+            } else {
+              ty
+            }
+            // A local `let` before the handle that aliases a declaration
+            // stands for it; any other local names none (#3596).
+            hce_note_callee(st, cty, name, hce_outer_decls(env, name), at, pos, env, defs, s)
+          },
           None => ()
         }
       } else {
@@ -929,10 +1410,33 @@ fn hce_note_call(callee: Expr, args: Array[Expr], off: Int, pos: Int, st: HceWal
     // other expression: the type of the callee the checker resolved there
     // (#3539).
     _ => if off >= 0 && Array::length(st.labels) > 0 {
-      let spelling = call_callee_spelling(callee)
-      match hce_site_type(st, off, spelling, s) {
-        Some(ty) => hce_note_callee(st, ty, spelling, off, pos, defs, s),
-        None => ()
+      match hce_namespace_callee(callee, st, env) {
+        // `ns.mk()` through a qualified-import namespace calls the import
+        // `ns.mk` by name (#3593).
+        Some(qualified) => match env_lookup(env, qualified) {
+          Some(ty) => hce_note_callee(st, ty, qualified, qualified, off, pos, env, defs, s),
+          None => ()
+        },
+        None => {
+          let spelling = call_callee_spelling(callee)
+          match hce_site_type(st, off, spelling, s) {
+            Some(ty) => {
+              let decl = hce_method_decl(callee, ty, env, s)
+              // A function-typed field is named as written (`fac.mk`): its
+              // own name may be a declaration's too (#3599).
+              let shown = match callee {
+                EDot(EIdent(recv, _), m, _, _) => if decl == "" {
+                  String::concat(recv, String::concat(".", m))
+                } else {
+                  spelling
+                },
+                _ => spelling
+              }
+              hce_note_callee(st, ty, shown, decl, off, pos, env, defs, s)
+            },
+            None => hce_note_unsure(off, spelling)
+          }
+        }
       }
     } else {
       ()
@@ -962,37 +1466,124 @@ fn hce_note_call(callee: Expr, args: Array[Expr], off: Int, pos: Int, st: HceWal
   }
 }
 
-/// A call at `at` whose callee, spelled `spelling`, has type `ty`: it
-/// performs the first counted effect the callee's row names, and its result
-/// is handle-bound when it can hold a function without that row -- the
-/// closure it returns inherited the row of this call. However the callee is
-/// reached (a name, a local alias, a method), the same type decides.
-fn hce_note_callee(st: HceWalk, ty: Type, spelling: String, at: Int, pos: Int, defs: Array[TypeDef], s: Subst) -> Unit {
-  let label = hce_row_label(ty, st.labels)
-  if label != "" {
-    hce_count_perform(st, label, at)
-    // An exception row counts the function values the result type spells
-    // -- the result itself, or one inside a tuple, array, `Option`, record
-    // or type argument -- and not those inside the fields of a declared
-    // type: a function that may throw and returns compiler state or a table
-    // that holds callbacks somewhere (a `MutMap`'s hash function) is common,
-    // and following the fields refused nine handles in the compiler itself.
-    let holds = if is_exception_effect_name(label) {
-      hce_spells_fn_without(subst_apply(s, ret_or_unit(hce_fn_result(ty))), label, defs, array_empty())
+/// `ns.m` when `callee` is `ns.m` and `ns` names a qualified-import
+/// namespace rather than a value (the checker calls the import `ns.m`).
+fn hce_namespace_callee(callee: Expr, st: HceWalk, env: TypeEnv) -> Option[String] {
+  match callee {
+    EDot(EIdent(ns, _), m, _, _) => if hce_lookup(st, ns) == 0 && env_lookup(env, ns) is None {
+      let qualified = String::concat(ns, String::concat(".", m))
+      match env_lookup(env, qualified) {
+        Some(_) => Some(qualified),
+        None => None
+      }
     } else {
-      match hce_fn_result(ty) {
-        Some(ret) => hce_holds_fn_without(subst_apply(s, ret), label, defs, array_empty()),
-        None => false
+      None
+    },
+    _ => None
+  }
+}
+
+/// #3593: the declaration a method call `recv.m(..)` resolved to -- the
+/// checker calls `T::m` for a receiver of type `T`, the recorded callee
+/// type's first parameter -- or "" when it calls a function-typed field or
+/// anything else that names no declaration.
+fn hce_method_decl(callee: Expr, ty: Type, env: TypeEnv, s: Subst) -> String {
+  match callee {
+    EDot(_, m, _, _) => match hce_fn_params(hce_late(subst_apply(s, ty))) {
+      Some(params) => if Array::length(params) > 0 {
+        let prefix = type_name_prefix(hce_late(subst_apply(s, Array::get(params, 0))))
+        let qualified = String::concat(prefix, String::concat("::", m))
+        if prefix != "" && env_lookup(env, qualified) is Some(_) {
+          qualified
+        } else {
+          ""
+        }
+      } else {
+        ""
+      },
+      None => ""
+    },
+    _ => ""
+  }
+}
+
+/// A call at `at` whose callee, spelled `spelling`, has type `ty`: it
+/// performs every counted effect the callee's row names, and its result is
+/// handle-bound for each one it can hold a function without -- the closure
+/// it returns inherited the row of this call. However the callee is reached
+/// (a name, a local alias, a method), the same type decides. `decl` names
+/// the declarations outside the body the callee stands for, comma-joined
+/// (more than one through a conditional alias, #3596), else "".
+fn hce_note_callee(st: HceWalk, ty: Type, spelling: String, decl: String, at: Int, pos: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Unit {
+  let found = hce_row_labels(ty, st.labels)
+  if Array::length(found) > 0 {
+    let mut performed = ""
+    let mut bound = ""
+    let mut guessed = false
+    for label in found {
+      performed = hce_set_union(performed, label)
+      // An exception row counts the function values the result type spells
+      // -- the result itself, or one inside a tuple, array, `Option`,
+      // record or type argument. Inside the fields of a declared type it
+      // counts them only when the callee's body creates a closure that
+      // throws and can leave it (#3584): a function that may throw and
+      // returns compiler state or a table holding callbacks (a `MutMap`'s
+      // hash function) is common, and following every field refused nine
+      // handles in the compiler itself. A declaration of another module
+      // answers by the fact its module published (#3593), whose fields this
+      // module may not see. A callee whose row has `label` only through a
+      // row variable this call instantiates answers by whether its body
+      // creates such a closure performing that variable (#3594).
+      let holds = if is_exception_effect_name(label) {
+        let ret = subst_apply(s, ret_or_unit(hce_fn_result(ty)))
+        let mut made = hce_spells_fn_without(ret, label, defs, array_empty())
+        for d in hce_set_items(decl) {
+          if !made && (hce_holds_fn_without(ret, label, defs, array_empty()) || retention_decl_value(d) is None) && (hce_decl_makes_bound(d, label, env, defs, s) || hce_decl_makes_bound_via_var(d, ty, label, env, defs, s)) {
+            made = true
+            guessed = hce_decl_unread(d)
+          } else {
+            ()
+          }
+        }
+        // #3599: a callee that names no declaration -- a parameter, a local
+        // bound to a call's result, a function-typed field -- has no body to
+        // read, so a closure inside a declared type's field of its result is
+        // taken to throw.
+        if !made && decl == "" && hce_holds_fn_without(ret, label, defs, array_empty()) {
+          made = true
+          guessed = true
+        } else {
+          ()
+        }
+        made
+      } else {
+        match hce_fn_result(ty) {
+          Some(ret) => hce_holds_fn_without(subst_apply(s, ret), label, defs, array_empty()),
+          None => false
+        }
+      }
+      if holds {
+        bound = hce_set_union(bound, label)
+      } else {
+        ()
       }
     }
+    hce_count_perform(st, performed, at)
     match hce_fn_result(ty) {
-      Some(_) => if holds {
-        let what = if spelling == "" {
+      Some(_) => if bound != "" {
+        let callee = if spelling == "" {
+          "this call's callee"
+        } else {
+          String::concat("`", String::concat(spelling, "`"))
+        }
+        let what = if guessed {
+          String::concat(hce_unread_prefix(), String::concat(callee, " returns"))
+        } else if spelling == "" {
           "the closure this call returns"
         } else {
-          String::concat("the closure `", String::concat(spelling, "` returns"))
+          String::concat("the closure ", String::concat(callee, " returns"))
         }
-        Array::push(st.producers, (what, at, label, pos))
+        Array::push(st.producers, (what, at, bound, pos))
       } else {
         ()
       },
@@ -1014,7 +1605,7 @@ fn hce_site_type(st: HceWalk, off: Int, spelling: String, s: Subst) -> Option[Ty
   while !hit && i < n {
     let (soff, sp, ty) = Array::get(call_callee_sites, i)
     if soff == off && sp == spelling {
-      let t = subst_apply(s, ty)
+      let t = hce_late(subst_apply(s, ty))
       if hce_row_label(t, st.labels) != "" {
         found = Some(t)
         hit = true
@@ -1029,27 +1620,534 @@ fn hce_site_type(st: HceWalk, off: Int, spelling: String, s: Subst) -> Option[Ty
   found
 }
 
-/// The effect base of the handle-bound value the argument `arg` (just
+/// Does the function literal `f`, the value (or one of the values) of the
+/// declaration `name`, create a closure that performs `label` and can leave
+/// it? Its body is walked the way a handled body is.
+fn hce_literal_makes_bound(name: String, label: String, f: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Bool {
+  match f {
+    EFn(_, _, params, _, _, fbody) => {
+      let names: Array[String] = array_empty()
+      hce_collect_let_names(fbody, names)
+      let st = hce_new([label], false, 0, names)
+      // #3594: read for a row variable (`label` is `e`), a parameter
+      // whose function type's row is `e` performs it when called.
+      let declared = if label_is_effect_var(label) {
+        match env_lookup(env, name) {
+          Some(t) => match hce_fn_params(t) {
+            Some(ps) => ps,
+            None => array_empty()
+          },
+          None => array_empty()
+        }
+      } else {
+        array_empty()
+      }
+      let mut pi = 0
+      for p in params {
+        let (pname, _) = p
+        hce_bind(st, pname, if pi < Array::length(declared) && hce_row_names_var(Array::get(declared, pi), label) {
+          label
+        } else {
+          ""
+        })
+        pi = pi + 1
+      }
+      hce_walk(fbody, st, env, defs, s)
+      let mut made = false
+      for p in st.producers {
+        let (_, _, plabel, preach) = p
+        if preach > 0 && hce_has(hce_set_items(plabel), label) {
+          made = true
+        } else {
+          ()
+        }
+      }
+      made
+    },
+    _ => false
+  }
+}
+
+/// Is `callee` the parser's spelling of an annotation (`e: T`)?
+fn hce_is_ascription(callee: Expr) -> Bool {
+  match ascription_lambda_ann(callee) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// The function literals (`lits`) and the declarations (`srcs`) the value
+/// `e` of a top-level function-typed `let` may be, and whether every place
+/// its value can come from was read. Read the way `retention_alias_sources`
+/// reads an alias, with a literal as one more source: each branch of an
+/// `if` or a `match`, a block's tail, under an annotation or parentheses. A
+/// literal under a `let` of a block, or in a `match` arm that binds, may
+/// close over what those bind, which a walk of its body does not see, so it
+/// leaves the reading incomplete.
+fn hce_decl_sources(e: Expr, lits: Array[Expr], srcs: Array[String]) -> Bool {
+  match e {
+    EFn(_, _, _, _, _, _) => {
+      Array::push(lits, e)
+      true
+    },
+    EIdent(src, _) => {
+      Array::push(srcs, src)
+      true
+    },
+    EIf(_, a, b) => {
+      let ca = hce_decl_sources(a, lits, srcs)
+      let cb = hce_decl_sources(b, lits, srcs)
+      ca && cb
+    },
+    EMatch(_, arms) => {
+      let mut complete = true
+      for arm in arms {
+        let bound: Array[String] = array_empty()
+        retention_pat_names_into(arm.0, bound)
+        let found_lits: Array[Expr] = array_empty()
+        let found: Array[String] = array_empty()
+        if !hce_decl_sources(arm.1, found_lits, found) {
+          complete = false
+        } else {
+          ()
+        }
+        if Array::length(bound) > 0 && Array::length(found_lits) > 0 {
+          complete = false
+        } else {
+          for f in found_lits {
+            Array::push(lits, f)
+          }
+        }
+        for src in found {
+          if hce_has(bound, src) {
+            complete = false
+          } else {
+            Array::push(srcs, src)
+          }
+        }
+      }
+      complete
+    },
+    ESeq(_, b) => hce_decl_sources(b, lits, srcs),
+    ELet(n, v, rest, _) => {
+      let found_lits: Array[Expr] = array_empty()
+      let found: Array[String] = array_empty()
+      let mut complete = hce_decl_sources(rest, found_lits, found)
+      if Array::length(found_lits) > 0 {
+        complete = false
+      } else {
+        ()
+      }
+      for src in found {
+        if src == n {
+          if !hce_decl_sources(v, lits, srcs) {
+            complete = false
+          } else {
+            ()
+          }
+        } else {
+          Array::push(srcs, src)
+        }
+      }
+      complete
+    },
+    ECall(callee, args, _, _) => if hce_is_paren(e) || Array::length(args) == 1 && hce_is_ascription(callee) {
+      hce_decl_sources(Array::get(args, 0), lits, srcs)
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// The declarations `hce_decl_makes_bound` is reading, innermost last, and
+/// one entry for each time it met one of them again.
+let hce_decl_stack: Array[String] = []
+let hce_decl_cycles: Array[Int] = []
+
+/// #3584: does the declaration `name` of this module create a closure that
+/// performs `label` and can leave it -- held in a field of the value it
+/// returns (`Box::{ f: () -> throw(7) }`), say? Such a closure inherited the
+/// row of the call, so the handle around the call is what answers it. Read
+/// from the declaration's body, the way the handled body is: a declaration
+/// whose fields hold only closures that do not perform `label` (a `MutMap`'s
+/// hash function) answers no, and so does one this module does not hold.
+fn hce_decl_makes_bound(name: String, label: String, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Bool {
+  let key = String::concat(name, String::concat("|", label))
+  let mut known = 0 - 1
+  let mut ki = 0
+  while known < 0 && ki < Array::length(hce_decl_facts) {
+    let (k, _) = Array::get(hce_decl_facts, ki)
+    if k == key {
+      known = ki
+    } else {
+      ()
+    }
+    ki = ki + 1
+  }
+  if name == hce_unknown_decl() {
+    true
+  } else if known >= 0 {
+    let (_, made) = Array::get(hce_decl_facts, known)
+    made
+  } else if hce_has(hce_decl_stack, key) {
+    // A cycle answers no while its first reading is under way; an answer
+    // that leaned on it is not remembered.
+    Array::push(hce_decl_cycles, 1)
+    false
+  } else {
+    match retention_decl_value(name) {
+      // The function literals and the declarations its value may be
+      // (`hce_decl_sources`): `let make = () -> ..`, an alias of other
+      // declarations (`let make = mk`, `let make: () -> Box with
+      // Exception[Int] = mk`), or a choice between them (`let make = if c {
+      // () -> .. } else { mk }`). One whose value may also come from
+      // something it does not read may be any, and answers yes
+      // (`hce_unknown_decl`), and so does one that reads nothing at all (a
+      // call's result), like a local of that kind (#3599).
+      Some(val) => {
+        let lits: Array[Expr] = array_empty()
+        let srcs: Array[String] = array_empty()
+        if !hce_decl_sources(val, lits, srcs) {
+          Array::push(srcs, hce_unknown_decl())
+        } else {
+          ()
+        }
+        let cycles_before = Array::length(hce_decl_cycles)
+        let unsure_before = Array::length(hce_unsure)
+        Array::push(hce_decl_stack, key)
+        let mut made = false
+        for f in lits {
+          if !made && hce_literal_makes_bound(name, label, f, env, defs, s) {
+            made = true
+          } else {
+            ()
+          }
+        }
+        for src in srcs {
+          if !made && src != name && hce_decl_makes_bound(src, label, env, defs, s) {
+            made = true
+          } else {
+            ()
+          }
+        }
+        Array::truncate(hce_decl_stack, Array::length(hce_decl_stack) - 1)
+        if made || (Array::length(hce_decl_cycles) == cycles_before && Array::length(hce_unsure) == unsure_before) {
+          Array::push(hce_decl_facts, (key, made))
+        } else {
+          ()
+        }
+        if Array::length(hce_decl_stack) == 0 {
+          Array::truncate(hce_decl_cycles, 0)
+        } else {
+          ()
+        }
+        made
+      },
+      // #3593: a declaration of another module, by the fact its module
+      // published (`hce_bind_module_summaries`).
+      None => hce_imported_makes_bound(name, label, env)
+    }
+  }
+}
+
+/// #3599: is `name` a top-level binding of this module whose value names no
+/// function the check can read (`let g = pick(3)`)?
+fn hce_decl_unread(name: String) -> Bool {
+  match retention_decl_value(name) {
+    Some(val) => {
+      let lits: Array[Expr] = array_empty()
+      let srcs: Array[String] = array_empty()
+      !hce_decl_sources(val, lits, srcs) && Array::length(lits) == 0 && Array::length(srcs) == 0
+    },
+    None => false
+  }
+}
+
+/// Whether the module that declares the imported function `name` published
+/// that a closure it creates performs `label` and can leave it.
+fn hce_imported_makes_bound(name: String, label: String, env: TypeEnv) -> Bool {
+  match env_lookup(env, retention_summary_marker(name)) {
+    Some(CtNamed(_, facts)) => {
+      let mut found = false
+      for f in facts {
+        match f {
+          CtNamed(l, _) => if l == label {
+            found = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// #3594: does the declaration `name`, called at the instantiated type
+/// `inst`, return a closure performing `label` that it created for a row
+/// variable of its own row (`forward[e](g: () -> Int with e) -> Box with e`
+/// building `Box::{ f: () -> g() }`), the call instantiating that variable
+/// to a row that names `label`?
+fn hce_decl_makes_bound_via_var(name: String, inst: Type, label: String, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Bool {
+  match env_lookup(env, name) {
+    Some(scheme) => {
+      let mut made = false
+      for v in hce_result_fn_row(scheme) {
+        if !made && label_is_effect_var(v) {
+          let at: Array[String] = array_empty()
+          hce_var_inst(scheme, inst, v, at)
+          if hce_has(at, label) && hce_decl_makes_bound(name, v, env, defs, s) {
+            made = true
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      }
+      made
+    },
+    None => false
+  }
+}
+
+/// The effect bases the row variable `v` of `scheme` stands for in `inst`,
+/// the same type instantiated at a call: read off each function row of
+/// `scheme` that names `v`, as the labels the matching row of `inst` adds
+/// to the ones `scheme` spells there.
+fn hce_var_inst(scheme: Type, inst: Type, v: String, out: Array[String]) -> Unit {
+  match (scheme, inst) {
+    (CtForAll(_, _, inner), _) => hce_var_inst(inner, inst, v, out),
+    (_, CtForAll(_, _, inner)) => hce_var_inst(scheme, inner, v, out),
+    (CtFn(ps, r, srow), CtFn(qs, r2, irow)) => {
+      if hce_row_names_var(scheme, v) {
+        let own = hce_row_bases(srow)
+        for b in hce_row_bases(irow) {
+          if !hce_has(own, b) {
+            hce_add(out, b)
+          } else {
+            ()
+          }
+        }
+      } else {
+        ()
+      }
+      if Array::length(ps) == Array::length(qs) {
+        hce_var_inst_all(ps, qs, v, out)
+      } else {
+        ()
+      }
+      hce_var_inst(r, r2, v, out)
+    },
+    (CtArray(a), CtArray(b)) => hce_var_inst(a, b, v, out),
+    (CtOption(a), CtOption(b)) => hce_var_inst(a, b, v, out),
+    (CtTuple(xs), CtTuple(ys)) => if Array::length(xs) == Array::length(ys) {
+      hce_var_inst_all(xs, ys, v, out)
+    } else {
+      ()
+    },
+    (CtNamed(_, xs), CtNamed(_, ys)) => if Array::length(xs) == Array::length(ys) {
+      hce_var_inst_all(xs, ys, v, out)
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+fn hce_var_inst_all(xs: Array[Type], ys: Array[Type], v: String, out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    hce_var_inst(Array::get(xs, i), Array::get(ys, i), v, out)
+    i = i + 1
+  }
+}
+
+/// The bases of the effects a row spells, row variables left out.
+fn hce_row_bases(row: Option[String]) -> Array[String] {
+  let out: Array[String] = array_empty()
+  match row {
+    Some(r) => for raw in String::split(r, ",") {
+      let l = String::trim(raw)
+      if String::length(l) > 0 && !String::starts_with(l, "#") && !label_is_effect_var(l) {
+        hce_add(out, row_label_base(effect_name_of_op(l)))
+      } else {
+        ()
+      }
+    },
+    None => ()
+  }
+  out
+}
+
+/// Does the row of the function type `ty` name the row variable `v`?
+fn hce_row_names_var(ty: Type, v: String) -> Bool {
+  match ty {
+    CtForAll(_, _, inner) => hce_row_names_var(inner, v),
+    CtFn(_, _, Some(row)) => {
+      let mut found = false
+      for raw in String::split(row, ",") {
+        if String::trim(raw) == v {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// Does the row of the function type `ty` name a row variable?
+fn hce_row_has_var(ty: Type) -> Bool {
+  match ty {
+    CtForAll(_, _, inner) => hce_row_has_var(inner),
+    CtFn(_, _, Some(row)) => {
+      let mut found = false
+      for raw in String::split(row, ",") {
+        if label_is_effect_var(String::trim(raw)) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// Is the walk reading a declaration for a row variable (#3594)?
+fn hce_poly_walk(st: HceWalk) -> Bool {
+  Array::length(st.labels) == 1 && label_is_effect_var(Array::get(st.labels, 0))
+}
+
+fn hce_callee_is_ctor(callee: Expr, defs: Array[TypeDef]) -> Bool {
+  match callee {
+    EIdent(name, _) => hce_is_ctor(name, defs),
+    _ => false
+  }
+}
+
+/// #3593: `env` with, for each function this module publishes that creates
+/// a closure performing an exception and can return it inside a declared
+/// type's fields, the exception bases it does that for -- read where the
+/// module's own handles read it (`hce_decl_makes_bound`), so an importer's
+/// handle can answer without the body. The facts ride the function's
+/// `retention_summary_marker` binding as its type arguments, after the
+/// retention summary, and reach importers, re-exports and type companions
+/// the way that summary does. `final_s` is the module's final substitution.
+export fn hce_bind_module_summaries(stmts: Array[Stmt], env: TypeEnv, defs0: Array[TypeDef], final_s: Subst) -> TypeEnv {
+  if !retention_summaries_enabled() {
+    env
+  } else {
+    let defs = hce_defs_with_env(defs0, env)
+    Array::push(hce_final, final_s)
+    let mut out = env
+    for stmt in stmts {
+      match stmt {
+        SLet(_, _, name, _, _) => {
+          let facts = hce_decl_bound_facts(name, env, defs, final_s)
+          // A declaration with no fact still hides the facts of an import
+          // its name would otherwise republish.
+          match env_lookup(env, retention_summary_marker(name)) {
+            Some(CtNamed(text, old)) => if Array::length(facts) > 0 || Array::length(old) > 0 {
+              out = env_bind(out, retention_summary_marker(name), CtNamed(text, facts))
+            } else {
+              ()
+            },
+            _ => if Array::length(facts) > 0 {
+              out = env_bind(out, retention_summary_marker(name), CtNamed("", facts))
+            } else {
+              ()
+            }
+          }
+        },
+        _ => ()
+      }
+    }
+    Array::truncate(hce_final, Array::length(hce_final) - 1)
+    out
+  }
+}
+
+/// The exception bases the declaration `name` creates a throwing closure
+/// for that can leave it inside a declared type's fields, and the row
+/// variables of its own row it creates a closure performing for (#3594),
+/// each as a `CtNamed` with no arguments. A result type that spells the
+/// function needs no fact: the importer reads it off the type.
+fn hce_decl_bound_facts(name: String, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Array[Type] {
+  let facts: Array[Type] = array_empty()
+  match env_lookup(env, name) {
+    Some(ty0) => {
+      let ty = subst_apply(s, ty0)
+      match hce_fn_result(ty) {
+        Some(ret0) => {
+          let ret = subst_apply(s, ret0)
+          let bases: Array[String] = array_empty()
+          for l in hce_result_fn_row(ty) {
+            if !label_is_effect_var(l) {
+              let base = row_label_base(effect_name_of_op(l))
+              if is_exception_effect_name(base) {
+                hce_add(bases, base)
+              } else {
+                ()
+              }
+            } else {
+              ()
+            }
+          }
+          // #3594: a row variable of the declaration's own row (`e`) is a
+          // fact too, which an importer reads at the row its call
+          // instantiates that variable to.
+          for l in hce_result_fn_row(ty) {
+            if label_is_effect_var(l) {
+              hce_add(bases, l)
+            } else {
+              ()
+            }
+          }
+          for base in bases {
+            if !hce_spells_fn_without(ret, base, defs, array_empty()) && hce_holds_fn_without(ret, base, defs, array_empty()) && hce_decl_makes_bound(name, base, env, defs, s) {
+              Array::push(facts, CtNamed(base, array_empty()))
+            } else {
+              ()
+            }
+          }
+        },
+        None => ()
+      }
+    },
+    None => ()
+  }
+  facts
+}
+
+/// The effect bases of the handle-bound values the argument `arg` (just
 /// walked; `producers_before` is where its producers begin) hands the call:
-/// a closure written in it that can leave it, or a handle-bound local it
-/// does not merely call. "" when it hands none.
+/// the closures written in it that can leave it, and the handle-bound
+/// locals it does not merely call. "" when it hands none.
 fn hce_arg_bound_label(arg: Expr, producers_before: Int, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> String {
   let mut found = ""
   let mut pi = producers_before
-  while found == "" && pi < Array::length(st.producers) {
+  while pi < Array::length(st.producers) {
     let (_, _, plabel, preach) = Array::get(st.producers, pi)
     if preach > 0 {
-      found = plabel
+      found = hce_set_union(found, plabel)
     } else {
       ()
     }
     pi = pi + 1
   }
   let mut si = 0
-  while found == "" && si < Array::length(st.scope) {
-    let (n, label) = Array::get(st.scope, si)
+  while si < Array::length(st.scope) {
+    let (n, label, _) = Array::get(st.scope, si)
     if label != "" && hce_lookup(st, n) == 2 && hce_name_reach(n, arg, st, env, defs, s) > 0 {
-      found = label
+      found = hce_set_union(found, label)
     } else {
       ()
     }
@@ -1058,13 +2156,13 @@ fn hce_arg_bound_label(arg: Expr, producers_before: Int, st: HceWalk, env: TypeE
   found
 }
 
-/// Can the call at `off` keep the value performing `label` it is handed as
+/// Can the call at `off` keep the value performing the set `label` it is handed as
 /// argument `ai` (`arg`, of `nargs`) past the call -- in state the callee
 /// captured, a module-level binding, its receiver, a handler's state? Not
 /// when:
 ///
 ///   - the parameter there cannot hold a function, or is a function type
-///     whose row names `label` or a row variable: a closure handed there
+///     whose row names every base of `label` or a row variable: a closure handed there
 ///     takes that row, and whoever calls it passes the handler;
 ///   - the callee is a constructor -- `Some` / `Ok` / `Err` or a declared
 ///     enum variant, never a function by the case of its name (the value it
@@ -1079,7 +2177,7 @@ fn hce_arg_bound_label(arg: Expr, producers_before: Int, st: HceWalk, env: TypeE
 /// imported function, a method, a computed callee, `perform` -- may.
 fn hce_callee_may_keep(callee: Expr, off: Int, arg: Expr, ai: Int, nargs: Int, label: String, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Bool {
   let takes_row = match hce_param_type(callee, off, arg, ai, nargs, st, env, s) {
-    Some(pt) => !hce_holds_fn(pt, defs, array_empty()) || hce_param_takes_row(pt, label),
+    Some(pt) => !hce_holds_fn(pt, defs, array_empty()) || hce_set_untaken(label, pt) == "",
     None => false
   }
   if takes_row {
@@ -1133,7 +2231,7 @@ fn hce_param_type(callee: Expr, off: Int, arg: Expr, ai: Int, nargs: Int, st: Hc
   match arg {
     ELabeledArg(_, _, _) => None,
     _ => match ty {
-      Some(t) => match hce_fn_params(subst_apply(s, t)) {
+      Some(t) => match hce_fn_params(hce_late(subst_apply(s, t))) {
         Some(params) => {
           let at = if Array::length(params) == nargs + 1 {
             ai + 1
@@ -1182,16 +2280,18 @@ fn hce_recorded_type(off: Int, spelling: String) -> Option[Type] {
   found
 }
 
-/// Forget the producers from `from` on whose effect the parameter type `pt`
-/// carries.
+/// Take from the producers from `from` on the effects the parameter type
+/// `pt` carries, and forget those left with none: a closure performing
+/// `Ask` and `Log` handed to `() -> Int with Ask` still needs this handle
+/// for `Log` (#3585).
 fn hce_drop_row_taken(st: HceWalk, from: Int, pt: Type) -> Unit {
   let kept: Array[(String, Int, String, Int)] = array_empty()
   let mut pi = from
   while pi < Array::length(st.producers) {
-    let p = Array::get(st.producers, pi)
-    let (_, _, plabel, _) = p
-    if !hce_param_takes_row(pt, plabel) {
-      Array::push(kept, p)
+    let (pwhat, poff, plabel, preach) = Array::get(st.producers, pi)
+    let left = hce_set_untaken(plabel, pt)
+    if left != "" {
+      Array::push(kept, (pwhat, poff, left, preach))
     } else {
       ()
     }

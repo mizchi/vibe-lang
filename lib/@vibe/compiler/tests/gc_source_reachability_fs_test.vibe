@@ -1,0 +1,86 @@
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_gc
+}
+import @vibe/compiler/core {
+  set_executable_exports_stripped
+}
+import @vibe/process {
+  process_sh_capture
+}
+
+fn gc_reachability_fs_run(label: String, source: String, expected: String) -> Unit with Exception + Fs + Env + Process + Console {
+  gc_reachability_fs_run_entry(label, source, "main", false, expected)
+}
+
+fn gc_reachability_fs_run_entry(label: String, source: String, entry: String, strip: Bool, expected: String) -> Unit with Exception + Fs + Env + Process + Console {
+  Fs::mkdir_p("_build/vibe_test/gc_source_reachability_fs")
+  let extension = if entry == "__no_entry__" {
+    ".vibe"
+  } else {
+    ".vibex"
+  }
+  let input = "_build/vibe_test/gc_source_reachability_fs/" + label + extension
+  Fs::write_file(input, source)
+  // GC is an instrumented CLI lane: neither regular nor test builds announce
+  // an executable export strip. Retain entry-source publications in both.
+  set_executable_exports_stripped(strip)
+  let wasm = handle {
+    compile_file_fs_mode_gc(input, entry)
+  } with { Exception::Throw(msg) => {
+    set_executable_exports_stripped(false); throw(msg)
+  } }
+  set_executable_exports_stripped(false)
+  let output = "_build/vibe_test/gc_source_reachability_fs/" + label + ".wasm"
+  Fs::write_bytes(output, wasm)
+  let result = process_sh_capture("bash scripts/run_wasm_vibe_host_runner.sh " + output)
+  inspect(result.exit_code, content = "0")
+  assert(result.stdout == expected)
+}
+
+test "GC unused builtin import does not require Future" {
+  gc_reachability_fs_run("unused", "import @vibe/builtin { trait Iterator } fn main() -> Unit allows Console { println(\"ok:unused-import\") }", "ok:unused-import\n")
+}
+
+test "GC retains a used builtin function while dropping unused AsyncIter methods" {
+  gc_reachability_fs_run("used-replace", "import @vibe/builtin { String::replace_all } fn main() -> Unit allows Console { println(String::replace_all(\"aba\", \"a\", \"x\")) }", "xbx\n")
+}
+
+test "GC keeps the builtin Iterator implementation used by a for loop" {
+  gc_reachability_fs_run("used-iterator", "import @vibe/builtin { trait Iterator } fn main() -> Unit allows Console { for x in [1, 2] { println(\"\\{x}\") }; () }", "1\n2\n")
+}
+
+test "GC test artifacts ignore unused dependency exports without an export strip" {
+  gc_reachability_fs_run_entry("test-mode", "import @vibe/builtin { trait Iterator } test \"only\" { println(\"ok:gc-test\") }", "__no_entry__", false, "ok:gc-test\n0\n")
+}
+
+test "GC test artifacts retain the Iterator implementation their loop calls" {
+  gc_reachability_fs_run_entry("test-iterator", "import @vibe/builtin { trait Iterator } test \"loop\" { for x in [1, 2] { println(\"\\{x}\") }; () }", "__no_entry__", false, "1\n2\n0\n")
+}
+
+test "GC test artifacts follow used dependency functions without rooting all exports" {
+  Fs::mkdir_p("_build/vibe_test/gc_source_reachability_fs")
+  Fs::write_file("_build/vibe_test/gc_source_reachability_fs/test-provider.vibe", "export fn greeting() -> String { \"ok:dependency\" } export fn unused() -> Future[Int] { Future::ready(7) }")
+  gc_reachability_fs_run_entry("test-dependency", "import ./test-provider.vibe { greeting } test \"call\" { println(greeting()) }", "__no_entry__", false, "ok:dependency\n0\n")
+}
+
+fn gc_reachability_fs_future_refused(label: String, source: String) -> Unit with Exception + Fs + Env {
+  Fs::mkdir_p("_build/vibe_test/gc_source_reachability_fs")
+  let input = "_build/vibe_test/gc_source_reachability_fs/" + label + ".vibe"
+  Fs::write_file(input, source)
+  set_executable_exports_stripped(false)
+  let msg = handle {
+    let _ = compile_file_fs_mode_gc(input, "__no_entry__")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "does not support the builtin `Future::ready`"))
+}
+
+test "GC test artifacts retain their entry source exports across FS boundaries" {
+  gc_reachability_fs_future_refused("test-public", "export fn published() -> Future[Int] { Future::ready(7) } test \"only\" { () }")
+}
+
+test "GC test artifacts retain the entry source reexported dependency" {
+  Fs::mkdir_p("_build/vibe_test/gc_source_reachability_fs")
+  Fs::write_file("_build/vibe_test/gc_source_reachability_fs/reexport-provider.vibe", "export fn published() -> Future[Int] { Future::ready(7) }")
+  gc_reachability_fs_future_refused("test-reexport", "export ./reexport-provider.vibe { published } test \"only\" { () }")
+}

@@ -1,0 +1,166 @@
+// #3565: a local binding spelled like a builtin -- a parameter, a `let`, a
+// lambda parameter, a match arm binder or a `for` variable -- is the binding
+// the call reaches, in typing, in the effect row and in the emitted code.
+//
+// Before this, two layers resolved the name to the builtin anyway:
+//   - the effect checker charged the builtin's row (`print` / `println` ->
+//     `Console`, `sh` / `sh_lines` -> `Process`) to a pure function, so
+//     `fn call_it(print: () -> String) -> String { print() }` was refused;
+//   - the linear lowering called the builtin (`sleep` / `sleep_blocking` /
+//     `map_has`): invalid wasm, a `0`, or an out-of-bounds trap.
+//
+// Every function below declares no row, and every answer is one the builtin
+// never gives.
+
+fn call_it(print: () -> String) -> String {
+  print()
+}
+
+fn print_param(print: (Int) -> Int) -> Int {
+  print(5)
+}
+
+fn print_let() -> Int {
+  let print = (a: Int) -> Int { a + 100 }
+  print(5)
+}
+
+fn print_lambda() -> Int {
+  let g = (print: (Int) -> Int) -> Int { print(5) }
+  g((a: Int) -> Int { a - 1 })
+}
+
+fn print_match(o: Option[(Int) -> Int]) -> Int {
+  match o {
+    Some(print) => print(5),
+    None => 0
+  }
+}
+
+fn print_for(fs: Array[(Int) -> Int]) -> Int {
+  let mut t = 0
+  for print in fs {
+    t = t + print(5)
+  }
+  t
+}
+
+fn println_param(println: (String) -> String) -> String {
+  println("x")
+}
+
+fn println_let() -> String {
+  let println = (s: String) -> String { "<\{s}>" }
+  println("y")
+}
+
+fn println_inner_lambda(println: (String) -> String) -> String {
+  let g = () -> String { println("z") }
+  g()
+}
+
+fn sh_param(sh: (String) -> Int) -> Int {
+  sh("ls")
+}
+
+fn sh_lines_let() -> Int {
+  let sh_lines = (s: String) -> Int { String::length(s) }
+  sh_lines("abcd")
+}
+
+fn sleep_param(sleep: (Int) -> Int) -> Int {
+  sleep(5)
+}
+
+fn sleep_let() -> Int {
+  let sleep = (a: Int) -> Int { a + 100 }
+  sleep(5)
+}
+
+fn sleep_lambda() -> Int {
+  let g = (sleep: (Int) -> Int) -> Int { sleep(5) }
+  g((a: Int) -> Int { a * 3 })
+}
+
+fn sleep_match(o: Option[(Int) -> Int]) -> Int {
+  match o {
+    Some(sleep) => sleep(5),
+    None => 0
+  }
+}
+
+fn sleep_for(fs: Array[(Int) -> Int]) -> Int {
+  let mut t = 0
+  for sleep in fs {
+    t = t + sleep(5)
+  }
+  t
+}
+
+fn sleep_blocking_param(sleep_blocking: (Int) -> Int) -> Int {
+  sleep_blocking(7)
+}
+
+fn map_has_param(map_has: (Int) -> Int) -> Int {
+  map_has(5)
+}
+
+fn map_has_let() -> Int {
+  let map_has = (a: Int, b: Int) -> Int { a - b }
+  map_has(10, 3)
+}
+
+fn map_has_inner_lambda(map_has: (Int) -> Int) -> Int {
+  let g = () -> Int { map_has(1) }
+  g()
+}
+
+fn add100(a: Int) -> Int {
+  a + 100
+}
+
+test "a parameter spelled print is the parameter (the issue's shape)" {
+  inspect(call_it(() -> "hi"), content = "hi")
+  inspect(print_param(add100), content = "105")
+}
+
+test "print bound by let, lambda parameter, match arm and for" {
+  inspect(print_let(), content = "105")
+  inspect(print_lambda(), content = "4")
+  inspect(print_match(Some(add100)), content = "105")
+  let fs: Array[(Int) -> Int] = [add100, (a: Int) -> Int { a * 2 }]
+  inspect(print_for(fs), content = "115")
+}
+
+test "println and the shell builtins as local names" {
+  inspect(println_param((s: String) -> String { "[\{s}]" }), content = "[x]")
+  inspect(println_let(), content = "<y>")
+  inspect(println_inner_lambda((s: String) -> String { "{\{s}}" }), content = "{z}")
+  inspect(sh_param((s: String) -> Int { String::length(s) }), content = "2")
+  inspect(sh_lines_let(), content = "4")
+}
+
+test "sleep and sleep_blocking as local names call the local" {
+  inspect(sleep_param(add100), content = "105")
+  inspect(sleep_let(), content = "105")
+  inspect(sleep_lambda(), content = "15")
+  inspect(sleep_match(Some(add100)), content = "105")
+  let fs: Array[(Int) -> Int] = [add100]
+  inspect(sleep_for(fs), content = "105")
+  inspect(sleep_blocking_param(add100), content = "107")
+}
+
+test "map_has as a local name calls the local" {
+  inspect(map_has_param(add100), content = "105")
+  inspect(map_has_let(), content = "7")
+  inspect(map_has_inner_lambda(add100), content = "101")
+}
+
+// The capture scan no longer records these names as a closure's free
+// variable, so an unshadowed call inside a lambda still reaches the builtin.
+test "the builtin still answers where nothing shadows it" {
+  let m = Map::from_pairs([("a", 1)])
+  inspect(map_has(m, "a"), content = "true")
+  let g = () -> Bool { map_has(m, "b") }
+  inspect(g(), content = "false")
+}

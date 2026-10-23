@@ -466,6 +466,86 @@ if ! printf '%s\n' "$oob_stripped_out" | grep -qE 'wasm-function\[|RuntimeError:
 fi
 echo "[compiler-gate] OOB abort messages + path:line ok (five ops; stripped mapping degrades)"
 
+# 4e2. #3543: an index, offset or count of 2^32 or more TRAPS. The bounds checks
+#     narrowed the index with i32.wrap_i64 before comparing it with the u32
+#     length, so 2^32 wrapped to 0: `Array::get(xs, 4294967296)` answered
+#     xs[0], `Array::set` overwrote it, and `Bytes::slice(b, 2^32, 2^32 + 2)`
+#     answered b[0..2]. Each sample prints `before`, so a build or run that
+#     dies early cannot satisfy its row, and must not reach `after`. The
+#     linear (RC production) lane also names the operation, the full index
+#     and the length; the gc lane traps bare (native `array.get` bounds, no
+#     __rt_oob_abort). `local_get` / `local_set` keep their array in a gc
+#     local, so on gc they take the native `array.get` / `array.set`, whose
+#     i32 index operand is saturated rather than wrapped. On gc, `Array::get`
+#     on an array in linear memory (a `String::split` result) and
+#     `String::byte_at` had no bounds check at all, so their small
+#     out-of-range rows run there too. The answers that
+#     stay answers are fixtures/index_out_of_u32_range_test.vibe.
+echo "[compiler-gate] 4e2 an index of 2^32 or more traps instead of wrapping into range (#3543)"
+u32dir="_build/_gate_index_u32"
+rm -rf "$u32dir"; mkdir -p "$u32dir"
+# case|lanes|access statement|linear-lane message
+u32_cases=(
+  "arr_get|linear gc|println(\"\\{Array::get(xs, id(4294967296))}\")|Array::get: index 4294967296 out of bounds for length 3"
+  "arr_get_neg|linear gc|println(\"\\{Array::get(xs, id(-4294967296))}\")|Array::get: index -4294967296 out of bounds for length 3"
+  "arr_index|linear gc|println(\"\\{xs[id(4294967296)]}\")|Array::get: index 4294967296 out of bounds for length 3"
+  "arr_set|linear gc|Array::set(xs, id(4294967296), 5)|Array::set: index 4294967296 out of bounds for length 3"
+  "byte_at|linear gc|println(\"\\{String::byte_at(s, id(4294967296))}\")|String::byte_at: index 4294967296 out of bounds for length 3"
+  "bytes_get|linear gc|println(\"\\{Bytes::get(b, id(4294967296))}\")|Bytes::get: index 4294967296 out of bounds for length 3"
+  "bytes_set|linear gc|Bytes::set(b, id(4294967296), 65)|Bytes::set: index 4294967296 out of bounds for length 3"
+  "bytes_slice|linear gc|println(\"\\{Bytes::length(Bytes::slice(b, id(4294967296), id(4294967298)))}\")|Bytes::get: index 4294967296 out of bounds for length 3"
+  "bytes_slice_end|linear gc|println(\"\\{Bytes::length(Bytes::slice(b, id(0), id(4294967298)))}\")|Bytes::get: index 3 out of bounds for length 3"
+  "bytes_blit|linear gc|Bytes::blit(Bytes::new(), b, id(4294967296), id(4294967298))|Bytes::get: index 4294967296 out of bounds for length 3"
+  "native_get|linear gc|println(\"\\{local_get(id(4294967296))}\")|Array::get: index 4294967296 out of bounds for length 3"
+  "native_set|linear gc|println(\"\\{local_set(id(4294967296))}\")|Array::set: index 4294967296 out of bounds for length 3"
+  "split_get|gc|println(\"\\{Array::get(String::split(\"a,b\", \",\"), id(5))}\")|"
+  "byte_at_small|gc|println(\"\\{String::byte_at(s, id(5))}\")|"
+)
+for u32_case in "${u32_cases[@]}"; do
+  IFS='|' read -r u32_name u32_lanes u32_access u32_msg <<<"$u32_case"
+  u32_src="$u32dir/$u32_name.vibe"
+  printf '%s\n' \
+    'fn id(x: Int) -> Int {' '  x' '}' '' \
+    'fn local_get(i: Int) -> Int {' '  let a = [1, 2, 3]' '  Array::get(a, i)' '}' '' \
+    'fn local_set(i: Int) -> Int {' '  let a = [1, 2, 3]' '  Array::set(a, i, 9)' '  Array::get(a, 0)' '}' '' \
+    'fn main allows Console {' \
+    '  let xs = [10, 20, 30]' '  let s = "abc"' '  let b = Bytes::from_array([97, 98, 99])' \
+    '  println("before")' "  $u32_access" '  println("after")' '}' >"$u32_src"
+  for u32_lane in $u32_lanes; do
+    u32_wasm="$u32dir/${u32_name}_$u32_lane.wasm"
+    if [ "$u32_lane" = gc ]; then
+      VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+        "$u32_src" "$u32_wasm" main >/dev/null 2>&1 || true
+    else
+      env -u VIBE_RC VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+        "$u32_src" "$u32_wasm" main >/dev/null 2>&1 || true
+    fi
+    if [ ! -s "$u32_wasm" ]; then
+      echo "[compiler-gate] FAIL: $u32_name did not compile on $u32_lane (#3543)" >&2
+      cat "$u32_wasm.diag" >&2 2>/dev/null || true
+      exit 1
+    fi
+    u32_status=0
+    u32_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_RUNNER_EXIT_WITH_RESULT=1 bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$u32_wasm" 2>&1)" || u32_status=$?
+    if ! printf '%s\n' "$u32_out" | grep -qxF 'before'; then
+      echo "[compiler-gate] FAIL: $u32_name died before the access on $u32_lane (#3543): $u32_out" >&2
+      exit 1
+    fi
+    if [ "$u32_status" -eq 0 ] || printf '%s\n' "$u32_out" | grep -qxF 'after'; then
+      echo "[compiler-gate] FAIL: $u32_name answered instead of trapping on $u32_lane (#3543): $u32_out" >&2
+      exit 1
+    fi
+    if [ "$u32_lane" = linear ] && ! printf '%s\n' "$u32_out" | grep -qF "$u32_msg"; then
+      echo "[compiler-gate] FAIL: $u32_name did not report '$u32_msg' on $u32_lane (#3543): $u32_out" >&2
+      exit 1
+    fi
+  done
+done
+rm -rf "$u32dir"
+echo "[compiler-gate] index-of-2^32 traps ok (Array, String, Bytes; linear and gc)"
+
 # 4f. #2362: `insert_raw`'s probe walk is BOUNDED. `find_index` has carried a
 #     step guard since it was written; the insert path walking the same chain
 #     under the same invariant did not, so a table with no empty slot spun

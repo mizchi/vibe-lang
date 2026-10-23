@@ -195,6 +195,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_if_i64,
   emit_if_void,
   emit_import_section_func,
+  emit_index_ge_u32_len,
   emit_local_get,
   emit_local_set,
   emit_local_tee,
@@ -226,12 +227,14 @@ export fn gen_arr_get_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: 
   // in either) and `oob_abort_idx` the abort helper's function index. Pass
   // oob_abort_idx < 0 to omit the call and emit the historical bare-trap
   // body (the static twin pins that form).
+  //
+  // #3543: the index stays i64 for the compare. Narrowing it first wrapped
+  // 2^32 to 0, so `Array::get(xs, 4294967296)` answered xs[0].
   emit_local_get(b, 1)
   if enable_rc {
     emit_i64_const(b, 1)
     emit_i64_shr_s(b)
   }
-  emit_i32_wrap_i64(b)
   emit_local_get(b, 0)
   if enable_rc {
     emit_i64_const(b, -2)
@@ -239,7 +242,7 @@ export fn gen_arr_get_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: 
   }
   emit_i32_wrap_i64(b)
   emit_i32_load(b, 2, 4)
-  emit_i32_ge_u(b)
+  emit_index_ge_u32_len(b)
   emit_if_void(b)
   if oob_abort_idx >= 0 {
     emit_i64_const(b, oob_prefix_fat)
@@ -514,12 +517,12 @@ export fn gen_arr_set_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: 
   // #811: same unsigned bounds check as gen_arr_get_body — an OOB set
   // silently corrupted adjacent memory. #2199: same formatted abort as
   // gen_arr_get_body (see its comment); oob_abort_idx < 0 omits the call.
+  // #3543: compared in i64, as in gen_arr_get_body.
   emit_local_get(b, 1)
   if enable_rc {
     emit_i64_const(b, 1)
     emit_i64_shr_s(b)
   }
-  emit_i32_wrap_i64(b)
   emit_local_get(b, 0)
   if enable_rc {
     emit_i64_const(b, -2)
@@ -527,7 +530,7 @@ export fn gen_arr_set_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: 
   }
   emit_i32_wrap_i64(b)
   emit_i32_load(b, 2, 4)
-  emit_i32_ge_u(b)
+  emit_index_ge_u32_len(b)
   emit_if_void(b)
   if oob_abort_idx >= 0 {
     emit_i64_const(b, oob_prefix_fat)

@@ -33,7 +33,7 @@ import @vibe/compiler/lowering/effects/direct {
 }
 
 import @vibe/compiler/lowering/effects/evidence {
-  edp_collect_effect_defs, edp_collect_fn_defs, edp_es_collect_into, edp_params_of_fn
+  edp_collect_effect_defs, edp_collect_fn_defs, edp_es_collect_into, edp_params_of_fn, evidence_split_handler_sets
 }
 
 import @vibe/compiler/lowering/effects/queries {
@@ -254,6 +254,19 @@ import ./suspend_scps_split_tail.vibe {
 /// backend_body_wasi_module_gc_impl), so that pass only ever sees the sites
 /// this one left alone.
 export fn suspend_cps_pass(stmts: Array[Stmt]) -> Array[String] {
+  // A suspend site needs one driver for the whole group. Splitting first
+  // hides sibling effects from its continuation and return-owner analysis.
+  // Split only the ordinary handler sets left after those drivers exist.
+  let errs = scps_lower_handle_sites(stmts)
+  if Array::length(errs) == 0 {
+    for e in evidence_split_handler_sets(stmts) {
+      Array::push(errs, e)
+    }
+  } else ()
+  errs
+}
+
+fn scps_lower_handle_sites(stmts: Array[Stmt]) -> Array[String] {
   let errs = array_empty_str()
   // #3176: a call spelled like an audited pure builtin reaches the program's
   // own function when the program declares one; judge it by that row.
@@ -2333,7 +2346,7 @@ fn scps_throw_escape_msg(arms: Array[(Pat, Expr)]) -> String {
       _ => ()
     }
   }
-  String::concat(String::concat("resume with a value and `throw` after this `handle`, or move the inner exception handler outside it: a handler arm of `", eff), "` here can throw, and an exception handler between the `perform` and this `handle` would catch it, but an arm's exceptions belong to the code around the `handle` -- the lowering that runs the arm there cannot take this handle (for example, it also has an exception arm, mixes effects, or its body calls through a closure or a row variable)")
+  String::concat(String::concat("resume with a value and `throw` after this `handle`, or move the inner exception handler outside it: a handler arm of `", eff), "` here can throw, and an exception handler between the `perform` and this `handle` would catch it, but an arm's exceptions belong to the code around the `handle` -- the lowering that runs the arm there cannot take this handle (for example, it also has an exception arm, mixes effects, or its body calls through a closure or a row variable). An `Exception` arm written in the same handler set as this arm is such an inner handler; moving it outside means a `handle` of its own around this one")
 }
 
 fn scps_prepass_bind_local(scope: Array[(String, Int)], name: String, value: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> Array[(String, Int)] {

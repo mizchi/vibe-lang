@@ -185,9 +185,10 @@ fn kept_with_its_row() -> (Int, Int, Int) {
 }
 
 // A function that may throw and returns a declared type whose field holds a
-// closure: an exception row counts the functions a result type spells, not
-// those inside a declared type's fields (compiler state and `MutMap`s hold
-// callbacks there), and this one does not throw.
+// closure: inside a declared type's fields, an exception row counts only a
+// closure the function creates that throws and can leave it (#3584;
+// compiler state and `MutMap`s hold callbacks there), and this one does not
+// throw.
 struct Table {
   fs: Array[(Int) -> Int]
 }
@@ -207,6 +208,43 @@ fn table_from_a_throwing_call() -> Int {
   } with { Exception[String]::Throw(_) => Table::{ fs: [] } }
   let f = Array::get(t.fs, 0)
   f(3)
+}
+
+// The throwing closure `load_checked` creates is applied in place; the one
+// its result holds does not throw.
+fn load_checked(n: Int) -> Table with Exception[String] {
+  let m = (() -> if n < 0 {
+    throw("neg")
+  } else {
+    n
+  })()
+  Table::{ fs: [(x: Int) -> x + m] }
+}
+
+fn table_from_a_checked_call() -> Int {
+  let t = handle {
+    load_checked(4)
+  } with { Exception[String]::Throw(_) => Table::{ fs: [] } }
+  let f = Array::get(t.fs, 0)
+  f(3)
+}
+
+// The same, with the handle checked before the helper it calls, which
+// reaches a throwing function through a local alias (Codex on #3594): the
+// helper is read again once its body is checked, and its field closure
+// still does not throw.
+fn table_from_a_later_helper() -> Int {
+  let t = handle {
+    load_later(5)
+  } with { Exception[String]::Throw(_) => Table::{ fs: [] } }
+  let f = Array::get(t.fs, 0)
+  f(3)
+}
+
+fn load_later(n: Int) -> Table with Exception[String] {
+  let check = maybe
+  let m = check(n < 0) + n
+  Table::{ fs: [(x: Int) -> x + m] }
 }
 
 test "a handle-bound closure called inside its handle" {
@@ -243,4 +281,6 @@ test "a closure that needs nothing from the handle leaves it" {
   inspect(method_results(), "(6, 108)")
   inspect(kept_with_its_row(), "(5, 8, 9)")
   inspect(table_from_a_throwing_call(), "5")
+  inspect(table_from_a_checked_call(), "7")
+  inspect(table_from_a_later_helper(), "15")
 }

@@ -1409,6 +1409,18 @@ run_test_block_fixtures_gc "captured let mut shadowed (gc)" fixtures/gc_ref_cell
 run_test_block_fixtures_rc "captured let mut shadowed (linear, RC)" fixtures/gc_ref_cell_shadow_slot_test.vibe
 echo '[compiler-gate] captured let mut shadowed ok'
 
+# 15b-8. #3545: `String <` on a runtime String the desugar's syntactic
+#        classifier cannot name (`String::from_byte`, `Int::to_string`, a
+#        `String::split` element) compared ADDRESSES on the gc lane: the GC
+#        entry dropped the checker's typed String-operator rows. Every pair in
+#        the fixture is allocated in the opposite order to its content order,
+#        so a reference compare cannot pass. All three lanes must agree.
+echo '[compiler-gate] 15b-8/15 String order on builtin results (#3545)'
+run_test_block_fixtures "String order on builtin results (linear, bump)" fixtures/gc_string_order_builtin_results_test.vibe
+run_test_block_fixtures_gc "String order on builtin results (gc)" fixtures/gc_string_order_builtin_results_test.vibe
+run_test_block_fixtures_rc "String order on builtin results (linear, RC)" fixtures/gc_string_order_builtin_results_test.vibe
+echo '[compiler-gate] String order on builtin results ok'
+
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
 #      type-directed sentinel that the pre-check desugar lowers by the operand's
 #      head type — `Option` (Some/None) or `Result` (Ok/Err, the default). The

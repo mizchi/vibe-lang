@@ -1,0 +1,112 @@
+// lib/@vibe/compiler/lowering/effects/evidence -- the free names of an
+// expression, which the evidence pass reads to decide whether a local helper
+// can be copied together with the names it needs.
+
+import @vibe/compiler/core {
+  Expr, expr_children
+}
+
+import @vibe/compiler/lowering/effects/queries {
+  edp_str_array_contains
+}
+
+import ./evidence_scan_view_expr.vibe {
+  edp_param_base_name, edp_pat_names
+}
+
+/// Recorded by `edp_free_names` for a part it cannot read names out of (an
+/// interpolation's text), so a copy is declined rather than trusted.
+export let edp_free_names_opaque: String = "#opaque"
+
+/// The names `e` reads or assigns that it does not bind itself, into `out`.
+/// `bound` is the names bound around `e`. Every binder form is scoped (`let`,
+/// `let mut`, `let rec`, parameters, match and handler arm patterns, `for`,
+/// `loop`), and an assignment's target counts, because the AST keeps it as a
+/// name rather than an `EIdent`.
+export fn edp_free_names(e: Expr, bound: Array[String], out: Array[String]) -> Unit {
+  match e {
+    EIdent(n, _) => edp_free_name(n, bound, out),
+    EAssign(n, v, c, _) => {
+      edp_free_name(n, bound, out)
+      edp_free_names(v, bound, out)
+      edp_free_names(c, bound, out)
+    },
+    EAssignOp(n, _, v, c, _) => {
+      edp_free_name(n, bound, out)
+      edp_free_names(v, bound, out)
+      edp_free_names(c, bound, out)
+    },
+    ELet(n, v, b, _) => {
+      edp_free_names(v, bound, out)
+      edp_free_names(b, edp_names_with(bound, [n]), out)
+    },
+    ELetMut(n, v, b, _) => {
+      edp_free_names(v, bound, out)
+      edp_free_names(b, edp_names_with(bound, [n]), out)
+    },
+    ELetRec(n, v, b) => {
+      let inner = edp_names_with(bound, [n])
+      edp_free_names(v, inner, out)
+      edp_free_names(b, inner, out)
+    },
+    EFn(_, _, ps, _, _, body) => {
+      let names: Array[String] = []
+      for p in ps {
+        Array::push(names, edp_param_base_name(p.0))
+      }
+      edp_free_names(body, edp_names_with(bound, names), out)
+    },
+    EMatch(sc, arms) => {
+      edp_free_names(sc, bound, out)
+      for arm in arms {
+        edp_free_names(arm.1, edp_names_with(bound, edp_pat_names(arm.0)), out)
+      }
+    },
+    EHandle(bd, arms) => {
+      edp_free_names(bd, bound, out)
+      for arm in arms {
+        edp_free_names(arm.1, edp_names_with(bound, edp_pat_names(arm.0)), out)
+      }
+    },
+    EForIn(n, idx, it, b) => {
+      edp_free_names(it, bound, out)
+      let names = [n]
+      match idx {
+        Some(i) => Array::push(names, i),
+        None => ()
+      }
+      edp_free_names(b, edp_names_with(bound, names), out)
+    },
+    ELoop(pairs, b) => {
+      let names: Array[String] = []
+      for pair in pairs {
+        edp_free_names(pair.1, bound, out)
+        Array::push(names, pair.0)
+      }
+      edp_free_names(b, edp_names_with(bound, names), out)
+    },
+    EStringInterp(_) => Array::push(out, edp_free_names_opaque),
+    _ => for child in expr_children(e) {
+      edp_free_names(child, bound, out)
+    }
+  }
+}
+
+fn edp_free_name(n: String, bound: Array[String], out: Array[String]) -> Unit {
+  if !edp_str_array_contains(bound, n) && !edp_str_array_contains(out, n) {
+    Array::push(out, n)
+  } else {
+    ()
+  }
+}
+
+export fn edp_names_with(bound: Array[String], names: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  for n in bound {
+    Array::push(out, n)
+  }
+  for n in names {
+    Array::push(out, n)
+  }
+  out
+}

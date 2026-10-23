@@ -23,6 +23,9 @@ import @vibe/compiler/core {
   env_bind,
   env_bind_with_origin,
   env_lookup_flat,
+  erased_kinds_marker,
+  erased_kinds_marker_target,
+  is_erased_kinds_marker,
   resolve_import_path,
   resolve_import_path_candidates
 }
@@ -595,6 +598,15 @@ export fn engine_bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv
       }
     }
   }
+  // #3601: the kinds each companion's erased row lets out beyond the
+  // message, the standard library's included.
+  let erased_kind_rows: Array[(String, Type)] = []
+  for entry in dep_bindings {
+    let (bname, bty) = entry
+    if is_erased_kinds_marker(bname) {
+      Array::push(erased_kind_rows, (erased_kinds_marker_target(bname), bty))
+    }
+  }
   let seen = array_empty()
   let mut i = 0
   while i < Array::length(dep_bindings) {
@@ -627,6 +639,12 @@ export fn engine_bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv
         match env_lookup_flat(retention_rows, candidate_name) {
           Some(t) => {
             out = env_bind(out, retention_summary_marker(local_name), t)
+          },
+          None => ()
+        }
+        match env_lookup_flat(erased_kind_rows, candidate_name) {
+          Some(t) => {
+            out = env_bind(out, erased_kinds_marker(local_name), t)
           },
           None => ()
         }

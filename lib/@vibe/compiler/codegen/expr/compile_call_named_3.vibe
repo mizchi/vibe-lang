@@ -1847,7 +1847,11 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
     }
     nl
   }
-  else if ctx.enable_rc && cc_raw_abi_shim_applies(ctx.func_table, ctx.func_offset, fname) {
+  else if ctx.enable_rc && !(local_idx_hint >= 0 && (fname == "sleep" || fname == "sleep_blocking")) && cc_raw_abi_shim_applies(ctx.func_table, ctx.func_offset, fname) {
+    // #3565: a local `sleep` / `sleep_blocking` (a parameter, `let`, pattern
+    // or `for` variable) is the program's value; the resolved call below
+    // calls it. The capture scan cannot invent either name inside a lambda
+    // (`is_inlined_scalar_builtin`), so a local hit is a binding.
     // #930: same raw-ABI shim shape as the #705 Fs::exists family and the
     // #865 vibe_process_exit_raw case above -- these three were registered
     // straight into the func table (linked_compile's name->import map) with
@@ -1929,7 +1933,12 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i64_const(buf, 0)
     nl
   }
-  else if (fname == "println" || fname == "print") && !cc_ft_has(ctx.func_table, fname) {
+  else if (fname == "println" || fname == "print") && local_idx_hint < 0 && !cc_ft_has(ctx.func_table, fname) {
+    // #3565: `local_idx_hint < 0` -- a local binding of the name (a
+    // parameter, `let`, pattern or `for` variable) is the program's value,
+    // which the checker typed and charged the call against; the resolved
+    // call below calls it. Sound because both names are registered in
+    // `is_inlined_scalar_builtin`, so a hit cannot be a capture artifact.
     // #929: the println/print checker builtins had NO linear-lane lowering
     // at all -- builtin_registry marks them in_linear_table=false on the
     // assumption that "a real prelude source function" serves the linear

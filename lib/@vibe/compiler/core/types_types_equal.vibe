@@ -98,6 +98,20 @@ fn is_effect_var_name(name: String) -> Bool {
   }
 }
 
+/// #3589: the row variable a type argument stands for, when it is one: a
+/// struct's row parameter is passed a row as `CtNamed(<row>, [])`, so
+/// `Holder[e]` carries `e` (or the fresh `$N` a call renamed it to).
+export fn row_var_type_arg(t: Type) -> Option[String] {
+  match t {
+    CtNamed(n, args) => if Array::length(args) == 0 && is_effect_var_name(n) {
+      Some(n)
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
 /// Resolve an effect variable name through the effect-binding chain (transitively
 /// following var->var links). Returns the bound effect-label string ("" = pure)
 /// or None if the variable is unbound.
@@ -521,10 +535,27 @@ export fn subst_apply(s: Subst, ty: Type) -> Type {
       (rfn, subst_apply(s, rft))
     }),
     CtNamed(name, args) => zonk_hkt(CtNamed(name, for arg in args {
-      subst_apply(s, arg)
+      match row_var_type_arg(arg) {
+        Some(v) => resolve_row_type_arg(arg, resolve_effect_opt(s, Some(v))),
+        None => subst_apply(s, arg)
+      }
     })),
     CtForAll(_, _, _) => ty,
     _ => ty
+  }
+}
+
+/// #3589: a row argument (`Holder[$4]`) after its row variable is resolved
+/// the way a function's `with $4` is: the labels it is bound to
+/// (`Holder[Console]`, the shape a literal storing `run: noisy` has before
+/// generalization reads it). Without this, `generalize` published the bound
+/// `$4` as a free row, `instantiate` freshened it, and `(make().run)()` in a
+/// pure function ran `Console` uncharged. A variable bound to the pure row
+/// stays as it was: no argument spells the pure row.
+export fn resolve_row_type_arg(arg: Type, resolved: Option[String]) -> Type {
+  match resolved {
+    Some(row) => CtNamed(row, array_empty()),
+    None => arg
   }
 }
 
@@ -1427,6 +1458,14 @@ fn collect_effect_vars_walk(t: Type, out: Array[String]) -> Int {
     },
     CtNamed(_, args) => {
       for a in args {
+        // #3589: a row variable passed as a type argument (`Holder[e]`)
+        // is the same variable as the row's `with e`.
+        match row_var_type_arg(a) {
+          Some(name) => if !string_array_contains(out, name) {
+            Array::push(out, name)
+          },
+          None => ()
+        }
         let _ = collect_effect_vars_walk(a, out)
       }
       0
@@ -1497,7 +1536,11 @@ fn rename_effect_vars(t: Type, pairs: Array[(String, String)]) -> Type {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(args) {
-        Array::push(out, rename_effect_vars(Array::get(args, i), pairs))
+        let a = Array::get(args, i)
+        Array::push(out, match row_var_type_arg(a) {
+          Some(v) => CtNamed(rename_eff_name(v, pairs), array_empty()),
+          None => rename_effect_vars(a, pairs)
+        })
         i = i + 1
       }
       CtNamed(name, out)

@@ -9,6 +9,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  compiler_owned_type_arity,
   env_cache_read_snapshot,
   env_lookup,
   expr_child_at,
@@ -130,7 +131,18 @@ import ./checker_effects_throw_payload_kind.vibe {
   collect_handle_effects,
   effect_name_of_op,
   entry_block_display_name,
+  erased_arg_kept_marker,
+  erased_arm_read_binder,
+  erased_iife_marker,
+  erased_local_key,
+  erased_local_leaks_for,
+  erased_local_marker,
+  erased_reads_marker,
+  erased_root_marker,
+  erased_slot_declared,
+  erased_slot_marker,
   exception_effect_labels,
+  exception_family_of,
   instantiate_callee_label,
   instantiate_callee_label_marked,
   is_program_entry_name,
@@ -139,6 +151,7 @@ import ./checker_effects_throw_payload_kind.vibe {
   kinded_handle_owner_marker,
   kinded_pinned_row_var_marker,
   labels_union,
+  local_binding_needs_overlay_entry,
   lookup_fn_effs,
   lookup_program_fn_effs,
   lookup_program_fn_param_effs,
@@ -147,6 +160,7 @@ import ./checker_effects_throw_payload_kind.vibe {
   program_fn_exists,
   program_fn_index,
   requirement_marked_cell,
+  row_is_erased_slot,
   row_mismatch_roots,
   row_scope_pop,
   source_definition_shadows_builtin,
@@ -620,8 +634,9 @@ export fn overlay_bind_empty(names: Array[String], effs: Array[Array[String]], n
   let (sn, se) = shadow_overlay(names, effs, name)
   // Most locals cannot fall through to a top-level function, so retaining an
   // empty marker for every binding only lengthens every descendant snapshot.
-  // The marker is needed exactly when the fallback table contains this name.
-  if !program_fn_exists(fn_index, name) {
+  // The marker is needed exactly when a fallback (the program's table or an
+  // unqualified effectful builtin, #3565) answers this name.
+  if !local_binding_needs_overlay_entry(fn_index, name) {
     return (sn, se)
   }
   let out_names = [name]
@@ -916,7 +931,7 @@ export fn overlay_bind_local(names: Array[String], effs: Array[Array[String]], n
   // #1723: an empty row is still a lexical binding. Keeping an explicit
   // empty entry is what distinguishes "a pure local shadows this name" from
   // "no local binding; consult the top-level function table".
-  if Array::length(labels) == 0 && !program_fn_exists(fn_index, name) {
+  if Array::length(labels) == 0 && !local_binding_needs_overlay_entry(fn_index, name) {
     return shadowed
   }
   let out_names = [name]
@@ -957,15 +972,141 @@ export fn build_param_overlay(params: Array[(String, Option[TypeExpr])], fn_name
     // #1723: all parameters are lexical bindings. A pure callback (or even a
     // non-function parameter later rejected by typing) must mask a same-named
     // top-level function during this independent effect walk.
-    if Array::length(labels) > 0 || program_fn_exists(fn_index, base_name) {
+    if Array::length(labels) > 0 || local_binding_needs_overlay_entry(fn_index, base_name) {
       Array::push(names, base_name)
       Array::push(effs, labels)
     } else {
       ()
     }
+    // #3589: a row variable passed to a struct parameter's type
+    // (`h: Holder[q]`) is this signature's own, like a callback's `with q`:
+    // a call through `h.run` runs it, so the body is charged it.
+    let row_args = no_str_labels()
+    match ptype {
+      Some(te) => type_arg_row_vars_into(te, row_args),
+      None => ()
+    }
+    if Array::length(row_args) > 0 {
+      Array::push(names, String::concat(row_arg_owner_prefix(), base_name))
+      Array::push(effs, row_args)
+    }
+    // #3540: a function row nested in a parameter's type (`Array[() -> Int
+    // with e]`, `Option[..]`, a tuple, a callback's result) carries the
+    // signature's row variable too. Only a kinded handle reads these entries
+    // (`overlay_nests_row_var`, `kinded_pinned_row_var_labels`).
+    match ptype {
+      Some(te) => {
+        let nested: Array[Array[String]] = []
+        nested_fn_rows_into(te, true, nested)
+        for row in nested {
+          Array::push(names, String::concat(row_nest_owner_prefix(), base_name))
+          Array::push(effs, row)
+        }
+      },
+      None => ()
+    }
     i = i + 1
   }
   (names, effs)
+}
+
+/// The overlay entry under which a function row nested in a parameter's type
+/// is recorded, one entry per row (`build_param_overlay`). Like
+/// `row_arg_owner_prefix`, the `#` keeps lookups by name away from it.
+fn row_nest_owner_prefix() -> String {
+  "#rownest:"
+}
+
+/// The rows holding a row variable of the function types nested in `te`:
+/// inside a type argument, a tuple, or a function type's parameters or
+/// result. A top-level function type's own row is the callback entry, so it
+/// is left out (`top`).
+fn nested_fn_rows_into(te: TypeExpr, top: Bool, out: Array[Array[String]]) -> Unit {
+  match te {
+    TyFn(ps, ret, eff) => {
+      if !top {
+        let labels = effect_row_labels(effect_row_parse(eff))
+        let mut has_var = false
+        for l in labels {
+          if label_is_effect_var(l) {
+            has_var = true
+          }
+        }
+        if has_var {
+          Array::push(out, labels)
+        }
+      }
+      for p in ps {
+        nested_fn_rows_into(p, false, out)
+      }
+      nested_fn_rows_into(ret, false, out)
+    },
+    TyApp(_, args) => {
+      for a in args {
+        nested_fn_rows_into(a, false, out)
+      }
+      ()
+    },
+    TyTuple(items) => {
+      for a in items {
+        nested_fn_rows_into(a, false, out)
+      }
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// #3540: does a function row nested in a parameter's type carry `v`
+/// (`row_nest_owner_prefix`)?
+fn overlay_nests_row_var(ov_names: Array[String], ov_effs: Array[Array[String]], v: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(ov_names) && i < Array::length(ov_effs) && !found {
+    if String::starts_with(Array::get(ov_names, i), row_nest_owner_prefix()) && str_labels_contain(Array::get(ov_effs, i), v) {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The overlay entry under which a struct parameter's row variables are
+/// recorded (`build_param_overlay`). The `#` keeps every lookup by name and
+/// every walk over callbacks away from it; only `overlay_owns_row_var` reads
+/// it.
+fn row_arg_owner_prefix() -> String {
+  "#rowarg:"
+}
+
+/// The row variables `te` passes as a type argument (`Holder[q]`), outside
+/// a compiler-owned head (`TaskGroup[rg, e]`), whose row slot keeps its own
+/// handling.
+fn type_arg_row_vars_into(te: TypeExpr, out: Array[String]) -> Unit {
+  match te {
+    TyApp(head, args) => {
+      let owned = match compiler_owned_type_arity(head) {
+        Some(_) => true,
+        None => false
+      }
+      for a in args {
+        match a {
+          TyName(n) => if !owned && label_is_effect_var(n) && !str_labels_contain(out, n) {
+            Array::push(out, n)
+          },
+          _ => type_arg_row_vars_into(a, out)
+        }
+      }
+      ()
+    },
+    TyTuple(items) => {
+      for a in items {
+        type_arg_row_vars_into(a, out)
+      }
+      ()
+    },
+    _ => ()
+  }
 }
 
 /// A `let apply: [T](f: (T) -> T with e, x: T) -> T = (f, x) -> { f(x) }`
@@ -1085,7 +1226,9 @@ fn overlay_owns_row_var(ov_names: Array[String], ov_effs: Array[Array[String]], 
   let mut i = 0
   while i < Array::length(ov_names) && i < Array::length(ov_effs) && !found {
     let n = Array::get(ov_names, i)
-    if !String::starts_with(n, "#") && str_labels_contain(Array::get(ov_effs, i), v) {
+    if String::starts_with(n, row_arg_owner_prefix()) && str_labels_contain(Array::get(ov_effs, i), v) {
+      found = true
+    } else if !String::starts_with(n, "#") && str_labels_contain(Array::get(ov_effs, i), v) {
       match overlay_alias_target(ov_names, ov_effs, n) {
         Some(_) => (),
         None => found = true
@@ -1161,6 +1304,18 @@ fn kinded_pinned_row_var_labels(declared: Array[String], ov_names: Array[String]
               }
             }
           }
+        } else if String::starts_with(n, row_nest_owner_prefix()) && str_labels_contain(row, v) {
+          // A function row nested in a parameter's type is a carrier like a
+          // callback's own row.
+          carriers = carriers + 1
+          if Array::length(exception_effect_labels(row)) == 0 {
+            unpinned = true
+          }
+        } else if String::starts_with(n, row_arg_owner_prefix()) && str_labels_contain(row, v) {
+          // A row argument (`Holder[e]`) names no exception label beside the
+          // variable, so a field's function may raise any kind through it.
+          carriers = carriers + 1
+          unpinned = true
         }
         i = i + 1
       }
@@ -1184,7 +1339,11 @@ fn kinded_pinned_row_var_labels(declared: Array[String], ov_names: Array[String]
 fn charge_typed_own_row_vars(call_off: Int, spelling: String, ov_names: Array[String], ov_effs: Array[Array[String]], declared: Array[String], in_handle: Bool, missing: Array[String]) -> Unit {
   let own = no_str_labels()
   for v in call_callee_recorded_row_vars(call_off, spelling) {
-    if overlay_owns_row_var(ov_names, ov_effs, v) {
+    // #3540: in the body of a kinded handle a variable reached through a
+    // function nested in a parameter's type (`fs[0]()` over `fs: Array[() ->
+    // Int with e]`) is run too, and the arm would catch whatever kind a
+    // caller fills it with.
+    if overlay_owns_row_var(ov_names, ov_effs, v) || (under_kinded_handle(declared) && overlay_nests_row_var(ov_names, ov_effs, v)) {
       Array::push(own, v)
     }
   }
@@ -1637,13 +1796,20 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
             // binding is charged that row (local_fn_overlay_labels).
             Some(row) => {
               pe_push(stack, stack_ci, callee, ci)
-              pe_push(stack, stack_ci, Array::get(args, 0), pe_ctx(ctxs, labels_union(declared, closure_row_extra_labels(row)), in_handle, ov_names, ov_effs, kinds))
+              pe_push(stack, stack_ci, Array::get(args, 0), pe_ctx(ctxs, labels_union(erased_slot_body_declared(declared, row), closure_row_extra_labels(row)), in_handle, ov_names, ov_effs, kinds))
             },
             None => {
               // A callee that is not a name (a field, a call result) is one
               // this pass cannot see, so a closure literal handed to it stays
               // as strict as the body (closure_arg_declared).
-              pe_push(stack, stack_ci, callee, ci)
+              // #3601: a literal applied where it is written runs right here
+              // (`erased_iife_marker`).
+              match callee {
+                EFn(_, _, _, _, _, _) => pe_push(stack, stack_ci, callee, pe_ctx(ctxs, labels_union(declared, [
+                  erased_iife_marker()
+                ]), in_handle, ov_names, ov_effs, kinds)),
+                _ => pe_push(stack, stack_ci, callee, ci)
+              }
               let mut bi = 0
               while bi < Array::length(args) {
                 pe_push(stack, stack_ci, Array::get(args, bi), ci)
@@ -1681,7 +1847,41 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
         // directly as a call ARGUMENT is relaxed, at the call site and only
         // when the callee's signature shows it discharges the throws
         // (closure_arg_declared).
-        let body_declared = effect_row_inherit(effect_row_parse(effect), labels_union(declared, current_ret_fn_rows()))
+        // #3601: a literal whose own row is the erased one carries only
+        // messages to whoever calls it (`erased_slot_marker`), and so does one
+        // returned for an erased function row of the enclosing result.
+        // A literal handed to a callee that handles what it raises keeps its
+        // own row as written (`erased_arg_kept_marker`).
+        let kept_arg = effect_row_has_label(Some(declared), erased_arg_kept_marker())
+        let applied_here = effect_row_has_label(Some(declared), erased_iife_marker())
+        let body_declared = match effect_row_parse(effect) {
+          Some(_) => {
+            let own = effect_row_labels(effect_row_parse(effect))
+            let bound_name = Array::get(lambda_owner_pending, 0)
+            if row_is_erased_slot(own) && applied_here {
+              labels_union(own, exception_family_of(declared))
+            } else if row_is_erased_slot(own) && !kept_arg {
+              // A literal bound by `let` is called through its binding, which
+              // is charged what it lets out (`erased_local_marker`); any other
+              // is a value whose row alone its callers read.
+              if String::length(bound_name) > 0 {
+                labels_union(own, [erased_local_marker(fn_name, bound_name)])
+              } else {
+                labels_union(own, [erased_slot_marker()])
+              }
+            } else {
+              own
+            }
+          },
+          None => {
+            let ret_rows = current_ret_fn_rows()
+            if row_is_erased_slot(ret_rows) && effect_row_has_label(Some(declared), erased_root_marker(fn_name)) {
+              labels_union(erased_slot_declared(declared, ret_rows), closure_row_extra_labels(ret_rows))
+            } else {
+              labels_without(labels_without(labels_union(declared, ret_rows), erased_arg_kept_marker()), erased_iife_marker())
+            }
+          }
+        }
         // #885: extend the callback-parameter overlay with THIS function's own
         // function-typed parameters (if any carry a declared effect), scoped to
         // its body. New entries are appended AHEAD of the inherited overlay so
@@ -1826,7 +2026,20 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
             kinded_handle_marker()
           ]), labels_union(kinded_pinned_row_var_labels(declared, ov_names, ov_effs), kinded_handle_owner_labels()))
         } else if Array::length(exc_arms) > 0 {
-          labels_union(labels_without_exception_family_marker(declared), discharged)
+          // #3541: an erased arm that reads its binder reads it as the thrown
+          // message, a `String`, and the kind is not carried at run time. So
+          // its body may raise only messages: the enclosing row's exception
+          // labels are dropped (the arm catches those kinds too) and the
+          // erased label covers `String` and unresolved kinds only. An arm
+          // that leaves its payload unread catches every kind.
+          let read_binder = erased_arm_read_binder(arms)
+          if String::length(read_binder) > 0 {
+            labels_union(labels_union(labels_without_exception_family(declared), discharged), [
+              erased_reads_marker(read_binder)
+            ])
+          } else {
+            labels_union(labels_without_exception_family_marker(declared), discharged)
+          }
         } else {
           labels_union(declared, discharged)
         }
@@ -1855,7 +2068,8 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
         // non-recursive), so only the body's overlay needs the new binding
         // shadowed out. #1361: the same place registers a local closure's own
         // declared row, so calling it from the body leaks that row.
-        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
+        // #3601: plus what its erased row lets out (`erased_local_leaks`).
+        let (body_ov_names, body_ov_effs) = overlay_add_erased_local_leaks(overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index), fn_name, name, val)
         // #1344 follow-up: the local's payload kind is its initializer's, read
         // in the OUTER scope for the same non-recursive reason.
         let body_kinds = throw_kind_bind(kinds, name, throw_payload_kind(val, kinds))
@@ -1868,7 +2082,8 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
         // reference `name` (self-recursion), so both val and body need the
         // shadow applied -- and, since #1361, the local closure's own row, so a
         // recursive effectful closure is checked against it on both sides.
-        let (rec_ov_names, rec_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
+        // #3601: plus what its erased row lets out, on both sides too.
+        let (rec_ov_names, rec_ov_effs) = overlay_add_erased_local_leaks(overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index), fn_name, name, val)
         // A `let rec` value is a function; there is no payload kind to read off
         // it, so the name binds unresolvable on both sides (which is also what
         // stops it resolving through a same-named top-level binding).
@@ -1983,7 +2198,10 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
           // literal only: any OTHER field expression (a call that performs, say)
           // keeps the enclosing `declared` and stays checked as before.
           let field_declared = match fval {
-            EFn(_, _, _, _, _, _) => labels_union(declared, struct_field_rows_for(rec_sname, fname)),
+            EFn(_, _, _, _, _, _) => {
+              let field_row = struct_field_rows_for(rec_sname, fname)
+              labels_union(erased_slot_body_declared(declared, field_row), field_row)
+            },
             _ => declared
           }
           pe_push(stack, stack_ci, fval, pe_ctx(ctxs, field_declared, in_handle, ov_names, ov_effs, kinds))
@@ -2025,4 +2243,50 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
   Array::truncate(row_formal_scope, scope_depth)
   Array::truncate(lambda_owner_stack, owner_depth)
   errors
+}
+
+/// #3601: the labels a closure literal written for a slot whose function row
+/// is `row` (an annotation, a field) is walked under: the slot's erased row
+/// when it is one (`erased_slot_declared`), else the enclosing labels.
+fn erased_slot_body_declared(declared: Array[String], row: Array[String]) -> Array[String] {
+  if row_is_erased_slot(row) {
+    erased_slot_declared(declared, row)
+  } else {
+    declared
+  }
+}
+
+/// `labels` without `label`.
+fn labels_without(labels: Array[String], label: String) -> Array[String] {
+  if effect_row_has_label(Some(labels), label) {
+    let out = no_str_labels()
+    for l in labels {
+      if l != label {
+        Array::push(out, l)
+      }
+    }
+    out
+  } else {
+    labels
+  }
+}
+
+/// #3601: the overlay after `let name = val` with the kinds a closure
+/// literal `val`'s erased row lets out (`erased_local_leaks`) added to the
+/// binding's entry, so a call through it is charged them.
+fn overlay_add_erased_local_leaks(overlay: (Array[String], Array[Array[String]]), fn_name: String, name: String, val: Expr) -> (Array[String], Array[Array[String]]) {
+  let (names, effs) = overlay
+  match val {
+    EFn(_, _, _, _, _, _) => {
+      let kinds = erased_local_leaks_for(erased_local_key(fn_name, name))
+      if Array::length(kinds) > 0 && Array::length(names) > 0 && Array::get(names, 0) == name {
+        let out_effs = Array::slice(effs, 0, Array::length(effs))
+        Array::set(out_effs, 0, labels_union(Array::get(effs, 0), kinds))
+        (names, out_effs)
+      } else {
+        overlay
+      }
+    },
+    _ => overlay
+  }
 }

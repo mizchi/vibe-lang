@@ -12,13 +12,18 @@ import @vibe/compiler/core {
   TypeExpr,
   canonical_builtin_name,
   canonical_exception_effect_name,
+  env_bind,
   env_name_index_at,
   env_name_index_length,
+  erased_kinds_marker,
+  erased_kinds_marker_target,
   exception_effect_labels_equal,
   exception_kinds_compatible,
   exception_label_kind,
   exception_throw_label_for_kind,
+  expr_children_into,
   is_entry_runtime_managed_effect,
+  is_erased_kinds_marker,
   is_exception_label,
   is_exception_throw_operation,
   is_legacy_console_provider,
@@ -486,10 +491,401 @@ export fn kinded_handle_owner_prefix() -> String {
   "#kinded-owner:"
 }
 
-/// A pseudo-label of a kinded handle's body (the marker, a pinned row
-/// variable, the owning lambda); none is a row item a reader can write.
+/// A pseudo-label of a handle's body (the kinded marker, a pinned row
+/// variable, the owning lambda, the erased-arm markers below); none is a row
+/// item a reader can write.
 export fn is_kinded_handle_pseudo_label(l: String) -> Bool {
-  String::starts_with(l, "#kinded-")
+  String::starts_with(l, "#kinded-") || String::starts_with(l, erased_handle_marker_prefix())
+}
+
+fn erased_handle_marker_prefix() -> String {
+  "#erased-handle:"
+}
+
+/// #3541: the pseudo-label of a named function's own body (not of a handle
+/// in it, nor of a lambda with a row of its own). An exception of another kind
+/// than the message that its erased `with Exception` row lets out is recorded
+/// against the function (`erased_row_leaks`), and a caller charges it like a
+/// label of that row: the erased row carries the kinds its body throws.
+export fn erased_root_marker(fn_name: String) -> String {
+  String::concat(erased_handle_marker_prefix(), String::concat("root:", fn_name))
+}
+
+/// #3541: (function, `Exception[K]`) for every kind other than the thrown
+/// message that a named function's erased `with Exception` row authorized.
+/// Filled by `decl_authorizes_effect` during a walk, read and reset by the
+/// module's effect check.
+export let erased_row_leaks: Array[(String, String)] = []
+
+/// Record that the erased label of `labels` authorized `Exception[kind]`, when
+/// `labels` is a named function's own body (`erased_root_marker`).
+export fn record_erased_row_leak(labels: Array[String], kind: String) -> Unit {
+  let prefix = String::concat(erased_handle_marker_prefix(), "root:")
+  let local_prefix = String::concat(erased_handle_marker_prefix(), "local:")
+  for l in labels {
+    if String::starts_with(l, local_prefix) {
+      let key = String::substring(l, String::length(local_prefix), String::length(l))
+      let label = String::concat("Exception[", String::concat(kind, "]"))
+      let mut seen = false
+      for leak in erased_local_leaks {
+        let (o, k) = leak
+        if o == key && k == label {
+          seen = true
+        }
+      }
+      if !seen {
+        Array::push(erased_local_leaks, (key, label))
+        Array::set(erased_local_leaks_grew, 0, true)
+      }
+    }
+    if String::starts_with(l, prefix) {
+      let owner = String::substring(l, String::length(prefix), String::length(l))
+      let label = String::concat("Exception[", String::concat(kind, "]"))
+      let mut seen = false
+      for leak in erased_row_leaks {
+        let (o, k) = leak
+        if o == owner && k == label {
+          seen = true
+        }
+      }
+      if !seen {
+        Array::push(erased_row_leaks, (owner, label))
+      }
+    }
+  }
+  ()
+}
+
+/// #3601: the pseudo-label of the body of a closure literal bound by
+/// `let name` in `fn_name` whose own row is the erased `with Exception`. A
+/// kind other than the message its row lets out is recorded against the
+/// binding (`erased_local_leaks`), and a call through the binding is charged
+/// it, as a named function's caller is (`erased_root_marker`).
+export fn erased_local_marker(fn_name: String, name: String) -> String {
+  String::concat(erased_handle_marker_prefix(), String::concat("local:", erased_local_key(fn_name, name)))
+}
+
+export fn erased_local_key(fn_name: String, name: String) -> String {
+  String::concat(fn_name, String::concat("|", name))
+}
+
+/// #3601: (`erased_local_key`, `Exception[K]`) for every kind a let-bound
+/// closure literal's erased row lets out, over every round of the module's
+/// effect check. Keyed by the enclosing binding and the local name, so two
+/// locals of one spelling share their kinds: that only charges more.
+export let erased_local_leaks: Array[(String, String)] = []
+
+/// Whether a walk recorded a new `erased_local_leaks` entry.
+export let erased_local_leaks_grew: Array[Bool] = [false]
+
+/// The labels `erased_local_leaks` records for `key`.
+export fn erased_local_leaks_for(key: String) -> Array[String] {
+  let out = no_str_labels()
+  for row in erased_local_leaks {
+    let (o, l) = row
+    if o == key && !str_labels_contain(out, l) {
+      Array::push(out, l)
+    }
+  }
+  out
+}
+
+/// #3601: (function, `Exception[K]`) for every kind a function of the module
+/// just checked lets out through its erased row, over every round of the
+/// check. It outlives the check: the checker binds it into the module's
+/// environment (`env_bind_erased_kinds`), which is what an importer reads.
+export let erased_row_charged: Array[(String, String)] = []
+
+/// The labels `erased_row_charged` records for `name`.
+export fn erased_row_charged_for(name: String) -> Array[String] {
+  let out = no_str_labels()
+  for row in erased_row_charged {
+    let (o, l) = row
+    if o == name && !str_labels_contain(out, l) {
+      Array::push(out, l)
+    }
+  }
+  out
+}
+
+/// The `erased_kinds_marker` payload for `labels`: one `CtNamed` per label.
+export fn erased_kinds_type(labels: Array[String]) -> Type {
+  let items: Array[Type] = []
+  for l in labels {
+    Array::push(items, CtNamed(l, []))
+  }
+  CtNamed("", items)
+}
+
+/// The labels an `erased_kinds_marker` payload carries.
+export fn erased_kinds_labels(ty: Type) -> Array[String] {
+  let out = no_str_labels()
+  match ty {
+    CtNamed(_, items) => for item in items {
+      match item {
+        CtNamed(l, _) => if String::length(l) > 0 {
+          Array::push(out, l)
+        },
+        _ => ()
+      }
+    },
+    _ => ()
+  }
+  out
+}
+
+/// #3601: `env` with an `erased_kinds_marker` binding for each top-level
+/// function of `stmts` whose erased row lets out a kind other than the
+/// message (`erased_row_charged`), so a module importing it charges a call
+/// with that kind. Clears the record.
+/// A top-level binding of this module hides an import of its name, so one
+/// that lets nothing out beyond the message is bound an EMPTY marker when an
+/// imported one of its name is in `env`: the nearest marker is then this
+/// module's own answer, and the publication does not hand the imported
+/// function's kinds to the local one (Codex on #3605).
+export fn env_bind_erased_kinds(env: TypeEnv, stmts: Array[Stmt]) -> TypeEnv {
+  let mut out = env
+  let imported = env_erased_kinds_rows(env)
+  if Array::length(erased_row_charged) > 0 || Array::length(imported) > 0 {
+    let done = no_str_labels()
+    for stmt in stmts {
+      let name = erased_kinds_toplevel_name(stmt)
+      if String::length(name) > 0 && !str_labels_contain(done, name) {
+        Array::push(done, name)
+        let labels = erased_row_charged_for(name)
+        if Array::length(labels) > 0 {
+          out = env_bind(out, erased_kinds_marker(name), erased_kinds_type(labels))
+        } else if erased_kinds_rows_name(imported, name) {
+          out = env_bind(out, erased_kinds_marker(name), erased_kinds_type(no_str_labels()))
+        }
+      }
+    }
+  }
+  Array::truncate(erased_row_charged, 0)
+  out
+}
+
+/// The name a top-level statement binds in the module's value namespace, or
+/// "" when it binds none: a local binding of that name hides an imported
+/// function's `erased_kinds_marker`.
+export fn erased_kinds_toplevel_name(stmt: Stmt) -> String {
+  match stmt {
+    SLet(_, _, n, _, _) => n,
+    SLetMut(n, _, _) => n,
+    SExternLet(n, _) => n,
+    SFnDecl(_, n, _, _, _) => n,
+    _ => ""
+  }
+}
+
+fn erased_kinds_rows_name(rows: Array[(String, Type)], name: String) -> Bool {
+  let mut found = false
+  for row in rows {
+    let (n, _) = row
+    found = found || n == name
+  }
+  found
+}
+
+/// Every `erased_kinds_marker` bound in `env`, as (function name, payload),
+/// nearest binding first and each name once.
+export fn env_erased_kinds_rows(env: TypeEnv) -> Array[(String, Type)] {
+  let rows: Array[(String, Type)] = []
+  let names = no_str_labels()
+  let mut current = env
+  let mut done = false
+  let push = (name: String, ty: Type) -> if is_erased_kinds_marker(name) {
+    let fname = erased_kinds_marker_target(name)
+    if !str_labels_contain(names, fname) {
+      Array::push(names, fname)
+      Array::push(rows, (fname, ty))
+    }
+  }
+  while !done {
+    match current {
+      EnvBind(name, binding, rest) => {
+        push(name, binding.ty)
+        current = rest
+      },
+      EnvFlat(bindings) => {
+        for entry in bindings {
+          let (name, binding) = entry
+          push(name, binding.ty)
+        }
+        done = true
+      },
+      EnvShowWrappers(_, _, rest) => current = rest,
+      EnvTraitDef(_, _, _, _, rest, _, _) => current = rest,
+      EnvTraitImpl(_, _, rest) => current = rest,
+      EnvTraitImplGen(_, _, _, _, rest) => current = rest,
+      EnvTypeDefs(_, _, rest) => current = rest,
+      EnvMutCell(_, _, rest) => current = rest,
+      EnvCached(_, _, rest) => current = rest,
+      EnvEmpty => done = true
+    }
+  }
+  rows
+}
+
+/// #3541: the pseudo-label of the body of an erased handle whose arm
+/// `Exception::Throw(m)` reads `m`, the thrown message. It names the binder so
+/// a refusal can name the kinded arm to write.
+export fn erased_reads_marker(binder: String) -> String {
+  String::concat(erased_handle_marker_prefix(), String::concat("reads:", binder))
+}
+
+/// The binder `erased_reads_marker` names in `labels`, or "" when the row is
+/// not such a body.
+export fn erased_reads_binder(labels: Array[String]) -> String {
+  let prefix = String::concat(erased_handle_marker_prefix(), "reads:")
+  let mut found = ""
+  for l in labels {
+    if String::starts_with(l, prefix) {
+      found = String::substring(l, String::length(prefix), String::length(l))
+    }
+  }
+  found
+}
+
+/// Does the erased exception label of `labels` cover only the thrown message?
+/// In the body of an erased arm that reads its binder, and in the body of a
+/// closure literal whose own row is the erased one (`erased_slot_marker`);
+/// everywhere else it covers every kind.
+export fn erased_covers_only_messages(labels: Array[String]) -> Bool {
+  String::length(erased_reads_binder(labels)) > 0 || under_erased_slot(labels)
+}
+
+/// #3601: the pseudo-label of the body of a closure literal whose own row is
+/// the erased `with Exception` with no row variable -- the row of the
+/// parameter, annotation or field it is written for, or its own. A caller of
+/// the closure reads that row, which carries only messages, so the body may
+/// raise only those (and the kinds the row names).
+export fn erased_slot_marker() -> String {
+  String::concat(erased_handle_marker_prefix(), "slot")
+}
+
+/// #3601: the pseudo-label of the walk of a closure literal handed to a
+/// callee that handles what it raises (or whose parameters are not known):
+/// the literal's own erased row is the parameter's to judge, not a value the
+/// module keeps.
+export fn erased_arg_kept_marker() -> String {
+  String::concat(erased_handle_marker_prefix(), "arg")
+}
+
+/// #3601: the pseudo-label of the walk of a closure literal applied where it
+/// is written (`(() -> Int with Exception { .. })()`): it runs right there,
+/// so what its erased row lets out is the enclosing body's.
+export fn erased_iife_marker() -> String {
+  String::concat(erased_handle_marker_prefix(), "iife")
+}
+
+/// The exception labels and the pseudo-labels of `labels`: what a closure
+/// literal applied where it is written takes from the enclosing body.
+export fn exception_family_of(labels: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  for l in labels {
+    if (is_exception_label(l) || is_kinded_handle_pseudo_label(l)) && l != erased_iife_marker() && l != erased_arg_kept_marker() {
+      Array::push(out, l)
+    }
+  }
+  out
+}
+
+export fn under_erased_slot(labels: Array[String]) -> Bool {
+  effect_row_has_label(Some(labels), erased_slot_marker())
+}
+
+/// Is `row` a function-type row that carries no kind but the message to its
+/// callers beyond the ones it names: an erased exception label and no row
+/// variable?
+export fn row_is_erased_slot(row: Array[String]) -> Bool {
+  let mut erased = false
+  let mut has_var = false
+  for l in row {
+    if label_is_effect_var(l) {
+      has_var = true
+    } else if is_exception_label(l) && String::length(exception_label_kind(l)) == 0 && String::index_of(l, "::") < 0 {
+      erased = true
+    }
+  }
+  erased && !has_var
+}
+
+/// The labels the body of a closure literal written for the erased slot row
+/// `row` is checked under: the enclosing labels without their exception
+/// family (the closure's exceptions reach whoever calls it, not the
+/// enclosing function), the row's exception labels, and the marker.
+export fn erased_slot_declared(declared: Array[String], row: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  for l in declared {
+    if !is_exception_label(l) && !is_kinded_handle_pseudo_label(l) {
+      Array::push(out, l)
+    }
+  }
+  for l in row {
+    if is_exception_label(l) && !str_labels_contain(out, l) {
+      Array::push(out, l)
+    }
+  }
+  Array::push(out, erased_slot_marker())
+  out
+}
+
+/// #3541: the binder an ERASED exception arm (`Exception::Throw(m)`) reads
+/// in its body, or "" when the handle has no such arm or the arm leaves its
+/// payload unread (`_`, or a name its body never mentions). A payload pattern
+/// other than a name counts as read. The mention is judged by spelling, so a
+/// shadowing binding of the same name counts as a read: that only refuses
+/// more.
+export fn erased_arm_read_binder(arms: Array[(Pat, Expr)]) -> String {
+  let mut found = ""
+  for arm in arms {
+    let (pat, body) = arm
+    match pat {
+      PCtor(name, binds) => {
+        let idx = String::index_of(name, "::")
+        if idx > 0 && is_exception_label(name) && String::length(exception_label_kind(name)) == 0 && Array::length(binds) == 1 {
+          match Array::get(binds, 0) {
+            PWild => (),
+            PBind(b) => if expr_mentions_name(body, b) {
+              found = b
+            },
+            _ => {
+              found = "the payload"
+            }
+          }
+        }
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+fn expr_mentions_name(root: Expr, name: String) -> Bool {
+  let stack = Array::slice([root], 0, 1)
+  let mut found = false
+  while Array::length(stack) > 0 && !found {
+    let n = Array::length(stack)
+    let e = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match e {
+      EIdent(x, _) => if x == name {
+        found = true
+      },
+      EStringInterp(parts) => {
+        for part in parts {
+          if String::contains(part, name) {
+            found = true
+          }
+        }
+        ()
+      },
+      _ => ()
+    }
+    expr_children_into(e, stack)
+  }
+  found
 }
 
 /// #3540: is `v` a row variable this kinded handle's body may not run?
@@ -1978,6 +2374,24 @@ export fn lookup_program_fn_effs(fn_index: MutMap[String, Int], effs: Array[Arra
 /// `effect_name_exists` over the program table, through its index.
 export fn program_fn_exists(fn_index: MutMap[String, Int], name: String) -> Bool {
   MutMap::has(fn_index, name)
+}
+
+/// Whether a local binding of `name` must leave an entry in the lexical
+/// overlay even when its own row is empty. The entry is what tells a call of
+/// that name "a local answers this" apart from "no local; fall through", and
+/// two fallbacks exist: the program's function table and the unqualified
+/// effectful builtins. #3565: only the first was consulted, so a parameter,
+/// `let`, lambda parameter, pattern or `for` variable spelled `print` /
+/// `println` / `sh` / `sh_lines` left no entry, and a call of it was charged
+/// the builtin's row (`fn call_it(print: () -> String) -> String { print() }`
+/// was refused for a missing `Console`). A qualified builtin needs no entry:
+/// no local binder can spell `Fs::read_file`. Only the builtins whose
+/// lowering also yields to a local of their spelling are listed: the raw host
+/// names (`vibe_process_exit_raw`, `vibe_tcp_*_raw`, ...) are still lowered
+/// straight to the host import, so a local of that spelling stays refused
+/// rather than checking clean and calling the host (Codex on #3612).
+export fn local_binding_needs_overlay_entry(fn_index: MutMap[String, Int], name: String) -> Bool {
+  program_fn_exists(fn_index, name) || name == "print" || name == "println" || name == "sh" || name == "sh_lines"
 }
 
 /// `lookup_fn_param_effs` over the program table, through its index. The

@@ -180,6 +180,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_eqz,
   emit_i64_extend_i32_s,
   emit_i64_ge_s,
+  emit_i64_ge_u,
   emit_i64_gt_s,
   emit_i64_le_s,
   emit_i64_lt_s,
@@ -201,6 +202,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_if_i64,
   emit_if_void,
   emit_import_section_func,
+  emit_index_ge_u32_len,
   emit_local_get,
   emit_local_set,
   emit_local_tee,
@@ -595,16 +597,16 @@ export fn gen_bytes_get_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx
   // #2199: before the trap, call __rt_oob_abort with this operation's prefix
   // plus the signed index and the length (see gen_arr_get_body's comment);
   // oob_abort_idx < 0 emits the historical bare-trap form.
+  // #3543: compared in i64, so an index of 2^32 or more cannot wrap into range.
   emit_local_get(b, 1)
   if enable_rc {
     emit_i64_const(b, 1)
     emit_i64_shr_s(b)
   }
-  emit_i32_wrap_i64(b)
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
   emit_i32_load(b, 2, 4)
-  emit_i32_ge_u(b)
+  emit_index_ge_u32_len(b)
   emit_if_void(b)
   if oob_abort_idx >= 0 {
     emit_i64_const(b, oob_prefix_fat)
@@ -1307,16 +1309,16 @@ export fn gen_bytes_set_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx
   // #811: unsigned bounds check (idx as u32 >= len traps; negatives too).
   // #2199: same formatted abort as gen_bytes_get_body (see its comment);
   // oob_abort_idx < 0 emits the historical bare-trap form.
+  // #3543: compared in i64, as in gen_bytes_get_body.
   emit_local_get(b, 1)
   if enable_rc {
     emit_i64_const(b, 1)
     emit_i64_shr_s(b)
   }
-  emit_i32_wrap_i64(b)
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
   emit_i32_load(b, 2, 4)
-  emit_i32_ge_u(b)
+  emit_index_ge_u32_len(b)
   emit_if_void(b)
   if oob_abort_idx >= 0 {
     emit_i64_const(b, oob_prefix_fat)
@@ -1359,77 +1361,67 @@ export fn gen_bytes_set_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx
   b
 }
 
+/// `Bytes::blit(dst, src, start, end)`: push `src[start..end]` onto `dst`.
+/// Params 0-3, no locals. #3543: the loop runs on the i64 `start` param
+/// itself. It used to narrow `start` / `end` to i32 counters, so
+/// `blit(d, s, 2^32, 2^32 + 2)` copied `s[0..2]` instead of trapping in
+/// `bytes_get`. The unsigned compare keeps the narrowed form's order for
+/// every in-range pair, and the tagged order is the untagged one, so the
+/// params are compared as they arrive.
 export fn gen_bytes_blit_body(enable_rc: Bool, bytes_get_idx: Int, bytes_push_idx: Int) -> Bytes {
   let b = bytebuf_new()
-  emit_local_get(b, 2)
-  // ADR-0055 Stage 1: start/end indices arrive tagged; untag for loop bounds.
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shr_s(b)
-  }
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 4)
-  emit_local_get(b, 3)
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shr_s(b)
-  }
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 5)
   emit_block_void(b)
   emit_loop_void(b)
-  emit_local_get(b, 4)
-  emit_local_get(b, 5)
-  emit_i32_ge_u(b)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i64_ge_u(b)
   emit_br_if(b, 1)
   emit_local_get(b, 0)
   emit_local_get(b, 1)
-  emit_local_get(b, 4)
-  emit_i64_extend_i32_u(b)
-  // ADR-0055 Stage 1: tag the index passed to the value-world bytes_get.
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shl(b)
-  }
+  emit_local_get(b, 2)
   emit_call(b, bytes_get_idx)
   emit_call(b, bytes_push_idx)
-  emit_local_get(b, 4)
-  emit_i32_const(b, 1)
-  emit_i32_add(b)
-  emit_local_set(b, 4)
+  emit_local_get(b, 2)
+  // ADR-0055 Stage 1: one step of a tagged index is 2.
+  emit_i64_const(b, if enable_rc {
+    2
+  } else {
+    1
+  })
+  emit_i64_add(b)
+  emit_local_set(b, 2)
   emit_br(b, 0)
   emit_end(b)
   emit_end(b)
   b
 }
 
+/// `Bytes::fill(dst, value, count)`: push `value` onto `dst` `count` times.
+/// Params 0-2, no locals. #3543: the loop counts the i64 `count` param down
+/// to zero. It used to narrow `count` to an i32 bound, so a count of
+/// 2^32 + 1 pushed one byte; a count <= 0 pushes nothing, as the linear
+/// lane's synthesized `while i < count` loop does. The byte value (param 1)
+/// goes straight to the value-world bytes_push, which untags it itself.
 export fn gen_bytes_fill_body(enable_rc: Bool, bytes_push_idx: Int) -> Bytes {
   let b = bytebuf_new()
-  emit_i32_const(b, 0)
-  emit_local_set(b, 3)
-  emit_local_get(b, 2)
-  // ADR-0055 Stage 1: count arrives tagged; untag for the loop bound. The byte
-  // value (local 1) is passed straight to the value-world bytes_push, which
-  // untags it itself.
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shr_s(b)
-  }
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 4)
   emit_block_void(b)
   emit_loop_void(b)
-  emit_local_get(b, 3)
-  emit_local_get(b, 4)
-  emit_i32_ge_u(b)
+  // ADR-0055 Stage 1: a tagged count is <= 0 exactly when the count is.
+  emit_local_get(b, 2)
+  emit_i64_const(b, 0)
+  emit_i64_le_s(b)
   emit_br_if(b, 1)
   emit_local_get(b, 0)
   emit_local_get(b, 1)
   emit_call(b, bytes_push_idx)
-  emit_local_get(b, 3)
-  emit_i32_const(b, 1)
-  emit_i32_add(b)
-  emit_local_set(b, 3)
+  emit_local_get(b, 2)
+  emit_i64_const(b, if enable_rc {
+    2
+  } else {
+    1
+  })
+  emit_i64_sub(b)
+  emit_local_set(b, 2)
   emit_br(b, 0)
   emit_end(b)
   emit_end(b)
@@ -1597,50 +1589,40 @@ export fn gen_bytes_push_body(enable_rc: Bool, arena_ptr_addr: Int, arena_data_b
   b
 }
 
+/// `Bytes::slice(src, start, end)`: a fresh Bytes holding `src[start..end]`.
+/// Params 0-2, one i64 local (3, the result). #3543: the loop runs on the
+/// i64 `start` param itself, as in gen_bytes_blit_body -- narrowed i32
+/// counters made `slice(b, 2^32, 2^32 + 2)` answer `b[0..2]` and
+/// `slice(b, 0, 2^32 + 2)` answer `b[0..2]` instead of trapping in
+/// `bytes_get`.
 export fn gen_bytes_slice_body(enable_rc: Bool, bytes_new_idx: Int, bytes_get_idx: Int, bytes_push_idx: Int) -> Bytes {
   let b = bytebuf_new()
   emit_call(b, bytes_new_idx)
-  emit_local_set(b, 5)
-  emit_local_get(b, 1)
-  // ADR-0055 Stage 1: start/end indices arrive tagged; untag for loop bounds.
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shr_s(b)
-  }
-  emit_i32_wrap_i64(b)
   emit_local_set(b, 3)
-  emit_local_get(b, 2)
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shr_s(b)
-  }
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 4)
   emit_block_void(b)
   emit_loop_void(b)
-  emit_local_get(b, 3)
-  emit_local_get(b, 4)
-  emit_i32_ge_u(b)
+  emit_local_get(b, 1)
+  emit_local_get(b, 2)
+  emit_i64_ge_u(b)
   emit_br_if(b, 1)
-  emit_local_get(b, 5)
-  emit_local_get(b, 0)
   emit_local_get(b, 3)
-  emit_i64_extend_i32_u(b)
-  // ADR-0055 Stage 1: tag the index passed to the value-world bytes_get.
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shl(b)
-  }
+  emit_local_get(b, 0)
+  emit_local_get(b, 1)
   emit_call(b, bytes_get_idx)
   emit_call(b, bytes_push_idx)
-  emit_local_get(b, 3)
-  emit_i32_const(b, 1)
-  emit_i32_add(b)
-  emit_local_set(b, 3)
+  emit_local_get(b, 1)
+  // ADR-0055 Stage 1: one step of a tagged index is 2.
+  emit_i64_const(b, if enable_rc {
+    2
+  } else {
+    1
+  })
+  emit_i64_add(b)
+  emit_local_set(b, 1)
   emit_br(b, 0)
   emit_end(b)
   emit_end(b)
-  emit_local_get(b, 5)
+  emit_local_get(b, 3)
   b
 }
 

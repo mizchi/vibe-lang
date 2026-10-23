@@ -5,7 +5,7 @@ import @vibe/compiler/checker/annotations {
 }
 
 import @vibe/compiler/checker/type_relations {
-  check_assignable_set_type_defs, type_is_ground
+  check_assignable_set_type_defs, struct_param_is_row, type_is_ground, widen_struct_row_args
 }
 
 import @vibe/compiler/checker/resume {
@@ -47,7 +47,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_encode_name, match_scrutinee_temp
+  impl_encode_name, match_scrutinee_temp, type_param_name
 }
 
 import @vibe/parser {
@@ -93,8 +93,10 @@ import ./checker_escape.vibe {
 import ./checker_builtin_arg_head_rest.vibe {
   add_param_capture_dependency,
   bind_builtin_arg_var,
-  bind_struct_row_formals,
+  bind_struct_row_unions,
+  collect_struct_row_labels,
   env_lookup_unless_synthesized_builtin,
+  inst_struct_field_ty,
   let_rhs_closure_literal,
   let_rhs_is_alias,
   lookup_builtin_in_env,
@@ -2307,13 +2309,38 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 while tpi < tplen {
                   match fresh_var(c2) {
                     (tv, nc) => {
-                      Array::push(fresh_targs, tv)
+                      // #3589: a row parameter takes a fresh ROW variable,
+                      // which the field's row names below, so the value
+                      // stored there binds it (`Holder[$4]`, `$4` =
+                      // `Console`) instead of the struct's own spelling
+                      // `r`, which every declaration shares.
+                      if struct_param_is_row(defs, dfields, type_param_name(Array::get(s_tparams, tpi))) {
+                        Array::push(fresh_targs, CtNamed("$\{c2}", array_empty()))
+                      } else {
+                        Array::push(fresh_targs, tv)
+                      }
                       c2 = nc
                     },
                     _ => ()
                   }
                   tpi = tpi + 1
                 }
+              }
+              // #3568: a row parameter takes the row of the functions
+              // stored under it -- every field's, so two fields sharing
+              // one formal give it both their labels (Codex review on
+              // #3594). Bound before any field is checked against it.
+              if tplen > 0 && !use_explicit {
+                let row_formals: Array[String] = []
+                let row_labels: Array[Array[String]] = []
+                for df in dfields {
+                  let (dfn, dfty) = df
+                  match lookup_actual_field_ty(field_tys, dfn) {
+                    Some(aty) => collect_struct_row_labels(defs, dfty, aty, s_tparams, s1, row_formals, row_labels),
+                    None => ()
+                  }
+                }
+                s1 = bind_struct_row_unions(s_tparams, fresh_targs, row_formals, row_labels, s1)
               }
               // Missing declared fields (absent from the literal).
               let mut mi = 0
@@ -2323,19 +2350,23 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 // (rigid params substituted by the fresh vars above); a
                 // non-generic struct keeps the raw declared type as before.
                 let dty = if tplen > 0 {
-                  subst_type_params(dty0, s_tparams, fresh_targs)
+                  inst_struct_field_ty(dty0, s_tparams, fresh_targs)
                 } else {
                   dty0
                 }
                 match lookup_actual_field_ty(field_tys, dn) {
                   Some(aty) => {
                     // Value type check (ground-gated like check_record_fields).
-                    s1 = check_assignable_for(dty, subst_apply(s1, aty), s1, errors, "struct field type mismatch for ", dn, lookup_field_expr_off(fields, dn))
-                    // #3568: a row parameter takes the row variable of the
-                    // function stored under it.
-                    if tplen > 0 && !use_explicit {
-                      s1 = bind_struct_row_formals(dty0, aty, s_tparams, fresh_targs, s1)
+                    // #3589: a nested struct's row argument may be narrower
+                    // than the union this literal bound (`Inner[Console]` in
+                    // a `Pair[Console, Env]`); `widen_struct_row_args` admits
+                    // that at a covariant row parameter only.
+                    let aty_checked = if tplen > 0 {
+                      widen_struct_row_args(defs, subst_apply(s1, dty), subst_apply(s1, aty))
+                    } else {
+                      subst_apply(s1, aty)
                     }
+                    s1 = check_assignable_for(dty, aty_checked, s1, errors, "struct field type mismatch for ", dn, lookup_field_expr_off(fields, dn))
                     // Compare latent payloads before the struct's field type
                     // replaces the value's own instantiation evidence.
                     for field in fields {

@@ -28,6 +28,7 @@ import @vibe/compiler/core {
   TypeExpr,
   apply_type_constructor,
   env_lookup,
+  env_type_defs,
   env_value_binding_with_origin,
   expr_child_at,
   expr_children,
@@ -88,7 +89,7 @@ import ./checker_escape.vibe {
 }
 
 import ./checker_builtin_arg_head_rest.vibe {
-  head_fold_char, is_logic_binop, is_order_binop
+  checker_int_array_has, head_fold_char, is_logic_binop, is_order_binop, row_formal_arg_candidate, row_formal_arg_positions
 }
 
 import ./checker_closure_capture_row.vibe {
@@ -2403,8 +2404,19 @@ export fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeE
 export fn resolve_tparams_in(ty: Type, env: TypeEnv) -> Type {
   match ty {
     CtNamed(name, args) => {
-      let ra = for a in args {
-        resolve_tparams_in(a, env)
+      // #3589: a row variable passed to a struct's row parameter stays one.
+      let pins = if row_formal_arg_candidate(name, args) {
+        row_formal_arg_positions(env_type_defs(env), name, args)
+      } else {
+        []
+      }
+      let ra: Array[Type] = []
+      for a in args {
+        Array::push(ra, if checker_int_array_has(pins, Array::length(ra)) {
+          a
+        } else {
+          resolve_tparams_in(a, env)
+        })
       }
       match env_lookup(env, name) {
         Some(t) => match t {

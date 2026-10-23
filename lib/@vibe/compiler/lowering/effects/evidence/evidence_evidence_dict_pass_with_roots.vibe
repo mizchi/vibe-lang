@@ -61,6 +61,10 @@ import ./evidence_edp_apply_migration.vibe {
   edp_all_sites_eligible_with_index, edp_apply_migration_with_index, edp_handle_owner_cps
 }
 
+import ./evidence_handler_sets.vibe {
+  edp_handler_set_statements, edp_iso_map, edp_split_handler_sets
+}
+
 import ./evidence_handle_effect_names_expr.vibe {
   edp_append_ctor_inert_names,
   edp_append_effect_irrelevant_row_fns,
@@ -516,6 +520,24 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
   evidence_dict_pass_with_roots(stmts, [entry_name])
 }
 
+/// #3583: lower every `handle` whose arms name several effects as nested
+/// single-effect handles (`edp_split_handler_sets`), and return the refusals
+/// for the sets no nesting answers. `suspend_cps_pass` calls it after building
+/// grouped suspend drivers, so evidence migration sees single-effect sites.
+export fn evidence_split_handler_sets(stmts: Array[Stmt]) -> Array[String] {
+  let errs = empty_str_array()
+  let statements = edp_handler_set_statements(stmts)
+  if Array::length(statements) > 0 {
+    let fn_defs = edp_collect_fn_defs(stmts)
+    let es_names = array_empty()
+    let es_members = array_empty()
+    edp_es_collect_into(stmts, es_names, es_members)
+    let fx = (fn_defs, edp_fn_row_label_table(fn_defs, es_names, es_members), edp_collect_program_binders(stmts))
+    edp_split_handler_sets(stmts, statements, (e: Expr, y: String) -> edp_ao_arm_may_perform(e, y, fx, false), (e: Expr, y: String) -> edp_ao_perform_offset(e, y, fx), errs)
+  } else ()
+  errs
+}
+
 export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]) -> Array[String] {
   let errs = empty_str_array()
   // #3176: a call spelled like an audited pure builtin reaches the program's
@@ -532,6 +554,12 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
     edp_alpha_rename_shadowed(stmts, edp_collect_fn_defs(stmts), user_edpsh)
   } else {
     false
+  }
+  // #3583: before anything reads a handle's effect from its first arm --
+  // including the isolation below, which works on nested pairs. The
+  // pipelines have already split in `suspend_cps_pass`; this is a no-op then.
+  for e in evidence_split_handler_sets(stmts) {
+    Array::push(errs, e)
   }
   // #3540: before the effect list is read -- it may declare fresh copies.
   edp_isolate_nested_arm_handlers(stmts)
@@ -2671,63 +2699,4 @@ fn edp_iso_any_still_reaches(es: Array[Expr], y: String, fx: (Array[(Int, Bool, 
     i = i + 1
   }
   hit
-}
-
-/// Rebuild `expr` with `f` applied to each direct child expression.
-fn edp_iso_map(expr: Expr, f: (Expr) -> Expr) -> Expr {
-  match expr {
-    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, f(body)),
-    ELet(n, v, b, off) => ELet(n, f(v), f(b), off),
-    ELetRec(n, v, b) => ELetRec(n, f(v), f(b)),
-    ELetMut(n, v, b, off) => ELetMut(n, f(v), f(b), off),
-    ESeq(a, b) => ESeq(f(a), f(b)),
-    EIf(c, t, el) => EIf(f(c), f(t), f(el)),
-    EMatch(sc, arms) => EMatch(f(sc), for a in arms {
-      let (pp, ex) = a
-      (pp, f(ex))
-    }),
-    EHandle(bd, arms) => EHandle(f(bd), for a in arms {
-      let (pp, ex) = a
-      (pp, f(ex))
-    }),
-    ECall(callee, args, off, res) => ECall(f(callee), for a in args {
-      f(a)
-    }, off, res),
-    EWhile(c, b) => EWhile(f(c), f(b)),
-    EForIn(n, idx, it, b) => EForIn(n, idx, f(it), f(b)),
-    ELoop(pairs, b) => ELoop(for pr in pairs {
-      let (n, v) = pr
-      (n, f(v))
-    }, f(b)),
-    EBinOp(op, l, r, boff) => EBinOp(op, f(l), f(r), boff),
-    EUnaryOp(op, x) => EUnaryOp(op, f(x)),
-    EAssign(n, v, c, toff) => EAssign(n, f(v), f(c), toff),
-    EAssignOp(n, op, v, c, toff) => EAssignOp(n, op, f(v), f(c), toff),
-    EReturn(x) => EReturn(f(x)),
-    EDot(o, fl, o1, o2) => EDot(f(o), fl, o1, o2),
-    ELabeledArg(l, n, v) => ELabeledArg(l, n, f(v)),
-    EBreak(opt) => EBreak(match opt {
-      Some(x) => Some(f(x)),
-      None => None
-    }),
-    EContinue(args) => EContinue(for a in args {
-      f(a)
-    }),
-    ETuple(items) => ETuple(for a in items {
-      f(a)
-    }),
-    EArray(items) => EArray(for a in items {
-      f(a)
-    }),
-    ERecord(n, fields, tas) => ERecord(n, for fd in fields {
-      let (fn2, v) = fd
-      (fn2, f(v))
-    }, tas),
-    EMap(fields) => EMap(for fd in fields {
-      let (fn2, v) = fd
-      (fn2, f(v))
-    }),
-    ESpread(x) => ESpread(f(x)),
-    _ => expr
-  }
 }

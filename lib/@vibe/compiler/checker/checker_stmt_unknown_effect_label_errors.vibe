@@ -1505,7 +1505,18 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
     for t in tes {
       unbound_decl_row_vars(t, bound, unbound)
     }
-    if Array::length(unbound) > 0 {
+    // #3589: an enum's row parameter is not carried by its values (a
+    // constructor types as the bare enum), so a call through a function
+    // taken out of `Job[e]` was charged nothing. Refused until it is.
+    let enum_row = if kind == "enum" {
+      enum_payload_row_formal(tes, bound, unbound)
+    } else {
+      ""
+    }
+    if String::length(enum_row) > 0 {
+      reported = true
+      Array::push(errors, enum_row_formal_message(dname, enum_row) + " (in a payload of enum '" + dname + "') [@fn=" + dname + "]")
+    } else if Array::length(unbound) > 0 {
       reported = true
       let where_kind = if kind == "struct" {
         "a field of struct"
@@ -1663,6 +1674,36 @@ fn unbound_decl_row_vars(te: TypeExpr, bound: Array[String], out: Array[String])
     },
     _ => ()
   }
+}
+
+/// #3589: a row variable an enum payload's function row names -- one the
+/// enum declares as a parameter, or one it does not bind (`unbound`) -- or ""
+/// when the payload rows name none.
+fn enum_payload_row_formal(tes: Array[TypeExpr], bound: Array[String], unbound: Array[String]) -> String {
+  let mut found = if Array::length(unbound) > 0 {
+    Array::get(unbound, 0)
+  } else {
+    ""
+  }
+  let rows: Array[String] = []
+  for t in tes {
+    fek_rows_in_texpr(t, rows)
+  }
+  for row in rows {
+    for l in row_text_labels(row) {
+      let v = String::trim(l)
+      if String::length(found) == 0 && uel_is_row_var(v) && uel_contains(bound, v) {
+        found = v
+      }
+    }
+  }
+  found
+}
+
+/// The refusal for an enum payload whose function row names row variable
+/// `v`.
+fn enum_row_formal_message(dname: String, v: String) -> String {
+  "write the effects the payload's function performs (`with Console`), or hold the function in a struct with a row parameter (`struct " + dname + "[" + v + "] { run: () -> Int with " + v + " }`) -- the effect row variable `" + v + "` is not carried by a value of enum `" + dname + "`, so a call through a function taken out of it would not be charged its effects"
 }
 
 /// A row variable as a declaration spells it: one lowercase letter.

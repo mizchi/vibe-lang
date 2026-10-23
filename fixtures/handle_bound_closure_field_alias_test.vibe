@@ -1,0 +1,92 @@
+// #3596 controls: a local alias of a builder is followed to the declaration
+// it names, so these stay accepted -- an alias of a builder whose field
+// closure does not throw (same-module and imported, before the handle and
+// inside it), an alias of a throwing builder whose closure is called inside
+// the handle, and an alias rebound to a non-throwing builder before the
+// handle. fixtures/typecheck/handle_bound_closure_exception_field_*alias*_reject.vibe
+// hold the refusals.
+import ./modules/handle_bound_closure_field_dep.vibe {
+  fallback, mk_ok
+}
+
+struct Cell {
+  f: () -> Int
+}
+
+fn throwing() -> Cell with Exception[Int] {
+  Cell::{ f: () -> throw(7) }
+}
+
+fn safe() -> Cell with Exception[Int] {
+  Cell::{ f: () -> 3 }
+}
+
+fn alias_inside() -> Int {
+  let b = handle {
+    let g = safe
+    g()
+  } with { Exception[Int]::Throw(c) => Cell::{ f: () -> c } }
+  let f = b.f
+  f()
+}
+
+fn alias_before() -> Int {
+  let g = safe
+  let b = handle {
+    let h = g
+    h()
+  } with { Exception[Int]::Throw(c) => Cell::{ f: () -> c } }
+  let f = b.f
+  f()
+}
+
+fn imported_alias(n: Int) -> Int {
+  let g = mk_ok
+  let b = handle {
+    g(n)
+  } with { Exception[Int]::Throw(c) => fallback(c) }
+  let f = b.f
+  f()
+}
+
+fn called_inside() -> Int {
+  handle {
+    let g = throwing
+    let b = g()
+    let f = b.f
+    f()
+  } with { Exception[Int]::Throw(c) => c + 100 }
+}
+
+fn rebound() -> Int {
+  let g = throwing
+  let g = safe
+  let b = handle {
+    g()
+  } with { Exception[Int]::Throw(c) => Cell::{ f: () -> c } }
+  let f = b.f
+  f()
+}
+
+fn branches(c: Bool) -> Int {
+  let g = if c {
+    safe
+  } else {
+    safe
+  }
+  let b = handle {
+    g()
+  } with { Exception[Int]::Throw(n) => Cell::{ f: () -> n } }
+  let f = b.f
+  f()
+}
+
+test "a local alias of a builder whose field closure does not throw leaves the handle" {
+  inspect(alias_inside(), content = "3")
+  inspect(alias_before(), content = "3")
+  inspect(imported_alias(5), content = "6")
+  inspect(imported_alias(-2), content = "-2")
+  inspect(called_inside(), content = "107")
+  inspect(rebound(), content = "3")
+  inspect(branches(true), content = "3")
+}
