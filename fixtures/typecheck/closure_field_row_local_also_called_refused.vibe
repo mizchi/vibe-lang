@@ -1,0 +1,35 @@
+// Codex on #3620: a closure literal bound by `let` and stored by name in a
+// field declared `with Box[T]`, at written type arguments, takes the row
+// `Box[String]` at its binding -- but only when every use of the name is such
+// a field. Here `g` is also called directly, where no handler is passed, so
+// no one calling convention serves both uses: the field's reader (`drive`)
+// passes the handler (`tick` performs `Box`) and the direct call does not.
+// It trapped ("null function or function signature mismatch") after a clean
+// `vibe check`; the build is refused with the edit. A closure written in the field itself, or one whose
+// binding writes the row, answers (fixtures/closure_field_generic_row_test.vibe).
+effect Box[T] {
+  Put(T) -> Unit
+}
+
+struct Holder[T] {
+  f: () -> Int with Box[T]
+}
+
+fn drive(f: () -> Int with Box[String]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(_) => resume(())
+  }
+}
+
+fn tick() -> Int with Box[String] {
+  perform Box::Put("t")
+  1
+}
+
+fn main() -> Int {
+  let g = () -> 7
+  let h = Holder[String]::{ f: g }
+  drive(h.f) + g() + drive(tick)
+}

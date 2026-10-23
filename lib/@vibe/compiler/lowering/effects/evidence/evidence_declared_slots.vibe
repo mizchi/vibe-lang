@@ -17,7 +17,14 @@ import ./evidence_returned_scan_expr.vibe {
 }
 
 import ./evidence_slot_refusals.vibe {
-  edp_field_site_prefix, edp_refuse_field_type_args, edp_row_top_labels, edp_slot_row_stampable
+  edp_field_site_prefix,
+  edp_refuse_field_type_args,
+  edp_refuse_uncopied_literal,
+  edp_refuse_unstamped_field_literal,
+  edp_row_top_labels,
+  edp_set_slot_callee,
+  edp_slot_row_stampable,
+  edp_take_slot_callee
 }
 
 import @vibe/compiler/lowering/effects/queries {
@@ -508,20 +515,128 @@ export fn edp_ascribed_record_targs(stmts: Array[Stmt], callee: Expr, args: Arra
 }
 
 /// #3611: refuse a value the stamp would give a field's row -- a row-free
-/// literal, a row-free top-level function -- when that row names a type
+/// literal, a row-free top-level function, the name of a row-free literal
+/// bound by `let` (`lit`, Codex on #3620) -- when that row names a type
 /// parameter `targs` does not instantiate. Any other value is left to the
 /// rules a field without a readable row already has.
-export fn edp_refuse_unread_field_row(sname: String, fname: String, targs: Array[TypeExpr], v: Expr, scope: Array[String], pure_names: MutSet[String]) -> Unit {
+export fn edp_refuse_unread_field_row(sname: String, fname: String, targs: Array[TypeExpr], v: Expr, scope: Array[String], pure_names: MutSet[String], lit: Option[Expr]) -> Unit {
   let row = edp_field_row_unread(sname, fname, targs)
   if row != "" {
     let stamped = match v {
       EFn(_, _, _, _, None, _) => true,
-      EIdent(an, _) => MutSet::has(pure_names, an) && !edp_str_array_contains(scope, an),
+      EIdent(an, _) => (MutSet::has(pure_names, an) && !edp_str_array_contains(scope, an)) || edp_is_rowfree_literal(lit),
       _ => false
     }
     if stamped {
       edp_refuse_field_type_args(sname, fname, row, edp_field_row_params(sname, row), Array::length(targs) > 0)
     }
+  }
+}
+
+/// Do the slot rows a `let`-bound literal's uses ask for all name one
+/// stampable row? A use with no such row records "" (#3424).
+export fn edp_rows_agree(rows: Array[String]) -> Bool {
+  let mut ok = Array::length(rows) > 0
+  for r in rows {
+    if r == "" || r != Array::get(rows, 0) {
+      ok = false
+    } else {
+      ()
+    }
+  }
+  ok
+}
+
+fn edp_is_rowfree_literal(lit: Option[Expr]) -> Bool {
+  match lit {
+    Some(EFn(_, _, _, _, None, _)) => true,
+    _ => false
+  }
+}
+
+/// Codex on #3620: the row-free closure literals bound by `let` and stored by
+/// name in a field whose row the stamp reads (`let g = () -> 1` then
+/// `Holder[String]::{ f: g }`): each literal's name and `scope` index, the
+/// field's row, and the field's slot-callee spelling. The field is read with
+/// its row's dict, so the literal needs the row, which only its binding can
+/// give it; `edp_settle_field_literal` decides there.
+let edp_field_lit_names: Array[String] = []
+let edp_field_lit_slots: Array[Int] = []
+let edp_field_lit_rows: Array[String] = []
+let edp_field_lit_callees: Array[String] = []
+
+/// Where a binding's body starts noting field uses.
+export fn edp_field_literal_mark() -> Int {
+  Array::length(edp_field_lit_names)
+}
+
+/// Note a field of row `row` holding `lit` -- (name, `scope` index, the
+/// literal bound there) -- when that is a row-free closure literal.
+export fn edp_note_field_literal(lit: (String, Int, Option[Expr]), row: String, callee: String) -> Unit {
+  if edp_is_rowfree_literal(lit.2) {
+    Array::push(edp_field_lit_names, lit.0)
+    Array::push(edp_field_lit_slots, lit.1)
+    Array::push(edp_field_lit_rows, row)
+    Array::push(edp_field_lit_callees, callee)
+  }
+}
+
+/// Did the body after `mark` store the literal bound at `slot` in a field?
+export fn edp_field_literal_pending(slot: Int, mark: Int) -> Bool {
+  let mut i = mark
+  let mut hit = false
+  while !hit && i < Array::length(edp_field_lit_slots) {
+    hit = Array::get(edp_field_lit_slots, i) == slot
+    i = i + 1
+  }
+  hit
+}
+
+/// Remove the field uses noted after `mark` for the literal `name` bound at
+/// `slot`, and answer the row it takes: the fields' row when they agree and
+/// are all `total` of its uses, else "" with the build refused. A literal
+/// that calls a local closure (`calls_local`) is refused as one written at a
+/// field is (`edp_refuse_uncopied_literal`).
+export fn edp_settle_field_literal(name: String, slot: Int, mark: Int, total: Int, calls_local: Bool) -> String {
+  let mut row = ""
+  let mut callee = ""
+  let mut agree = true
+  let mut count = 0
+  let mut w = mark
+  let mut i = mark
+  while i < Array::length(edp_field_lit_names) {
+    if Array::get(edp_field_lit_slots, i) == slot && Array::get(edp_field_lit_names, i) == name {
+      if count == 0 {
+        row = Array::get(edp_field_lit_rows, i)
+        callee = Array::get(edp_field_lit_callees, i)
+      } else if Array::get(edp_field_lit_rows, i) != row {
+        agree = false
+      }
+      count = count + 1
+    } else {
+      Array::set(edp_field_lit_names, w, Array::get(edp_field_lit_names, i))
+      Array::set(edp_field_lit_slots, w, Array::get(edp_field_lit_slots, i))
+      Array::set(edp_field_lit_rows, w, Array::get(edp_field_lit_rows, i))
+      Array::set(edp_field_lit_callees, w, Array::get(edp_field_lit_callees, i))
+      w = w + 1
+    }
+    i = i + 1
+  }
+  Array::truncate(edp_field_lit_names, w)
+  Array::truncate(edp_field_lit_slots, w)
+  Array::truncate(edp_field_lit_rows, w)
+  Array::truncate(edp_field_lit_callees, w)
+  if count == 0 {
+    ""
+  } else if calls_local {
+    edp_set_slot_callee(callee, true)
+    edp_refuse_uncopied_literal(edp_take_slot_callee(), row, ("", false))
+    ""
+  } else if agree && count == total {
+    row
+  } else {
+    edp_refuse_unstamped_field_literal(name, callee, row)
+    ""
   }
 }
 

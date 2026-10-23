@@ -201,3 +201,56 @@ test "a type parameter nested in the row's type argument" {
   } }
   inspect(drive_arr(h.f), "34")
 }
+
+// Codex on #3620: a closure literal bound by `let` and named in the field
+// takes the field's row at its binding when every use of the name is such a
+// field. It was compiled without the row while `drive` passed the handler,
+// and the call trapped ("null function or function signature mismatch").
+test "a local literal named in the field" {
+  let g = () -> 10
+  let h = Holder[String]::{ f: g }
+  inspect(drive(h.f), "10")
+}
+
+test "a local literal named in two fields" {
+  let g = () -> 11
+  let h = Holder[String]::{ f: g }
+  let h2: Holder[String] = Holder::{ f: g }
+  inspect(drive(h.f) + drive(h2.f), "22")
+}
+
+test "a local literal named in a concrete row field" {
+  let g = () -> 12
+  let p = Pair[Int]::{ g: () -> 1, plain: g, tag: 0 }
+  inspect(drive(p.plain), "12")
+}
+
+fn mk_local() -> Holder[String] with Box[String] {
+  let g = () -> {
+    perform Box::Put("abc")
+    13
+  }
+  Holder[String]::{ f: g }
+}
+
+test "a performing local literal named in the field" {
+  let h = handle {
+    mk_local()
+  } with {
+    Box::Put(_) => resume(())
+  }
+  inspect(drive(h.f), "43")
+}
+
+// The edit the refusal names when the name has another use, or when the
+// record's type arguments are inferred: a row written on the literal is the
+// closure's own.
+test "a local literal that writes its row" {
+  let g = () -> Int with Box[String] {
+    perform Box::Put("ab")
+    14
+  }
+  let h = Holder::{ f: g }
+  let h2 = Holder[String]::{ f: g }
+  inspect(drive(h.f) + drive(h2.f), "68")
+}
