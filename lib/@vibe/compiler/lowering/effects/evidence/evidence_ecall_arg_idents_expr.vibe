@@ -69,6 +69,10 @@ import ./evidence_returned_scan_expr.vibe {
   edp_assigns_name, edp_count_assigns_name, edp_return_name_count, edp_tail_name_count
 }
 
+import ./evidence_free_names.vibe {
+  edp_free_names, edp_free_names_opaque, edp_names_with
+}
+
 import ./evidence_declared_slots.vibe {
   edp_expr_builds_row_field,
   edp_field_slot,
@@ -365,6 +369,43 @@ fn edp_stamp_tuple_tail(e: Expr, tys: Array[TypeExpr], tail: Bool, rets: Option[
     }, off, res),
     EBinOp(op, l, r, boff) => EBinOp(op, edp_stamp_tuple_tail(l, tys, false, rets, stmts, scope, pure_names), edp_stamp_tuple_tail(r, tys, false, rets, stmts, scope, pure_names), boff),
     EUnaryOp(op, x) => EUnaryOp(op, edp_stamp_tuple_tail(x, tys, false, rets, stmts, scope, pure_names)),
+    // A `return` anywhere else in the body leaves the function too, as
+    // `edp_stamp_returns` walks it (Codex on #3610: a `return` in a loop).
+    EForIn(n, idx, it, b) => {
+      let it2 = edp_stamp_tuple_tail(it, tys, false, rets, stmts, scope, pure_names)
+      Array::push(scope, n)
+      match idx {
+        Some(ix) => Array::push(scope, ix),
+        None => ()
+      }
+      EForIn(n, idx, it2, edp_stamp_tuple_tail(b, tys, false, rets, stmts, scope, pure_names))
+    },
+    ELoop(pairs, b) => {
+      let pairs2 = for pr in pairs {
+        let (n, v) = pr
+        (n, edp_stamp_tuple_tail(v, tys, false, rets, stmts, scope, pure_names))
+      }
+      for pr in pairs {
+        Array::push(scope, pr.0)
+      }
+      ELoop(pairs2, edp_stamp_tuple_tail(b, tys, false, rets, stmts, scope, pure_names))
+    },
+    EDot(o, f, o1, o2) => EDot(edp_stamp_tuple_tail(o, tys, false, rets, stmts, scope, pure_names), f, o1, o2),
+    ELabeledArg(l, ln, v) => ELabeledArg(l, ln, edp_stamp_tuple_tail(v, tys, false, rets, stmts, scope, pure_names)),
+    EBreak(Some(x)) => EBreak(Some(edp_stamp_tuple_tail(x, tys, false, rets, stmts, scope, pure_names))),
+    EContinue(args) => EContinue(for x in args {
+      edp_stamp_tuple_tail(x, tys, false, rets, stmts, scope, pure_names)
+    }),
+    EArray(items) => EArray(for x in items {
+      edp_stamp_tuple_tail(x, tys, false, rets, stmts, scope, pure_names)
+    }),
+    ERecord(rn, fields, tas) => ERecord(rn, for f in fields {
+      (f.0, edp_stamp_tuple_tail(f.1, tys, false, rets, stmts, scope, pure_names))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      (f.0, edp_stamp_tuple_tail(f.1, tys, false, rets, stmts, scope, pure_names))
+    }),
+    ESpread(x) => ESpread(edp_stamp_tuple_tail(x, tys, false, rets, stmts, scope, pure_names)),
     _ => e
   }
   Array::truncate(scope, base)
@@ -1299,103 +1340,6 @@ fn edp_int_array_has(xs: Array[Int], x: Int) -> Bool {
     }
   }
   found
-}
-
-/// Recorded by `edp_free_names` for a part it cannot read names out of (an
-/// interpolation's text), so a copy is declined rather than trusted.
-let edp_free_names_opaque = "#opaque"
-
-/// The names `e` reads or assigns that it does not bind itself, into `out`.
-/// `bound` is the names bound around `e`. Every binder form is scoped (`let`,
-/// `let mut`, `let rec`, parameters, match and handler arm patterns, `for`,
-/// `loop`), and an assignment's target counts, because the AST keeps it as a
-/// name rather than an `EIdent`.
-fn edp_free_names(e: Expr, bound: Array[String], out: Array[String]) -> Unit {
-  match e {
-    EIdent(n, _) => edp_free_name(n, bound, out),
-    EAssign(n, v, c, _) => {
-      edp_free_name(n, bound, out)
-      edp_free_names(v, bound, out)
-      edp_free_names(c, bound, out)
-    },
-    EAssignOp(n, _, v, c, _) => {
-      edp_free_name(n, bound, out)
-      edp_free_names(v, bound, out)
-      edp_free_names(c, bound, out)
-    },
-    ELet(n, v, b, _) => {
-      edp_free_names(v, bound, out)
-      edp_free_names(b, edp_names_with(bound, [n]), out)
-    },
-    ELetMut(n, v, b, _) => {
-      edp_free_names(v, bound, out)
-      edp_free_names(b, edp_names_with(bound, [n]), out)
-    },
-    ELetRec(n, v, b) => {
-      let inner = edp_names_with(bound, [n])
-      edp_free_names(v, inner, out)
-      edp_free_names(b, inner, out)
-    },
-    EFn(_, _, ps, _, _, body) => {
-      let names: Array[String] = []
-      for p in ps {
-        Array::push(names, edp_param_base_name(p.0))
-      }
-      edp_free_names(body, edp_names_with(bound, names), out)
-    },
-    EMatch(sc, arms) => {
-      edp_free_names(sc, bound, out)
-      for arm in arms {
-        edp_free_names(arm.1, edp_names_with(bound, edp_pat_names(arm.0)), out)
-      }
-    },
-    EHandle(bd, arms) => {
-      edp_free_names(bd, bound, out)
-      for arm in arms {
-        edp_free_names(arm.1, edp_names_with(bound, edp_pat_names(arm.0)), out)
-      }
-    },
-    EForIn(n, idx, it, b) => {
-      edp_free_names(it, bound, out)
-      let names = [n]
-      match idx {
-        Some(i) => Array::push(names, i),
-        None => ()
-      }
-      edp_free_names(b, edp_names_with(bound, names), out)
-    },
-    ELoop(pairs, b) => {
-      let names: Array[String] = []
-      for pair in pairs {
-        edp_free_names(pair.1, bound, out)
-        Array::push(names, pair.0)
-      }
-      edp_free_names(b, edp_names_with(bound, names), out)
-    },
-    EStringInterp(_) => Array::push(out, edp_free_names_opaque),
-    _ => for child in expr_children(e) {
-      edp_free_names(child, bound, out)
-    }
-  }
-}
-
-fn edp_free_name(n: String, bound: Array[String], out: Array[String]) -> Unit {
-  if !edp_str_array_contains(bound, n) && !edp_str_array_contains(out, n) {
-    Array::push(out, n)
-  } else {
-    ()
-  }
-}
-
-fn edp_names_with(bound: Array[String], names: Array[String]) -> Array[String] {
-  let out: Array[String] = []
-  for n in bound {
-    Array::push(out, n)
-  }
-  for n in names {
-    Array::push(out, n)
-  }
-  out
 }
 
 fn edp_scope_last_index(scope: Array[String], name: String) -> Int {

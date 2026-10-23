@@ -104,6 +104,50 @@ fn edp_result_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr
   out
 }
 
+/// The tuple type a parameterless alias `ty` names, through a chain of
+/// aliases, or None.
+fn edp_result_alias_tuple(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] {
+  let mut cur = ty
+  let mut out: Option[TypeExpr] = None
+  let mut steps = 0
+  let mut done = false
+  while !done && steps < 32 {
+    let head = match cur {
+      TyName(an) => an,
+      _ => ""
+    }
+    let mut next: Option[TypeExpr] = None
+    if String::length(head) > 0 {
+      for st in stmts {
+        match st {
+          STypeAlias(_, an, tparams, body) => if an == head && Array::length(tparams) == 0 {
+            next = Some(body)
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      }
+    } else {
+      ()
+    }
+    match next {
+      Some(TyTuple(items)) => {
+        out = Some(TyTuple(items))
+        done = true
+      },
+      Some(body) => {
+        cur = body
+      },
+      None => {
+        done = true
+      }
+    }
+    steps = steps + 1
+  }
+  out
+}
+
 /// The type-alias names the program declares, taken once per stamp pass
 /// (`edp_note_program_aliases`).
 let edp_program_aliases: Array[MutSet[String]] = []
@@ -217,7 +261,21 @@ export fn edp_expr_builds_row_field(e: Expr) -> Bool {
 /// at any depth of nested tuples, is a function type with a stampable row;
 /// else None. The closure in that position is called with the dict, as one
 /// returned alone at that type is (`edp_result_slot`).
-export fn edp_tuple_result_types(stmts: Array[Stmt], rty: TypeExpr) -> Option[Array[TypeExpr]] {
+export fn edp_tuple_result_types(stmts: Array[Stmt], rty0: TypeExpr) -> Option[Array[TypeExpr]] {
+  // A tuple result spelled through an alias (`fn mk() -> Pair` with
+  // `type Pair = (() -> Int with Ask, Int)`) is expanded as a function
+  // result's alias is (`edp_result_slot`; Codex on #3610).
+  let rty = match rty0 {
+    TyName(an) => if edp_is_program_alias(an) {
+      match edp_result_alias_tuple(stmts, rty0) {
+        Some(t) => t,
+        None => rty0
+      }
+    } else {
+      rty0
+    },
+    _ => rty0
+  }
   match rty {
     TyTuple(items) => {
       let mut hit = false
