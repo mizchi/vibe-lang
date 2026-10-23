@@ -1,0 +1,32 @@
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+import @vibe/compiler/normalize/desugar {
+  desugar_hoist_local_lambdas
+}
+
+// Hoisting a directly called closure must be invariant under renaming an
+// unrelated inner binding. A genuine value use must still retain the closure.
+fn local_hoist_count(tail: String) -> Int with Exception {
+  let source = "effect QLog{Emit(String)->Unit} fn main()->Int{let f=(a:Int)->Int with QLog{perform QLog::Emit(\"test\");a+1};" + tail + "}"
+  let stmts = parse_program(lex(source))
+  let before = Array::length(stmts)
+  desugar_hoist_local_lambdas(stmts)
+  Array::length(stmts) - before
+}
+
+test "an inner let's spelling does not change the outer direct-call convention" {
+  let call = "let got=handle{f(41)}with{QLog::Emit(_)=>resume(())};"
+  assert_eq(local_hoist_count(call + "let shadow=()->1;let keep=shadow;got+keep()"), 1)
+  assert_eq(local_hoist_count(call + "let f=()->1;let keep=f;got+keep()"), 1)
+}
+
+test "an inner parameter's spelling does not change the outer direct-call convention" {
+  let call = "let got=handle{f(41)}with{QLog::Emit(_)=>resume(())};"
+  assert_eq(local_hoist_count(call + "let call=(other:()->Int)->Int{let keep=other;keep()};got+call(()->1)"), 1)
+  assert_eq(local_hoist_count(call + "let call=(f:()->Int)->Int{let keep=f;keep()};got+call(()->1)"), 1)
+}
+
+test "an outer value read in a shadow's initializer remains an escape" {
+  assert_eq(local_hoist_count("let f=f;handle{f(41)}with{QLog::Emit(_)=>resume(())}"), 0)
+}

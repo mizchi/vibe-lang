@@ -638,7 +638,7 @@ fn dlh_marker_only_called_directly(expr: Expr, marker: String) -> Bool {
 /// extra_names_as_idents ++ args, off)` -- the captured-value arguments the
 /// newly-hoisted top-level function now expects as its leading parameters,
 /// each just a bare reference to the SAME name it had in the original
-/// (unshadowed, per dlh_marker_only_called_directly's guarantee) enclosing
+/// (unshadowed, per dlh_subst's marker substitution) enclosing
 /// scope, still valid at the call site since hoisting doesn't move the call
 /// site itself, only the closure's OWN body. Full traversal (marker is
 /// fresh/unique, no shadowing concern, so no bound-tracking needed here).
@@ -1197,9 +1197,14 @@ fn dlh_hoist_arg_bindings(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int], lit
         // its closure convention. A hoisted native function may elide an
         // unused dictionary, so its declared row alone cannot prove that
         // convention to a field reader. Direct-only uses keep the #786 path.
-        // Checking every same-spelled reference is conservative: a shadow
-        // can prevent a hoist, but cannot hide an escaping use.
-        let hoistable = dlh_has_perform(fbody) && Array::length(bad) == 0 && (literal_args > 0 || eff_is_blank || dlh_marker_only_called_directly(rest, name))
+        // Substitute only unshadowed uses before testing for a value escape.
+        let hoistable = dlh_has_perform(fbody) && Array::length(bad) == 0 && (literal_args > 0 || eff_is_blank || {
+          let mut marker = ":dlh-direct"
+          while dinsp_scan(rest, 2, marker) {
+            marker = String::concat(marker, ":")
+          }
+          dlh_marker_only_called_directly(dlh_subst(rest, name, marker), marker)
+        })
         if hoistable {
           let idx = Array::get(ctr, 0)
           Array::set(ctr, 0, idx + 1)
