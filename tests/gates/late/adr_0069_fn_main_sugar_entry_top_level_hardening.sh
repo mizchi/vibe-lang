@@ -1379,13 +1379,13 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_loop_nested_break_suspend_test.vibe \
   fixtures/effect_resume_store_loop_break_test.vibe \
   fixtures/effect_loop_ctl_name_collision_test.vibe
-# #1536 boundary: generic linearization still walks only positions that every
-# execution reaching a compound also reaches, so it never names a suspension
-# INSIDE a branch or inside a short-circuit RHS. Both are instead named WHOLE
-# (the snapshots above pin that, bypass included). A selected RHS that returns
-# stays closed -- now via the general rule below, since a `return` anywhere on
-# a split body's spine is refused before the split runs.
-scps_check_reject "err_effect_let_shortcircuit_return_suspend.vibe" "cannot contain a \`return\`" "letshortcircuitreturn"
+# A selected short-circuit RHS may return from the source function even
+# after resumption. The owner-targeted control must skip the code after the
+# handle; a bypassed RHS must still run that code without performing.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_shortcircuit_return_suspend_test.vibe
+VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_BACKEND=gc bash scripts/vibe_test.sh \
+  fixtures/effect_shortcircuit_return_suspend_test.vibe
 # #1536: a `return` on a split body's own spine is hoisted to the tail it
 # already denotes (in a needing fn's clone / a closure literal, `return v` IS
 # that computation's value). It used to be left in place, compile clean, and
@@ -1410,9 +1410,9 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_return_nested_loop_test.vibe
 # #1536: `return` in a HANDLE body means "leave the enclosing function", not
-# "the handle's value", so it is captured in a cell declared outside the handle
-# and returned after it. The snapshot pins taken / not-taken / from inside a
-# suspending loop nested in the handle body.
+# "the handle's value". Owner-targeted control crosses lifted continuations
+# and leaves that function. The snapshots pin taken / not-taken / from inside
+# a suspending loop nested in the handle body.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_return_in_handle_body_test.vibe
 # #1536: `for x in xs` over a PROVED array becomes the indexed while form, which

@@ -1199,32 +1199,28 @@ fn edp_first_live_replay_handle(stmts: Array[Stmt], keep: Array[Bool]) -> String
   found
 }
 
-/// The effect desc a `handle`'s arm list claims: the first arm's effect name,
-/// `"<catch-all>"` for a wildcard/binder arm, `""` for an Error handle (or no
-/// arms). Shared by the live-handle check and the #1514 culprit-call locator so
-/// both agree on WHICH handle a given desc refers to.
+/// The first non-Exception effect claimed by any arm, or `<catch-all>` for
+/// a wildcard/binder. Exception-only handlers return the empty description.
+/// Shared by the live-handle guard and its culprit locator so both identify
+/// the same surviving user effect regardless of Exception arm order.
 fn edp_handle_own_effect_desc(arms: Array[(Pat, Expr)]) -> String {
-  let mut own = ""
-  if Array::length(arms) > 0 {
-    let (p, _) = Array::get(arms, 0)
-    match p {
+  for arm in arms {
+    let (p, _) = arm
+    let own = match p {
       PCtor(qname, _) => if is_exception_throw_operation(qname) {
-        ()
+        ""
       } else {
-        own = edp_effect_name_of(qname)
+        edp_effect_name_of(qname)
       },
-      PWild => {
-        own = "<catch-all>"
-      },
-      PBind(_) => {
-        own = "<catch-all>"
-      },
-      _ => ()
+      PWild => "<catch-all>",
+      PBind(_) => "<catch-all>",
+      _ => ""
     }
-  } else {
-    ()
+    if own != "" {
+      return own
+    }
   }
-  own
+  ""
 }
 
 fn edp_nonerror_handle_desc_expr(expr: Expr) -> String {

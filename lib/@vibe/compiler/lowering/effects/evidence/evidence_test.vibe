@@ -324,3 +324,37 @@ test "a loop-state binder spelled like a pure top-level function stays opaque" {
   inspect(Array::length(evidence_dict_pass(loop_shadowing_pure_program(), "main")) > 0, content = "true")
 }
 
+fn opaque_grouped_handler(exception_first: Bool) -> Array[Stmt] {
+  let own = (PCtor("Ask::Get", []), ECall(EIdent("resume", -1), [EInt(7)], -1, [
+  ]))
+  let caught = (PCtor("Exception[String]::Throw", [PBind("message")]), EInt(-1))
+  let arms = if exception_first {
+    [caught, own]
+  } else {
+    [own, caught]
+  }
+  let perform = ECall(EIdent("perform", -1), [
+    ECall(EIdent("Ask::Get", -1), [], -1, [])
+  ], -1, [])
+  [
+    SEffectDef(false, "Ask", [], [("Get", [], TyName("Int"))]),
+    SLet(false, false, "main", None, EFn([], [], [], Some(TyName("Int")), None, ELet("local", EFn([
+    ], [], [], None, None, perform), EHandle(ECall(EIdent("local", 25), [], 25, [
+    ]), arms), -1)))
+  ]
+}
+
+test "survivor detection sees a user effect after Exception arms" {
+  let errors = evidence_dict_pass(opaque_grouped_handler(true), "main")
+  assert(Array::length(errors) > 0)
+  assert(String::contains(Array::get(errors, 0), "Ask"))
+  assert(String::contains(Array::get(errors, 0), "local"))
+}
+
+test "surviving grouped handler refusals do not depend on Exception arm order" {
+  let first = evidence_dict_pass(opaque_grouped_handler(true), "main")
+  let last = evidence_dict_pass(opaque_grouped_handler(false), "main")
+  assert(Array::length(first) > 0)
+  assert(Array::length(last) > 0)
+  inspect(first, content = __to_string(last))
+}

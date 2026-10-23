@@ -1,0 +1,24 @@
+// #3540: the mixed Ask/Exception driver runs the Ask arm outside the
+// handled body and its sibling Exception arm. Only the outer String arm
+// catches the throw, so the result is -5 rather than -4 or a doubled pointer.
+effect Ask {
+  Get() -> Int
+}
+
+fn guarded() -> Int with Ask {
+  handle {
+    perform Ask::Get() + 1
+  } with { Exception[Int]::Throw(code) => code * 2 }
+}
+
+fn arm_throw_outside_body() -> Int {
+  handle {
+    handle {
+      guarded()
+    } with { Ask::Get() => throw("mixed"); Exception[String]::Throw(_) => -4 }
+  } with { Exception[String]::Throw(_) => -5 }
+}
+
+test "a throwing arm bypasses both body and sibling exception handlers" {
+  inspect(arm_throw_outside_body(), "-5")
+}

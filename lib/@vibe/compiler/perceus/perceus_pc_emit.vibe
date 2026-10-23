@@ -9,7 +9,19 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, bsearch_leftmost, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  bsearch_leftmost,
+  builtin_frame_jump,
+  builtin_frame_scope,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  resolved_callee_operation,
+  return_call_site
 }
 
 import ./perceus_analyze_calls.vibe {
@@ -351,6 +363,7 @@ export fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[Stri
     cons: [],
     exit_ord: 0,
     handle_floor: 0,
+    return_floor: 0,
     let_stack: [],
     exit_ids: [],
     exit_ords: [],
@@ -464,6 +477,7 @@ export fn pctx_reset(ctx: PCtx) -> Int {
   Array::truncate(ctx.cons, 0)
   ctx.exit_ord = 0
   ctx.handle_floor = 0
+  ctx.return_floor = 0
   let lets0: Array[String] = []
   ctx.let_stack = lets0
   Array::truncate(ctx.exit_ids, 0)
@@ -912,7 +926,8 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     EUnit => 0,
     EStringInterp(_) => 0,
     EIdent(x, off) => pe_use(ctx, scope, x, off),
-    ECall(callee, args, _, _) => {
+    ECall(callee, args, _, resolution) => {
+      let operation = resolved_callee_operation(resolution)
       // Same lexical-shadow guard as pc_count (and compile_call #875).
       let bmask = pe_borrow_mask(ctx, scope, callee)
       match callee {
@@ -922,6 +937,10 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       let mut i = 0
       while i < Array::length(args) {
         let arg = Array::get(args, i)
+        let saved_return_floor = ctx.return_floor
+        if operation == builtin_frame_scope && i == 1 {
+          ctx.return_floor = ctx.next_id
+        }
         if pe_bmask_has(bmask, i) || pc_loop_call_arg_borrow(ctx, scope, arg) {
           match arg {
             EIdent(_, _) => 0,
@@ -930,7 +949,15 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
         } else {
           pc_emit(ctx, scope, arg)
         }
+        ctx.return_floor = saved_return_floor
         i = i + 1
+      }
+      if operation == builtin_frame_jump {
+        pe_exit(ctx, scope, 4, ctx.return_floor, EUnit)
+      }
+      let call_site = return_call_site(resolution)
+      if call_site >= 0 {
+        pe_exit(ctx, scope, 5, ctx.return_floor, EInt(call_site))
       }
       // #3141: `throw(x)` is `perform Exception::Throw(x)`, which codegen
       // lowers to a wasm `throw` right after its payload.

@@ -1,3 +1,15 @@
+import @vibe/compiler/core {
+  return_call_original, return_call_site
+}
+import @vibe/compiler/codegen/common_base {
+  frame_cookie, frame_cookie_set
+}
+import @vibe/compiler/core {
+  builtin_frame_jump, builtin_frame_scope, bytebuf_push, leb128_encode_u32
+}
+import @vibe/compiler/codegen/common_base {
+  emit_frame_check_payload, emit_frame_scope_epilogue, emit_frame_scope_prologue
+}
 // lib/@vibe/compiler/codegen/expr/compile_call.vibe — call core.
 
 import ./compile_lambda.vibe {
@@ -51,6 +63,8 @@ import @vibe/compiler/codegen/common_base {
   func_table_user_index_of,
   is_efn,
   is_eident,
+  rc_exit_push,
+  rc_exit_truncate,
   region_try_body_ld
 }
 
@@ -59,10 +73,12 @@ import @vibe/compiler/codegen/common_extractors {
 }
 
 import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
   emit_block_void,
   emit_br,
   emit_br_if,
   emit_call,
+  emit_drop,
   emit_end,
   emit_i32_add,
   emit_i32_const,
@@ -71,9 +87,11 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_add,
   emit_i64_and,
   emit_i64_const,
+  emit_i64_eqz,
   emit_i64_ge_s,
   emit_i64_lt_s,
   emit_i64_shr_s,
+  emit_if_void,
   emit_local_get,
   emit_local_set,
   emit_local_tee,
@@ -98,7 +116,7 @@ import ./compile_call_cc_ladder_names.vibe {
 }
 
 import ./compile_call_named_1.vibe {
-  cc_compile_named_1
+  cc_compile_named_1, rc_exit_release
 }
 
 import ./compile_call_named_3.vibe {
@@ -174,8 +192,44 @@ fn cc_emit_truncate_release(buf: Bytes, args: Array[Expr], kind: Int, local_name
   next_local + 2
 }
 
-export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Array[Int], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+fn compile_call_inner(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Array[Int], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let operation = resolved_callee_operation(resolution)
+  if operation == builtin_frame_scope && Array::length(args) == 2 {
+    let frame = next_local
+    let payload = next_local + 1
+    Array::push(local_names, ""); Array::push(local_names, ""); Array::push(local_names, "")
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local + 3, ctx, ld)
+    emit_local_set(buf, frame)
+    let control_tag = 4 + Array::length(ctx.effect_names)
+    emit_frame_scope_prologue(buf, control_tag)
+    let exit_mark = Array::length(ctx.rc_exit_stack_names)
+    rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, "", 102, -1, -1)
+    let result = ce(buf, Array::get(args, 1), local_names, nl, ctx, if ld >= 0 {
+      ld + 4
+    } else {
+      -1
+    })
+    rc_exit_truncate(ctx, exit_mark)
+    emit_frame_scope_epilogue(buf, control_tag, frame, payload, next_local + 2, ctx.enable_rc, ctx.rc_shadow, ctx.rc_dup_func_idx, ctx.rc_drop_func_idx, frame_cookie(ctx.rc_exit_state))
+    return result
+  }
+  if operation == builtin_frame_jump && Array::length(args) == 3 {
+    let nl = ce(buf, ETuple([Array::get(args, 0), Array::get(args, 1)]), local_names, next_local, ctx, ld)
+    let payload = nl
+    let frame = nl + 1
+    Array::push(local_names, ""); Array::push(local_names, "")
+    emit_local_set(buf, payload)
+    emit_frame_check_payload(buf, payload, frame, ctx.enable_rc)
+    let end_local = ce(buf, ECall(EIdent("abort", -2), [Array::get(args, 2)], -1, [
+    ]), local_names, nl + 2, ctx, ld)
+    emit_drop(buf)
+    emit_end(buf)
+    rc_exit_release(buf, ctx, local_names, 4, EUnit, -1)
+    frame_cookie_set(buf, ctx.rc_exit_state, 1)
+    emit_local_get(buf, payload)
+    bytebuf_push(buf, 8); leb128_encode_u32(buf, 4 + Array::length(ctx.effect_names))
+    return end_local
+  }
   if is_eident(callee) && get_eident_name(callee) == "__region_run" && Array::length(args) == 1 {
     if ctx.region_ptr_addr >= 0 {
       emit_region_enter(buf, ctx.region_ptr_addr)
@@ -382,5 +436,37 @@ fn compile_call_core_resolved(buf: Bytes, callee: Expr, raw_args: Array[Expr], r
     } else {
       nl
     }
+  }
+}
+
+export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Array[Int], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  let site = return_call_site(resolution)
+  if site < 0 || !ctx.enable_rc {
+    compile_call_inner(buf, callee, args, resolution, local_names, next_local, ctx, ld, ce)
+  } else {
+    let payload = next_local
+    Array::push(local_names, "")
+    let control_tag = 4 + Array::length(ctx.effect_names)
+    emit_block_i64(buf); emit_block_i64(buf)
+    bytebuf_push(buf, 31); bytebuf_push(buf, 126); leb128_encode_u32(buf, 1)
+    bytebuf_push(buf, 0); leb128_encode_u32(buf, control_tag); leb128_encode_u32(buf, 0)
+    let end_local = compile_call_inner(buf, callee, args, return_call_original(resolution), local_names, next_local + 1, ctx, if ld >= 0 {
+      ld + 3
+    } else {
+      -1
+    }, ce)
+    emit_end(buf); emit_br(buf, 1); emit_end(buf)
+    emit_local_set(buf, payload)
+    let cookie = frame_cookie(ctx.rc_exit_state)
+    if cookie < 0 {
+      throw("internal: return control call has no activation cookie")
+    }
+    emit_local_get(buf, cookie); emit_i64_eqz(buf); emit_if_void(buf)
+    rc_exit_release(buf, ctx, local_names, 5, EInt(site), -1)
+    frame_cookie_set(buf, ctx.rc_exit_state, 1)
+    emit_end(buf)
+    emit_local_get(buf, payload); bytebuf_push(buf, 8); leb128_encode_u32(buf, control_tag)
+    emit_end(buf)
+    end_local
   }
 }

@@ -1,8 +1,8 @@
 import @vibe/compiler/core {
-  Expr, Stmt
+  Expr, Pat, Stmt, TypeExpr
 }
 import @vibe/compiler/lowering/effects/suspend {
-  suspend_cps_pass
+  scps_collect_groups, scps_group_target, scps_safe_captures, scps_scope_from_visible, suspend_cps_pass
 }
 
 test "programs without triggered handles preserve their bodies" {
@@ -12,4 +12,54 @@ test "programs without triggered handles preserve their bodies" {
     SExpr(ELet("value", EInt(42), EIdent("value", 4), 0)) => true,
     _ => false
   }, content = "true")
+}
+
+test "group targets identify effect sets independently of arm order" {
+  let arms = [(PCtor("A::Get", []), EInt(1)), (PCtor("B::Get", []), EInt(2))]
+  let reversed = [(PCtor("B::Get", []), EInt(2)), (PCtor("A::Get", []), EInt(1))]
+  let groups = scps_collect_groups([
+    SExpr(EHandle(EInt(0), arms)),
+    SExpr(EHandle(EInt(0), reversed))
+  ])
+  inspect(Array::length(groups), content = "1")
+  inspect(scps_group_target(arms, groups), content = scps_group_target(reversed, groups))
+}
+
+test "visible plain data does not survive a shadowing opaque binder" {
+  let ctx = ([], [], [], [], [], [], [])
+  let visible = [("log", "", true)]
+  inspect(scps_safe_captures(scps_scope_from_visible(visible, "Ask", ctx)), content = "[log]")
+  Array::push(visible, ("log", "", false))
+  inspect(scps_safe_captures(scps_scope_from_visible(visible, "Ask", ctx)), content = "[]")
+}
+
+fn group_guard_perform(name: String) -> Expr {
+  ECall(EIdent("perform", -1), [ECall(EIdent(name, -1), [], -1, [])], -1, [])
+}
+fn group_guard_resume(value: Int) -> Expr {
+  ECall(EIdent("resume", -1), [EInt(value)], -1, [])
+}
+
+test "the convention guard inspects every arm of a remaining group" {
+  let captured = ELet("saved", EIdent("resume", -1), ECall(EIdent("saved", -1), [
+    EInt(5)
+  ], -1, []), -1)
+  let first = EHandle(ECall(EIdent("f", -1), [], -1, []), [
+    (PCtor("A::Get", []), group_guard_resume(100)),
+    (PCtor("B::Get", []), captured)
+  ])
+  let later = EHandle(ECall(EIdent("f", -1), [], -1, []), [
+    (PCtor("C::Get", []), group_guard_resume(7)),
+    (PCtor("B::Get", []), group_guard_resume(2))
+  ])
+  let body = ELet("f", EFn([], [], [], None, None, group_guard_perform("B::Get")), ESeq(first, later), -1)
+  let stmts = [
+    SEffectDef(false, "A", [], [("Get", [], TyName("Int"))]),
+    SEffectDef(false, "B", [], [("Get", [], TyName("Int"))]),
+    SEffectDef(false, "C", [], [("Get", [], TyName("Int"))]),
+    SLet(false, false, "main", None, EFn([], [], [], None, None, body))
+  ]
+  let errors = suspend_cps_pass(stmts)
+  assert(Array::length(errors) > 0)
+  assert(String::contains(Array::get(errors, 0), "step convention"))
 }

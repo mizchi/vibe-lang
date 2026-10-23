@@ -1,3 +1,9 @@
+import @vibe/compiler/core {
+  builtin_frame_jump, builtin_frame_scope
+}
+import @vibe/compiler/codegen/common_base {
+  emit_frame_check_payload, emit_frame_scope_epilogue, emit_frame_scope_prologue
+}
 // lib/@vibe/compiler/codegen/gc/backend_call.vibe — named 1.
 
 import @vibe/compiler/core {
@@ -327,6 +333,36 @@ fn compile_call_gc_unresolved(buf: Bytes, callee: Expr, args: Array[Expr], local
 
 fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Array[Int], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
   let operation = resolved_callee_operation(resolution)
+  if operation == builtin_frame_scope && Array::length(args) == 2 {
+    let frame = next_local
+    let payload = next_local + 1
+    Array::push(local_names, ""); Array::push(local_names, ""); Array::push(local_names, "")
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local + 3, ld)
+    emit_local_set(buf, frame)
+    emit_frame_scope_prologue(buf, 1)
+    let result = ce(buf, Array::get(args, 1), local_names, nl, if ld >= 0 {
+      ld + 4
+    } else {
+      -1
+    })
+    emit_frame_scope_epilogue(buf, 1, frame, payload, next_local + 2, false, false, -1, -1, -1)
+    return result
+  }
+  if operation == builtin_frame_jump && Array::length(args) == 3 {
+    let nl = ce(buf, ETuple([Array::get(args, 0), Array::get(args, 1)]), local_names, next_local, ld)
+    let payload = nl
+    let frame = nl + 1
+    Array::push(local_names, ""); Array::push(local_names, "")
+    emit_local_set(buf, payload)
+    emit_frame_check_payload(buf, payload, frame, false)
+    let end_local = ce(buf, ECall(EIdent("abort", -2), [Array::get(args, 2)], -1, [
+    ]), local_names, nl + 2, ld)
+    emit_drop(buf)
+    emit_end(buf)
+    emit_local_get(buf, payload)
+    bytebuf_push(buf, 8); leb128_encode_u32(buf, 1)
+    return end_local
+  }
   match callee {
     EIdent(source_name, _) => {
       // Match checker/linear shadowing: an alias spelling is a builtin only

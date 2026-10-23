@@ -1,3 +1,6 @@
+import @vibe/compiler/core {
+  builtin_frame_jump, builtin_frame_scope, resolved_callee_operation, return_call_site
+}
 // lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe — free vars expr sc.
 
 import @vibe/compiler/core {
@@ -315,7 +318,7 @@ export fn expr_contains_exceptions(expr: Expr) -> Bool {
     EUnaryOp(_, operand) => expr_contains_exceptions(operand),
     EIf(cond, then_e, else_e) =>
     expr_contains_exceptions(cond) || expr_contains_exceptions(then_e) || expr_contains_exceptions(else_e),
-    ECall(callee, args, _, _) => {
+    ECall(callee, args, _, resolution) => {
       // A bare `resume(..)` call compiles to `throw 1` (continuation resume)
       // even without a surrounding EHandle in this expression -- a resume
       // misused outside a handler must still produce a VALID module. A user
@@ -335,7 +338,8 @@ export fn expr_contains_exceptions(expr: Expr) -> Bool {
       // <eff_tag>` then referenced a tag index that plain does not exist,
       // failing wasm validation ("Invalid tag index: N") the moment the
       // function's body is compiled, whether or not it is ever called.
-      let mut found = match callee {
+      let operation = resolved_callee_operation(resolution)
+      let mut found = operation == builtin_frame_scope || operation == builtin_frame_jump || return_call_site(resolution) >= 0 || match callee {
         EIdent(cname, _) => cname == "resume" || cname == "perform",
         _ => expr_contains_exceptions(callee)
       }
@@ -947,7 +951,12 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
     // lib/@vibe/builtin/string.vibe's String::index_of_from), wrongly
     // skipping its capture into a nested closure and crashing with
     // "undefined variable (ident)" at runtime.
-    ECall(EIdent(cname, _), args, _, _) => if cname == "perform" {
+    ECall(EIdent(cname, _), args, _, resolution) => if resolved_callee_operation(resolution) == builtin_frame_scope || resolved_callee_operation(resolution) == builtin_frame_jump {
+      for arg in args {
+        collect_free_vars_expr_sc(arg, bound, fn_names, encl, skip_inlined, out)
+      }
+      0
+    } else if cname == "perform" {
       // #640 Stage 2: `throw(x)` parses to `perform Exception::Throw(x)`. The
       // magic `perform` callee and the `Exception::Throw` op name are keywords,
       // not capturable values — collecting them as free vars made every
