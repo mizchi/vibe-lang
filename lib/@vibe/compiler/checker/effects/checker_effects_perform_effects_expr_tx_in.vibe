@@ -151,6 +151,7 @@ import ./checker_effects_throw_payload_kind.vibe {
   kinded_handle_owner_marker,
   kinded_pinned_row_var_marker,
   labels_union,
+  local_binding_needs_overlay_entry,
   lookup_fn_effs,
   lookup_program_fn_effs,
   lookup_program_fn_param_effs,
@@ -633,8 +634,9 @@ export fn overlay_bind_empty(names: Array[String], effs: Array[Array[String]], n
   let (sn, se) = shadow_overlay(names, effs, name)
   // Most locals cannot fall through to a top-level function, so retaining an
   // empty marker for every binding only lengthens every descendant snapshot.
-  // The marker is needed exactly when the fallback table contains this name.
-  if !program_fn_exists(fn_index, name) {
+  // The marker is needed exactly when a fallback (the program's table or an
+  // unqualified effectful builtin, #3565) answers this name.
+  if !local_binding_needs_overlay_entry(fn_index, name) {
     return (sn, se)
   }
   let out_names = [name]
@@ -929,7 +931,7 @@ export fn overlay_bind_local(names: Array[String], effs: Array[Array[String]], n
   // #1723: an empty row is still a lexical binding. Keeping an explicit
   // empty entry is what distinguishes "a pure local shadows this name" from
   // "no local binding; consult the top-level function table".
-  if Array::length(labels) == 0 && !program_fn_exists(fn_index, name) {
+  if Array::length(labels) == 0 && !local_binding_needs_overlay_entry(fn_index, name) {
     return shadowed
   }
   let out_names = [name]
@@ -970,7 +972,7 @@ export fn build_param_overlay(params: Array[(String, Option[TypeExpr])], fn_name
     // #1723: all parameters are lexical bindings. A pure callback (or even a
     // non-function parameter later rejected by typing) must mask a same-named
     // top-level function during this independent effect walk.
-    if Array::length(labels) > 0 || program_fn_exists(fn_index, base_name) {
+    if Array::length(labels) > 0 || local_binding_needs_overlay_entry(fn_index, base_name) {
       Array::push(names, base_name)
       Array::push(effs, labels)
     } else {
