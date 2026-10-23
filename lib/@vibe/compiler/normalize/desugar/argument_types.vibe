@@ -4,24 +4,40 @@ import @vibe/compiler/core {
   Expr, TypeExpr
 }
 
+import @vibe/ast {
+  impl_target_from_key, type_param_name
+}
+
 import ./binding_shape_queries.vibe {
   array_elem_type_of, constructor_binding_is_masked, tuple_shape_parts
+}
+
+import ./callable_names.vibe {
+  impl_target_fn_key, impl_target_var_key
 }
 
 import ./constructor_annotations.vibe {
   dtd_tuple_parts_of_shape
 }
 
+import ./equality_aliases.vibe {
+  eq_subst_ty
+}
+
 import ./equality_shape_queries.vibe {
-  eq_shape_key
+  eq_fn_result_of_name, eq_formal_shape_of_name, eq_shape_key, shape_to_eq_ty, ty_contains_eq_unknown
 }
 
 import ./formal_scope.vibe {
-  formal_in_scope
+  formal_in_scope, is_marked_formal_name
 }
 
 import ./shape_environment.vibe {
   shape_key, tuple_shape_key
+}
+
+import ./state.vibe {
+  dtd_struct_field_decls, scope_formal_mark_prefix
 }
 
 import ./tuple_shape_encoding.vibe {
@@ -92,6 +108,234 @@ fn dtd_tuple_elem_type_name(obj: Expr, field: String, var_types: Array[(String, 
       None => None
     },
     _ => None
+  }
+}
+
+/// #3613: what a field projection `obj.field` reads, typed off the receiver.
+///
+///   `FieldTyped(t)`   the field's type at this receiver, with a generic
+///                     struct's parameters replaced by the receiver's type
+///                     arguments. A formal of an enclosing binder stays the
+///                     way the receiver's recorded type spells it (marked or
+///                     not; `field_head_name` reads both);
+///   `FieldUnreadable(d)` the field is declared `d`, which mentions a type
+///                     parameter of its struct, and the receiver's type
+///                     arguments are not readable here;
+///   `FieldUndeclared` the receiver's head names no declared struct with that
+///                     field.
+///
+/// The declared field type alone is NOT the answer for a generic struct:
+/// `struct Pair[T] { a: T }` declares `a` as the struct's own `T`, while
+/// `p: Pair[U]` holds a `U`. Reading the declaration's `T` lost the binder's
+/// `Eq` witness for `U` (`p.a == p.b` compared a boxed `Double` by reference),
+/// or reached a DIFFERENT formal that happened to share the spelling.
+export enum FieldProjection {
+  FieldTyped(TypeExpr);
+  FieldUnreadable(TypeExpr);
+  FieldUndeclared
+}
+
+fn ty_mentions_decl_formal(t: TypeExpr, formals: Array[String]) -> Bool {
+  match t {
+    TyName(n) => {
+      let mut found = false
+      for f in formals {
+        if type_param_name(f) == n {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    TyApp(h, args) => {
+      let mut found = ty_mentions_decl_formal(TyName(h), formals)
+      for a in args {
+        if ty_mentions_decl_formal(a, formals) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut found = false
+      for x in items {
+        if ty_mentions_decl_formal(x, formals) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    TyFn(ps, r, _) => {
+      let mut found = ty_mentions_decl_formal(r, formals)
+      for p in ps {
+        if ty_mentions_decl_formal(p, formals) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    TyUnit => false
+  }
+}
+
+fn ty_head_name(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => n,
+    TyApp(n, _) => n,
+    _ => ""
+  }
+}
+
+/// A recorded type for `n`, unless the name's most recent head says it
+/// belongs to an earlier binding of the same spelling. The question here IS
+/// the most recent entry's: a later binding of `n` shadows every earlier one,
+/// so an earlier head that agrees does not make a stale type current.
+fn recorded_type_of_name(var_types: Array[(String, String)], n: String, t: TypeExpr) -> Option[TypeExpr] {
+  let current = match lookup_var_type(var_types, n) {
+    Some(latest) => latest == ty_head_name(t),
+    None => true
+  }
+  if current {
+    Some(t)
+  } else {
+    None
+  }
+}
+
+/// The receiver's complete type where this pass records one, else its head
+/// alone (`TyName`), which leaves a generic struct's arguments unread.
+fn projection_receiver_type(obj: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  let full = match obj {
+    EIdent(n, _) => if constructor_binding_is_masked(var_types, n) {
+      None
+    } else {
+      // A parameter whose annotation mentions a formal records its whole
+      // shape here (`p: Pair[U]` is `{g:Pair,U}`); a concrete one under the
+      // equality shape; a `let` its impl target.
+      let fsh = eq_formal_shape_of_name(var_types, n)
+      if String::length(fsh) > 0 {
+        recorded_type_of_name(var_types, n, shape_to_eq_ty(fsh))
+      } else {
+        match lookup_var_type(var_types, eq_shape_key(n)) {
+          Some(sh) => if String::length(sh) > 0 {
+            recorded_type_of_name(var_types, n, shape_to_eq_ty(sh))
+          } else {
+            None
+          },
+          None => match lookup_var_type(var_types, impl_target_var_key(n)) {
+            Some(key) => match impl_target_from_key(key) {
+              Some(t) => recorded_type_of_name(var_types, n, t),
+              None => None
+            },
+            None => None
+          }
+        }
+      }
+    },
+    EDot(inner, f, _, _) => match dtd_field_projection(inner, f, struct_sets, var_types, fn_returns) {
+      FieldTyped(t) => Some(t),
+      _ => None
+    },
+    ECall(EIdent(f, _), _, _, _) => match eq_fn_result_of_name(var_types, f) {
+      Some(t) => Some(t),
+      None => if constructor_binding_is_masked(var_types, f) {
+        None
+      } else {
+        match fn_return_type(fn_returns, impl_target_fn_key(f)) {
+          Some(key) => impl_target_from_key(key),
+          None => None
+        }
+      }
+    },
+    _ => None
+  }
+  match full {
+    Some(t) => Some(t),
+    None => match obj {
+      EDot(_, _, _, _) => None,
+      _ => match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+        Some(head) => Some(TyName(head)),
+        None => None
+      }
+    }
+  }
+}
+
+/// #3613: the type of the projection `obj.field` -- see `FieldProjection`.
+export fn dtd_field_projection(obj: Expr, field: String, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> FieldProjection {
+  match projection_receiver_type(obj, struct_sets, var_types, fn_returns) {
+    None => FieldUndeclared,
+    Some(rt) => {
+      let (head, args) = match rt {
+        TyApp(n, xs) => (n, xs),
+        TyName(n) => (n, []),
+        _ => ("", [])
+      }
+      let mut result = FieldUndeclared
+      let mut decided = false
+      for decl in dtd_struct_field_decls {
+        let (sname, formals, fields) = decl
+        if !decided && sname == head {
+          for fd in fields {
+            let (fname, fty) = fd
+            if !decided && fname == field {
+              decided = true
+              result = if !ty_mentions_decl_formal(fty, formals) {
+                FieldTyped(fty)
+              } else if Array::length(args) == Array::length(formals) {
+                let t = eq_subst_ty(fty, formals, args)
+                if ty_contains_eq_unknown(t) {
+                  FieldUnreadable(fty)
+                } else {
+                  FieldTyped(t)
+                }
+              } else {
+                FieldUnreadable(fty)
+              }
+            } else {
+              ()
+            }
+          }
+        } else {
+          ()
+        }
+      }
+      result
+    }
+  }
+}
+
+/// #3613: is `e` a field projection whose type depends on type arguments its
+/// receiver does not show here? A function-typed field is not: no operator
+/// this answer steers compares a function by content at any type.
+export fn dtd_projection_is_unreadable(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
+  match e {
+    EDot(obj, field, _, _) => match dtd_field_projection(obj, field, struct_sets, var_types, fn_returns) {
+      FieldUnreadable(TyFn(_, _, _)) => false,
+      FieldUnreadable(_) => true,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// The head name `infer_arg_type_name` reports for a projected field's type: a
+/// formal by its source spelling, as a bare `x: T` parameter records it.
+fn field_head_name(t: TypeExpr) -> Option[String] {
+  let head = ty_head_name(t)
+  if String::length(head) == 0 || head == "?EqUnknown" {
+    None
+  } else if is_marked_formal_name(head) {
+    Some(String::substring(head, String::length(scope_formal_mark_prefix), String::length(head)))
+  } else {
+    Some(head)
   }
 }
 
@@ -200,11 +444,21 @@ export fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[Strin
     // Measured: `let t = ("bbb", "aaa"); t.0 < t.1` answered by address, so
     // `a == b` and `a < b` could both be true for the same pair. The element
     // type is already recorded by `tuple_shape_bind`; this is the read side.
+    // #3613: a declared struct field is typed through `dtd_field_projection`,
+    // which substitutes a generic struct's parameters with the receiver's
+    // type arguments: `p.a` on `p: Pair[U]` is a `U`, not `Pair`'s own `T`.
+    // Arguments it cannot read give no answer, never the declaration's
+    // parameter name. The flat `Struct.field` table answers only for a
+    // receiver whose declaration that pass does not see.
     EDot(obj, field, _, _) => match dtd_tuple_elem_type_name(obj, field, var_types) {
       Some(elem) => Some(elem),
-      None => match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
-        Some(otype) => fn_return_type(fn_returns, struct_field_type_key(otype, field)),
-        None => None
+      None => match dtd_field_projection(obj, field, struct_sets, var_types, fn_returns) {
+        FieldTyped(t) => field_head_name(t),
+        FieldUnreadable(_) => None,
+        FieldUndeclared => match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+          Some(otype) => fn_return_type(fn_returns, struct_field_type_key(otype, field)),
+          None => None
+        }
       }
     },
     // A call-valued iterable (`for x in lazy_iter_arr([..])`) or data ctor
@@ -432,7 +686,10 @@ export fn is_erased_generic_operand(l: Expr, r: Expr, struct_sets: Array[(String
     Some(t) => formal_in_scope(t) || !is_concrete_or_known_type_name(t, struct_sets),
     None => false
   }
-  lg || rg
+  // #3613: a field declared with its struct's type parameter, on a receiver
+  // whose arguments are not readable here, has no static type at this site;
+  // the runtime dispatch is the one lowering that does not need it.
+  lg || rg || dtd_projection_is_unreadable(l, struct_sets, var_types, fn_returns) || dtd_projection_is_unreadable(r, struct_sets, var_types, fn_returns)
 }
 
 /// Prefer the anonymous-record sentinel for a `let` value, falling back to the

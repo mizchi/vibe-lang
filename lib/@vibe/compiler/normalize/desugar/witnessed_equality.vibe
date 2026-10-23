@@ -15,6 +15,10 @@ import @vibe/core {
   array_empty
 }
 
+import ./argument_types.vibe {
+  FieldProjection, dtd_field_projection, dtd_projection_is_unreadable
+}
+
 import ./binding_shape_queries.vibe {
   shape_is_composite
 }
@@ -31,6 +35,10 @@ import ./formal_scope.vibe {
   formal_in_scope, is_marked_formal_name
 }
 
+import ./generic_equality.vibe {
+  eq_projection_unreadable_refused
+}
+
 import ./interpolation_witnesses.vibe {
   dtd_eq_witness_dict
 }
@@ -45,6 +53,14 @@ import ./trait_bounds.vibe {
 
 import ./typed_equality.vibe {
   eq_for_typed
+}
+
+import ./typed_rendering.vibe {
+  dtd_typed_eq_residual
+}
+
+import ./typed_row_queries.vibe {
+  dtd_typed_eq_key_for
 }
 
 fn unmark_formal(n: String) -> String {
@@ -107,6 +123,13 @@ fn operand_type(e: Expr, struct_sets: Array[(String, Array[String])], var_types:
   } else {
     match e {
       ECall(EIdent(f, _), _, _, _) => eq_fn_result_of_name(var_types, f),
+      // #3613: a field projection has the field's declared type with the
+      // receiver's type arguments substituted, so `p.a` on `p: Pair[U]` is a
+      // `U` and compares through `U`'s witness.
+      EDot(obj, field, _, _) => match dtd_field_projection(obj, field, struct_sets, var_types, fn_returns) {
+        FieldTyped(t) => Some(t),
+        _ => None
+      },
       _ => None
     }
   }
@@ -203,6 +226,48 @@ export fn dtd_eq_operand_formals(l: Expr, r: Expr, struct_sets: Array[(String, A
     }
   }
   out
+}
+
+/// #3613: the last rung of the `==` ladder. A typed row for the operator
+/// answers as before. Without one, an operand that projects a field declared
+/// with its struct's type parameter, off a receiver whose type arguments are
+/// not readable here, has no known type, and the raw `==` the residual keeps
+/// would compare a boxed `Double` or an aggregate by reference: refused.
+///
+/// Only inside a generic body, where such a field's type is a formal whose
+/// witness this is the one chance to reach. Outside one the operand's type is
+/// concrete, and the checker's row answers for it as before; the derived
+/// comparators this
+/// pass generates (`Box::equals(a: Box, b: Box)`) keep their documented raw
+/// field comparison, which `eq_derived_generic_refused` guards at every site
+/// that would call them with a formal-typed field.
+export fn dtd_eq_projection_residual(op: String, l: Expr, r: Expr, rl: Expr, rr: Expr, boff: Int, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr {
+  if Array::length(dtd_scope_formals) == 0 || String::length(dtd_typed_eq_key_for(boff)) > 0 {
+    dtd_typed_eq_residual(op, rl, rr, boff)
+  } else {
+    match unreadable_projection_field(l, struct_sets, var_types, fn_returns) {
+      Some(field) => eq_projection_unreadable_refused(op, field, boff),
+      None => match unreadable_projection_field(r, struct_sets, var_types, fn_returns) {
+        Some(field) => eq_projection_unreadable_refused(op, field, boff),
+        None => dtd_typed_eq_residual(op, rl, rr, boff)
+      }
+    }
+  }
+}
+
+fn unreadable_projection_field(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match e {
+    EDot(obj, field, _, _) => if dtd_projection_is_unreadable(e, struct_sets, var_types, fn_returns) {
+      let receiver = match obj {
+        EIdent(n, _) => n,
+        _ => "<value>"
+      }
+      Some(receiver + "." + field)
+    } else {
+      None
+    },
+    _ => None
+  }
 }
 
 export fn opt_expr_is_some(e: Option[Expr]) -> Bool {

@@ -550,6 +550,10 @@ ur_refused fixtures/err_eq_nested_witness_fn_unreadable_refused.vibe 'the type `
 # spells; its witness was left out and the call failed wasm validation.
 ur_refused fixtures/err_impl_bodyless_fallback_formal_unreadable_refused.vibe 'the `Eq` witness for `U` is read only from that parameter' 'spell `U` in the type of `Tag::name`'"'"'s `Self` parameter'
 ur_refused fixtures/err_eq_witness_missing_refused.vibe 'the `Eq` witness for `T` does not reach this comparison' 'compare at a concrete type, or pass the comparison in as a parameter'
+# #3613: a projected field typed by its struct's parameter, off a receiver
+# whose type arguments are not readable, would compare by reference.
+ur_refused fixtures/err_eq_projection_unreadable_refused.vibe 'a field its struct declares with a type parameter, from a value whose type arguments are not known here' 'bind the field with its complete type first (`let v: <type> = <value>.a`)' linear 'fixtures/err_eq_projection_unreadable_refused.vibe: line 25:17'
+ur_refused fixtures/err_eq_projection_unreadable_refused.vibe 'a field its struct declares with a type parameter, from a value whose type arguments are not known here' 'bind the field with its complete type first (`let v: <type> = <value>.a`)' gc 'fixtures/err_eq_projection_unreadable_refused.vibe: line 25:17'
 # #3297: a comparison whose complete type does not reach the ladder, known
 # only by its generic head or by an `Ok` / `Err` payload typed by a formal.
 # The derived comparator, or the raw payload match, would compare that
