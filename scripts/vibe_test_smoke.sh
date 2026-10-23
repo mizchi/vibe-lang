@@ -140,11 +140,25 @@ fi
 # vibe_test.sh is not sourceable (it runs tests on load).
 eval "$(sed -n '/^vt_fail_detail() {/,/^export -f vt_fail_detail$/p' \
   "$ROOT_DIR/scripts/vibe_test.sh")"
+# A canned stream is written as one transcript. The guest prints its own
+# lines (an assert block, its abort marker, ordinary output) on stdout and
+# the host prints the crash dump and the trap on stderr, and vt_fail_detail
+# reads the two files apart -- so split the transcript at the first host line.
+vt_canned_detail() {
+  local src="$1"
+  awk -v o="$src.out" -v e="$src.host" '
+    /^\[crash debug\]|^RuntimeError:|wasm trap:|^error while executing|^Error:/ { h = 1 }
+    { print > (h ? e : o) }
+  ' "$src"
+  : >> "$src.out"
+  : >> "$src.host"
+  vt_fail_detail "$src.out" "$src.host" "" "canned.vibe"
+}
 assert_canned_failing_name() {
   local label="$1" want="$2" errf out
   errf="$WORK/canned_${label}.err"
   cat > "$errf"
-  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  out="$(vt_canned_detail "$errf")"
   if ! printf '%s\n' "$out" | grep -qF "failing test: $want"; then
     echo "[vibe-test-smoke] FAIL: canned $label expected 'failing test: $want'" >&2
     printf '%s\n' "$out" >&2
@@ -314,17 +328,21 @@ echo "[vibe-test-smoke] ok (launcher condenser annotates frames from the funcmap
 # case would now assert that a trap IS reported, which is a different case and
 # is covered on its own below.
 assert_canned_assert_eq_diag() {
-  local errf="$WORK/canned_assert_eq.err" out
-  cat > "$errf" <<'EOF'
+  local outf="$WORK/canned_assert_eq.out" errf="$WORK/canned_assert_eq.err" out
+  # The guest prints the assert block and its abort marker on stdout; the
+  # host reports the trap on stderr.
+  cat > "$outf" <<'EOF'
 assert_eq failed
   expected: 2
   actual:   1
 assert failed: aborting
+EOF
+  cat > "$errf" <<'EOF'
 RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
 EOF
-  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  out="$(vt_fail_detail "$outf" "$errf" "" "canned.vibe")"
   if ! printf '%s\n' "$out" | grep -qF "assert_eq failed"; then
     echo "[vibe-test-smoke] FAIL: canned assert_eq missing 'assert_eq failed'" >&2
     printf '%s\n' "$out" >&2
@@ -360,7 +378,7 @@ RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
 EOF
-  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  out="$(vt_canned_detail "$errf")"
   if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
     echo "[vibe-test-smoke] FAIL: bare trap (no assert diag) lost its trap: line" >&2
     printf '%s\n' "$out" >&2
@@ -384,7 +402,7 @@ RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
 EOF
-  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  out="$(vt_canned_detail "$errf")"
   if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
     echo "[vibe-test-smoke] FAIL: real trap after an imitated assert block was suppressed (#2202)" >&2
     printf '%s\n' "$out" >&2
@@ -412,7 +430,7 @@ RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
 EOF
-  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  out="$(vt_canned_detail "$errf")"
   if printf '%s\n' "$out" | grep -qF "trap:"; then
     echo "[vibe-test-smoke] FAIL: real assert abort (with crash-debug between) still echoed its trap (#2202)" >&2
     printf '%s\n' "$out" >&2
@@ -443,7 +461,7 @@ RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
 EOF
-  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  out="$(vt_canned_detail "$errf")"
   if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
     echo "[vibe-test-smoke] FAIL: a marker-less assert block still suppressed the trap (#2219)" >&2
     printf '%s\n' "$out" >&2
@@ -478,7 +496,7 @@ RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
 EOF
-  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  out="$(vt_canned_detail "$errf")"
   if printf '%s\n' "$out" | grep -qF "trap:"; then
     echo "[vibe-test-smoke] FAIL: multiline assert abort (with marker) still echoed its trap (#2202)" >&2
     printf '%s\n' "$out" >&2
@@ -502,7 +520,7 @@ some unrelated output afterwards
 RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
 EOF
-  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  out="$(vt_canned_detail "$errf")"
   if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
     echo "[vibe-test-smoke] FAIL: real trap after a stale abort marker was suppressed (#2202)" >&2
     printf '%s\n' "$out" >&2
@@ -531,7 +549,7 @@ Int `/` by zero at fixtures/x.vibe:7:5 and then some
 RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
 EOF
-  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  out="$(vt_canned_detail "$errf")"
   if ! printf '%s\n' "$out" | grep -qF "Array::get: index 10 out of bounds for length 3"; then
     echo "[vibe-test-smoke] FAIL: generated OOB message lost from the condensed report (#2199)" >&2
     printf '%s\n' "$out" >&2
