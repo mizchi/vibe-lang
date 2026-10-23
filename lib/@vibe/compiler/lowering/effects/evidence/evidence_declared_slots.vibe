@@ -8,6 +8,10 @@ import @vibe/compiler/core {
   Expr, Stmt, TypeExpr, expr_children_into
 }
 
+import @vibe/ast {
+  type_param_name
+}
+
 import @vibe/core {
   struct MutMap, struct MutSet
 }
@@ -18,6 +22,7 @@ import ./evidence_returned_scan_expr.vibe {
 
 import ./evidence_slot_refusals.vibe {
   edp_field_site_prefix,
+  edp_parameter_type,
   edp_refuse_aliased_field_literal,
   edp_refuse_field_type_args,
   edp_refuse_uncopied_literal,
@@ -29,7 +34,7 @@ import ./evidence_slot_refusals.vibe {
 }
 
 import @vibe/compiler/lowering/effects/queries {
-  edp_is_identity_ascription, edp_str_array_contains
+  edp_is_identity_ascription
 }
 
 /// The slot (arity and row) a declared result `rty` gives the closure a
@@ -97,7 +102,7 @@ fn edp_result_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr
     }
     match next {
       Some((tparams, TyFn(ps, r, Some(row)))) => {
-        if edp_slot_row_stampable(row) && !edp_row_mentions_any(row, tparams) {
+        if edp_slot_row_stampable(row) && !edp_row_mentions_any(row, edp_unkeyed_tparams(tparams)) {
           out = Some(TyFn(ps, r, Some(row)))
         } else {
           ()
@@ -137,7 +142,7 @@ fn edp_result_alias_tuple(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] 
       for st in stmts {
         match st {
           STypeAlias(_, an, tparams, body) => if an == head && Array::length(tparams) == Array::length(args) {
-            next = Some(edp_type_expr_subst(body, tparams, args))
+            next = Some(edp_type_expr_subst(body, edp_unkeyed_tparams(tparams), args))
           } else {
             ()
           },
@@ -253,12 +258,13 @@ export fn edp_note_row_field_structs(stmts: Array[Stmt]) -> Unit {
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SStruct(_, sname, fields, _, _, tparams) => {
+        let row_params = edp_unkeyed_tparams(tparams)
         let slots: Array[(String, (Int, String))] = []
         let mut k = 0
         while k < Array::length(fields) {
           let (fname, fty) = Array::get(fields, k)
           match edp_result_slot(stmts, fty) {
-            Some(slot) => if !edp_row_label_is_any(slot.1, tparams) {
+            Some(slot) => if !edp_row_label_is_any(slot.1, row_params) {
               Array::push(slots, (fname, slot))
             },
             None => ()
@@ -267,7 +273,7 @@ export fn edp_note_row_field_structs(stmts: Array[Stmt]) -> Unit {
         }
         if Array::length(slots) > 0 {
           MutMap::set(table, sname, slots)
-          MutMap::set(params, sname, tparams)
+          MutMap::set(params, sname, row_params)
         }
       },
       _ => ()
@@ -515,26 +521,13 @@ export fn edp_ascribed_record_targs(stmts: Array[Stmt], callee: Expr, args: Arra
   }
 }
 
-/// #3611: refuse a value the stamp would give a field's row -- a row-free
-/// literal, a row-free top-level function, the name of a row-free literal
-/// bound by `let` or a local alias of one (`lit`, Codex on #3620) -- when
-/// that row names a type parameter `targs` does not instantiate. Any other
-/// value is left to the rules a field without a readable row already has.
-export fn edp_refuse_unread_field_row(sname: String, fname: String, targs: Array[TypeExpr], v: Expr, scope: Array[String], pure_names: MutSet[String], lit0: (String, Int, Option[Expr])) -> Unit {
-  let lit = match edp_local_alias_at(lit0.0, lit0.1) {
-    Some(al) => Some(al.1),
-    None => lit0.2
-  }
+/// #3611: without a readable instantiated field row, accept only a value
+/// already proven to carry its own row. Unknown parameters, mutable values,
+/// and call results must not silently take the row-free convention.
+export fn edp_refuse_unread_field_row(sname: String, fname: String, targs: Array[TypeExpr], needs_row: Bool) -> Unit {
   let row = edp_field_row_unread(sname, fname, targs)
-  if row != "" {
-    let stamped = match v {
-      EFn(_, _, _, _, None, _) => true,
-      EIdent(an, _) => (MutSet::has(pure_names, an) && !edp_str_array_contains(scope, an)) || edp_is_rowfree_literal(lit),
-      _ => false
-    }
-    if stamped {
-      edp_refuse_field_type_args(sname, fname, row, edp_field_row_params(sname, row), Array::length(targs) > 0)
-    }
+  if row != "" && needs_row {
+    edp_refuse_field_type_args(sname, fname, row, edp_field_row_params(sname, row), Array::length(targs) > 0)
   }
 }
 
@@ -627,9 +620,7 @@ export fn edp_field_literal_mark() -> Int {
 }
 
 /// Note a field of row `row` holding `lit` -- (name, `scope` index, the
-/// literal bound there) -- when that is a row-free closure literal. A local
-/// alias of one is refused: its literal is bound elsewhere, under a name the
-/// alias's binding is itself a use of.
+/// literal bound there) -- when that is a row-free closure literal.
 export fn edp_note_field_literal(lit: (String, Int, Option[Expr]), row: String, callee: String) -> Unit {
   match edp_local_alias_at(lit.0, lit.1) {
     Some(al) => if edp_is_rowfree_literal(Some(al.1)) {
@@ -701,6 +692,48 @@ export fn edp_settle_field_literal(name: String, slot: Int, mark: Int, total: In
   } else {
     edp_refuse_unstamped_field_literal(name, callee, row)
     ""
+  }
+}
+
+/// A closure value's declared row is authoritative at literals, parameters,
+/// and declared callback results. A top-level function's OWN
+/// row is not a closure ABI proof: a perform-free function may take no dict.
+export fn edp_declared_value_has_row(value: Expr, slot: Int, stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]]) -> Bool {
+  match value {
+    EFn(_, _, _, _, Some(row), _) => edp_slot_row_stampable(row),
+    EIdent(_, _) => if slot >= 0 {
+      match edp_parameter_type(slot) {
+        Some(ty) => match edp_result_slot(stmts, ty) {
+          Some(_) => true,
+          None => false
+        },
+        None => false
+      }
+    } else {
+      false
+    },
+    ECall(EIdent(name, _), _, _, _) => if slot < 0 {
+      match MutMap::get(fn_index, name) {
+        Some(indices) => {
+          let mut known = Array::length(indices) > 0
+          for index in indices {
+            let rowful = match Array::get(stmts, index) {
+              SLet(_, _, _, _, EFn(_, _, _, Some(result), _, _)) => match edp_result_slot(stmts, result) {
+                Some(_) => true,
+                None => false
+              },
+              _ => false
+            }
+            known = known && rowful
+          }
+          known
+        },
+        None => false
+      }
+    } else {
+      false
+    },
+    _ => false
   }
 }
 
@@ -801,4 +834,52 @@ export fn edp_tuple_result_types(stmts: Array[Stmt], rty0: TypeExpr) -> Option[A
 /// names the field rather than a call (`edp_slot_site`).
 export fn edp_field_slot_callee(sname: String, fname: String) -> String {
   String::concat(edp_field_site_prefix(), String::concat("the value of the field `", String::concat(fname, String::concat("` of `", String::concat(sname, "`")))))
+}
+
+export fn edp_field_alias_has_rowfree_literal(name: String, slot: Int) -> Bool {
+  match edp_local_alias_at(name, slot) {
+    Some(alias) => edp_is_rowfree_literal(Some(alias.1)),
+    None => false
+  }
+}
+
+/// `(p0, .., pn) -> name(p0, .., pn)` under `row`: a row-free function passed
+/// by name at a row-typed slot, wrapped so the dict its callee passes has a
+/// parameter to land in (#3424).
+export fn edp_slot_wrapper(name: String, arity: Int, row: String) -> Expr {
+  let params: Array[(String, Option[TypeExpr])] = []
+  let args: Array[Expr] = []
+  // The parameters must not shadow `name` inside the wrapper; a function
+  // spelled with the usual prefix gets the other one (Codex on #3426).
+  let prefix = if String::starts_with(name, "__edpw_") {
+    "__edpx_"
+  } else {
+    "__edpw_"
+  }
+  let mut k = 0
+  while k < arity {
+    let pn = String::concat(prefix, Int::to_string(k))
+    Array::push(params, (pn, None))
+    Array::push(args, EIdent(pn, 0 - 1))
+    k = k + 1
+  }
+  EFn([], [], params, None, Some(row), ECall(EIdent(name, 0 - 1), args, 0 - 1, [
+  ]))
+}
+
+// Rows contain source tokens, whereas kinded binders use encoded AST keys.
+fn edp_unkeyed_tparams(params: Array[String]) -> Array[String] {
+  let mut keyed = false
+  for param in params {
+    if type_param_name(param) != param {
+      keyed = true
+    }
+  }
+  if keyed {
+    for param in params {
+      type_param_name(param)
+    }
+  } else {
+    params
+  }
 }

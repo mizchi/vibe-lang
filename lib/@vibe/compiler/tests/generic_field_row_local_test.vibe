@@ -1,0 +1,114 @@
+import @vibe/compiler/entry/source_compile/wasi_only {
+  compile_source_wasi_only_rc
+}
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+import @vibe/process {
+  process_sh_capture
+}
+
+fn local_field_source(body: String) -> String {
+  "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} fn one()->Int{1} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{" + body + "}"
+}
+
+fn local_field_compile(source: String, lane: String) -> Bytes with Exception {
+  if lane == "gc" {
+    compile_source_gc_only(source, "main")
+  } else {
+    compile_source_wasi_only_rc(source, "main")
+  }
+}
+
+fn local_field_refusal(body: String, expected: String) -> Unit with Exception {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile(local_field_source(body), lane)
+      "compiled without the required calling-convention proof"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, expected))
+  }
+  ()
+}
+
+fn local_field_run(label: String, body: String, expected: String) -> Unit with Exception + Fs + Process + Console {
+  local_field_run_source(label, local_field_source(body), expected)
+}
+
+fn local_field_run_source(label: String, source: String, expected: String) -> Unit with Exception + Fs + Process + Console {
+  Fs::mkdir_p("_build/vibe_test/local_field_row")
+  for lane in ["rc", "gc"] {
+    let bytes = local_field_compile(source, lane)
+    let output = "_build/vibe_test/local_field_row/" + label + "-" + lane + ".wasm"
+    Fs::write_bytes(output, bytes)
+    let result = process_sh_capture("bash scripts/run_wasm_vibe_host_runner.sh --invoke _start " + output)
+    assert_eq(result.exit_code, 0)
+    assert_eq(result.stdout, expected)
+  }
+  ()
+}
+
+test "an unresolved field row refuses a local row-free closure" {
+  local_field_refusal("let g=()->1;let h=Holder::{f:g};println(\"\\{drive(h.f)}\")", "write the type arguments of `Holder`")
+}
+
+test "an unresolved field row refuses local closure aliases" {
+  local_field_refusal("let g=()->1;let a=g;let b=a;let h=Holder::{f:b};println(\"\\{drive(h.f)}\")", "write the type arguments of `Holder`")
+  local_field_refusal("let g=one;let h=Holder::{f:g};println(\"\\{drive(h.f)}\")", "write the type arguments of `Holder`")
+}
+
+test "unresolved fields refuse unproven parameters mutable values and results" {
+  local_field_refusal("let wrap=(g:()->Int)->Int{let h=Holder::{f:g};drive(h.f)};println(\"\\{wrap(()->1)}\")", "write the type arguments of `Holder`")
+  local_field_refusal("let mut g=()->1;let h=Holder::{f:g};println(\"\\{drive(h.f)}\")", "write the type arguments of `Holder`")
+  local_field_refusal("let make=()->(()->Int){()->1};let h=Holder::{f:make()};println(\"\\{drive(h.f)}\")", "write the type arguments of `Holder`")
+}
+
+test "the latest local binding determines the field convention" {
+  local_field_refusal("let g=()->Int with Box[String]{2};let g=()->1;let h=Holder::{f:g};println(\"\\{drive(h.f)}\")", "write the type arguments of `Holder`")
+}
+
+test "written and annotated field types stamp local row-free values" {
+  local_field_run("written", "let g=()->1;let h=Holder[String]::{f:g};println(\"\\{drive(h.f)}\")", "1\n")
+  local_field_run("annotated", "let g=()->1;let h:Holder[String]=Holder::{f:g};println(\"\\{drive(h.f)}\")", "1\n")
+}
+
+test "an alias that cannot be settled requires its closure's own row" {
+  local_field_refusal("let g=()->1;let a=g;let h:Holder[String]=Holder::{f:a};println(\"\\{drive(h.f)}\")", "store `g` in the field rather than its alias `a`")
+}
+
+test "type ascriptions cannot hide a row-free local alias" {
+  local_field_refusal("let g=()->1;let alias:()->Int=g;let h=Holder[String]::{f:alias};println(\"\\{drive(h.f)}\")", "store `g` in the field rather than its alias `alias`")
+  local_field_refusal("let g=()->1;let a:()->Int=g;let alias:()->Int=a;let h=Holder[String]::{f:alias};println(\"\\{drive(h.f)}\")", "store `g` in the field rather than its alias `alias`")
+}
+
+test "an ascribed alias preserves its closure's proven row" {
+  local_field_run("ascribed", "let g=()->Int with Box[String]{perform Box::Put(\"y\");1};let alias:()->Int with Box[String]=g;let h=Holder::{f:alias};println(\"\\{drive(h.f)}\")", "1\n")
+}
+
+test "an explicit local row works through a field and an alias" {
+  local_field_run("honest", "let g=()->Int with Box[String]{1};let a=g;let h=Holder::{f:a};println(\"\\{drive(h.f)}\")", "1\n")
+}
+
+test "a performing row-annotated closure keeps its field convention" {
+  local_field_run("performing", "let g=()->Int with Box[String]{perform Box::Put(\"y\");1};let h=Holder::{f:g};let h2=Holder[String]::{f:g};println(\"\\{drive(h.f)+drive(h2.f)}\")", "2\n")
+}
+
+test "a row-annotated closure can be called directly and stored in a field" {
+  local_field_run("mixed", "let g=()->Int with Box[String]{perform Box::Put(\"y\");1};let direct=handle{g()}with{Box::Put(_)=>resume(())};let h=Holder::{f:g};println(\"\\{direct+drive(h.f)}\")", "2\n")
+}
+
+test "a row-annotated alias retains the original capture environment" {
+  local_field_run("captured", "let n=1;let g=()->Int with Box[String]{n};let n=2;let a=g;let b=a;let h=Holder::{f:b};println(\"\\{drive(h.f)}\")", "1\n")
+}
+
+test "a later row-annotated binding masks an earlier row-free proof" {
+  local_field_run("shadow", "let g=()->1;let a=g;let a=()->Int with Box[String]{2};let h=Holder::{f:a};println(\"\\{drive(h.f)}\")", "2\n")
+}
+
+test "a declared callback parameter row remains accepted" {
+  local_field_run_source("declared-param", local_field_source("println(\"\\{wrap(()->Int with Box[String]{1})}\")") + "fn wrap(g:()->Int with Box[String])->Int{let a=g;let h=Holder::{f:a};drive(h.f)}", "1\n")
+}
+
+test "a declared callback result row remains accepted" {
+  local_field_run_source("declared-result", local_field_source("let h=Holder::{f:mk()};println(\"\\{drive(h.f)}\")") + "fn mk()->(()->Int with Box[String]){()->Int with Box[String]{1}}", "1\n")
+}

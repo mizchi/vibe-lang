@@ -29,7 +29,7 @@ import ./equality_shape_queries.vibe {
 }
 
 import ./formal_scope.vibe {
-  formal_in_scope, is_marked_formal_name
+  formal_in_scope, is_marked_formal_name, subst_scope_formals_ty
 }
 
 import ./shape_environment.vibe {
@@ -215,6 +215,13 @@ fn recorded_type_of_name(var_types: Array[(String, String)], n: String, t: TypeE
 /// alone (`TyName`), which leaves a generic struct's arguments unread.
 fn projection_receiver_type(obj: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
   let full = match obj {
+    ERecord(n, _, args) => if Array::length(args) > 0 {
+      Some(TyApp(n, for arg in args {
+        subst_scope_formals_ty(arg)
+      }))
+    } else {
+      None
+    },
     EIdent(n, _) => if constructor_binding_is_masked(var_types, n) {
       None
     } else {
@@ -257,13 +264,6 @@ fn projection_receiver_type(obj: Expr, struct_sets: Array[(String, Array[String]
           None => None
         }
       }
-    },
-    // A literal that writes its type arguments (`Pair[U]::{ .. }.a`) has
-    // them as its type; one that omits them falls to its head below.
-    ERecord(rn, _, tas) => if Array::length(tas) > 0 {
-      Some(TyApp(rn, tas))
-    } else {
-      None
     },
     _ => None
   }

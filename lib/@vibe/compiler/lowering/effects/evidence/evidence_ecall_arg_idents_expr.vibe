@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — ecall arg idents expr.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, builtin_shadow_source_name, expr_children, expr_children_into, is_runtime_scheduled_effect
+  Expr, Pat, Stmt, TypeExpr, expr_children, expr_children_into, is_runtime_scheduled_effect
 }
 
 import @vibe/core {
@@ -38,7 +38,16 @@ import ./evidence_poison_expr.vibe {
 }
 
 import ./evidence_scan_view_expr.vibe {
-  edp_lambda_row_params, edp_needing_scan_view, edp_param_base_name, edp_pat_names, edp_rename_free
+  edp_int_array_has,
+  edp_lambda_row_params,
+  edp_needing_scan_view,
+  edp_param_base_name,
+  edp_pat_names,
+  edp_rename_free,
+  edp_scope_has,
+  edp_scope_index_after,
+  edp_scope_last_index,
+  edp_scope_last_index_before
 }
 
 import ./evidence_slot_refusals.vibe {
@@ -49,9 +58,11 @@ import ./evidence_slot_refusals.vibe {
   edp_drop_params_from,
   edp_expr_passes_value_to_slot,
   edp_fn_result_has_row,
+  edp_join_and,
   edp_note_params,
   edp_note_slot_methods,
   edp_refuse_assigned_calls,
+  edp_refuse_rowless_local_field,
   edp_refuse_rowless_method_result,
   edp_refuse_rowless_param,
   edp_refuse_rowless_result,
@@ -75,8 +86,10 @@ import ./evidence_free_names.vibe {
 
 import ./evidence_declared_slots.vibe {
   edp_ascribed_record_targs,
+  edp_declared_value_has_row,
   edp_drop_local_aliases,
   edp_expr_builds_row_field,
+  edp_field_alias_has_rowfree_literal,
   edp_field_literal_mark,
   edp_field_literal_pending,
   edp_field_slot,
@@ -91,6 +104,7 @@ import ./evidence_declared_slots.vibe {
   edp_result_slot,
   edp_rows_agree,
   edp_settle_field_literal,
+  edp_slot_wrapper,
   edp_tuple_result_types
 }
 
@@ -105,26 +119,6 @@ import ./evidence_declared_slots.vibe {
 /// told to look at "a handle body, a needing function, or a row-carrying
 /// closure literal" while the decisive contributor is a signature elsewhere
 /// in the file that nothing calls. Naming it is the whole point.
-/// `a`, `a` and `b`, `a`, `b` and `c` -- for naming culprits in a message.
-export fn edp_join_and(names: Array[String]) -> String {
-  let n = Array::length(names)
-  let mut out = ""
-  let mut i = 0
-  while i < n {
-    // #3185: a program's own definition of a builtin-called name runs under
-    // `NAME$user`; the message names what the program wrote.
-    let nm = String::concat(String::concat("`", builtin_shadow_source_name(Array::get(names, i))), "`")
-    if i == 0 {
-      out = nm
-    } else if i == n - 1 {
-      out = String::concat(String::concat(out, " and "), nm)
-    } else {
-      out = String::concat(String::concat(out, ", "), nm)
-    }
-    i = i + 1
-  }
-  out
-}
 
 export fn edp_row_typed_param_owner(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
   let mut out = ""
@@ -997,6 +991,7 @@ fn edp_literal_calls_local(lit: Expr, body: Expr, scope: Array[String]) -> Bool 
 let edp_local_lit_names: Array[String] = []
 let edp_local_lit_slots: Array[Int] = []
 let edp_local_lit_vals: Array[Expr] = []
+let edp_local_lit_rows: Array[Bool] = []
 
 /// #3424: the `scope` indices of the mutable bindings (`let mut`, `loop`)
 /// around the walk, and the snapshots `edp_copy_snapshots` asked for: a fresh
@@ -1334,59 +1329,6 @@ fn edp_wrap_snapshots(body: Expr, slot: Int) -> Expr {
 }
 
 /// The innermost index of `name` in `scope` below `slot`, or -1.
-fn edp_scope_last_index_before(scope: Array[String], name: String, slot: Int) -> Int {
-  let mut i = if slot < Array::length(scope) {
-    slot
-  } else {
-    Array::length(scope)
-  }
-  let mut found = 0 - 1
-  while found < 0 && i > 0 {
-    i = i - 1
-    if Array::get(scope, i) == name {
-      found = i
-    } else {
-      ()
-    }
-  }
-  found
-}
-
-fn edp_int_array_has(xs: Array[Int], x: Int) -> Bool {
-  let mut found = false
-  for v in xs {
-    if v == x {
-      found = true
-    } else {
-      ()
-    }
-  }
-  found
-}
-
-fn edp_scope_last_index(scope: Array[String], name: String) -> Int {
-  let mut i = Array::length(scope)
-  let mut found = 0 - 1
-  while found < 0 && i > 0 {
-    i = i - 1
-    if Array::get(scope, i) == name {
-      found = i
-    } else {
-      ()
-    }
-  }
-  found
-}
-
-fn edp_scope_index_after(scope: Array[String], name: String, slot: Int) -> Bool {
-  let mut i = slot + 1
-  let mut found = false
-  while !found && i < Array::length(scope) {
-    found = Array::get(scope, i) == name
-    i = i + 1
-  }
-  found
-}
 
 /// The index in `edp_local_lit_*` of the literal bound to `name` at `slot`, or
 /// -1. A name rebound at another slot (a parameter, a pattern) is not it.
@@ -1459,30 +1401,6 @@ fn edp_slot_fn_type(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], ca
   }
 }
 
-/// `(p0, .., pn) -> name(p0, .., pn)` under `row`: a row-free function passed
-/// by name at a row-typed slot, wrapped so the dict its callee passes has a
-/// parameter to land in (#3424).
-fn edp_slot_wrapper(name: String, arity: Int, row: String) -> Expr {
-  let params: Array[(String, Option[TypeExpr])] = []
-  let args: Array[Expr] = []
-  // The parameters must not shadow `name` inside the wrapper; a function
-  // spelled with the usual prefix gets the other one (Codex on #3426).
-  let prefix = if String::starts_with(name, "__edpw_") {
-    "__edpx_"
-  } else {
-    "__edpw_"
-  }
-  let mut k = 0
-  while k < arity {
-    let pn = String::concat(prefix, Int::to_string(k))
-    Array::push(params, (pn, None))
-    Array::push(args, EIdent(pn, 0 - 1))
-    k = k + 1
-  }
-  EFn([], [], params, None, Some(row), ECall(EIdent(name, 0 - 1), args, 0 - 1, [
-  ]))
-}
-
 /// The row a top-level function's parameter `pos` declares on its function
 /// type, or None.
 fn edp_slot_row(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], callee: String, pos: Int) -> Option[String] {
@@ -1544,23 +1462,34 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[In
       // to an argument written at one of its row-typed parameters
       // (`edp_local_slot_fn_type`, #3416), whether or not it has a row.
       let mark = Array::length(edp_local_lit_names)
-      match v2 {
-        EFn(_, _, _, _, _, _) => {
-          Array::push(edp_local_lit_names, n)
-          Array::push(edp_local_lit_slots, Array::length(scope))
-          Array::push(edp_local_lit_vals, v2)
-        },
-        _ => ()
+      let rowful = edp_value_has_row(v2, scope, stmts, fn_index)
+      let tracked = match v2 {
+        EFn(_, _, _, _, _, _) => true,
+        EIdent(_, _) => rowful || edp_value_is_row_free(v2, scope, pure_names),
+        _ => rowful
+      }
+      if tracked {
+        // Aliases retain their actual initializer, never a copied closure
+        // body. The row proof cannot change the capture environment.
+        Array::push(edp_local_lit_names, n)
+        Array::push(edp_local_lit_slots, Array::length(scope))
+        Array::push(edp_local_lit_vals, v2)
+        Array::push(edp_local_lit_rows, rowful)
       }
       let hslot = Array::length(scope)
       let fmark = edp_field_literal_mark()
       let amark = edp_local_alias_mark()
-      edp_note_local_alias(n, hslot, edp_local_lit_of(v2, scope))
+      let alias_value = edp_identity_value(v2)
+      match alias_value {
+        EIdent(_, _) => edp_note_local_alias(n, hslot, edp_local_lit_of(alias_value, scope)),
+        _ => ()
+      }
       let b2 = edp_stamp_scoped(b, [n], stmts, fn_index, scope, pure_names)
       edp_drop_local_aliases(amark)
       Array::truncate(edp_local_lit_names, mark)
       Array::truncate(edp_local_lit_slots, mark)
       Array::truncate(edp_local_lit_vals, mark)
+      Array::truncate(edp_local_lit_rows, mark)
       edp_let_field_literal(n, v2, b, edp_wrap_snapshots(b2, hslot), off, hslot, fmark, scope)
     },
     ELetRec(n, v, b) => ELetRec(n, edp_stamp_scoped(v, [n], stmts, fn_index, scope, pure_names), edp_stamp_scoped(b, [
@@ -1657,7 +1586,7 @@ fn edp_stamp_record(e: Expr, targs: Array[TypeExpr], stmts: Array[Stmt], fn_inde
           (fn2, edp_stamp_slot_arg_at(v2, scope, pure_names, Some(slot)))
         },
         None => {
-          edp_refuse_unread_field_row(n, fn2, targs, v2, scope, pure_names, edp_local_lit_of(v2, scope))
+          edp_refuse_unread_field_row(n, fn2, targs, !edp_value_has_row(v2, scope, stmts, fn_index))
           (fn2, v2)
         }
       }
@@ -1672,7 +1601,12 @@ fn edp_local_lit_of(v: Expr, scope: Array[String]) -> (String, Int, Option[Expr]
   match v {
     EIdent(an, _) => {
       let slot = edp_scope_last_index(scope, an)
-      (an, slot, edp_local_lit_at(an, slot))
+      let found = edp_local_lit_at(an, slot)
+      let literal = match found {
+        Some(EFn(_, _, _, _, _, _)) => found,
+        _ => None
+      }
+      (an, slot, literal)
     },
     _ => ("", 0 - 1, None)
   }
@@ -1697,6 +1631,45 @@ fn edp_let_field_literal(n: String, v: Expr, b0: Expr, b: Expr, off: Int, slot: 
       ELet(n, v, b, off)
     },
     _ => ELet(n, v, b, off)
+  }
+}
+
+/// A literal's own concrete row is a calling-convention proof, including
+/// when the current local binding aliases that row-annotated literal.
+fn edp_value_has_row(value0: Expr, scope: Array[String], stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]]) -> Bool {
+  let value = edp_identity_value(value0)
+  let slot = match value {
+    EIdent(name, _) => edp_scope_last_index(scope, name),
+    ECall(EIdent(name, _), _, _, _) => edp_scope_last_index(scope, name),
+    _ => -1
+  }
+  let local = match value {
+    EIdent(name, _) => edp_local_lit_index(name, slot),
+    _ => -1
+  }
+  if local >= 0 {
+    Array::get(edp_local_lit_rows, local)
+  } else {
+    edp_declared_value_has_row(value, slot, stmts, fn_index)
+  }
+}
+
+/// A row-free value needs the field's handler convention before it can be
+/// stored there. Local literal and alias proofs are keyed by the binding's
+/// scope slot, so a same-named row-annotated binding masks an earlier proof.
+fn edp_value_is_row_free(value: Expr, scope: Array[String], pure_names: MutSet[String]) -> Bool {
+  match value {
+    EFn(_, _, _, _, None, _) => true,
+    EIdent(name, _) => if edp_scope_has(scope, name) {
+      match edp_local_lit_at(name, edp_scope_last_index(scope, name)) {
+        Some(EFn(_, _, _, _, None, _)) => true,
+        Some(EIdent(_, _)) => !Array::get(edp_local_lit_rows, edp_local_lit_index(name, edp_scope_last_index(scope, name))),
+        _ => false
+      }
+    } else {
+      MutSet::has(pure_names, name)
+    },
+    _ => false
   }
 }
 
@@ -1933,6 +1906,12 @@ fn edp_stamp_slot_arg_at(a: Expr, scope: Array[String], pure_names: MutSet[Strin
       } else {
         if edp_scope_has(scope, an) {
           edp_refuse_rowless_param(an, edp_scope_last_index(scope, an), callee, row)
+          match edp_local_lit_at(an, edp_scope_last_index(scope, an)) {
+            Some(EIdent(_, _)) => if edp_value_is_row_free(a, scope, pure_names) && !edp_field_alias_has_rowfree_literal(an, edp_scope_last_index(scope, an)) {
+              edp_refuse_rowless_local_field(an, callee, row)
+            },
+            _ => ()
+          }
         } else {
           ()
         }
@@ -1981,20 +1960,6 @@ fn edp_local_slot_fn_type(callee: String, scope: Array[String], pos: Int) -> Opt
     },
     _ => None
   }
-}
-
-fn edp_scope_has(scope: Array[String], name: String) -> Bool {
-  let mut i = Array::length(scope)
-  let mut found = false
-  while !found && i > 0 {
-    i = i - 1
-    if Array::get(scope, i) == name {
-      found = true
-    } else {
-      ()
-    }
-  }
-  found
 }
 
 /// A parameter's name without its labeled (`~`) or optional (`?`) marker.
@@ -2997,4 +2962,21 @@ fn edp_collect_ecall_arg_idents_arms(arms: Array[(Pat, Expr)], gname: String, ar
     }
     i = i + 1
   }
+}
+
+// A type ascription changes the type view, never the value's origin or ABI.
+fn edp_identity_value(value: Expr) -> Expr {
+  let mut current = value
+  let mut done = false
+  while !done {
+    match current {
+      ECall(EFn(_, _, params, _, _, body), args, _, _) => if Array::length(args) == 1 && edp_is_identity_ascription(params, body) {
+        current = Array::get(args, 0)
+      } else {
+        done = true
+      },
+      _ => done = true
+    }
+  }
+  current
 }
