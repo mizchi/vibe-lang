@@ -912,6 +912,14 @@ the body's effects are the enclosing function's: its `Async` is discharged by
 that never suspends needs no annotation either:
 `TaskGroup::spawn_suspend(g, () -> 6 * 7)` settles at once.
 
+A wrapper may take its task as an optional parameter (`task?: () -> T with
+Async`), which is declared `Option[..]`. The closure supplied for it arrives as
+`Some(closure)` and is a task closure exactly like a positional one: row-less,
+it may `sleep` and print; never suspending, it is still compiled to the step
+convention the scheduler calls; and the wrapper discharges it, so it does not
+count as a suspension of the entry. An omitted one is `None` (#3555). Pinned by
+`fixtures/spawn_suspend_optional_{rowless_sleep,pure_task,annotated_task}.vibe`.
+
 A host builtin that cannot reach `Async` and takes no closure (`println`,
 `Fs::read_file`) is see-through to the suspend lowering, so a suspendable task
 -- and an `Async` entry the lowering rewrites -- may call it (#3523; it used to

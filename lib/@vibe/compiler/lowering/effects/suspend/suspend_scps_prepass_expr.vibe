@@ -2365,6 +2365,81 @@ fn scps_prepass_bind_local(scope: Array[(String, Int)], name: String, value: Exp
   scps_scope_bind(scope, name, kind)
 }
 
+/// #3555: an optional parameter (`task?: () -> T with Async`) is declared
+/// `Option[..]`, and a supplied argument arrives as `Some(closure)`. The
+/// closure is the slot the call-convention fixups judge: left wrapped, a pure
+/// literal was not Done-wrapped and the scheduler's step call trapped. Each
+/// such argument is replaced by its payload, its wrapper kept index for index
+/// (`EUnit` elsewhere; the shared empty array when there is none).
+fn scps_unwrap_optional_slots(fparams: Array[(String, Option[TypeExpr])], rargs: Array[Expr]) -> Array[Expr] {
+  let mut out = scps_no_opt_wraps
+  let mut aj = 0
+  while aj < Array::length(rargs) && aj < Array::length(fparams) {
+    let w = Array::get(rargs, aj)
+    match w {
+      ECall(EIdent(ctor, _), cargs, _, _) => if (ctor == "Some" || ctor == "Option::Some") && Array::length(cargs) == 1 && scps_is_optional_fn_ty(Array::get(fparams, aj).1) {
+        if Array::length(out) == 0 {
+          out = []
+          while Array::length(out) < Array::length(rargs) {
+            Array::push(out, EUnit)
+          }
+        } else {
+          ()
+        }
+        Array::set(out, aj, w)
+        Array::set(rargs, aj, Array::get(cargs, 0))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    aj = aj + 1
+  }
+  out
+}
+
+let scps_no_opt_wraps: Array[Expr] = []
+
+/// Is the parameter type `Option[(..) -> ..]`?
+fn scps_is_optional_fn_ty(pty: Option[TypeExpr]) -> Bool {
+  match pty {
+    Some(TyApp(head, targs)) => head == "Option" && Array::length(targs) == 1 && match Array::get(targs, 0) {
+      TyFn(_, _, _) => true,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// The type the fixups judge argument `aj` against: the option's element
+/// where `scps_unwrap_optional_slots` unwrapped it, else the parameter's.
+fn scps_slot_param_ty(fparams: Array[(String, Option[TypeExpr])], aj: Int, opt_wraps: Array[Expr]) -> Option[TypeExpr] {
+  let (_, pty) = Array::get(fparams, aj)
+  if aj < Array::length(opt_wraps) {
+    match (Array::get(opt_wraps, aj), pty) {
+      (ECall(_, _, _, _), Some(TyApp(_, targs))) => Some(Array::get(targs, 0)),
+      _ => pty
+    }
+  } else {
+    pty
+  }
+}
+
+/// Put each unwrapped payload, as the fixups left it, back in its `Some`.
+fn scps_rewrap_optional_slots(rargs: Array[Expr], opt_wraps: Array[Expr]) -> Unit {
+  let mut aj = 0
+  while aj < Array::length(opt_wraps) {
+    match Array::get(opt_wraps, aj) {
+      ECall(ctor, _, coff, cres) => {
+        let payload = Array::get(rargs, aj)
+        Array::set(rargs, aj, ECall(ctor, [payload], coff, cres))
+      },
+      _ => ()
+    }
+    aj = aj + 1
+  }
+}
+
 /// #3517: is parameter `aj` the task closure of a spawn-shaped callee -- the
 /// last parameter, after a `TaskGroup` first one (`TaskGroup::spawn`,
 /// `Parallel::map`, and a wrapper with their shape)?
@@ -2555,10 +2630,11 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
         EIdent(fname, _) => {
           match scps_prepass_callee_params(scope, fname, ctx) {
             Some(fparams) => {
+              let opt_wraps = scps_unwrap_optional_slots(fparams, rargs)
               let mut aj = 0
               while aj < Array::length(rargs) {
                 if aj < Array::length(fparams) {
-                  let (_, pty) = Array::get(fparams, aj)
+                  let pty = scps_slot_param_ty(fparams, aj, opt_wraps)
                   let prow = scps_ty_row(pty)
                   // Every resolved Async-taking parameter uses the step call
                   // convention, including wrappers around spawn_suspend.
@@ -2660,6 +2736,7 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
                 }
                 aj = aj + 1
               }
+              scps_rewrap_optional_slots(rargs, opt_wraps)
             },
             None => ()
           }

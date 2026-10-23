@@ -1,0 +1,33 @@
+// #3555: a row-less task closure handed to an OPTIONAL `Async` task parameter
+// (`task?:`) runs where `Async` is handled, like one handed positionally or by
+// label. The supplied argument arrives as `Some(closure)` against
+// `Option[() -> Int with Async]`, so the checker refused the `sleep` in it
+// ("passed where no `Async` is expected"), and the entry-boundary scan then
+// counted the closure's suspension as the entry's own and refused the program
+// at `TaskGroup::run` ("cannot see through"). The omitted argument arrives as
+// `None`, which the suspend lowering read as a capture of unknown provenance
+// under the boundary the `sleep` brings ("captures `None`").
+// Executed by tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh
+// (want 42).
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+fn start(g~: TaskGroup, task?: () -> Int with Async) -> TaskHandle[Int] {
+  match task {
+    Some(t) => TaskGroup::spawn_suspend(g, t),
+    None => TaskGroup::spawn_suspend(g, () -> 0)
+  }
+}
+
+fn main() -> Int allows Async + Exception {
+  TaskGroup::run((g) -> {
+    let h = start(g = g, task = () -> {
+      sleep(1)
+      41
+    })
+    let d = start(g = g)
+    TaskGroup::pump_all(g)
+    TaskHandle::join(h) + TaskHandle::join(d) + 1
+  })
+}

@@ -329,6 +329,24 @@ fn afe_type_is_async_fn(t: Type) -> Bool {
   }
 }
 
+/// #3555: is `ctor(cargs)`, argument `ai`, a row-less closure literal
+/// supplied for an optional `Async` task parameter -- `Some(() -> ..)` where
+/// the parameter is `Option[(..) -> .. with Async]`? Allocation-free: it is
+/// asked of every constructor call argument in the program.
+fn afe_is_optional_async_task(ctor: String, cargs: Array[Expr], param_tys: Array[Type], ai: Int) -> Bool {
+  if (ctor == "Some" || ctor == "Option::Some") && Array::length(cargs) == 1 && ai < Array::length(param_tys) {
+    match Array::get(cargs, 0) {
+      EFn(_, _, _, _, None, _) => match Array::get(param_tys, ai) {
+        CtOption(elem) => afe_type_is_async_fn(elem),
+        _ => false
+      },
+      _ => false
+    }
+  } else {
+    false
+  }
+}
+
 export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> Array[EffectError] {
   // #2386 review: the memos are cleared before ANYTHING of this entry asks
   // them -- `afe_set_field_types` below consults the `AsyncIter` provenance
@@ -474,6 +492,22 @@ fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, lo
             Array::push(afe_closure_kind_stack, 3)
             check_async_effects_expr_lo_into(abody, env, false, afe_bind_params(locals, aparams, env), out)
             Array::truncate(afe_closure_kind_stack, mark)
+          },
+          // #3555: an optional task parameter (`task?: () -> T with Async`)
+          // is declared `Option[..]`, and a supplied closure arrives as
+          // `Some(closure)`: the same `Async` context as a positional one.
+          ECall(EIdent(ctor, _), cargs, _, _) => if afe_is_optional_async_task(ctor, cargs, param_tys, ai) {
+            match Array::get(cargs, 0) {
+              EFn(_, _, aparams, _, _, abody) => {
+                let mark = Array::length(afe_closure_kind_stack)
+                Array::push(afe_closure_kind_stack, 1)
+                check_async_effects_expr_lo_into(abody, env, true, afe_bind_params(locals, aparams, env), out)
+                Array::truncate(afe_closure_kind_stack, mark)
+              },
+              _ => ()
+            }
+          } else {
+            check_async_effects_expr_lo_into(arg, env, in_async, locals, out)
           },
           _ => check_async_effects_expr_lo_into(arg, env, in_async, locals, out)
         }
