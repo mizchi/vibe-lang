@@ -1,0 +1,163 @@
+// #3582: a closure literal written where a DECLARED type gives it an effect
+// row -- a struct field `f: () -> Int with Ask`, an element of a declared
+// tuple result -- is called with that row's handler by whoever reads it. The
+// literal was compiled without the row, so `drive(o.f)` called a closure of
+// the wrong arity and trapped ("null function or function signature
+// mismatch") after a clean `vibe check`. The literal now takes the declared
+// row, as one passed at a row-typed parameter or returned at a row-typed
+// result already did. The controls at the end already worked.
+
+effect Ask {
+  Get() -> Int
+}
+
+fn drive(f: () -> Int with Ask) -> Int {
+  handle {
+    f()
+  } with {
+    Ask::Get() => resume(7)
+  }
+}
+
+struct Out {
+  f: () -> Int with Ask
+}
+
+fn mk() -> Out {
+  Out::{ f: () -> perform Ask::Get() + 1 }
+}
+
+test "struct field literal returned from a function" {
+  let o = mk()
+  inspect(drive(o.f), "8")
+}
+
+test "struct field literal built in place" {
+  let o = Out::{ f: () -> perform Ask::Get() * 3 }
+  inspect(drive(o.f), "21")
+}
+
+fn mk_capture(k: Int) -> Out {
+  Out::{ f: () -> perform Ask::Get() + k }
+}
+
+test "struct field literal that captures a local" {
+  let o = mk_capture(100)
+  inspect(drive(o.f), "107")
+}
+
+test "struct field literal that performs nothing" {
+  let o = Out::{ f: () -> 3 }
+  inspect(drive(o.f), "3")
+}
+
+fn three() -> Int {
+  3
+}
+
+test "struct field holding a row-free top-level function" {
+  let o = Out::{ f: three }
+  inspect(drive(o.f), "3")
+}
+
+fn run_out(o: Out) -> Int {
+  drive(o.f)
+}
+
+test "struct literal passed as an argument" {
+  inspect(run_out(Out::{ f: () -> perform Ask::Get() - 2 }), "5")
+}
+
+fn mk_pair() -> (() -> Int with Ask, Int) {
+  (() -> perform Ask::Get() + 1, 3)
+}
+
+test "tuple element at a declared tuple result" {
+  let t = mk_pair()
+  inspect(drive(t.0) + t.1, "11")
+}
+
+fn mk_nested_pair(flag: Bool) -> (Int, (() -> Int with Ask, Int)) {
+  if flag {
+    return (1, (() -> perform Ask::Get() * 10, 2))
+  } else {
+    ()
+  }
+  (0, (() -> 4, 5))
+}
+
+test "nested tuple element, through a return and a tail" {
+  let (_, a) = mk_nested_pair(true)
+  let (_, b) = mk_nested_pair(false)
+  inspect(drive(a.0), "70")
+  inspect(drive(b.0), "4")
+}
+
+struct Inner {
+  g: () -> Int with Ask
+}
+
+struct Outer {
+  inner: Inner
+  n: Int
+}
+
+fn mk_outer() -> Outer {
+  Outer::{ inner: Inner::{ g: () -> perform Ask::Get() * 2 }, n: 1 }
+}
+
+test "nested struct field" {
+  let o = mk_outer()
+  inspect(drive(o.inner.g) + o.n, "15")
+}
+
+struct Gen[T] {
+  f: () -> T with Ask
+  tag: T
+}
+
+fn mk_gen() -> Gen[Int] {
+  Gen::{ f: () -> perform Ask::Get() + 100, tag: 5 }
+}
+
+test "generic struct field" {
+  let o = mk_gen()
+  inspect(drive(o.f) + o.tag, "112")
+}
+
+// Controls: these already took the row before #3582.
+
+enum Holder {
+  H(() -> Int with Ask)
+}
+
+fn mk_holder() -> Holder {
+  H(() -> perform Ask::Get() + 1)
+}
+
+test "control: enum payload" {
+  match mk_holder() {
+    H(f) => inspect(drive(f), "8")
+  }
+}
+
+fn mk_some() -> Option[() -> Int with Ask] {
+  Some(() -> perform Ask::Get() + 1)
+}
+
+test "control: Some payload" {
+  match mk_some() {
+    Some(f) => inspect(drive(f), "8"),
+    None => inspect("none", "unreachable")
+  }
+}
+
+fn mk_annotated() -> Out {
+  let g: () -> Int with Ask = () -> perform Ask::Get() + 1
+  Out::{ f: g }
+}
+
+test "control: annotated let placed in the field" {
+  let o = mk_annotated()
+  inspect(drive(o.f), "8")
+}
