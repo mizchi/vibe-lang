@@ -1,0 +1,355 @@
+// lib/@vibe/compiler/lowering/effects/evidence -- the function-typed slots a
+// DECLARED type gives a closure value: a function's declared result (#3435),
+// an element of a declared tuple result, and a struct field (#3582). A
+// closure written at such a slot is called with the row's dict by whoever
+// reads it, so the stamp gives a row-free literal that row.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, expr_children_into
+}
+
+import @vibe/core {
+  struct MutMap, struct MutSet
+}
+
+import ./evidence_returned_scan_expr.vibe {
+  edp_row_mentions_any
+}
+
+import ./evidence_slot_refusals.vibe {
+  edp_field_site_prefix, edp_slot_row_stampable
+}
+
+/// The slot (arity and row) a declared result `rty` gives the closure a
+/// function returns, when it is a function type with a stampable row.
+export fn edp_result_slot(stmts: Array[Stmt], rty: TypeExpr) -> Option[(Int, String)] {
+  // A declared result spelled through an alias (`fn mid() -> Thunk`) is
+  // expanded as an alias-annotated binding's is (Codex on #3447).
+  // Only a name the program declares as an alias is looked up: every
+  // function with a named result reaches this, and a scan of the
+  // program per function cost the selfcompile KPI 3.6 MB.
+  let resolved = match rty {
+    TyFn(_, _, Some(_)) => Some(rty),
+    TyName(an) => if edp_is_program_alias(an) {
+      edp_result_alias_fn_type(stmts, rty)
+    } else {
+      None
+    },
+    TyApp(an, _) => if edp_is_program_alias(an) {
+      edp_result_alias_fn_type(stmts, rty)
+    } else {
+      None
+    },
+    _ => None
+  }
+  match resolved {
+    Some(TyFn(rptys, _, Some(rrow))) => if edp_slot_row_stampable(rrow) {
+      Some((Array::length(rptys), rrow))
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// The function type a declared result spelled through an alias names,
+/// following an alias of an alias, bare or applied, as the checker's
+/// `dh_expand_type_alias` does (Codex on #3447: `type Gen[T] = Thunk`). An
+/// applied alias's arguments are not substituted, so a row that names one of
+/// its parameters is not read; the step bound stops a cycle.
+fn edp_result_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] {
+  let mut cur = ty
+  let mut out: Option[TypeExpr] = None
+  let mut steps = 0
+  let mut done = false
+  while !done && steps < 32 {
+    let head = match cur {
+      TyName(an) => an,
+      TyApp(an, _) => an,
+      _ => ""
+    }
+    let mut next: Option[(Array[String], TypeExpr)] = None
+    if String::length(head) > 0 {
+      for st in stmts {
+        match st {
+          STypeAlias(_, an, tparams, body) => if an == head {
+            next = Some((tparams, body))
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      }
+    } else {
+      ()
+    }
+    match next {
+      Some((tparams, TyFn(ps, r, Some(row)))) => {
+        if edp_slot_row_stampable(row) && !edp_row_mentions_any(row, tparams) {
+          out = Some(TyFn(ps, r, Some(row)))
+        } else {
+          ()
+        }
+        done = true
+      },
+      Some((_, body)) => {
+        cur = body
+      },
+      None => {
+        done = true
+      }
+    }
+    steps = steps + 1
+  }
+  out
+}
+
+/// The tuple type an alias `ty` names, through a chain of aliases, with an
+/// applied alias's type arguments substituted for its parameters (Codex on
+/// #3610: `type Pair[T] = (() -> Int with Ask, T)` as `Pair[Int]`), or None.
+/// An element whose function row mentions a parameter is left without a slot,
+/// as `edp_result_alias_fn_type` leaves such a function result.
+fn edp_result_alias_tuple(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] {
+  let mut cur = ty
+  let mut out: Option[TypeExpr] = None
+  let mut steps = 0
+  let mut done = false
+  while !done && steps < 32 {
+    let (head, args) = match cur {
+      TyName(an) => (an, []),
+      TyApp(an, xs) => (an, xs),
+      _ => ("", [])
+    }
+    let mut next: Option[TypeExpr] = None
+    if String::length(head) > 0 {
+      for st in stmts {
+        match st {
+          STypeAlias(_, an, tparams, body) => if an == head && Array::length(tparams) == Array::length(args) {
+            next = Some(edp_type_expr_subst(body, tparams, args))
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      }
+    } else {
+      ()
+    }
+    match next {
+      Some(TyTuple(items)) => {
+        out = Some(TyTuple(items))
+        done = true
+      },
+      Some(body) => {
+        cur = body
+      },
+      None => {
+        done = true
+      }
+    }
+    steps = steps + 1
+  }
+  out
+}
+
+/// `te` with each parameter in `names` replaced by the matching `args`. A
+/// function type whose row mentions a parameter becomes `TyUnit`, so it gives
+/// no slot: its row is known only at an instantiation this pass cannot read.
+fn edp_type_expr_subst(te: TypeExpr, names: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+  match te {
+    TyName(n) => {
+      let mut out = te
+      let mut i = 0
+      while i < Array::length(names) {
+        if Array::get(names, i) == n {
+          out = Array::get(args, i)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      out
+    },
+    TyApp(h, xs) => TyApp(h, for x in xs {
+      edp_type_expr_subst(x, names, args)
+    }),
+    TyFn(ps, r, row) => match row {
+      Some(rw) => if edp_row_mentions_any(rw, names) {
+        TyUnit
+      } else {
+        TyFn(for x in ps {
+          edp_type_expr_subst(x, names, args)
+        }, edp_type_expr_subst(r, names, args), row)
+      },
+      None => TyFn(for x in ps {
+        edp_type_expr_subst(x, names, args)
+      }, edp_type_expr_subst(r, names, args), row)
+    },
+    TyTuple(xs) => TyTuple(for x in xs {
+      edp_type_expr_subst(x, names, args)
+    }),
+    TyUnit => TyUnit
+  }
+}
+
+/// The type-alias names the program declares, taken once per stamp pass
+/// (`edp_note_program_aliases`).
+let edp_program_aliases: Array[MutSet[String]] = []
+
+export fn edp_note_program_aliases(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(edp_program_aliases, 0)
+  let names = MutSet::new_string()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(_, n, _, _) => MutSet::insert(names, n),
+      _ => ()
+    }
+    i = i + 1
+  }
+  Array::push(edp_program_aliases, names)
+}
+
+fn edp_is_program_alias(name: String) -> Bool {
+  Array::length(edp_program_aliases) > 0 && MutSet::has(Array::get(edp_program_aliases, 0), name)
+}
+
+/// #3582: per struct the program declares, its fields whose declared type is
+/// a function type with a stampable row, each with that slot's arity and row.
+/// Taken once per stamp pass (`edp_note_row_field_structs`).
+let edp_row_field_structs: Array[MutMap[String, Array[(String, (Int, String))]]] = [
+]
+
+/// #3582: a struct field declared `f: () -> Int with Ask` is called with the
+/// row's dict by whoever reads it, exactly as a parameter of that type is. A
+/// row that names one of the struct's own type parameters is not read, as for
+/// an alias (`edp_result_alias_fn_type`). Run after `edp_note_program_aliases`:
+/// a field spelled through an alias is expanded the way a result is.
+export fn edp_note_row_field_structs(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(edp_row_field_structs, 0)
+  let table: MutMap[String, Array[(String, (Int, String))]] = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, sname, fields, _, _, tparams) => {
+        let slots: Array[(String, (Int, String))] = []
+        let mut k = 0
+        while k < Array::length(fields) {
+          let (fname, fty) = Array::get(fields, k)
+          match edp_result_slot(stmts, fty) {
+            Some(slot) => if !edp_row_mentions_any(slot.1, tparams) {
+              Array::push(slots, (fname, slot))
+            },
+            None => ()
+          }
+          k = k + 1
+        }
+        if Array::length(slots) > 0 {
+          MutMap::set(table, sname, slots)
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  Array::push(edp_row_field_structs, table)
+}
+
+/// The slot the field `fname` of the struct `sname` declares, or None.
+export fn edp_field_slot(sname: String, fname: String) -> Option[(Int, String)] {
+  let mut out: Option[(Int, String)] = None
+  if Array::length(edp_row_field_structs) > 0 {
+    match MutMap::get(Array::get(edp_row_field_structs, 0), sname) {
+      Some(slots) => {
+        let mut k = 0
+        while k < Array::length(slots) {
+          let (fname2, slot) = Array::get(slots, k)
+          if fname2 == fname {
+            out = Some(slot)
+          }
+          k = k + 1
+        }
+      },
+      None => ()
+    }
+  }
+  out
+}
+
+/// Does `e` build a struct with a row-typed field? A read-only scan, so a
+/// statement with none is not rebuilt (#1875).
+export fn edp_expr_builds_row_field(e: Expr) -> Bool {
+  if Array::length(edp_row_field_structs) == 0 || MutMap::size(Array::get(edp_row_field_structs, 0)) == 0 {
+    false
+  } else {
+    let table = Array::get(edp_row_field_structs, 0)
+    let mut found = false
+    let stack: Array[Expr] = [e]
+    while !found && Array::length(stack) > 0 {
+      let n = Array::length(stack)
+      let cur = Array::get(stack, n - 1)
+      Array::truncate(stack, n - 1)
+      match cur {
+        ERecord(rn, _, _) => if MutMap::has(table, rn) {
+          found = true
+        },
+        _ => ()
+      }
+      expr_children_into(cur, stack)
+    }
+    found
+  }
+}
+
+/// #3582: the element types of a declared tuple result `rty` when one of them,
+/// at any depth of nested tuples, is a function type with a stampable row;
+/// else None. The closure in that position is called with the dict, as one
+/// returned alone at that type is (`edp_result_slot`).
+export fn edp_tuple_result_types(stmts: Array[Stmt], rty0: TypeExpr) -> Option[Array[TypeExpr]] {
+  // A tuple result spelled through an alias (`fn mk() -> Pair` with
+  // `type Pair = (() -> Int with Ask, Int)`) is expanded as a function
+  // result's alias is (`edp_result_slot`; Codex on #3610).
+  let alias_head = match rty0 {
+    TyName(an) => an,
+    TyApp(an, _) => an,
+    _ => ""
+  }
+  let rty = if String::length(alias_head) > 0 && edp_is_program_alias(alias_head) {
+    match edp_result_alias_tuple(stmts, rty0) {
+      Some(t) => t,
+      None => rty0
+    }
+  } else {
+    rty0
+  }
+  match rty {
+    TyTuple(items) => {
+      let mut hit = false
+      for t in items {
+        let slot_here = match edp_result_slot(stmts, t) {
+          Some(_) => true,
+          None => false
+        }
+        let nested = match edp_tuple_result_types(stmts, t) {
+          Some(_) => true,
+          None => false
+        }
+        if slot_here || nested {
+          hit = true
+        }
+      }
+      if hit {
+        Some(items)
+      } else {
+        None
+      }
+    },
+    _ => None
+  }
+}
+
+/// The slot-callee spelling of the field `fname` of `sname`, so a refusal
+/// names the field rather than a call (`edp_slot_site`).
+export fn edp_field_slot_callee(sname: String, fname: String) -> String {
+  String::concat(edp_field_site_prefix(), String::concat("the value of the field `", String::concat(fname, String::concat("` of `", String::concat(sname, "`")))))
+}
