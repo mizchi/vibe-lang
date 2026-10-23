@@ -556,6 +556,12 @@ ur_refused fixtures/err_eq_nested_witness_fn_unreadable_refused.vibe 'the type `
 # #3569: a bodyless impl's fallback whose bounded formal no `Self` parameter
 # spells; its witness was left out and the call failed wasm validation.
 ur_refused fixtures/err_impl_bodyless_fallback_formal_unreadable_refused.vibe 'the `Eq` witness for `U` is read only from that parameter' 'spell `U` in the type of `Tag::name`'"'"'s `Self` parameter'
+# #3616: a direct `Trait::m(x)` call whose arguments do not say which of two
+# applied impls it means; the refusal used to name a body that already exists.
+ur_refused fixtures/err_applied_trait_direct_call_ambiguous_refused.vibe '`Both` has `impl Value[Int] for Both` and `impl Value[String] for Both`' 'call the method through a bound that names the trait'"'"'s argument'
+ur_refused fixtures/err_applied_trait_direct_call_ambiguous_refused.vibe '`Both` has `impl Value[Int] for Both` and `impl Value[String] for Both`' 'call the method through a bound that names the trait'"'"'s argument' gc
+ur_refused fixtures/err_applied_trait_direct_call_unreadable_arg_refused.vibe '`P` has `impl It[Int] for P` and `impl It[String] for P`' 'annotate the argument of this call that fixes `A` in `It[A]`'
+ur_refused fixtures/err_applied_trait_direct_call_unreadable_arg_refused.vibe '`P` has `impl It[Int] for P` and `impl It[String] for P`' 'annotate the argument of this call that fixes `A` in `It[A]`' gc
 ur_refused fixtures/err_eq_witness_missing_refused.vibe 'the `Eq` witness for `T` does not reach this comparison' 'compare at a concrete type, or pass the comparison in as a parameter'
 # #3613: a projected field typed by its struct's parameter, off a receiver
 # whose type arguments are not readable, would compare by reference.

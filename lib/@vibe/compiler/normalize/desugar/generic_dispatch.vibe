@@ -9,7 +9,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_method_owner, impl_target_head, trait_ref_from_key, trait_ref_key, trait_ref_name, type_param_name
+  impl_method_owner, impl_target_head, impl_target_key, trait_ref_from_key, trait_ref_key, trait_ref_name, type_param_name
 }
 
 import @vibe/core {
@@ -47,7 +47,7 @@ import ./utilities.vibe {
 }
 
 import ./witness_targets.vibe {
-  collect_constructor_recvs
+  collect_constructor_recvs, infer_impl_target_expr
 }
 
 export fn collect_impl_infos(stmts: Array[Stmt]) -> Array[GenericImplInfo] {
@@ -337,12 +337,24 @@ fn instantiate_impl_trait(gen: DictGen, bindings: Array[(String, TypeExpr)]) -> 
 /// been inferred. Multiple compatible impl families remain unresolved rather
 /// than choosing one and silently dispatching to the wrong implementation.
 export fn specialize_applied_trait_for_target(trait_name: String, callee_params: Array[String], actual_target: TypeExpr, gens: Array[DictGen]) -> String {
-  if !trait_ref_mentions_param(trait_name, callee_params) {
+  let candidates = applied_trait_candidates(trait_name, callee_params, actual_target, gens)
+  if Array::length(candidates) == 1 {
+    Array::get(candidates, 0)
+  } else {
     trait_name
+  }
+}
+
+/// Every instantiation of the applied bound `trait_name` (which mentions the
+/// callee's formals `callee_params`) that an impl for `actual_target` provides,
+/// without duplicates. Empty when the bound mentions no callee formal.
+export fn applied_trait_candidates(trait_name: String, callee_params: Array[String], actual_target: TypeExpr, gens: Array[DictGen]) -> Array[String] {
+  let candidates = empty_str_array()
+  if !trait_ref_mentions_param(trait_name, callee_params) {
+    candidates
   } else match trait_ref_from_key(trait_name) {
-    None => trait_name,
+    None => candidates,
     Some(requested) => {
-      let candidates = empty_str_array()
       let mut i = 0
       while i < Array::length(gens) {
         let gen = Array::get(gens, i)
@@ -380,11 +392,83 @@ export fn specialize_applied_trait_for_target(trait_name: String, callee_params:
         }
         i = i + 1
       }
-      if Array::length(candidates) == 1 {
-        Array::get(candidates, 0)
+      candidates
+    }
+  }
+}
+
+/// #3616: the callee formals a call's own arguments fix, read by matching each
+/// value parameter's annotation (`a: A`) against the argument's syntactic type
+/// (`2` is an `Int`). An argument whose type is not readable contributes
+/// nothing. Two arguments that disagree about a formal mean the reading is not
+/// trustworthy, so the answer is then empty: narrowing on it could pick the
+/// wrong impl, and an empty answer only leaves the call ambiguous.
+export fn call_arg_formal_bindings(param_types: Array[Option[TypeExpr]], args: Array[Expr], callee_params: Array[String], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, TypeExpr)] {
+  let out: Array[(String, TypeExpr)] = []
+  let mut conflict = false
+  let mut i = 0
+  while i < Array::length(param_types) && i < Array::length(args) && !conflict {
+    match Array::get(param_types, i) {
+      Some(ann) => if type_expr_mentions_param(ann, callee_params) {
+        match infer_impl_target_expr(Array::get(args, i), struct_sets, var_types, fn_returns) {
+          Some(actual) => {
+            let local: Array[(String, TypeExpr)] = []
+            if impl_target_pattern_matches(ann, actual, callee_params, local) {
+              for binding in local {
+                let (formal, ty) = binding
+                match impl_pattern_binding(out, formal) {
+                  Some(prior) => if impl_target_key(prior) != impl_target_key(ty) {
+                    conflict = true
+                  } else {
+                    ()
+                  },
+                  None => Array::push(out, binding)
+                }
+              }
+            } else {
+              ()
+            }
+          },
+          None => ()
+        }
       } else {
-        trait_name
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  if conflict {
+    []
+  } else {
+    out
+  }
+}
+
+/// #3616: the candidates (from `applied_trait_candidates`) that remain once the
+/// formals `bindings` fixes are substituted into the requested bound. With
+/// `impl It[Int] for P` and `impl It[String] for P`, `It::pass(p, 2)` requests
+/// `It[A]`, which both match; `A = Int` leaves only `It[Int]`.
+export fn narrow_applied_trait_candidates(trait_name: String, callee_params: Array[String], candidates: Array[String], bindings: Array[(String, TypeExpr)]) -> Array[String] {
+  match trait_ref_from_key(trait_name) {
+    None => candidates,
+    Some(requested) => {
+      let narrowed_request = substitute_impl_bindings(requested, bindings)
+      let out = empty_str_array()
+      for candidate in candidates {
+        match trait_ref_from_key(candidate) {
+          Some(candidate_ref) => {
+            let scratch = []
+            if impl_target_pattern_matches(narrowed_request, candidate_ref, callee_params, scratch) {
+              Array::push(out, candidate)
+            } else {
+              ()
+            }
+          },
+          None => ()
+        }
       }
+      out
     }
   }
 }
