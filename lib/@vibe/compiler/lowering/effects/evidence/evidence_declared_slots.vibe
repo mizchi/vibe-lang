@@ -104,24 +104,28 @@ fn edp_result_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr
   out
 }
 
-/// The tuple type a parameterless alias `ty` names, through a chain of
-/// aliases, or None.
+/// The tuple type an alias `ty` names, through a chain of aliases, with an
+/// applied alias's type arguments substituted for its parameters (Codex on
+/// #3610: `type Pair[T] = (() -> Int with Ask, T)` as `Pair[Int]`), or None.
+/// An element whose function row mentions a parameter is left without a slot,
+/// as `edp_result_alias_fn_type` leaves such a function result.
 fn edp_result_alias_tuple(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] {
   let mut cur = ty
   let mut out: Option[TypeExpr] = None
   let mut steps = 0
   let mut done = false
   while !done && steps < 32 {
-    let head = match cur {
-      TyName(an) => an,
-      _ => ""
+    let (head, args) = match cur {
+      TyName(an) => (an, []),
+      TyApp(an, xs) => (an, xs),
+      _ => ("", [])
     }
     let mut next: Option[TypeExpr] = None
     if String::length(head) > 0 {
       for st in stmts {
         match st {
-          STypeAlias(_, an, tparams, body) => if an == head && Array::length(tparams) == 0 {
-            next = Some(body)
+          STypeAlias(_, an, tparams, body) => if an == head && Array::length(tparams) == Array::length(args) {
+            next = Some(edp_type_expr_subst(body, tparams, args))
           } else {
             ()
           },
@@ -146,6 +150,46 @@ fn edp_result_alias_tuple(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] 
     steps = steps + 1
   }
   out
+}
+
+/// `te` with each parameter in `names` replaced by the matching `args`. A
+/// function type whose row mentions a parameter becomes `TyUnit`, so it gives
+/// no slot: its row is known only at an instantiation this pass cannot read.
+fn edp_type_expr_subst(te: TypeExpr, names: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+  match te {
+    TyName(n) => {
+      let mut out = te
+      let mut i = 0
+      while i < Array::length(names) {
+        if Array::get(names, i) == n {
+          out = Array::get(args, i)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      out
+    },
+    TyApp(h, xs) => TyApp(h, for x in xs {
+      edp_type_expr_subst(x, names, args)
+    }),
+    TyFn(ps, r, row) => match row {
+      Some(rw) => if edp_row_mentions_any(rw, names) {
+        TyUnit
+      } else {
+        TyFn(for x in ps {
+          edp_type_expr_subst(x, names, args)
+        }, edp_type_expr_subst(r, names, args), row)
+      },
+      None => TyFn(for x in ps {
+        edp_type_expr_subst(x, names, args)
+      }, edp_type_expr_subst(r, names, args), row)
+    },
+    TyTuple(xs) => TyTuple(for x in xs {
+      edp_type_expr_subst(x, names, args)
+    }),
+    TyUnit => TyUnit
+  }
 }
 
 /// The type-alias names the program declares, taken once per stamp pass
@@ -265,16 +309,18 @@ export fn edp_tuple_result_types(stmts: Array[Stmt], rty0: TypeExpr) -> Option[A
   // A tuple result spelled through an alias (`fn mk() -> Pair` with
   // `type Pair = (() -> Int with Ask, Int)`) is expanded as a function
   // result's alias is (`edp_result_slot`; Codex on #3610).
-  let rty = match rty0 {
-    TyName(an) => if edp_is_program_alias(an) {
-      match edp_result_alias_tuple(stmts, rty0) {
-        Some(t) => t,
-        None => rty0
-      }
-    } else {
-      rty0
-    },
-    _ => rty0
+  let alias_head = match rty0 {
+    TyName(an) => an,
+    TyApp(an, _) => an,
+    _ => ""
+  }
+  let rty = if String::length(alias_head) > 0 && edp_is_program_alias(alias_head) {
+    match edp_result_alias_tuple(stmts, rty0) {
+      Some(t) => t,
+      None => rty0
+    }
+  } else {
+    rty0
   }
   match rty {
     TyTuple(items) => {
