@@ -1333,7 +1333,11 @@ fn edp_wrap_snapshots(body: Expr, slot: Int) -> Expr {
 /// The index in `edp_local_lit_*` of the literal bound to `name` at `slot`, or
 /// -1. A name rebound at another slot (a parameter, a pattern) is not it.
 fn edp_local_lit_index(name: String, slot: Int) -> Int {
-  let mut i = Array::length(edp_local_lit_names)
+  let mut i = if slot < 0 {
+    0
+  } else {
+    Array::length(edp_local_lit_names)
+  }
   let mut found = 0 - 1
   while found < 0 && i > 0 {
     i = i - 1
@@ -1645,10 +1649,20 @@ fn edp_value_has_row(value0: Expr, scope: Array[String], stmts: Array[Stmt], fn_
   }
   let local = match value {
     EIdent(name, _) => edp_local_lit_index(name, slot),
+    ECall(EIdent(name, _), _, _, _) => edp_local_lit_index(name, slot),
     _ => -1
   }
   if local >= 0 {
-    Array::get(edp_local_lit_rows, local)
+    match value {
+      ECall(_, _, _, _) => match Array::get(edp_local_lit_vals, local) {
+        EFn(_, _, _, Some(result), _, _) => match edp_result_slot(stmts, result) {
+          Some(_) => true,
+          None => false
+        },
+        _ => false
+      },
+      _ => Array::get(edp_local_lit_rows, local)
+    }
   } else {
     edp_declared_value_has_row(value, slot, stmts, fn_index)
   }
