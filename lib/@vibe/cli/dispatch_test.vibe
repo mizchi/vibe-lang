@@ -33,6 +33,7 @@ import ../compiler {
   selfhost_cli_run_plan_args,
   selfhost_cli_test_plan_args,
   selfhost_cli_user_dispatch_args,
+  test_artifact_out,
   test_artifact_rel,
   user_dispatch_is_verb
 }
@@ -1146,6 +1147,28 @@ test "user test plan expands a directory to *_test.vibe files" {
   assert(String::starts_with(plan, "vibe-host-action-v1\nrun-tests\n"))
   assert(String::contains(plan, "/tmp/vibe_user_dispatch_test_plan_dir/cwd_test.vibe"))
   assert(!String::contains(plan, "/tmp/vibe_user_dispatch_test_plan_dir\t"))
+}
+
+test "test_artifact_out never hands one source another's artifact" {
+  // #3618 review: `_up/a_test~2.vibe` is a real file whose plain artifact is
+  // the suffix a later colliding source would be given.
+  let srcs: Array[String] = []
+  let outs: Array[String] = []
+  for src in [
+    "_up/a_test~2.vibe",
+    "_up/a_test.vibe",
+    "../a_test.vibe",
+    "../a_test.vibe"
+  ] {
+    let out = test_artifact_out("b", src, Array::length(srcs), srcs, outs)
+    Array::push(srcs, src)
+    Array::push(outs, out)
+  }
+  assert_eq(Array::get(outs, 0), "b/test/_up/a_test~2.wasm")
+  assert_eq(Array::get(outs, 1), "b/test/_up/a_test.wasm")
+  assert_eq(Array::get(outs, 2), "b/test/_up/a_test~2_1.wasm")
+  // The same spelling again is the same file and shares its artifact.
+  assert_eq(Array::get(outs, 3), "b/test/_up/a_test~2_1.wasm")
 }
 
 // #3505: `vibe test ./a_test.vibe` and `vibe test .` died on
