@@ -10,7 +10,24 @@
 //# Imports
 
 import @vibe/compiler/lowering/effects/evidence {
-  edp_row_top_labels, edp_slot_row_stampable
+  edp_field_slot, edp_note_program_aliases, edp_note_row_field_structs, edp_result_slot, edp_row_top_labels, edp_slot_row_stampable
+}
+
+import @vibe/compiler/core {
+  Stmt, TypeExpr
+}
+import @vibe/ast {
+  type_param_key
+}
+
+fn kinded_field_slot(row: String, args: Array[TypeExpr]) -> Option[(Int, String)] {
+  let stmts = [
+    SStruct(false, "H", [("f", TyFn([], TyName("Int"), Some(row)))], [], [], [
+      type_param_key("F", 1)
+    ])
+  ]
+  edp_note_row_field_structs(stmts)
+  edp_field_slot("H", "f", args)
 }
 
 //# Tests
@@ -25,4 +42,36 @@ test "labels split at the top-level separators only" {
 test "a lowercase type argument is not read as a row variable" {
   inspect(edp_slot_row_stampable("Pair[String, b]"), "true")
   inspect(edp_slot_row_stampable("Box[Int] + e"), "false")
+}
+
+test "kinded field formals are substituted by their source names" {
+  match kinded_field_slot("Box[F[Int]]", [TyName("Option")]) {
+    Some((_, row)) => assert_eq(row, "Box[Option[Int]]"),
+    None => assert(false)
+  }
+}
+
+test "a kinded field formal still requires its actual argument" {
+  match kinded_field_slot("Box[F[Int]]", []) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
+
+test "a kinded formal in label position is not a concrete effect" {
+  match kinded_field_slot("F[Int]", [TyName("Option")]) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
+
+test "a kinded alias row is withheld when it cannot be instantiated" {
+  let stmts = [
+    STypeAlias(false, "Thunk", [type_param_key("F", 1)], TyFn([], TyName("Int"), Some("Box[F[Int]]")))
+  ]
+  edp_note_program_aliases(stmts)
+  match edp_result_slot(stmts, TyApp("Thunk", [TyName("Option")])) {
+    None => (),
+    Some(_) => assert(false)
+  }
 }

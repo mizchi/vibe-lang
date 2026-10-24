@@ -4,15 +4,15 @@
 // whether a row names an alias parameter.
 
 import @vibe/compiler/core {
-  Expr, Pat, expr_children
+  Expr, Pat, expr_children, expr_children_into
 }
 
 import @vibe/compiler/lowering/effects/queries {
-  edp_str_array_contains
+  EdpReadQuery, edp_rq_fold, edp_str_array_contains
 }
 
 import ./evidence_scan_view_expr.vibe {
-  edp_pat_names
+  edp_pat_names, edp_rename_free
 }
 
 /// How many tail positions of `e` are the bare name `n`, reading tails as
@@ -217,4 +217,39 @@ export fn edp_row_mentions_any(row: String, names: Array[String]) -> Bool {
     i = i + 1
   }
   found
+}
+
+// Context may change a record's callbacks only if every read is a result and
+// every assignment is visited here. A captured writer belongs to its lambda.
+export fn edp_record_binding_returned(body: Expr, name: String, tail: Bool, returns: Bool) -> Bool {
+  let results = (if tail {
+    edp_tail_name_count(body, name)
+  } else {
+    0
+  }) + (if returns {
+    edp_return_name_count(body, name)
+  } else {
+    0
+  })
+  if results == 0 {
+    return false
+  }
+  let marker = "#record-result"
+  let renamed = edp_rename_free(body, name, marker)
+  if edp_rq_fold(RQIdentUses(marker), renamed) != results {
+    return false
+  }
+  let stack = [renamed]
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let current = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match current {
+      EFn(_, _, _, _, _, _) => if edp_count_assigns_name(current, marker) > 0 {
+        return false
+      },
+      _ => expr_children_into(current, stack)
+    }
+  }
+  true
 }

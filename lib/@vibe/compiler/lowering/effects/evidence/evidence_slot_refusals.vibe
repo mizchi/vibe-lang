@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — callback slot refusals.
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, expr_children, expr_children_into, is_runtime_scheduled_effect
+  Expr, Stmt, TypeExpr, builtin_shadow_source_name, expr_children, expr_children_into, is_runtime_scheduled_effect
 }
 
 import @vibe/core {
@@ -247,15 +247,10 @@ export fn edp_refuse_field_type_args(sname: String, fname: String, row: String, 
   Array::push(edp_slot_refusal_msgs, "\{edit}: \{why}. Without the row it takes no handler argument, and a call through the field passes one, so the call traps")
 }
 
-/// Codex on #3620: a row-free closure literal bound by `let` and stored by
-/// name in a row-typed field, which the stamp cannot give the field's row
-/// because the name is also used elsewhere (a direct call, another row, a
-/// field whose type arguments are not written). Written on the literal, the
-/// row is the closure's own and every use takes it (measured for a written,
-/// an annotated and an inferred field).
-export fn edp_refuse_unstamped_field_literal(name: String, callee: String, row: String) -> Unit {
-  Array::push(edp_slot_refusal_rows, row)
-  Array::push(edp_slot_refusal_msgs, "write the effect row on the closure `\{name}` where it is bound (`let \{name} = (..) -> T with \{row} { .. }`), or write the closure in the field itself: `\{name}` is stored as \{edp_slot_site(callee)}, and it is also used where the compiler cannot give it that row. \{edp_slot_consequence(callee)}")
+/// A proven row-free alias or field projection retains its original convention.
+/// Do not reject an unused callback: `edp_push_refusal` reads the slot's usage.
+export fn edp_refuse_rowless_local_field(name: String, callee: String, row: String) -> Unit {
+  edp_push_refusal(row, "declare `with \{row}` on the original definition of `\{name}` (the closure or source field) before using it as \{edp_result_site(callee)}: its row-free calling convention takes no handler argument, but its caller passes one")
 }
 
 /// Codex on #3620: a local alias of a row-free closure literal stored in a
@@ -305,10 +300,8 @@ export fn edp_refuse_uncopied_literal(callee: String, row: String, called: (Stri
   }
 }
 
-/// A parameter whose annotation is a function type with no row, passed on.
-/// Only a parameter is judged: a `let`-bound name is left to the stamp's own
-/// rules, which can see its literal.
-export fn edp_refuse_rowless_param(name: String, slot: Int, callee: String, row: String) -> Unit {
+/// The annotation of the parameter at this lexical slot, when recorded.
+export fn edp_parameter_type(slot: Int) -> Option[TypeExpr] {
   let mut i = Array::length(edp_param_ty_slots)
   let mut found = false
   while !found && i > 0 {
@@ -320,12 +313,17 @@ export fn edp_refuse_rowless_param(name: String, slot: Int, callee: String, row:
     }
   }
   if found {
-    match Array::get(edp_param_ty_vals, i) {
-      Some(TyFn(_, _, None)) => edp_push_refusal(row, String::concat("annotate the parameter `", String::concat(name, String::concat("` with the effect row: `", String::concat(name, String::concat(": (..) -> T with ", String::concat(row, String::concat("`. It is passed on as ", String::concat(edp_slot_site(callee), String::concat(". ", edp_slot_consequence(callee))))))))))),
-      _ => ()
-    }
+    Array::get(edp_param_ty_vals, i)
   } else {
-    ()
+    None
+  }
+}
+
+/// Refuse a parameter declared without the row required at its use.
+export fn edp_refuse_rowless_param(name: String, slot: Int, callee: String, row: String) -> Unit {
+  match edp_parameter_type(slot) {
+    Some(TyFn(_, _, None)) => edp_push_refusal(row, String::concat("annotate the parameter `", String::concat(name, String::concat("` with the effect row: `", String::concat(name, String::concat(": (..) -> T with ", String::concat(row, String::concat("`. It is passed on as ", String::concat(edp_slot_site(callee), String::concat(". ", edp_slot_consequence(callee))))))))))),
+    _ => ()
   }
 }
 
@@ -425,7 +423,9 @@ export fn edp_expr_passes_value_to_slot(e: Expr, slot_callees: MutSet[String]) -
           ECall(EDot(_, _, _, _), _, _, _) => {
             found = true
           },
-          _ => ()
+          _ => if edp_record_arg_needs_context(a) {
+            found = true
+          }
         }
       }
       expr_children_into(cur, stack)
@@ -820,5 +820,50 @@ export fn edp_slot_method(m: String) -> String {
     ""
   } else {
     edp_unique_method_in(Array::get(edp_slot_methods, 0), m)
+  }
+}
+
+export fn edp_refuse_unstamped_field_literal(name: String, callee: String, row: String) -> Unit {
+  Array::push(edp_slot_refusal_rows, row)
+  Array::push(edp_slot_refusal_msgs, "write the effect row on the closure `\{name}` where it is bound (`let \{name} = (..) -> T with \{row} { .. }`), or write the closure in the field itself: `\{name}` is stored as \{edp_slot_site(callee)}, and it is also used where the compiler cannot give it that row. \{edp_slot_consequence(callee)}")
+}
+
+/// Join source-level names for a diagnostic, with a final `and`.
+export fn edp_join_and(names: Array[String]) -> String {
+  let n = Array::length(names)
+  let mut out = ""
+  let mut i = 0
+  while i < n {
+    // #3185: a program's own definition of a builtin-called name runs under
+    // `NAME$user`; the message names what the program wrote.
+    let nm = String::concat(String::concat("`", builtin_shadow_source_name(Array::get(names, i))), "`")
+    if i == 0 {
+      out = nm
+    } else if i == n - 1 {
+      out = String::concat(String::concat(out, " and "), nm)
+    } else {
+      out = String::concat(String::concat(out, ", "), nm)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// A projected callback keeps the source field's physical convention.
+export fn edp_refuse_rowless_projection(field: String, callee: String, row: String) -> Unit {
+  Array::push(edp_slot_refusal_rows, row)
+  Array::push(edp_slot_refusal_msgs, "declare the source field `\{field}` with `with \{row}` before storing it in \{edp_slot_site(callee)}: the projected callback takes no handler argument, but a call through the destination field passes one")
+}
+
+// The lexical alias is a factory; its result, rather than its own row, needs editing.
+export fn edp_refuse_rowless_factory_result(name: String, callee: String, row: String) -> Unit {
+  edp_push_refusal(row, "declare `with \{row}` on the callback result type of the factory `\{name}`: `-> ((..) -> T with \{row})`. Its row-free result is \{edp_result_site(callee)} and takes no handler argument, but its caller passes one")
+}
+
+export fn edp_record_arg_needs_context(arg: Expr) -> Bool {
+  match arg {
+    ELoop(_, _)|EAssign(_, _, _, _)|EAssignOp(_, _, _, _, _)|ERecord(_, _, _)|EIf(_, _, _)|EMatch(_, _)|EHandle(_, _)|ELet(_, _, _, _)|ELetMut(_, _, _, _)|ELetRec(_, _, _)|ESeq(_, _) => true,
+    ELabeledArg(_, _, value) => edp_record_arg_needs_context(value),
+    _ => false
   }
 }
