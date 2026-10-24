@@ -1,0 +1,295 @@
+// Float rounding (#3543).
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr, expr_children
+}
+
+import @vibe/ast {
+  builtin_ref
+}
+
+//# Functions
+
+/// #3543: `Float` is a 32-bit type held in the f64 representation `Double`
+/// uses, so code generation computes `a + b` on two Floats in f64. Every
+/// arithmetic result the checker typed `Float` therefore has to be rounded to
+/// f32 before anything reads it; otherwise `16777217.0f == 16777216.0f` would
+/// be `false` and `1.0f / 3.0f` would print 16 digits.
+///
+/// The checker files one typed-`==` channel row per such site
+/// (`float_arith_rows_from_capture`): an arithmetic binop under its operator
+/// offset (`binop_offs`), a compound assignment under its target offset
+/// (`assign_offs`). This pass wraps each hit in `Double::to_float`, whose
+/// lowering is `f32.demote_f64` + `f64.promote_f32` on every lane. Rounding
+/// the exact f64 result of `+ - * /` on two f32 values gives the correctly
+/// rounded f32 result: f64 has 53 >= 2 * 24 + 2 significand bits, so the
+/// double rounding is innocuous for these four operations.
+///
+/// A binop the compiler synthesized (offset -1) is never a hit; the checker
+/// files no row for one either. Negation needs no row: `-x` of an f32 value
+/// is exactly an f32 value.
+export fn rewrite_float_arith_stmts(stmts: Array[Stmt], binop_offs: Array[Int], assign_offs: Array[Int]) -> Unit {
+  if Array::length(binop_offs) > 0 || Array::length(assign_offs) > 0 {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      Array::set(stmts, i, fr_stmt(Array::get(stmts, i), binop_offs, assign_offs))
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// #3543: the refusal a build lane WITHOUT typed rows gives a program that
+/// can hold a `Float`. Such a lane (`vibe build --debug`, the linked and
+/// library lanes) parses without source offsets, so the checker cannot file
+/// the rows `rewrite_float_arith_stmts` keys on, and a Float sum would be
+/// left as its f64 value -- silently not an f32. A program that never spells
+/// `Float` (or `f32`), an `f` literal or a `Float` conversion cannot hold
+/// one, so only those are refused, with the edit.
+export fn refuse_rowless_float_program(stmts: Array[Stmt]) -> Unit with Exception {
+  if program_mentions_float(stmts) {
+    throw("build without `--debug`: this build lane parses without source offsets, so it cannot round `Float` arithmetic to f32 (#3543); the default build, `vibe run` and `vibe test` can")
+  } else {
+    ()
+  }
+}
+
+/// Whether `stmts` spell `Float` / `f32` in a type, an `f` literal, or a
+/// call that produces or consumes a Float (`Double::to_float`,
+/// `Int::to_float`, any `Float::*`).
+export fn program_mentions_float(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    found = fr_stmt_mentions(Array::get(stmts, i))
+    i = i + 1
+  }
+  found
+}
+
+fn fr_stmt_mentions(stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, _, ty, body) => fr_opt_ty(ty) || fr_expr_mentions(body),
+    SLetMut(_, ty, body) => fr_opt_ty(ty) || fr_expr_mentions(body),
+    SLetPat(_, body) => fr_expr_mentions(body),
+    STest(_, body) => fr_expr_mentions(body),
+    SBench(_, body) => fr_expr_mentions(body),
+    SExample(_, body) => fr_expr_mentions(body),
+    SExpr(body) => fr_expr_mentions(body),
+    SFnDecl(_, _, body, _, _) => fr_expr_mentions(body),
+    SStruct(_, _, fields, _, _, _) => {
+      let mut found = false
+      for f in fields {
+        let (_, fty) = f
+        if fr_ty(fty) {
+          found = true
+        }
+      }
+      found
+    },
+    SEnum(_, _, _, variants, _) => fr_variants(variants),
+    SSuberror(_, _, variants) => fr_variants(variants),
+    STypeAlias(_, _, _, ty) => fr_ty(ty),
+    STrait(_, _, _, methods, _, _) => fr_sigs(methods),
+    SEffectDef(_, _, _, ops) => fr_sigs(ops),
+    SImpl(_, _, _, target) => fr_ty(target),
+    SExternLet(_, ty) => fr_ty(ty),
+    SModule(_, _, inner) => program_mentions_float(inner),
+    _ => false
+  }
+}
+
+fn fr_variants(variants: Array[(String, Array[TypeExpr])]) -> Bool {
+  let mut found = false
+  for v in variants {
+    let (_, payload) = v
+    if fr_tys(payload) {
+      found = true
+    }
+  }
+  found
+}
+
+fn fr_sigs(sigs: Array[(String, Array[TypeExpr], TypeExpr)]) -> Bool {
+  let mut found = false
+  for sg in sigs {
+    let (_, params, ret) = sg
+    if fr_tys(params) || fr_ty(ret) {
+      found = true
+    }
+  }
+  found
+}
+
+fn fr_opt_ty(ty: Option[TypeExpr]) -> Bool {
+  match ty {
+    Some(t) => fr_ty(t),
+    None => false
+  }
+}
+
+fn fr_tys(tys: Array[TypeExpr]) -> Bool {
+  let mut found = false
+  for t in tys {
+    if fr_ty(t) {
+      found = true
+    }
+  }
+  found
+}
+
+fn fr_ty(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => n == "Float" || n == "f32",
+    TyApp(n, args) => n == "Float" || n == "f32" || fr_tys(args),
+    TyFn(params, ret, _) => fr_tys(params) || fr_ty(ret),
+    TyTuple(items) => fr_tys(items),
+    TyUnit => false
+  }
+}
+
+fn fr_expr_mentions(e: Expr) -> Bool {
+  let here = match e {
+    EIdent(name, _) => name == "Double::to_float" || name == "Int::to_float" || String::starts_with(name, "Float::"),
+    EFn(_, _, params, ret, _, _) => {
+      let mut found = fr_opt_ty(ret)
+      for p in params {
+        let (_, pty) = p
+        if fr_opt_ty(pty) {
+          found = true
+        }
+      }
+      found
+    },
+    ERecord(_, _, targs) => fr_tys(targs),
+    _ => false
+  }
+  if here {
+    true
+  } else {
+    let mut found = false
+    for c in expr_children(e) {
+      if !found && fr_expr_mentions(c) {
+        found = true
+      }
+    }
+    found
+  }
+}
+
+fn fr_has(offs: Array[Int], off: Int) -> Bool {
+  if off < 0 {
+    false
+  } else {
+    let mut found = false
+    let mut i = 0
+    while i < Array::length(offs) && !found {
+      if Array::get(offs, i) == off {
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  }
+}
+
+fn fr_round(e: Expr) -> Expr {
+  ECall(builtin_ref("Double::to_float"), [e], -1, [])
+}
+
+fn fr_stmt(stmt: Stmt, bo: Array[Int], ao: Array[Int]) -> Stmt {
+  match stmt {
+    SLet(exported, recursive, name, annotation, expr) => SLet(exported, recursive, name, annotation, fr_expr(expr, bo, ao)),
+    SLetMut(name, annotation, expr) => SLetMut(name, annotation, fr_expr(expr, bo, ao)),
+    STest(name, expr) => STest(name, fr_expr(expr, bo, ao)),
+    SBench(name, expr) => SBench(name, fr_expr(expr, bo, ao)),
+    SExample(name, expr) => SExample(name, fr_expr(expr, bo, ao)),
+    SExpr(expr) => SExpr(fr_expr(expr, bo, ao)),
+    SLetPat(pattern, expr) => SLetPat(pattern, fr_expr(expr, bo, ao)),
+    SModule(exported, name, inner) => {
+      let copy = for s in inner {
+        s
+      }
+      rewrite_float_arith_stmts(copy, bo, ao)
+      SModule(exported, name, copy)
+    },
+    SFnDecl(exported, name, expr, requires, ensures) => SFnDecl(exported, name, fr_expr(expr, bo, ao), fr_exprs(requires, bo, ao), fr_exprs(ensures, bo, ao)),
+    _ => stmt
+  }
+}
+
+fn fr_exprs(items: Array[Expr], bo: Array[Int], ao: Array[Int]) -> Array[Expr] {
+  for it in items {
+    fr_expr(it, bo, ao)
+  }
+}
+
+fn fr_named(fields: Array[(String, Expr)], bo: Array[Int], ao: Array[Int]) -> Array[(String, Expr)] {
+  for fld in fields {
+    let (n, v) = fld
+    (n, fr_expr(v, bo, ao))
+  }
+}
+
+fn fr_arms(arms: Array[(Pat, Expr)], bo: Array[Int], ao: Array[Int]) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, e) = a
+    (p, fr_expr(e, bo, ao))
+  }
+}
+
+fn fr_expr(expr: Expr, bo: Array[Int], ao: Array[Int]) -> Expr {
+  match expr {
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_, _) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    EIdent(_, _) => expr,
+    ETuple(items) => ETuple(fr_exprs(items, bo, ao)),
+    EArray(items) => EArray(fr_exprs(items, bo, ao)),
+    ERecord(rn, fields, targs) => ERecord(rn, fr_named(fields, bo, ao), targs),
+    EIf(c, t, e) => EIf(fr_expr(c, bo, ao), fr_expr(t, bo, ao), fr_expr(e, bo, ao)),
+    ELet(n, v, b, soff) => ELet(n, fr_expr(v, bo, ao), fr_expr(b, bo, ao), soff),
+    ELetRec(n, v, b) => ELetRec(n, fr_expr(v, bo, ao), fr_expr(b, bo, ao)),
+    ELetMut(n, v, b, soff) => ELetMut(n, fr_expr(v, bo, ao), fr_expr(b, bo, ao), soff),
+    EAssign(n, v, b, target_off) => EAssign(n, fr_expr(v, bo, ao), fr_expr(b, bo, ao), target_off),
+    EAssignOp(n, op, v, b, target_off) => if fr_has(ao, target_off) {
+      // `x op= v` is `x = x op v`, which is how every backend lowers it; the
+      // sum is rounded before it is stored.
+      EAssign(n, fr_round(EBinOp(op, EIdent(n, -1), fr_expr(v, bo, ao), -1)), fr_expr(b, bo, ao), target_off)
+    } else {
+      EAssignOp(n, op, fr_expr(v, bo, ao), fr_expr(b, bo, ao), target_off)
+    },
+    ESeq(a, b) => ESeq(fr_expr(a, bo, ao), fr_expr(b, bo, ao)),
+    EMatch(s, arms) => EMatch(fr_expr(s, bo, ao), fr_arms(arms, bo, ao)),
+    EHandle(s, arms) => EHandle(fr_expr(s, bo, ao), fr_arms(arms, bo, ao)),
+    EWhile(c, b) => EWhile(fr_expr(c, bo, ao), fr_expr(b, bo, ao)),
+    ELoop(params, b) => ELoop(fr_named(params, bo, ao), fr_expr(b, bo, ao)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, fr_expr(it, bo, ao), fr_expr(b, bo, ao)),
+    ECall(callee, args, off, callee_resolution) => ECall(fr_expr(callee, bo, ao), fr_exprs(args, bo, ao), off, callee_resolution),
+    EBinOp(op, l, r, boff) => {
+      let rebuilt = EBinOp(op, fr_expr(l, bo, ao), fr_expr(r, bo, ao), boff)
+      if fr_has(bo, boff) {
+        fr_round(rebuilt)
+      } else {
+        rebuilt
+      }
+    },
+    EUnaryOp(op, e) => EUnaryOp(op, fr_expr(e, bo, ao)),
+    EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, params, ret, eff, fr_expr(body, bo, ao)),
+    EDot(e, field, off, fdoff) => EDot(fr_expr(e, bo, ao), field, off, fdoff),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, fr_expr(v, bo, ao)),
+    EReturn(e) => EReturn(fr_expr(e, bo, ao)),
+    EBreak(opt) => match opt {
+      Some(v) => EBreak(Some(fr_expr(v, bo, ao))),
+      None => expr
+    },
+    EContinue(args) => EContinue(fr_exprs(args, bo, ao)),
+    EMap(fields) => EMap(fr_named(fields, bo, ao)),
+    ESpread(e) => ESpread(fr_expr(e, bo, ao)),
+    EStringInterp(_) => expr
+  }
+}

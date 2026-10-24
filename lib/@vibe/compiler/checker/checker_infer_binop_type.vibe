@@ -5,7 +5,7 @@ import @vibe/compiler/checker/annotations {
 }
 
 import @vibe/compiler/checker/type_relations {
-  head_kind
+  float_mix_hint, head_kind
 }
 
 import @vibe/compiler/checker/resume {
@@ -2281,7 +2281,7 @@ export fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeE
         if eq_has_named {
           (CtBool, s)
         } else {
-          Array::push(errors, binop_mismatch_msg(op, "': operands must have same type", off))
+          Array::push(errors, binop_mismatch_msg(op, float_mix_hint(left_ty, right_ty, s, "': operands must have same type"), off))
           (CtUnknown, s)
         }
       }
@@ -2294,11 +2294,14 @@ export fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeE
         Some(s1) => (CtBool, s1),
         None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
           Some(s1) => (CtBool, s1),
-          None => match infer_named_trait_binop(env, left_ty, right_ty, "Ord", s) {
-            Some((_, s1)) => (CtBool, s1),
-            None => {
-              Array::push(errors, binop_mismatch_msg(op, "': operands must be Int or Double", off))
-              (CtUnknown, s)
+          None => match unify_binop_candidate(left_ty, right_ty, CtFloat, s) {
+            Some(s1) => (CtBool, s1),
+            None => match infer_named_trait_binop(env, left_ty, right_ty, "Ord", s) {
+              Some((_, s1)) => (CtBool, s1),
+              None => {
+                Array::push(errors, binop_mismatch_msg(op, float_mix_hint(left_ty, right_ty, s, "': operands must be Int or Double"), off))
+                (CtUnknown, s)
+              }
             }
           }
         }
@@ -2312,13 +2315,16 @@ export fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeE
         Some(s1) => (CtInt, s1),
         None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
           Some(s1) => (CtDouble, s1),
-          None => match unify_binop_candidate(left_ty, right_ty, CtString, s) {
-            Some(s1) => (CtString, s1),
-            None => match infer_named_trait_binop(env, left_ty, right_ty, "Add", s) {
-              Some((resolved, s1)) => (resolved, s1),
-              None => {
-                Array::push(errors, binop_mismatch_msg("+", "': operands must be Int, Double, or String", off))
-                (CtUnknown, s)
+          None => match unify_binop_candidate(left_ty, right_ty, CtFloat, s) {
+            Some(s1) => (CtFloat, s1),
+            None => match unify_binop_candidate(left_ty, right_ty, CtString, s) {
+              Some(s1) => (CtString, s1),
+              None => match infer_named_trait_binop(env, left_ty, right_ty, "Add", s) {
+                Some((resolved, s1)) => (resolved, s1),
+                None => {
+                  Array::push(errors, binop_mismatch_msg("+", float_mix_hint(left_ty, right_ty, s, "': operands must be Int, Double, or String"), off))
+                  (CtUnknown, s)
+                }
               }
             }
           }
@@ -2340,32 +2346,35 @@ export fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeE
       Some(s1) => (CtInt, s1),
       None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
         Some(s1) => (CtDouble, s1),
-        None => match infer_named_trait_binop(env, left_ty, right_ty, trait_name, s) {
-          Some((resolved, s1)) => (resolved, s1),
-          None => {
-            // #2206, #3041: a Unit LHS under `-` is almost always a
-            // line-leading `- x` (minus, then a space) glued onto the
-            // previous statement. Since #3041 a line-leading `-x` with no
-            // space is a prefix minus that starts a new expression, so only
-            // the spaced spelling still continues the line. The checker never
-            // sees line layout, so the clause states the language rule
-            // rather than claiming this line started with `-`; the base text
-            // stays a prefix so substring pins hold.
-            let minus_unit_lhs = if op == "-" {
-              match subst_apply(s, left_ty) {
-                CtUnit => true,
-                _ => false
+        None => match unify_binop_candidate(left_ty, right_ty, CtFloat, s) {
+          Some(s1) => (CtFloat, s1),
+          None => match infer_named_trait_binop(env, left_ty, right_ty, trait_name, s) {
+            Some((resolved, s1)) => (resolved, s1),
+            None => {
+              // #2206, #3041: a Unit LHS under `-` is almost always a
+              // line-leading `- x` (minus, then a space) glued onto the
+              // previous statement. Since #3041 a line-leading `-x` with no
+              // space is a prefix minus that starts a new expression, so only
+              // the spaced spelling still continues the line. The checker never
+              // sees line layout, so the clause states the language rule
+              // rather than claiming this line started with `-`; the base text
+              // stays a prefix so substring pins hold.
+              let minus_unit_lhs = if op == "-" {
+                match subst_apply(s, left_ty) {
+                  CtUnit => true,
+                  _ => false
+                }
+              } else {
+                false
               }
-            } else {
-              false
+              let tail = if minus_unit_lhs {
+                "': operands must be Int or Double (the left operand is Unit -- a `-` followed by a space at the start of a line continues the previous line's expression; to start a new expression with a negative value, remove the space (`-1`, `-x`) or parenthesize the negated value, e.g. `(-1)`)"
+              } else {
+                "': operands must be Int or Double"
+              }
+              Array::push(errors, binop_mismatch_msg(op, float_mix_hint(left_ty, right_ty, s, tail), off))
+              (CtUnknown, s)
             }
-            let tail = if minus_unit_lhs {
-              "': operands must be Int or Double (the left operand is Unit -- a `-` followed by a space at the start of a line continues the previous line's expression; to start a new expression with a negative value, remove the space (`-1`, `-x`) or parenthesize the negated value, e.g. `(-1)`)"
-            } else {
-              "': operands must be Int or Double"
-            }
-            Array::push(errors, binop_mismatch_msg(op, tail, off))
-            (CtUnknown, s)
           }
         }
       }
@@ -2854,6 +2863,31 @@ export fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCa
       } else {
         ()
       }
+    } else {
+      ()
+    },
+    None => ()
+  }
+}
+
+/// #3543: record an arithmetic operation the checker typed as producing a
+/// `Float`, so the post-check rewrite (`rewrite_float_arith_stmts`) can round
+/// its f64 result to f32. `kind` 9 is a binop keyed by its operator offset;
+/// kind 10 is a compound assignment (`x += y`) keyed by its target offset.
+/// Two identical rows, because every reader of the capture arrays walks them
+/// in pairs. A Float result is concrete by construction -- the Float operand
+/// candidate is tried only after Int and Double failed -- so no later
+/// substitution can change the answer, and an unlocated (synthesized) site
+/// records nothing.
+export fn record_float_arith(capture: Option[TypedOccurrenceRoleLaneCapture], off: Int, kind: Int) -> Unit {
+  match capture {
+    Some(c) => if !c.provenance_enabled && off >= 0 {
+      Array::push(c.binop_offsets, off)
+      Array::push(c.binop_kinds, kind)
+      Array::push(c.binop_types, CtFloat)
+      Array::push(c.binop_offsets, off)
+      Array::push(c.binop_kinds, kind)
+      Array::push(c.binop_types, CtFloat)
     } else {
       ()
     },

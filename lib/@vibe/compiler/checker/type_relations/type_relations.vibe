@@ -784,6 +784,8 @@ export fn head_kind(t: Type) -> Int {
   match t {
     CtInt => 1,
     CtDouble => 2,
+    // #3543: a distinct scalar head, never interchangeable with Double.
+    CtFloat => 21,
     CtBool => 3,
     CtString => 4,
     CtChar => 5,
@@ -1837,13 +1839,30 @@ export fn check_assignable_for(expected: Type, actual: Type, s0: Subst, errors: 
           }
         }
       } else {
-        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(subst_apply(s, expected)), String::concat(", got ", String::concat(type_for_mismatch(subst_apply(s, actual)), assignable_marker(off)))))))
+        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(subst_apply(s, expected)), String::concat(", got ", String::concat(type_for_mismatch(subst_apply(s, actual)), String::concat(float_double_assign_hint(subst_apply(s, expected), subst_apply(s, actual)), assignable_marker(off))))))))
         s
       }
     }
   }
   Array::truncate(assignable_span_end, 0)
   result
+}
+
+/// #3543: the edit for a `Double` given where a `Float` is expected (or the
+/// other way round). Neither converts implicitly: the two are different
+/// widths, and a silent narrowing would round.
+fn float_double_assign_hint(expected: Type, actual: Type) -> String {
+  match expected {
+    CtFloat => match actual {
+      CtDouble => " -- write a Float literal with an `f` suffix (`0.5f`) or convert with `Double::to_float(x)`, which rounds to f32",
+      _ => ""
+    },
+    CtDouble => match actual {
+      CtFloat => " -- widen the Float with `Float::to_double(x)`, which is exact",
+      _ => ""
+    },
+    _ => ""
+  }
 }
 
 /// #3590: true when two applications of one head meet with an argument that
@@ -2341,6 +2360,7 @@ fn is_builtin_scalar(t: Type) -> Bool {
   match t {
     CtInt => true,
     CtDouble => true,
+    CtFloat => true,
     CtBool => true,
     CtString => true,
     CtChar => true,
@@ -2852,5 +2872,35 @@ fn struct_row_label_dropped(defs: Array[TypeDef], m: String, k: Int, expected_ro
         Some("")
       }
     }
+  }
+}
+
+/// #3543: `Float` and `Double` are distinct types, so mixing them in one
+/// operator is a type error. When that is what went wrong, the message tail
+/// (after `type mismatch in '<op>`) leads with the edit -- an `f` suffix on a
+/// Double literal, or an explicit conversion -- instead of `base`.
+export fn float_mix_hint(left_ty: Type, right_ty: Type, s: Subst, base: String) -> String {
+  let l = subst_apply(s, left_ty)
+  let r = subst_apply(s, right_ty)
+  let lf = match l {
+    CtFloat => true,
+    _ => false
+  }
+  let rf = match r {
+    CtFloat => true,
+    _ => false
+  }
+  let ld = match l {
+    CtDouble => true,
+    _ => false
+  }
+  let rd = match r {
+    CtDouble => true,
+    _ => false
+  }
+  if (lf && rd) || (ld && rf) {
+    "': write the Double operand as a Float -- an `f` suffix on a literal (`2.0f`) or `Double::to_float(x)` -- or widen the Float with `Float::to_double(x)`; one operand is a 32-bit `Float` and the other a 64-bit `Double`"
+  } else {
+    base
   }
 }

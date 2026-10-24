@@ -591,8 +591,13 @@ that could not be fixed safely before `0.1.0`, and none is needed to write an
 ordinary program. They stay usable but are **not frozen** for `0.1.0`.
 
 - **`Float`** (`1.5f` literals, `Float` annotations, `Double::to_float` /
-  `Float::to_double`). It is documented as 32-bit but computes as a 64-bit
-  double, so `16777217.0f == 16777216.0f` is `false` (#3543). Use `Double`.
+  `Float::to_double`). The hunt found it documented as 32-bit but computing
+  as a 64-bit double, so `16777217.0f == 16777216.0f` was `false` (#3543).
+  It is IEEE binary32 now: a type distinct from `Double`, whose literals,
+  conversions and arithmetic results are rounded to the nearest f32 (see the
+  cheatsheet's "`Float` is 32-bit"). Those semantics are newer than the
+  freeze, so it stays outside it. `vibe build --debug` refuses a program that
+  uses `Float`, because that lane cannot round its arithmetic.
 - **`derive (Hash)` and the `Map::*_by` operations keyed on it.** The derived
   key is length-prefixed and tagged, so two different values no longer share
   a key, and `-0.0` and `0.0` share one as `==` says they should (#3544).

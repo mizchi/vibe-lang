@@ -104,7 +104,31 @@ be a wrong one.
 ## Decimals
 
 A decimal literal is a `Double` — 64-bit. A 32-bit `Float` takes an `f`
-suffix: `1.5f`. Both interpolate as the decimal you wrote.
+suffix: `1.5f`. A `Float` holds only 32-bit values: the literal, each
+arithmetic result and each conversion is rounded to the nearest one, so it
+keeps about 7 significant digits where a `Double` keeps about 16. Both
+interpolate as the shortest decimal that reads back as the same value:
+
+```vibe run
+fn main allows Console {
+  let third = 1.0f / 3.0f
+  println("Float:  \{third}")
+  println("Double: \{1.0 / 3.0}")
+  println("2^24 + 1 as a Float: \{16777217.0f}")
+  println("widened: \{Float::to_double(0.1f)}")
+}
+```
+
+```output
+Float:  0.33333334
+Double: 0.3333333333333333
+2^24 + 1 as a Float: 16777216
+widened: 0.10000000149011612
+```
+
+The two types do not mix. `x * 2.5` on a `Float` is a compile error that
+names the fix: write `2.5f`, or convert with `Double::to_float` or
+`Float::to_double`.
 
 ## How far `Int` goes
 

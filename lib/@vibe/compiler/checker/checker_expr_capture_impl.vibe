@@ -168,6 +168,7 @@ import ./checker_infer_binop_type.vibe {
   lookup_actual_field_ty,
   lookup_field_expr_off,
   publish_row_formals,
+  record_float_arith,
   record_receiver_kind,
   record_string_binop_operands,
   resolve_bare_var,
@@ -915,7 +916,18 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // only as the fallback for desugar-synthesized binops.
       record_string_binop_operands(capture, op, boff, left, right, left_applied, right_applied)
       let (result_ty, s3) = infer_binop_type(op, left_applied, right_applied, env, s2, errors, tytab, bin_off)
-      (subst_apply(s3, result_ty), s3, c2)
+      let bin_result = subst_apply(s3, result_ty)
+      // #3543: an arithmetic result typed `Float` is rounded to f32 after
+      // the checker ran; the row tells the rewrite which operators to wrap.
+      match bin_result {
+        CtFloat => if op == "+" || op == "-" || op == "*" || op == "/" {
+          record_float_arith(capture, boff, 9)
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      (bin_result, s3, c2)
     },
     EUnaryOp(op, operand) => {
       let (operand_ty, s1, c1) = check_expr_capture(operand, env, defs, s, c, errors, tytab, capture, lane)
@@ -943,6 +955,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       } else if op == "-" {
         match subst_apply(s1, operand_ty) {
           CtDouble => (CtDouble, s1, c1),
+          // #3543: negating an f32 value is exact, so `-x` stays a Float.
+          CtFloat => (CtFloat, s1, c1),
           CtInt => (CtInt, s1, c1),
           CtVar(_) => match unify(operand_ty, CtInt, s1) {
             Some(s2) => (CtInt, s2, c1),
@@ -955,7 +969,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // and return -237, the complemented struct pointer.
             let flag = unary_operand_is_definitely_wrong(other, defs)
             if flag {
-              Array::push(errors, "operand of unary `-` must be Int or Double")
+              Array::push(errors, "operand of unary `-` must be Int or Double (or Float)")
             } else {
               ()
             }
@@ -1020,13 +1034,43 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       check_expr_capture(body, env, defs, s1b, c1, errors, tytab, capture, lane)
     },
-    EAssignOp(name, _, val, body, target_off) => {
-      let (_, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
-      match env_lookup(env, name) {
-        Some(_) => (),
-        None => Array::push(errors, String::concat("unknown name: ", String::concat(name, assign_target_marker(target_off))))
+    EAssignOp(name, aop, val, body, target_off) => {
+      let (val_ty, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
+      let s1f = match env_lookup(env, name) {
+        Some(target_ty) => {
+          // #3543: a compound assignment on a `Float` (or of one) is typed as
+          // the binop it stands for, so `x += 1.5` on a Float is refused the
+          // way `x + 1.5` is, and the row tells the rewrite to round the sum.
+          // Other compound assignments keep their existing, untyped checking.
+          let target_applied = subst_apply(s1, target_ty)
+          let val_applied = subst_apply(s1, val_ty)
+          let float_involved = match target_applied {
+            CtFloat => true,
+            _ => match val_applied {
+              CtFloat => true,
+              _ => false
+            }
+          }
+          if float_involved && (aop == "+" || aop == "-" || aop == "*" || aop == "/") {
+            let (res_ty, s1r) = infer_binop_type(aop, target_applied, val_applied, env, s1, errors, tytab, target_off)
+            match subst_apply(s1r, res_ty) {
+              CtFloat => match target_applied {
+                CtFloat => record_float_arith(capture, target_off, 10),
+                _ => ()
+              },
+              _ => ()
+            }
+            s1r
+          } else {
+            s1
+          }
+        },
+        None => {
+          Array::push(errors, String::concat("unknown name: ", String::concat(name, assign_target_marker(target_off))))
+          s1
+        }
       }
-      check_expr_capture(body, env, defs, s1, c1, errors, tytab, capture, lane)
+      check_expr_capture(body, env, defs, s1f, c1, errors, tytab, capture, lane)
     },
     EMatch(scrutinee, arms) => {
       let (scr_ty, s1, c1) = check_expr_capture(scrutinee, env, defs, s, c, errors, tytab, capture, lane)
@@ -2033,6 +2077,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           let flag = match other {
             CtInt => true,
             CtDouble => true,
+            CtFloat => true,
             CtBool => true,
             CtUnit => true,
             CtChar => true,

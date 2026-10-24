@@ -64,6 +64,7 @@ import @vibe/compiler/codegen/common_base {
   emit_region_try_prologue,
   expr_tag,
   find_local_slot,
+  float_to_string_expr,
   func_table_builtin_pos_of,
   func_table_index_of,
   func_table_user_index_of,
@@ -100,12 +101,15 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_drop,
   emit_else,
   emit_end,
+  emit_f32_convert_i64_s,
+  emit_f32_demote_f64,
   emit_f64_abs,
   emit_f64_ceil,
   emit_f64_eq,
   emit_f64_floor,
   emit_f64_max,
   emit_f64_min,
+  emit_f64_promote_f32,
   emit_f64_reinterpret_i64,
   emit_global_get,
   emit_global_set,
@@ -1079,6 +1083,25 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     emit_local_get(buf, res_local)
     nl
   }
+  // review-lint: allow-gc-direct-abi-unlisted -- both names have registered GC function-table bodies (16 and 12), so the capture scan already skips them; this arm replaces those bodies' lowering
+  else if (fname == "Double::to_float" || fname == "Int::to_float") && !gc_name_is_user_defined(ctx, local_names, fname) {
+    // #3543 (gc mirror of the linear arm): a `Float` is the f64 of an f32
+    // value, so `Double::to_float` rounds to the nearest f32 (ties to even,
+    // overflow to +/-Infinity) and `Int::to_float` converts straight to f32
+    // -- one rounding, never two. The registered body 16 is an identity and
+    // body 12 an f64 conversion, so neither may serve these names.
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+    // review-lint: allow-gc-direct-abi-unlisted -- the same arm
+    if fname == "Double::to_float" {
+      emit_f64_reinterpret_i64(buf)
+      emit_f32_demote_f64(buf)
+    } else {
+      emit_f32_convert_i64_s(buf)
+    }
+    emit_f64_promote_f32(buf)
+    emit_i64_reinterpret_f64(buf)
+    nl
+  }
   else if fname == "Double::abs" || fname == "Double::floor" || fname == "Double::ceil" {
     let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
     emit_f64_reinterpret_i64(buf)
@@ -1109,7 +1132,12 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     double_runtime_require(ctx.func_table, double_runtime_parse_name())
     ce(buf, double_parse_expr(Array::get(args, 0)), local_names, next_local, ld)
   }
-  else if (fname == "Double::to_string" || fname == "Float::to_string") && !gc_name_is_user_defined(ctx, local_names, fname) {
+  else if fname == "Float::to_string" && !gc_name_is_user_defined(ctx, local_names, fname) {
+    // #3543: the shortest decimal that reads back as the same f32.
+    double_runtime_require(ctx.func_table, double_runtime_to_string_name())
+    ce(buf, float_to_string_expr(Array::get(args, 0)), local_names, next_local, ld)
+  }
+  else if fname == "Double::to_string" && !gc_name_is_user_defined(ctx, local_names, fname) {
     double_runtime_require(ctx.func_table, double_runtime_to_string_name())
     ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ld)
   }

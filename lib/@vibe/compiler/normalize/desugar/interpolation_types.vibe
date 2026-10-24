@@ -4,6 +4,10 @@ import @vibe/compiler/core {
   Expr, Pat, TypeExpr
 }
 
+import @vibe/ast {
+  is_builtin_ref_offset
+}
+
 import ./argument_types.vibe {
   infer_arg_type_name
 }
@@ -202,18 +206,44 @@ export fn interp_arg_is_bool(arg: Expr, struct_sets: Array[(String, Array[String
 export fn interp_arg_is_double(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
   match arg {
     EIdent(n, _) => match lookup_var_type(var_types, n) {
-      Some(t) => t == "Double" || t == "Float" || interp_row_is_double(arg),
-      None => interp_row_is_double(arg)
+      Some(t) => (t == "Double" && !interp_row_is_scalar(arg, "Float")) || interp_row_is_scalar(arg, "Double"),
+      None => interp_row_is_scalar(arg, "Double")
     },
     EFloat(_) => false,
-    _ => interp_row_is_double(arg)
+    _ => interp_row_is_scalar(arg, "Double")
   }
 }
 
-/// #3542: the checker filed a render row typing `arg` as `Double`.
-fn interp_row_is_double(arg: Expr) -> Bool {
+/// #3543: the `Float` twin of `interp_arg_is_double`. A Float renders through
+/// `Float::to_string` (the shortest decimal that reads back as the same f32),
+/// not the Double formatter, which would spell out the f64 digits of the f32
+/// value (`0.10000000149011612` for `0.1f`). The checker's render row
+/// answers first: a name whose recorded type and row disagree is a shadow.
+export fn interp_arg_is_float(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
+  match arg {
+    EIdent(n, _) => match lookup_var_type(var_types, n) {
+      Some(t) => (t == "Float" && !interp_row_is_scalar(arg, "Double")) || interp_row_is_scalar(arg, "Float"),
+      None => interp_row_is_scalar(arg, "Float")
+    },
+    EFloat(_) => false,
+    // An `f` literal, or an arithmetic result the Float rewrite rounded:
+    // both are the compiler's own `Double::to_float` call, which carries no
+    // render row of its own (a binop has no row key) and is a Float by
+    // construction.
+    ECall(EIdent(cn, coff), _, _, _) => (is_builtin_ref_offset(coff) && (cn == "Double::to_float" || cn == "Int::to_float")) || interp_row_is_scalar(arg, "Float"),
+    // A negation or a branch carries no row of its own; it is a Float when
+    // its operand (either branch -- the checker made them agree) is one.
+    EUnaryOp(op, inner) => op == "-" && interp_arg_is_float(inner, struct_sets, var_types, fn_returns),
+    EIf(_, t, e) => interp_arg_is_float(t, struct_sets, var_types, fn_returns) || interp_arg_is_float(e, struct_sets, var_types, fn_returns),
+    _ => interp_row_is_scalar(arg, "Float")
+  }
+}
+
+/// #3542: the checker filed a render row typing `arg` as the scalar `name`
+/// (`Double`, or `Float` since #3543).
+fn interp_row_is_scalar(arg: Expr, name: String) -> Bool {
   match dtd_typed_render_row_arg(arg) {
-    Some(TyName(n)) => n == "Double",
+    Some(TyName(n)) => n == name,
     _ => false
   }
 }

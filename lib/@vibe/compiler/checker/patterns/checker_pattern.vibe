@@ -364,9 +364,17 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
       }
       env
     },
-    PFloat(_) => {
+    PFloat(pv) => {
       match scrutinee_ty {
         CtDouble => (),
+        // #3543: a `Float` holds only f32 values, so a literal that is not
+        // one could never match. `1.5f` lexes to its f32 value already; a
+        // Double literal is accepted when it IS one (`1.5`, `0.25`).
+        CtFloat => if Float::to_double(Double::to_float(pv)) == pv {
+          ()
+        } else {
+          Array::push(errors, "float literal pattern is not a `Float` value and can never match this `Float` scrutinee: add the `f` suffix to round it to f32 (`1.1f`)")
+        },
         CtVar(_) => (),
         CtUnknown => (),
         CtNamed(_, _) => (),
@@ -477,6 +485,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
           let non_enum_scrutinee = match scrutinee_ty {
             CtInt => true,
             CtDouble => true,
+            CtFloat => true,
             CtBool => true,
             CtString => true,
             CtChar => true,
@@ -569,6 +578,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
           let concrete_non_tuple = match scrutinee_ty {
             CtInt => true,
             CtDouble => true,
+            CtFloat => true,
             CtBool => true,
             CtString => true,
             CtChar => true,
@@ -777,6 +787,7 @@ fn cp_scrutinee_is_structural(ty: Type) -> Bool {
   match ty {
     CtInt => true,
     CtDouble => true,
+    CtFloat => true,
     CtBool => true,
     CtString => true,
     CtChar => true,
