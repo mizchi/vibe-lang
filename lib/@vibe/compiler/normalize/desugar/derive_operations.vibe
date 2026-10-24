@@ -25,7 +25,7 @@ import ./equality_requests.vibe {
 }
 
 import ./formal_scope.vibe {
-  is_scalar_type_name
+  arr_helper_tparams, is_scalar_type_name
 }
 
 import ./hash_key_signature.vibe {
@@ -324,14 +324,18 @@ export fn show_for_typed(fty0: TypeExpr, val: Expr, known_types: Array[String]) 
       EMatch(val, Array::slice([(PTuple(pats), acc)], 0, 1))
     },
     TyApp("Array", args) => if Array::length(args) == 1 {
-      // #3564: record the helper this call names wherever the array sits
-      // (`Option[Array[Int]]`, a tuple, an alias); `desugar_derives` collects
-      // only a field's own top-level `Array`, and a helper nothing generated
-      // reached code generation unresolved.
-      Array::push(dtd_show_inline_arr_elems, Array::get(args, 0))
-      ECall(EIdent(arr_to_string_name(Array::get(args, 0)), -1), Array::slice([
-        val
-      ], 0, 1), -1, [])
+      if show_array_elem_is_bare_formal(Array::get(args, 0)) {
+        show_array_inline(Array::get(args, 0), val, known_types)
+      } else {
+        // #3564: record the helper this call names wherever the array sits
+        // (`Option[Array[Int]]`, a tuple, an alias); `desugar_derives` collects
+        // only a field's own top-level `Array`, and a helper nothing generated
+        // reached code generation unresolved.
+        Array::push(dtd_show_inline_arr_elems, Array::get(args, 0))
+        ECall(EIdent(arr_to_string_name(Array::get(args, 0)), -1), Array::slice([
+          val
+        ], 0, 1), -1, [])
+      }
     } else {
       ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1, [])
     },
@@ -349,6 +353,46 @@ export fn show_for_typed(fty0: TypeExpr, val: Expr, known_types: Array[String]) 
     },
     _ => ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1, [])
   }
+}
+
+/// Is `elem`, after peeling `Array` layers, a bare type parameter of the
+/// declaration being derived (`T` of `xs: Array[T]` or `Array[Array[T]]`)?
+fn show_array_elem_is_bare_formal(elem: TypeExpr) -> Bool {
+  match elem {
+    TyApp("Array", inner) => if Array::length(inner) == 1 {
+      show_array_elem_is_bare_formal(Array::get(inner, 0))
+    } else {
+      false
+    },
+    TyName(n) => Array::length(arr_helper_tparams(TyName(n))) > 0,
+    _ => false
+  }
+}
+
+/// #3547: `Array[T]` of a declaration's own formal, rendered in place:
+/// `"[" ++ show(a[0]) ++ ", " ++ .. ++ "]"`. A `__arr_to_string__` helper
+/// would have to be generic over `T` and render an erased formal, which the
+/// checker refuses, so a `derive (Show)` type with such a field failed to
+/// build even when it was never rendered. In place, the elements render the
+/// way a bare `v: T` field does; a site that knows the instantiation renders
+/// the substituted `Array[Int]` / `Array[Bool]` through its own helper
+/// (`show_generic_inline`).
+fn show_array_inline(elem_ty: TypeExpr, val: Expr, known_types: Array[String]) -> Expr {
+  let arr = show_tmp_name()
+  let idx = show_tmp_name()
+  let acc = show_tmp_name()
+  let elem = ECall(builtin_ref("Array::get"), [
+    EIdent(arr, -1),
+    EIdent(idx, -1)
+  ], -1, [])
+  let elem_show = show_for_typed(elem_ty, elem, known_types)
+  let sep = EIf(EBinOp("==", EIdent(idx, -1), EInt(0), -1), EString("", -1), EString(", ", -1))
+  let set_acc = EAssign(acc, concat2(concat2(EIdent(acc, -1), sep), elem_show), EUnit, -1)
+  let incr = EAssign(idx, EBinOp("+", EIdent(idx, -1), EInt(1), -1), EUnit, -1)
+  let length = ECall(builtin_ref("Array::length"), [EIdent(arr, -1)], -1, [])
+  let walk = EWhile(EBinOp("<", EIdent(idx, -1), length, -1), ESeq(set_acc, incr))
+  let closed = concat2(EIdent(acc, -1), EString("]", -1))
+  ELet(arr, val, ELetMut(idx, EInt(0), ELetMut(acc, EString("[", -1), ESeq(walk, closed), -1), -1), -1)
 }
 
 /// #3092: a derived renderer's field or payload that is, or carries through

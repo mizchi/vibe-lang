@@ -523,11 +523,6 @@ ur_refused fixtures/err_derive_hash_effectful_hash_key_refused.vibe 'would perfo
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
 ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type' gc
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' gc 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
-# #3547: an `Array[T]` field of a `derive (Show)` generic type is refused at the
-# type, naming the field and the edit -- not in the compiler's spelling of the
-# helper it generated.
-ur_refused fixtures/err_derive_show_generic_array_field_refused.vibe 'the elements of `w: Array[T]`' 'write `G::to_string` yourself'
-ur_refused fixtures/err_derive_show_generic_array_field_refused.vibe 'the elements of `w: Array[T]`' 'write `G::to_string` yourself' gc
 # #3559: an explicit `H::to_string(h)` on a `derive (Show)` generic whose type
 # arguments are not known at the call printed a field's address.
 ur_refused fixtures/err_derive_show_generic_qualified_call_unknown_refused.vibe 'cannot call `H::to_string` here' 'call it where the type is concrete'
