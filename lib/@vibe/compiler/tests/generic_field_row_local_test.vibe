@@ -281,3 +281,45 @@ test "callback alias convention: no-record-row-free-alias" {
 test "callback alias convention: unused-no-record-alias" {
   local_field_run_source("unused-no-record-alias", "effect Box[T]{Put(T)->Unit} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");1}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let g=()->1;let alias=g;println(\"\\{drive(alias)}\")}", "1\n")
 }
+
+test "instantiated callback field convention: cell-row-parameter" {
+  local_field_run_source("cell-row-parameter", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} fn copy(a:Cell[()->Int with Box[String]])->Int{let b=Holder::{f:a.f};drive(b.f)} fn main()->Unit allows Console{let g=()->Int with Box[String]{perform Box::Put(\"y\");1};let a=Cell[()->Int with Box[String]]::{f:g};println(\"\\{copy(a)}\")}", "1\n")
+}
+
+test "instantiated callback field convention: cell-row-local-capture" {
+  local_field_run_source("cell-row-local-capture", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} fn main()->Unit allows Console{let n=1;let g=()->Int with Box[String]{perform Box::Put(\"y\");n};let a=Cell[()->Int with Box[String]]::{f:g};let n=2;let b=Holder::{f:a.f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "instantiated callback field convention: cell-row-alias-argument" {
+  local_field_run_source("cell-row-alias-argument", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} type Thunk=()->Int with Box[String] fn copy(a:Cell[Thunk])->Int{let b=Holder::{f:a.f};drive(b.f)} fn main()->Unit allows Console{let g=()->Int with Box[String]{1};let a=Cell[Thunk]::{f:g};println(\"\\{copy(a)}\")}", "1\n")
+}
+
+test "instantiated callback field convention: cell-row-record-alias" {
+  local_field_run_source("cell-row-record-alias", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} fn main()->Unit allows Console{let g=()->Int with Box[String]{1};let a=Cell[()->Int with Box[String]]::{f:g};let alias=a;let a=Raw::{f:()->2};let b=Holder::{f:alias.f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "instantiated callback field convention: cell-row-factory" {
+  local_field_run_source("cell-row-factory", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} type Thunk=()->Int with Box[String] fn make()->Cell[Thunk]{let g=()->Int with Box[String]{1};Cell[Thunk]::{f:g}} fn main()->Unit allows Console{let b=Holder::{f:make().f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "instantiated callback field convention: cell-pure-unread-target" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} fn main()->Unit allows Console{let a=Cell[()->Int]::{f:()->1};let b=Holder::{f:a.f};println(\"\\{drive(b.f)}\")}", lane)
+      "compiled without the instantiated callback convention"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "write the type arguments of `Holder`"))
+  }
+  ()
+}
+
+test "instantiated callback field convention: cell-pure-written-target" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} fn main()->Unit allows Console{let a=Cell[()->Int]::{f:()->1};let b=Holder[String]::{f:a.f};println(\"\\{drive(b.f)}\")}", lane)
+      "compiled without the instantiated callback convention"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "declare the source field `f`"))
+  }
+  ()
+}
