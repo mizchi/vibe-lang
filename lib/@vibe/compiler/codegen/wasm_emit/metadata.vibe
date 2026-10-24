@@ -17,10 +17,17 @@ export fn emit_function_name_section(out: Bytes, names: Array[String], base_inde
   if count == 0 {
     ()
   } else {
-    let content = bytebuf_new()
-    bytebuf_push_string(content, "name")
     // function-names subsection: vec of (funcidx, name), funcidx ascending.
-    let namemap = bytebuf_new()
+    // Both buffers are reserved up front (a name costs its bytes plus two
+    // LEB128 prefixes of at most five bytes each): grown from empty, a
+    // compiler-sized name map left every doubling behind on the heap.
+    let mut namemap_capacity = 5
+    let mut ci = 0
+    while ci < count {
+      namemap_capacity = namemap_capacity + String::length(Array::get(names, ci)) + 10
+      ci = ci + 1
+    }
+    let namemap = Bytes::with_capacity(namemap_capacity)
     leb128_encode_u32(namemap, count)
     let mut i = 0
     while i < count {
@@ -28,6 +35,8 @@ export fn emit_function_name_section(out: Bytes, names: Array[String], base_inde
       bytebuf_push_string(namemap, Array::get(names, i))
       i = i + 1
     }
+    let content = Bytes::with_capacity(Bytes::length(namemap) + 16)
+    bytebuf_push_string(content, "name")
     bytebuf_push_section(content, 1, namemap)
     bytebuf_push_section(out, 0, content)
   }

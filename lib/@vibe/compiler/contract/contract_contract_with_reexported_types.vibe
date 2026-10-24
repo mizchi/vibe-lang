@@ -1299,7 +1299,6 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
   let mut ui = 0
   while ui < Array::length(impl_units) {
     let (raw, unit_stmts) = Array::get(impl_units, ui)
-    let defs = collect_impl_fn_defs(unit_stmts)
     let unit_types = collect_impl_type_defs(unit_stmts)
     // #847: a unit may satisfy a declaration purely via `export ./other.vibe
     // { name }` (no direct SLet/SStruct/... def of its own) — `check_contract`
@@ -1312,10 +1311,13 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
     let mut oi = 0
     while oi < Array::length(opaque_names) {
       let (oname, _) = Array::get(opaque_names, oi)
+      // Built once per name: spelled inside the scan below, it allocated a
+      // fresh string per comparison, ~10 MB of the self-compile heap.
+      let okey = "type \{oname}"
       let mut otaken = false
       let mut oai = 0
       while oai < Array::length(allocated) {
-        if Array::get(allocated, oai) == "type \{oname}" {
+        if Array::get(allocated, oai) == okey {
           otaken = true
         } else ()
         oai = oai + 1
@@ -1337,7 +1339,7 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
           // implementation is a type alias (it may be a struct or enum).
           // Keep the import item bare so Phase 1 records kind=None.
           Array::push(names, oname)
-          Array::push(allocated, "type \{oname}")
+          Array::push(allocated, okey)
         } else ()
       }
       oi = oi + 1
@@ -1357,12 +1359,17 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
         ()
       } else {
         let mut defined_here = array_contains_string(unit_reexported, dname)
+        // The top-level `let`s `collect_impl_fn_defs` lists, read in place:
+        // only the name and the export flag matter here, not the signature
+        // text that collector renders for every definition.
         let mut fi = 0
-        while fi < Array::length(defs) {
-          let (fname, _, fexp) = Array::get(defs, fi)
-          if fname == dname && fexp {
-            defined_here = true
-          } else ()
+        while fi < Array::length(unit_stmts) {
+          match Array::get(unit_stmts, fi) {
+            SLet(fexp, _, fname, _, _) => if fname == dname && fexp {
+              defined_here = true
+            } else (),
+            _ => ()
+          }
           fi = fi + 1
         }
         if defined_here {
