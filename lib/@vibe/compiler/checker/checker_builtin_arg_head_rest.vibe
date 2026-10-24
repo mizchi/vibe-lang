@@ -13,7 +13,7 @@ import @vibe/compiler/checker/resume {
 }
 
 import @vibe/compiler/checker/diagnostics {
-  off_marker_len
+  off_marker, off_marker_len
 }
 
 import @vibe/compiler/core {
@@ -167,6 +167,58 @@ export fn check_spawn_shaped_call(env: TypeEnv, s: Subst, defs: Array[TypeDef], 
   }
 }
 
+/// #3547: a lambda literal whose unannotated parameter the call expects to be
+/// a `Double` (`Iterator::fold(ds, 0.0, (acc, s) -> acc + s)`). The parameter
+/// is not seeded with `Double` (`lambda_seed_type_lowers`: arithmetic on a
+/// `Double` is chosen from its spelling), so `+` typed it `Int` and the call
+/// reported "expected (Double, Double) -> Double, got (Int, Int) -> Int",
+/// which reads backwards. Lead with the edit instead. Fires only where the
+/// argument does not unify and such a parameter was typed `Int`; "" else.
+fn unannotated_double_lambda_hint(pty: Type, aty: Type, arg: Expr, s: Subst, label: String) -> String {
+  match arg {
+    EFn(_, _, params, _, _, _) => match (pty, aty) {
+      (CtFn(eps, _, _), CtFn(aps, _, _)) => if Array::length(eps) == Array::length(params) && Array::length(aps) == Array::length(params) {
+        let mut fires = false
+        let mut i = 0
+        while i < Array::length(params) && !fires {
+          let (_, ann) = Array::get(params, i)
+          if (ann is None) && (subst_apply(s, Array::get(eps, i)) is CtDouble) && (subst_apply(s, Array::get(aps, i)) is CtInt) {
+            fires = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        if fires && (unify(pty, aty, s) is None) {
+          let mut spelled = ""
+          let mut j = 0
+          while j < Array::length(params) {
+            let (pname, ann) = Array::get(params, j)
+            let piece = if (ann is None) && (subst_apply(s, Array::get(eps, j)) is CtDouble) {
+              pname + ": Double"
+            } else {
+              pname
+            }
+            spelled = if j == 0 {
+              piece
+            } else {
+              spelled + ", " + piece
+            }
+            j = j + 1
+          }
+          "annotate the callback's `Double` parameters (`(" + spelled + ") -> ..`): `" + label + "` calls it with `Double` values, but the body's arithmetic typed an unannotated parameter `Int`"
+        } else {
+          ""
+        }
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
 export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_exprs: Array[Expr], s: Subst, errors: Array[String], label: String, off: Int) -> Subst {
   let mut out = s
   let mut ui = 0
@@ -227,7 +279,17 @@ export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_expr
       } else {
         ()
       }
-      let checked = check_assignable_for(pty, aty, out, errors, "argument type mismatch for ", label, a_off)
+      let hint = if have_exprs {
+        unannotated_double_lambda_hint(pty, aty, Array::get(arg_exprs, ui), out, label)
+      } else {
+        ""
+      }
+      let checked = if hint != "" {
+        Array::push(errors, String::concat(hint, off_marker(a_off)))
+        out
+      } else {
+        check_assignable_for(pty, aty, out, errors, "argument type mismatch for ", label, a_off)
+      }
       // A check that reported nothing leaves the path unconsumed.
       check_assignable_set_enclosing("")
       checked
