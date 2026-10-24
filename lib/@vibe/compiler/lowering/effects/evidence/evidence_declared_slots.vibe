@@ -20,8 +20,10 @@ import ./evidence_slot_refusals.vibe {
   edp_field_site_prefix,
   edp_refuse_aliased_field_literal,
   edp_refuse_field_type_args,
+  edp_refuse_rowless_param,
   edp_refuse_uncopied_literal,
   edp_refuse_unstamped_field_literal,
+  edp_refuse_unstamped_slot_literal,
   edp_row_top_labels,
   edp_set_slot_callee,
   edp_slot_row_stampable,
@@ -618,6 +620,26 @@ export fn edp_note_local_alias(n: String, slot: Int, v: (String, Int, Option[Exp
       Array::push(edp_local_alias_vals, al.1)
     },
     None => ()
+  }
+}
+
+/// #3621: a name passed at a parameter whose function type carries `row`,
+/// when the stamp left it without that row: a parameter annotated without
+/// one (`edp_refuse_rowless_param`), or a row-free closure literal bound by
+/// `let` (`lit`) -- or a local alias of one -- whose other uses kept it
+/// row-free (`edp_stamp_let_literal`). The callee calls it with the row's
+/// dict, so the call trapped.
+export fn edp_refuse_rowless_local(name: String, slot: Int, callee: String, row: String, lit: Option[Expr]) -> Unit {
+  edp_refuse_rowless_param(name, slot, callee, row)
+  if edp_is_rowfree_literal(lit) {
+    edp_refuse_unstamped_slot_literal(name, name, callee, row)
+  } else if lit is None {
+    match edp_local_alias_at(name, slot) {
+      Some(al) => if edp_is_rowfree_literal(Some(al.1)) {
+        edp_refuse_unstamped_slot_literal(name, al.0, callee, row)
+      },
+      None => ()
+    }
   }
 }
 
