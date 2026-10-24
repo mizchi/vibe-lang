@@ -348,6 +348,35 @@ test "lex_tuple_index_then_float_unaffected" {
   assert(lex_match("0.5", [TFloat(0.5), TEof]))
 }
 
+/// #3543: the bits of the `TFloat` that `source` lexes to, beside the bits of
+/// `Double::parse(text)`, as `hi:lo hi:lo`; the two must be identical.
+fn lexed_float_bits(source: String, text: String) -> String {
+  let lexed = handle {
+    match Array::get(lex(source), 0) {
+      TFloat(d) => "\{Double::to_i64_bits_hi(d)}:\{Double::to_i64_bits_lo(d)}",
+      _ => "not a float"
+    }
+  } with { Exception::Throw(msg) => msg }
+  let parsed = match Double::parse(text) {
+    Some(d) => "\{Double::to_i64_bits_hi(d)}:\{Double::to_i64_bits_lo(d)}",
+    None => "None"
+  }
+  "\{lexed} \{parsed}"
+}
+
+test "lex_float_literal_is_correctly_rounded" {
+  // #3543: the lexer's literal conversion answers exactly what
+  // `Double::parse` does. The integer one below DBL_MAX + half an ulp is
+  // DBL_MAX (it used to lex to Infinity); `1 + 3 * 2^-53` is a midpoint and
+  // ties to the even 1.0000000000000004 (it used to take the odd neighbour).
+  let below = "179769313486231580793728971405303415079934132710037826936173778980444968292764750946649017977587207096330286416692887910946555547851940402630657488671505820681908902000708383676273854845817711531764475730270069855571366959622842914819860834936475292719074168444365510704342711559699508093042880177904174497791"
+  inspect(lexed_float_bits(String::concat(below, ".0"), below), content = "2146435071:4294967295 2146435071:4294967295")
+  let mid = "1.00000000000000033306690738754696212708950042724609375"
+  inspect(lexed_float_bits(mid, mid), content = "1072693248:2 1072693248:2")
+  inspect(lexed_float_bits("0.1", "0.1"), content = "1069128089:2576980378 1069128089:2576980378")
+  inspect(lexed_float_bits("2.5f", "2.5"), content = "1074003968:0 1074003968:0")
+}
+
 test "lex_comment_skip" {
   assert(lex_match("a // comment\nb", [
     TIdent("a"),
