@@ -638,7 +638,7 @@ fn dlh_marker_only_called_directly(expr: Expr, marker: String) -> Bool {
 /// extra_names_as_idents ++ args, off)` -- the captured-value arguments the
 /// newly-hoisted top-level function now expects as its leading parameters,
 /// each just a bare reference to the SAME name it had in the original
-/// (unshadowed, per dlh_marker_only_called_directly's guarantee) enclosing
+/// (unshadowed, per dlh_subst's marker substitution) enclosing
 /// scope, still valid at the call site since hoisting doesn't move the call
 /// site itself, only the closure's OWN body. Full traversal (marker is
 /// fresh/unique, no shadowing concern, so no bound-tracking needed here).
@@ -849,7 +849,7 @@ fn dlh_args_have_literal_efn(args: Array[Expr]) -> Bool {
 /// wrapper is preserved, only its inner value is replaced). Non-literal
 /// args are left untouched. See dlh_args_have_literal_efn's call site
 /// (dlh_hoist_expr's ECall case) for why this exists.
-fn dlh_letbind_literal_args(callee: Expr, args: Array[Expr], off: Int, resolution: Array[Int], ctr: Array[Int]) -> Expr {
+fn dlh_letbind_literal_args(callee: Expr, args: Array[Expr], off: Int, resolution: Array[Int], ctr: Array[Int]) -> (Expr, Int) {
   let new_args = array_empty()
   let lits = array_empty()
   let mut i = 0
@@ -888,7 +888,7 @@ fn dlh_letbind_literal_args(callee: Expr, args: Array[Expr], off: Int, resolutio
     wrapped = ELet(nm, lit, wrapped, off)
     k = k - 1
   }
-  wrapped
+  (wrapped, Array::length(lits))
 }
 
 /// Record which top-level statement the hoist is walking, so a lambda it
@@ -1139,6 +1139,14 @@ fn dlh_owner_len_at(s: String, i: Int, end: Int, n: Int) -> Int {
 }
 
 fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
+  dlh_hoist_arg_bindings(expr, hoisted, ctr, 0)
+}
+
+/// Only the outer `literal_args` lets were just synthesized for inline call
+/// arguments. Their native-function conversion is required by #1070, including
+/// suspend task arguments. Carry the exact count from the producer rather than
+/// recognizing a generated name, and reset it before walking a source body.
+fn dlh_hoist_arg_bindings(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int], literal_args: Int) -> Expr {
   match expr {
     ELet(name, v, b, soff) => match v {
       EFn(tp, bnds, params, rt, eff, fbody) => {
@@ -1168,7 +1176,11 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
           eff
         }
         let hoisted_fn = dlh_hoist_expr(EFn(tp, bnds, params, rt, eff_fixed, fbody), hoisted, ctr)
-        let rest = dlh_hoist_expr(b, hoisted, ctr)
+        let rest = if literal_args > 0 {
+          dlh_hoist_arg_bindings(b, hoisted, ctr, literal_args - 1)
+        } else {
+          dlh_hoist_expr(b, hoisted, ctr)
+        }
         let bad = empty_str_array()
         let mut pb = empty_str_array()
         let mut i = 0
@@ -1181,7 +1193,18 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
           EFn(_, _, _, _, _, hb) => dlh_scan_free(hb, pb, bad),
           _ => ()
         }
-        let hoistable = dlh_has_perform(fbody) && Array::length(bad) == 0
+        // A source-bound, explicitly row-annotated closure used as a value retains
+        // its closure convention. A hoisted native function may elide an
+        // unused dictionary, so its declared row alone cannot prove that
+        // convention to a field reader. Direct-only uses keep the #786 path.
+        // Substitute only unshadowed uses before testing for a value escape.
+        let hoistable = dlh_has_perform(fbody) && Array::length(bad) == 0 && (literal_args > 0 || eff_is_blank || {
+          let mut marker = ":dlh-direct"
+          while dinsp_scan(rest, 2, marker) {
+            marker = String::concat(marker, ":")
+          }
+          dlh_marker_only_called_directly(dlh_subst(rest, name, marker), marker)
+        })
         if hoistable {
           let idx = Array::get(ctr, 0)
           Array::set(ctr, 0, idx + 1)
@@ -1272,7 +1295,8 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
         // order as the literal appearing inline) so the existing ELet/EFn
         // hoist logic above turns it into an ordinary named function
         // reference, exactly like the already-working named-closure case.
-        dlh_hoist_expr(dlh_letbind_literal_args(callee, args, off, callee_resolution, ctr), hoisted, ctr)
+        let (wrapped, literal_args) = dlh_letbind_literal_args(callee, args, off, callee_resolution, ctr)
+        dlh_hoist_arg_bindings(wrapped, hoisted, ctr, literal_args)
       } else {
         ECall(dlh_hoist_expr(callee, hoisted, ctr), for a in args {
           dlh_hoist_expr(a, hoisted, ctr)
