@@ -1,0 +1,162 @@
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr, is_exception_throw_handler_name, is_runtime_scheduled_effect
+}
+
+import @vibe/compiler/lowering/effects/queries {
+  edp_str_array_contains
+}
+
+import ./suspend_scps_rename_ident.vibe {
+  scps_refs_name
+}
+
+import ./suspend_scps_split_tail.vibe {
+  scps_calls_ok, scps_culprit_parts
+}
+
+// lib/@vibe/compiler/lowering/effects/suspend/suspend.vibe -- which effects
+// have step-compiled function values, and the refusal for the handles whose
+// effect has none.
+
+/// The effects `suspend_cps_pass` runs its prepass for: those with an arm
+/// that stores `resume` as a value somewhere in the program, plus the ones a
+/// retry adds. Only for these is a closure literal, or a function passed by
+/// name, handed over in the step convention, so only for these may a driven
+/// body call a function VALUE as a step source. Set once per run, before any
+/// handle is lowered.
+let scps_step_mode_effs: Array[String] = []
+
+/// The effects a run refused such a call for (`scps_step_param_refused`).
+let scps_step_mode_wanted_effs: Array[String] = []
+
+/// Adds `extra` to `cps_effs` (the prepass effect list) and records the
+/// result as this run's step-mode effects.
+export fn scps_note_step_mode(cps_effs: Array[String], extra: Array[String]) -> Unit {
+  let mut j = 0
+  while j < Array::length(extra) {
+    if !edp_str_array_contains(cps_effs, Array::get(extra, j)) {
+      Array::push(cps_effs, Array::get(extra, j))
+    }
+    j = j + 1
+  }
+  Array::truncate(scps_step_mode_effs, 0)
+  Array::truncate(scps_step_mode_wanted_effs, 0)
+  let mut i = 0
+  while i < Array::length(cps_effs) {
+    Array::push(scps_step_mode_effs, Array::get(cps_effs, i))
+    i = i + 1
+  }
+}
+
+export fn scps_step_mode_wanted() -> Array[String] {
+  Array::slice(scps_step_mode_wanted_effs, 0, Array::length(scps_step_mode_wanted_effs))
+}
+
+export fn scps_step_mode(eff: String) -> Bool {
+  edp_str_array_contains(scps_step_mode_effs, eff)
+}
+
+/// #3540: a handle the driver takes only because an arm leaves with `return`
+/// (#3064) or `throw` (#3540) rewrites its body into steps, and so does every
+/// clone of a function that body calls. A function VALUE whose row carries
+/// the effect -- a parameter of the enclosing function, or of the cloned one
+/// -- was treated as a step source there, but nothing hands such a value over
+/// in the step convention unless the effect is in step mode: the caller
+/// passed a plain closure, whose `perform` then ran with no handler at all
+/// (a thrown wasm exception on linear, `unreachable` on gc), and a closure
+/// that returned without performing had its plain result read as a step.
+///
+/// True, with the refusal pushed to `errs`, when `body` is accepted with
+/// those values as step sources and refused without them. Outside step mode
+/// they are classified as opaque closures instead; nothing changes for an
+/// effect in step mode, or for a scope that holds no such value. The effect
+/// is noted for `suspend_cps_pass`'s retry in step mode, which makes the
+/// refusal stand only when that retry does not compile either.
+export fn scps_step_param_refused(body: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)], errs: Array[String]) -> Bool {
+  let (eff, ops_qnames, needing, site, _) = sctx
+  let mut has_step_value = false
+  for entry in scope {
+    let (_, kind) = entry
+    if kind == 2 {
+      has_step_value = true
+    }
+  }
+  if scps_step_mode(eff) || !has_step_value {
+    false
+  } else {
+    let opaque: Array[(String, Int)] = []
+    for entry in scope {
+      let (nm, kind) = entry
+      Array::push(opaque, (nm, if kind == 2 {
+        0
+      } else {
+        kind
+      }))
+    }
+    let no_seed: Array[String] = []
+    let plain_sctx = (eff, ops_qnames, needing, site, no_seed)
+    if scps_calls_ok(body, plain_sctx, ctx, opaque) || !scps_calls_ok(body, sctx, ctx, scope) {
+      false
+    } else {
+      let (_, found_clause, marker) = scps_culprit_parts(body, plain_sctx, ctx, opaque)
+      // The culprit walk does not enter a nested `handle`; name the value.
+      let mut clause = found_clause
+      for entry in scope {
+        let (nm, kind) = entry
+        if clause == "" && kind == 2 && scps_refs_name(body, nm) {
+          clause = String::concat(" (here: `", String::concat(nm, "`)"))
+        }
+      }
+      let lead = String::concat(String::concat("resume with a value, and `return` or `throw` after the `handle` instead of in its arm -- an arm of `", eff), String::concat("` that returns or throws runs where its `handle` is, which rewrites the handled code into steps, but a function value that performs `", String::concat(eff, "` and comes from outside that code is not rewritten, so it cannot be called there")))
+      Array::push(errs, String::concat(String::concat(lead, clause), marker))
+      // `Async`'s entry boundary picks its own convention before this pass.
+      if !is_runtime_scheduled_effect(eff) && !edp_str_array_contains(scps_step_mode_wanted_effs, eff) {
+        Array::push(scps_step_mode_wanted_effs, eff)
+      }
+      true
+    }
+  }
+}
+
+/// The effect a handle's arms name, for a message (the first `Eff::Op`).
+export fn scps_arms_effect_name(arms: Array[(Pat, Expr)]) -> String {
+  let mut eff = ""
+  for a in arms {
+    let (p, _) = a
+    match p {
+      PCtor(q, _) => if eff == "" {
+        let ci = String::index_of(q, "::")
+        eff = if ci > 0 {
+          String::substring(q, 0, ci)
+        } else {
+          q
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  eff
+}
+
+export fn scps_throw_escape_msg(arms: Array[(Pat, Expr)]) -> String {
+  let mut eff = ""
+  for a in arms {
+    let (p, _) = a
+    match p {
+      PCtor(q, _) => if eff == "" && !is_exception_throw_handler_name(q) {
+        let ci = String::index_of(q, "::")
+        eff = if ci > 0 {
+          String::substring(q, 0, ci)
+        } else {
+          q
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  String::concat(String::concat("resume with a value and `throw` after this `handle`, or move the inner exception handler outside it: a handler arm of `", eff), "` here can throw, and an exception handler between the `perform` and this `handle` would catch it, but an arm's exceptions belong to the code around the `handle` -- the lowering that runs the arm there cannot take this handle (for example, it also has an exception arm, mixes effects, or its body calls through a closure or a row variable). An `Exception` arm written in the same handler set as this arm is such an inner handler; moving it outside means a `handle` of its own around this one")
+}

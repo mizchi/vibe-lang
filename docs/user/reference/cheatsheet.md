@@ -2200,6 +2200,18 @@ program that step-compiles a closure while the same effect is mixed between a
 "resume-as-value handler" and a "tail-resumptive handler" of its own is a
 compile error (the convention-consistency guard).
 
+An arm that leaves with `return` while the body reaches the effect through a
+call, or with `throw` past an exception handler between the `perform` and the
+`handle`, runs where its `handle` is too, through the same rewrite (#3064,
+#3540). When the body, or a function it calls, runs a function value of the
+effect (`fn guarded(f: () -> Int with Ask)` called as `guarded(() -> perform
+Ask::Get() + 1)`), the program is compiled with that effect's closures in
+step form, so the guard above applies: another handle of the effect that
+resumes in place over a closure is refused with ``resume with a value, and
+`return` or `throw` after the `handle` instead of in its arm``. Before #3540
+such a program compiled and stopped at run time with no handler for the
+closure's `perform`.
+
 The `k` convention, which binds one trailing parameter beyond the operation's
 declared arity (`Emit(v, k) => v + k(0)`, a non-tail continuation), **was a
 feature of the retired MoonBit fixture runner and is not supported on the

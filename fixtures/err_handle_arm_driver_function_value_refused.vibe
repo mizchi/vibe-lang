@@ -1,0 +1,35 @@
+// #3540: the `Ask` arm below throws past an exception handler in `guarded`,
+// so it runs where its `handle` is and `guarded`'s call of `f` must suspend.
+// That takes every `Ask` closure in the program in the step convention, but
+// `in_place` hands one to a handler that resumes in place, which cannot call
+// a step. Before #3540 this compiled and stopped at run time with a thrown
+// Wasm exception (gc: `unreachable`); it is refused with the edit.
+effect Ask {
+  Get() -> Int
+}
+
+fn guarded(f: () -> Int with Ask) -> Int with Ask {
+  handle {
+    f()
+  } with { Exception[Int]::Throw(code) => code * 2 }
+}
+
+fn twice(f: () -> Int with Ask) -> Int with Ask {
+  f() + f()
+}
+
+fn in_place() -> Int {
+  handle {
+    twice(() -> perform Ask::Get() + 1)
+  } with { Ask::Get() => resume(3) }
+}
+
+fn caught() -> Int {
+  handle {
+    handle {
+      guarded(() -> perform Ask::Get() + 1)
+    } with { Ask::Get() => throw("not an int") }
+  } with { Exception[String]::Throw(_m) => -1 }
+}
+
+export let _start: () -> Int = () -> caught() + in_place()

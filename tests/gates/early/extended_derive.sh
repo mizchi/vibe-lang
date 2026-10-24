@@ -591,6 +591,12 @@ ur_refused fixtures/err_handle_arm_return_for_call_refused.vibe 'a handler arm f
 ur_refused fixtures/err_handle_arm_return_for_call_refused.vibe 'a handler arm for `Ask` here leaves the function with `return`' 'write `perform Ask::..` in the `handle` body itself' gc
 ur_refused fixtures/err_handle_arm_return_outer_break_refused.vibe 'leaves a loop outside it, which the rewritten body cannot do' 'write `perform Ask::..` in the `handle` body itself'
 ur_refused fixtures/err_handle_arm_return_outer_break_refused.vibe 'leaves a loop outside it, which the rewritten body cannot do' 'write `perform Ask::..` in the `handle` body itself' gc
+# #3540: a throwing arm runs at its handle, so the callee's call of its closure
+# must suspend, and another handle of the effect resumes in place over a
+# closure: no convention serves both, so the build is refused with the edit
+# (it compiled, and stopped at run time with no handler for the `perform`).
+ur_refused fixtures/err_handle_arm_driver_function_value_refused.vibe 'a function value that performs `Ask` and comes from outside that code is not rewritten' 'resume with a value, and `return` or `throw` after the `handle`'
+ur_refused fixtures/err_handle_arm_driver_function_value_refused.vibe 'a function value that performs `Ask` and comes from outside that code is not rewritten' 'resume with a value, and `return` or `throw` after the `handle`' gc
 for ur_case in err_handle_arm_return_for_call_refused err_handle_arm_return_outer_break_refused; do
   for ur_lane in linear gc; do
     if grep -qF 'captures `resume` as a value' "$urdir/${ur_case}_$ur_lane.wasm.diag"; then
