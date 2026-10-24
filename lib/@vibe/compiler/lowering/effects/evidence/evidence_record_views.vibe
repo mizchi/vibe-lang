@@ -4,13 +4,29 @@ import @vibe/compiler/core {
   Expr, Stmt, TypeExpr
 }
 import ./evidence_declared_slots.vibe {
-  edp_field_slot_declared, edp_has_row_fields, edp_result_slot, edp_type_expr_subst, edp_unkeyed_tparams
+  edp_callback_kind,
+  edp_declared_factory_kind,
+  edp_field_slot_declared,
+  edp_has_row_fields,
+  edp_identity_value,
+  edp_record_context_type,
+  edp_record_targs_under,
+  edp_record_type_subst,
+  edp_result_slot,
+  edp_type_expr_subst,
+  edp_unkeyed_tparams
+}
+import ./evidence_fn_statement_index.vibe {
+  edp_indexed_params_of_fn
+}
+import @vibe/core {
+  struct MutMap
 }
 import ./evidence_slot_refusals.vibe {
-  edp_parameter_type
+  edp_parameter_type, edp_slot_row_stampable
 }
 import ./evidence_scan_view_expr.vibe {
-  edp_scope_last_index
+  edp_param_base_name, edp_scope_last_index
 }
 import @vibe/compiler/lowering/effects/queries {
   edp_is_identity_ascription
@@ -20,6 +36,8 @@ let edp_record_views: Array[(Int, TypeExpr, Bool)] = []
 
 export fn edp_record_views_reset() -> Unit {
   Array::truncate(edp_record_views, 0)
+  Array::truncate(edp_factory_results, 0)
+  Array::truncate(edp_record_results, 0)
 }
 
 export fn edp_drop_record_views(mark: Int) -> Unit {
@@ -64,7 +82,7 @@ fn edp_record_type_view(ty: TypeExpr, stmts: Array[Stmt], fuel: Int) -> Option[(
             out = Some((ty, false))
           },
           STypeAlias(_, n, names, body) => if n == head && Array::length(names) == Array::length(args) {
-            out = edp_record_type_view(edp_type_expr_subst(body, edp_unkeyed_tparams(names), args), stmts, fuel - 1)
+            out = edp_record_type_view(edp_record_type_subst(body, edp_unkeyed_tparams(names), args), stmts, fuel - 1)
           },
           _ => ()
         }
@@ -86,7 +104,7 @@ fn edp_record_field_type(ty: TypeExpr, field: String, stmts: Array[Stmt]) -> Opt
       SStruct(_, n, fields, _, _, names) => if n == head {
         for item in fields {
           if item.0 == field && Array::length(names) == Array::length(args) {
-            out = Some(edp_type_expr_subst(item.1, edp_unkeyed_tparams(names), args))
+            out = Some(edp_record_type_subst(item.1, edp_unkeyed_tparams(names), args))
           }
         }
       },
@@ -233,4 +251,176 @@ fn edp_record_row_free_type(ty: TypeExpr, stmts: Array[Stmt], fuel: Int) -> Bool
       found
     }
   }
+}
+
+// Lexical immutable aliases retain only the factory result convention. No
+// initializer or closure body is copied, and mutable initializers prove nothing.
+let edp_factory_results: Array[(Int, Int)] = []
+
+export fn edp_bound_factory_result(slot: Int) -> Int {
+  let mut kind = -1
+  for item in edp_factory_results {
+    if item.0 == slot {
+      kind = item.1
+    }
+  }
+  kind
+}
+
+export fn edp_factory_result_kind(value0: Expr, scope: Array[String], stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]]) -> Int {
+  let value = edp_identity_value(value0)
+  let slot = match value {
+    EIdent(n, _) => edp_scope_last_index(scope, n),
+    _ => -1
+  }
+  let kind = if slot >= 0 {
+    edp_bound_factory_result(slot)
+  } else {
+    -1
+  }
+  if kind >= 0 {
+    kind
+  } else {
+    edp_declared_factory_kind(value, slot, stmts, fn_index)
+  }
+}
+
+export fn edp_bind_factory_result(slot: Int, value: Expr, scope: Array[String], stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]]) -> Int {
+  let mark = Array::length(edp_factory_results)
+  let kind = edp_factory_result_kind(value, scope, stmts, fn_index)
+  if kind >= 0 {
+    Array::push(edp_factory_results, (slot, kind))
+  }
+  mark
+}
+
+export fn edp_drop_factory_results(mark: Int) -> Unit {
+  Array::truncate(edp_factory_results, mark)
+}
+
+// Writers and readers use the same instantiated field type. A generic field
+// T becomes a callback slot only when the literal supplies that function type.
+export fn edp_instantiated_field_slot(name: String, field: String, args: Array[TypeExpr], stmts: Array[Stmt]) -> Option[(Int, String)] {
+  if Array::length(args) == 0 {
+    return None
+  }
+  match edp_record_field_type(TyApp(name, args), field, stmts) {
+    Some(ty) => edp_result_slot(stmts, ty),
+    None => None
+  }
+}
+
+export fn edp_local_factory_result(slot: Int, stmts: Array[Stmt]) -> Int {
+  let kind = edp_bound_factory_result(slot)
+  if kind >= 0 {
+    kind
+  } else {
+    match edp_parameter_type(slot) {
+      Some(TyFn(_, result, _)) => edp_callback_kind(result, stmts, 32),
+      _ => -1
+    }
+  }
+}
+
+export fn edp_nested_record_args(name: String, field: String, args: Array[TypeExpr], value: Expr, stmts: Array[Stmt]) -> Array[TypeExpr] {
+  edp_record_targs_under(stmts, edp_record_field_type(TyApp(name, args), field, stmts), value)
+}
+
+// Read a callee's declared nominal parameter before its record argument is
+// visited. A lexical callee never falls back to a same-named global function.
+export fn edp_record_argument_type(arg: Expr, named: String, pos: Int, positional: Bool, local: Option[Expr], slot: Int, stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]]) -> Option[TypeExpr] {
+  let params = if named != "" {
+    edp_indexed_params_of_fn(stmts, fn_index, named)
+  } else {
+    match local {
+      Some(EFn(_, _, ps, _, _, _)) => Some(ps),
+      _ => None
+    }
+  }
+  let mut out: Option[TypeExpr] = None
+  match params {
+    Some(ps) => {
+      let mut at = if positional {
+        pos
+      } else {
+        -1
+      }
+      match arg {
+        ELabeledArg(label, _, _) => {
+          at = -1
+          let mut i = 0
+          for param in ps {
+            if edp_param_base_name(param.0) == label {
+              at = i
+            }; i = i + 1
+          }
+        },
+        _ => ()
+      }
+      if at >= 0 && at < Array::length(ps) {
+        out = Array::get(ps, at).1
+      }
+    },
+    None => if named == "" && slot >= 0 && positional {
+      match edp_parameter_type(slot) {
+        Some(TyFn(ts, _, _)) => if pos >= 0 && pos < Array::length(ts) {
+          out = Some(Array::get(ts, pos))
+        },
+        _ => ()
+      }
+    }
+  }
+  match out {
+    Some(ty) => if edp_record_context_type(ty, stmts) {
+      out
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+export fn edp_literal_slot_fn_type(local: Option[Expr], pos: Int) -> Option[(Int, String)] {
+  match local {
+    Some(EFn(_, _, params, _, _, _)) => if pos >= 0 && pos < Array::length(params) {
+      let (_, pty) = Array::get(params, pos)
+      match pty {
+        Some(TyFn(ptys, _, Some(row))) => if edp_slot_row_stampable(row) {
+          Some((Array::length(ptys), row))
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+// A record-valued binding used only as a result supplies context to its
+// assignments. Slots, rather than generated loop-result names, define scope.
+let edp_record_results: Array[Int] = []
+
+export fn edp_record_result_enter(slot: Int, enabled: Bool) -> Int {
+  if enabled {
+    let mark = Array::length(edp_record_results); Array::push(edp_record_results, slot); mark
+  } else {
+    -1
+  }
+}
+
+export fn edp_record_result_leave(mark: Int) -> Unit {
+  if mark >= 0 {
+    Array::truncate(edp_record_results, mark)
+  }
+}
+
+export fn edp_record_result_target(slot: Int) -> Bool {
+  let mut found = false
+  for value in edp_record_results {
+    found = found || value == slot
+  }
+  found
 }

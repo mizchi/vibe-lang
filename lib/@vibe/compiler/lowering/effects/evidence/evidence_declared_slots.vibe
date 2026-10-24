@@ -16,6 +16,10 @@ import @vibe/core {
   struct MutMap, struct MutSet
 }
 
+import ./evidence_scan_view_expr.vibe {
+  edp_param_base_name
+}
+
 import ./evidence_fn_statement_index.vibe {
   edp_indexed_params_of_fn
 }
@@ -25,6 +29,7 @@ import ./evidence_returned_scan_expr.vibe {
 }
 
 import ./evidence_slot_refusals.vibe {
+  edp_args_pass_literal,
   edp_field_site_prefix,
   edp_parameter_type,
   edp_refuse_aliased_field_literal,
@@ -38,7 +43,7 @@ import ./evidence_slot_refusals.vibe {
 }
 
 import @vibe/compiler/lowering/effects/queries {
-  edp_is_identity_ascription
+  edp_is_identity_ascription, edp_str_array_contains
 }
 
 /// The slot (arity and row) a declared result `rty` gives the closure a
@@ -244,6 +249,7 @@ let edp_row_field_structs: Array[MutMap[String, Array[(String, (Int, String))]]]
 /// #3611: the type parameters of each struct in `edp_row_field_structs`, so a
 /// field row that names one is instantiated at the literal (`edp_field_slot`).
 let edp_row_field_tparams: Array[MutMap[String, Array[String]]] = []
+let edp_nested_row_structs: Array[String] = []
 
 /// #3582: a struct field declared `f: () -> Int with Ask` is called with the
 /// row's dict by whoever reads it, exactly as a parameter of that type is. A
@@ -256,6 +262,7 @@ let edp_row_field_tparams: Array[MutMap[String, Array[String]]] = []
 export fn edp_note_row_field_structs(stmts: Array[Stmt]) -> Unit {
   Array::truncate(edp_row_field_structs, 0)
   Array::truncate(edp_row_field_tparams, 0)
+  Array::truncate(edp_nested_row_structs, 0)
   let table: MutMap[String, Array[(String, (Int, String))]] = MutMap::new_string()
   let params: MutMap[String, Array[String]] = MutMap::new_string()
   let mut i = 0
@@ -264,9 +271,11 @@ export fn edp_note_row_field_structs(stmts: Array[Stmt]) -> Unit {
       SStruct(_, sname, fields, _, _, tparams) => {
         let row_params = edp_unkeyed_tparams(tparams)
         let slots: Array[(String, (Int, String))] = []
+        let mut nested = false
         let mut k = 0
         while k < Array::length(fields) {
           let (fname, fty) = Array::get(fields, k)
+          nested = nested || edp_type_contains_callback_row(fty, stmts, 32)
           match edp_result_slot(stmts, fty) {
             Some(slot) => if !edp_row_label_is_any(slot.1, row_params) {
               Array::push(slots, (fname, slot))
@@ -274,6 +283,9 @@ export fn edp_note_row_field_structs(stmts: Array[Stmt]) -> Unit {
             None => ()
           }
           k = k + 1
+        }
+        if nested {
+          Array::push(edp_nested_row_structs, sname)
         }
         if Array::length(slots) > 0 {
           MutMap::set(table, sname, slots)
@@ -488,7 +500,7 @@ fn edp_struct_args_of(stmts: Array[Stmt], ty: TypeExpr, rn: String) -> Array[Typ
       for st in stmts {
         match st {
           STypeAlias(_, an, tparams, body) => if an == head && Array::length(tparams) == Array::length(args) {
-            next = Some(edp_type_expr_subst(body, tparams, args))
+            next = Some(edp_record_type_subst(body, edp_unkeyed_tparams(tparams), args))
           },
           _ => ()
         }
@@ -716,34 +728,7 @@ export fn edp_declared_value_has_row(value: Expr, slot: Int, stmts: Array[Stmt],
     } else {
       false
     },
-    ECall(EIdent(name, _), _, _, _) => if slot < 0 {
-      match MutMap::get(fn_index, name) {
-        Some(indices) => {
-          let mut known = Array::length(indices) > 0
-          for index in indices {
-            let rowful = match Array::get(stmts, index) {
-              SLet(_, _, _, _, EFn(_, _, _, Some(result), _, _)) => match edp_result_slot(stmts, result) {
-                Some(_) => true,
-                None => false
-              },
-              _ => false
-            }
-            known = known && rowful
-          }
-          known
-        },
-        None => false
-      }
-    } else {
-      // A factory parameter's result has its own callback convention.
-      match edp_parameter_type(slot) {
-        Some(TyFn(_, result, _)) => match edp_result_slot(stmts, result) {
-          Some(_) => true,
-          None => false
-        },
-        _ => false
-      }
-    },
+    ECall(callee, _, _, _) => edp_declared_factory_kind(callee, slot, stmts, fn_index) == 1,
     _ => false
   }
 }
@@ -772,7 +757,7 @@ export fn edp_field_slot_declared(sname: String, fname: String) -> Option[(Int, 
 /// Does `e` build a struct with a row-typed field? A read-only scan, so a
 /// statement with none is not rebuilt (#1875).
 export fn edp_expr_builds_row_field(e: Expr) -> Bool {
-  if Array::length(edp_row_field_structs) == 0 || MutMap::size(Array::get(edp_row_field_structs, 0)) == 0 {
+  if !edp_has_row_fields() && Array::length(edp_nested_row_structs) == 0 {
     false
   } else {
     let table = Array::get(edp_row_field_structs, 0)
@@ -783,7 +768,7 @@ export fn edp_expr_builds_row_field(e: Expr) -> Bool {
       let cur = Array::get(stack, n - 1)
       Array::truncate(stack, n - 1)
       match cur {
-        ERecord(rn, _, _) => if MutMap::has(table, rn) {
+        ERecord(rn, _, _) => if MutMap::has(table, rn) || edp_str_array_contains(edp_nested_row_structs, rn) {
           found = true
         },
         _ => ()
@@ -957,4 +942,356 @@ export fn edp_identity_value(value: Expr) -> Expr {
     }
   }
   current
+}
+
+// Record views substitute row arguments because their concrete instantiation
+// is available. Keep the deliberately lossy result-slot substitution separate.
+export fn edp_record_type_subst(ty: TypeExpr, names: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+  if Array::length(names) == 0 {
+    return ty
+  }
+  match ty {
+    TyName(_) => edp_type_expr_subst(ty, names, args),
+    TyApp(head, items) => {
+      let values = for item in items {
+        edp_record_type_subst(item, names, args)
+      }
+      match edp_type_expr_subst(TyName(head), names, args) {
+        TyName(n) => TyApp(n, values),
+        _ => TyUnit
+      }
+    },
+    TyFn(params, result, row) => {
+      let next = match row {
+        Some(r) => if edp_row_label_is_any(r, names) {
+          None
+        } else if edp_row_mentions_any(r, names) {
+          edp_row_subst_args(r, names, args)
+        } else {
+          Some(r)
+        },
+        None => None
+      }
+      match (row, next) {
+        (Some(_), None) => TyUnit,
+        _ => TyFn(for param in params {
+          edp_record_type_subst(param, names, args)
+        }, edp_record_type_subst(result, names, args), next)
+      }
+    },
+    TyTuple(items) => TyTuple(for item in items {
+      edp_record_type_subst(item, names, args)
+    }),
+    TyUnit => TyUnit
+  }
+}
+
+// A known callback convention, never absence interpreted as row-free.
+export fn edp_callback_kind(ty: TypeExpr, stmts: Array[Stmt], fuel: Int) -> Int {
+  match ty {
+    TyFn(_, _, _) => (),
+    TyName(n) => if !edp_is_program_alias(n) {
+      return -1
+    },
+    TyApp(n, _) => if !edp_is_program_alias(n) {
+      return -1
+    },
+    _ => return -1
+  }
+  match edp_result_slot(stmts, ty) {
+    Some(_) => 1,
+    None => match ty {
+      TyFn(_, _, None) => 0,
+      _ => {
+        let (head, args) = match ty {
+          TyName(n) => (n, []),
+          TyApp(n, xs) => (n, xs),
+          _ => ("", [])
+        }
+        let mut kind = -1
+        if fuel > 0 && edp_is_program_alias(head) {
+          for st in stmts {
+            match st {
+              STypeAlias(_, name, params, body) => if name == head && Array::length(params) == Array::length(args) {
+                kind = edp_callback_kind(edp_type_expr_subst(body, edp_unkeyed_tparams(params), args), stmts, fuel - 1)
+              },
+              _ => ()
+            }
+          }
+        }
+        kind
+      }
+    }
+  }
+}
+
+// A callable's declared callback RESULT, independent of its own convention.
+export fn edp_declared_factory_kind(value: Expr, slot: Int, stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]]) -> Int {
+  match value {
+    EFn(_, _, _, Some(result), _, _) => edp_callback_kind(result, stmts, 32),
+    EIdent(name, _) => if slot >= 0 {
+      match edp_parameter_type(slot) {
+        Some(TyFn(_, result, _)) => edp_callback_kind(result, stmts, 32),
+        _ => -1
+      }
+    } else {
+      let mut kind = -1
+      match MutMap::get(fn_index, name) {
+        Some(indices) => {
+          let mut first = true
+          let mut agrees = true
+          for index in indices {
+            let current = match Array::get(stmts, index) {
+              SLet(_, _, _, _, EFn(_, _, _, Some(result), _, _)) => edp_callback_kind(result, stmts, 32),
+              _ => -1
+            }
+            if first {
+              kind = current; first = false
+            } else {
+              agrees = agrees && kind == current
+            }
+          }
+          if !agrees {
+            kind = -1
+          }
+        },
+        None => ()
+      }
+      kind
+    },
+    _ => -1
+  }
+}
+
+// An explicit callback type argument (or alias) requires the producer walk.
+export fn edp_record_callback_args(args: Array[TypeExpr]) -> Bool {
+  let mut found = false
+  for ty in args {
+    match ty {
+      TyFn(_, _, Some(_)) => found = true,
+      TyName(n) => if edp_is_program_alias(n) {
+        found = true
+      },
+      TyApp(n, _) => if edp_is_program_alias(n) {
+        found = true
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+export fn edp_slot_row_or_empty(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], callee: String, pos: Int) -> String {
+  if pos < 0 {
+    ""
+  } else {
+    match edp_slot_row(stmts, fn_index, callee, pos) {
+      Some(row) => row,
+      None => ""
+    }
+  }
+}
+
+// Include an outer record whose field supplies a nested callback's context.
+fn edp_type_contains_callback_row(ty: TypeExpr, stmts: Array[Stmt], fuel: Int) -> Bool {
+  if fuel <= 0 {
+    return false
+  }
+  match ty {
+    TyFn(_, _, Some(_)) => true,
+    TyApp(n, args) => {
+      let mut found = false
+      for arg in args {
+        found = found || edp_type_contains_callback_row(arg, stmts, fuel - 1)
+      }
+      found || edp_alias_contains_callback_row(n, args, stmts, fuel)
+    },
+    TyName(n) => if edp_is_program_alias(n) {
+      edp_alias_contains_callback_row(n, [], stmts, fuel)
+    } else {
+      false
+    },
+    TyTuple(items) => {
+      let mut found = false
+      for item in items {
+        found = found || edp_type_contains_callback_row(item, stmts, fuel - 1)
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn edp_alias_contains_callback_row(name: String, args: Array[TypeExpr], stmts: Array[Stmt], fuel: Int) -> Bool {
+  let mut found = false
+  if edp_is_program_alias(name) {
+    for st in stmts {
+      match st {
+        STypeAlias(_, n, params, body) => if n == name && Array::length(params) == Array::length(args) {
+          found = edp_type_contains_callback_row(edp_record_type_subst(body, edp_unkeyed_tparams(params), args), stmts, fuel - 1)
+        },
+        _ => ()
+      }
+    }
+  }
+  found
+}
+
+/// A parameter's name without its labeled (`~`) or optional (`?`) marker.
+
+/// The index of the parameter of the top-level `callee` a label names, or -1.
+export fn edp_param_index_by_label(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], callee: String, label: String) -> Int {
+  match edp_indexed_params_of_fn(stmts, fn_index, callee) {
+    Some(params) => {
+      let mut found = 0 - 1
+      let mut i = 0
+      while found < 0 && i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        if edp_param_base_name(pn) == label {
+          found = i
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    None => 0 - 1
+  }
+}
+
+// Only nominal contexts that can carry a callback row need a producer walk.
+export fn edp_record_context_type(ty: TypeExpr, stmts: Array[Stmt]) -> Bool {
+  edp_record_context_type_in(ty, stmts, 32)
+}
+
+fn edp_record_context_type_in(ty: TypeExpr, stmts: Array[Stmt], fuel: Int) -> Bool {
+  if fuel <= 0 {
+    return false
+  }
+  let head = match ty {
+    TyName(n) => n,
+    TyApp(n, _) => n,
+    _ => return false
+  }
+  let args = match ty {
+    TyApp(_, xs) => xs,
+    _ => {
+      if !edp_is_program_alias(head) && !edp_str_array_contains(edp_nested_row_structs, head) && !edp_has_row_fields() {
+        return false
+      }
+      []
+    }
+  }
+  let mut found = edp_str_array_contains(edp_nested_row_structs, head)
+  if edp_has_row_fields() {
+    found = found || MutMap::has(Array::get(edp_row_field_structs, 0), head)
+  }
+  for arg in args {
+    found = found || edp_type_contains_callback_row(arg, stmts, 32)
+  }
+  if !found && edp_is_program_alias(head) {
+    for st in stmts {
+      match st {
+        STypeAlias(_, n, names, body) => if n == head && Array::length(names) == Array::length(args) {
+          found = edp_record_context_type_in(edp_record_type_subst(body, edp_unkeyed_tparams(names), args), stmts, fuel - 1)
+        },
+        _ => ()
+      }
+    }
+  }
+  found
+}
+
+/// Does `e` contain a named call with a row-free closure literal argument, a
+/// row-free top-level function passed by name, or a `let`-bound row-free
+/// literal? A read-only scan, so a statement with none is not rebuilt
+/// (#1875).
+export fn edp_expr_passes_literal_arg(e: Expr, pure_names: MutSet[String], stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let stack: Array[Expr] = [e]
+  while !found && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      ECall(EIdent(_, _), args, _, _) => if edp_args_pass_literal(args, pure_names) {
+        found = true
+      },
+      // Codex on #3467: a method-style call too (`runner.run(() -> ..)`).
+      ECall(EDot(_, _, _, _), args, _, _) => if edp_args_pass_literal(args, pure_names) {
+        found = true
+      },
+      ECall(EFn(_, _, _, _, _, _), cargs, _, _) => if Array::length(cargs) == 1 {
+        match Array::get(cargs, 0) {
+          EFn(_, _, _, _, None, _) => {
+            found = true
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      ERecord(_, _, args) => if edp_record_callback_args(args) {
+        found = true
+      },
+      // A row-free one may take a row from its uses; one with a row is
+      // bound under a name of its own (`edp_unique_row_lit_name`, #3416).
+      ELet(_, EFn(_, _, _, _, _, _), _, _) => {
+        found = true
+      },
+      // A lambda that returns a closure at a declared row (Codex on #3447).
+      EFn(_, _, _, Some(TyFn(_, _, Some(_))), _, _) => {
+        found = true
+      },
+      // #3582: or a tuple that may hold one.
+      EFn(_, _, _, Some(TyTuple(_)), _, _) => {
+        found = true
+      },
+      EFn(_, _, params, _, _, _) => if edp_params_need_record_context(params, stmts) {
+        found = true
+      },
+      _ => ()
+    }
+    expr_children_into(cur, stack)
+  }
+  found
+}
+
+// Select callers as well as producers: a generic Cell literal has no row
+// until its callee's nominal parameter supplies the missing type arguments.
+export fn edp_note_record_slot_callees(stmts: Array[Stmt], defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], names: MutSet[String]) -> Unit {
+  for def in defs {
+    match Array::get(stmts, def.0) {
+      SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => if edp_params_need_record_context(params, stmts) {
+        MutSet::insert(names, def.3)
+      },
+      _ => ()
+    }
+  }
+  ()
+}
+
+fn edp_params_need_record_context(params: Array[(String, Option[TypeExpr])], stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  for param in params {
+    match param.1 {
+      Some(ty) => found = found || edp_callable_record_context(ty, stmts),
+      None => ()
+    }
+  }
+  found
+}
+
+fn edp_callable_record_context(ty: TypeExpr, stmts: Array[Stmt]) -> Bool {
+  match ty {
+    TyFn(params, result, _) => {
+      let mut found = edp_callable_record_context(result, stmts)
+      for param in params {
+        found = found || edp_callable_record_context(param, stmts)
+      }
+      found
+    },
+    _ => edp_record_context_type(ty, stmts)
+  }
 }

@@ -323,3 +323,186 @@ test "instantiated callback field convention: cell-pure-written-target" {
   }
   ()
 }
+
+test "factory and nested record conventions: factory-alias" {
+  local_field_run_source("factory-alias", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let make=()->(()->Int with Box[String]){()->1};let alias=make;let h=Holder::{f:alias()};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: nested-instantiated-row" {
+  local_field_run_source("nested-instantiated-row", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} struct Outer[T]{inner:Cell[()->Int with Box[T]]} fn copy(a:Outer[String])->Int{let b=Holder::{f:a.inner.f};drive(b.f)} fn main()->Unit allows Console{let g=()->Int with Box[String]{perform Box::Put(\"y\");1};let c=Cell[()->Int with Box[String]]::{f:g};let a=Outer[String]::{inner:c};println(\"\\{copy(a)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: generic-cell-literal-abi" {
+  local_field_run_source("generic-cell-literal-abi", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} fn main()->Unit allows Console{let a=Cell[()->Int with Box[String]]::{f:()->1};let b=Holder::{f:a.f};println(\"\\{drive(b.f)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: pure-factory-alias-written-abi" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn main()->Unit allows Console{let make=()->(()->Int){()->1};let alias=make;let h=Holder[String]::{f:alias()};println(\"\\{drive(h.f)}\")}", lane)
+      "compiled without the callback result convention"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "callback result type of the factory"))
+  }
+  ()
+}
+
+test "factory and nested record conventions: factory-alias-capture-shadow" {
+  local_field_run_source("factory-alias-capture-shadow", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}}  fn main()->Unit allows Console{let n=1;let make=()->(()->Int with Box[String]){()->{n}};let alias=make;let make=()->(()->Int){()->2};let n=2;let h=Holder::{f:alias()};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: factory-alias-chain" {
+  local_field_run_source("factory-alias-chain", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}}  fn main()->Unit allows Console{let n=1;let make=()->(()->Int with Box[String]){()->{n}};let a=make;let b=a;let h=Holder::{f:b()};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: factory-alias-result-binding" {
+  local_field_run_source("factory-alias-result-binding", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}}  fn main()->Unit allows Console{let n=1;let make=()->(()->Int with Box[String]){()->{n}};let a=make;let cb=a();let h=Holder::{f:cb};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: factory-parameter-alias" {
+  local_field_run_source("factory-parameter-alias", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn copy(make:()->(()->Int with Box[String]))->Int{let alias=make;let h=Holder::{f:alias()};drive(h.f)} fn main()->Unit allows Console{let make=()->(()->Int with Box[String]){()->1};println(\"\\{copy(make)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: global-factory-local-alias" {
+  local_field_run_source("global-factory-local-alias", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn make()->(()->Int with Box[String]){()->1} fn main()->Unit allows Console{let alias=make;let h=Holder::{f:alias()};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: factory-ascribed-alias" {
+  local_field_run_source("factory-ascribed-alias", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}}  fn main()->Unit allows Console{let n=1;let make=()->(()->Int with Box[String]){()->{n}};let alias:()->(()->Int with Box[String])=make;let h=Holder::{f:alias()};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: pure-factory-alias-result-binding" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}}  fn main()->Unit allows Console{let make=()->(()->Int){()->1};let alias=make;let cb=alias();let h=Holder[String]::{f:cb};println(\"\\{drive(h.f)}\")}", lane)
+      "compiled without the callback result convention"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "original definition"))
+  }
+  ()
+}
+
+test "factory and nested record conventions: pure-factory-alias-no-record" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn use(f:()->Int with Box[String])->Int{drive(f)} fn main()->Unit allows Console{let make=()->(()->Int){()->1};let alias=make;println(\"\\{use(alias())}\")}", lane)
+      "compiled without the callback result convention"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "callback result type of the factory"))
+  }
+  ()
+}
+
+test "factory and nested record conventions: pure-factory-parameter-direct" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn copy(make:()->(()->Int))->Int{let h=Holder[String]::{f:make()};drive(h.f)} fn main()->Unit allows Console{let make=()->(()->Int){()->1};println(\"\\{copy(make)}\")}", lane)
+      "compiled without the callback result convention"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "callback result type of the factory"))
+  }
+  ()
+}
+
+test "factory and nested record conventions: unused-pure-factory-alias" {
+  local_field_run_source("unused-pure-factory-alias", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} fn unused(f:()->Int with Box[String])->Int with Box[String]{1} fn main()->Unit allows Console{let make=()->(()->Int){()->2};let alias=make;let cb=alias();println(\"\\{handle{perform Box::Put(\"x\");unused(cb)}with{Box::Put(_)=>resume(())}}\")}", "1\n")
+}
+
+test "factory and nested record conventions: nested-row-record-alias" {
+  local_field_run_source("nested-row-record-alias", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} struct Outer[T]{inner:Cell[()->Int with Box[T]]}  fn main()->Unit allows Console{let g=()->Int with Box[String]{1};let a=Outer[String]::{inner:Cell[()->Int with Box[String]]::{f:g}};let alias=a;let a=Raw::{f:()->2};let h=Holder::{f:alias.inner.f};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: nested-row-type-alias" {
+  local_field_run_source("nested-row-type-alias", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} struct Outer[T]{inner:Cell[()->Int with Box[T]]} type Wrapped[T]=Outer[T] fn copy(a:Wrapped[String])->Int{let h=Holder::{f:a.inner.f};drive(h.f)} fn main()->Unit allows Console{let g=()->Int with Box[String]{1};let a=Outer[String]::{inner:Cell[()->Int with Box[String]]::{f:g}};println(\"\\{copy(a)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: nested-row-record-factory" {
+  local_field_run_source("nested-row-record-factory", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} struct Outer[T]{inner:Cell[()->Int with Box[T]]} fn make()->Outer[String]{let g=()->Int with Box[String]{1};Outer[String]::{inner:Cell[()->Int with Box[String]]::{f:g}}} fn main()->Unit allows Console{let h=Holder::{f:make().inner.f};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: nested-pure-written-target" {
+  for lane in ["rc", "gc"] {
+    let message = handle {
+      local_field_compile("effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} struct Outer{inner:Cell[()->Int]} fn main()->Unit allows Console{let a=Outer::{inner:Cell[()->Int]::{f:()->1}};let h=Holder[String]::{f:a.inner.f};println(\"\\{drive(h.f)}\")}", lane)
+      "compiled without the callback result convention"
+    } with { Exception::Throw(message) => message }
+    assert(String::contains(message, "declare the source field"))
+  }
+  ()
+}
+
+test "factory and nested record conventions: generic-cell-literal-alias-type" {
+  local_field_run_source("generic-cell-literal-alias-type", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} type Thunk=()->Int with Box[String] fn make()->Cell[Thunk]{Cell[Thunk]::{f:()->1}} fn main()->Unit allows Console{let h=Holder::{f:make().f};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: generic-cell-literal-capture" {
+  local_field_run_source("generic-cell-literal-capture", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T}  fn main()->Unit allows Console{let n=1;let a=Cell[()->Int with Box[String]]::{f:()->{n}};let n=2;let h=Holder::{f:a.f};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: generic-cell-no-row-field-catalogue" {
+  local_field_run_source("generic-cell-no-row-field-catalogue", "effect Box[T]{Put(T)->Unit} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} fn main()->Unit allows Console{let a=Cell[()->Int with Box[String]]::{f:()->1};println(\"\\{drive(a.f)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: nested-inferred-inner-args" {
+  local_field_run_source("nested-inferred-inner-args", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} struct Outer[T]{inner:Cell[()->Int with Box[T]]}  fn main()->Unit allows Console{let g=()->Int with Box[String]{1};let a=Outer[String]::{inner:Cell::{f:()->1}};let alias=a;let a=Raw::{f:()->2};let h=Holder::{f:alias.inner.f};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "factory and nested record conventions: nested-factory-inferred-inner-args" {
+  local_field_run_source("nested-factory-inferred-inner-args", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} struct Outer[T]{inner:Cell[()->Int with Box[T]]} fn make()->Outer[String]{let g=()->Int with Box[String]{1};Outer[String]::{inner:Cell::{f:()->1}}} fn main()->Unit allows Console{let h=Holder::{f:make().inner.f};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "record producer contexts: nested-call-context" {
+  local_field_run_source("nested-call-context", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} struct Outer[T]{inner:Cell[()->Int with Box[T]]} fn copy(a:Outer[String])->Int{let b=Holder::{f:a.inner.f};drive(b.f)} fn main()->Unit allows Console{println(\"\\{copy(Outer::{inner:Cell::{f:()->1}})}\")}", "1\n")
+}
+
+test "record producer contexts: nested-return-context" {
+  local_field_run_source("nested-return-context", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} struct Outer[T]{inner:Cell[()->Int with Box[T]]} fn make()->Outer[String]{Outer::{inner:Cell::{f:()->1}}} fn main()->Unit allows Console{let h=Holder::{f:make().inner.f};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "record producer contexts: nested-call-if-context" {
+  local_field_run_source("nested-call-if-context", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} struct Outer[T]{inner:Cell[()->Int with Box[T]]} fn copy(a:Outer[String])->Int{let h=Holder::{f:a.inner.f};drive(h.f)}  fn main()->Unit allows Console{let n=1;let r=copy(if true{Outer::{inner:Cell::{f:()->n}}}else{Outer::{inner:Cell::{f:()->2}}});println(\"\\{r}\")}", "1\n")
+}
+
+test "record producer contexts: nested-return-early-context" {
+  local_field_run_source("nested-return-early-context", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} struct Outer[T]{inner:Cell[()->Int with Box[T]]} fn make()->Outer[String]{while true{return Outer::{inner:Cell::{f:()->1}}};Outer::{inner:Cell::{f:()->2}}} fn main()->Unit allows Console{let h=Holder::{f:make().inner.f};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "record producer contexts: record-return-alias-context" {
+  local_field_run_source("record-return-alias-context", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} type Wrapped=Cell[()->Int with Box[String]] fn make()->Wrapped{Cell::{f:()->1}} fn main()->Unit allows Console{let h=Holder::{f:make().f};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "record producer contexts: record-call-alias-context" {
+  local_field_run_source("record-call-alias-context", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} type Wrapped=Cell[()->Int with Box[String]] fn copy(a:Wrapped)->Int{let h=Holder::{f:a.f};drive(h.f)} fn main()->Unit allows Console{let r=copy(Cell::{f:()->1});println(\"\\{r}\")}", "1\n")
+}
+
+test "record producer contexts: local-record-call-context" {
+  local_field_run_source("local-record-call-context", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} struct Outer[T]{inner:Cell[()->Int with Box[T]]}  fn main()->Unit allows Console{let copy=(a:Outer[String])->Int{let h=Holder::{f:a.inner.f};drive(h.f)};let r=copy(Outer::{inner:Cell::{f:()->1}});println(\"\\{r}\")}", "1\n")
+}
+
+test "record producer contexts: shadowed-record-callee-context" {
+  local_field_run_source("shadowed-record-callee-context", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} fn copy(a:Cell[()->Int with Box[String]])->Int{drive(a.f)} fn main()->Unit allows Console{let copy=(a:Cell[()->Int])->Int{a.f()};let r=copy(Cell::{f:()->1});println(\"\\{r}\")}", "1\n")
+}
+
+test "record producer contexts: function-parameter-record-context" {
+  local_field_run_source("function-parameter-record-context", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} struct Outer[T]{inner:Cell[()->Int with Box[T]]} fn copy(a:Outer[String])->Int{let h=Holder::{f:a.inner.f};drive(h.f)} fn invoke(f:(Outer[String])->Int)->Int{f(Outer::{inner:Cell::{f:()->1}})} fn main()->Unit allows Console{println(\"\\{invoke(copy)}\")}", "1\n")
+}
+
+test "record producer contexts: inline-lambda-record-context" {
+  local_field_run_source("inline-lambda-record-context", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} fn main()->Unit allows Console{let c=((a:Cell[()->Int with Box[String]])->Cell[()->Int with Box[String]]{a})(Cell::{f:()->1});let h=Holder::{f:c.f};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "record producer contexts: record-context-inner-lambda-return" {
+  local_field_run_source("record-context-inner-lambda-return", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} fn make()->Cell[()->Int with Box[String]]{let inner=()->Cell[()->Int]{return Cell::{f:()->2}};let c=inner();let n=c.f()-1;Cell::{f:()->n}} fn main()->Unit allows Console{let h=Holder::{f:make().f};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "record producer contexts: record-result-loop-break" {
+  local_field_run_source("record-result-loop-break", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} fn make()->Cell[()->Int with Box[String]]{loop (i=0){break Cell::{f:()->1}}} fn main()->Unit allows Console{let h=Holder::{f:make().f};println(\"\\{drive(h.f)}\")}", "1\n")
+}
+
+test "record producer contexts: record-argument-loop-break" {
+  local_field_run_source("record-argument-loop-break", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} fn copy(a:Cell[()->Int with Box[String]])->Int{drive(a.f)} fn main()->Unit allows Console{let r=copy(loop(i=0){break Cell::{f:()->1}});println(\"\\{r}\")}", "1\n")
+}
+
+test "record producer contexts: record-nested-loop-break-scope" {
+  local_field_run_source("record-nested-loop-break-scope", "effect Box[T]{Put(T)->Unit} struct Holder[T]{f:()->Int with Box[T]} struct Raw{f:()->Int} fn drive(f:()->Int with Box[String])->Int{handle{perform Box::Put(\"x\");f()}with{Box::Put(_)=>resume(())}} struct Cell[T]{f:T} fn make()->Cell[()->Int with Box[String]]{loop(i=0){let c=loop(j=0){break Cell::{f:()->2}};let n=c.f()-1;break Cell::{f:()->n}}} fn main()->Unit allows Console{let h=Holder::{f:make().f};println(\"\\{drive(h.f)}\")}", "1\n")
+}

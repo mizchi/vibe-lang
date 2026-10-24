@@ -1022,7 +1022,7 @@ fn edp_note_lambda_candidate(name: String, val: Expr, names: Array[String], bodi
 /// Collect candidate lambdas AND tally every binder spelling in the same
 /// walk (`bcount`), so the sole-binder check below costs no second pass over
 /// the program (a separate walk measured +2.4% self-compile allocation).
-fn edp_collect_lambda_candidates_expr(expr: Expr, names: Array[String], bodies: Array[Expr], bcount: MutMap[String, Int]) -> Unit {
+fn edp_collect_lambda_candidates_expr(expr: Expr, names: Array[String], bodies: Array[Expr], bcount: EdpBinderCounts) -> Unit {
   edp_tally_node_binders(expr, bcount)
   match expr {
     ELet(name, val, body, _) => {
@@ -1043,17 +1043,36 @@ fn edp_collect_lambda_candidates_expr(expr: Expr, names: Array[String], bodies: 
   }
 }
 
-fn edp_tally(bcount: MutMap[String, Int], nm: String) -> Unit {
-  let prev = match MutMap::get(bcount, nm) {
-    Some(c) => c,
+// Keep exact counts in a dense mutable array. Map entries are stable indices,
+// so repeated spellings do not allocate a replacement Option on every tally.
+type EdpBinderCounts = (MutMap[String, Int], Array[Int])
+
+fn edp_binder_counts_new() -> EdpBinderCounts {
+  let index: MutMap[String, Int] = MutMap::new_string()
+  let values: Array[Int] = []
+  (index, values)
+}
+
+fn edp_binder_count(counts: EdpBinderCounts, name: String) -> Int {
+  match MutMap::get(counts.0, name) {
+    Some(index) => Array::get(counts.1, index),
     None => 0
   }
-  MutMap::set(bcount, nm, prev + 1)
+}
+
+fn edp_tally(bcount: EdpBinderCounts, nm: String) -> Unit {
+  match MutMap::get(bcount.0, nm) {
+    Some(index) => Array::set(bcount.1, index, Array::get(bcount.1, index) + 1),
+    None => {
+      MutMap::set(bcount.0, nm, Array::length(bcount.1))
+      Array::push(bcount.1, 1)
+    }
+  }
 }
 
 /// The binders introduced AT this node (not below it): the same cases as
 /// edp_collect_binders, without its recursion.
-fn edp_tally_node_binders(expr: Expr, bcount: MutMap[String, Int]) -> Unit {
+fn edp_tally_node_binders(expr: Expr, bcount: EdpBinderCounts) -> Unit {
   match expr {
     ELet(n, _, _, _) => edp_tally(bcount, n),
     ELetRec(n, _, _) => edp_tally(bcount, n),
@@ -1087,7 +1106,7 @@ fn edp_tally_node_binders(expr: Expr, bcount: MutMap[String, Int]) -> Unit {
   }
 }
 
-fn edp_tally_arm_binders(arms: Array[(Pat, Expr)], bcount: MutMap[String, Int]) -> Unit {
+fn edp_tally_arm_binders(arms: Array[(Pat, Expr)], bcount: EdpBinderCounts) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
     let (pat, _) = Array::get(arms, i)
@@ -1096,7 +1115,7 @@ fn edp_tally_arm_binders(arms: Array[(Pat, Expr)], bcount: MutMap[String, Int]) 
   }
 }
 
-fn edp_tally_pat_binders(pat: Pat, bcount: MutMap[String, Int]) -> Unit {
+fn edp_tally_pat_binders(pat: Pat, bcount: EdpBinderCounts) -> Unit {
   match pat {
     PBind(n) => edp_tally(bcount, n),
     PCtor(_, subs) => {
@@ -1132,7 +1151,7 @@ fn edp_tally_pat_binders(pat: Pat, bcount: MutMap[String, Int]) -> Unit {
 /// Binders of a statement the candidate walk does not enter. These kinds
 /// are rare, so the separate walker's cost stays off the common path, but a
 /// spelling bound only here must still count -- or it would be admitted.
-fn edp_tally_other_stmt_binders(stmt: Stmt, bcount: MutMap[String, Int]) -> Unit {
+fn edp_tally_other_stmt_binders(stmt: Stmt, bcount: EdpBinderCounts) -> Unit {
   let scratch = empty_str_array()
   match stmt {
     SExternLet(nm, _) => Array::push(scratch, nm),
@@ -1242,8 +1261,8 @@ fn edp_lambda_visible_pure(lam: Expr, pure_fns: Array[String]) -> Bool {
 /// spelling must itself be a candidate lambda. `bcount` is tallied during the
 /// candidate walk itself (edp_collect_lambda_candidates_expr), so this costs
 /// one map lookup per candidate rather than another pass over the program.
-fn edp_lambda_only_spellings(cand_names: Array[String], bcount: MutMap[String, Int]) -> MutSet[String] {
-  let cand: MutMap[String, Int] = MutMap::new_string()
+fn edp_lambda_only_spellings(cand_names: Array[String], bcount: EdpBinderCounts) -> MutSet[String] {
+  let cand = edp_binder_counts_new()
   let mut i = 0
   while i < Array::length(cand_names) {
     edp_tally(cand, Array::get(cand_names, i))
@@ -1253,14 +1272,8 @@ fn edp_lambda_only_spellings(cand_names: Array[String], bcount: MutMap[String, I
   let mut j = 0
   while j < Array::length(cand_names) {
     let nm = Array::get(cand_names, j)
-    let c = match MutMap::get(cand, nm) {
-      Some(v) => v,
-      None => 0
-    }
-    let b = match MutMap::get(bcount, nm) {
-      Some(v) => v,
-      None => 0
-    }
+    let c = edp_binder_count(cand, nm)
+    let b = edp_binder_count(bcount, nm)
     if b == c {
       MutSet::add(out, nm)
     } else {
@@ -1366,14 +1379,14 @@ fn edp_name_bodies_all_pure(name: String, names: Array[String], bodies: Array[Ex
 /// Count every reference to a closed owner and the direct calls whose
 /// selected argument names one uniquely bound inert function. Equal counts
 /// prove the owner never escapes, and no caller can supply another value.
-fn edp_inert_param_uses(expr: Expr, owner: String, pos: Int, inert: MutSet[String], bcount: MutMap[String, Int], counts: Array[Int]) -> Unit {
+fn edp_inert_param_uses(expr: Expr, owner: String, pos: Int, inert: MutSet[String], bcount: EdpBinderCounts, counts: Array[Int]) -> Unit {
   match expr {
     EIdent(nm, _) => if nm == owner {
       Array::set(counts, 0, Array::get(counts, 0) + 1)
     },
     ECall(EIdent(nm, _), args, _, _) => if nm == owner && pos < Array::length(args) {
       match Array::get(args, pos) {
-        EIdent(arg, _) => if MutSet::has(inert, arg) && MutMap::get(bcount, arg) == Some(1) {
+        EIdent(arg, _) => if MutSet::has(inert, arg) && edp_binder_count(bcount, arg) == 1 {
           Array::set(counts, 1, Array::get(counts, 1) + 1)
         },
         _ => ()
@@ -1391,7 +1404,7 @@ fn edp_inert_param_uses(expr: Expr, owner: String, pos: Int, inert: MutSet[Strin
   expr_children_pop(mark)
 }
 
-fn edp_inert_param_uses_stmts(stmts: Array[Stmt], owner: String, pos: Int, inert: MutSet[String], bcount: MutMap[String, Int], counts: Array[Int]) -> Unit {
+fn edp_inert_param_uses_stmts(stmts: Array[Stmt], owner: String, pos: Int, inert: MutSet[String], bcount: EdpBinderCounts, counts: Array[Int]) -> Unit {
   for stmt in stmts {
     match stmt {
       SLet(_, _, _, _, expr) => edp_inert_param_uses(expr, owner, pos, inert, bcount, counts),
@@ -1413,7 +1426,7 @@ fn edp_inert_param_uses_stmts(stmts: Array[Stmt], owner: String, pos: Int, inert
 /// as a global function. Recover that fact from its checked pure function
 /// type, or, for an unannotated closure-conversion capture, from ALL calls to
 /// its private owner. Never infer purity from the old spelling itself.
-fn edp_append_renamed_inert_params(stmts: Array[Stmt], pure_fns: Array[String], inert: MutSet[String], bcount: MutMap[String, Int]) -> Bool {
+fn edp_append_renamed_inert_params(stmts: Array[Stmt], pure_fns: Array[String], inert: MutSet[String], bcount: EdpBinderCounts) -> Bool {
   let mut grew = false
   for stmt in stmts {
     match stmt {
@@ -1426,10 +1439,10 @@ fn edp_append_renamed_inert_params(stmts: Array[Stmt], pure_fns: Array[String], 
           } else {
             marked
           }
-          if String::starts_with(name, "__edpsh_") && !MutSet::has(inert, name) && MutMap::get(bcount, name) == Some(1) {
+          if String::starts_with(name, "__edpsh_") && !MutSet::has(inert, name) && edp_binder_count(bcount, name) == 1 {
             let safe = match ty {
               Some(TyFn(_, _, None)) => true,
-              None => if !exported && MutMap::get(bcount, owner) == Some(1) {
+              None => if !exported && edp_binder_count(bcount, owner) == 1 {
                 let counts = [0, 0]
                 edp_inert_param_uses_stmts(stmts, owner, pos, inert, bcount, counts)
                 Array::get(counts, 0) > 0 && Array::get(counts, 0) == Array::get(counts, 1)
@@ -1456,7 +1469,7 @@ fn edp_append_renamed_inert_params(stmts: Array[Stmt], pure_fns: Array[String], 
 export fn edp_append_visible_pure_lambda_names(stmts: Array[Stmt], pure_fns: Array[String]) -> Unit {
   let names = empty_str_array()
   let bodies: Array[Expr] = []
-  let bcount: MutMap[String, Int] = MutMap::new_string()
+  let bcount = edp_binder_counts_new()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {

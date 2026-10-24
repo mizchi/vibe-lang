@@ -1,6 +1,12 @@
 import @vibe/compiler/syntax {
   lex, parse_program
 }
+import @vibe/compiler/lowering/effects/evidence {
+  edp_append_visible_pure_lambda_names
+}
+import @vibe/compiler/lowering/effects/queries {
+  edp_str_array_contains
+}
 import @vibe/compiler/normalize/desugar {
   desugar_hoist_local_lambdas
 }
@@ -29,4 +35,34 @@ test "an inner parameter's spelling does not change the outer direct-call conven
 
 test "an outer value read in a shadow's initializer remains an escape" {
   assert_eq(local_hoist_count("let f=f;handle{f(41)}with{QLog::Emit(_)=>resume(())}"), 0)
+}
+
+fn census_marks_pure(source: String, name: String) -> Bool with Exception {
+  let names: Array[String] = []
+  edp_append_visible_pure_lambda_names(parse_program(lex(source)), names)
+  edp_str_array_contains(names, name)
+}
+
+test "all repeated lambda binders remain inert candidates" {
+  for count in [3, 4, 7] {
+    let mut body = ""
+    let mut i = 0
+    while i < count {
+      body = body + "let repeated=()->1;"; i = i + 1
+    }
+    assert(census_marks_pure("fn owner()->Int{" + body + "0}", "repeated"))
+  }
+  ()
+}
+
+test "a non-lambda collision is not lost among repeated candidates" {
+  for count in [1, 2, 4] {
+    let mut source = "fn owner()->Int{let repeated=()->1;let repeated=()->2;let repeated=()->3;0}"
+    let mut i = 0
+    while i < count {
+      source = source + "fn other_" + Int::to_string(i) + "(repeated:Int)->Int{repeated}"; i = i + 1
+    }
+    assert(!census_marks_pure(source, "repeated"))
+  }
+  ()
 }

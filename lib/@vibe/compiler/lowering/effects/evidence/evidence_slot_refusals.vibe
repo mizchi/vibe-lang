@@ -407,7 +407,9 @@ export fn edp_expr_passes_value_to_slot(e: Expr, slot_callees: MutSet[String]) -
           ECall(EDot(_, _, _, _), _, _, _) => {
             found = true
           },
-          _ => ()
+          _ => if edp_record_arg_needs_context(a) {
+            found = true
+          }
         }
       }
       expr_children_into(cur, stack)
@@ -835,4 +837,17 @@ export fn edp_join_and(names: Array[String]) -> String {
 export fn edp_refuse_rowless_projection(field: String, callee: String, row: String) -> Unit {
   Array::push(edp_slot_refusal_rows, row)
   Array::push(edp_slot_refusal_msgs, "declare the source field `\{field}` with `with \{row}` before storing it in \{edp_slot_site(callee)}: the projected callback takes no handler argument, but a call through the destination field passes one")
+}
+
+// The lexical alias is a factory; its result, rather than its own row, needs editing.
+export fn edp_refuse_rowless_factory_result(name: String, callee: String, row: String) -> Unit {
+  edp_push_refusal(row, "declare `with \{row}` on the callback result type of the factory `\{name}`: `-> ((..) -> T with \{row})`. Its row-free result is \{edp_result_site(callee)} and takes no handler argument, but its caller passes one")
+}
+
+export fn edp_record_arg_needs_context(arg: Expr) -> Bool {
+  match arg {
+    ELoop(_, _)|EAssign(_, _, _, _)|EAssignOp(_, _, _, _, _)|ERecord(_, _, _)|EIf(_, _, _)|EMatch(_, _)|EHandle(_, _)|ELet(_, _, _, _)|ELetMut(_, _, _, _)|ELetRec(_, _, _)|ESeq(_, _) => true,
+    ELabeledArg(_, _, value) => edp_record_arg_needs_context(value),
+    _ => false
+  }
 }
