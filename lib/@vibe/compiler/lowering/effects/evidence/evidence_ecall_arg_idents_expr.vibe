@@ -91,7 +91,9 @@ import ./evidence_declared_slots.vibe {
   edp_result_slot,
   edp_rows_agree,
   edp_settle_field_literal,
-  edp_tuple_result_types
+  edp_slot_wrapper,
+  edp_tuple_result_types,
+  edp_unascribed
 }
 
 /// Any top-level fn with a row-E-typed parameter?
@@ -1459,30 +1461,6 @@ fn edp_slot_fn_type(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], ca
   }
 }
 
-/// `(p0, .., pn) -> name(p0, .., pn)` under `row`: a row-free function passed
-/// by name at a row-typed slot, wrapped so the dict its callee passes has a
-/// parameter to land in (#3424).
-fn edp_slot_wrapper(name: String, arity: Int, row: String) -> Expr {
-  let params: Array[(String, Option[TypeExpr])] = []
-  let args: Array[Expr] = []
-  // The parameters must not shadow `name` inside the wrapper; a function
-  // spelled with the usual prefix gets the other one (Codex on #3426).
-  let prefix = if String::starts_with(name, "__edpw_") {
-    "__edpx_"
-  } else {
-    "__edpw_"
-  }
-  let mut k = 0
-  while k < arity {
-    let pn = String::concat(prefix, Int::to_string(k))
-    Array::push(params, (pn, None))
-    Array::push(args, EIdent(pn, 0 - 1))
-    k = k + 1
-  }
-  EFn([], [], params, None, Some(row), ECall(EIdent(name, 0 - 1), args, 0 - 1, [
-  ]))
-}
-
 /// The row a top-level function's parameter `pos` declares on its function
 /// type, or None.
 fn edp_slot_row(stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]], callee: String, pos: Int) -> Option[String] {
@@ -1555,7 +1533,7 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_index: MutMap[String, Array[In
       let hslot = Array::length(scope)
       let fmark = edp_field_literal_mark()
       let amark = edp_local_alias_mark()
-      edp_note_local_alias(n, hslot, edp_local_lit_of(v2, scope))
+      edp_note_local_alias(n, hslot, edp_local_lit_of(edp_unascribed(v2), scope))
       let b2 = edp_stamp_scoped(b, [n], stmts, fn_index, scope, pure_names)
       edp_drop_local_aliases(amark)
       Array::truncate(edp_local_lit_names, mark)

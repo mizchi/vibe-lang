@@ -643,6 +643,44 @@ export fn edp_refuse_rowless_local(name: String, slot: Int, callee: String, row:
   }
 }
 
+/// `(p0, .., pn) -> name(p0, .., pn)` under `row`: a row-free function passed
+/// by name at a row-typed slot, wrapped so the dict its callee passes has a
+/// parameter to land in (#3424).
+export fn edp_slot_wrapper(name: String, arity: Int, row: String) -> Expr {
+  let params: Array[(String, Option[TypeExpr])] = []
+  let args: Array[Expr] = []
+  // The parameters must not shadow `name` inside the wrapper; a function
+  // spelled with the usual prefix gets the other one (Codex on #3426).
+  let prefix = if String::starts_with(name, "__edpw_") {
+    "__edpx_"
+  } else {
+    "__edpw_"
+  }
+  let mut k = 0
+  while k < arity {
+    let pn = String::concat(prefix, Int::to_string(k))
+    Array::push(params, (pn, None))
+    Array::push(args, EIdent(pn, 0 - 1))
+    k = k + 1
+  }
+  EFn([], [], params, None, Some(row), ECall(EIdent(name, 0 - 1), args, 0 - 1, [
+  ]))
+}
+
+/// The value a `let` binds under an annotation: `let a: T = v` reaches this
+/// pass as the identity ascription `((__asc: T) -> __asc)(v)` (Codex on
+/// #3620: `let alias: () -> Int = g` is an alias of `g` too).
+export fn edp_unascribed(v: Expr) -> Expr {
+  match v {
+    ECall(EFn(_, _, aparams, _, _, abody), args, _, _) => if Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) {
+      Array::get(args, 0)
+    } else {
+      v
+    },
+    _ => v
+  }
+}
+
 /// Where a binding's body starts noting field uses.
 export fn edp_field_literal_mark() -> Int {
   Array::length(edp_field_lit_names)
