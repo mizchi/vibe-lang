@@ -64,9 +64,11 @@ vibe compile --entry <name> <file.vibe>          # entry other than `main` (not 
   you ran from.
 - **`--debug`** builds through the linked debug lane: library modules are
   cached as linked wasm files and only the entry is recompiled. It cannot be
-  combined with `--component`, `--wit` or `--minify`. It refuses a program
-  that uses `Float`: the lane parses without source offsets, so it cannot
-  round `Float` arithmetic to f32 (#3543).
+  combined with `--component`, `--wit` or `--minify`. It type-checks the
+  whole import closure first and compiles the entry with that check's types
+  (each library is checked again as it is compiled), so `Float` arithmetic is
+  rounded to f32 and a `Double` an import returns is one, as in the default
+  build (#3543, #3625).
 - **`--minify`** runs the standalone `vibe-opt.wasm` optimizer over the core
   module after it is written. The default artifact is not post-optimized. With
   `--component` it is refused (the minifier takes a core module); with

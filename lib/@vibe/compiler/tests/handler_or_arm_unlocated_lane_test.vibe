@@ -1,15 +1,25 @@
 //# #3301 (Codex on #3337): the or-pattern arm `resume` rule answers the same
-//# on a lane that parses without source offsets. `vibe build --debug` compiles
-//# each dependency through `compile_file_wasi_library`, whose
-//# `parse_program(lex(..))` gives every node the offset -1; the copies of an
-//# arm used to be found by the offset of their `resume`, so none was found
-//# there, and the declared `X -> A` / `Y -> B` refused an arm the handle
-//# instantiates at Int and Int, which the located lanes accept.
+//# on a program parsed without source offsets, where `parse_program(lex(..))`
+//# gives every node the offset -1; the copies of an arm used to be found by
+//# the offset of their `resume`, so none was found there, and the declared
+//# `X -> A` / `Y -> B` refused an arm the handle instantiates at Int and Int,
+//# which the located lanes accept. `vibe build --debug` compiles each
+//# dependency through `compile_file_wasi_library`, which parsed that way
+//# until #3625 made it located; the library-lane rows below keep pinning
+//# that lane, and the `unlocated_check` rows the unlocated parse itself.
 
 //# Imports
 
 import @vibe/core {
   array_empty
+}
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
 }
 
 import @vibe/compiler/entry/source_compile/wasi_only {
@@ -47,6 +57,17 @@ fn disagreeing_dep() -> String {
   String::concat(generic_effect(), "export fn mixed() -> Int {\n  handle {\n    let a: Int = perform E::X\n    let b: String = perform E::Y\n    a + String::length(b)\n  } with {\n    E::X|E::Y => {\n      let k = resume\n      0\n    }\n  }\n}\n")
 }
 
+/// A refusal's message without the checker's trailing source-position
+/// marker (` [@off=N:M]`), which the located library lane carries.
+fn without_marker(message: String) -> String {
+  let at = String::index_of(message, " [@off=")
+  if at < 0 {
+    message
+  } else {
+    String::substring(message, 0, at)
+  }
+}
+
 fn library_lane(dir: String, source: String) -> String with Env + Fs {
   let path = String::concat(dir, "/dep.vibe")
   Fs::mkdir_p(dir)
@@ -57,7 +78,15 @@ fn library_lane(dir: String, source: String) -> String with Env + Fs {
     } else {
       "not wasm"
     }
-  } with { Exception::Throw(m) => m }
+  } with { Exception::Throw(m) => without_marker(m) }
+}
+
+/// The same program checked from an UNLOCATED parse: every node at offset -1.
+fn unlocated_check(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    "ok"
+  } with { Exception::Throw(m) => without_marker(m) }
 }
 
 /// Two or-pattern arms whose operations share a prefix, each `handle`
@@ -99,4 +128,11 @@ test "the library lane takes or-pattern arms sharing a prefix as two arms" {
 
 test "the library lane never compares arms written apart" {
   inspect(library_lane("/tmp/vibe_or_arm_unlocated_apart", written_apart_dep()), content = "wasm")
+}
+
+test "an unlocated parse answers the or-pattern arm rule the same way" {
+  inspect(unlocated_check(agreeing_dep()), content = "ok")
+  inspect(unlocated_check(disagreeing_dep()), content = "write `E::X => ..` and `E::Y => ..` as separate arms: `resume` here would take Int for `E::X` but String for `E::Y`, and an or-pattern arm has one `resume`")
+  inspect(unlocated_check(prefix_dep()), content = "ok")
+  inspect(unlocated_check(written_apart_dep()), content = "ok")
 }
