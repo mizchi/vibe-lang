@@ -443,9 +443,11 @@ Not Send:
 - closures;
 - a type with an unresolved type variable, even when every resolved part is
   `Send`: an unannotated `Result::Ok(1)` leaves `E` open and is refused;
-- a type parameter with no `Send` bound -- refused today where a spawned
-  closure captures it; inside its generic body it still satisfies a `T: Send`
-  bound (`Channel::bounded` included), which #3554 tracks;
+- a type parameter with no `Send` bound (nor one that extends `Send`) --
+  refused where a spawned closure captures it, and where its generic body
+  hands it to a `T: Send` bound (`Channel::bounded`, `TaskGroup::spawn`, a
+  program's own `[U: Send]`): its callers are never asked, so the message
+  names the bound to declare on its binder (`[T: Send]`);
 - any named type with no visible declaration -- host resources, opaque
   handles, and the builtin `Map`.
 
@@ -909,6 +911,14 @@ the body's effects are the enclosing function's: its `Async` is discharged by
 `Async + Exception`: a body that prints is written without one (#3519). A body
 that never suspends needs no annotation either:
 `TaskGroup::spawn_suspend(g, () -> 6 * 7)` settles at once.
+
+A wrapper may take its task as an optional parameter (`task?: () -> T with
+Async`), which is declared `Option[..]`. The closure supplied for it arrives as
+`Some(closure)` and is a task closure exactly like a positional one: row-less,
+it may `sleep` and print; never suspending, it is still compiled to the step
+convention the scheduler calls; and the wrapper discharges it, so it does not
+count as a suspension of the entry. An omitted one is `None` (#3555). Pinned by
+`fixtures/spawn_suspend_optional_{rowless_sleep,pure_task,annotated_task}.vibe`.
 
 A host builtin that cannot reach `Async` and takes no closure (`println`,
 `Fs::read_file`) is see-through to the suspend lowering, so a suspendable task

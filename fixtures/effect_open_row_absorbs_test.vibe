@@ -1,0 +1,66 @@
+// #3575: an open row `Log + e` takes the labels of the callback that its
+// concrete part does not name. Before, the row was compared with the
+// callback's as a label set, `e` counting as one more label, so any callback
+// with an effect beyond `Log` was refused as dropping it.
+effect Log {
+  Emit(String) -> Unit
+}
+
+effect Tick {
+  Step(Int) -> Int
+}
+
+fn call(f: () -> Int with Log + e) -> Int with Log + e {
+  f()
+}
+
+fn call_explicit[e](f: () -> Int with Log + e) -> Int with Log + e {
+  f()
+}
+
+fn kinded[e](f: () -> Int with Exception[Int] + e) -> Int with Exception[Int] + e {
+  f()
+}
+
+fn both() -> Int with Log + Tick {
+  perform Log::Emit("both")
+  perform Tick::Step(1)
+}
+
+// Fewer labels than the slot's concrete part, plus one it does not name.
+fn ticks() -> Int with Tick {
+  perform Tick::Step(10)
+}
+
+fn logs() -> Int with Log {
+  perform Log::Emit("logs")
+  4
+}
+
+fn raises() -> Int with Exception[Int] + Tick {
+  let n = perform Tick::Step(100)
+  throw(n)
+}
+
+// The caller declares what each call's `e` was instantiated to.
+fn drive() -> Int with Log + Tick {
+  call(both) + call_explicit(both) + call(ticks) + call(logs)
+}
+
+fn caught() -> Int with Tick {
+  handle {
+    kinded(raises)
+  } with { Exception[Int]::Throw(n) => n }
+}
+
+fn run() -> Int {
+  handle {
+    handle {
+      drive() + caught()
+    } with { Log::Emit(_m) => resume(()) }
+  } with { Tick::Step(n) => resume(n + 1) }
+}
+
+test "an open row absorbs the labels its concrete part does not name" {
+  inspect(run(), "120")
+}

@@ -238,6 +238,19 @@ const modeArms = [
     { role: "handle-name", pattern: "EHandle(_, arms)", body: "dinsp_arms_bind(arms, name)" },
     { role: "mention-default", pattern: "_", body: "false" }
   ] },
+  // #3532: the re-throw guard asks whether an arm body rebinds the arm's
+  // binder; every binder spelling counts, references do not.
+  { mode: 8, arms: [
+    { role: "rebind-let", pattern: "ELet(n, _, _, _)", body: "n == name" },
+    { role: "rebind-letrec", pattern: "ELetRec(n, _, _)", body: "n == name" },
+    { role: "rebind-letmut", pattern: "ELetMut(n, _, _, _)", body: "n == name" },
+    { role: "rebind-for", pattern: "EForIn(v, idx, _, _)", body: "v == name || dinsp_opt_is(idx, name)" },
+    { role: "rebind-parameter", pattern: "EFn(_, _, params, _, _, _)", body: "dinsp_params_bind_spelled(params, name)" },
+    { role: "rebind-match", pattern: "EMatch(_, arms)", body: "dinsp_arms_bind(arms, name)" },
+    { role: "rebind-handle", pattern: "EHandle(_, arms)", body: `name == "resume" || dinsp_arms_bind(arms, name)` },
+    { role: "rebind-loop", pattern: "ELoop(params, _)", body: "dinsp_loop_params_bind(params, name)" },
+    { role: "rebind-default", pattern: "_", body: "false" }
+  ] },
   { mode: 3, arms: [
     { role: "labeled-wrapper-self", pattern: "ELabeledArg(_, _, _)", body: "true" },
     // #1952: a block-local `(a: Int, b?: Int)` is the second reason the
@@ -379,7 +392,8 @@ expectMutationFailure("census records one bit twice", () => {
 const droppedMode = mutate(scan.body, /\} else if mode == 6 \{[\s\S]*?\n  \} else \{/, "} else {", "a dropped mode");
 expectMutationFailure("a dropped mode", () => assert.equal(matchExprArms(droppedMode).length, modeArms.length + 1));
 const wrongOptionalArm = mutate(scan.body, "EFn(_, _, params, _, _, _) => dinsp_params_optional(params),", "EFn(_, _, params, _, _, _) => dinsp_params_bind(params, name),", "mode 3 optional-parameter arm");
-expectMutationFailure("mode 3 optional-parameter arm", () => assertArms(matchExprArms(wrongOptionalArm)[1], modeArms[1].arms, "mutated mode 3"));
+const mode3Index = modeArms.findIndex(({ mode }) => mode === 3);
+expectMutationFailure("mode 3 optional-parameter arm", () => assertArms(matchExprArms(wrongOptionalArm)[mode3Index], modeArms[mode3Index].arms, "mutated mode 3"));
 
 const synthetic = `fn probe(expr: Expr) -> Bool {
   let escaped = "quoted \\\" match expr { [ ( ) ] }"

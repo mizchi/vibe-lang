@@ -27,6 +27,7 @@ import ./state.vibe {
 ///   mode 3 -- does this contain a labeled-argument wrapper?
 ///   mode 4 -- is `name` used anywhere except as a direct call callee?
 ///   mode 5 -- is `name` targeted by an assignment or assignment-op?
+///   mode 8 -- does this BIND `name` anywhere (any binder form, any depth)?
 ///
 /// The variants are enumerated by hand rather than recursed through
 /// `expr_children`, and that is the whole point: `expr_children` ALLOCATES a
@@ -107,6 +108,24 @@ export fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       EFn(_, _, params, _, _, _) => dinsp_params_bind(params, name),
       EMatch(_, arms) => dinsp_arms_bind(arms, name),
       EHandle(_, arms) => dinsp_arms_bind(arms, name),
+      _ => false
+    }
+  } else if mode == 8 {
+    // #3532: the re-throw guard (`exn_rethrow_enter`) asks whether every
+    // `name` inside an arm body still means the arm's own binder. Unlike mode
+    // 2 it ignores references, and it counts every binder spelling: a `for`
+    // index, a `loop` parameter, a labeled or optional parameter (`name~`,
+    // `name?`), and the `resume` an operation arm binds. Over-approximating
+    // only costs the guard its restore; it never makes a binder look free.
+    match expr {
+      ELet(n, _, _, _) => n == name,
+      ELetRec(n, _, _) => n == name,
+      ELetMut(n, _, _, _) => n == name,
+      EForIn(v, idx, _, _) => v == name || dinsp_opt_is(idx, name),
+      EFn(_, _, params, _, _, _) => dinsp_params_bind_spelled(params, name),
+      EMatch(_, arms) => dinsp_arms_bind(arms, name),
+      EHandle(_, arms) => name == "resume" || dinsp_arms_bind(arms, name),
+      ELoop(params, _) => dinsp_loop_params_bind(params, name),
       _ => false
     }
   } else if mode == 3 {
@@ -320,6 +339,37 @@ fn dinsp_params_bind(params: Array[(String, Option[TypeExpr])], name: String) ->
     i = i + 1
   }
   found
+}
+
+/// A parameter binds `name` under any spelling the parser leaves on it: bare,
+/// labeled (`name~`) or optional (`name?`).
+fn dinsp_params_bind_spelled(params: Array[(String, Option[TypeExpr])], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    found = pn == name || pn == String::concat(name, "~") || pn == String::concat(name, "?")
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_loop_params_bind(params: Array[(String, Expr)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    found = pn == name
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_opt_is(opt: Option[String], name: String) -> Bool {
+  match opt {
+    Some(n) => n == name,
+    None => false
+  }
 }
 
 /// `base`, or `base` with the smallest numeric suffix that neither argument

@@ -1,0 +1,98 @@
+// #3532: re-throwing an exception arm's own binder keeps what the original
+// throw reported. The cleanup shape below (`TaskGroup::run` has the same one)
+// catches through an erased arm, so the binder has no static type there, and
+// the re-throw used to publish an empty kind and no message. An outer erased
+// arm then read `""` from `__exn_kind()` / `__exn_message()`, and the entry
+// boundary printed the payload's heap address (`vibe: uncaught error: 1764`).
+// The arm now saves the report on entry and the re-throw writes it back.
+//
+// The answers are read through the side channel on purpose: an outer KINDED
+// arm renders its own typed binder and never looks at the channel, so it
+// could not tell the two behaviours apart.
+
+enum Bad {
+  Bad(String)
+} derive (Show)
+
+let log: Array[String] = []
+
+/// Cleanup, then the caught payload re-thrown unchanged.
+fn guarded[T, e](body: () -> T with e) -> T with e {
+  handle {
+    body()
+  } with { Exception::Throw(p) => {
+    Array::push(log, "cleanup")
+    throw(p)
+  } }
+}
+
+/// The same, with a cleanup that throws and catches an exception of its own
+/// before the re-throw -- which rewrites the channel in between.
+fn guarded_noisy[T, e](body: () -> T with e) -> T with e {
+  handle {
+    body()
+  } with { Exception::Throw(p) => {
+    let _ = handle {
+      throw("cleanup failed")
+      0
+    } with { Exception::Throw(_) => 1 }
+    throw(p)
+  } }
+}
+
+/// A re-throw from inside a closure the arm builds.
+fn guarded_deferred[T, e](body: () -> T with e) -> T with e {
+  handle {
+    body()
+  } with { Exception::Throw(p) => {
+    let again = () -> throw(p)
+    again()
+  } }
+}
+
+fn fail() -> Int with Exception[Bad] {
+  throw(Bad("x"))
+}
+
+fn report(f: () -> Int with Exception[Bad]) -> String {
+  handle {
+    let _ = f()
+    "none"
+  } with { Exception::Throw(_) => "\{__exn_kind()}: \{__exn_message()}" }
+}
+
+test "a re-thrown erased binder keeps the original kind and message" {
+  inspect(report(() -> guarded(() -> fail())), "Bad: Bad(x)")
+}
+
+test "a cleanup that throws and catches does not replace the report" {
+  inspect(report(() -> guarded_noisy(() -> fail())), "Bad: Bad(x)")
+}
+
+test "a re-throw from a closure the arm built keeps the report" {
+  inspect(report(() -> guarded_deferred(() -> fail())), "Bad: Bad(x)")
+}
+
+test "nested cleanup arms each pass the report through" {
+  inspect(report(() -> guarded(() -> guarded(() -> fail()))), "Bad: Bad(x)")
+}
+
+/// Control: once the arm's body rebinds the name, `throw(p)` throws the NEW
+/// value, which reports itself -- the saved report must not be written back.
+fn rebinds_payload() -> Int with Exception {
+  handle {
+    throw("first")
+    0
+  } with { Exception::Throw(p) => {
+    let p = "second"
+    throw(p)
+  } }
+}
+
+test "a rebound name throws and reports the new value" {
+  let r = handle {
+    let _ = rebinds_payload()
+    "none"
+  } with { Exception::Throw(m) => "\{__exn_kind()}: \{m}" }
+  inspect(r, "String: second")
+}

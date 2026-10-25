@@ -1,7 +1,14 @@
 // Exceptions.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, __to_string, builtin_callee_resolution, is_exception_effect_name, is_exception_throw_operation
+  Expr,
+  Pat,
+  Stmt,
+  __to_string,
+  builtin_callee_resolution,
+  is_exception_effect_name,
+  is_exception_throw_handler_name,
+  is_exception_throw_operation
 }
 
 import @vibe/ast {
@@ -13,11 +20,11 @@ import @vibe/core {
 }
 
 import ./inspect_rewrite.vibe {
-  dinsp_fresh_name
+  dinsp_fresh_name, dinsp_scan
 }
 
 import ./state.vibe {
-  dtd_exn_kind_state
+  dtd_exn_kind_state, dtd_exn_rethrow_ids, dtd_exn_rethrow_names, dtd_exn_rethrow_used
 }
 
 import ./utilities.vibe {
@@ -99,10 +106,16 @@ export fn exn_kind_read_expr() -> Expr {
 }
 
 export fn exn_kind_write_expr(kind: String) -> Expr {
+  exn_kind_write_value(EString(kind, -1))
+}
+
+/// `exn_kind_write_expr` for a kind computed at run time (#3532: a re-throw
+/// writes back the kind its arm saved).
+export fn exn_kind_write_value(kind: Expr) -> Expr {
   ECall(builtin_ref("Array::set"), [
     EIdent(exn_kind_cell_name(), -1),
     EInt(0),
-    EString(kind, -1)
+    kind
   ], -1, builtin_callee_resolution("Array::set"))
 }
 
@@ -263,6 +276,124 @@ export fn exn_kind_fresh_payload_name() -> String {
   let n = Array::get(dtd_exn_kind_state, 2)
   Array::set(dtd_exn_kind_state, 2, n + 1)
   String::concat("__exn_payload", __to_string(n))
+}
+
+//# #3532: a re-throw of an exception arm's own binder keeps the original report
+//
+// `handle { .. } with { Exception::Throw(p) => { cleanup(); throw(p) } }` is
+// the cleanup shape (`TaskGroup::run` releases its host waits this way). The
+// arm is erased, so `p` has no static type there and the re-throw site
+// recorded kind "" and no message -- and the entry boundary, reading kind "",
+// printed `__to_string(p)`: `vibe: uncaught error: 1764`, a heap address, for
+// a `TaskError` whose original throw had rendered `Failed(boom)`.
+//
+// The throw that reached the arm DID publish both, and the arm runs before
+// anything else can overwrite them (see the one-slot argument above). So the
+// arm copies the cell into two locals on entry, and a re-throw of the binder
+// writes the copy back instead of the "" it would otherwise publish. That
+// makes the re-throw transparent: whoever reads the cell next -- an outer
+// handler or the entry boundary -- sees exactly what it would have seen with
+// no arm in between. The copy is taken on entry rather than read at the
+// re-throw because the cleanup between the two may itself throw and catch,
+// which rewrites the cell.
+//
+// The copy describes the binder only while the name still means the binder.
+// `exn_rethrow_enter` refuses an arm whose body rebinds the name ANYWHERE
+// (`dinsp_scan` mode 8), so a `throw(p)` the restore matches always throws
+// the arm's own payload; a lambda that captures `p` captures the copies too.
+// A kinded arm (`Exception[K]::Throw(e)`) takes the copy too: it holds what
+// rendering `e` at the re-throw would publish, without trusting a type this
+// pass may have read from an outer binding of the same name.
+
+/// The local an arm copies the cell's kind into on entry (`[0]`).
+export fn exn_rethrow_saved_kind_name(id: Int) -> String {
+  String::concat("__exn_rethrow_kind", __to_string(id))
+}
+
+/// The local an arm copies the cell's rendered message into (`[1]`).
+export fn exn_rethrow_saved_msg_name(id: Int) -> String {
+  String::concat("__exn_rethrow_msg", __to_string(id))
+}
+
+/// Forget every open arm. Called with the rest of the pass state, so an arm
+/// left open by a rewrite that threw cannot leak into the next program.
+export fn exn_rethrow_reset() -> Unit {
+  Array::truncate(dtd_exn_rethrow_names, 0)
+  Array::truncate(dtd_exn_rethrow_ids, 0)
+  Array::truncate(dtd_exn_rethrow_used, 0)
+}
+
+/// Open an exception arm `p => body` for re-throws, before its body is
+/// rewritten. Answers the arm's slot on the stack, or -1 when `p` is not a
+/// single-binder exception arm or `body` rebinds the binder's name.
+export fn exn_rethrow_enter(p: Pat, body: Expr) -> Int {
+  if exn_kind_suppressed() {
+    -1
+  } else {
+    match p {
+      PCtor(label, subs) => if Array::length(subs) == 1 && is_exception_throw_handler_name(label) {
+        match Array::get(subs, 0) {
+          PBind(v) => if dinsp_scan(body, 8, v) {
+            -1
+          } else {
+            let id = Array::get(dtd_exn_kind_state, 2)
+            Array::set(dtd_exn_kind_state, 2, id + 1)
+            Array::push(dtd_exn_rethrow_names, v)
+            Array::push(dtd_exn_rethrow_ids, id)
+            Array::push(dtd_exn_rethrow_used, 0)
+            Array::length(dtd_exn_rethrow_names) - 1
+          },
+          _ => -1
+        }
+      } else {
+        -1
+      },
+      _ => -1
+    }
+  }
+}
+
+/// Close the arm `exn_rethrow_enter` opened, with its rewritten body. When a
+/// re-throw in the body took the copy, the body is wrapped in the two locals
+/// that hold it; otherwise it is returned unchanged.
+export fn exn_rethrow_leave(ctx: Int, rewritten: Expr) -> Expr {
+  if ctx < 0 {
+    rewritten
+  } else {
+    let id = Array::get(dtd_exn_rethrow_ids, ctx)
+    let used = Array::get(dtd_exn_rethrow_used, ctx) == 1
+    Array::truncate(dtd_exn_rethrow_names, ctx)
+    Array::truncate(dtd_exn_rethrow_ids, ctx)
+    Array::truncate(dtd_exn_rethrow_used, ctx)
+    if used {
+      exn_kind_mark_used()
+      ELet(exn_rethrow_saved_kind_name(id), exn_kind_read_expr(), ELet(exn_rethrow_saved_msg_name(id), exn_msg_read_expr(), rewritten, -1), -1)
+    } else {
+      rewritten
+    }
+  }
+}
+
+/// The saved-copy id for a throw whose payload is an open arm's binder, or -1.
+/// Marks that arm as needing its copy.
+export fn exn_rethrow_restore(payload: Expr) -> Int {
+  match payload {
+    EIdent(v, _) => {
+      let mut i = Array::length(dtd_exn_rethrow_names) - 1
+      let mut found = -1
+      while i >= 0 {
+        if Array::get(dtd_exn_rethrow_names, i) == v {
+          Array::set(dtd_exn_rethrow_used, i, 1)
+          found = Array::get(dtd_exn_rethrow_ids, i)
+          i = -1
+        } else {
+          i = i - 1
+        }
+      }
+      found
+    },
+    _ => -1
+  }
 }
 
 /// `perform <Error|Exception[K]>::Throw(payload)` -- the ONLY shape `throw(x)`

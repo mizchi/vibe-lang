@@ -70,6 +70,7 @@ import @vibe/compiler/core {
   lookup_registry_builtin,
   rewrite_import_alias_stmt,
   subst_apply,
+  subst_bounds_for,
   trait_defined,
   trait_definition,
   trait_impl_declared_for_ctor,
@@ -84,7 +85,7 @@ import @vibe/compiler/checker/type_relations {
 }
 
 import ./checker_merge_capture_provenance.vibe {
-  call_callee_sites, type_is_erased_rethrow
+  call_callee_sites, formals_standing_for_var, type_is_erased_rethrow
 }
 
 import ./checker.vibe {
@@ -141,7 +142,7 @@ import ./checker_stmt_push_source_scope_names.vibe {
 }
 
 import ./checker_stmt_stmts_with_binders.vibe {
-  check_stmts_with_binders
+  check_stmts_with_binders, derived_hash_renderer_withheld, hash_renderer_withheld_add, hash_renderer_withheld_reset
 }
 
 /// #1503: `no impl `Eq` for `Array[Int]`` is flatly false when the program
@@ -345,12 +346,13 @@ export fn push_error_strings(msgs: Array[String], errors: Array[String]) -> Unit
 export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Array[String]) -> Unit {
   let pairs = collect_subst_bounds_pairs(s)
   let n = Array::length(pairs)
+  let unsent: Array[(Int, String, String, Int)] = []
   let mut i = 0
   while i < n {
     let (vid, bounds) = Array::get(pairs, i)
     let resolved = subst_apply(s, CtVar(vid))
     match resolved {
-      CtVar(_) => (),
+      CtVar(rep) => note_unsent_formals(env, s, vid, rep, bounds, unsent),
       CtUnknown => (),
       _ => {
         let bn = Array::length(bounds)
@@ -405,7 +407,71 @@ export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], err
     }
     i = i + 1
   }
+  for entry in unsent {
+    let (_, spelled, bound, site_vid) = entry
+    let shown = trait_reference_display(bound)
+    let edit = String::concat("declare the bound on its binder: `[", String::concat(spelled, String::concat(": ", String::concat(shown, "]`"))))
+    let why = String::concat("` is a type parameter with no `Send` bound, so its callers are never asked for one and any value -- an `Array`, `Bytes`, a closure, a `mut` field -- would cross here; ", edit)
+    Array::push(errors, String::concat("no impl `", String::concat(shown, String::concat("` for `", String::concat(spelled, String::concat("`: `", String::concat(spelled, String::concat(why, bound_var_site_marker(site_vid)))))))))
+  }
   reset_bound_var_sites()
+}
+
+/// #3554: a bound that requires `Send` (`Send` itself, or a trait extending
+/// it) whose variable resolved to another VARIABLE used to be skipped as
+/// unresolved. Inside a generic body that variable can be a type parameter --
+/// formals are unification variables there -- and one with no `Send` bound of
+/// its own is not Send: `fn r[T](x: T) { need(x) }` with `fn need[U: Send]`
+/// let any `T` across, because `r`'s callers are never asked. Each such
+/// formal is recorded once, at the earliest call (pairs come newest first).
+fn note_unsent_formals(env: TypeEnv, s: Subst, vid: Int, rep: Int, bounds: Array[String], unsent: Array[(Int, String, String, Int)]) -> Unit {
+  let mut wanted = ""
+  for b in bounds {
+    if wanted == "" && bound_entails_send(env, b) {
+      wanted = b
+    } else {
+      ()
+    }
+  }
+  if wanted != "" {
+    for formal in formals_standing_for_var(rep, s) {
+      let (fvid, spelled) = formal
+      if !bounds_entail_send(env, subst_bounds_for(s, fvid)) {
+        let mut at = 0 - 1
+        let mut k = 0
+        while k < Array::length(unsent) {
+          let (uvid, _, _, _) = Array::get(unsent, k)
+          if uvid == fvid {
+            at = k
+          } else {
+            ()
+          }
+          k = k + 1
+        }
+        if at >= 0 {
+          Array::set(unsent, at, (fvid, spelled, wanted, vid))
+        } else {
+          Array::push(unsent, (fvid, spelled, wanted, vid))
+        }
+      } else {
+        ()
+      }
+    }
+  } else {
+    ()
+  }
+}
+
+fn bounds_entail_send(env: TypeEnv, bounds: Array[String]) -> Bool {
+  let mut found = false
+  for b in bounds {
+    if bound_entails_send(env, b) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
 }
 
 /// #1340 (ADR-0071): validate a generic-instantiation row item
@@ -987,6 +1053,7 @@ export fn collect_derive_field_errors(stmts: Array[Stmt], env: TypeEnv, errors: 
     }
     d = d + 1
   }
+  dfe_fill_hash_renderless(stmts, declared, declared_derives, defined, aliases, generics, env)
   let mut s = 0
   while s < Array::length(stmts) {
     match Array::get(stmts, s) {
@@ -1014,6 +1081,69 @@ export fn collect_derive_field_errors(stmts: Array[Stmt], env: TypeEnv, errors: 
     }
     s = s + 1
   }
+}
+
+/// `derive (Hash)` also derives a renderer, so that interpolating the value
+/// works. The key never calls it (#3544). When a field the renderer would
+/// render has no renderer, the renderer is not derived, rather than the
+/// derive refused: the type keeps its key and, like a type that derives
+/// nothing, has no `to_string`. The desugar withholds the same renderer
+/// (`hash_renderless_types`). The judgement is the one `derive (Show)` gets
+/// (`dfe_check_show`), run to a least fixpoint, because a field of another
+/// withheld type has no renderer either (`dfe_check_trait` reads the set, which
+/// `check_stmts_with_binders` reads too, to bind no `T::to_string` for them).
+fn dfe_fill_hash_renderless(stmts: Array[Stmt], declared: Array[String], declared_derives: Array[Array[String]], defined: Array[String], aliases: Array[(String, Array[String], TypeExpr)], generics: Array[(String, Array[String], Array[TypeExpr], Array[String])], env: TypeEnv) -> Unit {
+  hash_renderer_withheld_reset()
+  let candidates: Array[(String, Array[String], Array[TypeExpr])] = []
+  for st in stmts {
+    match st {
+      SStruct(_, name, fields, derives, _, tparams) => if dfe_renderer_is_hash_only(name, derives, defined) {
+        Array::push(candidates, (name, tparams, for field in fields {
+          field.1
+        }))
+      } else {
+        ()
+      },
+      SEnum(_, name, tparams, variants, derives) => if dfe_renderer_is_hash_only(name, derives, defined) {
+        let parts: Array[TypeExpr] = []
+        for variant in variants {
+          for payload in variant.1 {
+            Array::push(parts, payload)
+          }
+        }
+        Array::push(candidates, (name, tparams, parts))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  let mut changed = Array::length(candidates) > 0
+  while changed {
+    changed = false
+    for candidate in candidates {
+      let (name, tparams, parts) = candidate
+      if !derived_hash_renderer_withheld(name) {
+        let scratch: Array[String] = []
+        for part in parts {
+          dfe_check_show(name, ["Show"], tparams, "field", part, declared, declared_derives, defined, aliases, generics, env, scratch, [
+          ], 0)
+        }
+        if Array::length(scratch) > 0 {
+          hash_renderer_withheld_add(name)
+          changed = true
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    }
+  }
+}
+
+fn dfe_renderer_is_hash_only(name: String, derives: Array[String], defined: Array[String]) -> Bool {
+  struct_derives_has(derives, "Hash") && !struct_derives_has(derives, "Show") && !str_array_has(defined, String::concat(name, "::to_string")) && !str_array_has(defined, String::concat(name, "::#implShow"))
 }
 
 /// An imported declaration's derives are not carried by its TypeDef; its
@@ -1144,7 +1274,7 @@ fn dfe_find_generic(generics: Array[(String, Array[String], Array[TypeExpr], Arr
     let (gn, params, parts, gderives) = Array::get(generics, i)
     if gn == n && Array::length(params) == arity {
       local = true
-      if struct_derives_has(gderives, "Show") || (struct_derives_has(gderives, "Hash") && !written) {
+      if struct_derives_has(gderives, "Show") || (struct_derives_has(gderives, "Hash") && !written && !derived_hash_renderer_withheld(n)) {
         found = Some((params, parts))
       } else {
         ()
@@ -1486,8 +1616,9 @@ fn dfe_check_trait(owner: String, derives: Array[String], trait_name: String, op
     ()
   } else {
     let qualified = String::concat(head, String::concat("::", op))
-    // `derive (Hash)` also generates `to_string` (see the SStruct arm).
-    let derived = struct_derives_has(head_derives, trait_name) || (trait_name == "Show" && struct_derives_has(head_derives, "Hash"))
+    // `derive (Hash)` also generates `to_string` (see the SStruct arm),
+    // unless a field it would render has none (#3567).
+    let derived = struct_derives_has(head_derives, trait_name) || (trait_name == "Show" && struct_derives_has(head_derives, "Hash") && !derived_hash_renderer_withheld(head))
     let written = str_array_has(defined, qualified) || str_array_has(defined, String::concat(head, String::concat("::#impl", trait_name)))
     let imported = match env_lookup(env, qualified) {
       Some(_) => true,

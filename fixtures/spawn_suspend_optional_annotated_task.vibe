@@ -1,0 +1,28 @@
+// #3555: a task closure that carries its own `with Async` row, handed to an
+// OPTIONAL `Async` task parameter, is discharged by the callee like a
+// positional one. The entry-boundary scan walked the `Some(closure)` argument,
+// counted its `sleep_wait` as the entry's own suspension, and the boundary it
+// injected could not be lowered over `TaskGroup::run` ("cannot see through").
+// Executed by tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh
+// (want 42).
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle, sleep_wait
+}
+
+fn start(g~: TaskGroup, task?: () -> Int with Async) -> TaskHandle[Int] {
+  match task {
+    Some(t) => TaskGroup::spawn_suspend(g, t),
+    None => TaskGroup::spawn_suspend(g, () -> 0)
+  }
+}
+
+fn main() -> Int allows Async + Exception {
+  TaskGroup::run((g) -> {
+    let h = start(g = g, task = () -> Int with Async {
+      sleep_wait(1)
+      41
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(h) + 1
+  })
+}

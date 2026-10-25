@@ -577,6 +577,16 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
   for name in fn_names_list {
     module_capacity = module_capacity + String::length(name) + 64
   }
+  // The name section also names every lambda after its owner
+  // (`<owner>__lambda_slot__<k>`), and `vibe.linemap` copies the flushed row
+  // stream. Without them the final appends outgrew the reservation and
+  // doubled the whole module buffer.
+  module_capacity = module_capacity + num_lambdas * 128
+  if linemap_state.enabled {
+    module_capacity = module_capacity + bytebuf_length(linemap_state.stream) + Array::length(linemap_state.grp_fn) * 10 + 32
+  } else {
+    ()
+  }
   let out = Bytes::with_capacity(module_capacity)
   emit_header(out)
   emit_vibe_abi_custom_section(out, "raw")
@@ -2101,7 +2111,9 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
   // as its rows were skipped one at a time before, and skipping does not
   // advance `prev_f`.
   if linemap_state.enabled && Array::length(linemap_state.grp_fn) > 0 {
-    let lm_content = bytebuf_new()
+    // Reserved at its final size: the name, the magic, two LEB128 prefixes
+    // per group and the row stream.
+    let lm_content = Bytes::with_capacity(bytebuf_length(linemap_state.stream) + Array::length(linemap_state.grp_fn) * 10 + 32)
     let lm_name = "vibe.linemap"
     leb128_encode_u32(lm_content, String::length(lm_name))
     let mut lmni = 0

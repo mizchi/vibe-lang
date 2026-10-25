@@ -1119,6 +1119,9 @@ let ord_text = match ord {
 // struct derive(Show) -> Point::to_string(p) : String ("Point { x: 1, y: 2 }")
 // enum derive(Show) -> E::to_string(v) : String ("B(3)" / "A")
 // derive(Hash) -> T::hash_key(v) (構造キー、to_string も併せて生成)
+// The `to_string` is derived only when every field has a renderer (#3567).
+// Otherwise the type keeps its key and has no `to_string`, and interpolating
+// it asks for `derive(Show)`.
 // The key follows `==`, except that a `Double` is keyed as `compare` orders
 // it: every NaN shares one key, so a NaN key can be read back from a Map.
 // derive(Default) -> T::default() + `impl Default for T` 登録 (#1847) —
@@ -2212,6 +2215,34 @@ continuation with a tail `resume(v)` (#627).
 ```vibe
 let apply: [T](f~: (T) -> T with e, x~: T) -> T with e = (f~, x~) -> {
   f(x)
+}
+```
+
+A row variable is filled at each call, wherever the signature writes it:
+
+- beside concrete labels, it takes what the argument performs beyond them.
+  `call(work)` below binds `e := Fs` for a `work` with `Console + Fs`, and
+  `e := Env` for one with only `Env`; the caller is charged `Console + e` as
+  filled (#3575).
+- as a struct's row argument, with or without a binder: `j: Job[e]` beside
+  `with e` is the signature's own `e`, and each `Job::{ .. }` literal has its
+  own row (#3574).
+- on a local lambda with an explicit binder (`let call = [e](f: () -> Int
+  with e) -> Int with e { .. }`), the variable is the lambda's own and is
+  filled per call. Without the binder, a local lambda's `with e` is the
+  enclosing function's (#3576).
+
+```vibe
+fn call(f: () -> Int with Console + e) -> Int with Console + e {
+  f()
+}
+
+struct Job[e] {
+  run: () -> Int with e
+}
+
+fn go(j: Job[e]) -> Int with e {
+  (j.run)()
 }
 ```
 

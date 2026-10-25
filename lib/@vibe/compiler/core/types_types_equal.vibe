@@ -194,6 +194,29 @@ export fn subst_eff_binding(s: Subst, name: String) -> Option[String] {
   out
 }
 
+/// The labels the row variable `label` stands for, pushed onto `resolved`.
+/// #3575: a variable bound to an OPEN row (`e := Fs, $9`) passes on the
+/// variable that row ends in, which may itself be bound by now, so each such
+/// variable is resolved in turn (`fuel` bounds a cyclic chain).
+fn push_resolved_effect_var(s: Subst, label: String, resolved: Array[String], fuel: Int) -> Unit {
+  match subst_eff_lookup(s, label) {
+    Some(bound) => if String::length(bound) > 0 {
+      for part in String::split(bound, ",") {
+        let trimmed = String::trim(part)
+        if String::length(trimmed) == 0 {
+          ()
+        } else if fuel > 0 && trimmed != label && is_effect_var_name(trimmed) {
+          push_resolved_effect_var(s, trimmed, resolved, fuel - 1)
+        } else {
+          Array::push(resolved, trimmed)
+        }
+      }
+      ()
+    },
+    None => Array::push(resolved, label)
+  }
+}
+
 /// Resolve a CtFn effect annotation through the effect-binding chain: a bound
 /// effect variable becomes its binding (an empty binding "" collapses to the
 /// pure row `None`); anything else is returned unchanged.
@@ -209,18 +232,7 @@ fn resolve_effect_opt(s: Subst, eff: Option[String]) -> Option[String] {
       while i < Array::length(labels) {
         let label = String::trim(Array::get(labels, i))
         if is_effect_var_name(label) {
-          match subst_eff_lookup(s, label) {
-            Some(bound) => if String::length(bound) > 0 {
-              for part in String::split(bound, ",") {
-                let trimmed = String::trim(part)
-                if String::length(trimmed) > 0 {
-                  Array::push(resolved, trimmed)
-                }
-              }
-              ()
-            },
-            None => Array::push(resolved, label)
-          }
+          push_resolved_effect_var(s, label, resolved, 16)
         } else if String::starts_with(label, "#capture[") {
           let close = String::index_of(label, "]")
           let mut id = 0
@@ -2142,10 +2154,205 @@ export fn unify_effects(ea: Option[String], eb: Option[String], s: Subst) -> Opt
       },
       None => Some(s)
     }
-  } else if effect_names_compatible(ra, rb) {
-    Some(s)
+  } else {
+    match unify_open_rows(ra, rb, s) {
+      Some(result) => result,
+      None => if effect_names_compatible(ra, rb) {
+        Some(s)
+      } else {
+        None
+      }
+    }
+  }
+}
+
+/// #3575: a resolved row split into its concrete labels and its row
+/// variables.
+fn open_row_parts(row: Option[String]) -> (Array[String], Array[String]) {
+  let concrete = array_empty()
+  let vars = array_empty()
+  for label in effect_label_list(row) {
+    if is_effect_var_name(label) {
+      Array::push(vars, label)
+    } else {
+      Array::push(concrete, label)
+    }
+  }
+  (concrete, vars)
+}
+
+/// Does `labels` name `label`, compared as row set-equality compares them
+/// (`effect_label_base_name`)?
+fn row_labels_name(labels: Array[String], label: String) -> Bool {
+  let base = effect_label_base_name(label)
+  let mut found = false
+  for l in labels {
+    if !found && effect_label_base_name(l) == base {
+      found = true
+    }
+  }
+  found
+}
+
+fn row_labels_subset(small: Array[String], big: Array[String]) -> Bool {
+  let mut ok = true
+  for l in small {
+    if ok && !row_labels_name(big, l) {
+      ok = false
+    }
+  }
+  ok
+}
+
+/// The labels of `big` that `small` does not name, then `tail` (a row
+/// variable, or "" for none), as one row.
+fn row_labels_rest(big: Array[String], small: Array[String], tail: String) -> String {
+  let out = array_empty()
+  for l in big {
+    if !row_labels_name(small, l) && !row_labels_name(out, l) {
+      Array::push(out, l)
+    }
+  }
+  if String::length(tail) > 0 {
+    Array::push(out, tail)
+  }
+  String::join(out, ", ")
+}
+
+/// #3575: unify two rows when one of them is OPEN -- concrete labels beside
+/// one row variable, `Console + e`. The variable takes the labels of the other
+/// side that the concrete part does not name: `Console + e` against `Console +
+/// Fs` binds `e := Fs`, and against `Console + Fs + f` binds `e := Fs + f`.
+/// Before, the two rows were compared as label SETS, the variable counting as
+/// one more label, so `Console + e` met only `Console + e` and a callback with
+/// any further effect was refused as dropping it.
+///
+/// None when neither row is open in this sense (the caller compares the sets
+/// as before); Some(None) when the rows cannot be made equal -- a concrete
+/// label of the open side that the other side lacks, which no binding of the
+/// variable can supply; Some(Some(s')) otherwise. Two open rows of different
+/// variables are unified only when one concrete part contains the other; the
+/// general case would need a fresh third variable, and is refused as before.
+fn unify_open_rows(ra: Option[String], rb: Option[String], s: Subst) -> Option[Option[Subst]] {
+  if row_text_names_var(ra) || row_text_names_var(rb) {
+    unify_open_row_parts(ra, rb, s)
   } else {
     None
+  }
+}
+
+/// Does the row text name a row variable (`e`, `$4`) among its labels? Read
+/// in place, so the common call -- two closed rows -- allocates nothing.
+fn row_text_names_var(row: Option[String]) -> Bool {
+  match row {
+    None => false,
+    Some(text) => {
+      let n = String::length(text)
+      let mut found = false
+      let mut start = 0
+      let mut i = 0
+      while i <= n && !found {
+        if i == n || String::char_code_at(text, i) == 44 {
+          let mut a = start
+          while a < i && String::char_code_at(text, a) == 32 {
+            a = a + 1
+          }
+          let mut b = i
+          while b > a && String::char_code_at(text, b - 1) == 32 {
+            b = b - 1
+          }
+          let c = if b > a {
+            String::char_code_at(text, a)
+          } else {
+            0
+          }
+          if (b - a == 1 && c >= 97 && c <= 122) || (b - a >= 2 && c == 36) {
+            found = true
+          }
+          start = i + 1
+        }
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+fn unify_open_row_parts(ra: Option[String], rb: Option[String], s: Subst) -> Option[Option[Subst]] {
+  let (ca, va) = open_row_parts(ra)
+  let (cb, vb) = open_row_parts(rb)
+  let na = Array::length(va)
+  let nb = Array::length(vb)
+  if na > 1 || nb > 1 || na + nb == 0 {
+    None
+  } else if na == 1 && nb == 1 {
+    let v = Array::get(va, 0)
+    let w = Array::get(vb, 0)
+    if v == w {
+      None
+    } else if row_labels_subset(ca, cb) {
+      Some(Some(SubstEffBind(v, row_labels_rest(cb, ca, w), s)))
+    } else if row_labels_subset(cb, ca) {
+      Some(Some(SubstEffBind(w, row_labels_rest(ca, cb, v), s)))
+    } else {
+      Some(None)
+    }
+  } else if na == 1 {
+    if row_labels_subset(ca, cb) {
+      Some(Some(SubstEffBind(Array::get(va, 0), row_labels_rest(cb, ca, ""), s)))
+    } else {
+      Some(None)
+    }
+  } else if row_labels_subset(cb, ca) {
+    Some(Some(SubstEffBind(Array::get(vb, 0), row_labels_rest(ca, cb, ""), s)))
+  } else {
+    Some(None)
+  }
+}
+
+/// #3575: the open row variable of `expected`'s row that a function value of
+/// type `actual` must widen, and the labels it takes: `actual` performs labels
+/// the concrete part of `expected` does not name, and lacks some that it does
+/// (`with Env` given to `with Console + e`). A function with fewer effects is
+/// assignable to a slot that allows more, so `e := Env` is the binding; plain
+/// unification cannot find it because the rows are not equal. An open value
+/// row passes its own variable on (`with Fs + f` binds `e := Fs + f`). None
+/// for any other shape, including an exception label among the extra ones,
+/// whose kinds the assignability check judges on its own (#3540).
+export fn open_row_widening(expected: Option[String], actual: Option[String], s: Subst) -> Option[Subst] {
+  // A slot whose row names no variable has none to widen; resolving cannot
+  // introduce one.
+  if row_text_names_var(expected) {
+    open_row_widening_parts(expected, actual, s)
+  } else {
+    None
+  }
+}
+
+fn open_row_widening_parts(expected: Option[String], actual: Option[String], s: Subst) -> Option[Subst] {
+  let (ce, ve) = open_row_parts(semantic_effect_opt(resolve_effect_opt(s, expected)))
+  let (ca, va) = open_row_parts(semantic_effect_opt(resolve_effect_opt(s, actual)))
+  if Array::length(ve) != 1 || Array::length(va) > 1 || Array::length(ce) == 0 || row_labels_subset(ce, ca) || row_labels_subset(ca, ce) {
+    None
+  } else {
+    let v = Array::get(ve, 0)
+    // An open value row (`Fs + f`) hands its variable on: `e := Fs + f`.
+    let tail = if Array::length(va) == 1 {
+      Array::get(va, 0)
+    } else {
+      ""
+    }
+    let mut exception = false
+    for l in ca {
+      if is_exception_label(l) && !row_labels_name(ce, l) {
+        exception = true
+      }
+    }
+    if exception || tail == v {
+      None
+    } else {
+      Some(SubstEffBind(v, row_labels_rest(ca, ce, tail), s))
+    }
   }
 }
 

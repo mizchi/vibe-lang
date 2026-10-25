@@ -365,8 +365,10 @@ total = 3
 `a` は sleep で中断し、`b` は `a` を待つところまで走ります。その後 `a` が
 終わって `b` を起こします。中断可能なタスクのクロージャに自前の row は
 要りません: `spawn_suspend` は `Async` のクロージャを期待しており、タスクは
-エントリの capability (ここでは `Console`) を使えます。sleep は足し算では
-なく重なり、壁時計は読みません。
+エントリの capability (ここでは `Console`) を使えます。クロージャに row を
+書くとそれがタスクの row のすべてになり、`spawn_suspend` がそこで受け付ける
+のは `Async + Exception` だけなので、出力するタスクは row を書きません。
+sleep は足し算ではなく重なり、壁時計は読みません。
 
 ## Future と非同期イテレーション
 

@@ -499,6 +499,13 @@ ur_refused fixtures/err_derive_hash_show_only_field_refused.vibe 'keys field `i`
 ur_refused fixtures/err_derive_hash_show_only_field_refused.vibe 'keys field `i` by the key of `Inner`' 'add `Hash` to the `derive` of `Inner`' gc
 ur_refused fixtures/err_derive_hash_generic_array_field_refused.vibe 'field `xs` holds `T`' 'write `Box::hash_key` yourself'
 ur_refused fixtures/err_derive_hash_generic_array_field_refused.vibe 'field `xs` holds `T`' 'write `Box::hash_key` yourself' gc
+# #3567: interpolating a `derive (Hash)` type whose field's type has no
+# renderer. Its implied renderer is withheld (the key does not need it), so the
+# interpolation is refused like that of a type that derives nothing, instead of
+# an internal compiler error. The key side rides the unit lane:
+# fixtures/derive_hash_field_without_show_test.vibe.
+ur_refused fixtures/err_derive_hash_renderless_interp_refused.vibe 'cannot interpolate a value of type `Outer`: it has no Show renderer' 'add `derive(Show)` to `Outer`'
+ur_refused fixtures/err_derive_hash_renderless_interp_refused.vibe 'cannot interpolate a value of type `Outer`: it has no Show renderer' 'add `derive(Show)` to `Outer`' gc
 # #3551: a `Map` field, keyed by the map's address (two equal maps, two keys),
 # and a field whose type's written `hash_key` takes an `Int` -- imported from
 # another module -- which the generated key called with the value anyway. The
@@ -549,6 +556,12 @@ ur_refused fixtures/err_eq_nested_witness_fn_unreadable_refused.vibe 'the type `
 # #3569: a bodyless impl's fallback whose bounded formal no `Self` parameter
 # spells; its witness was left out and the call failed wasm validation.
 ur_refused fixtures/err_impl_bodyless_fallback_formal_unreadable_refused.vibe 'the `Eq` witness for `U` is read only from that parameter' 'spell `U` in the type of `Tag::name`'"'"'s `Self` parameter'
+# #3616: a direct `Trait::m(x)` call whose arguments do not say which of two
+# applied impls it means; the refusal used to name a body that already exists.
+ur_refused fixtures/err_applied_trait_direct_call_ambiguous_refused.vibe '`Both` has `impl Value[Int] for Both` and `impl Value[String] for Both`' 'call the method through a bound that names the trait'"'"'s argument'
+ur_refused fixtures/err_applied_trait_direct_call_ambiguous_refused.vibe '`Both` has `impl Value[Int] for Both` and `impl Value[String] for Both`' 'call the method through a bound that names the trait'"'"'s argument' gc
+ur_refused fixtures/err_applied_trait_direct_call_unreadable_arg_refused.vibe '`P` has `impl It[Int] for P` and `impl It[String] for P`' 'annotate the argument of this call that fixes `A` in `It[A]`'
+ur_refused fixtures/err_applied_trait_direct_call_unreadable_arg_refused.vibe '`P` has `impl It[Int] for P` and `impl It[String] for P`' 'annotate the argument of this call that fixes `A` in `It[A]`' gc
 ur_refused fixtures/err_eq_witness_missing_refused.vibe 'the `Eq` witness for `T` does not reach this comparison' 'compare at a concrete type, or pass the comparison in as a parameter'
 # #3613: a projected field typed by its struct's parameter, off a receiver
 # whose type arguments are not readable, would compare by reference.

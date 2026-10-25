@@ -1,0 +1,27 @@
+// #3555: a closure that never suspends, handed to an OPTIONAL `Async` task
+// parameter, is called by the scheduler under the step convention, so it must
+// be compiled to return a step. Positionally the literal is wrapped that way;
+// as an optional argument it arrives as `Some(closure)`, the wrapping was
+// skipped, and the task trapped (`unreachable` in `__scps_bubble_Async`)
+// after a clean `vibe check`. The omitted argument takes the callee's default.
+// Executed by tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh
+// (want 42).
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+fn start(g~: TaskGroup, task?: () -> Int with Async) -> TaskHandle[Int] {
+  match task {
+    Some(t) => TaskGroup::spawn_suspend(g, t),
+    None => TaskGroup::spawn_suspend(g, () -> 1)
+  }
+}
+
+fn main() -> Int allows Async + Exception {
+  TaskGroup::run((g) -> {
+    let h = start(g = g, task = () -> 40)
+    let d = start(g = g)
+    TaskGroup::pump_all(g)
+    TaskHandle::join(h) + TaskHandle::join(d) + 1
+  })
+}

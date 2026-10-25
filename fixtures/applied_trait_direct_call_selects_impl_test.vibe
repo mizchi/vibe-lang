@@ -1,0 +1,86 @@
+// #3616: with two applied impls of one parameterized trait for the same type,
+// a direct `Trait::m(x, ..)` call selects the impl from the argument types.
+// It used to fail with "add a body for `pass` to `impl It for P`".
+
+trait It[A] {
+  pass(self: Self, a: A) -> A
+}
+
+struct P {
+  n: Int
+}
+
+impl It[Int] for P {
+  pass(self: Self, a: Int) -> Int {
+    a + self.n
+  }
+}
+
+impl It[String] for P {
+  pass(self: Self, a: String) -> String {
+    a + "!"
+  }
+}
+
+trait Pick[A] {
+  pick(Self, A, A) -> A
+}
+
+impl Pick[Int] for P {
+  pick(self: P, a: Int, b: Int) -> Int {
+    a - b + self.n
+  }
+}
+
+impl Pick[String] for P {
+  pick(_self: P, a: String, b: String) -> String {
+    b + a
+  }
+}
+
+impl Pick[Array[Int]] for P {
+  pick(_self: P, a: Array[Int], b: Array[Int]) -> Array[Int] {
+    Array::concat(b, a)
+  }
+}
+
+fn via[T: It[Int]](x: T) -> Int {
+  It::pass(x, 2)
+}
+
+fn via_both[T: It[Int] + It[String]](x: T) -> String {
+  let n = It::pass(x, 40)
+  It::pass(x, "n=") + "\{n}"
+}
+
+test "a direct call selects the impl the argument type names" {
+  let p = P::{ n: 1 }
+  inspect(It::pass(p, 2), "3")
+  inspect(It::pass(p, "s"), "s!")
+}
+
+test "a bound name or an annotated binding selects the impl" {
+  let p = P::{ n: 10 }
+  let k = 5
+  let s: String = "t"
+  inspect(It::pass(p, k), "15")
+  inspect(It::pass(p, s), "t!")
+  let o: Option[Int] = Some(3)
+  let a: Int = match o {
+    Some(v) => v,
+    None => 0
+  }
+  inspect(It::pass(p, a), "13")
+}
+
+test "every argument that names the trait argument agrees" {
+  let p = P::{ n: 100 }
+  inspect(Pick::pick(p, 9, 2), "107")
+  inspect(Pick::pick(p, "a", "b"), "ba")
+  inspect(Pick::pick(p, [1], [2, 3]), "[2, 3, 1]")
+}
+
+test "a call through a bound uses the bound's witness" {
+  inspect(via(P::{ n: 1 }), "3")
+  inspect(via_both(P::{ n: 2 }), "n=!42")
+}

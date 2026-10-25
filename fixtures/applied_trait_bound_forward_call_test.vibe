@@ -1,0 +1,46 @@
+// #3563: a generic called ABOVE its declaration is checked against a scheme
+// hoisted from its signature. That scheme kept an applied bound's arguments as
+// the formals' NAMES (`Conv[A]`), so the forward call looked for an impl of
+// `Conv` at a type literally named `A`. Every `Trait::op` wrapper sits after
+// the module's last trait or impl, so the trailing `trait Base[A]` below turned
+// the `Conv::conv` calls in this file into forward references and they were
+// refused with ``no impl `Conv[A]` for `P` ``. The refusal side is
+// `fixtures/typecheck/applied_trait_bound_{,self_}forward_call_reject.vibe`.
+trait Conv[A] {
+  conv(Self) -> A
+}
+
+struct P { x: Int }
+
+impl Conv[String] for P {
+  conv(self) -> String {
+    "P(\{self.x})"
+  }
+}
+
+impl Conv[Int] for Int {
+  conv(self) -> Int {
+    self * 10
+  }
+}
+
+fn conv_above() -> String {
+  conv_via(P::{ x: 4 })
+}
+
+fn conv_via[T: Conv[A], A](v: T) -> A {
+  Conv::conv(v)
+}
+
+test "a trait operation called above a later generic trait" {
+  inspect(Conv::conv(P::{ x: 3 }), "P(3)")
+  inspect(Conv::conv(5), "50")
+}
+
+test "an applied bound naming another formal, called above its declaration" {
+  inspect(conv_above(), "P(4)")
+}
+
+trait Base[A] {
+  get(Self) -> A
+}

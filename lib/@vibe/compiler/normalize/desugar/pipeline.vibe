@@ -69,7 +69,7 @@ import ./equality_requests.vibe {
 }
 
 import ./exceptions.vibe {
-  collect_struct_field_sets, ensure_exn_kind_cell, exn_kind_cell_present, lookup_str_pair
+  collect_struct_field_sets, ensure_exn_kind_cell, exn_kind_cell_present, exn_rethrow_reset, lookup_str_pair
 }
 
 import ./formal_scope.vibe {
@@ -98,6 +98,10 @@ import ./models.vibe {
 
 import ./railway_binds.vibe {
   collect_toplevel_anon_records, collect_toplevel_constructor_vars
+}
+
+import ./method_witnesses.vibe {
+  dtd_trait_method_binders_set, method_witness_dict_sigs
 }
 
 import ./renderer_scope.vibe {
@@ -586,6 +590,9 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   // bound entailing `Eq`, injected nothing, and `x == y` compared two equal
   // `Double`s raw (`false`).
   dtd_trait_supers_set(supers_map)
+  // #3580: read with the supers graph when a call through a trait bound
+  // passes the witnesses of the method's own bounded formals.
+  dtd_trait_method_binders_set(stmts, traits_raw)
   dtd_inject_builtin_eq(stmts, traits_raw)
   let trait_type_params = collect_trait_type_params(stmts)
   let traits = flatten_traits(traits_raw, supers_map)
@@ -630,6 +637,7 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   })
   Array::set(dtd_exn_kind_state, 1, 0)
   Array::set(dtd_exn_kind_state, 2, 0)
+  exn_rethrow_reset()
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
@@ -713,7 +721,7 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
         } else {
           lookup_trait_type_params(trait_type_params, trait_name)
         }
-        Array::push(stmts, make_dict_struct_stmt(trait_name, sigs, dict_tparams))
+        Array::push(stmts, make_dict_struct_stmt(trait_name, method_witness_dict_sigs(traits, trait_name, sigs), dict_tparams))
       }
       ti = ti + 1
     }

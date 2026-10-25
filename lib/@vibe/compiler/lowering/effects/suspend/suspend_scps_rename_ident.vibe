@@ -201,6 +201,11 @@ export fn scps_op_suffix(qname: String) -> String {
 export fn scps_collect_ctor_names(stmts: Array[Stmt]) -> Array[String] {
   let out = array_empty_str()
   Array::push(out, "Some")
+  // #3555: `None` is a constructor too. Left out, a bare `None` read as a
+  // capture of unknown provenance, so an omitted optional argument (which
+  // arrives as `None`) inside a `TaskGroup::run` body under the `Async`
+  // boundary was refused as "captures `None`".
+  Array::push(out, "None")
   Array::push(out, "Ok")
   Array::push(out, "Err")
   let mut i = 0
@@ -1928,6 +1933,24 @@ export fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals:
   }
 }
 
+/// A parameter of function type whose concrete row carries `eff`: what a
+/// value in it performs, a callee whose own row lacks `eff` discharges.
+fn scps_fn_ty_discharges(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), t: TypeExpr, eff: String) -> Bool {
+  match t {
+    TyFn(_, _, Some(row)) => scps_row_contains(ctx, row, eff) && !scps_row_has_var(row),
+    _ => false
+  }
+}
+
+/// A closure literal or a bare name -- a value, not a computation.
+fn scps_is_value_expr(e: Expr) -> Bool {
+  match e {
+    EFn(_, _, _, _, _, _) => true,
+    EIdent(_, _) => true,
+    _ => false
+  }
+}
+
 fn scps_undischarged_args(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), name: String, args: Array[Expr], eff: String) -> Array[Expr] {
   let (stmts, _, _, _, _, _, _) = ctx
   let mut params: Array[(String, Option[TypeExpr])] = []
@@ -1947,15 +1970,25 @@ fn scps_undischarged_args(ctx: (Array[Stmt], Array[(String, Array[(String, Array
   let mut k = 0
   while k < Array::length(args) {
     let a = Array::get(args, k)
-    let is_value = match a {
-      EFn(_, _, _, _, _, _) => true,
-      EIdent(_, _) => true,
-      _ => false
-    }
-    let discharged = if is_value && k < Array::length(params) {
+    let discharged = if k < Array::length(params) {
       match Array::get(params, k).1 {
-        Some(TyFn(_, _, Some(row))) => scps_row_contains(ctx, row, eff) && !scps_row_has_var(row),
-        _ => false
+        Some(pty) => match a {
+          EFn(_, _, _, _, _, _) => scps_fn_ty_discharges(ctx, pty, eff),
+          EIdent(_, _) => scps_fn_ty_discharges(ctx, pty, eff),
+          // #3555: an optional parameter (`task?: () -> T with Async`) is
+          // declared `Option[..]`; its supplied value arrives as `Some(v)` and
+          // is discharged like `v` in a parameter of the element's type.
+          ECall(EIdent(ctor, _), cargs, _, _) => if (ctor == "Some" || ctor == "Option::Some") && Array::length(cargs) == 1 && scps_is_value_expr(Array::get(cargs, 0)) {
+            match pty {
+              TyApp(head, targs) => head == "Option" && Array::length(targs) == 1 && scps_fn_ty_discharges(ctx, Array::get(targs, 0), eff),
+              _ => false
+            }
+          } else {
+            false
+          },
+          _ => false
+        },
+        None => false
       }
     } else {
       false

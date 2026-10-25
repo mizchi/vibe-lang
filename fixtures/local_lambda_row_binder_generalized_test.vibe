@@ -1,0 +1,35 @@
+// #3576: a local lambda's explicit `[e]` row binder is the lambda's own and
+// is instantiated at each call, as a top-level binder is. Before, a call
+// charged the token `e` to the enclosing function, so `pure_run` was refused
+// with "missing { e }".
+fn noisy() -> Int with Console {
+  println("noisy")
+  10
+}
+
+fn pure_run() -> Int {
+  let call = [e](f: () -> Int with e) -> Int with e {
+    f() + 1
+  }
+  call(() -> 1) + call(() -> 2)
+}
+
+fn noisy_run() -> Int with Console {
+  let call = [e](f: () -> Int with e) -> Int with e {
+    f() + 1
+  }
+  let alias = call
+  call(() -> 1) + call(noisy) + alias(() -> 3) + alias(noisy)
+}
+
+// A concrete label beside the lambda's own variable.
+fn labeled_run() -> Int with Console {
+  let call = [e](f: () -> Int with Console + e) -> Int with Console + e {
+    f()
+  }
+  call(noisy) + call(() -> 20)
+}
+
+test "a local lambda's row binder is instantiated per call" allows Console {
+  inspect(pure_run() + noisy_run() + labeled_run(), "63")
+}

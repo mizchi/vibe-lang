@@ -57,6 +57,9 @@ let dtd_synth_dict_fields: Array[(String, String, String)]
 let dtd_constructor_tracking: Array[Bool]
 let dtd_constructor_local_returns: Array[String]
 let dtd_exn_kind_state: Array[Int]
+let dtd_exn_rethrow_names: Array[String]
+let dtd_exn_rethrow_ids: Array[Int]
+let dtd_exn_rethrow_used: Array[Int]
 let dtd_typed_index_offs: Array[Int]
 let dtd_typed_index_verdicts: Array[String]
 let dtd_typed_forin_offs: Array[Int]
@@ -64,12 +67,15 @@ let dtd_typed_forin_verdicts: Array[String]
 let dtd_index_refusals: Array[String]
 let dtd_builtin_iterator_namespaces: Array[String]
 let dtd_trait_supers: Array[(String, Array[String])]
+let dtd_trait_method_binders: Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])]
+let dtd_trait_method_sigs_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]
 let dtd_eq_injected: Array[Bool]
 let dtd_constructor_callable_bodies: Array[(String, Array[String], Array[(String, Option[TypeExpr])], Expr)]
 let dtd_constructor_payload_call_stack: Array[String]
 let dtd_show_self_fn: Array[String]
 let dtd_interp_site_off: Array[Int]
 let dtd_derived_renderers: Array[String]
+let dtd_hash_renderless: Array[String]
 let dtd_show_shims: Array[String]
 let dtd_generic_show_shims: Array[String]
 let dtd_local_show_shims: Array[String]
@@ -156,6 +162,7 @@ let dhhc_forward_only: Array[Bool]
 // Exceptions.
 fn exn_kind_read_expr() -> Expr
 fn exn_kind_write_expr(kind: String) -> Expr
+fn exn_kind_write_value(kind: Expr) -> Expr
 fn exn_msg_read_expr() -> Expr
 fn exn_msg_write_expr(rendered: Expr) -> Expr
 fn ensure_exn_kind_cell(stmts: Array[Stmt]) -> Unit
@@ -164,6 +171,12 @@ fn exn_kind_cell_present(stmts: Array[Stmt]) -> Bool
 fn exn_kind_suppressed() -> Bool
 fn exn_kind_mark_used() -> Unit
 fn exn_kind_fresh_payload_name() -> String
+fn exn_rethrow_reset() -> Unit
+fn exn_rethrow_enter(p: Pat, body: Expr) -> Int
+fn exn_rethrow_leave(ctx: Int, rewritten: Expr) -> Expr
+fn exn_rethrow_restore(payload: Expr) -> Int
+fn exn_rethrow_saved_kind_name(id: Int) -> String
+fn exn_rethrow_saved_msg_name(id: Int) -> String
 fn is_perform_throw_shape(callee: Expr, args: Array[Expr]) -> Bool
 fn is_exception_kind_read(callee: Expr, args: Array[Expr]) -> Bool
 fn is_exception_message_read(callee: Expr, args: Array[Expr]) -> Bool
@@ -278,6 +291,9 @@ fn lookup_gen_entry(gens: Array[DictGen], name: String) -> Option[DictGen]
 fn lookup_gen(gens: Array[DictGen], name: String) -> Option[Array[(String, String, Int)]]
 fn matching_generic_impl_method(gens: Array[DictGen], cname: String, trait_name: String, method: String, actual: TypeExpr) -> Option[String]
 fn specialize_applied_trait_for_target(trait_name: String, callee_params: Array[String], actual_target: TypeExpr, gens: Array[DictGen]) -> String
+fn applied_trait_candidates(trait_name: String, callee_params: Array[String], actual_target: TypeExpr, gens: Array[DictGen]) -> Array[String]
+fn call_arg_formal_bindings(param_types: Array[Option[TypeExpr]], args: Array[Expr], callee_params: Array[String], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, TypeExpr)]
+fn narrow_applied_trait_candidates(trait_name: String, callee_params: Array[String], candidates: Array[String], bindings: Array[(String, TypeExpr)]) -> Array[String]
 fn generic_impl_bound_target(gens: Array[DictGen], method_name: String, type_param: String, sig_params: Array[TypeExpr], actual: TypeExpr) -> Option[TypeExpr]
 
 // Lambda return shapes.
@@ -309,8 +325,20 @@ fn dtd_eq_was_injected() -> Bool
 fn dtd_inject_builtin_eq(stmts: Array[Stmt], traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit
 fn dtd_scalar_eq_witness(cname: String, m: String) -> Option[Expr]
 
+// Method witnesses (#3580).
+fn dtd_trait_method_binders_set(stmts: Array[Stmt], traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit
+fn trait_method_binder(trait_name: String, method: String) -> Option[(Array[String], Array[(String, Array[String])])]
+fn trait_method_witness_slots(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], trait_name: String, method: String) -> Array[(String, String)]
+fn method_witness_param(i: Int) -> String
+fn method_witness_dict_sigs(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], trait_name: String, sigs: Array[(String, Array[TypeExpr], TypeExpr)]) -> Array[(String, Array[TypeExpr], TypeExpr)]
+fn method_witness_binds(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], slots: Array[(String, String)]) -> Array[(String, String, String, Array[String])]
+fn impl_method_declares_formal(gen: DictGen, type_param: String) -> Bool
+fn impl_formal_method_formal(gen: DictGen, type_param: String, sig_params: Array[TypeExpr], method_formals: Array[String]) -> Option[String]
+
 // Witness generation.
-fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], nested_recvs: Array[(String, Int, TypeExpr)], orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] with Exception
+fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], nested_recvs: Array[(String, Int, TypeExpr)], param_types: Array[Option[TypeExpr]], orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] with Exception
+fn dict_binds_trait(dict_binds: Array[(String, String, String, Array[String])], dict_pname: String) -> String
+fn method_witness_call_dicts(dict_binds: Array[(String, String, String, Array[String])], dict_pname: String, member: String, orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Array[Expr] with Exception
 
 // Nested witness.
 fn nested_recv_binding(formal: String, nested_recvs: Array[(String, Int, TypeExpr)], orig_args: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> NestedBinding
@@ -502,6 +530,7 @@ fn gen_default_fn(tname: String, fields: Array[(String, TypeExpr)], known_types:
 fn gen_enum_default_fn(ename: String, variants: Array[(String, Array[TypeExpr])], known_types: Array[String]) -> Stmt
 fn collect_array_elem_types(ty: TypeExpr, acc: Array[TypeExpr], acc_keys: Array[String]) -> Unit
 fn collect_decl_type_names(stmts: Array[Stmt]) -> Array[String]
+fn hash_renderless_types(stmts: Array[Stmt]) -> Array[String]
 fn empty_stmt_list() -> Array[Stmt]
 fn struct_decl_exists(stmts: Array[Stmt], name: String) -> Bool
 

@@ -1,0 +1,52 @@
+// Codex on #3624: a call through a trait bound passes the witnesses of the
+// method's own bounded binder (#3580), read from the ONE declaration the
+// flattened dictionary keeps. With `Key: Good + Bad`, both declaring `same`,
+// `flatten_traits` keeps `Good`'s binderless one (supertraits in order, first
+// declaration wins), but the binder search skipped it and found `Bad`'s
+// `[X: Render]`: `T::same(a, b)` in a generic body was refused ("give
+// `Key::same` a parameter of type `X`") where the seed compiled it. The
+// search now asks `flatten_trait_owners`, the flattening rule itself.
+trait Render {
+  render(Self) -> String
+}
+
+trait Good {
+  same(Self, Self) -> Bool
+}
+
+trait Bad {
+  same[X: Render](Self, X) -> Bool
+}
+
+trait Key: Good + Bad {
+}
+
+fn check[T: Key](a: T, b: T) -> Bool {
+  T::same(a, b)
+}
+
+// `Bad`'s binder still reaches a call through `Bad` itself.
+fn via_bad[T: Bad, X: Render](a: T, x: X) -> Bool {
+  T::same(a, x)
+}
+
+struct P {
+  n: Int
+}
+
+impl Render for Int {
+  render(self) -> String {
+    "i\{self}"
+  }
+}
+
+impl Bad for P {
+  same[X: Render](self, x: X) -> Bool {
+    X::render(x) == "i\{self.n}"
+  }
+}
+
+test "the bound's binder is the retained declaration's" {
+  inspect(via_bad(P::{ n: 1 }, 1), "true")
+  inspect(via_bad(P::{ n: 1 }, 2), "false")
+}

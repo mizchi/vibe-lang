@@ -1,0 +1,41 @@
+// #3621: a row-free lambda bound by `let` and passed at parameters of two
+// different rows (`Box[String]` and `Box[Int]`). The checker accepts it: a
+// lambda that never performs `Box` is tied to no instantiation (#3341). The
+// lambda takes a parameter's row only when all its uses agree on one, so it
+// kept the row-free calling convention, and each callee calls it with a
+// handler: called inside a `Box[String]` handler, it trapped ("indirect call
+// type mismatch"). The build is refused with the edit. Writing the closure at
+// each call answers. (`put_s` performs `Box`, which is what makes the calls
+// pass a handler at all.)
+effect Box[T] {
+  Put(T) -> Int
+}
+
+effect Other {
+  Ping() -> Int
+}
+
+fn run_cb(f: () -> Int with Box[String]) -> Int with Box[String] {
+  f()
+}
+
+fn run_int(f: () -> Int with Box[Int]) -> Int {
+  handle {
+    f()
+  } with { Box::Put(n) => resume(n + 1) }
+}
+
+fn pure_lambda() -> Int with Box[String] {
+  let g = () -> Int {
+    3
+  }
+  run_cb(g) + run_int(g)
+}
+
+fn put_s() -> Int with Box[String] {
+  perform Box::Put("s")
+}
+
+fn performs() -> Int with Box[String] {
+  run_cb(put_s)
+}

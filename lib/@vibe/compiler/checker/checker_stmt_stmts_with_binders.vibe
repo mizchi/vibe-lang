@@ -65,6 +65,10 @@ import ./checker_impl_method_signature.vibe {
   check_impl_method_signature, check_impl_supertrait_method_overlap, collect_impl_method_origins, impl_method_origins_of
 }
 
+import ./checker_throw_kind_of_type.vibe {
+  bind_trait_bound_self_reference, bind_trait_bound_tparams
+}
+
 import ./checker_closure_capture_row.vibe {
   quantify_own_rows, quantify_own_rows_of, tail_expr_off
 }
@@ -508,6 +512,15 @@ fn hoisted_scheme_slot(annotation: Option[TypeExpr], tparams: Array[String], var
 }
 
 /// The declared bounds, re-keyed from formal name to this scheme's variable id.
+///
+/// #3563: a bound's own ARGUMENTS are re-keyed too, exactly as the `EFn` arm
+/// does when the declaration itself is checked (`bind_trait_bound_tparams`):
+/// the bounded formal becomes the self marker and every other formal becomes
+/// this scheme's variable for it. A raw `Conv[A]` kept the formal's NAME, so a
+/// caller above the declaration -- every `Trait::op` wrapper sits after the
+/// module's last trait or impl -- resolved `A` as a type named `A` and
+/// reported ``no impl `Conv[A]` for `P` `` once an unrelated trait was
+/// declared below the call.
 fn hoisted_scheme_bounds(tparams: Array[String], tbounds: Array[(String, Array[String])], ids: Array[Int]) -> Array[(Int, Array[String])] {
   let out = array_empty()
   let mut i = 0
@@ -516,7 +529,11 @@ fn hoisted_scheme_bounds(tparams: Array[String], tbounds: Array[(String, Array[S
     let mut j = 0
     while j < Array::length(tparams) {
       if Array::get(tparams, j) == bname {
-        Array::push(out, (Array::get(ids, j), blist))
+        let tpname = type_param_name(bname)
+        let owned = for bound in blist {
+          bind_trait_bound_tparams(bind_trait_bound_self_reference(bound, tpname), tparams, ids)
+        }
+        Array::push(out, (Array::get(ids, j), owned))
       } else {
         ()
       }
@@ -1291,6 +1308,30 @@ fn forward_restore_root_order(capture: Option[CheckerStatementCapture], start: I
   }
 }
 
+/// #3567: the `derive (Hash)` types of the program being checked whose implied
+/// renderer is withheld, because a field it would render has no renderer.
+/// Filled by `collect_derive_field_errors` (`dfe_fill_hash_renderless`),
+/// which runs before the declarations are bound; read below, so no
+/// `T::to_string` is bound for them.
+let hash_renderer_withheld: Array[String] = []
+
+export fn hash_renderer_withheld_reset() -> Unit {
+  Array::truncate(hash_renderer_withheld, 0)
+}
+
+export fn hash_renderer_withheld_add(name: String) -> Unit {
+  Array::push(hash_renderer_withheld, name)
+}
+
+/// Is `T::to_string` withheld from the `derive (Hash)` type `name`?
+export fn derived_hash_renderer_withheld(name: String) -> Bool {
+  let mut found = false
+  for n in hash_renderer_withheld {
+    found = found || n == name
+  }
+  found
+}
+
 export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool, validate_completed_decls: Bool) -> (TypeEnv, Subst, Int) {
   let mut stmts = reorder_type_decls_first(raw_stmts, i)
   // #3538: impl methods are paired with their `SImpl` in PARSE order, which
@@ -2020,7 +2061,8 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         } else {
           env_eq_impl
         }
-        let env_show = if struct_derives_has(enum_derives, "Show") || struct_derives_has(enum_derives, "Hash") {
+        // #3567: not for a `derive (Hash)` enum whose renderer is withheld.
+        let env_show = if struct_derives_has(enum_derives, "Show") || (struct_derives_has(enum_derives, "Hash") && !derived_hash_renderer_withheld(name)) {
           let env_show_base = if struct_derives_has(enum_derives, "Show") {
             EnvTraitImpl("Show", ctor_result_type, env_ord)
           } else {
@@ -2193,7 +2235,8 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         } else {
           env1
         }
-        let env3 = if struct_derives_has(derives, "Show") || struct_derives_has(derives, "Hash") {
+        // #3567: not for a `derive (Hash)` struct whose renderer is withheld.
+        let env3 = if struct_derives_has(derives, "Show") || (struct_derives_has(derives, "Hash") && !derived_hash_renderer_withheld(name)) {
           let env_show_base = if struct_derives_has(derives, "Show") {
             EnvTraitImpl("Show", CtStruct(name), env2)
           } else {

@@ -1,7 +1,7 @@
 //# Imports
 
 import ./checker_parity_test_support.vibe {
-  check_source_err, check_source_ok
+  check_source_err, check_source_err_contains, check_source_ok
 }
 
 //# Misc
@@ -27,6 +27,10 @@ fn ok(body: String) -> Bool {
 
 fn err(body: String) -> Bool {
   check_source_err(String::concat(probe, body))
+}
+
+fn err_says(body: String, needle: String) -> Bool {
+  check_source_err_contains(String::concat(probe, body), needle)
 }
 
 //# Tests
@@ -93,6 +97,29 @@ test "not Send: a closure is not Send" {
 test "Send: inside a generic body, a parameter bounded by Send or by a subtrait of it is Send" {
   assert(ok("fn r[T: Send](x: T) -> Int { need(x) }"))
   assert(ok("trait Wire: Send {\n  weight(Self) -> Int\n}\nfn r[T: Wire](x: T) -> Int { need(x) }"))
+}
+
+test "not Send: inside a generic body, a parameter with no Send bound is not Send" {
+  // #3554: a formal is a unification variable inside its body, so the probe's
+  // bounded variable resolved to `T`'s and the bound check skipped it as
+  // unresolved -- `r`'s callers were never asked, and any `T` crossed. The
+  // message names the bound to declare on `r`'s binder.
+  assert(err_says("fn r[T](x: T) -> Int { need(x) }", "declare the bound on its binder: `[T: Send]`"))
+  assert(err("fn r[T](x: T) -> Int { need(Some(x)) }"))
+  assert(err("fn r[T](x: T) -> Int { need((1, x)) }"))
+  // A bound that does not entail Send does not make the parameter Send.
+  assert(err("trait Tag {\n  tag(Self) -> Int\n}\nfn r[T: Tag](x: T) -> Int { need(x) }"))
+  // A local generic lambda's parameter is a binder the same way.
+  assert(err_says("fn r() -> Int {\n  let g = [U](y: U) -> Int { need(y) }\n  g(1)\n}", "`[U: Send]`"))
+  // A bound that extends `Send` asks for itself on the binder.
+  assert(err_says("trait Wire: Send {\n  weight(Self) -> Int\n}\nfn need_wire[T: Wire](x: T) -> Int { 0 }\nfn r[T](x: T) -> Int { need_wire(x) }", "`[T: Wire]`"))
+  // Through a bounded intermediate, the outer parameter still needs its own.
+  assert(err_says("fn mid[T: Send](x: T) -> Int { need(x) }\nfn r[U](x: U) -> Int { mid(x) }", "`[U: Send]`"))
+  assert(ok("fn mid[T: Send](x: T) -> Int { need(x) }\nfn r[U: Send](x: U) -> Int { mid(x) }"))
+  // A field write checks its receiver and value through a nested expression
+  // check, which used to forget every type parameter recorded before it.
+  assert(err_says("struct M { mut n: Int }\nfn r[T](x: T) -> Int {\n  let m = M::{ n: 0 }\n  m.n = 1\n  need(x)\n}", "`[T: Send]`"))
+  assert(ok("fn r() -> Int {\n  let g = [U: Send](y: U) -> Int { need(y) }\n  g(1)\n}"))
 }
 
 test "not Send: Option of a part that is not Send" {

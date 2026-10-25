@@ -2291,6 +2291,34 @@ export fn record_eq_formal_var(vid: Int, name: String, arity: Int, gid: Int, rig
   }
 }
 
+/// #3554: the number of formal rows recorded so far, for a throwaway re-check
+/// to hand back to `eq_formal_rows_restore`.
+export fn eq_formal_rows_mark() -> Int {
+  Array::length(eq_formal_vars)
+}
+
+/// #3554: drop what a throwaway re-check added to the formal tables -- the
+/// formals its declarations substituted (`efn_mark`) and the rows it recorded
+/// (`mark`). Its substitution is discarded and its variable numbers are
+/// handed out again by the check that continues, so a row it left behind
+/// would name an unrelated variable as a type parameter.
+export fn eq_formal_rows_restore(efn_mark: Int, mark: Int) -> Unit {
+  if efn_mark >= 0 && efn_mark < Array::length(efn_substituted_formals) {
+    Array::truncate(efn_substituted_formals, efn_mark)
+  } else {
+    ()
+  }
+  if mark >= 0 && mark < Array::length(eq_formal_vars) {
+    Array::truncate(eq_formal_vars, mark)
+    Array::truncate(eq_formal_arity, mark)
+    Array::truncate(eq_formal_group, mark)
+    Array::truncate(eq_formal_rigid, mark)
+    Array::truncate(eq_formal_depth, mark)
+  } else {
+    ()
+  }
+}
+
 /// The table row recording binder `vid`, or -1. Scanned from the most recent
 /// row backwards and preferring a row whose declaration is still open: an
 /// auxiliary re-check (`check_resume_values` re-checks each `resume(..)`
@@ -2502,6 +2530,32 @@ export fn unsent_open_formal_vars(s: Subst) -> Array[Int] {
         },
         _ => ()
       }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #3554: the recorded type parameters that variable `rep` stands for under
+/// `s` -- `(variable id, binder spelling)`, open declaration or not. A formal
+/// is a unification variable inside its body, so handing an unbounded `x: T`
+/// to a `[U: Send]` callee leaves the callee's bounded variable resolved to
+/// `T`'s variable (or `T`'s resolved to it, whichever unify picked). The
+/// program bound check runs after every declaration has closed, so it asks
+/// this table which binder the surviving variable is.
+export fn formals_standing_for_var(rep: Int, s: Subst) -> Array[(Int, String)] {
+  let out: Array[(Int, String)] = []
+  let mut i = 0
+  while i < Array::length(eq_formal_vars) {
+    let (vid, name) = Array::get(eq_formal_vars, i)
+    let stands_for = match subst_apply(s, CtVar(vid)) {
+      CtVar(r) => r == rep,
+      _ => false
+    }
+    if stands_for && !eq_formals_has_vid(out, vid) {
+      Array::push(out, (vid, eq_formal_binder_spelling(name, Array::get(eq_formal_arity, i))))
     } else {
       ()
     }

@@ -125,8 +125,14 @@ import ./exceptions.vibe {
   exn_kind_read_expr,
   exn_kind_suppressed,
   exn_kind_write_expr,
+  exn_kind_write_value,
   exn_msg_read_expr,
   exn_msg_write_expr,
+  exn_rethrow_enter,
+  exn_rethrow_leave,
+  exn_rethrow_restore,
+  exn_rethrow_saved_kind_name,
+  exn_rethrow_saved_msg_name,
   is_exception_kind_read,
   is_exception_message_read,
   is_perform_throw_shape,
@@ -294,7 +300,11 @@ import ./utilities.vibe {
 }
 
 import ./witness_generation.vibe {
-  synth_dicts
+  dict_binds_trait, method_witness_call_dicts, synth_dicts
+}
+
+import ./method_witnesses.vibe {
+  trait_method_witness_slots
 }
 
 import ./witnessed_equality.vibe {
@@ -1191,7 +1201,17 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         let (head, member) = parts
         let as_method = find_dict_for_method(dict_binds, head, member)
         match as_method {
-          Some(dict_pname) => EDot(EIdent(dict_pname, -1), member, -1, -1),
+          Some(dict_pname) => {
+            // #3580: a method with a bounded binder of its own takes those
+            // witnesses ahead of its arguments, from the call; a value has no
+            // call to read them from.
+            if Array::length(trait_method_witness_slots(traits, dict_binds_trait(dict_binds, dict_pname), member)) > 0 {
+              throw("call `" + name + "(..)` directly instead of taking it as a value, or wrap it in a lambda with concrete parameter types: `" + member + "` has bounded type parameters of its own, whose witnesses a call through the trait reads from its arguments")
+            } else {
+              ()
+            }
+            EDot(EIdent(dict_pname, -1), member, -1, -1)
+          },
           None => match qual_ctor_member(head, member, struct_sets, fn_returns) {
             Some(m) => EIdent(m, off),
             None => {
@@ -1558,25 +1578,35 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         // the wrapper expansions are `Some(..)`/`Ok(..)`/`Err(..)`/`None`. A
         // user-written formatter could legitimately return "" -- and is no
         // longer called from here at all.
-        let render_vars = if kind == "" {
-          var_types
+        //
+        // #3532: a payload that is an enclosing exception arm's own binder is
+        // a re-throw. Its arm saved what the original throw published
+        // (`exn_rethrow_enter`), so it writes that back instead of rendering
+        // the binder here, where an erased arm leaves it with no type.
+        let rethrow = exn_rethrow_restore(perform_throw_payload(args))
+        let (kind_write, msg_write) = if rethrow >= 0 {
+          (exn_kind_write_value(EIdent(exn_rethrow_saved_kind_name(rethrow), -1)), exn_msg_write_expr(EIdent(exn_rethrow_saved_msg_name(rethrow), -1)))
         } else {
-          extend_var_types(var_types, pname, Some(kind))
+          let render_vars = if kind == "" {
+            var_types
+          } else {
+            extend_var_types(var_types, pname, Some(kind))
+          }
+          let render_target = interp_show_target(EIdent(pname, -1), true, struct_sets, render_vars, fn_returns)
+          let rendered = if render_target != "" {
+            Some(ECall(EIdent(render_target, -1), Array::slice([
+              EIdent(pname, -1)
+            ], 0, 1), -1, []))
+          } else {
+            interp_expand(EIdent(pname, -1), true, gens, traits, struct_sets, dict_binds, render_vars, fn_returns)
+          }
+          (exn_kind_write_expr(kind), exn_msg_write_expr(if interp_has_repl(rendered) {
+            interp_take_repl(rendered)
+          } else {
+            EString("", -1)
+          }))
         }
-        let render_target = interp_show_target(EIdent(pname, -1), true, struct_sets, render_vars, fn_returns)
-        let rendered = if render_target != "" {
-          Some(ECall(EIdent(render_target, -1), Array::slice([
-            EIdent(pname, -1)
-          ], 0, 1), -1, []))
-        } else {
-          interp_expand(EIdent(pname, -1), true, gens, traits, struct_sets, dict_binds, render_vars, fn_returns)
-        }
-        let msg_write = exn_msg_write_expr(if interp_has_repl(rendered) {
-          interp_take_repl(rendered)
-        } else {
-          EString("", -1)
-        })
-        ELet(pname, perform_throw_payload(rwargs), ESeq(exn_kind_write_expr(kind), ESeq(msg_write, ECall(callee, perform_throw_with_payload(rwargs, EIdent(pname, -1)), off, callee_resolution))), -1)
+        ELet(pname, perform_throw_payload(rwargs), ESeq(kind_write, ESeq(msg_write, ECall(callee, perform_throw_with_payload(rwargs, EIdent(pname, -1)), off, callee_resolution))), -1)
       } else {
         let rwargs = for a in args {
           rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
@@ -1641,9 +1671,9 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               match array_intrinsic {
                 Some(intrinsic) => ECall(iterator_array_intrinsic_callee(intrinsic, coff), rwargs, off, callee_resolution),
                 None => match as_method {
-                  Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1, -1), rwargs, off, callee_resolution),
+                  Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1, -1), concat_expr_arrays(method_witness_call_dicts(dict_binds, dict_pname, member_of(name), args, traits, struct_sets, var_types, fn_returns, gens), rwargs), off, callee_resolution),
                   None => match lookup_gen_entry(gens, name) {
-                    Some(gen) => match synth_dicts_if(gen_prepends_dicts(gen), gen.type_params, gen.threaded, gen.constructor_recvs, gen.nested_recvs, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                    Some(gen) => match synth_dicts_if(gen_prepends_dicts(gen), gen.type_params, gen.threaded, gen.constructor_recvs, gen.nested_recvs, gen.param_types, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                       Some(dicts) => ECall(EIdent(name, coff), concat_expr_arrays(dicts, rwargs), off, callee_resolution),
                       None => ECall(EIdent(name, coff), rwargs, off, callee_resolution)
                     },
@@ -1705,7 +1735,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                 None => ()
               }
               match as_tparam_dict {
-                Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), m, -1, -1), prepend_expr(robj, rwargs), off, callee_resolution),
+                Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), m, -1, -1), concat_expr_arrays(method_witness_call_dicts(dict_binds, dict_pname, m, prepend_expr(obj, args), traits, struct_sets, var_types, fn_returns, gens), prepend_expr(robj, rwargs)), off, callee_resolution),
                 None => match as_recv_method {
                   // #1199 bug 2: `qual` (e.g. "Box::describe") can be a
                   // THREADED generic itself (`Box::describe[T: Hash](b:
@@ -1728,7 +1758,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                   // falling back to the un-dicted call (same as the EIdent
                   // arm's own fallback) when synth_dicts can't resolve one.
                   Some(qual) => match lookup_gen_entry(gens, qual) {
-                    Some(gen) => match synth_dicts_if(gen_prepends_dicts(gen), gen.type_params, gen.threaded, gen.constructor_recvs, gen.nested_recvs, prepend_expr(obj, args), traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                    Some(gen) => match synth_dicts_if(gen_prepends_dicts(gen), gen.type_params, gen.threaded, gen.constructor_recvs, gen.nested_recvs, gen.param_types, prepend_expr(obj, args), traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                       Some(dicts) => ECall(EIdent(qual, doff), concat_expr_arrays(dicts, prepend_expr(robj, rwargs)), off, callee_resolution),
                       None => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off, callee_resolution)
                     },
@@ -1745,7 +1775,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               // enclosing formal got no dictionary at all.
               let threaded = lambda_threaded_sig(tp, bs, ps, traits, dict_binds)
               if Array::length(threaded) > 0 {
-                match synth_dicts(tp, threaded, array_empty(), lambda_nested_recvs(bs, ps), args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                match synth_dicts(tp, threaded, array_empty(), lambda_nested_recvs(bs, ps), param_types_of(ps), args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                   Some(dicts) => ECall(rewritten, concat_expr_arrays(dicts, rwargs), off, callee_resolution),
                   None => ECall(rewritten, rwargs, off, callee_resolution)
                 }
@@ -1930,7 +1960,10 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         } else {
           var_types
         }, p, fn_returns), resume_binders, fn_returns))
-        Array::push(out, (p, rewrite_expr(b, gens_masked_by(gens, arm_names), traits, struct_sets, dict_binds, arm_vars, fn_returns)))
+        // #3532: an exception arm saves the cell for a re-throw of its binder.
+        let rethrow_ctx = exn_rethrow_enter(p, b)
+        let rb = rewrite_expr(b, gens_masked_by(gens, arm_names), traits, struct_sets, dict_binds, arm_vars, fn_returns)
+        Array::push(out, (p, exn_rethrow_leave(rethrow_ctx, rb)))
         i = i + 1
       }
       EHandle(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
@@ -2469,9 +2502,9 @@ fn concat_threaded(a: Array[(String, String, Int)], b: Array[(String, String, In
 
 /// `synth_dicts` when the callee actually declares dict parameters, None when
 /// it does not -- see gen_prepends_dicts.
-fn synth_dicts_if(prepend: Bool, callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], nested_recvs: Array[(String, Int, TypeExpr)], args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] with Exception {
+fn synth_dicts_if(prepend: Bool, callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], nested_recvs: Array[(String, Int, TypeExpr)], param_types: Array[Option[TypeExpr]], args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] with Exception {
   if prepend {
-    synth_dicts(callee_type_params, threaded, constructor_recvs, nested_recvs, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens)
+    synth_dicts(callee_type_params, threaded, constructor_recvs, nested_recvs, param_types, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens)
   } else {
     None
   }
@@ -2567,6 +2600,13 @@ fn handler_arm_binds_resume(p: Pat) -> Bool {
 fn param_names(ps: Array[(String, Option[TypeExpr])]) -> Array[String] {
   for p in ps {
     strip_label_tilde(p.0)
+  }
+}
+
+/// Each value parameter's annotation, positionally (`DictGen.param_types`).
+fn param_types_of(ps: Array[(String, Option[TypeExpr])]) -> Array[Option[TypeExpr]] {
+  for p in ps {
+    p.1
   }
 }
 
