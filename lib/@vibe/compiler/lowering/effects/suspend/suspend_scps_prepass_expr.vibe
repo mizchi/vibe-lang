@@ -127,6 +127,10 @@ import ./suspend_scps_rename_ident.vibe {
   scps_y_name
 }
 
+import ./suspend_step_mode.vibe {
+  scps_arms_effect_name, scps_note_step_mode, scps_step_mode, scps_step_mode_wanted, scps_step_param_refused, scps_throw_escape_msg
+}
+
 import ./suspend_scps_split_tail.vibe {
   scps_calls_ok,
   scps_collect_cps_effs,
@@ -267,6 +271,12 @@ export fn suspend_cps_pass(stmts: Array[Stmt]) -> Array[String] {
 }
 
 fn scps_lower_handle_sites(stmts: Array[Stmt]) -> Array[String] {
+  scps_lower_handle_sites_with(stmts, array_empty_str())
+}
+
+/// `extra`: effects put in step mode although no arm stores `resume` -- the
+/// retry below (#3540).
+fn scps_lower_handle_sites_with(stmts: Array[Stmt], extra: Array[String]) -> Array[String] {
   let errs = array_empty_str()
   // #3176: a call spelled like an audited pure builtin reaches the program's
   // own function when the program declares one; judge it by that row.
@@ -289,6 +299,7 @@ fn scps_lower_handle_sites(stmts: Array[Stmt]) -> Array[String] {
   if !any_trigger {
     errs
   } else {
+    let snapshot = Array::slice(stmts, 0, Array::length(stmts))
     let effect_defs = edp_collect_effect_defs(stmts)
     let fn_defs = edp_collect_fn_defs(stmts)
     let es_names = array_empty()
@@ -307,6 +318,7 @@ fn scps_lower_handle_sites(stmts: Array[Stmt]) -> Array[String] {
     let st = (scps_ctr_box(), array_empty_str(), array_empty_str(), array_empty_str(), array_empty_str(), scps_empty_stmts(), errs)
     // closure-CPS (追記31 Vertical B) phase 1: the CPS-mode effect set.
     let cps_effs = scps_collect_cps_effs(stmts, groups)
+    scps_note_step_mode(cps_effs, extra)
     let ecfgs = array_empty_ecfg()
     let mut ce = 0
     while ce < Array::length(cps_effs) {
@@ -373,7 +385,28 @@ fn scps_lower_handle_sites(stmts: Array[Stmt]) -> Array[String] {
     } else {
       ()
     }
-    errs
+    // #3540: a handle driven only for a `return` / `throw` arm calls a
+    // function value of an effect no arm stores `resume` for, so nothing was
+    // handed over in the step convention and that call was refused. Lower the
+    // program again with those effects in step mode, which passes every such
+    // value as a step; keep the refusal when that does not compile either
+    // (the convention guard above refuses a handle of the effect that resumes
+    // in place).
+    let wanted = scps_step_mode_wanted()
+    if Array::length(errs) > 0 && Array::length(wanted) > 0 && Array::length(extra) == 0 {
+      Array::truncate(stmts, 0)
+      for s0 in snapshot {
+        Array::push(stmts, s0)
+      }
+      let retried = scps_lower_handle_sites_with(stmts, wanted)
+      if Array::length(retried) == 0 {
+        retried
+      } else {
+        errs
+      }
+    } else {
+      errs
+    }
   }
 }
 
@@ -753,7 +786,7 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, why: 
         ()
       } else {
         Array::push(seen_scope, snm)
-        if srow != "" && scps_row_contains(ctx, srow, eff) {
+        if srow != "" && scps_step_mode(eff) && scps_row_contains(ctx, srow, eff) {
           Array::push(cps_seed, snm)
         } else {
           ()
@@ -765,7 +798,9 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, why: 
     // Every currently visible binding participates, not just step sources:
     // an opaque local must mask every same-spelled top-level authorization.
     let call_scope = scps_scope_from_visible(scope, eff, ctx)
-    if !scps_calls_ok(body, sctx, ctx, call_scope) {
+    if scps_step_param_refused(body, sctx, ctx, call_scope, errs) {
+      None
+    } else if !scps_calls_ok(body, sctx, ctx, call_scope) {
       // #1536 / #1514 parity: name the offending call and carry its offset
       // as the ` [@off=N:M]` marker the located lanes resolve (and every
       // lane strips), same contract as the handle-side culprit marker.
@@ -1212,7 +1247,7 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
         while cpi < Array::length(params) {
           let (pnm, pty) = Array::get(params, cpi)
           let prow = scps_ty_row(pty)
-          if prow != "" && scps_row_contains(ctx, prow, eff) {
+          if prow != "" && scps_step_mode(eff) && scps_row_contains(ctx, prow, eff) {
             Array::push(cps_seed, pnm)
           } else {
             ()
@@ -1252,7 +1287,9 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
         }
         let sctx = (eff, ops_qnames, needing, site, cps_seed)
         let call_scope = scps_scope_from_params(cparams, eff, inert_generated, ctx)
-        if !scps_calls_ok(fbody2, sctx, ctx, call_scope) {
+        if scps_step_param_refused(fbody2, sctx, ctx, call_scope, errs) {
+          ()
+        } else if !scps_calls_ok(fbody2, sctx, ctx, call_scope) {
           // #1536 / #1514 parity: name the offending call inside `fname`'s
           // body. The offset indexes the module that defines `fname`, which
           // may not be the entry file -- verify_culprit_off_marker degrades
@@ -2287,28 +2324,6 @@ fn scps_driver_lead(why: String, eff: String) -> String {
   }
 }
 
-/// The effect a handle's arms name, for a message (the first `Eff::Op`).
-fn scps_arms_effect_name(arms: Array[(Pat, Expr)]) -> String {
-  let mut eff = ""
-  for a in arms {
-    let (p, _) = a
-    match p {
-      PCtor(q, _) => if eff == "" {
-        let ci = String::index_of(q, "::")
-        eff = if ci > 0 {
-          String::substring(q, 0, ci)
-        } else {
-          q
-        }
-      } else {
-        ()
-      },
-      _ => ()
-    }
-  }
-  eff
-}
-
 /// ` [@off=N]` at the first throwing site of a non-exception arm.
 fn scps_throw_marker(arms: Array[(Pat, Expr)], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, String, Bool)]) -> String {
   let mut at = 0 - 1
@@ -2326,27 +2341,6 @@ fn scps_throw_marker(arms: Array[(Pat, Expr)], ctx: (Array[Stmt], Array[(String,
   } else {
     ""
   }
-}
-
-fn scps_throw_escape_msg(arms: Array[(Pat, Expr)]) -> String {
-  let mut eff = ""
-  for a in arms {
-    let (p, _) = a
-    match p {
-      PCtor(q, _) => if eff == "" && !is_exception_throw_handler_name(q) {
-        let ci = String::index_of(q, "::")
-        eff = if ci > 0 {
-          String::substring(q, 0, ci)
-        } else {
-          q
-        }
-      } else {
-        ()
-      },
-      _ => ()
-    }
-  }
-  String::concat(String::concat("resume with a value and `throw` after this `handle`, or move the inner exception handler outside it: a handler arm of `", eff), "` here can throw, and an exception handler between the `perform` and this `handle` would catch it, but an arm's exceptions belong to the code around the `handle` -- the lowering that runs the arm there cannot take this handle (for example, it also has an exception arm, mixes effects, or its body calls through a closure or a row variable). An `Exception` arm written in the same handler set as this arm is such an inner handler; moving it outside means a `handle` of its own around this one")
 }
 
 fn scps_prepass_bind_local(scope: Array[(String, Int)], name: String, value: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> Array[(String, Int)] {

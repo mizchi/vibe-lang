@@ -63,7 +63,8 @@ let x: Int = 42                // 63-bit (RC lane: 1-bit-tagged i64),
                                // every backend (#1877): max + 1 == min;
                                // out-of-range literals are rejected with
                                // IntLiteralOverflow
-let f: Float = 1.5f            // 32-bit (suffix f)
+let f: Float = 1.5f            // 32-bit IEEE binary32 (suffix f); see
+                               // "`Float` is 32-bit" below
 let d: Double = 3.14           // 64-bit (default decimal)
 let s: String = "hello \{x}"   // interpolation with \{expr}
                                // (`\(x)` は非対応、`\{x}` を使う)
@@ -90,6 +91,44 @@ let c: Char = 'A'              // byte value 65; Char is a transparent Int alias
 let b: Bool = true
 let u: Unit = ()
 ```
+
+### `Float` is 32-bit
+
+`Float` is IEEE binary32 and every `Float` value is an f32 value (#3543). An
+`f` literal, `Double::to_float`, `Int::to_float` and each `+ - * /` result
+(compound assignment included) are rounded to the nearest f32, ties to even;
+a result too large for an f32 is `Infinity` / `-Infinity`, and `0.0f / 0.0f`
+is NaN, which `==` calls unequal even to itself. `Float::to_double` widens
+exactly. `Float::to_string` and interpolation print the shortest decimal
+that reads back as the same f32 (`0.1f` prints `0.1`, `1.0f / 3.0f` prints
+`0.33333334`), in `Double`'s spelling.
+
+`Float` and `Double` are different types, and neither converts implicitly:
+`x * 2.5` on a `Float` `x` is a type error whose message names the edit
+(`2.5f`, or `Double::to_float` / `Float::to_double`). A `Float` holds the f64
+of its f32 value at run time, so equality, ordering and hashing see exactly
+the f32 value. No builtin trait has a `Float` impl yet, so a bounded generic
+(`[T: Eq]`, `[T: Show]`, `[T: Add]`) refuses a `Float` with
+``no impl `Eq` for `Float` ``; compare or render at the concrete type.
+
+```vibe
+test "Float rounds to f32" {
+  assert(16777217.0f == 16777216.0f)
+  assert(Float::to_double(0.1f) != 0.1)
+  assert(Float::to_string(1.0f / 3.0f) == "0.33333334")
+  let mut acc = 0.0f
+  acc += 0.1f
+  assert(acc == 0.1f)
+}
+```
+
+A decimal `f` literal is rounded twice: to the nearest `Double` and then to
+the nearest f32. That can differ from rounding the decimal straight to f32
+when the decimal lies within half a `Double` ulp of a point halfway between
+two f32 values. Such literals are rare but not only long ones: a search of
+literals with up to 9 significant digits found 61, the shortest with 7
+(`0.00000000000000000000000007038531f` holds the f32 that prints
+`7.0385313e-26`, one f32 step above the nearest one, `7.038531e-26`).
 
 ### Multi-line raw strings (`#|`)
 
@@ -1145,7 +1184,7 @@ impl [T: Eq] Eq for Array[T]              // 宣言はできるが bound には�
 // docs/internal/design/concurrency.md "`Send` and capture safety".
 
 // `Default` (#1847) は builtin trait: prelude が marker + primitive impl
-// (Int/Float/Double/Bool/String) を登録するので `[T: Default]` bound は
+// (Int/Double/Bool/String) を登録するので `[T: Default]` bound は
 // どこでも満たせる。generic code から `T::default()` を呼ぶには
 // method-bearing 宣言 (`trait Default { default() -> Self }`) が要るので
 // `import @vibe/core { Default }` する — witness は Hash と同じ dict 経由。
@@ -2200,6 +2239,18 @@ program that step-compiles a closure while the same effect is mixed between a
 "resume-as-value handler" and a "tail-resumptive handler" of its own is a
 compile error (the convention-consistency guard).
 
+An arm that leaves with `return` while the body reaches the effect through a
+call, or with `throw` past an exception handler between the `perform` and the
+`handle`, runs where its `handle` is too, through the same rewrite (#3064,
+#3540). When the body, or a function it calls, runs a function value of the
+effect (`fn guarded(f: () -> Int with Ask)` called as `guarded(() -> perform
+Ask::Get() + 1)`), the program is compiled with that effect's closures in
+step form, so the guard above applies: another handle of the effect that
+resumes in place over a closure is refused with ``resume with a value, and
+`return` or `throw` after the `handle` instead of in its arm``. Before #3540
+such a program compiled and stopped at run time with no handler for the
+closure's `perform`.
+
 The `k` convention, which binds one trailing parameter beyond the operation's
 declared arity (`Emit(v, k) => v + k(0)`, a non-tail continuation), **was a
 feature of the retired MoonBit fixture runner and is not supported on the
@@ -2596,7 +2647,7 @@ Profiler::heap_bytes()  // with Profiler - current bump-heap pointer
                         // way now_us deltas attribute time (heap never shrinks)
 ```
 
-**Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_byte`, `Int::parse(s) -> Option[Int]` (10 進、先頭 `-` 可; 空文字列・非数字・`Int::max_value` 超えは `None`), `Double::parse(s) -> Option[Double]` (an optional sign, digits, an optional fraction, an optional `e`/`E` exponent, and `NaN` / `Infinity` / `-Infinity`; correctly rounded, so it reads back every spelling `Double::to_string` writes; both backends, #2652), `Double::to_string(d) -> String` (the shortest digits that read back to the same double, in JavaScript's spelling: `1.5`, `100`, `0.000001`, `1e-7`, `1e+21`, `1.7976931348623157e+308`; `NaN`, `Infinity`, `-Infinity`, and `-0` for negative zero; `"\{d}"` and `__to_string(d)` print the same, #2652)
+**Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_byte`, `Int::parse(s) -> Option[Int]` (10 進、先頭 `-` 可; 空文字列・非数字・`Int::max_value` 超えは `None`), `Double::parse(s) -> Option[Double]` (an optional sign, digits, an optional fraction, an optional `e`/`E` exponent, and `NaN` / `Infinity` / `-Infinity`; correctly rounded, so it reads back every spelling `Double::to_string` writes; both backends, #2652), `Double::to_string(d) -> String` (the shortest digits that read back to the same double, in JavaScript's spelling: `1.5`, `100`, `0.000001`, `1e-7`, `1e+21`, `1.7976931348623157e+308`; `NaN`, `Infinity`, `-Infinity`, and `-0` for negative zero; `"\{d}"` and `__to_string(d)` print the same, #2652), `Float::to_string(f) -> String` (the same spelling for the shortest digits that read back to the same f32: `0.1f` prints `0.1`, `1.0f / 3.0f` prints `0.33333334`, #3543)
 
 **Reserved prefix**: `__vibe_` is the compiler's. Its generated definitions
 carry it (the Double runtime prelude's `__vibe_double_to_string`, the String

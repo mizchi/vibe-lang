@@ -1,0 +1,33 @@
+// #3623: the field `f` is declared `with Box[F[Int]]`, a row naming the
+// struct's kinded parameter `F`. The literal below writes no type arguments
+// and is bound under no annotation, so the compiler cannot give the closure
+// the instantiated row (`Box[Option[Int]]`). It is refused with the edit, as
+// the same literal is for a plain parameter
+// (closure_field_generic_row_inferred_refused.vibe). Before #3622 the
+// evidence pass compared the row's `F` with the parameter's encoded key,
+// never saw the row name it, and gave the closure the uninstantiated
+// `Box[F[Int]]`. Both edits answer in
+// fixtures/struct_field_row_kinded_formal_test.vibe.
+effect Box[T] {
+  Put(T) -> Unit
+}
+
+struct Holder[F[_]] {
+  f: () -> Int with Box[F[Int]]
+}
+
+fn drive(f: () -> Int with Box[Option[Int]]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(_) => resume(())
+  }
+}
+
+fn main() -> Int {
+  let h = Holder::{ f: () -> {
+    perform Box::Put(Some(2))
+    5
+  } }
+  drive(h.f)
+}

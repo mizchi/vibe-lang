@@ -1,0 +1,134 @@
+// #3543: `Float` is IEEE binary32. Every `Float` value is an f32 value: an
+// `f` literal, a conversion and each arithmetic result is rounded to the
+// nearest f32 (ties to even), overflow is +/-Infinity, and `Float::to_string`
+// prints the shortest decimal that reads back as the same f32. Before #3543 a
+// Float computed as a 64-bit Double, and every row below answered the Double
+// answer instead.
+
+test "an f literal is the nearest f32" {
+  // 2^24 + 1 is the first integer an f32 cannot hold; it ties to even.
+  inspect(16777217.0f == 16777216.0f, content = "true")
+  inspect(16777217.0f, content = "16777216")
+  inspect(16777219.0f, content = "16777220")
+  inspect(0.1f, content = "0.1")
+  // The f32 nearest 0.1 is not the Double nearest 0.1.
+  inspect(Float::to_double(0.1f), content = "0.10000000149011612")
+  inspect(Float::to_double(0.1f) == 0.1, content = "false")
+  inspect(10f, content = "10")
+  inspect(-2.5f, content = "-2.5")
+}
+
+test "arithmetic rounds each result to f32" {
+  let third = 1.0f / 3.0f
+  inspect(third, content = "0.33333334")
+  inspect(Float::to_string(third), content = "0.33333334")
+  inspect(Float::to_double(third), content = "0.3333333432674408")
+  let big = 16777216.0f
+  inspect(big + 1.0f == big, content = "true")
+  inspect(big + 2.0f, content = "16777218")
+  inspect(0.1f + 0.2f, content = "0.3")
+  inspect(0.1f + 0.2f == 0.3f, content = "true")
+  inspect(0.1f * 3.0f, content = "0.3")
+  inspect(1.0f - 0.9f, content = "0.100000024")
+  // Each operation rounds, not only the last one: in f64, (a * b) - c keeps
+  // the low bits of the product that f32 drops.
+  let a = 16777215.0f
+  inspect(a * a - 281474943156225.0f, content = "0")
+  inspect(-third, content = "-0.33333334")
+}
+
+test "compound assignment rounds the stored value" {
+  let mut acc = 0.0f
+  let mut i = 0
+  while i < 10 {
+    acc += 0.1f
+    i = i + 1
+  }
+  inspect(acc, content = "1.0000001")
+  let mut x = 16777216.0f
+  x += 1.0f
+  inspect(x, content = "16777216")
+  x *= 3.0f
+  inspect(x, content = "50331650")
+  inspect(Float::to_double(x), content = "50331648")
+}
+
+test "conversions round to f32" {
+  inspect(Float::to_double(Double::to_float(0.1)) == 0.1, content = "false")
+  inspect(Double::to_float(0.1), content = "0.1")
+  inspect(Double::to_float(3.141592653589793), content = "3.1415927")
+  inspect(Int::to_float(16777217), content = "16777216")
+  // One rounding, straight to f32: 2^53 + 2^29 + 1 lies just above an f32
+  // midpoint. Through f64 it would land on the midpoint and tie down.
+  inspect(Int::to_float(9007199791611905), content = "9007200000000000")
+  inspect(Float::to_int(Double::to_float(2.75)), content = "2")
+}
+
+test "overflow is infinity" {
+  inspect(100000000000000000000000000000000000000000.0f, content = "Infinity")
+  let max = 340282346638528859811704183484516925440.0f
+  inspect(max, content = "3.4028235e+38")
+  inspect(max * 2.0f, content = "Infinity")
+  inspect(0.0f - max * 2.0f, content = "-Infinity")
+  inspect(Double::to_float(1000000000000000000000000000000000000000.0), content = "Infinity")
+  // The smallest f32 subnormal, and what is below half of it.
+  inspect(0.000000000000000000000000000000000000000000001401298464324817f, content = "1e-45")
+  inspect(Double::to_float(0.0000000000000000000000000000000000000000000005), content = "0")
+}
+
+test "NaN is unequal to itself" {
+  let zero = 0.0f
+  let nan = zero / zero
+  inspect(nan == nan, content = "false")
+  inspect(nan != nan, content = "true")
+  inspect(nan, content = "NaN")
+  inspect(Double::to_float(0.0 / 0.0), content = "NaN")
+}
+
+test "comparisons see the f32 values" {
+  inspect(0.1f < 0.10000001f, content = "true")
+  inspect(16777217.0f < 16777218.0f, content = "true")
+  inspect(16777217.0f <= 16777216.0f, content = "true")
+  inspect(-0.0f == 0.0f, content = "true")
+}
+
+struct FPoint {
+  x: Float;
+  y: Float
+} derive (Eq, Show)
+
+test "a Float field renders and compares as an f32" {
+  let p = FPoint::{ x: 1.0f / 3.0f, y: 0.1f }
+  inspect(p, content = "FPoint { x: 0.33333334, y: 0.1 }")
+  inspect(p == FPoint::{ x: 0.33333334f, y: 0.1f }, content = "true")
+  let xs = [0.1f, 1.0f / 3.0f]
+  inspect(xs, content = "[0.1, 0.33333334]")
+  inspect(Some(0.1f), content = "Some(0.1)")
+}
+
+// Codex on #3627: `f32` is the same type as `Float`, so a field spelled `f32`
+// renders the same shortest f32 digits (it printed the Double expansion,
+// `0.10000000149011612`).
+struct F32Field {
+  x: f32
+} derive (Show)
+
+test "a field spelled f32 renders as a Float" {
+  inspect(F32Field::{ x: 0.1f }, content = "F32Field { x: 0.1 }")
+}
+
+fn classify(x: Float) -> String {
+  match x {
+    0.5 => "half",
+    1.1f => "one point one",
+    _ => "other"
+  }
+}
+
+test "a literal pattern matches the f32 value" {
+  // `0.5` is an f32 value already; `1.1f` is the f32 nearest 1.1.
+  inspect(classify(0.5f), content = "half")
+  inspect(classify(1.1f), content = "one point one")
+  inspect(classify(Double::to_float(1.1)), content = "one point one")
+  inspect(classify(1.2f), content = "other")
+}

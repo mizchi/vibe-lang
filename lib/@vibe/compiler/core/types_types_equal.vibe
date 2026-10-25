@@ -414,6 +414,13 @@ export fn subst_resolves_to_double(s: Subst, ty: Type) -> Bool {
         result = true
         done = true
       },
+      // #3543: a `Float` is held exactly as a `Double` is (an f64 whose value
+      // is an f32), so every consumer of this head query -- the codegen
+      // float classifiers, above all -- must treat it as one.
+      CtFloat => {
+        result = true
+        done = true
+      },
       CtVar(vid) => if int_array_has(seen, vid) {
         done = true
       } else {
@@ -480,6 +487,7 @@ export fn subst_apply(s: Subst, ty: Type) -> Type {
     CtString => ty,
     CtUnit => ty,
     CtDouble => ty,
+    CtFloat => ty,
     CtChar => ty,
     CtBytes => ty,
     CtUnknown => ty,
@@ -686,6 +694,7 @@ export fn type_to_string(ty: Type) -> String {
   match ty {
     CtInt => "Int",
     CtDouble => "Double",
+    CtFloat => "Float",
     CtBool => "Bool",
     CtString => "String",
     CtChar => "Char",
@@ -994,12 +1003,15 @@ export fn resolve_builtin(name: String) -> Option[Type] {
   if name == "Int" || name == "i32" {
     Some(CtInt)
   }
-  else if name == "Double" || name == "f64" || name == "Float" || name == "f32" {
-    // This type system has no distinct 32-bit float: `Float` is
-    // unified with `Double` (codegen is f64-only, and float literals such as
-    // `0.0f` are already typed CtDouble). Without this, `Float` resolved to an
-    // opaque CtNamed and `x < 0.0f` mismatched (Float vs Double).
+  else if name == "Double" || name == "f64" {
     Some(CtDouble)
+  }
+  else if name == "Float" || name == "f32" {
+    // #3543: `Float` is its own 32-bit type, not an alias of `Double`. It
+    // shares Double's f64 representation, and every value it holds is
+    // exactly an f32: literals, conversions and arithmetic results are
+    // rounded to f32 (see `rewrite_float_arith_stmts`).
+    Some(CtFloat)
   }
   else if name == "Bool" {
     Some(CtBool)
@@ -1068,6 +1080,7 @@ export fn type_has_unknown(ty: Type) -> Bool {
   match ty {
     CtInt => false,
     CtDouble => false,
+    CtFloat => false,
     CtBool => false,
     CtString => false,
     CtChar => false,
@@ -1122,6 +1135,7 @@ export fn type_erase_vars(ty: Type) -> Type {
   match ty {
     CtInt => ty,
     CtDouble => ty,
+    CtFloat => ty,
     CtBool => ty,
     CtString => ty,
     CtChar => ty,
@@ -1163,6 +1177,7 @@ export fn collect_type_var_ids(ty: Type, out: Array[Int]) -> Unit {
   match ty {
     CtInt => (),
     CtDouble => (),
+    CtFloat => (),
     CtBool => (),
     CtString => (),
     CtChar => (),
@@ -2364,6 +2379,10 @@ export fn types_equal(a: Type, b: Type) -> Bool {
     },
     CtDouble => match b {
       CtDouble => true,
+      _ => false
+    },
+    CtFloat => match b {
+      CtFloat => true,
       _ => false
     },
     CtBool => match b {

@@ -100,6 +100,57 @@ export fn show_generic_known(head: String) -> Bool {
   show_generic_struct_known(head) || show_generic_enum_known(head)
 }
 
+/// Codex on #3627: does the renderer `derive (Show)` generates for the generic
+/// `head` print a field or payload whose type mentions a type parameter? Only
+/// a direct call can specialize it (`derived_generic_show_call`); taken as a
+/// value it renders through the erased formal.
+export fn show_generic_reads_formal(head: String) -> Bool {
+  match show_generic_struct_decl(head) {
+    Some((_, tps, fields)) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        if ty_mentions_name_in(Array::get(fields, i).1, tps) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    None => match show_generic_enum_decl(head) {
+      Some((_, tps, ctors)) => {
+        let mut found = false
+        let mut i = 0
+        while i < Array::length(ctors) {
+          let payload = Array::get(ctors, i).1
+          let mut j = 0
+          while j < Array::length(payload) {
+            if ty_mentions_name_in(Array::get(payload, j), tps) {
+              found = true
+            }
+            j = j + 1
+          }
+          i = i + 1
+        }
+        found
+      },
+      None => false
+    }
+  }
+}
+
+/// Codex on #3627: the refusal for `H::to_string` taken as a value, naming the
+/// edit.
+export fn derived_generic_show_value_msg(head: String, off: Int) -> String {
+  let lead = String::concat("cannot take `", String::concat(head, "::to_string` as a value: its derived renderer is specialized only where it is called, and a value would print a field through an erased type parameter (an address for a `Double` or an array) -- wrap it in a lambda at the concrete type (e.g. `(v: "))
+  let base = String::concat(lead, String::concat(head, String::concat("[Double]) -> ", String::concat(head, "::to_string(v)`)"))))
+  if off >= 0 {
+    String::concat(base, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+  } else {
+    base
+  }
+}
+
 /// #3074: the refusal for a `derive (Show)` generic enum whose type arguments
 /// this site cannot recover, naming the edit.
 export fn interp_generic_enum_unknown_msg(ename: String, off: Int) -> String {

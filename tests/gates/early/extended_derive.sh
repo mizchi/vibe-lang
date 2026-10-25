@@ -523,15 +523,13 @@ ur_refused fixtures/err_derive_hash_effectful_hash_key_refused.vibe 'would perfo
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
 ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type' gc
 ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' gc 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
-# #3547: an `Array[T]` field of a `derive (Show)` generic type is refused at the
-# type, naming the field and the edit -- not in the compiler's spelling of the
-# helper it generated.
-ur_refused fixtures/err_derive_show_generic_array_field_refused.vibe 'the elements of `w: Array[T]`' 'write `G::to_string` yourself'
-ur_refused fixtures/err_derive_show_generic_array_field_refused.vibe 'the elements of `w: Array[T]`' 'write `G::to_string` yourself' gc
 # #3559: an explicit `H::to_string(h)` on a `derive (Show)` generic whose type
 # arguments are not known at the call printed a field's address.
 ur_refused fixtures/err_derive_show_generic_qualified_call_unknown_refused.vibe 'cannot call `H::to_string` here' 'call it where the type is concrete'
 ur_refused fixtures/err_derive_show_generic_qualified_call_unknown_refused.vibe 'cannot call `H::to_string` here' 'call it where the type is concrete' gc
+# Codex on #3627: the same renderer taken as a value printed element addresses.
+ur_refused fixtures/err_derive_show_generic_value_refused.vibe 'cannot take `G::to_string` as a value' 'wrap it in a lambda at the concrete type'
+ur_refused fixtures/err_derive_show_generic_value_refused.vibe 'cannot take `G::to_string` as a value' 'wrap it in a lambda at the concrete type' gc
 # #3084: a generic function's result typed, at the call site, as a struct with
 # no renderer printed its address; the checker's row names the struct.
 ur_refused fixtures/err_interp_generic_call_missing_show_refused.vibe 'cannot interpolate a value of type `Hidden`' 'add `derive(Show)` to `Hidden`' linear 'fixtures/err_interp_generic_call_missing_show_refused.vibe: line 14:14'
@@ -596,6 +594,12 @@ ur_refused fixtures/err_handle_arm_return_for_call_refused.vibe 'a handler arm f
 ur_refused fixtures/err_handle_arm_return_for_call_refused.vibe 'a handler arm for `Ask` here leaves the function with `return`' 'write `perform Ask::..` in the `handle` body itself' gc
 ur_refused fixtures/err_handle_arm_return_outer_break_refused.vibe 'leaves a loop outside it, which the rewritten body cannot do' 'write `perform Ask::..` in the `handle` body itself'
 ur_refused fixtures/err_handle_arm_return_outer_break_refused.vibe 'leaves a loop outside it, which the rewritten body cannot do' 'write `perform Ask::..` in the `handle` body itself' gc
+# #3540: a throwing arm runs at its handle, so the callee's call of its closure
+# must suspend, and another handle of the effect resumes in place over a
+# closure: no convention serves both, so the build is refused with the edit
+# (it compiled, and stopped at run time with no handler for the `perform`).
+ur_refused fixtures/err_handle_arm_driver_function_value_refused.vibe 'a function value that performs `Ask` and comes from outside that code is not rewritten' 'resume with a value, and `return` or `throw` after the `handle`'
+ur_refused fixtures/err_handle_arm_driver_function_value_refused.vibe 'a function value that performs `Ask` and comes from outside that code is not rewritten' 'resume with a value, and `return` or `throw` after the `handle`' gc
 for ur_case in err_handle_arm_return_for_call_refused err_handle_arm_return_outer_break_refused; do
   for ur_lane in linear gc; do
     if grep -qF 'captures `resume` as a value' "$urdir/${ur_case}_$ur_lane.wasm.diag"; then

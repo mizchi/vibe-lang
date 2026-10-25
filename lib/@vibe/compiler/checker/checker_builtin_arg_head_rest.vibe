@@ -13,7 +13,7 @@ import @vibe/compiler/checker/resume {
 }
 
 import @vibe/compiler/checker/diagnostics {
-  off_marker_len
+  off_marker, off_marker_len
 }
 
 import @vibe/compiler/core {
@@ -167,6 +167,58 @@ export fn check_spawn_shaped_call(env: TypeEnv, s: Subst, defs: Array[TypeDef], 
   }
 }
 
+/// #3547: a lambda literal whose unannotated parameter the call expects to be
+/// a `Double` (`Iterator::fold(ds, 0.0, (acc, s) -> acc + s)`). The parameter
+/// is not seeded with `Double` (`lambda_seed_type_lowers`: arithmetic on a
+/// `Double` is chosen from its spelling), so `+` typed it `Int` and the call
+/// reported "expected (Double, Double) -> Double, got (Int, Int) -> Int",
+/// which reads backwards. Lead with the edit instead. Fires only where the
+/// argument does not unify and such a parameter was typed `Int`; "" else.
+fn unannotated_double_lambda_hint(pty: Type, aty: Type, arg: Expr, s: Subst, label: String) -> String {
+  match arg {
+    EFn(_, _, params, _, _, _) => match (pty, aty) {
+      (CtFn(eps, _, _), CtFn(aps, _, _)) => if Array::length(eps) == Array::length(params) && Array::length(aps) == Array::length(params) {
+        let mut fires = false
+        let mut i = 0
+        while i < Array::length(params) && !fires {
+          let (_, ann) = Array::get(params, i)
+          if (ann is None) && (subst_apply(s, Array::get(eps, i)) is CtDouble) && (subst_apply(s, Array::get(aps, i)) is CtInt) {
+            fires = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        if fires && (unify(pty, aty, s) is None) {
+          let mut spelled = ""
+          let mut j = 0
+          while j < Array::length(params) {
+            let (pname, ann) = Array::get(params, j)
+            let piece = if (ann is None) && (subst_apply(s, Array::get(eps, j)) is CtDouble) {
+              pname + ": Double"
+            } else {
+              pname
+            }
+            spelled = if j == 0 {
+              piece
+            } else {
+              spelled + ", " + piece
+            }
+            j = j + 1
+          }
+          "annotate the callback's `Double` parameters (`(" + spelled + ") -> ..`): `" + label + "` calls it with `Double` values, but the body's arithmetic typed an unannotated parameter `Int`"
+        } else {
+          ""
+        }
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
 export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_exprs: Array[Expr], s: Subst, errors: Array[String], label: String, off: Int) -> Subst {
   let mut out = s
   let mut ui = 0
@@ -227,7 +279,17 @@ export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_expr
       } else {
         ()
       }
-      let checked = check_assignable_for(pty, aty, out, errors, "argument type mismatch for ", label, a_off)
+      let hint = if have_exprs {
+        unannotated_double_lambda_hint(pty, aty, Array::get(arg_exprs, ui), out, label)
+      } else {
+        ""
+      }
+      let checked = if hint != "" {
+        Array::push(errors, String::concat(hint, off_marker(a_off)))
+        out
+      } else {
+        check_assignable_for(pty, aty, out, errors, "argument type mismatch for ", label, a_off)
+      }
       // A check that reported nothing leaves the path unconsumed.
       check_assignable_set_enclosing("")
       checked
@@ -1233,8 +1295,11 @@ export fn direct_builtin_return(name: String) -> Option[Type] {
   else if name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "MutList::truncate" || name == "FixedArray::set" || name == "FixedArray::blit" || name == "FixedArray::unsafe_set" || name == "Int64Array::set" || name == "Bytes::set" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::blit" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "Stdout::write_char" || name == "Stdout::write_stream" || name == "sleep" || name == "Fs::copy" || name == "Fs::chdir" || name == "Fs::mkdir" || name == "Fs::mkdir_p" || name == "Fs::append" || name == "Fs::remove" || name == "Fs::remove_file" || name == "Fs::remove_tree" || name == "Fs::rename" || name == "Fs::write_file" || name == "Fs::write_bytes" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "__set_field" {
     Some(CtUnit)
   }
-  else if name == "Double::from_i64_bits" || name == "Double::from_i64_bits_lohi" || name == "Int::to_double" || name == "Double::to_float" || name == "Float::to_double" {
+  else if name == "Double::from_i64_bits" || name == "Double::from_i64_bits_lohi" || name == "Int::to_double" || name == "Float::to_double" {
     Some(CtDouble)
+  }
+  else if name == "Double::to_float" || name == "Int::to_float" {
+    Some(CtFloat)
   }
   else if name == "Char::from_int" {
     Some(CtChar)
@@ -1618,6 +1683,8 @@ export fn bind_builtin_arg_var(arg_ty: Type, want: Int, s: Subst, c: Int) -> (Su
         Some(CtInt)
       } else if want == 2 {
         Some(CtDouble)
+      } else if want == 21 {
+        Some(CtFloat)
       } else if want == 3 {
         Some(CtBool)
       } else if want == 4 {
@@ -2208,6 +2275,7 @@ export fn type_name_prefix(ty: Type) -> String {
   match ty {
     CtInt => "Int",
     CtDouble => "Double",
+    CtFloat => "Float",
     CtBool => "Bool",
     CtString => "String",
     CtChar => "Char",

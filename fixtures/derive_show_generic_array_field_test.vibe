@@ -1,0 +1,80 @@
+// #3547: a `derive (Show)` generic type with an `Array[T]` field (or payload)
+// of its own type parameter. Its renderer named an `__arr_to_string__` helper
+// generic over `T`, whose body renders an erased formal, so the checker
+// refused the build -- even with the type unused -- at first in the
+// compiler's own spelling (`pass an explicit renderer '(__Vfp_T) -> String'
+// ... [@fn=__arr_to_string____Vfp_T]`), later with a refusal naming the
+// field. The array is now rendered in place, the way a bare `v: T` field is,
+// and every site below renders by content at its own instantiation.
+
+type Values[T] = Array[T]
+
+struct G[T] {
+  w: Array[T]
+} derive (Show)
+
+struct Unused[T] {
+  w: Array[T]
+} derive (Show)
+
+struct Grid[T] {
+  rows: Array[Array[T]];
+  label: String
+} derive (Show)
+
+struct Aliased[T] {
+  v: Values[T]
+} derive (Show)
+
+struct Holder {
+  g: G[Bool];
+  d: G[Double]
+} derive (Show)
+
+enum E[T] {
+  A(Array[T]);
+  B
+} derive (Show)
+
+fn shown[T: Show](x: T) -> String {
+  "\{x}"
+}
+
+test "an Array[T] field renders by content at each instantiation" {
+  let a: G[Int] = G::{ w: [1, 2] }
+  let b: G[Bool] = G::{ w: [true, false] }
+  let c: G[String] = G::{ w: ["x", "y"] }
+  let d: G[Double] = G::{ w: [1.5, 2.0] }
+  inspect("\{a} \{b} \{c} \{d}", content = "G { w: [1, 2] } G { w: [true, false] } G { w: [x, y] } G { w: [1.5, 2] }")
+}
+
+test "an empty array renders as brackets" {
+  let e: G[Int] = G::{ w: [] }
+  inspect("\{e}", content = "G { w: [] }")
+}
+
+test "the direct call and a Show bound render by content" {
+  let b: G[Bool] = G::{ w: [true] }
+  inspect(G::to_string(b), content = "G { w: [true] }")
+  inspect(shown(b), content = "G { w: [true] }")
+  let d: G[Double] = G::{ w: [0.5] }
+  inspect(shown(d), content = "G { w: [0.5] }")
+}
+
+test "nested arrays and an alias of an array render by content" {
+  let g: Grid[Bool] = Grid::{ rows: [[true], [false, true]], label: "m" }
+  inspect("\{g}", content = "Grid { rows: [[true], [false, true]], label: m }")
+  let v: Aliased[Double] = Aliased::{ v: [2.5] }
+  inspect("\{v}", content = "Aliased { v: [2.5] }")
+}
+
+test "a field of a concrete instantiation renders by content" {
+  let h = Holder::{ g: G::{ w: [true] }, d: G::{ w: [0.25] } }
+  inspect("\{h}", content = "Holder { g: G { w: [true] }, d: G { w: [0.25] } }")
+}
+
+test "an enum payload renders by content" {
+  let a: E[Bool] = E::A([false])
+  let b: E[Bool] = E::B
+  inspect("\{a} \{b}", content = "A([false]) B")
+}

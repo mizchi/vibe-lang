@@ -17,6 +17,9 @@ import @vibe/compiler/core {
   stmts_declare_prelude_ordering_shape,
   stmts_shadow_prelude_ordering,
   stmts_use_prelude_ordering,
+  typed_f32_assign_verdict,
+  typed_f32_binop_verdict,
+  typed_f32_row_head,
   typed_forin_row_head,
   typed_index_map_verdict,
   typed_index_open_verdict,
@@ -70,6 +73,10 @@ import ./equality_requests.vibe {
 
 import ./exceptions.vibe {
   collect_struct_field_sets, ensure_exn_kind_cell, exn_kind_cell_present, exn_rethrow_reset, lookup_str_pair
+}
+
+import ./float_rounding.vibe {
+  refuse_rowless_float_program, rewrite_float_arith_stmts
 }
 
 import ./formal_scope.vibe {
@@ -194,6 +201,13 @@ export fn desugar_trait_dicts_rowless_build(stmts: Array[Stmt]) -> Unit with Exc
 }
 
 fn dtd_whole_program(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], rowless_build: Bool) -> Unit with Exception {
+  // #3543: no rows, so no `Float` arithmetic could be rounded -- refuse a
+  // program that can hold a Float rather than compute it in f64.
+  if rowless_build {
+    refuse_rowless_float_program(stmts)
+  } else {
+    ()
+  }
   Array::set(dtd_rowless_build, 0, rowless_build)
   // #3132: this pass synthesizes `Array::get` / `Array::length` / ... calls
   // (interpolation, structural `==`, iteration), which must reach the
@@ -460,10 +474,24 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   let index_open_key = impl_target_key(TyApp(typed_index_row_head(), [
     TyName(typed_index_open_verdict())
   ]))
+  // #3543: the Float arithmetic rows, split off the same way and consumed by
+  // `rewrite_float_arith_stmts` below.
+  let f32_binop_key = impl_target_key(TyApp(typed_f32_row_head(), [
+    TyName(typed_f32_binop_verdict())
+  ]))
+  let f32_assign_key = impl_target_key(TyApp(typed_f32_row_head(), [
+    TyName(typed_f32_assign_verdict())
+  ]))
+  let f32_binop_offs: Array[Int] = []
+  let f32_assign_offs: Array[Int] = []
   let mut teq_i = 0
   while teq_i < Array::length(typed_eq_offsets) {
     let tkey = Array::get(typed_eq_keys, teq_i)
-    if tkey == forin_map_key {
+    if tkey == f32_binop_key {
+      Array::push(f32_binop_offs, Array::get(typed_eq_offsets, teq_i))
+    } else if tkey == f32_assign_key {
+      Array::push(f32_assign_offs, Array::get(typed_eq_offsets, teq_i))
+    } else if tkey == forin_map_key {
       dtd_typed_row_insert(dtd_typed_forin_offs, dtd_typed_forin_verdicts, Array::get(typed_eq_offsets, teq_i), typed_index_map_verdict())
     } else if tkey == forin_open_key {
       dtd_typed_row_insert(dtd_typed_forin_offs, dtd_typed_forin_verdicts, Array::get(typed_eq_offsets, teq_i), typed_index_open_verdict())
@@ -484,6 +512,9 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   // many files in one long-lived daemon, so a table left standing would
   // relabel a later program's struct after an earlier program's trait.
   dtd_synth_dict_reset()
+  // #3543: round every `Float` arithmetic result to f32 before any pass
+  // below copies or hoists the expressions that hold one.
+  rewrite_float_arith_stmts(stmts, f32_binop_offs, f32_assign_offs)
   // #790: lower array-literal spreads first, so no downstream pass or codegen
   // ever sees a raw ESpread.
   desugar_array_spread(stmts)

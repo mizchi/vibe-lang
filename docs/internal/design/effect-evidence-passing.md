@@ -519,7 +519,15 @@ linear closure of arity k has one function type, and a step is an ordinary
 tagged value, so the convention is decided statically from the row of the
 function type and the checker already rejects a row mismatch.
 
-1. A *CPS-mode* effect is one with at least one triggered handle site.
+1. A *CPS-mode* effect is one with an arm that stores `resume` as a value.
+   A handle driven only because an arm leaves with `return` (#3064) or
+   `throw` (#3540) does not make its effect CPS-mode by itself, so a call
+   through a function value of the effect in its body or in a clone it needs
+   (a parameter: nothing passed it as a step) is refused
+   (`scps_step_param_refused`). `suspend_cps_pass` then lowers the program
+   once more with those effects CPS-mode, and the refusal stands only when
+   that run does not compile either -- the guard in 4 refusing a handle of
+   the effect that resumes in place.
 2. A closure literal with an explicit row that performs a CPS-mode effect is
    compiled once, in step form. Unlike a named function it has no second
    entry, since a value has one body.

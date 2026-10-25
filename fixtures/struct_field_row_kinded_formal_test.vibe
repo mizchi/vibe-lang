@@ -1,0 +1,165 @@
+// #3623: a struct field's row may name a kinded formal applied to a type
+// (`with Box[F[Int]]`). At `Holder[Option]` that row is `Box[Option[Int]]`:
+// the constructor is substituted for `F` and the argument stays applied to it.
+// The checker compares the stored closure's performs and the handler a call
+// passes against that instantiation, and the evidence pass gives a row-free
+// closure literal stored there the instantiated row (#3622 reads the row
+// against `F`, not the parameter's encoded key `$type_param$1$F`, which the
+// row never names; before, the literal was stamped `Box[F[Int]]`).
+// fixtures/typecheck/struct_field_row_kinded_formal_*_reject.vibe pin the
+// payload and handler mismatches, and
+// closure_field_kinded_row_inferred_refused.vibe the literal whose type
+// arguments are not written.
+effect Box[T] {
+  Put(T) -> Unit
+}
+
+struct Holder[F[_]] {
+  f: () -> Int with Box[F[Int]]
+}
+
+struct Two[F[_], T] {
+  f: () -> Int with Box[F[T]]
+}
+
+struct Nest[F[_]] {
+  f: () -> Int with Box[Array[F[Int]]]
+}
+
+fn drive_o(f: () -> Int with Box[Option[Int]]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(_) => resume(())
+  }
+}
+
+fn read_o(f: () -> Int with Box[Option[Int]]) -> Int {
+  let mut got = 0
+  let r = handle {
+    f()
+  } with {
+    Box::Put(v) => {
+      got = match v {
+        Some(n) => n,
+        None => 0 - 1
+      }
+      resume(())
+    }
+  }
+  r * 100 + got
+}
+
+fn read_a(f: () -> Int with Box[Array[Int]]) -> Int {
+  let mut got = 0
+  let r = handle {
+    f()
+  } with {
+    Box::Put(v) => {
+      got = Array::length(v)
+      resume(())
+    }
+  }
+  r * 100 + got
+}
+
+fn read_s(f: () -> Int with Box[Option[String]]) -> Int {
+  let mut got = 0
+  let r = handle {
+    f()
+  } with {
+    Box::Put(v) => {
+      got = match v {
+        Some(s) => String::length(s),
+        None => 0 - 1
+      }
+      resume(())
+    }
+  }
+  r * 100 + got
+}
+
+fn read_n(f: () -> Int with Box[Array[Option[Int]]]) -> Int {
+  let mut got = 0
+  let r = handle {
+    f()
+  } with {
+    Box::Put(v) => {
+      got = Array::length(v)
+      resume(())
+    }
+  }
+  r * 100 + got
+}
+
+fn issue_program() -> Int {
+  let h = Holder[Option]::{ f: () -> {
+    perform Box::Put(Some(2))
+    5
+  } }
+  drive_o(h.f)
+}
+
+fn annotated() -> Int {
+  let h: Holder[Option] = Holder::{ f: () -> {
+    perform Box::Put(Some(2))
+    5
+  } }
+  read_o(h.f)
+}
+
+fn at_array() -> Int {
+  let h = Holder[Array]::{ f: () -> {
+    perform Box::Put([1, 2, 3])
+    7
+  } }
+  read_a(h.f)
+}
+
+fn none_payload() -> Int {
+  let h = Holder[Option]::{ f: () -> {
+    perform Box::Put(None)
+    9
+  } }
+  read_o(h.f)
+}
+
+fn two_formals() -> Int {
+  let t = Two[Option, String]::{ f: () -> {
+    perform Box::Put(Some("abc"))
+    10
+  } }
+  read_s(t.f)
+}
+
+fn nested() -> Int {
+  let n = Nest[Option]::{ f: () -> {
+    perform Box::Put([Some(1), None])
+    20
+  } }
+  read_n(n.f)
+}
+
+test "the issue's program" {
+  inspect(issue_program(), content = "5")
+}
+
+test "an annotated binding" {
+  inspect(annotated(), content = "502")
+}
+
+test "another constructor" {
+  inspect(at_array(), content = "703")
+}
+
+test "the handler reads the payload" {
+  inspect(none_payload(), content = "899")
+}
+
+test "a kinded formal applied to a plain formal" {
+  inspect(two_formals(), content = "1003")
+}
+
+test "a kinded formal nested in the row's argument" {
+  inspect(nested(), content = "2002")
+}

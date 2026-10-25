@@ -992,6 +992,7 @@ fn starts_statement_tok(tok: Token) -> Bool {
     TIdent(n) => n != "where" && n != "allows",
     TInt(_) => true,
     TFloat(_) => true,
+    TFloat32(_) => true,
     TString(_) => true,
     TStringInterp(_, _) => true,
     TLet => true,
@@ -1313,6 +1314,19 @@ fn parse_int_from_string(s: String) -> Int with Exception {
   acc
 }
 
+/// #3543: the f32 value of an `f` literal, held as a Double. The decimal is
+/// first rounded to the nearest Double (`parse_decimal_float`) and that is
+/// rounded to the nearest f32, so a literal whose decimal lies within half a
+/// Double ulp of an f32 rounding midpoint, without being that midpoint, can
+/// round the other way from a direct decimal-to-f32 conversion. It takes
+/// more than 17 significant digits to write one (`16777217.000000001f` reads
+/// as 16777216, the direct conversion gives 16777218); every literal of 9 or
+/// fewer significant digits, which is all an f32 can tell apart, rounds the
+/// same both ways.
+fn round_to_f32(value: Double) -> Double {
+  Float::to_double(Double::to_float(value))
+}
+
 fn lex_decimal(s: String, len: Int, i: Int) -> Token with Exception {
   let int_end = scan_digits_end(s, len, i)
   if int_end == i {
@@ -1338,7 +1352,7 @@ fn lex_decimal(s: String, len: Int, i: Int) -> Token with Exception {
       let value = parse_decimal_float(s[i: int_end], s[int_end + 1: frac_end])
       check_no_scientific_suffix(s, len, frac_end)
       if frac_end < len && String::char_code_at(s, frac_end) == 'f' {
-        lex_ret(TFloat(value), frac_end + 1)
+        lex_ret(TFloat32(round_to_f32(value)), frac_end + 1)
       } else {
         lex_ret(TFloat(value), frac_end)
       }
@@ -1349,7 +1363,7 @@ fn lex_decimal(s: String, len: Int, i: Int) -> Token with Exception {
   } else if int_end < len && String::char_code_at(s, int_end) == 'f' {
     // Integer-form float literal with an `f` suffix, e.g. `10f`, `0f`.
     let value = parse_decimal_float(s[i: int_end], "")
-    lex_ret(TFloat(value), int_end + 1)
+    lex_ret(TFloat32(round_to_f32(value)), int_end + 1)
   } else {
     check_no_scientific_suffix(s, len, int_end)
     let int_str = s[i: int_end];
@@ -1457,6 +1471,7 @@ fn is_expr_ending_tok(t: Token) -> Bool {
     TIdent(_) => true,
     TInt(_) => true,
     TFloat(_) => true,
+    TFloat32(_) => true,
     TString(_) => true,
     // #1318/#1319: an interpolated string ends an expression exactly like a
     // plain one. Omitting it let `let s = "a\{x}b"` followed by a line

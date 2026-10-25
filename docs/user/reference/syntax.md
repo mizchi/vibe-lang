@@ -111,7 +111,8 @@ Rules:
   are rejected.
 - Hex literals use `0x` or `0X`.
 - Decimal literals without `f` are `Double`; decimal literals with `f` are
-  `Float`.
+  `Float` (IEEE binary32: the literal is rounded to the nearest f32, by way of
+  the nearest `Double`).
 - Strings support interpolation with `\{Expr}` and the escapes `\n`, `\t`,
   `\r`, `\0`, `\"`, `\'`, `\\` and `\u{hex}` (1 to 6 hex digits naming a
   Unicode scalar value, written as its UTF-8 bytes). Any other escape is a lex

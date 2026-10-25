@@ -1,0 +1,79 @@
+//# #3543: a build lane that parses without source offsets (`vibe build
+//# --debug` compiles each dependency through `compile_file_wasi_library` and
+//# the entry through the linked lane, all `parse_program(lex(..))`) has no
+//# checker rows, so it cannot find the `Float` arithmetic results that must
+//# be rounded to f32. It refuses a program that can hold a Float, with the
+//# edit, instead of computing the sum as an f64; a program without one
+//# compiles as before.
+
+//# Imports
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/entry/source_compile/wasi_only {
+  compile_file_wasi_library, compile_file_wasi_only
+}
+
+//# Functions
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = array_empty()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::byte_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+fn is_wasm(bytes: Bytes) -> Bool {
+  Bytes::length(bytes) > 4 && Bytes::get(bytes, 0) == 0 && Bytes::get(bytes, 1) == 97 && Bytes::get(bytes, 2) == 115 && Bytes::get(bytes, 3) == 109
+}
+
+fn library_lane(dir: String, source: String) -> String with Env + Fs {
+  let path = String::concat(dir, "/dep.vibe")
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(path, string_to_bytes(source))
+  handle {
+    if is_wasm(compile_file_wasi_library(path)) {
+      "wasm"
+    } else {
+      "not wasm"
+    }
+  } with { Exception::Throw(m) => m }
+}
+
+fn entry_lane(dir: String, source: String) -> String with Env + Fs {
+  let path = String::concat(dir, "/main.vibe")
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(path, string_to_bytes(source))
+  handle {
+    if is_wasm(compile_file_wasi_only(path, "answer")) {
+      "wasm"
+    } else {
+      "not wasm"
+    }
+  } with { Exception::Throw(m) => m }
+}
+
+fn refusal() -> String {
+  "build without `--debug`: this build lane parses without source offsets, so it cannot round `Float` arithmetic to f32 (#3543); the default build, `vibe run` and `vibe test` can"
+}
+
+//# Misc
+
+test "the library lane refuses Float arithmetic it cannot round" {
+  inspect(library_lane("/tmp/vibe_float_rowless_lib", "export fn third() -> Float {\n  1.0f / 3.0f\n}\n") == refusal(), content = "true")
+}
+
+test "the entry lane refuses a Float annotation" {
+  inspect(entry_lane("/tmp/vibe_float_rowless_entry", "fn scale(x: Float) -> Float {\n  x\n}\n\nexport fn answer() -> Int {\n  1\n}\n") == refusal(), content = "true")
+}
+
+test "a program without a Float still compiles on both lanes" {
+  inspect(library_lane("/tmp/vibe_float_rowless_lib_ok", "export fn half(x: Double) -> Double {\n  x / 2.0\n}\n"), content = "wasm")
+  inspect(entry_lane("/tmp/vibe_float_rowless_entry_ok", "export fn answer() -> Int {\n  1 + 2\n}\n"), content = "wasm")
+}

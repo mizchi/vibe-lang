@@ -1,0 +1,102 @@
+// #3540: a handle whose arm leaves with `throw` (an exception handler sits
+// between the `perform` and the handle) or `return` (the body reaches the
+// effect through a call, #3064) runs its arm where the handle is, which
+// rewrites the handled body -- and every function it calls -- into steps. A
+// FUNCTION VALUE whose row carries the effect was then called as a step,
+// but nothing had handed it over as one: no arm in the program stores
+// `resume`, so closure arguments keep the plain convention. The closure's
+// `perform` ran with no handler at all (linear: "thrown Wasm exception";
+// gc: `unreachable`), and one that returned without performing had its
+// plain result read as a step. Such a program is now lowered with the effect
+// in step mode, so the value arrives as a step and the arm answers.
+effect Ask {
+  Get() -> Int
+}
+
+// The inner exception handler is in a callee that runs the closure.
+fn guarded(f: () -> Int with Ask) -> Int with Ask {
+  handle {
+    f()
+  } with { Exception[Int]::Throw(code) => code * 2 }
+}
+
+fn throw_through_callee(log: Array[String]) -> Int {
+  handle {
+    handle {
+      guarded(() -> perform Ask::Get() + 1)
+    } with { Ask::Get() => throw("not an int") }
+  } with { Exception[String]::Throw(m) => {
+    Array::push(log, "outer caught \{m}")
+    -1
+  } }
+}
+
+// The closure is a parameter of the function holding the handles.
+fn throw_through_param(f: () -> Int with Ask, log: Array[String]) -> Int {
+  handle {
+    handle {
+      handle {
+        f()
+      } with { Exception[Int]::Throw(c) => c * 2 }
+    } with { Ask::Get() => throw("from param") }
+  } with { Exception[String]::Throw(m) => {
+    Array::push(log, "outer caught \{m}")
+    -2
+  } }
+}
+
+fn twice(f: () -> Int with Ask) -> Int with Ask {
+  f() + f()
+}
+
+// A `return` arm over a callee that runs the closure.
+fn return_through_callee() -> Int {
+  let r = handle {
+    twice(() -> perform Ask::Get() + 1)
+  } with { Ask::Get() => return 42 }
+  r * 10
+}
+
+// A `return` arm on one branch only, over a closure parameter that performs
+// on one branch only.
+fn return_through_param(f: () -> Int with Ask, k: Int) -> Int {
+  let r = handle {
+    f() + 1
+  } with { Ask::Get() => if k > 5 {
+    return 42
+  } else {
+    resume(k)
+  } }
+  r * 10
+}
+
+fn pick(c: Bool, k: Int) -> Int {
+  return_through_param(() -> if c {
+    perform Ask::Get()
+  } else {
+    7
+  }, k)
+}
+
+test "a throwing arm over a closure run by a callee" {
+  let log: Array[String] = []
+  inspect(throw_through_callee(log), "-1")
+  inspect(log, "[outer caught not an int]")
+}
+
+test "a throwing arm over a closure parameter" {
+  let log: Array[String] = []
+  inspect(throw_through_param(() -> perform Ask::Get() + 1, log), "-2")
+  inspect(throw_through_param(() -> 5, log), "5")
+  inspect(log, "[outer caught from param]")
+}
+
+test "a returning arm over a closure run by a callee" {
+  inspect(return_through_callee(), "42")
+}
+
+test "a returning arm over a closure parameter" {
+  inspect(pick(false, 9), "80")
+  inspect(pick(true, 2), "30")
+  inspect(pick(true, 9), "42")
+}
