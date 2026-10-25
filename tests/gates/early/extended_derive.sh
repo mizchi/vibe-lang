@@ -314,16 +314,17 @@ ur_refused fixtures/err_interp_unrenderable_field_refused.vibe 'cannot interpola
 ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpolate `shadowed`' 'bind it with a type annotation' linear 'fixtures/err_interp_unrenderable_shadow_refused.vibe: line 14:23'
 ur_refused fixtures/err_interp_iterator_map_refused.vibe 'cannot interpolate `mapped`' 'bind it with a type annotation' linear 'fixtures/err_interp_iterator_map_refused.vibe: line 11:30'
 ur_refused fixtures/err_interp_iterator_filter_refused.vibe 'cannot interpolate `filtered`' 'bind it with a type annotation' linear 'fixtures/err_interp_iterator_filter_refused.vibe: line 10:30'
-# #3068: an `Option[Int]` from `Int::parse`, inline. Bound to an unannotated
-# name first, it renders by content since #3455 (the checker's row types the
-# name): fixtures/interp_fresh_untyped_let_test.vibe.
-ur_refused fixtures/err_interp_unrenderable_parse_call_refused.vibe 'cannot interpolate the result of `Int::parse`' 'bind it with a type annotation' linear 'fixtures/err_interp_unrenderable_parse_call_refused.vibe: line 7:14'
+# #3068 / #3548: an `Option[Int]` from `Int::parse`, inline, is no longer
+# refused: the interpolation pass renders it from the checker's row on both
+# lanes (fixtures/interp_builtin_option_result_test.vibe pins the answer). It
+# was refused here in codegen, which `vibe check` never runs, so check passed
+# what the build refused. Bound to an unannotated name first, it has rendered
+# by content since #3455: fixtures/interp_fresh_untyped_let_test.vibe.
 # #3068: the gc lane refuses every one of these with the same message. It had
 # none of the codegen refusals and printed the address (`809`, `177`, `224`).
 ur_refused fixtures/err_interp_unrenderable_bytes_refused.vibe 'cannot interpolate a `Bytes` value' 'Bytes::to_array(b)' gc 'fixtures/err_interp_unrenderable_bytes_refused.vibe: line 7:17'
 ur_refused fixtures/err_interp_unrenderable_field_refused.vibe 'cannot interpolate field `tags`' 'bind it with a type annotation' gc 'fixtures/err_interp_unrenderable_field_refused.vibe: line 10:17'
 ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpolate `shadowed`' 'bind it with a type annotation' gc 'fixtures/err_interp_unrenderable_shadow_refused.vibe: line 14:23'
-ur_refused fixtures/err_interp_unrenderable_parse_call_refused.vibe 'cannot interpolate the result of `Int::parse`' 'bind it with a type annotation' gc 'fixtures/err_interp_unrenderable_parse_call_refused.vibe: line 7:14'
 # #3080: an index-form slice whose subject's shape is unresolved. The slice call
 # had no source offset, so no row reached codegen and both lanes printed an
 # address. The message names the syntax, not the internal `__slice`.
