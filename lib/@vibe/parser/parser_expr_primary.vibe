@@ -1064,10 +1064,11 @@ fn parse_ctor_record_fields(tokens: Array[Token], starts: Array[Int], pos: Int, 
       match peek(tokens, next_pos) {
         TComma => parse_ctor_record_fields(tokens, starts, next_pos + 1, b, parse_recur, context),
         TRBrace => (ArrayBuilder::freeze(b), next_pos + 1),
-        _ => throw("expected ',' or '}' in record literal")
+        _ => throw("expected ',' or '}' in record literal at #\{next_pos}")
       }
     },
-    _ => throw("expected field name or '}' in record literal")
+    TDotDot => throw(record_spread_message(pos)),
+    _ => throw("expected field name or '}' in record literal at #\{pos}")
   }
 }
 
@@ -1228,7 +1229,10 @@ fn parse_paren_tuple_primary(tokens: Array[Token], starts: Array[Int], pos: Int,
           let close_pos = expect_tk(tokens, end_pos, ")")
           (ETuple(items), close_pos)
         },
-        _ => throw("expected ')' or ','")
+        // #3548: carry the failing token so the error names it, not the
+        // enclosing declaration's first line.
+        TColon => throw("bind the value with its type first (`let v: Type = expr`) and use `v`: a type ascription `(expr: Type)` is not an expression at #\{next_pos}"),
+        _ => throw("expected ')' or ',' at #\{next_pos}")
       }
     }
   }
@@ -1344,10 +1348,11 @@ fn parse_record_literal_fields(tokens: Array[Token], starts: Array[Int], pos: In
       match peek(tokens, next_pos) {
         TComma => parse_record_literal_fields(tokens, starts, next_pos + 1, b, parse_recur, context),
         TRBrace => (ArrayBuilder::freeze(b), next_pos + 1),
-        _ => throw("expected ',' or '}' in record literal")
+        _ => throw("expected ',' or '}' in record literal at #\{next_pos}")
       }
     },
-    _ => throw("expected field name or '}' in record literal")
+    TDotDot => throw(record_spread_message(pos)),
+    _ => throw("expected field name or '}' in record literal at #\{pos}")
   }
 }
 
@@ -1518,4 +1523,10 @@ export fn parse_primary_with_binder_context(tokens: Array[Token], starts: Array[
 export fn parse_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
   let adapted = (rtoks, rpos, rmode, _context) -> parse_recur(rtoks, rpos, rmode)
   parse_primary_with_binder_context(tokens, starts, pos, adapted, None)
+}
+
+/// #3548: `P::{ ..p, y: 9 }` -- a struct update is not a spelling, so say
+/// what to write instead, at the `..` itself.
+fn record_spread_message(pos: Int) -> String {
+  "write each field, reading the unchanged ones from the base (`P::{ x: p.x, y: 9 }`): a struct literal lists every field, and `..base` (struct update) is not a spelling at #\{pos}"
 }

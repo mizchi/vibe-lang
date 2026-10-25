@@ -199,7 +199,7 @@ for eqrefuse_src in fixtures/structural_eq_untyped_empty_*_refused.vibe; do
     cat "$eqrefuse_wasm.diag" >&2 2>/dev/null
     exit 1
   fi
-  if ! grep -qE 'Annotate|rename the declared type' "$eqrefuse_wasm.diag" 2>/dev/null; then
+  if ! grep -qiE 'annotate|rename the declared type' "$eqrefuse_wasm.diag" 2>/dev/null; then
     echo "[compiler-gate] FAIL: $eqrefuse_src refusal does not name an edit" >&2
     cat "$eqrefuse_wasm.diag" >&2 2>/dev/null
     exit 1

@@ -13,7 +13,7 @@ import @vibe/compiler/checker/resume {
 }
 
 import @vibe/compiler/checker/diagnostics {
-  off_marker, off_marker_len
+  anchor_unlocated_errors, off_marker, off_marker_len
 }
 
 import @vibe/compiler/core {
@@ -340,6 +340,14 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         note_local_generic_binding(val, gen, cenv)
         let def_env = cenv
         cenv = env_bind(cenv, name, gen)
+        // #3548: the guard desugar binds the scrutinee to the match temp, and
+        // the fall-through match it reads that temp in has no offset; keep
+        // the written scrutinee's, scoped like the temp, to locate a refusal.
+        if name == match_scrutinee_temp() {
+          cenv = env_bind(cenv, match_temp_anchor_key(), CtNamed(Int::to_string(railway_expr_off(val)), array_empty()))
+        } else {
+          ()
+        }
         cenv = bind_function_dependency_contracts(cenv, name, val)
         // #3152: record what a local closure captured, read in the scope it
         // was written in, so a later `TaskGroup::spawn(n, name)` -- or a
@@ -1081,7 +1089,21 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // unguarded arm exists — or by a literal empty `match x { }`. Both
         // reach codegen as an unconditional `unreachable`: every guard failing
         // at runtime trapped with no source location. Reject at compile time.
-        Array::push(errors, String::concat("non-exhaustive match: no unguarded arm covers the scrutinee (all guards may fail — add an unguarded arm or `_`)", off_marker(railway_expr_off(scrutinee))))
+        // #3548: the guard desugar's fall-through reads the match temp, which
+        // has no offset; the written scrutinee's is kept beside it.
+        let scr_off = railway_expr_off(scrutinee)
+        let at = if scr_off >= 0 {
+          scr_off
+        } else {
+          match env_lookup(env, match_temp_anchor_key()) {
+            Some(CtNamed(digits, _)) => match Int::parse(digits) {
+              Some(n) => n,
+              None => 0 - 1
+            },
+            _ => 0 - 1
+          }
+        }
+        Array::push(errors, String::concat("add an unguarded arm or `_ => ..` after the guarded ones: non-exhaustive match: no unguarded arm covers the scrutinee (all guards may fail)", off_marker(at)))
         (CtUnknown, s1, c1)
       }
       else {
@@ -1142,7 +1164,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           if repeated != "" {
             Array::push(errors, String::concat("rename one of the two `\{repeated}` in this pattern: a pattern binds each name once (to compare two parts, bind them apart and test `a == b` in a guard)", off_marker(railway_expr_off(scrutinee))))
           }
+          let pat_err_before = Array::length(errors)
           let arm_env = check_pattern(pat, scr_ty, rail_env, defs, errors)
+          // #3548: a pattern carries no offset, so what `check_pattern`
+          // reports (a constructor bound with the wrong arity, ...) is
+          // anchored at its arm -- the body, or the scrutinee when the body
+          // has none -- rather than printed with no position at all.
+          anchor_unlocated_errors(errors, pat_err_before, railway_expr_off(body), railway_expr_off(scrutinee))
           // #3419: a constructor the scrutinee's type cannot have makes the
           // arm dead code. A `let*` / `?` desugar is reported above instead.
           if rk == 0 {
@@ -1598,7 +1626,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     match arm_first_bare_tail(hbody, false) {
                       Some(bare) => {
                         harm_bare = true
-                        Array::push(errors, String::concat("handler arm `", String::concat(hqname, String::concat("` must pass its value back with resume(...): write `resume(<value>)` here, or leave the arm with `return` / `throw` -- a tail value without resume(...) does not resume the perform", off_marker(railway_expr_off(bare))))))
+                        // #3548: a literal tail has no offset; the arm's own
+                        // is the nearest, and the message says which tail.
+                        let bare_off = railway_expr_off(bare)
+                        if bare_off >= 0 {
+                          Array::push(errors, String::concat("handler arm `", String::concat(hqname, String::concat("` must pass its value back with resume(...): write `resume(<value>)` here, or leave the arm with `return` / `throw` -- a tail value without resume(...) does not resume the perform", off_marker(bare_off)))))
+                        } else {
+                          Array::push(errors, String::concat("handler arm `", String::concat(hqname, String::concat("` must pass its value back with resume(...) on every branch: a branch of this arm ends in a plain value -- write `resume(<value>)` there, or leave the arm with `return` / `throw` -- a tail value without resume(...) does not resume the perform", off_marker(railway_expr_off(hbody))))))
+                        }
                       },
                       None => ()
                     }
@@ -2798,4 +2833,11 @@ fn erased_throw_binder_settle(name: String, var: Type, s: Subst, errors: Array[S
       s
     }
   }
+}
+
+/// #3548: the environment key under which the guard desugar's match temp
+/// carries the offset of the scrutinee it was bound to. Spelled so no source
+/// name can collide with it.
+fn match_temp_anchor_key() -> String {
+  "__match_temp_anchor@"
 }
