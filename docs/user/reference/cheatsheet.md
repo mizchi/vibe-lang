@@ -122,13 +122,9 @@ test "Float rounds to f32" {
 }
 ```
 
-A decimal `f` literal is rounded twice: to the nearest `Double` and then to
-the nearest f32. That can differ from rounding the decimal straight to f32
-when the decimal lies within half a `Double` ulp of a point halfway between
-two f32 values. Such literals are rare but not only long ones: a search of
-literals with up to 9 significant digits found 61, the shortest with 7
-(`0.00000000000000000000000007038531f` holds the f32 that prints
-`7.0385313e-26`, one f32 step above the nearest one, `7.038531e-26`).
+A decimal `f` literal is rounded once, straight to the nearest f32 with ties
+to even: `16777217.000000001f` is 16777218, while `16777217f`, exactly halfway
+between 16777216 and 16777218, is 16777216.
 
 ### Multi-line raw strings (`#|`)
 
