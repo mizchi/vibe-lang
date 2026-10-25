@@ -527,6 +527,9 @@ ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpol
 # arguments are not known at the call printed a field's address.
 ur_refused fixtures/err_derive_show_generic_qualified_call_unknown_refused.vibe 'cannot call `H::to_string` here' 'call it where the type is concrete'
 ur_refused fixtures/err_derive_show_generic_qualified_call_unknown_refused.vibe 'cannot call `H::to_string` here' 'call it where the type is concrete' gc
+# Codex on #3627: the same renderer taken as a value printed element addresses.
+ur_refused fixtures/err_derive_show_generic_value_refused.vibe 'cannot take `G::to_string` as a value' 'wrap it in a lambda at the concrete type'
+ur_refused fixtures/err_derive_show_generic_value_refused.vibe 'cannot take `G::to_string` as a value' 'wrap it in a lambda at the concrete type' gc
 # #3084: a generic function's result typed, at the call site, as a struct with
 # no renderer printed its address; the checker's row names the struct.
 ur_refused fixtures/err_interp_generic_call_missing_show_refused.vibe 'cannot interpolate a value of type `Hidden`' 'add `derive(Show)` to `Hidden`' linear 'fixtures/err_interp_generic_call_missing_show_refused.vibe: line 14:14'
