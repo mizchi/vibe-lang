@@ -20,6 +20,10 @@ import ./intern.vibe {
   intern_qualified
 }
 
+import ./printer.vibe {
+  print_pat
+}
+
 import ./parser_base.vibe {
   _no_tb,
   _no_tp,
@@ -275,7 +279,7 @@ enum BlockStep {
   StepLetRec(String, Expr);
   StepAssign(String, Expr, Int);
   StepAssignOp(String, String, Expr, Int);
-  StepPattern(Pat, Expr);
+  StepPattern(Pat, Expr, Int);
   StepPatternElse(Pat, Expr, Expr, Array[SourceBinder]);
   StepStructDestr(Pat, Expr);
   StepRecordDestr(Pat, Expr);
@@ -303,8 +307,9 @@ enum BlockStep {
 /// so it does not cover anything, and a pattern only guarded arms reach is
 /// still reported as not handled.
 /// #3547: a written single-arm `match` whose arm is a Bool literal or `Some` /
-/// `None` can never be exhaustive, yet it has the shape of the partial-let
-/// desugar (`let Some(v) = o`), which the checker tolerates, so it compiled and
+/// `None` can never be exhaustive, yet it had the shape of the partial-let
+/// desugar (`let Some(v) = o`, which carries its own `_` arm since #3626), and
+/// the checker tolerates a single-arm match, so it compiled and
 /// trapped with a bare `unreachable`. Binding its scrutinee to the match
 /// temporary, as a guarded match does, puts it under the checker's flat
 /// Option / Bool exhaustiveness check.
@@ -1389,7 +1394,16 @@ fn apply_block_step(step: BlockStep, rest: Expr, context: Option[ParserBinderCon
     StepLetRec(name, val) => ELetRec(name, val, rest),
     StepAssign(name, val, target_at) => EAssign(name, val, rest, target_at),
     StepAssignOp(name, op, val, target_at) => EAssignOp(name, op, val, rest, target_at),
-    StepPattern(pat, val) => EMatch(val, [(pat, rest)]),
+    // #3626: a refutable pattern (`let Some(v) = o`) is a partial binding, as
+    // the cheatsheet documents. It used to desugar to a one-arm match, whose
+    // missing case trapped with a bare `unreachable`; the second arm now says
+    // which pattern failed and where. An irrefutable pattern (a tuple of
+    // names) keeps the one arm it always had.
+    StepPattern(pat, val, pat_off) => if let_pattern_may_refute(pat) {
+      EMatch(val, [(pat, rest), (PWild, let_refuted_arm(pat, pat_off))])
+    } else {
+      EMatch(val, [(pat, rest)])
+    },
     // #760(1): `let PAT = val else { alt }` — bind on match, else run the
     // diverging fallback. Desugars to a two-arm match whose wildcard arm is
     // the else body; the checker unifies both arms, so a fallback that
@@ -1534,10 +1548,48 @@ fn reject_let_else(tokens: Array[Token], pos: Int) -> Int with Exception {
 }
 
 /// Push a refutable pattern-let step. Returns the position past it.
-fn push_pattern_let_step(tokens: Array[Token], steps: ArrayBuilder[BlockStep], pat: Pat, val: Expr, next_pos: Int, context: Option[ParserBinderContext]) -> Int with Exception {
+fn push_pattern_let_step(tokens: Array[Token], steps: ArrayBuilder[BlockStep], pat: Pat, val: Expr, pat_off: Int, next_pos: Int, context: Option[ParserBinderContext]) -> Int with Exception {
   let after = reject_let_else(tokens, next_pos)
-  ArrayBuilder::push(steps, StepPattern(pat, val))
+  ArrayBuilder::push(steps, StepPattern(pat, val, pat_off))
   after
+}
+
+/// #3626: can a `let` pattern fail to match? Only a name, `_`, and tuples or
+/// struct destructures made of those cannot. A constructor, a literal and an
+/// or-pattern can; a constructor of a one-variant enum is counted too, since
+/// the parser cannot see the enum, and its extra arm is then never taken.
+fn let_pattern_may_refute(p: Pat) -> Bool {
+  match source_pat(p) {
+    PWild => false,
+    PBind(_) => false,
+    PTuple(elems) => {
+      let mut any = false
+      for e in elems {
+        if let_pattern_may_refute(e) {
+          any = true
+        }
+      }
+      any
+    },
+    PStruct(_, fields) => {
+      let mut any = false
+      for f in fields {
+        if let_pattern_may_refute(f.1) {
+          any = true
+        }
+      }
+      any
+    },
+    _ => true
+  }
+}
+
+/// #3626: the arm a refutable `let` takes when its pattern does not match.
+/// `__let_refuted` prints `let pattern `P` did not match at path:line:col`
+/// and traps; the string's offset is the pattern's, which the merge rebases
+/// with every other offset so codegen can place it in its file.
+fn let_refuted_arm(pat: Pat, pat_off: Int) -> Expr {
+  ECall(builtin_ref("__let_refuted"), [EString(print_pat(pat), pat_off)], -1, [])
 }
 
 fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
@@ -1731,7 +1783,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                   if next_pos <= eq {
                     throw("internal parser error: block let-ctor-pat parser did not advance")
                   } else {
-                    p = push_pattern_let_step(tokens, steps, pat, val, next_pos, context)
+                    p = push_pattern_let_step(tokens, steps, pat, val, blk_offset_at(starts, next), next_pos, context)
                   }
                 },
                 _ => {
@@ -1798,7 +1850,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
             if next_pos <= eq {
               throw("internal parser error: block let-pat parser did not advance")
             } else {
-              p = push_pattern_let_step(tokens, steps, pat, val, next_pos, context)
+              p = push_pattern_let_step(tokens, steps, pat, val, blk_offset_at(starts, next), next_pos, context)
             }
           },
           token => throw(binder_name_error(tk_name(token), "binding", next))

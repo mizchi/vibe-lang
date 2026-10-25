@@ -29,7 +29,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_str
+  array_contains_str, let_refuted_message
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -152,6 +152,18 @@ export fn collect_strings_expr(expr: Expr, out: Array[String], seen: MutSet[Stri
         EIdent(nm, _) => if nm == "__to_string" {
           collect_strings_expr(EString("true", -1), out, seen)
           collect_strings_expr(EString("false", -1), out, seen)
+        } else if nm == "__let_refuted" {
+          // #3626: the line a refutable `let` prints when its pattern does
+          // not match. Codegen builds the same string from the same call and
+          // looks it up, so a pool without it keeps the bare trap.
+          let msg = let_refuted_message(args)
+          if String::length(msg) > 0 {
+            collect_strings_note(msg, out, seen)
+            collect_strings_note("\n", out, seen)
+          } else {
+            ()
+          }
+          0
         } else {
           0
         },
@@ -839,7 +851,7 @@ fn is_inlined_async_builtin(name: String) -> Bool {
 /// reader bound the name -- an enclosing binding still reaches the closure
 /// through `encl`, which this skip never overrides.
 fn is_inlined_scalar_builtin(name: String) -> Bool {
-  name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt" || name == "abort" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "print" || name == "println" || name == "sleep" || name == "sleep_blocking" || name == "map_has" || name == "sh_lines" || name == "Double::from_i64_bits" || name == "Map::__iter_get_unchecked" || name == "Array::iter_eager" || is_runtime_prelude_dispatched_builtin(name)
+  name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt" || name == "abort" || name == "__let_refuted" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "print" || name == "println" || name == "sleep" || name == "sleep_blocking" || name == "map_has" || name == "sh_lines" || name == "Double::from_i64_bits" || name == "Map::__iter_get_unchecked" || name == "Array::iter_eager" || is_runtime_prelude_dispatched_builtin(name)
 }
 
 /// PR #2708 review: the callsite-dispatched names that lower to ONE call into

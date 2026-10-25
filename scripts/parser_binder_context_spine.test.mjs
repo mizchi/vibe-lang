@@ -814,7 +814,7 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
     // own to fall back to. Pinning `blk_offset_at(starts, ...)` here keeps the
     // binder-name anchor from silently regressing to nothing.
     "ascribe_wrap(val, the_type, value_mark, context, blk_offset_at(starts,",
-    "push_pattern_let_step(tokens, steps, pat, val, next_pos, context)",
+    "push_pattern_let_step(tokens, steps, pat, val, blk_offset_at(starts, next), next_pos, context)",
   ], [
     "fold_block_steps(ArrayBuilder::freeze(steps))",
     "ascribe_wrap(val, the_type)",

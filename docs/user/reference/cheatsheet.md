@@ -1072,6 +1072,16 @@ let demo: (Option[(Int, Int)], Option[Int]) -> Int = (pt, opt) -> {
 }
 ```
 
+A refutable `let` (a constructor, a literal or `|` anywhere in its pattern) is
+a **partial** binding: when the value does not match, the program stops with
+one line naming the pattern and where it is written, then traps (#3626):
+
+```
+let pattern `Some(v)` did not match at main.vibex:3:7 -- handle the other case with `match`, or with `guard <value> is Some(v) else { .. }`
+```
+
+To handle the other case instead, write the `match` or the `guard`.
+
 > **guard semantics (#1283):** `guard e is PAT else { alt }` desugars to
 > `match e { PAT => <rest-of-block>, _ => alt }` — the else arm IS the
 > continuation's fallthrough, which is why it must diverge. `return` and a

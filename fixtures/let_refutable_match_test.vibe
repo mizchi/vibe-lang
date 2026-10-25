@@ -1,0 +1,75 @@
+// #3626: a refutable `let` desugars to a match with a second arm that reports
+// the failed pattern. These rows pin that the extra arm types as the matching
+// arm's continuation, whatever it yields, and that a matching value binds as
+// before: Int, String, Double, an Array and a tuple, through a generic
+// function and inside a closure.
+
+enum Shape {
+  Circle(Double);
+  Rect(Int, Int)
+}
+
+fn unwrap[T](o: Option[T]) -> T {
+  let Some(v) = o
+  v
+}
+
+fn area(s: Shape) -> Int {
+  let Rect(w, h) = s
+  w * h
+}
+
+fn radius(s: Shape) -> Double {
+  let Circle(r) = s
+  r
+}
+
+fn first_two(xs: Option[Array[Int]]) -> Array[Int] {
+  let Some(arr) = xs
+  [Array::get(arr, 0), Array::get(arr, 1)]
+}
+
+fn pair(p: (Option[Int], String)) -> String {
+  let (Some(n), s) = p
+  "\{s}\{n}"
+}
+
+test "a refutable let binds a matching value of any type" {
+  inspect(unwrap(Some(41)) + 1, "42")
+  inspect(unwrap(Some("ok")), "ok")
+  inspect(area(Rect(6, 7)), "42")
+  inspect(radius(Circle(1.5)), "1.5")
+  inspect(first_two(Some([4, 5, 6])), "[4, 5]")
+  inspect(pair((Some(9), "n=")), "n=9")
+}
+
+test "a refutable let inside a closure" {
+  let f = (o: Option[Int]) -> {
+    let Some(v) = o
+    v * 2
+  }
+  inspect(f(Some(21)), "42")
+  let g = (s: Shape) -> {
+    let Rect(w, _) = s
+    "w=\{w}"
+  }
+  inspect(g(Rect(3, 4)), "w=3")
+}
+
+test "an irrefutable tuple let is unchanged" {
+  let (a, b) = (1, 2)
+  let ((c, d), e) = ((3, 4), 5)
+  inspect(a + b + c + d + e, "15")
+}
+
+effect Ask {
+  Get() -> Option[Int]
+}
+
+test "a refutable let inside a handled body" {
+  let r = handle {
+    let Some(v) = perform Ask::Get()
+    v + 1
+  } with { Ask::Get() => resume(Some(41)) }
+  inspect(r, "42")
+}

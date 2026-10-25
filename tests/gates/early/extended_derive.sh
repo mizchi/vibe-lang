@@ -761,6 +761,53 @@ done
 rm -rf "$dzdir"
 echo "[compiler-gate] Int division-by-zero trap message ok (/, %, /=; linear and gc)"
 
+# #3626: a refutable `let` whose pattern does not match prints the pattern and
+# its `path:line:col` before it traps, on both lanes. It used to trap with a
+# bare `unreachable`. Each fixture prints a line first (through a MATCHING
+# `let`), so a build or run that dies early cannot satisfy the row, and the
+# mismatch still TRAPS. The nested fixture's failed arm sits in a closure whose
+# value is a String, which the gc lane does not represent as an Int.
+echo "[compiler-gate] a refutable let names its pattern and path:line:col when it does not match (#3626)"
+lrdir="_build/_gate_let_refuted"
+rm -rf "$lrdir"; mkdir -p "$lrdir"
+for lr_case in "let_refutable_mismatch_trap|Some(v)|7|7|before 2" "let_refutable_nested_lambda_trap|(Rect(w, _), n)|13|9|before w=2 n=1"; do
+  IFS='|' read -r lr_name lr_pat lr_line lr_col lr_before <<<"$lr_case"
+  lr_src="fixtures/$lr_name.vibe"
+  lr_want="let pattern \`$lr_pat\` did not match at $lr_src:$lr_line:$lr_col -- handle the other case with \`match\`, or with \`guard <value> is $lr_pat else { .. }\`"
+  for lr_backend in linear gc; do
+    lr_wasm="$lrdir/${lr_name}_$lr_backend.wasm"
+    if [ "$lr_backend" = gc ]; then
+      VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+        "$lr_src" "$lr_wasm" main >/dev/null 2>&1 || true
+    else
+      VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+        "$lr_src" "$lr_wasm" main >/dev/null 2>&1 || true
+    fi
+    if [ ! -s "$lr_wasm" ]; then
+      echo "[compiler-gate] FAIL: $lr_src did not compile on $lr_backend (#3626)" >&2
+      cat "$lr_wasm.diag" >&2 2>/dev/null; exit 1
+    fi
+    lr_status=0
+    lr_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_RUNNER_EXIT_WITH_RESULT=1 bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$lr_wasm" 2>&1)" || lr_status=$?
+    if ! printf '%s\n' "$lr_out" | grep -qxF "$lr_before"; then
+      echo "[compiler-gate] FAIL: $lr_src did not print '$lr_before' before the mismatch on $lr_backend (#3626): $lr_out" >&2
+      exit 1
+    fi
+    if [ "$lr_status" -eq 0 ] || printf '%s\n' "$lr_out" | grep -qF 'after'; then
+      echo "[compiler-gate] FAIL: a refuted let answered instead of trapping on $lr_backend (#3626): $lr_out" >&2
+      exit 1
+    fi
+    if ! printf '%s\n' "$lr_out" | grep -qxF "$lr_want"; then
+      echo "[compiler-gate] FAIL: $lr_src did not report '$lr_want' on $lr_backend (#3626): $lr_out" >&2
+      exit 1
+    fi
+  done
+done
+rm -rf "$lrdir"
+echo "[compiler-gate] refutable let mismatch message ok (linear and gc)"
+
 # #3126 + #3158: on wasm-gc the division-by-zero abort and the erased-generic
 # `__generic_rel_diff` / `__generic_add` pair are conditionally pushed builtin
 # bodies, both after the optional integer renderer, and their indices are
