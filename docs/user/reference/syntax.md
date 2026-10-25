@@ -872,8 +872,7 @@ Rules:
 
 - The exception effect is spelled `Exception`. `Error` was its name through the
   ADR-0085 migration and is rejected by name in every place a source effect
-  name appears: a row item (`-> T with Error`), the handled effect
-  (`handle { .. } with Error { .. }`), and a qualified handler arm
+  name appears: a row item (`-> T with Error`) and a qualified handler arm
   (`with { Error::Throw(_) => .. }` or the suffix `with Error::Throw(_) => ..`).
 
   `perform Error::Throw(x)` is unaffected and stays legal. An operation

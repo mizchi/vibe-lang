@@ -12,8 +12,8 @@ const PRESETS: Preset[] = [
 }
 
 export let _start = () -> Int {
-  let ok = handle { safe_div(12, 3) } with Exception { Throw(_) => -1 }
-  let err = handle { safe_div(12, 0) } with Exception { Throw(_) => -1 }
+  let ok = handle { safe_div(12, 3) } with { Exception::Throw(_) => -1 }
+  let err = handle { safe_div(12, 0) } with { Exception::Throw(_) => -1 }
   ok + err
 }`,
   },
@@ -60,7 +60,7 @@ let risky = () -> Int with Exception {
 }
 
 export let _start = () -> Int {
-  handle { risky() } with Exception { Throw(_) => -1 }
+  handle { risky() } with { Exception::Throw(_) => -1 }
 }`,
   },
 ];

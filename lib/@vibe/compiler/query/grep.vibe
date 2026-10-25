@@ -225,6 +225,37 @@ fn grep_mangle(kind: String, name: String) -> String {
   }
 }
 
+/// #3530: an `arms` hole that opens a handler set (`with { $(a:arms) }`). A
+/// handler-set arm must name a qualified operation, so the `_ =>` arm
+/// `grep_mangle` emits does not parse there; this one does, and
+/// `grep_arms_hole_name` reads the hole from its body either way. The effect
+/// is a reserved spelling, so no arm a program writes is taken for it.
+fn grep_mangle_handler_set_arms(name: String) -> String {
+  String::concat("__vgm_armset::Arms => __vgm_arms__", name)
+}
+
+/// Whether the expanded pattern so far ends in `with {`, so that the next
+/// hole is the first arm of a handler set.
+fn grep_ends_with_handler_set_open(out: String) -> Bool {
+  let mut j = String::length(out)
+  while j > 0 && grep_is_space(String::char_code_at(out, j - 1)) {
+    j = j - 1
+  }
+  if j == 0 || String::char_code_at(out, j - 1) != '{' {
+    false
+  } else {
+    let mut k = j - 1
+    while k > 0 && grep_is_space(String::char_code_at(out, k - 1)) {
+      k = k - 1
+    }
+    k >= 4 && String::substring(out, k - 4, k) == "with" && (k == 4 || !grep_is_ident_char(String::char_code_at(out, k - 5)))
+  }
+}
+
+fn grep_is_space(c: Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13
+}
+
 fn grep_kind_is_known(kind: String) -> Bool {
   kind == "exp" || kind == "id" || kind == "const" || kind == "arg" || kind == "args" || kind == "pat" || kind == "type" || kind == "arms"
 }
@@ -315,7 +346,12 @@ fn grep_expand_metavars(pattern: String, vars: Array[String]) -> String with Exc
           } else if !grep_kind_is_known(kind) {
             throw(String::concat("grep pattern: unknown metavariable kind `", String::concat(kind, "` — use one of exp, id, const, arg, args, pat, type, arms")))
           } else {
-            out = String::concat(out, grep_mangle(kind, name))
+            let mangled = if kind == "arms" && grep_ends_with_handler_set_open(out) {
+              grep_mangle_handler_set_arms(name)
+            } else {
+              grep_mangle(kind, name)
+            }
+            out = String::concat(out, mangled)
             if name != "_" {
               Array::push(vars, name)
             } else {
@@ -616,7 +652,7 @@ export fn grep_compile_pattern(pattern: String) -> GrepPattern with Exception {
     // failure is `expected with but got eof`, which describes the parser's
     // state and not the spelling that works.
     Exception::Throw(msg) => if lead_word == "handle" {
-      throw(String::concat("grep pattern: ", String::concat(msg, " -- a `handle` pattern needs its `with` clause. Use `$(a:arms)` to match ANY handler: `handle { $(b:exp) } with $(e:id) { $(a:arms) }`. Write the arms out instead to match a specific one: `handle { $(b:exp) } with $(e:id) { Get($(p:pat)) => resume($(v:exp)) }`.")))
+      throw(String::concat("grep pattern: ", String::concat(msg, " -- a `handle` pattern needs its `with` clause. Use `$(a:arms)` to match ANY handler: `handle { $(b:exp) } with { $(a:arms) }`. Write the arms out instead to match a specific one: `handle { $(b:exp) } with { $(e:id)::Get($(p:pat)) => resume($(v:exp)) }`.")))
     } else {
       throw(String::concat("grep pattern: ", msg))
     }
@@ -928,9 +964,9 @@ fn grep_match_name(pname: String, tname: String, binds: Array[(String, String, I
     pname == tname
   } else if kind == "id" {
     // #2132: a metavariable can be the QUALIFIER of a qualified name --
-    // `with $(e:id) { Get(..) => .. }` reaches here as `__vgm_id__e::Get`,
-    // because the parser resolves an arm's operation against the handled
-    // effect. `grep_meta_of` decodes the variable as `e::Get`, so the literal
+    // `with { $(e:id)::Get(..) => .. }` reaches here as `__vgm_id__e::Get`,
+    // because the parser qualifies an arm's operation by the effect it
+    // names. `grep_meta_of` decodes the variable as `e::Get`, so the literal
     // `Get` used to be swallowed into the variable NAME and never compared:
     // the pattern matched `Log::Emit` and reported it under the nonsense key
     // `$e::Get`. Split the suffix back off and require it to match.
@@ -1152,14 +1188,21 @@ fn grep_match_fields(ps: Array[(String, Expr)], ts: Array[(String, Expr)], owner
 }
 
 /// The name of the `arms` hole when `ps` is exactly one, or "" otherwise. The
-/// hole is spelled `_ => __vgm_arms__<name>` by `grep_mangle`.
+/// hole is spelled `_ => __vgm_arms__<name>` by `grep_mangle`, and
+/// `__vgm_armset::Arms => __vgm_arms__<name>` when it opens a handler set
+/// (`grep_mangle_handler_set_arms`).
 fn grep_arms_hole_name(ps: Array[(Pat, Expr)]) -> String {
   if Array::length(ps) != 1 {
     ""
   } else {
     let (php, pbody) = Array::get(ps, 0)
-    match php {
-      PWild => match pbody {
+    let hole_pat = match source_pat(php) {
+      PWild => true,
+      PCtor(cn, _) => cn == "__vgm_armset::Arms",
+      _ => false
+    }
+    if hole_pat {
+      match pbody {
         EIdent(bn, _) => {
           let (kind, name) = grep_meta_of(bn)
           if kind == "arms" {
@@ -1169,8 +1212,9 @@ fn grep_arms_hole_name(ps: Array[(Pat, Expr)]) -> String {
           }
         },
         _ => ""
-      },
-      _ => ""
+      }
+    } else {
+      ""
     }
   }
 }
