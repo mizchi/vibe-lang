@@ -6,7 +6,8 @@
 > [spec/0-1.md](../../spec/0-1.md).
 
 The previous stable release is `v0.0.1` (2026-04-14); `v0.1.0-rc.1` to
-`v0.1.0-rc.4` were published as pre-releases. `0.1.0-rc.3` also fixed
+`v0.1.0-rc.3` were published as pre-releases. `0.1.0-rc.4` is in preparation;
+it has no published tag or assets as of 2026-10-26. `0.1.0-rc.3` also fixed
 RC ownership of store views, local closure captures, recursive closures, and
 closures returned from `Option` payloads (#3215, #3203, #3110, #3240); makes
 qualified constructor patterns through
@@ -19,7 +20,7 @@ rewritten in itself, so these notes describe a different compiler rather than
 a list of fixes. The work once prepared under the name
 "0.3.0 GA" is part of this release.
 
-## Changes in 0.1.0-rc.4
+## Changes prepared for 0.1.0-rc.4
 
 This candidate carries the fixes from the pre-release bug hunt (#3535). Each
 fix below closes a program that type-checked cleanly and then ran wrong,
@@ -34,8 +35,8 @@ time with the edit that fixes it, or it answers correctly.
   or a parameter or call result whose body the check cannot read (#3540,
   #3584, #3593, #3596, #3599). A closure performing two handled effects is
   refused when it leaves through a parameter that names only one (#3585).
-  One route is still not seen: a call that stores the closure in state it
-  captured, or in a module-level binding. See
+  A stored callback must keep its effect on its function type; a handler
+  that has returned cannot supply it. See the effect-boundary limits in
   [stable-surface §6.2](../reference/stable-surface.md).
 - **Effect rows.** A struct's row parameter carries a real row argument,
   including through nested structs and generic signatures, so a generic
@@ -45,8 +46,9 @@ time with the edit that fixes it, or it answers correctly.
   through projections, owned handles and generic arguments (#3587).
 - **Exceptions.** An erased `Exception::Throw(m)` arm that reads `m` now
   catches only `String` messages, and a bare `with Exception` row carries
-  the non-`String` kinds its body throws to its callers (#3541). Two routes
-  remain open and are listed in the stable surface, §6.2 (#3601).
+  the non-`String` kinds its body throws to its callers (#3541, #3601).
+  Retained or indirectly called callbacks should name their exception kind
+  explicitly; the runtime does not turn an erased payload into a message.
 - **Indexing.** An element access at an index of 2^32 or more, or a
   non-empty range reaching past the end, now traps as out of bounds instead
   of wrapping into range. This covers `Array::get` / `set` / `xs[i]`,
@@ -61,11 +63,31 @@ time with the edit that fixes it, or it answers correctly.
 - **Derives and generics.** Fixes to `derive (Show)` / `derive (Eq)`, impl
   overlap detection, generic renderers, and effect dictionaries for
   shadowing callbacks (#3551, #3587, #3592, #3597).
+- **`Float` is binary32.** Literals round directly from decimal to f32, and
+  arithmetic and conversions round to f32. Printing uses the shortest
+  decimal that reads back to the same f32. Default, debug and library builds
+  carry the typed rows required for rounding (#3543, #3625). `Float` remains
+  unstable; generic `Eq`, `Show` and `Add` impls still require a seed bump.
+- **Diagnostics and handler syntax.** The legacy `with E { Op(..) => .. }`
+  header is refused with the qualified replacement
+  (`with { E::Op(..) => .. }`). A refutable `let` mismatch names its pattern
+  and source position on linear and gc; a module build without a string
+  pool retains the bare trap. Parser, trait, assignment and handler
+  diagnostics gain positions and actionable edits (#3530, #3548, #3626).
+
+The candidate still has a known numeric correctness defect:
+`pick(2.5) + 1.0`, where `pick[T](x: T) -> T`, can add boxed bits as an
+integer and print `537`. Bind the result to an explicitly typed `Double`
+local before adding. [#3629](https://github.com/mizchi/vibe-lang/issues/3629)
+tracks the P0; promotion to `0.1.0` requires a fix or a safe compile-time
+refusal, with evidence in [#2834](https://github.com/mizchi/vibe-lang/issues/2834). See
+[stable-surface §6.2](../reference/stable-surface.md) for the scope and
+effect-boundary restrictions.
 
 The hunt also triaged surfaces that are not part of these fixes. Some showed
 wrong answers that could not be fixed safely before 0.1.0; others gave no
 wrong answer but rest on machinery the hunt could not vouch for. They are
-moved out of the 0.1.0 freeze rather than repaired: `Float`, `derive (Hash)`
+moved out of the 0.1.0 freeze: `Float`, `derive (Hash)`
 keys, trait impls beyond one module, higher-kinded parameters, kinded arms
 over a row-polymorphic callee, and first-class `resume`. See
 [stable-surface §6.1](../reference/stable-surface.md) for the reason given
@@ -271,8 +293,9 @@ the edit that fixes them rather than an internal pass name.
   carries its own range, across lines too. `vibe check` reports every
   collected diagnostic, identically on the FS lane, `--single-file` and
   `--json` ([source-range-contract.md](../reference/source-range-contract.md)).
-- Everything in §6 of [stable-surface.md](../reference/stable-surface.md) is
-  outside the SemVer promise, most notably the suspendable-task lane, the
+- The unstable surfaces listed in §6 and §6.1 of
+  [stable-surface.md](../reference/stable-surface.md) are outside the SemVer
+  promise, most notably the suspendable-task lane, the
   capability authorization surface and the wasm-gc backend. The pre-release
   bug hunt (#3535) added `Float`, `derive (Hash)` keys, nested and duplicated
   trait impls, higher-kinded parameters, kinded exception arms over
@@ -283,9 +306,11 @@ the edit that fixes them rather than an internal pass name.
   `let` (the value restriction), impl methods that disagree with their trait, effect rows
   not charged through call expressions, `Double` interpolation through a
   `for` binder or an index, and an explicit `H::to_string(x)` on a
-  `derive (Show)` generic printing a field's address. Shipped with a workaround in §6.2 of
-  [stable-surface.md](../reference/stable-surface.md) and an open P0 issue:
-  closures escaping a `handle`, and the untyped erased `Throw` binder.
+  `derive (Show)` generic printing a field's address. The separate generic
+  floating-point `+` defect (#3629) is still a P0 inside the stable numeric
+  surface; §6.2 records its workaround and the handler-lifetime and kinded
+  callback restrictions. Those restrictions do not move numeric correctness
+  outside the freeze or establish that the candidate is ready to publish.
 
 ## Release verification
 
