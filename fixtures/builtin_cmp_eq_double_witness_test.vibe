@@ -1,0 +1,66 @@
+// #3637: the prelude's `cmp_eq` / `cmp_ne` answer by value at `Double`, and
+// importing `@vibe/builtin` no longer turns a program's own `[T: Eq]` into a
+// comparison of boxes.
+//
+// `@vibe/builtin` declared `trait Eq` as a marker while the checker registered
+// `Eq` as method-bearing (#2523). `cmp_eq(1.5, 1.5)` was refused (the marker
+// `Eq` reaches no witness), and any import from the package merged the marker
+// into the program, which stopped the lowering from injecting `equals`: a
+// program's own `same[T: Eq](1.5, 1.5)` threaded no witness and answered
+// `false` after a clean build, while the same program without the import
+// answered `true`. The prelude now declares `equals(Self, Self) -> Bool`, the
+// signature the checker already used.
+//
+// `ord_max` / `num_add` stay refused at `Double` (`<` and `+` reach no
+// witness); `fixtures/typecheck/err_type_builtin_ord_max_double.vibe` pins that.
+
+import @vibe/builtin { cmp_eq, cmp_ne, num_add, ord_max, to_string }
+
+struct Pt {
+  v: Double
+} derive (Eq)
+
+fn same[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}
+
+fn b2s(b: Bool) -> String {
+  if b {
+    "t"
+  } else {
+    "f"
+  }
+}
+
+test "cmp_eq and cmp_ne compare a Double by value" {
+  let rows = [
+    b2s(cmp_eq(1.5, 1.5)),
+    b2s(cmp_eq(1.5, 2.5)),
+    b2s(cmp_eq(0.0, 0.0)),
+    b2s(cmp_ne(1.5, 1.5)),
+    b2s(cmp_ne(1.5, 2.5))
+  ]
+  inspect(String::join(rows, ""), "tftft")
+}
+
+test "cmp_eq at the other scalars and a derived struct" {
+  let rows = [
+    b2s(cmp_eq(1, 1)),
+    b2s(cmp_eq(1, 2)),
+    b2s(cmp_eq("a", "a")),
+    b2s(cmp_eq("a", "b")),
+    b2s(cmp_eq(true, true)),
+    b2s(cmp_eq('x', 'y')),
+    b2s(cmp_eq(Pt::{ v: 1.5 }, Pt::{ v: 1.5 })),
+    b2s(cmp_eq(Pt::{ v: 1.5 }, Pt::{ v: 2.5 }))
+  ]
+  inspect(String::join(rows, ""), "tftftftf")
+}
+
+test "a program's own Eq bound still dispatches with the prelude imported" {
+  inspect(String::concat(b2s(same(1.5, 1.5)), b2s(same(Pt::{ v: 2.5 }, Pt::{ v: 2.5 }))), "tt")
+}
+
+test "ord_max and num_add keep answering at Int and String" {
+  inspect(to_string(ord_max(3, 9)) + " " + ord_max("apple", "banana") + " " + to_string(num_add(2, 5)) + " " + num_add("a", "b"), "9 banana 7 ab")
+}
