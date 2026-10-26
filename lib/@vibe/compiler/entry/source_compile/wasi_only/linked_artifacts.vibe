@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/checker {
-  check_program, validate_source_file_exports, validate_source_file_owned_heads
+  check_program, typed_lowering_binop_anchor, validate_source_file_exports, validate_source_file_owned_heads
 }
 
 import @vibe/core {
@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen/wasi {
-  compile_wasi_module_linked_impl
+  compile_wasi_module_linked_impl, compile_wasi_module_linked_impl_with_typed_offsets
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -23,12 +23,14 @@ import @vibe/compiler/core {
   dir_of_path,
   is_builtin_iterator_serialized_boundary_path,
   is_owned_head_source_location_fs,
+  merged_offset_space_add,
+  merged_offset_space_reset,
   path_to_module_name,
   resolve_import_path
 }
 
 import @vibe/compiler/syntax {
-  lex, parse_program
+  lex, parse_program, rewrite_string_binops_stmts
 }
 import ./linked_helpers.vibe {
   resolve_reexport_chain
@@ -43,7 +45,15 @@ import ./preprocess.vibe {
 }
 
 import @vibe/compiler/normalize {
-  desugar_trait_dicts_rowless_build
+  desugar_trait_dicts_rowless_build, desugar_trait_dicts_with_typed_eq
+}
+
+import @vibe/compiler/loader {
+  parse_program_located_shared
+}
+
+import @vibe/checker/lowering {
+  checked_eq_rows_for_source, checked_lowering_for_source, split_checked_lowering
 }
 
 //# Functions
@@ -69,6 +79,77 @@ fn efn_param_count(expr: Expr) -> Int {
 fn read_program(path: String) -> Array[Stmt] with Exception + Fs {
   let source = Fs::read_file(path)
   parse_program(lex(source))
+}
+
+/// #3625: the ENTRY of a linked lane, read the same way but parsed located,
+/// with the text it was parsed from. It is the only file this lane compiles
+/// (each dependency is a separate linked module), so its own offsets are the
+/// merged space, and they are recorded as such for a refusal's `line:col`.
+fn read_entry_program_located(path: String) -> (Array[Stmt], String) with Exception + Fs {
+  let source = Fs::read_file(path)
+  let stmts = parse_program_located_shared(path, source)
+  merged_offset_space_reset()
+  merged_offset_space_add(path, source, 0)
+  (stmts, source)
+}
+
+/// #3625: what the import-resolving check answered for the entry `path`, if
+/// it checked exactly `source` -- the text this lane parsed -- in this
+/// process: the module's typed-lowering table (Double/`Float` value offsets,
+/// String binop anchors, Int/Bool render arguments) and its typed-`==`
+/// channel rows (render, receiver and `Float` arithmetic rows among them).
+/// Both are in the entry's own offset space, the space
+/// `read_entry_program_located` parses into. `None` when either is missing.
+///
+/// The lane's own `check_program` cannot supply them: it binds every
+/// imported name to an unknown type, so a `Float` or `Double` an imported
+/// function returns is invisible to it, and `a() + b()` over two of them was
+/// added as Int bits -- measured, `dbig() + done() == 3.5` answered `false`
+/// on `vibe build --debug` while the default build answered `true`.
+fn linked_entry_checked_rows(path: String, source: String) -> Option[(Array[Int], Array[Int], Array[String])] {
+  match checked_lowering_for_source(path, source) {
+    Some(table) => match checked_eq_rows_for_source(path, source) {
+      Some((eq_offs, eq_keys)) => Some((table, eq_offs, eq_keys)),
+      None => None
+    },
+    None => None
+  }
+}
+
+/// #3625: the trait-dictionary desugar for a linked entry. With the checked
+/// rows (`vibe build --debug` runs the import-resolving check first) it is
+/// the default lane's: the checked String binops are rewritten to their
+/// content forms, and the desugar reads the typed-`==` rows -- an untyped
+/// shadow renders by its own type (#3456) and each `Float` arithmetic result
+/// is rounded to f32 (#3543). Without them it is the no-row entry, which
+/// refuses both of those rather than answer them wrongly.
+export fn desugar_linked_entry(stmts: Array[Stmt], checked: Option[(Array[Int], Array[Int], Array[String])]) -> Unit with Exception {
+  match checked {
+    Some((table, eq_offs, eq_keys)) => {
+      let (_, rels, pluses, _, _) = split_checked_lowering(table)
+      let rewritten = rewrite_string_binops_stmts(stmts, rels, pluses, typed_lowering_binop_anchor)
+      let mut i = 0
+      while i < Array::length(stmts) {
+        Array::set(stmts, i, Array::get(rewritten, i))
+        i = i + 1
+      }
+      desugar_trait_dicts_with_typed_eq(stmts, eq_offs, eq_keys)
+    },
+    None => desugar_trait_dicts_rowless_build(stmts)
+  }
+}
+
+/// #3625: code generation for a linked entry, handed the same checked tables
+/// as `desugar_linked_entry`, so a Double or `Float` an imported function
+/// returns is computed and rendered as one.
+export fn compile_linked_entry_module(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], checked: Option[(Array[Int], Array[Int], Array[String])]) -> Bytes with Exception {
+  match checked {
+    Some((table, eq_offs, eq_keys)) => {
+      let (floats, _, _, int_renders, bool_renders) = split_checked_lowering(table)
+      compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, srcs, linked_imports, false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1, floats, int_renders, bool_renders, eq_offs, eq_keys)
+    },
+    None => compile_wasi_module_linked_impl(stmts, entry_name, srcs, linked_imports, false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1)
+  }
 }
 
 fn append_stmt_array(dst: Array[Stmt], src: Array[Stmt]) -> Unit {
@@ -248,16 +329,25 @@ fn collect_linked_dep_artifacts(dep_paths: Array[String], wanted_names: Array[Ar
 
 /// #946(3): dep-collection half of collect_linked_compile_inputs, factored out
 /// so a caller that already has its OWN entry_stmts (e.g. cli_support.vibe's
-/// check_linked_file, which needs a LOCATED parse for diagnostics — see its
+/// check_linked_file, which needs a RECOVERING parse for diagnostics — see its
 /// doc comment) can reuse the dep-resolution logic without re-parsing the
-/// entry file via this module's plain (unlocated, non-recovering) read_program.
+/// entry file via this module's non-recovering `read_entry_program_located`.
 export fn collect_linked_dep_inputs_for_stmts(entry_path: String, entry_stmts: Array[Stmt]) -> (Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)]) with Exception + Fs {
   let (dep_paths, dep_wanted_names) = collect_direct_dep_paths(entry_stmts, dir_of_path(entry_path))
   collect_linked_dep_artifacts(dep_paths, dep_wanted_names)
 }
 
 export fn collect_linked_compile_inputs(entry_path: String) -> (Array[Stmt], Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)]) with Exception + Fs {
-  let entry_stmts = read_program(entry_path)
+  let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, _) = collect_linked_compile_inputs_with_rows(entry_path)
+  (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs)
+}
+
+/// #3625: `collect_linked_compile_inputs`, with the entry parsed located and
+/// what the import-resolving check answered for exactly that text
+/// (`linked_entry_checked_rows`), for `desugar_linked_entry` and
+/// `compile_linked_entry_module`.
+export fn collect_linked_compile_inputs_with_rows(entry_path: String) -> (Array[Stmt], Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)], Option[(Array[Int], Array[Int], Array[String])]) with Exception + Fs {
+  let (entry_stmts, entry_source) = read_entry_program_located(entry_path)
   // #2808: this lane uses its OWN collector, so it needs its own call -- the
   // hook in `collect_parsed_sources_recursive` never runs here. It validates
   // the entry it just read; each dep is validated in
@@ -265,11 +355,11 @@ export fn collect_linked_compile_inputs(entry_path: String) -> (Array[Stmt], Arr
   validate_source_file_exports(entry_path, entry_stmts)
   validate_source_file_owned_heads(entry_path, linked_file_ships_owned_heads(entry_path), entry_stmts)
   let (resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_dep_inputs_for_stmts(entry_path, entry_stmts)
-  (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs)
+  (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, linked_entry_checked_rows(entry_path, entry_source))
 }
 
 export fn compile_file_wasi_linked_artifacts(entry_path: String, entry_name: String) -> (Bytes, Array[(String, String, Int, Int)], Array[(String, String)]) with Exception + Fs {
-  let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_compile_inputs(entry_path)
+  let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, checked_rows) = collect_linked_compile_inputs_with_rows(entry_path)
   let stmts = empty_stmt_array()
   append_stmt_array(stmts, resolved_type_stmts)
   append_stmt_array(stmts, entry_stmts)
@@ -279,12 +369,13 @@ export fn compile_file_wasi_linked_artifacts(entry_path: String, entry_name: Str
   // Check before stripping generic type params so Ord/Add/... constrained
   // bodies (`[T: Ord](a, b) { a < b }`) resolve `T` as a bound type variable.
   let _ = check_program(stmts)
-  // Unlocated parse: the checker has no site to key a typed row on, so this
-  // is the no-row entry. An interpolated untyped shadow it cannot type is
-  // refused with the edit rather than rendered through the outer type (#3456).
-  desugar_trait_dicts_rowless_build(stmts)
+  // #3625: this check sees imported names as unknown, so its answers are
+  // not the program's; the import-resolving check's are, when one ran in
+  // this process on this text. Without them the lane refuses what it cannot
+  // answer (an interpolated untyped shadow, #3456; a `Float`, #3543).
+  desugar_linked_entry(stmts, checked_rows)
   strip_generic_type_params(stmts)
-  let wasm = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), linked_imports, false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1)
+  let wasm = compile_linked_entry_module(stmts, entry_name, array_empty(), linked_imports, checked_rows)
   (wasm, linked_imports, linked_dep_specs)
 }
 

@@ -1,15 +1,7 @@
 //# Imports
 
-import @vibe/compiler/codegen/wasi {
-  compile_wasi_module_linked_impl
-}
-
 import @vibe/core {
   array_empty
-}
-
-import @vibe/compiler/codegen/common_base {
-  codegen_body_cache_discard, codegen_body_cache_new, empty_dbg_prov
 }
 
 import @vibe/compiler/core {
@@ -60,7 +52,7 @@ import @vibe/compiler/loader {
 // its own name, so the two call sites that used `empty_stmt_array()` now
 // call `array_empty()` directly instead.
 import @vibe/compiler/entry/source_compile/wasi_only {
-  collect_linked_compile_inputs, compile_file_wasi_library
+  collect_linked_compile_inputs_with_rows, compile_file_wasi_library, compile_linked_entry_module, desugar_linked_entry
 }
 
 import ./type_db.vibe {
@@ -93,18 +85,10 @@ import @vibe/compiler/query {
   deprecated_warning_lines_visible
 }
 
-import @vibe/compiler/normalize {
-  desugar_trait_dicts_rowless_build
-}
-
-// #946(3): re-parse the entry file WITH real char offsets for check_linked_file
-// (see its doc comment) — collect_linked_compile_inputs's own entry_stmts come
-// from linked_artifacts.vibe's read_program, which parses via the PLAIN
-// `parse_program(lex(source))` (no starts array => every node's offset is -1,
-// same pitfall parse_program_with_path's doc comment describes for
-// finish_typecheck_fs_impl). Re-parsing just the entry file is self-contained
-// (no shared-helper edit, so compile/build/debug paths that also flow through
-// read_program are untouched). Uses the RECOVERING parser (not
+// #946(3): parse the entry file for check_linked_file ITSELF (see its doc
+// comment) rather than through collect_linked_compile_inputs, whose entry
+// parse is the build's (located since #3625, but not recovering). Uses the
+// RECOVERING parser (not
 // parse_program_located): every diagnostic parse_program_recovering emits is
 // ALREADY a full `line L:col C: msg` string (extract_err_token_pos +
 // offset_to_line_col at the point of the throw, in parser.vibe) — the same
@@ -667,15 +651,21 @@ export fn verify_culprit_off_marker_snapshot(input_path: String, source_groups: 
 }
 
 export fn build_linked_debug_entry(input_path: String, entry_name: String) -> (Bytes, Array[(String, String)]) with Exception + Fs {
-  let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_compile_inputs(input_path)
+  let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, checked_rows) = collect_linked_compile_inputs_with_rows(input_path)
   let main_stmts = array_empty()
   append_stmt_array(main_stmts, resolved_type_stmts)
   append_non_import_stmts(main_stmts, entry_stmts)
-  // #3456: the debug entry is an unlocated parse with no checker rows, so an
-  // interpolated untyped shadow is refused with the edit here rather than
-  // rendered through the outer type by codegen's own (idempotent) run.
-  desugar_trait_dicts_rowless_build(main_stmts)
-  let bytes = compile_wasi_module_linked_impl(main_stmts, entry_name, empty_source_pairs(), linked_imports, false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1)
+  // #3625: the entry is parsed located, and `write_linked_debug_build_checked`
+  // ran the import-resolving check on it first, so that check's typed tables
+  // are there for exactly this text: desugar and codegen read them as the
+  // default lane does -- a Double or `Float` an imported function returns is
+  // one, each `Float` arithmetic result is rounded to f32 (#3543), and an
+  // interpolated untyped shadow renders by its own type (#3456). Without them
+  // (no check ran, or it checked another text) both of those are refused
+  // with the edit here, rather than answered wrongly by codegen's own
+  // (idempotent) run.
+  desugar_linked_entry(main_stmts, checked_rows)
+  let bytes = compile_linked_entry_module(main_stmts, entry_name, empty_source_pairs(), linked_imports, checked_rows)
   (bytes, linked_dep_specs)
 }
 
@@ -1926,18 +1916,20 @@ export fn executable_exports_stripped(entry_name: String) -> Bool with Env {
 /// be written, and nothing is written until it passes. A rejected build wastes
 /// the compile, which is the same trade the release lane already makes.
 ///
-/// #3577: the TYPE check cannot be read off that record -- this lane's parse
-/// is unlocated and runs no checker -- so it does run first, on the loader's
-/// snapshot. What keeps it from authorizing one snapshot and emitting another
-/// is the comparison before anything is written: every file the check read
-/// must still carry the stat token it had when the check read it.
+/// #3577: the TYPE check cannot be read off that record -- the entry compile
+/// runs no checker -- so it does run first, on the loader's snapshot. What
+/// keeps it from authorizing one snapshot and emitting another is the
+/// comparison before anything is written: every file the check read must
+/// still carry the stat token it had when the check read it. #3625: the same
+/// check files the entry's `Float` arithmetic rows, which the entry compile
+/// reads for exactly the text it parsed.
 ///
 /// `allow_unstable` is the caller's, read at the edge; this function has no
 /// Env effect.
 export fn write_linked_debug_build_checked(input_path: String, output_path: String, entry_name: String, allow_unstable: Bool) -> Unit with Env + Exception + Fs {
   unstable_closure_reset()
   // #3577: `--debug` changes code generation only. `build_linked_debug_entry`
-  // parses without offsets and runs no checker, so a type error compiled and
+  // runs no checker of its own, so a type error compiled and
   // ran (`let x: Int = "s"` printed `st`). Run the check `vibe check` and the
   // release build run, on the same import resolution, before emitting.
   // The compile below reads the files again, so the build is refused unless

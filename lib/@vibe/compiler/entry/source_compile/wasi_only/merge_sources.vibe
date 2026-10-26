@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/checker {
-  check_program, validate_source_file_exports, validate_source_file_owned_heads
+  validate_source_file_exports, validate_source_file_owned_heads
 }
 
 import @vibe/core {
@@ -9,15 +9,15 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen/wasi {
-  compile_wasi_module_impl
+  compile_wasi_module_impl_with_typed_offsets
 }
 
 import @vibe/compiler/normalize {
-  desugar_inspect_calls, desugar_trait_dicts_rowless_build, validate_serializable_reexport_references
+  desugar_inspect_calls, desugar_trait_dicts_with_typed_eq, validate_serializable_reexport_references
 }
 
 import @vibe/compiler/syntax {
-  lex, parse_program, print_program
+  lex, parse_program, print_program, shift_stmts_offsets
 }
 
 import @vibe/compiler/core {
@@ -41,6 +41,8 @@ import @vibe/compiler/core {
   is_builtin_iterator_serialized_boundary_path,
   is_owned_head_source_location_env_fs,
   linked_unit,
+  merged_offset_space_add,
+  merged_offset_space_reset,
   namespace_entry_import_shadows,
   namespace_private_value_stmts,
   namespace_private_value_stmts_after_renames,
@@ -66,8 +68,12 @@ import ./preprocess.vibe {
   expand_interp_only, strip_generic_type_params
 }
 
+import ./preprocess_compile.vibe {
+  source_offsets
+}
+
 import @vibe/compiler/loader {
-  ingest_source_text_fs
+  ingest_source_text_fs, parse_program_located_shared
 }
 
 //# Functions
@@ -106,12 +112,24 @@ fn resolve_existing_import_path(base_dir: String, raw_path: String, self_path: S
 /// would double-bind the local. The copy gets the target file's export renames
 /// applied first, so its body's references to renamed sibling exports stay
 /// consistent with the merged program.
-fn append_fs_import_local_def(merged: Array[Stmt], current_path: String, raw_path: String, original: String, local: String, plan: ExportRenamePlan) -> Bool with Env + Exception + Fs {
+///
+/// `clone_base` is `[-1]` for an unlocated merge. A located one (#3625) holds
+/// the next free merged offset: the copy is a second instance of the
+/// provider's code, so it takes a range of its own past every file, where the
+/// whole-program check files its `Float` rows apart from the original's.
+fn append_fs_import_local_def(merged: Array[Stmt], current_path: String, raw_path: String, original: String, local: String, plan: ExportRenamePlan, clone_base: Array[Int]) -> Bool with Env + Exception + Fs {
   let resolved = resolve_existing_import_path(dir_of_path(current_path), raw_path, current_path)
   // Builtin read + ingest, same as collect_parsed_sources_recursive
   // (flatten-lane wiring constraint / #741).
   let source = ingest_source_text_fs(resolved, Fs::read_file(resolved))
-  let source_stmts = namespace_private_value_stmts_after_renames(resolved, parse_program(lex(source)), export_plan_renames_for(plan, resolved))
+  let base = Array::get(clone_base, 0)
+  let parsed = if base < 0 {
+    parse_program(lex(source))
+  } else {
+    Array::set(clone_base, 0, base + String::length(source) + 1)
+    shift_stmts_offsets(parse_program_located_shared(resolved, source), base)
+  }
+  let source_stmts = namespace_private_value_stmts_after_renames(resolved, parsed, export_plan_renames_for(plan, resolved))
   let mut i = 0
   let mut done = false
   while i < Array::length(source_stmts) && !done {
@@ -127,14 +145,14 @@ fn append_fs_import_local_def(merged: Array[Stmt], current_path: String, raw_pat
   done
 }
 
-fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Array[String] with Env + Exception + Fs {
+fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], plan: ExportRenamePlan, excluded_locals: Array[String], clone_base: Array[Int]) -> Array[String] with Env + Exception + Fs {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
   let mut i = 0
   while i < Array::length(refs) {
     let (raw_path, original, local) = Array::get(refs, i)
     if !string_array_contains_local(emitted, local) && !string_array_contains_local(excluded_locals, local) {
-      if append_fs_import_local_def(merged, current_path, raw_path, original, local, plan) {
+      if append_fs_import_local_def(merged, current_path, raw_path, original, local, plan, clone_base) {
         Array::push(emitted, local)
       } else {
         ()
@@ -149,7 +167,7 @@ fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: Stri
 /// target is also claimed by a publication-only re-export alias. A bare target
 /// name cannot carry both authorities through the merged AST; retaining the
 /// import's distinct local binding keeps the two source meanings separate.
-fn append_fs_selected_import_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], plan: ExportRenamePlan, selected_locals: Array[String]) -> Unit with Env + Exception + Fs {
+fn append_fs_selected_import_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], plan: ExportRenamePlan, selected_locals: Array[String], clone_base: Array[Int]) -> Unit with Env + Exception + Fs {
   let emitted = array_empty()
   // Import lookup is last-binding-wins. Preserve the same winner when more
   // than one import uses the selected local spelling.
@@ -165,7 +183,7 @@ fn append_fs_selected_import_defs(merged: Array[Stmt], current_path: String, stm
             None => item.name
           }
           if string_array_contains_local(selected_locals, local) && !string_array_contains_local(emitted, local) {
-            if append_fs_import_local_def(merged, current_path, raw_path, item.name, local, plan) {
+            if append_fs_import_local_def(merged, current_path, raw_path, item.name, local, plan, clone_base) {
               Array::push(emitted, local)
             } else {
               throw(String::concat("cannot preserve imported value through re-export alias collision: ", local))
@@ -250,7 +268,7 @@ fn append_unique_strings(target: Array[String], source: Array[String]) -> Unit {
 /// a second pass once the whole program is known, because the export-rename
 /// plan (ambiguous exported names + re-export facades) needs every file's
 /// export surface before any file can be rewritten.
-fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], visited: Array[Array[String]]) -> Unit with Env + Exception + Fs {
+fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], file_sources: Array[String], file_stmts: Array[Array[Stmt]], visited: Array[Array[String]], located: Bool) -> Unit with Env + Exception + Fs {
   if path_set_contains(visited, path) {
     ()
   }
@@ -268,7 +286,14 @@ fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], fil
     // in THIS lane too, so a contract package in the graph resolves to its
     // conformance-checked facade instead of a parse error on bodyless decls.
     let source = ingest_source_text_fs(path, Fs::read_file(path))
-    let stmts = parse_program(lex(source))
+    // #3625: a BUILD collects located (each file in its own offset space,
+    // rebased by `collect_located_merged_stmts`); printing the merged program
+    // as source text has no use for offsets.
+    let stmts = if located {
+      parse_program_located_shared(path, source)
+    } else {
+      parse_program(lex(source))
+    }
     // #2808: the aggregate-export refusal, per FILE, BEFORE the closure is
     // flattened. This is the only point where the file's own `export { }` list
     // and its own declarations are both still readable: `check_program` runs
@@ -289,17 +314,18 @@ fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], fil
           ()
         } else {
           let resolved = resolve_existing_import_path(base_dir, raw_path, path)
-          collect_parsed_sources_recursive(resolved, file_paths, file_stmts, visited)
+          collect_parsed_sources_recursive(resolved, file_paths, file_sources, file_stmts, visited, located)
         },
         SReExport(raw_path, _) => {
           let resolved = resolve_existing_import_path(base_dir, raw_path, path)
-          collect_parsed_sources_recursive(resolved, file_paths, file_stmts, visited)
+          collect_parsed_sources_recursive(resolved, file_paths, file_sources, file_stmts, visited, located)
         },
         _ => ()
       }
       i = i + 1
     }
     Array::push(file_paths, path)
+    Array::push(file_sources, source)
     Array::push(file_stmts, stmts)
   }
 }
@@ -390,7 +416,7 @@ fn validate_retained_entry_source_names(stmts: Array[Stmt], retained_originals: 
   }
 }
 
-fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], merged: Array[Stmt]) -> ExportRenamePlan with Env + Exception + Fs {
+fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], merged: Array[Stmt], clone_base: Array[Int]) -> ExportRenamePlan with Env + Exception + Fs {
   let plan = build_export_rename_plan(file_paths, file_stmts, entry_path)
   let units = []
   let mut fi = 0
@@ -422,10 +448,10 @@ fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], fil
       // collision local with no value to clone (a type, a constructor) keeps
       // its alias: dropping it left `B::plain` unresolved at codegen when `Box`
       // also arrived through a re-export of the same module.
-      let skipped_locals = append_fs_import_alias_collision_defs(merged, path, stmts, plan, inline_exclusions)
+      let skipped_locals = append_fs_import_alias_collision_defs(merged, path, stmts, plan, inline_exclusions, clone_base)
       append_unique_strings(skipped_locals, import_rename_locals_named(collect_import_aliases(stmts), reexport_surface_only))
       append_unique_strings(skipped_locals, retained_collision_locals)
-      append_fs_selected_import_defs(merged, path, stmts, plan, retained_collision_locals)
+      append_fs_selected_import_defs(merged, path, stmts, plan, retained_collision_locals, clone_base)
       append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, active_import_renames)
     } else {
       append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
@@ -451,9 +477,43 @@ fn serialize_builtin_iterator_boundaries(stmts: Array[Stmt]) -> Unit {
 
 fn collect_merged_stmts_recursive(entry_path: String, merged: Array[Stmt], visited: Array[Array[String]]) -> Unit with Env + Exception + Fs {
   let file_paths = array_empty()
+  let file_sources = array_empty()
   let file_stmts = array_empty()
-  collect_parsed_sources_recursive(entry_path, file_paths, file_stmts, visited)
-  let _ = append_parsed_merged_stmts(entry_path, file_paths, file_stmts, merged)
+  collect_parsed_sources_recursive(entry_path, file_paths, file_sources, file_stmts, visited, false)
+  let _ = append_parsed_merged_stmts(entry_path, file_paths, file_stmts, merged, [
+    0 - 1
+  ])
+  ()
+}
+
+/// #3625: the same merge for a BUILD, with every file parsed located and
+/// shifted into a disjoint range of one offset space -- `[base, base +
+/// length]`, one spare byte between files, alias-collision copies past the
+/// last file -- the layout the default FS lane builds
+/// (`build_grouped_merged_stmts_impl`) and records in `merged_offset_space`.
+/// One offset then names one node, so the whole-program check can file a row
+/// per `Float` arithmetic site and the rounding pass finds exactly those
+/// sites, and a refusal thrown after the merge resolves its offset to a
+/// `line:col` of the right file.
+fn collect_located_merged_stmts(entry_path: String, merged: Array[Stmt], visited: Array[Array[String]]) -> Unit with Env + Exception + Fs {
+  let file_paths = array_empty()
+  let file_sources = array_empty()
+  let file_stmts = array_empty()
+  collect_parsed_sources_recursive(entry_path, file_paths, file_sources, file_stmts, visited, true)
+  merged_offset_space_reset()
+  let rebased = array_empty()
+  let mut base = 0
+  let mut i = 0
+  while i < Array::length(file_paths) {
+    let source = Array::get(file_sources, i)
+    Array::push(rebased, shift_stmts_offsets(Array::get(file_stmts, i), base))
+    merged_offset_space_add(Array::get(file_paths, i), source, base)
+    base = base + String::length(source) + 1
+    i = i + 1
+  }
+  let _ = append_parsed_merged_stmts(entry_path, file_paths, rebased, merged, [
+    base
+  ])
   ()
 }
 
@@ -788,11 +848,14 @@ fn print_merged_program(stmts: Array[Stmt]) -> String with Exception {
 /// compiles the result.
 export fn coverage_driver_program_source_fs(entry_path: String, driver_path: String) -> String with Env + Exception + Fs {
   let file_paths = array_empty()
+  let file_sources = array_empty()
   let file_stmts = array_empty()
   let visited = path_set_new()
-  collect_parsed_sources_recursive(entry_path, file_paths, file_stmts, visited)
+  collect_parsed_sources_recursive(entry_path, file_paths, file_sources, file_stmts, visited, false)
   let merged = empty_stmt_array()
-  let plan = append_parsed_merged_stmts(entry_path, file_paths, file_stmts, merged)
+  let plan = append_parsed_merged_stmts(entry_path, file_paths, file_stmts, merged, [
+    0 - 1
+  ])
   let driver_source = ingest_source_text_fs(driver_path, Fs::read_file(driver_path))
   let driver_stmts = parse_program(lex(driver_source))
   // The driver is a separate source unit from the compiler entry that precedes
@@ -827,7 +890,7 @@ export fn compile_file_wasi_only(entry_path: String, entry_name: String) -> Byte
   namespace_rename_originals_reset()
   let stmts = empty_stmt_array()
   let visited = path_set_new()
-  collect_merged_stmts_recursive(entry_path, stmts, visited)
+  collect_located_merged_stmts(entry_path, stmts, visited)
   // #3098: interpolation only; the trait-dictionary desugar runs after the
   // check (the #3069 order), or the checker sees its own lowering.
   expand_interp_only(stmts)
@@ -836,19 +899,21 @@ export fn compile_file_wasi_only(entry_path: String, entry_name: String) -> Byte
   // variable. Stripping first leaves `T` a concrete `CtNamed("T")`, so the
   // Ord-constrained `<` fails to resolve. Stripping happens after the check,
   // for monomorphic codegen.
-  let _ = check_program(stmts)
-  // Unlocated parse: the checker has no site to key a typed row on, so this
-  // is the no-row entry. An interpolated untyped shadow it cannot type is
-  // refused with the edit rather than rendered through the outer type (#3456).
-  desugar_trait_dicts_rowless_build(stmts)
+  // #3625: the merge is located in one offset space, so the check answers
+  // with the typed tables the single-source lane takes (`source_offsets`):
+  // the Double/`Float` value offsets codegen reads, the render rows that
+  // type an interpolated untyped shadow (#3456), and the `Float` arithmetic
+  // rows the desugar rounds to f32 (#3543).
+  let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, _) = source_offsets(stmts)
+  desugar_trait_dicts_with_typed_eq(stmts, eq_offsets, eq_keys)
   strip_generic_type_params(stmts)
-  compile_wasi_module_impl(stmts, entry_name)
+  compile_wasi_module_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys)
 }
 
 //# Misc
 
 export {
-  collect_merged_stmts_recursive
+  collect_located_merged_stmts, collect_merged_stmts_recursive
 }
 
 export {

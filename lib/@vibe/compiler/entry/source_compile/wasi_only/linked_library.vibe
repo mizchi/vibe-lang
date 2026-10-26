@@ -1,15 +1,11 @@
 //# Imports
 
-import @vibe/compiler/checker {
-  check_program
-}
-
 import @vibe/core {
   array_empty
 }
 
 import @vibe/compiler/codegen/wasi {
-  compile_wasi_module_linked_impl
+  compile_wasi_module_linked_impl_with_typed_offsets
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -25,7 +21,7 @@ import @vibe/compiler/syntax {
 }
 
 import ./merge_sources.vibe {
-  collect_merged_stmts_recursive
+  collect_located_merged_stmts
 }
 
 import ./path_utils.vibe {
@@ -36,8 +32,12 @@ import ./preprocess.vibe {
   expand_interp_only, strip_generic_type_params
 }
 
+import ./preprocess_compile.vibe {
+  source_offsets
+}
+
 import @vibe/compiler/normalize {
-  desugar_trait_dicts_rowless_build
+  desugar_trait_dicts_with_typed_eq
 }
 
 //# Functions
@@ -45,7 +45,9 @@ import @vibe/compiler/normalize {
 export fn compile_file_wasi_library(dep_path: String) -> Bytes with Env + Exception + Fs {
   let stmts = empty_stmt_array()
   let visited = path_set_new()
-  collect_merged_stmts_recursive(dep_path, stmts, visited)
+  // #3625: located and rebased into one offset space, so the check below
+  // answers with typed tables, as on the single-source lane.
+  collect_located_merged_stmts(dep_path, stmts, visited)
   // #3098: interpolation only, then check, then the trait-dictionary desugar,
   // then strip generic binders -- the #3069 order. Desugaring before the check
   // handed the checker its own lowering, so a library with a trait impl or a
@@ -53,11 +55,11 @@ export fn compile_file_wasi_library(dep_path: String) -> Bytes with Env + Except
   // `__dict_` reserved-prefix rule, `EqDict::equals` at arity 3).
   expand_interp_only(stmts)
   // Check before stripping generic type params (see merge_sources.vibe).
-  let _ = check_program(stmts)
-  // Unlocated parse: the checker has no site to key a typed row on, so this
-  // is the no-row entry. An interpolated untyped shadow it cannot type is
-  // refused with the edit rather than rendered through the outer type (#3456).
-  desugar_trait_dicts_rowless_build(stmts)
+  // #3625: the Double/`Float` value offsets codegen reads, the render rows
+  // that type an interpolated untyped shadow (#3456), and the `Float`
+  // arithmetic rows the desugar rounds to f32 (#3543).
+  let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, _) = source_offsets(stmts)
+  desugar_trait_dicts_with_typed_eq(stmts, eq_offsets, eq_keys)
   strip_generic_type_params(stmts)
-  compile_wasi_module_linked_impl(stmts, "_start", array_empty(), array_empty(), true, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1)
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, "_start", array_empty(), array_empty(), true, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys)
 }

@@ -1377,6 +1377,43 @@ fi
 echo '[compiler-gate] build --debug refuses a type error ok (#3577)'
 rm -rf "$lldir"
 
+# #3625: `Float` arithmetic on `vibe build --debug`. The library and entry
+# lanes parsed without offsets, so no checker row named a Float site and the
+# build refused every program that used Float. They parse located now; the
+# library takes its typed tables from its own check of the rebased merge, the
+# entry from the import-resolving check that runs first. Each bit of the
+# answer is one check (fixtures/linked_library_float/main.vibe): 4095 on both
+# lanes, the same as the default build.
+echo "[compiler-gate] build --debug rounds Float arithmetic to f32 (#3625)"
+lfdir="_build/_gate_linked_library_float"
+rm -rf "$lfdir"; mkdir -p "$lfdir"
+lf_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  build --debug fixtures/linked_library_float/main.vibe -o "$lfdir/main.wasm" --entry _start 2>&1 || true)"
+if [ ! -s "$lfdir/main.wasm" ] || [ ! -s "$lfdir/main.debug/lib.wasm" ]; then
+  echo "[compiler-gate] FAIL: build --debug of a Float library produced no main/lib wasm (#3625)" >&2
+  printf '%s\n' "$lf_out" >&2; exit 1
+fi
+lf_rel_out="$(VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  build fixtures/linked_library_float/main.vibe -o "$lfdir/release.wasm" --entry _start 2>&1 || true)"
+if [ ! -s "$lfdir/release.wasm" ]; then
+  echo "[compiler-gate] FAIL: default build of the Float library fixture produced no wasm (#3625)" >&2
+  printf '%s\n' "$lf_rel_out" >&2; exit 1
+fi
+if bash scripts/wasmtime_run.sh --version >/dev/null 2>&1; then
+  lf_res="$(run_bounded 60 bash scripts/wasmtime_run.sh run --preload lib="$lfdir/main.debug/lib.wasm" \
+    --invoke _start "$lfdir/main.wasm" 2>&1 | tr -dc '0-9-' || true)"
+  lf_rel_res="$(run_bounded 60 bash scripts/wasmtime_run.sh run --invoke _start "$lfdir/release.wasm" 2>&1 | tr -dc '0-9-' || true)"
+  if [ "$lf_res" != "4095" ] || [ "$lf_rel_res" != "4095" ]; then
+    echo "[compiler-gate] FAIL: Float arithmetic answered '$lf_res' on build --debug and '$lf_rel_res' on the default build (expected 4095 on both) (#3625)" >&2; exit 1
+  fi
+  echo '[compiler-gate] build --debug Float arithmetic ok (4095)'
+else
+  echo '[compiler-gate] build --debug Float library compiled; SKIP run: wasmtime not available'
+fi
+rm -rf "$lfdir"
+
 # 15b-3c'. #3067: `String::substring` clamps its indices on every lane. The gc
 #          lane used its own body with no bounds checks and read the bytes
 #          around the string (`("beta", 0, 5)` answered `beta]`).
