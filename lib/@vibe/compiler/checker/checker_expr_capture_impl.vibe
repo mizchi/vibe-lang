@@ -25,6 +25,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  bound_flat_self_add,
   env_bind,
   env_bind_mut,
   env_lookup,
@@ -40,6 +41,7 @@ import @vibe/compiler/core {
   resolve_type_constructor_args,
   subst_add_bound,
   subst_apply,
+  subst_bounds_for,
   type_name_has_iterator_impl,
   type_to_string,
   typed_lowering_arg_offset,
@@ -79,7 +81,7 @@ import ./checker_resolve.vibe {
 }
 
 import @vibe/compiler/checker/traits {
-  closure_capture_facts, spawn_caps_marker
+  bound_entails_trait, closure_capture_facts, spawn_caps_marker
 }
 
 import @vibe/compiler/checker/effects {
@@ -943,6 +945,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       } else {
         ()
       }
+      if op == "+" {
+        record_add_formal(capture, boff, bin_result, env, s3)
+      }
       (bin_result, s3, c2)
     },
     EUnaryOp(op, operand) => {
@@ -1067,7 +1072,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               _ => false
             }
           }
-          let s1f_inner = if float_involved && (aop == "+" || aop == "-" || aop == "*" || aop == "/") {
+          let s1f_inner = if (float_involved || (aop == "+" && add_formal_for_type(target_applied, env, s1) != "")) && (aop == "+" || aop == "-" || aop == "*" || aop == "/") {
             let (res_ty, s1r) = infer_binop_type(aop, target_applied, val_applied, env, s1, errors, tytab, target_off)
             match subst_apply(s1r, res_ty) {
               CtFloat => match target_applied {
@@ -1090,6 +1095,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             }
           } else {
             ()
+          }
+          if aop == "+" {
+            record_add_formal(capture, target_off, subst_apply(s1f_inner, target_ty), env, s1f_inner)
           }
           s1f_inner
         },
@@ -2892,5 +2900,40 @@ fn ty_is_float_scalar(t: Type) -> Bool {
     CtDouble => true,
     CtFloat => true,
     _ => false
+  }
+}
+
+// Store the OPEN lexical formal now: resolving a callee's spelling later can
+// mistake its T for the caller's T. Kind 13 shares the paired typed-row carrier.
+fn record_add_formal(capture: Option[TypedOccurrenceRoleLaneCapture], off: Int, ty: Type, env: TypeEnv, s: Subst) -> Unit {
+  match capture {
+    Some(c) => if !c.provenance_enabled && off >= 0 {
+      match ty {
+        CtVar(id) => {
+          let name = add_formal_for_type(CtVar(id), env, s)
+          if name != "" {
+            Array::push(c.binop_offsets, off)
+            Array::push(c.binop_kinds, 13)
+            Array::push(c.binop_types, CtNamed(name, []))
+            Array::push(c.binop_offsets, off)
+            Array::push(c.binop_kinds, 13)
+            Array::push(c.binop_types, CtNamed(name, []))
+          }
+        },
+        _ => ()
+      }
+    },
+    None => ()
+  }
+}
+
+fn add_formal_for_type(ty: Type, env: TypeEnv, s: Subst) -> String {
+  match ty {
+    CtVar(id) => if Array::any(subst_bounds_for(s, id), (b) -> bound_entails_trait(env, b, "Add") && bound_flat_self_add(env, b)) {
+      open_formal_name_for_var(id, s)
+    } else {
+      ""
+    },
+    _ => ""
   }
 }

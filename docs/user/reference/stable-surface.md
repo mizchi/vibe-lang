@@ -605,11 +605,12 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   cheatsheet's "`Float` is 32-bit"). Those semantics are newer than the
   freeze, so it stays outside it. The default build, `vibe build --debug`,
   and library builds round its arithmetic. A linked entry with no matching
-  checked source still refuses `Float`. Generic `Eq`, `Show`, `Signed` and
-  `Default` bounds hold at `Float` as at `Double`; `Ord` and `Add` bounds are
-  refused at both. The library generics of `@vibe/builtin` / `@vibe/core`
-  take a `Float` too: the imported `to_string`, `Hash` keys and
-  `T::default()` (#3625).
+  checked source still refuses `Float`. Generic `Eq`, `Show` and `Add`
+  bounds accept `Float` and `f32` (#3625); addition uses a witness and rounds
+  each result to f32. `Signed`, `Default` and library-source `Hash` retain
+  their Float coverage. A method-bearing generic imported across debug libraries
+  is refused with an edit to export a concrete wrapper or use the default
+  build. See §6.2 for generic-call arithmetic behavior.
 - **`derive (Hash)` and the `Map::*_by` operations keyed on it.** The derived
   key is length-prefixed and tagged, so two different values no longer share
   a key, and `-0.0` and `0.0` share one as `==` says they should (#3544).
@@ -666,14 +667,14 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
 
 ### 6.2 Candidate correctness and effect-boundary limits
 
-**Fixed: a generic call returning `Double` or `Float` entered integer `+`**
+**Generic floating-point call results retain their checked numeric type**
 ([#3629](https://github.com/mizchi/vibe-lang/issues/3629)).
-`fn pick[T](x: T) -> T { x }` followed by `pick(2.5) + 1.0` printed `537`
-instead of `3.5`. Every operator now computes such an operand as a float on
-the default, debug and library builds (`fixtures/generic_call_double_arith_test.vibe`).
-A linked build entry with no checked source refuses the operand with the
-edit (an annotated binding) rather than guess. Evidence for promotion
-belongs in [#2834](https://github.com/mizchi/vibe-lang/issues/2834).
+`fn pick[T](x: T) -> T { x }` followed by `pick(2.5) + 1.0` now produces
+`3.5`; the binary32 form also rounds correctly. Default, debug and library
+builds carry the checker rows. A linked build without rows for its exact
+source refuses an ambiguous result and names the concrete annotation that
+fixes it. This resolves the previously reported integer-addition defect;
+release verification still requires the other gates below.
 
 **A handler supplies its effects only while its body runs.** Keep a closure
 that performs the handled effect inside that lifetime, or move the handler

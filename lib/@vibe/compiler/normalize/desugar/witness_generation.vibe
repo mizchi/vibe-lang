@@ -5,7 +5,7 @@ import @vibe/compiler/lowering/trait_namespaces {
 }
 
 import @vibe/compiler/core {
-  Expr, TypeExpr
+  Expr, TypeExpr, trait_sigs_first_self_binary, trait_sigs_first_self_relation
 }
 
 import @vibe/ast {
@@ -20,6 +20,10 @@ import @vibe/ast {
 
 import @vibe/core {
   array_empty
+}
+
+import ./addition.vibe {
+  scalar_add_witness
 }
 
 import ./argument_types.vibe {
@@ -47,7 +51,16 @@ import ./method_witnesses.vibe {
   method_witness_binds,
   method_witness_param,
   trait_method_binder,
+  trait_method_declaring_owner,
   trait_method_witness_slots
+}
+
+import ./equality_aliases.vibe {
+  eq_expand_alias_ty
+}
+
+import ./formal_scope.vibe {
+  is_marked_formal_name
 }
 
 import ./generic_equality.vibe {
@@ -98,13 +111,14 @@ import ./typed_equality.vibe {
 }
 
 import ./utilities.vibe {
-  dict_struct_name, empty_expr_array, empty_str_array, empty_ty_args, method_names_of_sigs, str_array_contains
+  dict_struct_name, empty_expr_array, empty_str_array, empty_ty_args, method_names_of_sigs, str_array_contains, synthesized_dict_field_trait
 }
 
 import ./witness_targets.vibe {
   dtd_builtin_witness,
   dtd_eq_was_injected,
   dtd_scalar_eq_witness,
+  dtd_scalar_float_show_witness,
   first_array_elem,
   infer_impl_target_expr,
   push_constructor_subst,
@@ -181,7 +195,12 @@ fn method_witness_slot_closure(slots: Array[(String, String)], arity: Int, field
   ]))
 }
 
-fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Option[Expr]) -> Option[Expr] with Exception {
+fn build_concrete_dict_for_target(raw_target: TypeExpr, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Option[Expr]) -> Option[Expr] with Exception {
+  let actual_target = if eq_ty_has_formal(raw_target) {
+    raw_target
+  } else {
+    eq_expand_alias_ty(raw_target)
+  }
   let cname = impl_target_head(actual_target)
   match lookup_trait_sigs(traits, trait_ref_name(trait_name)) {
     Some(sigs) => {
@@ -223,6 +242,26 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
         // by `<Type>::<method>`, which any trait with an `equals` for that
         // type can occupy. Skipping `fn_exists` drops through to the builtin
         // and scalar arms below, where the right answer is.
+        let owner = if cname == "Int" || cname == "String" || cname == "Bool" || cname == "Char" || cname == "Float" || cname == "f32" || cname == "Double" {
+          trait_method_declaring_owner(trait_name, m)
+        } else {
+          ""
+        }
+        let scalar_show = if owner == "Show" && (matching_generic_impl_method(gens, cname, owner, m, actual_target) is None) {
+          dtd_scalar_float_show_witness(cname, m, sigs)
+        } else {
+          None
+        }
+        let scalar_eq = if owner == "Eq" && trait_sigs_first_self_relation(sigs, m) && (matching_generic_impl_method(gens, cname, owner, m, actual_target) is None) {
+          dtd_scalar_eq_witness(cname, m)
+        } else {
+          None
+        }
+        let scalar_add = if owner == "Add" && trait_sigs_first_self_binary(sigs, "add", "Self") && (matching_generic_impl_method(gens, cname, owner, m, actual_target) is None) {
+          scalar_add_witness(cname, m)
+        } else {
+          None
+        }
         let injected_eq_scalar = dtd_eq_was_injected() && trait_ref_name(trait_name) == dtd_eq_witness_trait() && (dtd_scalar_eq_witness(cname, m) is Some)
         let specialized_generic_eq = match actual_target {
           TyApp(ghead, gargs) => if trait_ref_name(trait_name) == dtd_eq_witness_trait() && m == "equals" && Array::length(gargs) > 0 && str_array_contains(dtd_eq_derived_generic, ghead) && !eq_ty_has_formal(actual_target) {
@@ -238,7 +277,22 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
           },
           _ => None
         }
-        if specialized_generic_eq is Some {
+        if scalar_show is Some {
+          match scalar_show {
+            Some(closure) => Array::push(recfields, (m, closure)),
+            None => ()
+          }
+        } else if scalar_eq is Some {
+          match scalar_eq {
+            Some(closure) => Array::push(recfields, (m, closure)),
+            None => ()
+          }
+        } else if scalar_add is Some {
+          match scalar_add {
+            Some(closure) => Array::push(recfields, (m, closure)),
+            None => ()
+          }
+        } else if specialized_generic_eq is Some {
           match specialized_generic_eq {
             Some(closure) => Array::push(recfields, (m, closure)),
             None => ()
@@ -256,7 +310,11 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
           // (#2840) stays closed.
           match dtd_builtin_witness(qm) {
             Some(closure) => Array::push(recfields, (m, closure)),
-            None => match dtd_scalar_eq_witness(cname, m) {
+            None => match (if trait_sigs_first_self_relation(sigs, m) {
+              dtd_scalar_eq_witness(cname, m)
+            } else {
+              None
+            }) {
               // #2523: `Int` / `Double` / `Bool` / `Char` have no
               // `<Type>::equals` builtin the way `String` does, and the
               // prelude's impls cannot carry a body without colliding with a
@@ -689,7 +747,20 @@ export fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String
         infer_arg_type_name(recv_arg, struct_sets, var_types, fn_returns)
       }
       match inferred {
-        Some(nm) => {
+        Some(inferred_name) => {
+          let actual = if is_constructor_recv || is_elem_recv {
+            None
+          } else {
+            infer_impl_target_expr(recv_arg, struct_sets, var_types, fn_returns)
+          }
+          let nm = if is_marked_formal_name(inferred_name) {
+            match actual {
+              Some(target) => impl_target_head(target),
+              None => inferred_name
+            }
+          } else {
+            inferred_name
+          }
           let resolved_trait = if is_constructor_recv {
             let substs = constructor_substs_from_recvs(constructor_recvs, orig_args, gens, struct_sets, var_types, fn_returns)
             push_constructor_subst(substs, type_param, nm)
@@ -702,7 +773,7 @@ export fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String
             // A constructor receiver similarly carries `F[A]`, while its
             // witness target is the constructor F rather than F[A].
             TyName(nm)
-          } else match infer_impl_target_expr(recv_arg, struct_sets, var_types, fn_returns) {
+          } else match actual {
             Some(inferred) => inferred,
             None => TyName(nm)
           }

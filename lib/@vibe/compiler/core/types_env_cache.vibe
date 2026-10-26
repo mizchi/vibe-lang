@@ -1724,12 +1724,17 @@ export fn flatten_trait_sigs_into(tname: String, traits_raw: Array[(String, Arra
 /// body answered `true` for two DIFFERENT `Pt`, because the rung handed erased
 /// `Pt` values to a method declared over `Int`.
 export fn trait_sigs_first_self_relation(sigs: Array[(String, Array[TypeExpr], TypeExpr)], method: String) -> Bool {
+  trait_sigs_first_self_binary(sigs, method, "Bool")
+}
+
+/// The retained binary method must accept Self twice and return the requested type.
+export fn trait_sigs_first_self_binary(sigs: Array[(String, Array[TypeExpr], TypeExpr)], method: String, result: String) -> Bool {
   let mut i = 0
   let mut ok = false
   while i < Array::length(sigs) {
     let (m, params, ret) = Array::get(sigs, i)
     if m == method {
-      ok = Array::length(params) == 2 && flat_type_expr_is(Array::get(params, 0), "Self") && flat_type_expr_is(Array::get(params, 1), "Self") && flat_type_expr_is(ret, "Bool")
+      ok = Array::length(params) == 2 && flat_type_expr_is(Array::get(params, 0), "Self") && flat_type_expr_is(Array::get(params, 1), "Self") && flat_type_expr_is(ret, result)
       i = Array::length(sigs)
     } else {
       i = i + 1
@@ -1743,6 +1748,23 @@ fn flat_type_expr_is(te: TypeExpr, name: String) -> Bool {
     TyName(n) => n == name,
     _ => false
   }
+}
+
+/// The retained Add operation needs no additional method type parameters.
+export fn bound_flat_self_add(env: TypeEnv, bound: String) -> Bool {
+  let (flat, owners) = bound_flat_sigs(env, bound)
+  let mut method_generic = false
+  for owner in owners {
+    if owner.0 == "add" {
+      match trait_definition(env, owner.1) {
+        Some((_, _, _, gens)) => {
+          method_generic = Array::any(gens, (g) -> g.0 == "add" && Array::length(g.1) > 0)
+        },
+        None => ()
+      }
+    }
+  }
+  !method_generic && trait_sigs_first_self_binary(flat, "add", "Self")
 }
 
 /// #3327 review: does the witness dictionary for `bound` carry

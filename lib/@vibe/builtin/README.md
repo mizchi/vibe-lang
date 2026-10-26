@@ -73,10 +73,10 @@ Boundary enforcement is active in:
 - `num_add`, `num_sub`, `num_mul`, `num_div`, `num_abs`, `num_square`, `num_clamp`
 
 `Eq` carries `equals(Self, Self) -> Bool`, so `cmp_eq` dispatches through the
-witness and compares a `Double` or a `derive (Eq)` struct by value. `Ord` and
-`Add` are markers: `<` and `+` on an erased `T` have no witness, so the
-checker refuses the `ord_*` helpers and `num_add` at `Double` and asks for the
-operation at the concrete type (`Double::max(a, b)`, `a + b`).
+witness and compares a `Double` or a `derive (Eq)` struct by value.
+`Add` carries `add(Self, Self) -> Self`, so `num_add` adds Double values and
+rounds every Float sum to f32. `Ord` remains a marker: erased ordering at
+`Double` is refused with the concrete operation (`Double::max(a, b)`).
 
 `iterator.vibe` provides the finite collection protocol and its eager transform
 surface. Trait-associated operations stay in the trait namespace instead of

@@ -67,9 +67,9 @@ time with the edit that fixes it, or it answers correctly.
   arithmetic and conversions round to f32. Printing uses the shortest
   decimal that reads back to the same f32. Default, debug and library builds
   carry the typed rows required for rounding (#3543, #3625). `Float` remains
-  unstable. Generic `Eq`, `Show`, `Signed` and `Default` bounds hold at
-  `Float`, and so do the library impls behind `to_string`, `Hash` keys and
-  `T::default()` (#3625, after the seed bump to `float-binary32-2026-10-26`).
+  unstable; after the seed bump, generic `Eq`, `Show` and `Add` accept it.
+  Each generic addition rounds to f32, including compound assignment.
+  The library impls also support Float `Hash` keys and `T::default()`.
 - **Diagnostics and handler syntax.** The legacy `with E { Op(..) => .. }`
   header is refused with the qualified replacement
   (`with { E::Op(..) => .. }`). A refutable `let` mismatch names its pattern
@@ -77,14 +77,12 @@ time with the edit that fixes it, or it answers correctly.
   pool retains the bare trap. Parser, trait, assignment and handler
   diagnostics gain positions and actionable edits (#3530, #3548, #3626).
 
-A numeric correctness defect found late was fixed:
-`pick(2.5) + 1.0`, where `pick[T](x: T) -> T`, added boxed bits as an
-integer and printed `537`; it is `3.5` now under every operator
-([#3629](https://github.com/mizchi/vibe-lang/issues/3629)). A linked build
-entry with no checked source refuses such an operand with the edit. Record
-promotion evidence in [#2834](https://github.com/mizchi/vibe-lang/issues/2834). See
-[stable-surface §6.2](../reference/stable-surface.md) for the remaining
-effect-boundary restrictions.
+Generic floating-point call results now keep their checked numeric type:
+`pick(2.5) + 1.0`, where `pick[T](x: T) -> T`, produces `3.5` (#3629).
+Builds without checker rows for their exact source refuse ambiguous results
+with an actionable annotation diagnostic. See
+[stable-surface §6.2](../reference/stable-surface.md) for the supported lanes
+and remaining effect-boundary restrictions.
 
 The hunt also triaged surfaces that are not part of these fixes. Some showed
 wrong answers that could not be fixed safely before 0.1.0; others gave no
@@ -309,9 +307,10 @@ the edit that fixes them rather than an internal pass name.
   not charged through call expressions, `Double` interpolation through a
   `for` binder or an index, and an explicit `H::to_string(x)` on a
   `derive (Show)` generic printing a field's address. The generic
-  floating-point `+` defect (#3629) is fixed as well; §6.2 records the
-  handler-lifetime and kinded callback restrictions, which do not establish
-  that the candidate is ready to publish.
+  floating-point `+` defect (#3629) is fixed. §6.2 records the supported
+  lanes and the handler-lifetime and kinded callback restrictions. Those
+  restrictions do not move numeric correctness outside the freeze or
+  establish that the candidate is ready to publish.
 
 ## Release verification
 

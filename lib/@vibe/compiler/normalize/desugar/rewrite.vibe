@@ -26,6 +26,10 @@ import @vibe/core {
   array_empty
 }
 
+import ./addition.vibe {
+  addition_witness, rewrite_addition
+}
+
 import ./argument_types.vibe {
   anon_or_infer, infer_arg_type_name, is_erased_generic_operand, refuse_rowless_untyped_operand
 }
@@ -1920,7 +1924,29 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       local_show_shim_pop()
       EAssign(name, new_val, new_cont, target_off)
     },
-    EAssignOp(name, op, val, cont, target_off) => EAssignOp(name, op, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns), target_off),
+    EAssignOp(name, op, val, cont, target_off) => {
+      let rv = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let rc = rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let lhs = EIdent(name, target_off)
+      let call = if op == "+" {
+        addition_witness(lhs, val, lhs, rv, target_off, dict_binds, traits, var_types)
+      } else {
+        None
+      }
+      match call {
+        Some(sum) => EAssign(name, sum, rc, target_off),
+        // A checked floating assignment marks its RHS before this pass.
+        // Keep that concrete path even if the target was bound to a generic call.
+        None => if op == "+" && is_erased_generic_operand(lhs, val, struct_sets, var_types, fn_returns) && (match infer_arg_type_name(val, struct_sets, var_types, fn_returns) {
+          Some(t) => t != "Double" && t != "Float" && t != "f32",
+          None => true
+        }) {
+          EAssign(name, rewrite_addition(lhs, val, lhs, rv, target_off, dict_binds, traits, struct_sets, var_types, fn_returns), rc, target_off)
+        } else {
+          EAssignOp(name, op, rv, rc, target_off)
+        }
+      }
+    },
     ESeq(a, b) => ESeq(rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EMatch(scrut, arms) => {
       let out = array_empty()
@@ -2399,30 +2425,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           EBinOp(op, rl, rr, boff)
         }
       } else if op == "+" {
-        // String `+` lowering: the checker types `String + String` as String,
-        // but the backends compile a bare `+` as numeric i64.add — on the
-        // (ptr<<32)|len string repr that adds the lengths and garbles the
-        // pointer. Rewrite to String::concat when either ORIGINAL operand is
-        // determinably String (literal, tracked var, string-returning call,
-        // or a nested `+` chain of those). Undeterminable operands (e.g. two
-        // untracked call results) keep the raw binop — same residual class
-        // as #695's opaque `==`.
-        let stringish = (match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
-          Some(t) => t == "String",
-          None => false
-        }) || (match infer_arg_type_name(r, struct_sets, var_types, fn_returns) {
-          Some(t) => t == "String",
-          None => false
-        })
-        if stringish {
-          ECall(builtin_ref("String::concat"), [rl, rr], -1, [])
-        } else if is_erased_generic_operand(l, r, struct_sets, var_types, fn_returns) {
-          // #973: same erased-`[T: Add]` case as the relational branch above.
-          refuse_rowless_untyped_operand(op, l, r, struct_sets, var_types, fn_returns)
-          ECall(builtin_ref("__generic_add"), [rl, rr], -1, [])
-        } else {
-          EBinOp(op, rl, rr, boff)
-        }
+        rewrite_addition(l, r, rl, rr, boff, dict_binds, traits, struct_sets, var_types, fn_returns)
       } else {
         EBinOp(op, rl, rr, boff)
       }
