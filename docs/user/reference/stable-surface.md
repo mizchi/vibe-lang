@@ -607,9 +607,9 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   and library builds round its arithmetic. A linked entry with no matching
   checked source still refuses `Float`. Generic `Eq`, `Show`, `Signed` and
   `Default` bounds hold at `Float` as at `Double`; `Ord` and `Add` bounds are
-  refused at both, and the library-source generics of `@vibe/builtin` /
-  `@vibe/core` (the imported `to_string`, `Hash` keys) wait on a seed bump
-  (#3625).
+  refused at both. The library generics of `@vibe/builtin` / `@vibe/core`
+  take a `Float` too: the imported `to_string`, `Hash` keys and
+  `T::default()` (#3625).
 - **`derive (Hash)` and the `Map::*_by` operations keyed on it.** The derived
   key is length-prefixed and tagged, so two different values no longer share
   a key, and `-0.0` and `0.0` share one as `==` says they should (#3544).
