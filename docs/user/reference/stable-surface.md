@@ -605,9 +605,11 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   cheatsheet's "`Float` is 32-bit"). Those semantics are newer than the
   freeze, so it stays outside it. The default build, `vibe build --debug`,
   and library builds round its arithmetic. A linked entry with no matching
-  checked source still refuses `Float`. Generic `Eq`, `Show` and `Add`
-  bounds have no `Float` impl yet (#3625); compare or render at the concrete
-  type. See §6.2 for the separate generic-call arithmetic bug.
+  checked source still refuses `Float`. Generic `Eq`, `Show`, `Signed` and
+  `Default` bounds hold at `Float` as at `Double`; `Ord` and `Add` bounds are
+  refused at both, and the library-source generics of `@vibe/builtin` /
+  `@vibe/core` (the imported `to_string`, `Hash` keys) wait on a seed bump
+  (#3625).
 - **`derive (Hash)` and the `Map::*_by` operations keyed on it.** The derived
   key is length-prefixed and tagged, so two different values no longer share
   a key, and `-0.0` and `0.0` share one as `==` says they should (#3544).
@@ -664,15 +666,14 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
 
 ### 6.2 Candidate correctness and effect-boundary limits
 
-**A generic call returning `Double` or `Float` can enter integer `+`**
+**Fixed: a generic call returning `Double` or `Float` entered integer `+`**
 ([#3629](https://github.com/mizchi/vibe-lang/issues/3629)).
-`fn pick[T](x: T) -> T { x }` followed by `pick(2.5) + 1.0` type-checks but
-prints `537` instead of `3.5` on the candidate. Bind the result first with an
-explicit type (`let v: Double = pick(2.5)`, then `v + 1.0`). This is a P0
-defect in the stable numeric surface and blocks promotion to `0.1.0` until
-the expression compiles correctly or is safely refused. Record that evidence
-in [#2834](https://github.com/mizchi/vibe-lang/issues/2834). The workaround
-does not make the direct expression correct or move it outside the freeze.
+`fn pick[T](x: T) -> T { x }` followed by `pick(2.5) + 1.0` printed `537`
+instead of `3.5`. Every operator now computes such an operand as a float on
+the default, debug and library builds (`fixtures/generic_call_double_arith_test.vibe`).
+A linked build entry with no checked source refuses the operand with the
+edit (an annotated binding) rather than guess. Evidence for promotion
+belongs in [#2834](https://github.com/mizchi/vibe-lang/issues/2834).
 
 **A handler supplies its effects only while its body runs.** Keep a closure
 that performs the handled effect inside that lifetime, or move the handler

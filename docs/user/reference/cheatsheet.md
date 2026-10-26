@@ -123,12 +123,13 @@ The generics that `@vibe/builtin` and `@vibe/core` declare in library source
 ``no impl `Show` for `Float` `` and the like: their `Float` impls wait on a
 seed bump.
 
-A generic call's floating-point result used directly in `+` is a known
-codegen bug ([#3629](https://github.com/mizchi/vibe-lang/issues/3629)):
-`pick(2.5) + 1.0`, for `fn pick[T](x: T) -> T { x }`, can add boxed bits
-as an integer. First bind it with an explicit type
-(`let v: Double = pick(2.5)`), then write `v + 1.0`. The same restriction
-applies to `Float`; f32 rounding does not repair an integer operation.
+A generic call's floating-point result is computed as a float under every
+operator ([#3629](https://github.com/mizchi/vibe-lang/issues/3629)):
+`pick(2.5) + 1.0`, for `fn pick[T](x: T) -> T { x }`, is `3.5`, and the same
+holds for `Float`, an index, a `for` element and a match binder. It used to
+add the boxed bits as an integer and print `537`. A linked build entry that
+no type check covered cannot tell such an operand's type, so it refuses the
+operator and asks for an annotated binding (`let v: Double = pick(2.5)`).
 
 ```vibe
 test "Float rounds to f32" {

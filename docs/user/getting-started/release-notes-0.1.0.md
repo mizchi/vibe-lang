@@ -67,7 +67,9 @@ time with the edit that fixes it, or it answers correctly.
   arithmetic and conversions round to f32. Printing uses the shortest
   decimal that reads back to the same f32. Default, debug and library builds
   carry the typed rows required for rounding (#3543, #3625). `Float` remains
-  unstable; generic `Eq`, `Show` and `Add` impls still require a seed bump.
+  unstable. Generic `Eq`, `Show`, `Signed` and `Default` bounds hold at
+  `Float`; the library-source impls (`to_string`, `Hash` keys) still require
+  a seed bump.
 - **Diagnostics and handler syntax.** The legacy `with E { Op(..) => .. }`
   header is refused with the qualified replacement
   (`with { E::Op(..) => .. }`). A refutable `let` mismatch names its pattern
@@ -75,13 +77,13 @@ time with the edit that fixes it, or it answers correctly.
   pool retains the bare trap. Parser, trait, assignment and handler
   diagnostics gain positions and actionable edits (#3530, #3548, #3626).
 
-The candidate still has a known numeric correctness defect:
-`pick(2.5) + 1.0`, where `pick[T](x: T) -> T`, can add boxed bits as an
-integer and print `537`. Bind the result to an explicitly typed `Double`
-local before adding. [#3629](https://github.com/mizchi/vibe-lang/issues/3629)
-tracks the P0; promotion to `0.1.0` requires a fix or a safe compile-time
-refusal, with evidence in [#2834](https://github.com/mizchi/vibe-lang/issues/2834). See
-[stable-surface §6.2](../reference/stable-surface.md) for the scope and
+A numeric correctness defect found late was fixed:
+`pick(2.5) + 1.0`, where `pick[T](x: T) -> T`, added boxed bits as an
+integer and printed `537`; it is `3.5` now under every operator
+([#3629](https://github.com/mizchi/vibe-lang/issues/3629)). A linked build
+entry with no checked source refuses such an operand with the edit. Record
+promotion evidence in [#2834](https://github.com/mizchi/vibe-lang/issues/2834). See
+[stable-surface §6.2](../reference/stable-surface.md) for the remaining
 effect-boundary restrictions.
 
 The hunt also triaged surfaces that are not part of these fixes. Some showed
@@ -306,11 +308,10 @@ the edit that fixes them rather than an internal pass name.
   `let` (the value restriction), impl methods that disagree with their trait, effect rows
   not charged through call expressions, `Double` interpolation through a
   `for` binder or an index, and an explicit `H::to_string(x)` on a
-  `derive (Show)` generic printing a field's address. The separate generic
-  floating-point `+` defect (#3629) is still a P0 inside the stable numeric
-  surface; §6.2 records its workaround and the handler-lifetime and kinded
-  callback restrictions. Those restrictions do not move numeric correctness
-  outside the freeze or establish that the candidate is ready to publish.
+  `derive (Show)` generic printing a field's address. The generic
+  floating-point `+` defect (#3629) is fixed as well; §6.2 records the
+  handler-lifetime and kinded callback restrictions, which do not establish
+  that the candidate is ready to publish.
 
 ## Release verification
 
