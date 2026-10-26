@@ -68,8 +68,8 @@ time with the edit that fixes it, or it answers correctly.
   decimal that reads back to the same f32. Default, debug and library builds
   carry the typed rows required for rounding (#3543, #3625). `Float` remains
   unstable. Generic `Eq`, `Show`, `Signed` and `Default` bounds hold at
-  `Float`, and so do the library impls behind `to_string`, `Hash` keys and
-  `T::default()` (#3625, after the seed bump to `float-binary32-2026-10-26`).
+  `Float`; the library-source impls (`to_string`, `Hash` keys) still require
+  a seed bump.
 - **Diagnostics and handler syntax.** The legacy `with E { Op(..) => .. }`
   header is refused with the qualified replacement
   (`with { E::Op(..) => .. }`). A refutable `let` mismatch names its pattern
