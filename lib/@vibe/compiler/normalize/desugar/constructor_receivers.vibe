@@ -1,7 +1,11 @@
 // Constructor receivers.
 
+import @vibe/ast {
+  impl_target_key
+}
+
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, expr_child_at, expr_children, expr_children_pop, expr_children_push, expr_children_top
+  Expr, Pat, Stmt, TypeExpr, expr_child_at, expr_children, expr_children_pop, expr_children_push, expr_children_top
 }
 
 import @vibe/core {
@@ -10,6 +14,10 @@ import @vibe/core {
 
 import ./argument_types.vibe {
   infer_arg_type_name
+}
+
+import ./callable_names.vibe {
+  impl_target_var_key
 }
 
 import ./constructor_environments.vibe {
@@ -26,6 +34,10 @@ import ./generic_dispatch.vibe {
 
 import ./models.vibe {
   DictGen
+}
+
+import ./parameter_annotations.vibe {
+  seed_var_types
 }
 
 import ./renderer_scope.vibe {
@@ -50,6 +62,10 @@ import ./type_names.vibe {
 
 import ./utilities.vibe {
   empty_str_array, local_fn_return_key, str_array_contains
+}
+
+import ./witness_targets.vibe {
+  infer_impl_target_expr
 }
 
 /// #1064 (Codex review on the original fix): a railway-bound name's real type
@@ -112,6 +128,110 @@ export fn constructor_for_body_var_types(iter: Expr, value_name: String, index_n
   match index_name {
     Some(name) => constructor_rewrite_var_types(value_vars, name, Some("Int")),
     None => value_vars
+  }
+}
+
+/// #3635: the environment a `for` body is rewritten in. Both binders are
+/// local, so each one first drops every outer entry of its name -- the same
+/// masking a lambda parameter gets from `seed_var_types`. Before this the loop
+/// recorded nothing: `same(y, 2)` on a `for y in xs` element had no type to
+/// read its `[T: Eq]` witness from and was refused, and with an outer
+/// `let y = 7` in scope the call read THAT binding's `Int` and compared two
+/// `Double`s through `Int`'s witness (`same(2.5, 2.5)` answered `false`).
+///
+/// The value binder then gets the element type the iterand describes, as a
+/// `let` of the element would: its head, and its full impl target when the
+/// iterand's reads as `Array[..]` with the same head, so a generic element
+/// (`Box[Double]`) keeps the argument its witness needs. The index binder is
+/// an `Int`. An iterand this pass cannot read records no type, and the masking
+/// alone keeps a stale outer entry from answering for it.
+export fn for_body_var_types(iter: Expr, value_name: String, index_name: Option[String], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let names = match index_name {
+    Some(iname) => [value_name, iname],
+    None => [value_name]
+  }
+  let elem = infer_arg_elem_type_name(iter, struct_sets, var_types, fn_returns)
+  let tracking = Array::get(dtd_constructor_tracking, 0)
+  if (elem is None) && (index_name is None) && !for_binders_shadow(var_types, names) {
+    if tracking {
+      constructor_for_body_var_types(iter, value_name, index_name, struct_sets, var_types, fn_returns)
+    } else {
+      var_types
+    }
+  } else {
+    let target = for_elem_impl_target(iter, elem, struct_sets, var_types, fn_returns)
+    let params: Array[(String, Option[TypeExpr])] = for n in names {
+      (n, None)
+    }
+    let masked = seed_var_types(params, empty_str_array(), var_types)
+    let out = if tracking {
+      constructor_rewrite_var_types(masked, value_name, elem)
+    } else {
+      match elem {
+        Some(t) => Array::push(masked, (value_name, t)),
+        None => ()
+      }
+      masked
+    }
+    match target {
+      Some(key) => Array::push(out, (impl_target_var_key(value_name), key)),
+      None => ()
+    }
+    match index_name {
+      Some(iname) => if tracking {
+        constructor_rewrite_var_types(out, iname, Some("Int"))
+      } else {
+        Array::push(out, (iname, "Int"))
+        out
+      },
+      None => out
+    }
+  }
+}
+
+/// Does `var_types` hold an entry for one of `names` -- the plain name or a
+/// key derived from it (`<prefix>$name`)? Only then is there an outer binding
+/// for a `for` binder to mask, so the common loop skips the copy.
+fn for_binders_shadow(var_types: Array[(String, String)], names: Array[String]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(var_types) {
+    let (key, _) = Array::get(var_types, i)
+    for n in names {
+      if key == n || String::ends_with(key, String::concat("$", n)) {
+        found = true
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The full impl target of a `for` element, read off the iterand's own
+/// `Array[..]` target when its head agrees with `elem`.
+fn for_elem_impl_target(iter: Expr, elem: Option[String], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match elem {
+    Some(head) => match infer_impl_target_expr(iter, struct_sets, var_types, fn_returns) {
+      Some(TyApp(c, args)) => if c == "Array" && Array::length(args) == 1 {
+        let t = Array::get(args, 0)
+        let thead = match t {
+          TyName(n) => n,
+          TyApp(n, _) => n,
+          _ => ""
+        }
+        if thead == head {
+          Some(impl_target_key(t))
+        } else {
+          None
+        }
+      } else {
+        None
+      },
+      _ => None
+    },
+    None => None
   }
 }
 
