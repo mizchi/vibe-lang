@@ -398,14 +398,12 @@ one linearization, so the guarantees above hold across them.
 ## `Send` and capture safety
 
 This section is the canonical statement of the `Send` allowlist. Other
-documents link here instead of copying it. Each row of the list below has a
-case in `lib/@vibe/compiler/tests/send_allowlist_test.vibe`, so a row cannot
-drift from the checker without a test failing -- except "a type parameter with
-no `Send` bound", which is refused where a spawned closure captures it but
-not yet where it reaches a `Send` bound inside its generic body (#3554). That
-test asks the bound
-directly; the places the bound is required -- a task's result, a channel
-element, `Parallel::map` -- are pinned by
+documents link here instead of copying it. The structural bound checks are
+pinned by `lib/@vibe/compiler/tests/send_allowlist_test.vibe`, including
+scalars, `FrozenArray`, aliases, the builtin `Map` refusal, and a generic
+body passing an unbounded formal to a `Send` bound (#3554). That test asks
+the bound directly; the places the bound is required -- a task's result, a
+channel element, `Parallel::map` -- are pinned by
 `fixtures/typecheck/{spawn_result_closure,spawn_result_option_array,parallel_map_result}_not_send_reject.vibe`
 (#3518: a task whose result is a closure used to be accepted).
 

@@ -290,6 +290,11 @@ spelling at all — `Option::Some` reports `unknown name`, so write `Some`.
   early exit.
 - Patterns: wildcard, binding, literal, constructor, tuple, record, struct,
   or-pattern, guard.
+- A refutable `let` is partial: on mismatch it traps. The default linear and
+  wasm-gc builds report the written pattern, source position and the edit
+  (`match` or `guard .. is .. else { .. }`). Use either explicit form when
+  failure is expected. A module build without a string pool still traps
+  without that message (#3626).
 - The `is` expression `expr is Pat` (ADR-0023).
 
 ### 2.5 Type definitions and traits
@@ -327,7 +332,7 @@ spelling at all — `Option::Some` reports `unknown name`, so write `Some`.
   saying so, and a user `effect Mut` / `effectset Mut` is refused too, so
   adding the marker later is a compatible addition rather than a collision
   with a user name.
-- `throw` / `handle ... with Exception { ... }`, the `?` operator (ADR-0016,
+- `throw` / `handle ... with { Exception::Throw(m) => ... }`, the `?` operator (ADR-0016,
   ADR-0050). `throw(x)` is call-form and sugar for
   `perform Exception::Throw(x)` (#640); the bracketless `Exception` row is
   erased — its payload is deliberately unconstrained.
@@ -341,8 +346,10 @@ spelling at all — `Option::Some` reports `unknown name`, so write `Some`.
   `Exception[IoError]::Throw(e)` catches every exception its body raises, so
   the body may raise only `IoError`: an erased or unresolved throw, an erased
   callee (`with Exception`), or a throw of another kind is refused there. The
-  erased `Exception::Throw(m)` arm catches everything, with an untyped
-  payload. At a function's own ROW the reading is gradual: a payload whose
+  erased `Exception::Throw(m)` arm catches every kind when it leaves the
+  payload unread; a read binder has type `String`, so a body known to throw
+  another kind is refused. Use `Exception[K]::Throw(e)` to read a payload of
+  type `K`. At a function's own ROW the reading is gradual: a payload whose
   kind cannot be resolved (a pattern binder, a field projection — an ordinary
   local binding IS resolved from its initializer) is treated as erased and
   passes any `Exception[K]` — no false positives, known misses. Tightening
@@ -596,8 +603,11 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   It is IEEE binary32 now: a type distinct from `Double`, whose literals,
   conversions and arithmetic results are rounded to the nearest f32 (see the
   cheatsheet's "`Float` is 32-bit"). Those semantics are newer than the
-  freeze, so it stays outside it. `vibe build --debug` refuses a program that
-  uses `Float`, because that lane cannot round its arithmetic.
+  freeze, so it stays outside it. The default build, `vibe build --debug`,
+  and library builds round its arithmetic. A linked entry with no matching
+  checked source still refuses `Float`. Generic `Eq`, `Show` and `Add`
+  bounds have no `Float` impl yet (#3625); compare or render at the concrete
+  type. See §6.2 for the separate generic-call arithmetic bug.
 - **`derive (Hash)` and the `Map::*_by` operations keyed on it.** The derived
   key is length-prefixed and tagged, so two different values no longer share
   a key, and `-0.0` and `0.0` share one as `==` says they should (#3544).
@@ -626,8 +636,9 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   impl method's signature is checked against its trait (#3538), except a
   method the trait does not declare in a plain (non-applied) impl.
 - **Higher-kinded type parameters (`F[_]`).** They work in the hunt's probes,
-  but they sit on the same unchecked impl machinery, and their diagnostics
-  have no position (#3548).
+  but they sit on the same impl machinery outside the frozen subset. The
+  kinded-field row regression `Box[F[Int]]` is covered by
+  `fixtures/struct_field_row_kinded_formal_test.vibe` (#3623).
 - **Kinded exception arms (`Exception[K]::Throw(e)`) over a row-polymorphic
   callee**, and a handler arm that performs another effect (#3540). The hunt
   found such an arm catching a kind it does not name, and an arm's own effects
@@ -651,54 +662,36 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   compile"). Its spelling is expected to change with native continuations.
   Tail `resume(v)` is frozen.
 
-### 6.2 Known soundness gaps in the frozen core (0.1.0)
+### 6.2 Candidate correctness and effect-boundary limits
 
-The policy is that vibe is never silently wrong. These gaps break that inside
-the frozen surface, and `0.1.0` ships with them. (The hunt closed five more
-before the tag: a generic body making two type parameters one type and a
-bare generic type in a signature or a declaration (#3536), a generic call
-result or struct literal generalized by `let` (#3537), an impl method that
-disagrees with its
-trait (#3538), effect rows not charged through a call expression (#3539),
-and `Double` interpolation through a binder or an index (#3542).)
-They are listed so a reader can stay clear of them. Each one is an open P0 bug, and closing it can
-reject programs that compile today. Each is fixed as a compatible change,
-because those programs are already wrong.
+**A generic call returning `Double` or `Float` can enter integer `+`**
+([#3629](https://github.com/mizchi/vibe-lang/issues/3629)).
+`fn pick[T](x: T) -> T { x }` followed by `pick(2.5) + 1.0` type-checks but
+prints `537` instead of `3.5` on the candidate. Bind the result first with an
+explicit type (`let v: Double = pick(2.5)`, then `v + 1.0`). This is a P0
+defect in the stable numeric surface and blocks promotion to `0.1.0` until
+the expression compiles correctly or is safely refused. Record that evidence
+in [#2834](https://github.com/mizchi/vibe-lang/issues/2834). The workaround
+does not make the direct expression correct or move it outside the freeze.
 
-- **A closure created inside a `handle` can outlive it with a pure type**
-  (#3540). `vibe check` refuses a closure that leaves directly, and one held
-  in a declared struct or enum field returned by a function it can read (one
-  named in this module or imported, a method, an alias, or a literal a
-  top-level binding chooses). A builder with no body to read -- a parameter,
-  a call's result (`let g = pick(3); handle { g() }`) -- is taken to build
-  such a closure whenever its row names the caught exception and its result
-  can hold a function (see the
-  cheatsheet's "A closure that performs must not outlive its `handle`").
-  A call that stores the closure in state it captured, or in a module-level
-  binding, names no binding the check can see, so that closure can still
-  leave and trap when called. Do not store a closure that performs the
-  handled effect.
-- **The erased `Exception::Throw(m)` binder is assumed to be a `String`**
-  (#3541, #3601). An arm that reads `m` is refused over a body that raises
-  another kind, including a kind that a function lets out through its erased
-  `with Exception` row, whether the function is in the same module or
-  imported (its module publishes the kinds). A function value is typed only
-  by the row it is given, and an erased row there carries only messages: a
-  closure literal written for a field or result typed `with Exception`, or
-  for such a parameter of a callee whose own row lets exceptions out, may
-  throw only messages (one bound by `let` or `let rec`, applied where it is
-  written, or passed for a parameter whose row variable the callee's row lets
-  out, is charged at its calls like a named function), and a function whose row
-  names or lets out another kind may be passed there only where the
-  receiving row names that kind or is a row variable with no erased
-  `Exception` beside it. A callee whose own row raises no
-  exception handles what a callback raises (`TaskGroup::spawn_suspend`), so it
-  takes any kind. The kind is not carried at run time. Two routes are not
-  seen: such a callee that keeps the callback and calls it after it returns,
-  and a closure literal passed to a callee that is itself a function value (a
-  callback parameter or a local closure), whose parameter rows the check
-  cannot read. Throw a value other than a `String` under a kinded row, and
-  catch it with the kinded arm (`Exception[K]::Throw(e)`).
+**A handler supplies its effects only while its body runs.** Keep a closure
+that performs the handled effect inside that lifetime, or move the handler
+inside the closure. The checker refuses direct escapes and closures returned
+through readable builders (#3540); a callee that stores a callback in captured
+or module-level state still requires care. Keep the effect on the stored
+function's type rather than relying on a handler that has already returned.
+The detailed restrictions and supported forms are in the cheatsheet's
+"A closure that performs must not outlive its `handle`".
+
+**Exception kinds are checked statically; the runtime carries one abortive
+tag.** An erased `Exception::Throw(m)` arm reads `m` as a `String`, and a
+known non-message throw is refused there (#3541, #3601). A function value
+communicates its exception kinds through its declared row. In particular,
+use an explicit `with Exception[K]` row for a callback that throws values of
+type `K`, including one retained by a callee or called indirectly, and catch
+it with `Exception[K]::Throw(e)`. The erased row is not a runtime conversion
+of arbitrary payloads into messages. The cheatsheet's "Typed exceptions"
+describes the checks at calls, callback parameters and rethrows.
 
 ## 7. Operating the freeze
 
