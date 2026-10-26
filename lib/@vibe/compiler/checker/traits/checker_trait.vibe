@@ -446,8 +446,22 @@ export fn register_builtin_traits_for(env: TypeEnv, withheld: Array[String]) -> 
   // five scalars, but only the `Eq` / `Ord` / arithmetic rows below were
   // seeded, so `[T: Show]` answered ``no impl `Show` for `Int` `` while a
   // `derive (Show)` struct satisfied it. Seeded the same way as `Eq`'s.
+  //
+  // #3625: every row seeded for `Double` is seeded for `Float` too. A `Float`
+  // is held as the f64 of its f32 value, so the witnesses that exist answer by
+  // f32 semantics with no code of their own: `Eq`'s is the annotated `a == b`
+  // at `Float` (`dtd_scalar_eq_witness`), which is the concrete `==` (value
+  // equality, `-0.0f == 0.0f`, NaN unequal to itself), and `Show` is only ever
+  // honoured where the argument's type is concrete, which renders through
+  // `Float::to_string`. `Ord` / `Add` reach no witness and are refused at
+  // `Float` exactly as at `Double` (`erased_cmp_bound_refusal`); `Sub` / `Mul`
+  // / `Div` / `Signed` bodies pin their operand to `Int`. The PRELUDE cannot
+  // declare these impls yet: the committed seed reads `Float` as `Double`, so
+  // `impl Eq for Float` in `@vibe/builtin` overlaps `impl Eq for Double` in
+  // every seed-compiled module that imports it. Until the seed bump lands,
+  // `builtin_trait_seed_parity_test.vibe` lists these rows as seeded-only.
   let env_show = if !seed_withheld(withheld, "Show") {
-    EnvTraitImpl("Show", CtString, EnvTraitImpl("Show", CtChar, EnvTraitImpl("Show", CtBool, EnvTraitImpl("Show", CtDouble, EnvTraitImpl("Show", CtInt, env)))))
+    EnvTraitImpl("Show", CtFloat, EnvTraitImpl("Show", CtString, EnvTraitImpl("Show", CtChar, EnvTraitImpl("Show", CtBool, EnvTraitImpl("Show", CtDouble, EnvTraitImpl("Show", CtInt, env))))))
   } else {
     env
   }
@@ -458,28 +472,28 @@ export fn register_builtin_traits_for(env: TypeEnv, withheld: Array[String]) -> 
   let e5 = EnvTraitDef("Mul", no_supers, false, nm, e4, empty_strings(), no_trait_method_gens())
   let e6 = EnvTraitDef("Div", no_supers, false, nm, e5, empty_strings(), no_trait_method_gens())
   let e7 = EnvTraitImpl("Eq", CtInt, e6)
-  let e8 = EnvTraitImpl("Eq", CtDouble, e7)
+  let e8 = EnvTraitImpl("Eq", CtFloat, EnvTraitImpl("Eq", CtDouble, e7))
   let e9 = EnvTraitImpl("Eq", CtString, e8)
   let e10 = EnvTraitImpl("Eq", CtBool, e9)
   // #3187: the prelude declares `impl Eq for Char` too. Its witness is the
   // annotated `a == b` desugar_trait_dict synthesizes for each scalar.
   let e10c = EnvTraitImpl("Eq", CtChar, e10)
   let e11 = EnvTraitImpl("Ord", CtInt, e10c)
-  let e12 = EnvTraitImpl("Ord", CtDouble, e11)
+  let e12 = EnvTraitImpl("Ord", CtFloat, EnvTraitImpl("Ord", CtDouble, e11))
   let e13 = EnvTraitImpl("Ord", CtString, e12)
   let e14 = EnvTraitImpl("Add", CtInt, e13)
-  let e15 = EnvTraitImpl("Add", CtDouble, e14)
+  let e15 = EnvTraitImpl("Add", CtFloat, EnvTraitImpl("Add", CtDouble, e14))
   // #3178: `@vibe/builtin/builtin_traits.vibe` declares `impl Add for String`
   // and `+` joins two Strings, but only Int and Double were seeded here, so a
   // program's own `[T: Add]` answered ``no impl `Add` for `String` `` while
   // the prelude's `num_add` (which carries that module's impls) accepted it.
   let e15s = EnvTraitImpl("Add", CtString, e15)
   let e16 = EnvTraitImpl("Sub", CtInt, e15s)
-  let e17 = EnvTraitImpl("Sub", CtDouble, e16)
+  let e17 = EnvTraitImpl("Sub", CtFloat, EnvTraitImpl("Sub", CtDouble, e16))
   let e18 = EnvTraitImpl("Mul", CtInt, e17)
-  let e19 = EnvTraitImpl("Mul", CtDouble, e18)
+  let e19 = EnvTraitImpl("Mul", CtFloat, EnvTraitImpl("Mul", CtDouble, e18))
   let e20 = EnvTraitImpl("Div", CtInt, e19)
-  let e21 = EnvTraitImpl("Div", CtDouble, e20)
+  let e21 = EnvTraitImpl("Div", CtFloat, EnvTraitImpl("Div", CtDouble, e20))
   let e22 = EnvTraitImpl("Eq", i64_type, e21)
   let e23 = EnvTraitImpl("Eq", u8_type, e22)
   let e24 = EnvTraitImpl("Eq", u16_type, e23)
@@ -525,10 +539,6 @@ export fn register_builtin_traits_for(env: TypeEnv, withheld: Array[String]) -> 
   let e58 = EnvTraitDef("Send", no_supers, false, nm, e57, empty_strings(), no_trait_method_gens())
   let e59 = EnvTraitImpl("Send", CtInt, e58)
   // #3543: a `Float` is a scalar and crosses a task boundary like Double.
-  // It has no Eq / Ord / Show / arithmetic trait impls yet: the prelude
-  // cannot declare `impl Eq for Float` while the committed seed still reads
-  // `Float` as `Double` (the two impls would overlap there), so a bounded
-  // generic at Float is refused with ``no impl `Eq` for `Float` ``.
   let e60 = EnvTraitImpl("Send", CtFloat, EnvTraitImpl("Send", CtDouble, e59))
   let e61 = EnvTraitImpl("Send", CtString, e60)
   let e62 = EnvTraitImpl("Send", CtBool, e61)
@@ -544,12 +554,12 @@ export fn register_builtin_traits_for(env: TypeEnv, withheld: Array[String]) -> 
   // declaration, and the checker names that import when it is missing
   // (`marker_default_dispatch_error` in checker.vibe).
   let env_signed = if !seed_withheld(withheld, "Signed") {
-    EnvTraitImpl("Signed", CtDouble, EnvTraitImpl("Signed", CtInt, e64))
+    EnvTraitImpl("Signed", CtFloat, EnvTraitImpl("Signed", CtDouble, EnvTraitImpl("Signed", CtInt, e64)))
   } else {
     e64
   }
   if !seed_withheld(withheld, "Default") {
-    EnvTraitImpl("Default", CtString, EnvTraitImpl("Default", CtBool, EnvTraitImpl("Default", CtDouble, EnvTraitImpl("Default", CtInt, env_signed))))
+    EnvTraitImpl("Default", CtFloat, EnvTraitImpl("Default", CtString, EnvTraitImpl("Default", CtBool, EnvTraitImpl("Default", CtDouble, EnvTraitImpl("Default", CtInt, env_signed)))))
   } else {
     env_signed
   }
