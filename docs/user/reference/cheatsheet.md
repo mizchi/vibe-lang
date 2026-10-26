@@ -107,9 +107,21 @@ that reads back as the same f32 (`0.1f` prints `0.1`, `1.0f / 3.0f` prints
 `x * 2.5` on a `Float` `x` is a type error whose message names the edit
 (`2.5f`, or `Double::to_float` / `Float::to_double`). A `Float` holds the f64
 of its f32 value at run time, so equality, ordering and hashing see exactly
-the f32 value. The builtin `Eq`, `Show` and `Add` traits have no `Float`
-impl yet, so a generic with one of those bounds refuses a `Float` with
-``no impl `Eq` for `Float` ``; compare or render at the concrete type.
+the f32 value.
+
+A program's builtin trait bounds hold at `Float` wherever they hold at
+`Double` (#3625). `[T: Eq]` compares through a witness that is the concrete
+`==`, so it is f32 value equality: `-0.0f` equals `0.0f`, and a NaN is
+unequal to itself. `[T: Show]`, `[T: Signed]` and `[T: Default]` hold, and a
+`Float` that comes back out of such a generic still prints as an f32.
+`[T: Ord]` and `[T: Add]` are refused at `Float` as at `Double`, because `<`
+and `+` on an erased type reach no witness; `*`, `-` and `/` in a generic body
+fix the operand to `Int`. Compare or compute at the concrete type instead.
+The generics that `@vibe/builtin` and `@vibe/core` declare in library source
+(the imported `to_string`, `Hash` keys such as `map_key_to_string` /
+`get_by`, and `T::default()` with `@vibe/core`'s `Default`) still answer
+``no impl `Show` for `Float` `` and the like: their `Float` impls wait on a
+seed bump.
 
 A generic call's floating-point result used directly in `+` is a known
 codegen bug ([#3629](https://github.com/mizchi/vibe-lang/issues/3629)):

@@ -1,0 +1,139 @@
+// #3625 item 2: the builtin trait bounds at `Float`.
+//
+// `Float` is IEEE binary32, held as the f64 of its f32 value (#3543). Every
+// row the checker seeds for `Double` is seeded for `Float` too, and what a
+// bound answers there answers by f32 semantics:
+//
+// - `[T: Eq]` dispatches through the annotated `a == b` at `Float`, the same
+//   comparison the concrete `==` makes: f32 value equality, `-0.0f` equal to
+//   `0.0f`, a NaN unequal to itself. Before, the bound was refused with
+//   ``no impl `Eq` for `Float` ``.
+// - `[T: Show]`, `[T: Signed]` and `[T: Default]` hold at `Float`, and a value
+//   that comes back out of such a generic renders as an f32 (`0.1`, not
+//   `0.10000000149011612`).
+// - `[T: Ord]` / `[T: Add]` reach no witness, so they stay refused at `Float`
+//   exactly as at `Double`, and `*` / `-` / `/` in a generic body fix the
+//   operand to `Int` (fixtures/typecheck/err_type_float_{ord,add,mul}_bound.vibe).
+// - The library generics (`@vibe/builtin`'s `to_string`, `@vibe/core`'s `Hash`
+//   keys and `T::default()`) carry their impls in source, which waits on a
+//   seed bump: the committed seed reads `Float` as `Double`, so a prelude
+//   `impl Eq for Float` would overlap there.
+//
+// The derived operations on a struct with `Float` fields do not go through
+// these witnesses; they are pinned here alongside, since a `[T: Eq]` bound at
+// such a struct dispatches to the derived `equals`.
+
+struct Sample {
+  w: Float;
+  label: String
+} derive (Eq, Show, Hash, Ord)
+
+fn same[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}
+
+fn differ[T: Eq](a: T, b: T) -> Bool {
+  a != b
+}
+
+fn same_opt[T: Eq](a: Option[T], b: Option[T]) -> Bool {
+  a == b
+}
+
+fn same_pair[T: Eq](a: (T, Int), b: (T, Int)) -> Bool {
+  a == b
+}
+
+fn count_equal[T: Eq](xs: Array[T], x: T) -> Int {
+  let mut n = 0
+  for y in xs {
+    // A `for` binder carries no annotation the witness can read from.
+    let v: T = y
+    if same(v, x) {
+      n = n + 1
+    }
+  }
+  n
+}
+
+fn keep_shown[T: Show](x: T) -> T {
+  x
+}
+
+fn keep_signed[T: Signed](x: T) -> T {
+  x
+}
+
+fn keep_default[T: Default](x: T) -> T {
+  x
+}
+
+fn nan() -> Float {
+  0.0f / 0.0f
+}
+
+test "an Eq bound at Float compares f32 values" {
+  inspect(same(1.5f, 1.5f), content = "true")
+  inspect(same(0.1f, 0.2f), content = "false")
+  inspect(same(0.0f, -0.0f), content = "true")
+  inspect(same(nan(), nan()), content = "false")
+  inspect(differ(nan(), nan()), content = "true")
+  inspect(differ(1.5f, 1.5f), content = "false")
+  // Both literals round to the same f32, so they are one value.
+  inspect(same(16777217.0f, 16777216.0f), content = "true")
+  // The f32 sum rounds back to the left operand.
+  inspect(same(16777216.0f + 1.0f, 16777216.0f), content = "true")
+  inspect(same(Double::to_float(0.1), 0.1f), content = "true")
+}
+
+test "an Eq bound at Float agrees with the concrete ==" {
+  let xs = [0.1f, 0.2f, 0.1f + 0.2f, 0.3f, -0.0f, 0.0f, nan()]
+  let mut agree = 0
+  // A `for` binder carries no annotation the witness can read from, so each
+  // element is annotated before the bounded call.
+  for x in xs {
+    let a: Float = x
+    for y in xs {
+      let b: Float = y
+      if same(a, b) == (a == b) {
+        agree = agree + 1
+      }
+    }
+  }
+  inspect(agree, content = "49")
+  inspect(count_equal(xs, 0.0f), content = "2")
+  inspect(count_equal(xs, nan()), content = "0")
+}
+
+test "an Eq bound reaches a Float nested in a parameter" {
+  inspect(same_opt(Some(1.5f), Some(1.5f)), content = "true")
+  inspect(same_opt(Some(1.5f), Some(2.5f)), content = "false")
+  inspect(same_opt(Some(nan()), Some(nan())), content = "false")
+  inspect(same_opt(None, Some(0.0f)), content = "false")
+  inspect(same_pair((-0.0f, 1), (0.0f, 1)), content = "true")
+  inspect(same_pair((0.5f, 1), (0.5f, 2)), content = "false")
+}
+
+test "Show, Signed and Default bounds hold at Float" {
+  inspect(keep_shown(0.1f), content = "0.1")
+  inspect("\{keep_shown(1.0f / 3.0f)}", content = "0.33333334")
+  inspect(Float::to_string(keep_signed(-2.5f)), content = "-2.5")
+  inspect(Float::to_string(keep_default(16777217.0f)), content = "16777216")
+}
+
+test "derive(Eq, Show, Hash, Ord) on a struct with a Float field" {
+  let a = Sample::{ w: 0.1f, label: "a" }
+  let b = Sample::{ w: Double::to_float(0.1), label: "a" }
+  let z = Sample::{ w: -0.0f, label: "z" }
+  let z2 = Sample::{ w: 0.0f, label: "z" }
+  inspect(a == b, content = "true")
+  inspect(same(a, b), content = "true")
+  inspect(same(a, z), content = "false")
+  inspect(same(z, z2), content = "true")
+  inspect(a, content = "Sample { w: 0.1, label: a }")
+  inspect(Sample::hash_key(z) == Sample::hash_key(z2), content = "true")
+  inspect(Sample::hash_key(a) == Sample::hash_key(b), content = "true")
+  inspect(Sample::hash_key(a) == Sample::hash_key(z), content = "false")
+  inspect(Sample::compare(a, z) == Ordering::Greater, content = "true")
+  inspect(Sample::compare(Sample::{ w: 0.5f, label: "a" }, Sample::{ w: 0.25f, label: "z" }) == Ordering::Greater, content = "true")
+}
