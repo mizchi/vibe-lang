@@ -107,9 +107,16 @@ that reads back as the same f32 (`0.1f` prints `0.1`, `1.0f / 3.0f` prints
 `x * 2.5` on a `Float` `x` is a type error whose message names the edit
 (`2.5f`, or `Double::to_float` / `Float::to_double`). A `Float` holds the f64
 of its f32 value at run time, so equality, ordering and hashing see exactly
-the f32 value. No builtin trait has a `Float` impl yet, so a bounded generic
-(`[T: Eq]`, `[T: Show]`, `[T: Add]`) refuses a `Float` with
+the f32 value. The builtin `Eq`, `Show` and `Add` traits have no `Float`
+impl yet, so a generic with one of those bounds refuses a `Float` with
 ``no impl `Eq` for `Float` ``; compare or render at the concrete type.
+
+A generic call's floating-point result used directly in `+` is a known
+codegen bug ([#3629](https://github.com/mizchi/vibe-lang/issues/3629)):
+`pick(2.5) + 1.0`, for `fn pick[T](x: T) -> T { x }`, can add boxed bits
+as an integer. First bind it with an explicit type
+(`let v: Double = pick(2.5)`), then write `v + 1.0`. The same restriction
+applies to `Float`; f32 rounding does not repair an integer operation.
 
 ```vibe
 test "Float rounds to f32" {
@@ -1076,7 +1083,9 @@ one line naming the pattern and where it is written, then traps (#3626):
 let pattern `Some(v)` did not match at main.vibex:3:7 -- handle the other case with `match`, or with `guard <value> is Some(v) else { .. }`
 ```
 
-To handle the other case instead, write the `match` or the `guard`.
+To handle the other case instead, write the `match` or the `guard`. A module
+build without a string pool still traps without the message; the default
+linear and wasm-gc builds report it.
 
 > **guard semantics (#1283):** `guard e is PAT else { alt }` desugars to
 > `match e { PAT => <rest-of-block>, _ => alt }` — the else arm IS the
