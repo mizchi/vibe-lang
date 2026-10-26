@@ -117,10 +117,11 @@ unequal to itself. `[T: Show]`, `[T: Signed]` and `[T: Default]` hold, and a
 `[T: Ord]` and `[T: Add]` are refused at `Float` as at `Double`, because `<`
 and `+` on an erased type reach no witness; `*`, `-` and `/` in a generic body
 fix the operand to `Int`. Compare or compute at the concrete type instead.
-The library generics take a `Float` too: the imported `to_string(0.1f)` is
-`"0.1"`, `@vibe/core`'s `Hash` keys a `Float` by its f32 digits with
-`-0.0f` and `0.0f` sharing one key (`map_key_to_string`, `get_by`,
-`set_by`), and `T::default()` at `Float` is `0.0f`.
+The generics that `@vibe/builtin` and `@vibe/core` declare in library source
+(the imported `to_string`, `Hash` keys such as `map_key_to_string` /
+`get_by`, and `T::default()` with `@vibe/core`'s `Default`) still answer
+``no impl `Show` for `Float` `` and the like: their `Float` impls wait on a
+seed bump.
 
 A generic call's floating-point result is computed as a float under every
 operator ([#3629](https://github.com/mizchi/vibe-lang/issues/3629)):
