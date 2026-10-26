@@ -1,7 +1,7 @@
 // Argument types.
 
 import @vibe/compiler/core {
-  Expr, TypeExpr
+  Expr, TypeExpr, typed_lowering_arg_offset
 }
 
 import @vibe/ast {
@@ -37,7 +37,7 @@ import ./shape_environment.vibe {
 }
 
 import ./state.vibe {
-  dtd_struct_field_decls, scope_formal_mark_prefix
+  dtd_rowless_build, dtd_struct_field_decls, scope_formal_mark_prefix
 }
 
 import ./tuple_shape_encoding.vibe {
@@ -739,5 +739,43 @@ export fn anon_or_infer(val: Expr, struct_sets: Array[(String, Array[String])], 
   match anon_record_inferred(val, struct_sets) {
     Some(s) => Some(s),
     None => infer_arg_type_name(val, struct_sets, var_types, fn_returns)
+  }
+}
+
+/// #3629: on a build lane with no checker rows (`dtd_rowless_build`), an
+/// operand of `+` / `<` whose static type here is a type formal NOT bound by
+/// an enclosing binder -- a generic function's result, `pick(2.5)` for
+/// `pick[T](x: T) -> T`, or a name bound to one -- has no type at all: the
+/// callee's formal is instantiated at the call, and with no rows the
+/// instantiation is unknown. The runtime Int/String dispatch it would be sent
+/// to adds a `Double`'s box as an Int (`pick(2.5) + 1.0` printed `537`), and
+/// the lanes WITH rows mark such an operand from the checker's answer instead.
+/// So it is refused with the edit, which works on every lane: an annotated
+/// binding carries its type in the syntax. An enclosing binder's own formal
+/// still dispatches at run time, which is sound because the checker admits
+/// `+` / `<` on a formal only at Int and String instantiations.
+export fn refuse_rowless_untyped_operand(op: String, l: Expr, r: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit with Exception {
+  if Array::get(dtd_rowless_build, 0) {
+    refuse_rowless_untyped_one(op, l, struct_sets, var_types, fn_returns)
+    refuse_rowless_untyped_one(op, r, struct_sets, var_types, fn_returns)
+  } else {
+    ()
+  }
+}
+
+fn refuse_rowless_untyped_one(op: String, operand: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit with Exception {
+  match infer_arg_type_name(operand, struct_sets, var_types, fn_returns) {
+    Some(t) => if !formal_in_scope(t) && !is_concrete_or_known_type_name(t, struct_sets) {
+      let off = typed_lowering_arg_offset(operand)
+      let at = if off >= 0 {
+        String::concat(" [@off=", String::concat(Int::to_string(off), "]"))
+      } else {
+        ""
+      }
+      throw(String::concat("bind this operand of `", String::concat(op, String::concat("` with its type first (e.g. `let v: Double = ...`, then use `v`): this build has no type check of the exact text it compiles, so it cannot tell which type a generic call's result has here, and would add a `Double` as an Int (#3629)", at))))
+    } else {
+      ()
+    },
+    None => ()
   }
 }

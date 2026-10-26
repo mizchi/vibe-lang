@@ -20,6 +20,7 @@ import @vibe/compiler/core {
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  float_operand_unmarked,
   resolved_callee_operation,
   return_call_site
 }
@@ -1657,7 +1658,12 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
 /// bare name is therefore a borrow here, like a borrowed call argument
 /// (`pc_count_borrow` keeps the binding alive through it, and its scope-end
 /// drop releases it). Any other operand is walked as before.
-fn pc_operand_count(ctx: PCtx, scope: PScope, e: Expr) -> Int {
+///
+/// #3629: an operand the desugar marked as a float (`float_operand_unmarked`)
+/// is read through the mark, which codegen compiles to its argument; counted
+/// as a call argument, a marked name took a dup nobody released.
+fn pc_operand_count(ctx: PCtx, scope: PScope, e_in: Expr) -> Int {
+  let e = float_operand_unmarked(e_in)
   match e {
     EIdent(x, _) => pc_count_borrow(ctx, scope, x),
     _ => pc_count(ctx, scope, e)
@@ -1666,7 +1672,8 @@ fn pc_operand_count(ctx: PCtx, scope: PScope, e: Expr) -> Int {
 
 /// The emission twin of `pc_operand_count`: a bare-name operand is a borrow,
 /// so it plans no dup and spends no reference.
-fn pc_operand_emit(ctx: PCtx, scope: PScope, e: Expr) -> Int {
+fn pc_operand_emit(ctx: PCtx, scope: PScope, e_in: Expr) -> Int {
+  let e = float_operand_unmarked(e_in)
   match e {
     EIdent(_, _) => 0,
     _ => pc_emit(ctx, scope, e)

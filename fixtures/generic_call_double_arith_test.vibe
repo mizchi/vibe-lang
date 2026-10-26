@@ -1,0 +1,123 @@
+// #3629: a `Double` or `Float` that reaches an operator as the result of a
+// generic call (or of an index, a method, a trait-bound generic) is computed
+// as a float. The desugar used to read `pick(2.5)` as its callee's formal
+// `T` and send `+` and `<` to the runtime Int/String dispatch, and code
+// generation chose float arithmetic only from operand syntax: `pick(2.5) +
+// 1.0` printed `537`. The checker now files every float operation and the
+// desugar marks its operands, so each answer below is the float one.
+
+fn pick[T](x: T) -> T {
+  x
+}
+
+fn first[T](xs: Array[T]) -> T {
+  Array::get(xs, 0)
+}
+
+fn same[T: Show](x: T) -> T {
+  x
+}
+
+fn Double::half(x: Double) -> Double {
+  x / 2.0
+}
+
+fn lt[T: Ord](a: T, b: T) -> Bool {
+  a < b
+}
+
+test "a generic call result under each arithmetic operator" {
+  inspect(pick(2.5) + 1.0, content = "3.5")
+  inspect(1.0 + pick(2.5), content = "3.5")
+  inspect(pick(2.5) + pick(1.0), content = "3.5")
+  inspect(pick(2.5) - pick(1.0), content = "1.5")
+  inspect(pick(2.5) * pick(2.0), content = "5")
+  inspect(pick(5.0) / pick(2.0), content = "2.5")
+  inspect(-pick(2.5) + 1.0, content = "-1.5")
+  inspect((pick(2.5) + 1.0) * 2.0, content = "7")
+  let s = Double::to_string(pick(2.5) + 1.0)
+  inspect(s, content = "3.5")
+  inspect("a=\{pick(2.5) + 1.0}", content = "a=3.5")
+}
+
+test "a name bound to a generic call result" {
+  let v = pick(2.5)
+  inspect(v + v, content = "5")
+  let w = pick(2.5) + 1.0
+  inspect(w, content = "3.5")
+}
+
+test "orderings compare the numbers, negative ones included" {
+  inspect(pick(3.0) > pick(2.5), content = "true")
+  inspect(pick(2.5) > pick(3.0), content = "false")
+  inspect(pick(-1.0) < pick(-2.0), content = "false")
+  inspect(pick(-2.0) < pick(-1.0), content = "true")
+  inspect(pick(-3.0) >= pick(-2.5), content = "false")
+  inspect(pick(-2.5) <= 1.0, content = "true")
+  inspect(pick(0.0) == pick(-0.0), content = "true")
+  inspect(pick(1.5) != pick(1.5), content = "false")
+}
+
+test "compound assignment of a generic call result or an index" {
+  let mut acc = pick(1.0)
+  acc += pick(2.5)
+  inspect(acc, content = "3.5")
+  let xs: Array[Double] = [1.5, 2.5]
+  let mut a2 = xs[0]
+  a2 += xs[1]
+  inspect(a2, content = "4")
+  let mut a3 = 0.5
+  a3 -= pick(2.0)
+  inspect(a3, content = "-1.5")
+  let mut a4 = 1.0
+  a4 *= first(xs)
+  inspect(a4, content = "1.5")
+}
+
+test "an index, a method, a UFCS call and a trait-bound generic" {
+  let xs: Array[Double] = [1.5, 2.5]
+  inspect(xs[0] + xs[1], content = "4")
+  inspect(first(xs) + first(xs), content = "3")
+  inspect(Double::half(5.0) + pick(1.0), content = "3.5")
+  inspect((5.0).half() + pick(1.0), content = "3.5")
+  inspect(same(2.5) + same(1.0), content = "3.5")
+  inspect(same(-2.5) < same(-3.0), content = "false")
+}
+
+test "a name whose binding the lowering cannot classify" {
+  let xs: Array[Double] = [1.5, 2.5]
+  let v = xs[0]
+  inspect(v * v, content = "2.25")
+  let ys = [pick(1.5), 2.5]
+  let y = ys[0]
+  inspect(y * y, content = "2.25")
+  let mut total = 0.0
+  for x in xs {
+    total = total + x * x
+  }
+  inspect(total, content = "8.5")
+  let m = match Some(pick(2.5)) {
+    Some(d) => d * d,
+    None => 0.0
+  }
+  inspect(m, content = "6.25")
+  let (a, b) = (pick(1.5), 2.0)
+  inspect(a * a + b * b, content = "6.25")
+}
+
+test "an erased formal still dispatches at run time" {
+  inspect(lt(1, 2), content = "true")
+  inspect(lt("b", "a"), content = "false")
+  inspect(pick(2) + pick(3), content = "5")
+  inspect(pick("a") + pick("b"), content = "ab")
+}
+
+test "Float results of generic calls" {
+  inspect(pick(2.5f) + 1.0f, content = "3.5")
+  inspect(pick(2.5f) + pick(1.0f), content = "3.5")
+  inspect(pick(-2.5f) < pick(-3.0f), content = "false")
+  inspect(pick(1.0f) / pick(3.0f), content = "0.33333334")
+  let mut f = pick(1.0f)
+  f += pick(0.5f)
+  inspect(f, content = "1.5")
+}

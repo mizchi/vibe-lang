@@ -1,7 +1,7 @@
 // Float rounding (#3543).
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, expr_children
+  Expr, Pat, Stmt, TypeExpr, expr_child_at, expr_children, expr_children_pop, expr_children_push, expr_children_top
 }
 
 import @vibe/ast {
@@ -28,15 +28,81 @@ import @vibe/ast {
 /// A binop the compiler synthesized (offset -1) is never a hit; the checker
 /// files no row for one either. Negation needs no row: `-x` of an f32 value
 /// is exactly an f32 value.
-export fn rewrite_float_arith_stmts(stmts: Array[Stmt], binop_offs: Array[Int], assign_offs: Array[Int]) -> Unit {
-  if Array::length(binop_offs) > 0 || Array::length(assign_offs) > 0 {
+///
+/// #3629: the same walk marks the operands of every `Double` / `Float`
+/// operation the checker filed a float-operand row for
+/// (`typed_float_operand_row_head`): `operand_offs` are binops keyed by their
+/// operator offset, `operand_assign_offs` compound assignments keyed by their
+/// target offset. See `fr_mark`. A statement holding no hit is left as it is:
+/// the walk rebuilds every node it visits, and nearly every program has a
+/// float operation somewhere, so rebuilding them all grew the self-compile's
+/// heap by 11 MB.
+export fn rewrite_float_arith_stmts(stmts: Array[Stmt], binop_offs: Array[Int], assign_offs: Array[Int], operand_offs: Array[Int], operand_assign_offs: Array[Int]) -> Unit {
+  if Array::length(binop_offs) > 0 || Array::length(assign_offs) > 0 || Array::length(operand_offs) > 0 || Array::length(operand_assign_offs) > 0 {
     let mut i = 0
     while i < Array::length(stmts) {
-      Array::set(stmts, i, fr_stmt(Array::get(stmts, i), binop_offs, assign_offs))
+      let stmt = Array::get(stmts, i)
+      if fr_stmt_hits(stmt, binop_offs, assign_offs, operand_offs, operand_assign_offs) {
+        Array::set(stmts, i, fr_stmt(stmt, binop_offs, assign_offs, operand_offs, operand_assign_offs))
+      } else {
+        ()
+      }
       i = i + 1
     }
   } else {
     ()
+  }
+}
+
+fn fr_stmt_hits(stmt: Stmt, bo: Array[Int], ao: Array[Int], fo: Array[Int], fa: Array[Int]) -> Bool {
+  match stmt {
+    SLet(_, _, _, _, expr) => fr_expr_hits(expr, bo, ao, fo, fa),
+    SLetMut(_, _, expr) => fr_expr_hits(expr, bo, ao, fo, fa),
+    STest(_, expr) => fr_expr_hits(expr, bo, ao, fo, fa),
+    SBench(_, expr) => fr_expr_hits(expr, bo, ao, fo, fa),
+    SExample(_, expr) => fr_expr_hits(expr, bo, ao, fo, fa),
+    SExpr(expr) => fr_expr_hits(expr, bo, ao, fo, fa),
+    SLetPat(_, expr) => fr_expr_hits(expr, bo, ao, fo, fa),
+    SModule(_, _, _) => true,
+    SFnDecl(_, _, expr, requires, ensures) => {
+      let mut found = fr_expr_hits(expr, bo, ao, fo, fa)
+      for e in requires {
+        if !found && fr_expr_hits(e, bo, ao, fo, fa) {
+          found = true
+        }
+      }
+      for e in ensures {
+        if !found && fr_expr_hits(e, bo, ao, fo, fa) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// Whether `e` holds a binop or compound assignment the rewrite changes.
+/// Walks the shared child stack, so a statement with no hit allocates nothing.
+fn fr_expr_hits(e: Expr, bo: Array[Int], ao: Array[Int], fo: Array[Int], fa: Array[Int]) -> Bool {
+  let here = match e {
+    EBinOp(_, _, _, boff) => fr_has(bo, boff) || fr_has(fo, boff),
+    EAssignOp(_, _, _, _, target_off) => fr_has(ao, target_off) || fr_has(fa, target_off),
+    _ => false
+  }
+  if here {
+    true
+  } else {
+    let mark = expr_children_push(e)
+    let end = expr_children_top()
+    let mut found = false
+    let mut i = mark
+    while i < end && !found {
+      found = fr_expr_hits(expr_child_at(i), bo, ao, fo, fa)
+      i = i + 1
+    }
+    expr_children_pop(mark)
+    found
   }
 }
 
@@ -202,48 +268,85 @@ fn fr_round(e: Expr) -> Expr {
   ECall(builtin_ref("Double::to_float"), [e], -1, [])
 }
 
-fn fr_stmt(stmt: Stmt, bo: Array[Int], ao: Array[Int]) -> Stmt {
+/// #3629: mark `e`, an operand of a `Double` / `Float` operation, as a float
+/// for both lowerings. Code generation chooses float arithmetic from an
+/// operand's syntax, and the desugar sends `+` / `<` on an operand it types
+/// as a type formal -- which is what a generic call's result reads as -- to
+/// the runtime Int/String dispatch: `pick(2.5) + 1.0` added the Double's box
+/// as an Int. `Float::to_double` is the identity at code generation (a
+/// `Float` already is the f64 of its value), the desugar types it `Double`,
+/// and the float-operand readers look through it, so the mark costs no
+/// instruction. A literal or a conversion is already a float to both, and a
+/// nested arithmetic operator or negation is marked inside, so the lowering
+/// still computes a chain on bits without boxing each step.
+fn fr_mark(e: Expr) -> Expr {
+  match e {
+    EFloat(_) => e,
+    ECall(EIdent(f, _), _, _, _) => if f == "Float::to_double" || f == "Double::to_float" || f == "Int::to_double" || f == "Int::to_float" {
+      e
+    } else {
+      fr_wrap_double(e)
+    },
+    EBinOp(op, l, r, boff) => if op == "+" || op == "-" || op == "*" || op == "/" {
+      EBinOp(op, fr_mark(l), fr_mark(r), boff)
+    } else {
+      fr_wrap_double(e)
+    },
+    EUnaryOp(op, inner) => if op == "-" {
+      EUnaryOp(op, fr_mark(inner))
+    } else {
+      fr_wrap_double(e)
+    },
+    _ => fr_wrap_double(e)
+  }
+}
+
+fn fr_wrap_double(e: Expr) -> Expr {
+  ECall(builtin_ref("Float::to_double"), [e], -1, [])
+}
+
+fn fr_stmt(stmt: Stmt, bo: Array[Int], ao: Array[Int], fo: Array[Int], fa: Array[Int]) -> Stmt {
   match stmt {
-    SLet(exported, recursive, name, annotation, expr) => SLet(exported, recursive, name, annotation, fr_expr(expr, bo, ao)),
-    SLetMut(name, annotation, expr) => SLetMut(name, annotation, fr_expr(expr, bo, ao)),
-    STest(name, expr) => STest(name, fr_expr(expr, bo, ao)),
-    SBench(name, expr) => SBench(name, fr_expr(expr, bo, ao)),
-    SExample(name, expr) => SExample(name, fr_expr(expr, bo, ao)),
-    SExpr(expr) => SExpr(fr_expr(expr, bo, ao)),
-    SLetPat(pattern, expr) => SLetPat(pattern, fr_expr(expr, bo, ao)),
+    SLet(exported, recursive, name, annotation, expr) => SLet(exported, recursive, name, annotation, fr_expr(expr, bo, ao, fo, fa)),
+    SLetMut(name, annotation, expr) => SLetMut(name, annotation, fr_expr(expr, bo, ao, fo, fa)),
+    STest(name, expr) => STest(name, fr_expr(expr, bo, ao, fo, fa)),
+    SBench(name, expr) => SBench(name, fr_expr(expr, bo, ao, fo, fa)),
+    SExample(name, expr) => SExample(name, fr_expr(expr, bo, ao, fo, fa)),
+    SExpr(expr) => SExpr(fr_expr(expr, bo, ao, fo, fa)),
+    SLetPat(pattern, expr) => SLetPat(pattern, fr_expr(expr, bo, ao, fo, fa)),
     SModule(exported, name, inner) => {
       let copy = for s in inner {
         s
       }
-      rewrite_float_arith_stmts(copy, bo, ao)
+      rewrite_float_arith_stmts(copy, bo, ao, fo, fa)
       SModule(exported, name, copy)
     },
-    SFnDecl(exported, name, expr, requires, ensures) => SFnDecl(exported, name, fr_expr(expr, bo, ao), fr_exprs(requires, bo, ao), fr_exprs(ensures, bo, ao)),
+    SFnDecl(exported, name, expr, requires, ensures) => SFnDecl(exported, name, fr_expr(expr, bo, ao, fo, fa), fr_exprs(requires, bo, ao, fo, fa), fr_exprs(ensures, bo, ao, fo, fa)),
     _ => stmt
   }
 }
 
-fn fr_exprs(items: Array[Expr], bo: Array[Int], ao: Array[Int]) -> Array[Expr] {
+fn fr_exprs(items: Array[Expr], bo: Array[Int], ao: Array[Int], fo: Array[Int], fa: Array[Int]) -> Array[Expr] {
   for it in items {
-    fr_expr(it, bo, ao)
+    fr_expr(it, bo, ao, fo, fa)
   }
 }
 
-fn fr_named(fields: Array[(String, Expr)], bo: Array[Int], ao: Array[Int]) -> Array[(String, Expr)] {
+fn fr_named(fields: Array[(String, Expr)], bo: Array[Int], ao: Array[Int], fo: Array[Int], fa: Array[Int]) -> Array[(String, Expr)] {
   for fld in fields {
     let (n, v) = fld
-    (n, fr_expr(v, bo, ao))
+    (n, fr_expr(v, bo, ao, fo, fa))
   }
 }
 
-fn fr_arms(arms: Array[(Pat, Expr)], bo: Array[Int], ao: Array[Int]) -> Array[(Pat, Expr)] {
+fn fr_arms(arms: Array[(Pat, Expr)], bo: Array[Int], ao: Array[Int], fo: Array[Int], fa: Array[Int]) -> Array[(Pat, Expr)] {
   for a in arms {
     let (p, e) = a
-    (p, fr_expr(e, bo, ao))
+    (p, fr_expr(e, bo, ao, fo, fa))
   }
 }
 
-fn fr_expr(expr: Expr, bo: Array[Int], ao: Array[Int]) -> Expr {
+fn fr_expr(expr: Expr, bo: Array[Int], ao: Array[Int], fo: Array[Int], fa: Array[Int]) -> Expr {
   match expr {
     EInt(_) => expr,
     EFloat(_) => expr,
@@ -251,48 +354,68 @@ fn fr_expr(expr: Expr, bo: Array[Int], ao: Array[Int]) -> Expr {
     EBool(_) => expr,
     EUnit => expr,
     EIdent(_, _) => expr,
-    ETuple(items) => ETuple(fr_exprs(items, bo, ao)),
-    EArray(items) => EArray(fr_exprs(items, bo, ao)),
-    ERecord(rn, fields, targs) => ERecord(rn, fr_named(fields, bo, ao), targs),
-    EIf(c, t, e) => EIf(fr_expr(c, bo, ao), fr_expr(t, bo, ao), fr_expr(e, bo, ao)),
-    ELet(n, v, b, soff) => ELet(n, fr_expr(v, bo, ao), fr_expr(b, bo, ao), soff),
-    ELetRec(n, v, b) => ELetRec(n, fr_expr(v, bo, ao), fr_expr(b, bo, ao)),
-    ELetMut(n, v, b, soff) => ELetMut(n, fr_expr(v, bo, ao), fr_expr(b, bo, ao), soff),
-    EAssign(n, v, b, target_off) => EAssign(n, fr_expr(v, bo, ao), fr_expr(b, bo, ao), target_off),
-    EAssignOp(n, op, v, b, target_off) => if fr_has(ao, target_off) {
-      // `x op= v` is `x = x op v`, which is how every backend lowers it; the
-      // sum is rounded before it is stored.
-      EAssign(n, fr_round(EBinOp(op, EIdent(n, -1), fr_expr(v, bo, ao), -1)), fr_expr(b, bo, ao), target_off)
-    } else {
-      EAssignOp(n, op, fr_expr(v, bo, ao), fr_expr(b, bo, ao), target_off)
+    ETuple(items) => ETuple(fr_exprs(items, bo, ao, fo, fa)),
+    EArray(items) => EArray(fr_exprs(items, bo, ao, fo, fa)),
+    ERecord(rn, fields, targs) => ERecord(rn, fr_named(fields, bo, ao, fo, fa), targs),
+    EIf(c, t, e) => EIf(fr_expr(c, bo, ao, fo, fa), fr_expr(t, bo, ao, fo, fa), fr_expr(e, bo, ao, fo, fa)),
+    ELet(n, v, b, soff) => ELet(n, fr_expr(v, bo, ao, fo, fa), fr_expr(b, bo, ao, fo, fa), soff),
+    ELetRec(n, v, b) => ELetRec(n, fr_expr(v, bo, ao, fo, fa), fr_expr(b, bo, ao, fo, fa)),
+    ELetMut(n, v, b, soff) => ELetMut(n, fr_expr(v, bo, ao, fo, fa), fr_expr(b, bo, ao, fo, fa), soff),
+    EAssign(n, v, b, target_off) => EAssign(n, fr_expr(v, bo, ao, fo, fa), fr_expr(b, bo, ao, fo, fa), target_off),
+    EAssignOp(n, op, v, b, target_off) => {
+      // #3629: a float compound assignment's value is marked, so the
+      // lowering takes its float path whatever the value's syntax.
+      let rv = if fr_has(fa, target_off) {
+        fr_mark(fr_expr(v, bo, ao, fo, fa))
+      } else {
+        fr_expr(v, bo, ao, fo, fa)
+      }
+      if fr_has(ao, target_off) {
+        // `x op= v` is `x = x op v`, which is how every backend lowers it; the
+        // sum is rounded before it is stored.
+        let target = if fr_has(fa, target_off) {
+          fr_mark(EIdent(n, -1))
+        } else {
+          EIdent(n, -1)
+        }
+        EAssign(n, fr_round(EBinOp(op, target, rv, -1)), fr_expr(b, bo, ao, fo, fa), target_off)
+      } else {
+        EAssignOp(n, op, rv, fr_expr(b, bo, ao, fo, fa), target_off)
+      }
     },
-    ESeq(a, b) => ESeq(fr_expr(a, bo, ao), fr_expr(b, bo, ao)),
-    EMatch(s, arms) => EMatch(fr_expr(s, bo, ao), fr_arms(arms, bo, ao)),
-    EHandle(s, arms) => EHandle(fr_expr(s, bo, ao), fr_arms(arms, bo, ao)),
-    EWhile(c, b) => EWhile(fr_expr(c, bo, ao), fr_expr(b, bo, ao)),
-    ELoop(params, b) => ELoop(fr_named(params, bo, ao), fr_expr(b, bo, ao)),
-    EForIn(n, idx, it, b) => EForIn(n, idx, fr_expr(it, bo, ao), fr_expr(b, bo, ao)),
-    ECall(callee, args, off, callee_resolution) => ECall(fr_expr(callee, bo, ao), fr_exprs(args, bo, ao), off, callee_resolution),
+    ESeq(a, b) => ESeq(fr_expr(a, bo, ao, fo, fa), fr_expr(b, bo, ao, fo, fa)),
+    EMatch(s, arms) => EMatch(fr_expr(s, bo, ao, fo, fa), fr_arms(arms, bo, ao, fo, fa)),
+    EHandle(s, arms) => EHandle(fr_expr(s, bo, ao, fo, fa), fr_arms(arms, bo, ao, fo, fa)),
+    EWhile(c, b) => EWhile(fr_expr(c, bo, ao, fo, fa), fr_expr(b, bo, ao, fo, fa)),
+    ELoop(params, b) => ELoop(fr_named(params, bo, ao, fo, fa), fr_expr(b, bo, ao, fo, fa)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, fr_expr(it, bo, ao, fo, fa), fr_expr(b, bo, ao, fo, fa)),
+    ECall(callee, args, off, callee_resolution) => ECall(fr_expr(callee, bo, ao, fo, fa), fr_exprs(args, bo, ao, fo, fa), off, callee_resolution),
     EBinOp(op, l, r, boff) => {
-      let rebuilt = EBinOp(op, fr_expr(l, bo, ao), fr_expr(r, bo, ao), boff)
+      let rl = fr_expr(l, bo, ao, fo, fa)
+      let rr = fr_expr(r, bo, ao, fo, fa)
+      let rebuilt = if fr_has(fo, boff) {
+        EBinOp(op, fr_mark(rl), fr_mark(rr), boff)
+      } else {
+        EBinOp(op, rl, rr, boff)
+      }
       if fr_has(bo, boff) {
         fr_round(rebuilt)
       } else {
         rebuilt
       }
     },
-    EUnaryOp(op, e) => EUnaryOp(op, fr_expr(e, bo, ao)),
-    EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, params, ret, eff, fr_expr(body, bo, ao)),
-    EDot(e, field, off, fdoff) => EDot(fr_expr(e, bo, ao), field, off, fdoff),
-    ELabeledArg(l, n, v) => ELabeledArg(l, n, fr_expr(v, bo, ao)),
-    EReturn(e) => EReturn(fr_expr(e, bo, ao)),
+    EUnaryOp(op, e) => EUnaryOp(op, fr_expr(e, bo, ao, fo, fa)),
+    EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, params, ret, eff, fr_expr(body, bo, ao, fo, fa)),
+    EDot(e, field, off, fdoff) => EDot(fr_expr(e, bo, ao, fo, fa), field, off, fdoff),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, fr_expr(v, bo, ao, fo, fa)),
+    EReturn(e) => EReturn(fr_expr(e, bo, ao, fo, fa)),
     EBreak(opt) => match opt {
-      Some(v) => EBreak(Some(fr_expr(v, bo, ao))),
+      Some(v) => EBreak(Some(fr_expr(v, bo, ao, fo, fa))),
       None => expr
     },
-    EContinue(args) => EContinue(fr_exprs(args, bo, ao)),
-    EMap(fields) => EMap(fr_named(fields, bo, ao)),
-    ESpread(e) => ESpread(fr_expr(e, bo, ao)),
+    EContinue(args) => EContinue(fr_exprs(args, bo, ao, fo, fa)),
+    EMap(fields) => EMap(fr_named(fields, bo, ao, fo, fa)),
+    ESpread(e) => ESpread(fr_expr(e, bo, ao, fo, fa)),
     EStringInterp(_) => expr
   }
 }

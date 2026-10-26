@@ -1,0 +1,86 @@
+//# Imports
+
+// #3629: the checker files a float-operand row for every `Double` / `Float`
+// arithmetic or ordering binop and compound assignment, and the desugar marks
+// its operands with `Float::to_double`, the identity at code generation. A
+// generic call's result reads as its callee's type formal to the desugar, so
+// without the mark `pick(2.5) + 1.0` went to the runtime Int/String dispatch
+// (`__generic_add`) and added the Double's box as an Int. A build lane with
+// no rows cannot tell, so it refuses such an operand with the edit.
+// `fixtures/generic_call_double_arith_test.vibe` pins the answers.
+
+import @vibe/compiler/checker {
+  check_program_scalar_lowering_observation
+}
+
+import @vibe/compiler/normalize {
+  desugar_trait_dicts_rowless_build, desugar_trait_dicts_with_typed_eq
+}
+
+import @vibe/compiler/syntax {
+  lex, lex_with_offsets, parse_program, parse_program_located, print_program
+}
+
+//# Functions
+
+fn desugared_with_rows(source: String) -> String with Exception {
+  let (toks, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(toks, starts, source)
+  match check_program_scalar_lowering_observation(stmts) {
+    Some((_, _, _, _, eq_offs, eq_keys)) => {
+      desugar_trait_dicts_with_typed_eq(stmts, eq_offs, eq_keys)
+      print_program(stmts)
+    },
+    None => "no observation"
+  }
+}
+
+fn rowless(source: String) -> String {
+  handle {
+    let stmts = parse_program(lex(source))
+    desugar_trait_dicts_rowless_build(stmts)
+    "clean"
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn pick_src(body: String) -> String {
+  String::concat("fn pick[T](x: T) -> T {\n  x\n}\n\n", body)
+}
+
+//# Tests
+
+test "#3629: a Double binop over a generic call marks its operands" {
+  let out = desugared_with_rows(pick_src("fn f() -> Double {\n  pick(2.5) + 1.0\n}\n"))
+  inspect(String::contains(out, "Float::to_double(pick(2.5))"), content = "true")
+  inspect(String::contains(out, "__generic_add"), content = "false")
+}
+
+test "#3629: a Double ordering over generic calls marks both operands" {
+  let out = desugared_with_rows(pick_src("fn f() -> Bool {\n  pick(2.5) < pick(3.0)\n}\n"))
+  inspect(String::contains(out, "Float::to_double(pick(3.0))"), content = "true")
+  inspect(String::contains(out, "__generic_rel_diff"), content = "false")
+}
+
+test "#3629: a Double compound assignment marks its value" {
+  let out = desugared_with_rows(pick_src("fn f() -> Double {\n  let mut a = 1.0\n  a += pick(2.5)\n  a\n}\n"))
+  inspect(String::contains(out, "Float::to_double(pick(2.5))"), content = "true")
+}
+
+test "#3629: an Int or String binop over a generic call is left alone" {
+  let ints = desugared_with_rows(pick_src("fn f() -> Int {\n  pick(2) + pick(3)\n}\n"))
+  inspect(String::contains(ints, "Float::to_double"), content = "false")
+  let strs = desugared_with_rows(pick_src("fn f() -> String {\n  pick(\"a\") + pick(\"b\")\n}\n"))
+  inspect(String::contains(strs, "Float::to_double"), content = "false")
+}
+
+test "#3629: with no rows, a generic call result under `+` is refused with the edit" {
+  let msg = rowless(pick_src("fn f() -> Double {\n  pick(2.5) + 1.0\n}\n"))
+  inspect(String::starts_with(msg, "bind this operand of `+` with its type first"), content = "true")
+  let rel = rowless(pick_src("fn f() -> Bool {\n  let v = pick(2.5)\n  v < 1.0\n}\n"))
+  inspect(String::starts_with(rel, "bind this operand of `<` with its type first"), content = "true")
+}
+
+test "#3629: with no rows, an annotated binding and an enclosing formal still compile" {
+  inspect(rowless(pick_src("fn f() -> Double {\n  let v: Double = pick(2.5)\n  v + 1.0\n}\n")), content = "clean")
+  inspect(rowless("fn lt[T: Ord](a: T, b: T) -> Bool {\n  a < b\n}\n"), content = "clean")
+}
