@@ -135,8 +135,8 @@ fn main allows Console + Exception {
       })
       TaskHandle::join(a)
     })
-  } with Exception[TaskError] {
-    Throw(e) => {
+  } with {
+    Exception[TaskError]::Throw(e) => {
       println("caught \{e}")
       0
     }

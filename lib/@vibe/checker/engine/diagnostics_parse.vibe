@@ -875,6 +875,38 @@ fn engine_loc_kw_before(source: String, off: Int, kw: String) -> Bool {
 /// ambiguous (shadowing, re-declaration, fn/let collision) returns -1 and
 /// the message stays unlocated -- missing information beats misinformation.
 export fn engine_find_fn_anchor_off(source: String, name: String) -> Int {
+  engine_find_decl_anchor_off(source, name, 0)
+}
+
+/// #3548: the offset of the `nth` (1-based) declaration of `name` written at
+/// the start of a line -- a top-level `fn` / `let` / type, which is what a
+/// duplicate-declaration diagnostic is about. -1 when there are fewer, so a
+/// duplicate the scan cannot see stays unlocated instead of naming another.
+export fn engine_find_nth_decl_anchor_off(source: String, name: String, nth: Int) -> Int {
+  if nth <= 0 {
+    0 - 1
+  } else {
+    engine_find_decl_anchor_off(source, name, nth)
+  }
+}
+
+/// True when the line holding `off` starts in column 1 (no indentation).
+fn engine_loc_line_unindented(source: String, off: Int) -> Bool {
+  let mut i = off
+  while i > 0 && String::char_code_at(source, i - 1) != 10 {
+    i = i - 1
+  }
+  if i >= String::length(source) {
+    false
+  } else {
+    let c = String::char_code_at(source, i)
+    c != 32 && c != 9
+  }
+}
+
+fn engine_find_decl_anchor_off(source: String, name: String, nth: Int) -> Int {
+  let mut nth_seen = 0
+  let mut nth_off = 0 - 1
   let nlen = String::length(name)
   if nlen == 0 {
     0 - 1
@@ -1005,6 +1037,16 @@ export fn engine_find_fn_anchor_off(source: String, name: String) -> Int {
           i
         }
         if engine_loc_kw_before(source, decl_probe, "fn") {
+          if nth > 0 && engine_loc_line_unindented(source, i) {
+            nth_seen = nth_seen + 1
+            if nth_seen == nth {
+              nth_off = i
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
           fn_count = fn_count + 1
           if fn_off < 0 {
             fn_off = i
@@ -1026,6 +1068,16 @@ export fn engine_find_fn_anchor_off(source: String, name: String) -> Int {
             false
           }
           if is_let_decl {
+            if nth > 0 && engine_loc_line_unindented(source, i) {
+              nth_seen = nth_seen + 1
+              if nth_seen == nth {
+                nth_off = i
+              } else {
+                ()
+              }
+            } else {
+              ()
+            }
             let_count = let_count + 1
             if let_off < 0 {
               let_off = i
@@ -1042,7 +1094,9 @@ export fn engine_find_fn_anchor_off(source: String, name: String) -> Int {
       }
     }
     let decl_count = fn_count + let_count
-    if decl_count == 1 {
+    if nth > 0 {
+      nth_off
+    } else if decl_count == 1 {
       if fn_count == 1 {
         fn_off
       } else {

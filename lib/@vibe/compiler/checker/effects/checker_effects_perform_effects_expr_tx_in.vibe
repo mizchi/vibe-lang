@@ -2119,7 +2119,7 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
         // per handle.
         let exc_arms = exception_effect_labels(discharged)
         if Array::length(exc_arms) > 1 {
-          Array::push(errors, EEMultipleExceptionArms(fn_name, join_labels(exc_arms)))
+          Array::push(errors, EEMultipleExceptionArms(fn_name, join_labels(exc_arms), second_exception_arm_off(arms)))
         } else {
           ()
         }
@@ -2400,5 +2400,50 @@ fn overlay_add_erased_local_leaks(overlay: (Array[String], Array[Array[String]])
       }
     },
     _ => overlay
+  }
+}
+
+/// #3548: where a handle's SECOND exception arm is, read from its body (a
+/// pattern and a `handle` carry no offset), so the one-exception-arm refusal
+/// names the arm to remove. -1 when that body shows none.
+fn second_exception_arm_off(arms: Array[(Pat, Expr)]) -> Int {
+  let mut seen = 0
+  let mut off = 0 - 1
+  for arm in arms {
+    let (p, body) = arm
+    match p {
+      PCtor(q, _) => if seen < 2 && String::starts_with(q, "Exception") {
+        seen = seen + 1
+        if seen == 2 {
+          off = arm_body_first_off(body)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  off
+}
+
+fn arm_body_first_off(e: Expr) -> Int {
+  match e {
+    EIdent(_, off) => off,
+    EString(_, off) => off,
+    ECall(callee, _, off, _) => if off >= 0 {
+      off
+    } else {
+      arm_body_first_off(callee)
+    },
+    EDot(base, _, off, _) => if off >= 0 {
+      off
+    } else {
+      arm_body_first_off(base)
+    },
+    EBinOp(_, lhs, _, _) => arm_body_first_off(lhs),
+    ESeq(first, _) => arm_body_first_off(first),
+    _ => 0 - 1
   }
 }

@@ -122,13 +122,9 @@ test "Float rounds to f32" {
 }
 ```
 
-A decimal `f` literal is rounded twice: to the nearest `Double` and then to
-the nearest f32. That can differ from rounding the decimal straight to f32
-when the decimal lies within half a `Double` ulp of a point halfway between
-two f32 values. Such literals are rare but not only long ones: a search of
-literals with up to 9 significant digits found 61, the shortest with 7
-(`0.00000000000000000000000007038531f` holds the f32 that prints
-`7.0385313e-26`, one f32 step above the nearest one, `7.038531e-26`).
+A decimal `f` literal is rounded once, straight to the nearest f32 with ties
+to even: `16777217.000000001f` is 16777218, while `16777217f`, exactly halfway
+between 16777216 and 16777218, is 16777216.
 
 ### Multi-line raw strings (`#|`)
 
@@ -1071,6 +1067,16 @@ let demo: (Option[(Int, Int)], Option[Int]) -> Int = (pt, opt) -> {
   a + b + x + y + px + py + v               // v is in scope past the guard
 }
 ```
+
+A refutable `let` (a constructor, a literal or `|` anywhere in its pattern) is
+a **partial** binding: when the value does not match, the program stops with
+one line naming the pattern and where it is written, then traps (#3626):
+
+```
+let pattern `Some(v)` did not match at main.vibex:3:7 -- handle the other case with `match`, or with `guard <value> is Some(v) else { .. }`
+```
+
+To handle the other case instead, write the `match` or the `guard`.
 
 > **guard semantics (#1283):** `guard e is PAT else { alt }` desugars to
 > `match e { PAT => <rest-of-block>, _ => alt }` — the else arm IS the

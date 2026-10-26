@@ -157,9 +157,24 @@ export fn plan_module_order(edges: Array[(String, Array[String])], root: String)
       let did = mo_intern(names, color, rank, dep)
       let dcolor = Array::get(color, did)
       if dcolor == 1 {
-        // Same wording as ensure_fingerprint_fs_go's inline check, so moving
-        // the rejection upfront does not change the user-visible diagnostic.
-        throw(String::concat("type_db: import cycle detected at ", dep))
+        // #3548: name the whole cycle and the edit, not the pass that saw
+        // it (`type_db:`). The path from `dep` down to here is on the stack.
+        let chain: Array[String] = []
+        let mut on_path = false
+        for sid in st_node {
+          if sid == did {
+            on_path = true
+          } else {
+            ()
+          }
+          if on_path {
+            Array::push(chain, Array::get(names, sid))
+          } else {
+            ()
+          }
+        }
+        Array::push(chain, dep)
+        throw(import_cycle_message(chain))
       } else if dcolor == 0 {
         Array::set(color, did, 1)
         Array::push(st_node, did)
@@ -225,4 +240,10 @@ export fn plan_module_order(edges: Array[(String, Array[String])], root: String)
     k = k + 1
   }
   (out_paths, out_ranks)
+}
+
+/// #3548: the import-cycle refusal. `chain` runs from the module the cycle
+/// returns to, through each import, back to it.
+export fn import_cycle_message(chain: Array[String]) -> String {
+  String::concat("break this import cycle -- move what these modules share into a module that imports none of them: ", String::concat(String::join(chain, " imports "), " (import cycle)"))
 }

@@ -796,7 +796,6 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
     "distribute_local_fn_ann",
     "apply_local_let_tp",
     "desugar_guarded",
-    "qualify_handle_arm_pattern",
     "apply_struct_destr",
     "apply_record_destr",
     "apply_block_step",
@@ -805,7 +804,6 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
   ]) {
     assertContextual(dispatchSource, helper, []);
   }
-  assertContextual(dispatchSource, "parse_handle_arm", ["qualify_handle_arm_pattern(effect_name, pat, qualifier, context)"], ["qualify_handle_arm_pattern(effect_name, pat)"]);
   assertContextual(dispatchSource, "parse_impl_block", [
     "fold_block_steps(ArrayBuilder::freeze(steps), context)",
     // The offset argument is required, not incidental: ascribe_wrap's synthetic
@@ -814,7 +812,7 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
     // own to fall back to. Pinning `blk_offset_at(starts, ...)` here keeps the
     // binder-name anchor from silently regressing to nothing.
     "ascribe_wrap(val, the_type, value_mark, context, blk_offset_at(starts,",
-    "push_pattern_let_step(tokens, steps, pat, val, next_pos, context)",
+    "push_pattern_let_step(tokens, steps, pat, val, blk_offset_at(starts, next), next_pos, context)",
   ], [
     "fold_block_steps(ArrayBuilder::freeze(steps))",
     "ascribe_wrap(val, the_type)",

@@ -122,3 +122,59 @@ export fn bound_var_site_marker(vid: Int) -> String {
   }
   out
 }
+
+/// #3548: give every diagnostic pushed since `from` that carries no
+/// position the marker of `off` (or of `fallback` when `off` is negative).
+/// For a check whose subject has no offset of its own -- a pattern -- this is
+/// the nearest node that does; one already located is left alone.
+export fn anchor_unlocated_errors(errors: Array[String], from: Int, off: Int, fallback: Int) -> Unit {
+  let at = if off >= 0 {
+    off
+  } else {
+    fallback
+  }
+  if at >= 0 {
+    let mut i = from
+    while i < Array::length(errors) {
+      let msg = Array::get(errors, i)
+      if String::index_of(msg, " [@") < 0 {
+        Array::set(errors, i, String::concat(msg, off_marker(at)))
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// #3548: the `impl` heads checked so far in this program, as
+/// `trait|owner`, so a diagnostic about one can name WHICH `impl Trait for
+/// Owner` it is (`impl_head_marker`). An impl carries no source offset.
+export let impl_heads_seen: Array[String] = []
+
+export fn reset_impl_heads_seen() -> Unit {
+  Array::truncate(impl_heads_seen, 0)
+}
+
+/// Record one more `impl trait_head for owner` and answer the locator marker
+/// naming it: the k-th impl of that trait for that owner in source order. An
+/// impl with no plain owner name gets no marker.
+export fn note_impl_head(trait_head: String, owner: String) -> String {
+  if trait_head == "" || owner == "" {
+    ""
+  } else {
+    let key = String::concat(trait_head, String::concat("|", owner))
+    Array::push(impl_heads_seen, key)
+    let mut k = 0
+    for seen in impl_heads_seen {
+      if seen == key {
+        k = k + 1
+      } else {
+        ()
+      }
+    }
+    String::concat(" [@impl-method=", String::concat(key, String::concat("||head|", String::concat(Int::to_string(k), "]"))))
+  }
+}

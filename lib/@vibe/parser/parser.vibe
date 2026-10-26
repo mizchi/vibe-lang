@@ -1546,6 +1546,53 @@ fn recover_after_inactive_cfg_stmt(tokens: Array[Token], start: Int) -> Int {
   n - 1
 }
 
+/// #3548: how many `{` are still open at token `upto`, counted from `from`.
+fn recovery_brace_depth(tokens: Array[Token], from: Int, upto: Int) -> Int {
+  let mut depth = 0
+  let mut i = from
+  let n = Array::length(tokens)
+  while i < upto && i < n {
+    match peek(tokens, i) {
+      TLBrace => depth = depth + 1,
+      TRBrace => if depth > 0 {
+        depth = depth - 1
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  depth
+}
+
+/// #3548: the token after the `}` that closes `depth` open braces, scanning
+/// from `from`; the final token (EOF) when they never close.
+fn recovery_skip_to_close(tokens: Array[Token], from: Int, depth: Int) -> Int {
+  let n = Array::length(tokens)
+  let mut d = depth
+  let mut i = from
+  let mut out = n - 1
+  let mut done = false
+  while !done && i < n {
+    match peek(tokens, i) {
+      TLBrace => d = d + 1,
+      TRBrace => {
+        d = d - 1
+        if d == 0 {
+          out = i + 1
+          done = true
+        }
+      },
+      TEof => {
+        out = i
+        done = true
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// Like `parse_program_located`, but NEVER rethrows. On a per-statement syntax
 /// error it records the located (`line:col`) message into a diagnostics array,
 /// then resynchronizes by advancing `pos` to the next top-level statement start
@@ -1683,7 +1730,15 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
           // anchor_pos > start_pos (the clamp above enforces
           // anchor_pos >= start_pos), and the anchor+1 path always
           // consumes at least one token.
-          let resync_pos = if anchor_pos > start_pos && is_recovery_point(peek(tokens, anchor_pos)) {
+          // #3548: an error inside a body (`fn main() { .. }`) resumes after
+          // the brace that closes the failed declaration. Resuming at the
+          // next `let` inside that body parsed it as a top-level statement
+          // and reported the same broken line a second time, at the wrong
+          // position.
+          let open_depth = recovery_brace_depth(tokens, start_pos, anchor_pos)
+          let resync_pos = if open_depth > 0 {
+            recovery_skip_to_close(tokens, anchor_pos, open_depth)
+          } else if anchor_pos > start_pos && is_recovery_point(peek(tokens, anchor_pos)) {
             anchor_pos
           } else {
             let mut rp = anchor_pos + 1

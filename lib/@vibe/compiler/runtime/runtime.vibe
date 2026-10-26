@@ -65,6 +65,10 @@ import @vibe/compiler/runtime/eval_loader {
   contains_str
 }
 
+import @vibe/compiler/module_graph {
+  import_cycle_message
+}
+
 import ./typecheck_fs.vibe {
   checked_module_public_env_for_path,
   checked_module_public_env_with_reexport_declarations,
@@ -555,7 +559,23 @@ fn check_module_publishing_typed_lowering_offsets(path: String, ships_owned_head
 
 fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String], interfaces: DependencyInterfaceSet) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception {
   if contains_str(stack, path) {
-    throw(String::concat("type_db: import cycle detected at ", path))
+    // #3548: the stack holds the import path that came back to `path`.
+    let chain: Array[String] = []
+    let mut on_path = false
+    for p in stack {
+      if p == path {
+        on_path = true
+      } else {
+        ()
+      }
+      if on_path {
+        Array::push(chain, p)
+      } else {
+        ()
+      }
+    }
+    Array::push(chain, path)
+    throw(import_cycle_message(chain))
   } else {
     match ripple_get_source(rdb, path) {
       None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),

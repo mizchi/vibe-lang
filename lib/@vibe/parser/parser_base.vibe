@@ -695,9 +695,18 @@ export fn parse_pattern_with_binder_context(tokens: Array[Token], pos: Int, cont
                         _ => ()
                       }
                     },
-                    _ => {
-                      sd = false
-                    }
+                    // A struct pattern field binds its own name and nothing
+                    // else. Anything but a name or `}` used to be taken as
+                    // the closing brace, so the error landed on a later token
+                    // (`expected = but got ident`) and named no edit.
+                    TColon => {
+                      let field = match peek(tokens, sp - 1) {
+                        TIdent(f) => f,
+                        _ => "field"
+                      }
+                      throw("bind the field by its own name (`\{name}::{ \{field} }`) and match its value in the body (`match \{field} { .. }`): a struct pattern field binds a name, not a sub-pattern or a new name at #\{sp}")
+                    },
+                    _ => throw("expected a field name or `}` in the `\{name}::{ .. }` pattern at #\{sp}")
                   }
                 }
                 (PStruct(name, ArrayBuilder::freeze(field_pats)), sp + 1)
@@ -1338,12 +1347,11 @@ fn collect_effect_names(tokens: Array[Token], pos: Int, acc: String) -> (String,
 /// through the migration; ADR-0085 made `Exception` the one name, and every row
 /// in this tree was converted.
 ///
-/// Two callers, because a source effect NAME is produced in two places: row
-/// items (`parse_effect_item`, right here) and the handled-effect name in
-/// `handle { .. } with E { .. }` (mode 24, parser_expr_dispatch.vibe). #1461
-/// first landed with only the row-item call, which left `Error` legal in
-/// handler position purely because that path never went through here (#1501).
-/// Both call it now.
+/// A row item (`parse_effect_item`, right here) is the one caller. The other
+/// place a source effect name was produced, the `handle { .. } with E { .. }`
+/// header, was removed in #3530: mode 24 refuses that header outright and
+/// names `Exception` for `Error`, and a qualified handler arm
+/// (`parse_qualified_handle_arm`) refuses `Error::Throw` itself (#1501, #3284).
 ///
 /// `perform Error::Throw(x)` is deliberately NOT covered: an operation
 /// qualifier is not a row item, it names the operation the runtime dispatches,

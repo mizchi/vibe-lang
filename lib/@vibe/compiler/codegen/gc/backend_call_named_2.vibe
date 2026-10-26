@@ -38,7 +38,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_int, emit_memory_copy
+  array_contains_int, emit_memory_copy, let_refuted_message
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -141,6 +141,25 @@ export fn gc_resolve_builtin_last(ft: FuncTable, name: String) -> Int {
     }
   }
   found
+}
+
+/// #3626: the gc lane's refutable-`let` trap, as on linear: print the line
+/// the pool seeded for this `__let_refuted` call, then trap with nothing
+/// pushed after it, so the arm types as the continuation's value. A pool
+/// without the line keeps the bare trap.
+fn gc_let_refuted_trap(buf: Bytes, args: Array[Expr], ctx: CompileCtxGc) -> Unit {
+  let msg_fat = str_table_fat_or_zero(ctx.str_table, let_refuted_message(args))
+  let nl_fat = str_table_fat_or_zero(ctx.str_table, "\n")
+  let ps_idx = gc_resolve_builtin_last(ctx.func_table, "print_str")
+  if msg_fat != 0 && nl_fat != 0 && ps_idx >= 0 {
+    emit_i64_const(buf, msg_fat)
+    emit_call_resolved(buf, ctx, ps_idx)
+    emit_i64_const(buf, nl_fat)
+    emit_call_resolved(buf, ctx, ps_idx)
+  } else {
+    ()
+  }
+  bytebuf_push(buf, 0)
 }
 
 /// #3547: the gc lane's `Map::get` / `m[k]` miss trap. It prints the pooled
@@ -1306,6 +1325,10 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     }
     emit_i64_const(buf, 0)
     nl
+  }
+  else if fname == "__let_refuted" {
+    gc_let_refuted_trap(buf, args, ctx)
+    next_local
   }
   else if fname == "abort" && !gc_name_is_user_defined(ctx, local_names, fname) {
     // #2397: same print-then-trap as the linear lane, via `print_str`.

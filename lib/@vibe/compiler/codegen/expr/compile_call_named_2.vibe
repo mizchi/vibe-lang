@@ -45,7 +45,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_int
+  array_contains_int, let_refuted_message
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -134,7 +134,27 @@ fn cc_map_get_miss_parts(ctx: CompileCtx) -> (Int, Int, Int) with Exception {
 
 // Ordered named-call dispatch group.
 export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception, fname: String, fn_idx_in_list: Int, resolved_name: String, local_idx_hint: Int, prefer_bound_call: Bool, ctor_lookup_idx: Int, compile_call_core_fn: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception) -> Int with Exception {
-  if !prefer_bound_call && fname == "abort" {
+  if fname == "__let_refuted" {
+    // #3626: a refutable `let` whose pattern did not match. Print the line
+    // the pool seeded for this call (`let_refuted_message`), the way `abort`
+    // does, then trap. Nothing is pushed after the trap: the arm's value is
+    // the continuation's, of any type, and the stack is unreachable there. A
+    // lane whose pool lacks the line (the module lane) keeps the bare trap.
+    let mi = str_table_slot_or_neg(ctx.str_table, let_refuted_message(args))
+    let nl_i = str_table_slot_or_neg(ctx.str_table, "\n")
+    if mi >= 0 && nl_i >= 0 && func_table_index_of(ctx.func_table, "print_str") >= 0 {
+      let (ps_idx, _, _) = resolve_func(ctx.func_table, "print_str")
+      emit_str_ref(buf, Array::get(ctx.str_table.offsets, mi), Array::get(ctx.str_table.lengths, mi))
+      emit_call(buf, ps_idx)
+      emit_str_ref(buf, Array::get(ctx.str_table.offsets, nl_i), Array::get(ctx.str_table.lengths, nl_i))
+      emit_call(buf, ps_idx)
+    } else {
+      ()
+    }
+    bytebuf_push(buf, 0)
+    next_local
+  }
+  else if !prefer_bound_call && fname == "abort" {
     // #2397: print the caller-supplied message on the same stream
     // `__rt_oob_abort` uses (`print_str`), then trap. None row -- it
     // terminates rather than returning, so it does not color the caller.

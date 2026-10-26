@@ -199,7 +199,7 @@ for eqrefuse_src in fixtures/structural_eq_untyped_empty_*_refused.vibe; do
     cat "$eqrefuse_wasm.diag" >&2 2>/dev/null
     exit 1
   fi
-  if ! grep -qE 'Annotate|rename the declared type' "$eqrefuse_wasm.diag" 2>/dev/null; then
+  if ! grep -qiE 'annotate|rename the declared type' "$eqrefuse_wasm.diag" 2>/dev/null; then
     echo "[compiler-gate] FAIL: $eqrefuse_src refusal does not name an edit" >&2
     cat "$eqrefuse_wasm.diag" >&2 2>/dev/null
     exit 1
@@ -314,16 +314,17 @@ ur_refused fixtures/err_interp_unrenderable_field_refused.vibe 'cannot interpola
 ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpolate `shadowed`' 'bind it with a type annotation' linear 'fixtures/err_interp_unrenderable_shadow_refused.vibe: line 14:23'
 ur_refused fixtures/err_interp_iterator_map_refused.vibe 'cannot interpolate `mapped`' 'bind it with a type annotation' linear 'fixtures/err_interp_iterator_map_refused.vibe: line 11:30'
 ur_refused fixtures/err_interp_iterator_filter_refused.vibe 'cannot interpolate `filtered`' 'bind it with a type annotation' linear 'fixtures/err_interp_iterator_filter_refused.vibe: line 10:30'
-# #3068: an `Option[Int]` from `Int::parse`, inline. Bound to an unannotated
-# name first, it renders by content since #3455 (the checker's row types the
-# name): fixtures/interp_fresh_untyped_let_test.vibe.
-ur_refused fixtures/err_interp_unrenderable_parse_call_refused.vibe 'cannot interpolate the result of `Int::parse`' 'bind it with a type annotation' linear 'fixtures/err_interp_unrenderable_parse_call_refused.vibe: line 7:14'
+# #3068 / #3548: an `Option[Int]` from `Int::parse`, inline, is no longer
+# refused: the interpolation pass renders it from the checker's row on both
+# lanes (fixtures/interp_builtin_option_result_test.vibe pins the answer). It
+# was refused here in codegen, which `vibe check` never runs, so check passed
+# what the build refused. Bound to an unannotated name first, it has rendered
+# by content since #3455: fixtures/interp_fresh_untyped_let_test.vibe.
 # #3068: the gc lane refuses every one of these with the same message. It had
 # none of the codegen refusals and printed the address (`809`, `177`, `224`).
 ur_refused fixtures/err_interp_unrenderable_bytes_refused.vibe 'cannot interpolate a `Bytes` value' 'Bytes::to_array(b)' gc 'fixtures/err_interp_unrenderable_bytes_refused.vibe: line 7:17'
 ur_refused fixtures/err_interp_unrenderable_field_refused.vibe 'cannot interpolate field `tags`' 'bind it with a type annotation' gc 'fixtures/err_interp_unrenderable_field_refused.vibe: line 10:17'
 ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpolate `shadowed`' 'bind it with a type annotation' gc 'fixtures/err_interp_unrenderable_shadow_refused.vibe: line 14:23'
-ur_refused fixtures/err_interp_unrenderable_parse_call_refused.vibe 'cannot interpolate the result of `Int::parse`' 'bind it with a type annotation' gc 'fixtures/err_interp_unrenderable_parse_call_refused.vibe: line 7:14'
 # #3080: an index-form slice whose subject's shape is unresolved. The slice call
 # had no source offset, so no row reached codegen and both lanes printed an
 # address. The message names the syntax, not the internal `__slice`.
@@ -759,6 +760,53 @@ for dz_case in "int_div_zero_trap|/|7|5" "int_rem_zero_trap|%|7|5" "int_div_assi
 done
 rm -rf "$dzdir"
 echo "[compiler-gate] Int division-by-zero trap message ok (/, %, /=; linear and gc)"
+
+# #3626: a refutable `let` whose pattern does not match prints the pattern and
+# its `path:line:col` before it traps, on both lanes. It used to trap with a
+# bare `unreachable`. Each fixture prints a line first (through a MATCHING
+# `let`), so a build or run that dies early cannot satisfy the row, and the
+# mismatch still TRAPS. The nested fixture's failed arm sits in a closure whose
+# value is a String, which the gc lane does not represent as an Int.
+echo "[compiler-gate] a refutable let names its pattern and path:line:col when it does not match (#3626)"
+lrdir="_build/_gate_let_refuted"
+rm -rf "$lrdir"; mkdir -p "$lrdir"
+for lr_case in "let_refutable_mismatch_trap|Some(v)|7|7|before 2" "let_refutable_nested_lambda_trap|(Rect(w, _), n)|13|9|before w=2 n=1"; do
+  IFS='|' read -r lr_name lr_pat lr_line lr_col lr_before <<<"$lr_case"
+  lr_src="fixtures/$lr_name.vibe"
+  lr_want="let pattern \`$lr_pat\` did not match at $lr_src:$lr_line:$lr_col -- handle the other case with \`match\`, or with \`guard <value> is $lr_pat else { .. }\`"
+  for lr_backend in linear gc; do
+    lr_wasm="$lrdir/${lr_name}_$lr_backend.wasm"
+    if [ "$lr_backend" = gc ]; then
+      VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+        "$lr_src" "$lr_wasm" main >/dev/null 2>&1 || true
+    else
+      VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+        "$lr_src" "$lr_wasm" main >/dev/null 2>&1 || true
+    fi
+    if [ ! -s "$lr_wasm" ]; then
+      echo "[compiler-gate] FAIL: $lr_src did not compile on $lr_backend (#3626)" >&2
+      cat "$lr_wasm.diag" >&2 2>/dev/null; exit 1
+    fi
+    lr_status=0
+    lr_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_RUNNER_EXIT_WITH_RESULT=1 bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$lr_wasm" 2>&1)" || lr_status=$?
+    if ! printf '%s\n' "$lr_out" | grep -qxF "$lr_before"; then
+      echo "[compiler-gate] FAIL: $lr_src did not print '$lr_before' before the mismatch on $lr_backend (#3626): $lr_out" >&2
+      exit 1
+    fi
+    if [ "$lr_status" -eq 0 ] || printf '%s\n' "$lr_out" | grep -qF 'after'; then
+      echo "[compiler-gate] FAIL: a refuted let answered instead of trapping on $lr_backend (#3626): $lr_out" >&2
+      exit 1
+    fi
+    if ! printf '%s\n' "$lr_out" | grep -qxF "$lr_want"; then
+      echo "[compiler-gate] FAIL: $lr_src did not report '$lr_want' on $lr_backend (#3626): $lr_out" >&2
+      exit 1
+    fi
+  done
+done
+rm -rf "$lrdir"
+echo "[compiler-gate] refutable let mismatch message ok (linear and gc)"
 
 # #3126 + #3158: on wasm-gc the division-by-zero abort and the erased-generic
 # `__generic_rel_diff` / `__generic_add` pair are conditionally pushed builtin

@@ -1583,6 +1583,13 @@ fn type_spelled_for_message(t: Type, blank_vars: Bool) -> String {
       }
       StringBuilder::push(out, effect_var_spelling(String::substring(raw, i, j)))
       i = j
+    } else if i > 0 && i + 1 < n && String::byte_at(raw, i) == '/' && reader_ident_byte(String::byte_at(raw, i - 1)) && String::byte_at(raw, i + 1) >= '0' && String::byte_at(raw, i + 1) <= '9' {
+      // #3548: a type constructor is keyed `Option/1`; the reader wrote
+      // `Option`.
+      i = i + 1
+      while i < n && String::byte_at(raw, i) >= '0' && String::byte_at(raw, i) <= '9' {
+        i = i + 1
+      }
     } else if var_start {
       StringBuilder::push(out, "_")
       i = i + 2
@@ -1606,9 +1613,10 @@ export fn type_for_reader(t: Type) -> String {
 }
 
 /// The `expected X, got Y` spelling: effect variables as the source wrote
-/// them, inference variables unchanged.
+/// them, and an unresolved inference variable as `_` (#3520: `() -> ?t429
+/// with Async` named a variable the reader never wrote and cannot act on).
 fn type_for_mismatch(t: Type) -> String {
-  type_spelled_for_message(t, false)
+  type_spelled_for_message(t, true)
 }
 
 export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array[String], what: String, off: Int) -> Subst {
@@ -1769,7 +1777,13 @@ export fn check_assignable_for(expected: Type, actual: Type, s0: Subst, errors: 
       // scalar: Array vs FixedArray (zlib Huffman) is a different pair and
       // stays on the historical tolerate path.
       let named_vs_scalar = (type_fully_concrete(expected) && is_fully_concrete_named(expected_zonked) && is_builtin_scalar(actual_zonked)) || (is_builtin_scalar(expected_zonked) && is_fully_concrete_named(actual_zonked))
-      if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict || argument_conflict || (named_vs_scalar && !structural) {
+      // A function of one arity where another is expected cannot be
+      // reconciled by any instantiation either -- `fn app[T](f: () -> T)`
+      // given `(x: Int) -> Int` checked clean (the expected type mentions
+      // `T`, so it is not ground) and trapped at the call with "indirect call
+      // type mismatch".
+      let arity_conflict = fn_arity_conflict(expected_zonked, actual_zonked)
+      if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict || argument_conflict || arity_conflict || (named_vs_scalar && !structural) {
         Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(expected_zonked), String::concat(", got ", String::concat(type_for_mismatch(actual_zonked), assignable_marker(off)))))))
         s
       } else if structural {
@@ -1889,6 +1903,39 @@ fn float_double_assign_hint(expected: Type, actual: Type) -> String {
 /// `expected` is read as written, so an argument that only became concrete
 /// through this check's own substitution is not trusted (see
 /// `detect_narrowed_generic_mismatch_for`'s caller).
+/// Two function types whose parameter counts differ, at the top or under a
+/// matching `Array` / `Option` / tuple / function position: a mismatch no
+/// substitution of their variables can repair.
+fn fn_arity_conflict(expected: Type, actual: Type) -> Bool {
+  match (expected, actual) {
+    (CtFn(eps, er, _), CtFn(aps, ar, _)) => if Array::length(eps) != Array::length(aps) {
+      true
+    } else {
+      let mut hit = fn_arity_conflict(er, ar)
+      let mut i = 0
+      while !hit && i < Array::length(eps) {
+        hit = fn_arity_conflict(Array::get(eps, i), Array::get(aps, i))
+        i = i + 1
+      }
+      hit
+    },
+    (CtArray(e), CtArray(a)) => fn_arity_conflict(e, a),
+    (CtOption(e), CtOption(a)) => fn_arity_conflict(e, a),
+    (CtTuple(es), CtTuple(acts)) => if Array::length(es) != Array::length(acts) {
+      false
+    } else {
+      let mut hit = false
+      let mut i = 0
+      while !hit && i < Array::length(es) {
+        hit = fn_arity_conflict(Array::get(es, i), Array::get(acts, i))
+        i = i + 1
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
 fn applied_argument_conflict(expected: Type, actual: Type, s: Subst) -> Bool {
   match expected {
     CtNamed(en, eargs) => match actual {

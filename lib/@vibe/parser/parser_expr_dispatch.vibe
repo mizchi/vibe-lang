@@ -20,6 +20,10 @@ import ./intern.vibe {
   intern_qualified
 }
 
+import ./printer.vibe {
+  print_pat
+}
+
 import ./parser_base.vibe {
   _no_tb,
   _no_tp,
@@ -36,7 +40,6 @@ import ./parser_base.vibe {
   parse_type_param_kind,
   pattern_ref_mark,
   peek,
-  reject_retired_effect_label,
   skip_semi,
   tk_name
 }
@@ -275,7 +278,7 @@ enum BlockStep {
   StepLetRec(String, Expr);
   StepAssign(String, Expr, Int);
   StepAssignOp(String, String, Expr, Int);
-  StepPattern(Pat, Expr);
+  StepPattern(Pat, Expr, Int);
   StepPatternElse(Pat, Expr, Expr, Array[SourceBinder]);
   StepStructDestr(Pat, Expr);
   StepRecordDestr(Pat, Expr);
@@ -303,8 +306,9 @@ enum BlockStep {
 /// so it does not cover anything, and a pattern only guarded arms reach is
 /// still reported as not handled.
 /// #3547: a written single-arm `match` whose arm is a Bool literal or `Some` /
-/// `None` can never be exhaustive, yet it has the shape of the partial-let
-/// desugar (`let Some(v) = o`), which the checker tolerates, so it compiled and
+/// `None` can never be exhaustive, yet it had the shape of the partial-let
+/// desugar (`let Some(v) = o`, which carries its own `_` arm since #3626), and
+/// the checker tolerates a single-arm match, so it compiled and
 /// trapped with a bare `unreachable`. Binding its scrutinee to the match
 /// temporary, as a guarded match does, puts it under the checker's flat
 /// Option / Bool exhaustiveness check.
@@ -617,21 +621,6 @@ fn desugar_guarded_rows(arms: Array[(Pat, Expr, Expr)], rows: Array[(Array[Sourc
   }
 }
 
-fn qualify_handle_arm_pattern(effect_name: String, pat: Pat, qualifier: (Int, Int), context: Option[ParserBinderContext]) -> Pat {
-  match source_pat(pat) {
-    PCtor(name, args) => {
-      let qualified = if String::contains(name, "::") {
-        name
-      } else {
-        intern_qualified(effect_name, name)
-      }
-      source_set_pat_qualifier(source_rewrap_pat(pat, PCtor(qualified, args)), qualifier.0, qualifier.1, context)
-    },
-    POr(left, right) => source_rewrap_pat(pat, POr(qualify_handle_arm_pattern(effect_name, left, qualifier, context), qualify_handle_arm_pattern(effect_name, right, qualifier, context))),
-    _ => pat
-  }
-}
-
 /// The operation's own bare name is recorded after its arguments. Preserve a
 /// same-named bare payload constructor, but not a qualified `Api::A` payload:
 /// that one has a separate `(Api, A)` row and the operation row can be removed.
@@ -799,25 +788,6 @@ fn discard_handler_operation_refs(mark: (Int, Int), tokens: Array[Token], start:
     discard_handler_operation_segment_ref(mark, tokens, segment.0, segment.1, segments)
   }
   ()
-}
-
-fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_name: String, qualifier: (Int, Int), parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> ((Pat, Expr), Int) with Exception {
-  let ref_mark = pattern_ref_mark()
-  let (pat, pat_next) = parse_pattern_with_binder_context(tokens, pos, context)
-  discard_handler_operation_refs(ref_mark, tokens, pos, pat_next)
-  let qualified_pat = qualify_handle_arm_pattern(effect_name, pat, qualifier, context)
-  let arrow_pos = expect_tk(tokens, pat_next, "=>")
-  // #2197: a handler body is an arm body too -- same bare-assignment tail,
-  // same guard against paying for its result tuple on every arm.
-  let (raw_expr, raw_next) = parse_recur(tokens, arrow_pos, 0, context)
-  let mut expr = raw_expr
-  let mut next = raw_next
-  if arm_assign_follows(peek(tokens, raw_next)) {
-    let (assigned, after_assign) = parse_arm_assign_tail(tokens, raw_expr, raw_next, parse_recur, context)
-    expr = source_wrap_expr(assigned, arrow_pos, after_assign, context)
-    next = after_assign
-  }
-  ((source_wrap_pat(qualified_pat, pos, pat_next, context), expr), next)
 }
 
 fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> ((Pat, Expr), Int) with Exception {
@@ -1031,23 +1001,6 @@ fn parse_suffix_handle_rest(tokens: Array[Token], starts: Array[Int], pos: Int, 
       // inside that block, so hand the brace back to the outer block parser.
       (EHandle(body, ArrayBuilder::freeze(b)), end - 1)
     }
-  }
-}
-
-fn parse_handle_rest(tokens: Array[Token], starts: Array[Int], pos: Int, body: Expr, effect_name: String, qualifier: (Int, Int), b: ArrayBuilder[(Pat, Expr)], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  match peek(tokens, pos) {
-    TSemicolon => match peek(tokens, pos + 1) {
-      TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 2),
-      _ => {
-        let (arm, next) = parse_handle_arm(tokens, starts, pos + 1, effect_name, qualifier, parse_recur, context)
-        ArrayBuilder::push(b, arm)
-        parse_handle_rest(tokens, starts, next, body, effect_name, qualifier, b, parse_recur, context)
-      }
-    },
-    TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 1),
-    // #3072: located at the offending token, like the handler-set list above.
-    TComma => throw("replace this `,` with `;`: the arms of a `with Effect { ... }` handler are separated by `;`, not `,` at #\{pos}"),
-    _ => throw("expected ';' or '}' in handle arm list at #\{pos}")
   }
 }
 
@@ -1389,7 +1342,16 @@ fn apply_block_step(step: BlockStep, rest: Expr, context: Option[ParserBinderCon
     StepLetRec(name, val) => ELetRec(name, val, rest),
     StepAssign(name, val, target_at) => EAssign(name, val, rest, target_at),
     StepAssignOp(name, op, val, target_at) => EAssignOp(name, op, val, rest, target_at),
-    StepPattern(pat, val) => EMatch(val, [(pat, rest)]),
+    // #3626: a refutable pattern (`let Some(v) = o`) is a partial binding, as
+    // the cheatsheet documents. It used to desugar to a one-arm match, whose
+    // missing case trapped with a bare `unreachable`; the second arm now says
+    // which pattern failed and where. An irrefutable pattern (a tuple of
+    // names) keeps the one arm it always had.
+    StepPattern(pat, val, pat_off) => if let_pattern_may_refute(pat) {
+      EMatch(val, [(pat, rest), (PWild, let_refuted_arm(pat, pat_off))])
+    } else {
+      EMatch(val, [(pat, rest)])
+    },
     // #760(1): `let PAT = val else { alt }` — bind on match, else run the
     // diverging fallback. Desugars to a two-arm match whose wildcard arm is
     // the else body; the checker unifies both arms, so a fallback that
@@ -1534,10 +1496,48 @@ fn reject_let_else(tokens: Array[Token], pos: Int) -> Int with Exception {
 }
 
 /// Push a refutable pattern-let step. Returns the position past it.
-fn push_pattern_let_step(tokens: Array[Token], steps: ArrayBuilder[BlockStep], pat: Pat, val: Expr, next_pos: Int, context: Option[ParserBinderContext]) -> Int with Exception {
+fn push_pattern_let_step(tokens: Array[Token], steps: ArrayBuilder[BlockStep], pat: Pat, val: Expr, pat_off: Int, next_pos: Int, context: Option[ParserBinderContext]) -> Int with Exception {
   let after = reject_let_else(tokens, next_pos)
-  ArrayBuilder::push(steps, StepPattern(pat, val))
+  ArrayBuilder::push(steps, StepPattern(pat, val, pat_off))
   after
+}
+
+/// #3626: can a `let` pattern fail to match? Only a name, `_`, and tuples or
+/// struct destructures made of those cannot. A constructor, a literal and an
+/// or-pattern can; a constructor of a one-variant enum is counted too, since
+/// the parser cannot see the enum, and its extra arm is then never taken.
+fn let_pattern_may_refute(p: Pat) -> Bool {
+  match source_pat(p) {
+    PWild => false,
+    PBind(_) => false,
+    PTuple(elems) => {
+      let mut any = false
+      for e in elems {
+        if let_pattern_may_refute(e) {
+          any = true
+        }
+      }
+      any
+    },
+    PStruct(_, fields) => {
+      let mut any = false
+      for f in fields {
+        if let_pattern_may_refute(f.1) {
+          any = true
+        }
+      }
+      any
+    },
+    _ => true
+  }
+}
+
+/// #3626: the arm a refutable `let` takes when its pattern does not match.
+/// `__let_refuted` prints `let pattern `P` did not match at path:line:col`
+/// and traps; the string's offset is the pattern's, which the merge rebases
+/// with every other offset so codegen can place it in its file.
+fn let_refuted_arm(pat: Pat, pat_off: Int) -> Expr {
+  ECall(builtin_ref("__let_refuted"), [EString(print_pat(pat), pat_off)], -1, [])
 }
 
 fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
@@ -1731,7 +1731,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                   if next_pos <= eq {
                     throw("internal parser error: block let-ctor-pat parser did not advance")
                   } else {
-                    p = push_pattern_let_step(tokens, steps, pat, val, next_pos, context)
+                    p = push_pattern_let_step(tokens, steps, pat, val, blk_offset_at(starts, next), next_pos, context)
                   }
                 },
                 _ => {
@@ -1798,7 +1798,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
             if next_pos <= eq {
               throw("internal parser error: block let-pat parser did not advance")
             } else {
-              p = push_pattern_let_step(tokens, steps, pat, val, next_pos, context)
+              p = push_pattern_let_step(tokens, steps, pat, val, blk_offset_at(starts, next), next_pos, context)
             }
           },
           token => throw(binder_name_error(tk_name(token), "binding", next))
@@ -2079,23 +2079,42 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
         }
       },
       TIdent(name) => {
-        // Transitional ADR-0102 parser. Keep this legacy single-effect header
-        // until the warning/corpus migration and bootstrap bump are complete.
-        reject_retired_effect_label(name, wp)
+        // #3530: the single-effect header `with E { Op(..) => .. }` is gone.
+        // Its arm shapes beyond the qualified set's passed `vibe check` and
+        // then failed to compile or trapped, so it is refused here with the
+        // spelling that replaces it, naming the effect and the first arm's
+        // operation when the header shows them. `Error` was retired as an
+        // effect name too, so the replacement names `Exception` for it.
         let (effect_name, effect_next) = match peek(tokens, wp + 1) {
           TLBracket => collect_row_item_targs(tokens, wp + 2, 1, String::concat(name, "[")),
           _ => (name, wp + 1)
         }
-        let hb = expect_tk(tokens, effect_next, "{")
-        match peek(tokens, hb) {
-          TRBrace => throw(String::concat("handler for `", String::concat(effect_name, "` must contain at least one arm"))),
-          _ => {
-            let b = ArrayBuilder::new()
-            let (arm, next) = parse_handle_arm(tokens, starts, hb, effect_name, (wp, effect_next), parse_recur, context)
-            ArrayBuilder::push(b, arm)
-            parse_handle_rest(tokens, starts, next, body, effect_name, (wp, effect_next), b, parse_recur, context)
-          }
+        let suggested = if name == "Error" {
+          "Exception"
+        } else {
+          effect_name
         }
+        // An operation is spelled CamelCase, so a lowercase binder, `_` or a
+        // literal arm names none; the edit then shows a placeholder `Op`.
+        let named = match peek(tokens, effect_next) {
+          TLBrace => match peek(tokens, effect_next + 1) {
+            TIdent(first) => match peek(tokens, effect_next + 2) {
+              TDoubleColon => match peek(tokens, effect_next + 3) {
+                TIdent(second) => second,
+                _ => ""
+              },
+              _ => first
+            },
+            _ => ""
+          },
+          _ => ""
+        }
+        let op = if String::length(named) > 0 && String::char_code_at(named, 0) >= 65 && String::char_code_at(named, 0) <= 90 {
+          named
+        } else {
+          "Op"
+        }
+        throw("write `with { \{suggested}::\{op}(..) => .. }`, naming the effect on each handler arm: the `with \{effect_name} { .. }` header form was removed at #\{wp}")
       },
       _ => throw("expected '{' after 'with'")
     }
@@ -2126,7 +2145,7 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
               _ => throw("unreachable: parse_recur for for-in")
             }
           },
-          _ => throw("expected value binding name after ','")
+          _ => throw("expected value binding name after ',' at #\{start + 2}")
         },
         _ => {
           binder_capture_source(context, first_name, start, start)
@@ -2142,7 +2161,9 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
         }
       }
       ,
-      _ => throw("expected identifier after 'for'")
+      // #3548: a pattern is not a `for` binder; say how to destructure.
+      TLParen => throw("bind one name and destructure it in the body (`for item in xs { let (a, b) = item ... }`): a `for` binds a name (or `k, v`), not a pattern at #\{start}"),
+      _ => throw("expected identifier after 'for' at #\{start}")
     }
   } else if mode == 26 {
     // `taskgroup { g => body }` is pure sugar for `TaskGroup::run((g) -> {

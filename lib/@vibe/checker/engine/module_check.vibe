@@ -17,6 +17,7 @@ import ./dependency_projection.vibe {
 }
 import ./diagnostics_parse.vibe {
   engine_find_fn_anchor_off,
+  engine_find_nth_decl_anchor_off,
   engine_incremental_interface_trace_enabled,
   engine_incremental_typecheck_telemetry_add,
   engine_locate_import_alias_namespace_msg,
@@ -89,9 +90,29 @@ fn engine_locate_fn_name_marker(source: String, msg: String, mi: Int) -> String 
     engine_locate_type_error_heuristic(source, String::substring(msg, 0, mi))
   } else {
     let close = inner_start + rel_end
-    let name = String::substring(msg, inner_start, close)
+    let marked = String::substring(msg, inner_start, close)
     let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, close + 1, String::length(msg)))
-    let off = engine_find_fn_anchor_off(source, name)
+    // #3548: `name#k` names the k-th top-level declaration of `name` (a
+    // duplicate declaration is the second one, not the first).
+    let hash_at = String::index_of(marked, "#")
+    let nth = if hash_at > 0 {
+      match Int::parse(String::substring(marked, hash_at + 1, String::length(marked))) {
+        Some(k) => k,
+        None => 0
+      }
+    } else {
+      0
+    }
+    let name = if nth > 0 {
+      String::substring(marked, 0, hash_at)
+    } else {
+      marked
+    }
+    let off = if nth > 0 {
+      engine_find_nth_decl_anchor_off(source, name, nth)
+    } else {
+      engine_find_fn_anchor_off(source, name)
+    }
     if off >= 0 {
       String::concat(engine_offset_line_col_range_prefix(source, off, off + String::length(name)), stripped)
     } else {
@@ -948,6 +969,109 @@ fn engine_impl_method_name_index(tokens: Array[Token], trait_head: String, owner
   found
 }
 
+/// #3548: the span of the `nth` (1-based) `impl ... TRAIT ... for OWNER`
+/// header in `source`, from `impl` through the owner name; (-1, -1) when the
+/// tokens show fewer, so an impl the scan cannot see is left unlocated rather
+/// than pinned on another one.
+fn engine_impl_head_span(source: String, trait_head: String, owner: String, nth: Int) -> (Int, Int) {
+  let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
+  let n = Array::length(tokens)
+  let mut seen = 0
+  let mut span = (0 - 1, 0 - 1)
+  let mut i = 0
+  while i < n && nth > 0 && span.0 < 0 {
+    match Array::get(tokens, i) {
+      TImpl => {
+        let mut j = i + 1
+        let mut depth = 0
+        let mut saw_trait = false
+        let mut owner_at = 0 - 1
+        let mut header_done = false
+        while j < n && !header_done {
+          match Array::get(tokens, j) {
+            TLBracket => {
+              depth = depth + 1
+              j = j + 1
+            },
+            TRBracket => {
+              depth = depth - 1
+              j = j + 1
+            },
+            TIdent(name) => {
+              if name == trait_head && owner_at < 0 {
+                saw_trait = true
+              } else {
+                ()
+              }
+              j = j + 1
+            },
+            TFor => {
+              if depth == 0 && j + 1 < n {
+                match Array::get(tokens, j + 1) {
+                  TIdent(name) => if name == owner {
+                    owner_at = j + 1
+                  } else {
+                    ()
+                  },
+                  _ => ()
+                }
+              } else {
+                ()
+              }
+              j = j + 1
+            },
+            TLBrace => if depth == 0 {
+              header_done = true
+            } else {
+              j = j + 1
+            },
+            TSemicolon => {
+              header_done = true
+            },
+            TEof => {
+              header_done = true
+            },
+            TFn => {
+              header_done = true
+            },
+            TLet => {
+              header_done = true
+            },
+            TImpl => {
+              header_done = true
+            },
+            TExport => {
+              header_done = true
+            },
+            _ => {
+              j = j + 1
+            }
+          }
+        }
+        if saw_trait && owner_at >= 0 {
+          seen = seen + 1
+          if seen == nth {
+            span = (Array::get(starts, i), Array::get(ends, owner_at))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        i = if j > i {
+          j
+        } else {
+          i + 1
+        }
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  span
+}
+
 /// #3538: the span a ` [@impl-method=TRAIT|OWNER|METHOD|PART|PARAM]` marker
 /// names. The parser gives an impl method's lambda no source offsets, so the
 /// span is found from the tokens: the impl block (its trait and owner), the
@@ -1114,6 +1238,19 @@ fn engine_locate_impl_method(source: String, msg: String, marker_at: Int) -> Str
   let stripped = String::concat(String::substring(msg, 0, marker_at), String::substring(msg, close + 1, String::length(msg)))
   if Array::length(fields) != 5 {
     return engine_locate_type_error_heuristic(source, stripped)
+  }
+  if Array::get(fields, 3) == "head" {
+    // #3548: the k-th `impl TRAIT for OWNER` header itself.
+    let nth = match Int::parse(Array::get(fields, 4)) {
+      Some(k) => k,
+      None => 0
+    }
+    let (hs, he) = engine_impl_head_span(source, Array::get(fields, 0), Array::get(fields, 1), nth)
+    return if hs < 0 {
+      engine_locate_type_error_heuristic(source, stripped)
+    } else {
+      String::concat(engine_offset_line_col_range_prefix(source, hs, he), stripped)
+    }
   }
   let (s, e) = engine_impl_method_span(source, Array::get(fields, 0), Array::get(fields, 1), Array::get(fields, 2), Array::get(fields, 3), Array::get(fields, 4))
   if s < 0 {

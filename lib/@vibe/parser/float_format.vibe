@@ -266,3 +266,130 @@ export fn double_to_string_compiler(d: Double) -> String {
     }
   }
 }
+
+// ---- #3625: decimal -> f32, rounded once ----
+//
+// An `f` literal is the f32 nearest its decimal digits. Rounding the nearest
+// Double to f32 gives that answer except when the Double lands exactly on an
+// f32 rounding midpoint while the decimal does not: the first rounding moved
+// the value onto the tie, and ties-to-even then picks a side the decimal never
+// chose (`16777217.000000001f` read as 16777216, not 16777218). In that one
+// case the decimal is compared exactly with the midpoint, as digit strings,
+// and the comparison decides the direction.
+
+/// #3625: the f32 nearest the decimal `int_str.frac_str`, held as a Double.
+export fn round_decimal_to_f32(int_str: String, frac_str: String) -> Double with Exception {
+  let d: Double = parse_decimal_float(int_str, frac_str)
+  let f: Double = Float::to_double(Double::to_float(d))
+  // At or above 2^128 every value rounds to Infinity, midpoint or not.
+  if f == d || d >= 340282366920938463463374607431768211456.0 {
+    f
+  } else {
+    // `u` is the f32 ulp at `d`, 2^e: 2^-149 below the normal range.
+    let mut u: Double = 1.0
+    let mut e = 0
+    while e > -149 {
+      u = u / 2.0
+      e = e - 1
+    }
+    while d >= u * 16777216.0 {
+      u = u * 2.0
+      e = e + 1
+    }
+    let q: Double = d / u
+    let n: Double = Double::floor(q)
+    if q - n != 0.5 {
+      f
+    } else {
+      // The midpoint is (2n + 1) * 2^(e - 1).
+      let cmp = compare_decimal_to_dyadic(int_str, frac_str, Double::to_int(n) * 2 + 1, e - 1)
+      if cmp > 0 {
+        let up: Double = (n + 1.0) * u
+        Float::to_double(Double::to_float(up))
+      } else if cmp < 0 {
+        let down: Double = n * u
+        down
+      } else {
+        f
+      }
+    }
+  }
+}
+
+/// #3625: compare the decimal `int_str.frac_str` with `m * 2^e` exactly:
+/// negative, zero or positive as the decimal is below, at or above it.
+fn compare_decimal_to_dyadic(int_str: String, frac_str: String, m: Int, e: Int) -> Int {
+  // `m * 2^e` as `digits * 10^-scale`: for a negative `e`, `m * 5^-e` digits
+  // with the point `-e` places from the right.
+  let (factor, steps, scale) = if e >= 0 {
+    (2, e, 0)
+  } else {
+    (5, 0 - e, 0 - e)
+  }
+  let mut limbs: Array[Int] = []
+  let mut rest = m
+  while rest > 0 {
+    Array::push(limbs, rest % 10)
+    rest = rest / 10
+  }
+  let mut k = 0
+  while k < steps {
+    let mut carry = 0
+    let mut j = 0
+    while j < Array::length(limbs) {
+      let v = Array::get(limbs, j) * factor + carry
+      Array::set(limbs, j, v % 10)
+      carry = v / 10
+      j = j + 1
+    }
+    while carry > 0 {
+      Array::push(limbs, carry % 10)
+      carry = carry / 10
+    }
+    k = k + 1
+  }
+  let mut mid = ""
+  let mut j = Array::length(limbs) - 1
+  while j >= 0 {
+    mid = String::concat(mid, __to_string(Array::get(limbs, j)))
+    j = j - 1
+  }
+  let flen = String::length(frac_str)
+  let common = if flen > scale {
+    flen
+  } else {
+    scale
+  }
+  let lit = decimal_digits_trimmed(String::concat(String::concat(int_str, frac_str), zeros(common - flen)))
+  let other = decimal_digits_trimmed(String::concat(mid, zeros(common - scale)))
+  if String::length(lit) != String::length(other) {
+    String::length(lit) - String::length(other)
+  } else {
+    let mut i = 0
+    let mut out = 0
+    while i < String::length(lit) && out == 0 {
+      out = String::char_code_at(lit, i) - String::char_code_at(other, i)
+      i = i + 1
+    }
+    out
+  }
+}
+
+fn zeros(n: Int) -> String {
+  let mut s = ""
+  let mut i = 0
+  while i < n {
+    s = String::concat(s, "0")
+    i = i + 1
+  }
+  s
+}
+
+/// Digits with their leading zeros removed ("" for zero).
+fn decimal_digits_trimmed(s: String) -> String {
+  let mut i = 0
+  while i < String::length(s) && String::char_code_at(s, i) == '0' {
+    i = i + 1
+  }
+  String::substring(s, i, String::length(s))
+}

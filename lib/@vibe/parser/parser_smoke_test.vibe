@@ -365,7 +365,7 @@ test "a bare namesake is recorded alongside a qualified pattern" {
 }
 
 test "an effect operation does not compete with an enum pattern" {
-  let src = "enum Color { A }\neffect Logger { A() -> Int }\nfn f(c: Color) -> Int { let n = match c { Color::A => 1 }; handle { n } with Logger { A() => 2 } }"
+  let src = "enum Color { A }\neffect Logger { A() -> Int }\nfn f(c: Color) -> Int { let n = match c { Color::A => 1 }; handle { n } with { Logger::A() => 2 } }"
   let refs = qualified_pattern_refs_of(parse_program(lex(src)))
   assert(contains_ref(refs, "Color::A"))
   assert(!contains_ref(refs, "::A"))
@@ -379,27 +379,6 @@ test "a qualified handler-set operation does not add a bare constructor" {
   assert(!contains_ref(refs, "::A"))
 }
 
-test "a qualified operation in a named handler is not an enum pattern" {
-  let src = "enum Color { A }\neffect Logger { A -> Int }\nfn f(c: Color) -> Int { let n = match c { Color::A => 1 }; handle { n } with Logger { Logger::A => 2 } }"
-  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
-  assert(contains_ref(refs, "Color::A"))
-  assert(!contains_ref(refs, "Logger::A"))
-}
-
-test "a grouped named-handler operation is not an enum pattern" {
-  let src = "enum Api { A }\neffect Logger { A -> Int }\nfn f(c: Api) -> Int { let n = match c { Api::A => 1 }; handle { n } with Logger { (A) => resume(7) } }"
-  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
-  assert(contains_ref(refs, "Api::A"))
-  assert(!contains_ref(refs, "::A"))
-}
-
-test "grouped handler alternatives discard each operation reference" {
-  let src = "enum Api { A }\neffect Logger { A -> Int; B -> Int }\nfn f() -> Int { handle { match Api::A { Api::A => 1 } } with Logger { (A | B) => resume(7) } }"
-  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
-  assert(contains_ref(refs, "Api::A"))
-  assert(!contains_ref(refs, "::A"))
-}
-
 test "every alternative of a qualified or-arm is an operation, not an enum pattern" {
   let src = "enum Api { A; B }\neffect Logger { A -> Int; B -> Int }\nfn f() -> Int { handle { 1 } with { Logger::A | Logger::B => resume(7) } }\nfn g() -> Int { match Api::A { Api::A => 1, Api::B => 2 } }"
   let refs = qualified_pattern_refs_of(parse_program(lex(src)))
@@ -409,42 +388,42 @@ test "every alternative of a qualified or-arm is an operation, not an enum patte
 }
 
 test "a handler keeps a same-named nested constructor reference" {
-  let src = "enum Payload { A }\neffect Logger { A(Payload) -> Int }\nfn f() -> Int { handle { 1 } with Logger { A(A) => 2 } }\nfn g() -> Int { match Payload::A { Payload::A => 1 } }"
+  let src = "enum Payload { A }\neffect Logger { A(Payload) -> Int }\nfn f() -> Int { handle { 1 } with { Logger::A(A) => 2 } }\nfn g() -> Int { match Payload::A { Payload::A => 1 } }"
   let refs = qualified_pattern_refs_of(parse_program(lex(src)))
   assert(contains_ref(refs, "Payload::A"))
   assert(contains_ref(refs, "::A"))
 }
 
 test "a struct payload field does not preserve a handler operation reference" {
-  let src = "enum Api { A }\nstruct Payload { A: Int }\neffect Logger { A(Payload) -> Int }\nfn f() -> Int { handle { 1 } with Logger { A(Payload::{ A }) => 2 } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
+  let src = "enum Api { A }\nstruct Payload { A: Int }\neffect Logger { A(Payload) -> Int }\nfn f() -> Int { handle { 1 } with { Logger::A(Payload::{ A }) => 2 } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
   let refs = qualified_pattern_refs_of(parse_program(lex(src)))
   assert(contains_ref(refs, "Api::A"))
   assert(!contains_ref(refs, "::A"))
 }
 
 test "an anonymous record payload label does not preserve a handler operation reference" {
-  let src = "enum Api { A }\neffect Logger { A(Int) -> Int }\nfn f() -> Int { handle { 1 } with Logger { A(record { A: value }) => 2 } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
+  let src = "enum Api { A }\neffect Logger { A(Int) -> Int }\nfn f() -> Int { handle { 1 } with { Logger::A(record { A: value }) => 2 } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
   let refs = qualified_pattern_refs_of(parse_program(lex(src)))
   assert(contains_ref(refs, "Api::A"))
   assert(!contains_ref(refs, "::A"))
 }
 
 test "an anonymous record payload shorthand field does not preserve a handler operation reference" {
-  let src = "enum Api { A }\neffect Logger { A(Int) -> Int }\nfn f() -> Int { handle { 1 } with Logger { A(record { A }) => 2 } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
+  let src = "enum Api { A }\neffect Logger { A(Int) -> Int }\nfn f() -> Int { handle { 1 } with { Logger::A(record { A }) => 2 } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
   let refs = qualified_pattern_refs_of(parse_program(lex(src)))
   assert(contains_ref(refs, "Api::A"))
   assert(!contains_ref(refs, "::A"))
 }
 
 test "an anonymous record payload retains a nested bare constructor reference" {
-  let src = "enum Api { A }\neffect Logger { A(Int) -> Int }\nfn f() -> Int { handle { 1 } with Logger { A(record { value: A }) => 2 } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
+  let src = "enum Api { A }\neffect Logger { A(Int) -> Int }\nfn f() -> Int { handle { 1 } with { Logger::A(record { value: A }) => 2 } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
   let refs = qualified_pattern_refs_of(parse_program(lex(src)))
   assert(contains_ref(refs, "Api::A"))
   assert(contains_ref(refs, "::A"))
 }
 
 test "a qualified handler operation leaves its qualified payload reference" {
-  let src = "enum Api { A }\neffect Logger { A(Api) -> Int }\nfn f() -> Int { handle { 1 } with Logger { Logger::A(Api::A) => 2 } }"
+  let src = "enum Api { A }\neffect Logger { A(Api) -> Int }\nfn f() -> Int { handle { 1 } with { Logger::A(Api::A) => 2 } }"
   let refs = qualified_pattern_refs_of(parse_program(lex(src)))
   assert(contains_ref(refs, "Api::A"))
   assert(!contains_ref(refs, "Logger::A"))
@@ -452,14 +431,14 @@ test "a qualified handler operation leaves its qualified payload reference" {
 }
 
 test "named handler operation alternatives leave no enum references" {
-  let src = "enum Api { A }\neffect Logger { A -> Int; B -> Int }\nfn f() -> Int { handle { 1 } with Logger { A | B => resume(2) } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
+  let src = "enum Api { A }\neffect Logger { A -> Int; B -> Int }\nfn f() -> Int { handle { 1 } with { Logger::A | Logger::B => resume(2) } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
   let refs = qualified_pattern_refs_of(parse_program(lex(src)))
   assert(contains_ref(refs, "Api::A"))
   assert(!contains_ref(refs, "::A"))
 }
 
 test "a handler alternative keeps a bare payload in another branch" {
-  let src = "enum Api { A }\neffect Logger { A -> Int; B(Api) -> Int }\nfn f() -> Int { handle { 1 } with Logger { A | B(A) => resume(2) } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
+  let src = "enum Api { A }\neffect Logger { A -> Int; B(Api) -> Int }\nfn f() -> Int { handle { 1 } with { Logger::A | Logger::B(A) => resume(2) } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
   let refs = qualified_pattern_refs_of(parse_program(lex(src)))
   assert(contains_ref(refs, "Api::A"))
   assert(contains_ref(refs, "::A"))
@@ -534,13 +513,23 @@ test "parse_program: `Error` is rejected as a row label" {
   assert(String::contains(result, "`Error` was retired as an effect spelling in #1461"))
 }
 
-test "parse_program: `Error` is rejected as a handled-effect name (#1501)" {
-  let result = handle {
-    let _ =
-    parse_program(lex("fn g() -> Int { handle { 1 } with Error { Throw(_) => 0 } }"))
+test "parse_program: the `with E { .. }` handler header is refused with its replacement (#3530)" {
+  let named = handle {
+    let _ = parse_program(lex("effect Ask { Get() -> Int }\nfn g() -> Int { handle { 1 } with Ask { Get() => resume(2) } }"))
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::contains(result, "`Error` was retired as an effect spelling in #1461"))
+  assert(String::contains(named, "write `with { Ask::Get(..) => .. }`, naming the effect on each handler arm"))
+  // `Error` was retired as an effect name (#1501), so the edit names `Exception`.
+  let retired = handle {
+    let _ = parse_program(lex("fn g() -> Int { handle { 1 } with Error { Throw(_) => 0 } }"))
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::contains(retired, "write `with { Exception::Throw(..) => .. }`"))
+  let typed = handle {
+    let _ = parse_program(lex("fn g() -> Int { handle { 1 } with Exception[String] { _ => 0 } }"))
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::contains(typed, "write `with { Exception[String]::Op(..) => .. }`"))
 }
 
 test "parse_program: `Error` is rejected as a qualified handler arm (#3284)" {
@@ -568,7 +557,7 @@ test "parse_program: a qualified `Exception::Throw` arm is accepted (#3284)" {
 }
 
 test "parse_program: `Exception` is accepted in both positions" {
-  let src = "fn f() -> Int with Exception { throw(\"x\") }\nfn g() -> Int { handle { f() } with Exception { Throw(_) => 0 } }"
+  let src = "fn f() -> Int with Exception { throw(\"x\") }\nfn g() -> Int { handle { f() } with { Exception::Throw(_) => 0 } }"
   let stmts = parse_program(lex(src))
   assert(Array::length(stmts) == 2)
 }
@@ -595,15 +584,6 @@ test "#2337: constructor-kind binders survive parse and print" {
 test "#2337: declaration printers decode constructor-kind binders" {
   let source = "enum Box[F[_], A] { Value(F[A]) }\nstruct Holder[F[_], A] { value: F[A] }\ntype Apply[F[_], A] = F[A]\ntrait Functor[F[_]]\neffect Read[F[_], A] { Get(F[A]) -> A }"
   inspect(print_program(parse_program(lex(source))), "enum Box[F[_], A] { Value(F[A]) }\nstruct Holder[F[_], A] { value: F[A] }\ntype Apply[F[_], A] = F[A]\ntrait Functor[F[_]]\neffect Read[F[_], A] {\n  Get(F[A]) -> A\n}")
-}
-
-test "parse_program: an empty handler arm set is rejected (#1678)" {
-  let result = handle {
-    let _ =
-    parse_program(lex("fn g() -> Int { handle { 1 } with Exception { } }"))
-    "OK"
-  } with { Exception::Throw(e) => e }
-  assert(String::contains(result, "handler for `Exception` must contain at least one arm"))
 }
 
 test "parse_program: an empty qualified handler set is rejected (#1678)" {

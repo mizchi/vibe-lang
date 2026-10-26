@@ -205,7 +205,7 @@ handler_arm_payload_named_resume_reject	reject	binds a payload named `resume`, w
 handler_arm_resume_wrong_type_reject	reject	resume value type mismatch: expected String, got Int
 handler_arm_nested_suspend_tail_reject	reject	handler arm `Outer::Get` must pass its value back with resume(...)
 handler_set_comma_arms_reject	reject	line 14:29: replace this `,` with `;` or a newline: handler-set arms are separated by `;` or a newline
-handler_legacy_comma_arms_reject	reject	line 13:24: replace this `,` with `;`: the arms of a `with Effect { ... }` handler are separated by `;`
+handler_legacy_header_reject	reject	line 12:10: write `with { Ask::Get(..) => .. }`, naming the effect on each handler arm: the `with Ask { .. }` header form was removed
 handler_arm_mixed_resume_branch_reject	reject	handler arm `Name::Get` must pass its value back with resume(...)
 handler_arm_lambda_resume_wrong_handle_type_reject	reject	handler arm value type mismatch with the handle body's type: expected Int, got String
 handler_or_pattern_binding_reject	reject	write one handler arm per operation, or `_` for the payloads: an or-pattern arm cannot bind a payload
@@ -263,6 +263,7 @@ polymorphic_recursion_unsupported	ok
 property_access_ambiguous_function_vs_field	ok	
 scoped_ref_param_decl_forbidden	reject	unknown type `Ref` in parameter `r`
 scoped_ref_param_nested_decl_forbidden	reject	unknown type `Ref` in parameter `f`
+struct_pattern_subpattern_reject	reject	line 12:11: bind the field by its own name (`S::{ f }`) and match its value in the body (`match f { .. }`): a struct pattern field binds a name, not a sub-pattern or a new name
 suberror_brace_ctor_arity_mismatch	reject	function arity mismatch for Io: expected 1 args, got 0
 suberror_brace_payload_type_mismatch	reject	argument type mismatch for Parse: expected Int, got String
 suberror_brace_raise_ok	ok	
@@ -487,10 +488,12 @@ err_import_kind_mismatch_trait	reject	import kind mismatch: `add_eq` is a value,
 # says "unknown field 'z' on record { x: Int, y: Int }" where it used to say
 # only that a top-level expression is not allowed.
 #
-# 6 compile, and are `debt-accepts`: `x += "hello"` on an Int, `apply(add, 42)`
-# where `apply` wants a 1-argument function, `m[42] = 2` on a Map[String, Int],
-# `type T = T`, an inline `[T](x: T: Show)` bound, and `return` inside a
-# suspending loop (#1536). 3 are `ok` on purpose: two index-out-of-range
+# 5 compile, and are `debt-accepts`: `x += "hello"` on an Int, `m[42] = 2` on
+# a Map[String, Int], `type T = T`, an inline `[T](x: T: Show)` bound, and
+# `return` inside a suspending loop (#1536). `apply(add, 42)`, where `apply`
+# wants a 1-argument function, was the sixth: a function of another arity is
+# now refused even where the expected type mentions a type parameter. 3 are
+# `ok` on purpose: two index-out-of-range
 # fixtures assert a RUNTIME error the type system never promised (their own
 # comments say "(runtime error)"), and untyped recursion is allowed today.
 #
@@ -510,7 +513,7 @@ err_type_compound_assign_type	debt-accepts
 err_type_enum_wrong_ctor	reject	argument type mismatch for f: expected Int, got Bool
 err_type_enum_wrong_ctor_args	reject	function arity mismatch for f: expected 2 args, got 3
 err_type_extra_args	reject	function arity mismatch for add: expected 2 args, got 3
-err_type_fn_arity_mismatch	debt-accepts	
+err_type_fn_arity_mismatch	reject	argument type mismatch for apply: expected (_) -> _, got (Int, Int) -> Int
 err_type_generic_arg_mismatch	reject	function arity mismatch for pair: expected 2 args, got 3
 err_type_generic_mismatch	reject	argument type mismatch for use_string: expected String, got Int
 err_type_generic_return_mismatch	reject	argument type mismatch for bad: expected Int, got String
@@ -1221,7 +1224,6 @@ taskgroup_escape_run_alias_field_reject	reject	region escapes its nursery scope:
 taskgroup_escape_sender_field_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver` in a binding declared outside the body
 taskgroup_escape_open_array_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver` in a binding declared outside the body
 handler_payload_literal_set_reject	reject	bind the payload to a name and test it in the arm body: `Pick::P(v) => if v == 1 { .. } else { .. }` -- a handler arm selects on the operation alone, so `1` in `Pick::P(1)` is never tested and the arm would run for every `Pick::P` payload
-handler_payload_literal_legacy_reject	reject	combine all `Pick::P` arms into this one conditional/match arm, and remove the separate same-operation fallback arm
 handler_payload_suffix_reject	reject	bind the payload to a name and test it in the arm body: `Pick::P(v) => if v == 1 { .. } else { .. }`
 handler_payload_string_reject	reject	bind the payload to a name and test it in the arm body: `Say::Word(v) => if v == "hi" { .. } else { .. }`
 handler_payload_ctor_reject	reject	bind the payload to a name (`Paint::Use(v) => ..`) and `match v` against your pattern in the arm body -- a handler arm selects on the operation alone, so a payload pattern is never tested and the arm would run for every `Paint::Use` payload
@@ -2004,3 +2006,17 @@ err_type_float_compound_assign_double	reject	write the Double operand as a Float
 err_type_float_pattern_not_f32	reject	float literal pattern is not a `Float` value and can never match
 err_type_float_annot_double_literal	reject	expected Float, got Double -- write a Float literal with an `f` suffix
 err_type_float_eq_bound	reject	no impl `Eq` for `Float`
+# #3548 / #3520: diagnostics that had no position or the wrong one. Each row
+# pins the line:col as well as the message, so a regression to the enclosing
+# declaration's first line, or to no position at all, fails here.
+parse_record_spread_located_reject	reject	line 10:8: write each field, reading the unchanged ones from the base
+parse_type_ascription_located_reject	reject	line 4:16: bind the value with its type first (`let v: Type = expr`)
+parse_for_pattern_located_reject	reject	line 6:7: bind one name and destructure it in the body
+ctor_pattern_arity_located_reject	reject	line 10:13: write one sub-pattern per field of `R`
+non_mut_field_assign_located_reject	reject	line 8:3: declare the field `mut n` in `struct C`
+guard_only_match_located_reject	reject	line 4:9: add an unguarded arm or `_ => ..` after the guarded ones
+duplicate_fn_decl_second_located_reject	reject	line 7:4-10: rename or remove one of the two: `helper` is declared more than once
+impl_overlap_second_located_reject	reject	line 7:1-20: remove this impl, or give it a target the other does not cover: overlapping impls for `Tagged`
+exception_two_arms_located_reject	reject	line 10:90: a handle may have only ONE exception arm
+handler_arm_branch_resume_located_reject	reject	line 11:34: handler arm `Gate::Check` must pass its value back with resume(...) on every branch
+generic_fn_param_arity_reject	reject	line 9:3: argument type mismatch for app: expected () -> _, got (Int) -> Int
