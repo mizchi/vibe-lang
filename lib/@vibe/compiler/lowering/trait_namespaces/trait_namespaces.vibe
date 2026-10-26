@@ -121,12 +121,49 @@ fn collect_namespace_traits(stmts: Array[Stmt]) -> Array[(String, Array[(String,
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      STrait(_, trait_name, _, methods, _, _) => Array::push(out, (trait_name, methods)),
+      STrait(_, trait_name, supers, methods, _, _) => if trait_decl_is_yielding_marker(stmts, trait_name, supers, methods) {
+        ()
+      } else {
+        Array::push(out, (trait_name, methods))
+      },
       _ => ()
     }
     i = i + 1
   }
   out
+}
+
+/// #3636: is this `trait <name>` a pure marker (no methods, no supertraits)
+/// that another declaration of the same name in the merged program fills in?
+///
+/// The tables here are keyed by name and the first declaration wins.
+/// `@vibe/builtin` declares a marker `Default` so the bound is satisfiable
+/// without `@vibe/core`, where the method-bearing `Default` lives, and a
+/// program that imported `@vibe/builtin` first saw `Default` as the marker:
+/// `[T: Default]` threaded no witness, and `T::default()` died in codegen as
+/// "reached code generation unresolved". The opposite import order compiled
+/// and printed `0`. A pure marker declares nothing the fuller declaration
+/// lacks, so it yields to it. The checker has already resolved the bound to
+/// the method-bearing trait, or the call would not be here.
+fn trait_decl_is_yielding_marker(stmts: Array[Stmt], name: String, supers: Array[String], methods: Array[(String, Array[TypeExpr], TypeExpr)]) -> Bool {
+  if Array::length(methods) > 0 || Array::length(supers) > 0 {
+    false
+  } else {
+    let mut found = false
+    let mut i = 0
+    while !found && i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        STrait(_, other, other_supers, other_methods, _, _) => if other == name && (Array::length(other_methods) > 0 || Array::length(other_supers) > 0) {
+          found = true
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    found
+  }
 }
 
 /// Collect every trait's per-method generic binders (name -> [(method,
@@ -1265,7 +1302,12 @@ export fn collect_trait_supers(stmts: Array[Stmt]) -> Array[(String, Array[Strin
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      STrait(_, tname, supers, _, _, _) => Array::push(out, (tname, supers)),
+      // #3636: the same yielding rule as `collect_namespace_traits`.
+      STrait(_, tname, supers, methods, _, _) => if trait_decl_is_yielding_marker(stmts, tname, supers, methods) {
+        ()
+      } else {
+        Array::push(out, (tname, supers))
+      },
       _ => ()
     }
     i = i + 1
