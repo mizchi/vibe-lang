@@ -14,6 +14,7 @@ import @vibe/compiler/core {
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
   expr_children,
+  float_operand_unmarked,
   is_exception_throw_handler_name,
   leb128_encode_s64,
   leb128_encode_u32
@@ -1355,10 +1356,11 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       // Float arithmetic: locals hold raw f64 bits in i64; reinterpret both
       // sides, run the f64 op, reinterpret back. The unconditional i64 ops
       // below compute garbage on float bits (linear routes these through
-      // expr_is_floatish the same way).
-      let nl1 = ce(buf, lhs, local_names, next_local, ld)
+      // expr_is_floatish the same way). #3629: an operand the desugar
+      // marked as a float is compiled without its identity mark.
+      let nl1 = ce(buf, float_operand_unmarked(lhs), local_names, next_local, ld)
       emit_f64_reinterpret_i64(buf)
-      let nl2 = ce(buf, rhs, local_names, nl1, ld)
+      let nl2 = ce(buf, float_operand_unmarked(rhs), local_names, nl1, ld)
       emit_f64_reinterpret_i64(buf)
       if op == "+" {
         emit_f64_add(buf)
@@ -1375,9 +1377,9 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       // Float ordering: signed-i64 compare of raw f64 bits inverts the order
       // whenever both sides are negative (and misranks mixed signs vs -0.0),
       // so route through real f64 comparisons (mirrors the linear lane).
-      let nl1 = ce(buf, lhs, local_names, next_local, ld)
+      let nl1 = ce(buf, float_operand_unmarked(lhs), local_names, next_local, ld)
       emit_f64_reinterpret_i64(buf)
-      let nl2 = ce(buf, rhs, local_names, nl1, ld)
+      let nl2 = ce(buf, float_operand_unmarked(rhs), local_names, nl1, ld)
       emit_f64_reinterpret_i64(buf)
       if op == "<" {
         emit_f64_lt(buf)
@@ -1410,7 +1412,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
     },
     EUnaryOp(op, operand) => if op == "-" && gc_expr_is_floatish(operand, local_names, ctx) {
       // `0 - bits` integer-negates the f64 bit pattern; use f64.neg instead.
-      let nl = ce(buf, operand, local_names, next_local, ld)
+      let nl = ce(buf, float_operand_unmarked(operand), local_names, next_local, ld)
       emit_f64_reinterpret_i64(buf)
       emit_f64_neg(buf)
       emit_i64_reinterpret_f64(buf)

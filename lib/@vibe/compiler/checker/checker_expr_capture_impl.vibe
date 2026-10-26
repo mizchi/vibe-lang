@@ -935,6 +935,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         },
         _ => ()
       }
+      // #3629: a `Double` / `Float` operation whose operands the lowering
+      // may not see as floats (a generic call's result, an index), filed so
+      // the post-check rewrite marks them; see `float_operand_binop`.
+      if float_operand_binop(op, bin_result, subst_apply(s3, left_applied), subst_apply(s3, right_applied)) {
+        record_float_arith(capture, boff, 11)
+      } else {
+        ()
+      }
       (bin_result, s3, c2)
     },
     EUnaryOp(op, operand) => {
@@ -1059,7 +1067,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               _ => false
             }
           }
-          if float_involved && (aop == "+" || aop == "-" || aop == "*" || aop == "/") {
+          let s1f_inner = if float_involved && (aop == "+" || aop == "-" || aop == "*" || aop == "/") {
             let (res_ty, s1r) = infer_binop_type(aop, target_applied, val_applied, env, s1, errors, tytab, target_off)
             match subst_apply(s1r, res_ty) {
               CtFloat => match target_applied {
@@ -1072,6 +1080,18 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else {
             s1
           }
+          // #3629: the compound-assignment half of `float_operand_binop`,
+          // keyed by the target offset like the Float row above.
+          if aop == "+" || aop == "-" || aop == "*" || aop == "/" {
+            match subst_apply(s1f_inner, target_ty) {
+              CtDouble => record_float_arith(capture, target_off, 12),
+              CtFloat => record_float_arith(capture, target_off, 12),
+              _ => ()
+            }
+          } else {
+            ()
+          }
+          s1f_inner
         },
         None => {
           Array::push(errors, String::concat("unknown name: ", String::concat(name, assign_target_marker(target_off))))
@@ -2841,4 +2861,36 @@ fn erased_throw_binder_settle(name: String, var: Type, s: Subst, errors: Array[S
 /// name can collide with it.
 fn match_temp_anchor_key() -> String {
   "__match_temp_anchor@"
+}
+
+/// #3629: is `op` a `Double` / `Float` operation -- arithmetic whose result
+/// the checker typed as one, or an ordering whose operands it did?
+///
+/// Code generation picks float arithmetic from the operands' SYNTAX, and the
+/// desugar sends `+` and `<` on an operand whose static type it reads as a
+/// type formal to the runtime Int/String dispatch. A call to a generic
+/// function reads as its callee's own formal there (`pick[T](x: T) -> T`
+/// is `T`), so `pick(2.5) + 1.0` added the boxed Double's bits as an Int and
+/// printed `537`. The row this answer files makes the post-check rewrite mark
+/// both operands as floats (`rewrite_float_arith_stmts`), so neither lowering
+/// has to see the type in the syntax. A result typed `Double` or `Float` is
+/// concrete by construction -- the Int candidate is tried first -- so no later
+/// substitution can change the answer. `==` is not filed: the typed-`==`
+/// channel already compares a `Double` through its own rows.
+fn float_operand_binop(op: String, result: Type, left: Type, right: Type) -> Bool {
+  if op == "+" || op == "-" || op == "*" || op == "/" {
+    ty_is_float_scalar(result)
+  } else if op == "<" || op == ">" || op == "<=" || op == ">=" {
+    ty_is_float_scalar(left) || ty_is_float_scalar(right)
+  } else {
+    false
+  }
+}
+
+fn ty_is_float_scalar(t: Type) -> Bool {
+  match t {
+    CtDouble => true,
+    CtFloat => true,
+    _ => false
+  }
 }

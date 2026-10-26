@@ -1476,6 +1476,17 @@ run_test_block_fixtures_gc "Double field and assignment (gc)" fixtures/double_fi
 run_test_block_fixtures_rc "Double field and assignment (linear, RC)" fixtures/double_field_compare_test.vibe fixtures/double_compound_assignop_test.vibe
 echo '[compiler-gate] Double field and assignment ok'
 
+# #3629: a Double or Float that reaches `+ - * /`, an ordering or a compound
+# assignment as a generic call's result (or an index, a method, a
+# trait-bound generic) is computed as a float on every lane. The desugar read
+# `pick(2.5)` as the callee's formal and sent `+` / `<` to the runtime
+# Int/String dispatch, so `pick(2.5) + 1.0` printed `537` on all three.
+echo "[compiler-gate] generic call results as Double and Float operands (#3629)"
+run_test_block_fixtures "generic call float operands (linear, bump)" fixtures/generic_call_double_arith_test.vibe
+run_test_block_fixtures_gc "generic call float operands (gc)" fixtures/generic_call_double_arith_test.vibe
+run_test_block_fixtures_rc "generic call float operands (linear, RC)" fixtures/generic_call_double_arith_test.vibe
+echo '[compiler-gate] generic call float operands ok'
+
 # 15b-5. #3071: a function that performs a user effect with no handler reaching
 #        it keeps its raw `perform` -- a function nobody calls, or an exported
 #        callee whose every call site took the suspend-lowered clone. The linear

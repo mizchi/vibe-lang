@@ -57,6 +57,7 @@ import @vibe/compiler/core {
   typed_f32_assign_verdict,
   typed_f32_binop_verdict,
   typed_f32_row_head,
+  typed_float_operand_row_head,
   typed_forin_row_head,
   typed_index_map_verdict,
   typed_index_open_verdict,
@@ -1326,6 +1327,11 @@ export fn forin_receiver_rows_from_capture(checked: CheckedProgram, capture: Typ
 /// 9) or compound assignment (kind 10) the checker typed as producing a
 /// `Float`. The rows are what make the post-check rewrite round those results
 /// to f32. An offset filed twice (one site checked twice) files one row.
+///
+/// #3629: the same extraction carries the float-OPERAND rows,
+/// `#fop[Binop|Assign]`: a `Double` / `Float` arithmetic or ordering binop
+/// (kind 11) or compound assignment (kind 12), whose operands the rewrite
+/// marks as floats so the lowering never reads them as Int bits.
 export fn float_arith_rows_from_capture(capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String]) {
   let offs: Array[Int] = []
   let keys: Array[String] = []
@@ -1333,14 +1339,19 @@ export fn float_arith_rows_from_capture(capture: TypedOccurrenceRoleLaneCapture)
   let mut i = 0
   while i + 1 < n {
     let kind = Array::get(capture.binop_kinds, i)
-    if kind == 9 || kind == 10 {
+    if kind == 9 || kind == 10 || kind == 11 || kind == 12 {
       let off = Array::get(capture.binop_offsets, i)
-      let verdict = if kind == 9 {
+      let verdict = if kind == 9 || kind == 11 {
         typed_f32_binop_verdict()
       } else {
         typed_f32_assign_verdict()
       }
-      let key = impl_target_key(TyApp(typed_f32_row_head(), [TyName(verdict)]))
+      let head = if kind == 9 || kind == 10 {
+        typed_f32_row_head()
+      } else {
+        typed_float_operand_row_head()
+      }
+      let key = impl_target_key(TyApp(head, [TyName(verdict)]))
       let mut seen = false
       let mut j = 0
       while j < Array::length(offs) && !seen {

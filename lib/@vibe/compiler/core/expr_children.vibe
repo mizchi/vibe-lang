@@ -14,7 +14,7 @@ import ./ast.vibe {
 }
 
 import @vibe/ast {
-  index_site_offset
+  builtin_ref_offset, index_site_offset
 }
 
 /// #2424: the source offset that identifies an expression node to the
@@ -171,6 +171,35 @@ export fn typed_forin_row_head() -> String {
 /// identifier can spell.
 export fn typed_f32_row_head() -> String {
   "#f32"
+}
+
+/// #3629: the head that marks a typed-`==` channel row as a FLOAT-OPERAND row
+/// -- a `Double` or `Float` arithmetic or ordering binop (verdict
+/// `typed_f32_binop_verdict()`, keyed by its operator offset) or compound
+/// assignment (`typed_f32_assign_verdict()`, keyed by its target offset).
+/// The desugar marks the operands of each hit with `Float::to_double`, the
+/// identity at code generation, so a float the syntax does not show (a
+/// generic call's result) is neither added as Int bits nor sent to the
+/// runtime Int/String dispatch.
+export fn typed_float_operand_row_head() -> String {
+  "#fop"
+}
+
+/// #3629: `e` without the float-operand mark the desugar put on it -- the
+/// argument of a compiler-made `Float::to_double` call (`builtin_ref`, so a
+/// program's own call is never read through). The mark compiles to its
+/// argument on every lane, so an operand reader that looks through it emits
+/// what it emitted before the mark: a fresh box is still released, and a
+/// nested chain is still computed on bits.
+export fn float_operand_unmarked(e: Expr) -> Expr {
+  match e {
+    ECall(EIdent(f, off), args, _, _) => if f == "Float::to_double" && off == builtin_ref_offset() && Array::length(args) == 1 {
+      float_operand_unmarked(Array::get(args, 0))
+    } else {
+      e
+    },
+    _ => e
+  }
 }
 
 /// #3543: the `typed_f32_row_head` verdict of an arithmetic binop, keyed by
