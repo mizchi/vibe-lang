@@ -94,9 +94,10 @@ let u: Unit = ()
 
 ### `Float` is 32-bit
 
-`Float` is IEEE binary32 and every `Float` value is an f32 value (#3543). An
-`f` literal, `Double::to_float`, `Int::to_float` and each `+ - * /` result
-(compound assignment included) are rounded to the nearest f32, ties to even;
+`Float` is IEEE binary32 and every `Float` value is an f32 value (#3543).
+A decimal `f` literal rounds directly to the nearest f32, ties to even.
+`Double::to_float`, `Int::to_float` and each `+ - * /` result
+(compound assignment included) use the same rounding rule;
 a result too large for an f32 is `Infinity` / `-Infinity`, and `0.0f / 0.0f`
 is NaN, which `==` calls unequal even to itself. `Float::to_double` widens
 exactly. `Float::to_string` and interpolation print the shortest decimal
@@ -2559,7 +2560,7 @@ via `memory.copy`, so `push` is amortised O(1)):
 | `Bytes::push(b, v)` | append one byte (amortised O(1)) | linear / gc |
 | `Bytes::append(dst, src)` | **bulk concatenation. One `memory.copy`** | linear / gc |
 | `Bytes::concat(a, b)` | concatenation returning a new buffer | linear / gc |
-| `Bytes::slice(b, start, end)` | subsequence | linear / gc |
+| `Bytes::slice(b, start, end)` | fresh copy of `[start, end)`; bounds are not clamped (see below) | linear / gc |
 | `Bytes::index_of(hay, byte)` | first index holding `byte`, or `-1`. 16-byte SIMD scan | linear / gc |
 | `Bytes::last_index_of(hay, byte)` | last index holding `byte`, or `-1`. Same scan, downwards | linear / gc |
 | `Bytes::count(hay, byte)` | how many times `byte` occurs | linear / gc |
@@ -2568,6 +2569,24 @@ via `memory.copy`, so `push` is amortised O(1)):
 | `Bytes::blit(dst, src, start, end)` | append source range `[start, end)`; bulk copy on the linear lane | linear / gc |
 | `Bytes::fill(b, value, count)` | **appends** `count` copies of `value` (a `push` loop) | linear / gc |
 | `Bytes::from_array(a)` / `to_array(b)` | conversion to/from `Array[Int]` (**copies**) | linear / gc |
+
+`Bytes::slice(b, start, end)` makes a fresh buffer and **does not clamp bounds**.
+Its empty-range check compares the bounds in unsigned order. If that check
+finds `start >= end`, the result is empty; otherwise each selected index is
+bounds-checked, and an out-of-range read traps. For a three-byte buffer:
+
+| start | end | result |
+|---|---|---|
+| `1` | `3` | the last two bytes |
+| `2` | `1` | empty |
+| `5` | `5` | empty |
+| `-1` | `2` | empty (negative start sorts after nonnegative end) |
+| `0` | `-1` | traps when the copy reaches index `3` |
+| `0` | `4` | traps when the copy reaches index `3` |
+
+Use bounds satisfying `0 <= start`, `start <= end`, and `end <= Bytes::length(b)`
+for an in-bounds slice. The return/trap behavior is the same on linear and GC;
+diagnostic text can differ.
 
 > **`Bytes` has no renderer**, so `"\{b}"` is refused at check time (#2987) rather
 > than printing an address. Convert first: `let a: Array[Int] = Bytes::to_array(b)`
@@ -2697,7 +2716,8 @@ and were dropped).
 
 | operator | desugars to | types |
 |---|---|---|
-| `a + b` / `a - b` / `a * b` / `a / b` / `a % b` | `__add` / `__sub` / `__mul` / `__div` / `__mod` | Int, Float, Double |
+| `a + b` / `a - b` / `a * b` / `a / b` | `__add` / `__sub` / `__mul` / `__div` | Int, Float, Double |
+| `a % b` | `__mod` | Int |
 | `-a` | `__neg(a)` | Int, Float, Double |
 | `a == b` | `__eq(a, b)` | Eq types |
 | `a < b` | `__lt(a, b)` | Ord types |
@@ -2734,7 +2754,7 @@ prelude wrappers: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`.
 raw byte, not a code point (ADR-0098); UTF-8-encoding a code point is a
 different, currently nonexistent function.
 
-**Slicing clamps; indexing traps** (#2997). `String::substring(s, start, end)`,
+**String and Array slicing clamps; indexing traps** (#2997). `String::substring(s, start, end)`,
 `s[start:end]` and `Array::slice(xs, start, end)` clamp both bounds into
 `0..length`, and an `end` before `start` gives the empty slice -- nothing traps:
 `"abcdef"[2:10]` is `"cdef"`, `Array::slice([3, 1, 2], -1, 2)` is `[3, 1]`,

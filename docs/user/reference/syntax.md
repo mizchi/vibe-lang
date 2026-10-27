@@ -111,8 +111,8 @@ Rules:
   are rejected.
 - Hex literals use `0x` or `0X`.
 - Decimal literals without `f` are `Double`; decimal literals with `f` are
-  `Float` (IEEE binary32: the literal is rounded to the nearest f32, by way of
-  the nearest `Double`).
+  `Float` (IEEE binary32: the decimal spelling is rounded directly to the
+  nearest f32, ties to even).
 - Strings support interpolation with `\{Expr}` and the escapes `\n`, `\t`,
   `\r`, `\0`, `\"`, `\'`, `\\` and `\u{hex}` (1 to 6 hex digits naming a
   Unicode scalar value, written as its UTF-8 bytes). Any other escape is a lex
@@ -694,7 +694,7 @@ Precedence is high to low.
 |------|-----------|-------|-------|
 | 1 | `.`, `()`, `[]` | left | field, call, index |
 | 2 | unary `-`, `!`, `~` | right | numeric negation, bool not, bit-not |
-| 3 | `*`, `/`, `%` | left | |
+| 3 | `*`, `/`, `%` | left | `%` is `Int`-only; its sign follows the dividend |
 | 4 | `+`, `-` | left | |
 | 5 | `<<`, `>>` | left | `>>` is arithmetic shift |
 | 6 | `&` | left | bitwise and |
