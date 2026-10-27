@@ -465,6 +465,12 @@ Labeled arguments are evaluated in **parameter order**, not in the order they
 are written: `f(y=g(), x=h())` calls `h()` before `g()`. Bind an argument
 first when its side effects must happen in a particular order.
 
+A builtin takes positional arguments only. `String::concat(b = "a", a = "b")`
+is a build error whose message says to remove the label (#3651; it used to
+bind in written order and answer `"ab"`). The one exception is `sh_lines`,
+whose labels after the command are flags: `sh_lines("ls", a = true)` runs
+`ls -a`.
+
 ### Optional arguments: `x: T = default` (#3120) and `x?: T` (#1500)
 
 A parameter with a **default** can be left out by the caller. The body sees

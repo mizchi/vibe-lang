@@ -10,7 +10,7 @@
 // top-level let-bound functions.
 
 import ./checker_parity_test_support.vibe {
-  check_source_err, check_source_ok
+  check_source_err, check_source_err_contains, check_source_ok
 }
 
 //# Misc
@@ -171,4 +171,49 @@ test "labeled args: in-order labels with an omitted default accepted" {
 /// Fully labeled and complete, the reorder still applies.
 test "labeled args: reordered labels with every default supplied accepted" {
   assert(check_source_ok("fn f(a: Int = 1, b: Int = 2, c: Int = 3) -> Int {\n  a + b + c\n}\n\nfn main() -> Int {\n  f(c = 6, b = 4, a = 5)\n}"))
+}
+
+/// #3651: a builtin has no parameter names, so a labeled builtin call bound
+/// its arguments in written order and `b = "a", a = "b"` answered "ab". The
+/// label is refused, and the message names the edit.
+test "3651: swapped labels on a builtin rejected" {
+  assert(check_source_err_contains("fn main() -> String {\n  String::concat(b = \"a\", a = \"b\")\n}", "builtin `String::concat` takes positional arguments: remove `b = `"))
+}
+
+/// A label that names no parameter at all used to be accepted and ignored.
+test "3651: unknown labels on a builtin rejected" {
+  assert(check_source_err_contains("fn main() -> String {\n  String::concat(zzz = \"a\", qqq = \"b\")\n}", "remove `zzz = `"))
+}
+
+/// A label on any one argument is enough: the mix is no longer tolerated
+/// for a builtin either.
+test "3651: one labeled builtin argument rejected" {
+  assert(check_source_err_contains("fn main() -> Int {\n  let xs: Array[Int] = []\n  Array::push(xs, value = 1)\n  Array::length(xs)\n}", "builtin `Array::push`"))
+}
+
+/// The walk used to stand down when the module declared no function, so a
+/// labeled builtin call in a bare test block was never checked.
+test "3651: labeled builtin call in a module with no function rejected" {
+  assert(check_source_err_contains("test \"t\" {\n  let s = String::concat(b = \"a\", a = \"b\")\n  assert(String::length(s) == 2)\n}", "builtin `String::concat`"))
+}
+
+/// `sh_lines`'s labels after the command are flags (#777), so they stay.
+test "3651: sh_lines flag labels accepted" {
+  assert(check_source_ok("fn listing() -> Array[String] with Process {\n  sh_lines(\"ls\", a = true, l = false)\n}"))
+}
+
+/// ...but its command is positional.
+test "3651: a label on the sh_lines command rejected" {
+  assert(check_source_err_contains("fn listing() -> Array[String] with Process {\n  sh_lines(cmd = \"ls\")\n}", "the command of `sh_lines` is positional: remove `cmd = `"))
+}
+
+/// Positional builtin calls are unaffected.
+test "3651: positional builtin call accepted" {
+  assert(check_source_ok("fn main() -> String {\n  String::concat(\"a\", \"b\")\n}"))
+}
+
+/// A local binding that shadows a builtin's name is the program's value, not
+/// the builtin; its labels are not judged against the builtin.
+test "3651: a local shadowing a builtin name is not judged as the builtin" {
+  assert(check_source_ok("fn main() -> Int {\n  let println = (x~: Int) -> Int { x }\n  println(x = 1)\n}"))
 }
