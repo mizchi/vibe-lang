@@ -289,7 +289,7 @@ at the call, a closure bound by a local `let work = () -> ...`, and a
 top-level function passed by name all qualify, and a local closure the
 body calls counts as a capture. A closure the check cannot see into —
 say, a parameter of your own helper — is refused. The exception is a
-helper shaped like `spawn` (a `TaskGroup` first, a closure last, as
+helper shaped like `spawn` (a `TaskGroup[rg, e]` first, a closure last, as
 `Parallel::map` is): its callers' closures are checked, so inside it the
 parameter can be spawned.
 
@@ -384,9 +384,10 @@ The waits above belong to tasks. Two builtin types carry waiting as a value.
 it, `Future::ready(v)` is already filled, and `await(f)` suspends until the
 value is there.
 
-An async iterator is a value whose `next` returns
+An async iterator is a type that implements a trait whose `next` returns
 `Future[Option[(T, Self)]]`: the next element and the rest, or `None` at the
-end. `for x in it` over such a value awaits each step, so it carries `Async`.
+end. `for x in it` over such a value awaits each step, so the function that
+holds the loop needs `Async` in its row, and leaving it off is refused.
 Whether a `for` is the eager array loop or the await loop is decided by the
 iterand's type alone; there is no `for await`.
 
@@ -401,15 +402,21 @@ import @vibe/builtin {
   AsyncIter::map
 }
 
+trait Pull[T] {
+  next(Self) -> Future[Option[(T, Self)]]
+}
+
 struct Countdown {
   n: Int
 }
 
-fn Countdown::next(c: Countdown) -> Future[Option[(Int, Countdown)]] {
-  if c.n <= 0 {
-    Future::ready(None)
-  } else {
-    Future::ready(Some((c.n, Countdown::{ n: c.n - 1 })))
+impl Pull for Countdown {
+  next(self) -> Future[Option[(Int, Countdown)]] {
+    if self.n <= 0 {
+      Future::ready(None)
+    } else {
+      Future::ready(Some((self.n, Countdown::{ n: self.n - 1 })))
+    }
   }
 }
 
