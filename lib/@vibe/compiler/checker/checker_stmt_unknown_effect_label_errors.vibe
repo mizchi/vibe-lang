@@ -897,9 +897,45 @@ export fn collect_constructor_binder_errors(stmts: Array[Stmt], env: TypeEnv, er
       STest(tname, body) => cb_walk(body, tname, names, owners, errors),
       SBench(bname, body) => cb_walk(body, bname, names, owners, errors),
       SExpr(body) => cb_walk(body, "", names, owners, errors),
+      SStruct(_, sname, _, _, _, _) => cb_struct_check(sname, names, owners, errors),
       _ => ()
     }
     s = s + 1
+  }
+}
+
+/// #3549: a struct spelled like a variant in scope. A struct is built
+/// positionally by its name too (`struct B { v: Int }` makes `B(3)` a `B`),
+/// so with `enum E { B(Int); C }` beside it a bare `B(3)` named two
+/// constructors and silently built the one declared LATER in the file --
+/// measured on main at db57c1401, swapping the two declarations turned
+/// `B(3)` from an `E` into a `B`. Refused at the struct, with the rename.
+fn cb_struct_check(sname: String, names: Array[String], owners: Array[String], errors: Array[String]) -> Unit {
+  let mut idx = 0 - 1
+  let mut i = 0
+  while i < Array::length(names) && idx < 0 {
+    if Array::get(names, i) == sname {
+      idx = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if idx >= 0 {
+    let enum_name = Array::get(owners, idx)
+    let what = if String::length(enum_name) == 0 {
+      "the built-in `Option` constructor of that name"
+    } else {
+      "the variant `\{sname}` of `\{enum_name}`"
+    }
+    let alt = if String::length(enum_name) == 0 {
+      ""
+    } else {
+      " (or rename the variant)"
+    }
+    Array::push(errors, "rename the struct `\{sname}`\{alt}: it builds by name like \{what}, so a bare `\{sname}(..)` names both and silently builds only one of them [@fn=\{sname}]")
+  } else {
+    ()
   }
 }
 

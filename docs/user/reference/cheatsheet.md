@@ -461,9 +461,32 @@ let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
 let sum = f(x=10, y=20)   // => 30
 ```
 
-Labeled arguments are evaluated in **parameter order**, not in the order they
-are written: `f(y=g(), x=h())` calls `h()` before `g()`. Bind an argument
-first when its side effects must happen in a particular order.
+Labeled arguments are evaluated in the order they are **written**, then bound
+by name: `f(y = g(), x = h())` calls `g()` before `h()`, whatever order `f`
+declares `x` and `y` in (#3549, as in Swift, Kotlin and C#). An argument that
+can do or observe something (a call, an operator, an interpolation, a name) is
+bound to a temporary in written order when the call reorders it past another
+one; literals, lambdas and constructors are passed in place. Omitted optional
+arguments and defaults are filled after every written argument, a default in
+the callee.
+
+```vibe
+fn note(log: Array[String], s: String, v: Int) -> Int {
+  Array::push(log, s)
+  v
+}
+
+fn sub(x: Int, y: Int) -> Int {
+  x - y
+}
+
+test "labeled arguments run in written order" {
+  let log: Array[String] = []
+  let r = sub(y = note(log, "y", 1), x = note(log, "x", 10))
+  assert_eq(String::join(log, ","), "y,x")
+  assert_eq(r, 9)
+}
+```
 
 ### Optional arguments: `x: T = default` (#3120) and `x?: T` (#1500)
 
@@ -2449,6 +2472,27 @@ count, and the entry file's own types are its own.
 
 When a facade re-exports two bindings under one name, the later re-export is
 the one an importer sees, both in the checker and at run time.
+
+### A name cannot be both imported and declared (#3549)
+
+A file that imports a value and also declares a top-level `fn` or `let` of the
+same local name is refused, at the declaration:
+``rename `unwrap_or` here, or drop it from `import @vibe/builtin { .. }` ``.
+Every use would take the declaration, so the import was dead and nothing said
+so. The name that counts is the one the import binds: `import ./m.vibe
+{ helper as h }` leaves `helper` free and makes `h` taken. A block-local
+`let`, a parameter or a pattern may still shadow an import inside a body, and
+type imports (`struct Point`, `enum Color`, an uppercase bare item) are not
+part of the rule.
+
+### A struct cannot be named like a variant in scope (#3549)
+
+A struct builds by its name as well as by `S::{ .. }` (`struct B { v: Int }`
+makes `B(3)` a `B`), so a struct named like a variant of an enum it can see
+(`enum E { B(Int); C }`, local or imported) made a bare `B(3)` name two
+constructors, and the one declared later in the file won silently. The
+struct is refused with ``rename the struct `B` (or rename the variant)``;
+`E::B(..)` alone does not help, because the bare spelling stays ambiguous.
 
 ### Qualified names
 

@@ -1,7 +1,7 @@
 // Labeled args.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, expr_children
+  Expr, Pat, Stmt, TypeExpr, __to_string, expr_children
 }
 
 import @vibe/core {
@@ -956,6 +956,185 @@ fn strip_in_position_labels(args: Array[Expr], labels: Array[String]) -> Array[E
   out
 }
 
+/// #3549: what evaluating a labeled argument can do, for keeping the written
+/// order. 0: nothing observable (a literal, a lambda, a constructor name, an
+/// aggregate of those). 1: it reads a name, which a side effect of another
+/// argument could change (a `let mut` assigned through a closure, a
+/// top-level `let mut`). 2: anything else -- a call, an operator (which can
+/// trap), an interpolation, a block.
+fn labeled_arg_effect_class(e: Expr) -> Int {
+  match e {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_, _) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EFn(_, _, _, _, _, _) => 0,
+    EIdent(n, _) => if labeled_arg_ident_is_constant(n) {
+      0
+    } else {
+      1
+    },
+    ETuple(elems) => labeled_arg_effect_class_max(elems),
+    EArray(elems) => labeled_arg_effect_class_max(elems),
+    ESpread(v) => labeled_arg_effect_class(v),
+    ERecord(_, fields, _) => {
+      let mut c = 0
+      for field in fields {
+        let (_, v) = field
+        let fc = labeled_arg_effect_class(v)
+        if fc > c {
+          c = fc
+        } else {
+          ()
+        }
+      }
+      c
+    },
+    EUnaryOp(_, v) => labeled_arg_effect_class(v),
+    ELabeledArg(_, _, v) => labeled_arg_effect_class(v),
+    _ => 2
+  }
+}
+
+fn labeled_arg_effect_class_max(elems: Array[Expr]) -> Int {
+  let mut c = 0
+  for e in elems {
+    let ec = labeled_arg_effect_class(e)
+    if ec > c {
+      c = ec
+    } else {
+      ()
+    }
+  }
+  c
+}
+
+/// A constructor (`None`, `Leaf`) or a qualified name (`Pt::equals`) names
+/// one fixed value; only a lowercase plain name can be rebound by `=`.
+fn labeled_arg_ident_is_constant(n: String) -> Bool {
+  let ln = String::length(n)
+  if ln == 0 {
+    true
+  } else if String::contains(n, "::") {
+    true
+  } else {
+    let c = String::byte_at(n, 0)
+    c >= 65 && c <= 90
+  }
+}
+
+/// #3549: a labeled call is reordered into parameter order, and its
+/// arguments used to be EVALUATED in that order too: `sub(y = tr("y"),
+/// x = tr("x"))` printed `x` before `y`. True when the reorder moves two
+/// arguments past each other and at least one of them has an effect the
+/// other could observe (both read-only names never need it).
+export fn labeled_order_needs_temporaries(args: Array[Expr], param_labels: Array[String]) -> Bool {
+  let srcs = for label in param_labels {
+    labeled_source_index(args, label)
+  }
+  let classes = for src in srcs {
+    if src >= 0 {
+      labeled_arg_effect_class(Array::get(args, src))
+    } else {
+      0
+    }
+  }
+  let np = Array::length(srcs)
+  let mut needed = false
+  let mut i = 0
+  while i < np && !needed {
+    let ci = Array::get(classes, i)
+    if ci > 0 {
+      let mut j = i + 1
+      while j < np && !needed {
+        let cj = Array::get(classes, j)
+        if cj > 0 && (ci == 2 || cj == 2) && Array::get(srcs, i) > Array::get(srcs, j) {
+          needed = true
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  needed
+}
+
+/// Fresh temporaries per top-level statement (reset by `relabel_stmt`), so a
+/// statement's spelling never depends on what was relabelled before it. The
+/// `$` keeps them apart from every name a program can write.
+let labeled_order_tmp_next: Array[Int] = [0]
+
+/// #3549: `f(y = g(), x = h())` against `f(x, y)` becomes
+/// `let t0 = g(); let t1 = h(); f(t1, t0)`: each argument that can do or
+/// observe something is bound in WRITTEN order, then the call takes the
+/// temporaries in parameter order. Literals, lambdas and constructors stay in
+/// place. `final_args` is the call's argument list in parameter order (after
+/// optional filling, whose synthesized `Some(..)` stays around the
+/// temporary); `written` is the relabelled list as written.
+fn labeled_order_bind_written(callee: Expr, final_args: Array[Expr], written: Array[Expr], param_labels: Array[String], off: Int, callee_resolution: Array[Int]) -> Expr {
+  let np = Array::length(param_labels)
+  let args = for a in final_args {
+    a
+  }
+  let names = for _ in written {
+    ""
+  }
+  let values = for _ in written {
+    EUnit
+  }
+  let mut pj = 0
+  while pj < np && pj < Array::length(args) {
+    let src = labeled_source_index(written, Array::get(param_labels, pj))
+    if src >= 0 && labeled_arg_effect_class(Array::get(written, src)) > 0 {
+      let n = Array::get(labeled_order_tmp_next, 0)
+      Array::set(labeled_order_tmp_next, 0, n + 1)
+      let name = String::concat("__labeled_arg$", __to_string(n))
+      Array::set(names, src, name)
+      // Bind the value as written; an optional parameter's synthesized
+      // `Some(..)` stays at the call, around the temporary.
+      match Array::get(args, pj) {
+        ECall(EIdent(ctor, ctor_off), wrapped, wrap_off, cell) => if ctor == "Some" && ctor_off < 0 && wrap_off < 0 && Array::length(wrapped) == 1 {
+          Array::set(values, src, Array::get(wrapped, 0))
+          Array::set(args, pj, ECall(EIdent("Some", 0 - 1), [
+            EIdent(name, 0 - 1)
+          ], 0 - 1, cell))
+        } else {
+          Array::set(values, src, Array::get(args, pj))
+          Array::set(args, pj, EIdent(name, 0 - 1))
+        },
+        other => {
+          Array::set(values, src, other)
+          Array::set(args, pj, EIdent(name, 0 - 1))
+        }
+      }
+    } else {
+      ()
+    }
+    pj = pj + 1
+  }
+  let mut body = ECall(callee, args, off, callee_resolution)
+  let mut w = Array::length(written)
+  while w > 0 {
+    w = w - 1
+    let name = Array::get(names, w)
+    if String::length(name) > 0 {
+      body = ELet(name, Array::get(values, w), body, 0 - 1)
+    } else {
+      ()
+    }
+  }
+  body
+}
+
+export fn labeled_order_reset() -> Unit {
+  Array::set(labeled_order_tmp_next, 0, 0)
+}
+
 export fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[String]) -> Expr {
   match expr {
     ECall(callee, args, off, callee_resolution) => {
@@ -975,6 +1154,8 @@ export fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows:
         }
         la_i = la_i + 1
       }
+      // #3549: the parameter labels a reorder used, when one did.
+      let mut reordered_by = None
       let final_args = if any_labeled_arg {
         match target {
           EIdent(fname, foff) => {
@@ -1003,10 +1184,16 @@ export fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows:
             }
             match labels_opt {
               Some(labels) => match reorder_labeled_args(rargs, labels) {
-                Some(reordered) => strip_labeled_wrappers(reordered),
+                Some(reordered) => {
+                  reordered_by = Some(labels)
+                  strip_labeled_wrappers(reordered)
+                },
                 None => match optional_flags_for_call(fname, shadows) {
                   Some(flags) => match reorder_labeled_with_omissions(rargs, labels, flags) {
-                    Some(filled) => strip_labeled_wrappers(filled),
+                    Some(filled) => {
+                      reordered_by = Some(labels)
+                      strip_labeled_wrappers(filled)
+                    },
                     None => strip_in_position_labels(rargs, labels)
                   },
                   None => strip_in_position_labels(rargs, labels)
@@ -1027,7 +1214,14 @@ export fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows:
         },
         _ => final_args
       }
-      ECall(rcallee, opt_args, off, callee_resolution)
+      match reordered_by {
+        Some(labels) => if labeled_order_needs_temporaries(rargs, labels) {
+          labeled_order_bind_written(rcallee, opt_args, rargs, labels, off, callee_resolution)
+        } else {
+          ECall(rcallee, opt_args, off, callee_resolution)
+        },
+        None => ECall(rcallee, opt_args, off, callee_resolution)
+      }
     },
     EBinOp(op, l, r, boff) => EBinOp(op, relabel_expr(l, tbl, shadows), relabel_expr(r, tbl, shadows), boff),
     EUnaryOp(op, e) => EUnaryOp(op, relabel_expr(e, tbl, shadows)),
@@ -1254,6 +1448,7 @@ export fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows:
 }
 
 export fn relabel_stmt(stmt: Stmt, tbl: Array[(String, Array[String])]) -> Stmt {
+  labeled_order_reset()
   match stmt {
     SLet(ex, rc, name, ty, body) => SLet(ex, rc, name, ty, relabel_expr(body, tbl, empty_str_array())),
     // `fn name(..) { .. }` is SFnDecl, not SLet. Skipping it left every
