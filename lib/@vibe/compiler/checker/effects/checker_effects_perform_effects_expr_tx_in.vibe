@@ -190,7 +190,7 @@ fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: AfeLocals) -> Option[Stri
     // the reason #1358 gave for trait-based async iterators.
     Some(tn) => {
       let display = afe_display_iter_head(tn)
-      if display == "HostStream" || type_name_has_async_iterator_impl(env, display) {
+      if display == "HostStream" || type_name_has_async_iterator_impl(env, display) || afe_named_next_returns_future(env, display) {
         Some(display)
       } else if tn == afe_builtin_async_iter_head || (display == "AsyncIter" && afe_has_builtin_async_iter_provenance(env)) {
         Some("AsyncIter")
@@ -199,6 +199,38 @@ fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: AfeLocals) -> Option[Stri
       }
     },
     None => None
+  }
+}
+
+/// #3641: is `<type_name>::next` a function returning a `Future`? This is the
+/// rule the `for` desugar itself applies (`classify_sync_for_loop` /
+/// `classify_trait_free_for_loop` drive the await loop whenever
+/// `C::next`'s return head is `Future`), and it does not ask whether `next`
+/// came from a trait impl. The trait-impl scan above alone let a bare
+/// `fn Countdown::next(c: Countdown) -> Future[..]` drive an await loop from a
+/// function with no row. The env binds the method under the name the program
+/// spells the type with (an import alias included) and a generic receiver as
+/// a `CtForAll`. `Array` / `String` / `Map` keep their builtin loop in the
+/// desugar whatever `next` they have, so they are not charged here either.
+fn afe_named_next_returns_future(env: TypeEnv, type_name: String) -> Bool {
+  if type_name == "Array" || type_name == "String" || type_name == "Map" {
+    false
+  } else {
+    match env_lookup(env, String::concat(type_name, "::next")) {
+      Some(t) => afe_fn_type_returns_future(t),
+      None => false
+    }
+  }
+}
+
+fn afe_fn_type_returns_future(t: Type) -> Bool {
+  match t {
+    CtFn(_, ret, _) => match ret {
+      CtNamed(n, _) => n == "Future",
+      _ => false
+    },
+    CtForAll(_, _, body) => afe_fn_type_returns_future(body),
+    _ => false
   }
 }
 

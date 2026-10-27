@@ -21,7 +21,7 @@ import ./inspect_rewrite.vibe {
 }
 
 import ./type_names.vibe {
-  fn_exists, fn_return_is_fn_type, fn_return_type, struct_set_has
+  fn_exists, fn_return_is_fn_type, fn_return_type, resolve_alias_head, struct_set_has
 }
 
 import ./utilities.vibe {
@@ -188,9 +188,13 @@ fn build_pull_for_in(value_name: String, index_name: Option[String], iterable: E
 
 /// Does `fname`'s recorded return-type head indicate an async iterator
 /// (`next() -> Future[Option[..]]`)? Drives the `await`-wrapped loop choice.
+/// #3641: the head is followed through `type` aliases (`type Step =
+/// Future[..]`), because the checker charges `Async` from the RESOLVED return
+/// type (`afe_named_next_returns_future`); without this the aliased spelling
+/// was charged there and then refused here as having no iteration protocol.
 fn fn_return_is_future(fn_returns: Array[(String, String)], fname: String) -> Bool {
   match fn_return_type(fn_returns, fname) {
-    Some(head) => head == "Future",
+    Some(head) => resolve_alias_head(fn_returns, head) == "Future",
     None => false
   }
 }
