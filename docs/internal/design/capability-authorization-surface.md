@@ -218,9 +218,9 @@ that reads the keyword.
 
 - The book, README, cheatsheet and the spec teach one entry spelling, and it
   says what the row is.
-- The entry row hint says `allows`: `hint: add 'allows Console + Fs::read_file'
-  to 'main'`, `hint: declare 'fn main allows Fs::read_file'`; a called
-  function's hint keeps saying `with`.
+- The entry row hint says `allows`: `hint: change 'allows Console' to 'allows
+  Console + Fs::read_file' on 'main'`, `hint: declare 'fn main allows
+  Fs::read_file'`; a called function's hint keeps saying `with`.
 - The WIT world of a `.vibex` is projected from its `allows` row, which is
   the contract the run preflights.
 - A grant naming an operation its provider does not own (`allows

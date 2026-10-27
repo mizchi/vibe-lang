@@ -1081,7 +1081,7 @@ x                   // binding
 Some(x)             // constructor
 (a, b, c)           // tuple
 record { x, y }     // record
-Point::{ x, y }     // struct
+Point::{ x, y }     // struct: each field binds its own name
 A | B               // or-pattern
 x if x > 0          // guard (match arm only)
 ```
@@ -1572,8 +1572,9 @@ Mut[..]` is refused (the diagnostic starts ``remove `Mut` from the row``),
 and so is declaring `effect Mut` or `effectset Mut`.
 Missing effects are reported as a set difference (`effect row mismatch for 'f':
 missing { Fs } (declared { Exception }, requires { Exception, Fs })`) with a `hint:`
-line suggesting the exact row to declare (`hint: add 'with Exception + Fs' to
-'f'`, #639). The braces in that message render effect SETS, not source
+line suggesting the exact row to declare (`hint: change 'with Exception' to
+'with Exception + Fs' on 'f'`, #639; a function with no `with` clause gets
+`hint: declare 'fn f(...) -> T with Fs'`). The braces in that message render effect SETS, not source
 syntax — which is why they survived #1429 while the `hint:` line, being
 something you paste into your code, moved to the braceless spelling with
 everything else.
@@ -2910,10 +2911,13 @@ from `@vibe/core`.
 
 
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,
-`Int::is_even`, `Int::is_odd`, `Double::abs`, `Double::max`, `Double::min`,
-`Double::floor`, `Double::ceil` -- library functions in `@vibe/builtin`, so
-import the ones you call (`import @vibe/builtin { Int::abs, Double::floor }`);
-without the import the call is `unknown name`.
+`Int::is_even`, `Int::is_odd`, `Int::pow`, `Int::gcd`, `Double::round`,
+`Double::trunc`, `Double::clamp` -- library functions in `@vibe/builtin`, so
+import the ones you call (`import @vibe/builtin { Int::abs, Double::round }`).
+Without the import the call is `unknown name: Int::abs`, and the message names
+that import. `Double::abs`, `Double::max`, `Double::min`, `Double::floor` and
+`Double::ceil` are compiler builtins: they need no import, and importing them
+is accepted too.
 
 **Checked arithmetic** (#3127): `Int::checked_add`, `Int::checked_sub`,
 `Int::checked_mul`, `Int::checked_div`, `Int::checked_neg`, imported from
@@ -3753,6 +3757,49 @@ fn run(g: () -> Box with Exception[Int]) -> Box {
   handle { g() } with { Exception[Int]::Throw(c) => Box::{ f: () -> c } }
 }
 ```
+
+### A struct pattern binds each field by its own name
+
+`Pt::{ x, y }` binds `x` and `y`. A field cannot be renamed or matched in
+place: `let Pt::{ x: px } = p` is a parse error that names the edit. Bind the
+field by its name, or read it with `.` when two values of one struct are in
+scope:
+
+```vibe
+struct Pt { x: Int; y: Int }
+
+fn sum_xy(p: Pt) -> Int {
+  let Pt::{ x, y } = p
+  x + y
+}
+
+fn dx(a: Pt, b: Pt) -> Int {
+  let ax = a.x
+  let bx = b.x
+  ax - bx
+}
+```
+
+An anonymous record is the exception: `let record { name: n } = r` binds `n`.
+
+### `match` arms are tried in order, and a dead arm is a warning
+
+The first arm whose pattern matches wins. An arm that an earlier arm already
+covers never runs, and `vibe check` reports it as a warning located at its
+pattern (#3549): a repeated literal (`1 => 10, 1 => 20`), any arm after `_`
+or a plain name, and an arm under an irrefutable tuple such as `(k, _)`.
+
+```vibe skip
+// doctest-skip: shows the warning, which a doctest block does not assert
+match n {
+  _ => "other",
+  2 => "two"     // warning: remove this unreachable `match` arm: the earlier arm `_` already matches every value this arm matches, and arms are tried in order
+}
+```
+
+The check reads patterns only. An arm whose guard may fail
+(`1 if c => ..`) covers nothing, and an arm made dead by exhaustiveness
+(`true`, `false`, then `_`) is not reported.
 
 ### 補間できるのは Show を持つ型だけ (#1445)
 

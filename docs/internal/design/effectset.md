@@ -112,7 +112,7 @@ fix-it grants the missing operation rather than widening to the whole effect:
 
 ```text
 effect row mismatch for 'asks': missing { Ask::Get } (declared { Ask::Other }, requires { Ask::Get, Ask::Other })
-  hint: add 'with Ask::Get + Ask::Other' to 'asks'
+  hint: change 'with Ask::Other' to 'with Ask::Get + Ask::Other' on 'asks'
 ```
 
 That is the operation-level diagnostic contract pinned by

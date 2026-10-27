@@ -519,6 +519,51 @@ fn locate_interp_fragment_error(msg: String, part: String, frag_starts: Array[In
   }
 }
 
+/// A lexer error raised inside an interpolation hole, located in the file
+/// rather than in the hole: its `line L:C:` prefix counts from the fragment's
+/// first byte, which sits at `frag_base` in the remembered source. A message
+/// without that prefix, or a fragment the remembered source does not spell at
+/// `frag_base`, is returned unchanged.
+fn locate_interp_fragment_lex_error(msg: String, part: String, frag_base: Int) -> String {
+  let source = remembered_parse_source()
+  let same_source = frag_base >= 0 && frag_base + String::length(part) <= String::length(source) && String::substring(source, frag_base, frag_base + String::length(part)) == part
+  if !same_source || !String::starts_with(msg, "line ") {
+    msg
+  } else {
+    // `line L:C: rest`, L and C 1-based, C counting bytes.
+    let mut k = 5
+    let mut line = 0
+    while k < String::length(msg) && String::char_code_at(msg, k) >= 48 && String::char_code_at(msg, k) <= 57 {
+      line = line * 10 + (String::char_code_at(msg, k) - 48)
+      k = k + 1
+    }
+    let colon_ok = k < String::length(msg) && String::char_code_at(msg, k) == 58
+    k = k + 1
+    let mut col = 0
+    while k < String::length(msg) && String::char_code_at(msg, k) >= 48 && String::char_code_at(msg, k) <= 57 {
+      col = col * 10 + (String::char_code_at(msg, k) - 48)
+      k = k + 1
+    }
+    let tail_ok = k + 1 < String::length(msg) && String::char_code_at(msg, k) == 58 && String::char_code_at(msg, k + 1) == 32
+    if !colon_ok || !tail_ok || line < 1 || col < 1 {
+      msg
+    } else {
+      let mut off = 0
+      let mut at_line = 1
+      while off < String::length(part) && at_line < line {
+        if String::char_code_at(part, off) == 10 {
+          at_line = at_line + 1
+        } else {
+          ()
+        }
+        off = off + 1
+      }
+      let (l2, c2) = offset_to_line_col(source, frag_base + off + col - 1)
+      String::concat("line ", String::concat(__to_string(l2), String::concat(":", String::concat(__to_string(c2), String::substring(msg, k, String::length(msg))))))
+    }
+  }
+}
+
 /// Desugar a string-interpolation token's parts into a `String::concat` chain.
 /// Parts alternate literal/expression by index (even = literal chunk, odd =
 /// embedded expression SOURCE). The embedded expression is lexed and parsed as a
@@ -561,11 +606,20 @@ fn build_interp_expr(parts: Array[String], offsets: Array[Int], outer_starts: Ar
         ()
       }
     } else {
-      let (ftoks, fstarts, fends) = lex_with_offsets(part)
       let frag_off = if i < Array::length(offsets) {
         Array::get(offsets, i)
       } else {
         -1
+      }
+      // #3549: the fragment is lexed on its own, so a lexer error's
+      // `line L:C:` counted from the hole (`1e10` in `"x \{1e10}"` read
+      // `line 1:2`). It is moved to the file's own position.
+      let (ftoks, fstarts, fends) = if frag_off >= 0 {
+        handle {
+          lex_with_offsets(part)
+        } with { Exception::Throw(msg) => throw(locate_interp_fragment_lex_error(msg, part, frag_off)) }
+      } else {
+        lex_with_offsets(part)
       }
       if frag_off >= 0 {
         binder_capture_push_fragment(context, fstarts, fends, frag_off)

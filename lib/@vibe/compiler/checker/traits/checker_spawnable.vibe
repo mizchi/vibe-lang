@@ -907,6 +907,41 @@ fn sp_fact_name(fact_name: String) -> String {
   String::substring(fact_name, 2, String::length(fact_name))
 }
 
+/// #3549: a type as these messages show it. An inference variable (`?t238`)
+/// and a region the checker made up for a `TaskGroup` (`#region_240`) are not
+/// names the reader wrote or can write, so both read `_`:
+/// `Sender[_, _, Int]`, not `Sender[#region_240, ?t238, Int]`.
+fn sp_type_for_reader(t: Type) -> String {
+  let raw = type_to_string(t)
+  let n = String::length(raw)
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let skip = if i + 2 < n && String::byte_at(raw, i) == '?' && String::byte_at(raw, i + 1) == 't' && sp_is_digit(String::byte_at(raw, i + 2)) {
+      2
+    } else if i + 8 < n && String::byte_at(raw, i) == '#' && String::substring(raw, i, i + 8) == "#region_" && sp_is_digit(String::byte_at(raw, i + 8)) {
+      8
+    } else {
+      0
+    }
+    if skip > 0 {
+      StringBuilder::push(out, "_")
+      i = i + skip
+      while i < n && sp_is_digit(String::byte_at(raw, i)) {
+        i = i + 1
+      }
+    } else {
+      StringBuilder::push(out, String::substring(raw, i, i + 1))
+      i = i + 1
+    }
+  }
+  StringBuilder::freeze(out)
+}
+
+fn sp_is_digit(b: Int) -> Bool {
+  b >= '0' && b <= '9'
+}
+
 /// Judge recorded capture facts against THIS spawn call's region.
 fn sp_judge_facts(env: TypeEnv, s: Subst, defs: Array[TypeDef], facts: Array[Type], r_here: Type, formals: Array[Int]) -> Array[String] {
   let out = sp_empty_strings()
@@ -934,13 +969,13 @@ fn sp_judge_facts(env: TypeEnv, s: Subst, defs: Array[TypeDef], facts: Array[Typ
             // it. The generic "neither Send nor a same-nursery endpoint" did
             // not say what to write instead; the stream has one reader, so
             // the edit is to open it where it is read.
-            Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(type_to_string(resolved), String::concat("`: capture `", String::concat(vname, "` holds a host stream, which only one task may read or close -- open the stream inside the spawned task (call `host_stream_named` there, or start the request there for a response body) instead of capturing it")))))
+            Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(sp_type_for_reader(resolved), String::concat("`: capture `", String::concat(vname, "` holds a host stream, which only one task may read or close -- open the stream inside the spawned task (call `host_stream_named` there, or start the request there for a response body) instead of capturing it")))))
           } else if (r_here is CtUnknown) && sp_is_endpoint_head(resolved) {
             // #3640: the group was written without its region, so no endpoint
             // can be seen to share its nursery; the edit is to write it.
-            Array::push(out, "write the group this call spawns into as `TaskGroup[rg, e]`, adding `[rg, e]` to the function's type parameters: capture `\{vname}` is a `\{type_to_string(resolved)}`, which a spawned task may hold only when it belongs to the group's own nursery, and a group written `TaskGroup` names no nursery")
+            Array::push(out, "write the group this call spawns into as `TaskGroup[rg, e]`, adding `[rg, e]` to the function's type parameters: capture `\{vname}` is a `\{sp_type_for_reader(resolved)}`, which a spawned task may hold only when it belongs to the group's own nursery, and a group written `TaskGroup` names no nursery")
           } else {
-            Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(type_to_string(resolved), String::concat("`: capture `", String::concat(vname, "` is neither Send nor a same-nursery endpoint")))))
+            Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(sp_type_for_reader(resolved), String::concat("`: capture `", String::concat(vname, "` is neither Send nor a same-nursery endpoint")))))
           }
         } else {
           // `p:` -- checked at the enclosing function's own call sites.

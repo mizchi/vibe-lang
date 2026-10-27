@@ -2269,8 +2269,9 @@ if ! grep -qF "hint: declare 'fn mid(...) -> T with Fs'" "$pfdir/bad_transitive.
   echo "[compiler-gate] FAIL: no-row reject lacks the declare-form fix-it hint (#639)" >&2
   cat "$pfdir/bad_transitive.wasm.diag" >&2 2>/dev/null; exit 1
 fi
-# #639: a caller that already declares a row gets the add-form hint carrying
-# the sorted union (existing row preserved, missing effect appended).
+# #639: a caller that already declares a row gets a hint carrying the sorted
+# union (existing row preserved, missing effect appended). #3549: it names the
+# clause to change, since an "add 'with ..'" asked for a second clause.
 cat > "$pfdir/bad_row_single.vibe" <<'EOF'
 let leaf: (String) -> String with Fs = (p) -> {
   Fs::read_file(p)
@@ -2296,7 +2297,7 @@ if ! grep -qF "effect row mismatch for 'mid': missing { Fs } (declared { Excepti
   echo "[compiler-gate] FAIL: partial-row reject lacks the declared-vs-required diff (#639)" >&2
   cat "$pfdir/bad_row_single.wasm.diag" >&2 2>/dev/null; exit 1
 fi
-if ! grep -qF "hint: add 'with Exception + Fs' to 'mid'" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
+if ! grep -qF "hint: change 'with Exception' to 'with Exception + Fs' on 'mid'" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: partial-row reject lacks the add-form fix-it hint (#639)" >&2
   cat "$pfdir/bad_row_single.wasm.diag" >&2 2>/dev/null; exit 1
 fi
