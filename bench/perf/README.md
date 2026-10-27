@@ -3,6 +3,17 @@
 CI heap KPI gate, micro benches, and perf-investigation postmortems for the
 compiler / checker.
 
+## Formal representatives per publication (2026-10-27)
+
+Reuse a local representative table across one `callee_formal_bindings` call.
+Three alternating A/B pairs reduce uncached flat compiler walltime from 79.104 s
+to 45.662 s (-42.28%), with identical Wasm. Allocation falls 0.63%; reserved
+pages stay unchanged. FS wall differences are inconclusive. Bump/RC/shadow,
+GC and a detecting partial-formal negative control preserve publication behavior.
+
+See the [report](../../docs/internal/reports/formal-representative-reuse-2026-10-27.md)
+and [raw record](analysis/formal-representative-reuse-2026-10-27.json).
+
 ## Precise imported Show wrappers (2026-10-03)
 
 Module-owned wrapper facts remove inert render rows from ordinary imported

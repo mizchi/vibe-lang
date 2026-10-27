@@ -3,7 +3,12 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/checker {
-  callee_formal_bindings, callee_formal_marked_bindings, callee_formal_query_subst, callee_inst_types_cell
+  callee_formal_bindings,
+  callee_formal_marked_bindings,
+  callee_formal_query_subst,
+  callee_inst_types_cell,
+  record_eq_formal_var,
+  reset_eq_formal_vars
 }
 
 fn fill_calls(count: Int) -> Unit {
@@ -37,4 +42,64 @@ test "large formal tables preserve display and marked publication rows" {
   let (_, first) = Array::get(before, 0)
   assert_true(Array::length(first) > 0)
   Array::truncate(callee_inst_types_cell, 0)
+}
+
+// Representative reuse belongs to one publication, not the next completed
+// check: variable ids and binder records can both change between calls.
+test "formal publication recomputes representatives for each invocation" {
+  reset_eq_formal_vars()
+  fill_calls(3)
+  record_eq_formal_var(7, "Outer", 0, 0, false)
+  let first = callee_formal_bindings([], SubstEmpty)
+  assert(first == [
+    ("0:get", [("S$0", "Outer")]),
+    ("1:get", [("S$0", "Outer")]),
+    ("2:get", [("S$0", "Outer")])
+  ])
+  let concrete = callee_formal_bindings([], SubstBind(7, CtString, SubstEmpty))
+  assert(concrete == [
+    ("0:get", [("S$0", "String")]),
+    ("1:get", [("S$0", "String")]),
+    ("2:get", [("S$0", "String")])
+  ])
+  reset_eq_formal_vars()
+  record_eq_formal_var(7, "Inner", 0, 0, false)
+  let renamed = callee_formal_bindings([], SubstEmpty)
+  let (_, renamed_first) = Array::get(renamed, 0)
+  assert(renamed_first == [("S$0", "Inner")])
+  let (_, retained_first) = Array::get(first, 0)
+  assert(retained_first == [("S$0", "Outer")])
+  record_eq_formal_var(8, "Other", 0, 0, false)
+  let clashed = callee_formal_bindings([], SubstBind(8, CtVar(7), SubstEmpty))
+  for entry in clashed {
+    let (_, texts) = entry
+    assert_eq(Array::length(texts), 0)
+  }
+  Array::truncate(callee_inst_types_cell, 0)
+  assert_eq(Array::length(callee_formal_bindings([], SubstEmpty)), 0)
+  reset_eq_formal_vars()
+}
+
+// Display substitution drops a partly unresolved tuple. Its fallback must
+// still distinguish a binder's formal from the ordinary inference variable.
+test "partial callee arguments preserve formal spelling across publications" {
+  reset_eq_formal_vars()
+  fill_calls(1)
+  let scheme = CtForAll([0], [], CtFn([CtVar(0)], CtInt, Some("State[S$0]")))
+  let inst = CtFn([CtTuple([CtVar(7), CtVar(9)])], CtInt, Some("State[S$0]"))
+  Array::set(callee_inst_types_cell, 0, (0, scheme, inst, "get"))
+  record_eq_formal_var(7, "Outer", 0, 0, false)
+  assert(callee_formal_bindings([], SubstEmpty) == [
+    ("0:get", [("S$0", "(Outer, _)")])
+  ])
+  reset_eq_formal_vars()
+  record_eq_formal_var(7, "Inner", 0, 0, false)
+  assert(callee_formal_bindings([], SubstEmpty) == [
+    ("0:get", [("S$0", "(Inner, _)")])
+  ])
+  record_eq_formal_var(8, "Other", 0, 0, false)
+  let s = SubstBind(8, CtVar(7), SubstEmpty)
+  assert(callee_formal_bindings([], s) == [("0:get", [("S$0", "(_, _)")])])
+  Array::truncate(callee_inst_types_cell, 0)
+  reset_eq_formal_vars()
 }
