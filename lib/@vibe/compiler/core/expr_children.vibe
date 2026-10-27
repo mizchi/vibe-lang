@@ -214,6 +214,42 @@ export fn typed_f32_assign_verdict() -> String {
   "Assign"
 }
 
+/// #3653: the verdict of a NEGATION row, keyed by `typed_negation_operand_key`
+/// of its operand: under `typed_float_operand_row_head` for every `Double` /
+/// `Float` negation (mark the operand), under `typed_f32_row_head` for the
+/// `Float` ones (keep the result a `Float`).
+export fn typed_f32_negation_verdict() -> String {
+  "Neg"
+}
+
+/// #3653: the key a negation's float-operand row is filed under and looked up
+/// by. A unary operator carries no offset of its own, so the row is keyed by
+/// its operand's: a name's, a call's (its callee's), or a projection's field
+/// name -- the offset of one source token. A join or a block (`-(if c { a }
+/// else { b })`, `-{ ...; v }`) is keyed by the value it ends in (the first
+/// branch's, the first arm's), whose type is the operand's own, so every
+/// negation filed under one key negates a value of one type, and a row can
+/// only mark a negation of the type it was filed for. Anything else (a
+/// literal, a nested operator) answers `-1` and files nothing: the lowering
+/// already reads those as floats from their syntax, or through the marks on
+/// the operators inside them.
+export fn typed_negation_operand_key(operand: Expr) -> Int {
+  match operand {
+    EIf(_, then_e, _) => typed_negation_operand_key(then_e),
+    EMatch(_, arms) => if Array::length(arms) > 0 {
+      let (_, body) = Array::get(arms, 0)
+      typed_negation_operand_key(body)
+    } else {
+      0 - 1
+    },
+    ELet(_, _, body, _) => typed_negation_operand_key(body),
+    ELetMut(_, _, body, _) => typed_negation_operand_key(body),
+    ELetRec(_, _, body) => typed_negation_operand_key(body),
+    ESeq(_, second) => typed_negation_operand_key(second),
+    _ => typed_lowering_arg_offset(operand)
+  }
+}
+
 /// #3133: the receiver is a Map -- the index is `Map::get`.
 export fn typed_index_map_verdict() -> String {
   "#map"

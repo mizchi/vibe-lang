@@ -61,6 +61,7 @@ import @vibe/compiler/core {
   typed_add_row_head,
   typed_f32_assign_verdict,
   typed_f32_binop_verdict,
+  typed_f32_negation_verdict,
   typed_f32_row_head,
   typed_float_operand_row_head,
   typed_forin_row_head,
@@ -1345,7 +1346,10 @@ export fn forin_receiver_rows_from_capture(checked: CheckedProgram, capture: Typ
 /// #3629: the same extraction carries the float-OPERAND rows,
 /// `#fop[Binop|Assign]`: a `Double` / `Float` arithmetic or ordering binop
 /// (kind 11) or compound assignment (kind 12), whose operands the rewrite
-/// marks as floats so the lowering never reads them as Int bits.
+/// marks as floats so the lowering never reads them as Int bits. #3653: and
+/// `#fop[Neg]`, a `Double` / `Float` negation (kind 14), keyed by
+/// `typed_negation_operand_key` of its operand, plus `#f32[Neg]` for a
+/// `Float` one (kind 15), whose result the rewrite keeps a `Float`.
 export fn float_arith_rows_from_capture(capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String]) {
   let offs: Array[Int] = []
   let keys: Array[String] = []
@@ -1353,14 +1357,16 @@ export fn float_arith_rows_from_capture(capture: TypedOccurrenceRoleLaneCapture)
   let mut i = 0
   while i + 1 < n {
     let kind = Array::get(capture.binop_kinds, i)
-    if kind == 9 || kind == 10 || kind == 11 || kind == 12 {
+    if kind == 9 || kind == 10 || kind == 11 || kind == 12 || kind == 14 || kind == 15 {
       let off = Array::get(capture.binop_offsets, i)
       let verdict = if kind == 9 || kind == 11 {
         typed_f32_binop_verdict()
+      } else if kind == 14 || kind == 15 {
+        typed_f32_negation_verdict()
       } else {
         typed_f32_assign_verdict()
       }
-      let head = if kind == 9 || kind == 10 {
+      let head = if kind == 9 || kind == 10 || kind == 15 {
         typed_f32_row_head()
       } else {
         typed_float_operand_row_head()
