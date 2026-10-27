@@ -5,7 +5,15 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, dir_of_path, executable_export_kept_bytes, is_contract_ext, merged_offset_owner, unstable_package_note
+  Expr,
+  Stmt,
+  dir_of_path,
+  executable_export_kept_bytes,
+  is_contract_ext,
+  loader_physical_located,
+  loader_prepended_prefix_bytes,
+  merged_offset_owner,
+  unstable_package_note
 }
 
 import @vibe/compiler/cache {
@@ -525,7 +533,15 @@ fn locate_merged_interp_refusal(msg: String, site: Int) -> String {
     } else {
       match merged_offset_owner(start) {
         Some((path, source, local)) => {
-          let transformed = String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker)
+          // #3656: a directory-shared sibling is the file as written past the
+          // block the loader prepended; only an offset inside that block, or
+          // a text the loader generated, has no position on disk.
+          let skip = loader_prepended_prefix_bytes(source)
+          let transformed = if skip > 0 {
+            local < skip
+          } else {
+            String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker)
+          }
           let site_ok = if site == 1 {
             // #3139: a written `Array::set(..)` is keyed by its name.
             local >= 0 && local < String::length(source) && (String::char_code_at(source, local) == '[' || offset_starts_name(source, local))
@@ -543,7 +559,7 @@ fn locate_merged_interp_refusal(msg: String, site: Int) -> String {
               String::concat(__to_string(local), String::concat(":", __to_string(local + end - start)))
             }
             let rebased = String::concat(String::substring(msg, 0, inner_start), String::concat(local_inner, String::substring(msg, inner_start + rel, String::length(msg))))
-            let located = locate_type_error(source, rebased)
+            let located = loader_physical_located(source, locate_type_error(source, rebased))
             if String::starts_with(located, "line ") {
               String::concat(path, String::concat(": ", located))
             } else {
@@ -1018,7 +1034,7 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
             gi2 = gi2 + 1
           }
           if owners == 1 {
-            throw(String::concat(owner_path, String::concat(": ", locate_type_error(owner_source, msg))))
+            throw(String::concat(owner_path, String::concat(": ", loader_physical_located(owner_source, locate_type_error(owner_source, msg)))))
           } else {
             // locate against an empty source: the anchor cannot resolve, so
             // this only strips the side marker from the message.
@@ -1164,7 +1180,22 @@ fn locate_merged_marker(input_path: String, entry_source: String, source_groups:
       let local = marker_in_file_space(msg)
       // The entry too: its recorded text can be synthesized (a directory's
       // shared vpkg imports prepended), and `entry_source` is the file as read.
-      if String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker) {
+      // #3656: a directory-shared sibling (the entry or not) is located in
+      // its recorded text and moved past the prepended block, which leaves a
+      // position on disk or none.
+      if loader_prepended_prefix_bytes(source) > 0 {
+        let verified = if culprit {
+          verify_culprit_off_marker(source, local)
+        } else {
+          local
+        }
+        let located = loader_physical_located(source, locate_type_error(source, verified))
+        if String::starts_with(located, "line ") {
+          String::concat(path, String::concat(": ", located))
+        } else {
+          locate_type_error("", verified)
+        }
+      } else if String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker) {
         locate_type_error("", verify_culprit_off_marker("", local))
       } else if path == input_path {
         let located = locate_type_error(entry_source, if culprit {
@@ -1250,8 +1281,16 @@ fn missing_show_source_owns(source: String, msg: String) -> Bool {
 /// require the complete synthetic snapshot to match. None when the physical
 /// text cannot be verified -- the caller must then treat the member as
 /// unlocatable rather than emit coordinates computed on synthetic text.
+///
+/// #3656: a directory-shared sibling is answered with its recorded text, in
+/// whose space the offset is counted; the caller moves the position it locates
+/// there past the prepended block (`loader_physical_located`). Before, the
+/// PHYSICAL text was returned and read at the INGESTED offset, a block's
+/// length away from the byte the offset names.
 fn owner_locating_source(path: String, source: String) -> Option[String] with Env + Exception + Fs {
-  if String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker) {
+  if loader_prepended_prefix_bytes(source) > 0 {
+    Some(source)
+  } else if String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker) {
     if Fs::exists(path) {
       let physical = cache_read_source_fs(path)
       if source == ingest_source_text_fs(path, physical) {

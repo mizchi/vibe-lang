@@ -16,6 +16,10 @@
 // per-module typecheck, which locates its own diagnostics) cannot be resolved
 // against the previous compile's files.
 
+import ./loader_prepended_prefix.vibe {
+  loader_physical_text, loader_prepended_prefix_bytes
+}
+
 let merged_offset_paths: Array[String] = []
 
 let merged_offset_sources: Array[String] = []
@@ -54,10 +58,13 @@ export fn merged_offset_locations_snapshot() -> MergedOffsetLocations {
     let mut i = 0
     while i < Array::length(merged_offset_paths) {
       let source = Array::get(merged_offset_sources, i)
-      let real = !merged_offset_is_synthesized(source)
+      // #3656: a directory-shared sibling is placed from the end of the block
+      // the loader prepended, where the file on disk begins.
+      let skip = loader_prepended_prefix_bytes(source)
+      let real = skip > 0 || !merged_offset_is_synthesized(source)
       Array::push(paths, Array::get(merged_offset_paths, i))
-      Array::push(bases, Array::get(merged_offset_bases, i))
-      Array::push(lengths, String::length(source))
+      Array::push(bases, Array::get(merged_offset_bases, i) + skip)
+      Array::push(lengths, String::length(source) - skip)
       Array::push(placed, real)
       Array::push(newlines, if real {
         merged_offset_newlines(i)
@@ -159,8 +166,10 @@ export fn merged_offset_owner(off: Int) -> Option[(String, String, Int)] {
 /// by zero), so it declines rather than guess: no merge recorded, an offset
 /// past every file (an alias-collision clone), or a file whose parsed text is
 /// not the text on disk. The loader prepends a `// vibe: ...` marker line to
-/// the two sources it synthesizes (a contract facade, a vpkg's shared
-/// imports), and a position in that text is not one the reader can open.
+/// the sources it synthesizes (a contract facade, a types module), and a
+/// position in that text is not one the reader can open. A vpkg's shared
+/// imports are prepended to a file the reader DID write (#897); its offsets
+/// are counted from the end of that block (#3656), and one inside it declines.
 ///
 /// Called once per division site by the string-pool pass and again by
 /// codegen, so each file's newline table is built once and searched.
@@ -209,12 +218,19 @@ export fn merged_offset_line_col(off: Int) -> (String, Int, Int) {
       i = i + 1
     }
   }
+  let skip = if file < 0 {
+    0
+  } else {
+    loader_prepended_prefix_bytes(Array::get(merged_offset_sources, file))
+  }
   if off < 0 || file < 0 {
     ("", 0, 0)
-  } else if merged_offset_is_synthesized(Array::get(merged_offset_sources, file)) {
+  } else if skip == 0 && merged_offset_is_synthesized(Array::get(merged_offset_sources, file)) {
+    ("", 0, 0)
+  } else if off - Array::get(merged_offset_bases, file) < skip {
     ("", 0, 0)
   } else {
-    let local = off - Array::get(merged_offset_bases, file)
+    let local = off - Array::get(merged_offset_bases, file) - skip
     let nls = merged_offset_newlines(file)
     // The count of newlines strictly before `local` is the 0-based line; the
     // last of them ends the previous line.
@@ -251,7 +267,8 @@ fn merged_offset_newlines(file: Int) -> Array[Int] {
   if Array::get(merged_offset_nls_built, file) {
     Array::get(merged_offset_nls, file)
   } else {
-    let source = Array::get(merged_offset_sources, file)
+    // Counted in the file on disk (#3656), which is where `local` is counted.
+    let source = loader_physical_text(Array::get(merged_offset_sources, file))
     let len = String::length(source)
     // Counted first, so the table is allocated once at its final size.
     let mut count = 0

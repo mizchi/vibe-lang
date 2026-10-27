@@ -87,6 +87,23 @@ they were given. Empty output then reads as "nothing here", which is the CLI's
 own spelling of *clean*, so the mistake is silent. Going through `vibe lsp`
 instead is the way to avoid doing the conversion yourself.
 
+## A package sibling is located in the file on disk (#3656)
+
+A `.vibe` file next to an `index.vpkg` that shares imports (#897) is not
+compiled as written: the loader prepends a block of inherited imports to it,
+closed by the line `// vibe: end of vpkg directory-shared imports (#3656)`,
+and the passes after it read that text. Every position reported for such a
+file is counted in the file as written: a `vibe check` diagnostic (text and
+`--json`), a parse error in an imported sibling, an import error, a refusal
+raised by `vibe build` after the merge, a runtime `Int` division-by-zero
+location and a trap frame's `file:line`. Before this, each was the block's
+height too low (`fn helper` duplicated on line 5 reported at line 7), the
+merged refusals carried no position, and `vibe check --json` could crash
+converting a line past the end of the file. A diagnostic about the inherited
+imports themselves names no position in the sibling, because the author did
+not write those lines there. Pinned by
+`lib/@vibe/compiler/tests/vpkg_shared_prefix_positions_test.vibe`.
+
 ## `vibe grep` ranges identify source occurrences
 
 Matches and captures carry `start` and `end` as 0-based, half-open **byte**

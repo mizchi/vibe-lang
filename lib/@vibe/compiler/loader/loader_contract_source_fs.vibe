@@ -23,6 +23,8 @@ import @vibe/compiler/core {
   ensure_regular_source_fs,
   external_lib_roots,
   is_contract_ext,
+  loader_prepended_prefix_bytes,
+  loader_shared_imports_end_marker,
   nearest_vpkg_path_fs,
   normalize_path,
   path_in_dir,
@@ -1875,7 +1877,10 @@ fn shared_import_prefix_unshadowed(prefix: String, sibling: String) -> String wi
 }
 
 export fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: String) -> String with Env + Exception + Fs {
-  if String::starts_with(pin_blanked, vpkg_shared_import_marker) {
+  // An ingested text opens with the marker and holds the end marker; a file
+  // whose author merely began it with the marker comment still gets its
+  // imports.
+  if String::starts_with(pin_blanked, vpkg_shared_import_marker) && loader_prepended_prefix_bytes(pin_blanked) > 0 {
     pin_blanked
   } else {
     let prefix = vpkg_directory_shared_import_prefix_fs(path)
@@ -1888,7 +1893,11 @@ export fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: Stri
       let sib = String::concat(vpkg_contract_effects_prefix, String::concat(vpkg_sibling_ident(path), "__"))
       let own_prefix = shared_import_prefix_unshadowed(String::join(String::split(prefix, slot), sib), pin_blanked)
       // The short head is joined first, so the member's source is copied once.
-      String::concat(String::concat(vpkg_shared_import_marker, own_prefix), pin_blanked)
+      // #3656: the block closes with its end marker, so a position counted in
+      // the ingested text can be moved back to the file on disk
+      // (`loader_physical_located`): everything after the marker is the file,
+      // byte for byte.
+      String::concat(String::concat(vpkg_shared_import_marker, String::concat(own_prefix, loader_shared_imports_end_marker)), pin_blanked)
     }
   }
 }

@@ -442,8 +442,10 @@ ur_refused fixtures/err_impl_overlap_plain_after_impl_refused.vibe 'both define 
 # #3551: no unit is exempt by a marker comment. A module opening with the
 # facade's comment, and a real sibling the loader prefixes with the
 # shared-import marker (#897), were skipped and built `from-a from-a` / `from-pkg-a from-pkg-a`.
+# #3656: the sibling is located on its line on disk, past the loader's block;
+# the module that merely opens with the comment is still named without one.
 ur_refused fixtures/err_impl_overlap_marker_comment_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_marker_comment.vibe: remove'
-ur_refused fixtures/err_impl_overlap_vpkg_sibling_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_pkg_b/impl.vibe: remove'
+ur_refused fixtures/err_impl_overlap_vpkg_sibling_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_pkg_b/impl.vibe: line 7:1: remove'
 # #3551: a binding in another trait's namespace inside an impl's run no longer
 # ends it; both modules' inherited `Int::get` built `from-a from-a`.
 ur_refused fixtures/err_impl_overlap_inherited_after_trait_binding_refused.vibe 'both define `Int::get`' 'remove one of these: `impl Child for Int`' linear 'fixtures/modules/impl_overlap_inherited_b.vibe: line 7:1'
