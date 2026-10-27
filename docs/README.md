@@ -93,6 +93,7 @@ the repo; not the user manual.
 | Path | Notes |
 | --- | --- |
 | [internal/design/adr.md](internal/design/adr.md) | Living ADR log |
+| [internal/design/argument-labels.md](internal/design/argument-labels.md) | ADR-0120, proposed and unimplemented: argument labels required at every call to a declaration (Swift-style), with the call-site measurement and the migration plan |
 | [internal/design/async-host-contract.md](internal/design/async-host-contract.md) | #2832: every async host import read off the emitters — what the values mean, who owns a handle, what completion looks like, and how a cancelled wait is released (`future.cancel-read` / `stream.cancel-read` / `subtask.cancel`). The synchronous sibling is [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) |
 | [internal/design/capability-authorization-surface.md](internal/design/capability-authorization-surface.md) | ADR-0088, partial: the capability grant ladder; L1 and L3 are connected for `vibe run` |
 | [internal/design/capability-host-contract.md](internal/design/capability-host-contract.md) | ADR-0088's host half (#2825 step 1), partial (withholding landed; `vibe.capabilities` and the grant globals are not built): what a host does with a capability import it withholds |
