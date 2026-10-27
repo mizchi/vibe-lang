@@ -1,0 +1,77 @@
+// #3625: linked debug libraries own separate memories and function tables.
+// A hidden witness contains a closure/table index, so correcting the import
+// arity alone cannot make it portable. Refuse before emitting invalid Wasm.
+import @vibe/compiler/core {
+  Expr, Stmt, builtin_shadow_source_name, contains_name, path_set_new
+}
+import @vibe/compiler/normalize {
+  desugar_trait_dicts_with_typed_eq
+}
+import ./merge_sources.vibe {
+  collect_located_merged_stmts
+}
+
+fn witness_signature(stmt: Stmt, wanted: Array[String]) -> Option[Stmt] {
+  match stmt {
+    STrait(_, _, _, _, _, _) => Some(stmt),
+    SImpl(_, _, _, _) => Some(stmt),
+    STypeAlias(_, _, _, _) => Some(stmt),
+    SStruct(_, _, _, _, _, _) => Some(stmt),
+    SEnum(_, _, _, _, _) => Some(stmt),
+    SLet(ex, fn_decl, name, ann, EFn(tp, bs, ps, ret, eff, _)) => if contains_name(wanted, name) {
+      Some(SLet(ex, fn_decl, name, ann, EFn(tp, bs, ps, ret, eff, EUnit)))
+    } else {
+      None
+    },
+    SFnDecl(ex, name, EFn(tp, bs, ps, ret, eff, _), _, _) => if contains_name(wanted, name) {
+      Some(SLet(ex, true, name, None, EFn(tp, bs, ps, ret, eff, EUnit)))
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// Use the library's normalizer as the ABI authority. Marker bounds add no
+/// parameters and remain supported; method-bearing bounds cannot cross this
+/// linked-memory boundary. The same source signatures drive both decisions.
+export fn refuse_linked_witness_imports(specs: Array[(String, String)], imports: Array[(String, String, Int, Int)]) -> Unit with Env + Exception + Fs {
+  for spec in specs {
+    let wanted: Array[String] = []
+    for row in imports {
+      if row.0 == spec.0 {
+        Array::push(wanted, row.1)
+      }
+    }
+    let source: Array[Stmt] = []
+    collect_located_merged_stmts(spec.1, source, path_set_new())
+    let sigs: Array[Stmt] = []
+    for st in source {
+      match witness_signature(st, wanted) {
+        Some(sig) => Array::push(sigs, sig),
+        None => ()
+      }
+    }
+    desugar_trait_dicts_with_typed_eq(sigs, [], [])
+    for row in imports {
+      if row.0 == spec.0 {
+        let mut found = false
+        for st in sigs {
+          match st {
+            SLet(_, _, name, _, EFn(_, _, params, _, _, _)) => if builtin_shadow_source_name(name) == row.1 {
+              found = true
+              if Array::length(params) != row.2 {
+                throw("build without --debug, or export a concrete wrapper for `" + spec.0 + "::" + name + "`: this generic import needs trait witnesses; linked debug libraries have separate memories and function tables")
+              }
+            },
+            _ => ()
+          }
+        }
+        if !found {
+          throw("build without --debug, or export a concrete wrapper for `" + spec.0 + "::" + row.1 + "`: this linked export has no direct function signature, so its call ABI cannot be verified")
+        }
+      }
+    }
+  }
+  ()
+}

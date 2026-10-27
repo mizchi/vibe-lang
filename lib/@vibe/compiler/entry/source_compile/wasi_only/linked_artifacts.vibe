@@ -32,6 +32,10 @@ import @vibe/compiler/core {
 import @vibe/compiler/syntax {
   lex, parse_program, rewrite_string_binops_stmts
 }
+import ./linked_witness_guard.vibe {
+  refuse_linked_witness_imports
+}
+
 import ./linked_helpers.vibe {
   resolve_reexport_chain
 }
@@ -358,7 +362,7 @@ export fn collect_linked_compile_inputs_with_rows(entry_path: String) -> (Array[
   (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, linked_entry_checked_rows(entry_path, entry_source))
 }
 
-export fn compile_file_wasi_linked_artifacts(entry_path: String, entry_name: String) -> (Bytes, Array[(String, String, Int, Int)], Array[(String, String)]) with Exception + Fs {
+export fn compile_file_wasi_linked_artifacts(entry_path: String, entry_name: String) -> (Bytes, Array[(String, String, Int, Int)], Array[(String, String)]) with Env + Exception + Fs {
   let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, checked_rows) = collect_linked_compile_inputs_with_rows(entry_path)
   let stmts = empty_stmt_array()
   append_stmt_array(stmts, resolved_type_stmts)
@@ -373,13 +377,14 @@ export fn compile_file_wasi_linked_artifacts(entry_path: String, entry_name: Str
   // not the program's; the import-resolving check's are, when one ran in
   // this process on this text. Without them the lane refuses what it cannot
   // answer (an interpolated untyped shadow, #3456; a `Float`, #3543).
+  refuse_linked_witness_imports(linked_dep_specs, linked_imports)
   desugar_linked_entry(stmts, checked_rows)
   strip_generic_type_params(stmts)
   let wasm = compile_linked_entry_module(stmts, entry_name, array_empty(), linked_imports, checked_rows)
   (wasm, linked_imports, linked_dep_specs)
 }
 
-export fn compile_file_wasi_linked(entry_path: String, entry_name: String) -> (Bytes, Array[(String, String, Int, Int)]) with Exception + Fs {
+export fn compile_file_wasi_linked(entry_path: String, entry_name: String) -> (Bytes, Array[(String, String, Int, Int)]) with Env + Exception + Fs {
   let (wasm, linked_imports, _) = compile_file_wasi_linked_artifacts(entry_path, entry_name)
   (wasm, linked_imports)
 }

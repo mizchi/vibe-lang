@@ -37,7 +37,7 @@ import ./models.vibe {
 }
 
 import ./state.vibe {
-  dtd_trait_method_binders, dtd_trait_method_sigs_raw, dtd_trait_supers
+  dtd_trait_method_binders, dtd_trait_method_owners, dtd_trait_method_sigs_raw, dtd_trait_supers
 }
 
 import ./trait_bounds.vibe {
@@ -49,11 +49,12 @@ import ./utilities.vibe {
 }
 
 /// Record every trait's per-method binders for this program. Only traits that
-/// give at least one method a binder of its own are kept, so a program without
-/// method generics pays nothing.
+/// give a method a binder are kept in the binder table. Raw signatures also
+/// serve scalar witness defaults, which run before dict structs are emitted.
 export fn dtd_trait_method_binders_set(stmts: Array[Stmt], traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
   Array::truncate(dtd_trait_method_binders, 0)
   Array::truncate(dtd_trait_method_sigs_raw, 0)
+  Array::truncate(dtd_trait_method_owners, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -66,13 +67,10 @@ export fn dtd_trait_method_binders_set(stmts: Array[Stmt], traits_raw: Array[(St
     }
     i = i + 1
   }
-  if Array::length(dtd_trait_method_binders) > 0 {
-    let mut ti = 0
-    while ti < Array::length(traits_raw) {
-      Array::push(dtd_trait_method_sigs_raw, Array::get(traits_raw, ti))
-      ti = ti + 1
-    }
+  for row in traits_raw {
+    Array::push(dtd_trait_method_sigs_raw, row)
   }
+  ()
 }
 
 fn declared_method_binder(trait_name: String, method: String) -> Option[(Array[String], Array[(String, Array[String])])] {
@@ -111,12 +109,7 @@ export fn trait_method_binder(trait_name: String, method: String) -> Option[(Arr
   if Array::length(dtd_trait_method_binders) == 0 {
     None
   } else {
-    let mut owner = ""
-    for row in flatten_trait_owners(trait_ref_name(trait_name), dtd_trait_method_sigs_raw, dtd_trait_supers) {
-      if owner == "" && row.0 == method {
-        owner = row.1
-      }
-    }
+    let owner = trait_method_declaring_owner(trait_name, method)
     if owner == "" {
       None
     } else {
@@ -244,4 +237,31 @@ export fn impl_formal_method_formal(gen: DictGen, type_param: String, sig_params
     i = i + 1
   }
   out
+}
+
+/// The same first retained declaration the dictionary flattening selects.
+/// Cache the complete owner row once per trait, not once per scalar call.
+export fn trait_method_declaring_owner(trait_name: String, method: String) -> String {
+  let name = trait_ref_name(trait_name)
+  let mut rows = None
+  for cached in dtd_trait_method_owners {
+    if cached.0 == name {
+      rows = Some(cached.1)
+    }
+  }
+  let owners = match rows {
+    Some(found) => found,
+    None => {
+      let found = flatten_trait_owners(name, dtd_trait_method_sigs_raw, dtd_trait_supers)
+      Array::push(dtd_trait_method_owners, (name, found))
+      found
+    }
+  }
+  let mut result = ""
+  for row in owners {
+    if row.0 == method {
+      result = row.1
+    }
+  }
+  result
 }

@@ -1,0 +1,43 @@
+// #3625 item 2, the library half: `@vibe/core` declares its `Float` impls in
+// source, so the generics it exports take a `Float`. (The program-level bounds
+// are pinned by float_trait_bounds_test.vibe, and the prelude's `to_string` by
+// float_prelude_to_string_test.vibe.)
+//
+// Each answer is an f32 answer: `Hash` keys a `Float` by its shortest f32
+// digits with the two zeros on one key and every NaN on another, and
+// `T::default()` is `0.0f`.
+
+import @vibe/core {
+  get_by, has_by, map_key_to_string, set_by, trait Default, trait Hash
+}
+
+fn fresh[T: Default](witness: T) -> T {
+  T::default()
+}
+
+fn key_of[K: Hash](k: K) -> String {
+  K::hash_key(k)
+}
+
+test "Hash keys a Float by its f32 value" {
+  inspect(map_key_to_string(0.1f), content = "0.1")
+  inspect(map_key_to_string(-0.0f) == map_key_to_string(0.0f), content = "true")
+  inspect(map_key_to_string(0.0f / 0.0f), content = "NaN")
+  inspect(key_of(Double::to_float(0.1)) == key_of(0.1f), content = "true")
+  inspect(key_of(16777217.0f) == key_of(16777216.0f), content = "true")
+  inspect(key_of(0.1f) == key_of(0.2f), content = "false")
+}
+
+test "a Float keys a map through the Hash family" {
+  let empty: Map[String, Int] = Map::new()
+  let m = set_by(set_by(empty, 0.5f, 7), -0.0f, 9)
+  inspect(get_by(m, 0.5f), content = "Some(7)")
+  inspect(get_by(m, 0.0f), content = "Some(9)")
+  inspect(has_by(m, 0.25f), content = "false")
+  inspect(Map::size(m), content = "2")
+}
+
+test "T::default() at Float is 0.0f" {
+  inspect(Float::to_string(fresh(2.5f)), content = "0")
+  inspect(fresh(2.5f) == 0.0f, content = "true")
+}

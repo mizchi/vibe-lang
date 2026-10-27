@@ -17,7 +17,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_target_from_key, impl_target_key, trait_ref_from_key, trait_ref_key, type_param_arity, type_param_name
+  builtin_ref, impl_target_from_key, impl_target_key, trait_ref_from_key, trait_ref_key, type_param_arity, type_param_name
 }
 
 import @vibe/core {
@@ -36,6 +36,10 @@ import ./binding_shape_queries.vibe {
   dtd_ascribed_type
 }
 
+import ./lambda_return_shapes.vibe {
+  dtd_interp_fn_lamret_key, dtd_interp_lamret_key
+}
+
 import ./callable_names.vibe {
   impl_target_fn_key, impl_target_var_key
 }
@@ -49,7 +53,7 @@ import ./state.vibe {
 }
 
 import ./trait_bounds.vibe {
-  dtd_bound_entails_eq, dtd_eq_witness_method, dtd_eq_witness_trait, encode_constructor_recv_index, find_constructor_recv_index
+  dtd_eq_witness_method, dtd_eq_witness_trait, dtd_trait_entails, encode_constructor_recv_index, find_constructor_recv_index
 }
 
 import ./type_names.vibe {
@@ -213,12 +217,15 @@ export fn infer_impl_target_expr(arg: Expr, struct_sets: Array[(String, Array[St
       } else {
         None
       },
-      ECall(EIdent(name, _), _, _, _) => match fn_return_type(fn_returns, impl_target_fn_key(name)) {
-        Some(key) => impl_target_from_key(key),
-        None => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
-          Some(head) => Some(TyName(head)),
-          None => None
-        }
+      ECall(EIdent(name, _), args, _, _) => match generic_call_target(name, args, struct_sets, var_types, fn_returns) {
+        Some(target) => Some(target),
+        None => match fn_return_type(fn_returns, impl_target_fn_key(name)) {
+          Some(key) => impl_target_from_key(key),
+          None => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+            Some(head) => Some(TyName(head)),
+            None => None
+          }
+        },
       },
       _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
         Some(head) => Some(TyName(head)),
@@ -442,34 +449,34 @@ export fn dtd_eq_was_injected() -> Bool {
 /// `[T: Eq]` lambda sat in a `test` block never injected the signature: the
 /// lambda threaded no witness and `a == b` compared raw values -- `false` for
 /// two equal boxed `Double`s, after a clean `vibe check`. The match in
-/// `dtd_stmt_has_eq_bound` is exhaustive on purpose, so a new `Stmt` variant
+/// `dtd_stmt_has_trait_bound` is exhaustive on purpose, so a new `Stmt` variant
 /// fails to compile here instead of being skipped silently.
-fn dtd_program_has_eq_bound(stmts: Array[Stmt]) -> Bool {
+fn dtd_program_has_trait_bound(stmts: Array[Stmt], wanted: String) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(stmts) {
-    found = dtd_stmt_has_eq_bound(Array::get(stmts, i))
+    found = dtd_stmt_has_trait_bound(Array::get(stmts, i), wanted)
     i = i + 1
   }
   found
 }
 
-fn dtd_stmt_has_eq_bound(stmt: Stmt) -> Bool {
+fn dtd_stmt_has_trait_bound(stmt: Stmt, wanted: String) -> Bool {
   match stmt {
-    SLet(_, _, _, _, v) => dtd_expr_has_eq_bound(v),
-    SLetMut(_, _, v) => dtd_expr_has_eq_bound(v),
-    SLetPat(_, v) => dtd_expr_has_eq_bound(v),
-    STest(_, body) => dtd_expr_has_eq_bound(body),
-    SBench(_, body) => dtd_expr_has_eq_bound(body),
-    SExample(_, body) => dtd_expr_has_eq_bound(body),
-    SExpr(e) => dtd_expr_has_eq_bound(e),
-    SFnDecl(_, _, v, requires, ensures) => dtd_expr_has_eq_bound(v) || dtd_exprs_have_eq_bound(requires) || dtd_exprs_have_eq_bound(ensures),
-    SModule(_, _, body) => dtd_program_has_eq_bound(body),
-    SImpl(_, tbounds, _, _) => dtd_bounds_have_eq(tbounds),
+    SLet(_, _, _, _, v) => dtd_expr_has_trait_bound(v, wanted),
+    SLetMut(_, _, v) => dtd_expr_has_trait_bound(v, wanted),
+    SLetPat(_, v) => dtd_expr_has_trait_bound(v, wanted),
+    STest(_, body) => dtd_expr_has_trait_bound(body, wanted),
+    SBench(_, body) => dtd_expr_has_trait_bound(body, wanted),
+    SExample(_, body) => dtd_expr_has_trait_bound(body, wanted),
+    SExpr(e) => dtd_expr_has_trait_bound(e, wanted),
+    SFnDecl(_, _, v, requires, ensures) => dtd_expr_has_trait_bound(v, wanted) || dtd_exprs_have_trait_bound(requires, wanted) || dtd_exprs_have_trait_bound(ensures, wanted),
+    SModule(_, _, body) => dtd_program_has_trait_bound(body, wanted),
+    SImpl(_, tbounds, _, _) => dtd_bounds_have_trait(tbounds, wanted),
     // A trait method's own binder (`same: [X: Eq](Self, X, X) -> Bool`,
     // #684). The impl's function only receives it from
     // `inject_trait_method_generics_with`, which runs AFTER the injection.
-    STrait(_, _, _, _, method_gens, _) => dtd_method_gens_have_eq(method_gens),
+    STrait(_, _, _, _, method_gens, _) => dtd_method_gens_have_trait(method_gens, wanted),
     SEnum(_, _, _, _, _) => false,
     SSuberror(_, _, _) => false,
     SStruct(_, _, _, _, _, _) => false,
@@ -488,35 +495,35 @@ fn dtd_stmt_has_eq_bound(stmt: Stmt) -> Bool {
   }
 }
 
-fn dtd_exprs_have_eq_bound(exprs: Array[Expr]) -> Bool {
+fn dtd_exprs_have_trait_bound(exprs: Array[Expr], wanted: String) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(exprs) {
-    found = dtd_expr_has_eq_bound(Array::get(exprs, i))
+    found = dtd_expr_has_trait_bound(Array::get(exprs, i), wanted)
     i = i + 1
   }
   found
 }
 
-fn dtd_method_gens_have_eq(method_gens: Array[(String, Array[String], Array[(String, Array[String])])]) -> Bool {
+fn dtd_method_gens_have_trait(method_gens: Array[(String, Array[String], Array[(String, Array[String])])], wanted: String) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(method_gens) {
     let (_, _, bounds) = Array::get(method_gens, i)
-    found = dtd_bounds_have_eq(bounds)
+    found = dtd_bounds_have_trait(bounds, wanted)
     i = i + 1
   }
   found
 }
 
-fn dtd_bounds_have_eq(tbounds: Array[(String, Array[String])]) -> Bool {
+fn dtd_bounds_have_trait(tbounds: Array[(String, Array[String])], wanted: String) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(tbounds) {
     let (_, bs) = Array::get(tbounds, i)
     let mut j = 0
     while !found && j < Array::length(bs) {
-      if dtd_bound_entails_eq(Array::get(bs, j)) {
+      if dtd_trait_entails(Array::get(bs, j), wanted) {
         found = true
       } else {
         ()
@@ -528,9 +535,9 @@ fn dtd_bounds_have_eq(tbounds: Array[(String, Array[String])]) -> Bool {
   found
 }
 
-fn dtd_expr_has_eq_bound(e: Expr) -> Bool {
+fn dtd_expr_has_trait_bound(e: Expr, wanted: String) -> Bool {
   let direct = match e {
-    EFn(_, tbounds, _, _, _, _) => dtd_bounds_have_eq(tbounds),
+    EFn(_, tbounds, _, _, _, _) => dtd_bounds_have_trait(tbounds, wanted),
     _ => false
   }
   if direct {
@@ -543,7 +550,7 @@ fn dtd_expr_has_eq_bound(e: Expr) -> Bool {
     let mut i = mark
     let mut found = false
     while !found && i < top {
-      found = dtd_expr_has_eq_bound(expr_child_at(i))
+      found = dtd_expr_has_trait_bound(expr_child_at(i), wanted)
       i = i + 1
     }
     expr_children_pop(mark)
@@ -553,7 +560,7 @@ fn dtd_expr_has_eq_bound(e: Expr) -> Bool {
 
 export fn dtd_inject_builtin_eq(stmts: Array[Stmt], traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
   Array::set(dtd_eq_injected, 0, false)
-  if dtd_trait_declared_anywhere(stmts, dtd_eq_witness_trait()) || !dtd_program_has_eq_bound(stmts) {
+  if dtd_trait_declared_anywhere(stmts, dtd_eq_witness_trait()) || !dtd_program_has_trait_bound(stmts, dtd_eq_witness_trait()) {
     ()
   } else {
     match lookup_trait_sigs(traits_raw, dtd_eq_witness_trait()) {
@@ -594,22 +601,119 @@ export fn dtd_inject_builtin_eq(stmts: Array[Stmt], traits_raw: Array[(String, A
 /// cannot recurse into itself either: `dtd_eq_witness_dict` fires only when an
 /// operand's type names a type FORMAL in scope, and these are concrete.
 ///
-/// #3625: `Float` is seeded by the checker alone (the prelude cannot declare
-/// it while the committed seed reads `Float` as `Double`). Its witness is the
-/// annotated comparison at `Float`, the concrete `==`: a `Float` holds the f64
+/// #3625: `Float`'s witness is the annotated comparison at `Float`, the
+/// concrete `==`: a `Float` holds the f64
 /// of its f32 value, so this is f32 value equality, `-0.0f` equals `0.0f`, and
 /// a NaN is unequal to itself.
 export fn dtd_scalar_eq_witness(cname: String, m: String) -> Option[Expr] {
   if m != dtd_eq_witness_method() {
     None
-  } else if cname != "Int" && cname != "Double" && cname != "Float" && cname != "Bool" && cname != "Char" {
+  } else if cname != "Int" && cname != "Double" && cname != "Bool" && cname != "Char" && cname != "Float" && cname != "f32" && cname != "String" {
     None
   } else {
     let params: Array[(String, Option[TypeExpr])] = [
       ("__scalar_eq_a", Some(TyName(cname))),
       ("__scalar_eq_b", Some(TyName(cname)))
     ]
-    let body = EBinOp("==", EIdent("__scalar_eq_a", -1), EIdent("__scalar_eq_b", -1), -1)
+    let a = EIdent("__scalar_eq_a", -1)
+    let b = EIdent("__scalar_eq_b", -1)
+    let floating = cname == "Float" || cname == "f32" || cname == "Double"
+    let body = if cname == "String" {
+      ECall(builtin_ref("String::equals"), [a, b], -1, [])
+    } else EBinOp("==", if floating {
+      ECall(builtin_ref("Float::to_double"), [a], -1, [])
+    } else {
+      a
+    }, if floating {
+      ECall(builtin_ref("Float::to_double"), [b], -1, [])
+    } else {
+      b
+    }, -1)
     Some(EFn(array_empty(), array_empty(), params, Some(TyName("Bool")), None, body))
+  }
+}
+
+/// The builtin Add signature is needed only when a binder asks for it.
+export fn dtd_inject_builtin_add(stmts: Array[Stmt], traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
+  if !dtd_trait_declared_anywhere(stmts, "Add") && dtd_program_has_trait_bound(stmts, "Add") {
+    if lookup_trait_sigs(traits_raw, "Add") is None {
+      Array::push(traits_raw, ("Add", [
+        ("add", [TyName("Self"), TyName("Self")], TyName("Self"))
+      ]))
+      push_method_traits(stmts, traits_raw)
+    }
+  }
+}
+
+/// Float/Double renderers are pure callsite builtins, without registry value
+/// forms. An annotated closure preserves their concrete numeric renderer.
+export fn dtd_scalar_float_show_witness(cname: String, m: String, sigs: Array[(String, Array[TypeExpr], TypeExpr)]) -> Option[Expr] {
+  let mut valid = false
+  let mut seen = false
+  for sig in sigs {
+    if !seen && sig.0 == m {
+      seen = true
+      if m == "to_string" && Array::length(sig.1) == 1 {
+        valid = match (Array::get(sig.1, 0), sig.2) {
+          (TyName("Self"), TyName("String")) => true,
+          _ => false
+        }
+      }
+    }
+  }
+  if valid && (cname == "Float" || cname == "f32" || cname == "Double") {
+    let method = if cname == "Double" {
+      "Double::to_string"
+    } else {
+      "Float::to_string"
+    }
+    Some(EFn([], [], [("__float_show", Some(TyName(cname)))], Some(TyName("String")), None, ECall(builtin_ref(method), [
+      EIdent("__float_show", -1)
+    ], -1, [])))
+  } else {
+    None
+  }
+}
+
+// Instantiate a bare generic result from the parameter that fixes it, using
+// the existing checked return/parameter correspondence. The callee's T alone
+// is not evidence of the caller's identically spelled T.
+fn generic_call_target(name: String, args: Array[Expr], structs: Array[(String, Array[String])], vars: Array[(String, String)], returns: Array[(String, String)]) -> Option[TypeExpr] {
+  let marker = match lookup_var_type(vars, dtd_interp_lamret_key(name)) {
+    Some(local) => local,
+    None => match fn_return_type(returns, dtd_interp_fn_lamret_key(name)) {
+      Some(top) => top,
+      None => ""
+    }
+  }
+  if String::starts_with(marker, "t") && String::length(marker) > 1 {
+    Some(TyName(String::substring(marker, 1, String::length(marker))))
+  } else {
+    let mut numeric = String::length(marker) > 0
+    let mut at = 0
+    while numeric && at < String::length(marker) {
+      let ch = String::byte_at(marker, at)
+      if ch < 48 || ch > 57 {
+        numeric = false
+      }
+      at = at + 1
+    }
+    if numeric {
+      match Int::parse(marker) {
+        Some(i) => if i >= 0 && i < Array::length(args) {
+          // This correspondence establishes a bare result only. Nested
+          // witness targets still need their existing full-shape authority.
+          match infer_impl_target_expr(Array::get(args, i), structs, vars, returns) {
+            Some(TyName(head)) => Some(TyName(head)),
+            _ => None
+          }
+        } else {
+          None
+        },
+        None => None
+      }
+    } else {
+      None
+    }
   }
 }

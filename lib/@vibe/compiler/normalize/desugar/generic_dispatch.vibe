@@ -5,7 +5,7 @@ import @vibe/compiler/lowering/trait_namespaces {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr
+  Expr, Stmt, TypeExpr, builtin_shadow_source_name
 }
 
 import @vibe/ast {
@@ -80,19 +80,49 @@ export fn collect_impl_infos(stmts: Array[Stmt]) -> Array[GenericImplInfo] {
   out
 }
 
-fn generic_impl_info_for_owner(infos: Array[GenericImplInfo], owner: String) -> Option[GenericImplInfo] {
-  let mut i = 0
+// Read the parser's marker/method sequence, as the checker does for impl
+// provenance. Several scalar traits have the same owner (`Float`), so the
+// first SImpl for that owner cannot identify Float::add or Float::to_string.
+fn impl_info_for_binding(stmts: Array[Stmt], at: Int, owner: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], infos: Array[GenericImplInfo]) -> Option[GenericImplInfo] {
+  if owner == "" {
+    return None
+  }
+  let mut j = at - 1
+  let mut active_trait = ""
+  let mut done = false
+  while j >= 0 && !done {
+    match Array::get(stmts, j) {
+      SImpl(tps, _, tr, target) => {
+        if impl_method_owner(tps, tr, target) == owner {
+          active_trait = tr
+        }
+        done = true
+      },
+      SLet(_, _, name, _, _) => {
+        let head = qualified_head(builtin_shadow_source_name(name))
+        if head != owner && (lookup_trait_sigs(traits, head) is None) {
+          done = true
+        }
+      },
+      _ => {
+        done = true
+      }
+    }
+    j = j - 1
+  }
   let mut result = None
-  while i < Array::length(infos) {
-    let info = Array::get(infos, i)
-    if info.owner == owner {
+  let mut matches = 0
+  for info in infos {
+    if info.owner == owner && (active_trait == "" || info.trait_name == active_trait) {
       result = Some(info)
-      i = Array::length(infos)
-    } else {
-      i = i + 1
+      matches = matches + 1
     }
   }
-  result
+  if matches == 1 {
+    result
+  } else {
+    None
+  }
 }
 
 export fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gimpl_infos: Array[GenericImplInfo]) -> Array[DictGen] {
@@ -104,7 +134,7 @@ export fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, A
         EFn(tparams, bounds, params, ret, _, _) => if already_threaded(bounds, params) {
           ()
         } else {
-          let impl_info = generic_impl_info_for_owner(gimpl_infos, qualified_head(fname))
+          let impl_info = impl_info_for_binding(stmts, i, qualified_head(builtin_shadow_source_name(fname)), traits, gimpl_infos)
           let is_impl_method = match impl_info {
             Some(_) => true,
             None => false
@@ -274,7 +304,7 @@ export fn matching_generic_impl_method(gens: Array[DictGen], cname: String, trai
     if impl_target_head(match gen.impl_target {
       Some(target) => target,
       None => TyName("")
-    }) == cname && String::ends_with(gen.name, String::concat("::", method)) {
+    }) == cname && String::ends_with(builtin_shadow_source_name(gen.name), String::concat("::", method)) {
       match gen.impl_target {
         Some(target) => if impl_target_pattern_matches(target, actual, gen.impl_params, bindings) && impl_trait_pattern_matches(gen.impl_trait, trait_name, gen.impl_params, bindings) {
           result = Some(gen.name)

@@ -1,0 +1,90 @@
+// #3625: bounded Float operations must use values and round every sum to f32.
+fn same[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}
+fn plus[T: Add](a: T, b: T) -> T {
+  a + b
+}
+fn accumulate[T: Add](a: T, b: T) -> T {
+  let mut out = a
+  out += b
+  out += b
+  out
+}
+fn keep[T: Show](a: T) -> T {
+  a
+}
+fn pick[T](a: T) -> T {
+  a
+}
+fn indirect[T: Add](a: T, b: T, make: () -> T) -> T {
+  let saved = pick(a)
+  (if true {
+    saved
+  } else {
+    b
+  }) + make()
+}
+fn nested[T: Add](a: T, b: T) -> (T, Float) {
+  let inner = [T: Add](x: T, y: T) -> T {
+    x + y
+  }
+  (a + b, inner(0.1f, 0.2f))
+}
+fn concrete_result[T: Add](unused: T) -> Int {
+  pick(20) + pick(7)
+}
+
+test "Float Eq compares values including IEEE edge cases" {
+  inspect(same(0.1f, 0.1f), content = "true")
+  inspect(same(0.1f, 0.2f), content = "false")
+  inspect(same(-0.0f, 0.0f), content = "true")
+  let nan = 0.0f / 0.0f
+  inspect(same(nan, nan), content = "false")
+  let inf = 1.0f / 0.0f
+  inspect(same(inf, inf), content = "true")
+  inspect(same(inf, -inf), content = "false")
+  let alias: f32 = 0.1f
+  inspect(same(alias, 0.1f), content = "true")
+}
+
+test "Float Add rounds each generic sum" {
+  inspect(plus(1.5f, 2.25f), content = "3.75")
+  inspect(plus(0.1f, 0.2f), content = "0.3")
+  inspect(plus(plus(16777216.0f, 1.0f), -16777216.0f), content = "0")
+  inspect(accumulate(16777216.0f, 1.0f), content = "16777216")
+  inspect(accumulate(0.0f, 0.1f), content = "0.2")
+  inspect(plus(-1.5f, -2.25f), content = "-3.75")
+  inspect(plus(1.0f / 0.0f, 1.0f), content = "Infinity")
+  inspect(plus(0.0f / 0.0f, 1.0f), content = "NaN")
+  inspect(1.0f / plus(-0.0f, -0.0f), content = "-Infinity")
+  let alias: f32 = 0.1f
+  inspect(plus(alias, 0.2f), content = "0.3")
+}
+
+test "generic dispatch follows lexical formals through expressions" {
+  inspect(indirect(0.1f, 0.2f, () -> Float {
+    0.2f
+  }), content = "0.3")
+  inspect(nested(20, 7), content = "(27, 0.3)")
+  inspect(concrete_result(0.1f), content = "27")
+}
+
+test "Add retains Int String and Double behavior" {
+  inspect(plus(20, 7), content = "27")
+  inspect(plus("left", "right"), content = "leftright")
+  inspect(plus(1.5, 2.25), content = "3.75")
+  inspect(plus(0.1, 0.2), content = "0.30000000000000004")
+  inspect(accumulate(1.5, 0.25), content = "2")
+  inspect(keep(0.1f), content = "0.1")
+}
+
+trait Key: Add
+impl Key for Float
+fn inherited[T: Key](a: T, b: T) -> T {
+  a + b
+}
+
+test "a subtrait inherits the binary32 Add witness" {
+  inspect(inherited(0.1f, 0.2f), content = "0.3")
+}

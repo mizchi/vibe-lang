@@ -1382,7 +1382,7 @@ rm -rf "$lldir"
 # build refused every program that used Float. They parse located now; the
 # library takes its typed tables from its own check of the rebased merge, the
 # entry from the import-resolving check that runs first. Each bit of the
-# answer is one check (fixtures/linked_library_float/main.vibe): 4095 on both
+# answer is one check (fixtures/linked_library_float/main.vibe): 65535 on both
 # lanes, the same as the default build.
 echo "[compiler-gate] build --debug rounds Float arithmetic to f32 (#3625)"
 lfdir="_build/_gate_linked_library_float"
@@ -1405,13 +1405,22 @@ if bash scripts/wasmtime_run.sh --version >/dev/null 2>&1; then
   lf_res="$(run_bounded 60 bash scripts/wasmtime_run.sh run --preload lib="$lfdir/main.debug/lib.wasm" \
     --invoke _start "$lfdir/main.wasm" 2>&1 | tr -dc '0-9-' || true)"
   lf_rel_res="$(run_bounded 60 bash scripts/wasmtime_run.sh run --invoke _start "$lfdir/release.wasm" 2>&1 | tr -dc '0-9-' || true)"
-  if [ "$lf_res" != "4095" ] || [ "$lf_rel_res" != "4095" ]; then
-    echo "[compiler-gate] FAIL: Float arithmetic answered '$lf_res' on build --debug and '$lf_rel_res' on the default build (expected 4095 on both) (#3625)" >&2; exit 1
+  if [ "$lf_res" != "65535" ] || [ "$lf_rel_res" != "65535" ]; then
+    echo "[compiler-gate] FAIL: Float arithmetic answered '$lf_res' on build --debug and '$lf_rel_res' on the default build (expected 65535 on both) (#3625)" >&2; exit 1
   fi
-  echo '[compiler-gate] build --debug Float arithmetic ok (4095)'
+  echo '[compiler-gate] build --debug Float arithmetic ok (65535)'
 else
   echo '[compiler-gate] build --debug Float library compiled; SKIP run: wasmtime not available'
 fi
+# A witness closure cannot cross independent linked heaps/function tables.
+lf_generic_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  build --debug fixtures/linked_library_float/generic_witness.vibe -o "$lfdir/generic.wasm" --entry _start 2>&1 || true)"
+if [ -s "$lfdir/generic.wasm" ] || [[ "$lf_generic_out" != *'export a concrete wrapper'* ]]; then
+  echo '[compiler-gate] FAIL: linked generic witness import was not refused with the edit' >&2
+  printf '%s\n' "$lf_generic_out" >&2; exit 1
+fi
+
 rm -rf "$lfdir"
 
 # 15b-3c'. #3067: `String::substring` clamps its indices on every lane. The gc

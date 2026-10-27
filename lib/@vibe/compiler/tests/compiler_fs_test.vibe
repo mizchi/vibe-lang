@@ -540,7 +540,7 @@ fn library_outcome(label: String, dep_path: String) -> String with Env + Fs {
   } with { Exception::Throw(message) => message }))
 }
 
-fn linked_outcome(label: String, entry_path: String) -> String with Fs {
+fn linked_outcome(label: String, entry_path: String) -> String with Env + Fs {
   String::concat(label, String::concat(": ", handle {
     let _ = compile_file_wasi_linked_artifacts(entry_path, "_start")
     "accepted"
@@ -658,4 +658,13 @@ test "#3098 compile_file_wasi_library accepts a trait impl and bounded generics"
 
 test "#3098 compile_file_wasi_linked_artifacts accepts an entry over a trait library" {
   inspect(linked_outcome("3098-linked", "fixtures/linked_library_trait_dict/main.vibe"), "3098-linked: accepted")
+}
+
+test "linked witness refusal follows a re-export alias to its generic binding" {
+  let base = "/tmp/vibe_float_witness_reexport"
+  Fs::mkdir_p(base)
+  write_source(base + "/lib.vibe", "export fn sum[T: Add](a: T, b: T) -> T { a + b }\n")
+  write_source(base + "/facade.vibe", "export ./lib.vibe { sum as plus }\n")
+  write_source(base + "/main.vibe", "import ./facade.vibe { plus }\nlet _start: () -> Int = () -> { plus(20, 22) }\n")
+  inspect(String::contains(linked_outcome("reexport", base + "/main.vibe"), "export a concrete wrapper"), content = "true")
 }

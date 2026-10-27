@@ -107,29 +107,31 @@ that reads back as the same f32 (`0.1f` prints `0.1`, `1.0f / 3.0f` prints
 `x * 2.5` on a `Float` `x` is a type error whose message names the edit
 (`2.5f`, or `Double::to_float` / `Float::to_double`). A `Float` holds the f64
 of its f32 value at run time, so equality, ordering and hashing see exactly
-the f32 value.
+the f32 value. The builtin `Eq`, `Show` and `Add` traits also accept `Float`
+and its `f32` alias. Generic equality follows IEEE rules (NaN is unequal to
+itself, and signed zeros are equal), rendering preserves the shortest f32
+spelling, and each generic `+` or `+=` rounds its result to f32 (#3625).
+`Signed` and `Default` bounds retain their existing coverage, and Float's
+library-source `Hash` keys and `Default` dispatch are available as well.
 
-A program's builtin trait bounds hold at `Float` wherever they hold at
-`Double` (#3625). `[T: Eq]` compares through a witness that is the concrete
-`==`, so it is f32 value equality: `-0.0f` equals `0.0f`, and a NaN is
-unequal to itself. `[T: Show]`, `[T: Signed]` and `[T: Default]` hold, and a
-`Float` that comes back out of such a generic still prints as an f32.
-`[T: Ord]` and `[T: Add]` are refused at `Float` as at `Double`, because `<`
-and `+` on an erased type reach no witness; `*`, `-` and `/` in a generic body
-fix the operand to `Int`. Compare or compute at the concrete type instead.
-The generics that `@vibe/builtin` and `@vibe/core` declare in library source
-(the imported `to_string`, `Hash` keys such as `map_key_to_string` /
-`get_by`, and `T::default()` with `@vibe/core`'s `Default`) still answer
-``no impl `Show` for `Float` `` and the like: their `Float` impls wait on a
-seed bump.
+`Add` carries `add(Self, Self) -> Self`. A generic `+` or `+=` calls that
+witness; builtin defaults add `Int`, join `String`, add `Double` at f64
+precision, and add `Float` at f32 precision. A program's own marker `Add`,
+or one without that retained signature, still refuses boxed types through
+the bound. A method with additional type parameters is not an operator
+witness; call it explicitly.
 
-A generic call's floating-point result is computed as a float under every
-operator ([#3629](https://github.com/mizchi/vibe-lang/issues/3629)):
-`pick(2.5) + 1.0`, for `fn pick[T](x: T) -> T { x }`, is `3.5`, and the same
-holds for `Float`, an index, a `for` element and a match binder. It used to
-add the boxed bits as an integer and print `537`. A linked build entry that
-no type check covered cannot tell such an operand's type, so it refuses the
-operator and asks for an annotated binding (`let v: Double = pick(2.5)`).
+The linked `build --debug` lane refuses an imported generic function whose
+bounds require method witnesses. Export a concrete wrapper from the library,
+or use the default build. Generic processing inside the library, returning a
+concrete scalar, is supported; separate debug libraries cannot exchange the
+witness closures that an erased call needs.
+
+Generic call results used directly in floating-point arithmetic now retain
+the checked operand type (#3629): `pick(2.5) + 1.0` produces `3.5` and
+`pick(0.1f) + 0.2f` produces `0.3`. A linked build without checker rows for
+its exact source still refuses an ambiguous generic result with an edit
+that adds a concrete type annotation.
 
 ```vibe
 test "Float rounds to f32" {

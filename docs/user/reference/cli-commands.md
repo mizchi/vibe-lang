@@ -68,7 +68,11 @@ vibe compile --entry <name> <file.vibe>          # entry other than `main` (not 
   whole import closure first and compiles the entry with that check's types
   (each library is checked again as it is compiled), so `Float` arithmetic is
   rounded to f32 and a `Double` an import returns is one, as in the default
-  build (#3543, #3625).
+  build (#3543, #3625). A generic imported from a debug library is refused
+  when its bounds need method witnesses: export a concrete wrapper, or use
+  the default build. A re-export with no verifiable direct function signature
+  is refused with the same edit. Generic processing inside a library can
+  return concrete scalar values across the boundary.
 - **`--minify`** runs the standalone `vibe-opt.wasm` optimizer over the core
   module after it is written. The default artifact is not post-optimized. With
   `--component` it is refused (the minifier takes a core module); with

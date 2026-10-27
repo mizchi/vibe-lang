@@ -1,0 +1,171 @@
+// #3625: generic addition uses a value witness, including f32 rounding.
+
+import @vibe/compiler/core {
+  Expr, TypeExpr, trait_sigs_first_self_binary, typed_add_row_head
+}
+import @vibe/compiler/lowering/trait_namespaces {
+  lookup_trait_sigs
+}
+import @vibe/ast {
+  builtin_ref, impl_target_from_key
+}
+import @vibe/core {
+  array_empty
+}
+import ./argument_types.vibe {
+  infer_arg_type_name, is_erased_generic_operand, refuse_rowless_untyped_operand
+}
+import ./equality_shape_queries.vibe {
+  eq_shape_key
+}
+import ./formal_scope.vibe {
+  formal_in_scope
+}
+import ./method_witnesses.vibe {
+  trait_method_binder
+}
+import ./state.vibe {
+  dtd_rowless_build
+}
+import ./trait_bounds.vibe {
+  dtd_trait_entails
+}
+import ./typed_row_queries.vibe {
+  dtd_typed_eq_key_for
+}
+
+fn add_dict(binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], formal: String) -> Option[String] {
+  let mut found = None
+  for bind in binds {
+    let (tp, tr, dict, _) = bind
+    if (found is None) && tp == formal && formal_in_scope(tp) && dtd_trait_entails(tr, "Add") {
+      match lookup_trait_sigs(traits, tr) {
+        Some(sigs) => if (trait_method_binder(tr, "add") is None) && trait_sigs_first_self_binary(sigs, "add", "Self") {
+          found = Some(dict)
+        },
+        None => ()
+      }
+    }
+  }
+  found
+}
+
+// Only a parameter's lexical annotation is proof here. A let-bound generic
+// call can return a DIFFERENT callee's identically spelled T. Every let masks
+// the parameter with its eq_shape_key, even when that shape is empty.
+fn add_parameter(e: Expr, vars: Array[(String, String)]) -> String {
+  match e {
+    EIdent(name, _) => {
+      let mask = eq_shape_key(name)
+      let mut i = Array::length(vars) - 1
+      let mut out = ""
+      let mut done = false
+      while i >= 0 && !done {
+        let (k, v) = Array::get(vars, i)
+        if k == mask {
+          done = true
+        }
+        else if k == name {
+          out = v; done = true
+        }
+        i = i - 1
+      }
+      out
+    },
+    _ => ""
+  }
+}
+
+export fn addition_witness(l: Expr, r: Expr, rl: Expr, rr: Expr, off: Int, binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], vars: Array[(String, String)]) -> Option[Expr] with Exception {
+  let typed_formal = match impl_target_from_key(dtd_typed_eq_key_for(off)) {
+    Some(TyApp(head, args)) => if head == typed_add_row_head() && Array::length(args) == 1 {
+      match Array::get(args, 0) {
+        TyName(name) => name,
+        _ => ""
+      }
+    } else "",
+    _ => ""
+  }
+  let formal = if typed_formal != "" {
+    typed_formal
+  } else {
+    let left = add_parameter(l, vars)
+    if left != "" && (add_dict(binds, traits, left) is Some) {
+      left
+    }
+    else {
+      add_parameter(r, vars)
+    }
+  }
+  match add_dict(binds, traits, formal) {
+    Some(dict) => Some(ECall(EDot(EIdent(dict, -1), "add", -1, -1), [rl, rr], -1, [
+    ])),
+    None => if typed_formal != "" {
+      throw("generic addition lost the Add witness for `" + typed_formal + "`")
+    } else {
+      None
+    }
+  }
+}
+
+export fn rewrite_addition(l: Expr, r: Expr, rl: Expr, rr: Expr, off: Int, binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], structs: Array[(String, Array[String])], vars: Array[(String, String)], returns: Array[(String, String)]) -> Expr with Exception {
+  match addition_witness(l, r, rl, rr, off, binds, traits, vars) {
+    Some(call) => call,
+    None => {
+      let stringish = (match infer_arg_type_name(l, structs, vars, returns) {
+        Some(t) => t == "String",
+        None => false
+      }) || (match infer_arg_type_name(r, structs, vars, returns) {
+        Some(t) => t == "String",
+        None => false
+      })
+      if stringish {
+        ECall(builtin_ref("String::concat"), [rl, rr], -1, [])
+      }
+      else if is_erased_generic_operand(l, r, structs, vars, returns) {
+        refuse_rowless_untyped_operand("+", l, r, structs, vars, returns)
+        if Array::get(dtd_rowless_build, 0) && Array::any(binds, (b) -> add_dict(binds, traits, b.0) is Some) {
+          throw("bind the operands of `+` with their concrete type first: this build has no checker row identifying the lexical Add witness")
+        }
+        ECall(builtin_ref("__generic_add"), [rl, rr], -1, [])
+      } else {
+        EBinOp("+", rl, rr, off)
+      }
+    }
+  }
+}
+
+/// Float and Double are boxed f64 values. The identity conversion tells code
+/// generation to unbox BOTH operands. Float rounds at this step, even if the
+/// caller never directly mentions Float (or calls the generic repeatedly).
+export fn scalar_add_witness(cname: String, m: String) -> Option[Expr] {
+  if m != "add" || (cname != "Int" && cname != "String" && cname != "Double" && cname != "Float" && cname != "f32") {
+    None
+  }
+  else {
+    let params: Array[(String, Option[TypeExpr])] = [
+      ("__add_a", Some(TyName(cname))),
+      ("__add_b", Some(TyName(cname)))
+    ]
+    let a = EIdent("__add_a", -1)
+    let b = EIdent("__add_b", -1)
+    let body = if cname == "String" {
+      ECall(builtin_ref("String::concat"), [a, b], -1, [])
+    }
+    else if cname == "Int" {
+      EBinOp("+", a, b, -1)
+    }
+    else {
+      let sum = EBinOp("+", ECall(builtin_ref("Float::to_double"), [a], -1, []), ECall(builtin_ref("Float::to_double"), [
+        b
+      ], -1, []), -1)
+      if cname == "Double" {
+        sum
+      }
+      else {
+        ECall(builtin_ref("Double::to_float"), [sum], -1, [])
+      }
+    }
+    Some(EFn(array_empty(), array_empty(), params, Some(TyName(cname)), None, body))
+  }
+}

@@ -33,6 +33,7 @@ import ./types_env_cache.vibe {
   Type,
   TypeEnv,
   apply_type_constructor,
+  bound_flat_self_add,
   bound_flat_self_equals,
   hkt_app_name,
   hkt_ctor,
@@ -1833,8 +1834,9 @@ fn erased_add_is_by_value(ty: Type) -> Bool {
 /// - `<` has no witness path at all, so a trait named `Ord` is judged by the
 ///   type alone: a program `Ord` with `rank` or `compare` answered `true` for
 ///   `smaller(Token 2, Token 1)`.
-/// - `+` likewise lowers to `__generic_add` whatever `Add` declares: a program
-///   `Add` with `plus(Self, Self) -> Self` answered `0` for `add2(1.5, 2.25)`.
+/// - `+` dispatches through the first retained `add(Self, Self) -> Self`.
+///   A marker Add, or an Add with only `plus`, still uses `__generic_add`
+///   and is refused at boxed values.
 ///
 /// Every other trait, and every comparison at a type the builtin compares by
 /// value, is left alone. The walk mirrors `bound_entails_send` and keeps a
@@ -1856,7 +1858,7 @@ export fn erased_cmp_bound_refusal(env: TypeEnv, bound: String, resolved: Type) 
       } else if name == "Ord" {
         not(erased_cmp_is_by_value(resolved))
       } else if name == "Add" {
-        not(erased_add_is_by_value(resolved))
+        not(erased_add_is_by_value(resolved)) && not(bound_flat_self_add(env, bound))
       } else {
         false
       }
