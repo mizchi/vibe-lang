@@ -793,9 +793,14 @@ fn labeled_name_check_call(fname: String, fname_off: Int, args: Array[Expr], pna
 /// that spelling (`let println = identity`, then `println(x = 1)`), so the
 /// builtin refusal below stands down for it -- the question
 /// `builtin_resolves_at` answers from the environment, which this walk does
-/// not have. A top-level `fn` is already in the walk's table; this covers a
-/// value binding, a destructuring `let`, an extern, an enum or suberror
-/// constructor, and an import. Rebuilt by
+/// not have, and which in any case runs before the program's own bindings
+/// exist. So this enumerates every `Stmt` form that binds a bare callable
+/// name: a `let` / `let mut` / `fn`, a destructuring `let`, an extern, an enum
+/// or suberror constructor, an import, and a plain re-export (`SReExport`, or
+/// the locally visible spellings the FS merge keeps in
+/// `SReExportSourceBoundary`). The rest bind no bare value: a struct, alias,
+/// trait, impl, effect, effectset or resource names a type or a qualified
+/// operation, and `SAliasDecl` a namespace. Rebuilt by
 /// `collect_builtin_claimed_names` for each validation run.
 let builtin_claimed_names: Array[String] = []
 
@@ -834,6 +839,27 @@ fn builtin_claimed_collect(stmts: Array[Stmt]) -> Unit {
             Some(a) => a,
             None => item.name
           })
+          k = k + 1
+        }
+      },
+      // A plain re-export binds its name locally; an aliased one is only
+      // published, so it claims nothing here. The FS merge drops SReExport
+      // and keeps the locally visible spellings in the boundary instead.
+      SReExport(_, items) => {
+        let mut k = 0
+        while k < Array::length(items) {
+          let item = Array::get(items, k)
+          match item.alias {
+            Some(_) => (),
+            None => Array::push(builtin_claimed_names, item.name)
+          }
+          k = k + 1
+        }
+      },
+      SReExportSourceBoundary(visible, _) => {
+        let mut k = 0
+        while k < Array::length(visible) {
+          Array::push(builtin_claimed_names, Array::get(visible, k))
           k = k + 1
         }
       },
