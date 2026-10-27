@@ -70,7 +70,7 @@ import @vibe/compiler/checker/resolution {
 }
 
 import @vibe/compiler/checker/traits {
-  check_spawnable_captures
+  check_spawnable_captures, spawn_closure_param_type, spawn_group_region
 }
 
 import @vibe/compiler/checker/effects {
@@ -145,22 +145,19 @@ export fn check_spawn_shaped_call(env: TypeEnv, s: Subst, defs: Array[TypeDef], 
       CtNamed(hn, _) => hn == "TaskHandle",
       _ => false
     }
-    let takes_fn = match subst_apply(s, Array::get(param_tys, 1)) {
-      CtFn(_, _, _) => true,
-      _ => false
-    }
-    match subst_apply(s, Array::get(param_tys, 0)) {
-      CtNamed(tg_name, tg_args) => if is_handle && takes_fn && tg_name == "TaskGroup" && Array::length(tg_args) == 2 {
-        let violations = check_spawnable_captures(env, s, defs, Array::get(args, 1), Array::get(tg_args, 0), unsent_open_formal_vars(s))
-        let mut vi = 0
-        while vi < Array::length(violations) {
-          Array::push(errors, String::concat(Array::get(violations, vi), marker))
-          vi = vi + 1
+    // #3640: a group written `TaskGroup` (region and row left to the call)
+    // and an optional closure parameter count too.
+    let takes_fn = spawn_closure_param_type(subst_apply(s, Array::get(param_tys, 1)))
+    match spawn_group_region(subst_apply(s, Array::get(param_tys, 0))) {
+      Some(r_here) => if is_handle && takes_fn {
+        for violation in check_spawnable_captures(env, s, defs, Array::get(args, 1), r_here, unsent_open_formal_vars(s)) {
+          Array::push(errors, String::concat(violation, marker))
         }
+        ()
       } else {
         ()
       },
-      _ => ()
+      None => ()
     }
   } else {
     ()

@@ -1444,7 +1444,7 @@ fi
 # optional `task?:` parameter runs like a positional one (the previous stage2
 # refuses the row-less and annotated ones and traps on the pure one). Each pair
 # is fixture and wanted output.
-for async_entry_case in "async_entry_calls_async_closure:5" "async_entry_calls_sleep_wait:5" "async_entry_calls_async_fn_beside_group:47" "async_entry_user_sleep_and_sleep_wait:8" "spawn_suspend_alias_rowless_sleep:42" "spawn_suspend_alias_chain_rowless_sleep:42" "async_entry_shadowed_suspending_name:5" "async_entry_alias_to_suspending:5" "spawn_suspend_optional_rowless_sleep:42" "spawn_suspend_optional_pure_task:42" "spawn_suspend_optional_annotated_task:42"; do
+for async_entry_case in "async_entry_calls_async_closure:5" "async_entry_calls_sleep_wait:5" "async_entry_calls_async_fn_beside_group:47" "async_entry_user_sleep_and_sleep_wait:8" "spawn_suspend_alias_rowless_sleep:42" "spawn_suspend_alias_chain_rowless_sleep:42" "async_entry_shadowed_suspending_name:5" "async_entry_alias_to_suspending:5" "spawn_suspend_optional_rowless_sleep:42" "spawn_suspend_optional_pure_task:42" "spawn_suspend_optional_annotated_task:42" "spawn_suspend_optional_task_checked:42"; do
   async_entry_fixture="${async_entry_case%%:*}"
   async_entry_want="${async_entry_case#*:}"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
@@ -1481,7 +1481,7 @@ fi
 # `Async` function passed by name to a run-to-completion task, and a program
 # binding that takes a host builtin's spelling (`let println = ..`) and holds a
 # suspending closure.
-for async_refusal_case in "err_async_entry_closure_to_plain_param:cannot see through" "err_spawn_task_async_fn_by_name:runs its task to completion, so the task cannot suspend" "err_suspend_shadowed_builtin_async:(here: the call to 'println')" "err_async_entry_closure_to_async_hof:cannot see through" "err_async_entry_shadowed_discharger:cannot see through" "err_async_entry_call_before_shadow:(here: the call to 'tick')"; do
+for async_refusal_case in "err_async_entry_closure_to_plain_param:cannot see through" "err_spawn_task_async_fn_by_name:runs its task to completion, so the task cannot suspend" "err_suspend_shadowed_builtin_async:(here: the call to 'println')" "err_async_entry_closure_to_async_hof:cannot see through" "err_async_entry_shadowed_discharger:cannot see through" "err_async_entry_call_before_shadow:(here: the call to 'tick')" "err_spawn_suspend_optional_task_mut_capture:shares a mutable cell across the spawn boundary"; do
   async_refusal_fixture="${async_refusal_case%%:*}"
   async_refusal_needle="${async_refusal_case#*:}"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \

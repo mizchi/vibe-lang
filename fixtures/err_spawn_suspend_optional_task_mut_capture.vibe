@@ -1,0 +1,25 @@
+// #3640: a wrapper that takes its task as an optional parameter (`task?:`,
+// #3555) is spawn-shaped, so the closure a caller supplies is checked like a
+// positional one. It used to be unchecked in either spelling of the group: this
+// program read the caller's `let mut n` from the task and returned 2. Executed
+// by tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh, which asserts
+// the refusal.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+fn start(g~: TaskGroup, task?: () -> Int with Async) -> TaskHandle[Int] {
+  match task {
+    Some(t) => TaskGroup::spawn_suspend(g, t),
+    None => TaskGroup::spawn_suspend(g, () -> 0)
+  }
+}
+
+fn main() -> Int allows Async + Exception {
+  let mut n = 1
+  TaskGroup::run((g) -> {
+    let h = start(g = g, task = () -> n + 1)
+    TaskGroup::pump_all(g)
+    TaskHandle::join(h)
+  })
+}

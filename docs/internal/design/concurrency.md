@@ -474,11 +474,17 @@ the edit (open the stream inside the task).
 
 The check is `check_spawnable_captures`
 (`lib/@vibe/compiler/checker/traits/checker_spawnable.vibe`). It runs at every call
-whose callee has spawn's shape -- a `TaskGroup[rg, e]` first parameter and a
-closure last parameter -- which covers `TaskGroup::spawn`,
-`TaskGroup::spawn_suspend`, `Parallel::map`, a local `let` alias, a renamed
-import, and a wrapper of the same shape. It is selected by the callee's type,
-not its spelling. A spawn-shaped function taken as any other value -- passed
+whose callee has spawn's shape -- a `TaskGroup` first parameter and a closure
+last parameter -- which covers `TaskGroup::spawn`, `TaskGroup::spawn_suspend`,
+`Parallel::map`, a local `let` alias, a renamed import, and a wrapper of the
+same shape. It is selected by the callee's type, not its spelling. The group
+may be written `TaskGroup[rg, e]` or with its region and row left to the call
+(`g: TaskGroup`), and the closure may be an optional parameter (`task?: () ->
+T`), which a call supplies as `Some(closure)` or leaves `None` (#3640). A group
+written `TaskGroup` names no nursery, so a task spawned into it may not hold an
+endpoint: the diagnostic asks for `TaskGroup[rg, e]`. Pinned by the
+`fixtures/typecheck/spawn_{helper,elided_group}_*` rows and
+`fixtures/{err_spawn_suspend_optional_task_mut_capture,spawn_suspend_optional_task_checked}.vibe`. A spawn-shaped function taken as any other value -- passed
 as an argument, stored in a field, returned -- is refused where it is taken,
 because no later call could see the closure it would run.
 
@@ -488,7 +494,8 @@ The closure argument must be one whose captures the check can see:
 - a name bound by a local `let` to a closure literal, whose captures were
   recorded where the `let` was checked;
 - a top-level function, which captures nothing;
-- inside a spawn-shaped function, its own closure parameter: every call site
+- inside a spawn-shaped function, its own closure parameter, or the closure
+  `match task { Some(t) => .. }` takes out of its optional one: every call site
   of that function is itself checked.
 
 Anything else -- a closure a helper returned, a field, a rebound name -- is
