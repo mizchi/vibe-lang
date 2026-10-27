@@ -1,0 +1,81 @@
+// #3635: a `for` element passed straight to a `[T: Eq]` generic reads its
+// witness off the element type, the way a `let`-bound name does.
+//
+// The lowering's environment recorded nothing for a `for` binder, so the call
+// could not read `T` and was refused with "add an explicit type annotation to
+// the argument binding" -- an edit the program should not need, since the
+// element type is right there in the array. Worse, the binder did not mask an
+// outer binding of the same name: with `let y = 7` in scope, `for y in [1.5,
+// 2.5] { same(y, 2.5) }` read the outer `Int`, dispatched `Int`'s witness on
+// two `Double`s and answered `false` for the equal pair.
+
+struct Pt {
+  v: Double
+} derive (Eq)
+
+struct GBox[T] {
+  v: T
+} derive (Eq)
+
+fn same[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}
+
+fn b2s(b: Bool) -> String {
+  if b {
+    "t"
+  } else {
+    "f"
+  }
+}
+
+test "a for element supplies the witness at each scalar" {
+  let out: Array[String] = []
+  let xs = [1, 2, 3]
+  for y in xs {
+    Array::push(out, b2s(same(y, 2)))
+  }
+  for d in [1.5, 2.5] {
+    Array::push(out, b2s(same(d, 2.5)))
+  }
+  for s in ["a", "b"] {
+    Array::push(out, b2s(same(s, "b")))
+  }
+  inspect(String::join(out, ""), "ftfftft")
+}
+
+test "a for binder shadows an outer binding of its name" {
+  let out: Array[String] = []
+  let y = 7
+  for y in [1.5, 2.5] {
+    Array::push(out, b2s(same(y, 2.5)))
+  }
+  let s = "outer"
+  for s in [10, 20] {
+    Array::push(out, b2s(same(s, 20)))
+  }
+  Array::push(out, b2s(same(y, 7)))
+  Array::push(out, b2s(same(s, "outer")))
+  inspect(String::join(out, ""), "ftfttt")
+}
+
+test "a for element of a declared type compares by content" {
+  let out: Array[String] = []
+  let pts = [Pt::{ v: 1.5 }, Pt::{ v: 2.5 }]
+  for p in pts {
+    Array::push(out, b2s(same(p, Pt::{ v: 2.5 })))
+  }
+  for b in [GBox::{ v: 1.5 }, GBox::{ v: 2.5 }] {
+    Array::push(out, b2s(same(b, GBox::{ v: 2.5 })))
+  }
+  inspect(String::join(out, ""), "ftft")
+}
+
+test "the index binder is an Int" {
+  let out: Array[String] = []
+  for i, x in [5.5, 6.5] {
+    Array::push(out, b2s(same(i, 1)))
+    Array::push(out, b2s(same(x, 6.5)))
+  }
+  inspect(String::join(out, ""), "fftt")
+}

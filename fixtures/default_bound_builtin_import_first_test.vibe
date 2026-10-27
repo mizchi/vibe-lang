@@ -1,0 +1,29 @@
+// #3636: `T::default()` dispatches when `@vibe/builtin` is imported before
+// `@vibe/core`.
+//
+// `@vibe/builtin` declares a marker `Default` so the bound is satisfiable
+// without `@vibe/core`, which declares the method-bearing one. The lowering's
+// trait table is keyed by name and the first declaration won, so with this
+// import order `Default` was the marker, `[T: Default]` threaded no witness,
+// and the build died with an internal compiler error ("`T::default` (local,
+// @call) reached code generation unresolved"). With the imports swapped the
+// same program compiled. A pure marker now yields to a same-named declaration
+// that has methods.
+
+import @vibe/builtin { to_string }
+import @vibe/core { trait Default }
+
+fn fresh[T: Default](witness: T) -> T {
+  T::default()
+}
+
+test "T::default answers at each scalar with @vibe/builtin imported first" {
+  let d: Double = fresh(2.5)
+  let rows = [
+    to_string(fresh(7)),
+    "[" + fresh("x") + "]",
+    to_string(fresh(true)),
+    to_string(d == 0.0)
+  ]
+  inspect(String::join(rows, " "), "0 [] false true")
+}
