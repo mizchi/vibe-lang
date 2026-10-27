@@ -384,9 +384,9 @@ The waits above belong to tasks. Two builtin types carry waiting as a value.
 it, `Future::ready(v)` is already filled, and `await(f)` suspends until the
 value is there.
 
-An async iterator is a type that implements a trait whose `next` returns
-`Future[Option[(T, Self)]]`: the next element and the rest, or `None` at the
-end. `for x in it` over such a value awaits each step, so the function that
+An async iterator is a type whose `next` returns `Future[Option[(T, Self)]]`:
+the next element and the rest, or `None` at the end. The `next` can come from
+a trait impl, as below, or be a plain `fn T::next`. `for x in it` over such a value awaits each step, so the function that
 holds the loop needs `Async` in its row, and leaving it off is refused.
 Whether a `for` is the eager array loop or the await loop is decided by the
 iterand's type alone; there is no `for await`.

@@ -380,8 +380,9 @@ sleep は足し算ではなく重なり、壁時計は読みません。
 満たし、`Future::ready(v)` は最初から満たされていて、`await(f)` は値が揃う
 まで中断します。
 
-非同期イテレータは、`next` が `Future[Option[(T, Self)]]` を返す trait を
-実装した型です: 次の要素と残り、あるいは終わりなら `None`。そういう値に対する
+非同期イテレータは、`next` が `Future[Option[(T, Self)]]` を返す型です:
+次の要素と残り、あるいは終わりなら `None`。`next` は下の例のように trait の
+impl でも、素の `fn T::next` でも構いません。そういう値に対する
 `for x in it` は各ステップを await するので、そのループを含む関数の row には
 `Async` が要り、書かなければ拒否されます。`for` が eager な配列ループか
 await ループかは iterand の型だけで決まり、`for await` はありません。
