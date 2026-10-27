@@ -16,6 +16,10 @@ import ./argument_types.vibe {
   infer_arg_type_name
 }
 
+import ./formal_scope.vibe {
+  formal_in_scope, is_marked_formal_name
+}
+
 import ./inspect_rewrite.vibe {
   dinsp_fresh_name
 }
@@ -227,6 +231,32 @@ fn for_await_is_pull_source(inner: Expr, fn_returns: Array[(String, String)]) ->
   }
 }
 
+/// #3642: the iterand's type name as the loop classification reads it --
+/// `infer_arg_type_name`'s head with `type` aliases followed
+/// (`resolve_alias_head`). That head is the name the program SPELLED (a
+/// `let c: C`, a parameter `c: C`, a function declared `-> C`), and every
+/// protocol lookup below is keyed by the type's own name (`Countdown::next`,
+/// `Countdown::iter_get`, the struct set). Before this, `type C = Countdown`
+/// matched none of them, and the loop fell through to the residual array
+/// `EForIn`: it ran zero times and answered `0`, sync or async, with or
+/// without a protocol. A declared type of that spelling and an in-scope type
+/// formal keep their own name, so an `import { f as C }` value alias cannot
+/// redirect a real type `C`.
+fn for_iterand_type_name(iter: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
+    Some(tn) => Some(resolve_for_type_alias(tn, struct_sets, fn_returns)),
+    None => None
+  }
+}
+
+fn resolve_for_type_alias(tn: String, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> String {
+  if struct_set_has(struct_sets, tn) || is_marked_formal_name(tn) || formal_in_scope(tn) {
+    tn
+  } else {
+    resolve_alias_head(fn_returns, tn)
+  }
+}
+
 /// #1350: the trait-free arm of the for-loop classification. Without a
 /// declared trait there are no `impl ::next` methods to dispatch, so a plain
 /// `for x in e` keeps its EForIn (array) lowering -- but the two ASYNC shapes
@@ -242,7 +272,7 @@ fn for_await_is_pull_source(inner: Expr, fn_returns: Array[(String, String)]) ->
 /// call_indirect an array pointer. The pull loop fires only on a POSITIVE
 /// function-shaped classification.
 export fn classify_trait_free_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
-  match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
+  match for_iterand_type_name(iter, struct_sets, var_types, fn_returns) {
     Some(tn) => if tn == "HostStream" {
       build_host_stream_for(name, riter, rbody)
     } else if fn_exists(fn_returns, String::concat(tn, "::next")) && fn_return_is_future(fn_returns, String::concat(tn, "::next")) {
@@ -268,7 +298,7 @@ export fn classify_trait_free_for_loop(name: String, idx: Option[String], iter: 
 /// @vibe/core's List), so it also runs for trait-free programs where the
 /// next/iter classification stays gated off.
 fn classify_indexed_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
-  match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
+  match for_iterand_type_name(iter, struct_sets, var_types, fn_returns) {
     Some(tn) => if struct_set_has(struct_sets, tn) {
       if fn_exists(fn_returns, String::concat(tn, "::iter_length")) && fn_exists(fn_returns, String::concat(tn, "::iter_get")) {
         build_indexed_iter_for(name, idx, tn, riter, rbody)
@@ -340,7 +370,7 @@ fn for_iterand_off_marker(iter: Expr) -> String {
 /// trap. So this strictly turns a trap into a working loop (#827's own
 /// reasoning, now applied to the single surface).
 export fn classify_sync_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
-  match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
+  match for_iterand_type_name(iter, struct_sets, var_types, fn_returns) {
     Some(tn) => if is_residual_eager_for_type(tn) {
       // These eager builtins own the residual EForIn lowering. A public
       // conversion such as `Array::iter(xs) -> AsyncIter[T]` must only run
@@ -357,7 +387,7 @@ export fn classify_sync_for_loop(name: String, idx: Option[String], iter: Expr, 
       }
     } else {
       match fn_return_type(fn_returns, String::concat(tn, "::iter")) {
-        Some(itertype) => build_iter_for(name, itertype, ECall(EIdent(String::concat(tn, "::iter"), -1), [
+        Some(itertype) => build_iter_for(name, resolve_for_type_alias(itertype, struct_sets, fn_returns), ECall(EIdent(String::concat(tn, "::iter"), -1), [
           riter
         ], -1, []), rbody),
         None => classify_indexed_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
