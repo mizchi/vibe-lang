@@ -514,7 +514,19 @@ export fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_i
   let mut rc_kind = 0
   let mut is_borrow_ret_ext = false
   if ctx.enable_rc {
-    if expr_is_floatish(value, local_names, ctx) {
+    // #3652: a `Double` VIEW -- an element read (`Array::get` on an
+    // `Array[Double]`) or a field projection (`t.1`, `s.ratio`) -- is
+    // classified by its shape below, like a view of any other type: the
+    // borrow-returning call leaves the binding borrow-bound, so an owning use
+    // retains it, and the projection is retained at the binding. This arm
+    // took the binding as an OWNED box with nothing retained, so passing it to
+    // a function that consumes its argument released the element its
+    // container still held, and the container's drop released it again --
+    // `__rt_rc_alloc` trapped after ~20000 iterations. Only an unannotated
+    // binding reached here: the annotation's ascription call retains the
+    // borrowed argument it is given.
+    let float_view = is_edot(value) || call_returns_borrow(value, local_names, ctx)
+    if !float_view && expr_is_floatish(value, local_names, ctx) {
       rc_kind = 2
       Array::push(ctx.heap_binding_names, name)
       // #3135: a `Double` is a heap box, and the plan now says so, so an
