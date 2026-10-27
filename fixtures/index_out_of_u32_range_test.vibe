@@ -6,8 +6,10 @@
 // This file pins the side that ANSWERS: the in-range boundary still reads and
 // writes, and the operations defined to clamp or to do nothing keep doing so
 // for a huge argument. The side that must TRAP (Array::get / set / `xs[i]`,
-// String::byte_at, Bytes::get / set / slice / blit at 2^32, and a negative
-// -2^32) is pinned by the early gate row `4e2`, on the linear and gc lanes.
+// String::byte_at, Bytes::get / set / blit at 2^32, and a negative -2^32) is
+// pinned by the early gate row `4e2`, on the linear and gc lanes. Since #3549
+// `Bytes::slice` clamps like `Array::slice`, so a range at or past 2^32 is an
+// answer here rather than a trap there.
 //
 // `id` keeps every index a runtime value, so no constant folding answers it.
 fn id(x: Int) -> Int {
@@ -49,6 +51,10 @@ test "an empty Bytes range at 2^32 is empty, as it is below" {
 test "a slice end of 2^32 or more clamps to the length" {
   inspect(String::substring("abc", id(1), id(4294967296) + 1), "bc")
   inspect(Array::length(Array::slice([10, 20, 30], id(1), id(4294967296) + 1)), "2")
+  let b = Bytes::from_array([1, 2, 3])
+  inspect(Bytes::length(Bytes::slice(b, id(1), id(4294967296) + 1)), "2")
+  inspect(Bytes::length(Bytes::slice(b, id(0), id(4294967298))), "3")
+  inspect(Bytes::length(Bytes::slice(b, id(4294967296), id(4294967298))), "0")
 }
 
 test "truncating to 2^32 or more keeps every element" {

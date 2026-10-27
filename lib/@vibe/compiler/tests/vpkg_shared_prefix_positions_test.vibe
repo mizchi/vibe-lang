@@ -1,0 +1,160 @@
+//# Positions in a sibling of a contract that shares imports (#3656)
+//
+// The loader prepends a contract's directory-shared imports (#897) to every
+// sibling `.vibe` file, and the passes after it read that INGESTED text. A
+// line counted in it was the author's line plus the block's height: in the
+// package below a duplicate `fn helper` written on line 5 was reported at
+// line 7, a type error's range two lines low, a parse error in an imported
+// sibling likewise, and `vibe check --json` crashed converting a line past
+// the end of the file on disk. A refusal raised after the merge (structural
+// `==`) was reported with no position at all.
+//
+// Every case below writes the package to disk and asks the checker for the
+// diagnostic, so the expected line is the one an editor opening the file
+// shows.
+
+//# Imports
+
+import ../cli_support.vibe {
+  check_linked_file
+}
+
+import @vibe/compiler/core {
+  loader_physical_located, loader_physical_text, loader_prepended_prefix_bytes, loader_shift_located_lines
+}
+
+import @vibe/compiler/loader {
+  ingest_source_text_fs
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/json {
+  Json
+}
+
+import @vibe/lsp {
+  lsp_diagnostics_json_of_messages_for
+}
+
+//# Functions
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = array_empty()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+fn write_file(path: String, text: String) -> Unit with Fs {
+  Fs::write_bytes(path, string_to_bytes(text))
+}
+
+/// A package directory whose contract shares `@vibe/random`'s `seed`, with
+/// `impl` as its one sibling. Returns the sibling's path.
+fn write_package(dir: String, impl_text: String) -> String with Fs {
+  Fs::mkdir_p(dir)
+  write_file(String::concat(dir, "/index.vpkg"), "import @vibe/random { seed }\n\nfn wrapped(x: Int) -> Int\n")
+  let impl_path = String::concat(dir, "/impl.vibe")
+  write_file(impl_path, impl_text)
+  impl_path
+}
+
+/// What `vibe check` raises for `path`, or `""` when it is clean.
+fn check(path: String) -> String with Env + Fs {
+  handle {
+    let _ = check_linked_file(path)
+    ""
+  } with { Exception::Throw(m) => m }
+}
+
+/// `msg` with the leading `dir` replaced by `<pkg>`, so the expected text
+/// does not repeat the scratch directory.
+fn rel(dir: String, msg: String) -> String {
+  String::join(String::split(msg, dir), "<pkg>")
+}
+
+fn dup_source() -> String {
+  "fn helper(x: Int) -> Int {\n  x\n}\n\nfn helper(x: Int) -> Int {\n  x + 1\n}\n\nexport fn wrapped(x: Int) -> Int {\n  helper(seed(x))\n}\n"
+}
+
+fn json_int(j: Json, a: String, b: String) -> Int {
+  Double::to_int(Json::number(Json::field(Json::field(j, a), b)))
+}
+
+//# Tests
+
+test "#3656: a name-located diagnostic in a sibling names the line on disk" {
+  let dir = "/tmp/vibe_vpkg_shared_positions_3656/dup"
+  let impl_path = write_package(dir, dup_source())
+  inspect(rel(dir, check(impl_path)), content = "<pkg>/impl.vibe: line 5:4-10: rename or remove one of the two: `helper` is declared more than once at the top level, and every use would silently take the last one (duplicate declaration: helper)")
+}
+
+test "#3656: a type error's byte range in a sibling is counted on disk" {
+  let dir = "/tmp/vibe_vpkg_shared_positions_3656/ty"
+  let impl_path = write_package(dir, "fn helper(x: Int) -> Int {\n  x\n}\n\nexport fn wrapped(x: Int) -> Int {\n  let s: Int = \"str\"\n  helper(seed(x)) + s\n}\n")
+  inspect(rel(dir, check(impl_path)), content = "<pkg>/impl.vibe: line 6:16-21: binding type mismatch for a local let: expected Int, got String")
+}
+
+test "#3656: a parse error in an imported sibling names the line on disk" {
+  let dir = "/tmp/vibe_vpkg_shared_positions_3656/parse"
+  let _ = write_package(dir, "fn helper(x: Int) -> Int {\n  x +\n}\n\nexport fn wrapped(x: Int) -> Int {\n  helper(seed(x))\n}\n")
+  let main_path = "/tmp/vibe_vpkg_shared_positions_3656/parse_main.vibe"
+  write_file(main_path, "import ./parse { wrapped }\n\nexport fn run() -> Int {\n  wrapped(1)\n}\n")
+  inspect(rel(dir, check(main_path)), content = "<pkg>/impl.vibe: line 3:1: unexpected token: }")
+}
+
+test "#3656: a refusal raised after the merge is located in the sibling" {
+  let dir = "/tmp/vibe_vpkg_shared_positions_3656/eq"
+  // An opaque `StringBuilder` field has no structural comparator, so the
+  // element type the pushes would give cannot decide `==` and the build
+  // refuses it after the merge. (A function field is refused earlier, by the
+  // checker, so it would not exercise the post-merge path.)
+  let impl_path = write_package(dir, "struct Box {\n  b: StringBuilder\n} derive (Eq)\n\nfn fill(xs: Array[Box], v: Int) -> Unit {\n  let b = StringBuilder::new()\n  StringBuilder::push(b, \"v\")\n  Array::push(xs, Box::{ b: b })\n}\n\nexport fn wrapped(x: Int) -> Int {\n  let left = []\n  fill(left, seed(x))\n  let right = []\n  fill(right, 1)\n  if left == right {\n    0\n  } else {\n    1\n  }\n}\n")
+  inspect(rel(dir, check(impl_path)), content = "<pkg>/impl.vibe: line 16:11: structural `==` cannot be decided here: annotate one of them (`let xs: Array[<type>] = []`): both operands are untyped empty-array bindings that were pushed to, so neither side describes its element type")
+}
+
+test "#3656: --json converts a sibling's diagnostic against the file on disk" {
+  let dir = "/tmp/vibe_vpkg_shared_positions_3656/json"
+  let impl_path = write_package(dir, dup_source())
+  let msg = check(impl_path)
+  let parsed = Json::parse(lsp_diagnostics_json_of_messages_for(impl_path, dup_source(), [
+    msg
+  ]))
+  let range = Json::field(Json::index(parsed, 0), "range")
+  inspect((json_int(range, "start", "line"), json_int(range, "start", "character"), json_int(range, "end", "line"), json_int(range, "end", "character")), content = "(4, 3, 4, 9)")
+}
+
+test "#3656: the ingested sibling is its prepended block followed by the file" {
+  let dir = "/tmp/vibe_vpkg_shared_positions_3656/ingest"
+  let impl_path = write_package(dir, dup_source())
+  let ingested = ingest_source_text_fs(impl_path, dup_source())
+  assert(loader_prepended_prefix_bytes(ingested) > 0)
+  assert(loader_physical_text(ingested) == dup_source())
+  // Re-ingesting an ingested text prepends nothing more.
+  assert(ingest_source_text_fs(impl_path, ingested) == ingested)
+  // A file that is not under such a contract has no block.
+  assert(loader_prepended_prefix_bytes(dup_source()) == 0)
+}
+
+test "#3656: a file that merely opens with the marker comment keeps its own lines" {
+  let text = "// vibe: vpkg directory-shared imports (#897)\nfn f() -> Int { 1 }\n"
+  assert(loader_prepended_prefix_bytes(text) == 0)
+  inspect(loader_physical_located(text, "line 2:4-5: m"), content = "line 2:4-5: m")
+}
+
+test "#3656: every position spelling is shifted, and one inside the block is dropped" {
+  inspect(loader_shift_located_lines("line 7:4-10: dup", 2), content = "line 5:4-10: dup")
+  inspect(loader_shift_located_lines("line 7:4: point", 2), content = "line 5:4: point")
+  inspect(loader_shift_located_lines("line 9:3-11:5: spans lines", 2), content = "line 7:3-9:5: spans lines")
+  inspect(loader_shift_located_lines("line 2:1: in the block", 2), content = "in the block")
+  inspect(loader_shift_located_lines("line 3:1: first line on disk", 2), content = "line 1:1: first line on disk")
+  inspect(loader_shift_located_lines("no position here", 2), content = "no position here")
+  inspect(loader_shift_located_lines("line x:1: not a position", 2), content = "line x:1: not a position")
+}

@@ -1,0 +1,29 @@
+//# #3549: a hint names an edit that compiles
+//
+// Three hints asked for an edit the compiler then refused: a second `with`
+// clause on a function that already had one, a second exception arm on a
+// `handle` (a handle has only one), and a `Result` type the language no
+// longer has. Each test below pins the hint's text and compiles the edit it
+// names.
+
+//# Imports
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+//# Tests
+
+test "a row mismatch on a declared clause names the clause to change" {
+  let src = "effect Ask {\n  Get(Int) -> Int\n}\n\nfn run(f: (Int) -> Int with Ask) -> Int with Ask {\n  f(1)\n}\n\nfn g() -> Int with Console {\n  run((x) -> {\n    println(\"q\")\n    perform Ask::Get(x)\n  })\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 10:3: effect row mismatch for 'g': missing { Ask } (declared { Console }, requires { Ask, Console })\nhint: change 'with Console' to 'with Ask + Console' on 'g']")
+  let fixed = "effect Ask {\n  Get(Int) -> Int\n}\n\nfn run(f: (Int) -> Int with Ask) -> Int with Ask {\n  f(1)\n}\n\nfn g() -> Int with Ask + Console {\n  run((x) -> {\n    println(\"q\")\n    perform Ask::Get(x)\n  })\n}\n"
+  inspect(collect_all_diagnostics(fixed), "[]")
+}
+
+test "a kinded arm that catches another kind names a nested handle" {
+  let src = "enum IoErr {\n  NotFound(String)\n}\n\nfn fail() -> Int with Exception[IoErr] {\n  throw(NotFound(\"cfg\"))\n}\n\nfn main() -> Int allows Exception[IoErr] {\n  handle {\n    fail()\n  } with { Exception[String]::Throw(s) => String::length(s) }\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 11:5: handler arm `Exception[String]::Throw` catches EVERY exception its body raises at run time (the exception channel carries no kind), so the body may raise only `Exception[String]`; in 'main' it also raises { Exception[IoErr] }\nhint: catch that kind in a handle of its own, nested inside this one around the call that raises it (a handle has only one exception arm), use the erased `Exception::Throw(m)` arm (which catches everything, with an untyped payload), give the throw a payload of the handled kind, or move that call outside this handle]")
+  let fixed = "enum IoErr {\n  NotFound(String)\n}\n\nfn fail() -> Int with Exception[IoErr] {\n  throw(NotFound(\"cfg\"))\n}\n\nfn main() -> Int {\n  handle {\n    handle {\n      fail()\n    } with { Exception[IoErr]::Throw(_) => 0 }\n  } with { Exception[String]::Throw(s) => String::length(s) }\n}\n"
+  inspect(collect_all_diagnostics(fixed), "[]")
+}

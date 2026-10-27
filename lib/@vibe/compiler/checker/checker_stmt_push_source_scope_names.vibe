@@ -1433,3 +1433,58 @@ export fn duplicate_import_value_note(seen: Array[String], item: ImportItem, err
     }
   }
 }
+
+/// #3549: a top-level `fn` / `let` that reuses the local name of a value this
+/// file imports. Every use resolves to the declaration (#3444), so the import
+/// is dead and the reader of a call cannot tell which of the two runs:
+/// `import @vibe/builtin { unwrap_or }` beside `fn unwrap_or(a: Int, b: Int)`
+/// made `unwrap_or(1, 2)` answer 3 with no diagnostic. Like a duplicate
+/// declaration (#1464) the clash is refused, and the message leads with the
+/// two edits. Type imports (a kind qualifier, or an uppercase type head) are
+/// not values and stay out of it, as in `duplicate_import_value_note`.
+export fn import_declaration_clash_errors(stmts: Array[Stmt], from_idx: Int, errors: Array[String]) -> Unit {
+  let imported: Array[String] = array_empty()
+  let paths: Array[String] = array_empty()
+  let mut i = from_idx
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, items) => for item in items {
+        if import_item_is_value_binding(item) && !name_is_type_head(item.name) {
+          Array::push(imported, import_bound_name(item))
+          Array::push(paths, path)
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if Array::length(imported) > 0 {
+    let reported: Array[String] = array_empty()
+    let mut j = from_idx
+    while j < Array::length(stmts) {
+      let declared = match Array::get(stmts, j) {
+        SLet(_, _, n, _, _) => n,
+        SLetMut(n, _, _) => n,
+        SExternLet(n, _) => n,
+        _ => ""
+      }
+      if String::length(declared) > 0 && declared != "_" && !es_string_array_contains(reported, declared) {
+        let k = es_index_of(imported, declared)
+        if k >= 0 {
+          Array::push(reported, declared)
+          let path = Array::get(paths, k)
+          Array::push(errors, "rename `\{declared}` here, or drop it from `import \{path} { .. }`: `\{declared}` is imported from \{path} and also declared in this file, and every use silently takes the declaration [@fn=\{declared}]")
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+  } else {
+    ()
+  }
+}

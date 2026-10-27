@@ -72,6 +72,10 @@ import ./import_alias_rewrite_rewrite_alias_expr_ix.vibe {
   namespace_rename_original
 }
 
+import ./loader_prepended_prefix.vibe {
+  loader_physical_text, loader_prepended_prefix_bytes
+}
+
 import ./types_env_cache.vibe {
   Type
 }
@@ -889,15 +893,16 @@ fn impl_what(tparams: Array[String], trait_key: String, target: TypeExpr) -> Str
 }
 
 /// The text a refusal's line numbers are counted in, or `""` (no line) when
-/// the loader may have prepended lines the file on disk does not hold: a
-/// sibling under a contract that shares imports opens with
-/// `vpkg_shared_import_marker` and the inherited import lines, so a line
-/// counted in the unit's text is not the author's line. Read from the text,
-/// as `merged_offset_is_synthesized` does, only to WITHHOLD a line number --
-/// a module that merely opens with such a comment loses its line, never its
-/// check.
+/// the text is not the file on disk. A sibling under a contract that shares
+/// imports opens with the block the loader prepended (#897); its lines are
+/// counted after that block (#3656), which is the file as written. A text
+/// that opens with a loader marker line but carries no complete block -- a
+/// generated facade or types module, or a module that merely opens with such
+/// a comment -- loses its line, never its check.
 fn unit_located_text(unit: LinkedUnit) -> String {
-  if String::starts_with(unit.source, "// vibe: contract facade (desugared from .vibei)\n") || String::starts_with(unit.source, "// vibe: vpkg directory-shared imports (#897)\n") || String::starts_with(unit.source, "// vibe: vpkg contract types module (#1840)\n") {
+  if loader_prepended_prefix_bytes(unit.source) > 0 {
+    loader_physical_text(unit.source)
+  } else if String::starts_with(unit.source, "// vibe: contract facade (desugared from .vibei)\n") || String::starts_with(unit.source, "// vibe: vpkg directory-shared imports (#897)\n") || String::starts_with(unit.source, "// vibe: vpkg contract types module (#1840)\n") {
     ""
   } else {
     unit.source

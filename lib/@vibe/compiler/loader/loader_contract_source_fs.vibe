@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/loader/loader.vibe — contract source fs.
 
 import @vibe/compiler/syntax {
-  cfg_ambient_flags_csv, lex, lex_with_offsets, located_lex_message, parse_program, parse_program_preserving_located
+  Token, cfg_ambient_flags_csv, lex, lex_with_offsets, located_lex_message, parse_program, parse_program_preserving_located, print_stmt
 }
 
 import @vibe/core {
@@ -10,6 +10,7 @@ import @vibe/core {
 
 import @vibe/compiler/core {
   Expr,
+  ImportItem,
   Source,
   Stmt,
   Subst,
@@ -22,6 +23,8 @@ import @vibe/compiler/core {
   ensure_regular_source_fs,
   external_lib_roots,
   is_contract_ext,
+  loader_prepended_prefix_bytes,
+  loader_shared_imports_end_marker,
   nearest_vpkg_path_fs,
   normalize_path,
   path_in_dir,
@@ -1650,8 +1653,234 @@ fn vpkg_sibling_ident(path: String) -> String {
   StringBuilder::freeze(sb)
 }
 
+fn shared_string_array_contains(items: Array[String], target: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(items) {
+    if Array::get(items, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// The local name an inherited import item binds as a VALUE, or "" for a
+/// type import (a kind qualifier, or an uppercase type head) -- the same
+/// split the checker's import/declaration clash rule makes
+/// (`import_declaration_clash_errors`).
+fn shared_import_value_binding(item: ImportItem) -> String {
+  match item.kind {
+    Some(_) => "",
+    None => {
+      let n = item.name
+      let c = if String::length(n) == 0 {
+        0
+      } else {
+        String::byte_at(n, 0)
+      }
+      if String::length(n) == 0 || String::contains(n, "::") || (c >= 65 && c <= 90) {
+        ""
+      } else {
+        match item.alias {
+          Some(a) => a,
+          None => n
+        }
+      }
+    }
+  }
+}
+
+fn shared_ident_byte(c: Int) -> Bool {
+  (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+/// Cheap, complete pre-filter for `sibling_top_level_value_names`: whether
+/// `name` occurs as a whole word right after `fn` / `let` / `mut` / `rec`
+/// (whitespace between). Every top-level value declaration has that shape,
+/// so a miss here proves the sibling does not declare `name`; a hit (which
+/// a block-local `let` also produces) only licenses the token scan.
+fn shared_name_follows_binder_keyword(text: String, name: String) -> Bool {
+  let n = String::length(name)
+  let len = String::length(text)
+  let mut hit = false
+  let mut from = 0
+  while !hit && from < len {
+    let rel = String::index_of(text[from: len], name)
+    if rel < 0 {
+      from = len
+    } else {
+      let at = from + rel
+      let after_ok = at + n >= len || !shared_ident_byte(String::byte_at(text, at + n))
+      let mut k = at - 1
+      while k >= 0 && (String::byte_at(text, k) == 32 || String::byte_at(text, k) == 9 || String::byte_at(text, k) == 10 || String::byte_at(text, k) == 13) {
+        k = k - 1
+      }
+      let gap = k < at - 1
+      let word_end = k + 1
+      let mut ws = k
+      while ws >= 0 && shared_ident_byte(String::byte_at(text, ws)) {
+        ws = ws - 1
+      }
+      let word = if word_end > ws + 1 {
+        text[ws + 1: word_end]
+      } else {
+        ""
+      }
+      if after_ok && gap && (word == "fn" || word == "let" || word == "mut" || word == "rec") {
+        hit = true
+      } else {
+        from = at + 1
+      }
+    }
+  }
+  hit
+}
+
+fn shared_token_is_let_modifier(t: Token) -> Bool {
+  match t {
+    TMut => true,
+    TRec => true,
+    _ => false
+  }
+}
+
+/// The value names `text` declares at the TOP LEVEL: `fn NAME`, `let NAME`,
+/// `let mut NAME`, `let rec NAME`, `extern let NAME`, at bracket depth 0.
+/// Read from tokens, so a string, a comment or a nested block cannot pose as
+/// a declaration.
+fn sibling_top_level_value_names(text: String) -> Array[String] with Exception {
+  let names: Array[String] = array_empty()
+  let tokens = lex(text)
+  let n = Array::length(tokens)
+  let mut depth = 0
+  let mut i = 0
+  while i < n {
+    match Array::get(tokens, i) {
+      TLBrace => depth = depth + 1,
+      TLParen => depth = depth + 1,
+      TLBracket => depth = depth + 1,
+      TRBrace => if depth > 0 {
+        depth = depth - 1
+      },
+      TRParen => if depth > 0 {
+        depth = depth - 1
+      },
+      TRBracket => if depth > 0 {
+        depth = depth - 1
+      },
+      TFn => if depth == 0 && i + 1 < n {
+        match Array::get(tokens, i + 1) {
+          TIdent(name) => Array::push(names, name),
+          _ => ()
+        }
+      },
+      TLet => if depth == 0 {
+        let mut j = i + 1
+        while j < n && shared_token_is_let_modifier(Array::get(tokens, j)) {
+          j = j + 1
+        }
+        if j < n {
+          match Array::get(tokens, j) {
+            TIdent(name) => Array::push(names, name),
+            _ => ()
+          }
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  names
+}
+
+/// #897 + #3549: a sibling's own top-level declaration shadows an inherited
+/// directory-shared import ("a sibling's own explicit declaration always
+/// shadows an inherited one"), while an import the file WRITES and also
+/// declares is refused by the checker (`import_declaration_clash_errors`).
+/// The checker cannot tell the two apart -- the inherited lines are ordinary
+/// text by then -- so the shadowed items are dropped here, before the text
+/// is ingested: every use already resolved to the declaration, so the item
+/// was dead. A line whose items are all dropped stays as `import @p {  }`,
+/// keeping the package in the sibling's dependency closure exactly as the
+/// manifest scan (`manifest_directory_shared_import_deps`) reports it.
+/// Only the `import @..` lines are touched; the effects carrier and the
+/// types-module line are not import items a sibling can shadow by value.
+/// A pure function of (prefix, sibling text), so the per-vpkg prefix cache
+/// stays per-vpkg and the downstream caches keyed on the ingested text stay
+/// correct.
+fn shared_import_prefix_unshadowed(prefix: String, sibling: String) -> String with Exception {
+  let lines = String::split(prefix, "\n")
+  let mut candidate = false
+  let mut li = 0
+  while !candidate && li < Array::length(lines) {
+    let line = Array::get(lines, li)
+    if String::starts_with(line, "import @") {
+      for stmt in parse_program(lex(line)) {
+        match stmt {
+          SImport(_, items) => for item in items {
+            let bound = shared_import_value_binding(item)
+            if bound != "" && shared_name_follows_binder_keyword(sibling, bound) {
+              candidate = true
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        }
+      }
+    } else {
+      ()
+    }
+    li = li + 1
+  }
+  if !candidate {
+    prefix
+  } else {
+    let declared = sibling_top_level_value_names(sibling)
+    let out: Array[String] = array_empty()
+    for line in lines {
+      if String::starts_with(line, "import @") {
+        let stmts = parse_program(lex(line))
+        if Array::length(stmts) == 1 {
+          match Array::get(stmts, 0) {
+            SImport(ipath, items) => {
+              let kept: Array[ImportItem] = array_empty()
+              for item in items {
+                let bound = shared_import_value_binding(item)
+                if bound != "" && shared_string_array_contains(declared, bound) {
+                  ()
+                } else {
+                  Array::push(kept, item)
+                }
+              }
+              if Array::length(kept) == Array::length(items) {
+                Array::push(out, line)
+              } else {
+                Array::push(out, print_stmt(SImport(ipath, kept)))
+              }
+            },
+            _ => Array::push(out, line)
+          }
+        } else {
+          Array::push(out, line)
+        }
+      } else {
+        Array::push(out, line)
+      }
+    }
+    String::join(out, "\n")
+  }
+}
+
 export fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: String) -> String with Env + Exception + Fs {
-  if String::starts_with(pin_blanked, vpkg_shared_import_marker) {
+  // An ingested text opens with the marker and holds the end marker; a file
+  // whose author merely began it with the marker comment still gets its
+  // imports.
+  if String::starts_with(pin_blanked, vpkg_shared_import_marker) && loader_prepended_prefix_bytes(pin_blanked) > 0 {
     pin_blanked
   } else {
     let prefix = vpkg_directory_shared_import_prefix_fs(path)
@@ -1662,9 +1891,13 @@ export fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: Stri
       // sibling's own suffix so two siblings never collide in a merge.
       let slot = String::concat(vpkg_contract_effects_prefix, String::concat(vpkg_contract_effects_sibling_slot, "__"))
       let sib = String::concat(vpkg_contract_effects_prefix, String::concat(vpkg_sibling_ident(path), "__"))
-      let own_prefix = String::join(String::split(prefix, slot), sib)
+      let own_prefix = shared_import_prefix_unshadowed(String::join(String::split(prefix, slot), sib), pin_blanked)
       // The short head is joined first, so the member's source is copied once.
-      String::concat(String::concat(vpkg_shared_import_marker, own_prefix), pin_blanked)
+      // #3656: the block closes with its end marker, so a position counted in
+      // the ingested text can be moved back to the file on disk
+      // (`loader_physical_located`): everything after the marker is the file,
+      // byte for byte.
+      String::concat(String::concat(vpkg_shared_import_marker, String::concat(own_prefix, loader_shared_imports_end_marker)), pin_blanked)
     }
   }
 }

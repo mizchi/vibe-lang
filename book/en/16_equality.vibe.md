@@ -109,9 +109,11 @@ does not say the element type. `vibe run` and `vibe test` still type it,
 and the comparison answers by content when the element is one `==` can
 compare: `Int`, `String`, `Double`, `Bytes`, an array, an option, a
 tuple, or a declared struct. What does not compare is an element with no
-structural comparator, such as a closure field. That comparison is a
-build error that names the edit, not an address comparison and not a
-trap you meet at run time. `vibe check` does not run this pass. The
+structural comparator, such as a field of an opaque type. That comparison
+is a build error that names the edit, not an address comparison and not a
+trap you meet at run time. `vibe check` does not run this pass. An
+element that holds a function is refused sooner, by `vibe check` itself:
+a function has no equality at all (#3549). The
 annotation on `xs` and `ys` above states the element type in the
 binding itself.
 

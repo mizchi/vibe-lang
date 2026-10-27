@@ -29,6 +29,8 @@ import @vibe/compiler/core {
   ensure_regular_source_fs,
   is_builtin_iterator_serialized_boundary_path,
   is_contract_ext,
+  loader_physical_located,
+  loader_physical_text,
   nearest_vpkg_path_fs,
   path_has_relative_prefix,
   resolve_import_path_candidates,
@@ -83,6 +85,28 @@ fn special_bundle_header(path: String) -> Option[(Array[String], Array[String])]
   }
 }
 
+/// The `line L:C: ` of the import spelled `keyword raw_path` in `source`, or
+/// `""` when the text does not show it. Searched in the file as written
+/// (#3656): a sibling of a contract that shares imports opens with the block
+/// the loader prepended (#897), whose lines the author never wrote and which
+/// may hold an import of the same path.
+fn located_import_position(source: String, keyword: String, raw_path: String) -> String {
+  let text = loader_physical_text(source)
+  let needle = String::concat(keyword, String::concat(" ", raw_path))
+  let needle_off = String::index_of(text, needle)
+  let off = if needle_off >= 0 {
+    needle_off + String::length(keyword) + 1
+  } else {
+    String::index_of(text, raw_path)
+  }
+  if off < 0 {
+    ""
+  } else {
+    let (line, col) = offset_to_line_col(text, off)
+    String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+  }
+}
+
 /// #831: a plain relative/workspace-absolute import (`import ./x.vibe { .. }`,
 /// `export ./x.vibe { .. }`) whose resolved candidate does not exist on disk
 /// used to reach `Fs::read_file` unguarded further down the pipeline
@@ -99,19 +123,7 @@ fn special_bundle_header(path: String) -> Option[(Array[String], Array[String])]
 /// import" would.
 fn located_missing_import_error(source: String, keyword: String, raw_path: String, resolved: String) -> String {
   let base_msg = String::concat("cannot resolve import '", String::concat(raw_path, String::concat("' (resolved to ", String::concat(resolved, ")"))))
-  let needle = String::concat(keyword, String::concat(" ", raw_path))
-  let needle_off = String::index_of(source, needle)
-  let off = if needle_off >= 0 {
-    needle_off + String::length(keyword) + 1
-  } else {
-    String::index_of(source, raw_path)
-  }
-  if off < 0 {
-    base_msg
-  } else {
-    let (line, col) = offset_to_line_col(source, off)
-    String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), String::concat(": ", base_msg)))))
-  }
+  String::concat(located_import_position(source, keyword, raw_path), base_msg)
 }
 
 /// The `@scope/name...` spelling a relative-import-boundary error should
@@ -147,19 +159,7 @@ fn qualified_package_name_from_owner(owner: String) -> String {
 /// internals" / "parent package cannot import nested package internals").
 fn located_package_boundary_error(source: String, keyword: String, raw_path: String, suggestion: String) -> String {
   let base_msg = String::concat("relative ", String::concat(keyword, String::concat(" '", String::concat(raw_path, String::concat("' crosses a package boundary; use `", String::concat(keyword, String::concat(" ", String::concat(suggestion, "` instead"))))))))
-  let needle = String::concat(keyword, String::concat(" ", raw_path))
-  let needle_off = String::index_of(source, needle)
-  let off = if needle_off >= 0 {
-    needle_off + String::length(keyword) + 1
-  } else {
-    String::index_of(source, raw_path)
-  }
-  if off < 0 {
-    base_msg
-  } else {
-    let (line, col) = offset_to_line_col(source, off)
-    String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), String::concat(": ", base_msg)))))
-  }
+  String::concat(located_import_position(source, keyword, raw_path), base_msg)
 }
 
 /// A relative (`./`, `../`) import must stay within the importing file's own
@@ -350,19 +350,7 @@ fn resolved_export_names_uncached_fs(resolved: String, token: Int) -> Array[Stri
 
 fn located_import_name_error(source: String, keyword: String, raw_path: String, name: String, display: String) -> String {
   let base_msg = String::concat("\"", String::concat(name, String::concat("\" is not exported by ", display)))
-  let needle = String::concat(keyword, String::concat(" ", raw_path))
-  let needle_off = String::index_of(source, needle)
-  let off = if needle_off >= 0 {
-    needle_off + String::length(keyword) + 1
-  } else {
-    String::index_of(source, raw_path)
-  }
-  if off < 0 {
-    base_msg
-  } else {
-    let (line, col) = offset_to_line_col(source, off)
-    String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), String::concat(": ", base_msg)))))
-  }
+  String::concat(located_import_position(source, keyword, raw_path), base_msg)
 }
 
 /// A friendly `@scope/name` label for the error message when derivable from
@@ -714,7 +702,7 @@ fn located_parse_uncached(path: String, source: String) -> Array[Stmt] with Exce
   handle {
     let (tokens, starts, _ends) = lex_with_offsets(source)
     parse_program_located(tokens, starts, source)
-  } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), located_lex_message(source, msg))) }
+  } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), loader_physical_located(source, located_lex_message(source, msg)))) }
 }
 
 fn located_parse_record(path: String, source: String, parsed: Array[Stmt]) -> Unit {

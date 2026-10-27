@@ -1,0 +1,122 @@
+// #3549: labeled arguments are evaluated in the order they are WRITTEN, then
+// bound to the parameters by name. The desugar used to reorder the arguments
+// into parameter order and evaluate them there, so `sub(y = tr("y"), x =
+// tr("x"))` ran `tr("x")` first. Measured on main at db57c1401: the first
+// test below logged `x,y`. Arguments that can do or observe something are
+// bound to temporaries in written order; literals, lambdas and constructors
+// stay in place.
+
+fn note(log: Array[String], s: String, v: Int) -> Int {
+  Array::push(log, s)
+  v
+}
+
+fn sub(x: Int, y: Int) -> Int {
+  x - y
+}
+
+fn three(a: Int, b: Int, c: Int) -> Int {
+  a * 100 + b * 10 + c
+}
+
+fn opt(a: Int, b?: Int, c?: Int) -> Int {
+  let bv = match b {
+    Some(v) => v,
+    None => 0
+  }
+  let cv = match c {
+    Some(v) => v,
+    None => 0
+  }
+  a * 100 + bv * 10 + cv
+}
+
+fn dflt(a: Int, b: Int = 5, c: Int = 7) -> Int {
+  a * 100 + b * 10 + c
+}
+
+fn fail_now(log: Array[String]) -> Int with Exception {
+  Array::push(log, "throw")
+  throw("boom")
+}
+
+fn joined(log: Array[String]) -> String {
+  String::join(log, ",")
+}
+
+test "two calls run in written order" {
+  let log: Array[String] = []
+  let r = sub(y = note(log, "y", 1), x = note(log, "x", 10))
+  inspect(joined(log), content = "y,x")
+  inspect(r, content = "9")
+}
+
+test "three calls written in a rotated order" {
+  let log: Array[String] = []
+  let r = three(c = note(log, "c", 3), a = note(log, "a", 1), b = note(log, "b", 2))
+  inspect(joined(log), content = "c,a,b")
+  inspect(r, content = "123")
+}
+
+test "a literal between calls stays in place" {
+  let log: Array[String] = []
+  let r = three(c = 3, b = note(log, "b", 2), a = note(log, "a", 1))
+  inspect(joined(log), content = "b,a")
+  inspect(r, content = "123")
+}
+
+test "written in parameter order needs nothing" {
+  let log: Array[String] = []
+  let r = sub(x = note(log, "x", 10), y = note(log, "y", 1))
+  inspect(joined(log), content = "x,y")
+  inspect(r, content = "9")
+}
+
+test "a name is read where it is written" {
+  let mut n = 1
+  let bump = () -> {
+    n = n + 10
+    n
+  }
+  let r = sub(y = n, x = bump())
+  inspect(r, content = "10")
+  inspect(n, content = "11")
+}
+
+test "optional parameters omitted from a reordered call" {
+  let log: Array[String] = []
+  let r = opt(c = note(log, "c", 3), a = note(log, "a", 1))
+  inspect(joined(log), content = "c,a")
+  inspect(r, content = "103")
+}
+
+test "defaulted parameters omitted from a reordered call" {
+  let log: Array[String] = []
+  let r = dflt(c = note(log, "c", 9), a = note(log, "a", 1))
+  inspect(joined(log), content = "c,a")
+  inspect(r, content = "159")
+}
+
+test "nested labeled calls keep written order at both levels" {
+  let log: Array[String] = []
+  let r = sub(y = sub(y = note(log, "a", 1), x = note(log, "b", 5)), x = note(log, "c", 10))
+  inspect(joined(log), content = "a,b,c")
+  inspect(r, content = "6")
+}
+
+test "a local labeled lambda" {
+  let log: Array[String] = []
+  let g = (x~: Int, y~: Int) -> x - y
+  let r = g(y = note(log, "y", 1), x = note(log, "x", 10))
+  inspect(joined(log), content = "y,x")
+  inspect(r, content = "9")
+}
+
+test "an exception in a later argument comes after the earlier ones" {
+  let log: Array[String] = []
+  let r = handle {
+    sub(y = note(log, "y", 1), x = fail_now(log))
+  } with { Exception::Throw(_) => 0 - 1 }
+  inspect(joined(log), content = "y,throw")
+  inspect(r, content = "-1")
+}

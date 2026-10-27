@@ -1,5 +1,6 @@
 import @vibe/compiler/core {
   MergedOffsetLocations,
+  loader_shared_imports_end_marker,
   merged_offset_line_col,
   merged_offset_locations_snapshot,
   merged_offset_space_add,
@@ -34,6 +35,24 @@ test "compact locations survive source reset and restore nested scopes on throw"
   assert(merged_offset_line_col(105) == ("", 0, 0))
   assert(merged_offset_line_col(1001) == ("second.vibe", 1, 2))
   merged_offset_space_reset()
+}
+
+/// #3656: a directory-shared sibling is the file on disk past the block the
+/// loader prepended, so an offset there is placed on its line on disk -- both
+/// directly and through a compact snapshot -- and one inside the block is not.
+test "a sibling's offsets are placed past its prepended shared-import block" {
+  merged_offset_space_reset()
+  let block = String::concat("// vibe: vpkg directory-shared imports (#897)\nimport @vibe/random { seed }\n", loader_shared_imports_end_marker)
+  let k = String::length(block)
+  merged_offset_space_add("pkg/impl.vibe", String::concat(block, "fn f() -> Int {\n  1 / 0\n}\n"), 100)
+  inspect(merged_offset_line_col(100 + k + 20), content = "(pkg/impl.vibe, 2, 5)")
+  inspect(merged_offset_line_col(100 + 3), content = "(, 0, 0)")
+  let compact = merged_offset_locations_snapshot()
+  merged_offset_space_reset()
+  let placed = with_merged_offset_locations(compact, () -> ((String, Int, Int), (String, Int, Int)) with Exception {
+    (merged_offset_line_col(100 + k + 20), merged_offset_line_col(100 + 3))
+  })
+  inspect(placed, content = "((pkg/impl.vibe, 2, 5), (, 0, 0))")
 }
 
 test "invalid compact location columns and newline ranges refuse before action" {

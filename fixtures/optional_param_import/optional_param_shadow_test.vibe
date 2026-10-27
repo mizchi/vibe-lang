@@ -1,13 +1,15 @@
-// #3432: a top-level binding shadows an imported function of the same name,
-// so the import's optional parameters must not rewrite its calls (Codex on
-// #3441). Before, the import's omitted `times?` was filled in, so `greet(1)`
-// here was refused with `function arity mismatch for greet: expected 1 args,
-// got 2`.
+// #3432: a top-level binding spelled like an imported function, so the
+// import's optional parameters must not rewrite its calls (Codex on #3441).
+// Before, the import's omitted `times?` was filled in, so `greet(1)` here was
+// refused with `function arity mismatch for greet: expected 1 args, got 2`.
 //
 // The calls are type checked against the local bindings, and since #3444 they
-// run the local bindings too.
+// run the local bindings too. Since #3549 importing a name AND declaring it is
+// refused, so the imports come in under aliases: the parameter table is
+// keyed by the bound name, and the local `greet` / `digits` must not pick up
+// the dependency's optional parameters through the source name.
 
-import ./lib.vibe { greet, digits }
+import ./lib.vibe { greet as lib_greet, digits as lib_digits }
 
 fn greet(n: Int) -> Int {
   n + 100
@@ -23,7 +25,12 @@ fn local_digits_typed_as_local() -> Int {
   digits(4, 2)
 }
 
-test "calls to a shadowing local are type checked against the local" {
+test "calls to a same-named local are type checked against the local" {
   inspect(local_greet_typed_as_local(), content = "101")
   inspect(local_digits_typed_as_local(), content = "42")
+}
+
+test "the aliased imports keep their optional parameters" {
+  inspect(lib_greet("hi"), content = "hi x1")
+  inspect(lib_digits(b = 4), content = "-4-")
 }

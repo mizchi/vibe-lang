@@ -1,0 +1,166 @@
+//# Positions in a sibling the loader prepended imports to (#3656)
+//
+// A `.vibe` file in a directory whose `index.vpkg` shares imports (#897) is
+// not compiled as written: the loader prepends a block -- its opening marker
+// line, the contract's effect-names carrier, the types-module import, the
+// inherited import lines -- and every pass after it reads that INGESTED text.
+// A line counted in it is the author's line plus the block's height, so a
+// duplicate `fn helper` written on line 5 was reported at line 7.
+//
+// The block ends with `loader_shared_imports_end_marker`, so its length is
+// read from the text itself rather than recomputed from the contract. What
+// follows the block is the file with its `require` pins blanked, which keeps
+// every byte where it is, so an offset past the block minus the block's length
+// IS the offset in the file on disk, and a line past it minus the block's line
+// count is the line on disk. The block always ends in a newline, so a column
+// is the same in both.
+//
+// `core` cannot import `contract`, so the opening marker is spelled here, as
+// `merged_offset_is_synthesized` spells it; the round-trip test in
+// `lib/@vibe/compiler/tests/vpkg_shared_prefix_positions_test.vibe` compares
+// it with the loader's real output.
+
+/// The last line of the block the loader prepends to a directory-shared
+/// sibling. Nothing else in the block can contain it: the rest is the opening
+/// marker and printed declarations.
+export let loader_shared_imports_end_marker: String = "// vibe: end of vpkg directory-shared imports (#3656)\n"
+
+/// The byte length of the block the loader prepended to `source`, or `0` when
+/// the text opens with no such block. A text that opens with the marker line
+/// but has no end marker is a file the author began with that comment, so
+/// nothing was prepended to it and its positions are its own.
+export fn loader_prepended_prefix_bytes(source: String) -> Int {
+  if String::starts_with(source, "// vibe: vpkg directory-shared imports (#897)\n") {
+    let at = String::index_of(source, loader_shared_imports_end_marker)
+    if at < 0 {
+      0
+    } else {
+      at + String::length(loader_shared_imports_end_marker)
+    }
+  } else {
+    0
+  }
+}
+
+/// The number of lines the prepended block occupies: the newlines among its
+/// first `bytes` bytes, since it ends in one.
+export fn loader_prepended_prefix_lines(source: String, bytes: Int) -> Int {
+  let mut count = 0
+  let mut i = 0
+  while i < bytes {
+    if String::byte_at(source, i) == 10 {
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+/// The file as it is on disk (pins blanked): `source` without the prepended
+/// block, or `source` itself when there is none.
+export fn loader_physical_text(source: String) -> String {
+  let k = loader_prepended_prefix_bytes(source)
+  if k == 0 {
+    source
+  } else {
+    String::substring(source, k, String::length(source))
+  }
+}
+
+/// The run of ASCII digits in `s` starting at `from`, as `(value, end)`;
+/// `(-1, from)` when there is none.
+fn located_digits(s: String, from: Int) -> (Int, Int) {
+  let mut i = from
+  let mut acc = 0
+  while i < String::length(s) && String::byte_at(s, i) >= 48 && String::byte_at(s, i) <= 57 {
+    acc = acc * 10 + (String::byte_at(s, i) - 48)
+    i = i + 1
+  }
+  if i == from {
+    (0 - 1, from)
+  } else {
+    (acc, i)
+  }
+}
+
+/// `located` -- a message that may open with `line L:C: `, `line L:C-E: ` or
+/// `line L:C-L2:C2: ` -- with its lines counted in the file on disk instead of
+/// in `source`, the text it was located against.
+///
+/// Unchanged when `source` carries no prepended block or `located` has no
+/// position. A position INSIDE the block names text the author never wrote,
+/// so it is dropped and the message is returned unlocated: no position beats
+/// a wrong one.
+export fn loader_physical_located(source: String, located: String) -> String {
+  let k = loader_prepended_prefix_bytes(source)
+  if k == 0 || !String::starts_with(located, "line ") {
+    located
+  } else {
+    loader_shift_located_lines(located, loader_prepended_prefix_lines(source, k))
+  }
+}
+
+/// `located` with `lines` subtracted from each line number of its leading
+/// position (see `loader_physical_located`), or its message alone when the
+/// position falls within the first `lines` lines.
+export fn loader_shift_located_lines(located: String, lines: Int) -> String {
+  let (l1, after_l1) = located_digits(located, 5)
+  if l1 < 0 || after_l1 >= String::length(located) || String::byte_at(located, after_l1) != 58 {
+    return located
+  } else {
+    ()
+  }
+  let (c1, after_c1) = located_digits(located, after_l1 + 1)
+  if c1 < 0 {
+    return located
+  } else {
+    ()
+  }
+  // `-E` (an end column on the same line) or `-L2:C2` (an end on a later
+  // line). The message after a position opens with a space, so a digit right
+  // after the colon that follows `-N` is an end column, not the message.
+  let mut end_line_at = 0 - 1
+  let mut end_line = 0 - 1
+  let mut pos_end = after_c1
+  if after_c1 < String::length(located) && String::byte_at(located, after_c1) == 45 {
+    let (n, after_n) = located_digits(located, after_c1 + 1)
+    if n >= 0 {
+      pos_end = after_n
+      if after_n + 1 < String::length(located) && String::byte_at(located, after_n) == 58 && String::byte_at(located, after_n + 1) >= 48 && String::byte_at(located, after_n + 1) <= 57 {
+        let (_, after_c2) = located_digits(located, after_n + 1)
+        end_line_at = after_c1 + 1
+        end_line = n
+        pos_end = after_c2
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  if pos_end + 1 >= String::length(located) || String::byte_at(located, pos_end) != 58 || String::byte_at(located, pos_end + 1) != 32 {
+    return located
+  } else {
+    ()
+  }
+  if l1 <= lines {
+    return String::substring(located, pos_end + 2, String::length(located))
+  } else {
+    ()
+  }
+  let head = String::concat("line ", String::concat(Int::to_string(l1 - lines), String::substring(located, after_l1, if end_line_at < 0 {
+    pos_end
+  } else {
+    end_line_at
+  })))
+  if end_line_at < 0 {
+    String::concat(head, String::substring(located, pos_end, String::length(located)))
+  } else {
+    let (_, after_end_line) = located_digits(located, end_line_at)
+    String::concat(head, String::concat(Int::to_string(end_line - lines), String::substring(located, after_end_line, String::length(located))))
+  }
+}

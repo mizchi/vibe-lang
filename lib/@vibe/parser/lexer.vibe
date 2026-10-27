@@ -674,7 +674,7 @@ fn check_no_scientific_suffix(s: String, len: Int, pos: Int) -> Unit with Except
       }
       let has_digits = digits_start < len && is_digit(String::char_code_at(s, digits_start))
       if has_digits {
-        throw(String::concat(located_prefix(s, pos), "scientific notation is not supported; write the digits out or compute the value"))
+        throw(String::concat(located_prefix(s, pos), scientific_literal_message(s, len, pos, digits_start)))
       } else if has_sign {
         throw(String::concat(located_prefix(s, pos), "incomplete exponent: expected digit(s) after the sign in scientific notation"))
       } else {
@@ -686,6 +686,91 @@ fn check_no_scientific_suffix(s: String, len: Int, pos: Int) -> Unit with Except
   } else {
     ()
   }
+}
+
+/// #3549: the message for `<mantissa>e<exponent>`, naming the literal to
+/// write instead (`1.5e3` is `1500.0`). The mantissa is found by scanning back
+/// from the `e`, so a retry that starts inside the number (the recovering
+/// lexer resumes one byte on) reports the same literal and the same edit.
+fn scientific_literal_message(s: String, len: Int, epos: Int, digits_start: Int) -> String {
+  let mut ms = epos
+  while ms > 0 && (is_digit(String::char_code_at(s, ms - 1)) || String::char_code_at(s, ms - 1) == '.') {
+    ms = ms - 1
+  }
+  let mut de = digits_start
+  while de < len && is_digit(String::char_code_at(s, de)) {
+    de = de + 1
+  }
+  let written = String::substring(s, ms, de)
+  let negative = String::char_code_at(s, epos + 1) == '-'
+  let exp_digits = String::substring(s, digits_start, de)
+  if String::length(exp_digits) > 2 || ms == epos {
+    String::concat("scientific notation is not supported: write `", String::concat(written, "` out in digits, or compute it"))
+  } else {
+    let mut exp = 0
+    let mut k = 0
+    while k < String::length(exp_digits) {
+      exp = exp * 10 + (String::char_code_at(exp_digits, k) - 48)
+      k = k + 1
+    }
+    let signed = if negative {
+      0 - exp
+    } else {
+      exp
+    }
+    let shown = expanded_decimal(String::substring(s, ms, epos), signed)
+    String::concat("scientific notation is not supported: write `", String::concat(written, String::concat("` as `", String::concat(shown, "`"))))
+  }
+}
+
+/// `mantissa` (digits, at most one `.`) times ten to `exp`, as a decimal
+/// literal: `expanded_decimal("1.5", 3)` is `1500.0`, `("25", -3)` `0.025`.
+fn expanded_decimal(mantissa: String, exp: Int) -> String {
+  let dot = String::index_of(mantissa, ".")
+  let int_part = if dot >= 0 {
+    String::substring(mantissa, 0, dot)
+  } else {
+    mantissa
+  }
+  let frac_part = if dot >= 0 {
+    String::substring(mantissa, dot + 1, String::length(mantissa))
+  } else {
+    ""
+  }
+  let digits = String::concat(int_part, frac_part)
+  let n = String::length(digits)
+  let point = String::length(int_part) + exp
+  let (whole, frac) = if point >= n {
+    (String::concat(digits, zeros(point - n)), "")
+  } else if point <= 0 {
+    ("0", String::concat(zeros(0 - point), digits))
+  } else {
+    (String::substring(digits, 0, point), String::substring(digits, point, n))
+  }
+  let mut ws = 0
+  while ws + 1 < String::length(whole) && String::char_code_at(whole, ws) == '0' {
+    ws = ws + 1
+  }
+  let mut fe = String::length(frac)
+  while fe > 0 && String::char_code_at(frac, fe - 1) == '0' {
+    fe = fe - 1
+  }
+  let frac_shown = if fe == 0 {
+    "0"
+  } else {
+    String::substring(frac, 0, fe)
+  }
+  String::concat(String::substring(whole, ws, String::length(whole)), String::concat(".", frac_shown))
+}
+
+fn zeros(n: Int) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < n {
+    out = String::concat(out, "0")
+    i = i + 1
+  }
+  out
 }
 
 fn empty_string_array() -> Array[String] {
@@ -1314,6 +1399,32 @@ fn parse_int_from_string(s: String) -> Int with Exception {
   acc
 }
 
+/// #3549: `remove the _`, naming the number as written and as it must be
+/// written. The literal is found by scanning back from `i` too, so the
+/// recovering lexer's retry one byte on names the same literal.
+fn digit_separator_message(s: String, len: Int, i: Int) -> String {
+  let mut ls = i
+  while ls > 0 && (is_digit(String::char_code_at(s, ls - 1)) || String::char_code_at(s, ls - 1) == '_') {
+    ls = ls - 1
+  }
+  let mut le = i
+  while le < len && (is_digit(String::char_code_at(s, le)) || String::char_code_at(s, le) == '_') {
+    le = le + 1
+  }
+  let written = String::substring(s, ls, le)
+  let mut plain = ""
+  let mut k = 0
+  while k < String::length(written) {
+    if String::char_code_at(written, k) != '_' {
+      plain = String::concat(plain, String::substring(written, k, k + 1))
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  String::concat("remove the `_` from this number: a numeric literal has no digit separators (write `", String::concat(plain, String::concat("`, not `", String::concat(written, "`)"))))
+}
+
 fn lex_decimal(s: String, len: Int, i: Int) -> Token with Exception {
   let int_end = scan_digits_end(s, len, i)
   if int_end == i {
@@ -1322,7 +1433,7 @@ fn lex_decimal(s: String, len: Int, i: Int) -> Token with Exception {
   // `1_000_000` lexed as `1` followed by the name `_000_000`, and the report
   // was `unknown name: _000_000`.
   if int_end + 1 < len && String::char_code_at(s, int_end) == '_' && is_digit(String::char_code_at(s, int_end + 1)) {
-    throw("remove the `_` from this number: a numeric literal has no digit separators (write `1000000`, not `1_000_000`)")
+    throw(String::concat(located_prefix(s, int_end), digit_separator_message(s, len, i)))
   }
   // Tuple field access `t.0.0`: a number immediately preceded by a single field
   // dot must NOT absorb a trailing `.<digit>` as a float decimal — that `.` is

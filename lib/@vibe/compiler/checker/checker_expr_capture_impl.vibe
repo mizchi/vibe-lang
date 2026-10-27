@@ -45,6 +45,7 @@ import @vibe/compiler/core {
   type_name_has_iterator_impl,
   type_to_string,
   typed_lowering_arg_offset,
+  typed_negation_operand_key,
   unify
 }
 
@@ -156,6 +157,10 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 
 import ./checker_eq_generalized_site.vibe {
   refuse_generalized_eq_sites
+}
+
+import ./checker_eq_function_operand.vibe {
+  eq_function_operand_refusal, eq_operand_is_nullary_ctor
 }
 
 import ./checker_infer_binop_type.vibe {
@@ -926,6 +931,22 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // only as the fallback for desugar-synthesized binops.
       record_string_binop_operands(capture, op, boff, left, right, left_applied, right_applied)
       let (result_ty, s3) = infer_binop_type(op, left_applied, right_applied, env, s2, errors, tytab, bin_off)
+      // #3549: a function has no content to compare, so `==` on a value
+      // whose comparator would reach one could only answer by identity.
+      let eq_typed = match result_ty {
+        CtBool => true,
+        _ => false
+      }
+      // A comparison with a payload-less constructor (`x == None`) decides by
+      // the variant alone and never reaches a function.
+      if eq_typed && (op == "==" || op == "!=") && !eq_operand_is_nullary_ctor(left, defs) && !eq_operand_is_nullary_ctor(right, defs) {
+        match eq_function_operand_refusal(op, left_applied, s3, defs) {
+          Some(msg) => Array::push(errors, String::concat(msg, off_marker(bin_off))),
+          None => ()
+        }
+      } else {
+        ()
+      }
       let bin_result = subst_apply(s3, result_ty)
       // #3543: an arithmetic result typed `Float` is rounded to f32 after
       // the checker ran; the row tells the rewrite which operators to wrap.
@@ -975,9 +996,19 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       } else if op == "-" {
         match subst_apply(s1, operand_ty) {
-          CtDouble => (CtDouble, s1, c1),
+          // #3653: a float negation files a float-operand row, so the
+          // post-check rewrite marks its operand and neither lowering reads a
+          // float the syntax does not show (a destructured binder) as an Int.
+          CtDouble => {
+            record_float_arith(capture, typed_negation_operand_key(operand), 14)
+            (CtDouble, s1, c1)
+          },
           // #3543: negating an f32 value is exact, so `-x` stays a Float.
-          CtFloat => (CtFloat, s1, c1),
+          CtFloat => {
+            record_float_arith(capture, typed_negation_operand_key(operand), 14)
+            record_float_arith(capture, typed_negation_operand_key(operand), 15)
+            (CtFloat, s1, c1)
+          },
           CtInt => (CtInt, s1, c1),
           CtVar(_) => match unify(operand_ty, CtInt, s1) {
             Some(s2) => (CtInt, s2, c1),
@@ -2450,8 +2481,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         Array::push(fresh_targs, tv)
                       }
                       c2 = nc
-                    },
-                    _ => ()
+                    }
                   }
                   tpi = tpi + 1
                 }

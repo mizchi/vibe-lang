@@ -223,7 +223,7 @@ if ! grep -qF "missing { Ask::Get } (declared { Ask::Other }, requires { Ask::Ge
   cat "$eff1161dir/x.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
-if ! grep -qF "hint: add 'with Ask::Get + Ask::Other' to 'asks'" "$eff1161dir/x.wasm.diag" 2>/dev/null; then
+if ! grep -qF "hint: change 'with Ask::Other' to 'with Ask::Get + Ask::Other' on 'asks'" "$eff1161dir/x.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: err_effect_op_level_partial_row_bare_perform.vibe did not produce the expected operation-level fix-it hint" >&2
   cat "$eff1161dir/x.wasm.diag" >&2 2>/dev/null || true
   exit 1

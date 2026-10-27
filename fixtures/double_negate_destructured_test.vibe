@@ -1,0 +1,96 @@
+// #3653: unary minus on a `Double` the syntax does not show to be one -- a
+// name bound by tuple or struct destructuring, a `match` arm binder, a join
+// over such names. The lowering picks float or Int negation from the
+// operand's syntax, so these took the Int path: the RC lane negated the box
+// pointer (printing it trapped in `__vibe_double_to_string`) and the wasm-gc
+// lane negated the f64 bits (`-1.25` came out as a wrong number). The checker
+// now files a row for every float negation and the rewrite marks its operand.
+
+struct P {
+  x: Double;
+  y: Double
+}
+
+fn pair(x: Double) -> (Int, Double) {
+  (2, x * 0.5)
+}
+
+fn id[T](v: T) -> T {
+  v
+}
+
+test "#3653: a tuple-destructured Double" {
+  let (k, f) = pair(3.0)
+  let g = -f
+  inspect(g, "-1.5")
+  inspect(k, "2")
+}
+
+test "#3653: a struct-destructured Double" {
+  let p = P::{ x: 1.25, y: 2.5 }
+  let P::{ x, y } = p
+  let nx = -x
+  inspect(nx, "-1.25")
+  inspect(-y, "-2.5")
+}
+
+test "#3653: a match arm binder" {
+  let o = Some(4.5)
+  let mv = match o {
+    Some(v) => -v,
+    None => 0.0
+  }
+  inspect(mv, "-4.5")
+}
+
+test "#3653: a destructured element inside a for loop" {
+  let arr = [(1, 0.25), (2, 0.75)]
+  let mut acc = 0.0
+  for item in arr {
+    let (_, b) = item
+    acc = acc + -b
+  }
+  inspect(acc, "-1")
+}
+
+test "#3653: a join over destructured names" {
+  let (_, f) = pair(3.0)
+  let (_, h) = pair(5.0)
+  let c = Array::length([1]) > 0
+  let j = -(if c {
+    f
+  } else {
+    h
+  })
+  inspect(j, "-1.5")
+  let m = -(match c {
+    true => h,
+    false => f
+  })
+  inspect(m, "-2.5")
+}
+
+test "#3653: a generic call's result and a double negation" {
+  let (_, f) = pair(3.0)
+  inspect(-id(f), "-1.5")
+  inspect(-(-f), "1.5")
+}
+
+fn fpair() -> (Int, Float) {
+  (1, 1.0f / 3.0f)
+}
+
+test "#3653: a tuple-destructured Float stays a Float" {
+  let (_, f) = fpair()
+  let g = -f
+  inspect(g, "-0.33333334")
+  inspect(-f, "-0.33333334")
+  inspect(Float::to_double(g), "-0.3333333432674408")
+}
+
+test "#3653: Int negation is unchanged" {
+  let (k, _) = pair(1.0)
+  let nk = -k
+  inspect(nk, "-2")
+  inspect(nk + 5, "3")
+}

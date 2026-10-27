@@ -338,7 +338,8 @@ Rules:
   the call may omit it, and the body sees `Int`. Defaults are trailing, may
   read only earlier parameters, and apply only to a direct call; see the
   cheatsheet's "Optional arguments" section for the full rules.
-- Call arguments are reordered to match the parameter order during lowering.
+- Labeled call arguments are evaluated in the order they are written and then
+  bound to the parameters by name.
 - Missing optional args are passed as `None`.
 
 ## Builtins (current)

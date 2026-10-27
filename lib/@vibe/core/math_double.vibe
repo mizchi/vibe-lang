@@ -1,352 +1,1702 @@
-//# Functions
+//# Double math
+//
+// #3549: every function here answers the correctly rounded double (the one
+// nearest the exact value), but for the rare argument whose exact answer
+// lies within a tiny fraction of an ulp of a rounding boundary. `sqrt` is
+// computed exactly and rounded once, like the IEEE operation; the others
+// carry their intermediate values in double-double (about 106 bits) and
+// round once at the end, on top of the argument reductions of the FreeBSD
+// msun / musl libm (fdlibm lineage) routines named in their doc comments.
+// Measured against 2200-bit references on about 90,000 arguments, none was
+// more than 0.5 ulp off (fixtures/math_double_correctly_rounded_test.vibe
+// pins a sample). The bodies these replaced were Newton iterations and
+// truncated series: `sqrt(2.0)` printed 1.414213562373095 (1 ulp low),
+// `log10(7.0)` was 2 ulp low, `sin(pi)` was off by about 1e17 ulp,
+// `pow_double(-2.0, 3.0)` answered 0, and `sin` reduced its argument by
+// repeatedly subtracting 2*pi, so `sin(1e10)` looped about 1.6e9 times.
+//
+// fdlibm works on the two 32-bit words of the IEEE-754 pattern. Here a word
+// is an `Int` in [0, 2^32) (`Double::to_i64_bits_hi` / `_lo`), so a C
+// `int32_t` test such as `hx < 0` is written against the sign bit
+// (`hx >= 0x80000000`) or through `signed_word`. Constants are spelled by
+// their bit patterns, exactly as fdlibm documents them, so no decimal
+// conversion stands between the published table and the value used.
+//
+// Special values follow C99 Annex F: NaN in gives NaN out; a domain error
+// (`sqrt(-1.0)`, `ln(-1.0)`, `asin(2.0)`, `pow_double(-8.0, 1.0 / 3.0)`)
+// gives NaN; `ln(0.0)` is -Infinity; overflow gives +-Infinity and
+// underflow gives +-0, with gradual underflow through the subnormals.
 
-export fn ln(x: Double) -> Double {
-  if x <= 0.0 {
-    0.0 - 1.0 / 0.0
-  }
-  else {
-    let ln2 = 0.6931471805599453
-    let mut k = 0
-    let mut m = x
-    // #772: as with `sin`'s range reduction below, a Double comparison
-    // (`>=`/`<`) directly in a `while` header hits the codegen's
-    // type-oblivious while-loop fast path and gets compiled as an *integer*
-    // comparison, which is meaningless on a boxed Double. Route through a
-    // `let mut` Bool re-evaluated each iteration instead.
-    let mut too_large = m >= 2.0
-    while too_large {
-      m = m * 0.5
-      k = k + 1
-      too_large = m >= 2.0
-    }
-    let mut too_small_m = m < 0.5
-    while too_small_m {
-      m = m * 2.0
-      k = k - 1
-      too_small_m = m < 0.5
-    }
-    let t = (m - 1.0) / (m + 1.0)
-    let t2 = t * t
-    let mut term = t
-    let mut result = t
-    let mut i = 1
-    while i < 30 {
-      let nd = Int::to_double(i * 2 + 1)
-      term = term * t2
-      result = result + term / nd
-      i = i + 1
-    }
-    Int::to_double(k) * ln2 + 2.0 * result
+//# Bit access
+
+fn dbits(hi: Int, lo: Int) -> Double {
+  Double::from_i64_bits_lohi(lo, hi)
+}
+
+fn hi_word(x: Double) -> Int {
+  Double::to_i64_bits_hi(x)
+}
+
+fn lo_word(x: Double) -> Int {
+  Double::to_i64_bits_lo(x)
+}
+
+/// `x` with its low word cleared (fdlibm `SET_LOW_WORD(x, 0)`).
+fn with_lo_zero(x: Double) -> Double {
+  dbits(hi_word(x), 0)
+}
+
+/// `x` with its high word replaced (fdlibm `SET_HIGH_WORD`).
+fn with_hi(x: Double, hi: Int) -> Double {
+  dbits(hi, lo_word(x))
+}
+
+fn abs_d(x: Double) -> Double {
+  dbits(hi_word(x)&0x7fffffff, lo_word(x))
+}
+
+/// Negation by flipping the sign bit, so `-0.0` and NaN stay exact.
+fn neg_d(x: Double) -> Double {
+  dbits(hi_word(x)^0x80000000, lo_word(x))
+}
+
+fn is_nan_d(x: Double) -> Bool {
+  let ix = hi_word(x)&0x7fffffff
+  ix > 0x7ff00000 || (ix == 0x7ff00000 && lo_word(x) != 0)
+}
+
+fn is_zero_d(x: Double) -> Bool {
+  ((hi_word(x)&0x7fffffff)|lo_word(x)) == 0
+}
+
+/// The 32-bit word `w` read as a C `int32_t`.
+fn signed_word(w: Int) -> Int {
+  if w >= 0x80000000 {
+    w - 0x100000000
+  } else {
+    w
   }
 }
+
+let inf_d: Double = dbits(0x7ff00000, 0)
+
+let nan_d: Double = dbits(0x7ff80000, 0)
+
+let two24: Double = dbits(0x41700000, 0)
+
+let twom24: Double = dbits(0x3e700000, 0)
+
+let two53: Double = dbits(0x43400000, 0)
+
+let two54: Double = dbits(0x43500000, 0)
+
+let two1023: Double = dbits(0x7fe00000, 0)
+
+let twom1022: Double = dbits(0x00100000, 0)
+
+/// 1e300 and 1e-300: `huge * huge` overflows and `tiny * tiny` underflows.
+let huge: Double = dbits(0x7e37e43c, 0x8800759c)
+
+let tiny: Double = dbits(0x01a56e1f, 0xc2f8f359)
+
+/// `x * 2^n`, rounded once (musl `scalbn`).
+fn scalbn(x: Double, n: Int) -> Double {
+  let mut y = x
+  let mut k = n
+  if k > 1023 {
+    y = y * two1023
+    k = k - 1023
+    if k > 1023 {
+      y = y * two1023
+      k = k - 1023
+      if k > 1023 {
+        k = 1023
+      }
+    }
+  }
+  else if k < -1022 {
+    // Leave the final step below -53, so a subnormal result is rounded by
+    // the last multiplication alone.
+    y = y * (twom1022 * two53)
+    k = k + 969
+    if k < -1022 {
+      y = y * (twom1022 * two53)
+      k = k + 969
+      if k < -1022 {
+        k = -1022
+      }
+    }
+  }
+  y * dbits((k + 1023)<<20, 0)
+}
+
+//# Constants
 
 export let pi: Double = 3.14159265358979323846
 
 export let tau: Double = 6.28318530717958647692
 
-export fn sqrt(x: Double) -> Double {
-  if x <= 0.0 {
-    0.0
-  } else {
-    // #949: Newton from guess = x with a fixed iteration count fails for
-    // large inputs (each iteration only halves the exponent gap, so e.g.
-    // sqrt(1e40) needs ~66 halvings and 60 iterations aren't enough).
-    // Pre-scale the initial guess to a power of two just below sqrt(x):
-    // bring g up to >= 1, then halve while g*g still exceeds x. That
-    // leaves g in (sqrt(x)/2, sqrt(x)], so a handful of Newton steps
-    // converge quadratically for any finite magnitude.
-    //
-    // #772: Double comparisons must not sit directly in a `while` header
-    // (integer-compare fast-path miscompile) -- route through `let mut`
-    // Bools re-evaluated each iteration, as in `ln` above.
-    let mut g = x
-    let mut g_below_one = g < 1.0
-    while g_below_one {
-      g = g * 2.0
-      g_below_one = g < 1.0
-    }
-    let mut gg_above_x = g * g > x
-    while gg_above_x {
-      g = g * 0.5
-      gg_above_x = g * g > x
-    }
-    let mut i = 0
-    while i < 8 {
-      g = (g + x / g) * 0.5
-      i = i + 1
-    }
-    g
-  }
-}
-
-export fn hypot(x: Double, y: Double) -> Double {
-  sqrt(x * x + y * y)
-}
-
-export fn log10(x: Double) -> Double {
-  let log10e = 2.302585092994046
-  ln(x) / log10e
-}
-
-export fn degrees(rad: Double) -> Double {
-  rad * 180.0 / pi
-}
-
 export let e_const: Double = 2.71828182845904523536
 
-let half_pi: Double = 1.5707963267948966
+//# Square root and hypot
 
-export fn radians(deg: Double) -> Double {
-  deg * pi / 180.0
-}
-
-fn atan_small(x: Double) -> Double {
-  let xx = x * x
-  let mut result = x
-  let mut term = x
-  let mut i = 1
-  while i < 20 {
-    let n = i * 2 + 1
-    let nd = Int::to_double(n)
-    term = 0.0 - term * xx
-    result = result + term / nd
-    i = i + 1
+/// The correctly rounded square root (IEEE 754 `squareRoot`,
+/// round-to-nearest). The significand is extended to 108 bits and its
+/// integer square root taken digit by digit, which leaves the 53 result bits,
+/// a rounding bit, and an exact remainder; a square root is never exactly
+/// halfway between two doubles, so rounding up on the rounding bit is
+/// round-to-nearest. `sqrt(-0.0)` is `-0.0`, `sqrt(Infinity)` is `Infinity`,
+/// and a negative argument gives NaN.
+export fn sqrt(x: Double) -> Double {
+  let hx = hi_word(x)
+  let lx = lo_word(x)
+  let ix = hx&0x7fffffff
+  if is_nan_d(x) {
+    return x
   }
-  result
-}
-
-export fn atan(x: Double) -> Double {
-  if x > 1.0 {
-    // #772: `half_pi` (a global) minus a call result (`atan(...)`) --
-    // neither operand is a literal or a parameter, so the codegen's
-    // syntactic `expr_is_floatish` heuristic (which has no real type
-    // information) can't recognize this subtraction as float arithmetic and
-    // silently compiles it as an *integer* subtraction on the two boxed
-    // Double bit patterns/pointers instead. `+ 0.0` forces recognition
-    // without changing the value.
-    //
-    // #949: recurse into the full `atan` (not `atan_small`) so that
-    // 1/x values in (0.5, 1) go through the argument reduction below --
-    // the bare 20-term Taylor series is ~1% off as |arg| approaches 1.
-    (half_pi + 0.0) - atan(1.0 / x)
+  if (ix|lx) == 0 {
+    return x
   }
-  else if x < -1.0 {
-    0.0 - half_pi - atan(1.0 / x)
+  if hx >= 0x80000000 {
+    return nan_d
   }
-  else if x > 0.5 {
-    // #949: the 20-term Taylor series converges too slowly near |x| = 1
-    // (atan(0.99) was off by ~1%). Reduce via the half-angle identity
-    // atan(x) = 2*atan(x / (1 + sqrt(1 + x^2))); for |x| <= 1 the reduced
-    // argument is <= sqrt(2) - 1 ~ 0.414, so one reduction step always
-    // lands in atan_small's fast-converging range.
-    let y = x / (1.0 + sqrt(1.0 + x * x))
-    2.0 * atan_small(y)
+  if ix == 0x7ff00000 {
+    return x
   }
-  else if x < -0.5 {
-    let y = x / (1.0 + sqrt(1.0 + x * x))
-    2.0 * atan_small(y)
-  }
-  else {
-    atan_small(x)
-  }
-}
-
-export fn asin(x: Double) -> Double {
-  if x >= 1.0 {
-    half_pi
-  }
-  else if x <= -1.0 {
-    0.0 - half_pi
-  }
-  else {
-    atan(x / sqrt(1.0 - x * x))
-  }
-}
-
-export fn acos(x: Double) -> Double {
-  // #772: same `expr_is_floatish` blind spot as `atan` above -- `half_pi`
-  // (global) minus a call result (`asin(x)`), neither recognized, silently
-  // compiled as integer subtraction without the `+ 0.0` nudge.
-  (half_pi + 0.0) - asin(x)
-}
-
-export fn atan2(y: Double, x: Double) -> Double {
-  if x > 0.0 {
-    atan(y / x)
-  }
-  else if x < 0.0 {
-    // #772: same `expr_is_floatish` blind spot -- a call result
-    // (`atan(y / x)`) combined with a global (`pi`), neither recognized by
-    // the syntactic floatish heuristic, silently compiled as integer
-    // arithmetic without the `+ 0.0` nudge on `pi`.
-    if y >= 0.0 {
-      atan(y / x) + (pi + 0.0)
-    } else {
-      atan(y / x) - (pi + 0.0)
+  // x = m * 2^ex with m an integer of 53 bits (normalized from a subnormal).
+  let mut e = hx>>20
+  let mut m = ((hx&0xfffff)<<32)|lx
+  if e == 0 {
+    e = 1
+    while m < 0x10000000000000 {
+      m = m<<1
+      e = e - 1
     }
   }
   else {
-    if y > 0.0 {
-      half_pi
-    }
-    else if y < 0.0 {
-      0.0 - half_pi
+    m = m|0x10000000000000
+  }
+  let mut ex = e - 1075
+  if (ex&1) != 0 {
+    m = m<<1
+    ex = ex - 1
+  }
+  // q = floor(sqrt(m * 2^54)), 54 bits, by the restoring digit recurrence;
+  // the remainder never exceeds 2q, so every step fits in an Int.
+  let mut rem = 0
+  let mut q = 0
+  let mut pos = 52
+  while pos >= 0 {
+    rem = (rem<<2)|((m>>pos)&3)
+    let t = (q<<2)|1
+    if rem >= t {
+      rem = rem - t
+      q = (q<<1)|1
     }
     else {
-      0.0
+      q = q<<1
     }
+    pos = pos - 2
   }
+  let mut zeros = 0
+  while zeros < 27 {
+    rem = rem<<2
+    let t = (q<<2)|1
+    if rem >= t {
+      rem = rem - t
+      q = (q<<1)|1
+    }
+    else {
+      q = q<<1
+    }
+    zeros = zeros + 1
+  }
+  // sqrt(x) = (q / 2) * 2^(ex/2 - 26); round on q's last bit.
+  let mut mant = (q + 1)>>1
+  let mut scale = ex / 2 - 26
+  if mant == 0x20000000000000 {
+    mant = mant>>1
+    scale = scale + 1
+  }
+  dbits(((scale + 1075)<<20)|((mant>>32)&0xfffff), mant&0xffffffff)
 }
 
-export fn exp_double(x: Double) -> Double {
-  // #949: a fixed 30-term Maclaurin series diverges for x <~ -8
-  // (catastrophic cancellation between huge alternating terms: exp(-10)
-  // came back negative) and loses precision for large positive x (the
-  // series is truncated long before the terms decay: exp(20) was off by
-  // ~2%). Fix both by (a) mapping negative arguments through
-  // 1/exp(-x), and (b) splitting the non-negative argument into integer
-  // + fractional parts: exp(k + f) = e^k * exp(f) with e^k built by
-  // repeated multiplication and the Maclaurin series only ever evaluated
-  // on f in [0, 1), where 30 terms give full double precision.
-  if x < (0.0 - 746.0) {
-    // Codex P1 on #959: below ~-745.13 (ln of half the smallest subnormal)
-    // the result rounds to 0, and -inf would loop forever in the halving
-    // recursion below (-inf * 0.5 stays -inf). Return the guaranteed
-    // underflow directly; the band down to -746 still goes through the
-    // halving path so boundary rounding stays IEEE-faithful.
-    0.0
+/// sqrt(x^2 + y^2) without spurious overflow or underflow (musl `hypot`'s
+/// scaling and exact squares), correctly rounded but for the rare argument
+/// pair near a rounding boundary. An infinite argument gives `Infinity` even
+/// when the other is NaN.
+export fn hypot(x: Double, y: Double) -> Double {
+  let mut hx = hi_word(x)&0x7fffffff
+  let mut lx = lo_word(x)
+  let mut hy = hi_word(y)&0x7fffffff
+  let mut ly = lo_word(y)
+  if hx < hy || (hx == hy && lx < ly) {
+    let th = hx
+    let tl = lx
+    hx = hy
+    lx = ly
+    hy = th
+    ly = tl
   }
-  else if x < (0.0 - 709.0) {
-    // Codex P2 on #958: 1/exp(-x) divides by +inf once -x overflows
-    // (~709.78) and flushes the still-representable subnormal tail
-    // (exp underflows to true 0 only below ~-744). Square the
-    // half-argument instead — gradual underflow handles the subnormal
-    // range, and below ~-744 the product reaches 0 naturally.
-    // (`+ 0.0` on the call result and the Double annotation on the
-    // product: #772 — arithmetic with no literal/param operand is not
-    // recognized as float by the checker/codegen heuristics.)
-    let h = exp_double(x * 0.5) + 0.0
-    let hh: Double = h * h
-    hh
+  let ex = hx>>20
+  let ey = hy>>20
+  let mut a = dbits(hx, lx)
+  let mut b = dbits(hy, ly)
+  // |a| >= |b| as bit patterns, so a NaN sorts above Infinity: an infinite
+  // b with a NaN a answers Infinity.
+  if ey == 0x7ff {
+    return b
   }
-  else if x < 0.0 {
-    1.0 / exp_double(0.0 - x)
+  if ex == 0x7ff || (hy|ly) == 0 {
+    return a
   }
-  else if x > 710.0 {
-    // exp overflows double range well before 710 (ln(DBL_MAX) ~ 709.78);
-    // return +inf directly instead of walking the integer-part loop.
-    1.0 / 0.0
+  if ex - ey > 64 {
+    return a + b
+  }
+  let mut z = 1.0
+  let mut scale_down = false
+  if ex > 0x3ff + 510 {
+    z = dbits(0x6bb00000, 0)
+    a = a * dbits(0x14300000, 0)
+    b = b * dbits(0x14300000, 0)
+  }
+  else if ey < 0x3ff - 450 {
+    scale_down = true
+    a = a * dbits(0x6bb00000, 0)
+    b = b * dbits(0x6bb00000, 0)
+  }
+  // a^2 + b^2 as s + e, exactly but for the rounding of the tail (musl
+  // `hypot` takes it this far); then the square root of s + e, corrected
+  // to first order: r + (s + e - r^2) / (2r), which leaves one rounding.
+  let ha = a * a
+  let hb = b * b
+  let s = ha + hb
+  let e = sum_err(ha, hb, s) + prod_err(a, a, ha) + prod_err(b, b, hb)
+  let r = sqrt(s)
+  let p = r * r
+  let c = (((s - p) - prod_err(r, r, p)) + e) / (2.0 * r)
+  if scale_down {
+    // the result may be subnormal: round it once, onto that grid
+    let h = r + c
+    exp_scale(h, c - (h - r), -700)
   }
   else {
-    let mut int_pow = 1.0
-    let mut f = x
-    // #772: comparison routed through a `let mut` Bool, not the `while`
-    // header (integer-compare fast-path miscompile) -- see `ln` above.
-    let mut has_int_part = f >= 1.0
-    while has_int_part {
-      f = f - 1.0
-      int_pow = int_pow * e_const
-      has_int_part = f >= 1.0
-    }
-    let mut result = 1.0
-    let mut term = 1.0
-    let mut i = 1
-    while i < 30 {
-      let id = Int::to_double(i)
-      term = term * f / id
-      result = result + term
-      i = i + 1
-    }
-    int_pow * result
+    z * (r + c)
   }
 }
 
-export fn pow_double(base: Double, exponent: Double) -> Double {
-  exp_double(exponent * ln(base))
+//# Double-double arithmetic
+//
+// ln / log10 / log2_double / exp_double / pow_double carry their
+// intermediate values as unevaluated sums hi + lo of two doubles (about 106
+// bits), so the one rounding that matters is the last one, and the result is
+// the correctly rounded value except when the exact answer lies within about
+// 2^-20 ulp of a rounding boundary. The fdlibm algorithms these replaced are
+// below 1 ulp but not correctly rounded: measured, `exp` missed the nearest
+// double for 7% of arguments and `pow` for 9%, `ln(3.0)` and
+// `pow_double(2.0, -0.5)` among them. No fused multiply-add is assumed: an
+// exact product comes from Dekker's split.
+
+/// The high half of Dekker's split of a: 26 bits, so a product of two
+/// halves is exact. Valid for |a| < 2^996.
+fn split_hi(a: Double) -> Double {
+  let c = a * 134217729.0
+  a - c + c
 }
 
+/// a * b - p exactly, for p = a * b rounded (Dekker's product).
+fn prod_err(a: Double, b: Double, p: Double) -> Double {
+  let ah = split_hi(a)
+  let al = a - ah
+  let bh = split_hi(b)
+  let bl = b - bh
+  ah * bh - p + ah * bl + al * bh + al * bl
+}
+
+/// a + b - s exactly, for s = a + b rounded (Knuth's two-sum).
+fn sum_err(a: Double, b: Double, s: Double) -> Double {
+  let bb = s - a
+  (a - (s - bb)) + (b - bb)
+}
+
+/// (ah + al) + (bh + bl).
+fn dd_add(ah: Double, al: Double, bh: Double, bl: Double) -> (Double, Double) {
+  let s = ah + bh
+  let e = sum_err(ah, bh, s) + al + bl
+  let h = s + e
+  (h, e - (h - s))
+}
+
+/// (ah + al) * (bh + bl).
+fn dd_mul(ah: Double, al: Double, bh: Double, bl: Double) -> (Double, Double) {
+  let p = ah * bh
+  let e = prod_err(ah, bh, p) + ah * bl + al * bh
+  let h = p + e
+  (h, e - (h - p))
+}
+
+//# Logarithms
+
+let ln2_1: Double = dbits(0x3fe62e42, 0xfee00000)
+
+let ln2_2: Double = dbits(0x3dea39ef, 0x35600000)
+
+let ln2_3: Double = dbits(0x3be93c76, 0x73007e5f)
+
+let ivln10_hi: Double = dbits(0x3fdbcb7b, 0x1526e50e)
+
+let ivln10_lo: Double = dbits(0x3c695355, 0xbaaafad3)
+
+let ivln2_hi: Double = dbits(0x3ff71547, 0x652b82fe)
+
+let ivln2_lo: Double = dbits(0x3c7777d0, 0xffda0d24)
+
+/// The result of a logarithm at the arguments its reduction does not
+/// handle: `Some` for NaN, +-0, a negative, +Infinity and 1.
+fn log_special(x: Double) -> Option[Double] {
+  let hx = hi_word(x)
+  let lx = lo_word(x)
+  if is_nan_d(x) {
+    Some(x)
+  }
+  else if ((hx&0x7fffffff)|lx) == 0 {
+    Some(neg_d(inf_d))
+  }
+  else if hx >= 0x80000000 {
+    Some(nan_d)
+  }
+  else if hx >= 0x7ff00000 {
+    Some(x)
+  }
+  else if hx == 0x3ff00000 && lx == 0 {
+    Some(0.0)
+  }
+  else {
+    None
+  }
+}
+
+/// x = 2^k * m with m in [sqrt(2)/2, sqrt(2)), for a positive finite x;
+/// returns k.
+fn log_reduce_k(x: Double) -> Int {
+  let mut k = 0
+  let mut hx = hi_word(x)
+  if hx < 0x00100000 {
+    k = -54
+    hx = hi_word(x * two54)
+  }
+  hx = hx + 0x95f62
+  k + (hx>>20) - 0x3ff
+}
+
+/// The m - 1 of `log_reduce_k`, exact (Sterbenz: m is within a factor of
+/// two of 1).
+fn log_reduce_f(x: Double) -> Double {
+  let mut xx = x
+  if hi_word(x) < 0x00100000 {
+    xx = x * two54
+  }
+  let hx = hi_word(xx) + 0x95f62
+  with_hi(xx, (hx&0xfffff) + 0x3fe6a09e) - 1.0
+}
+
+/// 1/n as a double-double.
+fn dd_recip_hi(n: Double) -> Double {
+  1.0 / n
+}
+
+fn dd_recip_lo(n: Double) -> Double {
+  let h = 1.0 / n
+  let p = h * n
+  ((1.0 - p) - prod_err(h, n, p)) / n
+}
+
+/// ln(1 + f) for f = m - 1 as hi + lo, through
+/// ln(1 + f) = 2*atanh(s) = 2s * (1 + z/3 + z^2/5 + ...), s = f/(2 + f),
+/// z = s^2 <= 0.0295. The first three coefficients run in double-double
+/// and the tail, which weighs below 2^-23 of the sum, in double: the
+/// relative error is about 2^-76.
+fn log1p_dd(f: Double) -> (Double, Double) {
+  // s = f / (2 + f) as sh + sl
+  let dh = 2.0 + f
+  let dl = sum_err(2.0, f, dh)
+  let sh = f / dh
+  let p = sh * dh
+  let sl = ((f - p) - prod_err(sh, dh, p) - sh * dl) / dh
+  let (zh, zl) = dd_mul(sh, sl, sh, sl)
+  // tail: 1/9 + z/11 + z^2/13 + ..., in double
+  let mut tail = 0.0
+  let mut n = 41
+  while n > 8 {
+    tail = tail * zh + 1.0 / Int::to_double(n)
+    n = n - 2
+  }
+  // ((1/7 + z*tail) * z + 1/5) * z + 1/3, then * z, in double-double
+  let (a1h, a1l) = dd_mul(zh, zl, tail, 0.0)
+  let (b1h, b1l) = dd_add(dd_recip_hi(7.0), dd_recip_lo(7.0), a1h, a1l)
+  let (a2h, a2l) = dd_mul(zh, zl, b1h, b1l)
+  let (b2h, b2l) = dd_add(dd_recip_hi(5.0), dd_recip_lo(5.0), a2h, a2l)
+  let (a3h, a3l) = dd_mul(zh, zl, b2h, b2l)
+  let (b3h, b3l) = dd_add(dd_recip_hi(3.0), dd_recip_lo(3.0), a3h, a3l)
+  let (rh, rl) = dd_mul(zh, zl, b3h, b3l)
+  // 2s + 2s*R
+  let (th, tl) = dd_mul(2.0 * sh, 2.0 * sl, rh, rl)
+  dd_add(2.0 * sh, 2.0 * sl, th, tl)
+}
+
+/// ln(x) as hi + lo for a positive finite x: k*ln(2) + ln(1 + f), with
+/// ln(2) in three parts so k*ln2_1 and k*ln2_2 are exact.
+fn ln_dd(x: Double) -> (Double, Double) {
+  let kd = Int::to_double(log_reduce_k(x))
+  let (lh, ll) = log1p_dd(log_reduce_f(x))
+  let a = kd * ln2_1
+  let b = kd * ln2_2
+  let s = a + b
+  let (h, l) = dd_add(s, sum_err(a, b, s) + kd * ln2_3, lh, ll)
+  (h, l)
+}
+
+/// The natural logarithm, correctly rounded but for the rare argument whose
+/// logarithm sits within ~2^-20 ulp of a rounding boundary. `ln(0.0)` is
+/// -Infinity and a negative argument gives NaN.
+export fn ln(x: Double) -> Double {
+  match log_special(x) {
+    Some(v) => v,
+    None => {
+      let (h, l) = ln_dd(x)
+      h + l
+    },
+  }
+}
+
+/// The base-10 logarithm, ln(x) / ln(10) carried in double-double, so it
+/// is exact at the powers of ten and correctly rounded like `ln`.
+/// `log10(7.0)` used to divide two rounded doubles and print
+/// 0.8450980400142566, 2 ulp low.
+export fn log10(x: Double) -> Double {
+  match log_special(x) {
+    Some(v) => v,
+    None => {
+      let (lh, ll) = ln_dd(x)
+      let (h, l) = dd_mul(lh, ll, ivln10_hi, ivln10_lo)
+      h + l
+    },
+  }
+}
+
+/// The base-2 logarithm, k + ln(1 + f) / ln(2) in double-double: exact at
+/// the powers of two, correctly rounded like `ln`.
 export fn log2_double(x: Double) -> Double {
-  let ln2 = 0.6931471805599453
-  ln(x) / ln2
+  match log_special(x) {
+    Some(v) => v,
+    None => {
+      let kd = Int::to_double(log_reduce_k(x))
+      let (lh, ll) = log1p_dd(log_reduce_f(x))
+      let (mh, ml) = dd_mul(lh, ll, ivln2_hi, ivln2_lo)
+      let (h, l) = dd_add(kd, 0.0, mh, ml)
+      h + l
+    },
+  }
 }
 
-export fn sin(x: Double) -> Double {
-  // #772: range-reduce `x` into `[-pi, pi]` before the Taylor series below.
-  // This used to be a separate `normalize_angle` helper with
-  // `while a > pi { a = a - tau }` / `while a < 0.0 - pi { a = a + tau }`,
-  // which hit two independent pre-existing compiler bugs (never exercised
-  // before because this test file was never wired into any CI battery):
-  //
-  // 1. A Double comparison (`EBinOp` with op `<`/`>`) directly in a `while`
-  //    header hits the codegen's while-loop fast path
-  //    (lib/@vibe/compiler/codegen/expr/compile_expr_tail3.vibe), which
-  //    special-cases exactly that shape (cond is a top-level
-  //    `<`/`>`/`<=`/`>=` EBinOp) but always emits *integer* i64.lt_s /
-  //    i64.gt_s comparisons, with no check for Double operands -- unlike the
-  //    general expression path, which dispatches on `expr_is_floatish` and
-  //    correctly uses f64.lt / f64.gt. Doubles are boxed/tagged in the
-  //    linear-memory backend, so comparing two Double bit-patterns with a
-  //    signed-integer compare is meaningless: the loop-exit condition
-  //    effectively never evaluated "false", so the loop body ran forever,
-  //    each iteration bump-allocating a boxed Double until linear memory
-  //    (grown to the 4GB / 65535-page ceiling) was exhausted and the next
-  //    allocation trapped with "memory access out of bounds" -- reproducible
-  //    even for `sin(0.0)`, since the second loop's condition
-  //    (`a < 0.0 - pi`) is evaluated regardless of the actual value of `a`.
-  //    Fix: route the comparison through a `let mut` Bool re-evaluated at
-  //    the end of each iteration, so the `while` header itself is a plain
-  //    identifier (not a top-level comparison `EBinOp`), sidestepping the
-  //    buggy fast path and going through the normal (correct, type-aware)
-  //    codegen path instead.
-  // 2. Separately, calling a private (non-exported) helper function from
-  //    inside an *exported* function that also contains a Double-arithmetic
-  //    `while` loop -- exactly the `sin` / `normalize_angle` shape -- trips
-  //    a second, independent codegen bug when `sin` is invoked across a
-  //    module-import boundary (as every caller of this exported `sin`
-  //    necessarily does): the call reproduces even with a trivial
-  //    `identity` helper in place of `normalize_angle`, so it is unrelated
-  //    to bug (1) or to the trig math itself, and traps with the same
-  //    "memory access out of bounds" symptom in the exported wrapper.
-  //    Fix: inline the range-reduction directly into `sin`'s body instead
-  //    of factoring it into a separately-called helper, which avoids the
-  //    private-call + Double-loop combination that triggers it.
-  let mut a = x
-  let mut too_big = a > pi
-  while too_big {
-    a = a - tau
-    too_big = a > pi
-  }
-  let mut too_small = a < (0.0 - pi)
-  while too_small {
-    a = a + tau
-    too_small = a < (0.0 - pi)
-  }
-  let aa = a * a
-  let mut term = a
-  let mut result = a
-  let mut i = 1
-  while i < 13 {
-    let n = i * 2 * (i * 2 + 1)
-    let nd = Int::to_double(n)
-    term = 0.0 - term * aa / nd
-    result = result + term
+//# Exponential and power
+
+let invln2: Double = dbits(0x3ff71547, 0x652b82fe)
+
+let twom8: Double = dbits(0x3f700000, 0)
+
+/// e^(xh + xl) = 2^k * (h + l), returned as [h, l] in `out` with k the
+/// result, for |xh| <= ~746. x - k*ln(2) is formed in double-double from
+/// the three-part ln(2); e^r for |r| <= ln(2)/2 is e^(r/256) from a Taylor
+/// series (t and t^2/2 in double-double, the rest in double) squared eight
+/// times as e^(2u) - 1 = (e^u - 1) * (e^u - 1 + 2), which keeps the small
+/// part exact.
+fn exp_dd(xh: Double, xl: Double, out: Array[Double]) -> Int {
+  let k = Double::to_int(invln2 * xh + (if hi_word(xh) >= 0x80000000 {
+    -0.5
+  } else {
+    0.5
+  }))
+  let kd = Int::to_double(k)
+  let a = xh - kd * ln2_1
+  let b = kd * ln2_2
+  let r1 = a - b
+  let (rh, rl) = dd_add(r1, sum_err(a, 0.0 - b, r1), xl - kd * ln2_3, 0.0)
+  let th = rh * twom8
+  let tl = rl * twom8
+  let (t2h, t2l) = dd_mul(th, tl, th, tl)
+  let c3 = th * t2h * (1.0 / 6.0 + th * (1.0 / 24.0 + th * (1.0 / 120.0 + th * (1.0 / 720.0 + th * (1.0 / 5040.0)))))
+  let (s1h, s1l) = dd_add(th, tl, 0.5 * t2h, 0.5 * t2l)
+  let (mh0, ml0) = dd_add(s1h, s1l, c3, 0.0)
+  let mut mh = mh0
+  let mut ml = ml0
+  let mut i = 0
+  while i < 8 {
+    let (ph, pl) = dd_mul(mh, ml, mh, ml)
+    let (nh, nl) = dd_add(2.0 * mh, 2.0 * ml, ph, pl)
+    mh = nh
+    ml = nl
     i = i + 1
   }
-  result
+  let (h, l) = dd_add(1.0, 0.0, mh, ml)
+  Array::set(out, 0, h)
+  Array::set(out, 1, l)
+  k
 }
 
+/// 2^k * (h + l), rounded once also when the result is subnormal.
+fn exp_scale(h: Double, l: Double, k: Int) -> Double {
+  let hk = scalbn(h, k)
+  if (hi_word(hk)&0x7fffffff) >= 0x00100000 {
+    scalbn(h + l, k)
+  }
+  else {
+    // h * 2^k was rounded onto the subnormal grid; what it dropped, plus
+    // l, is rounded onto the same grid and added back exactly.
+    let back = scalbn(hk, 0 - k)
+    hk + scalbn((h - back) + l, k)
+  }
+}
+
+let exp_o_threshold: Double = dbits(0x40862e42, 0xfefa39ef)
+
+let exp_u_threshold: Double = dbits(0xc0874910, 0xd52d3051)
+
+/// e^x, correctly rounded but for the rare argument within ~2^-20 ulp of a
+/// rounding boundary. Overflows to `Infinity` above ~709.78 and underflows
+/// gradually to 0 below ~-745.13.
+export fn exp_double(x: Double) -> Double {
+  let hx = hi_word(x)&0x7fffffff
+  if is_nan_d(x) {
+    return x
+  }
+  if x > exp_o_threshold {
+    return inf_d
+  }
+  if x < exp_u_threshold {
+    return 0.0
+  }
+  if hx < 0x3c900000 {
+    // |x| < 2^-54: e^x rounds to 1 + x
+    return 1.0 + x
+  }
+  let out = [0.0, 0.0]
+  let k = exp_dd(x, 0.0, out)
+  let h: Double = Array::get(out, 0)
+  let l: Double = Array::get(out, 1)
+  exp_scale(h, l, k)
+}
+
+/// 0 when y is not an integer, 1 for an odd integer, 2 for an even one;
+/// only asked for a negative x (fdlibm `yisint`).
+fn pow_yisint(iy: Int, ly: Int) -> Int {
+  if iy >= 0x43400000 {
+    2
+  }
+  else if iy >= 0x3ff00000 {
+    let k = (iy>>20) - 0x3ff
+    if k > 20 {
+      let j = ly>>(52 - k)
+      if ((j<<(52 - k))&0xffffffff) == ly {
+        2 - (j&1)
+      } else {
+        0
+      }
+    }
+    else if ly == 0 {
+      let j = iy>>(20 - k)
+      if (j<<(20 - k)) == iy {
+        2 - (j&1)
+      } else {
+        0
+      }
+    }
+    else {
+      0
+    }
+  }
+  else {
+    0
+  }
+}
+
+/// `base` raised to `exponent`: e^(y * ln|x|) with the logarithm and the
+/// product in double-double, so it is correctly rounded but for the rare
+/// argument pair within ~2^-12 ulp of a rounding boundary (the logarithm's
+/// error is scaled by y * ln|x|, up to ~745). The special cases are C99's
+/// (fdlibm `pow`): `pow_double(x, 0.0)` and `pow_double(1.0, y)` are 1 even
+/// for NaN; `pow_double(x, 0.5)` is `sqrt(x)` and `pow_double(x, 2.0)` is
+/// `x * x`; a negative base takes an integral exponent (an odd one keeps the
+/// sign) and any other power of a negative base is NaN; 0 to a negative
+/// power is Infinity.
+export fn pow_double(base: Double, exponent: Double) -> Double {
+  let x = base
+  let y = exponent
+  let hx = hi_word(x)
+  let lx = lo_word(x)
+  let hy = hi_word(y)
+  let ly = lo_word(y)
+  let hxs = signed_word(hx)
+  let hys = signed_word(hy)
+  let ix = hx&0x7fffffff
+  let iy = hy&0x7fffffff
+  if (iy|ly) == 0 {
+    return 1.0
+  }
+  if hx == 0x3ff00000 && lx == 0 {
+    return 1.0
+  }
+  if ix > 0x7ff00000 || (ix == 0x7ff00000 && lx != 0) || iy > 0x7ff00000 || (iy == 0x7ff00000 && ly != 0) {
+    return x + y
+  }
+  let yisint = if hxs < 0 {
+    pow_yisint(iy, ly)
+  } else {
+    0
+  }
+  if ly == 0 {
+    if iy == 0x7ff00000 {
+      // y is +-Infinity
+      if ((ix - 0x3ff00000)|lx) == 0 {
+        return 1.0
+      }
+      if ix >= 0x3ff00000 {
+        return if hys >= 0 {
+          y
+        } else {
+          0.0
+        }
+      }
+      return if hys >= 0 {
+        0.0
+      } else {
+        neg_d(y)
+      }
+    }
+    if iy == 0x3ff00000 {
+      return if hys >= 0 {
+        x
+      } else {
+        1.0 / x
+      }
+    }
+    if hy == 0x40000000 {
+      return x * x
+    }
+    if hy == 0x3fe00000 && hxs >= 0 {
+      return sqrt(x)
+    }
+  }
+  let ax = abs_d(x)
+  if lx == 0 && (ix == 0x7ff00000 || ix == 0 || ix == 0x3ff00000) {
+    // x is +-0, +-Infinity or +-1
+    let mut z = ax
+    if hys < 0 {
+      z = 1.0 / z
+    }
+    if hxs < 0 {
+      if ((ix - 0x3ff00000)|yisint) == 0 {
+        z = nan_d
+      }
+      else if yisint == 1 {
+        z = neg_d(z)
+      }
+    }
+    return z
+  }
+  let mut s = 1.0
+  if hxs < 0 {
+    if yisint == 0 {
+      return nan_d
+    }
+    if yisint == 1 {
+      s = neg_d(1.0)
+    }
+  }
+  let big = s * huge * huge
+  let small = s * tiny * tiny
+  if iy > 0x43f00000 {
+    // |y| > 2^64: |x| != 1 here, so the power over- or underflows
+    return if (ix >= 0x3ff00000) == (hys > 0) {
+      big
+    } else {
+      small
+    }
+  }
+  let (lh, ll) = ln_dd(ax)
+  let ph = y * lh
+  let pl = prod_err(y, lh, ph) + y * ll
+  if ph > 710.0 {
+    return big
+  }
+  if ph < -746.0 {
+    return small
+  }
+  let yint = pow_yisint(iy, ly)
+  if yint != 0 && iy < 0x41d00000 && ph < 600.0 && ph > -600.0 {
+    // An integral |y| < 2^30 with the result far from overflow: x^|y| by
+    // repeated squaring in double-double, which is exact whenever the
+    // power fits in 106 bits, so an exact power that is a tie between two
+    // doubles (7^19, 9^17) rounds to even as it must.
+    return s * pow_int_dd(ax, Double::to_int(abs_d(y)), hys < 0)
+  }
+  let out = [0.0, 0.0]
+  let k = exp_dd(ph, pl, out)
+  let h: Double = Array::get(out, 0)
+  let l: Double = Array::get(out, 1)
+  s * exp_scale(h, l, k)
+}
+
+/// ax^n (or its reciprocal) for n >= 1, by binary powering in
+/// double-double, rounded once.
+fn pow_int_dd(ax: Double, n0: Int, reciprocal: Bool) -> Double {
+  let mut rh = 1.0
+  let mut rl = 0.0
+  let mut bh = ax
+  let mut bl = 0.0
+  let mut n = n0
+  while n > 0 {
+    if (n&1) != 0 {
+      let (h, l) = dd_mul(rh, rl, bh, bl)
+      rh = h
+      rl = l
+    }
+    n = n>>1
+    if n > 0 {
+      let (h, l) = dd_mul(bh, bl, bh, bl)
+      bh = h
+      bl = l
+    }
+  }
+  if reciprocal {
+    let (h, l) = dd_div(1.0, 0.0, rh, rl)
+    h + l
+  }
+  else {
+    rh + rl
+  }
+}
+
+//# Trigonometric functions
+//
+// Reduced by x - n*pi/2 to about 106 bits (Cody-Waite below 2^20 * pi/2,
+// Payne-Hanek above), then evaluated in double-double and rounded once.
+
+let pio4: Double = dbits(0x3fe921fb, 0x54442d18)
+
+let toint_d: Double = dbits(0x43380000, 0)
+
+let inv_pio2: Double = dbits(0x3fe45f30, 0x6dc9c883)
+
+let pio2_1: Double = dbits(0x3ff921fb, 0x54400000)
+
+let pio2_1t: Double = dbits(0x3dd0b461, 0x1a626331)
+
+let pio2_2: Double = dbits(0x3dd0b461, 0x1a600000)
+
+let pio2_2t: Double = dbits(0x3ba3198a, 0x2e037073)
+
+let pio2_3: Double = dbits(0x3ba3198a, 0x2e000000)
+
+let pio2_3t: Double = dbits(0x397b839a, 0x252049c1)
+
+/// 2/pi in 24-bit chunks: enough for the largest finite double.
+let ipio2: Array[Int] = [
+  0xa2f983,
+  0x6e4e44,
+  0x1529fc,
+  0x2757d1,
+  0xf534dd,
+  0xc0db62,
+  0x95993c,
+  0x439041,
+  0xfe5163,
+  0xabdebb,
+  0xc561b7,
+  0x246e3a,
+  0x424dd2,
+  0xe00649,
+  0x2eea09,
+  0xd1921c,
+  0xfe1deb,
+  0x1cb129,
+  0xa73ee8,
+  0x8235f5,
+  0x2ebb44,
+  0x84e99c,
+  0x7026b4,
+  0x5f7e41,
+  0x3991d6,
+  0x398353,
+  0x39f49c,
+  0x845f8b,
+  0xbdf928,
+  0x3b1ff8,
+  0x97ffde,
+  0x05980f,
+  0xef2f11,
+  0x8b5a0a,
+  0x6d1f6d,
+  0x367ecf,
+  0x27cb09,
+  0xb74f46,
+  0x3f669e,
+  0x5fea2d,
+  0x7527ba,
+  0xc7ebe5,
+  0xf17b3d,
+  0x0739f7,
+  0x8a5292,
+  0xea6bfb,
+  0x5fb11f,
+  0x8d5d08,
+  0x560330,
+  0x46fc7b,
+  0x6babf0,
+  0xcfbc20,
+  0x9af436,
+  0x1da9e3,
+  0x91615e,
+  0xe61b08,
+  0x659985,
+  0x5f14a0,
+  0x68408d,
+  0xffd880,
+  0x4d7327,
+  0x310606,
+  0x1556ca,
+  0x73a8c9,
+  0x60e27b,
+  0xc08c6b
+]
+
+/// pi/2 in 24-bit pieces.
+let pio2_parts: Array[Double] = [
+  dbits(0x3ff921fb, 0x40000000),
+  dbits(0x3e74442d, 0x00000000),
+  dbits(0x3cf84698, 0x80000000),
+  dbits(0x3b78cc51, 0x60000000),
+  dbits(0x39f01b83, 0x80000000),
+  dbits(0x387a2520, 0x40000000),
+  dbits(0x36e38222, 0x80000000)
+]
+
+fn double_zeros(n: Int) -> Array[Double] {
+  let out: Array[Double] = []
+  let mut i = 0
+  while i < n {
+    Array::push(out, 0.0)
+    i = i + 1
+  }
+  out
+}
+
+fn int_zeros(n: Int) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(out, 0)
+    i = i + 1
+  }
+  out
+}
+
+/// Sum of x[j] * f[jx + i - j] for j in 0..=jx.
+fn rem_pio2_dot(x: Array[Double], f: Array[Double], jx: Int, i: Int) -> Double {
+  let mut fw = 0.0
+  let mut j = 0
+  while j <= jx {
+    fw = fw + Array::get(x, j) * Array::get(f, jx + i - j)
+    j = j + 1
+  }
+  fw
+}
+
+/// Payne-Hanek reduction of a huge argument given as 24-bit chunks
+/// `x[0..nx]` scaled by 2^e0: writes x mod pi/2 into `y[0] + y[1]` and
+/// returns the quadrant (fdlibm `__kernel_rem_pio2` at its 113-bit
+/// precision, prec = 3, with the last two parts summed).
+fn rem_pio2_large(x: Array[Double], nx: Int, y: Array[Double], e0: Int) -> Int {
+  let jk = 6
+  let jp = 6
+  let jx = nx - 1
+  let mut jv = (e0 - 3) / 24
+  if jv < 0 {
+    jv = 0
+  }
+  let mut q0 = e0 - 24 * (jv + 1)
+  let f = double_zeros(20)
+  let fq = double_zeros(20)
+  let q = double_zeros(20)
+  let iq = int_zeros(20)
+  let mut j = jv - jx
+  let mut i = 0
+  while i <= jx + jk {
+    Array::set(f, i, if j < 0 {
+      0.0
+    } else {
+      Int::to_double(Array::get(ipio2, j))
+    })
+    j = j + 1
+    i = i + 1
+  }
+  i = 0
+  while i <= jk {
+    Array::set(q, i, rem_pio2_dot(x, f, jx, i))
+    i = i + 1
+  }
+  let mut jz = jk
+  let mut n = 0
+  let mut ih = 0
+  let mut z: Double = 0.0
+  let mut recompute = true
+  while recompute {
+    recompute = false
+    // distill q[] into iq[] reversingly
+    i = 0
+    z = Array::get(q, jz)
+    j = jz
+    while j >= 1 {
+      let fw = Int::to_double(Double::to_int(twom24 * z))
+      Array::set(iq, i, Double::to_int(z - two24 * fw))
+      z = Array::get(q, j - 1) + fw
+      i = i + 1
+      j = j - 1
+    }
+    // the integer part of z, mod 8 (z is non-negative and below 2^30)
+    z = scalbn(z, q0)
+    z = z - 8.0 * Int::to_double(Double::to_int(z * 0.125))
+    n = Double::to_int(z)
+    z = z - Int::to_double(n)
+    ih = 0
+    if q0 > 0 {
+      let top = Array::get(iq, jz - 1)>>(24 - q0)
+      n = n + top
+      Array::set(iq, jz - 1, Array::get(iq, jz - 1) - (top<<(24 - q0)))
+      ih = Array::get(iq, jz - 1)>>(23 - q0)
+    }
+    else if q0 == 0 {
+      ih = Array::get(iq, jz - 1)>>23
+    }
+    else if z >= 0.5 {
+      ih = 2
+    }
+    if ih > 0 {
+      // q > 0.5: use 1 - q
+      n = n + 1
+      let mut carry = 0
+      i = 0
+      while i < jz {
+        let v = Array::get(iq, i)
+        if carry == 0 {
+          if v != 0 {
+            carry = 1
+            Array::set(iq, i, 0x1000000 - v)
+          }
+        }
+        else {
+          Array::set(iq, i, 0xffffff - v)
+        }
+        i = i + 1
+      }
+      if q0 == 1 {
+        Array::set(iq, jz - 1, Array::get(iq, jz - 1)&0x7fffff)
+      }
+      else if q0 == 2 {
+        Array::set(iq, jz - 1, Array::get(iq, jz - 1)&0x3fffff)
+      }
+      if ih == 2 {
+        z = 1.0 - z
+        if carry != 0 {
+          z = z - scalbn(1.0, q0)
+        }
+      }
+    }
+    if is_zero_d(z) {
+      let mut acc = 0
+      i = jz - 1
+      while i >= jk {
+        acc = acc|Array::get(iq, i)
+        i = i - 1
+      }
+      if acc == 0 {
+        // every chunk so far cancelled: take more terms of 2/pi
+        let mut k = 1
+        while Array::get(iq, jk - k) == 0 {
+          k = k + 1
+        }
+        i = jz + 1
+        while i <= jz + k {
+          Array::set(f, jx + i, Int::to_double(Array::get(ipio2, jv + i)))
+          Array::set(q, i, rem_pio2_dot(x, f, jx, i))
+          i = i + 1
+        }
+        jz = jz + k
+        recompute = true
+      }
+    }
+  }
+  // chop off zero terms
+  if is_zero_d(z) {
+    jz = jz - 1
+    q0 = q0 - 24
+    while Array::get(iq, jz) == 0 {
+      jz = jz - 1
+      q0 = q0 - 24
+    }
+  }
+  else {
+    z = scalbn(z, 0 - q0)
+    if z >= two24 {
+      let fw = Int::to_double(Double::to_int(twom24 * z))
+      Array::set(iq, jz, Double::to_int(z - two24 * fw))
+      jz = jz + 1
+      q0 = q0 + 24
+      Array::set(iq, jz, Double::to_int(fw))
+    }
+    else {
+      Array::set(iq, jz, Double::to_int(z))
+    }
+  }
+  // integer chunks back to floating point
+  let mut fw = scalbn(1.0, q0)
+  i = jz
+  while i >= 0 {
+    Array::set(q, i, fw * Int::to_double(Array::get(iq, i)))
+    fw = fw * twom24
+    i = i - 1
+  }
+  // fq = pio2 * q
+  i = jz
+  while i >= 0 {
+    let mut acc = 0.0
+    let mut k = 0
+    while k <= jp && k <= jz - i {
+      acc = acc + Array::get(pio2_parts, k) * Array::get(q, i + k)
+      k = k + 1
+    }
+    Array::set(fq, jz - i, acc)
+    i = i - 1
+  }
+  // compress fq[] into y[0] + y[1] + y[2], 113 bits (fdlibm prec = 3)
+  i = jz
+  while i >= 1 {
+    let fw1 = Array::get(fq, i - 1) + Array::get(fq, i)
+    Array::set(fq, i, Array::get(fq, i) + (Array::get(fq, i - 1) - fw1))
+    Array::set(fq, i - 1, fw1)
+    i = i - 1
+  }
+  i = jz
+  while i >= 2 {
+    let fw2 = Array::get(fq, i - 1) + Array::get(fq, i)
+    Array::set(fq, i, Array::get(fq, i) + (Array::get(fq, i - 1) - fw2))
+    Array::set(fq, i - 1, fw2)
+    i = i - 1
+  }
+  let mut rest = 0.0
+  i = jz
+  while i >= 2 {
+    rest = rest + Array::get(fq, i)
+    i = i - 1
+  }
+  let y0: Double = Array::get(fq, 0)
+  let y1: Double = Array::get(fq, 1) + rest
+  Array::set(y, 0, if ih == 0 {
+    y0
+  } else {
+    neg_d(y0)
+  })
+  Array::set(y, 1, if ih == 0 {
+    y1
+  } else {
+    neg_d(y1)
+  })
+  n&7
+}
+
+/// x - n*pi/2 for |x| < 2^20 * pi/2 (n >= 1) by Cody-Waite reduction
+/// against pi/2 in four parts: the first three have 33 bits, so their
+/// multiples are exact, and the differences are kept in double-double, so
+/// the result carries about 150 bits less the cancellation (under 62 bits
+/// for a double). Writes [y0, y1], returns n.
+fn rem_pio2_medium(x: Double, y: Array[Double]) -> Int {
+  // round-to-nearest of x * 2/pi
+  let f_n = x * inv_pio2 + toint_d - toint_d
+  let n = Double::to_int(f_n)
+  // exact: f_n * pio2_1 is within a factor of two of x
+  let r1 = x - f_n * pio2_1
+  let (r2h, r2l) = dd_add(r1, 0.0, 0.0 - f_n * pio2_2, 0.0)
+  let (r3h, r3l) = dd_add(r2h, r2l, 0.0 - f_n * pio2_3, 0.0)
+  let (r4h, r4l) = dd_add(r3h, r3l, 0.0 - f_n * pio2_3t, 0.0)
+  Array::set(y, 0, r4h)
+  Array::set(y, 1, r4l)
+  n
+}
+
+/// x - n*pi/2 as y[0] + y[1] with |y[0]| <= ~pi/4, about 106 bits; returns
+/// n (musl `__rem_pio2`). Exact for every finite x: the huge ones go through
+/// Payne-Hanek.
+fn rem_pio2(x: Double, y: Array[Double]) -> Int {
+  let hx = hi_word(x)
+  let ix = hx&0x7fffffff
+  if ix < 0x413921fb {
+    rem_pio2_medium(x, y)
+  }
+  else if ix >= 0x7ff00000 {
+    let nan = x - x
+    Array::set(y, 0, nan)
+    Array::set(y, 1, nan)
+    0
+  }
+  else {
+    // |x| scaled to [2^23, 2^24), split into three 24-bit chunks
+    let mut z = dbits((hx&0xfffff)|((0x3ff + 23)<<20), lo_word(x))
+    let tx = double_zeros(3)
+    let mut i = 0
+    while i < 2 {
+      Array::set(tx, i, Int::to_double(Double::to_int(z)))
+      z = (z - Array::get(tx, i)) * two24
+      i = i + 1
+    }
+    Array::set(tx, 2, z)
+    let mut nx = 3
+    while nx > 1 && is_zero_d(Array::get(tx, nx - 1)) {
+      nx = nx - 1
+    }
+    let ty = double_zeros(2)
+    let n = rem_pio2_large(tx, nx, ty, (ix>>20) - (0x3ff + 23))
+    if hx >= 0x80000000 {
+      Array::set(y, 0, neg_d(Array::get(ty, 0)))
+      Array::set(y, 1, neg_d(Array::get(ty, 1)))
+      0 - n
+    }
+    else {
+      Array::set(y, 0, Array::get(ty, 0))
+      Array::set(y, 1, Array::get(ty, 1))
+      n
+    }
+  }
+}
+
+/// (ah + al) / (bh + bl), for operands below 2^996 in magnitude.
+fn dd_div(ah: Double, al: Double, bh: Double, bl: Double) -> (Double, Double) {
+  let qh = ah / bh
+  let p = qh * bh
+  let r = ((ah - p) - prod_err(qh, bh, p) + al - qh * bl) / bh
+  let h = qh + r
+  (h, r - (h - qh))
+}
+
+/// sqrt(ah + al) for ah > 0: the rounded root and its first-order
+/// correction.
+fn dd_sqrt(ah: Double, al: Double) -> (Double, Double) {
+  let r = sqrt(ah)
+  let p = r * r
+  let c = ((ah - p) - prod_err(r, r, p) + al) / (2.0 * r)
+  let h = r + c
+  (h, c - (h - r))
+}
+
+/// 1 - (zh + zl) * (sh + sl) / k, one level of the nested Taylor forms
+/// below, in double-double.
+fn taylor_level(zh: Double, zl: Double, sh: Double, sl: Double, k: Double) -> (Double, Double) {
+  let (ph, pl) = dd_mul(zh, zl, sh, sl)
+  let (qh, ql) = dd_div(ph, pl, k, 0.0)
+  dd_add(1.0, 0.0, 0.0 - qh, 0.0 - ql)
+}
+
+/// sin(rh + rl) for |r| <= ~pi/4, as hi + lo:
+/// r * (1 - z/(2*3) * (1 - z/(4*5) * (1 - ...))) with z = r^2. The five
+/// outer levels run in double-double; the inner ones, which weigh below
+/// 2^-28 of the result, in double.
+fn sin_dd(rh: Double, rl: Double) -> (Double, Double) {
+  let (zh, zl) = dd_mul(rh, rl, rh, rl)
+  let mut t = 1.0
+  let mut n = 14
+  while n > 5 {
+    t = 1.0 - zh * t / Int::to_double((2 * n) * (2 * n + 1))
+    n = n - 1
+  }
+  let mut sh = t
+  let mut sl = 0.0
+  while n >= 1 {
+    let (h, l) = taylor_level(zh, zl, sh, sl, Int::to_double((2 * n) * (2 * n + 1)))
+    sh = h
+    sl = l
+    n = n - 1
+  }
+  dd_mul(rh, rl, sh, sl)
+}
+
+/// cos(rh + rl) for |r| <= ~pi/4, as hi + lo:
+/// 1 - z/(1*2) * (1 - z/(3*4) * (1 - ...)), the same split as `sin_dd`.
+fn cos_dd(rh: Double, rl: Double) -> (Double, Double) {
+  let (zh, zl) = dd_mul(rh, rl, rh, rl)
+  let mut t = 1.0
+  let mut n = 14
+  while n > 5 {
+    t = 1.0 - zh * t / Int::to_double((2 * n - 1) * (2 * n))
+    n = n - 1
+  }
+  let mut ch = t
+  let mut cl = 0.0
+  while n >= 1 {
+    let (h, l) = taylor_level(zh, zl, ch, cl, Int::to_double((2 * n - 1) * (2 * n)))
+    ch = h
+    cl = l
+    n = n - 1
+  }
+  (ch, cl)
+}
+
+/// sin(x), cos(x) or tan(x) by `which` (0, 1, 2) for a finite x with
+/// |x| > 2^-27: reduced by `rem_pio2`, then evaluated in double-double and
+/// rounded once.
+fn trig_dd(x: Double, which: Int) -> Double {
+  let ix = hi_word(x)&0x7fffffff
+  let y = [0.0, 0.0]
+  let n = if ix <= 0x3fe921fb {
+    Array::set(y, 0, x)
+    0
+  } else {
+    rem_pio2(x, y)&3
+  }
+  let rh: Double = Array::get(y, 0)
+  let rl: Double = Array::get(y, 1)
+  if which == 2 {
+    let (sh, sl) = sin_dd(rh, rl)
+    let (ch, cl) = cos_dd(rh, rl)
+    if (n&1) == 0 {
+      let (h, l) = dd_div(sh, sl, ch, cl)
+      h + l
+    }
+    else {
+      // tan(r + pi/2) = -cos(r) / sin(r)
+      let (h, l) = dd_div(ch, cl, sh, sl)
+      neg_d(h + l)
+    }
+  }
+  else {
+    // sin(r + n*pi/2) and cos(r + n*pi/2) cycle through +-sin and +-cos
+    let m = (n + which)&3
+    let v = if (m&1) == 0 {
+      let (h, l) = sin_dd(rh, rl)
+      h + l
+    } else {
+      let (h, l) = cos_dd(rh, rl)
+      h + l
+    }
+    if m >= 2 {
+      neg_d(v)
+    } else {
+      v
+    }
+  }
+}
+
+/// The sine, correctly rounded but for the rare argument within ~2^-20
+/// ulp of a rounding boundary, with an exact argument reduction for every
+/// finite x. `sin(Infinity)` and `sin(NaN)` are NaN.
+export fn sin(x: Double) -> Double {
+  let ix = hi_word(x)&0x7fffffff
+  if ix < 0x3e500000 {
+    // |x| < 2^-26 (also +-0): sin(x) rounds to x
+    x
+  }
+  else if ix >= 0x7ff00000 {
+    x - x
+  }
+  else {
+    trig_dd(x, 0)
+  }
+}
+
+/// The cosine, rounded as `sin` is.
 export fn cos(x: Double) -> Double {
-  sin(x + half_pi)
+  let ix = hi_word(x)&0x7fffffff
+  if ix < 0x3e46a09e {
+    // |x| < 2^-27 * sqrt(2): cos(x) rounds to 1
+    1.0
+  }
+  else if ix >= 0x7ff00000 {
+    x - x
+  }
+  else {
+    trig_dd(x, 1)
+  }
 }
 
+/// The tangent, rounded as `sin` is.
 export fn tan(x: Double) -> Double {
-  // #772: `let c = cos(x)` -- the initializer is an unrecognized call, so
-  // the codegen's `expr_is_floatish` heuristic marks `c`'s local slot as
-  // non-float; the later `sin(x) / c` then has *no* recognized-floatish
-  // operand (another unrecognized call divided by a non-float-tagged slot)
-  // and gets compiled as integer division on the two boxed Double
-  // pointers/bit-patterns. `+ 0.0` on the initializer marks `c`'s slot
-  // floatish so the division is correctly recognized.
-  let c = cos(x) + 0.0
-  sin(x) / c
+  let ix = hi_word(x)&0x7fffffff
+  if ix < 0x3e400000 {
+    // |x| < 2^-27: tan(x) rounds to x
+    x
+  }
+  else if ix >= 0x7ff00000 {
+    x - x
+  }
+  else {
+    trig_dd(x, 2)
+  }
+}
+
+//# Inverse trigonometric functions
+
+let atanhi0: Double = dbits(0x3fddac67, 0x0561bb4f)
+
+let atanhi1: Double = dbits(0x3fe921fb, 0x54442d18)
+
+let atanhi2: Double = dbits(0x3fef730b, 0xd281f69b)
+
+let atanhi3: Double = dbits(0x3ff921fb, 0x54442d18)
+
+let atanlo0: Double = dbits(0x3c7a2b7f, 0x222f65e2)
+
+let atanlo1: Double = dbits(0x3c81a626, 0x33145c07)
+
+let atanlo2: Double = dbits(0x3c700788, 0x7af0cbbd)
+
+let atanlo3: Double = dbits(0x3c91a626, 0x33145c07)
+
+let pio2_hi: Double = dbits(0x3ff921fb, 0x54442d18)
+
+let pio2_lo: Double = dbits(0x3c91a626, 0x33145c07)
+
+let pi_lo: Double = dbits(0x3ca1a626, 0x33145c07)
+
+/// atan(th + tl) for |t| <= 0.4375 as hi + lo: t * (1 - z/3 + z^2/5 - ...)
+/// with z = t^2 <= 0.192. The eight leading coefficients run in
+/// double-double, the tail (below 2^-23 of the sum) in double.
+fn atan_series_dd(th: Double, tl: Double) -> (Double, Double) {
+  let (zh, zl) = dd_mul(th, tl, th, tl)
+  let mut tail = 0.0
+  let mut n = 34
+  while n >= 8 {
+    let c = 1.0 / Int::to_double(2 * n + 1)
+    tail = tail * zh + (if (n&1) == 0 {
+      c
+    } else {
+      0.0 - c
+    })
+    n = n - 1
+  }
+  let mut ah = tail
+  let mut al = 0.0
+  while n >= 0 {
+    let d = Int::to_double(2 * n + 1)
+    let ch = if (n&1) == 0 {
+      dd_recip_hi(d)
+    } else {
+      0.0 - dd_recip_hi(d)
+    }
+    let cl = if (n&1) == 0 {
+      dd_recip_lo(d)
+    } else {
+      0.0 - dd_recip_lo(d)
+    }
+    let (ph, pl) = dd_mul(zh, zl, ah, al)
+    let (sh, sl) = dd_add(ch, cl, ph, pl)
+    ah = sh
+    al = sl
+    n = n - 1
+  }
+  dd_mul(th, tl, ah, al)
+}
+
+/// atan(ah + al) for 0 <= a < 2^66 as hi + lo, through fdlibm's
+/// reduction to |t| <= 0.4375 around atan(0.5), atan(1), atan(1.5) and
+/// atan(Infinity), with t formed in double-double.
+fn atan_dd(ah: Double, al: Double) -> (Double, Double) {
+  let ix = hi_word(ah)
+  if ix < 0x3fdc0000 {
+    // a < 0.4375
+    if ix < 0x3e400000 {
+      // a < 2^-27: a - a^3/3, the next term is below 2^-108 of a
+      dd_add(ah, al, 0.0 - ah * ah * ah / 3.0, 0.0)
+    } else {
+      atan_series_dd(ah, al)
+    }
+  }
+  else if ix < 0x3fe60000 {
+    // 7/16 <= a < 11/16: t = (2a - 1) / (2 + a)
+    let (nh, nl) = dd_add(2.0 * ah, 2.0 * al, -1.0, 0.0)
+    let (dh, dl) = dd_add(2.0, 0.0, ah, al)
+    let (th, tl) = dd_div(nh, nl, dh, dl)
+    let (sh, sl) = atan_series_dd(th, tl)
+    dd_add(atanhi0, atanlo0, sh, sl)
+  }
+  else if ix < 0x3ff30000 {
+    // 11/16 <= a < 19/16: t = (a - 1) / (a + 1)
+    let (nh, nl) = dd_add(ah, al, -1.0, 0.0)
+    let (dh, dl) = dd_add(ah, al, 1.0, 0.0)
+    let (th, tl) = dd_div(nh, nl, dh, dl)
+    let (sh, sl) = atan_series_dd(th, tl)
+    dd_add(atanhi1, atanlo1, sh, sl)
+  }
+  else if ix < 0x40038000 {
+    // a < 2.4375: t = (a - 1.5) / (1 + 1.5a)
+    let (nh, nl) = dd_add(ah, al, -1.5, 0.0)
+    let (mh, ml) = dd_mul(1.5, 0.0, ah, al)
+    let (dh, dl) = dd_add(mh, ml, 1.0, 0.0)
+    let (th, tl) = dd_div(nh, nl, dh, dl)
+    let (sh, sl) = atan_series_dd(th, tl)
+    dd_add(atanhi2, atanlo2, sh, sl)
+  }
+  else {
+    // t = -1/a
+    let (th, tl) = dd_div(-1.0, 0.0, ah, al)
+    let (sh, sl) = atan_series_dd(th, tl)
+    dd_add(atanhi3, atanlo3, sh, sl)
+  }
+}
+
+/// The arctangent, in [-pi/2, pi/2], carried in double-double and
+/// rounded once (fdlibm's argument reduction, a Taylor series in place of
+/// its polynomial).
+export fn atan(x: Double) -> Double {
+  let hx = hi_word(x)
+  let ix = hx&0x7fffffff
+  if ix >= 0x44100000 {
+    // |x| >= 2^66
+    if is_nan_d(x) {
+      return x
+    }
+    return if hx >= 0x80000000 {
+      neg_d(atanhi3)
+    } else {
+      atanhi3
+    }
+  }
+  let (h, l) = atan_dd(abs_d(x), 0.0)
+  let z = h + l
+  if hx >= 0x80000000 {
+    neg_d(z)
+  } else {
+    z
+  }
+}
+
+/// (1 - x) * (1 + x) = 1 - x^2 in double-double, without the cancellation
+/// of 1 - x*x near |x| = 1.
+fn one_minus_sq_dd(x: Double) -> (Double, Double) {
+  let a = 1.0 - x
+  let b = 1.0 + x
+  dd_mul(a, sum_err(1.0, 0.0 - x, a), b, sum_err(1.0, x, b))
+}
+
+/// The arcsine, in [-pi/2, pi/2]: atan(x / sqrt(1 - x^2)) in
+/// double-double. NaN outside [-1, 1].
+export fn asin(x: Double) -> Double {
+  let hx = hi_word(x)
+  let ix = hx&0x7fffffff
+  if ix >= 0x3ff00000 {
+    if ((ix - 0x3ff00000)|lo_word(x)) == 0 {
+      return x * pio2_hi
+    }
+    return if is_nan_d(x) {
+      x
+    } else {
+      nan_d
+    }
+  }
+  if ix < 0x3e500000 {
+    // |x| < 2^-26: asin(x) rounds to x
+    return x
+  }
+  let (dh0, dl0) = one_minus_sq_dd(x)
+  let (dh, dl) = dd_sqrt(dh0, dl0)
+  let (qh, ql) = dd_div(abs_d(x), 0.0, dh, dl)
+  let (h, l) = atan_dd(qh, ql)
+  let z = h + l
+  if hx >= 0x80000000 {
+    neg_d(z)
+  } else {
+    z
+  }
+}
+
+/// The arccosine, in [0, pi]: 2 * atan(sqrt((1 - x) / (1 + x))) in
+/// double-double. NaN outside [-1, 1].
+export fn acos(x: Double) -> Double {
+  let hx = hi_word(x)
+  let ix = hx&0x7fffffff
+  if ix >= 0x3ff00000 {
+    if ((ix - 0x3ff00000)|lo_word(x)) == 0 {
+      return if hx >= 0x80000000 {
+        2.0 * pio2_hi
+      } else {
+        0.0
+      }
+    }
+    return if is_nan_d(x) {
+      x
+    } else {
+      nan_d
+    }
+  }
+  if ix <= 0x3c600000 {
+    // |x| < 2^-57: acos(x) rounds to pi/2
+    return pio2_hi
+  }
+  let a = 1.0 - x
+  let b = 1.0 + x
+  let (qh, ql) = dd_div(a, sum_err(1.0, 0.0 - x, a), b, sum_err(1.0, x, b))
+  let (rh, rl) = dd_sqrt(qh, ql)
+  let (h, l) = atan_dd(rh, rl)
+  2.0 * h + 2.0 * l
+}
+
+/// The angle of the point (x, y), in [-pi, pi], with the C99 signed-zero
+/// and infinity cases (musl `atan2`): `atan2(0.0, -1.0)` is pi and
+/// `atan2(-0.0, -1.0)` is -pi. |y/x| is formed in double-double from
+/// arguments scaled to the same exponent, so the division adds no rounding.
+export fn atan2(y: Double, x: Double) -> Double {
+  if is_nan_d(x) || is_nan_d(y) {
+    return x + y
+  }
+  let hx = hi_word(x)
+  let lx = lo_word(x)
+  let hy = hi_word(y)
+  let ly = lo_word(y)
+  if hx == 0x3ff00000 && lx == 0 {
+    return atan(y)
+  }
+  // m = 2*sign(x) + sign(y)
+  let m = ((hy>>31)&1)|((hx>>30)&2)
+  let ix = hx&0x7fffffff
+  let iy = hy&0x7fffffff
+  let half_pi_signed = if (m&1) != 0 {
+    neg_d(pio2_hi)
+  } else {
+    pio2_hi
+  }
+  if (iy|ly) == 0 {
+    return if m <= 1 {
+      y
+    }
+    else if m == 2 {
+      pi
+    }
+    else {
+      neg_d(pi)
+    }
+  }
+  if (ix|lx) == 0 {
+    return half_pi_signed
+  }
+  if ix == 0x7ff00000 {
+    let v = if iy == 0x7ff00000 {
+      if m <= 1 {
+        pio4
+      } else {
+        3.0 * pio4
+      }
+    }
+    else if m <= 1 {
+      0.0
+    }
+    else {
+      pi
+    }
+    return if (m&1) != 0 {
+      neg_d(v)
+    } else {
+      v
+    }
+  }
+  if ix + (64<<20) < iy || iy == 0x7ff00000 {
+    return half_pi_signed
+  }
+  let ax = abs_d(x)
+  let ay = abs_d(y)
+  if iy + (64<<20) < ix {
+    // |y/x| < 2^-64: atan(q) rounds to q, and pi - q to pi
+    let q = ay / ax
+    return if m == 0 {
+      q
+    }
+    else if m == 1 {
+      neg_d(q)
+    }
+    else if m == 2 {
+      pi
+    }
+    else {
+      neg_d(pi)
+    }
+  }
+  // scale both to the exponent of x, so |x| lands in [1, 2) and the
+  // double-double quotient cannot overflow its split
+  let mut e = (ix>>20) - 0x3ff
+  if (ix>>20) == 0 {
+    e = ((hi_word(ax * two54)>>20)&0x7ff) - 0x3ff - 54
+  }
+  let (qh, ql) = dd_div(scalbn(ay, 0 - e), 0.0, scalbn(ax, 0 - e), 0.0)
+  let (zh, zl) = atan_dd(qh, ql)
+  if m <= 1 {
+    let z = zh + zl
+    return if m == 0 {
+      z
+    } else {
+      neg_d(z)
+    }
+  }
+  // x < 0: pi - atan(|y/x|)
+  let (h, l) = dd_add(pi, pi_lo, 0.0 - zh, 0.0 - zl)
+  let res = h + l
+  if m == 2 {
+    res
+  } else {
+    neg_d(res)
+  }
+}
+
+//# Angle conversion
+
+let rad_to_deg_hi: Double = dbits(0x404ca5dc, 0x1a63c1f8)
+
+let rad_to_deg_lo: Double = dbits(0xbce1e7ab, 0x456405f9)
+
+let deg_to_rad_hi: Double = dbits(0x3f91df46, 0xa2529d39)
+
+let deg_to_rad_lo: Double = dbits(0x3c15c1d8, 0xbecdd291)
+
+/// x * (c_hi + c_lo) with the rounding error of x * c_hi recovered by
+/// Dekker's product, so the one remaining rounding is the final addition.
+fn mul_by_constant(x: Double, c_hi: Double, c_lo: Double) -> Double {
+  let ix = hi_word(x)&0x7fffffff
+  let p = x * c_hi
+  if ix >= 0x7ff00000 || is_zero_d(x) {
+    // +-0 keeps its sign and +-Infinity stays infinite (the tail would turn
+    // it into Infinity - Infinity)
+    p
+  }
+  else if ix < 0x20000000 {
+    // scaled by 2^600 into the range where the split is exact
+    mul_by_constant(x * dbits(0x65700000, 0), c_hi, c_lo) * dbits(0x1a700000, 0)
+  }
+  else if ix >= 0x5ff00000 {
+    mul_by_constant(x * dbits(0x1a700000, 0), c_hi, c_lo) * dbits(0x65700000, 0)
+  }
+  else {
+    let xc = x * 134217729.0
+    let xh = x - xc + xc
+    let xl = x - xh
+    let cc = c_hi * 134217729.0
+    let ch = c_hi - cc + cc
+    let cl = c_hi - ch
+    let err = xh * ch - p + xh * cl + xl * ch + xl * cl
+    p + (err + x * c_lo)
+  }
+}
+
+/// Radians to degrees, x * 180/pi.
+export fn degrees(rad: Double) -> Double {
+  mul_by_constant(rad, rad_to_deg_hi, rad_to_deg_lo)
+}
+
+/// Degrees to radians, x * pi/180.
+export fn radians(deg: Double) -> Double {
+  mul_by_constant(deg, deg_to_rad_hi, deg_to_rad_lo)
 }
