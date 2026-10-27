@@ -788,6 +788,48 @@ fn labeled_name_check_call(fname: String, fname_off: Int, args: Array[Expr], pna
   }
 }
 
+/// Codex on #3657: the names the program's own top-level bindings and imports
+/// claim. A call to one of them runs the program's value, not the builtin of
+/// that spelling (`let println = identity`, then `println(x = 1)`), so the
+/// builtin refusal below stands down for it -- the question
+/// `builtin_resolves_at` answers from the environment, which this walk does
+/// not have. A top-level `fn` is already in the walk's table; this covers a
+/// value binding, a destructuring `let`, an extern and an import. Rebuilt by
+/// `collect_builtin_claimed_names` for each validation run.
+let builtin_claimed_names: Array[String] = []
+
+export fn collect_builtin_claimed_names(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(builtin_claimed_names, 0)
+  builtin_claimed_collect(stmts)
+}
+
+fn builtin_claimed_collect(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => Array::push(builtin_claimed_names, name),
+      SLetMut(name, _, _) => Array::push(builtin_claimed_names, name),
+      SFnDecl(_, name, _, _, _) => Array::push(builtin_claimed_names, name),
+      SExternLet(name, _) => Array::push(builtin_claimed_names, name),
+      SLetPat(pat, _) => labeled_walk_pat_binds(pat, builtin_claimed_names),
+      SImport(_, items) => {
+        let mut k = 0
+        while k < Array::length(items) {
+          let item = Array::get(items, k)
+          Array::push(builtin_claimed_names, match item.alias {
+            Some(a) => a,
+            None => item.name
+          })
+          k = k + 1
+        }
+      },
+      SModule(_, _, ms) => builtin_claimed_collect(ms),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 /// #3651: a builtin has no parameter names, so nothing reorders its labeled
 /// arguments and codegen binds them in written order. `String::concat(b =
 /// "a", a = "b")` reads as "ba" and answered "ab", and a label naming no
@@ -796,7 +838,12 @@ fn labeled_name_check_call(fname: String, fname_off: Int, args: Array[Expr], pna
 /// flag (`a = true` appends ` -a`, #777), so only its command is positional.
 /// One error per call -- the edit (drop the labels) is the same for each.
 fn builtin_label_check_call(fname: String, fname_off: Int, args: Array[Expr], errors: Array[String]) -> Unit {
-  match lookup_builtin(fname) {
+  let builtin = if string_array_contains_exact(builtin_claimed_names, fname) {
+    None
+  } else {
+    lookup_builtin(fname)
+  }
+  match builtin {
     Some(_) => {
       let mut lbl = ""
       let mut found = false
