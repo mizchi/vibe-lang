@@ -63,8 +63,8 @@ answer = 42
 `main` の `+ Exception` は飾りではありません: spawn したタスクは失敗しうる
 ので、`join` はその失敗を `TaskError` として投げ直し、`join` 自身の row は
 `Exception[TaskError]` を持ちます。`main` から外すと、コンパイラが正確な
-修正を示します — `` hint: add 'allows Console +
-Exception[TaskError]' to 'main' `` (上で書いた素の `Exception` がそれを
+修正を示します — `` hint: change 'allows Console' to 'allows Console +
+Exception[TaskError]' on 'main' `` (上で書いた素の `Exception` がそれを
 覆います)。
 
 ## タスクはいつ走るか

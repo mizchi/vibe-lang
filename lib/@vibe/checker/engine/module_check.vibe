@@ -2,7 +2,7 @@ import @vibe/ast {
   TypeExpr, impl_method_owner_head, impl_method_owner_trait_key, trait_ref_name
 }
 import @vibe/compiler/core {
-  BindingOrigin, EnvValueBinding, Expr, Stmt, Type, TypeDef
+  BindingOrigin, EnvValueBinding, Expr, Stmt, Type, TypeDef, loader_physical_located, loader_physical_text, loader_prepended_prefix_bytes
 }
 import @vibe/compiler/syntax {
   Token
@@ -702,13 +702,36 @@ fn engine_locate_each_line(path: String, source: String, msg: String) -> Array[S
   let mut i = 0
   while i < Array::length(parts) {
     let part = Array::get(parts, i)
-    let located = engine_locate_type_error(source, part)
+    let located = engine_locate_physical(source, part)
     match engine_type_diagnostic_display(path, source, located) {
       (disp_path, disp_msg) => Array::push(out, String::concat(String::concat(disp_path, ": "), disp_msg))
     }
     i = i + 1
   }
   out
+}
+
+/// #3656: `msg` located in the file on disk. `source` is the module's
+/// INGESTED text, which for a sibling of a contract that shares imports opens
+/// with the block the loader prepended (#897); a line counted in it was the
+/// author's line plus that block's height. The position is moved past the
+/// block. One that lands inside it came either from an offset there -- a
+/// diagnostic about text the author never wrote, reported without a position
+/// -- or from a search by name that met the inherited import first; the
+/// search is then run again on the file as written.
+fn engine_locate_physical(source: String, msg: String) -> String {
+  let located = engine_locate_type_error(source, msg)
+  if loader_prepended_prefix_bytes(source) == 0 {
+    located
+  } else {
+    let physical = loader_physical_located(source, located)
+    let dropped = String::starts_with(located, "line ") && !String::starts_with(physical, "line ")
+    if dropped && !String::contains(msg, " [@off=") && !String::contains(msg, " [@assign-target") {
+      engine_locate_type_error(loader_physical_text(source), msg)
+    } else {
+      physical
+    }
+  }
 }
 
 /// #2831: a `\n`-joined report split into ONE STRING PER DIAGNOSTIC.

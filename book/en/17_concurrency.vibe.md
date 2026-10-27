@@ -64,9 +64,9 @@ parses to exactly `TaskGroup::run((n) -> { .. })`.
 The `+ Exception` on `main` is not decoration: a spawned task can fail,
 and `join` rethrows that failure as a `TaskError`, so `join`'s own row
 carries `Exception[TaskError]`. Leave it off `main` and the compiler
-tells you the exact edit — `` hint: add 'allows Console +
-Exception[TaskError]' to 'main' `` (the plain `Exception` written above
-covers it).
+tells you the exact edit — `` hint: change 'allows Console' to 'allows
+Console + Exception[TaskError]' on 'main' `` (the plain `Exception` written
+above covers it).
 
 ## When a task runs
 

@@ -1,0 +1,82 @@
+// #3652: a `let` that binds a VIEW of a `Double` -- an element read
+// (`Array::get` on an `Array[Double]`) or a field projection -- without an
+// annotation, then hands the binding to a function that consumes its
+// argument. The RC lane took such a binding as an owned box with nothing
+// retained, so the callee released the element its container still held and
+// the container's drop released it again: the allocator's free list was
+// corrupted and `__rt_rc_alloc` trapped after ~20000 iterations. Annotating
+// the binding (`let y0: Double = ...`) was the only workaround.
+
+struct DPair {
+  r: Double;
+  s: Double
+}
+
+fn k1(a: Double, b: Double) -> Double {
+  a + b
+}
+
+fn via_get(x: Double) -> Double {
+  let y = [x * 2.0, x * 0.5]
+  let y0 = Array::get(y, 0)
+  let y1 = Array::get(y, 1)
+  k1(y0, y1)
+}
+
+fn via_tuple_field(x: Double) -> Double {
+  let t = (x * 2.0, x * 0.5)
+  let a = t.0
+  let b = t.1
+  k1(a, b)
+}
+
+fn via_struct_field(x: Double) -> Double {
+  let s = DPair::{ r: x * 2.0, s: x * 0.5 }
+  let a = s.r
+  let b = s.s
+  k1(a, b)
+}
+
+fn via_get_mut(x: Double) -> Double {
+  let y = [x * 2.0, x * 0.5]
+  let mut y0 = Array::get(y, 0)
+  let y1 = Array::get(y, 1)
+  k1(y0, y1)
+}
+
+fn run(f: (Double) -> Double) -> Double {
+  let mut i = 0
+  let mut acc = 0.0
+  while i < 20000 {
+    acc = acc + f(Int::to_double(i))
+    i = i + 1
+  }
+  acc
+}
+
+test "#3652: an unannotated Array::get of a Double, passed to a consuming call" {
+  inspect(run(via_get), "499975000")
+}
+
+test "#3652: an unannotated tuple field of a Double, passed to a consuming call" {
+  inspect(run(via_tuple_field), "499975000")
+}
+
+test "#3652: an unannotated struct field of a Double, passed to a consuming call" {
+  inspect(run(via_struct_field), "499975000")
+}
+
+test "#3652: the let mut control" {
+  inspect(run(via_get_mut), "499975000")
+}
+
+test "#3652: the element still belongs to its array after the call" {
+  let ys = [1.5, 2.5]
+  let a = Array::get(ys, 0)
+  let sum = k1(a, a)
+  let fresh = [9.5, 8.5, 7.5]
+  inspect(sum, "3")
+  inspect(Array::get(fresh, 0), "9.5")
+  inspect(Array::get(ys, 0), "1.5")
+  inspect(a, "1.5")
+}

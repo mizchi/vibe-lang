@@ -52,6 +52,10 @@
 // need fix, so the incremental-lane case here uses a SAME-arity shadow
 // (avoiding the false arity error) and the fixture test covers the
 // stronger by-VALUE proof for this lane instead.
+// Since #3549 the loader drops an inherited item the sibling declares at its
+// top level (a hand-written import beside a declaration is refused), so the
+// frozen cache never holds the import's type: the different-arity shadow
+// compiles on this lane too, pinned below.
 
 import @vibe/compiler/entry/source_compile/wasi_only {
   compile_file_wasi_only
@@ -192,6 +196,48 @@ test "vpkg directory-shared import: sibling's own local shadows the inherited im
   write_file(impl_path, "fn seed(a: Int) -> Int { a + 1000 }\n\nexport fn use_local_seed(a: Int) -> Int {\n  seed(a)\n}\n\nexport fn entry_shadow() -> Int {\n  use_local_seed(5)\n}\n")
   let bytes = compile_file_fs_mode_rc(contract_path, "entry_shadow")
   assert_wasm_magic(bytes)
+}
+
+/// #3549: the loader drops an inherited import item the sibling declares at
+/// its top level, so the checker never sees the import beside the
+/// declaration. That also lifts the seeded-env arity limitation the file
+/// header describes: a shadow of a DIFFERENT arity now compiles on this lane.
+test "vpkg directory-shared import: a different-arity local shadows the inherited import, incremental lane (#3549)" {
+  let base_dir = "/tmp/vibe_compiler_vpkg_shared_scope_shadow_arity_3549/pkg"
+  Fs::mkdir_p(base_dir)
+  let contract_path = String::concat(base_dir, "/index.vpkg")
+  write_file(contract_path, "import @vibe/random { seed }\n\nfn use_local_seed(a: Int, b: Int) -> Int\nfn entry_shadow() -> Int\n")
+  write_file(String::concat(base_dir, "/shadow_impl.vibe"), "fn seed(a: Int, b: Int) -> Int { a - b }\n\nexport fn use_local_seed(a: Int, b: Int) -> Int {\n  seed(a, b)\n}\n\nexport fn entry_shadow() -> Int {\n  use_local_seed(10, 3)\n}\n")
+  let bytes = compile_file_fs_mode_rc(contract_path, "entry_shadow")
+  assert_wasm_magic(bytes)
+}
+
+/// #3549: only a TOP-LEVEL declaration drops the inherited item. A block-local
+/// `let seed`, and `fn seed` spelled inside a string or a comment, leave it in
+/// place, so the other uses still reach `@vibe/random`'s `seed`.
+test "vpkg directory-shared import: a block-local or quoted `seed` keeps the inherited import, incremental lane (#3549)" {
+  let base_dir = "/tmp/vibe_compiler_vpkg_shared_scope_keep_3549/pkg"
+  Fs::mkdir_p(base_dir)
+  let contract_path = String::concat(base_dir, "/index.vpkg")
+  write_file(contract_path, "import @vibe/random { seed }\n\nfn use_seed(x: Int) -> Int\nfn entry_keep() -> Int\n")
+  write_file(String::concat(base_dir, "/impl.vibe"), "// fn seed(x: Int) -> Int is not declared here\nfn helper() -> Int {\n  let seed = 3\n  seed\n}\n\nfn label() -> String {\n  \"fn seed\"\n}\n\nexport fn use_seed(x: Int) -> Int {\n  seed(x) + helper() + String::length(label())\n}\n\nexport fn entry_keep() -> Int {\n  use_seed(0)\n}\n")
+  let bytes = compile_file_fs_mode_rc(contract_path, "entry_keep")
+  assert_wasm_magic(bytes)
+}
+
+/// #3549: an import the sibling WRITES itself is not inherited, so declaring
+/// the same name beside it is the clash the checker refuses, with the edit.
+test "vpkg directory-shared import: a sibling's own written import beside a declaration is refused, incremental lane (#3549)" {
+  let base_dir = "/tmp/vibe_compiler_vpkg_shared_scope_written_3549/pkg"
+  Fs::mkdir_p(base_dir)
+  let contract_path = String::concat(base_dir, "/index.vpkg")
+  write_file(contract_path, "import @vibe/random { seed }\n\nfn use_local_seed(a: Int) -> Int\nfn entry_written() -> Int\n")
+  write_file(String::concat(base_dir, "/impl.vibe"), "import @vibe/random { seed }\n\nfn seed(a: Int) -> Int { a + 1000 }\n\nexport fn use_local_seed(a: Int) -> Int {\n  seed(a)\n}\n\nexport fn entry_written() -> Int {\n  use_local_seed(5)\n}\n")
+  let message = handle {
+    let _ = compile_file_fs_mode_rc(contract_path, "entry_written")
+    ""
+  } with { Exception::Throw(e) => e }
+  assert(String::contains(message, "rename `seed` here, or drop it from `import @vibe/random { .. }`"))
 }
 
 /// #897 negative case: `outside.vibe` sits ONE DIRECTORY ABOVE the `.vpkg`

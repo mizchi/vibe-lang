@@ -509,21 +509,43 @@ test "completed root recheck replaces stale module diagnostics" {
 }
 
 test "suberror refresh locates its marker across same-name types" {
+  // A suberror `X` and a struct `X` share the `X::equals` marker, so the
+  // refresh has to skip the struct's (later) marker to find its own. Getting
+  // that wrong overwrote the struct's constructor only when a variant was also
+  // spelled `X`, and since #3549 a struct spelled like a variant in scope is
+  // refused (a bare `X(..)` built whichever was declared later). That shape
+  // is pinned as the refusal; the marker walk is pinned on the legal shape.
+  let clash = handle {
+    let _ = check_program_typed_occurrence_statement_observation([
+      SSuberror(false, "X", [("X", [TyName("Pair")])]),
+      SStruct(false, "X", [("value", TyName("String"))], array_empty(), array_empty(), array_empty()),
+      SLet(false, false, "probe", None, EInt(0))
+    ])
+    ""
+  } with { Exception::Throw(e) => e }
+  inspect(clash, "rename the struct `X` (or rename the variant): it builds by name like the variant `X` of `X`, so a bare `X(..)` names both and silently builds only one of them [@fn=X]")
   match check_program_typed_occurrence_statement_observation([
-    SSuberror(false, "X", [("X", [TyName("Pair")])]),
+    SSuberror(false, "X", [("Y", [TyName("Pair")])]),
     SStruct(false, "X", [("value", TyName("String"))], array_empty(), array_empty(), array_empty()),
     SModule(false, "Nested", [
       STypeAlias(false, "Pair", array_empty(), TyName("Int"))
     ]),
     SLet(false, false, "probe", None, EInt(0))
   ]) {
-    Some(observation) => match env_lookup(observation.checked_program.final_env, "X") {
-      Some(CtFn(params, CtStruct("X"), _)) => if Array::length(params) == 1 {
-        assert(Array::get(params, 0) == CtString)
-      } else {
-        assert(false)
-      },
-      _ => assert(false)
+    Some(observation) => {
+      let env = observation.checked_program.final_env
+      match env_lookup(env, "X") {
+        Some(CtFn(params, CtStruct("X"), _)) => if Array::length(params) == 1 {
+          assert(Array::get(params, 0) == CtString)
+        } else {
+          assert(false)
+        },
+        _ => assert(false)
+      }
+      match env_lookup(env, "Y") {
+        Some(CtFn(params, CtEnum("X"), _)) => assert(Array::length(params) == 1),
+        _ => assert(false)
+      }
     },
     None => assert(false)
   }
@@ -1071,7 +1093,29 @@ test "typedb walk: a non-colliding local was never affected (#2915 control)" {
 test "projected checker root local hoist shadows imports while generic replay stays legacy" {
   let dep_path = "workspace/dep.vibe"
   let dep_env = checked_test_env("export let value = 1\nexport let source = \"text\"")
-  let source = "import ./dep.vibe { value, source as alias }\nlet value: String = \"local\""
+  // A root declaration that reuses an imported value's name is refused since
+  // #3549 -- every use took the declaration and the import was dead -- so the
+  // hoist that let it win is reachable only in a program that is reported.
+  // Both checker APIs report it, naming the edit.
+  let clash = "import ./dep.vibe { value, source as alias }\nlet value: String = \"local\""
+  let clash_env = projected_import_env_for_test(clash, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let projected_clash = handle {
+    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", clash), clash_env)
+    ""
+  } with { Exception::Throw(e) => e }
+  assert(String::contains(projected_clash, "rename `value` here, or drop it from `import ./dep.vibe { .. }`"))
+  let legacy_clash = handle {
+    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", clash), clash_env)
+    ""
+  } with { Exception::Throw(e) => e }
+  assert(String::contains(legacy_clash, "rename `value` here, or drop it from `import ./dep.vibe { .. }`"))
+  // The edit the message names: with the import aliased away the root
+  // `value` is the program's own -- its declared type, and no import origin
+  // left behind by the projected env -- while the generic checker API still
+  // retains its historical replay of the alias.
+  let source = "import ./dep.vibe { value as dep_value, source as alias }\nlet value: String = \"local\""
   let stmts = parse_program_with_path("workspace/main.vibe", source)
   let import_env = projected_import_env_for_test(source, "workspace/main.vibe", [
     dep_path

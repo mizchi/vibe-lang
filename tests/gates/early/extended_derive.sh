@@ -150,7 +150,9 @@ echo "[compiler-gate] extended derive (enum Ord/Show, Default, Eq, Hash + Map ke
 # cannot read (a pushed NAME, or pushes that all happen inside a function the
 # array is merely passed to) AND that the typed-`==` channel (#2391, after
 # #2447) does not admit -- a declared element whose field allow-list fails
-# (a closure field, an opaque nominal field). Once BOTH sides are non-empty
+# (an opaque nominal field; a closure field is the checker's to refuse since
+# #3549, fixtures/typecheck/eq_function_untyped_empty_array_reject.vibe).
+# Once BOTH sides are non-empty
 # that must fail closed at runtime rather than silently falling back to
 # reference or length equality.
 echo "[compiler-gate] structural equality untyped-empty mutation fail-closed (#1681/#2157)"
@@ -440,8 +442,10 @@ ur_refused fixtures/err_impl_overlap_plain_after_impl_refused.vibe 'both define 
 # #3551: no unit is exempt by a marker comment. A module opening with the
 # facade's comment, and a real sibling the loader prefixes with the
 # shared-import marker (#897), were skipped and built `from-a from-a` / `from-pkg-a from-pkg-a`.
+# #3656: the sibling is located on its line on disk, past the loader's block;
+# the module that merely opens with the comment is still named without one.
 ur_refused fixtures/err_impl_overlap_marker_comment_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_marker_comment.vibe: remove'
-ur_refused fixtures/err_impl_overlap_vpkg_sibling_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_pkg_b/impl.vibe: remove'
+ur_refused fixtures/err_impl_overlap_vpkg_sibling_refused.vibe 'both define `Int::name`' 'remove one of these: `impl Name for Int`' linear 'fixtures/modules/impl_overlap_pkg_b/impl.vibe: line 7:1: remove'
 # #3551: a binding in another trait's namespace inside an impl's run no longer
 # ends it; both modules' inherited `Int::get` built `from-a from-a`.
 ur_refused fixtures/err_impl_overlap_inherited_after_trait_binding_refused.vibe 'both define `Int::get`' 'remove one of these: `impl Child for Int`' linear 'fixtures/modules/impl_overlap_inherited_b.vibe: line 7:1'
@@ -2267,8 +2271,9 @@ if ! grep -qF "hint: declare 'fn mid(...) -> T with Fs'" "$pfdir/bad_transitive.
   echo "[compiler-gate] FAIL: no-row reject lacks the declare-form fix-it hint (#639)" >&2
   cat "$pfdir/bad_transitive.wasm.diag" >&2 2>/dev/null; exit 1
 fi
-# #639: a caller that already declares a row gets the add-form hint carrying
-# the sorted union (existing row preserved, missing effect appended).
+# #639: a caller that already declares a row gets a hint carrying the sorted
+# union (existing row preserved, missing effect appended). #3549: it names the
+# clause to change, since an "add 'with ..'" asked for a second clause.
 cat > "$pfdir/bad_row_single.vibe" <<'EOF'
 let leaf: (String) -> String with Fs = (p) -> {
   Fs::read_file(p)
@@ -2294,7 +2299,7 @@ if ! grep -qF "effect row mismatch for 'mid': missing { Fs } (declared { Excepti
   echo "[compiler-gate] FAIL: partial-row reject lacks the declared-vs-required diff (#639)" >&2
   cat "$pfdir/bad_row_single.wasm.diag" >&2 2>/dev/null; exit 1
 fi
-if ! grep -qF "hint: add 'with Exception + Fs' to 'mid'" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
+if ! grep -qF "hint: change 'with Exception' to 'with Exception + Fs' on 'mid'" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: partial-row reject lacks the add-form fix-it hint (#639)" >&2
   cat "$pfdir/bad_row_single.wasm.diag" >&2 2>/dev/null; exit 1
 fi

@@ -461,9 +461,32 @@ let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
 let sum = f(x=10, y=20)   // => 30
 ```
 
-Labeled arguments are evaluated in **parameter order**, not in the order they
-are written: `f(y=g(), x=h())` calls `h()` before `g()`. Bind an argument
-first when its side effects must happen in a particular order.
+Labeled arguments are evaluated in the order they are **written**, then bound
+by name: `f(y = g(), x = h())` calls `g()` before `h()`, whatever order `f`
+declares `x` and `y` in (#3549, as in Swift, Kotlin and C#). An argument that
+can do or observe something (a call, an operator, an interpolation, a name) is
+bound to a temporary in written order when the call reorders it past another
+one; literals, lambdas and constructors are passed in place. Omitted optional
+arguments and defaults are filled after every written argument, a default in
+the callee.
+
+```vibe
+fn note(log: Array[String], s: String, v: Int) -> Int {
+  Array::push(log, s)
+  v
+}
+
+fn sub(x: Int, y: Int) -> Int {
+  x - y
+}
+
+test "labeled arguments run in written order" {
+  let log: Array[String] = []
+  let r = sub(y = note(log, "y", 1), x = note(log, "x", 10))
+  assert_eq(String::join(log, ","), "y,x")
+  assert_eq(r, 9)
+}
+```
 
 ### Optional arguments: `x: T = default` (#3120) and `x?: T` (#1500)
 
@@ -791,11 +814,39 @@ to reference equality or to a length-only answer, and they do not leave a
 trap for run time. `vibe check` does not run this pass. On the lane those
 three commands use, a pushed name whose element is on the allow-list above
 already answers by content (#2391). The build error is an element the
-allow-list rejects (a closure field, an opaque nominal field). A lane
+allow-list rejects (an opaque nominal field; a closure field is refused
+earlier, by the checker, see "Functions have no `==`" below). A lane
 without the checker's rows (the flat single-source lane) still fails for
 the syntactic residual. Annotate those bindings
 (`let xs: Array[Int] = []`). While either side is still empty the lengths
 decide the answer, annotation or not.
+
+#### Functions have no `==` (#3549)
+
+A function has no content to compare, so `==` / `!=` on a value whose
+comparison would reach one is a checker error: bare, an `Array` element, the
+`Some` payload, a tuple element, a record or struct field, or an enum payload,
+through a generic type's arguments too. Measured before the check, `f == f`
+answered `true`, two closures with the same body `false`, and `[f] == [g]`
+and a struct with a function field followed the same identity.
+`derive (Eq)` over such a field is refused at the declaration for the same
+reason (its witness is what a `[T: Eq]` bound would call), and so is an
+`Eq` bound at a generic derived type's function instantiation
+(`eq2(b1, b2)` with `b1: Box[(Int) -> Int]`). The message asks
+for the edit: compare a value the functions compute, or give the closure an
+id field and compare that (a struct that writes its own `equals` is compared
+by it, so `fn Handler::equals(a, b) { a.id == b.id }` is fine). A comparison
+with a payload-less constructor (`x == None`, `step != Step::Stop`) decides by
+the variant alone and is accepted.
+
+```vibe skip
+// rejected: compare a value the functions compute (call them and compare
+// the results), or give the closure an id field and compare that: functions
+// have no equality, and `==` here compares `(Int) -> Int`, ...
+fn same_fn(f: (Int) -> Int, g: (Int) -> Int) -> Bool {
+  f == g
+}
+```
 
 ## Pipe Operator
 
@@ -1030,7 +1081,7 @@ x                   // binding
 Some(x)             // constructor
 (a, b, c)           // tuple
 record { x, y }     // record
-Point::{ x, y }     // struct
+Point::{ x, y }     // struct: each field binds its own name
 A | B               // or-pattern
 x if x > 0          // guard (match arm only)
 ```
@@ -1521,8 +1572,9 @@ Mut[..]` is refused (the diagnostic starts ``remove `Mut` from the row``),
 and so is declaring `effect Mut` or `effectset Mut`.
 Missing effects are reported as a set difference (`effect row mismatch for 'f':
 missing { Fs } (declared { Exception }, requires { Exception, Fs })`) with a `hint:`
-line suggesting the exact row to declare (`hint: add 'with Exception + Fs' to
-'f'`, #639). The braces in that message render effect SETS, not source
+line suggesting the exact row to declare (`hint: change 'with Exception' to
+'with Exception + Fs' on 'f'`, #639; a function with no `with` clause gets
+`hint: declare 'fn f(...) -> T with Fs'`). The braces in that message render effect SETS, not source
 syntax — which is why they survived #1429 while the `hint:` line, being
 something you paste into your code, moved to the braceless spelling with
 everything else.
@@ -2422,6 +2474,31 @@ count, and the entry file's own types are its own.
 When a facade re-exports two bindings under one name, the later re-export is
 the one an importer sees, both in the checker and at run time.
 
+### A name cannot be both imported and declared (#3549)
+
+A file that imports a value and also declares a top-level `fn` or `let` of the
+same local name is refused, at the declaration:
+``rename `unwrap_or` here, or drop it from `import @vibe/builtin { .. }` ``.
+Every use would take the declaration, so the import was dead and nothing said
+so. The name that counts is the one the import binds: `import ./m.vibe
+{ helper as h }` leaves `helper` free and makes `h` taken. A block-local
+`let`, a parameter or a pattern may still shadow an import inside a body, and
+type imports (`struct Point`, `enum Color`, an uppercase bare item) are not
+part of the rule. The rule covers the imports a file writes. An import a
+package sibling inherits from its directory's `index.vpkg` (#897) is not
+one of them: the sibling's own top-level declaration of that name shadows it,
+and the inherited item is dropped from that sibling's scope.
+
+### A struct cannot be named like a variant in scope (#3549)
+
+A struct builds by its name as well as by `S::{ .. }` (`struct B { v: Int }`
+makes `B(3)` a `B`), so a struct named like a variant of an enum it can see
+(`enum E { B(Int); C }`, local or imported, or a `suberror` variant) made a
+bare `B(3)` name two constructors, and the one declared later in the file won
+silently. The
+struct is refused with ``rename the struct `B` (or rename the variant)``;
+`E::B(..)` alone does not help, because the bare spelling stays ambiguous.
+
 ### Qualified names
 
 どの記号が識別子の一部になるかは文脈で決まる。
@@ -2560,7 +2637,7 @@ via `memory.copy`, so `push` is amortised O(1)):
 | `Bytes::push(b, v)` | append one byte (amortised O(1)) | linear / gc |
 | `Bytes::append(dst, src)` | **bulk concatenation. One `memory.copy`** | linear / gc |
 | `Bytes::concat(a, b)` | concatenation returning a new buffer | linear / gc |
-| `Bytes::slice(b, start, end)` | fresh copy of `[start, end)`; bounds are not clamped (see below) | linear / gc |
+| `Bytes::slice(b, start, end)` | a **copy** of `[start, end)`, clamped exactly like `Array::slice`: `start` into `[0, length]`, then `end` into `[start, length]`, so an out-of-range bound truncates (`slice(b, -2, 3)` is `b[0..3]`) and an inverted range is empty | linear / gc |
 | `Bytes::index_of(hay, byte)` | first index holding `byte`, or `-1`. 16-byte SIMD scan | linear / gc |
 | `Bytes::last_index_of(hay, byte)` | last index holding `byte`, or `-1`. Same scan, downwards | linear / gc |
 | `Bytes::count(hay, byte)` | how many times `byte` occurs | linear / gc |
@@ -2570,23 +2647,20 @@ via `memory.copy`, so `push` is amortised O(1)):
 | `Bytes::fill(b, value, count)` | **appends** `count` copies of `value` (a `push` loop) | linear / gc |
 | `Bytes::from_array(a)` / `to_array(b)` | conversion to/from `Array[Int]` (**copies**) | linear / gc |
 
-`Bytes::slice(b, start, end)` makes a fresh buffer and **does not clamp bounds**.
-Its empty-range check compares the bounds in unsigned order. If that check
-finds `start >= end`, the result is empty; otherwise each selected index is
-bounds-checked, and an out-of-range read traps. For a three-byte buffer:
+`Bytes::slice(b, start, end)` makes a fresh buffer and clamps its bounds the
+same way `Array::slice` does (#3549): `start` into `[0, length]`, then `end`
+into `[start, length]`. Nothing traps. For a three-byte buffer:
 
 | start | end | result |
 |---|---|---|
 | `1` | `3` | the last two bytes |
 | `2` | `1` | empty |
 | `5` | `5` | empty |
-| `-1` | `2` | empty (negative start sorts after nonnegative end) |
-| `0` | `-1` | traps when the copy reaches index `3` |
-| `0` | `4` | traps when the copy reaches index `3` |
+| `-1` | `2` | the first two bytes |
+| `0` | `-1` | empty |
+| `0` | `4` | all three bytes |
 
-Use bounds satisfying `0 <= start`, `start <= end`, and `end <= Bytes::length(b)`
-for an in-bounds slice. The return/trap behavior is the same on linear and GC;
-diagnostic text can differ.
+The answers are the same on linear and GC.
 
 > **`Bytes` has no renderer**, so `"\{b}"` is refused at check time (#2987) rather
 > than printing an address. Convert first: `let a: Array[Int] = Bytes::to_array(b)`
@@ -2754,8 +2828,8 @@ prelude wrappers: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`.
 raw byte, not a code point (ADR-0098); UTF-8-encoding a code point is a
 different, currently nonexistent function.
 
-**String and Array slicing clamps; indexing traps** (#2997). `String::substring(s, start, end)`,
-`s[start:end]` and `Array::slice(xs, start, end)` clamp both bounds into
+**String, Array and Bytes slicing clamps; indexing traps** (#2997). `String::substring(s, start, end)`,
+`s[start:end]`, `Array::slice(xs, start, end)` and `Bytes::slice(b, start, end)` clamp both bounds into
 `0..length`, and an `end` before `start` gives the empty slice -- nothing traps:
 `"abcdef"[2:10]` is `"cdef"`, `Array::slice([3, 1, 2], -1, 2)` is `[3, 1]`,
 `Array::slice([3, 1, 2], 2, 1)` is `[]`. A single-element read is the opposite:
@@ -2841,10 +2915,13 @@ from `@vibe/core`.
 
 
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,
-`Int::is_even`, `Int::is_odd`, `Double::abs`, `Double::max`, `Double::min`,
-`Double::floor`, `Double::ceil` -- library functions in `@vibe/builtin`, so
-import the ones you call (`import @vibe/builtin { Int::abs, Double::floor }`);
-without the import the call is `unknown name`.
+`Int::is_even`, `Int::is_odd`, `Int::pow`, `Int::gcd`, `Double::round`,
+`Double::trunc`, `Double::clamp` -- library functions in `@vibe/builtin`, so
+import the ones you call (`import @vibe/builtin { Int::abs, Double::round }`).
+Without the import the call is `unknown name: Int::abs`, and the message names
+that import. `Double::abs`, `Double::max`, `Double::min`, `Double::floor` and
+`Double::ceil` are compiler builtins: they need no import, and importing them
+is accepted too.
 
 **Checked arithmetic** (#3127): `Int::checked_add`, `Int::checked_sub`,
 `Int::checked_mul`, `Int::checked_div`, `Int::checked_neg`, imported from
@@ -3684,6 +3761,49 @@ fn run(g: () -> Box with Exception[Int]) -> Box {
   handle { g() } with { Exception[Int]::Throw(c) => Box::{ f: () -> c } }
 }
 ```
+
+### A struct pattern binds each field by its own name
+
+`Pt::{ x, y }` binds `x` and `y`. A field cannot be renamed or matched in
+place: `let Pt::{ x: px } = p` is a parse error that names the edit. Bind the
+field by its name, or read it with `.` when two values of one struct are in
+scope:
+
+```vibe
+struct Pt { x: Int; y: Int }
+
+fn sum_xy(p: Pt) -> Int {
+  let Pt::{ x, y } = p
+  x + y
+}
+
+fn dx(a: Pt, b: Pt) -> Int {
+  let ax = a.x
+  let bx = b.x
+  ax - bx
+}
+```
+
+An anonymous record is the exception: `let record { name: n } = r` binds `n`.
+
+### `match` arms are tried in order, and a dead arm is a warning
+
+The first arm whose pattern matches wins. An arm that an earlier arm already
+covers never runs, and `vibe check` reports it as a warning located at its
+pattern (#3549): a repeated literal (`1 => 10, 1 => 20`), any arm after `_`
+or a plain name, and an arm under an irrefutable tuple such as `(k, _)`.
+
+```vibe skip
+// doctest-skip: shows the warning, which a doctest block does not assert
+match n {
+  _ => "other",
+  2 => "two"     // warning: remove this unreachable `match` arm: the earlier arm `_` already matches every value this arm matches, and arms are tried in order
+}
+```
+
+The check reads patterns only. An arm whose guard may fail
+(`1 if c => ..`) covers nothing, and an arm made dead by exhaustiveness
+(`true`, `false`, then `_`) is not reported.
 
 ### 補間できるのは Show を持つ型だけ (#1445)
 

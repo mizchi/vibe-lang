@@ -1,0 +1,29 @@
+// #3549: labeled arguments that suspend are still evaluated in written order
+// (fixtures/labeled_arg_written_order_test.vibe holds the synchronous cases;
+// this file is apart because the wasm-gc backend has no `await` yet).
+
+fn sub(x: Int, y: Int) -> Int {
+  x - y
+}
+
+fn joined(log: Array[String]) -> String {
+  String::join(log, ",")
+}
+
+fn awaited(log: Array[String], s: String, v: Int) -> Int with Async {
+  Array::push(log, s)
+  await(Future::ready(v))
+}
+
+fn async_sub(log: Array[String]) -> Int with Async {
+  sub(y = awaited(log, "y", 1), x = awaited(log, "x", 10))
+}
+
+test "suspending arguments keep written order" {
+  let log: Array[String] = []
+  let r = handle {
+    async_sub(log)
+  } with { Async::Suspend(_) => resume(0) }
+  inspect(joined(log), content = "y,x")
+  inspect(r, content = "9")
+}

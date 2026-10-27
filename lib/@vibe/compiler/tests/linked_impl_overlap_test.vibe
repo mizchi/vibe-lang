@@ -5,7 +5,7 @@ import @vibe/compiler/contract {
 }
 
 import @vibe/compiler/core {
-  Stmt, linked_impl_overlap_error, linked_unit
+  Stmt, linked_impl_overlap_error, linked_unit, loader_shared_imports_end_marker
 }
 
 import @vibe/compiler/loader {
@@ -179,6 +179,18 @@ test "a module opening with a loader marker line is still checked" {
       ("tb.vibe", impl_b)
     ]), content = refusal)
   }
+}
+
+/// #3656: a sibling the loader DID prepend a complete shared-import block to
+/// is the file as written past that block, so it is named with its line on
+/// disk rather than without one.
+test "a sibling with a prepended shared-import block is located on disk" {
+  let ingested = String::concat(vpkg_shared_import_marker, String::concat("import @vibe/random { seed }\n", String::concat(loader_shared_imports_end_marker, impl_b)))
+  inspect(link_verdict([
+    ("tr.vibe", trait_src),
+    ("ta.vibe", impl_a),
+    ("pkg/tb.vibe", ingested)
+  ]), content = "pkg/tb.vibe: line 3:1: remove one of these: `impl Name for Int` here and `impl Name for Int` in ta.vibe: line 1:1 both define `Int::name` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one")
 }
 
 /// A contract's types module is the one site of the type family it defines

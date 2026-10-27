@@ -1,0 +1,297 @@
+// #3549: @vibe/core's Double math answers the correctly rounded double.
+//
+// Every expectation below is the IEEE double nearest the exact value,
+// computed independently at 2200 bits (mpmath) -- not a recording of what
+// the implementation printed. A Double renders as its shortest round-trip
+// digits, so each `content` pins the result bit for bit. Before #3549
+// `sqrt(2.0)` printed 1.414213562373095, `sqrt(10.0)` 3.162277660168379,
+// `pow_double(2.0, 0.5)` 1.4142135623730954 and `log10(7.0)`
+// 0.8450980400142566; `sin(pi)` was off by 1e17 ulp and
+// `pow_double(-2.0, 3.0)` came back 0.
+//
+// The same answers on the wasm-gc lane are asserted by the 40h8 suite in
+// tests/gates/mid/6b_40_wasm_gc_region_arena_reclamation.sh.
+
+import @vibe/core {
+  acos, asin, atan, atan2, cos, degrees, exp_double, hypot, ln, log10, log2_double, pi, pow_double, radians, sin, sqrt, tan
+}
+
+/// A double from its IEEE-754 words, for arguments a literal cannot spell
+/// (scientific notation is not accepted, and a subnormal has no short form).
+fn bits(hi: Int, lo: Int) -> Double {
+  Double::from_i64_bits_lohi(lo, hi)
+}
+
+test "sqrt is correctly rounded" {
+  inspect(sqrt(2.0), content = "1.4142135623730951")
+  inspect(sqrt(3.0), content = "1.7320508075688772")
+  inspect(sqrt(5.0), content = "2.23606797749979")
+  inspect(sqrt(10.0), content = "3.1622776601683795")
+  inspect(sqrt(0.5), content = "0.7071067811865476")
+  inspect(sqrt(0.1), content = "0.31622776601683794")
+  inspect(sqrt(2.25), content = "1.5")
+  inspect(sqrt(1000000.0), content = "1000")
+  inspect(sqrt(0.0001), content = "0.01")
+  inspect(sqrt(123456789.0), content = "11111.111060555555")
+  inspect(sqrt(7.0), content = "2.6457513110645907")
+}
+
+test "ln is correctly rounded" {
+  inspect(ln(2.0), content = "0.6931471805599453")
+  inspect(ln(3.0), content = "1.0986122886681098")
+  inspect(ln(7.0), content = "1.9459101490553132")
+  inspect(ln(10.0), content = "2.302585092994046")
+  inspect(ln(0.5), content = "-0.6931471805599453")
+  inspect(ln(0.1), content = "-2.3025850929940455")
+  inspect(ln(1.5), content = "0.4054651081081644")
+  inspect(ln(100.0), content = "4.605170185988092")
+  inspect(ln(1.0001), content = "0.00009999500033329732")
+  inspect(ln(12345.678), content = "9.421061321291832")
+}
+
+test "log10 is correctly rounded" {
+  inspect(log10(7.0), content = "0.8450980400142568")
+  inspect(log10(2.0), content = "0.3010299956639812")
+  inspect(log10(3.0), content = "0.47712125471966244")
+  inspect(log10(0.5), content = "-0.3010299956639812")
+  inspect(log10(1000.0), content = "3")
+  inspect(log10(0.001), content = "-3")
+  inspect(log10(42.0), content = "1.6232492903979006")
+  inspect(log10(1.0000001), content = "4.3429446044209946e-8")
+  inspect(log10(20.0), content = "1.3010299956639813")
+}
+
+test "log2_double is correctly rounded" {
+  inspect(log2_double(3.0), content = "1.584962500721156")
+  inspect(log2_double(10.0), content = "3.321928094887362")
+  inspect(log2_double(0.1), content = "-3.321928094887362")
+  inspect(log2_double(1024.0), content = "10")
+  inspect(log2_double(0.75), content = "-0.4150374992788438")
+  inspect(log2_double(1.5), content = "0.5849625007211562")
+}
+
+test "exp_double is correctly rounded" {
+  inspect(exp_double(1.0), content = "2.718281828459045")
+  inspect(exp_double(-1.0), content = "0.36787944117144233")
+  inspect(exp_double(0.5), content = "1.6487212707001282")
+  inspect(exp_double(2.0), content = "7.38905609893065")
+  inspect(exp_double(10.0), content = "22026.465794806718")
+  inspect(exp_double(-10.0), content = "0.000045399929762484854")
+  inspect(exp_double(0.001), content = "1.0010005001667084")
+  inspect(exp_double(100.0), content = "2.6881171418161356e+43")
+  inspect(exp_double(709.0), content = "8.218407461554972e+307")
+  inspect(exp_double(-20.0), content = "2.061153622438558e-9")
+}
+
+test "sin is correctly rounded" {
+  inspect(sin(1.0), content = "0.8414709848078965")
+  inspect(sin(0.5), content = "0.479425538604203")
+  inspect(sin(2.0), content = "0.9092974268256817")
+  inspect(sin(3.0), content = "0.1411200080598672")
+  inspect(sin(10.0), content = "-0.5440211108893698")
+  inspect(sin(100.0), content = "-0.5063656411097588")
+  inspect(sin(1000000.0), content = "-0.34999350217129294")
+  inspect(sin(pi), content = "1.2246467991473532e-16")
+  inspect(sin(0.1), content = "0.09983341664682815")
+  inspect(sin(10000000000.0), content = "-0.4875060250875107")
+}
+
+test "cos is correctly rounded" {
+  inspect(cos(1.0), content = "0.5403023058681398")
+  inspect(cos(0.5), content = "0.8775825618903728")
+  inspect(cos(2.0), content = "-0.4161468365471424")
+  inspect(cos(3.0), content = "-0.9899924966004454")
+  inspect(cos(10.0), content = "-0.8390715290764524")
+  inspect(cos(100.0), content = "0.8623188722876839")
+  inspect(cos(1000000.0), content = "0.9367521275331447")
+  inspect(cos(pi), content = "-1")
+  inspect(cos(0.1), content = "0.9950041652780258")
+  inspect(cos(10000000000.0), content = "0.873119622676856")
+}
+
+test "tan is correctly rounded" {
+  inspect(tan(1.0), content = "1.5574077246549023")
+  inspect(tan(0.5), content = "0.5463024898437905")
+  inspect(tan(2.0), content = "-2.185039863261519")
+  inspect(tan(3.0), content = "-0.1425465430742778")
+  inspect(tan(10.0), content = "0.6483608274590866")
+  inspect(tan(100.0), content = "-0.5872139151569291")
+  inspect(tan(1000000.0), content = "-0.373624453987599")
+  inspect(tan(0.1), content = "0.10033467208545055")
+  inspect(tan(10000000000.0), content = "-0.5583496378112418")
+}
+
+test "atan is correctly rounded" {
+  inspect(atan(1.0), content = "0.7853981633974483")
+  inspect(atan(0.5), content = "0.4636476090008061")
+  inspect(atan(2.0), content = "1.1071487177940904")
+  inspect(atan(10.0), content = "1.4711276743037347")
+  inspect(atan(0.1), content = "0.09966865249116204")
+  inspect(atan(-3.0), content = "-1.2490457723982544")
+  inspect(atan(0.7), content = "0.6107259643892086")
+}
+
+test "asin is correctly rounded" {
+  inspect(asin(0.5), content = "0.5235987755982989")
+  inspect(asin(0.1), content = "0.1001674211615598")
+  inspect(asin(0.9), content = "1.1197695149986342")
+  inspect(asin(-0.3), content = "-0.3046926540153975")
+  inspect(asin(0.99), content = "1.4292568534704693")
+}
+
+test "acos is correctly rounded" {
+  inspect(acos(0.5), content = "1.0471975511965979")
+  inspect(acos(0.1), content = "1.4706289056333368")
+  inspect(acos(0.9), content = "0.45102681179626236")
+  inspect(acos(-0.3), content = "1.8754889808102941")
+  inspect(acos(0.99), content = "0.1415394733244273")
+  inspect(acos(-0.99), content = "3.000053180265366")
+}
+
+test "degrees is correctly rounded" {
+  inspect(degrees(pi), content = "180")
+  inspect(degrees(1.0), content = "57.29577951308232")
+  inspect(degrees(0.5), content = "28.64788975654116")
+  inspect(degrees(2.0), content = "114.59155902616465")
+}
+
+test "radians is correctly rounded" {
+  inspect(radians(180.0), content = "3.141592653589793")
+  inspect(radians(90.0), content = "1.5707963267948966")
+  inspect(radians(45.0), content = "0.7853981633974483")
+  inspect(radians(1.0), content = "0.017453292519943295")
+  inspect(radians(360.0), content = "6.283185307179586")
+}
+
+test "pow_double is correctly rounded" {
+  inspect(pow_double(2.0, 0.5), content = "1.4142135623730951")
+  inspect(pow_double(2.0, 10.0), content = "1024")
+  inspect(pow_double(10.0, -3.0), content = "0.001")
+  inspect(pow_double(3.0, 1.0 / 3.0), content = "1.4422495703074083")
+  inspect(pow_double(1.5, 2.5), content = "2.7556759606310752")
+  inspect(pow_double(7.0, 0.5), content = "2.6457513110645907")
+  inspect(pow_double(10.0, 0.1), content = "1.2589254117941673")
+  inspect(pow_double(2.0, -0.5), content = "0.7071067811865476")
+  inspect(pow_double(0.5, 0.25), content = "0.8408964152537145")
+  inspect(pow_double(1.0000001, 1000000000.0), content = "2.6881038582144647e+43")
+  inspect(pow_double(5.0, 3.0), content = "125")
+}
+
+test "atan2 is correctly rounded" {
+  inspect(atan2(1.0, 1.0), content = "0.7853981633974483")
+  inspect(atan2(1.0, -1.0), content = "2.356194490192345")
+  inspect(atan2(-1.0, -1.0), content = "-2.356194490192345")
+  inspect(atan2(4.859355607204908, 9.039246310050903), content = "0.493260947930178")
+  inspect(atan2(-4.377992954245126, -1.6188194509059723), content = "-1.9249676963313642")
+  inspect(atan2(2.0, -3.0), content = "2.5535900500422257")
+}
+
+test "hypot is correctly rounded" {
+  inspect(hypot(3.0, 4.0), content = "5")
+  inspect(hypot(1.0, 1.0), content = "1.4142135623730951")
+  inspect(hypot(5.0, 12.0), content = "13")
+  inspect(hypot(0.1, 0.2), content = "0.223606797749979")
+  inspect(hypot(2.36462690093283, -2.6669101824474257), content = "3.564248911321565")
+}
+
+test "pow_double of a negative base takes the sign of an odd power" {
+  inspect(pow_double(0.0 - 2.0, 3.0), content = "-8")
+  inspect(pow_double(0.0 - 8.0, 2.0), content = "64")
+}
+
+test "exact answers stay exact" {
+  inspect(log10(1000.0), content = "3")
+  inspect(log10(0.001), content = "-3")
+  inspect(log2_double(1024.0), content = "10")
+  inspect(log2_double(0.125), content = "-3")
+  inspect(pow_double(2.0, 10.0), content = "1024")
+  inspect(pow_double(10.0, 15.0), content = "1000000000000000")
+  inspect(pow_double(-2.0, 3.0), content = "-8")
+  inspect(pow_double(2.0, -1074.0), content = "5e-324")
+  inspect(pow_double(4.0, 0.5), content = "2")
+  inspect(exp_double(0.0), content = "1")
+}
+
+// Arguments chosen to be hard: exact powers that are ties between two
+// doubles (7^19 needs 54 bits; ties go to even), huge trigonometric arguments
+// that need the full Payne-Hanek reduction (6381956970095103 * 2^797 is the
+// double nearest a multiple of pi/2), subnormal results, and the pairs on
+// which the earlier fdlibm ports measured their largest errors.
+test "hard arguments are correctly rounded" {
+  inspect(pow_double(7.0, 19.0), content = "11398895185373144")
+  inspect(pow_double(9.0, 17.0), content = "16677181699666568")
+  inspect(pow_double(5.0, 23.0), content = "11920928955078124")
+  inspect(pow_double(1.0000001, 1000000000.0), content = "2.6881038582144647e+43")
+  inspect(pow_double(2.5, -300.5), content = "2.6243840767986496e-120")
+  inspect(sin(10000000000.0 * 10000000000.0 * 100.0), content = "-0.8522008497671888")
+  inspect(cos(10000000000.0 * 10000000000.0 * 100.0), content = "0.523214785395139")
+  inspect(tan(10000000000.0 * 10000000000.0 * 100.0), content = "-1.6287782256068988")
+  inspect(sin(bits(0x7e37e43c, 0x8800759c)), content = "-0.8178819121159085")
+  inspect(cos(bits(0x7fefffff, 0xffffffff)), content = "-0.9999876894265599")
+  inspect(sin(pi), content = "1.2246467991473532e-16")
+  inspect(cos(pi / 2.0), content = "6.123233995736766e-17")
+  inspect(tan(pi / 4.0), content = "0.9999999999999999")
+  inspect(sin(bits(0x7506ac5b, 0x262ca1ff)), content = "1")
+  inspect(exp_double(709.0), content = "8.218407461554972e+307")
+  inspect(exp_double(-745.0), content = "5e-324")
+  inspect(exp_double(-720.5), content = "1.2326102893e-313")
+  inspect(ln(bits(0x00000000, 0x00000001)), content = "-744.4400719213812")
+  inspect(ln(1.0000000000001), content = "9.992007221625909e-14")
+  inspect(log10(bits(0x7fefffff, 0xffffffff)), content = "308.25471555991675")
+  inspect(hypot(bits(0x7fe1ccf3, 0x85ebc8a0), bits(0x7fe1ccf3, 0x85ebc8a0)), content = "1.4142135623730951e+308")
+  inspect(hypot(bits(0x00000000, 0x000017b8), bits(0x00000000, 0x00001fa0)), content = "5e-320")
+  inspect(atan2(-126438887.39002037, 57499293733573940.0), content = "-2.1989641816451126e-9")
+  inspect(acos(-0.9999999999481449), content = "3.141582469771669")
+  inspect(asin(0.9999999999211956), content = "1.570783772559958")
+}
+
+// C99 Annex F: NaN in gives NaN out, a domain error gives NaN, a pole gives
+// a signed Infinity, and the signs of zero survive.
+test "special values follow C99" {
+  inspect(sqrt(-1.0), content = "NaN")
+  inspect(sqrt(-0.0), content = "-0")
+  inspect(sqrt(1.0 / 0.0), content = "Infinity")
+  inspect(sqrt(0.0 / 0.0), content = "NaN")
+  inspect(ln(0.0), content = "-Infinity")
+  inspect(ln(-0.0), content = "-Infinity")
+  inspect(ln(-1.0), content = "NaN")
+  inspect(ln(1.0 / 0.0), content = "Infinity")
+  inspect(ln(1.0), content = "0")
+  inspect(log10(-2.0), content = "NaN")
+  inspect(log2_double(0.0), content = "-Infinity")
+  inspect(exp_double(1.0 / 0.0), content = "Infinity")
+  inspect(exp_double(-1.0 / 0.0), content = "0")
+  inspect(exp_double(0.0 / 0.0), content = "NaN")
+  inspect(exp_double(710.0), content = "Infinity")
+  inspect(exp_double(-746.0), content = "0")
+  inspect(exp_double(-0.0), content = "1")
+  inspect(pow_double(0.0 / 0.0, 0.0), content = "1")
+  inspect(pow_double(1.0, 0.0 / 0.0), content = "1")
+  inspect(pow_double(-8.0, 1.0 / 3.0), content = "NaN")
+  inspect(pow_double(0.0, -1.0), content = "Infinity")
+  inspect(pow_double(-0.0, -1.0), content = "-Infinity")
+  inspect(pow_double(-0.0, 3.0), content = "-0")
+  inspect(pow_double(-1.0, 1.0 / 0.0), content = "1")
+  inspect(pow_double(0.5, -1.0 / 0.0), content = "Infinity")
+  inspect(pow_double(2.0, 1024.0), content = "Infinity")
+  inspect(pow_double(-2.0, 1025.0), content = "-Infinity")
+  inspect(pow_double(2.0, -1080.0), content = "0")
+  inspect(sin(-0.0), content = "-0")
+  inspect(sin(1.0 / 0.0), content = "NaN")
+  inspect(cos(0.0 / 0.0), content = "NaN")
+  inspect(tan(-0.0), content = "-0")
+  inspect(atan(-1.0 / 0.0), content = "-1.5707963267948966")
+  inspect(asin(1.5), content = "NaN")
+  inspect(acos(-1.0), content = "3.141592653589793")
+  inspect(acos(1.0), content = "0")
+  inspect(asin(-0.0), content = "-0")
+  inspect(atan2(0.0, -1.0), content = "3.141592653589793")
+  inspect(atan2(-0.0, -1.0), content = "-3.141592653589793")
+  inspect(atan2(-0.0, 1.0), content = "-0")
+  inspect(atan2(1.0 / 0.0, -1.0 / 0.0), content = "2.356194490192345")
+  inspect(atan2(1.0, 0.0), content = "1.5707963267948966")
+  inspect(hypot(1.0 / 0.0, 0.0 / 0.0), content = "Infinity")
+  inspect(hypot(0.0 / 0.0, 1.0), content = "NaN")
+  inspect(degrees(-0.0), content = "-0")
+  inspect(degrees(1.0 / 0.0), content = "Infinity")
+}

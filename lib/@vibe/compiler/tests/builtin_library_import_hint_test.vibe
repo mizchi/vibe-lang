@@ -1,0 +1,89 @@
+//# #3549: `unknown name` for a `@vibe/builtin` export names its import
+//
+// `Int::abs`, `Option::unwrap_or` and the rest are library functions, so a
+// call without the import is `unknown name`. The hint list lives in the
+// checker; this test reads the package contract, so a qualified export added
+// there that the checker cannot see without its import fails here until it
+// has a row.
+
+//# Imports
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+//# Functions
+
+/// The qualified names `lib/@vibe/builtin/index.vpkg` declares (`fn X::y`).
+fn builtin_contract_qualified_names() -> Array[String] with Fs {
+  let out: Array[String] = []
+  for line in String::split(Fs::read_file("lib/@vibe/builtin/index.vpkg"), "\n") {
+    let decl = if String::starts_with(line, "export fn ") {
+      String::substring(line, 10, String::length(line))
+    } else if String::starts_with(line, "fn ") {
+      String::substring(line, 3, String::length(line))
+    } else {
+      ""
+    }
+    let paren = String::index_of(decl, "(")
+    let bracket = String::index_of(decl, "[")
+    let end = if bracket >= 0 && (paren < 0 || bracket < paren) {
+      bracket
+    } else {
+      paren
+    }
+    if end > 0 {
+      let name = String::substring(decl, 0, end)
+      if String::contains(name, "::") && !Array::any(out, (n) -> n == name) {
+        Array::push(out, name)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+//# Tests
+
+test "Int::abs without its import names the import" {
+  inspect(collect_all_diagnostics("fn f() -> Int {\n  Int::abs(0 - 3)\n}\n"), "[line 2:3-11: unknown name: Int::abs -- it is a library function, not a builtin: add `import @vibe/builtin { Int::abs }`]")
+}
+
+test "every qualified export the checker cannot see names its import" {
+  let names = builtin_contract_qualified_names()
+  let mut src = ""
+  let mut i = 0
+  while i < Array::length(names) {
+    src = String::concat(src, "fn probe_\{i}() -> Int {\n  let _ = \{Array::get(names, i)}\n  0\n}\n")
+    i = i + 1
+  }
+  let mut unknown = 0
+  let mut unhinted: Array[String] = []
+  for d in String::split(String::join(collect_all_diagnostics(src), "\n"), "\n") {
+    let at = String::index_of(d, "unknown name: ")
+    if at >= 0 {
+      unknown = unknown + 1
+      let rest = String::substring(d, at + 14, String::length(d))
+      let stop = String::index_of(rest, " ")
+      let name = if stop >= 0 {
+        String::substring(rest, 0, stop)
+      } else {
+        rest
+      }
+      if !String::contains(d, "add `import @vibe/builtin { \{name} }`") {
+        Array::push(unhinted, name)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  }
+  // The scan is not vacuous: the contract declares well over a hundred
+  // qualified names a program reaches only by import.
+  assert(unknown > 100)
+  inspect(String::join(unhinted, " "), "")
+}

@@ -2,14 +2,27 @@ import ./helpers.vibe {
   diagnostics
 }
 
-// The current diagnostic API accepts this match. Also check its observable
-// behavior so retiring the old warning text cannot discard the ordering claim.
+// #3549: an arm an earlier arm already covers never runs, and `vibe check`
+// says so. The observable ordering is checked too, so the warning cannot
+// drift from what the program does.
 test "catch all wins over a later matching arm" {
-  inspect(diagnostics("fn main() -> String {\n  let x = 1\n  match x {\n    1 => \"one\",\n    _ => \"other\",\n    2 => \"two\"\n  }\n}"), "")
+  inspect(diagnostics("fn main() -> String {\n  let x = 1\n  match x {\n    1 => \"one\",\n    _ => \"other\",\n    2 => \"two\"\n  }\n}"), "line 6:5-6: warning: remove this unreachable `match` arm: the earlier arm `_` already matches every value this arm matches, and arms are tried in order")
   let x = 2
   inspect(match x {
     1 => "one",
     _ => "other",
     2 => "two"
   }, "other")
+}
+
+test "a repeated literal arm is unreachable" {
+  inspect(diagnostics("fn f(n: Int) -> Int {\n  match n {\n    1 => 10,\n    1 => 20,\n    _ => 0\n  }\n}"), "line 4:5-6: warning: remove this unreachable `match` arm: the earlier arm `1` already matches every value this arm matches, and arms are tried in order")
+}
+
+test "an arm under an irrefutable tuple or an or-pattern is unreachable" {
+  inspect(diagnostics("enum Sh {\n  Circle(Int);\n  Empty\n}\n\nfn f(n: Int, s: Sh) -> Int {\n  let a = match n {\n    2 | 3 => 1,\n    3 => 9,\n    k => k\n  }\n  let b = match (n, s) {\n    (_, Empty) => 1,\n    (1, Empty) => 2,\n    (k, _) => k,\n    _ => 0\n  }\n  a + b\n}"), "line 9:5-6: warning: remove this unreachable `match` arm: the earlier arm `2 | 3` already matches every value this arm matches, and arms are tried in order\nline 14:5-15: warning: remove this unreachable `match` arm: the earlier arm `(_, Empty)` already matches every value this arm matches, and arms are tried in order\nline 16:5-6: warning: remove this unreachable `match` arm: the earlier arm `(k, _)` already matches every value this arm matches, and arms are tried in order")
+}
+
+test "a guarded arm, a refutable let and an is-test report nothing" {
+  inspect(diagnostics("fn f(n: Int, o: Option[Int]) -> Int {\n  let a = match n {\n    1 if n > 0 => 10,\n    1 => 20,\n    _ => 0\n  }\n  guard o is Some(z) else {\n    return 0\n  }\n  let c = if o is Some(_) {\n    1\n  } else {\n    2\n  }\n  a + z + c\n}"), "")
 }
