@@ -794,13 +794,25 @@ fn labeled_name_check_call(fname: String, fname_off: Int, args: Array[Expr], pna
 /// builtin refusal below stands down for it -- the question
 /// `builtin_resolves_at` answers from the environment, which this walk does
 /// not have. A top-level `fn` is already in the walk's table; this covers a
-/// value binding, a destructuring `let`, an extern and an import. Rebuilt by
+/// value binding, a destructuring `let`, an extern, an enum or suberror
+/// constructor, and an import. Rebuilt by
 /// `collect_builtin_claimed_names` for each validation run.
 let builtin_claimed_names: Array[String] = []
 
 export fn collect_builtin_claimed_names(stmts: Array[Stmt]) -> Unit {
   Array::truncate(builtin_claimed_names, 0)
   builtin_claimed_collect(stmts)
+}
+
+/// A constructor is a binding too (Codex on #3657): a call to a variant that
+/// takes a builtin's spelling constructs the variant, not the builtin.
+fn builtin_claimed_push_variants(variants: Array[(String, Array[TypeExpr])]) -> Unit {
+  let mut k = 0
+  while k < Array::length(variants) {
+    let (vname, _) = Array::get(variants, k)
+    Array::push(builtin_claimed_names, vname)
+    k = k + 1
+  }
 }
 
 fn builtin_claimed_collect(stmts: Array[Stmt]) -> Unit {
@@ -812,6 +824,8 @@ fn builtin_claimed_collect(stmts: Array[Stmt]) -> Unit {
       SFnDecl(_, name, _, _, _) => Array::push(builtin_claimed_names, name),
       SExternLet(name, _) => Array::push(builtin_claimed_names, name),
       SLetPat(pat, _) => labeled_walk_pat_binds(pat, builtin_claimed_names),
+      SEnum(_, _, _, variants, _) => builtin_claimed_push_variants(variants),
+      SSuberror(_, _, variants) => builtin_claimed_push_variants(variants),
       SImport(_, items) => {
         let mut k = 0
         while k < Array::length(items) {
