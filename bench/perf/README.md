@@ -3,6 +3,37 @@
 CI heap KPI gate, micro benches, and perf-investigation postmortems for the
 compiler / checker.
 
+## Compiler code-size series
+
+`scripts/bench_metrics.sh` records `sizes.stage2_code_bytes` (the code-section
+payload, including body-length framing) and `sizes.stage2_functions` (defined
+functions, including small bodies), alongside the complete image size. These
+are advisory series; the perf report shows their deltas and leaves older
+snapshots' missing baselines unavailable.
+
+The `compiler_size` record binds the image SHA-256 to `generation.json` and
+the exact flattened compiler input. Generations record `source.entry_sha256`
+before compilation and refuse a changed input before publishing their receipt.
+Collection checks the receipt, captured input and requested current input; old
+receipts need a fresh generation. The build-origin commit and dirty-tree flag
+describe the producer, which may be reused from cache when its input is identical.
+
+Function attribution is a separate diagnostic. Build a companion with only
+`VIBE_WASM_NAMES=1` changed, then run:
+
+```bash
+node scripts/compiler_size_metrics.mjs _build/ordinary/stage2.wasm \
+  --named _build/named/stage2.wasm > _build/compiler-size.json
+```
+
+The companion must match the ordinary image after removing only `name`
+sections. Source groups use the compiler source manifest and qualified debug
+names; runtime-generated and ambiguous/unmapped functions retain their bytes in
+explicit residual groups. Group bytes sum to function-body bytes, which exclude
+code-section framing. Missing names are recorded as unavailable. No extra named
+compiler is built by the ordinary CI collector. Binaryen validation and a
+compile-only size ratchet remain separate work in #2506.
+
 ## Formal representatives per publication (2026-10-27)
 
 Reuse a local representative table across one `callee_formal_bindings` call.

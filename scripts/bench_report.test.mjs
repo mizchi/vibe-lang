@@ -85,6 +85,29 @@ test("legacy advisory wall-time and calibration data stay out of the report", ()
   }
 });
 
+test("compiler code payload and function counts are distinct, source-bound series", () => {
+  const base = flatSnapshot("base"); const cur = flatSnapshot("current");
+  Object.assign(base.sizes, { stage2_code_bytes: 1000, stage2_functions: 200 });
+  Object.assign(cur.sizes, { stage2_code_bytes: 900, stage2_functions: 180 });
+  cur.compiler_size = { artifact_sha256: "a".repeat(64), source: { entry_sha256: "b".repeat(64) }, attribution: { status: "unavailable" } };
+  const report = render(cur, base);
+  assert.match(report, /\| code section payload \| 900 B \(-10\.00% 🎉\) \|/);
+  assert.match(report, /\| defined functions \| 180 \(-10\.00% 🎉\) \|/);
+  assert.match(report, /compiler image `aaaaaaaaaaaa` · input `bbbbbbbbbbbb` · named attribution: unavailable/);
+  assert.doesNotMatch(report, /drift outside.*stage2_code_bytes/);
+});
+
+test("older compiler snapshots have no fabricated zero code/count baseline", () => {
+  const base = flatSnapshot("base"); const cur = flatSnapshot("current");
+  Object.assign(cur.sizes, { stage2_code_bytes: 900, stage2_functions: 180 });
+  assert.match(render(cur, base), /\| code section payload \| 900 B \(–\) \|/);
+  assert.doesNotMatch(render(base, base), /compiler detail/);
+  assert.match(render(base, cur), /absent here.*stage2_code_bytes.*stage2_functions/);
+  delete cur.sizes.stage2_functions;
+  base.sizes.stage2_functions = 200;
+  assert.match(render(cur, base), /absent here.*stage2_functions/);
+});
+
 test("the three tiers render one representative row each, with a per-cell delta", () => {
   const report = render(flatSnapshot("current"), flatSnapshot("baseline"));
   assert.match(report, /#### Large — the compiler itself/);

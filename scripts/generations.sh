@@ -611,8 +611,9 @@ write_generation_manifest() {
   local stage1="$5"
   local stage2="$6"
   local stage3="${7:-}"
+  local entry_sha256="$8"
   local generation_json="$out_dir/generation.json"
-  node - "$PROJECT_ROOT" "$manifest" "$generation_json" "$entry" "$stage0" "$stage1" "$stage2" "$stage3" "$(git_commit)" "$(git_dirty)" <<'NODE'
+  node - "$PROJECT_ROOT" "$manifest" "$generation_json" "$entry" "$stage0" "$stage1" "$stage2" "$stage3" "$(git_commit)" "$(git_dirty)" "$entry_sha256" <<'NODE'
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -628,11 +629,15 @@ const [
   stage3Path,
   sourceCommit,
   dirty,
+  entrySha256,
 ] = process.argv.slice(2);
 
 const seedManifest = JSON.parse(fs.readFileSync(seedManifestPath, "utf8"));
 const rel = (p) => path.isAbsolute(p) ? path.relative(root, p) : p;
 const sha256 = (p) => crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+if (sha256(path.resolve(root, entry)) !== entrySha256) {
+  throw new Error("generation source changed while building; rebuild from a fixed input");
+}
 const artifact = (p, builtBy) => ({
   path: rel(p),
   sha256: sha256(p),
@@ -661,6 +666,7 @@ const out = {
     commit: sourceCommit,
     dirty: dirty === "true",
     entry: rel(entry),
+    entry_sha256: entrySha256,
   },
   stages,
   result: {
@@ -838,6 +844,8 @@ command_build() {
   if [ "$build_stage3" != "1" ]; then
     rm -f "$stage3"
   fi
+  local entry_sha256
+  entry_sha256="$(sha256_file "$(abs_path "$entry")")"
   cp "$SEED_ARTIFACT_PATH" "$stage0"
   validate_wasm_if_available stage0 "$stage0"
   run_generation_compile "stage0(seed) -> stage1" "$stage0" "$entry" "$stage1" "$entry_name"
@@ -859,9 +867,9 @@ command_build() {
     else
       run_start_if_enabled stage3 "$stage3" "$out_dir/stage3_run.out"
     fi
-    write_generation_manifest "$manifest" "$out_dir" "$entry" "$stage0" "$stage1" "$stage2" "$stage3"
+    write_generation_manifest "$manifest" "$out_dir" "$entry" "$stage0" "$stage1" "$stage2" "$stage3" "$entry_sha256"
   else
-    write_generation_manifest "$manifest" "$out_dir" "$entry" "$stage0" "$stage1" "$stage2"
+    write_generation_manifest "$manifest" "$out_dir" "$entry" "$stage0" "$stage1" "$stage2" "" "$entry_sha256"
   fi
   echo "[selfhost-gen] stage2 candidate: $(rel_path "$stage2")"
 }
