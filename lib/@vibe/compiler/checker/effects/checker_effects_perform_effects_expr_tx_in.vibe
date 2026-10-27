@@ -12,11 +12,13 @@ import @vibe/compiler/core {
   compiler_owned_type_arity,
   env_cache_read_snapshot,
   env_lookup,
+  env_type_defs,
   expr_child_at,
   expr_children,
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  find_typedef,
   is_effect_inst_label,
   is_exception_effect_name,
   type_name_has_async_iterator_impl
@@ -189,8 +191,11 @@ fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: AfeLocals) -> Option[Stri
     // parks once per byte, so the enclosing row must carry `Async` for exactly
     // the reason #1358 gave for trait-based async iterators.
     Some(tn) => {
-      let display = afe_display_iter_head(tn)
-      if display == "HostStream" || type_name_has_async_iterator_impl(env, display) {
+      let spelled = afe_display_iter_head(tn)
+      // #3642: the desugar follows a `type` alias of the iterand's head to
+      // the type it names before it picks the loop, so this does too.
+      let display = afe_resolve_iterand_alias(env, spelled)
+      if display == "HostStream" || type_name_has_async_iterator_impl(env, display) || afe_named_next_returns_future(env, display) {
         Some(display)
       } else if tn == afe_builtin_async_iter_head || (display == "AsyncIter" && afe_has_builtin_async_iter_provenance(env)) {
         Some("AsyncIter")
@@ -199,6 +204,85 @@ fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: AfeLocals) -> Option[Stri
       }
     },
     None => None
+  }
+}
+
+/// #3642: the type a `type` alias of an iterand's head names (`type C =
+/// Countdown` -> `Countdown`, `type B[T] = Box[T]` -> `Box`), following a
+/// chain of aliases; any other name is returned as written. The desugar reads
+/// the same alias before it picks the loop (`for_iterand_type_name`), so an
+/// awaiting loop over `c: C` is charged here exactly as one over
+/// `c: Countdown` is. The builtin heads a `for` usually iterates are no alias
+/// and skip the declaration walk.
+fn afe_resolve_iterand_alias(env: TypeEnv, name: String) -> String {
+  if name == "Array" || name == "String" || name == "Map" || name == "HostStream" || name == "AsyncIter" || name == afe_builtin_async_iter_head {
+    name
+  } else {
+    let defs = env_type_defs(env)
+    let mut cur = name
+    let mut fuel = 16
+    while fuel > 0 {
+      fuel = fuel - 1
+      match find_typedef(defs, cur) {
+        Some(TDAlias(_, _, body)) => match afe_alias_body_head(body) {
+          Some(head) => {
+            cur = head
+          },
+          None => {
+            fuel = 0
+          }
+        },
+        _ => {
+          fuel = 0
+        }
+      }
+    }
+    cur
+  }
+}
+
+fn afe_alias_body_head(t: Type) -> Option[String] {
+  match t {
+    CtNamed(n, _) => if n == "#hkt" {
+      None
+    } else {
+      Some(n)
+    },
+    CtStruct(n) => Some(n),
+    CtEnum(n) => Some(n),
+    _ => None
+  }
+}
+
+/// #3641: is `<type_name>::next` a function returning a `Future`? This is the
+/// rule the `for` desugar itself applies (`classify_sync_for_loop` /
+/// `classify_trait_free_for_loop` drive the await loop whenever
+/// `C::next`'s return head is `Future`), and it does not ask whether `next`
+/// came from a trait impl. The trait-impl scan above alone let a bare
+/// `fn Countdown::next(c: Countdown) -> Future[..]` drive an await loop from a
+/// function with no row. The env binds the method under the name the program
+/// spells the type with (an import alias included) and a generic receiver as
+/// a `CtForAll`. `Array` / `String` / `Map` keep their builtin loop in the
+/// desugar whatever `next` they have, so they are not charged here either.
+fn afe_named_next_returns_future(env: TypeEnv, type_name: String) -> Bool {
+  if type_name == "Array" || type_name == "String" || type_name == "Map" {
+    false
+  } else {
+    match env_lookup(env, String::concat(type_name, "::next")) {
+      Some(t) => afe_fn_type_returns_future(t),
+      None => false
+    }
+  }
+}
+
+fn afe_fn_type_returns_future(t: Type) -> Bool {
+  match t {
+    CtFn(_, ret, _) => match ret {
+      CtNamed(n, _) => n == "Future",
+      _ => false
+    },
+    CtForAll(_, _, body) => afe_fn_type_returns_future(body),
+    _ => false
   }
 }
 

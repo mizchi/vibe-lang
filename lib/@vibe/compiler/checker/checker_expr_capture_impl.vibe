@@ -81,7 +81,7 @@ import ./checker_resolve.vibe {
 }
 
 import @vibe/compiler/checker/traits {
-  bound_entails_trait, closure_capture_facts, spawn_caps_marker
+  bound_entails_trait, closure_capture_facts, spawn_caps_marker, spawn_safe_marker, spawn_safe_option_binder
 }
 
 import @vibe/compiler/checker/effects {
@@ -1194,6 +1194,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           }
           let pat_err_before = Array::length(errors)
           let arm_env = check_pattern(pat, scr_ty, rail_env, defs, errors)
+          // #3640: `Some(t)` out of a spawn-shaped function's optional closure
+          // parameter is trusted like the parameter (`spawn_safe_marker`).
+          let arm_env = match spawn_safe_option_binder(env, scrutinee, pat) {
+            Some(t) => env_bind(arm_env, spawn_safe_marker(t), CtUnit),
+            None => arm_env
+          }
           // #3548: a pattern carries no offset, so what `check_pattern`
           // reports (a constructor bound with the wrong arity, ...) is
           // anchored at its arm -- the body, or the scrutinee when the body

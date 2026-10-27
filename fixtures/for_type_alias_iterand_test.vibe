@@ -1,0 +1,146 @@
+// #3642: a `for` over a value whose type is spelled with a `type` alias
+// iterates exactly as one over the type's own name. The loop classification
+// used to look the protocol up under the ALIAS (`C::iter_get`, `C::next`),
+// find none, and fall through to the array loop, which ran zero times and
+// answered 0 -- sync or async, through a `let` annotation, a parameter, a
+// return type, a generic alias, or an imported alias.
+import ./modules/for_type_alias_dep.vibe {
+  Runs, runs
+}
+
+struct Countdown {
+  n: Int
+}
+
+fn Countdown::iter_length(c: Countdown) -> Int {
+  c.n
+}
+
+fn Countdown::iter_get(c: Countdown, i: Int) -> Int {
+  c.n - i
+}
+
+type C = Countdown
+
+type CC = C
+
+fn sum_let(n: Int) -> Int {
+  let c: C = Countdown::{ n: n }
+  let mut acc = 0
+  for x in c {
+    acc = acc + x
+  }
+  acc
+}
+
+fn sum_param(c: C) -> Int {
+  let mut acc = 0
+  for x in c {
+    acc = acc + x
+  }
+  acc
+}
+
+fn make(n: Int) -> CC {
+  Countdown::{ n: n }
+}
+
+fn sum_ret(n: Int) -> Int {
+  let mut acc = 0
+  for x in make(n) {
+    acc = acc + x
+  }
+  acc
+}
+
+struct Cell[T] {
+  left: Int;
+  value: T
+}
+
+fn Cell::iter_length[T](c: Cell[T]) -> Int {
+  c.left
+}
+
+fn Cell::iter_get[T](c: Cell[T], i: Int) -> T {
+  c.value
+}
+
+type B[T] = Cell[T]
+
+fn sum_generic(c: B[Int]) -> Int {
+  let mut acc = 0
+  for x in c {
+    acc = acc + x
+  }
+  acc
+}
+
+fn sum_imported(r: Runs) -> Int {
+  let mut acc = 0
+  for x in r {
+    acc = acc + x
+  }
+  acc
+}
+
+struct Ticks {
+  n: Int
+}
+
+fn Ticks::next(t: Ticks) -> Future[Option[(Int, Ticks)]] {
+  if t.n <= 0 {
+    Future::ready(None)
+  } else {
+    Future::ready(Some((t.n, Ticks::{ n: t.n - 1 })))
+  }
+}
+
+type T2 = Ticks
+
+fn sum_async_let(n: Int) -> Int with Async {
+  let t: T2 = Ticks::{ n: n }
+  let mut acc = 0
+  for x in t {
+    acc = acc + x
+  }
+  acc
+}
+
+fn sum_async_param(t: T2) -> Int with Async {
+  let mut acc = 0
+  for x in t {
+    acc = acc + x
+  }
+  acc
+}
+
+test "a let annotated with an alias iterates the struct" {
+  inspect(sum_let(4), content = "10")
+}
+
+test "a parameter typed with an alias iterates the struct" {
+  inspect(sum_param(Countdown::{ n: 4 }), content = "10")
+}
+
+test "a call returning an alias of an alias iterates the struct" {
+  inspect(sum_ret(4), content = "10")
+}
+
+test "a generic alias iterates the generic struct" {
+  inspect(sum_generic(Cell::{ left: 3, value: 4 }), content = "12")
+}
+
+test "an imported alias iterates the struct it names" {
+  inspect(sum_imported(runs(3)), content = "600")
+  let mut acc = 0
+  for x in runs(2) {
+    acc = acc + x
+  }
+  inspect(acc, content = "300")
+}
+
+test "an alias of a Future-returning iterator awaits every step" allows Async {
+  inspect(sum_async_let(4), content = "10")
+  inspect(sum_async_param(Ticks::{ n: 3 }), content = "6")
+}

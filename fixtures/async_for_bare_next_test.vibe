@@ -1,0 +1,78 @@
+// #3641: a `for` over a bare `fn T::next` returning a `Future` is an await
+// loop, so the function holding it carries `Async`. With the row, each shape
+// below runs and answers the same sum the trait-based iterator gives. The
+// row-less forms are refused (fixtures/typecheck/async_for_bare_next_*_reject).
+struct Countdown {
+  n: Int
+}
+
+fn Countdown::next(c: Countdown) -> Future[Option[(Int, Countdown)]] {
+  if c.n <= 0 {
+    Future::ready(None)
+  } else {
+    Future::ready(Some((c.n, Countdown::{ n: c.n - 1 })))
+  }
+}
+
+fn sum_down(n: Int) -> Int with Async {
+  let mut acc = 0
+  for x in Countdown::{ n: n } {
+    acc = acc + x
+  }
+  acc
+}
+
+struct Cell[T] {
+  left: Int;
+  value: T
+}
+
+fn Cell::next[T](c: Cell[T]) -> Future[Option[(T, Cell[T])]] {
+  if c.left <= 0 {
+    Future::ready(None)
+  } else {
+    Future::ready(Some((c.value, Cell::{ left: c.left - 1, value: c.value })))
+  }
+}
+
+fn total(c: Cell[Int]) -> Int with Async {
+  let mut acc = 0
+  for x in c {
+    acc = acc + x
+  }
+  acc
+}
+
+struct Steps {
+  n: Int
+}
+
+type Step = Future[Option[(Int, Steps)]]
+
+fn Steps::next(s: Steps) -> Step {
+  if s.n <= 0 {
+    Future::ready(None)
+  } else {
+    Future::ready(Some((s.n * 10, Steps::{ n: s.n - 1 })))
+  }
+}
+
+fn sum_steps(n: Int) -> Int with Async {
+  let mut acc = 0
+  for x in Steps::{ n: n } {
+    acc = acc + x
+  }
+  acc
+}
+
+test "a bare Future-returning next drives an await loop under Async" allows Async {
+  inspect(sum_down(4), content = "10")
+}
+
+test "a generic receiver's bare next drives an await loop under Async" allows Async {
+  inspect(total(Cell::{ left: 3, value: 4 }), content = "12")
+}
+
+test "a next returning an alias of Future drives an await loop under Async" allows Async {
+  inspect(sum_steps(3), content = "60")
+}

@@ -77,7 +77,7 @@ import ./checker_resolve.vibe {
 }
 
 import @vibe/compiler/checker/traits {
-  bound_entails_trait, check_spawnable_captures, spawn_safe_marker
+  bound_entails_trait, check_spawnable_captures, spawn_closure_param_type, spawn_group_region, spawn_safe_marker
 }
 
 import @vibe/compiler/checker/effects {
@@ -1304,8 +1304,10 @@ let handle_lambda_expanding_cell: Array[String] = []
 
 /// #3125 / #3152: the `Spawnable` capture check needs the closure at the call,
 /// so it is keyed on the callee's TYPE, not its spelling. A function whose
-/// FIRST parameter is a `TaskGroup[r, e]` and whose LAST parameter is a
-/// closure is taken to run that closure in the group, and its closure
+/// FIRST parameter is a `TaskGroup` -- `TaskGroup[r, e]`, or written with its
+/// region and row left to the call (#3640, `spawn_group_region`) -- and whose
+/// LAST parameter is a closure, or an optional one (`task?:`,
+/// `spawn_closure_param_type`), is taken to run that closure in the group, and its closure
 /// argument is checked at every call: `TaskGroup::spawn`,
 /// `TaskGroup::spawn_suspend` and `Parallel::map` are the library's three, and
 /// a `let` alias, a renamed import, or a user wrapper with that shape answers
@@ -1318,15 +1320,7 @@ export fn param_types_are_spawn_shaped(params: Array[Type]) -> Bool {
   if n < 2 {
     false
   } else {
-    let group_ok = match Array::get(params, 0) {
-      CtNamed(gn, gargs) => gn == "TaskGroup" && Array::length(gargs) == 2,
-      _ => false
-    }
-    let closure_ok = match Array::get(params, n - 1) {
-      CtFn(_, _, _) => true,
-      _ => false
-    }
-    group_ok && closure_ok
+    !(spawn_group_region(Array::get(params, 0)) is None) && spawn_closure_param_type(Array::get(params, n - 1))
   }
 }
 
@@ -1434,18 +1428,14 @@ export fn resolve_bare_var(s: Subst, t: Type) -> Type {
 /// Run the `Spawnable` capture check for one spawn-shaped call: `group_ty` is
 /// the type of its `TaskGroup` argument and `closure` its closure argument.
 export fn report_spawnable_violations(env: TypeEnv, s: Subst, defs: Array[TypeDef], group_ty: Type, closure: Expr, errors: Array[String], name: String, callee_off: Int) -> Unit {
-  match subst_apply(s, group_ty) {
-    CtNamed(tg_name, tg_args) => if tg_name == "TaskGroup" && Array::length(tg_args) == 2 {
-      let violations = check_spawnable_captures(env, s, defs, closure, Array::get(tg_args, 0), unsent_open_formal_vars(s))
-      let mut vi = 0
-      while vi < Array::length(violations) {
-        Array::push(errors, String::concat(Array::get(violations, vi), off_marker_len(callee_off, String::length(name))))
-        vi = vi + 1
+  match spawn_group_region(subst_apply(s, group_ty)) {
+    Some(r_here) => {
+      for violation in check_spawnable_captures(env, s, defs, closure, r_here, unsent_open_formal_vars(s)) {
+        Array::push(errors, String::concat(violation, off_marker_len(callee_off, String::length(name))))
       }
-    } else {
       ()
     },
-    _ => ()
+    None => ()
   }
 }
 

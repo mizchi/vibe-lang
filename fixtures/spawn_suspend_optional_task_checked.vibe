@@ -1,0 +1,27 @@
+// #3640 control: a wrapper taking an optional task (`task?:`, #3555) with its
+// group written in full spawns the closure matched out of it, which is trusted
+// like a closure parameter because every caller's closure is checked; an
+// omitted task is `None`, which runs nothing. The complete spelling used to
+// refuse the matched closure ("its captures cannot be seen here").
+// Executed by tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh
+// (want 42).
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+fn start[rg, e](g~: TaskGroup[rg, e], task?: () -> Int with Async + e) -> TaskHandle[rg, e, Int] {
+  match task {
+    Some(t) => TaskGroup::spawn_suspend(g, t),
+    None => TaskGroup::spawn_suspend(g, () -> 0)
+  }
+}
+
+fn main() -> Int allows Async + Exception {
+  let n = 41
+  TaskGroup::run((g) -> {
+    let h = start(g = g, task = () -> n + 1)
+    let d = start(g = g)
+    TaskGroup::pump_all(g)
+    TaskHandle::join(h) + TaskHandle::join(d)
+  })
+}

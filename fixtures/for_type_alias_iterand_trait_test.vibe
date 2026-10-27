@@ -1,0 +1,73 @@
+// #3642: the same alias rule on the trait-aware loop classification (a
+// program that declares a method-bearing trait): a sync `next` and an async
+// trait `next` reached through a `type` alias drive their loops, where they
+// used to run zero times and answer 0.
+trait Step[T] {
+  next(Self) -> Option[(T, Self)]
+}
+
+trait Pull[T] {
+  next(Self) -> Future[Option[(T, Self)]]
+}
+
+struct Countdown {
+  n: Int
+}
+
+impl Step for Countdown {
+  next(c: Countdown) -> Option[(Int, Countdown)] {
+    if c.n <= 0 {
+      None
+    } else {
+      Some((c.n, Countdown::{ n: c.n - 1 }))
+    }
+  }
+}
+
+struct Ticks {
+  n: Int
+}
+
+impl Pull for Ticks {
+  next(t: Ticks) -> Future[Option[(Int, Ticks)]] {
+    if t.n <= 0 {
+      Future::ready(None)
+    } else {
+      Future::ready(Some((t.n * 10, Ticks::{ n: t.n - 1 })))
+    }
+  }
+}
+
+type C = Countdown
+
+type T2 = Ticks
+
+fn sum_sync(c: C) -> Int {
+  let mut acc = 0
+  for x in c {
+    acc = acc + x
+  }
+  acc
+}
+
+fn sum_async(t: T2) -> Int with Async {
+  let mut acc = 0
+  for x in t {
+    acc = acc + x
+  }
+  acc
+}
+
+test "a sync trait iterator through an alias" {
+  let c: C = Countdown::{ n: 4 }
+  let mut acc = 0
+  for x in c {
+    acc = acc + x
+  }
+  inspect(acc, content = "10")
+  inspect(sum_sync(Countdown::{ n: 3 }), content = "6")
+}
+
+test "an async trait iterator through an alias awaits every step" allows Async {
+  inspect(sum_async(Ticks::{ n: 3 }), content = "60")
+}

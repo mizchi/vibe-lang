@@ -1,0 +1,31 @@
+// #3640 control: a spawn-shaped helper written with the group's region and row
+// left to the call (`g: TaskGroup`) keeps working where its callers' closures
+// capture only `Send` values, and so does the complete spelling. Inside either
+// helper the closure parameter is trusted, because every call site is checked.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn start(g: TaskGroup, f: () -> Int) -> TaskHandle[Int] {
+  TaskGroup::spawn(g, f)
+}
+
+fn start_full[rg, e](g: TaskGroup[rg, e], f: () -> Int with Exception + e) -> TaskHandle[rg, e, Int] {
+  TaskGroup::spawn(g, f)
+}
+
+fn twice(g: TaskGroup, f: () -> Int) -> TaskHandle[Int] {
+  start(g, f)
+}
+
+fn main() -> Unit allows Console + Exception {
+  let n = 41
+  let w = TaskGroup::run((g) -> {
+    let a = start(g, () -> n + 1)
+    let b = start_full(g, () -> n)
+    let c = twice(g, () -> 1)
+    let d = TaskGroup::spawn(g, () -> TaskHandle::join(TaskGroup::spawn(g, () -> 2)))
+    TaskHandle::join(a) + TaskHandle::join(b) + TaskHandle::join(c) + TaskHandle::join(d)
+  })
+  println("w = \{w}")
+}

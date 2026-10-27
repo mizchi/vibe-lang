@@ -644,6 +644,84 @@ export fn spawn_safe_marker(name: String) -> String {
   String::concat("#spawn_safe:", name)
 }
 
+/// #3640: the region of the group a spawn-shaped call runs its closure in,
+/// read from the type of its `TaskGroup` parameter or argument, or `None` when
+/// `t` is no `TaskGroup`. `TaskGroup[r, e]` answers `r`. A group written with
+/// its region and row left to the call (`g: TaskGroup`, #3536) is the same
+/// group, so it answers too, with `CtUnknown`: that names no nursery, so a
+/// captured endpoint is never taken for one of the same nursery. The bare
+/// spelling resolves to `CtStruct("TaskGroup")` (the shipped declaration is a
+/// struct), or to `CtNamed("TaskGroup", [])` where none is in scope. Only the
+/// complete spelling used to count, so a helper written `fn start(g:
+/// TaskGroup, f: () -> Int)` was not spawn-shaped -- its callers' closures went
+/// unchecked -- and a spawn inside it skipped the check altogether.
+export fn spawn_group_region(t: Type) -> Option[Type] {
+  match t {
+    CtNamed(n, args) => if n != "TaskGroup" {
+      None
+    } else if Array::length(args) == 2 {
+      Some(Array::get(args, 0))
+    } else if Array::length(args) == 0 {
+      Some(CtUnknown)
+    } else {
+      None
+    },
+    CtStruct(n) => if n == "TaskGroup" {
+      Some(CtUnknown)
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+fn sp_is_endpoint_head(t: Type) -> Bool {
+  let n = match t {
+    CtNamed(name, _) => name,
+    CtStruct(name) => name,
+    _ => ""
+  }
+  n == "TaskGroup" || n == "TaskHandle" || n == "Sender" || n == "Receiver"
+}
+
+/// #3640: whether `t` is the type of a spawn-shaped function's closure
+/// parameter: a closure, or an optional one (`task?: () -> T`, declared
+/// `Option[() -> T]`, #3555), which a call supplies as `Some(closure)` or
+/// leaves `None`.
+export fn spawn_closure_param_type(t: Type) -> Bool {
+  match t {
+    CtFn(_, _, _) => true,
+    CtOption(inner) => inner is CtFn(_, _, _),
+    _ => false
+  }
+}
+
+/// #3640: the binder that `match task { Some(t) => .. }` names for the
+/// optional closure parameter `task` of a spawn-shaped function, which is
+/// then trusted like the parameter itself (`spawn_safe_marker`): every call
+/// site supplied it as a checked closure or `None`. `None` for any other
+/// scrutinee or pattern.
+export fn spawn_safe_option_binder(env: TypeEnv, scrutinee: Expr, pat: Pat) -> Option[String] {
+  match scrutinee {
+    EIdent(x, _) => if env_marker_before(env, spawn_safe_marker(x), x) is None {
+      None
+    } else {
+      match pat {
+        PCtor(ctor, items) => if (ctor == "Some" || ctor == "Option::Some") && Array::length(items) == 1 {
+          match Array::get(items, 0) {
+            PBind(t) => Some(t),
+            _ => None
+          }
+        } else {
+          None
+        },
+        _ => None
+      }
+    },
+    _ => None
+  }
+}
+
 /// The marker `marker` when it is bound in front of every binding of `name`;
 /// `None` when `name` is bound first, or neither is bound locally.
 export fn env_marker_before(env: TypeEnv, marker: String, name: String) -> Option[Type] {
@@ -857,6 +935,10 @@ fn sp_judge_facts(env: TypeEnv, s: Subst, defs: Array[TypeDef], facts: Array[Typ
             // not say what to write instead; the stream has one reader, so
             // the edit is to open it where it is read.
             Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(type_to_string(resolved), String::concat("`: capture `", String::concat(vname, "` holds a host stream, which only one task may read or close -- open the stream inside the spawned task (call `host_stream_named` there, or start the request there for a response body) instead of capturing it")))))
+          } else if (r_here is CtUnknown) && sp_is_endpoint_head(resolved) {
+            // #3640: the group was written without its region, so no endpoint
+            // can be seen to share its nursery; the edit is to write it.
+            Array::push(out, "write the group this call spawns into as `TaskGroup[rg, e]`, adding `[rg, e]` to the function's type parameters: capture `\{vname}` is a `\{type_to_string(resolved)}`, which a spawned task may hold only when it belongs to the group's own nursery, and a group written `TaskGroup` names no nursery")
           } else {
             Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(type_to_string(resolved), String::concat("`: capture `", String::concat(vname, "` is neither Send nor a same-nursery endpoint")))))
           }
@@ -879,6 +961,15 @@ fn sp_judge_facts(env: TypeEnv, s: Subst, defs: Array[TypeDef], facts: Array[Typ
 export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef], f_expr: Expr, r_here: Type, formals: Array[Int]) -> Array[String] {
   match f_expr {
     EFn(_, _, params, _, _, body) => sp_judge_facts(env, s, defs, closure_capture_facts(env, body, params), r_here, formals),
+    // #3640: an optional closure parameter (#3555) is supplied as
+    // `Some(closure)`, judged as the closure, or left `None`, which runs
+    // nothing.
+    ECall(EIdent("Some", _), cargs, _, _) => if Array::length(cargs) == 1 {
+      check_spawnable_captures(env, s, defs, Array::get(cargs, 0), r_here, formals)
+    } else {
+      sp_unseen_closure_argument()
+    },
+    EIdent("None", _) => sp_empty_strings(),
     EIdent(name, _) => match env_marker_before(env, spawn_safe_marker(name), name) {
       Some(_) => sp_empty_strings(),
       None => match env_marker_before(env, spawn_caps_marker(name), name) {
@@ -893,10 +984,14 @@ export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef],
         }
       }
     },
-    _ => [
-      "no impl `Spawnable` for this closure argument: its captures cannot be seen here -- write the closure literally at this call, or bind it with a local `let` to a closure literal"
-    ]
+    _ => sp_unseen_closure_argument()
   }
+}
+
+fn sp_unseen_closure_argument() -> Array[String] {
+  [
+    "no impl `Spawnable` for this closure argument: its captures cannot be seen here -- write the closure literally at this call, or bind it with a local `let` to a closure literal"
+  ]
 }
 
 // #1262 / ADR-0100 (1) -- HISTORY, and why the walk that used to live here is
