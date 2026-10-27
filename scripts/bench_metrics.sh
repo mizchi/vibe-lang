@@ -63,6 +63,12 @@ TRACKED="${VIBE_TRACKED_BENCHES:-bench/perf/tracked_benches.txt}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+# Bind geometry to this checkout's fresh flattened compiler input before any
+# timed work. Missing/stale receipts must not become a plausible size reading.
+bash scripts/ensure_generated.sh --check
+compiler_size_json="$work/compiler-size.json"
+node scripts/compiler_size_metrics.mjs "$STAGE2" > "$compiler_size_json"
+
 # --- selfcompile KPI: heap (deterministic) + wall (median of N) ---------------
 heap=""
 walls=()
@@ -283,6 +289,7 @@ fi
 # --- assemble JSON ------------------------------------------------------------
 BM_HEAP="$heap" BM_WALL_MEDIAN="$wall_median" BM_WALL_RUNS="${walls[*]}" \
 BM_STAGE2="$stage2_bytes" BM_ADAPTER="$adapter_bundle_bytes" \
+BM_COMPILER_SIZE="$compiler_size_json" BM_STAGE2_PATH="$STAGE2" \
 BM_SOURCES="$sources_bundle_bytes" BM_MODSRC="$module_source_bytes" \
 BM_MICRO_STATUS="$micro_status" \
 BM_INCREMENTAL="$incremental_kpi" \
@@ -314,12 +321,17 @@ for (const [name, linStatus, linFuel, linHeap, linCommitted, linBytes,
   };
 }
 const sh = (c) => require("child_process").execSync(c, { encoding: "utf8" }).trim();
+const compilerSize = JSON.parse(fs.readFileSync(process.env.BM_COMPILER_SIZE, "utf8"));
+if (require("node:crypto").createHash("sha256").update(fs.readFileSync(process.env.BM_STAGE2_PATH)).digest("hex") !== compilerSize.artifact_sha256) {
+  throw new Error("compiler changed during metrics collection; keep the artifact fixed and retry");
+}
 let commit = process.env.GITHUB_SHA || "";
 try { if (!commit) commit = sh("git rev-parse HEAD"); } catch {}
 const doc = {
   schema: 1,
   commit,
   date: new Date().toISOString(),
+  compiler_size: compilerSize,
   selfcompile: {
     heap_ptr_bytes: +process.env.BM_HEAP,
     wall_ms_median: +process.env.BM_WALL_MEDIAN,
@@ -351,6 +363,8 @@ const doc = {
   },
   sizes: {
     stage2_wasm: +process.env.BM_STAGE2,
+    stage2_code_bytes: compilerSize.code_section_bytes,
+    stage2_functions: compilerSize.defined_functions,
     cli_adapter_bundle: +process.env.BM_ADAPTER,
     compiler_sources_bundle: +process.env.BM_SOURCES,
     module_source: +process.env.BM_MODSRC,

@@ -182,6 +182,21 @@ lines.push(`| selfcompile | ${cell(fmtBytes, cur.selfcompile?.heap_ptr_bytes, ba
   `${cell(fmtBytes, cur.benches?.[REPRESENTATIVE.largeBench]?.bytes_per_op, base?.benches?.[REPRESENTATIVE.largeBench]?.bytes_per_op)} |`);
 lines.push("");
 
+// Compiler geometry is a separate series from the complete image's size.
+if (cur.sizes?.stage2_code_bytes != null || cur.sizes?.stage2_functions != null) {
+  lines.push("| compiler detail | value |", "|---|---:|");
+  for (const [label, key, fmt] of [["code section payload", "stage2_code_bytes", fmtBytes],
+                                  ["defined functions", "stage2_functions", fmtCount]]) {
+    if (cur.sizes?.[key] != null) show(`sizes.${key}`);
+    lines.push(`| ${label} | ${cell(fmt, cur.sizes?.[key], base?.sizes?.[key])} |`);
+  }
+  lines.push("");
+  if (cur.compiler_size) {
+    lines.push(`> compiler image \`${cur.compiler_size.artifact_sha256?.slice(0, 12) || "?"}\` · input \`${cur.compiler_size.source?.entry_sha256?.slice(0, 12) || "?"}\` · named attribution: ${cur.compiler_size.attribution?.status || "unavailable"}`);
+    lines.push("");
+  }
+}
+
 // Two paired allocation readings protect the optional production prelude.
 // The large CLI build runs on main only; PRs show its latest main reading
 // explicitly as main's, like coverage, to keep the per-PR collection bounded.
@@ -313,7 +328,7 @@ const unionKeys = (a, b) => {
 
 function* allMetrics() {
   yield ["selfcompile heap", "selfcompile.heap_ptr_bytes", cur.selfcompile?.heap_ptr_bytes, base?.selfcompile?.heap_ptr_bytes];
-  for (const k of ["stage2_wasm", "cli_adapter_bundle", "compiler_sources_bundle", "module_source"]) {
+  for (const k of ["stage2_wasm", "stage2_code_bytes", "stage2_functions", "cli_adapter_bundle", "compiler_sources_bundle", "module_source"]) {
     yield [k, `sizes.${k}`, cur.sizes?.[k], base?.sizes?.[k]];
   }
   for (const name of unionKeys(cur.sizes?.samples, base?.sizes?.samples)) {

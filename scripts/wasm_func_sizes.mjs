@@ -8,6 +8,7 @@
 // VIBE_WASM_NAMES=1 (release executables are stripped by default, ADR-0077):
 //   VIBE_WASM_NAMES=1 bash scripts/generations.sh build --out-dir /tmp/attr_gen
 //   node scripts/wasm_func_sizes.mjs /tmp/attr_gen/stage2.wasm --top 40
+// `--json` emits all defined functions for source-bound diagnostic consumers.
 //
 // `--prefix-rollup` aggregates by name prefix (text before the last "__" or
 // first "_exp_"), which maps well onto vibe codegen provenance: user functions
@@ -18,23 +19,40 @@ import { readFileSync } from "node:fs";
 
 function uleb(buf, p) {
   let r = 0n, s = 0n, b;
-  do { b = buf[p++]; r |= BigInt(b & 0x7f) << s; s += 7n; } while (b & 0x80);
+  do {
+    if (p >= buf.length || s >= 35n) throw new Error("truncated or oversized u32 LEB128");
+    b = buf[p++]; r |= BigInt(b & 0x7f) << s; s += 7n;
+  } while (b & 0x80);
+  if (r > 0xffffffffn) throw new Error("oversized u32 LEB128");
   return [Number(r), p];
 }
 
 const args = process.argv.slice(2);
-let file = null, top = 30, rollup = false;
+let file = null, top = 30, rollup = false, asJson = false;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--top") top = parseInt(args[++i], 10);
   else if (args[i] === "--prefix-rollup") rollup = true;
+  else if (args[i] === "--json") asJson = true;
   else file = args[i];
 }
 if (!file) {
-  console.error("usage: node scripts/wasm_func_sizes.mjs <module.wasm> [--top N] [--prefix-rollup]");
+  console.error("usage: node scripts/wasm_func_sizes.mjs <module.wasm> [--top N] [--prefix-rollup] [--json]");
   process.exit(2);
 }
 
 const b = readFileSync(file);
+if (!b.subarray(0, 8).equals(Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]))) {
+  throw new Error("expected a core Wasm version-1 module");
+}
+function limits(q) {
+  let flags; [flags, q] = uleb(b, q);
+  // Refuse unhandled memory64/shared/custom-page forms rather than shifting
+  // every following function name onto the wrong definition.
+  if (flags !== 0 && flags !== 1) throw new Error(`unsupported import limits flags ${flags}`);
+  [, q] = uleb(b, q);
+  if (flags === 1) [, q] = uleb(b, q);
+  return q;
+}
 let p = 8;
 let numImportedFuncs = 0;
 let codeOff = -1, codeSize = 0;
@@ -43,19 +61,34 @@ while (p < b.length) {
   const sid = b[p++];
   let sz; [sz, p] = uleb(b, p);
   const end = p + sz;
+  if (end > b.length) throw new Error("truncated Wasm section");
   if (sid === 2) {
     let cnt; let q = p;
     [cnt, q] = uleb(b, q);
-    for (let i = 0; i < cnt && q < end; i++) {
+    for (let i = 0; i < cnt; i++) {
       let ml; [ml, q] = uleb(b, q); q += ml;
       let fl; [fl, q] = uleb(b, q); q += fl;
       const kind = b[q++];
       if (kind === 0) { numImportedFuncs++; [, q] = uleb(b, q); }
-      else if (kind === 1) { q++; const flag = b[q++]; [, q] = uleb(b, q); if (flag === 1) [, q] = uleb(b, q); }
-      else if (kind === 2) { const flag = b[q++]; [, q] = uleb(b, q); if (flag === 1) [, q] = uleb(b, q); }
-      else if (kind === 3) { q += 2; }
-      else break;
+      else if (kind === 1) {
+        const ref = b[q++];
+        if (ref !== 0x70 && ref !== 0x6f) throw new Error("unsupported imported table reference type");
+        q = limits(q);
+      }
+      else if (kind === 2) { q = limits(q); }
+      else if (kind === 3) {
+        if (b[q] === 0x63 || b[q] === 0x64) throw new Error("unsupported imported typed-reference global");
+        q += 2;
+      }
+      else if (kind === 4) {
+        let attribute; [attribute, q] = uleb(b, q);
+        if (attribute !== 0) throw new Error("unsupported imported tag attribute");
+        [, q] = uleb(b, q);
+      }
+      else throw new Error(`unsupported import kind ${kind}`);
+      if (q > end) throw new Error("truncated import section");
     }
+    if (q !== end) throw new Error("import section length mismatch");
   } else if (sid === 10) {
     codeOff = p; codeSize = sz;
   } else if (sid === 0) {
@@ -68,15 +101,20 @@ while (p < b.length) {
         const sub = b[q++];
         let ssz; [ssz, q] = uleb(b, q);
         const send = q + ssz;
+        if (send > end) throw new Error("truncated name subsection");
         if (sub === 1) {
           let cnt; [cnt, q] = uleb(b, q);
-          for (let i = 0; i < cnt && q < send; i++) {
+          for (let i = 0; i < cnt; i++) {
             let idx, len2;
             [idx, q] = uleb(b, q);
             [len2, q] = uleb(b, q);
-            names.set(idx, b.subarray(q, q + len2).toString("utf8"));
+            if (q + len2 > send) throw new Error("truncated function name");
+            const name = b.subarray(q, q + len2).toString("utf8");
+            if (names.has(idx) && names.get(idx) !== name) throw new Error("ambiguous function name");
+            names.set(idx, name);
             q += len2;
           }
+          if (q !== send) throw new Error("function-name subsection length mismatch");
         }
         q = send;
       }
@@ -91,13 +129,19 @@ let cnt; [cnt, q] = uleb(b, q);
 const funcs = [];
 for (let i = 0; i < cnt; i++) {
   let bsz; [bsz, q] = uleb(b, q);
+  if (q + bsz > codeOff + codeSize) throw new Error("truncated function body");
   funcs.push({ idx: numImportedFuncs + i, size: bsz, name: names.get(numImportedFuncs + i) || "?" });
   q += bsz;
 }
+if (q !== codeOff + codeSize) throw new Error("code section length mismatch");
 funcs.sort((a, z) => z.size - a.size);
 
 const total = funcs.reduce((s, f) => s + f.size, 0);
-if (rollup) {
+const named = funcs.filter((f) => f.name !== "?").length;
+if (asJson) {
+  console.log(JSON.stringify({ codeSectionBytes: codeSize, codeBytes: total,
+    importedFunctions: numImportedFuncs, namedFunctions: named, functions: funcs }));
+} else if (rollup) {
   const groups = new Map();
   for (const f of funcs) {
     let key = f.name;
@@ -120,6 +164,7 @@ if (rollup) {
     console.log(`${String(f.size).padStart(9)} #${String(f.idx).padStart(5)} ${(100 * f.size / total).toFixed(2).padStart(6)}% ${f.name}`);
   }
 }
-const named = funcs.filter((f) => f.name !== "?").length;
-const topShare = funcs.slice(0, top).reduce((s, f) => s + f.size, 0);
-console.log(`-- code section: ${total} B across ${funcs.length} functions (${named} named); top ${top} = ${(100 * topShare / total).toFixed(1)}%`);
+if (!asJson) {
+  const topShare = funcs.slice(0, top).reduce((s, f) => s + f.size, 0);
+  console.log(`-- code section: ${total} B across ${funcs.length} functions (${named} named); top ${top} = ${(100 * topShare / total).toFixed(1)}%`);
+}

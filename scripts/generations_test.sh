@@ -58,13 +58,17 @@ test -s "$TMP_ROOT/out/stage2.wasm"
 test -s "$TMP_ROOT/out/stage3.wasm"
 test -s "$TMP_ROOT/out/generation.json"
 
-node - "$TMP_ROOT/out/generation.json" <<'NODE'
+node - "$TMP_ROOT/out/generation.json" "$TMP_ROOT" <<'NODE'
 const assert = require("node:assert");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
+const path = require("node:path");
 const data = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 assert.equal(data.policy, "rust-style-stage0-stage1-stage2");
 assert.equal(data.seed.name, "test-seed");
 assert.equal(data.source.entry, "lib/@vibe/compiler/index.vibe");
+assert.equal(data.source.entry_sha256, crypto.createHash("sha256")
+  .update(fs.readFileSync(path.join(process.argv[3], data.source.entry))).digest("hex"));
 assert.equal(data.stages.stage0.built_by, "fixed-seed");
 assert.equal(data.stages.stage1.built_by, "stage0");
 assert.equal(data.stages.stage2.built_by, "stage1");
@@ -86,6 +90,34 @@ status_empty="$(VIBE_PROJECT_ROOT="$TMP_ROOT" bash "$SCRIPT" status \
 echo "$status_empty" | grep -qE "^generation\.status=not-built$" || { echo "status missing not-built state" >&2; echo "$status_empty" >&2; exit 1; }
 
 echo "selfhost generations status self-test: ok"
+
+# The receipt must describe the input every stage read, not a later edit.
+cp "$TMP_ROOT/lib/@vibe/compiler/index.vibe" "$TMP_ROOT/original-entry.vibe"
+cat > "$TMP_ROOT/mutating_runner.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+"$VIBE_GENERATION_BASE_TEST_RUNNER" "$@"
+if [ "$(basename "$3")" = "stage0_seed.wasm" ]; then
+  printf '// changed during compile\n' >> "$4"
+fi
+EOF
+chmod +x "$TMP_ROOT/mutating_runner.sh"
+mkdir -p "$TMP_ROOT/changed-input-out"
+printf '{}\n' > "$TMP_ROOT/changed-input-out/generation.json"
+if VIBE_PROJECT_ROOT="$TMP_ROOT" \
+    VIBE_GENERATION_RUNNER_SCRIPT="$TMP_ROOT/mutating_runner.sh" \
+    VIBE_GENERATION_BASE_TEST_RUNNER="$TMP_ROOT/fake_cli_runner.sh" \
+    VIBE_GENERATION_VALIDATE_WASM=0 VIBE_GENERATION_VALIDATE_RUN=0 \
+    bash "$SCRIPT" build --manifest "$TMP_ROOT/bootstrap/seed.json" \
+      --out-dir "$TMP_ROOT/changed-input-out" >"$TMP_ROOT/changed-input.log" 2>&1; then
+  echo "expected an input edited during generation to be refused" >&2
+  exit 1
+fi
+grep -q 'changed during compile' "$TMP_ROOT/lib/@vibe/compiler/index.vibe"
+grep -q 'generation source changed while building' "$TMP_ROOT/changed-input.log"
+test ! -e "$TMP_ROOT/changed-input-out/generation.json"
+cp "$TMP_ROOT/original-entry.vibe" "$TMP_ROOT/lib/@vibe/compiler/index.vibe"
+echo "selfhost generations input-identity self-test: ok"
 
 cp "$TMP_ROOT/bootstrap/seed.json" "$TMP_ROOT/bootstrap/bad-seed.json"
 node - "$TMP_ROOT/bootstrap/bad-seed.json" <<'NODE'
