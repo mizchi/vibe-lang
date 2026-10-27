@@ -7,7 +7,7 @@ argument to a labeled parameter is a build error.
 
 Date: 2026-10-27
 
-Related: #986, #1001, #1500, #1899, #1994, #2404, #2974, #3120, #3432,
+Tracking: #3650. Related: #3651 (builtin labels unchecked), #986, #1001, #1500, #1899, #1994, #2404, #2974, #3120, #3432,
 ADR-0020 (pipe-first), ADR-0064 (`fn` declarations), ADR-0081 (canonical
 method call), ADR-0117 (`_` as pipe slot and section).
 
@@ -42,7 +42,7 @@ parameter, instead of a program that compiles and gives the wrong answer.
 any label is accepted and the arguments bind in the order they were written.
 `String::concat(b = "a", a = "b")` answers `"ab"` with no diagnostic. Under
 the issue triage rules this is a P0, and it is a bug today whatever this ADR
-decides.
+decides (#3651).
 
 **Labels are resolved by a syntactic pass with its own environment.**
 `normalize/desugar/labeled_args.vibe`, `binder_authority.vibe` and the
@@ -178,8 +178,8 @@ is deleted: about 2,300 lines in `labeled_args.vibe` and
 
 **Builtins get parameter names.** About 170 qualified builtins live in
 `core/builtin_registry.vibe` and `checker/builtin_sigs/`. The P0 fix
-(reject a builtin label that does not match its position) ships first, on
-its own.
+(#3651: reject a builtin label that does not match its position) ships
+first, on its own.
 
 **The migration is mechanical and large.** Measured with
 `vibe grep --pattern '$(f:id)($(a:args))'` over every tracked `.vibe` /
