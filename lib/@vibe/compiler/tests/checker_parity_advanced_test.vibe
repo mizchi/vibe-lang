@@ -1,7 +1,7 @@
 //# Imports
 
 import ./checker_parity_test_support.vibe {
-  check_source_err, check_source_err_contains, check_source_located_err_contains, check_source_ok
+  check_source_err, check_source_err_contains, check_source_located_err_contains, check_source_ok, check_source_report
 }
 
 //# Misc
@@ -44,8 +44,28 @@ test "completed aliases refresh suberror constructor contracts" {
 }
 
 test "suberror refresh preserves a later same-named struct constructor" {
+  // The refresh rebinds a suberror's variants once its payload aliases are
+  // complete, and must leave a LATER binding of the same name alone. The one
+  // later binding a variant can share a name with is a struct constructor,
+  // and since #3549 that program is refused: a bare `Box(..)` built whichever
+  // of the two was declared later (measured on db57c1401: with the struct
+  // first, `Box("x")` was an `Old`; with the suberror first, a `Box`). The
+  // refusal is the answer now, and it is the only diagnostic: the refresh
+  // kept the struct's constructor, so `let good = Box("x")` adds no second
+  // error about a `Pair` payload.
   let source = "type Pair = StringMap[Int, String]\nsuberror Old { Box(Pair) }\nstruct Box { value: String }\ntype StringMap[A, B] = (A, B)\nlet good = Box(\"x\")"
-  assert(check_source_ok(source))
+  let message = check_source_report(source)
+  inspect(message, "rename the struct `Box` (or rename the variant): it builds by name like the variant `Box` of `Old`, so a bare `Box(..)` names both and silently builds only one of them [@fn=Box]")
+  // Control: the report is not cut short at the refusal. A real type error
+  // beside it is reported too, so a clobbered constructor would have been.
+  let control = check_source_report(String::concat(source, "\nlet bad: Int = \"s\""))
+  assert(String::contains(control, "rename the struct `Box`"))
+  assert(String::contains(control, "\n"))
+  // With the struct renamed, both constructors are what they say: the struct
+  // builds from a `String`, and the variant takes the completed `Pair`.
+  let renamed = "type Pair = StringMap[Int, String]\nsuberror Old { Box(Pair) }\nstruct Crate { value: String }\ntype StringMap[A, B] = (A, B)\nlet good = Crate(\"x\")\nlet pair = Box((1, \"y\"))"
+  assert(check_source_ok(renamed))
+  assert(check_source_err(String::concat(renamed, "\nlet bad = Box(1)")))
 }
 
 test "parity: Float unified with Double (#492)" {

@@ -2484,14 +2484,18 @@ so. The name that counts is the one the import binds: `import ./m.vibe
 { helper as h }` leaves `helper` free and makes `h` taken. A block-local
 `let`, a parameter or a pattern may still shadow an import inside a body, and
 type imports (`struct Point`, `enum Color`, an uppercase bare item) are not
-part of the rule.
+part of the rule. The rule covers the imports a file writes. An import a
+package sibling inherits from its directory's `index.vpkg` (#897) is not
+one of them: the sibling's own top-level declaration of that name shadows it,
+and the inherited item is dropped from that sibling's scope.
 
 ### A struct cannot be named like a variant in scope (#3549)
 
 A struct builds by its name as well as by `S::{ .. }` (`struct B { v: Int }`
 makes `B(3)` a `B`), so a struct named like a variant of an enum it can see
-(`enum E { B(Int); C }`, local or imported) made a bare `B(3)` name two
-constructors, and the one declared later in the file won silently. The
+(`enum E { B(Int); C }`, local or imported, or a `suberror` variant) made a
+bare `B(3)` name two constructors, and the one declared later in the file won
+silently. The
 struct is refused with ``rename the struct `B` (or rename the variant)``;
 `E::B(..)` alone does not help, because the bare spelling stays ambiguous.
 
