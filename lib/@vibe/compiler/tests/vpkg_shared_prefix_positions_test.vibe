@@ -112,10 +112,12 @@ test "#3656: a parse error in an imported sibling names the line on disk" {
 
 test "#3656: a refusal raised after the merge is located in the sibling" {
   let dir = "/tmp/vibe_vpkg_shared_positions_3656/eq"
-  // A closure field has no structural comparator, so the element type the
-  // pushes would give cannot decide `==` and the build refuses it.
-  let impl_path = write_package(dir, "struct Box {\n  f: (Int) -> Int\n}\n\nfn fill(xs: Array[Box], v: Int) -> Unit {\n  Array::push(xs, Box::{ f: (y: Int) -> y + v })\n}\n\nexport fn wrapped(x: Int) -> Int {\n  let left = []\n  fill(left, seed(x))\n  let right = []\n  fill(right, 1)\n  if left == right {\n    0\n  } else {\n    1\n  }\n}\n")
-  inspect(rel(dir, check(impl_path)), content = "<pkg>/impl.vibe: line 14:11: structural `==` cannot be decided here: annotate one of them (`let xs: Array[<type>] = []`): both operands are untyped empty-array bindings that were pushed to, so neither side describes its element type")
+  // An opaque `StringBuilder` field has no structural comparator, so the
+  // element type the pushes would give cannot decide `==` and the build
+  // refuses it after the merge. (A function field is refused earlier, by the
+  // checker, so it would not exercise the post-merge path.)
+  let impl_path = write_package(dir, "struct Box {\n  b: StringBuilder\n} derive (Eq)\n\nfn fill(xs: Array[Box], v: Int) -> Unit {\n  let b = StringBuilder::new()\n  StringBuilder::push(b, \"v\")\n  Array::push(xs, Box::{ b: b })\n}\n\nexport fn wrapped(x: Int) -> Int {\n  let left = []\n  fill(left, seed(x))\n  let right = []\n  fill(right, 1)\n  if left == right {\n    0\n  } else {\n    1\n  }\n}\n")
+  inspect(rel(dir, check(impl_path)), content = "<pkg>/impl.vibe: line 16:11: structural `==` cannot be decided here: annotate one of them (`let xs: Array[<type>] = []`): both operands are untyped empty-array bindings that were pushed to, so neither side describes its element type")
 }
 
 test "#3656: --json converts a sibling's diagnostic against the file on disk" {
