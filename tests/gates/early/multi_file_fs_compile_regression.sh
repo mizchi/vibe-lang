@@ -480,7 +480,9 @@ echo "[compiler-gate] OOB abort messages + path:line ok (five ops; stripped mapp
 #     on an array in linear memory (a `String::split` result) and
 #     `String::byte_at` had no bounds check at all, so their small
 #     out-of-range rows run there too. The answers that
-#     stay answers are fixtures/index_out_of_u32_range_test.vibe.
+#     stay answers are fixtures/index_out_of_u32_range_test.vibe. Since #3549
+#     `Bytes::slice` clamps its range like `Array::slice` instead of trapping
+#     past the length, so its 2^32 rows are answers too and live there.
 echo "[compiler-gate] 4e2 an index of 2^32 or more traps instead of wrapping into range (#3543)"
 u32dir="_build/_gate_index_u32"
 rm -rf "$u32dir"; mkdir -p "$u32dir"
@@ -493,8 +495,6 @@ u32_cases=(
   "byte_at|linear gc|println(\"\\{String::byte_at(s, id(4294967296))}\")|String::byte_at: index 4294967296 out of bounds for length 3"
   "bytes_get|linear gc|println(\"\\{Bytes::get(b, id(4294967296))}\")|Bytes::get: index 4294967296 out of bounds for length 3"
   "bytes_set|linear gc|Bytes::set(b, id(4294967296), 65)|Bytes::set: index 4294967296 out of bounds for length 3"
-  "bytes_slice|linear gc|println(\"\\{Bytes::length(Bytes::slice(b, id(4294967296), id(4294967298)))}\")|Bytes::get: index 4294967296 out of bounds for length 3"
-  "bytes_slice_end|linear gc|println(\"\\{Bytes::length(Bytes::slice(b, id(0), id(4294967298)))}\")|Bytes::get: index 3 out of bounds for length 3"
   "bytes_blit|linear gc|Bytes::blit(Bytes::new(), b, id(4294967296), id(4294967298))|Bytes::get: index 4294967296 out of bounds for length 3"
   "native_get|linear gc|println(\"\\{local_get(id(4294967296))}\")|Array::get: index 4294967296 out of bounds for length 3"
   "native_set|linear gc|println(\"\\{local_set(id(4294967296))}\")|Array::set: index 4294967296 out of bounds for length 3"

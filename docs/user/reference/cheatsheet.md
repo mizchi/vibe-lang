@@ -2588,7 +2588,7 @@ via `memory.copy`, so `push` is amortised O(1)):
 | `Bytes::push(b, v)` | append one byte (amortised O(1)) | linear / gc |
 | `Bytes::append(dst, src)` | **bulk concatenation. One `memory.copy`** | linear / gc |
 | `Bytes::concat(a, b)` | concatenation returning a new buffer | linear / gc |
-| `Bytes::slice(b, start, end)` | fresh copy of `[start, end)`; bounds are not clamped (see below) | linear / gc |
+| `Bytes::slice(b, start, end)` | a **copy** of `[start, end)`, clamped exactly like `Array::slice`: `start` into `[0, length]`, then `end` into `[start, length]`, so an out-of-range bound truncates (`slice(b, -2, 3)` is `b[0..3]`) and an inverted range is empty | linear / gc |
 | `Bytes::index_of(hay, byte)` | first index holding `byte`, or `-1`. 16-byte SIMD scan | linear / gc |
 | `Bytes::last_index_of(hay, byte)` | last index holding `byte`, or `-1`. Same scan, downwards | linear / gc |
 | `Bytes::count(hay, byte)` | how many times `byte` occurs | linear / gc |
@@ -2598,23 +2598,20 @@ via `memory.copy`, so `push` is amortised O(1)):
 | `Bytes::fill(b, value, count)` | **appends** `count` copies of `value` (a `push` loop) | linear / gc |
 | `Bytes::from_array(a)` / `to_array(b)` | conversion to/from `Array[Int]` (**copies**) | linear / gc |
 
-`Bytes::slice(b, start, end)` makes a fresh buffer and **does not clamp bounds**.
-Its empty-range check compares the bounds in unsigned order. If that check
-finds `start >= end`, the result is empty; otherwise each selected index is
-bounds-checked, and an out-of-range read traps. For a three-byte buffer:
+`Bytes::slice(b, start, end)` makes a fresh buffer and clamps its bounds the
+same way `Array::slice` does (#3549): `start` into `[0, length]`, then `end`
+into `[start, length]`. Nothing traps. For a three-byte buffer:
 
 | start | end | result |
 |---|---|---|
 | `1` | `3` | the last two bytes |
 | `2` | `1` | empty |
 | `5` | `5` | empty |
-| `-1` | `2` | empty (negative start sorts after nonnegative end) |
-| `0` | `-1` | traps when the copy reaches index `3` |
-| `0` | `4` | traps when the copy reaches index `3` |
+| `-1` | `2` | the first two bytes |
+| `0` | `-1` | empty |
+| `0` | `4` | all three bytes |
 
-Use bounds satisfying `0 <= start`, `start <= end`, and `end <= Bytes::length(b)`
-for an in-bounds slice. The return/trap behavior is the same on linear and GC;
-diagnostic text can differ.
+The answers are the same on linear and GC.
 
 > **`Bytes` has no renderer**, so `"\{b}"` is refused at check time (#2987) rather
 > than printing an address. Convert first: `let a: Array[Int] = Bytes::to_array(b)`
@@ -2782,8 +2779,8 @@ prelude wrappers: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`.
 raw byte, not a code point (ADR-0098); UTF-8-encoding a code point is a
 different, currently nonexistent function.
 
-**String and Array slicing clamps; indexing traps** (#2997). `String::substring(s, start, end)`,
-`s[start:end]` and `Array::slice(xs, start, end)` clamp both bounds into
+**String, Array and Bytes slicing clamps; indexing traps** (#2997). `String::substring(s, start, end)`,
+`s[start:end]`, `Array::slice(xs, start, end)` and `Bytes::slice(b, start, end)` clamp both bounds into
 `0..length`, and an `end` before `start` gives the empty slice -- nothing traps:
 `"abcdef"[2:10]` is `"cdef"`, `Array::slice([3, 1, 2], -1, 2)` is `[3, 1]`,
 `Array::slice([3, 1, 2], 2, 1)` is `[]`. A single-element read is the opposite:

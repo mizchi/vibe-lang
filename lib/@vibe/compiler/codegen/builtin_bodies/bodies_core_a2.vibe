@@ -209,9 +209,9 @@ export fn gen_arr_slice_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: Bool
   // #982: slice had ZERO bounds checks — `Array::slice([1,2,3], 1, 10)`
   // memory_copy'd 9 elements of raw adjacent heap into the result and
   // `Array::slice(a, 2, 0)` computed a negative count that trapped inside the
-  // copy (while Bytes::slice is bounds-checked, #811 — non-uniform). Clamp
-  // start into [0, len] and end into [start', len] up front, so an
-  // out-of-range slice tolerantly truncates and an inverted range yields [].
+  // copy. Clamp start into [0, len] and end into [start', len] up front, so
+  // an out-of-range slice tolerantly truncates and an inverted range yields
+  // []. Bytes::slice shares this clamp since #3549 (it used to trap, #811).
   // Scratch i64 local for len: RC reuses existing local 10 (elem, set later
   // before its own use); non-RC adds local 9 (meta bumped 6/0 -> 6/1 at the
   // linked_compile push_builtin site).
@@ -1451,13 +1451,26 @@ export fn gen_bytes_push_body(enable_rc: Bool, arena_ptr_addr: Int, arena_data_b
 }
 
 /// `Bytes::slice(src, start, end)`: a fresh Bytes holding `src[start..end]`.
-/// Params 0-2, one i64 local (3, the result). #3543: the loop runs on the
-/// i64 `start` param itself, as in gen_bytes_blit_body -- narrowed i32
-/// counters made `slice(b, 2^32, 2^32 + 2)` answer `b[0..2]` and
-/// `slice(b, 0, 2^32 + 2)` answer `b[0..2]` instead of trapping in
+/// Params 0-2, two i64 locals (3, the result; 4, the untagged length).
+/// #3543: the loop runs on the i64 `start` param itself, as in
+/// gen_bytes_blit_body -- narrowed i32 counters made
+/// `slice(b, 2^32, 2^32 + 2)` answer `b[0..2]` instead of trapping in
 /// `bytes_get`.
+///
+/// #3549: the range is clamped exactly like `Array::slice` (the shared
+/// `emit_slice_bounds_clamp`): start into [0, len], end into [start, len].
+/// Before, a negative start compared unsigned and answered an empty buffer
+/// (`slice(c, -2, 3)` had length 0 where `Array::slice` gives 3) and an end
+/// past the length trapped in `Bytes::get` (`slice(c, 2, 7)`).
 export fn gen_bytes_slice_body(enable_rc: Bool, bytes_new_idx: Int, bytes_get_idx: Int, bytes_push_idx: Int) -> Bytes {
   let b = bytebuf_new()
+  // len = src[4] (u32 byte count, untagged), as gen_bytes_len_body reads it.
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, 4)
+  emit_slice_bounds_clamp(b, enable_rc, 4)
   emit_call(b, bytes_new_idx)
   emit_local_set(b, 3)
   emit_block_void(b)
