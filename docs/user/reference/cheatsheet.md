@@ -791,11 +791,39 @@ to reference equality or to a length-only answer, and they do not leave a
 trap for run time. `vibe check` does not run this pass. On the lane those
 three commands use, a pushed name whose element is on the allow-list above
 already answers by content (#2391). The build error is an element the
-allow-list rejects (a closure field, an opaque nominal field). A lane
+allow-list rejects (an opaque nominal field; a closure field is refused
+earlier, by the checker, see "Functions have no `==`" below). A lane
 without the checker's rows (the flat single-source lane) still fails for
 the syntactic residual. Annotate those bindings
 (`let xs: Array[Int] = []`). While either side is still empty the lengths
 decide the answer, annotation or not.
+
+#### Functions have no `==` (#3549)
+
+A function has no content to compare, so `==` / `!=` on a value whose
+comparison would reach one is a checker error: bare, an `Array` element, the
+`Some` payload, a tuple element, a record or struct field, or an enum payload,
+through a generic type's arguments too. Measured before the check, `f == f`
+answered `true`, two closures with the same body `false`, and `[f] == [g]`
+and a struct with a function field followed the same identity.
+`derive (Eq)` over such a field is refused at the declaration for the same
+reason (its witness is what a `[T: Eq]` bound would call), and so is an
+`Eq` bound at a generic derived type's function instantiation
+(`eq2(b1, b2)` with `b1: Box[(Int) -> Int]`). The message asks
+for the edit: compare a value the functions compute, or give the closure an
+id field and compare that (a struct that writes its own `equals` is compared
+by it, so `fn Handler::equals(a, b) { a.id == b.id }` is fine). A comparison
+with a payload-less constructor (`x == None`, `step != Step::Stop`) decides by
+the variant alone and is accepted.
+
+```vibe skip
+// rejected: compare a value the functions compute (call them and compare
+// the results), or give the closure an id field and compare that: functions
+// have no equality, and `==` here compares `(Int) -> Int`, ...
+fn same_fn(f: (Int) -> Int, g: (Int) -> Int) -> Bool {
+  f == g
+}
+```
 
 ## Pipe Operator
 

@@ -1,0 +1,327 @@
+// lib/@vibe/compiler/checker -- `==` on a value that holds a function
+// (#3549).
+
+import @vibe/compiler/core {
+  Expr, Stmt, Subst, Type, TypeDef, find_typedef, resolve_type_alias_params, subst_apply, type_to_string
+}
+
+import @vibe/ast {
+  type_param_name
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  checker_string_array_has, eq_source_comparator_heads
+}
+
+//# Reaching a function
+
+/// #3549: the first function a structural comparison of a `ty` value would
+/// reach, with the positions it passed through (outermost first) pushed onto
+/// `path`, or `None` when no position holds a function.
+///
+/// A function has no content to compare, so the comparator of every shape
+/// that holds one ends in reference identity: measured before this check,
+/// `f == f` answered `true`, two closures with the same body `false`, and
+/// `[f] == [g]`, `Some(f) == Some(f)` and a struct with a function field the
+/// same way, after a clean check. The walk follows the comparator: an
+/// `Array` element, the `Some` payload, a tuple element, a record field, and a
+/// declared struct's fields or enum's payloads with its type arguments
+/// substituted. A declared type whose `::equals` the program writes itself
+/// (`note_source_comparator_heads`) is compared by that function, so it is not
+/// descended. A head with no declaration here (a builtin container such as
+/// `Map`, an opaque type) is judged by its type arguments, and so is a
+/// declared head met again inside its own walk, so a recursive declaration
+/// closes. A type variable still free here holds no value and is not a
+/// function.
+export fn eq_function_reached(ty: Type, s: Subst, defs: Array[TypeDef], path: Array[String]) -> Option[Type] {
+  let visiting: Array[String] = []
+  eqf_reach(subst_apply(s, ty), defs, visiting, path)
+}
+
+fn eqf_reach(ty: Type, defs: Array[TypeDef], visiting: Array[String], path: Array[String]) -> Option[Type] {
+  match ty {
+    CtFn(_, _, _) => Some(ty),
+    CtForAll(_, _, body) => match eqf_reach(body, defs, visiting, path) {
+      Some(_) => Some(ty),
+      None => None
+    },
+    CtArray(e) => eqf_reach_at(e, "an `Array` element", defs, visiting, path),
+    CtOption(e) => eqf_reach_at(e, "the `Some` payload", defs, visiting, path),
+    CtTuple(items) => {
+      let mut found = None
+      let mut i = 0
+      while i < Array::length(items) && eqf_is_none(found) {
+        found = eqf_reach_at(Array::get(items, i), String::concat("tuple element `.", String::concat(Int::to_string(i), "`")), defs, visiting, path)
+        i = i + 1
+      }
+      found
+    },
+    CtRecord(rfields) => {
+      let mut found = None
+      let mut i = 0
+      while i < Array::length(rfields) && eqf_is_none(found) {
+        let (fname, fty) = Array::get(rfields, i)
+        found = eqf_reach_at(fty, "field `\{fname}`", defs, visiting, path)
+        i = i + 1
+      }
+      found
+    },
+    CtNamed(n, args) => eqf_reach_named(n, args, defs, visiting, path),
+    CtStruct(n) => eqf_reach_named(n, [], defs, visiting, path),
+    CtEnum(n) => eqf_reach_named(n, [], defs, visiting, path),
+    CtApplied(head, args) => match head {
+      CtNamed(n, hargs) => if Array::length(hargs) == 0 {
+        eqf_reach_named(n, args, defs, visiting, path)
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
+fn eqf_is_none(found: Option[Type]) -> Bool {
+  match found {
+    Some(_) => false,
+    None => true
+  }
+}
+
+/// Walk `ty` as the position `segment`, which stays on `path` only when a
+/// function is found under it.
+fn eqf_reach_at(ty: Type, segment: String, defs: Array[TypeDef], visiting: Array[String], path: Array[String]) -> Option[Type] {
+  Array::push(path, segment)
+  let found = eqf_reach(ty, defs, visiting, path)
+  if eqf_is_none(found) {
+    Array::truncate(path, Array::length(path) - 1)
+  } else {
+    ()
+  }
+  found
+}
+
+fn eqf_reach_args(n: String, args: Array[Type], defs: Array[TypeDef], visiting: Array[String], path: Array[String]) -> Option[Type] {
+  let mut found = None
+  let mut i = 0
+  while i < Array::length(args) && eqf_is_none(found) {
+    found = eqf_reach_at(Array::get(args, i), "a type argument of `\{n}`", defs, visiting, path)
+    i = i + 1
+  }
+  found
+}
+
+fn eqf_param_names(tparams: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  for p in tparams {
+    Array::push(out, type_param_name(p))
+  }
+  out
+}
+
+/// A declaration-level field or payload type at the use's type arguments.
+/// Without them (the declaration itself, judged by `derive (Eq)`), a
+/// parameter stands for no particular type and is read as `CtUnknown`, never
+/// as a declaration that happens to share its spelling: in
+/// `type FnInt = (Int) -> Int` beside `struct Cell[FnInt] { value: FnInt }`,
+/// the field is the parameter, not the alias.
+fn eqf_instantiate(fty: Type, names: Array[String], args: Array[Type]) -> Type {
+  if Array::length(names) == 0 {
+    fty
+  } else if Array::length(names) == Array::length(args) {
+    resolve_type_alias_params(fty, names, args)
+  } else {
+    let unknowns: Array[Type] = []
+    let mut i = 0
+    while i < Array::length(names) {
+      Array::push(unknowns, CtUnknown)
+      i = i + 1
+    }
+    resolve_type_alias_params(fty, names, unknowns)
+  }
+}
+
+fn eqf_reach_named(n: String, args: Array[Type], defs: Array[TypeDef], visiting: Array[String], path: Array[String]) -> Option[Type] {
+  if checker_string_array_has(eq_source_comparator_heads, n) {
+    None
+  } else if checker_string_array_has(visiting, n) {
+    eqf_reach_args(n, args, defs, visiting, path)
+  } else {
+    match find_typedef(defs, n) {
+      Some(TDStruct(_, fields, _, tparams)) => {
+        let names = eqf_param_names(tparams)
+        Array::push(visiting, n)
+        let mut found = None
+        let mut i = 0
+        while i < Array::length(fields) && eqf_is_none(found) {
+          let (fname, fty) = Array::get(fields, i)
+          found = eqf_reach_at(eqf_instantiate(fty, names, args), "field `\{fname}` of `\{n}`", defs, visiting, path)
+          i = i + 1
+        }
+        Array::truncate(visiting, Array::length(visiting) - 1)
+        found
+      },
+      Some(TDEnum(_, tparams, variants)) => {
+        let names = eqf_param_names(tparams)
+        Array::push(visiting, n)
+        let mut found = None
+        let mut i = 0
+        while i < Array::length(variants) && eqf_is_none(found) {
+          let (vname, payloads) = Array::get(variants, i)
+          let mut j = 0
+          while j < Array::length(payloads) && eqf_is_none(found) {
+            found = eqf_reach_at(eqf_instantiate(Array::get(payloads, j), names, args), "the payload of `\{n}::\{vname}`", defs, visiting, path)
+            j = j + 1
+          }
+          i = i + 1
+        }
+        Array::truncate(visiting, Array::length(visiting) - 1)
+        found
+      },
+      Some(TDAlias(_, aparams, target)) => {
+        Array::push(visiting, n)
+        let found = eqf_reach(eqf_instantiate(target, eqf_param_names(aparams), args), defs, visiting, path)
+        Array::truncate(visiting, Array::length(visiting) - 1)
+        found
+      },
+      Some(_) => None,
+      None => eqf_reach_args(n, args, defs, visiting, path)
+    }
+  }
+}
+
+//# Refusal
+
+/// #3549: is `e` a constructor that carries no payload (`None`, `E::B`, `B`)?
+/// A comparison with one decides by the variant alone: an `Option` or a
+/// derived enum comparator reaches a payload only when both sides are the
+/// same variant, and this one has none. So `x == None` is a presence test that
+/// never compares a function, even when `x`'s `Some` payload is one, and it is
+/// not refused (the compiler's own sources write `recursive_env == None` over
+/// an `Option[TypeEnv]`). A name is a constructor only when `defs` declares it
+/// as a payload-less variant, under the qualifier when one is written.
+export fn eq_operand_is_nullary_ctor(e: Expr, defs: Array[TypeDef]) -> Bool {
+  match e {
+    EIdent(n, _) => {
+      let cut = String::last_index_of(n, "::")
+      let (qual, seg) = if cut >= 0 {
+        (String::substring(n, 0, cut), String::substring(n, cut + 2, String::length(n)))
+      } else {
+        ("", n)
+      }
+      if seg == "None" && (qual == "" || qual == "Option") {
+        true
+      } else {
+        let mut found = false
+        let mut i = 0
+        while i < Array::length(defs) && !found {
+          match Array::get(defs, i) {
+            TDEnum(en, _, variants) => if qual == "" || qual == en {
+              let mut j = 0
+              while j < Array::length(variants) && !found {
+                let (vname, payloads) = Array::get(variants, j)
+                found = vname == seg && Array::length(payloads) == 0
+                j = j + 1
+              }
+            } else {
+              ()
+            },
+            _ => ()
+          }
+          i = i + 1
+        }
+        found
+      }
+    },
+    _ => false
+  }
+}
+
+/// #3549: the refusal for `==` / `!=` on operands of type `operand` when a
+/// structural comparison of it would reach a function, or `None`. It leads
+/// with the edit: compare what the functions compute, or an id the program
+/// gives the closure. An `Option` operand is usually a presence test, so its
+/// message names `is None` / `is Some(_)` first.
+export fn eq_function_operand_refusal(op: String, operand: Type, s: Subst, defs: Array[TypeDef]) -> Option[String] {
+  let resolved = subst_apply(s, operand)
+  let path: Array[String] = []
+  match eq_function_reached(resolved, s, defs, path) {
+    Some(fty) => {
+      let presence = match resolved {
+        CtOption(_) => "to test whether the option holds a function, write `x is Some(_)` or compare with `None` itself; otherwise ",
+        _ => ""
+      }
+      let shown = type_to_string(resolved)
+      let where_ = if Array::length(path) == 0 {
+        ""
+      } else {
+        ", which holds the function `\{type_to_string(fty)}` at \{String::join(path, " -> ")}"
+      }
+      Some("\{presence}compare a value the functions compute (call them and compare the results), or give the closure an id field and compare that: functions have no equality, and `\{op}` here compares `\{shown}`\{where_}, so it could only answer by identity (two closures with the same body would be unequal)")
+    },
+    None => None
+  }
+}
+
+/// #3549: the refusal for a bound that entails `Eq` (`[T: Eq]`, or a trait
+/// extending it) instantiated at `resolved` when the witness's comparison
+/// would reach a function, or `None`. A function type itself has no `Eq`
+/// impl and is refused as "no impl" already; what reaches here is a type
+/// whose impl exists but whose comparator ends at a function -- a generic
+/// `derive (Eq)` declaration at a function argument, `Box[(Int) -> Int]`:
+/// measured before this refusal, `eq2(b1, b2)` answered `false` for two boxes
+/// of closures with the same body, and `eq2(b1, b1)` `true`.
+export fn eq_function_bound_refusal(bound_display: String, resolved: Type, s: Subst, defs: Array[TypeDef]) -> Option[String] {
+  let path: Array[String] = []
+  match eq_function_reached(resolved, s, defs, path) {
+    Some(fty) => {
+      let where_ = if Array::length(path) == 0 {
+        ""
+      } else {
+        ", which holds the function `\{type_to_string(fty)}` at \{String::join(path, " -> ")}"
+      }
+      Some("compare a value the functions compute (call them and compare the results), or give the closure an id field and compare that: no impl `\{bound_display}` for `\{type_to_string(subst_apply(s, resolved))}`\{where_}, because functions have no equality and its comparison could only answer by identity")
+    },
+    None => None
+  }
+}
+
+/// #3549: refuse `derive (Eq)` on a declaration whose derived comparator
+/// would reach a function through a field or payload. The derive registers
+/// `impl Eq`, so an `[T: Eq]` bound is satisfied there and its witness then
+/// compared the function by identity: `eq2(d, d2)` answered `false` for two
+/// values built from closures with the same body. A declaration whose
+/// `::equals` the program writes itself derives nothing for `Eq` and is
+/// skipped. Run after the statements were checked, so `defs` holds every
+/// declaration with its resolved field types.
+export fn collect_derive_eq_function_errors(stmts: Array[Stmt], defs: Array[TypeDef], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, derives, _, _) => eqf_check_derive(name, derives, defs, errors),
+      SEnum(_, name, _, _, derives) => eqf_check_derive(name, derives, defs, errors),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn eqf_check_derive(name: String, derives: Array[String], defs: Array[TypeDef], errors: Array[String]) -> Unit {
+  if checker_string_array_has(derives, "Eq") && !checker_string_array_has(eq_source_comparator_heads, name) {
+    let path: Array[String] = []
+    let visiting: Array[String] = []
+    match eqf_reach_named(name, [], defs, visiting, path) {
+      Some(fty) => {
+        let at = if Array::length(path) == 0 {
+          "a field"
+        } else {
+          String::join(path, " -> ")
+        }
+        Array::push(errors, "write `\{name}::equals` yourself (comparing what the function computes, or an id field), or remove `Eq` from its `derive`: functions have no equality, and the derived comparator would reach the function `\{type_to_string(fty)}` at \{at}, so it could only answer by identity [@fn=\{name}]")
+      },
+      None => ()
+    }
+  } else {
+    ()
+  }
+}

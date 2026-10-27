@@ -150,7 +150,9 @@ echo "[compiler-gate] extended derive (enum Ord/Show, Default, Eq, Hash + Map ke
 # cannot read (a pushed NAME, or pushes that all happen inside a function the
 # array is merely passed to) AND that the typed-`==` channel (#2391, after
 # #2447) does not admit -- a declared element whose field allow-list fails
-# (a closure field, an opaque nominal field). Once BOTH sides are non-empty
+# (an opaque nominal field; a closure field is the checker's to refuse since
+# #3549, fixtures/typecheck/eq_function_untyped_empty_array_reject.vibe).
+# Once BOTH sides are non-empty
 # that must fail closed at runtime rather than silently falling back to
 # reference or length equality.
 echo "[compiler-gate] structural equality untyped-empty mutation fail-closed (#1681/#2157)"
