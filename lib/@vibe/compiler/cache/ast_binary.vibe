@@ -38,7 +38,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr, builtin_operation_arity
+  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr, builtin_operation_arity, call_placement_wire_valid, return_call_site
 }
 
 //# Constants ===
@@ -1523,18 +1523,28 @@ export fn ast_binary_read_expr(r: AstBinaryReader) -> Expr with Exception {
     let args = ast_binary_read_expr_array(r)
     let off = ast_binary_read_svarint_checked(r)
     let count = ast_binary_read_count_checked(r)
-    if count > 1 {
-      throw("AST binary: invalid callee resolution")
-    }
     let resolution: Array[Int] = []
     let mut i = 0
     while i < count {
-      let operation = ast_binary_read_svarint_checked(r)
-      if operation != 0 - 1 && builtin_operation_arity(operation) < 0 {
-        throw("AST binary: unknown callee operation")
-      }
-      Array::push(resolution, operation)
+      Array::push(resolution, ast_binary_read_svarint_checked(r))
       i = i + 1
+    }
+    let start = if return_call_site(resolution) >= 0 {
+      2
+    } else {
+      0
+    }
+    let payload = count - start
+    if payload > 0 {
+      let operation = Array::get(resolution, start)
+      let known = operation == 0 - 1 || builtin_operation_arity(operation) >= 0
+      if payload == 1 {
+        if !known {
+          throw("AST binary: unknown callee operation")
+        }
+      } else if !call_placement_wire_valid(resolution, start) || (!known && operation != 0) {
+        throw("AST binary: invalid callee resolution")
+      }
     }
     ECall(callee, args, off, resolution)
   } else if tag == AST_BINARY_TAG_E_BIN_OP {

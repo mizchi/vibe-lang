@@ -308,3 +308,70 @@ export fn call_placement_is_refused(cell: Array[Int]) -> Bool {
 export fn call_placement_is_canonical(cell: Array[Int]) -> Bool {
   placement_role(cell) == 4
 }
+
+fn placement_slots_valid(written: Int, mode: Int, slots: Array[Int], start: Int) -> Bool {
+  let used: MutMap[Int, Bool] = MutMap::new_int()
+  let mut valid = written >= 0 && (mode >= 0 && mode <= 2)
+  let mut count = 0
+  let mut i = start
+  while i < Array::length(slots) && valid {
+    let slot = Array::get(slots, i)
+    if slot == 0 {
+      ()
+    } else if slot < 2 {
+      valid = false
+    } else {
+      let source = slot / 2 - 1
+      if source >= written || MutMap::has(used, source) {
+        valid = false
+      } else {
+        MutMap::set(used, source, true)
+        count = count + 1
+      }
+    }
+    if mode != 0 && slot != (i - start + 1) * 2 {
+      valid = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  valid && count == written && (mode == 0 || Array::length(slots) - start == written)
+}
+
+/// One payload grammar serves source-row restoration and binary AST transport.
+export fn call_placement_payload_valid(written: Int, mode: Int, slots: Array[Int]) -> Bool {
+  placement_slots_valid(written, mode, slots, 0)
+}
+
+/// Raw snapshot pool IDs cannot cross a process boundary. Checked/expected
+/// placements and explicit refusals retain their validated payload instead.
+export fn call_placement_wire_valid(cell: Array[Int], start: Int) -> Bool {
+  if start < 0 || !call_placement_cell_prefix(cell, start) {
+    false
+  } else {
+    let role = Array::get(cell, start + 2)
+    if role == 1 || role == 4 {
+      Array::length(cell) >= start + 5 && placement_slots_valid(Array::get(cell, start + 3), Array::get(cell, start + 4), cell, start + 5)
+    } else if role == 2 || role == 3 {
+      if Array::length(cell) == start + 3 {
+        true
+      }
+      else if Array::length(cell) < start + 5 {
+        false
+      }
+      else {
+        let mut valid = Array::get(cell, start + 3) >= 0 - 1 && (Array::get(cell, start + 4) == 0 || Array::get(cell, start + 4) == 1)
+        let mut i = start + 5
+        while i < Array::length(cell) && valid {
+          let byte = Array::get(cell, i)
+          valid = byte >= 0 && byte <= 255
+          i = i + 1
+        }
+        valid
+      }
+    } else {
+      false
+    }
+  }
+}

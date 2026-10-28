@@ -1,3 +1,7 @@
+import @vibe/compiler/cache {
+  ast_binary_read_expr, ast_binary_reader_new, ast_binary_write_expr
+}
+
 import @vibe/compiler/core {
   Expr,
   Stmt,
@@ -169,5 +173,55 @@ test "placement transport retains more than 255 written arguments" {
       assert(Array::get(slots, 0) == 600 && Array::get(slots, 299) == 2)
     },
     None => assert(false)
+  }
+}
+
+fn binary_cell(cell: Array[Int]) -> Option[Array[Int]] {
+  let bytes = Bytes::new()
+  ast_binary_write_expr(bytes, ECall(EIdent("f", 7), [EInt(3), EInt(10)], 7, cell))
+  handle {
+    match ast_binary_read_expr(ast_binary_reader_new(bytes)) {
+      ECall(_, _, _, restored) => Some(restored),
+      _ => None
+    }
+  } with { Exception::Throw(_) => None }
+}
+
+/// AST caches retain checked placements, refusal diagnostics and return-site
+/// wrappers, in addition to the original single-operation cells.
+test "binary AST transport retains validated placement cells" {
+  for cell in [
+    [],
+    [-1],
+    [2],
+    [0, -3660, 1, 2, 0, 4, 2, 0],
+    [2, -3660, 4, 2, 0, 2, 4],
+    [0, -3660, 2],
+    [0, -3660, 3, -1, 1, 102]
+  ] {
+    assert(binary_cell(cell) == Some(cell))
+    let wrapped = return_call_resolve(cell, 17)
+    assert(binary_cell(wrapped) == Some(wrapped))
+  }
+}
+
+/// Process-local snapshot IDs and invalid index/operation payloads are refused;
+/// merely lifting the old one-word limit would accept untrusted garbage.
+test "binary AST transport refuses transient and malformed placement cells" {
+  for cell in [
+    [0],
+    [9999],
+    [0, -3660, 0, 1, 0],
+    [0, -3660, 1],
+    [0, -3660, 1, 2, 0, 2, 2],
+    [0, -3660, 1, 2, 0, 2],
+    [0, -3660, 1, 2, 1, 4, 2],
+    [0, -3660, 1, 2, 3, 2, 4],
+    [9999, -3660, 1, 2, 0, 2, 4],
+    [0, -3660, 3, -2, 0],
+    [0, -3660, 3, 7, 0, 256]
+  ] {
+    assert(binary_cell(cell) == None)
+    assert(binary_cell(return_call_resolve(cell, 17)) == None)
   }
 }
