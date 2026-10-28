@@ -1,0 +1,237 @@
+import @vibe/core {
+  struct MutMap
+}
+
+import @vibe/compiler/core {
+  BindingOrigin,
+  Expr,
+  Type,
+  TypeEnv,
+  call_placement_wants_binding,
+  env_bind_mut,
+  env_bind_with_origin,
+  env_lookup_binding,
+  env_mut_escape,
+  freeze_call_header_origin
+}
+
+// Only demanded mutable callees allocate a box. Every reference resolves that
+// box through TypeEnv, so an assignment in one call argument reaches the next.
+let live_headers: Array[Array[(Int, Array[String], Int)]] = []
+let probe_depth: Array[Int] = [0]
+
+export fn checker_call_header_flow_begin() -> Unit {
+  Array::truncate(live_headers, 0)
+  Array::set(probe_depth, 0, 0)
+}
+
+export fn checker_call_header_is_probe() -> Bool {
+  Array::get(probe_depth, 0) > 0
+}
+
+fn header_names(value: Expr) -> Option[Array[String]] {
+  match value {
+    EFn(_, _, params, _, _, _) => Some(for param in params {
+      let (name, _) = param
+      name
+    }),
+    _ => None
+  }
+}
+
+fn logical_name(name: String) -> String {
+  if String::ends_with(name, "~") {
+    name[0: String::length(name) - 1]
+  }
+  else {
+    name
+  }
+}
+
+fn same_header(a: Array[String], b: Array[String]) -> Bool {
+  let mut same = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while i < Array::length(a) && same {
+    same = logical_name(Array::get(a, i)) == logical_name(Array::get(b, i))
+    i = i + 1
+  }
+  same
+}
+
+fn make_header_box(kind: Int, names: Array[String]) -> BindingOrigin {
+  let box = [(kind, names, 0)]
+  if !checker_call_header_is_probe() {
+    Array::push(live_headers, box)
+  } else {
+    ()
+  }
+  BindingOriginMutableFunctionHeader(box)
+}
+
+/// Install metadata on exactly the mutable binding selected by TypeEnv.
+export fn checker_bind_mut_call_header(env: TypeEnv, name: String, ty: Type, value: Expr, escapes: Bool) -> TypeEnv {
+  let names = header_names(value)
+  let mut needed = call_placement_wants_binding(name)
+  match names {
+    Some(params) => for param in params {
+      needed = needed || String::ends_with(param, "?")
+    },
+    None => ()
+  }
+  if needed {
+    let origin = match names {
+      Some(params) => make_header_box(1, params),
+      None => make_header_box(0, [])
+    }
+    EnvMutCell(name, escapes, env_bind_with_origin(env, name, ty, origin))
+  } else {
+    env_bind_mut(env, name, ty, escapes)
+  }
+}
+
+/// Sequential assignments change the actual binding, including across sibling
+/// argument checks. Once control flow made it uncertain, an assignment cannot
+/// recover the declaration by whichever branch the checker happened to visit.
+export fn checker_assign_call_header(env: TypeEnv, name: String, value: Expr) -> Unit {
+  match env_lookup_binding(env, name) {
+    Some(binding) => match binding.origin {
+      BindingOriginMutableFunctionHeader(box) => {
+        let (kind, previous, revision) = Array::get(box, 0)
+        if kind == 2 {
+          ()
+        } else {
+          let (next_kind, next) = match header_names(value) {
+            Some(params) => (1, params),
+            None => (0, [])
+          }
+          if kind != next_kind || !same_header(previous, next) {
+            Array::set(box, 0, (next_kind, next, revision + 1))
+          } else {
+            ()
+          }
+        }
+      },
+      _ => ()
+    },
+    None => ()
+  }
+}
+
+/// Empty ordinary programs allocate no snapshot array. Revision changes also
+/// detect a header changed and then changed back inside a branch.
+export fn checker_call_header_snapshot() -> Option[Array[(Int, Array[String], Int, Bool)]] {
+  if Array::length(live_headers) == 0 {
+    None
+  } else {
+    Some(for box in live_headers {
+      let (kind, names, revision) = Array::get(box, 0)
+      (kind, names, revision, false)
+    })
+  }
+}
+
+/// Rewind to the branch input, retaining which outer bindings any arm wrote.
+export fn checker_call_header_rewind(snapshot: Option[Array[(Int, Array[String], Int, Bool)]]) -> Unit {
+  match snapshot {
+    Some(rows) => {
+      let mut i = 0
+      while i < Array::length(rows) {
+        let (kind, names, revision, changed) = Array::get(rows, i)
+        let box = Array::get(live_headers, i)
+        let (_, _, current) = Array::get(box, 0)
+        Array::set(rows, i, (kind, names, revision, changed || current != revision))
+        Array::set(box, 0, (kind, names, revision))
+        i = i + 1
+      }
+      Array::truncate(live_headers, Array::length(rows))
+    },
+    None => Array::truncate(live_headers, 0)
+  }
+}
+
+/// A branch, loop or closure does not dominate the following expression.
+/// Poison only the outer bindings whose logical header it changed.
+export fn checker_call_header_merge(snapshot: Option[Array[(Int, Array[String], Int, Bool)]]) -> Unit {
+  match snapshot {
+    Some(rows) => {
+      let mut i = 0
+      while i < Array::length(rows) {
+        let (kind, names, revision, changed) = Array::get(rows, i)
+        let box = Array::get(live_headers, i)
+        let (_, _, current) = Array::get(box, 0)
+        Array::set(box, 0, if changed || current != revision {
+          (2, [], revision + 1)
+        } else {
+          (kind, names, revision)
+        })
+        i = i + 1
+      }
+      Array::truncate(live_headers, Array::length(rows))
+    },
+    None => Array::truncate(live_headers, 0)
+  }
+}
+
+/// Speculative type queries cannot mutate binding flow or publish placements.
+export fn checker_call_header_probe_begin() -> Option[Array[(Int, Array[String], Int, Bool)]] {
+  let saved = checker_call_header_snapshot()
+  Array::set(probe_depth, 0, Array::get(probe_depth, 0) + 1)
+  saved
+}
+
+export fn checker_call_header_probe_end(saved: Option[Array[(Int, Array[String], Int, Bool)]]) -> Unit {
+  checker_call_header_rewind(saved)
+  Array::set(probe_depth, 0, Array::get(probe_depth, 0) - 1)
+}
+
+/// A persisted mutable input contains frozen facts. Rehydrate each visible
+/// binding once before checking, without trusting an older cached index box.
+export fn checker_seed_mut_call_headers(env: TypeEnv) -> TypeEnv {
+  let seen: MutMap[String, Bool] = MutMap::new_string()
+  let mut out = env
+  let mut current = env
+  let mut done = false
+  while !done {
+    match current {
+      EnvMutCell(name, _, rest) => {
+        if !MutMap::has(seen, name) {
+          MutMap::set(seen, name, true)
+          match (env_mut_escape(env, name), env_lookup_binding(env, name)) {
+            (Some(escapes), Some(binding)) => {
+              let origin = freeze_call_header_origin(binding.origin)
+              match origin {
+                BindingOriginFunctionHeader(names) => out = EnvMutCell(name, escapes, env_bind_with_origin(out, name, binding.ty, make_header_box(1, names))),
+                BindingOriginUncertainFunctionHeader => out = EnvMutCell(name, escapes, env_bind_with_origin(out, name, binding.ty, make_header_box(2, [
+                ]))),
+                _ => ()
+              }
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        }
+        current = rest
+      },
+      EnvBind(_, _, rest) => current = rest,
+      EnvTraitDef(_, _, _, _, rest, _, _) => current = rest,
+      EnvTraitImpl(_, _, rest) => current = rest,
+      EnvTraitImplGen(_, _, _, _, rest) => current = rest,
+      EnvTypeDefs(_, _, rest) => current = rest,
+      EnvCached(_, _, rest) => current = rest,
+      EnvShowWrappers(_, _, rest) => current = rest,
+      _ => done = true
+    }
+  }
+  out
+}
+
+export fn checker_call_header_barrier(expr: Expr) -> Bool {
+  match expr {
+    EFn(_, _, _, _, _, _) => true,
+    EWhile(_, _) => true,
+    ELoop(_, _) => true,
+    EForIn(_, _, _, _) => true,
+    _ => false
+  }
+}

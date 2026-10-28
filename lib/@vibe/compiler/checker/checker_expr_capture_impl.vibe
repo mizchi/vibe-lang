@@ -1,3 +1,22 @@
+import ./checker_expr_numeric_observation.vibe {
+  add_formal_for_type, float_operand_binop, record_add_formal
+}
+
+import ./checker_call_header_flow.vibe {
+  checker_assign_call_header,
+  checker_bind_mut_call_header,
+  checker_call_header_barrier,
+  checker_call_header_merge,
+  checker_call_header_probe_begin,
+  checker_call_header_probe_end,
+  checker_call_header_rewind,
+  checker_call_header_snapshot
+}
+
+import ./checker_call_header.vibe {
+  checker_bind_call_header
+}
+
 // lib/@vibe/compiler/checker/checker.vibe — expr capture impl.
 
 import @vibe/compiler/checker/annotations {
@@ -346,7 +365,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         let aliases_outer = spine_region_active && expression_aliases_outer_binding(val, cenv)
         note_local_generic_binding(val, gen, cenv)
         let def_env = cenv
-        cenv = env_bind(cenv, name, gen)
+        cenv = checker_bind_call_header(cenv, name, gen, val)
         // #3548: the guard desugar binds the scrutinee to the match temp, and
         // the fall-through match it reads that temp in has no offset; keep
         // the written scrutinee's, scoped like the temp, to locate a refusal.
@@ -415,7 +434,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
           cenv = env_bind_mut(cenv, name, lr_tv, escapes)
           c1 = nc2
         } else {
-          cenv = env_bind_mut(cenv, name, vt, escapes)
+          cenv = checker_bind_mut_call_header(cenv, name, vt, val, escapes)
           c1 = nc
         }
         // #3343 (Codex on #3359): what the binding may carry -- what it
@@ -433,7 +452,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
       ELetRec(name, val, body) => {
         let (tv, c1b) = fresh_var(c1)
         let err_before = Array::length(errors)
-        let (vt, ns, nc) = ce(val, env_bind(cenv, name, tv), defs, s1, c1b, errors, tytab, capture, lane)
+        let (vt, ns, nc) = ce(val, checker_bind_call_header(cenv, name, tv, val), defs, s1, c1b, errors, tytab, capture, lane)
         attach_unlocated_decl_name_marker(errors, err_before, name)
         let s2 = match unify(tv, vt, ns) {
           Some(su) => su,
@@ -459,7 +478,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // for `let` -- keyed by its value, since `ELetRec` has no offset.
         record_local_let_rec_type(val, body, gen, lane)
         note_local_generic_binding(val, gen, cenv)
-        cenv = env_bind(cenv, name, gen)
+        cenv = checker_bind_call_header(cenv, name, gen, val)
         cenv = bind_function_dependency_contracts(cenv, name, val)
         cenv = retention_bind_let(cenv, name, val, gen, true)
         s1 = s2
@@ -833,8 +852,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           Array::push(errors, String::concat("if condition must be Bool, got ", String::concat(type_to_string(resolved_ct), String::concat(hint, off_marker(railway_expr_off(cond))))))
         }
       }
+      let header_fork = checker_call_header_snapshot()
       let (tt, s2, c2) = check_expr_capture(then_e, env, defs, s1, c1, errors, tytab, capture, lane)
+      checker_call_header_rewind(header_fork)
       let (et, s3, c3) = check_expr_capture(else_e, env, defs, s2, c2, errors, tytab, capture, lane)
+      checker_call_header_merge(header_fork)
       // The two branches must agree when both yield a real value (previously
       // unchecked — `if c { 1 } else { "x" }` was accepted). A `CtUnit` branch
       // is tolerated: `if c { stmt }` desugars to an `else ()` whose value is
@@ -1084,6 +1106,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           s1
         }
       }
+      checker_assign_call_header(env, name, val)
       check_expr_capture(body, env, defs, s1b, c1, errors, tytab, capture, lane)
     },
     EAssignOp(name, aop, val, body, target_off) => {
@@ -1197,6 +1220,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         let mut si = s1
         let mut ci = c1
         let mut ai = 0
+        let header_arms = checker_call_header_snapshot()
         while ai < alen {
           let (pat, body) = Array::get(arms, ai)
           // #951: `A(v) | B(v) => v` (or any or-pattern binding a variable in
@@ -1247,6 +1271,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             ()
           }
           let (arm_ty, ns, nc) = check_expr_capture(body, arm_env, defs, si, ci, errors, tytab, capture, lane)
+          checker_call_header_rewind(header_arms)
           si = ns
           ci = nc
           // #3012 / #2985 review (Codex P2): the match's type is anchored on
@@ -1465,6 +1490,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         } else {
           ()
         }
+        checker_call_header_merge(header_arms)
         (result_ty, si, ci)
       }
     },
@@ -1533,6 +1559,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // #1340 (ADR-0071): every arm reads the ONE instantiation published in
       // henv_shared above, so the S that `Get => resume(0)` binds to Int is the
       // same S the `Put(v)` payload binder and the body's performs see.
+      let header_handlers = checker_call_header_snapshot()
       let mut hai = 0
       while hai < Array::length(harms) {
         // A split or-pattern arm carries its group stamp around the body.
@@ -1661,6 +1688,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     env_bind(henv, "resume", CtFn([hret], hret, None))
                   }
                   let (harm_ty, hns, hnc) = check_expr_capture(hbody, henv_arm, defs, hs1, hc1, errors, tytab, capture, lane)
+                  checker_call_header_rewind(header_handlers)
                   hs1 = hns
                   hc1 = hnc
                   // #2962: a tail-resumptive arm (no value reference to
@@ -1858,6 +1886,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 None => 0 - 1
               }
               let (earm_ty, eans, eanc) = check_expr_capture(hbody, eaenv, defs, hs1, hc1, errors, tytab, capture, lane)
+              checker_call_header_rewind(header_handlers)
               if ea_mark >= 0 {
                 erased_throw_arm_leave(ea_mark)
               }
@@ -1907,6 +1936,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // rejects unknown arm names), so require every op to have an arm.
       let hx_eff = array_empty()
       let hx_ops = array_empty()
+      checker_call_header_merge(header_handlers)
       let mut hxi = 0
       while hxi < Array::length(harms) {
         let (hxpat, _) = Array::get(harms, hxi)
@@ -2803,7 +2833,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
 export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> (Type, Subst, Int) {
   // Production calls carry None. Avoid enter/exit Option dispatches for every
   // recursive expression while preserving them exactly for opt-in capture.
-  match capture {
+  let barrier = checker_call_header_barrier(expr)
+  let header_scope = if barrier {
+    checker_call_header_snapshot()
+  } else {
+    None
+  }
+  let result = match capture {
     None => check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, lane, false),
     Some(_) => {
       typed_occurrence_capture_enter_expression(capture, expr)
@@ -2813,13 +2849,25 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
       result
     }
   }
+  if barrier {
+    checker_call_header_merge(header_scope)
+  } else {
+    ()
+  }
+  result
 }
 
 /// Check exactly this expression root as a discarded statement. Recursive
 /// children go back through `check_expr_capture`, so the flag cannot leak into
 /// a nested value position (#1679 review follow-up).
 fn check_expr_capture_discarded_root(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> (Type, Subst, Int) {
-  match capture {
+  let barrier = checker_call_header_barrier(expr)
+  let header_scope = if barrier {
+    checker_call_header_snapshot()
+  } else {
+    None
+  }
+  let result = match capture {
     None => check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, lane, true),
     Some(_) => {
       typed_occurrence_capture_enter_expression(capture, expr)
@@ -2829,6 +2877,12 @@ fn check_expr_capture_discarded_root(expr: Expr, env: TypeEnv, defs: Array[TypeD
       result
     }
   }
+  if barrier {
+    checker_call_header_merge(header_scope)
+  } else {
+    ()
+  }
+  result
 }
 
 export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (Type, Subst, Int) {
@@ -2837,7 +2891,8 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
   // alias a fresh variable here. Not an internal entry: the checker recurses
   // through check_expr_capture.
   reset_eq_formal_vars()
-  check_expr_nested(expr, env, defs, s, c, errors, tytab)
+  check_assignable_set_type_defs(defs)
+  check_expr_capture(expr, env, defs, s, c, errors, tytab, None, "Primary")
 }
 
 /// #3554: `check_expr` for a check made INSIDE a running one -- the
@@ -2850,7 +2905,10 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
 /// type parameter at all.
 fn check_expr_nested(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (Type, Subst, Int) {
   check_assignable_set_type_defs(defs)
-  check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, "Primary", false)
+  let saved_headers = checker_call_header_probe_begin()
+  let result = check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, "Primary", false)
+  checker_call_header_probe_end(saved_headers)
+  result
 }
 
 /// #3150: the arguments of a spawn- or run-shaped call that the dedicated
@@ -2905,71 +2963,4 @@ fn erased_throw_binder_settle(name: String, var: Type, s: Subst, errors: Array[S
 /// name can collide with it.
 fn match_temp_anchor_key() -> String {
   "__match_temp_anchor@"
-}
-
-/// #3629: is `op` a `Double` / `Float` operation -- arithmetic whose result
-/// the checker typed as one, or an ordering whose operands it did?
-///
-/// Code generation picks float arithmetic from the operands' SYNTAX, and the
-/// desugar sends `+` and `<` on an operand whose static type it reads as a
-/// type formal to the runtime Int/String dispatch. A call to a generic
-/// function reads as its callee's own formal there (`pick[T](x: T) -> T`
-/// is `T`), so `pick(2.5) + 1.0` added the boxed Double's bits as an Int and
-/// printed `537`. The row this answer files makes the post-check rewrite mark
-/// both operands as floats (`rewrite_float_arith_stmts`), so neither lowering
-/// has to see the type in the syntax. A result typed `Double` or `Float` is
-/// concrete by construction -- the Int candidate is tried first -- so no later
-/// substitution can change the answer. `==` is not filed: the typed-`==`
-/// channel already compares a `Double` through its own rows.
-fn float_operand_binop(op: String, result: Type, left: Type, right: Type) -> Bool {
-  if op == "+" || op == "-" || op == "*" || op == "/" {
-    ty_is_float_scalar(result)
-  } else if op == "<" || op == ">" || op == "<=" || op == ">=" {
-    ty_is_float_scalar(left) || ty_is_float_scalar(right)
-  } else {
-    false
-  }
-}
-
-fn ty_is_float_scalar(t: Type) -> Bool {
-  match t {
-    CtDouble => true,
-    CtFloat => true,
-    _ => false
-  }
-}
-
-// Store the OPEN lexical formal now: resolving a callee's spelling later can
-// mistake its T for the caller's T. Kind 13 shares the paired typed-row carrier.
-fn record_add_formal(capture: Option[TypedOccurrenceRoleLaneCapture], off: Int, ty: Type, env: TypeEnv, s: Subst) -> Unit {
-  match capture {
-    Some(c) => if !c.provenance_enabled && off >= 0 {
-      match ty {
-        CtVar(id) => {
-          let name = add_formal_for_type(CtVar(id), env, s)
-          if name != "" {
-            Array::push(c.binop_offsets, off)
-            Array::push(c.binop_kinds, 13)
-            Array::push(c.binop_types, CtNamed(name, []))
-            Array::push(c.binop_offsets, off)
-            Array::push(c.binop_kinds, 13)
-            Array::push(c.binop_types, CtNamed(name, []))
-          }
-        },
-        _ => ()
-      }
-    },
-    None => ()
-  }
-}
-
-fn add_formal_for_type(ty: Type, env: TypeEnv, s: Subst) -> String {
-  match ty {
-    CtVar(id) => if Array::any(subst_bounds_for(s, id), (b) -> bound_entails_trait(env, b, "Add") && bound_flat_self_add(env, b)) {
-      open_formal_name_for_var(id, s)
-    } else {
-      ""
-    },
-    _ => ""
-  }
 }

@@ -15,7 +15,8 @@ import @vibe/compiler/core {
   env_name_index_at,
   env_name_index_length,
   env_value_binding,
-  env_value_binding_with_origin
+  env_value_binding_with_origin,
+  freeze_call_header_origin
 }
 import @vibe/checker/transport {
   append_checked_lowering_text, decode_checked_lowering
@@ -397,7 +398,13 @@ fn write_type_defs(out: CacheTextWriter, defs: Array[TypeDef]) -> Unit {
 
 fn write_binding_origin(out: CacheTextWriter, origin: BindingOrigin) -> Unit {
   match origin {
+    BindingOriginMutableFunctionHeader(_) => write_binding_origin(out, freeze_call_header_origin(origin)),
+    BindingOriginUncertainFunctionHeader => cache_push(out, "A"),
     BindingOriginUnavailable => cache_push(out, "U"),
+    BindingOriginFunctionHeader(params) => {
+      cache_push(out, "L")
+      write_string_array(out, params)
+    },
     BindingOriginModuleExport(path, name) => {
       cache_push(out, "M")
       cache_segment(out, path)
@@ -976,6 +983,11 @@ fn parse_binding_origin(text: String, pos: Int) -> (BindingOrigin, Int) with Exc
   } else {
     match String::char_code_at(text, pos) {
       'U' => (BindingOriginUnavailable, pos + 1),
+      'A' => (BindingOriginUncertainFunctionHeader, pos + 1),
+      'L' => {
+        let (params, next) = parse_string_array(text, pos + 1)
+        (BindingOriginFunctionHeader(params), next)
+      },
       'M' => {
         let (path, after_path) = parse_segment(text, pos + 1)
         let (name, next) = parse_segment(text, after_path)

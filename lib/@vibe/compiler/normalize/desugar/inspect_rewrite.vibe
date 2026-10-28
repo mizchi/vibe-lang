@@ -1,7 +1,7 @@
 // Inspect rewrite.
 
 import @vibe/compiler/core {
-  Expr, ImportItem, Pat, Stmt, TypeExpr, __to_string, expr_children
+  Expr, ImportItem, Pat, Stmt, TypeExpr, __to_string, call_placement_note_positional, expr_children
 }
 
 import @vibe/ast {
@@ -421,7 +421,7 @@ export fn dinsp_fresh_name(base: String, value: Expr, content: Expr) -> String {
 /// binding and compare the stringified value against ITSELF -- a failing
 /// assertion that silently passes, which is the worst way this could break
 /// (Codex review on #1621).
-fn inspect_lowering_expr(value: Expr, content: Expr) -> Expr {
+fn inspect_lowering_expr(value: Expr, content: Expr, cell: Array[Int]) -> Expr {
   let actual_name = dinsp_fresh_name("__vibe_inspect_actual", value, content)
   let expected_name = dinsp_fresh_name("__vibe_inspect_expected", value, content)
   let actual = EIdent(actual_name, 0 - 1)
@@ -442,7 +442,7 @@ fn inspect_lowering_expr(value: Expr, content: Expr) -> Expr {
     EBool(false)
   ], 0 - 1, []))
   let check = EIf(EBinOp("==", actual, expected, -1), EUnit, on_mismatch)
-  ELet(actual_name, ECall(builtin_ref("__to_string"), [value], 0 - 1, []), ELet(expected_name, content, check, 0 - 1), 0 - 1)
+  ELet(actual_name, ECall(builtin_ref("__to_string"), [value], 0 - 1, cell), ELet(expected_name, content, check, 0 - 1), 0 - 1)
 }
 
 /// Rewrite every two-argument `inspect(value, content)` call to its expansion.
@@ -460,7 +460,8 @@ fn dinsp_expr(expr: Expr) -> Expr {
       }
       match callee {
         EIdent(name, _) => if name == "inspect" && Array::length(rewritten) == 2 {
-          inspect_lowering_expr(Array::get(rewritten, 0), Array::get(rewritten, 1))
+          call_placement_note_positional(callee, args, off, callee_resolution)
+          inspect_lowering_expr(Array::get(rewritten, 0), Array::get(rewritten, 1), callee_resolution)
         } else {
           ECall(dinsp_expr(callee), rewritten, off, callee_resolution)
         },

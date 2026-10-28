@@ -618,6 +618,53 @@ fn report_path_only_callee_restore_hits(raw: String, emit: Bool) -> Int with Fs 
   count
 }
 
+fn function_header_bind_pattern() -> String {
+  "bind_function_dependency_contracts(env_bind($(env:exp), $(name:exp), $(ty:exp)), $(bound:exp), $(value:exp))"
+}
+
+fn report_function_header_bind_hits(raw: String, emit: Bool) -> Int with Stderr {
+  let hits = Json::parse(raw)
+  let mut count = 0
+  let mut i = 0
+  while i < Json::length(hits) {
+    let hit = Json::index(hits, i)
+    let path = Json::string(Json::field(hit, "path"))
+    if String::contains(path, "/compiler/checker/") && is_production_compiler_path(path) {
+      count = count + 1
+      if emit {
+        report_finding(path, Double::to_int(Json::number(Json::field(hit, "line"))), Json::string(Json::field(hit, "text")), "function declarations must retain their call headers: use checker_bind_call_header before bind_function_dependency_contracts")
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+// Exercise the real AST matcher: a future broken pattern cannot be certified
+// by a hand-written JSON result that happens to look like a match.
+fn function_header_bind_self_test(vibe: String) -> Int with Fs + Process + Stderr {
+  let path = "_build/_review_lint_headers/compiler/checker/finish.vibe"
+  Fs::write_file(path, "fn finish(env: E, name: String, ty: T, value: X) -> E { bind_function_dependency_contracts(env_bind(env, name, ty), name, value) }")
+  let (bad_code, bad) = run_grep(vibe, path, function_header_bind_pattern())
+  if bad_code != 0 || report_function_header_bind_hits(bad, false) != 1 {
+    Stderr::write_stream("review-lint self-test: a plain binding lost its function header without a finding\n")
+    1
+  } else {
+    Fs::write_file(path, "// bind_function_dependency_contracts(env_bind(env, name, ty), name, value)\nfn finish(env: E, name: String, ty: T, value: X) -> E { bind_function_dependency_contracts(checker_bind_call_header(env, name, ty, value), name, value) }")
+    let (good_code, good) = run_grep(vibe, path, function_header_bind_pattern())
+    if good_code != 0 || report_function_header_bind_hits(good, false) != 0 {
+      Stderr::write_stream("review-lint self-test: a header-preserving binding or comment was reported\n")
+      1
+    } else {
+      0
+    }
+  }
+}
+
 fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
   let patterns = [
     "$(ctor:id)($(name:const), $(rest:args))",
@@ -638,6 +685,7 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
   // Restore only after matching the checked row to the current source.
   Array::push(patterns, "match module_typed_lowering_offsets_for_path($(path:exp)) { Some($(rows:id)) => restore_resolved_callees($(stmts:exp), $(rows:id)), None => () }")
   Array::push(patterns, "match module_typed_lowering_offsets_for_path($(path:exp)) { Some($(rows:id)) => restore_resolved_callees($(stmts:exp), $(rows:id)), _ => () }")
+  Array::push(patterns, function_header_bind_pattern())
   let mut i = 0
   let mut violations = 0
   let mut failed = false
@@ -680,8 +728,10 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
         // patterns 7.. are effect_name_compare_patterns(): four per name.
         let name = Array::get(policy_effect_names(), (i - 7) / 4)
         violations = violations + report_effect_name_compare_hits(output, "\"" + name + "\"", true)
-      } else {
+      } else if i < 9 + Array::length(effect_patterns) {
         violations = violations + report_path_only_callee_restore_hits(output, true)
+      } else {
+        violations = violations + report_function_header_bind_hits(output, true)
       }
     }
     i = i + 1
@@ -754,7 +804,8 @@ fn gc_write_bare_probe(path: String, with_marker: Bool) -> Unit with Fs {
   Fs::write_file(path, body)
 }
 
-fn self_test() -> Int with Fs + Stderr {
+fn self_test(vibe: String) -> Int with Fs + Process + Stderr {
+  let header_code = function_header_bind_self_test(vibe)
   let stale_restore = "[{\"path\":\"/repo/lib/@vibe/compiler/runtime/parse.vibe\",\"line\":1,\"text\":\"match path_only { Some(rows) => restore_resolved_callees(stmts, rows), None => () }\"}]"
   let restore_test = "[{\"path\":\"/repo/lib/@vibe/compiler/tests/restore_test.vibe\",\"line\":1,\"text\":\"stale restore regression\"}]"
   let raw = "[{\"path\":\"/repo/lib/@vibe/compiler/normalize/pass.vibe\",\"line\":1,\"text\":\"ELet(\\\"__tmp\\\", e, e, -1)\",\"captures\":{\"name\":{\"text\":\"\\\"__tmp\\\"\"}}}]"
@@ -773,7 +824,9 @@ fn self_test() -> Int with Fs + Stderr {
   gc_write_bare_probe(bare_marked, true)
   gc_write_bare_probe(bare_plain, false)
   let gc_ledger = gc_ledger_sample()
-  if report_path_only_callee_restore_hits(stale_restore, false) != 1 || report_path_only_callee_restore_hits("[]", false) != 0 || report_path_only_callee_restore_hits(restore_test, false) != 0 {
+  if header_code != 0 {
+    header_code
+  } else if report_path_only_callee_restore_hits(stale_restore, false) != 1 || report_path_only_callee_restore_hits("[]", false) != 0 || report_path_only_callee_restore_hits(restore_test, false) != 0 {
     Stderr::write_stream("review-lint self-test: a path-only callee restore was missed or a regression fixture was flagged\n")
     1
   } else if !starts_with_synthetic_literal("\"__tmp\"") {
@@ -968,7 +1021,7 @@ fn by_name_arm_self_test() -> Int with Fs + Stderr {
 
 fn main allows Env + Fs + Process + Console + Stderr {
   let code = if flag("--self-test") {
-    self_test()
+    self_test(option_or("--vibe", "runtime/vibe"))
   } else {
     let root = option_or("--root", "lib/@vibe/compiler")
     let vibe = option_or("--vibe", "runtime/vibe")

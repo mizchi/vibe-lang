@@ -1,0 +1,227 @@
+import @vibe/checker/engine {
+  CheckJob, engine_check_module_impl
+}
+import @vibe/compiler/checker/artifacts/module {
+  CheckedModuleArtifact, decode_checked_module_artifact, encode_checked_module_artifact
+}
+import @vibe/compiler/runtime/checked_module_cache {
+  checked_module_cache_stats, commit_checked_module_artifact, set_checked_module_cache_mode
+}
+import @vibe/compiler/runtime {
+  module_typed_lowering_bind_source, module_typed_lowering_memo_put, module_typed_lowering_memo_reset, parse_program_with_path
+}
+
+import @vibe/compiler/checker {
+  check_program_with_env_typed_lowering_located_observation
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, Type, TypeEnv, env_bind, lowering_row_encode, lowering_row_tag, restore_call_placements
+}
+
+import @vibe/parser {
+  lex_with_offsets, parse_program_located
+}
+
+import @vibe/compiler/normalize {
+  desugar_inspect_calls, desugar_trait_dicts_with_typed_eq
+}
+
+fn checked_placement_rows(source: String) -> Array[Int] with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
+  let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts, EnvEmpty)
+  match rows {
+    Some(found) => found,
+    None => {
+      assert(false); []
+    }
+  }
+}
+
+fn placement_packet(offset: Int, slots: Array[Int]) -> Array[Int] {
+  let rows = [13, lowering_row_encode(offset, 8), 41, 10]
+  for slot in slots {
+    Array::push(rows, lowering_row_encode(slot, 11))
+  }
+  Array::push(rows, lowering_row_encode(offset, 12))
+  rows
+}
+
+fn lowering_message(source: String, rows: Array[Int], expand_inspect: Bool) -> String with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
+  restore_call_placements(stmts, rows)
+  if expand_inspect {
+    desugar_inspect_calls(stmts)
+  } else {
+    ()
+  }
+  handle {
+    desugar_trait_dicts_with_typed_eq(stmts, [], [])
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+fn poison_placement(rows: Array[Int]) -> Unit {
+  let mut poisoned = false
+  let mut i = 0
+  while i + 1 < Array::length(rows) && !poisoned {
+    if lowering_row_tag(Array::get(rows, i)) == 11 && lowering_row_tag(Array::get(rows, i + 1)) == 11 {
+      let first = Array::get(rows, i)
+      Array::set(rows, i, Array::get(rows, i + 1))
+      Array::set(rows, i + 1, first)
+      poisoned = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  assert(poisoned)
+}
+
+/// This is the real build lowering entry, not a standalone row comparator.
+test "lowering refuses a poisoned argument placement and names the source call" {
+  let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
+  let rows = checked_placement_rows(source)
+  assert(lowering_message(source, rows, false) == "")
+  poison_placement(rows)
+  let message = lowering_message(source, rows, false)
+  assert(String::contains(message, "placement disagrees with the checker for `f`"))
+}
+
+/// A complete checked channel cannot silently treat a lost call row as rowless.
+test "lowering refuses a missing row but retains explicit rowless phase1b behavior" {
+  let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
+  assert(String::contains(lowering_message(source, [13], false), "missing or invalid checker argument placement for `f`"))
+  assert(lowering_message(source, [14], false) == "")
+}
+
+/// Inspect erases its call before dictionary lowering; its original diagnostic
+/// must survive on the synthetic expression that takes the value's type.
+test "a macro cannot erase a poisoned source call placement" {
+  let source = "fn main() -> Unit allows Console { inspect(1, content = \"1\") }"
+  let offset = String::index_of(source, "inspect(")
+  let message = lowering_message(source, placement_packet(offset, [4, 2]), true)
+  assert(String::contains(message, "placement disagrees with the checker for `inspect`"))
+}
+
+/// Mutable lambda declarations follow the binding typing resolves, across a
+/// sequential assignment, with no independent syntax/name table lookup.
+test "checker placements survive sequential mutable lambda assignments" {
+  let source = "fn main() -> Int { let mut g = (x~: Int, y~: Int) -> Int { x - y }; let a = g(y = 3, x = 10); g = (y~: Int, x~: Int) -> Int { x - y }; a + g(y = 3, x = 10) }"
+  assert(lowering_message(source, checked_placement_rows(source), false) == "")
+}
+
+/// Optional slots record omission and wrapping independently of the old fill.
+test "checker placement agrees on optional omission wrapping and option values" {
+  let head = "fn pick(x: Int, y?: Int) -> Int { x }\nfn main() -> Int { "
+  for call in [
+    "pick(x = 10)",
+    "pick(y = 3, x = 10)",
+    "pick(10)",
+    "pick(10, 3)",
+    "pick(y = None, x = 10)",
+    "pick(y = Some(3), x = 10)"
+  ] {
+    let source = head + call + " }"
+    assert(lowering_message(source, checked_placement_rows(source), false) == "")
+  }
+}
+
+/// Completing an inferred recursive group must preserve the same declaration
+/// headers that typing used inside the group's provisional environment.
+test "recursive group generalization retains call placement headers" {
+  for source in [
+    "let rec f = (x~: Int, y~: Int) -> { if x == 0 { y } else { f(x = 0, y = y) } }\nfn main() -> Int { f(y = 3, x = 0) }",
+    "let rec f = (x~: Int, y~: Int) -> { if x == 0 { y } else { g(x = 0, y = y) } }\nlet rec g = (x~: Int, y~: Int) -> { if x == 0 { y } else { f(x = 0, y = y) } }\nfn main() -> Int { f(y = 3, x = 0) }"
+  ] {
+    assert(lowering_message(source, checked_placement_rows(source), false) == "")
+  }
+}
+
+fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> String with Env + Fs + Exception {
+  let path = "/tmp/vibe_call_placement_cache_guard.vibe"
+  set_checked_module_cache_mode("on")
+  let artifacts: Array[CheckedModuleArtifact] = []
+  let job = CheckJob::{
+    path,
+    source,
+    deps: [],
+    dep_fps: [],
+    dep_envs: [],
+    ships_owned_heads: false
+  }
+  let _ = engine_check_module_impl(job, false, None, Some((Bytes::from_array([7]), artifacts)), None)
+  assert(Array::length(artifacts) == 1)
+  let original = Array::get(artifacts, 0)
+  let artifact = if roundtrip {
+    match decode_checked_module_artifact(encode_checked_module_artifact(original), original.input_identity) {
+      Some(decoded) => decoded,
+      None => {
+        assert(false); original
+      }
+    }
+  } else {
+    original
+  }
+  let rows = artifact.lowering_offsets
+  if mutation == 1 {
+    poison_placement(rows)
+  } else if mutation == 2 {
+    Array::truncate(rows, 0)
+    Array::push(rows, 13)
+  } else {
+    ()
+  }
+  commit_checked_module_artifact(path, source, artifact, false)
+  module_typed_lowering_memo_reset()
+  module_typed_lowering_memo_put(path, "placement-cache-guard", rows, artifact.eq_offsets, artifact.eq_keys)
+  module_typed_lowering_bind_source(path, "placement-cache-guard", source)
+  let parsed = parse_program_with_path(path, source)
+  assert(checked_module_cache_stats().2 > 0)
+  let message = handle {
+    desugar_trait_dicts_with_typed_eq(parsed, [], [])
+    ""
+  } with { Exception::Throw(message) => message }
+  set_checked_module_cache_mode("off")
+  message
+}
+
+/// Raw cached statements share cells with the checked tree (and serialize
+/// those cells). That alone cannot certify that their arguments were rewritten.
+test "raw checked-module cache handouts cannot bypass placement comparison" {
+  let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
+  for roundtrip in [false, true] {
+    assert(cached_lowering_message(source, 0, roundtrip) == "")
+    assert(String::contains(cached_lowering_message(source, 1, roundtrip), "placement disagrees with the checker for `f`"))
+    assert(String::contains(cached_lowering_message(source, 2, roundtrip), "missing or invalid checker argument placement for `f`"))
+  }
+}
+
+/// Namespace qualification introduces no receiver, even when optional filling
+/// has added one argument before the qualified call is typed.
+test "qualified optional placement does not infer a receiver from arity" {
+  let env = env_bind(env_bind(EnvEmpty, "helper.pick", CtFn([
+    CtInt,
+    CtOption(CtInt)
+  ], CtInt, None)), "#params:helper.pick", CtRecord([
+    ("x", CtUnknown),
+    ("y?", CtUnknown)
+  ]))
+  for call in [
+    "helper.pick(10)",
+    "helper.pick(10, 3)",
+    "helper.pick(10, None)",
+    "helper.pick(y = 3, x = 10)"
+  ] {
+    let source = "fn main() -> Int { " + call + " }"
+    let (tokens, starts, _) = lex_with_offsets(source)
+    let stmts = parse_program_located(tokens, starts, source)
+    let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts, env)
+    match rows {
+      Some(_) => (),
+      None => assert(false)
+    }
+  }
+}

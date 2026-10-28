@@ -1,0 +1,83 @@
+import @vibe/compiler/core {
+  BindingOrigin,
+  Expr,
+  Type,
+  TypeEnv,
+  call_placement_wants_binding,
+  env_bind,
+  env_bind_with_origin,
+  env_lookup,
+  env_lookup_binding,
+  param_names_prefix
+}
+
+/// Bind a declaration header on the same value binding typing will resolve.
+/// No record is allocated for an ordinary function without an optional slot
+/// or a labeled call demanding its header in this program.
+export fn checker_bind_call_header(env: TypeEnv, name: String, ty: Type, value: Expr) -> TypeEnv {
+  match value {
+    EFn(_, _, params, _, _, _) => {
+      let mut needed = call_placement_wants_binding(name)
+      for param in params {
+        let (raw, _) = param
+        needed = needed || String::ends_with(raw, "?")
+      }
+      if needed {
+        let names = for param in params {
+          let (raw, _) = param
+          raw
+        }
+        env_bind_with_origin(env, name, ty, BindingOriginFunctionHeader(names))
+      } else {
+        env_bind(env, name, ty)
+      }
+    },
+    _ => env_bind(env, name, ty)
+  }
+}
+
+/// A value/parameter shadow has Unavailable provenance, so it cannot inherit
+/// a same-typed outer function's labels. Imported headers are companions of
+/// the actual module binding, projected under this module's local name.
+export fn checker_call_header_names(env: TypeEnv, name: String) -> Option[Array[String]] {
+  match env_lookup_binding(env, name) {
+    Some(binding) => match binding.origin {
+      BindingOriginFunctionHeader(names) => Some(names),
+      BindingOriginMutableFunctionHeader(box) => {
+        let (kind, names, _) = Array::get(box, 0)
+        if kind == 1 {
+          Some(names)
+        } else {
+          None
+        }
+      },
+      BindingOriginModuleExport(_, _) => match env_lookup(env, String::concat(param_names_prefix, name)) {
+        Some(CtRecord(fields)) => Some(for field in fields {
+          let (raw, _) = field
+          raw
+        }),
+        _ => None
+      },
+      _ => None
+    },
+    None => None
+  }
+}
+
+/// The standalone checker API also accepts explicit imported parameter-name
+/// companions without a module path. Promote those input declarations once;
+/// later ordinary bindings automatically clear their header provenance.
+export fn checker_seed_import_call_headers(env: TypeEnv, imported: Array[(String, Array[String])]) -> TypeEnv {
+  let mut out = env
+  for row in imported {
+    let (name, names) = row
+    match env_lookup_binding(env, name) {
+      Some(binding) => match binding.origin {
+        BindingOriginUnavailable => out = env_bind_with_origin(out, name, binding.ty, BindingOriginFunctionHeader(names)),
+        _ => ()
+      },
+      None => ()
+    }
+  }
+  out
+}

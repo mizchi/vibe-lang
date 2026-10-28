@@ -1,3 +1,7 @@
+import @vibe/compiler/core {
+  call_placement_syntax_errors
+}
+
 // Pipeline.
 
 import @vibe/compiler/lowering/trait_namespaces {
@@ -542,6 +546,16 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   // many files in one long-lived daemon, so a table left standing would
   // relabel a later program's struct after an earlier program's trait.
   dtd_synth_dict_reset()
+  // Compare source calls before optimizers can replace their callees or add
+  // hoisted capture arguments. Their subsequent positional calls are already
+  // canonical and must not be interpreted as fresh written arguments.
+  desugar_labeled_args(stmts)
+  let placement_errors = call_placement_syntax_errors()
+  if Array::length(placement_errors) > 0 {
+    throw(String::join(placement_errors, "\n"))
+  } else {
+    ()
+  }
   // #3543: round every `Float` arithmetic result to f32 before any pass
   // below copies or hoists the expressions that hold one. #3629: and mark
   // every float operation's operands, before the `+` / `<` rewrite below
@@ -580,15 +594,12 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   // elsewhere is still handled safely either way.
   dtpw_inline_trivial_wrappers(stmts)
   // #786: hoist non-capturing effectful local lambdas to top-level functions
-  // before any other pass. A local `let f = (x) -> { perform ... }` that captures
+  // before dictionary rewriting. A local `let f = (x) -> { perform ... }` that captures
   // nothing gets promoted to a top-level `let f = ...`, so codegen emits a direct
   // function (with its `$read` effect param) instead of a local closure whose
-  // arity-1 type may go unregistered. Runs first so the hoisted top-level SLets
-  // are processed by every downstream pass (labeled args, dict rewrite, codegen).
+  // arity-1 type may go unregistered. The hoisted top-level SLets
+  // are processed by downstream dictionary rewriting and codegen.
   desugar_hoist_local_lambdas(stmts)
-  // Labeled-argument reordering runs first so downstream passes and codegen see
-  // args already in declared parameter order.
-  desugar_labeled_args(stmts)
   // derive(...) structural function generation (#638) — independent of traits,
   // idempotent, so it runs unconditionally here at the shared pre-check points.
   // #1398 review (Codex P1): reset before desugar_derives repopulates it, so

@@ -23,7 +23,17 @@ import @vibe/compiler/checker {
   CheckedProgram
 }
 import @vibe/compiler/core {
-  BindingOrigin, EnvValueBinding, Subst, Type, TypeDef, TypeEnv, TypeExpr, env_cached, env_name_index_at, env_name_index_length
+  BindingOrigin,
+  EnvValueBinding,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  env_cached,
+  env_name_index_at,
+  env_name_index_length,
+  freeze_call_header_origin
 }
 
 /// Lossless transport of the production checker's result. Encoding does not
@@ -359,8 +369,14 @@ fn cp_read_type_def(reader: AstBinaryReader) -> TypeDef with Exception {
 
 fn cp_write_origin(out: Bytes, value: BindingOrigin) -> Unit {
   match value {
+    BindingOriginMutableFunctionHeader(_) => cp_write_origin(out, freeze_call_header_origin(value)),
+    BindingOriginUncertainFunctionHeader => Bytes::push(out, 5),
     BindingOriginUnavailable => {
       Bytes::push(out, 1)
+    },
+    BindingOriginFunctionHeader(params) => {
+      Bytes::push(out, 4)
+      cp_write_array_string(out, params)
     },
     BindingOriginModuleExport(field_0, field_1) => {
       Bytes::push(out, 2)
@@ -391,6 +407,8 @@ fn cp_read_origin(reader: AstBinaryReader) -> BindingOrigin with Exception {
       let field_1 = ast_binary_read_string_checked(reader)
       BindingOriginReExportSurface(field_0, field_1)
     },
+    4 => BindingOriginFunctionHeader(cp_read_array_string(reader)),
+    5 => BindingOriginUncertainFunctionHeader,
     _ => throw("checked program: unknown BindingOrigin tag")
   }
 }

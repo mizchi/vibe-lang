@@ -54,8 +54,27 @@ rejects v3 rather than reading it short.
 `array<svarint>`. An empty cell is unresolved/unmigrated; `[-1]` resolves a
 migrated source spelling to a program binding; `[1]` through `[15]` name
 the five MutBytes, seven MutList, and three Array mutation/capacity builtin
-operations. Other values or more than one entry are rejected. This payload is preserved by checked-program transport and call
-rewrites. It carries no source offset or interned spelling ID.
+operations. IDs 16 and 17 are compiler-owned frame control forms. An unknown
+operation is rejected. This identity is independent of diagnostic spellings.
+
+ADR-0120 Phase 1b extends the same signed-array framing with a placement
+suffix: `[operation, -3660, role, written_count, mode, slot_codes...]`.
+Role 1 holds an expected source placement; role 4 retains a checked placement.
+A slot code of zero omits an optional parameter; positive codes are
+`(written_index + 1) * 2 + wrap_some`. Every written index must occur exactly
+once. Modes 1 (shell flags) and 2 (legacy opaque value calls) require identity
+placement; mode 0 permits declaration-based reordering and optional filling.
+The operation word may be zero when only placement is known. Roles 2/3 retain
+an explicit refusal, optionally with the original source offset, diagnostic
+kind and name bytes. A compiler return-site prefix may wrap the cell.
+Transient role-0 snapshot pool IDs never cross the binary boundary.
+
+A raw parsed snapshot may share cells with a checked tree. Consequently its
+role-4 cell does **not** prove that its argument list was rewritten. The raw
+source restore API always reinstalls the source-bound placement, including
+for cache hand-outs and decoded artifacts. Checked AST lowering keeps its own
+already-applied state. Missing, malformed and conflicting source packets are
+refused rather than treated as a rowless observation.
 
 The checker assigns these identities after lexical/module binding resolution.
 The linear and GC backends consume the same operation ID for MutBytes, MutList,
@@ -64,16 +83,18 @@ Other builtin families retain their existing dispatch until migrated.
 
 The existing per-module lowering carrier also transports these answers when
 only the type environment is reused. Tag 7 stores
-`(call_offset * 65536 + operation_code) * 8 + 7`, where operation code 0 means a
-program binding and codes 1–15 match the operation IDs. Restoration matches the
+`(call_offset * 65536 + operation_code) * 16 + 7`, where operation code 0 means a
+program binding and codes 1–17 match the operation IDs. Restoration matches the
 exact current module's located call, before offset rebasing or namespace
 rewrites; it never derives an identity from the callee's diagnostic spelling.
-Tag 7 rebasing therefore adds `base * 65536 * 8`, while existing tags add `base * 8`.
-All consumers use `resolved_callee_row_rebase` for this distinction. The wider
-identity field keeps IDs above 7 distinct from source offsets; unknown IDs are
-not restored. The AST binary layout stayed v3 because its signed-varint cell
-already carries these IDs; older v3 readers reject the new operations explicitly.
-The compiler source fingerprint invalidates older carrier entries.
+Tag 7 rebasing therefore adds `base * 65536 * 16`, while existing tags add `base * 16`.
+Tags 8/12 frame an offset-bound placement packet; tags 9/10/11 carry written
+count, mode and slot codes. Tags 13/14 mark complete/declined observations.
+Only coordinate rows rebase: packet payloads and availability markers stay put.
+All consumers use `resolved_callee_row_rebase` for this distinction. The four-bit
+tag encoding and extended cell grammar are isolated from older readers by the
+compiler source fingerprint. The AST's signed-array byte framing is unchanged;
+old readers reject extended cells instead of misreading them.
 
 **v1 -> v2**: `EString` gained its source offset. v1 wrote only the value and
 rebuilt the offset as `-1`, so a cached parse lost what locates a literal's

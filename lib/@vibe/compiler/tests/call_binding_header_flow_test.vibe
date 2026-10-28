@@ -1,0 +1,123 @@
+import @vibe/compiler/core {
+  BindingOrigin,
+  Expr,
+  Stmt,
+  Subst,
+  Type,
+  TypeEnv,
+  call_placement_capture_begin,
+  call_placement_capture_end,
+  call_placement_note_legacy,
+  env_bind,
+  env_cache,
+  env_lookup_binding,
+  freeze_call_header_origin
+}
+import @vibe/compiler/checker {
+  checker_assign_call_header,
+  checker_bind_mut_call_header,
+  checker_call_header_flow_begin,
+  checker_call_header_merge,
+  checker_call_header_names,
+  checker_call_header_probe_begin,
+  checker_call_header_probe_end,
+  checker_call_header_rewind,
+  checker_call_header_snapshot,
+  checker_seed_mut_call_headers
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+import @vibe/compiler/runtime {
+  parse_persistent_type_env, persistent_type_env_cache_text
+}
+
+fn lambda_xy(reversed: Bool) -> Expr with Exception {
+  let source = if reversed {
+    "let f = (y~: Int, x~: Int) -> Int { x - y }"
+  } else {
+    "let f = (x~: Int, y~: Int) -> Int { x - y }"
+  }
+  match Array::get(parse_program(lex(source)), 0) {
+    SLet(_, _, _, _, value) => value,
+    _ => {
+      assert(false); EInt(0)
+    }
+  }
+}
+
+fn mutable_header_env() -> TypeEnv with Exception {
+  checker_call_header_flow_begin()
+  call_placement_capture_begin()
+  call_placement_note_legacy(EIdent("f", 0), [EInt(1), EInt(2)], [4, 2], 0, [])
+  call_placement_capture_end()
+  checker_bind_mut_call_header(EnvEmpty, "f", CtFn([CtInt, CtInt], CtInt, None), lambda_xy(false), false)
+}
+
+fn header_is(env: TypeEnv, names: Array[String]) -> Unit {
+  match checker_call_header_names(env, "f") {
+    Some(actual) => assert(actual == names),
+    None => assert(false)
+  }
+}
+
+/// Boxes belong to bindings, so identical types and names do not alias.
+test "assignments reach cached references but not a shadowed mutable binding" {
+  let outer = env_cache(mutable_header_env())
+  let inner = checker_bind_mut_call_header(outer, "f", CtFn([CtInt, CtInt], CtInt, None), lambda_xy(false), false)
+  checker_assign_call_header(inner, "f", lambda_xy(true))
+  header_is(inner, ["y~", "x~"])
+  header_is(outer, ["x~", "y~"])
+  let value_shadow = env_bind(inner, "f", CtFn([CtInt, CtInt], CtInt, None))
+  checker_assign_call_header(value_shadow, "f", lambda_xy(false))
+  header_is(inner, ["y~", "x~"])
+}
+
+/// An arm can change back, but its write still cannot dominate its sibling.
+test "branch rewind and merge preserve uncertainty after a changed-back header" {
+  let env = mutable_header_env()
+  let fork = checker_call_header_snapshot()
+  checker_assign_call_header(env, "f", lambda_xy(true))
+  checker_assign_call_header(env, "f", lambda_xy(false))
+  checker_call_header_rewind(fork)
+  header_is(env, ["x~", "y~"])
+  checker_call_header_merge(fork)
+  match env_lookup_binding(env, "f") {
+    Some(binding) => assert(freeze_call_header_origin(binding.origin) == BindingOriginUncertainFunctionHeader),
+    None => assert(false)
+  }
+  checker_assign_call_header(env, "f", lambda_xy(true))
+  assert(checker_call_header_names(env, "f") == None)
+}
+
+/// A speculative query cannot rewrite primary flow facts or register locals.
+test "probe writes and local declarations are isolated from primary typing" {
+  let env = mutable_header_env()
+  let saved = checker_call_header_probe_begin()
+  checker_assign_call_header(env, "f", lambda_xy(true))
+  let _ = checker_bind_mut_call_header(env, "f", CtFn([CtInt, CtInt], CtInt, None), lambda_xy(true), false)
+  checker_call_header_probe_end(saved)
+  header_is(env, ["x~", "y~"])
+  let scope = checker_call_header_snapshot()
+  checker_assign_call_header(env, "f", lambda_xy(false))
+  checker_call_header_merge(scope)
+  header_is(env, ["x~", "y~"])
+}
+
+/// Cache transport freezes logical facts and a new check creates fresh boxes.
+test "cached mutable header facts rehydrate without sharing a previous check" {
+  let env = env_cache(mutable_header_env())
+  let bytes = persistent_type_env_cache_text(env)
+  match parse_persistent_type_env(bytes) {
+    Some(decoded) => {
+      assert(persistent_type_env_cache_text(decoded) == bytes)
+      checker_call_header_flow_begin()
+      let fresh = checker_seed_mut_call_headers(decoded)
+      checker_assign_call_header(fresh, "f", lambda_xy(true))
+      header_is(fresh, ["y~", "x~"])
+      header_is(env, ["x~", "y~"])
+      header_is(decoded, ["x~", "y~"])
+    },
+    None => assert(false)
+  }
+}

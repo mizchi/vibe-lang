@@ -1,3 +1,7 @@
+import @vibe/compiler/core {
+  freeze_call_header_origin
+}
+
 //# Shadow-only checked implementation body artifact (#1958)
 
 import @vibe/ast {
@@ -2132,7 +2136,17 @@ export fn normalized_checked_function_join_artifact_matches_authority(text: Stri
 
 fn normalized_binding_origin_bytes(origin: BindingOrigin) -> String {
   match origin {
+    BindingOriginMutableFunctionHeader(_) => normalized_binding_origin_bytes(freeze_call_header_origin(origin)),
+    BindingOriginUncertainFunctionHeader => "a",
     BindingOriginUnavailable => "u",
+    BindingOriginFunctionHeader(params) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "l")
+      for name in params {
+        body_push_piece(out, name)
+      }
+      StringBuilder::freeze(out)
+    },
     BindingOriginModuleExport(module_name, export_name) => {
       let out = StringBuilder::new(); StringBuilder::push(out, "m"); body_push_piece(out, module_name); body_push_piece(out, export_name); StringBuilder::freeze(out)
     },
@@ -2143,8 +2157,18 @@ fn normalized_binding_origin_bytes(origin: BindingOrigin) -> String {
 }
 
 fn normalized_binding_origin_valid(text: String) -> Bool {
-  if text == "u" {
+  if text == "u" || text == "a" {
     true
+  } else if String::starts_with(text, "l") {
+    let mut pos = 1
+    let mut valid = true
+    while pos < String::length(text) && valid {
+      match body_piece(text, pos) {
+        Some((_, next)) => pos = next,
+        None => valid = false
+      }
+    }
+    valid && pos == String::length(text)
   } else if String::starts_with(text, "m") || String::starts_with(text, "r") {
     match body_piece(text, 1) {
       Some((module_name, p)) => match body_piece(text, p) {
