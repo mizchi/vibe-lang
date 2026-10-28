@@ -1,0 +1,79 @@
+import @vibe/compiler/core {
+  Subst, Type, TypeEnv, bound_flat_self_add, subst_bounds_for
+}
+import @vibe/compiler/checker/traits {
+  bound_entails_trait
+}
+import ./checker_infer_binop_type.vibe {
+  TypedOccurrenceRoleLaneCapture
+}
+import ./checker_lambda_expr.vibe {
+  open_formal_name_for_var
+}
+
+/// #3629: is `op` a `Double` / `Float` operation -- arithmetic whose result
+/// the checker typed as one, or an ordering whose operands it did?
+///
+/// Code generation picks float arithmetic from the operands' SYNTAX, and the
+/// desugar sends `+` and `<` on an operand whose static type it reads as a
+/// type formal to the runtime Int/String dispatch. A call to a generic
+/// function reads as its callee's own formal there (`pick[T](x: T) -> T`
+/// is `T`), so `pick(2.5) + 1.0` added the boxed Double's bits as an Int and
+/// printed `537`. The row this answer files makes the post-check rewrite mark
+/// both operands as floats (`rewrite_float_arith_stmts`), so neither lowering
+/// has to see the type in the syntax. A result typed `Double` or `Float` is
+/// concrete by construction -- the Int candidate is tried first -- so no later
+/// substitution can change the answer. `==` is not filed: the typed-`==`
+/// channel already compares a `Double` through its own rows.
+export fn float_operand_binop(op: String, result: Type, left: Type, right: Type) -> Bool {
+  if op == "+" || op == "-" || op == "*" || op == "/" {
+    ty_is_float_scalar(result)
+  } else if op == "<" || op == ">" || op == "<=" || op == ">=" {
+    ty_is_float_scalar(left) || ty_is_float_scalar(right)
+  } else {
+    false
+  }
+}
+
+fn ty_is_float_scalar(t: Type) -> Bool {
+  match t {
+    CtDouble => true,
+    CtFloat => true,
+    _ => false
+  }
+}
+
+// Store the OPEN lexical formal now: resolving a callee's spelling later can
+// mistake its T for the caller's T. Kind 13 shares the paired typed-row carrier.
+export fn record_add_formal(capture: Option[TypedOccurrenceRoleLaneCapture], off: Int, ty: Type, env: TypeEnv, s: Subst) -> Unit {
+  match capture {
+    Some(c) => if !c.provenance_enabled && off >= 0 {
+      match ty {
+        CtVar(id) => {
+          let name = add_formal_for_type(CtVar(id), env, s)
+          if name != "" {
+            Array::push(c.binop_offsets, off)
+            Array::push(c.binop_kinds, 13)
+            Array::push(c.binop_types, CtNamed(name, []))
+            Array::push(c.binop_offsets, off)
+            Array::push(c.binop_kinds, 13)
+            Array::push(c.binop_types, CtNamed(name, []))
+          }
+        },
+        _ => ()
+      }
+    },
+    None => ()
+  }
+}
+
+export fn add_formal_for_type(ty: Type, env: TypeEnv, s: Subst) -> String {
+  match ty {
+    CtVar(id) => if Array::any(subst_bounds_for(s, id), (b) -> bound_entails_trait(env, b, "Add") && bound_flat_self_add(env, b)) {
+      open_formal_name_for_var(id, s)
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}

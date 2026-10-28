@@ -1,7 +1,7 @@
 // Labeled args.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, __to_string, builtin_param_labels, expr_children
+  Expr, Pat, Stmt, TypeExpr, __to_string, builtin_param_labels, call_placement_is_refused, call_placement_note_legacy, expr_children
 }
 
 import @vibe/core {
@@ -23,6 +23,54 @@ import ./state.vibe {
 
 import ./utilities.vibe {
   empty_expr_array, empty_str_array, str_array_contains
+}
+
+// Trace the source indices at the actual legacy argument pushes. The one
+// scratch array is reused after child rewrites; snapshots copy it only for
+// calls whose labels/optional slots need comparison.
+let placement_trace: Array[Int] = []
+let placement_tracking: Array[Bool] = [false]
+
+fn placement_trace_identity(count: Int) -> Unit {
+  if Array::get(placement_tracking, 0) {
+    Array::truncate(placement_trace, 0)
+    let mut i = 0
+    while i < count {
+      Array::push(placement_trace, (i + 1) * 2)
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+}
+
+fn placement_trace_clear() -> Unit {
+  if Array::get(placement_tracking, 0) {
+    Array::truncate(placement_trace, 0)
+  } else {
+    ()
+  }
+}
+
+fn placement_trace_source(source: Int) -> Unit {
+  if Array::get(placement_tracking, 0) {
+    Array::push(placement_trace, (source + 1) * 2)
+  } else {
+    ()
+  }
+}
+
+fn placement_trace_wrap(at: Int) -> Unit {
+  if Array::get(placement_tracking, 0) && at < Array::length(placement_trace) {
+    let slot = Array::get(placement_trace, at)
+    if slot > 0 {
+      Array::set(placement_trace, at, slot + 1)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
 }
 
 /// Labeled-argument reordering. Named args are order-independent — `f(y=2, x=1)`
@@ -776,11 +824,13 @@ fn optional_fill_args(args: Array[Expr], flags: Array[Bool]) -> Array[Expr] {
           }
           if Array::get(flags, i) && !opt_arg_already_option(a) && !still_labeled {
             Array::push(out, ECall(EIdent("Some", 0 - 1), [a], 0 - 1, []))
+            placement_trace_wrap(i)
           } else {
             Array::push(out, a)
           }
         } else {
           Array::push(out, EIdent("None", 0 - 1))
+          placement_trace_source(-1)
         }
         i = i + 1
       }
@@ -869,6 +919,7 @@ fn reorder_labeled_args(args: Array[Expr], param_labels: Array[String]) -> Optio
   if !labeled_reorder_candidate(args, param_labels) {
     None
   } else {
+    placement_trace_clear()
     let out = empty_expr_array()
     let mut ok = true
     let mut pj = 0
@@ -879,12 +930,14 @@ fn reorder_labeled_args(args: Array[Expr], param_labels: Array[String]) -> Optio
         pj = Array::length(param_labels)
       } else {
         Array::push(out, Array::get(args, fk))
+        placement_trace_source(fk)
         pj = pj + 1
       }
     }
     if ok {
       Some(out)
     } else {
+      placement_trace_identity(Array::length(args))
       None
     }
   }
@@ -901,6 +954,7 @@ fn reorder_labeled_with_omissions(args: Array[Expr], param_labels: Array[String]
   if Array::length(args) >= np || Array::length(flags) != np {
     None
   } else {
+    placement_trace_clear()
     let out = empty_expr_array()
     let mut placed = 0
     let mut ok = true
@@ -909,9 +963,11 @@ fn reorder_labeled_with_omissions(args: Array[Expr], param_labels: Array[String]
       let fk = labeled_source_index(args, Array::get(param_labels, pj))
       if fk >= 0 {
         Array::push(out, Array::get(args, fk))
+        placement_trace_source(fk)
         placed = placed + 1
       } else if Array::get(flags, pj) {
         Array::push(out, EIdent("None", 0 - 1))
+        placement_trace_source(-1)
       } else {
         ok = false
       }
@@ -920,6 +976,7 @@ fn reorder_labeled_with_omissions(args: Array[Expr], param_labels: Array[String]
     if ok && placed == Array::length(args) {
       Some(out)
     } else {
+      placement_trace_identity(Array::length(args))
       None
     }
   }
@@ -939,6 +996,7 @@ fn strip_labeled_wrappers(args: Array[Expr]) -> Array[Expr] {
 }
 
 fn strip_in_position_labels(args: Array[Expr], labels: Array[String], builtin_slots: Bool) -> Array[Expr] {
+  placement_trace_identity(Array::length(args))
   let out = empty_expr_array()
   let mut i = 0
   while i < Array::length(args) {
@@ -1154,6 +1212,13 @@ export fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows:
         }
         la_i = la_i + 1
       }
+      let call_optional_flags = match target {
+        EIdent(fname, _) => optional_flags_for_call(fname, shadows),
+        _ => None
+      }
+      let tracked = any_labeled_arg || call_optional_flags != None || call_placement_is_refused(callee_resolution)
+      Array::set(placement_tracking, 0, tracked)
+      placement_trace_identity(Array::length(rargs))
       // #3549: the parameter labels a reorder used, when one did.
       let mut reordered_by = None
       let final_args = if any_labeled_arg {
@@ -1188,7 +1253,7 @@ export fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows:
                   reordered_by = Some(labels)
                   strip_labeled_wrappers(reordered)
                 },
-                None => match optional_flags_for_call(fname, shadows) {
+                None => match call_optional_flags {
                   Some(flags) => match reorder_labeled_with_omissions(rargs, labels, flags) {
                     Some(filled) => {
                       reordered_by = Some(labels)
@@ -1219,12 +1284,14 @@ export fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows:
       } else {
         rargs
       }
-      let opt_args = match target {
-        EIdent(fname, _) => match optional_flags_for_call(fname, shadows) {
-          Some(flags) => optional_fill_args(final_args, flags),
-          None => final_args
-        },
-        _ => final_args
+      let opt_args = match call_optional_flags {
+        Some(flags) => optional_fill_args(final_args, flags),
+        None => final_args
+      }
+      if tracked {
+        call_placement_note_legacy(callee, rargs, placement_trace, off, callee_resolution)
+      } else {
+        ()
       }
       match reordered_by {
         Some(labels) => if labeled_order_needs_temporaries(rargs, labels) {

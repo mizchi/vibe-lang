@@ -1,0 +1,82 @@
+import @vibe/compiler/core {
+  BindingOrigin, EnvValueBinding, Expr, Stmt, Subst, Type, TypeEnv, env_bind, env_bind_with_origin, env_cache, env_lookup_binding
+}
+
+import @vibe/compiler/checker {
+  CheckedProgram
+}
+
+import @vibe/compiler/checker/artifacts/program {
+  decode_checked_program, encode_checked_program
+}
+
+import @vibe/compiler/runtime {
+  parse_persistent_type_env, persistent_type_env_cache_text
+}
+
+fn header_type() -> Type {
+  CtFn([CtInt, CtOption(CtInt)], CtInt, None)
+}
+
+fn assert_header(env: TypeEnv) -> Unit {
+  match env_lookup_binding(env, "f") {
+    Some(binding) => assert(binding.origin == BindingOriginFunctionHeader([
+      "second~",
+      "first?"
+    ])),
+    None => assert(false)
+  }
+}
+
+/// The actual binding owns its header, including when a cache answers lookup.
+test "a same-typed value shadow does not inherit a declaration header" {
+  let env = env_cache(env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginFunctionHeader([
+    "second~",
+    "first?"
+  ])))
+  assert_header(env)
+  let shadow = env_bind(env, "f", header_type())
+  match env_lookup_binding(shadow, "f") {
+    Some(binding) => assert(binding.origin == BindingOriginUnavailable),
+    None => assert(false)
+  }
+  assert_header(env)
+}
+
+/// Persistent environments retain declaration names independently of the type.
+test "persistent environment carries the resolved function header" {
+  let env = env_cache(env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginFunctionHeader([
+    "second~",
+    "first?"
+  ])))
+  let encoded = persistent_type_env_cache_text(env)
+  match parse_persistent_type_env(encoded) {
+    Some(decoded) => {
+      assert_header(decoded)
+      assert(persistent_type_env_cache_text(decoded) == encoded)
+    },
+    None => assert(false)
+  }
+}
+
+/// A checked artifact owns header bytes, rather than a mutable caller array.
+test "checked program seals local function headers with its environment" {
+  let names = ["second~", "first?"]
+  let original = CheckedProgram::{
+    checked_stmts: [SExpr(EInt(0))],
+    final_env: env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginFunctionHeader(names)),
+    type_defs: [],
+    final_subst: SubstEmpty,
+    typed_occurrences: []
+  }
+  let encoded = encode_checked_program(original)
+  Array::set(names, 0, "changed")
+  assert(encode_checked_program(original) != encoded)
+  match decode_checked_program(encoded) {
+    Some(decoded) => {
+      assert_header(decoded.final_env)
+      assert(encode_checked_program(decoded) == encoded)
+    },
+    None => assert(false)
+  }
+}

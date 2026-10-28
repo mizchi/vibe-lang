@@ -1,0 +1,173 @@
+import @vibe/compiler/core {
+  Expr,
+  Stmt,
+  Type,
+  TypeEnv,
+  call_placement_capture_begin,
+  call_placement_capture_end,
+  call_placement_checked_rows,
+  call_placement_get,
+  call_placement_is_refused,
+  call_placement_note_legacy,
+  call_placement_publish,
+  call_placement_raw,
+  call_placement_syntax_begin,
+  call_placement_syntax_errors,
+  env_bind,
+  lowering_row_encode,
+  resolved_callee_operation,
+  restore_call_placements,
+  return_call_resolve
+}
+
+import @vibe/compiler/checker/builtin_sigs {
+  resolve_builtin_callee
+}
+
+/// Offset -1 must not collapse distinct raw calls into one snapshot.
+test "unlocated label snapshots use independent cells and expire by epoch" {
+  call_placement_capture_begin()
+  let first: Array[Int] = []
+  let second: Array[Int] = []
+  call_placement_note_legacy(EIdent("first", -1), [EInt(1)], [2], -1, first)
+  call_placement_note_legacy(EIdent("second", -1), [EInt(2), EInt(3)], [4, 2], -1, second)
+  call_placement_capture_end()
+  match call_placement_raw(first) {
+    Some((EIdent(name, _), args, slots, _)) => {
+      assert(name == "first")
+      assert(args == [EInt(1)])
+      assert(slots == [2])
+    },
+    _ => assert(false)
+  }
+  match call_placement_raw(second) {
+    Some((EIdent(name, _), args, slots, _)) => {
+      assert(name == "second")
+      assert(Array::length(args) == 2)
+      assert(slots == [4, 2])
+    },
+    _ => assert(false)
+  }
+  call_placement_capture_begin()
+  assert(call_placement_raw(first) == None)
+  call_placement_capture_end()
+}
+
+/// Resolving a non-migrated builtin must retain its raw placement snapshot.
+test "callee resolution preserves label metadata for ordinary and migrated calls" {
+  call_placement_capture_begin()
+  let cell: Array[Int] = []
+  let callee = EIdent("Array::get", 7)
+  call_placement_note_legacy(callee, [EArray([EInt(9)]), EInt(0)], [2, 4], 7, cell)
+  call_placement_capture_end()
+  assert(resolve_builtin_callee(EnvEmpty, "Array::get", 7, cell) == 0)
+  assert(call_placement_raw(cell) != None)
+  let errors: Array[String] = []
+  call_placement_publish(callee, 7, cell, 2, 0, [2, 4], errors)
+  assert(errors == [])
+  assert(call_placement_get(cell) == Some((2, 0, [2, 4])))
+  assert(resolved_callee_operation(cell) == 0)
+  assert(resolve_builtin_callee(EnvEmpty, "MutBytes::push", 7, cell) == 2)
+  assert(call_placement_get(cell) == Some((2, 0, [2, 4])))
+  assert(resolved_callee_operation(cell) == 2)
+  assert(resolved_callee_operation(return_call_resolve(cell, 17)) == 2)
+  let own = env_bind(EnvEmpty, "MutBytes::push", CtFn([CtInt, CtInt], CtInt, None))
+  assert(resolve_builtin_callee(own, "MutBytes::push", 7, cell) == -1)
+  assert(resolved_callee_operation(cell) == -1)
+  assert(call_placement_get(cell) == Some((2, 0, [2, 4])))
+}
+
+/// The comparison uses source indices, so equal argument values cannot hide a swap.
+test "equal values do not hide a checker and legacy placement disagreement" {
+  call_placement_capture_begin()
+  let cell: Array[Int] = []
+  let callee = EIdent("subtract", 9)
+  call_placement_note_legacy(callee, [EInt(1), EInt(1)], [4, 2], 9, cell)
+  call_placement_capture_end()
+  let errors: Array[String] = []
+  call_placement_publish(callee, 9, cell, 2, 0, [2, 4], errors)
+  assert(Array::length(errors) == 1)
+  assert(String::contains(Array::get(errors, 0), "`subtract`"))
+  call_placement_syntax_begin()
+  call_placement_note_legacy(callee, [EInt(1), EInt(1)], [4, 2], 9, cell)
+  assert(Array::length(call_placement_syntax_errors()) == 1)
+}
+
+/// Packet entries carry indices directly, including an omitted optional slot.
+test "checked placement emits a variable length tagged packet" {
+  call_placement_capture_begin()
+  call_placement_capture_end()
+  let errors: Array[String] = []
+  let cell: Array[Int] = []
+  call_placement_publish(EIdent("f", 7), 7, cell, 2, 0, [5, 2, 0], errors)
+  assert(call_placement_checked_rows() == [13, 120, 41, 10, 91, 43, 11, 124])
+}
+
+fn restore_packet(rows: Array[Int]) -> Array[Int] {
+  let cell: Array[Int] = []
+  restore_call_placements([
+    SExpr(ECall(EIdent("f", 7), [
+      ELabeledArg("y", "~", EInt(1)),
+      ELabeledArg("x", "~", EInt(1))
+    ], 7, cell))
+  ], rows)
+  cell
+}
+
+/// Duplicate source observations agree, while conflicting order cannot be used.
+test "restoration accepts equal duplicate packets and refuses conflicting ones" {
+  let packet = [120, 41, 10, 75, 43, 124]
+  let rows = [13]
+  for row in packet {
+    Array::push(rows, row)
+  }
+  for row in packet {
+    Array::push(rows, row)
+  }
+  assert(call_placement_get(restore_packet(rows)) == Some((2, 0, [4, 2])))
+  Array::set(rows, 10, 43)
+  Array::set(rows, 11, 75)
+  assert(call_placement_is_refused(restore_packet(rows)))
+}
+
+/// The transport cannot silently ignore malformed or incomplete proof bytes.
+test "malformed placement packets fail closed at the labeled call" {
+  let invalid = [
+    [13],
+    [13, 120, 41, 10, 75, 75, 124],
+    [13, 120, 41, 10, 75, 124],
+    [13, 120, 41, 10, 75, 43],
+    [13, 120, 41, 10, 75, 43, 140],
+    [13, 120, 41, 26, 75, 43, 124],
+    [13, 120, 41, 58, 75, 43, 124],
+    [13, 14],
+    [14, 120, 41, 10, 75, 43, 124]
+  ]
+  for rows in invalid {
+    assert(call_placement_is_refused(restore_packet(rows)))
+  }
+  assert(!call_placement_is_refused(restore_packet([14])))
+}
+
+/// Indices are variable-length rows; arities above a byte are not truncated.
+test "placement transport retains more than 255 written arguments" {
+  let rows = [13, 120, lowering_row_encode(300, 9), 10]
+  let args: Array[Expr] = []
+  let mut i = 0
+  while i < 300 {
+    Array::push(rows, lowering_row_encode((300 - i) * 2, 11))
+    Array::push(args, ELabeledArg("x", "~", EInt(i)))
+    i = i + 1
+  }
+  Array::push(rows, 124)
+  let cell: Array[Int] = []
+  restore_call_placements([SExpr(ECall(EIdent("f", 7), args, 7, cell))], rows)
+  match call_placement_get(cell) {
+    Some((written, mode, slots)) => {
+      assert(written == 300 && mode == 0)
+      assert(Array::length(slots) == 300)
+      assert(Array::get(slots, 0) == 600 && Array::get(slots, 299) == 2)
+    },
+    None => assert(false)
+  }
+}

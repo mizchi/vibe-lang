@@ -1,3 +1,7 @@
+import ./call_placement.vibe {
+  call_placement_cell_prefix
+}
+
 import @vibe/core {
   struct MutMap
 }
@@ -7,6 +11,10 @@ import ./ast.vibe {
 }
 import ./expr_children.vibe {
   expr_child_at, expr_children_pop, expr_children_push, expr_children_top
+}
+
+import ./typed_lowering_rows.vibe {
+  lowering_row_encode, lowering_row_payload, lowering_row_rebase, lowering_row_tag
 }
 
 // Operation identities are separate from source spellings and binding names.
@@ -103,9 +111,9 @@ export fn return_call_resolve(resolution: Array[Int], site: Int) -> Array[Int] {
 }
 export fn resolved_callee_operation(resolution: Array[Int]) -> Int {
   let n = Array::length(resolution)
-  if n == 1 {
+  if n == 1 || call_placement_cell_prefix(resolution, 0) {
     Array::get(resolution, 0)
-  } else if n == 3 && return_call_site(resolution) >= 0 {
+  } else if return_call_site(resolution) >= 0 && (n == 3 || call_placement_cell_prefix(resolution, 2)) {
     Array::get(resolution, 2)
   } else {
     0
@@ -135,12 +143,7 @@ export fn builtin_operation_alias(operation: Int) -> String {
 let callee_identity_radix: Int = 65536
 /// Rebase all typed-lowering channels without losing the callee identity.
 export fn resolved_callee_row_rebase(row: Int, base: Int) -> Int {
-  let scale = if row % 8 == 7 {
-    callee_identity_radix * 8
-  } else {
-    8
-  }
-  row + base * scale
+  lowering_row_rebase(row, base)
 }
 
 let callee_capture: Array[Int] = []
@@ -154,7 +157,7 @@ export fn resolved_callee_capture_record(offset: Int, operation: Int) -> Unit {
     } else {
       operation
     }
-    Array::push(callee_capture, (offset * callee_identity_radix + identity) * 8 + 7)
+    Array::push(callee_capture, lowering_row_encode(offset * callee_identity_radix + identity, 7))
   }
 }
 export fn resolved_callee_capture_rows() -> Array[Int] {
@@ -204,15 +207,15 @@ fn restore_callee_stmts(stmts: Array[Stmt], operations: MutMap[Int, Int]) -> Uni
 export fn restore_resolved_callees(stmts: Array[Stmt], rows: Array[Int]) -> Unit {
   let mut has_callees = false
   for row in rows {
-    if row % 8 == 7 {
+    if lowering_row_tag(row) == 7 {
       has_callees = true
     }
   }
   if has_callees {
     let operations: MutMap[Int, Int] = MutMap::new_int()
     for row in rows {
-      if row % 8 == 7 {
-        let payload = row / 8
+      if lowering_row_tag(row) == 7 {
+        let payload = lowering_row_payload(row)
         let identity = payload % callee_identity_radix
         if identity == 0 || builtin_operation_arity(identity) >= 0 {
           MutMap::set(operations, payload / callee_identity_radix, if identity == 0 {

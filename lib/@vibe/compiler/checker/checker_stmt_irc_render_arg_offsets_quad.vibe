@@ -1,3 +1,19 @@
+import ./checker_call_header_flow.vibe {
+  checker_call_header_flow_begin, checker_seed_mut_call_headers
+}
+
+import ./checker_call_header.vibe {
+  checker_seed_import_call_headers
+}
+
+import @vibe/compiler/core {
+  call_placement_capture_begin, call_placement_capture_end, call_placement_checked_rows
+}
+
+import @vibe/compiler/core {
+  lowering_row_encode, lowering_row_payload, lowering_row_tag, param_names_prefix
+}
+
 // lib/@vibe/compiler/checker/checker_stmt.vibe — irc render arg offsets quad.
 
 import @vibe/compiler/checker/traits {
@@ -630,30 +646,31 @@ export fn checked_double_render_offsets(checked: CheckedProgram) -> Array[Int] {
 
 /// #2391 slice 2: the typed-lowering channel's value encoding. One table
 /// carries every per-module channel so the memo/sidecar/rebase carrier stays a
-/// flat Array[Int]: enc = offset * 8 + tag, with tag 0 = Double call result,
+/// flat Array[Int]: enc = offset * 16 + tag, with tag 0 = Double call result,
 /// 1 = String relational binop anchor, 2 = String `+` binop anchor, 3 = Int
 /// render/`eq` argument, 4 = Double render/`eq` argument, 5 = Bool render/`eq`
 /// argument, 6 = unrenderable render/`eq` argument (#2987). Tag 7 carries
 /// resolved callees: its payload is call_offset * 65536 + operation, so its
-/// rebase is B * 65536 * 8 (core/resolved_callee.vibe). Rebasing any other module
-/// table by a merge base B therefore adds B * 8. The decoder lives in
-/// file_compile's split; keep the two in lockstep.
+/// rebase is B * 65536 * 16 (core/resolved_callee.vibe). Rebasing any other module
+/// table by a merge base B uses core/typed_lowering_rows.vibe; placement
+/// payload rows never move. Tags 8/12 frame an offset-bound packet, 9/10/11
+/// carry written count/mode/source slots, and 13/14 declare availability.
 ///
-/// #2424 widened the tag from 2 bits to 3 when tag 4 arrived. Nothing has to be
-/// migrated for that: the persistent artifact key is
+/// #2424 widened the tag to 3 bits; #3660 widens it to 4 for placements.
+/// No sidecar migration is needed: the persistent artifact key is
 /// `persistent_cache_version_tag()` = "v23|cg-" + `codegen_fingerprint()`, and
 /// the fingerprint hashes every compiler source, so a stale sidecar written
 /// under the old encoding cannot be read back under the new one.
 export fn typed_lowering_enc(offset: Int, tag: Int) -> Int {
-  offset * 8 + tag
+  lowering_row_encode(offset, tag)
 }
 
 export fn typed_lowering_enc_offset(enc: Int) -> Int {
-  enc / 8
+  lowering_row_payload(enc)
 }
 
 export fn typed_lowering_enc_tag(enc: Int) -> Int {
-  enc - (enc / 8) * 8
+  lowering_row_tag(enc)
 }
 
 /// Check once and retain only source-located primary call results whose
@@ -940,6 +957,9 @@ fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: Type
       for row in resolved_callee_capture_rows() {
         Array::push(enc, row)
       }
+      for row in call_placement_checked_rows() {
+        Array::push(enc, row)
+      }
       (checked, Some(enc), eq_offs, eq_keys)
     }
   }
@@ -1126,8 +1146,6 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
 export fn param_names_marker(name: String) -> String {
   String::concat(param_names_prefix, name)
 }
-
-let param_names_prefix: String = "#params:"
 
 /// Whether a binding name is a `param_names_marker`. Allocates nothing, so a
 /// scan over every binding of a dependency costs no heap.
@@ -1328,7 +1346,10 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       check_labeled_arg_names_stmts_with_imports(stmts, frozen_errors, true, imported_param_rows)
       // #986: reorder fully-labeled calls before checking (see check_program).
       imported_params_set(imported_param_rows)
+      checker_call_header_flow_begin()
+      call_placement_capture_begin()
       desugar_labeled_args(stmts)
+      call_placement_capture_end()
       imported_params_set(array_empty())
       // #1571: see check_program.
       desugar_inspect_calls(stmts)
@@ -1357,7 +1378,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       } else {
         seed_defs_next_c
       }
-      let cached_env = env_cache(initial_env)
+      let cached_env = env_cache(checker_seed_mut_call_headers(checker_seed_import_call_headers(initial_env, imported_param_rows)))
       let seeded_raw_env = if trait_defined(cached_env, "Eq") {
         cached_env
       } else {

@@ -1,0 +1,194 @@
+import ./checker_call_header_flow.vibe {
+  checker_call_header_is_probe
+}
+
+import @vibe/compiler/core {
+  Expr, TypeEnv, builtin_param_labels, call_placement_publish, call_placement_raw, canonical_builtin_name
+}
+
+import @vibe/compiler/checker/builtin_sigs {
+  builtin_resolves_at
+}
+
+import ./checker_call_header.vibe {
+  checker_call_header_names
+}
+
+fn placement_param_name(raw: String) -> String {
+  let size = String::length(raw)
+  if String::ends_with(raw, "~") || String::ends_with(raw, "?") {
+    raw[0: size - 1]
+  } else {
+    raw
+  }
+}
+
+fn placement_value(arg: Expr) -> Expr {
+  match arg {
+    ELabeledArg(_, _, value) => value,
+    _ => arg
+  }
+}
+
+fn placement_option_value(arg: Expr) -> Bool {
+  match placement_value(arg) {
+    EIdent(name, _) => name == "None",
+    ECall(EIdent(name, _), args, _, _) => name == "Some" && Array::length(args) == 1,
+    _ => false
+  }
+}
+
+fn placement_identity(count: Int) -> Array[Int] {
+  let slots: Array[Int] = []
+  let mut i = 0
+  while i < count {
+    Array::push(slots, (i + 1) * 2)
+    i = i + 1
+  }
+  slots
+}
+
+// Written-first resolution is independent of the old declared-slot-first
+// rewrite. The header comes from the value binding selected for typing.
+fn placement_for_header(args: Array[Expr], names: Array[String]) -> Option[Array[Int]] {
+  let sources = for _ in names {
+    -1
+  }
+  let mut labeled = 0
+  for arg in args {
+    match arg {
+      ELabeledArg(_, _, _) => labeled = labeled + 1,
+      _ => ()
+    }
+  }
+  let mut valid = labeled == 0 || labeled == Array::length(args)
+  let mut written = 0
+  while written < Array::length(args) && valid {
+    let slot = match Array::get(args, written) {
+      ELabeledArg(label, _, _) => {
+        let mut found = -1
+        let mut i = 0
+        while i < Array::length(names) && found < 0 {
+          if placement_param_name(Array::get(names, i)) == label {
+            found = i
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        found
+      },
+      _ => written
+    }
+    if slot < 0 || slot >= Array::length(names) {
+      valid = false
+    } else if Array::get(sources, slot) >= 0 {
+      valid = false
+    } else {
+      Array::set(sources, slot, written)
+    }
+    written = written + 1
+  }
+  let slots: Array[Int] = []
+  let mut slot = 0
+  while slot < Array::length(names) && valid {
+    let source = Array::get(sources, slot)
+    let optional = String::ends_with(Array::get(names, slot), "?")
+    if source < 0 {
+      if optional {
+        Array::push(slots, 0)
+      } else {
+        valid = false
+      }
+    } else {
+      let wrap = optional && !placement_option_value(Array::get(args, source))
+      Array::push(slots, (source + 1) * 2 + if wrap {
+        1
+      } else {
+        0
+      })
+    }
+    slot = slot + 1
+  }
+  if valid {
+    Some(slots)
+  } else {
+    None
+  }
+}
+
+/// Calls through values without declaration headers keep the legacy positional
+/// passthrough. Labels on such values are retired in ADR-0120 Phase 4.
+export fn checker_record_opaque_call_placement(cell: Array[Int], errors: Array[String]) -> Unit {
+  if checker_call_header_is_probe() {
+    ()
+  } else {
+    match call_placement_raw(cell) {
+      Some((callee, args, _, offset)) => {
+        call_placement_publish(callee, offset, cell, Array::length(args), 2, placement_identity(Array::length(args)), errors)
+      },
+      None => ()
+    }
+  }
+}
+
+/// The UFCS dispatcher supplies its checker-resolved qualified binding and
+/// whether the receiver occupies the first formal (not a written argument).
+export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv, name: String, ident_offset: Int, implicit_receiver: Bool, errors: Array[String]) -> Unit {
+  if checker_call_header_is_probe() || Array::length(errors) > 0 {
+    ()
+  } else {
+    match call_placement_raw(cell) {
+      Some((callee, args, _, offset)) => {
+        if builtin_resolves_at(env, name, ident_offset) {
+          match builtin_param_labels(name) {
+            Some(_) => {
+              let mode = if canonical_builtin_name(name) == "sh_lines" {
+                1
+              } else {
+                0
+              }
+              call_placement_publish(callee, offset, cell, Array::length(args), mode, placement_identity(Array::length(args)), errors)
+            },
+            None => checker_record_opaque_call_placement(cell, errors)
+          }
+        } else {
+          match checker_call_header_names(env, name) {
+            Some(all_names) => {
+              let names = if implicit_receiver && Array::length(all_names) > 0 {
+                Array::slice(all_names, 1, Array::length(all_names))
+              } else {
+                all_names
+              }
+              match placement_for_header(args, names) {
+                Some(slots) => call_placement_publish(callee, offset, cell, Array::length(args), 0, slots, errors),
+                None => ()
+              }
+            },
+            None => checker_record_opaque_call_placement(cell, errors)
+          }
+        }
+      },
+      None => ()
+    }
+  }
+}
+
+/// Precheck macros carry the original snapshot on their typed replacement.
+/// Resolve that source callee in the actual environment at this point.
+export fn checker_record_call_placement(expr: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
+  match expr {
+    ECall(callee, args, _, cell) => match call_placement_raw(cell) {
+      Some((raw_callee, raw_args, _, _)) => match raw_callee {
+        EIdent(name, ident_offset) => checker_record_resolved_call_placement(cell, env, name, ident_offset, false, errors),
+        _ => match callee {
+          EIdent(name, ident_offset) => checker_record_resolved_call_placement(cell, env, name, ident_offset, Array::length(args) == Array::length(raw_args) + 1, errors),
+          EDot(_, _, _, _) => (),
+          _ => checker_record_opaque_call_placement(cell, errors)
+        }
+      },
+      None => ()
+    },
+    _ => ()
+  }
+}

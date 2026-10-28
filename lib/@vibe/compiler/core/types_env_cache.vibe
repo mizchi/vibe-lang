@@ -102,7 +102,32 @@ export enum BindingOrigin {
   BindingOriginModuleExport(String, String);
   /// A re-export contributes to this module's published surface, but the
   /// re-export statement does not introduce a local binder (#2287).
-  BindingOriginReExportSurface(String, String)
+  BindingOriginReExportSurface(String, String);
+  /// A declaration carries its raw header on the resolved value binding.
+  /// Ordinary value/parameter bindings have no declaration labels.
+  BindingOriginFunctionHeader(Array[String]);
+  /// A live checker binding owns this box; transport freezes its logical fact.
+  BindingOriginMutableFunctionHeader(Array[(Int, Array[String], Int)]);
+  BindingOriginUncertainFunctionHeader
+}
+
+/// Persistent contexts contain label facts, never a mutable box or revision.
+export fn freeze_call_header_origin(origin: BindingOrigin) -> BindingOrigin {
+  match origin {
+    BindingOriginMutableFunctionHeader(box) => {
+      let (kind, names, _) = Array::get(box, 0)
+      if kind == 1 {
+        BindingOriginFunctionHeader(names)
+      }
+      else if kind == 2 {
+        BindingOriginUncertainFunctionHeader
+      }
+      else {
+        BindingOriginUnavailable
+      }
+    },
+    _ => origin
+  }
 }
 
 export struct EnvValueBinding {
@@ -413,6 +438,9 @@ export fn env_type_definition_origin(env: TypeEnv, name: String) -> Option[Bindi
         if n == marker || n == name {
           match binding.origin {
             BindingOriginUnavailable => (),
+            BindingOriginFunctionHeader(_) => (),
+            BindingOriginMutableFunctionHeader(_) => (),
+            BindingOriginUncertainFunctionHeader => (),
             origin => {
               pending = Some(origin)
             }
@@ -464,6 +492,9 @@ fn source_type_definition_origin(env: TypeEnv, name: String) -> Option[BindingOr
     None => match env_lookup_binding(env, name) {
       Some(binding) => match binding.origin {
         BindingOriginUnavailable => None,
+        BindingOriginFunctionHeader(_) => None,
+        BindingOriginMutableFunctionHeader(_) => None,
+        BindingOriginUncertainFunctionHeader => None,
         origin => Some(origin)
       },
       None => None
