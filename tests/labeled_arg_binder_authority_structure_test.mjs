@@ -73,7 +73,7 @@ const ordinary = [
   ["optional_fill_args", "fn optional_fill_args(args: Array[Expr], flags: Array[Bool]) -> Array[Expr]"],
   ["reorder_labeled_args", "fn reorder_labeled_args(args: Array[Expr], param_labels: Array[String]) -> Option[Array[Expr]]"],
   ["strip_labeled_wrappers", "fn strip_labeled_wrappers(args: Array[Expr]) -> Array[Expr]"],
-  ["strip_in_position_labels", "fn strip_in_position_labels(args: Array[Expr], labels: Array[String]) -> Array[Expr]"],
+  ["strip_in_position_labels", "fn strip_in_position_labels(args: Array[Expr], labels: Array[String], builtin_slots: Bool) -> Array[Expr]"],
   ["relabel_expr", "fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[String]) -> Expr"],
   ["relabel_stmt", "fn relabel_stmt(stmt: Stmt, tbl: Array[(String, Array[String])]) -> Stmt"],
   ["desugar_labeled_args", "export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit"],

@@ -1,0 +1,308 @@
+//# Imports
+
+import @vibe/core {
+  array_empty
+}
+
+import ./builtin_name.vibe {
+  canonical_builtin_name
+}
+
+//# Functions
+
+// ADR-0120 Phase 1a (#3659): each builtin's parameter labels, in declared
+// order. `_` marks a positional slot -- it takes no label. A builtin has no
+// source declaration to read names from, so this table is where they live.
+//
+// The rule for `_` is ADR-0120 D3's, applied mechanically:
+//   - the receiver of a `T::f` (`Array::get(_, at)`);
+//   - the only argument of a one-parameter function (`String::length(_)`);
+//   - the operands of a symmetric or operator-like function
+//     (`String::concat(_, _)`, `eq(_, _)`, `add(_, _)`);
+//   - every parameter of an internal hook (`vibe_*_raw`, `simd_*`, `__*`),
+//     which no program is meant to call by name.
+// Every other parameter is labeled with its role (`at`, `value`, `start`,
+// `end`, `sep`, `needle`, ...).
+//
+// The labels are public API (ADR-0120 D6): renaming one breaks every call
+// that writes it. tests/builtin_param_labels_test.vibe holds the table to the
+// builtins' signatures -- every checker-visible registry row has a row here,
+// and every row's arity matches the builtin's type. A builtin with no row
+// keeps refusing every label (#3651), so a gap fails closed.
+//
+// Enum constructors (`Some`, `None`) and the codegen intrinsics the parser
+// synthesizes (`__index`, `__rec_field`, `__set_field`, `__exn_kind`,
+// `__exn_message`) have no row on purpose: they are positional by
+// construction.
+let builtin_param_label_rows: Array[(String, Array[String])] = [
+  // Env
+  ("Env::get", ["_"]),
+  ("Env::args_len", []),
+  ("Env::args_get", ["_"]),
+  // Fs
+  ("Fs::read_file", ["_"]),
+  ("Fs::exists", ["_"]),
+  ("Fs::stat_token", ["_"]),
+  ("Fs::write_file", ["_", "contents"]),
+  ("Fs::publish_immutable_text", ["_", "text"]),
+  ("Fs::write_bytes", ["_", "bytes"]),
+  ("Fs::read_bytes", ["_"]),
+  ("Fs::remove", ["_"]),
+  ("Fs::remove_file", ["_"]),
+  ("Fs::remove_tree", ["_"]),
+  ("Fs::mkdir_p", ["_"]),
+  ("Fs::mkdir", ["_"]),
+  ("Fs::chdir", ["_"]),
+  ("Fs::copy", ["_", "to"]),
+  ("Fs::append", ["_", "contents"]),
+  ("Fs::rename", ["_", "to"]),
+  ("Fs::is_dir", ["_"]),
+  ("Fs::is_file", ["_"]),
+  ("Fs::getcwd", []),
+  ("Fs::readdir", ["_"]),
+  // Process
+  ("sh", ["_"]),
+  // `sh_lines`'s labels after the command are flags (#777), not parameters.
+  ("sh_lines", ["_"]),
+  // Fallback-only path helpers have one positional argument.
+  ("path", ["_"]),
+  ("Path::ref", ["_"]),
+  ("Path::to_string", ["_"]),
+  ("Path::is_absolute", ["_"]),
+  ("Path::resolve", ["_"]),
+  // Console and the legacy tty streams
+  ("Stdin::read_stream", ["_"]),
+  ("Stdin::read_char", []),
+  ("Stdin::read_via_stream", []),
+  ("Stdout::write_stream", ["_"]),
+  ("Stdout::write_char", ["_"]),
+  ("Stderr::write_stream", ["_"]),
+  ("Stderr::write_char", ["_"]),
+  ("Console::read_stream", ["_"]),
+  ("Console::read_char", []),
+  ("Console::write_stream", ["_"]),
+  ("Console::write_char", ["_"]),
+  ("Console::write_err_stream", ["_"]),
+  ("Console::write_err_char", ["_"]),
+  ("StdinStream::next", ["_"]),
+  ("StdinStream::close", ["_"]),
+  ("StdinStream::read_chunk", ["_", "max"]),
+  ("println", ["_"]),
+  ("print", ["_"]),
+  // Http
+  ("Http::request", ["_", "url", "headers", "body"]),
+  ("Http::response_status", ["_"]),
+  ("Http::response_header", ["_", "name"]),
+  ("Http::response_body", ["_"]),
+  ("Http::close", ["_"]),
+  // Profiler and time
+  ("Profiler::now_us", []),
+  ("Profiler::heap_bytes", []),
+  ("sleep", ["_"]),
+  ("sleep_blocking", ["_"]),
+  // Async
+  ("Future::ready", ["_"]),
+  ("Future::pending", []),
+  ("Future::resolve", ["_", "value"]),
+  ("await", ["_"]),
+  ("host_future_get", []),
+  ("host_future_named", ["_"]),
+  ("host_response_named", ["_"]),
+  ("host_response_named_with", ["_", "body"]),
+  ("host_stream_named", ["_"]),
+  ("host_stream_next", ["_"]),
+  ("host_stream_close", ["_"]),
+  ("HostResponse::status", ["_"]),
+  ("HostResponse::body", ["_"]),
+  ("HostStream::next", ["_"]),
+  ("HostStream::close", ["_"]),
+  // String
+  ("String::length", ["_"]),
+  ("String::equals", ["_", "_"]),
+  ("String::concat", ["_", "_"]),
+  ("String::char_code_at", ["_", "at"]),
+  ("String::from_char_code", ["_"]),
+  ("String::substring", ["_", "start", "end"]),
+  ("String::join", ["_", "sep"]),
+  ("String::ends_with", ["_", "suffix"]),
+  ("String::starts_with", ["_", "prefix"]),
+  ("String::last_index_of", ["_", "needle"]),
+  ("String::index_of", ["_", "needle"]),
+  ("String::contains", ["_", "needle"]),
+  ("String::split", ["_", "sep"]),
+  ("String::trim", ["_"]),
+  ("String::to_bytes", ["_"]),
+  ("String::unicode_length", ["_"]),
+  ("String::utf16_length", ["_"]),
+  ("String::utf8_length", ["_"]),
+  ("string_char_at", ["_", "at"]),
+  ("StringBuilder::new", []),
+  ("StringBuilder::push", ["_", "value"]),
+  ("StringBuilder::freeze", ["_"]),
+  // Array
+  ("Array::with_capacity", ["_"]),
+  ("array_new", []),
+  ("Array::length", ["_"]),
+  ("Array::get", ["_", "at"]),
+  ("Array::push", ["_", "value"]),
+  ("Array::push_all", ["_", "values"]),
+  ("Array::set", ["_", "at", "value"]),
+  ("Array::truncate", ["_", "length"]),
+  ("Array::slice", ["_", "start", "end"]),
+  ("Array::concat", ["_", "_"]),
+  ("Array::reverse", ["_"]),
+  ("Array::map", ["_", "f"]),
+  ("Array::filter", ["_", "f"]),
+  ("Array::find", ["_", "f"]),
+  ("Array::any", ["_", "f"]),
+  ("Array::all", ["_", "f"]),
+  ("Array::fold", ["_", "init", "f"]),
+  ("ArrayBuilder::new", []),
+  ("ArrayBuilder::push", ["_", "value"]),
+  ("ArrayBuilder::freeze", ["_"]),
+  ("FrozenArray::from_array", ["_"]),
+  ("FrozenArray::get", ["_", "at"]),
+  ("FrozenArray::length", ["_"]),
+  ("FrozenArray::to_array", ["_"]),
+  ("FixedArray::make", ["_", "value"]),
+  ("FixedArray::length", ["_"]),
+  ("FixedArray::get", ["_", "at"]),
+  ("FixedArray::set", ["_", "at", "value"]),
+  ("FixedArray::unsafe_set", ["_", "at", "value"]),
+  // Destination first: `FixedArray::blit(dst, dst_off, src, src_off, len)`.
+  ("FixedArray::blit", ["_", "at", "src", "src_start", "length"]),
+  ("Int64Array::make", ["_", "value"]),
+  ("Int64Array::length", ["_"]),
+  ("Int64Array::get", ["_", "at"]),
+  ("Int64Array::set", ["_", "at", "value"]),
+  // Bytes
+  ("Bytes::new", []),
+  ("Bytes::with_capacity", ["_"]),
+  ("Bytes::from_array", ["_"]),
+  ("Bytes::to_array", ["_"]),
+  ("Bytes::length", ["_"]),
+  ("Bytes::get", ["_", "at"]),
+  ("Bytes::set", ["_", "at", "value"]),
+  ("Bytes::push", ["_", "value"]),
+  ("Bytes::append", ["_", "bytes"]),
+  ("Bytes::concat", ["_", "_"]),
+  ("Bytes::slice", ["_", "start", "end"]),
+  ("Bytes::index_of_bytes", ["_", "needle"]),
+  ("Bytes::index_of", ["_", "value"]),
+  ("Bytes::count", ["_", "value"]),
+  ("Bytes::last_index_of", ["_", "value"]),
+  ("Bytes::compare", ["_", "_"]),
+  ("Bytes::blit", ["_", "src", "start", "end"]),
+  ("Bytes::fill", ["_", "value", "count"]),
+  ("ByteStream::to_string", ["_"]),
+  // Map
+  ("Map::get", ["_", "key"]),
+  ("Map::keys", ["_"]),
+  ("Map::values", ["_"]),
+  ("Map::size", ["_"]),
+  ("Map::has", ["_", "key"]),
+  ("Map::has_key", ["_", "key"]),
+  ("Map::set", ["_", "key", "value"]),
+  ("Map::delete", ["_", "key"]),
+  ("MapBuilder::new", []),
+  ("MapBuilder::set", ["_", "key", "value"]),
+  ("MapBuilder::freeze", ["_"]),
+  ("MapBuilder::has_key", ["_", "key"]),
+  ("MapBuilder::get", ["_", "key"]),
+  ("map_has", ["_", "key"]),
+  // Numbers and characters
+  ("Int::to_double", ["_"]),
+  ("Int::to_float", ["_"]),
+  ("Int::to_string", ["_"]),
+  ("Int::parse", ["_"]),
+  ("Int::popcount", ["_"]),
+  ("Int::ctz", ["_"]),
+  ("Int::clz", ["_"]),
+  ("Double::to_int", ["_"]),
+  ("Double::to_string", ["_"]),
+  ("Double::parse", ["_"]),
+  ("Double::abs", ["_"]),
+  ("Double::ceil", ["_"]),
+  ("Double::floor", ["_"]),
+  ("Double::max", ["_", "_"]),
+  ("Double::min", ["_", "_"]),
+  ("Double::from_i64_bits", ["_"]),
+  ("Double::to_i64_bits_hi", ["_"]),
+  ("Double::to_i64_bits_lo", ["_"]),
+  ("Float::to_int", ["_"]),
+  ("Float::to_string", ["_"]),
+  ("Char::to_int", ["_"]),
+  ("Char::from_int", ["_"]),
+  // Operators, assertions and control
+  ("eq", ["_", "_"]),
+  ("not", ["_"]),
+  ("add", ["_", "_"]),
+  ("sub", ["_", "_"]),
+  ("mul", ["_", "_"]),
+  ("lt", ["_", "_"]),
+  ("abort", ["_"]),
+  ("assert", ["_"]),
+  ("assert_true", ["_"]),
+  ("assert_eq", ["_", "_"]),
+  ("throw", ["_"]),
+  // Internal hooks: positional throughout.
+  // Iteration lowering and binary64 bit assembly also construct these calls.
+  ("Map::iter_get", ["_", "_"]),
+  ("Double::from_i64_bits_lohi", ["_", "_"]),
+  ("vibe_fs_stat_token_raw", ["_"]),
+  ("vibe_sh_capture_raw", ["_"]),
+  ("vibe_sh_capture_exit_code_raw", ["_"]),
+  ("vibe_sh_capture_stdout_raw", ["_"]),
+  ("vibe_sh_capture_stderr_raw", ["_"]),
+  ("vibe_sh_capture_close_raw", ["_"]),
+  ("vibe_process_exit_raw", ["_"]),
+  ("vibe_tcp_connect_raw", ["_", "_"]),
+  ("vibe_tcp_read_raw", ["_", "_"]),
+  ("vibe_tcp_write_raw", ["_", "_"]),
+  ("vibe_tcp_close_raw", ["_"]),
+  ("vibe_http_request_raw", ["_", "_", "_", "_"]),
+  ("vibe_http_response_status_raw", ["_"]),
+  ("vibe_http_response_header_raw", ["_", "_"]),
+  ("vibe_http_response_body_raw", ["_"]),
+  ("vibe_http_close_raw", ["_"]),
+  ("simd_skip_ws", ["_", "_", "_"]),
+  ("simd_scan_alnum", ["_", "_", "_"]),
+  ("simd_scan_alnum_str", ["_", "_", "_"]),
+  ("simd_scan_string_special_str", ["_", "_", "_"]),
+  ("simd_scan_line_end_str", ["_", "_", "_"]),
+  ("str_lex_diff", ["_", "_"]),
+  ("__generic_rel_diff", ["_", "_"]),
+  ("__generic_add", ["_", "_"]),
+  ("__to_string", ["_"]),
+  ("compiler_lowering_run", ["_"])
+]
+
+/// The labels of builtin `name`, `_` for a positional slot; `None` when the
+/// builtin has no row, in which case every label on a call to it is refused.
+/// A legacy spelling (`Fs::ReadFile`) answers for its canonical name, the way
+/// `lookup_builtin` resolves it.
+export fn builtin_param_labels(raw: String) -> Option[Array[String]] {
+  let name = canonical_builtin_name(raw)
+  let mut found = None
+  let mut i = 0
+  while i < Array::length(builtin_param_label_rows) {
+    let (n, labels) = Array::get(builtin_param_label_rows, i)
+    if n == name {
+      found = Some(labels)
+      i = Array::length(builtin_param_label_rows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Every name the table covers, in table order, for the census test.
+export fn builtin_param_label_names() -> Array[String] {
+  let out = array_empty()
+  for row in builtin_param_label_rows {
+    let (n, _) = row
+    Array::push(out, n)
+  }
+  out
+}
