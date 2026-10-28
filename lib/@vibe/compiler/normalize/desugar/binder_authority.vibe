@@ -291,13 +291,13 @@ fn strip_labeled_wrappers_paired(args: Array[Expr], node: BinderAuthorityNode, p
   out
 }
 
-fn strip_in_position_labels_paired(args: Array[Expr], labels: Array[String], node: BinderAuthorityNode, poisoned: Array[Bool]) -> Array[Expr] {
+fn strip_in_position_labels_paired(args: Array[Expr], labels: Array[String], node: BinderAuthorityNode, poisoned: Array[Bool], builtin_slots: Bool) -> Array[Expr] {
   let out = empty_expr_array()
   let mut i = 0
   while i < Array::length(args) {
     let arg = Array::get(args, i)
     match arg {
-      ELabeledArg(label, marker, value) => if label_matches_position(arg, labels, i) {
+      ELabeledArg(label, marker, value) => if (!builtin_slots || label != "_") && label_matches_position(arg, labels, i) {
         paired_promote_wrapper(node, i + 1, poisoned)
         Array::push(out, value)
       } else {
@@ -445,11 +445,11 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
                 if ok {
                   strip_labeled_wrappers_paired(reordered, node, poisoned)
                 } else {
-                  strip_in_position_labels_paired(rargs, labels, node, poisoned)
+                  strip_in_position_labels_paired(rargs, labels, node, poisoned, false)
                 }
               } else {
                 paired_poison(poisoned)
-                strip_in_position_labels_paired(rargs, labels, node, poisoned)
+                strip_in_position_labels_paired(rargs, labels, node, poisoned, false)
               },
               // #3659: mirrors relabel_expr -- a builtin's in-position label
               // is dropped, any other one survives to the checker.
@@ -457,7 +457,7 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
                 rargs
               } else {
                 match builtin_param_labels(fname) {
-                  Some(blabels) => strip_in_position_labels_paired(rargs, blabels, node, poisoned),
+                  Some(blabels) => strip_in_position_labels_paired(rargs, blabels, node, poisoned, true),
                   None => rargs
                 }
               }

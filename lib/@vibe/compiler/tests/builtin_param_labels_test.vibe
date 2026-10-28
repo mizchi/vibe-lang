@@ -1,11 +1,15 @@
 //# Imports
 
 import @vibe/compiler/checker/builtin_sigs {
-  lookup_builtin
+  lookup_builtin, lookup_builtin_fallback
 }
 
 import @vibe/compiler/core {
-  Type, builtin_param_label_names, builtin_param_labels, builtin_registry_typed
+  Expr, Stmt, Type, builtin_param_label_names, builtin_param_labels, builtin_registry_typed, expr_children
+}
+
+import @vibe/parser {
+  parse_source_with_ranges
 }
 
 //# Functions
@@ -18,6 +22,41 @@ fn builtin_type_arity(ty: Type) -> Int {
     CtForAll(_, _, body) => builtin_type_arity(body),
     _ => -1
   }
+}
+
+// Read literals from parsed code, so comments and formatting cannot add or
+// hide fallback names. The actual fallback lookup below decides which of
+// these strings is a builtin; the syntax walk does not infer signatures.
+fn fallback_name_literals(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    EString(name, _) => Array::push(out, name),
+    _ => ()
+  }
+  for child in expr_children(expr) {
+    fallback_name_literals(child, out)
+  }
+  ()
+}
+
+fn fallback_stmt_literals(stmt: Stmt, out: Array[String]) -> Unit {
+  match stmt {
+    SLet(_, _, _, _, body) => fallback_name_literals(body, out),
+    SFnDecl(_, _, body, _, _) => fallback_name_literals(body, out),
+    SLetMut(_, _, body) => fallback_name_literals(body, out),
+    SLetPat(_, body) => fallback_name_literals(body, out),
+    SExpr(body) => fallback_name_literals(body, out),
+    SModule(_, _, stmts) => {
+      for s in stmts {
+        fallback_stmt_literals(s, out)
+      }
+      ()
+    },
+    _ => ()
+  }
+}
+
+fn fallback_name_is_synthesized(name: String) -> Bool {
+  name == "Some" || name == "None" || name == "__index" || name == "__set_field" || name == "__rec_field" || name == "__exn_kind" || name == "__exn_message"
 }
 
 //# Misc
@@ -44,6 +83,55 @@ test "every checker-visible registry builtin has parameter labels" {
     }
   }
   assert(missing == 0)
+}
+
+/// Non-registry builtins are discovered in the fallback implementation, not
+/// in the labels table: deleting a fallback's row must fail this census too.
+test "every checker-visible fallback builtin has matching parameter labels" {
+  let dir = "lib/@vibe/compiler/checker/builtin_sigs"
+  let mut files = 0
+  let mut checked = 0
+  let mut bad = 0
+  for file in Fs::readdir(dir) {
+    if String::ends_with(file, ".vibe") {
+      files = files + 1
+      let path = dir + "/" + file
+      let stmts = parse_source_with_ranges(Fs::read_file(path))
+      let names: Array[String] = []
+      for stmt in stmts {
+        fallback_stmt_literals(stmt, names)
+      }
+      for name in names {
+        if fallback_name_is_synthesized(name) {
+          ()
+        } else {
+          match lookup_builtin_fallback(name) {
+            Some(ty) => {
+              checked = checked + 1
+              match builtin_param_labels(name) {
+                Some(labels) => if builtin_type_arity(ty) != Array::length(labels) {
+                  println("fallback builtin has wrong parameter-label arity: \{name}")
+                  bad = bad + 1
+                } else {
+                  ()
+                },
+                None => {
+                  println("fallback builtin without parameter labels: \{name}")
+                  bad = bad + 1
+                }
+              }
+            },
+            None => ()
+          }
+        }
+      }
+    } else {
+      ()
+    }
+  }
+  assert(files > 0)
+  assert(checked > 0)
+  assert(bad == 0)
 }
 
 /// A row's arity must match the builtin's type, or a label would name a slot
