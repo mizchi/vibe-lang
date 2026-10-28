@@ -25,7 +25,21 @@ import @vibe/compiler/checker/builtin_sigs {
 }
 
 import @vibe/compiler/core {
-  Expr, ImportItem, ImportKind, Pat, Stmt, Subst, Type, TypeDef, TypeEnv, TypeExpr, env_bind, expr_children, subst_apply, type_to_string
+  Expr,
+  ImportItem,
+  ImportKind,
+  Pat,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  builtin_param_labels,
+  env_bind,
+  expr_children,
+  subst_apply,
+  type_to_string
 }
 
 import ./checker.vibe {
@@ -870,13 +884,15 @@ fn builtin_claimed_collect(stmts: Array[Stmt]) -> Unit {
   }
 }
 
-/// #3651: a builtin has no parameter names, so nothing reorders its labeled
-/// arguments and codegen binds them in written order. `String::concat(b =
-/// "a", a = "b")` reads as "ba" and answered "ab", and a label naming no
-/// parameter at all was accepted. Refuse the label instead. `sh_lines` is the
-/// one builtin whose labels mean something: each one after the command is a
-/// flag (`a = true` appends ` -a`, #777), so only its command is positional.
-/// One error per call -- the edit (drop the labels) is the same for each.
+/// #3651: a builtin has no source declaration, so nothing reorders its
+/// labeled arguments and codegen binds them in written order. `String::concat(b
+/// = "a", a = "b")` reads as "ba" and used to answer "ab". #3659 gave builtins
+/// parameter names (`builtin_param_labels`, `_` for a positional slot):
+/// `relabel_expr` drops a label that names its own slot, so a label that
+/// reaches this walk is one of the shapes below, each refused with the edit.
+/// A builtin with no row refuses every label. `sh_lines`'s labels after the
+/// command are flags (#777), not parameters. One error per call: the first
+/// offending label's edit.
 fn builtin_label_check_call(fname: String, fname_off: Int, args: Array[Expr], errors: Array[String]) -> Unit {
   let builtin = if string_array_contains_exact(builtin_claimed_names, fname) {
     None
@@ -885,34 +901,94 @@ fn builtin_label_check_call(fname: String, fname_off: Int, args: Array[Expr], er
   }
   match builtin {
     Some(_) => {
+      let labels = builtin_param_labels(fname)
       let mut lbl = ""
-      let mut found = false
+      let mut at = -1
       let mut ai = 0
-      while ai < Array::length(args) && !found {
+      while ai < Array::length(args) && at < 0 {
         match Array::get(args, ai) {
           ELabeledArg(l, _, _) => if fname == "sh_lines" && ai > 0 {
             ()
+          } else if builtin_label_names_slot(labels, l, ai) {
+            // The desugar drops these; one that got here still binds its
+            // own slot, so it is not an error.
+            ()
           } else {
             lbl = l
-            found = true
+            at = ai
           },
           _ => ()
         }
         ai = ai + 1
       }
-      if found {
+      if at >= 0 {
         let marker = labeled_name_marker(fname_off, String::length(fname))
-        let message = if fname == "sh_lines" {
-          String::concat("the command of `sh_lines` is positional: remove `", String::concat(lbl, String::concat(" = ` (labels after the command are flags)", marker)))
-        } else {
-          String::concat("builtin `", String::concat(fname, String::concat("` takes positional arguments: remove `", String::concat(lbl, String::concat(" = ` and write the arguments in parameter order", marker)))))
-        }
-        Array::push(errors, message)
+        Array::push(errors, String::concat(builtin_label_refusal(fname, lbl, at, labels), marker))
       } else {
         ()
       }
     },
     None => ()
+  }
+}
+
+fn builtin_label_names_slot(labels: Option[Array[String]], lbl: String, at: Int) -> Bool {
+  match labels {
+    Some(names) => at < Array::length(names) && Array::get(names, at) == lbl,
+    None => false
+  }
+}
+
+/// The edit for label `lbl` written as argument `at` (0-based) of builtin
+/// `fname`, whose labels are `labels`.
+fn builtin_label_refusal(fname: String, lbl: String, at: Int, labels: Option[Array[String]]) -> String {
+  let remove = String::concat("remove `", String::concat(lbl, " = `"))
+  match labels {
+    None => String::concat("builtin `", String::concat(fname, String::concat("` takes positional arguments: ", String::concat(remove, " and write the arguments in parameter order")))),
+    Some(names) => {
+      let slot = if at < Array::length(names) {
+        Array::get(names, at)
+      } else {
+        ""
+      }
+      let mut declared = -1
+      let mut k = 0
+      while k < Array::length(names) && declared < 0 {
+        if Array::get(names, k) == lbl {
+          declared = k
+        } else {
+          ()
+        }
+        k = k + 1
+      }
+      if fname == "sh_lines" {
+        String::concat("the command of `sh_lines` is positional: ", String::concat(remove, " (labels after the command are flags)"))
+      } else if declared >= 0 {
+        String::concat("labeled argument `", String::concat(lbl, String::concat("` for builtin `", String::concat(fname, String::concat("` is out of parameter order: `", String::concat(lbl, String::concat("` is argument ", String::concat(__to_string(declared + 1), ", so write the arguments in parameter order"))))))))
+      } else if slot == "_" {
+        String::concat("argument ", String::concat(__to_string(at + 1), String::concat(" of builtin `", String::concat(fname, String::concat("` is positional: ", remove)))))
+      } else {
+        String::concat("builtin `", String::concat(fname, String::concat("` has no parameter `", String::concat(lbl, String::concat("`: ", String::concat(remove, builtin_label_list_hint(names)))))))
+      }
+    }
+  }
+}
+
+/// ` (its labels are `at`, `value`)`, or ` (every argument is positional)`
+/// when no slot has a label.
+fn builtin_label_list_hint(names: Array[String]) -> String {
+  let named = array_empty()
+  for n in names {
+    if n == "_" {
+      ()
+    } else {
+      Array::push(named, String::concat("`", String::concat(n, "`")))
+    }
+  }
+  if Array::length(named) == 0 {
+    " (every argument is positional)"
+  } else {
+    String::concat(" (its labels are ", String::concat(String::join(named, ", "), ")"))
   }
 }
 

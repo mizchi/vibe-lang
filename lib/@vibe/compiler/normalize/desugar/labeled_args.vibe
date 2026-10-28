@@ -1,7 +1,7 @@
 // Labeled args.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, __to_string, expr_children
+  Expr, Pat, Stmt, TypeExpr, __to_string, builtin_param_labels, expr_children
 }
 
 import @vibe/core {
@@ -1199,7 +1199,19 @@ export fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows:
                   None => strip_in_position_labels(rargs, labels)
                 }
               },
-              None => rargs
+              None => if str_array_contains(shadows, fname) {
+                rargs
+              } else {
+                // #3659: a builtin's label that names its own slot is
+                // dropped here, so the checker types the argument and
+                // codegen sees a plain one; binding is positional either
+                // way, so this never moves an argument. Any other label
+                // survives to `builtin_label_check_call`, which refuses it.
+                match builtin_param_labels(fname) {
+                  Some(blabels) => strip_in_position_labels(rargs, blabels),
+                  None => rargs
+                }
+              }
             }
           },
           _ => rargs

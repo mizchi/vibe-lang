@@ -488,11 +488,15 @@ test "labeled arguments run in written order" {
 }
 ```
 
-A builtin takes positional arguments only. `String::concat(b = "a", a = "b")`
-is a build error whose message says to remove the label (#3651; it used to
-bind in written order and answer `"ab"`). The one exception is `sh_lines`,
-whose labels after the command are flags: `sh_lines("ls", a = true)` runs
-`ls -a`.
+A builtin's parameters have names too (#3659). Its receiver, the only
+argument of a one-parameter builtin, and the operands of a symmetric one are
+positional; the rest can be written by name, in parameter order:
+`Array::get(xs, at = 0)`, `String::substring(s, start = 1, end = 3)`. Any
+other label is a build error naming the edit -- on a positional slot
+(`String::concat(b = "a", a = "b")`, which used to answer `"ab"`, #3651), out
+of order, or naming no parameter. A builtin's labels never reorder its
+arguments. `sh_lines` is the exception: its labels after the command are
+flags, so `sh_lines("ls", a = true)` runs `ls -a`.
 
 ### Optional arguments: `x: T = default` (#3120) and `x?: T` (#1500)
 

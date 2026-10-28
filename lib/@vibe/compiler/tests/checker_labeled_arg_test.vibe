@@ -177,7 +177,7 @@ test "labeled args: reordered labels with every default supplied accepted" {
 /// its arguments in written order and `b = "a", a = "b"` answered "ab". The
 /// label is refused, and the message names the edit.
 test "3651: swapped labels on a builtin rejected" {
-  assert(check_source_err_contains("fn main() -> String {\n  String::concat(b = \"a\", a = \"b\")\n}", "builtin `String::concat` takes positional arguments: remove `b = `"))
+  assert(check_source_err_contains("fn main() -> String {\n  String::concat(b = \"a\", a = \"b\")\n}", "argument 1 of builtin `String::concat` is positional: remove `b = `"))
 }
 
 /// A label that names no parameter at all used to be accepted and ignored.
@@ -185,10 +185,10 @@ test "3651: unknown labels on a builtin rejected" {
   assert(check_source_err_contains("fn main() -> String {\n  String::concat(zzz = \"a\", qqq = \"b\")\n}", "remove `zzz = `"))
 }
 
-/// A label on any one argument is enough: the mix is no longer tolerated
-/// for a builtin either.
+/// A label that names no parameter of the builtin is refused, and the
+/// message lists the labels it has.
 test "3651: one labeled builtin argument rejected" {
-  assert(check_source_err_contains("fn main() -> Int {\n  let xs: Array[Int] = []\n  Array::push(xs, value = 1)\n  Array::length(xs)\n}", "builtin `Array::push`"))
+  assert(check_source_err_contains("fn main() -> Int {\n  let xs: Array[Int] = []\n  Array::push(xs, val = 1)\n  Array::length(xs)\n}", "builtin `Array::push` has no parameter `val`: remove `val = ` (its labels are `value`)"))
 }
 
 /// The walk used to stand down when the module declared no function, so a
@@ -233,4 +233,30 @@ test "3651: a destructured top-level name with a builtin spelling is not judged 
 /// binding as well.
 test "3651: an enum constructor with a builtin name is not judged as the builtin" {
   assert(check_source_ok("enum Message {\n  println(Int)\n}\n\nfn main() -> Unit allows Console {\n  let _ = println(value = 1)\n  ()\n}"))
+}
+
+/// #3659: a builtin label that names its own slot is accepted.
+test "3659: an in-order builtin label accepted" {
+  assert(check_source_ok("fn main() -> Int {\n  let xs: Array[Int] = [1, 2]\n  Array::push(xs, value = 3)\n  Array::get(xs, at = 2)\n}"))
+}
+
+/// ...and every labeled slot of one call can be written.
+test "3659: several in-order builtin labels accepted" {
+  assert(check_source_ok("fn main() -> String {\n  String::substring(\"abcd\", start = 1, end = 3)\n}"))
+}
+
+/// The labeled argument is still type-checked: the label is gone before the
+/// checker sees the call.
+test "3659: a labeled builtin argument is type-checked" {
+  assert(check_source_err("fn main() -> Int {\n  let xs: Array[Int] = [1, 2]\n  Array::get(xs, at = \"x\")\n}"))
+}
+
+/// Labels never reorder a builtin's arguments.
+test "3659: an out-of-order builtin label rejected" {
+  assert(check_source_err_contains("fn main() -> String {\n  String::substring(\"abcd\", end = 3, start = 1)\n}", "labeled argument `end` for builtin `String::substring` is out of parameter order: `end` is argument 3"))
+}
+
+/// A label on a positional slot is refused with the edit.
+test "3659: a label on a positional builtin slot rejected" {
+  assert(check_source_err_contains("fn main() -> Int {\n  Array::length(xs = [1])\n}", "argument 1 of builtin `Array::length` is positional: remove `xs = `"))
 }

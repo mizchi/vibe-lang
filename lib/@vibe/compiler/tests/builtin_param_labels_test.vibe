@@ -1,0 +1,133 @@
+//# Imports
+
+import @vibe/compiler/checker/builtin_sigs {
+  lookup_builtin
+}
+
+import @vibe/compiler/core {
+  Type, builtin_param_label_names, builtin_param_labels, builtin_registry_typed
+}
+
+//# Functions
+
+/// The parameter count of a builtin's checker type, or -1 when the type is not
+/// a function.
+fn builtin_type_arity(ty: Type) -> Int {
+  match ty {
+    CtFn(params, _, _) => Array::length(params),
+    CtForAll(_, _, body) => builtin_type_arity(body),
+    _ => -1
+  }
+}
+
+//# Misc
+
+/// ADR-0120 Phase 1a (#3659): every checker-visible registry builtin carries
+/// parameter labels, so a new builtin cannot ship without them. A builtin with
+/// no row refuses every label (fails closed), which is why the census is a
+/// test rather than a guess.
+test "every checker-visible registry builtin has parameter labels" {
+  let rows = builtin_registry_typed()
+  let mut missing = 0
+  for row in rows {
+    let (name, _, _, _, visible) = row
+    if visible {
+      match builtin_param_labels(name) {
+        Some(_) => (),
+        None => {
+          println("builtin without parameter labels: \{name}")
+          missing = missing + 1
+        }
+      }
+    } else {
+      ()
+    }
+  }
+  assert(missing == 0)
+}
+
+/// A row's arity must match the builtin's type, or a label would name a slot
+/// the call does not have (or miss one it does).
+test "every parameter-label row matches its builtin's arity" {
+  let mut bad = 0
+  for name in builtin_param_label_names() {
+    let labels = match builtin_param_labels(name) {
+      Some(ls) => ls,
+      None => []
+    }
+    match lookup_builtin(name) {
+      Some(ty) => {
+        let arity = builtin_type_arity(ty)
+        if arity != Array::length(labels) {
+          println("parameter-label row for \{name} has \{Array::length(labels)} labels, its type has \{arity} parameters")
+          bad = bad + 1
+        } else {
+          ()
+        }
+      },
+      None => {
+        println("parameter-label row names no checker-visible builtin: \{name}")
+        bad = bad + 1
+      }
+    }
+  }
+  assert(bad == 0)
+}
+
+/// A label must be unique within a row, or two slots would answer to one
+/// spelling.
+test "parameter labels are unique within a builtin" {
+  let mut bad = 0
+  for name in builtin_param_label_names() {
+    let labels = match builtin_param_labels(name) {
+      Some(ls) => ls,
+      None => []
+    }
+    let mut i = 0
+    while i < Array::length(labels) {
+      let li = Array::get(labels, i)
+      let mut j = i + 1
+      while j < Array::length(labels) {
+        if li != "_" && li == Array::get(labels, j) {
+          println("builtin \{name} repeats the label \{li}")
+          bad = bad + 1
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      i = i + 1
+    }
+  }
+  assert(bad == 0)
+}
+
+/// Each name appears once in the table.
+test "parameter-label rows are not duplicated" {
+  let names = builtin_param_label_names()
+  let mut bad = 0
+  let mut i = 0
+  while i < Array::length(names) {
+    let mut j = i + 1
+    while j < Array::length(names) {
+      if Array::get(names, i) == Array::get(names, j) {
+        println("duplicated parameter-label row: \{Array::get(names, i)}")
+        bad = bad + 1
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  assert(bad == 0)
+}
+
+/// A legacy spelling answers for its canonical name, as `lookup_builtin`
+/// resolves it.
+test "a legacy builtin spelling has its canonical name's labels" {
+  match builtin_param_labels("Fs::ReadFile") {
+    Some(labels) => assert(Array::length(labels) == 1),
+    None => assert(false)
+  }
+}
