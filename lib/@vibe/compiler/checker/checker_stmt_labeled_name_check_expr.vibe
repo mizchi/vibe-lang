@@ -459,9 +459,11 @@ export fn hoist_te_applies_formal(te: TypeExpr, tparams: Array[String]) -> Bool 
 /// check_program) and rejects both shapes with a located error. Resolution
 /// scope deliberately mirrors collect_fn_param_labels / relabel_expr in
 /// desugar_trait_dict.vibe: named functions and qualified imports with published
-/// parameter names are validated — builtins with decorative
-/// flag labels (`sh_lines("ls", a = true)`), local closures, and method calls
-/// are left untouched, exactly like the reorder pass leaves them untouched.
+/// parameter names are validated. Local closures and method calls are left
+/// untouched, exactly like the reorder pass leaves them untouched. A builtin
+/// has no parameter names, so its labels are refused outright
+/// (`builtin_label_check_call`, #3651), except `sh_lines`'s flag labels
+/// (`sh_lines("ls", a = true)`).
 export fn labeled_name_marker(off: Int, len: Int) -> String {
   if off >= 0 && len > 0 {
     String::concat(" [@off=", String::concat(__to_string(off), String::concat(":", String::concat(__to_string(off + len), "]"))))
@@ -786,6 +788,134 @@ fn labeled_name_check_call(fname: String, fname_off: Int, args: Array[Expr], pna
   }
 }
 
+/// Codex on #3657: the names the program's own top-level bindings and imports
+/// claim. A call to one of them runs the program's value, not the builtin of
+/// that spelling (`let println = identity`, then `println(x = 1)`), so the
+/// builtin refusal below stands down for it -- the question
+/// `builtin_resolves_at` answers from the environment, which this walk does
+/// not have, and which in any case runs before the program's own bindings
+/// exist. So this enumerates every `Stmt` form that binds a bare callable
+/// name: a `let` / `let mut` / `fn`, a destructuring `let`, an extern, an enum
+/// or suberror constructor, an import, and a plain re-export (`SReExport`, or
+/// the locally visible spellings the FS merge keeps in
+/// `SReExportSourceBoundary`). The rest bind no bare value: a struct, alias,
+/// trait, impl, effect, effectset or resource names a type or a qualified
+/// operation, and `SAliasDecl` a namespace. Rebuilt by
+/// `collect_builtin_claimed_names` for each validation run.
+let builtin_claimed_names: Array[String] = []
+
+export fn collect_builtin_claimed_names(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(builtin_claimed_names, 0)
+  builtin_claimed_collect(stmts)
+}
+
+/// A constructor is a binding too (Codex on #3657): a call to a variant that
+/// takes a builtin's spelling constructs the variant, not the builtin.
+fn builtin_claimed_push_variants(variants: Array[(String, Array[TypeExpr])]) -> Unit {
+  let mut k = 0
+  while k < Array::length(variants) {
+    let (vname, _) = Array::get(variants, k)
+    Array::push(builtin_claimed_names, vname)
+    k = k + 1
+  }
+}
+
+fn builtin_claimed_collect(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => Array::push(builtin_claimed_names, name),
+      SLetMut(name, _, _) => Array::push(builtin_claimed_names, name),
+      SFnDecl(_, name, _, _, _) => Array::push(builtin_claimed_names, name),
+      SExternLet(name, _) => Array::push(builtin_claimed_names, name),
+      SLetPat(pat, _) => labeled_walk_pat_binds(pat, builtin_claimed_names),
+      SEnum(_, _, _, variants, _) => builtin_claimed_push_variants(variants),
+      SSuberror(_, _, variants) => builtin_claimed_push_variants(variants),
+      SImport(_, items) => {
+        let mut k = 0
+        while k < Array::length(items) {
+          let item = Array::get(items, k)
+          Array::push(builtin_claimed_names, match item.alias {
+            Some(a) => a,
+            None => item.name
+          })
+          k = k + 1
+        }
+      },
+      // A plain re-export binds its name locally; an aliased one is only
+      // published, so it claims nothing here. The FS merge drops SReExport
+      // and keeps the locally visible spellings in the boundary instead.
+      SReExport(_, items) => {
+        let mut k = 0
+        while k < Array::length(items) {
+          let item = Array::get(items, k)
+          match item.alias {
+            Some(_) => (),
+            None => Array::push(builtin_claimed_names, item.name)
+          }
+          k = k + 1
+        }
+      },
+      SReExportSourceBoundary(visible, _) => {
+        let mut k = 0
+        while k < Array::length(visible) {
+          Array::push(builtin_claimed_names, Array::get(visible, k))
+          k = k + 1
+        }
+      },
+      SModule(_, _, ms) => builtin_claimed_collect(ms),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// #3651: a builtin has no parameter names, so nothing reorders its labeled
+/// arguments and codegen binds them in written order. `String::concat(b =
+/// "a", a = "b")` reads as "ba" and answered "ab", and a label naming no
+/// parameter at all was accepted. Refuse the label instead. `sh_lines` is the
+/// one builtin whose labels mean something: each one after the command is a
+/// flag (`a = true` appends ` -a`, #777), so only its command is positional.
+/// One error per call -- the edit (drop the labels) is the same for each.
+fn builtin_label_check_call(fname: String, fname_off: Int, args: Array[Expr], errors: Array[String]) -> Unit {
+  let builtin = if string_array_contains_exact(builtin_claimed_names, fname) {
+    None
+  } else {
+    lookup_builtin(fname)
+  }
+  match builtin {
+    Some(_) => {
+      let mut lbl = ""
+      let mut found = false
+      let mut ai = 0
+      while ai < Array::length(args) && !found {
+        match Array::get(args, ai) {
+          ELabeledArg(l, _, _) => if fname == "sh_lines" && ai > 0 {
+            ()
+          } else {
+            lbl = l
+            found = true
+          },
+          _ => ()
+        }
+        ai = ai + 1
+      }
+      if found {
+        let marker = labeled_name_marker(fname_off, String::length(fname))
+        let message = if fname == "sh_lines" {
+          String::concat("the command of `sh_lines` is positional: remove `", String::concat(lbl, String::concat(" = ` (labels after the command are flags)", marker)))
+        } else {
+          String::concat("builtin `", String::concat(fname, String::concat("` takes positional arguments: remove `", String::concat(lbl, String::concat(" = ` and write the arguments in parameter order", marker)))))
+        }
+        Array::push(errors, message)
+      } else {
+        ()
+      }
+    },
+    None => ()
+  }
+}
+
 /// #986 (Codex P2-2 on #993): the walk tracks lexical shadowing — a local
 /// binding (`let f = ..`, fn param, pattern bind, loop var) of a table name
 /// suppresses validation for calls in its scope, since those calls resolve to
@@ -888,11 +1018,10 @@ export fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], 
               // to a genuine user-level closure -- a local binding OR a
               // known top-level fn -- either of which can legitimately
               // declare labeled params. A callee that is neither (a genuine
-              // BUILTIN, some of which use a deliberate decorative
-              // flag-label convention -- `sh_lines("ls", a = true)` -- or an
-              // import/erroneous reference) stays tolerated, exactly like
-              // the post-desugar branch below already tolerates those
-              // shapes.
+              // BUILTIN, or an import/erroneous reference) is not judged for
+              // mixing here: `sh_lines("ls", a = true)` mixes on purpose, and
+              // the post-desugar branch below refuses every other builtin
+              // label (#3651).
               if labeled_walk_shadowed(shadows, fname) {
                 check_mixed_argument_modes(fname, fname_off, args, errors)
               } else {
@@ -904,7 +1033,7 @@ export fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], 
             } else if !labeled_walk_shadowed(shadows, fname) {
               match lookup_labeled_check_fn(tbl, fname) {
                 Some(pnames) => labeled_name_check_call(fname, fname_off, args, pnames, errors),
-                None => ()
+                None => builtin_label_check_call(fname, fname_off, args, errors)
               }
             } else {
               ()
