@@ -84,21 +84,6 @@ fn written_formal_slot(slots: Array[Int], written: Int) -> Int {
   result
 }
 
-fn call_argument_exprs(args: Array[Expr], slots: Array[Int]) -> Array[Expr] {
-  for code in slots {
-    if code == 0 {
-      EIdent("None", -1)
-    } else {
-      let value = checker_call_argument_value(Array::get(args, code / 2 - 1))
-      if code % 2 == 1 {
-        ECall(EIdent("Some", -1), [value], -1, [])
-      } else {
-        value
-      }
-    }
-  }
-}
-
 // Checking a closure body does not evaluate the argument. Check value
 // expressions in written order first, then seed literal callbacks from the
 // preceding formal arguments, as declaration-order inference did before.
@@ -164,7 +149,8 @@ fn call_argument_capture_cursor(capture: Option[TypedOccurrenceRoleLaneCapture],
 /// Type arguments in written order and retain aligned formal views only for
 /// unification. Literal callback bodies receive preceding formal constraints
 /// after value expressions are checked. Omitted slots have logical None types.
-export fn check_written_call_arguments(args: Array[Expr], cell: Array[Int], param_tys: Array[Type], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, callee_inst: Option[(Type, Type)], name: String, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Array[Type], Array[Expr], Subst, Int) {
+/// The caller keeps the expression view; this result owns only the checked types.
+export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Expr], cell: Array[Int], param_tys: Array[Type], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, callee_inst: Option[(Type, Type)], name: String, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Array[Type], Subst, Int) {
   let plan = if call_placement_is_pending(cell) {
     match call_placement_get(cell) {
       Some((written, mode, slots)) => if mode != 0 {
@@ -178,10 +164,6 @@ export fn check_written_call_arguments(args: Array[Expr], cell: Array[Int], para
     }
   } else {
     None
-  }
-  let formal_args = match plan {
-    Some(slots) => call_argument_exprs(args, slots),
-    None => args
   }
   let arg_tys: Array[Type] = match plan {
     Some(slots) => for _ in slots {
@@ -300,7 +282,8 @@ export fn check_written_call_arguments(args: Array[Expr], cell: Array[Int], para
     } else {
       -1
     }
-    let (at, ns, nc) = check_child(source_arg, checker_call_argument_env(source_arg, arg_env, cell), defs, arg_s, c2, errors, tytab, capture, lane)
+    let source_env = checker_call_argument_env(source_arg, arg_env, cell)
+    let (at, ns, nc) = check_child(source_arg, source_env, defs, arg_s, c2, errors, tytab, capture, lane)
     if saved_child >= 0 {
       let _ = call_argument_capture_cursor(capture, saved_child); ()
     } else {
@@ -317,7 +300,9 @@ export fn check_written_call_arguments(args: Array[Expr], cell: Array[Int], para
       } else {
         arg
       },
-      None => source_arg
+      // Keep one value alias through the checks so the source wrapper
+      // stays borrowed from its argument array, including under RC.
+      None => arg
     }
     match plan {
       Some(_) => {
@@ -345,7 +330,7 @@ export fn check_written_call_arguments(args: Array[Expr], cell: Array[Int], para
   } else {
     ()
   }
-  (arg_tys, formal_args, s2, c2)
+  (arg_tys, s2, c2)
 }
 
 /// Preserve source positions independently of the logical formal-order view.

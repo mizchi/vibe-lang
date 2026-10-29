@@ -4,6 +4,42 @@ import @vibe/compiler/checker {
 import @vibe/compiler/core {
   Expr, Pat, Subst, Type, TypeDef, TypeEnv, env_bind
 }
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+/// Retention overrides follow formal slots even while source arguments keep
+/// their written labels and optional values have not been wrapped yet.
+test "region retention checks declared slots of reordered labeled calls" {
+  let head = "fn stash(dst: Array[() -> Array[Int]], value: () -> Array[Int]) -> Unit { Array::push(dst, value) }\n"
+  let body = "fn main() -> Int { let outer: Array[() -> Array[Int]] = []; let _ = region r { let values = MutList::empty(r); "
+  let capture = "() -> Array[Int] { MutList::to_array(values) }"
+  for call in [
+    "stash(dst = outer, value = " + capture + ")",
+    "stash(value = " + capture + ", dst = outer)"
+  ] {
+    assert(check_source_err_contains(head + body + call + "; 0 }; 42 }", "region escapes its scope"))
+  }
+  assert(check_source_ok(head + body + "stash(value = () -> Array[Int] { [1, 2] }, dst = outer); 0 }; 42 }"))
+}
+
+/// Optional closure provenance belongs to the logical Some slot, and an
+/// omitted optional value contributes None without a source child.
+test "region retention checks optional logical arguments" {
+  let head = "fn stash(dst: Array[() -> Array[Int]], value?: () -> Array[Int]) -> Unit { match value { Some(f) => Array::push(dst, f), None => () } }\n"
+  let body = "fn main() -> Int { let outer: Array[() -> Array[Int]] = []; let _ = region r { let values = MutList::empty(r); "
+  assert(check_source_err_contains(head + body + "stash(value = () -> Array[Int] { MutList::to_array(values) }, dst = outer); 0 }; 42 }", "region escapes its scope"))
+  assert(check_source_ok(head + body + "stash(dst = outer); 0 }; 42 }"))
+}
+
+/// Receiver dispatch prepends the receiver once, then aligns only the
+/// explicit arguments with the method's declared parameters.
+test "region retention aligns reordered method arguments after the receiver" {
+  let head = "struct Sink { items: Array[() -> Array[Int]] }\nfn Sink::stash(self: Sink, tag: Int, value: () -> Array[Int]) -> Unit { Array::push(self.items, value) }\n"
+  let body = "fn main() -> Int { let outside: Sink = Sink::{ items: [] }; let _ = region r { let values = MutList::empty(r); "
+  assert(check_source_err_contains(head + body + "outside.stash(value = () -> Array[Int] { MutList::to_array(values) }, tag = 0); 0 }; 42 }", "region escapes its scope"))
+  assert(check_source_ok(head + body + "outside.stash(value = () -> Array[Int] { [1, 2] }, tag = 0); 0 }; 42 }"))
+}
 
 fn review_region_env() -> TypeEnv {
   let outside = env_bind(EnvEmpty, "f", CtFn([], CtInt, None))

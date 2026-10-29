@@ -28,7 +28,7 @@ import @vibe/compiler/checker/builtin_sigs {
 }
 
 import ./checker_call_header.vibe {
-  checker_call_header_defaults, checker_call_header_names
+  checker_call_header_defaults, checker_call_header_has_optional, checker_call_header_names
 }
 
 fn placement_param_name(raw: String) -> String {
@@ -228,18 +228,11 @@ export fn checker_record_call_placement(expr: Expr, env: TypeEnv, errors: Array[
     ECall(callee, args, offset, cell) => {
       let mut needed = placement_has_labels(args)
       match callee {
-        EIdent(name, _) => match checker_call_header_names(env, name) {
-          Some(names) => {
-            for raw in names {
-              needed = needed || String::ends_with(raw, "?")
-            }; ()
-          },
-          None => ()
-        },
+        EIdent(name, _) => needed = needed || checker_call_header_has_optional(env, name),
         // Namespace and receiver dispatch select their declaration below.
         _ => ()
       }
-      if needed {
+      if needed && !checker_call_header_is_probe() {
         call_placement_capture_source(callee, args, offset, cell, false)
       } else {
         ()
@@ -457,16 +450,8 @@ export fn checker_check_defaulted_value(env: TypeEnv, name: String, offset: Int,
 /// Receiver/namespace dispatch supplies the declaration it actually resolved.
 /// Capture optional-only calls here as well, without scanning source bindings.
 export fn checker_capture_resolved_call_placement(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int], env: TypeEnv, name: String) -> Unit {
-  let mut needed = placement_has_labels(args)
-  match checker_call_header_names(env, name) {
-    Some(names) => {
-      for raw in names {
-        needed = needed || String::ends_with(raw, "?")
-      }; ()
-    },
-    None => ()
-  }
-  if needed {
+  let needed = placement_has_labels(args) || checker_call_header_has_optional(env, name)
+  if needed && !checker_call_header_is_probe() {
     call_placement_capture_source(callee, args, offset, cell, false)
   } else {
     ()

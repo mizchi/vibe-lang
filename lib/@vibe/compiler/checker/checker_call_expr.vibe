@@ -53,6 +53,8 @@ import @vibe/compiler/core {
   builtin_mutlist_to_array,
   builtin_mutlist_truncate,
   builtin_operation_arity,
+  call_placement_argument_view,
+  call_placement_is_pending,
   call_placement_mode,
   canonical_builtin_name,
   env_bind,
@@ -147,6 +149,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   check_interp_formal,
   effect_op_sig,
   effect_tparams,
+  env_has_active_region,
   generic_callback_instance,
   interp_name_is_shim,
   is_bytestream_named_type,
@@ -284,10 +287,18 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
         } else {
           (s, c)
         }
-        retaining_write_region_check(name, args, env, defs, s, c, errors, check_plain)
+        let region_args = if call_placement_is_pending(callee_resolution) && env_has_active_region(env) {
+          match call_placement_argument_view(args, callee_resolution) {
+            Some(view) => view,
+            None => args
+          }
+        } else {
+          args
+        }
+        retaining_write_region_check(name, region_args, env, defs, s, c, errors, check_plain)
         // #3343: a region value handed to a function or closure that may
         // keep it -- its body is re-checked under this call's regions.
-        retention_call_region_check(name, callee_off, callee_off, String::length(name), args, env, defs, s, c, errors, check_child)
+        retention_call_region_check(name, callee_off, callee_off, String::length(name), region_args, env, defs, s, c, errors, check_child)
         // #3179: the builtin arms below are selected by `arm`, never by
         // `name`: a spelling the program's own function answers for reaches
         // the ordinary call path at the end of this chain instead.
@@ -2085,7 +2096,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 // program links, so a region's value passed to it may be
                 // kept (`CellOf(h)` with only `Cell` imported, Codex on #3473).
                 if !has_qual && user_recv {
-                  retention_expr_callee_region_check(EIdent(name, callee_off), name, callee_off, args, env, defs, s, c, errors, check_child)
+                  retention_expr_callee_region_check(EIdent(name, callee_off), name, callee_off, region_args, env, defs, s, c, errors, check_child)
                 }
                 if has_qual || user_recv {
                   Some(check_child(ECall(EDot(Array::get(args, 0), name, callee_off, callee_off), Array::slice(args, 1, Array::length(args)), call_off, callee_resolution), env, defs, sa, ca, errors, tytab, capture, "SyntheticRewrite"))
@@ -2159,7 +2170,11 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                     },
                     None => None
                   }
-                  let (arg_tys, typed_args, s2, c2) = check_written_call_arguments(args, callee_resolution, inferred_param_tys, env, defs, callee_row_scope_subst(env, ct, s1), c1, errors, tytab, capture, lane, callee_inst, name, check_child)
+                  let typed_args = match call_placement_argument_view(args, callee_resolution) {
+                    Some(view) => view,
+                    None => args
+                  }
+                  let (arg_tys, s2, c2) = check_written_call_arguments(args, typed_args, callee_resolution, inferred_param_tys, env, defs, callee_row_scope_subst(env, ct, s1), c1, errors, tytab, capture, lane, callee_inst, name, check_child)
                   // #2773: THE CALL SITE THE BODY EXEMPTION DEFERS TO.
                   //
                   // `check_interp_formal` stands down inside a top-level
@@ -2407,11 +2422,19 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 _ => array_empty()
               }
               let all_args = prepend_expr(obj, args)
-              retaining_write_region_check(qualified, all_args, env, defs, s2, c2, errors, check_plain)
+              let region_args = if has_real_fn_binding && call_placement_is_pending(callee_resolution) && env_has_active_region(env) {
+                prepend_expr(obj, match call_placement_argument_view(args, callee_resolution) {
+                  Some(view) => view,
+                  None => args
+                })
+              } else {
+                all_args
+              }
+              retaining_write_region_check(qualified, region_args, env, defs, s2, c2, errors, check_plain)
               // #3343: as for a call by name; a method that names no
               // function (a function stored in a field) is checked below.
               match env_lookup(env, qualified) {
-                Some(_) => retention_call_region_check(qualified, qcall_field_off, call_off, String::length(method), all_args, env, defs, s2, c2, errors, check_child),
+                Some(_) => retention_call_region_check(qualified, qcall_field_off, call_off, String::length(method), region_args, env, defs, s2, c2, errors, check_child),
                 None => ()
               }
               let (arg_tys, typed_all_args, s3, c3) = if has_real_fn_binding {
@@ -2427,7 +2450,11 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 } else {
                   []
                 }
-                let (explicit_types, explicit_args, next_s, next_c) = check_written_call_arguments(args, callee_resolution, explicit_params, env, defs, callee_row_scope_subst(env, mt, receiver_s), c2, errors, tytab, capture, lane, method_inst, qualified, check_child)
+                let explicit_args = match call_placement_argument_view(args, callee_resolution) {
+                  Some(view) => view,
+                  None => args
+                }
+                let (explicit_types, next_s, next_c) = check_written_call_arguments(args, explicit_args, callee_resolution, explicit_params, env, defs, callee_row_scope_subst(env, mt, receiver_s), c2, errors, tytab, capture, lane, method_inst, qualified, check_child)
                 let types = [obj_ty]
                 let expressions = [obj]
                 for ty in explicit_types {

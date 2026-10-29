@@ -37,12 +37,10 @@ import @vibe/compiler/cache {
 }
 import @vibe/compiler/checker {
   aliased_builtin_import_type,
-  env_param_name_rows,
   import_item_kind_errors,
   import_item_namespace_alias_errors,
   import_keeps_builtin_signature,
   is_retention_summary_marker,
-  param_name_rows_have,
   param_names_marker,
   retention_summary_marker,
   retention_summary_marker_target,
@@ -1745,8 +1743,6 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
   let dep_bindings = view.bindings
   // #3432: the dependency's parameter-name rows, usually none.
   let dep_param_rows = env_flat_param_rows(dep_bindings)
-  // The markers earlier imports of this module already bound.
-  let acc_param_rows = env_param_name_rows(acc)
   // #3360: what the dependency's functions keep of their arguments, read
   // once. The standard library's are never read: its retaining operations
   // are checked by name.
@@ -1939,12 +1935,18 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
       // A later import of the name that carries none hides an earlier
       // import's marker with a tombstone, so the binding that won is the one
       // whose parameters the checker reads (Codex on #3441).
-      let with_params = match env_lookup_flat(dep_param_rows, name) {
-        Some(t) => env_bind(with_companions, param_names_marker(bound_name), t),
-        None => if param_name_rows_have(acc_param_rows, bound_name) {
-          env_bind(with_companions, param_names_marker(bound_name), CtUnit)
-        } else {
-          with_companions
+      // Only this name can need a tombstone. Enumerating acc here would
+      // clone every prior header again at each import.
+      let with_params = match binding_origin {
+        BindingOriginModuleFunctionHeader(_, _, _) => with_companions,
+        BindingOriginReExportFunctionHeader(_, _, _) => with_companions,
+        _ => match env_lookup_flat(dep_param_rows, name) {
+          Some(t) => env_bind(with_companions, param_names_marker(bound_name), t),
+          None => if env_lookup(acc, param_names_marker(bound_name)) is Some(CtRecord(_)) {
+            env_bind(with_companions, param_names_marker(bound_name), CtUnit)
+          } else {
+            with_companions
+          }
         }
       }
       // #3360: what the function keeps of its arguments, under the name this

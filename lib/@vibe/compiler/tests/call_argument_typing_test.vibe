@@ -1,8 +1,21 @@
 import @vibe/compiler/core {
-  BindingOrigin, Expr, Subst, Type, TypeEnv, TypeExpr, env_bind, env_bind_with_origin
+  BindingOrigin,
+  Expr,
+  Subst,
+  Type,
+  TypeEnv,
+  TypeExpr,
+  call_placement_capture_begin,
+  call_placement_capture_end,
+  env_bind,
+  env_bind_with_origin
 }
 import @vibe/compiler/checker {
-  check_expr
+  check_expr,
+  checker_call_header_probe_begin,
+  checker_call_header_probe_end,
+  checker_capture_resolved_call_placement,
+  checker_record_call_placement
 }
 
 fn labeled_call(value: Expr) -> Expr {
@@ -16,6 +29,36 @@ fn argument_errors(expr: Expr, env: TypeEnv) -> Array[String] {
   let errors: Array[String] = []
   let _ = check_expr(expr, env, [], SubstEmpty, 0, errors, [])
   errors
+}
+
+/// Auxiliary type probes cannot replace a published source placement with a
+/// raw snapshot, either through a named call or resolved receiver dispatch.
+test "type probes preserve a call's published placement" {
+  let env = env_bind_with_origin(EnvEmpty, "f", CtFn([CtInt], CtInt, None), BindingOriginFunctionHeader([
+    "x"
+  ]))
+  for resolved in [false, true] {
+    let cell: Array[Int] = []
+    let args = [ELabeledArg("x", "", EInt(3))]
+    let callee = EIdent("f", 7)
+    let call = ECall(callee, args, 7, cell)
+    let errors: Array[String] = []
+    call_placement_capture_begin()
+    checker_record_call_placement(call, env, errors)
+    let before = for item in cell {
+      item
+    }
+    let saved = checker_call_header_probe_begin()
+    if resolved {
+      checker_capture_resolved_call_placement(callee, args, 7, cell, env, "f")
+    } else {
+      checker_record_call_placement(call, env, errors)
+    }
+    checker_call_header_probe_end(saved)
+    call_placement_capture_end()
+    assert(Array::length(errors) == 0)
+    assert(cell == before)
+  }
 }
 
 /// Standalone call typing resolves source labels without preinstalled rows or

@@ -25,13 +25,55 @@ export fn checker_bind_call_header(env: TypeEnv, name: String, ty: Type, value: 
   }
 }
 
+fn header_names_have_optional(names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    found = String::ends_with(Array::get(names, i), "?")
+    i = i + 1
+  }
+  found
+}
+
+/// Ordinary positional calls need only optional-slot demand. Inspect the
+/// selected binding without copying an imported header's field names.
+export fn checker_call_header_has_optional(env: TypeEnv, name: String) -> Bool {
+  match env_lookup_binding(env, name) {
+    Some(binding) => match binding.origin {
+      BindingOriginFunctionHeader(names) => header_names_have_optional(names),
+      BindingOriginModuleFunctionHeader(_, _, names) => header_names_have_optional(names),
+      BindingOriginDefaultedFunctionHeader(names, _) => header_names_have_optional(names),
+      BindingOriginMutableFunctionHeader(box) => {
+        let (kind, names, _) = Array::get(box, 0)
+        kind == 1 && header_names_have_optional(names)
+      },
+      BindingOriginModuleExport(_, _) => match env_lookup(env, String::concat(param_names_prefix, name)) {
+        Some(CtRecord(fields)) => {
+          let mut i = 0
+          let mut found = false
+          while i < Array::length(fields) && !found {
+            let (raw, _) = Array::get(fields, i)
+            found = String::ends_with(raw, "?")
+            i = i + 1
+          }
+          found
+        },
+        _ => false
+      },
+      _ => false
+    },
+    None => false
+  }
+}
+
 /// A value/parameter shadow has Unavailable provenance, so it cannot inherit
-/// a same-typed outer function's labels. Imported headers are companions of
-/// the actual module binding, projected under this module's local name.
+/// a same-typed outer function's labels. Imported declarations retain names
+/// on their value binding; legacy module headers use a companion marker.
 export fn checker_call_header_names(env: TypeEnv, name: String) -> Option[Array[String]] {
   match env_lookup_binding(env, name) {
     Some(binding) => match binding.origin {
       BindingOriginFunctionHeader(names) => Some(names),
+      BindingOriginModuleFunctionHeader(_, _, names) => Some(names),
       BindingOriginDefaultedFunctionHeader(names, _) => Some(names),
       BindingOriginMutableFunctionHeader(box) => {
         let (kind, names, _) = Array::get(box, 0)
