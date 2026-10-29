@@ -16,9 +16,8 @@ import @vibe/compiler/core {
   call_placement_is_refused,
   call_placement_is_written,
   call_placement_note_positional,
+  call_placement_lowering_refusal,
   call_placement_record,
-  call_placement_syntax_begin,
-  call_placement_syntax_errors,
   env_bind,
   lowering_row_encode,
   resolved_callee_operation,
@@ -81,20 +80,19 @@ test "placing a call copies its cell and keeps the written one" {
 }
 
 /// A precheck macro that consumes a call positionally cannot keep a placement
-/// that moves an argument; one that moves nothing is kept.
+/// that moves an argument: it refuses the cell, which the macro's replacement
+/// keeps, by the call's name. One that moves nothing is kept.
 test "a positional macro refuses a moving placement" {
   let callee = EIdent("subtract", 9)
-  call_placement_syntax_begin()
   let moving: Array[Int] = []
   call_placement_record(moving, 9, 2, 0, [4, 2])
   call_placement_note_positional(callee, [EInt(1), EInt(1)], 9, moving)
-  assert(Array::length(call_placement_syntax_errors()) == 1)
-  assert(String::contains(Array::get(call_placement_syntax_errors(), 0), "`subtract`"))
-  call_placement_syntax_begin()
+  assert(call_placement_is_refused(moving))
+  assert(String::contains(call_placement_lowering_refusal(moving, EIdent("__to_string", -1), -1), "`subtract` at byte 9"))
   let still: Array[Int] = []
   call_placement_record(still, 9, 2, 0, [2, 4])
   call_placement_note_positional(callee, [EInt(1), EInt(1)], 9, still)
-  assert(Array::length(call_placement_syntax_errors()) == 0)
+  assert(!call_placement_is_refused(still))
 }
 
 /// Packet entries carry indices directly, including an omitted optional slot.

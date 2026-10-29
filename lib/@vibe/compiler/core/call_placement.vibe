@@ -25,7 +25,6 @@ export let param_names_prefix: String = "#params:"
 let placement_marker: Int = -3660
 let wanted_names: Array[MutMap[String, Bool]] = [MutMap::new_string()]
 let wanted_methods: Array[MutMap[String, Bool]] = [MutMap::new_string()]
-let syntax_errors: Array[String] = []
 let checked_cells: Array[(Int, Array[Int])] = []
 
 /// One checker run: forget the previous run's placements and demand.
@@ -119,14 +118,6 @@ fn placement_refusal_message(cell: Array[Int], callee: Expr, offset: Int) -> Str
   }
 }
 
-export fn call_placement_syntax_begin() -> Unit {
-  Array::truncate(syntax_errors, 0)
-}
-
-export fn call_placement_syntax_errors() -> Array[String] {
-  syntax_errors
-}
-
 export fn call_placement_install(cell: Array[Int], written: Int, mode: Int, slots: Array[Int]) -> Unit {
   placement_begin(cell, 1)
   Array::push(cell, written)
@@ -176,20 +167,29 @@ export fn call_placement_checked_rows() -> Array[Int] {
 }
 
 /// Precheck macros consume a call's arguments positionally. A checked
-/// placement that moves or fills an argument cannot survive that, so the
-/// enclosing lowering is refused; a refusal already on the cell is reported.
+/// placement that moves or fills an argument cannot survive that, so the cell
+/// -- which the macro's replacement keeps -- is refused, by the call's name,
+/// and lowering reports it there.
 export fn call_placement_note_positional(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int]) -> Unit {
   match call_placement_get(cell) {
     Some((written, mode, slots)) => if placement_role(cell) == 1 && mode == 0 && !placement_is_identity(written, slots, Array::length(args)) {
-      Array::push(syntax_errors, placement_refusal_message(cell, callee, offset))
+      placement_refuse_named(cell, callee, offset)
     } else {
       ()
     },
-    None => if call_placement_is_refused(cell) {
-      Array::push(syntax_errors, placement_refusal_message(cell, callee, offset))
-    } else {
-      ()
-    }
+    None => ()
+  }
+}
+
+fn placement_refuse_named(cell: Array[Int], callee: Expr, offset: Int) -> Unit {
+  placement_begin(cell, 3)
+  Array::push(cell, offset)
+  Array::push(cell, 0)
+  let name = placement_call_name(callee)
+  let mut i = 0
+  while i < String::length(name) {
+    Array::push(cell, String::char_code_at(name, i))
+    i = i + 1
   }
 }
 
