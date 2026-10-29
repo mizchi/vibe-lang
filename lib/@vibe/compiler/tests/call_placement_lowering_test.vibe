@@ -63,47 +63,31 @@ fn lowering_message(source: String, rows: Array[Int], expand_inspect: Bool) -> S
   } with { Exception::Throw(message) => message }
 }
 
-fn poison_placement(rows: Array[Int]) -> Unit {
-  let mut poisoned = false
-  let mut i = 0
-  while i + 1 < Array::length(rows) && !poisoned {
-    if lowering_row_tag(Array::get(rows, i)) == 11 && lowering_row_tag(Array::get(rows, i + 1)) == 11 {
-      let first = Array::get(rows, i)
-      Array::set(rows, i, Array::get(rows, i + 1))
-      Array::set(rows, i + 1, first)
-      poisoned = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  assert(poisoned)
-}
-
-/// This is the real build lowering entry, not a standalone row comparator.
-test "lowering refuses a poisoned argument placement and names the source call" {
+/// This is the real build lowering entry: the checker's rows reach a fresh
+/// parse, and lowering applies them.
+test "lowering applies the checked placement of a fresh parse" {
   let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
-  let rows = checked_placement_rows(source)
-  assert(lowering_message(source, rows, false) == "")
-  poison_placement(rows)
-  let message = lowering_message(source, rows, false)
-  assert(String::contains(message, "placement disagrees with the checker for `f`"))
+  assert(lowering_message(source, checked_placement_rows(source), false) == "")
 }
 
-/// A complete checked channel cannot silently treat a lost call row as rowless.
-test "lowering refuses a missing row but retains explicit rowless phase1b behavior" {
+/// Nothing after the checker resolves a label, so a labeled call that reaches
+/// lowering without the checker's placement -- a lost row, or a lane that
+/// declined to record rows -- is refused by name rather than bound in
+/// written order.
+test "lowering refuses a labeled call with no checked placement" {
   let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
   assert(String::contains(lowering_message(source, [13], false), "missing or invalid checker argument placement for `f`"))
-  assert(lowering_message(source, [14], false) == "")
+  assert(String::contains(lowering_message(source, [14], false), "missing or invalid checker argument placement for `f`"))
 }
 
-/// Inspect erases its call before dictionary lowering; its original diagnostic
-/// must survive on the synthetic expression that takes the value's type.
-test "a macro cannot erase a poisoned source call placement" {
+/// Inspect consumes its call's arguments positionally before dictionary
+/// lowering, so a placement that moves one cannot survive it: the call is
+/// refused by name rather than lowered in written order.
+test "a macro cannot erase a moving source call placement" {
   let source = "fn main() -> Unit allows Console { inspect(1, content = \"1\") }"
   let offset = String::index_of(source, "inspect(")
   let message = lowering_message(source, placement_packet(offset, [4, 2]), true)
-  assert(String::contains(message, "placement disagrees with the checker for `inspect`"))
+  assert(String::contains(message, "checker argument placement for `inspect`"))
 }
 
 /// Mutable lambda declarations follow the binding typing resolves, across a
@@ -166,9 +150,7 @@ fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> St
     original
   }
   let rows = artifact.lowering_offsets
-  if mutation == 1 {
-    poison_placement(rows)
-  } else if mutation == 2 {
+  if mutation == 2 {
     Array::truncate(rows, 0)
     Array::push(rows, 13)
   } else {
@@ -189,12 +171,12 @@ fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> St
 }
 
 /// Raw cached statements share cells with the checked tree (and serialize
-/// those cells). That alone cannot certify that their arguments were rewritten.
-test "raw checked-module cache handouts cannot bypass placement comparison" {
+/// those cells). That alone cannot certify that their arguments are placed:
+/// the rows decide, and a lost row is refused.
+test "raw checked-module cache handouts cannot bypass the placement rows" {
   let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
   for roundtrip in [false, true] {
     assert(cached_lowering_message(source, 0, roundtrip) == "")
-    assert(String::contains(cached_lowering_message(source, 1, roundtrip), "placement disagrees with the checker for `f`"))
     assert(String::contains(cached_lowering_message(source, 2, roundtrip), "missing or invalid checker argument placement for `f`"))
   }
 }

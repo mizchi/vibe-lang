@@ -1,0 +1,475 @@
+// ADR-0120 Phase 1c (#3661): apply the checker's argument placements.
+//
+// The checker resolves every labeled call, and every call to a callee with
+// optional parameters, from the binding it typed the call against, and
+// records the placement in the call's cell: which written argument fills each
+// declared slot, which optional slots are omitted (`None`), and which take a
+// synthesized `Some(..)`. Nothing here resolves a callee. Two passes read the
+// cells:
+//
+// - `apply_checked_call_placements` runs right after typing, on the trees the
+//   checker typed, so every pass after it (effects, regions, mutability, the
+//   checked statements a later lane reads) sees each call in declared order,
+//   exactly as typed. The placed call gets a "placed" copy of its cell.
+// - `lower_call_placements` runs at the start of lowering. It places a call a
+//   fresh parse restored from rows (still written), and gives every placed
+//   call the #3549 temporaries that keep its arguments evaluated in written
+//   order. It refuses a labeled call that reached it with no placement.
+//
+// Neither pass mutates a cell. A memoized parse hands the same cells to every
+// compile of the same text, so a written call must keep a cell that describes
+// written arguments; the rewritten call owns a copy (`call_placement_copy`).
+
+//# Imports
+
+import @vibe/compiler/core {
+  Expr,
+  Stmt,
+  __to_string,
+  call_placement_build,
+  call_placement_copy,
+  call_placement_get,
+  call_placement_is_canonical,
+  call_placement_is_placed,
+  call_placement_is_refused,
+  call_placement_is_written,
+  call_placement_lowering_refusal,
+  call_placement_written_of,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top
+}
+
+import ./typed_row_queries.vibe {
+  dtd_is_own_index
+}
+
+//# State
+
+let lowering_mode: Array[Bool] = [false]
+let lowering_errors: Array[String] = []
+
+/// Fresh temporaries per top-level statement, so a statement's spelling never
+/// depends on what was lowered before it. The `$` keeps them apart from every
+/// name a program can write.
+let placement_tmp_next: Array[Int] = [0]
+
+//# Placement
+
+fn placement_value(arg: Expr) -> Expr {
+  match arg {
+    ELabeledArg(_, _, value) => value,
+    _ => arg
+  }
+}
+
+fn placement_has_label(args: Array[Expr]) -> Bool {
+  let mut found = false
+  for arg in args {
+    match arg {
+      ELabeledArg(_, _, _) => found = true,
+      _ => ()
+    }
+  }
+  found
+}
+
+//# Written-order evaluation (#3549)
+
+/// 0: nothing to observe (a literal, a lambda, a constructor). 1: a name the
+/// argument could change (a `let mut` assigned through a closure, a
+/// top-level `let mut`). 2: anything else -- a call, an operator (which can
+/// trap), an interpolation, a block.
+fn placement_effect_class(e: Expr) -> Int {
+  match e {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_, _) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EFn(_, _, _, _, _, _) => 0,
+    EIdent(n, _) => if placement_ident_is_constant(n) {
+      0
+    } else {
+      1
+    },
+    ETuple(elems) => placement_effect_class_max(elems),
+    EArray(elems) => placement_effect_class_max(elems),
+    ESpread(v) => placement_effect_class(v),
+    ERecord(_, fields, _) => {
+      let mut c = 0
+      for field in fields {
+        let (_, v) = field
+        let fc = placement_effect_class(v)
+        if fc > c {
+          c = fc
+        } else {
+          ()
+        }
+      }
+      c
+    },
+    EUnaryOp(_, v) => placement_effect_class(v),
+    ELabeledArg(_, _, v) => placement_effect_class(v),
+    _ => 2
+  }
+}
+
+fn placement_effect_class_max(elems: Array[Expr]) -> Int {
+  let mut c = 0
+  for e in elems {
+    let ec = placement_effect_class(e)
+    if ec > c {
+      c = ec
+    } else {
+      ()
+    }
+  }
+  c
+}
+
+/// A constructor (`None`, `Leaf`) or a qualified name (`Pt::equals`) names
+/// one fixed value; only a lowercase plain name can be rebound by `=`.
+fn placement_ident_is_constant(n: String) -> Bool {
+  let ln = String::length(n)
+  if ln == 0 {
+    true
+  } else if String::contains(n, "::") {
+    true
+  } else {
+    let c = String::byte_at(n, 0)
+    c >= 65 && c <= 90
+  }
+}
+
+fn placement_sources(slots: Array[Int]) -> Array[Int] {
+  for slot in slots {
+    if slot > 0 {
+      slot / 2 - 1
+    } else {
+      0 - 1
+    }
+  }
+}
+
+/// True when the placement moves two arguments past each other and at least
+/// one of them has an effect the other could observe.
+fn placement_needs_temporaries(written: Array[Expr], srcs: Array[Int]) -> Bool {
+  let classes = for src in srcs {
+    if src >= 0 {
+      placement_effect_class(Array::get(written, src))
+    } else {
+      0
+    }
+  }
+  let np = Array::length(srcs)
+  let mut needed = false
+  let mut i = 0
+  while i < np && !needed {
+    let ci = Array::get(classes, i)
+    if ci > 0 {
+      let mut j = i + 1
+      while j < np && !needed {
+        let cj = Array::get(classes, j)
+        if cj > 0 && (ci == 2 || cj == 2) && Array::get(srcs, i) > Array::get(srcs, j) {
+          needed = true
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  needed
+}
+
+/// `f(y = g(), x = h())` against `f(x, y)` becomes
+/// `let t0 = g(); let t1 = h(); f(t1, t0)`: each argument that can do or
+/// observe something is bound in WRITTEN order, then the call takes the
+/// temporaries in declared order. A synthesized `Some(..)` stays at the call,
+/// around its temporary.
+fn placement_bind_written(callee: Expr, placed: Array[Expr], written: Array[Expr], slots: Array[Int], off: Int, cell: Array[Int]) -> Expr {
+  let args = for a in placed {
+    a
+  }
+  let names = for _ in written {
+    ""
+  }
+  let values = for _ in written {
+    EUnit
+  }
+  let mut pj = 0
+  while pj < Array::length(slots) && pj < Array::length(args) {
+    let slot = Array::get(slots, pj)
+    let src = if slot > 0 {
+      slot / 2 - 1
+    } else {
+      0 - 1
+    }
+    if src >= 0 && placement_effect_class(Array::get(written, src)) > 0 {
+      let n = Array::get(placement_tmp_next, 0)
+      Array::set(placement_tmp_next, 0, n + 1)
+      let name = String::concat("__labeled_arg$", __to_string(n))
+      Array::set(names, src, name)
+      Array::set(values, src, placement_value(Array::get(written, src)))
+      if slot - (slot / 2) * 2 == 1 {
+        // An optional parameter's synthesized `Some(..)` stays at the call,
+        // around the temporary.
+        Array::set(args, pj, ECall(EIdent("Some", 0 - 1), [
+          EIdent(name, 0 - 1)
+        ], 0 - 1, []))
+      } else {
+        Array::set(args, pj, EIdent(name, 0 - 1))
+      }
+    } else {
+      ()
+    }
+    pj = pj + 1
+  }
+  let mut body = ECall(callee, args, off, cell)
+  let mut w = Array::length(written)
+  while w > 0 {
+    w = w - 1
+    let name = Array::get(names, w)
+    if String::length(name) > 0 {
+      body = ELet(name, Array::get(values, w), body, 0 - 1)
+    } else {
+      ()
+    }
+  }
+  body
+}
+
+fn placement_lowered_call(callee: Expr, placed: Array[Expr], written: Array[Expr], mode: Int, slots: Array[Int], off: Int, written_cell: Array[Int]) -> Expr {
+  let cell = call_placement_copy(written_cell, 4)
+  if mode == 0 {
+    let srcs = placement_sources(slots)
+    if placement_needs_temporaries(written, srcs) {
+      placement_bind_written(callee, placed, written, slots, off, cell)
+    } else {
+      ECall(callee, placed, off, cell)
+    }
+  } else {
+    ECall(callee, placed, off, cell)
+  }
+}
+
+//# Walk
+
+fn placement_call(callee: Expr, args: Array[Expr], off: Int, cell: Array[Int]) -> Expr {
+  let lowering = Array::get(lowering_mode, 0)
+  match call_placement_get(cell) {
+    Some((written, mode, slots)) => if call_placement_is_written(cell) {
+      if Array::length(args) == written {
+        let placed = if mode == 0 {
+          call_placement_build(args, slots)
+        } else {
+          args
+        }
+        if lowering {
+          placement_lowered_call(callee, placed, args, mode, slots, off, cell)
+        } else {
+          ECall(callee, placed, off, call_placement_copy(cell, 5))
+        }
+      } else if mode != 0 {
+        // A flag or opaque placement moves nothing, so a call a macro gave
+        // another argument list (a `perform` around a handled host call
+        // shares its operation's cell) is already in the order it binds.
+        if lowering {
+          ECall(callee, args, off, call_placement_copy(cell, 4))
+        } else {
+          ECall(callee, args, off, cell)
+        }
+      } else {
+        // The stored call no longer has the shape the checker placed.
+        if lowering {
+          Array::push(lowering_errors, call_placement_lowering_refusal(cell, callee, off))
+        } else {
+          ()
+        }
+        ECall(callee, args, off, cell)
+      }
+    } else if lowering && call_placement_is_placed(cell) {
+      let written_args = if mode == 0 {
+        call_placement_written_of(args, written, slots)
+      } else {
+        args
+      }
+      placement_lowered_call(callee, args, written_args, mode, slots, off, cell)
+    } else {
+      ECall(callee, args, off, cell)
+    },
+    None => {
+      if lowering && (call_placement_is_refused(cell) || placement_has_label(args) && !call_placement_is_canonical(cell)) {
+        Array::push(lowering_errors, call_placement_lowering_refusal(cell, callee, off))
+      } else {
+        ()
+      }
+      ECall(callee, args, off, cell)
+    }
+  }
+}
+
+fn place_expr(expr: Expr) -> Expr {
+  match expr {
+    ECall(callee, args, off, cell) => {
+      let rargs = for a in args {
+        place_expr(a)
+      }
+      placement_call(place_expr(callee), rargs, off, cell)
+    },
+    EBinOp(op, l, r, boff) => EBinOp(op, place_expr(l), place_expr(r), boff),
+    EUnaryOp(op, e) => EUnaryOp(op, place_expr(e)),
+    ETuple(elems) => ETuple(for e in elems {
+      place_expr(e)
+    }),
+    EArray(elems) => EArray(for e in elems {
+      place_expr(e)
+    }),
+    ESpread(e) => ESpread(place_expr(e)),
+    ERecord(rn, fields, targs) => ERecord(rn, for field in fields {
+      let (fname, fval) = field
+      (fname, place_expr(fval))
+    }, targs),
+    EMap(fields) => EMap(for field in fields {
+      let (k, v) = field
+      (k, place_expr(v))
+    }),
+    EIf(c, t, e) => EIf(place_expr(c), place_expr(t), place_expr(e)),
+    ELet(name, v, b, soff) => ELet(name, place_expr(v), place_expr(b), soff),
+    ELetRec(name, v, b) => ELetRec(name, place_expr(v), place_expr(b)),
+    ELetMut(name, v, b, soff) => ELetMut(name, place_expr(v), place_expr(b), soff),
+    EAssign(name, v, c, target_off) => EAssign(name, place_expr(v), place_expr(c), target_off),
+    EAssignOp(name, op, v, c, target_off) => EAssignOp(name, op, place_expr(v), place_expr(c), target_off),
+    ESeq(a, b) => ESeq(place_expr(a), place_expr(b)),
+    EMatch(scrut, arms) => EMatch(place_expr(scrut), for arm in arms {
+      let (p, b) = arm
+      (p, place_expr(b))
+    }),
+    EHandle(scrut, arms) => EHandle(place_expr(scrut), for arm in arms {
+      let (p, b) = arm
+      (p, place_expr(b))
+    }),
+    EWhile(c, b) => EWhile(place_expr(c), place_expr(b)),
+    ELoop(params, b) => ELoop(for param in params {
+      let (name, init) = param
+      (name, place_expr(init))
+    }, place_expr(b)),
+    EForIn(name, idx, iter, b) => EForIn(name, idx, place_expr(iter), place_expr(b)),
+    EFn(tp, bnds, params, rt, eff, b) => EFn(tp, bnds, params, rt, eff, place_expr(b)),
+    EDot(obj, field, off, fdoff) => EDot(place_expr(obj), field, off, fdoff),
+    ELabeledArg(label, name, b) => ELabeledArg(label, name, place_expr(b)),
+    EReturn(e) => EReturn(place_expr(e)),
+    EBreak(opt) => match opt {
+      Some(e) => EBreak(Some(place_expr(e))),
+      None => expr
+    },
+    EContinue(exprs) => EContinue(for e in exprs {
+      place_expr(e)
+    }),
+    _ => expr
+  }
+}
+
+/// Allocation-free gate: does `expr` hold a call this pass must visit?
+fn placement_expr_pending(expr: Expr) -> Bool {
+  let lowering = Array::get(lowering_mode, 0)
+  let here = match expr {
+    ECall(_, args, _, cell) => call_placement_is_written(cell) || lowering && (call_placement_is_placed(cell) || call_placement_is_refused(cell) || placement_has_label(args) && !call_placement_is_canonical(cell)),
+    _ => false
+  }
+  if here {
+    true
+  } else {
+    let mark = expr_children_push(expr)
+    let end = expr_children_top()
+    let mut found = false
+    let mut i = mark
+    while i < end && !found {
+      found = placement_expr_pending(expr_child_at(i))
+      i = i + 1
+    }
+    expr_children_pop(mark)
+    found
+  }
+}
+
+fn placement_stmt_body(stmt: Stmt) -> Option[Expr] {
+  match stmt {
+    SLet(_, _, _, _, body) => Some(body),
+    SFnDecl(_, _, body, _, _) => Some(body),
+    SLetMut(_, _, body) => Some(body),
+    STest(_, body) => Some(body),
+    SBench(_, body) => Some(body),
+    SExample(_, body) => Some(body),
+    SExpr(e) => Some(e),
+    SLetPat(_, e) => Some(e),
+    _ => None
+  }
+}
+
+fn place_stmt(stmt: Stmt) -> Stmt {
+  Array::set(placement_tmp_next, 0, 0)
+  match stmt {
+    SLet(ex, rc, name, ty, body) => SLet(ex, rc, name, ty, place_expr(body)),
+    SFnDecl(ex, name, body, reqs, enss) => SFnDecl(ex, name, place_expr(body), reqs, enss),
+    SLetMut(name, ty, body) => SLetMut(name, ty, place_expr(body)),
+    STest(name, body) => STest(name, place_expr(body)),
+    SBench(name, body) => SBench(name, place_expr(body)),
+    SExample(name, body) => SExample(name, place_expr(body)),
+    SExpr(e) => SExpr(place_expr(e)),
+    SLetPat(pat, e) => SLetPat(pat, place_expr(e)),
+    SModule(ex, name, stmts) => {
+      let inner = for s in stmts {
+        s
+      }
+      place_stmts(inner, false)
+      SModule(ex, name, inner)
+    },
+    _ => stmt
+  }
+}
+
+fn place_stmts(stmts: Array[Stmt], own_only: Bool) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    let pending = match stmt {
+      SModule(_, _, _) => true,
+      _ => match placement_stmt_body(stmt) {
+        Some(body) => placement_expr_pending(body),
+        None => false
+      }
+    }
+    if pending && (!own_only || dtd_is_own_index(i)) {
+      Array::set(stmts, i, place_stmt(stmt))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// After typing: rewrite every placed call of the typed program to the
+/// declared-order arguments the checker typed.
+export fn apply_checked_call_placements(stmts: Array[Stmt]) -> Unit {
+  Array::set(lowering_mode, 0, false)
+  place_stmts(stmts, false)
+}
+
+/// At the start of lowering: place each restored call, give every placed call
+/// its written-order temporaries, and return the refusals -- a labeled call
+/// with no checked placement, or one whose placement no longer fits it.
+export fn lower_call_placements(stmts: Array[Stmt]) -> Array[String] {
+  Array::truncate(lowering_errors, 0)
+  Array::set(lowering_mode, 0, true)
+  place_stmts(stmts, true)
+  Array::set(lowering_mode, 0, false)
+  for e in lowering_errors {
+    e
+  }
+}

@@ -3,7 +3,7 @@ import ./ast.vibe {
 }
 
 import ./call_placement.vibe {
-  call_placement_install, call_placement_payload_valid, call_placement_refuse
+  call_placement_cell_prefix, call_placement_install, call_placement_is_canonical, call_placement_is_placed, call_placement_payload_valid, call_placement_refuse
 }
 
 import ./expr_children.vibe {
@@ -28,17 +28,31 @@ fn placement_restore_expr(expr: Expr, packets: MutMap[Int, Array[Int]], bad: Boo
           _ => ()
         }
       }
-      // A raw parser/checked-module snapshot can share this cell with the
-      // rewritten checked tree. Its canonical flag says nothing about these
-      // raw arguments: always reinstall the source-bound expected placement.
+      // A written call gets the packet's placement, replacing whatever an
+      // earlier compile of the same memoized text left in its cell. A cell
+      // that is placed (role 5) or lowered (role 4) belongs to a rewritten
+      // call -- the checked-module cache can hand out the checker's own tree
+      // -- whose arguments are no longer the written ones the packet
+      // describes, so it is kept.
       match MutMap::get(packets, offset) {
-        Some(payload) => if bad || Array::length(payload) < 2 {
+        Some(payload) => if call_placement_is_placed(cell) || call_placement_is_canonical(cell) {
+          ()
+        } else if bad || Array::length(payload) < 2 {
           call_placement_refuse(cell, true)
         } else {
           call_placement_install(cell, Array::get(payload, 0), Array::get(payload, 1), Array::slice(payload, 2, Array::length(payload)))
         },
-        None => if labeled {
-          call_placement_refuse(cell, bad)
+        // No packet: the checker placed nothing here. A labeled call that
+        // reaches lowering this way is refused there; a precheck macro that
+        // consumed it before checking (`inspect(value, content = ..)`) reads
+        // it positionally on this parse too. A corrupt row set refuses every
+        // labeled call outright.
+        None => if labeled && bad {
+          call_placement_refuse(cell, true)
+        } else if call_placement_cell_prefix(cell, 0) && !call_placement_is_placed(cell) && !call_placement_is_canonical(cell) {
+          // A memoized parse shares this cell with an earlier compile of the
+          // same text.
+          Array::truncate(cell, 1)
         } else {
           ()
         }

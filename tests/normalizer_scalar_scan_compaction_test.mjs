@@ -251,27 +251,11 @@ const modeArms = [
     { role: "rebind-loop", pattern: "ELoop(params, _)", body: "dinsp_loop_params_bind(params, name)" },
     { role: "rebind-default", pattern: "_", body: "false" }
   ] },
-  { mode: 3, arms: [
-    { role: "labeled-wrapper-self", pattern: "ELabeledArg(_, _, _)", body: "true" },
-    // #1952: a block-local `(a: Int, b?: Int)` is the second reason the
-    // relabel walk can change a statement. Without this arm the statement was
-    // skipped and the omitted argument reached the checker as an arity error.
-    { role: "optional-parameter-lambda", pattern: "EFn(_, _, params, _, _, _)", body: "dinsp_params_optional(params)" },
-    { role: "labeled-default", pattern: "_", body: "false" }
-  ] },
   { mode: 4, arms: [
     { role: "marker-value", pattern: "EIdent(n, _)", body: "n == name" },
     { role: "marker-assign", pattern: "EAssign(n, _, _, _)", body: "n == name" },
     { role: "marker-assignop", pattern: "EAssignOp(n, _, _, _, _)", body: "n == name" },
     { role: "marker-default", pattern: "_", body: "false" }
-  ] },
-  // #2386: the third and last reason the relabel walk can change a statement
-  // -- a call to a TOP-LEVEL optional-parameter fn by name. An omitted
-  // optional leaves no syntactic trace at the call site, but the callee's name
-  // is one, so this reads the same table the walk reads.
-  { mode: 6, arms: [
-    { role: "top-level-optional-callee", pattern: "ECall(callee, _, _, _)", body: `match callee { EIdent(n, _) => match optional_param_flags(n) { Some(_) => true, None => false }, EDot(EIdent(ns, _), field, _, _) => match optional_param_flags(String::concat(ns, String::concat(".", field))) { Some(_) => true, None => false }, _ => false }` },
-    { role: "optional-call-default", pattern: "_", body: "false" }
   ] },
   // The `else`, i.e. mode 5.
   { mode: 5, arms: [
@@ -389,11 +373,8 @@ expectMutationFailure("census records one bit twice", () => {
   assert.equal(canonical(halfCensus.slice(arm.start + 1, arm.end - 1)),
     canonical(halfCensus.slice(censusArm.start + 1, censusArm.end - 1).replace("Array::set(dinsp_census_cell, 0, 1)", "KEEP")));
 });
-const droppedMode = mutate(scan.body, /\} else if mode == 6 \{[\s\S]*?\n  \} else \{/, "} else {", "a dropped mode");
+const droppedMode = mutate(scan.body, /\} else if mode == 4 \{[\s\S]*?\n  \} else \{/, "} else {", "a dropped mode");
 expectMutationFailure("a dropped mode", () => assert.equal(matchExprArms(droppedMode).length, modeArms.length + 1));
-const wrongOptionalArm = mutate(scan.body, "EFn(_, _, params, _, _, _) => dinsp_params_optional(params),", "EFn(_, _, params, _, _, _) => dinsp_params_bind(params, name),", "mode 3 optional-parameter arm");
-const mode3Index = modeArms.findIndex(({ mode }) => mode === 3);
-expectMutationFailure("mode 3 optional-parameter arm", () => assertArms(matchExprArms(wrongOptionalArm)[mode3Index], modeArms[mode3Index].arms, "mutated mode 3"));
 
 const synthetic = `fn probe(expr: Expr) -> Bool {
   let escaped = "quoted \\\" match expr { [ ( ) ] }"

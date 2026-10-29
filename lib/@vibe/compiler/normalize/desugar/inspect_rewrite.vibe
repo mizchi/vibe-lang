@@ -12,46 +12,12 @@ import @vibe/parser {
   resolve_interp_expr
 }
 
-import ./labeled_args.vibe {
-  optional_param_flags, params_bind_name, pat_binds_name
+import ./param_names.vibe {
+  params_bind_name, pat_binds_name
 }
 
 import ./state.vibe {
   dinsp_census_cell, dinsp_census_row
-}
-
-/// Read-only scan for one of six questions, in ONE explicit-variant walk:
-///   mode 0 -- does this contain a two-argument `inspect(..)` call?
-///   mode 1 -- does this BIND the name `inspect` (a let / for / fn parameter)?
-///   mode 2 -- does this mention `name` at all, as a reference or a binder?
-///   mode 3 -- does this contain a labeled-argument wrapper?
-///   mode 4 -- is `name` used anywhere except as a direct call callee?
-///   mode 5 -- is `name` targeted by an assignment or assignment-op?
-///   mode 8 -- does this BIND `name` anywhere (any binder form, any depth)?
-///
-/// The variants are enumerated by hand rather than recursed through
-/// `expr_children`, and that is the whole point: `expr_children` ALLOCATES a
-/// fresh array per node, so using it for a "read-only" pre-check cost more
-/// allocation than the rebuild the pre-check exists to avoid. Measured on the
-/// perf gate's deterministic axis: the expr_children version put
-/// `selfcompile heap_ptr_bytes` +2.61% over main; this one is allocation-free.
-///
-/// Enumerated (no `_ =>` catch-all for the recursive shapes) so a new `Expr`
-/// variant is a compile error here instead of a silently unscanned subtree.
-/// True when any parameter is declared optional (`z?`). The marker survives on
-/// the parameter NAME at this stage -- see parse_one_param_with_binder_context.
-fn dinsp_params_optional(params: Array[(String, Option[TypeExpr])]) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(params) {
-    let (pn, _) = Array::get(params, i)
-    let pl = String::length(pn)
-    if pl > 0 && __slice(pn, pl - 1, pl) == "?" {
-      found = true
-    }
-    i = i + 1
-  }
-  found
 }
 
 /// Mode 0's predicate: this node is an `inspect(value, content)` call.
@@ -79,6 +45,23 @@ fn dinsp_here_binds(expr: Expr) -> Bool {
   }
 }
 
+/// Read-only scan for one of these questions, in ONE explicit-variant walk:
+///   mode 0 -- does this contain a two-argument `inspect(..)` call?
+///   mode 1 -- does this BIND the name `inspect` (a let / for / fn parameter)?
+///   mode 2 -- does this mention `name` at all, as a reference or a binder?
+///   mode 4 -- is `name` used anywhere except as a direct call callee?
+///   mode 5 -- is `name` targeted by an assignment or assignment-op?
+///   mode 8 -- does this BIND `name` anywhere (any binder form, any depth)?
+///
+/// The variants are enumerated by hand rather than recursed through
+/// `expr_children`, and that is the whole point: `expr_children` ALLOCATES a
+/// fresh array per node, so using it for a "read-only" pre-check cost more
+/// allocation than the rebuild the pre-check exists to avoid. Measured on the
+/// perf gate's deterministic axis: the expr_children version put
+/// `selfcompile heap_ptr_bytes` +2.61% over main; this one is allocation-free.
+///
+/// Enumerated (no `_ =>` catch-all for the recursive shapes) so a new `Expr`
+/// variant is a compile error here instead of a silently unscanned subtree.
 export fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
   let here = if mode == 0 {
     dinsp_here_uses(expr)
@@ -128,49 +111,11 @@ export fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       ELoop(params, _) => dinsp_loop_params_bind(params, name),
       _ => false
     }
-  } else if mode == 3 {
-    // "Does this statement need the relabel walk?" -- the only user is
-    // stmt_has_labeled_arg. A labeled argument is one reason; a lambda that
-    // declares an optional parameter is the other (#1952). Without the second,
-    // a statement whose only feature is a block-local `(a: Int, b?: Int)` was
-    // skipped outright, and the omitted argument reached the checker as an
-    // arity error. The top-level equivalent is mode 6 (a call to a top-level
-    // optional-parameter fn by name), consulted by desugar_labeled_args when
-    // collect_optional_param_fns found any.
-    match expr {
-      ELabeledArg(_, _, _) => true,
-      EFn(_, _, params, _, _, _) => dinsp_params_optional(params),
-      _ => false
-    }
   } else if mode == 4 {
     match expr {
       EIdent(n, _) => n == name,
       EAssign(n, _, _, _) => n == name,
       EAssignOp(n, _, _, _, _) => n == name,
-      _ => false
-    }
-  } else if mode == 6 {
-    // #2386: "does this statement call a TOP-LEVEL optional-parameter fn by
-    // name?" -- the third and last reason the relabel walk can change a
-    // statement (an omitted optional leaves no syntactic trace at the call,
-    // but the callee's NAME is one; relabel_expr's ECall arm fills only
-    // calls whose callee has a parameter-table key, including a qualified
-    // import). Reads the same table
-    // the walk reads (optional_param_tbl_set runs before the scan). Used
-    // with mode 3, it replaces the `walk_all` that rebuilt EVERY statement
-    // of a program declaring any optional parameter.
-    match expr {
-      ECall(callee, _, _, _) => match callee {
-        EIdent(n, _) => match optional_param_flags(n) {
-          Some(_) => true,
-          None => false
-        },
-        EDot(EIdent(ns, _), field, _, _) => match optional_param_flags(String::concat(ns, String::concat(".", field))) {
-          Some(_) => true,
-          None => false
-        },
-        _ => false
-      },
       _ => false
     }
   } else {

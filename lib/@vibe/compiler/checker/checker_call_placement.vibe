@@ -1,9 +1,31 @@
+// ADR-0120 Phase 1c (#3661): the checker places every call's arguments.
+//
+// A call is placed against the binding typing resolves its callee to: the
+// declaration header that binding carries (`BindingOriginFunctionHeader`, a
+// `let mut` header box, or an imported `#params:` companion), or a builtin's
+// parameter labels. The checker then types the placed call -- each labeled
+// argument in the slot its label names, `None` for an omitted optional
+// parameter, `Some(..)` around a value passed to one -- and records the
+// placement in the call's cell, over the arguments as written. The passes
+// after typing store the placed form (`apply_checked_call_placements`), and a
+// fresh parse gets the placement back through the typed-lowering rows.
+// Nothing before the checker resolves a label.
+
 import ./checker_call_header_flow.vibe {
   checker_call_header_is_probe
 }
 
 import @vibe/compiler/core {
-  Expr, TypeEnv, builtin_param_labels, call_placement_publish, call_placement_raw, canonical_builtin_name
+  Expr,
+  TypeEnv,
+  __to_string,
+  builtin_param_labels,
+  call_placement_build,
+  call_placement_cell_prefix,
+  call_placement_is_canonical,
+  call_placement_is_placed,
+  call_placement_record,
+  canonical_builtin_name
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -11,16 +33,26 @@ import @vibe/compiler/checker/builtin_sigs {
 }
 
 import ./checker_call_header.vibe {
-  checker_call_header_names
+  checker_call_header_names, checker_call_header_uncertain
 }
 
+//# Headers
+
+/// A header name without its markers: `~` (labeled), `?` (optional), `?=`
+/// (optional with a default).
 fn placement_param_name(raw: String) -> String {
   let size = String::length(raw)
-  if String::ends_with(raw, "~") || String::ends_with(raw, "?") {
+  if String::ends_with(raw, "?=") {
+    raw[0: size - 2]
+  } else if String::ends_with(raw, "~") || String::ends_with(raw, "?") {
     raw[0: size - 1]
   } else {
     raw
   }
+}
+
+fn placement_param_optional(raw: String) -> Bool {
+  String::ends_with(raw, "?") || String::ends_with(raw, "?=")
 }
 
 fn placement_value(arg: Expr) -> Expr {
@@ -48,12 +80,17 @@ fn placement_identity(count: Int) -> Array[Int] {
   slots
 }
 
-// Written-first resolution is independent of the old declared-slot-first
-// rewrite. The header comes from the value binding selected for typing.
-fn placement_for_header(args: Array[Expr], names: Array[String]) -> Option[Array[Int]] {
-  let sources = for _ in names {
-    -1
+fn placement_is_identity(slots: Array[Int], count: Int) -> Bool {
+  let mut same = Array::length(slots) == count
+  let mut i = 0
+  while i < Array::length(slots) && same {
+    same = Array::get(slots, i) == (i + 1) * 2
+    i = i + 1
   }
+  same
+}
+
+fn placement_label_count(args: Array[Expr]) -> Int {
   let mut labeled = 0
   for arg in args {
     match arg {
@@ -61,6 +98,28 @@ fn placement_for_header(args: Array[Expr], names: Array[String]) -> Option[Array
       _ => ()
     }
   }
+  labeled
+}
+
+fn placement_has_optional(names: Array[String]) -> Bool {
+  let mut found = false
+  for name in names {
+    found = found || placement_param_optional(name)
+  }
+  found
+}
+
+/// Written-first resolution: each written argument goes to the slot its label
+/// names (or its own position, unlabeled), an omitted optional slot is
+/// `None`, and a value for an optional slot that is not already an `Option`
+/// literal is wrapped. None when the call mixes labeled and positional
+/// arguments, names an unknown or repeated label, passes too many arguments,
+/// or omits a required one.
+fn placement_for_header(args: Array[Expr], names: Array[String]) -> Option[Array[Int]] {
+  let sources = for _ in names {
+    -1
+  }
+  let labeled = placement_label_count(args)
   let mut valid = labeled == 0 || labeled == Array::length(args)
   let mut written = 0
   while written < Array::length(args) && valid {
@@ -93,7 +152,7 @@ fn placement_for_header(args: Array[Expr], names: Array[String]) -> Option[Array
   let mut slot = 0
   while slot < Array::length(names) && valid {
     let source = Array::get(sources, slot)
-    let optional = String::ends_with(Array::get(names, slot), "?")
+    let optional = placement_param_optional(Array::get(names, slot))
     if source < 0 {
       if optional {
         Array::push(slots, 0)
@@ -117,81 +176,343 @@ fn placement_for_header(args: Array[Expr], names: Array[String]) -> Option[Array
   }
 }
 
-/// Calls through values without declaration headers keep the legacy positional
-/// passthrough. Labels on such values are retired in ADR-0120 Phase 4.
-export fn checker_record_opaque_call_placement(cell: Array[Int], errors: Array[String]) -> Unit {
+//# Diagnostics
+
+fn placement_marker(off: Int, len: Int) -> String {
+  if off >= 0 && len > 0 {
+    " [@off=" + __to_string(off) + ":" + __to_string(off + len) + "]"
+  } else if off >= 0 {
+    " [@off=" + __to_string(off) + "]"
+  } else {
+    ""
+  }
+}
+
+/// #1001: a call is uniformly positional or uniformly labeled. Judged on the
+/// arguments as written, before anything drops a label that already sits at
+/// its own position.
+fn placement_mixed_error(fname: String, off: Int, args: Array[Expr], errors: Array[String]) -> Bool {
+  let labeled = placement_label_count(args)
+  if labeled > 0 && labeled < Array::length(args) {
+    Array::push(errors, "call to " + fname + " mixes positional and labeled arguments — use either all positional or all labeled arguments" + placement_marker(off, String::length(fname)))
+    true
+  } else {
+    false
+  }
+}
+
+/// A call the header cannot place: name each label that is not at its own
+/// declared position.
+fn placement_label_errors(fname: String, off: Int, args: Array[Expr], names: Array[String], errors: Array[String]) -> Unit {
+  let mut ai = 0
+  while ai < Array::length(args) {
+    match Array::get(args, ai) {
+      ELabeledArg(lbl, _, _) => {
+        let in_position = ai < Array::length(names) && placement_param_name(Array::get(names, ai)) == lbl
+        if in_position {
+          ()
+        } else {
+          let mut known = false
+          for name in names {
+            known = known || placement_param_name(name) == lbl
+          }
+          let marker = placement_marker(off, String::length(fname))
+          if known {
+            Array::push(errors, "labeled argument `" + lbl + "` for " + fname + " is out of declared parameter order" + marker)
+          } else {
+            Array::push(errors, "unknown labeled argument `" + lbl + "` for " + fname + marker)
+          }
+        }
+      },
+      _ => ()
+    }
+    ai = ai + 1
+  }
+}
+
+/// A call that cannot be placed keeps its written arguments, minus a label
+/// that already names its own slot, so typing reports what it would for the
+/// positional call (an arity mismatch) next to the label errors.
+fn placement_strip_in_position(args: Array[Expr], names: Array[String]) -> Array[Expr] {
+  let out: Array[Expr] = []
+  let mut ai = 0
+  while ai < Array::length(args) {
+    let arg = Array::get(args, ai)
+    match arg {
+      ELabeledArg(lbl, _, value) => if ai < Array::length(names) && placement_param_name(Array::get(names, ai)) == lbl {
+        Array::push(out, value)
+      } else {
+        Array::push(out, arg)
+      },
+      _ => Array::push(out, arg)
+    }
+    ai = ai + 1
+  }
+  out
+}
+
+/// #3120: for a parameter with a default the `Option` is hidden, so a written
+/// `None` would read as "omitted" and run the default: `f(None)` for
+/// `x: Option[Int] = Some(1)` answered `Some(1)`.
+fn placement_default_errors(fname: String, off: Int, args: Array[Expr], names: Array[String], slots: Array[Int], errors: Array[String]) -> Unit {
+  let mut j = 0
+  while j < Array::length(slots) && j < Array::length(names) {
+    let slot = Array::get(slots, j)
+    if slot > 0 && String::ends_with(Array::get(names, j), "?=") {
+      let value = placement_value(Array::get(args, slot / 2 - 1))
+      let written_option = match value {
+        EIdent(n, _) => n == "None",
+        ECall(EIdent(n, _), cargs, _, _) => n == "Some" && Array::length(cargs) == 1,
+        _ => false
+      }
+      if written_option {
+        Array::push(errors, "argument " + __to_string(j + 1) + " of " + fname + " is a written `None` / `Some(..)` for a parameter with a default, which would read as an omitted argument; bind the value first (`let v: T = None`) and pass `v`, or omit the argument to use the default" + placement_marker(off, String::length(fname)))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+}
+
+fn placement_uncertain_error(fname: String, off: Int) -> String {
+  "cannot resolve labeled arguments for " + fname + ": a branch, loop or closure assigns it a lambda with different parameter names, so a label does not name a position here — call " + fname + " positionally, or give every lambda assigned to " + fname + " the same parameter names" + placement_marker(off, String::length(fname))
+}
+
+/// The edit for label `lbl` written as argument `at` (0-based) of builtin
+/// `fname`, whose labels are `labels`.
+fn builtin_label_refusal(fname: String, lbl: String, at: Int, labels: Option[Array[String]]) -> String {
+  let remove = "remove `" + lbl + " = `"
+  match labels {
+    None => "builtin `" + fname + "` takes positional arguments: " + remove + " and write the arguments in parameter order",
+    Some(names) => {
+      let slot = if at < Array::length(names) {
+        Array::get(names, at)
+      } else {
+        ""
+      }
+      let mut declared = -1
+      let mut k = 0
+      while k < Array::length(names) && declared < 0 {
+        if lbl != "_" && Array::get(names, k) == lbl {
+          declared = k
+        } else {
+          ()
+        }
+        k = k + 1
+      }
+      if canonical_builtin_name(fname) == "sh_lines" {
+        "the command of `sh_lines` is positional: " + remove + " (labels after the command are flags)"
+      } else if declared >= 0 {
+        "labeled argument `" + lbl + "` for builtin `" + fname + "` is out of parameter order: `" + lbl + "` is argument " + __to_string(declared + 1) + ", so write the arguments in parameter order"
+      } else if slot == "_" {
+        "argument " + __to_string(at + 1) + " of builtin `" + fname + "` is positional: " + remove
+      } else {
+        "builtin `" + fname + "` has no parameter `" + lbl + "`: " + remove + builtin_label_list_hint(names)
+      }
+    }
+  }
+}
+
+/// ` (its labels are `at`, `value`)`, or ` (every argument is positional)`
+/// when no slot has a label.
+fn builtin_label_list_hint(names: Array[String]) -> String {
+  let named: Array[String] = []
+  for n in names {
+    if n == "_" {
+      ()
+    } else {
+      Array::push(named, "`" + n + "`")
+    }
+  }
+  if Array::length(named) == 0 {
+    " (every argument is positional)"
+  } else {
+    " (its labels are " + String::join(named, ", ") + ")"
+  }
+}
+
+//# Placing
+
+fn placement_publish(cell: Array[Int], offset: Int, written: Int, mode: Int, slots: Array[Int]) -> Unit {
   if checker_call_header_is_probe() {
     ()
   } else {
-    match call_placement_raw(cell) {
-      Some((callee, args, _, offset)) => {
-        call_placement_publish(callee, offset, cell, Array::length(args), 2, placement_identity(Array::length(args)), errors)
-      },
-      None => ()
-    }
+    call_placement_record(cell, offset, written, mode, slots)
   }
 }
 
-/// The UFCS dispatcher supplies its checker-resolved qualified binding and
-/// whether the receiver occupies the first formal (not a written argument).
-export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv, name: String, ident_offset: Int, implicit_receiver: Bool, errors: Array[String]) -> Unit {
-  if checker_call_header_is_probe() || Array::length(errors) > 0 {
+fn placement_push_error(errors: Array[String], message: String) -> Unit {
+  if checker_call_header_is_probe() {
     ()
   } else {
-    match call_placement_raw(cell) {
-      Some((callee, args, _, offset)) => {
-        if builtin_resolves_at(env, name, ident_offset) {
-          match builtin_param_labels(name) {
-            Some(_) => {
-              let mode = if canonical_builtin_name(name) == "sh_lines" {
-                1
-              } else {
-                0
-              }
-              call_placement_publish(callee, offset, cell, Array::length(args), mode, placement_identity(Array::length(args)), errors)
-            },
-            None => checker_record_opaque_call_placement(cell, errors)
-          }
+    Array::push(errors, message)
+  }
+}
+
+/// A cell can carry a placement from an earlier compile of the same memoized
+/// text. A call this check does not place must not keep it.
+fn placement_forget(cell: Array[Int]) -> Unit {
+  if !checker_call_header_is_probe() && call_placement_cell_prefix(cell, 0) && !call_placement_is_canonical(cell) && !call_placement_is_placed(cell) {
+    Array::truncate(cell, 1)
+  } else {
+    ()
+  }
+}
+
+/// Calls through values without declaration headers keep their written order
+/// (ADR-0120 retires labels on such values in Phase 4). A labeled one is
+/// recorded so lowering knows the checker saw it.
+export fn checker_place_opaque(fname: String, off: Int, args: Array[Expr], call_off: Int, cell: Array[Int], errors: Array[String]) -> Unit {
+  if placement_label_count(args) > 0 {
+    let errs: Array[String] = []
+    let _ = placement_mixed_error(fname, off, args, errs)
+    for e in errs {
+      placement_push_error(errors, e)
+    }
+    placement_publish(cell, call_off, Array::length(args), 2, placement_identity(Array::length(args)))
+  } else {
+    placement_forget(cell)
+  }
+}
+
+fn placement_builtin(fname: String, off: Int, args: Array[Expr], call_off: Int, cell: Array[Int], errors: Array[String]) -> Array[Expr] {
+  let labels = builtin_param_labels(fname)
+  let flags_after_command = canonical_builtin_name(fname) == "sh_lines"
+  let mut bad = ""
+  let mut at = -1
+  let mut ai = 0
+  while ai < Array::length(args) && at < 0 {
+    match Array::get(args, ai) {
+      ELabeledArg(l, _, _) => if flags_after_command && ai > 0 {
+        ()
+      } else {
+        let names_slot = match labels {
+          Some(names) => l != "_" && ai < Array::length(names) && Array::get(names, ai) == l,
+          None => false
+        }
+        if names_slot {
+          ()
         } else {
-          match checker_call_header_names(env, name) {
-            Some(all_names) => {
-              let names = if implicit_receiver && Array::length(all_names) > 0 {
-                Array::slice(all_names, 1, Array::length(all_names))
-              } else {
-                all_names
-              }
-              match placement_for_header(args, names) {
-                Some(slots) => call_placement_publish(callee, offset, cell, Array::length(args), 0, slots, errors),
-                None => ()
-              }
-            },
-            None => checker_record_opaque_call_placement(cell, errors)
-          }
+          bad = l
+          at = ai
         }
       },
-      None => ()
+      _ => ()
+    }
+    ai = ai + 1
+  }
+  if at >= 0 {
+    placement_push_error(errors, builtin_label_refusal(fname, bad, at, labels) + placement_marker(off, String::length(fname)))
+    args
+  } else if flags_after_command {
+    // #777: the labels after the command are flags; codegen reads them.
+    placement_publish(cell, call_off, Array::length(args), 1, placement_identity(Array::length(args)))
+    args
+  } else {
+    // #3659: every label names its own slot, so binding is positional and
+    // the labels only go.
+    let slots = placement_identity(Array::length(args))
+    placement_publish(cell, call_off, Array::length(args), 0, slots)
+    call_placement_build(args, slots)
+  }
+}
+
+/// Place `args` against a declaration header. `fname` / `off` name the callee
+/// for diagnostics. Returns the arguments to type: placed when the header
+/// places the call, else the written ones minus in-position labels.
+fn placement_with_header(fname: String, off: Int, args: Array[Expr], names: Array[String], call_off: Int, cell: Array[Int], errors: Array[String]) -> Array[Expr] {
+  let labeled = placement_label_count(args)
+  if labeled == 0 && !placement_has_optional(names) {
+    placement_forget(cell)
+    args
+  } else {
+    match placement_for_header(args, names) {
+      Some(slots) => {
+        let errs: Array[String] = []
+        placement_default_errors(fname, off, args, names, slots, errs)
+        for e in errs {
+          placement_push_error(errors, e)
+        }
+        if labeled > 0 || !placement_is_identity(slots, Array::length(args)) || call_placement_cell_prefix(cell, 0) {
+          placement_publish(cell, call_off, Array::length(args), 0, slots)
+          call_placement_build(args, slots)
+        } else {
+          args
+        }
+      },
+      None => {
+        if labeled > 0 {
+          let errs: Array[String] = []
+          let _ = placement_mixed_error(fname, off, args, errs)
+          placement_label_errors(fname, off, args, names, errs)
+          for e in errs {
+            placement_push_error(errors, e)
+          }
+        } else {
+          ()
+        }
+        placement_forget(cell)
+        placement_strip_in_position(args, names)
+      }
     }
   }
 }
 
-/// Precheck macros carry the original snapshot on their typed replacement.
-/// Resolve that source callee in the actual environment at this point.
-export fn checker_record_call_placement(expr: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
+/// A call by name: `f(..)`, a local closure, an imported function (also
+/// spelled `ns.f`, which the dispatcher re-enters under its qualified name),
+/// a builtin. Returns the call to type.
+export fn checker_place_call(expr: Expr, env: TypeEnv, errors: Array[String]) -> Expr {
   match expr {
-    ECall(callee, _, _, cell) => match call_placement_raw(cell) {
-      Some((raw_callee, _, _, _)) => match raw_callee {
-        EIdent(name, ident_offset) => checker_record_resolved_call_placement(cell, env, name, ident_offset, false, errors),
-        _ => match callee {
-          // Namespace and UFCS dispatch publish explicitly at their resolved
-          // binding. Optional filling can also increase arity by one, so
-          // argument counts cannot identify an implicit receiver.
-          EIdent(_, _) => (),
-          EDot(_, _, _, _) => (),
-          _ => checker_record_opaque_call_placement(cell, errors)
+    ECall(callee, args, call_off, cell) => match callee {
+      EIdent(name, off) => {
+        let labeled = placement_label_count(args)
+        if labeled > 0 && builtin_resolves_at(env, name, off) {
+          ECall(callee, placement_builtin(name, off, args, call_off, cell, errors), call_off, cell)
+        } else {
+          match checker_call_header_names(env, name) {
+            Some(names) => ECall(callee, placement_with_header(name, off, args, names, call_off, cell, errors), call_off, cell),
+            None => {
+              if labeled > 0 && checker_call_header_uncertain(env, name) {
+                placement_push_error(errors, placement_uncertain_error(name, off))
+                placement_forget(cell)
+              } else {
+                checker_place_opaque(name, off, args, call_off, cell, errors)
+              }
+              expr
+            }
+          }
         }
       },
-      None => ()
+      // A method or qualified call is placed by its dispatcher, at the
+      // binding it resolves.
+      EDot(_, _, _, _) => expr,
+      _ => {
+        checker_place_opaque("<expr>", call_off, args, call_off, cell, errors)
+        expr
+      }
     },
-    _ => ()
+    _ => expr
+  }
+}
+
+/// `obj.m(..)` resolved to `T::m`: the receiver fills the first parameter and
+/// is not a written argument. Returns the explicit arguments to type.
+export fn checker_place_method_args(qualified: String, off: Int, args: Array[Expr], call_off: Int, cell: Array[Int], env: TypeEnv, errors: Array[String]) -> Array[Expr] {
+  match checker_call_header_names(env, qualified) {
+    Some(all_names) => {
+      let names = if Array::length(all_names) > 0 {
+        Array::slice(all_names, 1, Array::length(all_names))
+      } else {
+        all_names
+      }
+      placement_with_header(qualified, off, args, names, call_off, cell, errors)
+    },
+    None => {
+      checker_place_opaque(qualified, off, args, call_off, cell, errors)
+      args
+    }
   }
 }

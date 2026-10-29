@@ -44,11 +44,12 @@ any label is accepted and the arguments bind in the order they were written.
 the issue triage rules this is a P0, and it is a bug today whatever this ADR
 decides (#3651).
 
-**Labels are resolved by a syntactic pass with its own environment.**
-`normalize/desugar/labeled_args.vibe`, `binder_authority.vibe` and the
-label-name walk in `checker_stmt_labeled_name_check_expr.vibe` resolve a
-callee by name before the checker runs. That means they track shadowing,
-local lambdas and `let mut` rebinding themselves (`local_fn_tbl`,
+**Labels were resolved by a syntactic pass with its own environment.**
+Until #3661 removed them, `normalize/desugar/labeled_args.vibe` and
+`binder_authority.vibe` (both removed), with the label-name walk in
+`checker_stmt_labeled_name_check_expr.vibe`, resolved a callee by name before
+the checker ran. That meant they tracked
+shadowing, local lambdas and `let mut` rebinding themselves (`local_fn_tbl`,
 `unstable_mut_tbl`). #986, #1899 and #1994 were each a silently misbound
 argument caused by that resolver. Reordering also has a cost the reader has
 to remember: arguments are evaluated in parameter order, not in the order
@@ -167,14 +168,22 @@ derived (ADR-0113).
 
 ## Implementation consequences
 
-**Label resolution moves into the checker.** A declaration's binding records
-its parameter labels and `_` positions. The checker validates each call
-against the binding it already resolved for typing, then strips the labels.
-After that, lowering sees positional arguments only, and omitted defaulted
-or optional slots are filled by label at that point. The syntactic resolver
-is deleted: about 2,300 lines in `labeled_args.vibe` and
-`binder_authority.vibe`, plus the label walk in
-`checker_stmt_labeled_name_check_expr.vibe`.
+**Label resolution lives in the checker** (#3661). A declaration's binding
+records its parameter header (`BindingOriginFunctionHeader`, a `let mut`
+header box, or an imported `#params:` companion). `check_call_expr` places
+each call against the binding it resolves for typing
+(`checker_call_placement.vibe`) and types the placed call: labels stripped,
+`None` in an omitted optional slot, `Some(..)` around a value for one. The
+placement is recorded in the call's cell over the written arguments. After
+typing, `apply_checked_call_placements` stores the placed form, so every
+later pass sees declared order; a fresh parse gets the placement back through
+the typed-lowering rows, and `lower_call_placements` applies it at the start
+of lowering, binding effectful arguments to temporaries in written order
+(#3549). A labeled call that reaches lowering with no placement is refused.
+The syntactic resolver is removed: about 2,300 lines in `labeled_args.vibe`
+and `binder_authority.vibe` (both removed), plus the label walk in
+`checker_stmt_labeled_name_check_expr.vibe`, which keeps only the
+parameter-default refusals that are not about a call.
 
 **Builtins get parameter names.** About 170 qualified builtins live in
 `core/builtin_registry.vibe` and `checker/builtin_sigs/`. The P0 fix

@@ -3,6 +3,7 @@ import @vibe/compiler/core {
   Expr,
   Type,
   TypeEnv,
+  TypeExpr,
   call_placement_wants_binding,
   env_bind,
   env_bind_with_origin,
@@ -11,21 +12,40 @@ import @vibe/compiler/core {
   param_names_prefix
 }
 
+import @vibe/ast {
+  builtin_ref_offset
+}
+
 /// Bind a declaration header on the same value binding typing will resolve.
 /// No record is allocated for an ordinary function without an optional slot
 /// or a labeled call demanding its header in this program.
+///
+/// A parameter with a default (`x: T = d`, lowered to `x?`) is recorded as
+/// `x?=`, so the call that places an argument there can refuse a written
+/// `None` / `Some(..)`, which would read as an omitted argument (#3120).
 export fn checker_bind_call_header(env: TypeEnv, name: String, ty: Type, value: Expr) -> TypeEnv {
   match value {
-    EFn(_, _, params, _, _, _) => {
+    EFn(_, _, params, _, _, body) => {
       let mut needed = call_placement_wants_binding(name)
       for param in params {
         let (raw, _) = param
         needed = needed || String::ends_with(raw, "?")
       }
       if needed {
-        let names = for param in params {
+        let defaulted = match checker_defaulted_param_flags(params, body) {
+          Some(flags) => flags,
+          None => []
+        }
+        let mut pi = 0
+        let names: Array[String] = []
+        for param in params {
           let (raw, _) = param
-          raw
+          if pi < Array::length(defaulted) && Array::get(defaulted, pi) {
+            Array::push(names, String::concat(raw, "="))
+          } else {
+            Array::push(names, raw)
+          }
+          pi = pi + 1
         }
         env_bind_with_origin(env, name, ty, BindingOriginFunctionHeader(names))
       } else {
@@ -61,6 +81,77 @@ export fn checker_call_header_names(env: TypeEnv, name: String) -> Option[Array[
       _ => None
     },
     None => None
+  }
+}
+
+/// #1994: a `let mut` callee that a branch, loop or closure assigns lambdas
+/// with different parameter names has no declared order to place labels by.
+export fn checker_call_header_uncertain(env: TypeEnv, name: String) -> Bool {
+  match env_lookup_binding(env, name) {
+    Some(binding) => match binding.origin {
+      BindingOriginMutableFunctionHeader(box) => {
+        let (kind, _, _) = Array::get(box, 0)
+        kind == 2
+      },
+      BindingOriginUncertainFunctionHeader => true,
+      _ => false
+    },
+    None => false
+  }
+}
+
+fn defaulted_unwrap_scrutinee_is(e: Expr, n: String) -> Bool {
+  match e {
+    EMatch(EIdent(m, _), _) => m == n,
+    _ => false
+  }
+}
+
+/// Mark in `flags` every parameter the parser's unwrap prefix of `cur`
+/// defaults; true when `cur` opens with at least one such unwrap. Recursive
+/// over the prefix rather than a `let mut` cursor, so no projection of the
+/// borrowed body outlives the match that reads it.
+fn defaulted_mark(cur: Expr, params: Array[(String, Option[TypeExpr])], flags: Array[Bool]) -> Bool {
+  match cur {
+    // Only the parser's own unwrap: it alone carries the compiler-synthesized
+    // offset on the `let`, so a program's `let x: T = match x { .. }` over an
+    // `x?` parameter is not mistaken for a default.
+    ELet(n, ECall(EFn(_, _, aparams, _, _, EIdent(abody, _)), cargs, _, _), rest, loff) => if loff == builtin_ref_offset() && abody == "__asc" && Array::length(aparams) == 1 && Array::length(cargs) == 1 && defaulted_unwrap_scrutinee_is(Array::get(cargs, 0), n) {
+      let marker = String::concat(n, "?")
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pn, _) = Array::get(params, pi)
+        if pn == marker {
+          Array::set(flags, pi, true)
+        } else {
+          ()
+        }
+        pi = pi + 1
+      }
+      let _ = defaulted_mark(rest, params, flags)
+      true
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// #3120: which of `params` carry a default. The parser lowers `x: T = d`
+/// onto the optional `x?: Option[T]` and opens the body with
+/// `let x: T = match x { Some(x) => x, None => d }` (ascribed), so a default
+/// is recognised by that prefix.
+export fn checker_defaulted_param_flags(params: Array[(String, Option[TypeExpr])], body: Expr) -> Option[Array[Bool]] {
+  let flags: Array[Bool] = []
+  let mut pi = 0
+  while pi < Array::length(params) {
+    Array::push(flags, false)
+    pi = pi + 1
+  }
+  if defaulted_mark(body, params, flags) {
+    Some(flags)
+  } else {
+    None
   }
 }
 

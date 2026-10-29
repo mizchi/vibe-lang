@@ -10,11 +10,13 @@ import @vibe/compiler/core {
   call_placement_capture_begin,
   call_placement_capture_end,
   call_placement_checked_rows,
+  call_placement_copy,
   call_placement_get,
+  call_placement_is_placed,
   call_placement_is_refused,
-  call_placement_note_legacy,
-  call_placement_publish,
-  call_placement_raw,
+  call_placement_is_written,
+  call_placement_note_positional,
+  call_placement_record,
   call_placement_syntax_begin,
   call_placement_syntax_errors,
   env_bind,
@@ -28,47 +30,27 @@ import @vibe/compiler/checker/builtin_sigs {
   resolve_builtin_callee
 }
 
-/// Offset -1 must not collapse distinct raw calls into one snapshot.
-test "unlocated label snapshots use independent cells and expire by epoch" {
+/// Offset -1 must not collapse distinct calls into one placement, and an
+/// unlocated call has no row to travel in.
+test "unlocated placements use independent cells and publish no row" {
   call_placement_capture_begin()
   let first: Array[Int] = []
   let second: Array[Int] = []
-  call_placement_note_legacy(EIdent("first", -1), [EInt(1)], [2], -1, first)
-  call_placement_note_legacy(EIdent("second", -1), [EInt(2), EInt(3)], [4, 2], -1, second)
+  call_placement_record(first, -1, 1, 0, [2])
+  call_placement_record(second, -1, 2, 0, [4, 2])
   call_placement_capture_end()
-  match call_placement_raw(first) {
-    Some((EIdent(name, _), args, slots, _)) => {
-      assert(name == "first")
-      assert(args == [EInt(1)])
-      assert(slots == [2])
-    },
-    _ => assert(false)
-  }
-  match call_placement_raw(second) {
-    Some((EIdent(name, _), args, slots, _)) => {
-      assert(name == "second")
-      assert(Array::length(args) == 2)
-      assert(slots == [4, 2])
-    },
-    _ => assert(false)
-  }
-  call_placement_capture_begin()
-  assert(call_placement_raw(first) == None)
-  call_placement_capture_end()
+  assert(call_placement_get(first) == Some((1, 0, [2])))
+  assert(call_placement_get(second) == Some((2, 0, [4, 2])))
+  assert(call_placement_checked_rows() == [13])
 }
 
-/// Resolving a non-migrated builtin must retain its raw placement snapshot.
+/// Resolving a non-migrated builtin must retain the call's placement.
 test "callee resolution preserves label metadata for ordinary and migrated calls" {
   call_placement_capture_begin()
   let cell: Array[Int] = []
-  let callee = EIdent("Array::get", 7)
-  call_placement_note_legacy(callee, [EArray([EInt(9)]), EInt(0)], [2, 4], 7, cell)
+  call_placement_record(cell, 7, 2, 0, [2, 4])
   call_placement_capture_end()
   assert(resolve_builtin_callee(EnvEmpty, "Array::get", 7, cell) == 0)
-  assert(call_placement_raw(cell) != None)
-  let errors: Array[String] = []
-  call_placement_publish(callee, 7, cell, 2, 0, [2, 4], errors)
-  assert(errors == [])
   assert(call_placement_get(cell) == Some((2, 0, [2, 4])))
   assert(resolved_callee_operation(cell) == 0)
   assert(resolve_builtin_callee(EnvEmpty, "MutBytes::push", 7, cell) == 2)
@@ -81,29 +63,46 @@ test "callee resolution preserves label metadata for ordinary and migrated calls
   assert(call_placement_get(cell) == Some((2, 0, [2, 4])))
 }
 
-/// The comparison uses source indices, so equal argument values cannot hide a swap.
-test "equal values do not hide a checker and legacy placement disagreement" {
+/// A memoized parse shares its cells with every later compile, so the placed
+/// call owns a copy and the written call keeps a written placement.
+test "placing a call copies its cell and keeps the written one" {
   call_placement_capture_begin()
-  let cell: Array[Int] = []
-  let callee = EIdent("subtract", 9)
-  call_placement_note_legacy(callee, [EInt(1), EInt(1)], [4, 2], 9, cell)
+  let cell: Array[Int] = [3]
+  call_placement_record(cell, 9, 2, 0, [4, 2])
+  let placed = call_placement_copy(cell, 5)
+  assert(call_placement_is_written(cell))
+  assert(call_placement_is_placed(placed))
+  assert(call_placement_get(placed) == Some((2, 0, [4, 2])))
+  assert(resolved_callee_operation(placed) == 3)
+  // Re-typing the placed call records nothing over its written payload.
+  call_placement_record(placed, 9, 2, 0, [2, 4])
+  assert(call_placement_get(placed) == Some((2, 0, [4, 2])))
   call_placement_capture_end()
-  let errors: Array[String] = []
-  call_placement_publish(callee, 9, cell, 2, 0, [2, 4], errors)
-  assert(Array::length(errors) == 1)
-  assert(String::contains(Array::get(errors, 0), "`subtract`"))
+}
+
+/// A precheck macro that consumes a call positionally cannot keep a placement
+/// that moves an argument; one that moves nothing is kept.
+test "a positional macro refuses a moving placement" {
+  let callee = EIdent("subtract", 9)
   call_placement_syntax_begin()
-  call_placement_note_legacy(callee, [EInt(1), EInt(1)], [4, 2], 9, cell)
+  let moving: Array[Int] = []
+  call_placement_record(moving, 9, 2, 0, [4, 2])
+  call_placement_note_positional(callee, [EInt(1), EInt(1)], 9, moving)
   assert(Array::length(call_placement_syntax_errors()) == 1)
+  assert(String::contains(Array::get(call_placement_syntax_errors(), 0), "`subtract`"))
+  call_placement_syntax_begin()
+  let still: Array[Int] = []
+  call_placement_record(still, 9, 2, 0, [2, 4])
+  call_placement_note_positional(callee, [EInt(1), EInt(1)], 9, still)
+  assert(Array::length(call_placement_syntax_errors()) == 0)
 }
 
 /// Packet entries carry indices directly, including an omitted optional slot.
 test "checked placement emits a variable length tagged packet" {
   call_placement_capture_begin()
-  call_placement_capture_end()
-  let errors: Array[String] = []
   let cell: Array[Int] = []
-  call_placement_publish(EIdent("f", 7), 7, cell, 2, 0, [5, 2, 0], errors)
+  call_placement_record(cell, 7, 2, 0, [5, 2, 0])
+  call_placement_capture_end()
   assert(call_placement_checked_rows() == [13, 120, 41, 10, 91, 43, 11, 124])
 }
 
@@ -137,7 +136,6 @@ test "restoration accepts equal duplicate packets and refuses conflicting ones" 
 /// The transport cannot silently ignore malformed or incomplete proof bytes.
 test "malformed placement packets fail closed at the labeled call" {
   let invalid = [
-    [13],
     [13, 120, 41, 10, 75, 75, 124],
     [13, 120, 41, 10, 75, 124],
     [13, 120, 41, 10, 75, 43],
@@ -150,7 +148,13 @@ test "malformed placement packets fail closed at the labeled call" {
   for rows in invalid {
     assert(call_placement_is_refused(restore_packet(rows)))
   }
-  assert(!call_placement_is_refused(restore_packet([14])))
+  // A complete channel without this call's packet, or a declined one, leaves
+  // the call unplaced: lowering refuses it if it gets that far.
+  for rows in [[13], [14]] {
+    let cell = restore_packet(rows)
+    assert(!call_placement_is_refused(cell))
+    assert(call_placement_get(cell) == None)
+  }
 }
 
 /// Indices are variable-length rows; arities above a byte are not truncated.
@@ -196,6 +200,7 @@ test "binary AST transport retains validated placement cells" {
     [2],
     [0, -3660, 1, 2, 0, 4, 2, 0],
     [2, -3660, 4, 2, 0, 2, 4],
+    [0, -3660, 5, 2, 0, 4, 2],
     [0, -3660, 2],
     [0, -3660, 3, -1, 1, 102]
   ] {

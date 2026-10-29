@@ -3,7 +3,7 @@ import ./checker_call_header_flow.vibe {
 }
 
 import @vibe/compiler/core {
-  call_placement_capture_begin, call_placement_capture_end
+  call_placement_capture_begin, call_placement_capture_end, call_placement_demand_scan
 }
 
 // lib/@vibe/compiler/checker/checker_stmt.vibe — program type defs observation impl.
@@ -121,7 +121,7 @@ import @vibe/compiler/normalize {
   derive_trait_namespace_operations,
   desugar_handled_host_calls,
   desugar_inspect_calls,
-  desugar_labeled_args,
+  apply_checked_call_placements,
   desugar_railway_binds,
   erase_railway_origin_markers,
   inject_trait_method_generics
@@ -162,7 +162,7 @@ import ./checker_stmt_stmts_with_binders.vibe {
 import ./checker_stmt_unknown_effect_label_errors.vibe {
   builtin_seed_withheld,
   canonicalize_stdin_provider_type_import_heads,
-  check_labeled_arg_names_stmts,
+  check_param_default_uses,
   check_program_bounds,
   collect_async_effect_errors,
   collect_constructor_binder_errors,
@@ -201,20 +201,15 @@ export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: 
   // Collected up front; validating them needs the enum table, which only exists
   // once check_stmts_with_binders below has run.
   let qualified_pattern_refs = collect_qualified_pattern_refs(stmts)
-  // #1001: mixed positional/labeled argument-mode validation. Must run BEFORE
-  // desugar_labeled_args below — it silently strips a label that already
-  // matches its own declared position, which erases the only evidence that a
-  // call genuinely mixed argument modes (see check_mixed_argument_modes).
-  check_labeled_arg_names_stmts(stmts, frozen_errors, true)
-  // #986: reorder fully-labeled calls into declared parameter order BEFORE
-  // checking, so the checker unifies each labeled argument against the same
-  // parameter position codegen will bind it to (the codegen-time desugar runs
-  // this pass again later — it is in-place and idempotent). Without this the
-  // checker would see `add(y=2, x=1)` in call order while codegen binds the
-  // reordered form.
+  // #3120: a defaulted function's declaration-level refusals, and its use as
+  // a value.
+  check_param_default_uses(stmts, frozen_errors)
+  // ADR-0120 (#3661): the checker places each call's arguments at the binding
+  // its callee resolves to, while typing it. This only notes which bindings a
+  // labeled call names, so their declaration headers are kept.
   checker_call_header_flow_begin()
   call_placement_capture_begin()
-  desugar_labeled_args(stmts)
+  call_placement_demand_scan(stmts)
   call_placement_capture_end()
   // #1571: expand `inspect(..)` here, before the checker and before every
   // pre-codegen scan, so the snapshot assertion is import-free (see
@@ -250,9 +245,6 @@ export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: 
   handler_or_arm_resume_begin(handler_or_arms)
   set_generic_fn_decls(stmts)
   check_assignable_set_type_defs(empty_defs)
-  // #986: labeled-argument name validation (unknown / out-of-order labels).
-  // Must run after desugar_labeled_args above.
-  check_labeled_arg_names_stmts(stmts, frozen_errors, false)
   // ADR-0071 step 3 (#755): expand any effectset-name token in EVERY
   // declared effect row (function signatures AND parameter types) into its
   // flat leaf-label set ONCE here, before type-checking -- not just before
@@ -280,6 +272,10 @@ export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: 
   // #3548: so are impl heads; see impl_heads_seen.
   reset_impl_heads_seen()
   let (env, final_s0, _) = check_stmts_with_binders(expanded_stmts, 0, prelude_env, empty_defs, type_def_binders, prelude_defs_start, SubstEmpty, prelude_next_c, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, false, true)
+  // ADR-0120 (#3661): every pass after typing, and the caller, reads each call
+  // in the declared order the checker typed it in.
+  apply_checked_call_placements(stmts)
+  apply_checked_call_placements(expanded_stmts)
   // #2848: field reads whose receiver was still unsolved at every function
   // end are judged once more under the final substitution, which comes back
   // extended by the resolved reads' result variables -- BEFORE the bound
