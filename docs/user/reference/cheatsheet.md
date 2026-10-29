@@ -520,7 +520,7 @@ let c = span(5)            // => 10
 
 `x?: T` is the form without a default: the body receives an `Option[T]` and
 decides for itself what an omitted argument means. The caller writes the bare
-value either way, and the desugar adds the `Some(..)`.
+value either way, and the checker adds the `Some(..)` when it places the call.
 
 ```vibe
 fn label(name: String, suffix?: String) -> String {
