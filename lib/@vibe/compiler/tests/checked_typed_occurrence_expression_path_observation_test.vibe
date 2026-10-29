@@ -1,7 +1,7 @@
 //# Complete append-time typed-occurrence structural provenance
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_bind
+  BindingOrigin, Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_bind, env_bind_with_origin
 }
 
 import @vibe/compiler/checker {
@@ -57,6 +57,41 @@ fn assert_role(observation: CheckedTypedOccurrenceExpressionPathObservation, row
 
 fn snapshot_contains(snapshot: String, piece: String) -> Bool {
   String::index_of(snapshot, piece) >= 0
+}
+
+/// Deferred callback checking retains source coordinates even though the
+/// later-written value is checked before the callback body is inferred.
+test "deferred callbacks retain original argument and body paths" {
+  let env = env_bind_with_origin(env_bind(EnvEmpty, "value", CtString), "apply", CtFn([
+    CtString,
+    CtFn([CtString], CtString, None)
+  ], CtString, None), BindingOriginFunctionHeader(["value", "body"]))
+  let stmts = [
+    SLet(false, false, "result", None, ECall(EIdent("apply", 10), [
+      ELabeledArg("body", "", EFn([], [], [("s", None)], None, None, EIdent("s", 20))),
+      ELabeledArg("value", "", EIdent("value", 30))
+    ], 11, []))
+  ]
+  match check_program_with_env_typed_occurrence_expression_path_observation(stmts, env) {
+    Some(observation) => {
+      assert(checked_typed_occurrence_expression_path_observation_row_count(observation) == 3)
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 0), [
+        2,
+        0
+      ])
+      assert_role(observation, 0, "Identifier")
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 1), [
+        1,
+        0,
+        0
+      ])
+      assert_role(observation, 1, "Identifier")
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 2), [
+      ])
+      assert_role(observation, 2, "CallResult")
+    },
+    None => assert(false)
+  }
 }
 
 fn nested_call_fixture() -> Array[Stmt] {

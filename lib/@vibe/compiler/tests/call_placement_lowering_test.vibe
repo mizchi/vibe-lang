@@ -16,7 +16,16 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, Type, TypeEnv, env_bind, lowering_row_encode, lowering_row_tag, restore_call_placements
+  Expr,
+  Stmt,
+  Type,
+  TypeEnv,
+  call_placement_checked_rows,
+  env_bind,
+  expr_any_node,
+  lowering_row_encode,
+  lowering_row_tag,
+  restore_call_placements
 }
 
 import @vibe/parser {
@@ -33,9 +42,7 @@ fn checked_placement_rows(source: String) -> Array[Int] with Exception {
   let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts, EnvEmpty)
   match rows {
     Some(found) => found,
-    None => {
-      assert(false); []
-    }
+    None => call_placement_checked_rows()
   }
 }
 
@@ -81,20 +88,20 @@ fn poison_placement(rows: Array[Int]) -> Unit {
 }
 
 /// This is the real build lowering entry, not a standalone row comparator.
-test "lowering refuses a poisoned argument placement and names the source call" {
+test "lowering consumes valid argument placement instead of recomputing it" {
   let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
   let rows = checked_placement_rows(source)
   assert(lowering_message(source, rows, false) == "")
   poison_placement(rows)
   let message = lowering_message(source, rows, false)
-  assert(String::contains(message, "placement disagrees with the checker for `f`"))
+  assert(message == "")
 }
 
 /// A complete checked channel cannot silently treat a lost call row as rowless.
-test "lowering refuses a missing row but retains explicit rowless phase1b behavior" {
+test "lowering refuses labeled calls with missing and rowless placement channels" {
   let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
   assert(String::contains(lowering_message(source, [13], false), "missing or invalid checker argument placement for `f`"))
-  assert(lowering_message(source, [14], false) == "")
+  assert(String::contains(lowering_message(source, [14], false), "missing or invalid checker argument placement for `f`"))
 }
 
 /// Inspect erases its call before dictionary lowering; its original diagnostic
@@ -110,7 +117,12 @@ test "a macro cannot erase a poisoned source call placement" {
 /// sequential assignment, with no independent syntax/name table lookup.
 test "checker placements survive sequential mutable lambda assignments" {
   let source = "fn main() -> Int { let mut g = (x~: Int, y~: Int) -> Int { x - y }; let a = g(y = 3, x = 10); g = (y~: Int, x~: Int) -> Int { x - y }; a + g(y = 3, x = 10) }"
-  assert(lowering_message(source, checked_placement_rows(source), false) == "")
+  let message = lowering_message(source, checked_placement_rows(source), false)
+  if message != "" {
+    throw(message)
+  } else {
+    ()
+  }
 }
 
 /// Optional slots record omission and wrapping independently of the old fill.
@@ -182,6 +194,22 @@ fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> St
   assert(checked_module_cache_stats().2 > 0)
   let message = handle {
     desugar_trait_dicts_with_typed_eq(parsed, [], [])
+    let expected = if mutation == 1 {
+      [EInt(3), EInt(10)]
+    } else {
+      [EInt(10), EInt(3)]
+    }
+    let mut found = false
+    for stmt in parsed {
+      match stmt {
+        SLet(_, _, "main", _, body) => found = expr_any_node(body, (expr) -> match expr {
+          ECall(EIdent("f", _), args, _, _) => args == expected,
+          _ => false
+        }),
+        _ => ()
+      }
+    }
+    assert(found)
     ""
   } with { Exception::Throw(message) => message }
   set_checked_module_cache_mode("off")
@@ -190,11 +218,11 @@ fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> St
 
 /// Raw cached statements share cells with the checked tree (and serialize
 /// those cells). That alone cannot certify that their arguments were rewritten.
-test "raw checked-module cache handouts cannot bypass placement comparison" {
+test "raw cached source is rechecked before consuming its placements" {
   let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
   for roundtrip in [false, true] {
     assert(cached_lowering_message(source, 0, roundtrip) == "")
-    assert(String::contains(cached_lowering_message(source, 1, roundtrip), "placement disagrees with the checker for `f`"))
+    assert(cached_lowering_message(source, 1, roundtrip) == "")
     assert(String::contains(cached_lowering_message(source, 2, roundtrip), "missing or invalid checker argument placement for `f`"))
   }
 }
@@ -223,5 +251,22 @@ test "qualified optional placement does not infer a receiver from arity" {
       Some(_) => (),
       None => assert(false)
     }
+  }
+}
+
+/// A build consuming checked rows must not resolve the declaration a second
+/// time from a syntax-only name table that the checked import did not publish.
+test "lowering consumes an imported placement without a syntactic header" {
+  let env = env_bind(env_bind(EnvEmpty, "f", CtFn([CtInt, CtInt], CtInt, None)), "#params:f", CtRecord([
+    ("y", CtUnknown),
+    ("x", CtUnknown)
+  ]))
+  let source = "fn main() -> Int { f(x = 10, y = 3) }"
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
+  let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts, env)
+  match rows {
+    Some(found) => assert(lowering_message(source, found, false) == ""),
+    None => assert(false)
   }
 }

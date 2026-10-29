@@ -1,5 +1,12 @@
+import ./checker_call_arguments.vibe {
+  check_written_call_arguments, checker_call_argument_env, checker_call_argument_positions, checker_call_argument_value
+}
+
 import ./checker_call_placement.vibe {
-  checker_record_call_placement, checker_record_opaque_call_placement, checker_record_resolved_call_placement
+  checker_capture_resolved_call_placement,
+  checker_record_call_placement,
+  checker_record_opaque_call_placement,
+  checker_record_resolved_call_placement
 }
 
 // lib/@vibe/compiler/checker/checker.vibe — call expr.
@@ -46,6 +53,9 @@ import @vibe/compiler/core {
   builtin_mutlist_to_array,
   builtin_mutlist_truncate,
   builtin_operation_arity,
+  call_placement_argument_view,
+  call_placement_is_pending,
+  call_placement_mode,
   canonical_builtin_name,
   env_bind,
   env_bind_mut,
@@ -123,7 +133,8 @@ import ./checker_builtin_arg_head_rest.vibe {
   receiver_struct_field_type,
   tuple_projection_fn_type,
   type_name_prefix,
-  unify_call_args
+  unify_call_args,
+  unify_call_args_with_source_placement
 }
 
 import ./checker_closure_capture_row.vibe {
@@ -138,6 +149,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   check_interp_formal,
   effect_op_sig,
   effect_tparams,
+  env_has_active_region,
   generic_callback_instance,
   interp_name_is_shim,
   is_bytestream_named_type,
@@ -153,7 +165,6 @@ import ./checker_infer_binop_type.vibe {
   TypedOccurrenceRoleLaneCapture,
   callback_row_unreadable,
   callee_is_run_shaped,
-  callee_is_spawn_shaped,
   effect_instantiate,
   effect_is_declared,
   is_known_builtin_receiver_prefix,
@@ -230,6 +241,30 @@ import ./checker_throw_kind_of_type.vibe {
 // Check call arguments and callee dispatch through the caller's recursive checker.
 export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int), check_plain: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int), check_args: (Array[Expr], TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Subst, Int)) -> (Type, Subst, Int) {
   checker_record_call_placement(expr, env, errors)
+  let cell = match expr {
+    ECall(_, _, _, cell) => cell,
+    _ => []
+  }
+  let labeled = match expr {
+    ECall(_, args, _, _) => {
+      let mut found = false; for arg in args {
+        if arg is ELabeledArg(_, _, _) {
+          found = true
+        } else {
+          ()
+        }
+      }; found
+    },
+    _ => false
+  }
+  let check_child_original = check_child
+  let check_child = if labeled {
+    (arg: Expr, child_env: TypeEnv, child_defs: Array[TypeDef], child_s: Subst, child_c: Int, child_errors: Array[String], child_tab: Array[(Int, Type)], child_capture: Option[TypedOccurrenceRoleLaneCapture], child_lane: String) -> {
+      check_child_original(arg, checker_call_argument_env(arg, child_env, cell), child_defs, child_s, child_c, child_errors, child_tab, child_capture, child_lane)
+    }
+  } else {
+    check_child_original
+  }
   match expr {
     ECall(callee, args, call_off, callee_resolution) => match callee {
       // `perform EffName::Op(opargs)` parses as ECall(EIdent("perform"),
@@ -252,10 +287,18 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
         } else {
           (s, c)
         }
-        retaining_write_region_check(name, args, env, defs, s, c, errors, check_plain)
+        let region_args = if call_placement_is_pending(callee_resolution) && env_has_active_region(env) {
+          match call_placement_argument_view(args, callee_resolution) {
+            Some(view) => view,
+            None => args
+          }
+        } else {
+          args
+        }
+        retaining_write_region_check(name, region_args, env, defs, s, c, errors, check_plain)
         // #3343: a region value handed to a function or closure that may
         // keep it -- its body is re-checked under this call's regions.
-        retention_call_region_check(name, callee_off, callee_off, String::length(name), args, env, defs, s, c, errors, check_child)
+        retention_call_region_check(name, callee_off, callee_off, String::length(name), region_args, env, defs, s, c, errors, check_child)
         // #3179: the builtin arms below are selected by `arm`, never by
         // `name`: a spelling the program's own function answers for reaches
         // the ordinary call path at the end of this chain instead.
@@ -1485,7 +1528,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           let (init_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           // #3547: `(acc, x)` start as the accumulator and the element.
           match subst_apply(s2, recv_ty) {
-            CtArray(elem) => seed_lambda_params(Array::get(args, 2), [
+            CtArray(elem) => seed_lambda_params(checker_call_argument_value(Array::get(args, 2)), [
               init_ty,
               elem
             ], s2),
@@ -1500,7 +1543,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               // #3547: an unannotated accumulator was typed by its body (`+`
               // settles an open operand on `Int`), so "expected Int, got
               // Double" read backwards: name the edit instead.
-              if fold_acc_unannotated(Array::get(args, 2)) && (unify(acc_param, init_applied, s3) is None) {
+              if fold_acc_unannotated(checker_call_argument_value(Array::get(args, 2))) && (unify(acc_param, init_applied, s3) is None) {
                 Array::push(errors, "annotate the callback's accumulator with the initial value's type (`(acc: " + type_to_string(init_applied) + ", x) -> ..`): `Array::fold` starts from `" + type_to_string(init_applied) + "`, but the callback's body made its accumulator `" + type_to_string(acc_param) + "`" + off_marker(tail_expr_off(Array::get(args, 1))))
                 s3
               } else {
@@ -1515,7 +1558,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           // #3387: see `Array::map`.
           let s5 = effect_inst_rowless_arg_check(env, Array::get(args, 2), fn_ty, s5_elem, name, defs, errors)
           // #3360: the callback's writes of its parameters, now typed.
-          lambda_arg_elem_write_check(Array::get(args, 2), recv_ty, 1, s5, env, errors)
+          lambda_arg_elem_write_check(checker_call_argument_value(Array::get(args, 2)), recv_ty, 1, s5, env, errors)
           (tab_call_ty(tytab, call_off, subst_apply(s5, init_ty), capture, lane), s5, c3)
         } else if arm == "Array::map" {
           // `Array::map(a, f)` returns `Array[R]` where R is f's return type —
@@ -1538,7 +1581,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           // once its parameter has the element type.
           let s3 = effect_inst_rowless_arg_check(env, Array::get(args, 1), fn_ty, s3_elem, name, defs, errors)
           // #3360: the callback's writes of its parameter, now typed.
-          lambda_arg_elem_write_check(Array::get(args, 1), recv_ty, 0, s3, env, errors)
+          lambda_arg_elem_write_check(checker_call_argument_value(Array::get(args, 1)), recv_ty, 0, s3, env, errors)
           let result = match subst_apply(s3, fn_ty) {
             CtFn(_, ret, _) => CtArray(ret),
             _ => CtUnknown
@@ -1604,7 +1647,11 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                           // annotated with a concrete type hid it.
                           // `#active_nursery` only picks the edit the
                           // diagnostic names.
-                          let body_arg = Array::get(args, 0)
+                          let body_arg = if call_placement_mode(callee_resolution) == 0 {
+                            checker_call_argument_value(Array::get(args, 0))
+                          } else {
+                            Array::get(args, 0)
+                          }
                           let literal_body = match body_arg {
                             EFn(_, _, fn_params, _, _, _) => Array::length(fn_params) == 1,
                             _ => false
@@ -1618,7 +1665,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                             env
                           }
                           let errors_before_body = Array::length(errors)
-                          let (bt, s_body, c_body) = check_child(body_arg, body_env, defs, s_skolem, c1 + 1, errors, tytab, capture, lane)
+                          let (bt, s_body, c_body) = check_child(Array::get(args, 0), body_env, defs, s_skolem, c1 + 1, errors, tytab, capture, lane)
                           Array::truncate(run_body_param_cell, 0)
                           let mut write_refused = false
                           let mut ei = errors_before_body
@@ -1887,66 +1934,6 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           }
           let (rt, s2, c2) = future_builtin_type(name, arg_tys, args, s1, c1, errors, callee_off)
           (tab_call_ty(tytab, call_off, rt, capture, lane), s2, c2)
-        } else if arm == "TaskGroup::spawn" || arm == "TaskGroup::spawn_suspend" || (Array::length(args) == 2 && callee_is_spawn_shaped(env, s, name)) {
-          // #1081 step 3 Phase B: `Spawnable[r]` capture check. There is no
-          // general `Spawnable` trait/bound in this checker, so the check is
-          // attached to the call. #3125: it used to be selected by the
-          // literal spelling of these two names, so `let sp =
-          // TaskGroup::spawn; sp(n, () -> xs)` ran a capture the literal
-          // spelling refuses. It is now selected by the callee's TYPE
-          // (`callee_is_spawn_shaped`), which covers a `let` alias, a renamed
-          // import and a wrapper with spawn's signature; the one route a
-          // call cannot see -- the function handed on as a value -- is
-          // refused where the value is taken (`EIdent` arm).
-          // This branch does exactly the SAME instantiate + check-args +
-          // unify work the generic call-checking fallback below would (so
-          // ordinary type errors on `n`/`f` are unaffected), then additionally
-          // zonks `n`'s region argument and walks the closure literal's
-          // captured free variables against `check_spawnable_captures`.
-          match env_lookup(env, name) {
-            Some(scheme) => {
-              let (ti, c1, new_bounds) = instantiate(scheme, c)
-              let mut s0 = s
-              let mut bi = 0
-              while bi < Array::length(new_bounds) {
-                let (vid, bounds) = Array::get(new_bounds, bi)
-                if Array::length(bounds) != 0 {
-                  note_bound_var_site(vid, callee_off, String::length(name))
-                  s0 = subst_add_bound(s0, vid, bounds)
-                } else {
-                  ()
-                }
-                bi = bi + 1
-              }
-              match ti {
-                CtFn(param_tys, ret_ty, _) => {
-                  let (a0_ty, s1, c2) = check_child(Array::get(args, 0), env, defs, s0, c1, errors, tytab, capture, lane)
-                  let (a1_ty, s2, c3) = check_child(Array::get(args, 1), env, defs, s1, c2, errors, tytab, capture, lane)
-                  let arg_tys = [a0_ty, a1_ty]
-                  let s3_unified = unify_call_args(param_tys, arg_tys, args, s2, errors, name, callee_off)
-                  // #3387: the task's row names the effects it forwards by a
-                  // row variable, so a generic effect it performs is the
-                  // enclosing body's.
-                  let s3 = if Array::length(param_tys) == 2 {
-                    effect_inst_unnamed_arg_check(env, Array::get(args, 1), a1_ty, Array::get(param_tys, 1), s3_unified, name, defs, errors)
-                  } else {
-                    s3_unified
-                  }
-                  report_spawnable_violations(env, s3, defs, a0_ty, Array::get(args, 1), errors, name, callee_off)
-                  (tab_call_ty(tytab, call_off, subst_apply(s3, ret_ty), capture, lane), s3, c3)
-                },
-                _ => {
-                  let (sa, ca) = check_args(args, env, defs, s0, c1, errors, tytab, capture, lane)
-                  (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
-                }
-              }
-            },
-            None => {
-              Array::push(errors, String::concat(String::concat(String::concat("unknown name: ", name), builtin_no_lowering_hint(name)), off_marker_len(callee_off, String::length(name))))
-              let (sa, ca) = check_args(args, env, defs, s, c, errors, tytab, capture, lane)
-              (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
-            }
-          }
         } else {
           match direct_call_return(env, name, callee_off) {
             Some(ret_ty) => {
@@ -2044,7 +2031,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 let elem_s = check_hof_param_vs_elem(subst_apply(s2, Array::get(direct_arg_tys, 0)), subst_apply(s2, Array::get(direct_arg_tys, 1)), 0, s2, errors, String::concat(name, " function parameter type mismatch"))
                 let eff_s = effect_inst_rowless_arg_check(env, Array::get(args, 1), Array::get(direct_arg_tys, 1), elem_s, name, defs, errors)
                 // #3360: the callback's writes of its parameter, now typed.
-                lambda_arg_elem_write_check(Array::get(args, 1), Array::get(direct_arg_tys, 0), 0, eff_s, env, errors)
+                lambda_arg_elem_write_check(checker_call_argument_value(Array::get(args, 1)), Array::get(direct_arg_tys, 0), 0, eff_s, env, errors)
                 eff_s
               } else {
                 s2
@@ -2109,7 +2096,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 // program links, so a region's value passed to it may be
                 // kept (`CellOf(h)` with only `Cell` imported, Codex on #3473).
                 if !has_qual && user_recv {
-                  retention_expr_callee_region_check(EIdent(name, callee_off), name, callee_off, args, env, defs, s, c, errors, check_child)
+                  retention_expr_callee_region_check(EIdent(name, callee_off), name, callee_off, region_args, env, defs, s, c, errors, check_child)
                 }
                 if has_qual || user_recv {
                   Some(check_child(ECall(EDot(Array::get(args, 0), name, callee_off, callee_off), Array::slice(args, 1, Array::length(args)), call_off, callee_resolution), env, defs, sa, ca, errors, tytab, capture, "SyntheticRewrite"))
@@ -2183,37 +2170,11 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                     },
                     None => None
                   }
-                  let alen = Array::length(args)
-                  let arg_tys = array_empty()
-                  let mut ai = 0
-                  let mut s2 = callee_row_scope_subst(env, ct, s1)
-                  let mut c2 = c1
-                  while ai < alen {
-                    let arg = Array::get(args, ai)
-                    let arg_s = callback_prefix_subst(arg, inferred_param_tys, arg_tys, s2, callee_inst)
-                    // #3387: the row is read once the arguments to its left
-                    // have fixed what they fix.
-                    let arg_env = if ai < Array::length(inferred_param_tys) {
-                      callback_arg_env(env, arg, Array::get(inferred_param_tys, ai), arg_s, callee_inst, defs)
-                    } else {
-                      env
-                    }
-                    // #3547: a lambda literal's unannotated parameters start
-                    // as the types this call expects of them.
-                    seed_lambda_arg_from_call(arg, inferred_param_tys, arg_tys, arg_s)
-                    let (at, ns, nc) = check_child(arg, arg_env, defs, arg_s, c2, errors, tytab, capture, lane)
-                    Array::push(arg_tys, at)
-                    if ai < Array::length(inferred_param_tys) {
-                      // #3341: a function value passed here performs at the
-                      // parameter row's instantiation.
-                      let ns_inst = effect_inst_arg_check(env, arg, at, Array::get(inferred_param_tys, ai), ns, callee_inst, name, defs, errors)
-                      s2 = refine_trait_bounds_from_receiver(env, ns_inst, Array::get(inferred_param_tys, ai), at)
-                    } else {
-                      s2 = ns
-                    }
-                    c2 = nc
-                    ai = ai + 1
+                  let typed_args = match call_placement_argument_view(args, callee_resolution) {
+                    Some(view) => view,
+                    None => args
                   }
+                  let (arg_tys, s2, c2) = check_written_call_arguments(args, typed_args, callee_resolution, inferred_param_tys, env, defs, callee_row_scope_subst(env, ct, s1), c1, errors, tytab, capture, lane, callee_inst, name, check_child)
                   // #2773: THE CALL SITE THE BODY EXEMPTION DEFERS TO.
                   //
                   // `check_interp_formal` stands down inside a top-level
@@ -2249,13 +2210,13 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                       if alen3 != plen2 {
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(callee_off, String::length(name))))
                       }
-                      let s3_unified = unify_call_args(call_param_tys, arg_tys, args, s2, errors, name, callee_off)
+                      let s3_unified = unify_call_args_with_source_placement(call_param_tys, arg_tys, typed_args, s2, errors, name, callee_off, checker_call_argument_positions(callee_resolution))
                       // #3360: a closure argument's writes of its own
                       // parameter, now that the call has fixed its type.
-                      lambda_arg_param_write_check(args, call_param_tys, s3_unified, env, errors)
+                      lambda_arg_param_write_check(typed_args, call_param_tys, s3_unified, env, errors)
                       // #3387: a parameter whose type names no row for an
                       // effect a function argument performs.
-                      let s3_args = effect_inst_unnamed_args_check(env, args, arg_tys, call_param_tys, s3_unified, name, defs, errors)
+                      let s3_args = effect_inst_unnamed_args_check(env, typed_args, arg_tys, call_param_tys, s3_unified, name, defs, errors)
                       // #3341: a called lambda performs at the instantiation
                       // in scope here; read after the arguments, which fix a
                       // payload a generic lambda takes from them.
@@ -2264,7 +2225,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                       // (`Parallel::map(n, xs, f)`) keeps this general typing
                       // path and gets the same capture check on its closure.
                       if alen3 == plen2 && alen3 >= 2 && param_types_are_spawn_shaped(call_param_tys) {
-                        report_spawnable_violations(env, s3, defs, Array::get(arg_tys, 0), Array::get(args, alen3 - 1), errors, name, callee_off)
+                        report_spawnable_violations(env, s3, defs, Array::get(arg_tys, 0), Array::get(typed_args, alen3 - 1), errors, name, callee_off)
                       } else {
                         ()
                       }
@@ -2336,6 +2297,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
         match qualified_hit {
           Some(_) => match qualified_key {
             Some(k) => {
+              checker_capture_resolved_call_placement(callee, args, call_off, callee_resolution, env, k)
               checker_record_resolved_call_placement(callee_resolution, env, k, qcall_field_off, false, errors)
               check_child(ECall(EIdent(k, qcall_field_off), args, call_off, callee_resolution), env, defs, s, c, errors, tytab, capture, "SyntheticRewrite")
             },
@@ -2357,6 +2319,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               None => false
             }
             if has_real_fn_binding {
+              checker_capture_resolved_call_placement(callee, args, call_off, callee_resolution, env, qualified)
               checker_record_resolved_call_placement(callee_resolution, env, qualified, qcall_field_off, true, errors)
             } else {
               checker_record_opaque_call_placement(callee_resolution, errors)
@@ -2459,41 +2422,79 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 _ => array_empty()
               }
               let all_args = prepend_expr(obj, args)
-              retaining_write_region_check(qualified, all_args, env, defs, s2, c2, errors, check_plain)
+              let region_args = if has_real_fn_binding && call_placement_is_pending(callee_resolution) && env_has_active_region(env) {
+                prepend_expr(obj, match call_placement_argument_view(args, callee_resolution) {
+                  Some(view) => view,
+                  None => args
+                })
+              } else {
+                all_args
+              }
+              retaining_write_region_check(qualified, region_args, env, defs, s2, c2, errors, check_plain)
               // #3343: as for a call by name; a method that names no
               // function (a function stored in a field) is checked below.
               match env_lookup(env, qualified) {
-                Some(_) => retention_call_region_check(qualified, qcall_field_off, call_off, String::length(method), all_args, env, defs, s2, c2, errors, check_child),
+                Some(_) => retention_call_region_check(qualified, qcall_field_off, call_off, String::length(method), region_args, env, defs, s2, c2, errors, check_child),
                 None => ()
               }
-              let alen = Array::length(all_args)
-              let arg_tys = array_empty()
-              Array::push(arg_tys, obj_ty)
-              let mut ai = 1
-              let mut s3 = callee_row_scope_subst(env, mt, s2)
-              let mut c3 = c2
-              while ai < alen {
-                let marg = Array::get(all_args, ai)
-                let marg_s = callback_prefix_subst(marg, method_param_tys, arg_tys, s3, method_inst)
-                let marg_env = if ai < Array::length(method_param_tys) {
-                  callback_arg_env(env, marg, Array::get(method_param_tys, ai), marg_s, method_inst, defs)
-                } else if ai - 1 < Array::length(field_param_tys) {
-                  field_callback_arg_env(env, marg, Array::get(field_param_tys, ai - 1), marg_s, field_recv, defs)
+              let (arg_tys, typed_all_args, s3, c3) = if has_real_fn_binding {
+                let receiver_s = if Array::length(method_param_tys) > 0 {
+                  unify_call_args(Array::slice(method_param_tys, 0, 1), [obj_ty], [
+                    obj
+                  ], s2, errors, qualified, call_off)
                 } else {
-                  env
+                  s2
                 }
-                let (at, ns, nc) = check_child(marg, marg_env, defs, marg_s, c3, errors, tytab, capture, lane)
-                Array::push(arg_tys, at)
-                // #3341: see the named-call path.
-                s3 = if ai < Array::length(method_param_tys) {
-                  effect_inst_arg_check(env, marg, at, Array::get(method_param_tys, ai), ns, method_inst, qualified, defs, errors)
-                } else if ai - 1 < Array::length(field_param_tys) {
-                  field_effect_inst_arg_check(env, marg, at, Array::get(field_param_tys, ai - 1), ns, field_recv, method, defs, errors)
+                let explicit_params = if Array::length(method_param_tys) > 0 {
+                  Array::slice(method_param_tys, 1, Array::length(method_param_tys))
                 } else {
-                  ns
+                  []
                 }
-                c3 = nc
-                ai = ai + 1
+                let explicit_args = match call_placement_argument_view(args, callee_resolution) {
+                  Some(view) => view,
+                  None => args
+                }
+                let (explicit_types, next_s, next_c) = check_written_call_arguments(args, explicit_args, callee_resolution, explicit_params, env, defs, callee_row_scope_subst(env, mt, receiver_s), c2, errors, tytab, capture, lane, method_inst, qualified, check_child)
+                let types = [obj_ty]
+                let expressions = [obj]
+                for ty in explicit_types {
+                  Array::push(types, ty)
+                }
+                for value in explicit_args {
+                  Array::push(expressions, value)
+                }
+                (types, expressions, next_s, next_c)
+              } else {
+                let alen = Array::length(all_args)
+                let arg_tys = array_empty()
+                Array::push(arg_tys, obj_ty)
+                let mut ai = 1
+                let mut s3 = callee_row_scope_subst(env, mt, s2)
+                let mut c3 = c2
+                while ai < alen {
+                  let marg = Array::get(all_args, ai)
+                  let marg_s = callback_prefix_subst(marg, method_param_tys, arg_tys, s3, method_inst)
+                  let marg_env = if ai < Array::length(method_param_tys) {
+                    callback_arg_env(env, marg, Array::get(method_param_tys, ai), marg_s, method_inst, defs)
+                  } else if ai - 1 < Array::length(field_param_tys) {
+                    field_callback_arg_env(env, marg, Array::get(field_param_tys, ai - 1), marg_s, field_recv, defs)
+                  } else {
+                    env
+                  }
+                  let (at, ns, nc) = check_child(marg, marg_env, defs, marg_s, c3, errors, tytab, capture, lane)
+                  Array::push(arg_tys, at)
+                  // #3341: see the named-call path.
+                  s3 = if ai < Array::length(method_param_tys) {
+                    effect_inst_arg_check(env, marg, at, Array::get(method_param_tys, ai), ns, method_inst, qualified, defs, errors)
+                  } else if ai - 1 < Array::length(field_param_tys) {
+                    field_effect_inst_arg_check(env, marg, at, Array::get(field_param_tys, ai - 1), ns, field_recv, method, defs, errors)
+                  } else {
+                    ns
+                  }
+                  c3 = nc
+                  ai = ai + 1
+                }
+                (arg_tys, all_args, s3, c3)
               }
               let applied_method_ty = match mt {
                 CtFn(_, _, _) => mt,
@@ -2510,9 +2511,13 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   if alen2 != plen {
                     Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))), off_marker_len(call_off, String::length(qualified))))
                   }
-                  let s4_unified = unify_call_args(call_param_tys, arg_tys, all_args, s3, errors, qualified, call_off)
+                  let s4_unified = if has_real_fn_binding && Array::length(call_param_tys) > 0 {
+                    unify_call_args_with_source_placement(Array::slice(call_param_tys, 1, Array::length(call_param_tys)), Array::slice(arg_tys, 1, Array::length(arg_tys)), Array::slice(typed_all_args, 1, Array::length(typed_all_args)), s3, errors, qualified, call_off, checker_call_argument_positions(callee_resolution))
+                  } else {
+                    unify_call_args(call_param_tys, arg_tys, typed_all_args, s3, errors, qualified, call_off)
+                  }
                   // #3387: see the named-call path.
-                  let s4 = effect_inst_unnamed_args_check(env, all_args, arg_tys, call_param_tys, s4_unified, qualified, defs, errors)
+                  let s4 = effect_inst_unnamed_args_check(env, typed_all_args, arg_tys, call_param_tys, s4_unified, qualified, defs, errors)
                   let call_ret = Array::get(ret_box, 0)
                   let selected_ret = match direct_ret {
                     Some(t) => t,

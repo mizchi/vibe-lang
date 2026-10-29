@@ -1,0 +1,72 @@
+import @vibe/compiler/core {
+  BindingOrigin, Expr, Stmt, Subst, Type, TypeEnv, env_bind, env_bind_with_origin
+}
+import @vibe/compiler/checker {
+  check_expr
+}
+import @vibe/compiler/checker/effects {
+  check_async_effects_expr
+}
+import @vibe/compiler/normalize {
+  lower_checked_call_placements
+}
+
+fn sleeping_task() -> Expr {
+  EFn([], [], [], None, None, ESeq(ECall(EIdent("sleep", 20), [EInt(1)], 20, []), EInt(1)))
+}
+
+fn effect_errors(expr: Expr, env: TypeEnv) -> Int {
+  let errors: Array[String] = []
+  let _ = check_expr(expr, env, [], SubstEmpty, 0, errors, [])
+  Array::length(check_async_effects_expr(expr, env, false))
+}
+
+/// Optional wrapping is a checker fact, not a reason to require a syntactic
+/// Some before the async pass can recognize the callback's expected row.
+test "optional async tasks use source placements before and after lowering" {
+  let group = CtNamed("TaskGroup", [CtNamed("#outer", []), CtUnit])
+  let env = env_bind(env_bind_with_origin(EnvEmpty, "start", CtFn([
+    group,
+    CtOption(CtFn([], CtInt, Some("Async")))
+  ], CtInt, None), BindingOriginFunctionHeader(["g", "task?"])), "g", group)
+  for args in [
+    [
+      ELabeledArg("g", "", EIdent("g", 10)),
+      ELabeledArg("task", "", sleeping_task())
+    ],
+    [
+      ELabeledArg("task", "", sleeping_task()),
+      ELabeledArg("g", "", EIdent("g", 10))
+    ]
+  ] {
+    let expr = ECall(EIdent("start", 7), args, 7, [])
+    assert(effect_errors(expr, env) == 0)
+    let stmts = [SExpr(expr)]
+    lower_checked_call_placements(stmts, true)
+    match Array::get(stmts, 0) {
+      SExpr(placed) => assert(Array::length(check_async_effects_expr(placed, env, false)) == 0),
+      _ => assert(false)
+    }
+  }
+}
+
+/// Parameter order comes from the placement while effects are still visited
+/// in written order; a callback written first does not inherit slot zero.
+test "reordered async callbacks read the expected formal slot" {
+  let env = env_bind_with_origin(EnvEmpty, "f", CtFn([
+    CtInt,
+    CtFn([], CtInt, Some("Async"))
+  ], CtInt, None), BindingOriginFunctionHeader(["n", "task"]))
+  assert(effect_errors(ECall(EIdent("f", 7), [
+    ELabeledArg("task", "", sleeping_task()),
+    ELabeledArg("n", "", EInt(1))
+  ], 7, []), env) == 0)
+}
+
+/// An unchecked value-call label must not borrow a declaration-only context.
+test "opaque task labels keep their legacy rowless refusal" {
+  let env = env_bind(EnvEmpty, "f", CtFn([CtFn([], CtInt, Some("Async"))], CtInt, None))
+  assert(effect_errors(ECall(EIdent("f", 7), [
+    ELabeledArg("task", "", sleeping_task())
+  ], 7, []), env) > 0)
+}

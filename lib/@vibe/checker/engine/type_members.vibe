@@ -153,6 +153,7 @@ export fn engine_is_selected_type_companion(name: String, binding: EnvValueBindi
   let foreign = strict && (match binding.origin {
     BindingOriginUnavailable => false,
     BindingOriginFunctionHeader(_) => false,
+    BindingOriginDefaultedFunctionHeader(_, _) => false,
     BindingOriginMutableFunctionHeader(_) => false,
     BindingOriginUncertainFunctionHeader => false,
     _ => true
@@ -244,6 +245,7 @@ export fn engine_local_type_member_markers(stmts: Array[Stmt], env: TypeEnv) -> 
         match binding.origin {
           BindingOriginUnavailable => Array::push(locals, name),
           BindingOriginFunctionHeader(_) => Array::push(locals, name),
+          BindingOriginDefaultedFunctionHeader(_, _) => Array::push(locals, name),
           BindingOriginMutableFunctionHeader(_) => Array::push(locals, name),
           BindingOriginUncertainFunctionHeader => Array::push(locals, name),
           _ => ()
@@ -274,6 +276,7 @@ export fn engine_local_type_member_markers(stmts: Array[Stmt], env: TypeEnv) -> 
           match binding.origin {
             BindingOriginUnavailable => Array::push(locals, name),
             BindingOriginFunctionHeader(_) => Array::push(locals, name),
+            BindingOriginDefaultedFunctionHeader(_, _) => Array::push(locals, name),
             BindingOriginMutableFunctionHeader(_) => Array::push(locals, name),
             BindingOriginUncertainFunctionHeader => Array::push(locals, name),
             _ => ()
@@ -517,25 +520,31 @@ fn engine_selected_authoritative_binding_origin(env: TypeEnv, name: String) -> O
   }
   result
 }
-export fn engine_selected_module_binding_origin(dep_env: TypeEnv, resolved: String, source_name: String, reexport_surface_only: Bool) -> BindingOrigin {
-  // Preserve an ultimate module origin already carried by a facade binding.
-  // Replacing it with `resolved` at every import hop loses semantic provenance
-  // such as the canonical @vibe/builtin AsyncIter constructors.
-  let (path, original_name) = match engine_selected_authoritative_binding_origin(dep_env, source_name) {
-    Some(origin) => match origin {
-      BindingOriginModuleExport(origin_path, origin_name) => (origin_path, origin_name),
-      BindingOriginReExportSurface(origin_path, origin_name) => (origin_path, origin_name),
-      BindingOriginUnavailable => (resolved, source_name),
-      BindingOriginFunctionHeader(_) => (resolved, source_name)
-      BindingOriginMutableFunctionHeader(_) => (resolved, source_name)
-      BindingOriginUncertainFunctionHeader => (resolved, source_name)
-    },
-    None => (resolved, source_name)
-  }
-  if reexport_surface_only {
-    BindingOriginReExportSurface(path, original_name)
+fn engine_import_origin(path: String, name: String, surface_only: Bool) -> BindingOrigin {
+  if surface_only {
+    BindingOriginReExportSurface(path, name)
   } else {
-    BindingOriginModuleExport(path, original_name)
+    BindingOriginModuleExport(path, name)
+  }
+}
+fn engine_import_function_origin(path: String, name: String, params: Array[String], surface_only: Bool) -> BindingOrigin {
+  if surface_only {
+    BindingOriginReExportFunctionHeader(path, name, params)
+  } else {
+    BindingOriginModuleFunctionHeader(path, name, params)
+  }
+}
+/// Project the selected declaration's header with its ultimate module origin.
+/// Reuse its names instead of manufacturing a second parameter-marker binding.
+export fn engine_selected_module_binding_origin(dep_env: TypeEnv, resolved: String, source_name: String, reexport_surface_only: Bool) -> BindingOrigin {
+  match engine_selected_authoritative_binding_origin(dep_env, source_name) {
+    Some(BindingOriginModuleFunctionHeader(path, original, names)) => engine_import_function_origin(path, original, names, reexport_surface_only),
+    Some(BindingOriginReExportFunctionHeader(path, original, names)) => engine_import_function_origin(path, original, names, reexport_surface_only),
+    Some(BindingOriginFunctionHeader(names)) => engine_import_function_origin(resolved, source_name, names, reexport_surface_only),
+    Some(BindingOriginDefaultedFunctionHeader(names, _)) => engine_import_function_origin(resolved, source_name, names, reexport_surface_only),
+    Some(BindingOriginModuleExport(path, original)) => engine_import_origin(path, original, reexport_surface_only),
+    Some(BindingOriginReExportSurface(path, original)) => engine_import_origin(path, original, reexport_surface_only),
+    _ => engine_import_origin(resolved, source_name, reexport_surface_only)
   }
 }
 // What `env_flat_param_rows` answers for a binding list with no marker, which
@@ -633,7 +642,8 @@ export fn engine_bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv
         } else {
           candidate_name
         }
-        out = env_bind_with_origin(out, local_name, engine_trait_projection_map_type_bounds(candidate_ty, trait_mappings), engine_selected_module_binding_origin(dep_env, resolved, candidate_name, reexport_surface_only))
+        let origin = engine_selected_module_binding_origin(dep_env, resolved, candidate_name, reexport_surface_only)
+        out = env_bind_with_origin(out, local_name, engine_trait_projection_map_type_bounds(candidate_ty, trait_mappings), origin)
         // A member marker follows its companion, renamed with it, so a
         // contract further down can tell an impl or derived method from a
         // free function under the same type (`local_type_member_markers`).
@@ -642,11 +652,13 @@ export fn engine_bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv
         }
         // #3432: so do its parameter names, so `Box::make()` can omit an
         // optional argument when only `Box` was imported (Codex on #3441).
-        match env_lookup_flat(param_rows, candidate_name) {
-          Some(t) => {
-            out = env_bind(out, param_names_marker(local_name), t)
-          },
-          None => ()
+        match origin {
+          BindingOriginModuleFunctionHeader(_, _, _) => (),
+          BindingOriginReExportFunctionHeader(_, _, _) => (),
+          _ => match env_lookup_flat(param_rows, candidate_name) {
+            Some(t) => out = env_bind(out, param_names_marker(local_name), t),
+            None => ()
+          }
         }
         match env_lookup_flat(retention_rows, candidate_name) {
           Some(t) => {

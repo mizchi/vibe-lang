@@ -1,3 +1,7 @@
+import ./checker_parameter_defaults.vibe {
+  checker_check_default_declarations
+}
+
 import ./checker_call_header_flow.vibe {
   checker_call_header_flow_begin
 }
@@ -121,7 +125,6 @@ import @vibe/compiler/normalize {
   derive_trait_namespace_operations,
   desugar_handled_host_calls,
   desugar_inspect_calls,
-  desugar_labeled_args,
   desugar_railway_binds,
   erase_railway_origin_markers,
   inject_trait_method_generics
@@ -162,7 +165,6 @@ import ./checker_stmt_stmts_with_binders.vibe {
 import ./checker_stmt_unknown_effect_label_errors.vibe {
   builtin_seed_withheld,
   canonicalize_stdin_provider_type_import_heads,
-  check_labeled_arg_names_stmts,
   check_program_bounds,
   collect_async_effect_errors,
   collect_constructor_binder_errors,
@@ -174,6 +176,17 @@ import ./checker_stmt_unknown_effect_label_errors.vibe {
 }
 
 export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with Exception {
+  call_placement_capture_begin()
+  handle {
+    let checked = check_program_source_impl(stmts, capture, role_lane_capture)
+    call_placement_capture_end()
+    checked
+  } with { Exception::Throw(message) => {
+    call_placement_capture_end(); throw(message)
+  } }
+}
+
+fn check_program_source_impl(stmts: Array[Stmt], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with Exception {
   let errors = ArrayBuilder::new()
   let frozen_errors = ArrayBuilder::freeze(errors)
   push_error_strings(collect_trait_namespace_conflict_errors(stmts, EnvEmpty), frozen_errors)
@@ -201,21 +214,8 @@ export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: 
   // Collected up front; validating them needs the enum table, which only exists
   // once check_stmts_with_binders below has run.
   let qualified_pattern_refs = collect_qualified_pattern_refs(stmts)
-  // #1001: mixed positional/labeled argument-mode validation. Must run BEFORE
-  // desugar_labeled_args below — it silently strips a label that already
-  // matches its own declared position, which erases the only evidence that a
-  // call genuinely mixed argument modes (see check_mixed_argument_modes).
-  check_labeled_arg_names_stmts(stmts, frozen_errors, true)
-  // #986: reorder fully-labeled calls into declared parameter order BEFORE
-  // checking, so the checker unifies each labeled argument against the same
-  // parameter position codegen will bind it to (the codegen-time desugar runs
-  // this pass again later — it is in-place and idempotent). Without this the
-  // checker would see `add(y=2, x=1)` in call order while codegen binds the
-  // reordered form.
   checker_call_header_flow_begin()
-  call_placement_capture_begin()
-  desugar_labeled_args(stmts)
-  call_placement_capture_end()
+  checker_check_default_declarations(stmts, frozen_errors)
   // #1571: expand `inspect(..)` here, before the checker and before every
   // pre-codegen scan, so the snapshot assertion is import-free (see
   // desugar_inspect_calls).
@@ -250,9 +250,6 @@ export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: 
   handler_or_arm_resume_begin(handler_or_arms)
   set_generic_fn_decls(stmts)
   check_assignable_set_type_defs(empty_defs)
-  // #986: labeled-argument name validation (unknown / out-of-order labels).
-  // Must run after desugar_labeled_args above.
-  check_labeled_arg_names_stmts(stmts, frozen_errors, false)
   // ADR-0071 step 3 (#755): expand any effectset-name token in EVERY
   // declared effect row (function signatures AND parameter types) into its
   // flat leaf-label set ONCE here, before type-checking -- not just before

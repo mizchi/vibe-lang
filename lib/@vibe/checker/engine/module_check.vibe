@@ -49,7 +49,7 @@ import @vibe/compiler/cache {
 }
 import @vibe/compiler/checker {
   CheckedProgram,
-  check_program_with_projected_import_env_typed_lowering_located_observation,
+  check_program_with_projected_import_env_lowering_placements,
   declaring_module_path_clear,
   declaring_module_path_set,
   retention_summaries_clear,
@@ -591,8 +591,16 @@ fn engine_call_argument_range(source: String, callee: Int, spec: String) -> (Int
         if !ok || Array::length(firsts) != count {
           (0 - 1, 0 - 1)
         } else {
-          let first = Array::get(firsts, index)
+          let segment_first = Array::get(firsts, index)
           let last = Array::get(lasts, index)
+          let first = if segment_first + 2 <= last {
+            match (Array::get(tokens, segment_first), Array::get(tokens, segment_first + 1)) {
+              (TIdent(_), TEq) => segment_first + 2,
+              _ => segment_first
+            }
+          } else {
+            segment_first
+          }
           if engine_call_arg_is_literal(tokens, first, last, kind, items) {
             (Array::get(starts, first), Array::get(ends, last))
           } else {
@@ -1546,8 +1554,8 @@ export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool,
       declaring_module_path_set(job.path, job.ships_owned_heads)
       // A check that throws must not leave this module named as the one
       // being checked: the cells are process-global.
-      let (checked_program, located_offsets, eq_offs, eq_keys) = handle {
-        check_program_with_projected_import_env_typed_lowering_located_observation(stmts, import_env)
+      let (checked_program, located_offsets, eq_offs, eq_keys, placements) = handle {
+        check_program_with_projected_import_env_lowering_placements(stmts, import_env)
       } with { Exception::Throw(message) => {
         declaring_module_path_clear()
         retention_summaries_clear()
@@ -1555,13 +1563,11 @@ export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool,
       } }
       declaring_module_path_clear()
       retention_summaries_clear()
-      // `None` (the parse carried no offsets) cannot happen on this lane --
-      // parse_program_with_path_impl lexes with offsets -- but if it did, an
-      // empty table classifies nothing and leaves the syntactic classifier
-      // in charge, deterministically.
+      // Scalar observation may decline while call placements remain available.
+      // Preserve that independent channel in both memo and artifact outputs.
       engine_module_typed_lowering_memo_put(job.path, fingerprint, match located_offsets {
         Some(offsets) => offsets,
-        None => array_empty()
+        None => placements
       }, eq_offs, eq_keys)
       engine_module_typed_lowering_bind_source(job.path, fingerprint, job.source)
       let full_checked_env = checked_program.final_env
@@ -1610,7 +1616,7 @@ export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool,
           checked_program,
           lowering_offsets: match located_offsets {
             Some(offsets) => offsets,
-            None => [14]
+            None => placements
           },
           eq_offsets: eq_offs,
           eq_keys

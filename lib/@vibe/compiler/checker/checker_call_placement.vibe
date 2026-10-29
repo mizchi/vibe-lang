@@ -1,17 +1,34 @@
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker_len
+}
+
 import ./checker_call_header_flow.vibe {
   checker_call_header_is_probe
 }
 
 import @vibe/compiler/core {
-  Expr, TypeEnv, builtin_param_labels, call_placement_publish, call_placement_raw, canonical_builtin_name
+  BindingOrigin,
+  Expr,
+  TypeEnv,
+  __to_string,
+  builtin_param_labels,
+  call_placement_capture_source,
+  call_placement_publish,
+  call_placement_raw,
+  canonical_builtin_name,
+  env_lookup_binding
 }
 
 import @vibe/compiler/checker/builtin_sigs {
-  builtin_resolves_at
+  builtin_resolves_at, lookup_builtin
 }
 
 import ./checker_call_header.vibe {
-  checker_call_header_names
+  checker_call_header_defaults, checker_call_header_has_optional, checker_call_header_names
 }
 
 fn placement_param_name(raw: String) -> String {
@@ -125,7 +142,13 @@ export fn checker_record_opaque_call_placement(cell: Array[Int], errors: Array[S
   } else {
     match call_placement_raw(cell) {
       Some((callee, args, _, offset)) => {
-        call_placement_publish(callee, offset, cell, Array::length(args), 2, placement_identity(Array::length(args)), errors)
+        let before = Array::length(errors)
+        placement_check_mixed(placement_source_name(callee), offset, args, errors)
+        if Array::length(errors) == before {
+          call_placement_publish(callee, offset, cell, Array::length(args), 2, placement_identity(Array::length(args)), errors)
+        } else {
+          ()
+        }
       },
       None => ()
     }
@@ -135,22 +158,33 @@ export fn checker_record_opaque_call_placement(cell: Array[Int], errors: Array[S
 /// The UFCS dispatcher supplies its checker-resolved qualified binding and
 /// whether the receiver occupies the first formal (not a written argument).
 export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv, name: String, ident_offset: Int, implicit_receiver: Bool, errors: Array[String]) -> Unit {
-  if checker_call_header_is_probe() || Array::length(errors) > 0 {
+  if checker_call_header_is_probe() {
     ()
   } else {
+    let before = Array::length(errors)
     match call_placement_raw(cell) {
-      Some((callee, args, _, offset)) => {
-        if builtin_resolves_at(env, name, ident_offset) {
-          match builtin_param_labels(name) {
-            Some(_) => {
-              let mode = if canonical_builtin_name(name) == "sh_lines" {
-                1
-              } else {
-                0
-              }
-              call_placement_publish(callee, offset, cell, Array::length(args), mode, placement_identity(Array::length(args)), errors)
-            },
-            None => checker_record_opaque_call_placement(cell, errors)
+      Some((callee, args, macro_call, offset)) => {
+        // The inspect expander owns its fixed two-value layout. Its labels
+        // were decorative before Phase1c, including the content spelling;
+        // this macro snapshot must not be treated as an ordinary builtin.
+        if macro_call && name == "inspect" {
+          call_placement_publish(callee, offset, cell, Array::length(args), 0, placement_identity(Array::length(args)), errors)
+        } else if builtin_resolves_at(env, name, ident_offset) && (lookup_builtin(name) is Some(_)) {
+          placement_check_builtin(name, ident_offset, args, errors)
+          if Array::length(errors) == before {
+            match builtin_param_labels(name) {
+              Some(_) => {
+                let mode = if canonical_builtin_name(name) == "sh_lines" {
+                  1
+                } else {
+                  0
+                }
+                call_placement_publish(callee, offset, cell, Array::length(args), mode, placement_identity(Array::length(args)), errors)
+              },
+              None => checker_record_opaque_call_placement(cell, errors)
+            }
+          } else {
+            ()
           }
         } else {
           match checker_call_header_names(env, name) {
@@ -160,12 +194,25 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
               } else {
                 all_names
               }
-              match placement_for_header(args, names) {
-                Some(slots) => call_placement_publish(callee, offset, cell, Array::length(args), 0, slots, errors),
-                None => ()
+              let slots = placement_for_header(args, names)
+              placement_check_declared(name, ident_offset, args, names, slots, checker_call_header_defaults(env, name), errors)
+              if Array::length(errors) == before {
+                match slots {
+                  Some(found) => call_placement_publish(callee, offset, cell, Array::length(args), 0, found, errors),
+                  None => ()
+                }
+              } else {
+                ()
               }
             },
-            None => checker_record_opaque_call_placement(cell, errors)
+            None => {
+              placement_check_uncertain(env, name, ident_offset, args, errors)
+              if Array::length(errors) == before {
+                checker_record_opaque_call_placement(cell, errors)
+              } else {
+                ()
+              }
+            }
           }
         }
       },
@@ -178,20 +225,235 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
 /// Resolve that source callee in the actual environment at this point.
 export fn checker_record_call_placement(expr: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
   match expr {
-    ECall(callee, _, _, cell) => match call_placement_raw(cell) {
-      Some((raw_callee, _, _, _)) => match raw_callee {
-        EIdent(name, ident_offset) => checker_record_resolved_call_placement(cell, env, name, ident_offset, false, errors),
-        _ => match callee {
-          // Namespace and UFCS dispatch publish explicitly at their resolved
-          // binding. Optional filling can also increase arity by one, so
-          // argument counts cannot identify an implicit receiver.
-          EIdent(_, _) => (),
-          EDot(_, _, _, _) => (),
-          _ => checker_record_opaque_call_placement(cell, errors)
-        }
-      },
-      None => ()
+    ECall(callee, args, offset, cell) => {
+      let mut needed = placement_has_labels(args)
+      match callee {
+        EIdent(name, _) => needed = needed || checker_call_header_has_optional(env, name),
+        // Namespace and receiver dispatch select their declaration below.
+        _ => ()
+      }
+      if needed && !checker_call_header_is_probe() {
+        call_placement_capture_source(callee, args, offset, cell, false)
+      } else {
+        ()
+      }
+      match call_placement_raw(cell) {
+        Some((raw_callee, _, _, _)) => match raw_callee {
+          EIdent(name, ident_offset) => checker_record_resolved_call_placement(cell, env, name, ident_offset, false, errors),
+          _ => match callee {
+            // Namespace and UFCS dispatch publish explicitly at their resolved
+            // binding. Optional filling can also increase arity by one, so
+            // argument counts cannot identify an implicit receiver.
+            EIdent(_, _) => (),
+            EDot(_, _, _, _) => (),
+            _ => checker_record_opaque_call_placement(cell, errors)
+          }
+        },
+        None => ()
+      }
     },
     _ => ()
+  }
+}
+
+fn builtin_label_refusal(fname: String, lbl: String, at: Int, labels: Option[Array[String]]) -> String {
+  let remove = String::concat("remove `", String::concat(lbl, " = `"))
+  match labels {
+    None => String::concat("builtin `", String::concat(fname, String::concat("` takes positional arguments: ", String::concat(remove, " and write the arguments in parameter order")))),
+    Some(names) => {
+      let slot = if at < Array::length(names) {
+        Array::get(names, at)
+      } else {
+        ""
+      }
+      let mut declared = -1
+      let mut k = 0
+      while k < Array::length(names) && declared < 0 {
+        if lbl != "_" && Array::get(names, k) == lbl {
+          declared = k
+        } else {
+          ()
+        }
+        k = k + 1
+      }
+      if fname == "sh_lines" {
+        String::concat("the command of `sh_lines` is positional: ", String::concat(remove, " (labels after the command are flags)"))
+      } else if declared >= 0 {
+        String::concat("labeled argument `", String::concat(lbl, String::concat("` for builtin `", String::concat(fname, String::concat("` is out of parameter order: `", String::concat(lbl, String::concat("` is argument ", String::concat(__to_string(declared + 1), ", so write the arguments in parameter order"))))))))
+      } else if slot == "_" {
+        String::concat("argument ", String::concat(__to_string(at + 1), String::concat(" of builtin `", String::concat(fname, String::concat("` is positional: ", remove)))))
+      } else {
+        String::concat("builtin `", String::concat(fname, String::concat("` has no parameter `", String::concat(lbl, String::concat("`: ", String::concat(remove, builtin_label_list_hint(names)))))))
+      }
+    }
+  }
+}
+
+/// ` (its labels are `at`, `value`)`, or ` (every argument is positional)`
+/// when no slot has a label.
+fn builtin_label_list_hint(names: Array[String]) -> String {
+  let named = array_empty()
+  for n in names {
+    if n == "_" {
+      ()
+    } else {
+      Array::push(named, String::concat("`", String::concat(n, "`")))
+    }
+  }
+  if Array::length(named) == 0 {
+    " (every argument is positional)"
+  } else {
+    String::concat(" (its labels are ", String::concat(String::join(named, ", "), ")"))
+  }
+}
+
+fn placement_source_name(callee: Expr) -> String {
+  match callee {
+    EIdent(name, _) => name,
+    EDot(_, name, _, _) => name,
+    _ => "<call>"
+  }
+}
+
+fn placement_has_labels(args: Array[Expr]) -> Bool {
+  let mut found = false
+  for arg in args {
+    match arg {
+      ELabeledArg(_, _, _) => found = true,
+      _ => ()
+    }
+  }
+  found
+}
+
+fn placement_check_mixed(name: String, offset: Int, args: Array[Expr], errors: Array[String]) -> Unit {
+  let mut labeled = false
+  let mut plain = false
+  for arg in args {
+    match arg {
+      ELabeledArg(_, _, _) => labeled = true,
+      _ => plain = true
+    }
+  }
+  if labeled && plain {
+    Array::push(errors, "call to " + name + " mixes positional and labeled arguments — use either all positional or all labeled arguments" + off_marker_len(offset, String::length(name)))
+  } else {
+    ()
+  }
+}
+
+fn placement_check_builtin(name: String, offset: Int, args: Array[Expr], errors: Array[String]) -> Unit {
+  let labels = builtin_param_labels(name)
+  let mut ai = 0
+  let mut reported = false
+  while ai < Array::length(args) && !reported {
+    match Array::get(args, ai) {
+      ELabeledArg(label, _, _) => {
+        let valid = if canonical_builtin_name(name) == "sh_lines" && ai > 0 {
+          true
+        } else {
+          match labels {
+            Some(names) => label != "_" && ai < Array::length(names) && Array::get(names, ai) == label,
+            None => false
+          }
+        }
+        if !valid {
+          Array::push(errors, builtin_label_refusal(name, label, ai, labels) + off_marker_len(offset, String::length(name)))
+          reported = true
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    ai = ai + 1
+  }
+}
+
+fn placement_check_declared(name: String, offset: Int, args: Array[Expr], names: Array[String], slots: Option[Array[Int]], defaults: Option[Array[Bool]], errors: Array[String]) -> Unit {
+  placement_check_mixed(name, offset, args, errors)
+  let marker = off_marker_len(offset, String::length(name))
+  let mut ai = 0
+  while ai < Array::length(args) {
+    let arg = Array::get(args, ai)
+    let slot = match arg {
+      ELabeledArg(label, _, _) => {
+        let mut found = -1
+        let mut pi = 0
+        while pi < Array::length(names) && found < 0 {
+          if placement_param_name(Array::get(names, pi)) == label {
+            found = pi
+          } else {
+            ()
+          }
+          pi = pi + 1
+        }
+        match slots {
+          Some(_) => (),
+          None => if found < 0 {
+            Array::push(errors, "unknown labeled argument `" + label + "` for " + name + marker)
+          } else if ai != found {
+            Array::push(errors, "labeled argument `" + label + "` for " + name + " is out of declared parameter order" + marker)
+          } else {
+            ()
+          }
+        }
+        if found >= 0 {
+          found
+        } else {
+          ai
+        }
+      },
+      _ => ai
+    }
+    match defaults {
+      Some(flags) => if slot < Array::length(flags) && Array::get(flags, slot) && placement_option_value(arg) {
+        Array::push(errors, "argument " + __to_string(slot + 1) + " of " + name + " is a written `None` / `Some(..)` for a parameter with a default, which would read as an omitted argument; bind the value first (`let v: T = None`) and pass `v`, or omit the argument to use the default" + marker)
+      } else {
+        ()
+      },
+      None => ()
+    }
+    ai = ai + 1
+  }
+}
+
+fn placement_check_uncertain(env: TypeEnv, name: String, offset: Int, args: Array[Expr], errors: Array[String]) -> Unit {
+  let uncertain = match env_lookup_binding(env, name) {
+    Some(binding) => match binding.origin {
+      BindingOriginUncertainFunctionHeader => true,
+      BindingOriginMutableFunctionHeader(box) => Array::get(box, 0).0 == 2,
+      _ => false
+    },
+    None => false
+  }
+  if uncertain && placement_has_labels(args) {
+    Array::push(errors, "cannot resolve labeled arguments for " + name + ": a branch, loop or closure assigns it a lambda with different parameter names, so a label does not name a position here — call " + name + " positionally, or give every lambda assigned to " + name + " the same parameter names" + off_marker_len(offset, String::length(name)))
+  } else {
+    ()
+  }
+}
+
+/// Defaults are declaration-only facts. A value reference cannot preserve
+/// their omission contract through an ordinary function type.
+export fn checker_check_defaulted_value(env: TypeEnv, name: String, offset: Int, errors: Array[String]) -> Unit {
+  if checker_call_header_is_probe() {
+    ()
+  } else {
+    match checker_call_header_defaults(env, name) {
+      Some(_) => Array::push(errors, name + " has parameter defaults, which apply only to a direct call, so it cannot be used as a value; wrap it in a lambda that calls it, e.g. `(a) -> " + name + "(a)`" + off_marker_len(offset, String::length(name))),
+      None => ()
+    }
+  }
+}
+
+/// Receiver/namespace dispatch supplies the declaration it actually resolved.
+/// Capture optional-only calls here as well, without scanning source bindings.
+export fn checker_capture_resolved_call_placement(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int], env: TypeEnv, name: String) -> Unit {
+  let needed = placement_has_labels(args) || checker_call_header_has_optional(env, name)
+  if needed && !checker_call_header_is_probe() {
+    call_placement_capture_source(callee, args, offset, cell, false)
+  } else {
+    ()
   }
 }

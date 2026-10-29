@@ -1,3 +1,7 @@
+import @vibe/compiler/core {
+  BindingOrigin, env_lookup, env_lookup_binding_including_surface
+}
+
 import @vibe/checker/engine {
   CheckJob,
   ModuleOutcome,
@@ -105,4 +109,69 @@ test "published engine rows omit checker instantiations and preserve named captu
   let row = Some("IO,#einst:Box:17,#region_9,#param[0],#capture[12],IO")
   assert(engine_interface_effect_set_with_vars(row, [12], ["T"]) == "[#capture[T],IO]")
   assert(engine_interface_effect_set_with_vars(Some("#einst:Box:17"), [], []) == "[]")
+}
+
+/// Imported calls consume the selected declaration's header, including facade aliases.
+test "ordinary imported declaration labels survive projection and reexport" {
+  let first = CheckJob::{
+    path: "labels.vibe",
+    source: "export fn select(first: Int, second: String) -> Int { first }",
+    deps: [],
+    dep_fps: [],
+    dep_envs: [],
+    ships_owned_heads: false
+  }
+  match engine_check_module(first) {
+    Checked(_, fingerprint, env, _, _, _, _) => {
+      let facade = CheckJob::{
+        path: "facade.vibe",
+        source: "export ./labels.vibe { select as choose }",
+        deps: ["labels.vibe"],
+        dep_fps: [("labels.vibe", fingerprint)],
+        dep_envs: [("labels.vibe", env)],
+        ships_owned_heads: false
+      }
+      match engine_check_module(facade) {
+        Checked(_, facade_fp, facade_env, _, _, _, _) => {
+          assert(env_lookup(facade_env, "#params:choose") is None)
+          match env_lookup_binding_including_surface(facade_env, "choose") {
+            Some(binding) => match binding.origin {
+              BindingOriginReExportFunctionHeader(_, source, names) => {
+                assert(source == "select")
+                assert(names == ["first", "second"])
+              },
+              _ => assert(false)
+            },
+            None => assert(false)
+          }
+          let good = CheckJob::{
+            path: "consumer.vibe",
+            source: "import ./facade.vibe { choose as pick }\nexport fn result() -> Int { pick(second = \"ok\", first = 42) }",
+            deps: ["facade.vibe"],
+            dep_fps: [("facade.vibe", facade_fp)],
+            dep_envs: [("facade.vibe", facade_env)],
+            ships_owned_heads: false
+          }
+          match engine_check_module(good) {
+            Checked(_, _, _, _, _, _, _) => (),
+            Diagnosed(_, _) => assert(false)
+          }
+          let bad = CheckJob::{
+            path: good.path,
+            source: "import ./facade.vibe { choose as pick }\nexport fn result() -> Int { pick(second = 42, first = \"wrong\") }",
+            deps: good.deps,
+            dep_fps: good.dep_fps,
+            dep_envs: good.dep_envs,
+            ships_owned_heads: false
+          }
+          match engine_check_module(bad) {
+            Diagnosed(_, _) => (),
+            Checked(_, _, _, _, _, _, _) => assert(false)
+          }
+        },
+        Diagnosed(_, _) => assert(false)
+      }
+    },
+    Diagnosed(_, _) => assert(false)
+  }
 }

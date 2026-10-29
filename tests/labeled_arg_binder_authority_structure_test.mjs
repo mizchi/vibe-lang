@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { readDesugarSources } from "./helpers/desugar_sources.mjs";
 
 const root = new URL("../", import.meta.url);
-const normalizer = readDesugarSources();
 const detach = readFileSync(new URL("lib/@vibe/parser/ast_detach.vibe", root), "utf8");
-const normalizeFacade = readFileSync(new URL("lib/@vibe/compiler/normalize/index.vpkg", root), "utf8");
 const parserFacade = readFileSync(new URL("lib/@vibe/parser/index.vpkg", root), "utf8");
 
 function maskNonCode(source) {
@@ -69,39 +66,6 @@ function exactKeys(map, expected, label) {
   assert.deepEqual([...map.keys()].filter((x) => x !== "_").sort(), [...expected].sort(), label);
 }
 
-const ordinary = [
-  ["optional_fill_args", "fn optional_fill_args(args: Array[Expr], flags: Array[Bool]) -> Array[Expr]"],
-  ["reorder_labeled_args", "fn reorder_labeled_args(args: Array[Expr], param_labels: Array[String]) -> Option[Array[Expr]]"],
-  ["strip_labeled_wrappers", "fn strip_labeled_wrappers(args: Array[Expr]) -> Array[Expr]"],
-  ["strip_in_position_labels", "fn strip_in_position_labels(args: Array[Expr], labels: Array[String], builtin_slots: Bool) -> Array[Expr]"],
-  ["relabel_expr", "fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[String]) -> Expr"],
-  ["relabel_stmt", "fn relabel_stmt(stmt: Stmt, tbl: Array[(String, Array[String])]) -> Stmt"],
-  ["desugar_labeled_args", "export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit"],
-];
-for (const [name, signature] of ordinary) {
-  assert.ok(normalizer.includes(signature), signature);
-  assert.doesNotMatch(functionBody(normalizer, name), /paired_|BinderAuthority|detach_stmts|located_program_binder_authority|callback|LabeledArgAuthorityWalk/);
-}
-assert.match(functionBody(normalizer, "desugar_labeled_args"), /stmt_has_labeled_arg/);
-assert.doesNotMatch(functionBody(normalizer, "desugar_labeled_args"), /desugar_labeled_args_paired/);
-
-for (const [name, result] of [["labeled_reorder_candidate", "Bool"], ["labeled_source_index", "Int"], ["label_matches_position", "Bool"]]) {
-  assert.match(normalizer, new RegExp(`fn ${name}\\([^)]*\\) -> ${result}`));
-  assert.doesNotMatch(functionBody(normalizer, name), /Some\(|None|ArrayBuilder|array_empty|callback/);
-}
-
-const callArm = outerArms(normalizer, "relabel_expr_paired").get("ECall");
-assert.match(callArm, /let source = labeled_source_index\(rargs, Array::get\(labels, pi\)\)/);
-assert.match(callArm, /Array::push\(reordered, Array::get\(rargs, source\)\)/);
-assert.match(callArm, /Array::set\(node.children, pi \+ 1, Array::get\(original_children, source \+ 1\)\)/);
-assert.match(callArm, /Array::get\(used, source\)/);
-const promote = functionBody(normalizer, "paired_promote_wrapper");
-assert.match(promote, /AuthorityExprLabeledArg/);
-assert.match(promote, /Array::length\(binder_authority_node_slots\(wrapper\)\) == 0/);
-assert.match(promote, /Array::length\(children\) == 1/);
-
-assert.match(normalizeFacade, /normalize_labeled_args_with_binder_authority\(source: LocatedProgramBinderAuthority\)/);
-assert.doesNotMatch(normalizeFacade, /normalize_labeled_args_with_binder_authority\([^)]*(BinderAuthorityNode|BinderAuthoritySlot|Array\[)/);
 assert.match(parserFacade, /fn detach_stmts\(stmts: Array\[Stmt\]\) -> Array\[Stmt\]/);
 
 const pats = ["PWild", "PBind", "PInt", "PFloat", "PString", "PBool", "PCtor", "PTuple", "POr", "PStruct"];
@@ -114,25 +78,4 @@ exactKeys(outerArms(detach, "detach_expr"), exprs, "33 Expr detachment arms");
 exactKeys(outerArms(detach, "detach_stmt"), stmts, "26 Stmt detachment arms");
 for (const name of ["detach_pat", "detach_type_expr", "detach_expr", "detach_stmt"]) assert.doesNotMatch(functionBody(detach, name), /_ =>/);
 
-const pairedPats = outerArms(normalizer, "paired_expect_pat");
-exactKeys(pairedPats, pats, "10 paired Pat arms");
-assert.match(pairedPats.get("POr"), /paired_poison/);
-const pairedExprs = outerArms(normalizer, "relabel_expr_paired");
-exactKeys(pairedExprs, exprs, "33 paired Expr arms");
-assert.match(pairedExprs.get("ELoop"), /paired_poison[\s\S]*relabel_expr\(expr, tbl, shadows\)/);
-for (const name of ["EMatch", "EHandle"]) assert.match(pairedExprs.get(name), /node, 0[\s\S]*1 \+ i \* 2[\s\S]*2 \+ i \* 2/);
-
-const pairedStmts = outerArms(normalizer, "relabel_stmt_paired");
-exactKeys(pairedStmts, ["SLet", "SLetMut", "STest", "SBench", "SExample", "SExpr", "SExternLet", "SImport", "SAliasDecl", "STypeAlias", "SEffectSet", "SResource", "SExport", "SReExport", "SQualifiedPatternRefs", "STestEffectRows"], "paired supported Stmt arms");
-assert.match(pairedStmts.get("SExample"), /AuthorityStmtExample[\s\S]*relabel_expr_paired_child/);
-assert.match(pairedStmts.get("_"), /paired_poison[\s\S]*relabel_stmt/);
-
-const driver = functionBody(normalizer, "desugar_labeled_args_paired");
-assert.match(driver, /Array::length\(roots\) != Array::length\(stmts\)[\s\S]*paired_poison/);
-assert.match(driver, /let sentinel = BinderAuthorityNode/);
-assert.match(driver, /while i < Array::length\(stmts\)/);
-assert.match(driver, /else \{\s*sentinel\s*\}/);
-assert.doesNotMatch(driver, /relabel_stmt\(/);
-assert.doesNotMatch(normalizer, /Option\[LabeledArgAuthorityWalk\]|struct LabeledArgAuthorityWalk/);
-
-console.log("labeled binder authority structure: ok");
+console.log("parser detachment structure: ok");

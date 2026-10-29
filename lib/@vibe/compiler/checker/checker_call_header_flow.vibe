@@ -3,20 +3,11 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  BindingOrigin,
-  Expr,
-  Type,
-  TypeEnv,
-  call_placement_wants_binding,
-  env_bind_mut,
-  env_bind_with_origin,
-  env_lookup_binding,
-  env_mut_escape,
-  freeze_call_header_origin
+  BindingOrigin, Expr, Type, TypeEnv, env_bind_mut, env_bind_with_origin, env_lookup_binding, env_mut_escape, freeze_call_header_origin
 }
 
-// Only demanded mutable callees allocate a box. Every reference resolves that
-// box through TypeEnv, so an assignment in one call argument reaches the next.
+// Function-valued mutable bindings own a header box. Every reference resolves
+// it through TypeEnv, so an assignment in one call argument reaches the next.
 let live_headers: Array[Array[(Int, Array[String], Int)]] = []
 let probe_depth: Array[Int] = [0]
 
@@ -71,7 +62,13 @@ fn make_header_box(kind: Int, names: Array[String]) -> BindingOrigin {
 /// Install metadata on exactly the mutable binding selected by TypeEnv.
 export fn checker_bind_mut_call_header(env: TypeEnv, name: String, ty: Type, value: Expr, escapes: Bool) -> TypeEnv {
   let names = header_names(value)
-  let mut needed = call_placement_wants_binding(name)
+  let mut needed = match ty {
+    CtFn(_, _, _) => true,
+    CtForAll(_, _, _) => true,
+    CtVar(_) => true,
+    CtUnknown => true,
+    _ => false
+  }
   match names {
     Some(params) => for param in params {
       needed = needed || String::ends_with(param, "?")

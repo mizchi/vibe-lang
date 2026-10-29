@@ -9,14 +9,12 @@ import @vibe/compiler/core {
   TypeEnv,
   call_placement_capture_begin,
   call_placement_capture_end,
+  call_placement_capture_source,
   call_placement_checked_rows,
   call_placement_get,
   call_placement_is_refused,
-  call_placement_note_legacy,
   call_placement_publish,
   call_placement_raw,
-  call_placement_syntax_begin,
-  call_placement_syntax_errors,
   env_bind,
   lowering_row_encode,
   resolved_callee_operation,
@@ -33,14 +31,14 @@ test "unlocated label snapshots use independent cells and expire by epoch" {
   call_placement_capture_begin()
   let first: Array[Int] = []
   let second: Array[Int] = []
-  call_placement_note_legacy(EIdent("first", -1), [EInt(1)], [2], -1, first)
-  call_placement_note_legacy(EIdent("second", -1), [EInt(2), EInt(3)], [4, 2], -1, second)
+  call_placement_capture_source(EIdent("first", -1), [EInt(1)], -1, first, false)
+  call_placement_capture_source(EIdent("second", -1), [EInt(2), EInt(3)], -1, second, false)
   call_placement_capture_end()
   match call_placement_raw(first) {
     Some((EIdent(name, _), args, slots, _)) => {
       assert(name == "first")
       assert(args == [EInt(1)])
-      assert(slots == [2])
+      assert(!slots)
     },
     _ => assert(false)
   }
@@ -48,7 +46,7 @@ test "unlocated label snapshots use independent cells and expire by epoch" {
     Some((EIdent(name, _), args, slots, _)) => {
       assert(name == "second")
       assert(Array::length(args) == 2)
-      assert(slots == [4, 2])
+      assert(!slots)
     },
     _ => assert(false)
   }
@@ -62,7 +60,7 @@ test "callee resolution preserves label metadata for ordinary and migrated calls
   call_placement_capture_begin()
   let cell: Array[Int] = []
   let callee = EIdent("Array::get", 7)
-  call_placement_note_legacy(callee, [EArray([EInt(9)]), EInt(0)], [2, 4], 7, cell)
+  call_placement_capture_source(callee, [EArray([EInt(9)]), EInt(0)], 7, cell, false)
   call_placement_capture_end()
   assert(resolve_builtin_callee(EnvEmpty, "Array::get", 7, cell) == 0)
   assert(call_placement_raw(cell) != None)
@@ -81,20 +79,30 @@ test "callee resolution preserves label metadata for ordinary and migrated calls
   assert(call_placement_get(cell) == Some((2, 0, [2, 4])))
 }
 
-/// The comparison uses source indices, so equal argument values cannot hide a swap.
-test "equal values do not hide a checker and legacy placement disagreement" {
+/// Equal argument values do not erase their separate source indices.
+test "checker placements retain source indices for equal values" {
   call_placement_capture_begin()
   let cell: Array[Int] = []
   let callee = EIdent("subtract", 9)
-  call_placement_note_legacy(callee, [EInt(1), EInt(1)], [4, 2], 9, cell)
-  call_placement_capture_end()
+  call_placement_capture_source(callee, [EInt(1), EInt(1)], 9, cell, false)
   let errors: Array[String] = []
-  call_placement_publish(callee, 9, cell, 2, 0, [2, 4], errors)
+  call_placement_publish(callee, 9, cell, 2, 0, [4, 2], errors)
+  call_placement_capture_end()
+  assert(errors == [])
+  assert(call_placement_get(cell) == Some((2, 0, [4, 2])))
+}
+
+/// A macro can certify only the fixed positional layout it already consumed.
+test "a fixed layout macro refuses a reordered checker placement" {
+  call_placement_capture_begin()
+  let cell: Array[Int] = []
+  let callee = EIdent("inspect", 9)
+  call_placement_capture_source(callee, [EInt(1), EInt(1)], 9, cell, true)
+  let errors: Array[String] = []
+  call_placement_publish(callee, 9, cell, 2, 0, [4, 2], errors)
+  call_placement_capture_end()
   assert(Array::length(errors) == 1)
-  assert(String::contains(Array::get(errors, 0), "`subtract`"))
-  call_placement_syntax_begin()
-  call_placement_note_legacy(callee, [EInt(1), EInt(1)], [4, 2], 9, cell)
-  assert(Array::length(call_placement_syntax_errors()) == 1)
+  assert(call_placement_is_refused(cell))
 }
 
 /// Packet entries carry indices directly, including an omitted optional slot.

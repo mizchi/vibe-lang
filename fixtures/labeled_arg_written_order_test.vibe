@@ -44,6 +44,22 @@ fn joined(log: Array[String]) -> String {
   String::join(log, ",")
 }
 
+fn callback_value(log: Array[String], label: String, value: String) -> String {
+  Array::push(log, label)
+  value
+}
+
+fn callback_pair[T](left: T, right: T, body: (T, T) -> T) -> T {
+  body(left, right)
+}
+
+test "a callback written first keeps inference and written value evaluation" {
+  let log: Array[String] = []
+  let answer = callback_pair(body = (a, b) -> a + b, right = callback_value(log, "right", "b"), left = callback_value(log, "left", "a"))
+  inspect(joined(log), content = "right,left")
+  inspect(answer, content = "ab")
+}
+
 test "two calls run in written order" {
   let log: Array[String] = []
   let r = sub(y = note(log, "y", 1), x = note(log, "x", 10))
@@ -119,4 +135,37 @@ test "an exception in a later argument comes after the earlier ones" {
   } with { Exception::Throw(_) => 0 - 1 }
   inspect(joined(log), content = "y,throw")
   inspect(r, content = "-1")
+}
+
+struct LabeledReceiver {
+  base: Int
+}
+
+fn labeled_receiver(log: Array[String]) -> LabeledReceiver {
+  Array::push(log, "receiver")
+  LabeledReceiver::{ base: 100 }
+}
+
+fn LabeledReceiver::subtract(self: LabeledReceiver, x: Int, y: Int) -> Int {
+  self.base + x - y
+}
+
+fn LabeledReceiver::optional(self: LabeledReceiver, x: Int, y?: Int) -> Int {
+  self.base + x - match y {
+    Some(v) => v,
+    None => 0
+  }
+}
+
+test "a receiver runs before reordered written arguments" {
+  let log: Array[String] = []
+  let answer = labeled_receiver(log).subtract(y = note(log, "y", 3), x = note(log, "x", 10))
+  inspect(joined(log), content = "receiver,y,x")
+  inspect(answer, content = "107")
+}
+
+test "method optional placements exclude the implicit receiver" {
+  let value = LabeledReceiver::{ base: 100 }
+  inspect(value.optional(10), content = "110")
+  inspect(value.optional(y = 3, x = 10), content = "107")
 }

@@ -2139,10 +2139,47 @@ fn normalized_binding_origin_bytes(origin: BindingOrigin) -> String {
     BindingOriginMutableFunctionHeader(_) => normalized_binding_origin_bytes(freeze_call_header_origin(origin)),
     BindingOriginUncertainFunctionHeader => "a",
     BindingOriginUnavailable => "u",
+    BindingOriginDefaultedFunctionHeader(params, flags) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "d")
+      let bits = StringBuilder::new()
+      for flag in flags {
+        StringBuilder::push(bits, if flag {
+          "1"
+        } else {
+          "0"
+        })
+      }
+      body_push_piece(out, StringBuilder::freeze(bits))
+      for name in params {
+        body_push_piece(out, name)
+      }
+      StringBuilder::freeze(out)
+    },
     BindingOriginFunctionHeader(params) => {
       let out = StringBuilder::new()
       StringBuilder::push(out, "l")
       for name in params {
+        body_push_piece(out, name)
+      }
+      StringBuilder::freeze(out)
+    },
+    BindingOriginModuleFunctionHeader(module_name, export_name, names) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "f")
+      body_push_piece(out, module_name)
+      body_push_piece(out, export_name)
+      for name in names {
+        body_push_piece(out, name)
+      }
+      StringBuilder::freeze(out)
+    },
+    BindingOriginReExportFunctionHeader(module_name, export_name, names) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "g")
+      body_push_piece(out, module_name)
+      body_push_piece(out, export_name)
+      for name in names {
         body_push_piece(out, name)
       }
       StringBuilder::freeze(out)
@@ -2159,16 +2196,52 @@ fn normalized_binding_origin_bytes(origin: BindingOrigin) -> String {
 fn normalized_binding_origin_valid(text: String) -> Bool {
   if text == "u" || text == "a" {
     true
-  } else if String::starts_with(text, "l") {
+  } else if String::starts_with(text, "d") {
+    match body_piece(text, 1) {
+      Some((bits, start)) => {
+        let mut valid = String::length(bits) > 0
+        let mut any = false
+        let mut i = 0
+        while i < String::length(bits) {
+          let byte = String::byte_at(bits, i)
+          valid = valid && (byte == 48 || byte == 49)
+          any = any || byte == 49
+          i = i + 1
+        }
+        let mut pos = start
+        let mut count = 0
+        while pos < String::length(text) && valid {
+          match body_piece(text, pos) {
+            Some((_, next)) => {
+              pos = next; count = count + 1
+            },
+            None => valid = false
+          }
+        }
+        valid && any && pos == String::length(text) && count == String::length(bits)
+      },
+      None => false
+    }
+  } else if String::starts_with(text, "l") || String::starts_with(text, "f") || String::starts_with(text, "g") {
+    let module_header = !String::starts_with(text, "l")
     let mut pos = 1
+    let mut count = 0
     let mut valid = true
     while pos < String::length(text) && valid {
       match body_piece(text, pos) {
-        Some((_, next)) => pos = next,
+        Some((piece, next)) => {
+          if module_header && count < 2 {
+            valid = String::length(piece) > 0
+          } else {
+            ()
+          }
+          count = count + 1
+          pos = next
+        },
         None => valid = false
       }
     }
-    valid && pos == String::length(text)
+    valid && pos == String::length(text) && (!module_header || count >= 2)
   } else if String::starts_with(text, "m") || String::starts_with(text, "r") {
     match body_piece(text, 1) {
       Some((module_name, p)) => match body_piece(text, p) {

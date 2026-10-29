@@ -374,9 +374,29 @@ fn cp_write_origin(out: Bytes, value: BindingOrigin) -> Unit {
     BindingOriginUnavailable => {
       Bytes::push(out, 1)
     },
+    BindingOriginDefaultedFunctionHeader(params, flags) => {
+      Bytes::push(out, 6)
+      cp_write_array_string(out, params)
+      ast_binary_write_varint(out, Array::length(flags))
+      for flag in flags {
+        ast_binary_write_bool(out, flag)
+      }
+    },
     BindingOriginFunctionHeader(params) => {
       Bytes::push(out, 4)
       cp_write_array_string(out, params)
+    },
+    BindingOriginModuleFunctionHeader(path, source, names) => {
+      Bytes::push(out, 7)
+      ast_binary_write_string(out, path)
+      ast_binary_write_string(out, source)
+      cp_write_array_string(out, names)
+    },
+    BindingOriginReExportFunctionHeader(path, source, names) => {
+      Bytes::push(out, 8)
+      ast_binary_write_string(out, path)
+      ast_binary_write_string(out, source)
+      cp_write_array_string(out, names)
     },
     BindingOriginModuleExport(field_0, field_1) => {
       Bytes::push(out, 2)
@@ -409,6 +429,40 @@ fn cp_read_origin(reader: AstBinaryReader) -> BindingOrigin with Exception {
     },
     4 => BindingOriginFunctionHeader(cp_read_array_string(reader)),
     5 => BindingOriginUncertainFunctionHeader,
+    6 => {
+      let names = cp_read_array_string(reader)
+      let count = ast_binary_read_count_checked(reader)
+      if count != Array::length(names) {
+        throw("checked program: invalid parameter defaults")
+      } else {
+        ()
+      }
+      let flags: Array[Bool] = []
+      let mut any = false
+      let mut i = 0
+      while i < count {
+        let flag = ast_binary_read_bool_checked(reader)
+        Array::push(flags, flag)
+        any = any || flag
+        i = i + 1
+      }
+      if !any {
+        throw("checked program: empty parameter defaults")
+      } else {
+        ()
+      }
+      BindingOriginDefaultedFunctionHeader(names, flags)
+    },
+    7 => {
+      let path = ast_binary_read_string_checked(reader)
+      let source = ast_binary_read_string_checked(reader)
+      BindingOriginModuleFunctionHeader(path, source, cp_read_array_string(reader))
+    },
+    8 => {
+      let path = ast_binary_read_string_checked(reader)
+      let source = ast_binary_read_string_checked(reader)
+      BindingOriginReExportFunctionHeader(path, source, cp_read_array_string(reader))
+    },
     _ => throw("checked program: unknown BindingOrigin tag")
   }
 }

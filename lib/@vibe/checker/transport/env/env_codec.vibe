@@ -401,8 +401,33 @@ fn write_binding_origin(out: CacheTextWriter, origin: BindingOrigin) -> Unit {
     BindingOriginMutableFunctionHeader(_) => write_binding_origin(out, freeze_call_header_origin(origin)),
     BindingOriginUncertainFunctionHeader => cache_push(out, "A"),
     BindingOriginUnavailable => cache_push(out, "U"),
+    BindingOriginDefaultedFunctionHeader(params, flags) => {
+      cache_push(out, "D")
+      write_string_array(out, params)
+      let bits = StringBuilder::new()
+      for flag in flags {
+        StringBuilder::push(bits, if flag {
+          "1"
+        } else {
+          "0"
+        })
+      }
+      cache_segment(out, StringBuilder::freeze(bits))
+    },
     BindingOriginFunctionHeader(params) => {
       cache_push(out, "L")
+      write_string_array(out, params)
+    },
+    BindingOriginModuleFunctionHeader(path, name, params) => {
+      cache_push(out, "F")
+      cache_segment(out, path)
+      cache_segment(out, name)
+      write_string_array(out, params)
+    },
+    BindingOriginReExportFunctionHeader(path, name, params) => {
+      cache_push(out, "G")
+      cache_segment(out, path)
+      cache_segment(out, name)
       write_string_array(out, params)
     },
     BindingOriginModuleExport(path, name) => {
@@ -984,9 +1009,50 @@ fn parse_binding_origin(text: String, pos: Int) -> (BindingOrigin, Int) with Exc
     match String::char_code_at(text, pos) {
       'U' => (BindingOriginUnavailable, pos + 1),
       'A' => (BindingOriginUncertainFunctionHeader, pos + 1),
+      'D' => {
+        let (params, after_params) = parse_string_array(text, pos + 1)
+        let (bits, next) = parse_segment(text, after_params)
+        if String::length(bits) != Array::length(params) {
+          throw("invalid persistent parameter defaults")
+        } else {
+          ()
+        }
+        let flags: Array[Bool] = []
+        let mut any = false
+        let mut i = 0
+        while i < String::length(bits) {
+          let bit = String::byte_at(bits, i)
+          if bit != 48 && bit != 49 {
+            throw("invalid persistent parameter default bit")
+          } else {
+            ()
+          }
+          Array::push(flags, bit == 49)
+          any = any || bit == 49
+          i = i + 1
+        }
+        if !any {
+          throw("empty persistent parameter defaults")
+        } else {
+          ()
+        }
+        (BindingOriginDefaultedFunctionHeader(params, flags), next)
+      },
       'L' => {
         let (params, next) = parse_string_array(text, pos + 1)
         (BindingOriginFunctionHeader(params), next)
+      },
+      'F' => {
+        let (path, after_path) = parse_segment(text, pos + 1)
+        let (name, after_name) = parse_segment(text, after_path)
+        let (params, next) = parse_string_array(text, after_name)
+        (BindingOriginModuleFunctionHeader(path, name, params), next)
+      },
+      'G' => {
+        let (path, after_path) = parse_segment(text, pos + 1)
+        let (name, after_name) = parse_segment(text, after_path)
+        let (params, next) = parse_string_array(text, after_name)
+        (BindingOriginReExportFunctionHeader(path, name, params), next)
       },
       'M' => {
         let (path, after_path) = parse_segment(text, pos + 1)
