@@ -17,6 +17,7 @@ import ./checker_call_header_flow.vibe {
 
 import @vibe/compiler/core {
   Expr,
+  Pat,
   TypeEnv,
   __to_string,
   builtin_param_labels,
@@ -302,15 +303,99 @@ fn placement_reorders(slots: Array[Int]) -> Bool {
   moved
 }
 
-/// The first `let mut` binding with a tracked declaration header that `e`
-/// assigns, or "" when it assigns none.
-fn placement_assigned_header(e: Expr, env: TypeEnv) -> String {
-  let here = match e {
-    EAssign(name, _, _, _) => name,
-    EAssignOp(name, _, _, _, _) => name,
-    _ => ""
+fn placement_pat_binders(pat: Pat, out: Array[String]) -> Unit {
+  match pat {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, ps) => for p in ps {
+      placement_pat_binders(p, out)
+    },
+    PTuple(ps) => for p in ps {
+      placement_pat_binders(p, out)
+    },
+    POr(l, r) => {
+      placement_pat_binders(l, out)
+      placement_pat_binders(r, out)
+    },
+    PStruct(_, fields) => for field in fields {
+      let (_, fp) = field
+      placement_pat_binders(fp, out)
+    },
+    _ => ()
   }
-  let tracked = String::length(here) > 0 && match env_lookup_binding(env, here) {
+  ()
+}
+
+fn placement_shadowed(shadows: Array[String], name: String) -> Bool {
+  let mut found = false
+  for s in shadows {
+    found = found || s == name
+  }
+  found
+}
+
+/// The first `let mut` binding with a tracked declaration header that `e`
+/// assigns, or "" when it assigns none. A name the argument binds itself
+/// (`let mut g = 0; g = 1`) is a different binding and does not count (Codex
+/// on #3666).
+fn placement_assigned_header(e: Expr, env: TypeEnv, shadows: Array[String]) -> String {
+  match e {
+    EAssign(name, v, k, _) => placement_assigned_target(name, v, k, env, shadows),
+    EAssignOp(name, _, v, k, _) => placement_assigned_target(name, v, k, env, shadows),
+    ELet(name, v, b, _) => placement_assigned_bound(v, [name], b, env, shadows),
+    ELetMut(name, v, b, _) => placement_assigned_bound(v, [name], b, env, shadows),
+    ELetRec(name, v, b) => {
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      let found = placement_assigned_either(v, b, env, shadows)
+      Array::truncate(shadows, mark)
+      found
+    },
+    EFn(_, _, params, _, _, body) => placement_assigned_bound(EUnit, for param in params {
+      let (pn, _) = param
+      placement_param_name(pn)
+    }, body, env, shadows),
+    EForIn(name, idx, iter, body) => placement_assigned_bound(iter, match idx {
+      Some(ix) => [name, ix],
+      None => [name]
+    }, body, env, shadows),
+    ELoop(inits, body) => {
+      let mut found = ""
+      for init in inits {
+        let (_, iv) = init
+        if String::length(found) == 0 {
+          found = placement_assigned_header(iv, env, shadows)
+        } else {
+          ()
+        }
+      }
+      if String::length(found) > 0 {
+        found
+      } else {
+        placement_assigned_bound(EUnit, for init in inits {
+          let (pn, _) = init
+          pn
+        }, body, env, shadows)
+      }
+    },
+    EMatch(scrut, arms) => placement_assigned_arms(scrut, arms, env, shadows),
+    EHandle(scrut, arms) => placement_assigned_arms(scrut, arms, env, shadows),
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut found = ""
+      let mut i = mark
+      while i < end && String::length(found) == 0 {
+        found = placement_assigned_header(expr_child_at(i), env, shadows)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      found
+    }
+  }
+}
+
+fn placement_assigned_target(name: String, v: Expr, k: Expr, env: TypeEnv, shadows: Array[String]) -> String {
+  let tracked = !placement_shadowed(shadows, name) && match env_lookup_binding(env, name) {
     Some(binding) => match binding.origin {
       BindingOriginMutableFunctionHeader(_) => true,
       _ => false
@@ -318,19 +403,50 @@ fn placement_assigned_header(e: Expr, env: TypeEnv) -> String {
     None => false
   }
   if tracked {
-    here
+    name
   } else {
-    let mark = expr_children_push(e)
-    let end = expr_children_top()
-    let mut found = ""
-    let mut i = mark
-    while i < end && String::length(found) == 0 {
-      found = placement_assigned_header(expr_child_at(i), env)
-      i = i + 1
-    }
-    expr_children_pop(mark)
-    found
+    placement_assigned_either(v, k, env, shadows)
   }
+}
+
+fn placement_assigned_either(a: Expr, b: Expr, env: TypeEnv, shadows: Array[String]) -> String {
+  let found = placement_assigned_header(a, env, shadows)
+  if String::length(found) > 0 {
+    found
+  } else {
+    placement_assigned_header(b, env, shadows)
+  }
+}
+
+/// `value` in the outer scope, then `body` with `names` bound.
+fn placement_assigned_bound(value: Expr, names: Array[String], body: Expr, env: TypeEnv, shadows: Array[String]) -> String {
+  let found = placement_assigned_header(value, env, shadows)
+  if String::length(found) > 0 {
+    found
+  } else {
+    let mark = Array::length(shadows)
+    for n in names {
+      Array::push(shadows, n)
+    }
+    let inner = placement_assigned_header(body, env, shadows)
+    Array::truncate(shadows, mark)
+    inner
+  }
+}
+
+fn placement_assigned_arms(scrut: Expr, arms: Array[(Pat, Expr)], env: TypeEnv, shadows: Array[String]) -> String {
+  let mut found = placement_assigned_header(scrut, env, shadows)
+  for arm in arms {
+    if String::length(found) == 0 {
+      let (pat, body) = arm
+      let names: Array[String] = []
+      placement_pat_binders(pat, names)
+      found = placement_assigned_bound(EUnit, names, body, env, shadows)
+    } else {
+      ()
+    }
+  }
+  found
 }
 
 /// Codex on #3661: the checker types a placed call's arguments in declared
@@ -345,7 +461,8 @@ fn placement_reorder_flow_error(fname: String, off: Int, args: Array[Expr], slot
     let mut found: Option[String] = None
     let mut ai = 0
     while ai < Array::length(args) && found == None {
-      let assigned = placement_assigned_header(placement_value(Array::get(args, ai)), env)
+      let assigned = placement_assigned_header(placement_value(Array::get(args, ai)), env, [
+      ])
       if String::length(assigned) > 0 {
         let which = match Array::get(args, ai) {
           ELabeledArg(label, _, _) => "`" + label + " = ..`",
