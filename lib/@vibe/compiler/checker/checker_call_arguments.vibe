@@ -1,0 +1,365 @@
+import @vibe/compiler/core {
+  Expr,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  call_placement_error,
+  call_placement_get,
+  call_placement_is_pending,
+  call_placement_mode,
+  call_placement_payload_valid,
+  env_value_binding,
+  fresh_var,
+  refine_trait_bounds_from_receiver
+}
+import ./checker_infer_binop_type.vibe {
+  TypedOccurrenceRoleLaneCapture
+}
+import ./checker_lambda_expr.vibe {
+  seed_lambda_arg_from_call
+}
+import ./checker_row_effect_inst.vibe {
+  callback_arg_env, callback_prefix_subst, effect_inst_arg_check
+}
+
+let labeled_value_marker: String = "#call.labeled.value"
+
+/// Shape inspection may unwrap a label; recursive checking still enters its
+/// source wrapper so occurrence paths retain that structural child.
+export fn checker_call_argument_value(arg: Expr) -> Expr {
+  match arg {
+    ELabeledArg(_, _, value) => value,
+    _ => arg
+  }
+}
+
+/// This ephemeral top binding is consumed at the wrapper, before its value
+/// is checked. It never leaks into a nested call or a cached environment.
+export fn checker_call_argument_env(arg: Expr, env: TypeEnv, cell: Array[Int]) -> TypeEnv {
+  if (arg is ELabeledArg(_, _, _)) {
+    let rest = match env {
+      EnvBind(name, _, rest) => if name == labeled_value_marker {
+        rest
+      } else {
+        env
+      },
+      _ => env
+    }
+    EnvBind(labeled_value_marker, env_value_binding(if call_placement_mode(cell) == 0 {
+      CtUnit
+    } else {
+      CtUnknown
+    }), rest)
+  } else {
+    env
+  }
+}
+
+/// Pop the call-local wrapper context without walking or changing its value's
+/// lexical environment. Unresolved value calls retain legacy Unknown typing.
+export fn checker_labeled_argument_context(env: TypeEnv) -> (Bool, TypeEnv) {
+  match env {
+    EnvBind(name, binding, rest) => if name == labeled_value_marker {
+      (binding.ty == CtUnit, rest)
+    } else {
+      (true, env)
+    },
+    _ => (true, env)
+  }
+}
+
+fn written_formal_slot(slots: Array[Int], written: Int) -> Int {
+  let mut result = -1
+  let mut i = 0
+  while i < Array::length(slots) && result < 0 {
+    let code = Array::get(slots, i)
+    if code >= 2 && code / 2 - 1 == written {
+      result = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  result
+}
+
+fn call_argument_exprs(args: Array[Expr], slots: Array[Int]) -> Array[Expr] {
+  for code in slots {
+    if code == 0 {
+      EIdent("None", -1)
+    } else {
+      let value = checker_call_argument_value(Array::get(args, code / 2 - 1))
+      if code % 2 == 1 {
+        ECall(EIdent("Some", -1), [value], -1, [])
+      } else {
+        value
+      }
+    }
+  }
+}
+
+// Checking a closure body does not evaluate the argument. Check value
+// expressions in written order first, then seed literal callbacks from the
+// preceding formal arguments, as declaration-order inference did before.
+fn call_argument_visit_order(args: Array[Expr], slots: Array[Int]) -> Option[Array[Int]] {
+  let mut has_callback = false
+  for arg in args {
+    has_callback = has_callback || (checker_call_argument_value(arg) is EFn(_, _, _, _, _, _))
+  }
+  if has_callback {
+    let order: Array[Int] = []
+    let mut i = 0
+    while i < Array::length(args) {
+      if !(checker_call_argument_value(Array::get(args, i)) is EFn(_, _, _, _, _, _)) {
+        Array::push(order, i)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    for code in slots {
+      if code >= 2 {
+        let source = code / 2 - 1
+        if checker_call_argument_value(Array::get(args, source)) is EFn(_, _, _, _, _, _) {
+          Array::push(order, source)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    }
+    Some(order)
+  } else {
+    None
+  }
+}
+
+// Deferred bodies must still enter their original structural source child.
+// The visit order is a permutation of checked placement indices, so each
+// child is checked once before the parent cursor advances past the call.
+fn call_argument_capture_cursor(capture: Option[TypedOccurrenceRoleLaneCapture], next: Int) -> Int {
+  match capture {
+    Some(c) => if c.provenance_enabled && c.frame_depth > 0 {
+      let parent = c.frame_depth - 1
+      let previous = Array::get(c.frame_next_children, parent)
+      if next >= 0 {
+        if next <= Array::get(c.frame_expected_children, parent) {
+          Array::set(c.frame_next_children, parent, next)
+        } else {
+          c.complete = false
+        }
+      } else {
+        ()
+      }
+      previous
+    } else {
+      -1
+    },
+    None => -1
+  }
+}
+
+/// Type arguments in written order and retain aligned formal views only for
+/// unification. Literal callback bodies receive preceding formal constraints
+/// after value expressions are checked. Omitted slots have logical None types.
+export fn check_written_call_arguments(args: Array[Expr], cell: Array[Int], param_tys: Array[Type], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, callee_inst: Option[(Type, Type)], name: String, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Array[Type], Array[Expr], Subst, Int) {
+  let plan = if call_placement_is_pending(cell) {
+    match call_placement_get(cell) {
+      Some((written, mode, slots)) => if mode != 0 {
+        None
+      } else if written != Array::length(args) || !call_placement_payload_valid(written, mode, slots) {
+        Array::push(errors, call_placement_error(cell, EIdent(name, -1), -1)); None
+      } else {
+        Some(slots)
+      },
+      None => None
+    }
+  } else {
+    None
+  }
+  let formal_args = match plan {
+    Some(slots) => call_argument_exprs(args, slots),
+    None => args
+  }
+  let arg_tys: Array[Type] = match plan {
+    Some(slots) => for _ in slots {
+      CtUnknown
+    },
+    None => []
+  }
+  let seen_params: Array[Type] = match plan {
+    Some(_) => [],
+    None => param_tys
+  }
+  let seen_types: Array[Type] = match plan {
+    Some(_) => [],
+    None => arg_tys
+  }
+  let mut s2 = s
+  let mut c2 = c
+  match plan {
+    Some(slots) => {
+      let mut pi = 0
+      while pi < Array::length(slots) {
+        if Array::get(slots, pi) == 0 {
+          let (payload, next) = fresh_var(c2)
+          Array::set(arg_tys, pi, CtOption(payload))
+          c2 = next
+        } else {
+          ()
+        }
+        pi = pi + 1
+      }
+    },
+    None => ()
+  }
+  let known = call_placement_mode(cell) == 0
+  let order = match plan {
+    Some(slots) => call_argument_visit_order(args, slots),
+    None => None
+  }
+  let capture_base = match order {
+    Some(_) => call_argument_capture_cursor(capture, -1),
+    None => -1
+  }
+  let mut ai = 0
+  while ai < Array::length(args) {
+    let source_index = match order {
+      Some(indices) => Array::get(indices, ai),
+      None => ai
+    }
+    let source_arg = Array::get(args, source_index)
+    let arg = if known {
+      checker_call_argument_value(source_arg)
+    } else {
+      source_arg
+    }
+    let slot = match plan {
+      Some(slots) => written_formal_slot(slots, source_index),
+      None => ai
+    }
+    let original_expected = if slot >= 0 && slot < Array::length(param_tys) {
+      Array::get(param_tys, slot)
+    } else {
+      CtUnknown
+    }
+    let wrap = match plan {
+      Some(slots) => slot >= 0 && Array::get(slots, slot) % 2 == 1,
+      None => false
+    }
+    let expected = if wrap {
+      match original_expected {
+        CtOption(inner) => inner,
+        _ => original_expected
+      }
+    } else {
+      original_expected
+    }
+    let deferred = (order is Some(_)) && (arg is EFn(_, _, _, _, _, _))
+    let prefix_params = match plan {
+      Some(_) => {
+        let out: Array[Type] = []
+        if deferred {
+          let mut j = 0
+          while j < slot {
+            Array::push(out, if j < Array::length(param_tys) {
+              Array::get(param_tys, j)
+            } else {
+              CtUnknown
+            })
+            j = j + 1
+          }
+        } else {
+          for previous in seen_params {
+            Array::push(out, previous)
+          }; ()
+        }
+        Array::push(out, expected); out
+      },
+      None => param_tys
+    }
+    let prefix_types = match plan {
+      Some(_) => if deferred {
+        Array::slice(arg_tys, 0, slot)
+      } else {
+        seen_types
+      },
+      None => arg_tys
+    }
+    let arg_s = callback_prefix_subst(arg, prefix_params, prefix_types, s2, callee_inst)
+    let arg_env = if slot >= 0 && slot < Array::length(param_tys) {
+      callback_arg_env(env, arg, expected, arg_s, callee_inst, defs)
+    } else {
+      env
+    }
+    seed_lambda_arg_from_call(arg, prefix_params, prefix_types, arg_s)
+    let saved_child = if capture_base >= 0 {
+      call_argument_capture_cursor(capture, capture_base + source_index)
+    } else {
+      -1
+    }
+    let (at, ns, nc) = check_child(source_arg, checker_call_argument_env(source_arg, arg_env, cell), defs, arg_s, c2, errors, tytab, capture, lane)
+    if saved_child >= 0 {
+      let _ = call_argument_capture_cursor(capture, saved_child); ()
+    } else {
+      ()
+    }
+    let logical = if wrap {
+      CtOption(at)
+    } else {
+      at
+    }
+    let logical_expr = match plan {
+      Some(_) => if slot >= 0 {
+        Array::get(formal_args, slot)
+      } else {
+        arg
+      },
+      None => source_arg
+    }
+    match plan {
+      Some(_) => {
+        if slot >= 0 {
+          Array::set(arg_tys, slot, logical)
+        } else {
+          ()
+        }
+        Array::push(seen_params, original_expected)
+        Array::push(seen_types, logical)
+      },
+      None => Array::push(arg_tys, at)
+    }
+    s2 = if slot >= 0 && slot < Array::length(param_tys) {
+      let ns_inst = effect_inst_arg_check(env, logical_expr, logical, original_expected, ns, callee_inst, name, defs, errors)
+      refine_trait_bounds_from_receiver(env, ns_inst, original_expected, logical)
+    } else {
+      ns
+    }
+    c2 = nc
+    ai = ai + 1
+  }
+  if capture_base >= 0 {
+    let _ = call_argument_capture_cursor(capture, capture_base + Array::length(args)); ()
+  } else {
+    ()
+  }
+  (arg_tys, formal_args, s2, c2)
+}
+
+/// Preserve source positions independently of the logical formal-order view.
+export fn checker_call_argument_positions(cell: Array[Int]) -> Option[(Array[Int], Int)] {
+  if call_placement_is_pending(cell) {
+    match call_placement_get(cell) {
+      Some((written, mode, slots)) => if mode == 0 {
+        Some((slots, written))
+      } else {
+        None
+      },
+      None => None
+    }
+  } else {
+    None
+  }
+}

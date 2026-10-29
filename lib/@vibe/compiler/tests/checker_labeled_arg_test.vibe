@@ -15,6 +15,12 @@ import ./checker_parity_test_support.vibe {
 
 //# Misc
 
+/// A callback written first still receives constraints from earlier formal
+/// arguments. Its unannotated String parameter must not default to Int.
+test "reordered generic callbacks infer from their declared preceding value" {
+  assert(check_source_ok("fn apply[T](value: T, body: (T) -> T) -> T { body(value) }\nfn main() -> String { apply(body = (s) -> s + s, value = \"a\") }"))
+}
+
 /// Issue #986 repro: both argument types reversed — must be rejected.
 test "labeled args: fully reversed types rejected" {
   assert(check_source_err("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(x=\"hello\", y=5)\n}"))
@@ -265,4 +271,18 @@ test "3659: a label on a positional builtin slot rejected" {
 test "3659: the positional marker is not a builtin argument label" {
   assert(check_source_err_contains("fn main() -> Int {\n  Array::length(_ = [1])\n}", "argument 1 of builtin `Array::length` is positional: remove `_ = `"))
   assert(check_source_err_contains("fn main() -> Int {\n  Array::get([1], _ = 0)\n}", "builtin `Array::get` has no parameter `_`: remove `_ = `"))
+}
+
+/// A labeled callback keeps the same inference and refusal policy as its
+/// positional spelling: String is seeded; Double requires an annotation.
+test "labeled fold callbacks preserve accumulator inference and edits" {
+  assert(check_source_ok("fn main() -> String { Array::fold([\"a\"], init = \"\", f = (acc, x) -> acc + x) }"))
+  assert(check_source_err_contains("fn main() -> Double { Array::fold([1.0], init = 0.0, f = (acc, x) -> acc + x) }", "annotate the callback's accumulator"))
+}
+
+/// The precheck macro retains its historical decorative labels; checker-owned
+/// placements certify its fixed layout without applying ordinary builtin rules.
+test "inspect content labels survive call placement checking" {
+  assert(check_source_ok("fn main() -> Unit allows Console { inspect(1, content = \"1\") }"))
+  assert(check_source_ok("fn main() -> Unit allows Console { inspect(value = 1, content = \"1\") }"))
 }

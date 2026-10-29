@@ -217,6 +217,12 @@ fn unannotated_double_lambda_hint(pty: Type, aty: Type, arg: Expr, s: Subst, lab
 }
 
 export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_exprs: Array[Expr], s: Subst, errors: Array[String], label: String, off: Int) -> Subst {
+  unify_call_args_with_source_placement(param_tys, arg_tys, arg_exprs, s, errors, label, off, None)
+}
+
+/// A formal-order argument view retains its explicit written-source indices
+/// for literal diagnostics, including compiler-inserted optional wrapping.
+export fn unify_call_args_with_source_placement(param_tys: Array[Type], arg_tys: Array[Type], arg_exprs: Array[Expr], s: Subst, errors: Array[String], label: String, off: Int, placement: Option[(Array[Int], Int)]) -> Subst {
   let mut out = s
   let mut ui = 0
   let ul = min_int(Array::length(arg_tys), Array::length(param_tys))
@@ -228,18 +234,54 @@ export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_expr
   while ui < ul {
     let pty = Array::get(param_tys, ui)
     let aty = Array::get(arg_tys, ui)
+    let mut source_index = ui
+    let mut source_count = Array::length(arg_exprs)
+    let mut wrapped = false
+    match placement {
+      Some((slots, written)) => {
+        source_index = -1
+        source_count = written
+        if Array::length(slots) == Array::length(arg_tys) && ui < Array::length(slots) {
+          let code = Array::get(slots, ui)
+          let index = code / 2 - 1
+          if code >= 2 && index < written {
+            source_index = index
+            wrapped = code % 2 == 1
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      },
+      None => ()
+    }
+    let diagnostic_expr = if have_exprs {
+      let expr = Array::get(arg_exprs, ui)
+      if wrapped {
+        match expr {
+          ECall(EIdent("Some", _), values, _, _) => if Array::length(values) == 1 {
+            Array::get(values, 0)
+          } else {
+            expr
+          },
+          _ => expr
+        }
+      } else {
+        expr
+      }
+    } else {
+      EUnit
+    }
     // #2831 (2): anchor the ARGUMENT, not the callee. `takes("nope")` used to
     // report the column of `takes`, so the reader was sent to the name rather
     // than to the text they have to edit. The offset was already there -- this
     // path simply did not read it, which is why it is independent of #2831 (1)
     // (widening `EInt` / `EFloat` / `EBool`, an AST_BINARY_VERSION bump).
     //
-    // Indexing `arg_exprs` positionally is sound because `arg_tys` is built by
-    // walking `args` in order, and `desugar_labeled_args` reorders a labeled
-    // call BEFORE checking; an `ELabeledArg` that survives types as CtUnknown,
-    // which never mismatches. The length guard keeps a caller that cannot
-    // supply the expressions on the old callee anchor rather than on a
-    // MISALIGNED one -- a wrong location is worse than a coarse one.
+    // Formal views align with the types. An explicit source placement maps
+    // diagnostics back to written arguments; absent or invalid indices retain
+    // the coarse callee anchor instead of pointing at another argument.
     //
     // #3305: a tuple or array literal has no offset of its own, so it is
     // anchored at a located element inside it, and the locator widens that
@@ -247,16 +289,16 @@ export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_expr
     // no located element at all (`f([1, 2])`, `takes(42)`) keeps the callee
     // anchor and names its place in the call, which the locator reads back
     // from the call's tokens (`literal_arg_position_path`).
-    let (a_off, a_path) = if have_exprs {
-      let ao = railway_expr_off(Array::get(arg_exprs, ui))
+    let (a_off, a_path) = if have_exprs && source_index >= 0 {
+      let ao = railway_expr_off(diagnostic_expr)
       if ao >= 0 {
         (ao, "")
       } else {
-        let (lo, lpath) = literal_arg_anchor(Array::get(arg_exprs, ui))
+        let (lo, lpath) = literal_arg_anchor(diagnostic_expr)
         if lo >= 0 {
           (lo, lpath)
         } else {
-          (off, literal_arg_position_path(Array::get(arg_exprs, ui), ui, Array::length(arg_exprs)))
+          (off, literal_arg_position_path(diagnostic_expr, source_index, source_count))
         }
       }
     } else {
@@ -271,13 +313,13 @@ export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_expr
       // Set unconditionally (with -1 clearing it) so a range never leaks from
       // one argument onto the next argument's diagnostic.
       if have_exprs {
-        check_assignable_set_end(string_lit_end(Array::get(arg_exprs, ui)))
+        check_assignable_set_end(string_lit_end(diagnostic_expr))
         check_assignable_set_enclosing(a_path)
       } else {
         ()
       }
       let hint = if have_exprs {
-        unannotated_double_lambda_hint(pty, aty, Array::get(arg_exprs, ui), out, label)
+        unannotated_double_lambda_hint(pty, aty, diagnostic_expr, out, label)
       } else {
         ""
       }

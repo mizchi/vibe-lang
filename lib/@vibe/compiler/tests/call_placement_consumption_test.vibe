@@ -1,0 +1,102 @@
+import @vibe/compiler/core {
+  Expr, Stmt, Type, TypeEnv, call_placement_install, env_bind, restore_call_placements
+}
+import @vibe/compiler/checker {
+  check_program_with_env_typed_lowering_located_observation
+}
+import @vibe/compiler/normalize {
+  desugar_inspect_calls, lower_checked_call_placements
+}
+import @vibe/parser {
+  lex_with_offsets, parse_program_located
+}
+import @vibe/compiler/syntax {
+  print_program
+}
+
+fn parsed(source: String) -> Array[Stmt] with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  parse_program_located(tokens, starts, source)
+}
+
+fn placed(source: String, env: TypeEnv) -> Array[Stmt] with Exception {
+  let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(parsed(source), env)
+  let raw = parsed(source)
+  match rows {
+    Some(found) => restore_call_placements(raw, found),
+    None => assert(false)
+  }
+  lower_checked_call_placements(raw, true)
+  raw
+}
+
+/// The consumer follows the imported binding's checker answer without seeing
+/// a declaration or an independent parameter-name table.
+test "imported placements determine argument order" {
+  let env = env_bind(env_bind(EnvEmpty, "f", CtFn([CtInt, CtInt], CtInt, None)), "#params:f", CtRecord([
+    ("y", CtUnknown),
+    ("x", CtUnknown)
+  ]))
+  let result = placed("fn main() -> Int { f(x = 10, y = 3) }", env)
+  assert(print_program(result) == print_program(parsed("fn main() -> Int { f(3, 10) }")))
+}
+
+/// Omission and Some insertion are explicit indices in the packet, rather
+/// than questions asked of a callee's spelling while lowering.
+test "optional placements fill omitted slots and wrap written values" {
+  let head = "fn f(x: Int, y?: Int) -> Int { x }\nfn main() -> Int { "
+  for pair in [
+    ("f(x = 10)", "f(10, None)"),
+    ("f(y = 3, x = 10)", "f(10, Some(3))"),
+    ("f(10, None)", "f(10, None)")
+  ] {
+    assert(print_program(placed(head + pair.0 + " }", EnvEmpty)) == print_program(parsed(head + pair.1 + " }")))
+  }
+}
+
+/// Equal expressions are separate evaluations. Source indices keep their
+/// written-order bindings distinct even when expression equality cannot.
+test "equal calls keep separate written-order bindings" {
+  let cell: Array[Int] = []
+  call_placement_install(cell, 2, 0, [4, 2])
+  let first_call: Expr = ECall(EIdent("record", -1), [EString("same", -1)], -1, [
+  ])
+  let second_call: Expr = ECall(EIdent("record", -1), [EString("same", -1)], -1, [
+  ])
+  assert(first_call == second_call)
+  let stmts = [SExpr(ECall(EIdent("f", 7), [first_call, second_call], 7, cell))]
+  lower_checked_call_placements(stmts, true)
+  match Array::get(stmts, 0) {
+    SExpr(ELet(first, ECall(EIdent("record", _), _, -1, _), ELet(second, ECall(EIdent("record", _), _, -1, _), ECall(EIdent("f", _), args, _, _), _), _)) => {
+      assert(first != second)
+      match (Array::get(args, 0), Array::get(args, 1)) {
+        (EIdent(left, _), EIdent(right, _)) => assert(left == second && right == first),
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+/// A rowless lane must name the source call and the edit instead of using
+/// a syntactic declaration table as an alternate semantic authority.
+test "strict lowering refuses an unchecked labeled call" {
+  let message = handle {
+    lower_checked_call_placements(parsed("fn f(x: Int) -> Int { x }\nfn main() -> Int { f(x = 3) }"), true)
+    ""
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(message, "checker argument placement for `f`"))
+  assert(String::contains(message, "check this source before lowering it"))
+}
+
+/// A rowless macro must not erase the only labeled source call before the
+/// strict consumer can report its original name and the edit.
+test "a rowless inspect expansion retains its placement refusal" {
+  let stmts = parsed("fn main() -> Unit allows Console { inspect(1, content = \"1\") }")
+  desugar_inspect_calls(stmts)
+  let message = handle {
+    lower_checked_call_placements(stmts, true); ""
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(message, "checker argument placement for `inspect`"))
+  assert(String::contains(message, "check this source before lowering it"))
+}

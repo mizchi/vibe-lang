@@ -9,6 +9,8 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  call_placement_mode,
+  call_placement_source_slot,
   compiler_owned_type_arity,
   env_cache_read_snapshot,
   env_lookup,
@@ -413,14 +415,14 @@ fn afe_type_is_async_fn(t: Type) -> Bool {
   }
 }
 
-/// #3555: is `ctor(cargs)`, argument `ai`, a row-less closure literal
+/// #3555: is `ctor(cargs)` a row-less closure literal
 /// supplied for an optional `Async` task parameter -- `Some(() -> ..)` where
 /// the parameter is `Option[(..) -> .. with Async]`? Allocation-free: it is
 /// asked of every constructor call argument in the program.
-fn afe_is_optional_async_task(ctor: String, cargs: Array[Expr], param_tys: Array[Type], ai: Int) -> Bool {
-  if (ctor == "Some" || ctor == "Option::Some") && Array::length(cargs) == 1 && ai < Array::length(param_tys) {
+fn afe_is_optional_async_task(ctor: String, cargs: Array[Expr], param_ty: Type) -> Bool {
+  if (ctor == "Some" || ctor == "Option::Some") && Array::length(cargs) == 1 {
     match Array::get(cargs, 0) {
-      EFn(_, _, _, _, None, _) => match Array::get(param_tys, ai) {
+      EFn(_, _, _, _, None, _) => match param_ty {
         CtOption(elem) => afe_type_is_async_fn(elem),
         _ => false
       },
@@ -556,14 +558,38 @@ fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, lo
     // as a generic node it was not, and a plain `sleep` in a suspendable task
     // was refused unless the task carried a row -- which then could not name
     // `Console`.
-    ECall(callee, args, _, _) => {
+    ECall(callee, args, _, cell) => {
       check_async_effects_expr_lo_into(callee, env, in_async, locals, out)
       let param_tys = afe_callee_param_types(callee, env, locals)
+      let known = call_placement_mode(cell) == 0
       let mut ai = 0
       while ai < Array::length(args) {
-        let arg = Array::get(args, ai)
+        let source_arg = Array::get(args, ai)
+        let arg = if known {
+          match source_arg {
+            ELabeledArg(_, _, value) => value,
+            _ => source_arg
+          }
+        } else {
+          source_arg
+        }
+        let code = call_placement_source_slot(cell, ai, Array::length(args))
+        let formal = code / 2 - 1
+        let param_ty = if formal >= 0 && formal < Array::length(param_tys) {
+          Array::get(param_tys, formal)
+        } else {
+          CtUnknown
+        }
+        let expected = if code % 2 == 1 {
+          match param_ty {
+            CtOption(inner) => inner,
+            _ => param_ty
+          }
+        } else {
+          param_ty
+        }
         match arg {
-          EFn(_, _, aparams, _, None, abody) => if ai < Array::length(param_tys) && afe_type_is_async_fn(Array::get(param_tys, ai)) {
+          EFn(_, _, aparams, _, None, abody) => if afe_type_is_async_fn(expected) {
             let mark = Array::length(afe_closure_kind_stack)
             Array::push(afe_closure_kind_stack, 1)
             check_async_effects_expr_lo_into(abody, env, true, afe_bind_params(locals, aparams, env), out)
@@ -580,7 +606,7 @@ fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, lo
           // #3555: an optional task parameter (`task?: () -> T with Async`)
           // is declared `Option[..]`, and a supplied closure arrives as
           // `Some(closure)`: the same `Async` context as a positional one.
-          ECall(EIdent(ctor, _), cargs, _, _) => if afe_is_optional_async_task(ctor, cargs, param_tys, ai) {
+          ECall(EIdent(ctor, _), cargs, _, _) => if afe_is_optional_async_task(ctor, cargs, param_ty) {
             match Array::get(cargs, 0) {
               EFn(_, _, aparams, _, _, abody) => {
                 let mark = Array::length(afe_closure_kind_stack)

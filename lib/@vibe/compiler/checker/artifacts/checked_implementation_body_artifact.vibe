@@ -2139,6 +2139,23 @@ fn normalized_binding_origin_bytes(origin: BindingOrigin) -> String {
     BindingOriginMutableFunctionHeader(_) => normalized_binding_origin_bytes(freeze_call_header_origin(origin)),
     BindingOriginUncertainFunctionHeader => "a",
     BindingOriginUnavailable => "u",
+    BindingOriginDefaultedFunctionHeader(params, flags) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "d")
+      let bits = StringBuilder::new()
+      for flag in flags {
+        StringBuilder::push(bits, if flag {
+          "1"
+        } else {
+          "0"
+        })
+      }
+      body_push_piece(out, StringBuilder::freeze(bits))
+      for name in params {
+        body_push_piece(out, name)
+      }
+      StringBuilder::freeze(out)
+    },
     BindingOriginFunctionHeader(params) => {
       let out = StringBuilder::new()
       StringBuilder::push(out, "l")
@@ -2159,6 +2176,32 @@ fn normalized_binding_origin_bytes(origin: BindingOrigin) -> String {
 fn normalized_binding_origin_valid(text: String) -> Bool {
   if text == "u" || text == "a" {
     true
+  } else if String::starts_with(text, "d") {
+    match body_piece(text, 1) {
+      Some((bits, start)) => {
+        let mut valid = String::length(bits) > 0
+        let mut any = false
+        let mut i = 0
+        while i < String::length(bits) {
+          let byte = String::byte_at(bits, i)
+          valid = valid && (byte == 48 || byte == 49)
+          any = any || byte == 49
+          i = i + 1
+        }
+        let mut pos = start
+        let mut count = 0
+        while pos < String::length(text) && valid {
+          match body_piece(text, pos) {
+            Some((_, next)) => {
+              pos = next; count = count + 1
+            },
+            None => valid = false
+          }
+        }
+        valid && any && pos == String::length(text) && count == String::length(bits)
+      },
+      None => false
+    }
   } else if String::starts_with(text, "l") {
     let mut pos = 1
     let mut valid = true

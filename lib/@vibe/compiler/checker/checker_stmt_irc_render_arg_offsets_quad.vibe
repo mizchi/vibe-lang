@@ -1,3 +1,7 @@
+import ./checker_parameter_defaults.vibe {
+  checker_check_default_declarations
+}
+
 import ./checker_call_header_flow.vibe {
   checker_call_header_flow_begin, checker_seed_mut_call_headers
 }
@@ -120,10 +124,8 @@ import @vibe/compiler/normalize {
   derive_trait_namespace_operations,
   desugar_handled_host_calls,
   desugar_inspect_calls,
-  desugar_labeled_args,
   desugar_railway_binds,
   erase_railway_origin_markers,
-  imported_params_set,
   inject_trait_method_generics
 }
 
@@ -195,7 +197,6 @@ import ./checker_stmt_stmts_with_binders.vibe {
 import ./checker_stmt_unknown_effect_label_errors.vibe {
   builtin_seed_withheld,
   canonicalize_stdin_provider_type_import_heads,
-  check_labeled_arg_names_stmts_with_imports,
   check_program_bounds,
   collect_async_effect_errors,
   collect_constructor_binder_errors,
@@ -861,7 +862,8 @@ fn union_double_render_arg_offsets(checked: CheckedProgram, call_results: Array[
 /// program is identical to what check_program_result /
 /// check_program_with_projected_import_env_result produce today.
 export fn check_program_with_projected_import_env_typed_lowering_located_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String]) with Exception {
-  typed_lowering_located_observation_impl(stmts, initial_env, true)
+  let (checked, offsets, eq_offsets, eq_keys, _) = typed_lowering_located_observation_impl(stmts, initial_env, true)
+  (checked, offsets, eq_offsets, eq_keys)
 }
 
 /// #2449: the same observation for the lane whose import statements are NOT
@@ -871,17 +873,19 @@ export fn check_program_with_projected_import_env_typed_lowering_located_observa
 /// with the projected entry above; only that flag differs, because a lane that
 /// changed it would be checking a different program in order to observe one.
 export fn check_program_with_env_typed_lowering_located_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String]) with Exception {
-  typed_lowering_located_observation_impl(stmts, initial_env, false)
+  let (checked, offsets, eq_offsets, eq_keys, _) = typed_lowering_located_observation_impl(stmts, initial_env, false)
+  (checked, offsets, eq_offsets, eq_keys)
 }
 
-fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, imports_already_projected: Bool) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String]) with Exception {
+fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, imports_already_projected: Bool) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String], Array[Int]) with Exception {
   resolved_callee_capture_reset()
   let capture = reset_double_call_capture()
   let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, Some(capture), imports_already_projected).checked_program
+  let placements = call_placement_checked_rows()
   match double_call_result_offsets_from_capture(checked, capture) {
-    None => (checked, None, array_empty(), array_empty()),
+    None => (checked, None, array_empty(), array_empty(), placements),
     Some((out, primary_calls, located_primary_calls)) => if primary_calls > 0 && located_primary_calls == 0 {
-      (checked, None, array_empty(), array_empty())
+      (checked, None, array_empty(), array_empty(), placements)
     } else {
       // #2391 slice 2: one encoded table carries the Double call-result
       // offsets (tag 0) and the String relational/`+` binop anchors
@@ -957,10 +961,10 @@ fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: Type
       for row in resolved_callee_capture_rows() {
         Array::push(enc, row)
       }
-      for row in call_placement_checked_rows() {
+      for row in placements {
         Array::push(enc, row)
       }
-      (checked, Some(enc), eq_offs, eq_keys)
+      (checked, Some(enc), eq_offs, eq_keys, placements)
     }
   }
 }
@@ -1317,6 +1321,17 @@ fn stmts_bind_top_level(stmts: Array[Stmt], name: String) -> Bool {
 }
 
 fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool) -> CheckedProgramTypeDefsObservation with Exception {
+  call_placement_capture_begin()
+  handle {
+    let checked = check_program_with_env_source_impl(stmts, initial_env, capture, role_lane_capture, imports_already_projected)
+    call_placement_capture_end()
+    checked
+  } with { Exception::Throw(message) => {
+    call_placement_capture_end(); throw(message)
+  } }
+}
+
+fn check_program_with_env_source_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool) -> CheckedProgramTypeDefsObservation with Exception {
   match initial_env {
     EnvEmpty => check_program_type_defs_observation_impl(stmts, capture, role_lane_capture),
     _ => {
@@ -1342,15 +1357,8 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // optional argument or a label reaches the callee it names, and a label
       // the callee does not declare is refused as it is for a local callee.
       let imported_param_rows = unshadowed_param_rows(env_param_name_rows(initial_env), stmts)
-      // #1001: mixed argument-mode validation before desugar (see check_program).
-      check_labeled_arg_names_stmts_with_imports(stmts, frozen_errors, true, imported_param_rows)
-      // #986: reorder fully-labeled calls before checking (see check_program).
-      imported_params_set(imported_param_rows)
       checker_call_header_flow_begin()
-      call_placement_capture_begin()
-      desugar_labeled_args(stmts)
-      call_placement_capture_end()
-      imported_params_set(array_empty())
+      checker_check_default_declarations(stmts, frozen_errors)
       // #1571: see check_program.
       desugar_inspect_calls(stmts)
       // #3301: see check_program.
@@ -1393,8 +1401,6 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       handler_or_arm_resume_begin(handler_or_arms)
       set_generic_fn_decls(stmts)
       check_assignable_set_type_defs(empty_defs)
-      // #986: labeled-argument name validation (see check_program).
-      check_labeled_arg_names_stmts_with_imports(stmts, frozen_errors, false, imported_param_rows)
       // Keep CheckedProgram.checked_stmts as the original post-desugar source,
       // but match the ordinary path by checking and validating an expanded copy.
       let expanded_stmts = es_expand_top_level_effectset_rows(stmts, initial_env)
@@ -1842,4 +1848,10 @@ export fn check_program_with_projected_import_env_result(stmts: Array[Stmt], ini
 /// behavior while delegating through the successful production result.
 export fn check_program_with_env(stmts: Array[Stmt], initial_env: TypeEnv) -> TypeEnv with Exception {
   check_program_with_env_result(stmts, initial_env).final_env
+}
+
+/// Label availability is independent of scalar/render observation. Return the
+/// call-owned channel explicitly, including when that observation declines.
+export fn check_program_with_projected_import_env_lowering_placements(stmts: Array[Stmt], initial_env: TypeEnv) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String], Array[Int]) with Exception {
+  typed_lowering_located_observation_impl(stmts, initial_env, true)
 }

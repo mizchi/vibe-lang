@@ -1,0 +1,72 @@
+import @vibe/compiler/core {
+  BindingOrigin, Expr, Subst, Type, TypeEnv, env_bind, env_bind_with_origin
+}
+import @vibe/compiler/checker {
+  check_expr
+}
+
+fn task_group() -> Type {
+  CtNamed("TaskGroup", [CtNamed("#outer", []), CtUnit])
+}
+
+fn task_errors(expr: Expr, env: TypeEnv) -> Array[String] {
+  let errors: Array[String] = []
+  let _ = check_expr(expr, env, [], SubstEmpty, 0, errors, [])
+  errors
+}
+
+fn task_literal() -> Expr {
+  EFn([], [], [], None, None, EInt(1))
+}
+
+/// Spawn-shaped functions use the same logical Some/None arguments as an
+/// ordinary declaration, including when the closure is written before its group.
+test "optional task arguments use checked placements in every call shape" {
+  let signature = CtFn([task_group(), CtOption(CtFn([], CtInt, Some("Async")))], CtNamed("TaskHandle", [
+    CtNamed("#outer", []),
+    CtInt,
+    CtUnit
+  ]), None)
+  let env = env_bind(env_bind_with_origin(EnvEmpty, "start", signature, BindingOriginFunctionHeader([
+    "g~",
+    "task?"
+  ])), "g", task_group())
+  for args in [
+    [
+      ELabeledArg("g", "", EIdent("g", 20)),
+      ELabeledArg("task", "", task_literal())
+    ],
+    [
+      ELabeledArg("task", "", task_literal()),
+      ELabeledArg("g", "", EIdent("g", 20))
+    ],
+    [ELabeledArg("g", "", EIdent("g", 20))]
+  ] {
+    assert(Array::length(task_errors(ECall(EIdent("start", 7), args, 7, []), env)) == 0)
+  }
+}
+
+fn runner_env() -> TypeEnv {
+  let group = CtNamed("TaskGroup", [CtVar(0), CtUnit])
+  let scheme = CtForAll([0, 1], [], CtFn([CtFn([group], CtVar(1), None)], CtVar(1), None))
+  env_bind_with_origin(EnvEmpty, "runner", scheme, BindingOriginFunctionHeader([
+    "body"
+  ]))
+}
+
+/// A source label does not turn a literal nursery body into an opaque value.
+test "a labeled runner body keeps its literal region context" {
+  let body = EFn([], [], [("g", None)], None, None, EInt(1))
+  assert(Array::length(task_errors(ECall(EIdent("runner", 7), [
+    ELabeledArg("body", "", body)
+  ], 7, []), runner_env())) == 0)
+}
+
+/// Keeping the wrapper's occurrence frame must still expose an escaping group.
+test "a labeled runner body cannot return its nursery token" {
+  let body = EFn([], [], [("g", None)], None, None, EIdent("g", 20))
+  let errors = task_errors(ECall(EIdent("runner", 7), [
+    ELabeledArg("body", "", body)
+  ], 7, []), runner_env())
+  assert(String::contains(String::join(errors, "\n"), "region escapes"))
+}

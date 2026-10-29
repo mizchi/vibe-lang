@@ -1,0 +1,327 @@
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  __to_string,
+  call_placement_error,
+  call_placement_get,
+  call_placement_is_canonical,
+  call_placement_is_pending,
+  call_placement_mark_applied,
+  call_placement_payload_valid,
+  expr_any_node
+}
+
+let cpl_next: Array[Int] = [0]
+let cpl_require_checked: Array[Bool] = [false]
+
+fn cpl_value(arg: Expr) -> Expr {
+  match arg {
+    ELabeledArg(_, _, value) => value,
+    _ => arg
+  }
+}
+
+// 0: stable value; 1: a name that a later argument could assign; 2: a
+// computation that can observe or change another argument's value.
+fn cpl_effect_class(expr: Expr) -> Int {
+  match expr {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_, _) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EFn(_, _, _, _, _, _) => 0,
+    EIdent(name, _) => if String::length(name) == 0 || String::contains(name, "::") {
+      0
+    } else {
+      let first = String::byte_at(name, 0)
+      if first >= 65 && first <= 90 {
+        0
+      } else {
+        1
+      }
+    },
+    ETuple(items) => cpl_effects(items),
+    EArray(items) => cpl_effects(items),
+    ESpread(value) => cpl_effect_class(value),
+    EUnaryOp(_, value) => cpl_effect_class(value),
+    ELabeledArg(_, _, value) => cpl_effect_class(value),
+    ERecord(_, fields, _) => {
+      let mut result = 0
+      for field in fields {
+        let next = cpl_effect_class(field.1)
+        if next > result {
+          result = next
+        } else {
+          ()
+        }
+      }
+      result
+    },
+    _ => 2
+  }
+}
+
+fn cpl_effects(items: Array[Expr]) -> Int {
+  let mut result = 0
+  for item in items {
+    let next = cpl_effect_class(item)
+    if next > result {
+      result = next
+    } else {
+      ()
+    }
+  }
+  result
+}
+
+fn cpl_needs_temporaries(args: Array[Expr], slots: Array[Int]) -> Bool {
+  let mut needed = false
+  let mut i = 0
+  while i < Array::length(slots) && !needed {
+    let left = Array::get(slots, i) / 2 - 1
+    if left >= 0 {
+      let lc = cpl_effect_class(Array::get(args, left))
+      let mut j = i + 1
+      while j < Array::length(slots) && !needed {
+        let right = Array::get(slots, j) / 2 - 1
+        if right >= 0 && left > right {
+          let rc = cpl_effect_class(Array::get(args, right))
+          needed = lc > 0 && rc > 0 && (lc == 2 || rc == 2)
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  needed
+}
+
+fn cpl_call(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int]) -> Expr with Exception {
+  if call_placement_is_canonical(cell) {
+    let known = match call_placement_get(cell) {
+      Some((_, mode, _)) => mode == 0,
+      None => false
+    }
+    ECall(callee, if known {
+      for arg in args {
+        cpl_value(arg)
+      }
+    } else {
+      args
+    }, offset, cell)
+  } else {
+    match call_placement_get(cell) {
+      Some((written, mode, slots)) => {
+        if written != Array::length(args) || !call_placement_payload_valid(written, mode, slots) {
+          throw(call_placement_error(cell, callee, offset))
+        } else {
+          ()
+        }
+        let bind = mode == 0 && cpl_needs_temporaries(args, slots)
+        let names: Array[String] = for _ in args {
+          ""
+        }
+        if bind {
+          let mut i = 0
+          while i < Array::length(args) {
+            if cpl_effect_class(Array::get(args, i)) > 0 {
+              let next = Array::get(cpl_next, 0)
+              Array::set(cpl_next, 0, next + 1)
+              Array::set(names, i, "__labeled_arg$" + __to_string(next))
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+        } else {
+          ()
+        }
+        let placed: Array[Expr] = []
+        for slot in slots {
+          if slot == 0 {
+            Array::push(placed, EIdent("None", -1))
+          } else {
+            let source = slot / 2 - 1
+            let name = Array::get(names, source)
+            let value = if String::length(name) > 0 {
+              EIdent(name, -1)
+            } else if mode == 0 {
+              cpl_value(Array::get(args, source))
+            } else {
+              Array::get(args, source)
+            }
+            Array::push(placed, if slot % 2 == 1 {
+              ECall(EIdent("Some", -1), [value], -1, [])
+            } else {
+              value
+            })
+          }
+        }
+        call_placement_mark_applied(cell)
+        let receiver = if bind {
+          match callee {
+            EDot(obj, _, _, _) => if cpl_effect_class(obj) > 0 {
+              Some(obj)
+            } else {
+              None
+            },
+            _ => None
+          }
+        } else {
+          None
+        }
+        let receiver_name = match receiver {
+          Some(_) => "__labeled_recv$" + __to_string(Array::get(cpl_next, 0)),
+          None => ""
+        }
+        let placed_callee = match receiver {
+          Some(_) => match callee {
+            EDot(_, method, off, foff) => EDot(EIdent(receiver_name, -1), method, off, foff),
+            _ => callee
+          },
+          None => callee
+        }
+        let mut body = ECall(placed_callee, placed, offset, cell)
+        let mut i = Array::length(args)
+        while i > 0 {
+          i = i - 1
+          let name = Array::get(names, i)
+          if String::length(name) > 0 {
+            body = ELet(name, cpl_value(Array::get(args, i)), body, -1)
+          } else {
+            ()
+          }
+        }
+        match receiver {
+          Some(obj) => ELet(receiver_name, obj, body, -1),
+          None => body
+        }
+      },
+      None => {
+        let mut labeled = false
+        for arg in args {
+          match arg {
+            ELabeledArg(_, _, _) => labeled = true,
+            _ => ()
+          }
+        }
+        if call_placement_is_pending(cell) || (labeled && Array::get(cpl_require_checked, 0)) {
+          throw(call_placement_error(cell, callee, offset))
+        } else {
+          ECall(callee, args, offset, cell)
+        }
+      }
+    }
+  }
+}
+
+fn cpl_exprs(items: Array[Expr]) -> Array[Expr] with Exception {
+  for item in items {
+    cpl_expr(item)
+  }
+}
+fn cpl_fields(items: Array[(String, Expr)]) -> Array[(String, Expr)] with Exception {
+  for item in items {
+    (item.0, cpl_expr(item.1))
+  }
+}
+fn cpl_arms(items: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] with Exception {
+  for item in items {
+    (item.0, cpl_expr(item.1))
+  }
+}
+fn cpl_opt(item: Option[Expr]) -> Option[Expr] with Exception {
+  match item {
+    Some(expr) => Some(cpl_expr(expr)),
+    None => None
+  }
+}
+
+fn cpl_expr(expr: Expr) -> Expr with Exception {
+  match expr {
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_, _) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    EIdent(_, _) => expr,
+    EStringInterp(_) => expr,
+    ETuple(items) => ETuple(cpl_exprs(items)),
+    EArray(items) => EArray(cpl_exprs(items)),
+    ERecord(n, fields, tys) => ERecord(n, cpl_fields(fields), tys),
+    EMap(fields) => EMap(cpl_fields(fields)),
+    EIf(c, t, f) => EIf(cpl_expr(c), cpl_expr(t), cpl_expr(f)),
+    ELet(n, v, b, off) => ELet(n, cpl_expr(v), cpl_expr(b), off),
+    ELetRec(n, v, b) => ELetRec(n, cpl_expr(v), cpl_expr(b)),
+    ELetMut(n, v, b, off) => ELetMut(n, cpl_expr(v), cpl_expr(b), off),
+    EAssign(n, v, b, target_off) => EAssign(n, cpl_expr(v), cpl_expr(b), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, cpl_expr(v), cpl_expr(b), target_off),
+    ESeq(a, b) => ESeq(cpl_expr(a), cpl_expr(b)),
+    EMatch(s, arms) => EMatch(cpl_expr(s), cpl_arms(arms)),
+    EHandle(s, arms) => EHandle(cpl_expr(s), cpl_arms(arms)),
+    EWhile(c, b) => EWhile(cpl_expr(c), cpl_expr(b)),
+    ELoop(params, b) => ELoop(cpl_fields(params), cpl_expr(b)),
+    EForIn(v, k, it, b) => EForIn(v, k, cpl_expr(it), cpl_expr(b)),
+    ECall(callee, args, off, callee_resolution) => cpl_call(cpl_expr(callee), cpl_exprs(args), off, callee_resolution),
+    EBinOp(op, l, r, boff) => EBinOp(op, cpl_expr(l), cpl_expr(r), boff),
+    EUnaryOp(op, v) => EUnaryOp(op, cpl_expr(v)),
+    EFn(g, bs, ps, ret, row, body) => EFn(g, bs, ps, ret, row, cpl_expr(body)),
+    EDot(inner, f, off, foff) => EDot(cpl_expr(inner), f, off, foff),
+    ELabeledArg(l, sfx, v) => ELabeledArg(l, sfx, cpl_expr(v)),
+    EReturn(v) => EReturn(cpl_expr(v)),
+    EBreak(opt) => EBreak(cpl_opt(opt)),
+    EContinue(args) => EContinue(cpl_exprs(args)),
+    ESpread(v) => ESpread(cpl_expr(v))
+  }
+}
+
+fn cpl_here(expr: Expr) -> Bool {
+  match expr {
+    ECall(_, _, _, cell) => call_placement_is_pending(cell),
+    ELabeledArg(_, _, _) => true,
+    _ => false
+  }
+}
+
+fn cpl_body(expr: Expr) -> Expr with Exception {
+  if expr_any_node(expr, cpl_here) {
+    cpl_expr(expr)
+  } else {
+    expr
+  }
+}
+
+fn cpl_stmt(stmt: Stmt) -> Stmt with Exception {
+  Array::set(cpl_next, 0, 0)
+  match stmt {
+    SLet(ex, is_rec, name, ty, body) => SLet(ex, is_rec, name, ty, cpl_body(body)),
+    SLetMut(name, ty, body) => SLetMut(name, ty, cpl_body(body)),
+    SLetPat(pat, body) => SLetPat(pat, cpl_body(body)),
+    STest(name, body) => STest(name, cpl_body(body)),
+    SBench(name, body) => SBench(name, cpl_body(body)),
+    SExample(name, body) => SExample(name, cpl_body(body)),
+    SExpr(body) => SExpr(cpl_body(body)),
+    SFnDecl(ex, name, body, requires, ensures) => SFnDecl(ex, name, cpl_body(body), cpl_exprs(requires), cpl_exprs(ensures)),
+    SModule(ex, name, children) => SModule(ex, name, for child in children {
+      cpl_stmt(child)
+    }),
+    _ => stmt
+  }
+}
+
+/// Construct call arguments from checker-owned source indices. No binding or
+/// parameter-name lookup occurs here. Strict lanes refuse unchecked labels.
+export fn lower_checked_call_placements(stmts: Array[Stmt], require_checked: Bool) -> Unit with Exception {
+  Array::set(cpl_require_checked, 0, require_checked)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::set(stmts, i, cpl_stmt(Array::get(stmts, i)))
+    i = i + 1
+  }
+}

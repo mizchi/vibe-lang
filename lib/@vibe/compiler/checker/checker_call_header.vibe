@@ -1,36 +1,25 @@
+import ./checker_parameter_defaults.vibe {
+  checker_parameter_defaults
+}
+
 import @vibe/compiler/core {
-  BindingOrigin,
-  Expr,
-  Type,
-  TypeEnv,
-  call_placement_wants_binding,
-  env_bind,
-  env_bind_with_origin,
-  env_lookup,
-  env_lookup_binding,
-  param_names_prefix
+  BindingOrigin, Expr, Type, TypeEnv, env_bind, env_bind_with_origin, env_lookup, env_lookup_binding, param_names_prefix
 }
 
 /// Bind a declaration header on the same value binding typing will resolve.
-/// No record is allocated for an ordinary function without an optional slot
-/// or a labeled call demanding its header in this program.
+/// Later calls can request labels, so every declaration retains its names.
 export fn checker_bind_call_header(env: TypeEnv, name: String, ty: Type, value: Expr) -> TypeEnv {
   match value {
     EFn(_, _, params, _, _, _) => {
-      let mut needed = call_placement_wants_binding(name)
-      for param in params {
+      let names = for param in params {
         let (raw, _) = param
-        needed = needed || String::ends_with(raw, "?")
+        raw
       }
-      if needed {
-        let names = for param in params {
-          let (raw, _) = param
-          raw
-        }
-        env_bind_with_origin(env, name, ty, BindingOriginFunctionHeader(names))
-      } else {
-        env_bind(env, name, ty)
+      let origin = match checker_parameter_defaults(value) {
+        Some(flags) => BindingOriginDefaultedFunctionHeader(names, flags),
+        None => BindingOriginFunctionHeader(names)
       }
+      env_bind_with_origin(env, name, ty, origin)
     },
     _ => env_bind(env, name, ty)
   }
@@ -43,6 +32,7 @@ export fn checker_call_header_names(env: TypeEnv, name: String) -> Option[Array[
   match env_lookup_binding(env, name) {
     Some(binding) => match binding.origin {
       BindingOriginFunctionHeader(names) => Some(names),
+      BindingOriginDefaultedFunctionHeader(names, _) => Some(names),
       BindingOriginMutableFunctionHeader(box) => {
         let (kind, names, _) = Array::get(box, 0)
         if kind == 1 {
@@ -80,4 +70,15 @@ export fn checker_seed_import_call_headers(env: TypeEnv, imported: Array[(String
     }
   }
   out
+}
+
+/// Only the binding selected by typing can contribute parameter defaults.
+export fn checker_call_header_defaults(env: TypeEnv, name: String) -> Option[Array[Bool]] {
+  match env_lookup_binding(env, name) {
+    Some(binding) => match binding.origin {
+      BindingOriginDefaultedFunctionHeader(_, flags) => Some(flags),
+      _ => None
+    },
+    None => None
+  }
 }

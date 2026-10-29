@@ -686,61 +686,6 @@ export let dlh_module_tag: Array[String] = [""]
 /// back. One spelling, so the minter and the decoder cannot drift apart.
 export let dlh_hoisted_prefix: String = "__hoisted_lam_"
 
-/// #1500: `fname -> per-parameter "is optional"` flags, consulted by the ECall
-/// arm of `relabel_expr`. A module cell rather than another threaded parameter
-/// because `relabel_expr` recurses from ~30 sites; same shape as the other
-/// per-program tables in this file (`afe_field_types_cell`, `throw_kind_cell`).
-export let optional_param_tbl_cell: Array[Array[(String, Array[Bool])]] = array_empty()
-
-// #1952: block-local `let o = (a, b?) -> ...` is in `shadows`, so the
-// top-level table must not apply — but the local function still needs fill.
-// Innermost binding wins; leave pops with the matching `shadows` mark.
-export let optional_param_local_cell: Array[(String, Array[Bool])] = array_empty()
-
-/// #1899/#1952: the labels and optional flags of lambdas bound by a `let`
-/// INSIDE a block, which the two top-level tables above cannot see.
-///
-/// `collect_fn_param_labels` and `collect_optional_param_fns` both index
-/// top-level statements only, and the `ECall` arm of `relabel_expr` bails out
-/// for any callee found in `shadows`. That bail-out is right as far as it goes
-/// -- do not apply a top-level function's labels to a local binding that
-/// merely shares its name -- but it left a local labeled lambda with no table
-/// at all, so nothing reordered its arguments and nothing filled in its
-/// omitted optionals. Both failed silently at first: written-order arguments
-/// compiled and ran (#1899, P0), and an omitted optional reached the checker
-/// as `function arity mismatch` (#1952, P1).
-///
-/// A module cell for the same reason `optional_param_tbl_cell` is one:
-/// `relabel_expr` recurses from ~30 sites.
-///
-/// Each entry records the index its name occupies in `shadows`, and that is
-/// what makes shadowing work. A later binding of the same name -- `let s = 5`
-/// after `let s = (x~: Int) -> ...`, a parameter, a match binder -- pushes
-/// onto `shadows` at a higher index, so this entry is no longer the innermost
-/// binding of that name, the lookup below rejects it, and the old bail-out
-/// stands. Without the index a local lambda's labels would leak onto a
-/// completely unrelated value that happens to reuse its name.
-export let local_fn_tbl_cell: Array[(String, Array[String], Array[Bool], Int)] = array_empty()
-
-/// #1994: `let mut` lambda bindings whose scope does NOT agree on the labels,
-/// with the index the name occupies in `shadows` -- same innermost-binding
-/// discipline as `local_fn_tbl_cell` above. A labeled call to one of these has
-/// no resolution at all, so it must be reported rather than left to bind in
-/// written order, which is right only by luck.
-export let unstable_mut_tbl_cell: Array[(String, Int)] = array_empty()
-
-/// Every assignment that CHANGED a binding's labels, as (name, index in
-/// `shadows`). A subtree whose walk does not dominate what follows notes the
-/// length on entry and hands what its walk appended to
-/// `poison_branch_assignments` on the way out. An assignment that re-binds the
-/// same parameter names is not recorded: it changes nothing a labeled call can
-/// observe, so it must not cost the binding its labels.
-export let relabel_assigned_cell: Array[(String, Int)] = array_empty()
-
-/// Call sites drained by the checker (`unresolved_mut_labeled_calls`), as
-/// (callee name, callee offset).
-export let unresolved_mut_labeled_cell: Array[(String, Int)] = array_empty()
-
 // #2386: mode 7 answers modes 0 and 1 in ONE walk. The bits are recorded
 // here as the walk finds them; the walk stops early only once both are
 // known. dinsp_expr_census resets the cell and reads it.

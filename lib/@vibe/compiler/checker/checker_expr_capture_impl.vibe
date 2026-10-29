@@ -1,3 +1,11 @@
+import ./checker_call_placement.vibe {
+  checker_check_defaulted_value
+}
+
+import ./checker_call_arguments.vibe {
+  checker_labeled_argument_context
+}
+
 import ./checker_expr_numeric_observation.vibe {
   add_formal_for_type, float_operand_binop, record_add_formal
 }
@@ -6,11 +14,13 @@ import ./checker_call_header_flow.vibe {
   checker_assign_call_header,
   checker_bind_mut_call_header,
   checker_call_header_barrier,
+  checker_call_header_flow_begin,
   checker_call_header_merge,
   checker_call_header_probe_begin,
   checker_call_header_probe_end,
   checker_call_header_rewind,
-  checker_call_header_snapshot
+  checker_call_header_snapshot,
+  checker_seed_mut_call_headers
 }
 
 import ./checker_call_header.vibe {
@@ -45,6 +55,8 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   bound_flat_self_add,
+  call_placement_capture_begin,
+  call_placement_capture_end,
   env_bind,
   env_bind_mut,
   env_lookup,
@@ -699,6 +711,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       (CtUnknown, s, c)
     } else match env_lookup_unless_synthesized_builtin(env, railway_ident_lookup_name(name), ident_off) {
       Some(t) => {
+        checker_check_defaulted_value(env, railway_ident_lookup_name(name), ident_off, errors)
         let let_rhs = Array::length(spawn_value_let_rhs_cell) != 0
         Array::truncate(spawn_value_let_rhs_cell, 0)
         if !let_rhs && type_is_call_checked(s, t) {
@@ -2805,20 +2818,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
     },
     ELabeledArg(_, _, la_val) => {
-      // #986: desugar_labeled_args (run before checking — see check_program)
-      // RESOLVES labeled args whose callee's parameter names are known in this
-      // module: it reorders fully-labeled calls into declared order and strips
-      // the ELabeledArg wrappers, so those values reach the strict positional
-      // unification as plain args. An ELabeledArg that SURVIVES to this arm
-      // therefore has no label→position resolution available here — the
-      // callee is import-resolved (its param names live in another module,
-      // Codex P2-1 on #993), locally shadowed, a builtin with decorative flag
-      // labels (`sh_lines("ls", a = true)`), or an erroneous local shape that
-      // check_labeled_arg_names_stmts reports by name. Check the value for
-      // nested diagnostics but type the arg CtUnknown, so an unresolvable
-      // label is never falsely rejected by position.
-      let (_, la_s, la_c) = check_expr_capture(la_val, env, defs, s, c, errors, tytab, capture, lane)
-      (CtUnknown, la_s, la_c)
+      let (known, value_env) = checker_labeled_argument_context(env)
+      let (value_ty, la_s, la_c) = check_expr_capture(la_val, value_env, defs, s, c, errors, tytab, capture, lane)
+      (if known {
+        value_ty
+      } else {
+        CtUnknown
+      }, la_s, la_c)
     },
     _ => (CtUnknown, s, c)
   }
@@ -2890,9 +2896,17 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
   // pass `c = 0`), so a formal recorded by an earlier standalone check would
   // alias a fresh variable here. Not an internal entry: the checker recurses
   // through check_expr_capture.
+  checker_call_header_flow_begin()
+  call_placement_capture_begin()
   reset_eq_formal_vars()
   check_assignable_set_type_defs(defs)
-  check_expr_capture(expr, env, defs, s, c, errors, tytab, None, "Primary")
+  let checked_env = match env {
+    EnvEmpty => env,
+    _ => checker_seed_mut_call_headers(env)
+  }
+  let result = check_expr_capture(expr, checked_env, defs, s, c, errors, tytab, None, "Primary")
+  call_placement_capture_end()
+  result
 }
 
 /// #3554: `check_expr` for a check made INSIDE a running one -- the

@@ -44,10 +44,10 @@ any label is accepted and the arguments bind in the order they were written.
 the issue triage rules this is a P0, and it is a bug today whatever this ADR
 decides (#3651).
 
-**Labels are resolved by a syntactic pass with its own environment.**
+**Labels were resolved by a syntactic pass, removed in Phase 1c, with its own environment.**
 `normalize/desugar/labeled_args.vibe`, `binder_authority.vibe` and the
-label-name walk in `checker_stmt_labeled_name_check_expr.vibe` resolve a
-callee by name before the checker runs. That means they track shadowing,
+label-name walk in `checker_stmt_labeled_name_check_expr.vibe` resolved a
+callee by name before the checker ran. They tracked shadowing,
 local lambdas and `let mut` rebinding themselves (`local_fn_tbl`,
 `unstable_mut_tbl`). #986, #1899 and #1994 were each a silently misbound
 argument caused by that resolver. Reordering also has a cost the reader has
@@ -231,6 +231,13 @@ own sources use it.
 4. **Enforce.** The warning becomes an error. Retire `x~` and the labeled
    function-type spelling. Rewrite the cheatsheet's labeled-argument
    sections and `syntax.md` to the final state.
+
+Phase 1c (#3661) keeps the source argument order through checking. The
+checker publishes a placement on each call that needs labels or optional
+slots; lowering consumes its source indices and inserts `Some` / `None`.
+The syntactic resolver and paired binder-authority normalization are removed.
+Declaration reordering and opaque value-call behavior remain until Phase 4.
+Rowless build lanes refuse labeled calls and ask for checked source.
 
 ## Acceptance
 

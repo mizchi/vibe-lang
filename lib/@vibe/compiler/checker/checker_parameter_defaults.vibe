@@ -1,0 +1,106 @@
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+import @vibe/ast {
+  builtin_ref_offset
+}
+
+fn defaults_scrutinee(expr: Expr, name: String) -> Bool {
+  match expr {
+    EMatch(EIdent(found, _), _) => found == name,
+    _ => false
+  }
+}
+
+fn mark_defaults(expr: Expr, params: Array[(String, Option[TypeExpr])], flags: Array[Bool]) -> Unit {
+  match expr {
+    ELet(name, ECall(EFn(_, _, ascribed, _, _, EIdent(result, _)), args, _, _), rest, offset) => {
+      if offset == builtin_ref_offset() && result == "__asc" && Array::length(ascribed) == 1 && Array::length(args) == 1 && defaults_scrutinee(Array::get(args, 0), name) {
+        let mut i = 0
+        while i < Array::length(params) {
+          if Array::get(params, i).0 == name + "?" {
+            Array::set(flags, i, true)
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        mark_defaults(rest, params, flags)
+      } else {
+        ()
+      }
+    },
+    _ => ()
+  }
+}
+
+fn opens_default(expr: Expr) -> Bool {
+  match expr {
+    ELet(name, ECall(EFn(_, _, ascribed, _, _, EIdent(result, _)), args, _, _), _, offset) => offset == builtin_ref_offset() && result == "__asc" && Array::length(ascribed) == 1 && Array::length(args) == 1 && defaults_scrutinee(Array::get(args, 0), name),
+    _ => false
+  }
+}
+
+/// The parser's default unwrap prefix belongs to this declaration. Ordinary
+/// lambdas cannot declare defaults, and no spelling-based call table is needed.
+export fn checker_parameter_defaults(value: Expr) -> Option[Array[Bool]] {
+  match value {
+    EFn(_, _, params, _, _, body) => if opens_default(body) {
+      let flags = for _ in params {
+        false
+      }
+      mark_defaults(body, params, flags)
+      let mut any = false
+      for flag in flags {
+        any = any || flag
+      }
+      if any {
+        Some(flags)
+      } else {
+        None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+fn default_export_error(name: String) -> String {
+  "`" + name + "` has parameter defaults and is exported, but an importer cannot tell a default from a plain `x?` yet (#3440), so its call could not tell a written `None` from an omitted argument; keep the function private, or declare the parameter `x?: T` and match on the `Option`"
+}
+
+/// Export and method restrictions belong to the declaration that owns the
+/// defaults; they do not require a label-name walk through expression bodies.
+export fn checker_check_default_declarations(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SLet(exported, _, name, _, value) => match checker_parameter_defaults(value) {
+        Some(_) => if String::contains(name, "::") {
+          Array::push(errors, "`" + name + "` is a namespaced function with parameter defaults, which apply only to a direct call by name and not to a method call (`x.f(..)`); declare the parameter `x?: T` and match on the `Option`, or make it a plain top-level `fn`")
+        } else {
+          let mut published = exported
+          for other in stmts {
+            match other {
+              SExport(names) => {
+                for n in names {
+                  published = published || n == name
+                }; ()
+              },
+              _ => ()
+            }
+          }
+          if published {
+            Array::push(errors, default_export_error(name))
+          } else {
+            ()
+          }
+        },
+        None => ()
+      },
+      SModule(_, _, children) => checker_check_default_declarations(children, errors),
+      _ => ()
+    }
+  }
+  ()
+}
