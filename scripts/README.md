@@ -30,7 +30,6 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 
 ## Runtime & runners (wasm execution)
 - `wasm_vibe_host_runner.js` — **the** node host runner (fs/http/stdio imports)
-- `wasm_http_host_runner.js` — HTTP-host variant
 - `run_wasm_vibe_host_runner.sh` — wrapper (most-referenced sibling)
 - `wasmtime_run.sh` / `wasmtime_bin.sh` — wasmtime invocation + flags
 - `run_check_*_component.sh` / `run_cli_preview2_component.sh`
@@ -57,15 +56,15 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - **Runtime / mem / perf:** `test_vibe_{alloc_site,mem,bench}.sh`,
   `test_gc_selfbuild.sh`, `test_name_section.sh`, `test_simd_emit_wasmtime.sh`
 - **Host ABI / library / install:** `test_host_abi.js`, `test_vibe_library.sh`,
-  `test_vibe_cli_install.sh`, `test_vibe_install_hello.sh` (#1949 first-program
+  `test_vibe_install_hello.sh` (#1949 first-program
   smoke, no repo `lib/`), `test_vibe_root.sh` (#2675 project root and
   `.vibe/build/` contract), `test_wasm_vibe_wasmtime.sh`
 - **Async / http / process:** `test_real_async_host.sh`, `test_wasi_http_p3_full_gate.sh`
 
 ## Coverage
 - `coverage_{corpus,driver,drivers,features,fn,manifestcache,merge,multimodule,suite,testexec,unittests}.*`
-  — the selfhost-suite coverage lane. `coverage_wasm_{source,std}.mjs`,
-  `coverage_{eval,scratch}_sidecar.sh`, `coverage_gen_errcorpus.sh`
+  — the selfhost-suite coverage lane. `coverage_wasm_std.sh` (+ `_test`),
+  `coverage_gen_errcorpus.sh`
 - `coverage_acc_tool_run.sh` / `coverage_local_merge_run.sh` — cached-build
   wrappers for `lib/@vibe/cli/coverage_acc_tool.vibe` (global-branch-id
   `acc.json` merge + sum/len stat) and `lib/@vibe/cli/coverage_local_merge.vibe`
@@ -82,7 +81,10 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   `bench_vibe_lsp.js`
 
 ## Check / lint / gate / repro
-- `check_{bundle_sync,module_source_sync,portable_boundary}.sh`
+- `check_portable_boundary.sh`
+- `check_scripts_readme.sh` (+ `_test`) — every script THIS file names is in
+  the tree (#2001): literal names, one brace group, and `*` patterns are all
+  read; a name for a script that is gone fails
 - `check_vibe_fmt.sh` (+ `vibe_fmt_allowlist.txt`) — CI-enforced `vibe fmt`
   gate (`vibe-fmt-check` job, required): every `lib/**/*.vibe` file must be a
   `vibe_fmt.sh --check` fixpoint unless listed in the allowlist, which now
@@ -94,22 +96,21 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   `fixtures/**/*.vibe` carrying `test` blocks must run in a lane or be listed
   with a reason. `unit_test_runner.sh` discovers committed `*_test.vibe`
   files directly. Runs at the top of `compiler_gate.sh` before the selfbuild.
-- `check_fixture_snapshots.vibex` (+ `_test.sh`) — rejects `__DATA__` tails and
+- `check_fixture_snapshots.vibex` (+ `check_fixture_snapshots_test.sh`) — rejects `__DATA__` tails and
   `.diag` expectations under `fixtures/`. Runtime and warning expectations
   live in executable `inspect` snapshots (#1571). Invoked by the fixture
   execution check; its mutation tests run in bootstrap preflight and the
   pre-commit self-test.
-- `check_import_reservation.vibex` (+ `_test.sh`) — every user-callable
+- `check_import_reservation.vibex` (+ `check_import_reservation_test.sh`) — every user-callable
   capability spelling reserves the host import it lowers onto (#2905).
 - `lint_architecture_debt.sh` (+ `architecture_debt_{rules.tsv,allowlist.txt}`),
   `lint_tracked_experiment_names.sh`
 - `verify_rc.sh`, `rc_corpus_parity.sh`, `rc_cutover_readiness.sh`
-- `monitor_wasm_bundle_size.sh`, `repro_715_rc_free_list_corruption.sh`
 
 ## Install / release
 - The public curl and checkout installer is owned by `install/install.sh`, outside this internal scripts directory.
 - `install_wasmtime_release.sh`
-- `build_release_assets.sh`, `build_wasi_http_p3_full_adapter.sh`, `precompile.sh`
+- `build_release_assets.sh`, `build_wasi_http_p3_full_adapter.sh`
 
 ## Generators / codegen data
 - `emit_async_lift_fixture.sh`
