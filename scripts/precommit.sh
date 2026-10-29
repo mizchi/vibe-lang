@@ -29,5 +29,10 @@ VIBE_GUEST_PROFILE_LINT_ROOT="$STAGED_ROOT" \
 VIBE_DOC_CITATION_DOCS_ROOT="$STAGED_ROOT" \
   VIBE_DOC_CITATION_REPO_ROOT="$STAGED_ROOT" \
   bash "$SCRIPT_DIR/check_doc_path_citations.sh"
+# scripts/README.md names scripts; scripts get deleted. Same staged-tree rule
+# as the citation gate: a commit that deletes a script and its README mention
+# together passes, one that deletes only the script does not (#2001).
+VIBE_SCRIPTS_README_ROOT="$STAGED_ROOT" \
+  bash "$SCRIPT_DIR/check_scripts_readme.sh"
 
 echo "pre-commit: review-derived lint gates passed"
