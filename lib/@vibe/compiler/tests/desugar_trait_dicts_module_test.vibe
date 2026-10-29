@@ -15,6 +15,10 @@ import @vibe/compiler/syntax {
   lex, parse_program, print_stmt
 }
 
+import @vibe/compiler/checker {
+  check_program
+}
+
 // #2388: the per-module entry of the trait-dictionary pass. A dependency file
 // declares a trait, an impl and a bounded-generic function; the module file
 // declares a struct and a bounded-generic function that calls the
@@ -38,7 +42,7 @@ fn own_src() -> String {
 // the labeled function from a non-capturing effectful local lambda, which
 // `desugar_hoist_local_lambdas` promotes to a top-level function.
 fn dep2_src() -> String {
-  "export fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nexport fn apply(f: () -> Int) -> Int {\n  f()\n}\n"
+  "export effect Log {\n  Emit(String) -> Unit\n}\n\nexport fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nexport fn apply(f: () -> Int) -> Int {\n  f()\n}\n"
 }
 
 fn own2_src() -> String {
@@ -137,15 +141,27 @@ test "generated local names restart at every declaration, so a module compiled a
   inspect(render_named(own, "fail_own") == whole_named("fail_own"), content = "true")
 }
 
-fn whole2_named(name: String) -> String with Exception {
+/// The two files as one checked program. Lowering applies the checker's
+/// argument placements (ADR-0120, #3661), so what reaches it is checked.
+fn checked2() -> Array[Stmt] with Exception {
   let stmts = parse_program(lex(String::concat(dep2_src(), own2_src())))
+  let _ = check_program(stmts)
+  stmts
+}
+
+fn whole2_named(name: String) -> String with Exception {
+  let stmts = checked2()
   desugar_trait_dicts(stmts)
   render_named(stmts, name)
 }
 
 test "a hoisted local lambda's labeled call is reordered in a per-module run" {
-  let ctx = parse_program(lex(dep2_src()))
-  let own = parse_program(lex(own2_src()))
+  // The same checked program, split back into the dependency's statements
+  // (the read-only context) and the module's own.
+  let checked = checked2()
+  let ctx_len = Array::length(parse_program(lex(dep2_src())))
+  let ctx = Array::slice(checked, 0, ctx_len)
+  let own = Array::slice(checked, ctx_len, Array::length(checked))
   let synth = desugar_trait_dicts_module(own, ctx, "", [], [])
   // #2388: the hoisted function goes next to the declaration it came out of,
   // so it is one of the module's OWN statements and the synthesized set stays

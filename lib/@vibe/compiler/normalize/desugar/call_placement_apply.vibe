@@ -229,7 +229,21 @@ fn placement_bind_written(callee: Expr, placed: Array[Expr], written: Array[Expr
     }
     pj = pj + 1
   }
-  let mut body = ECall(callee, args, off, cell)
+  // A method call's receiver is written before its arguments, so one that
+  // can do or observe something is bound first, ahead of the argument
+  // temporaries; the call reads it back by name.
+  let (call_callee, receiver) = match callee {
+    EDot(obj, method, dot_off, field_off) => if placement_effect_class(obj) > 0 {
+      let n = Array::get(placement_tmp_next, 0)
+      Array::set(placement_tmp_next, 0, n + 1)
+      let rname = String::concat("__labeled_arg$", __to_string(n))
+      (EDot(EIdent(rname, 0 - 1), method, dot_off, field_off), Some((rname, obj)))
+    } else {
+      (callee, None)
+    },
+    _ => (callee, None)
+  }
+  let mut body = ECall(call_callee, args, off, cell)
   let mut w = Array::length(written)
   while w > 0 {
     w = w - 1
@@ -240,7 +254,10 @@ fn placement_bind_written(callee: Expr, placed: Array[Expr], written: Array[Expr
       ()
     }
   }
-  body
+  match receiver {
+    Some((rname, obj)) => ELet(rname, obj, body, 0 - 1),
+    None => body
+  }
 }
 
 fn placement_lowered_call(callee: Expr, placed: Array[Expr], written: Array[Expr], mode: Int, slots: Array[Int], off: Int, written_cell: Array[Int]) -> Expr {

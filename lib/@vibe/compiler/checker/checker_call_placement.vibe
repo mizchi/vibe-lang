@@ -25,7 +25,12 @@ import @vibe/compiler/core {
   call_placement_is_canonical,
   call_placement_is_placed,
   call_placement_record,
-  canonical_builtin_name
+  canonical_builtin_name,
+  env_lookup_binding,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -277,6 +282,87 @@ fn placement_default_errors(fname: String, off: Int, args: Array[Expr], names: A
   }
 }
 
+/// True when the placement moves an argument past one written after it.
+fn placement_reorders(slots: Array[Int]) -> Bool {
+  let mut last = -1
+  let mut moved = false
+  for slot in slots {
+    if slot > 0 {
+      let source = slot / 2 - 1
+      moved = moved || source < last
+      if source > last {
+        last = source
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  }
+  moved
+}
+
+/// The first `let mut` binding with a tracked declaration header that `e`
+/// assigns, or "" when it assigns none.
+fn placement_assigned_header(e: Expr, env: TypeEnv) -> String {
+  let here = match e {
+    EAssign(name, _, _, _) => name,
+    EAssignOp(name, _, _, _, _) => name,
+    _ => ""
+  }
+  let tracked = String::length(here) > 0 && match env_lookup_binding(env, here) {
+    Some(binding) => match binding.origin {
+      BindingOriginMutableFunctionHeader(_) => true,
+      _ => false
+    },
+    None => false
+  }
+  if tracked {
+    here
+  } else {
+    let mark = expr_children_push(e)
+    let end = expr_children_top()
+    let mut found = ""
+    let mut i = mark
+    while i < end && String::length(found) == 0 {
+      found = placement_assigned_header(expr_child_at(i), env)
+      i = i + 1
+    }
+    expr_children_pop(mark)
+    found
+  }
+}
+
+/// Codex on #3661: the checker types a placed call's arguments in declared
+/// order, which is how it follows a `let mut` lambda's parameter names from
+/// one assignment to the next. The call evaluates them in written order. So
+/// when a placement moves arguments past each other and one of them assigns
+/// such a binding, a labeled call to it in a sibling argument would be placed
+/// by the names it had before an assignment that runs first. Refused, naming
+/// the edit.
+fn placement_reorder_flow_error(fname: String, off: Int, args: Array[Expr], slots: Array[Int], env: TypeEnv) -> Option[String] {
+  if placement_reorders(slots) {
+    let mut found: Option[String] = None
+    let mut ai = 0
+    while ai < Array::length(args) && found == None {
+      let assigned = placement_assigned_header(placement_value(Array::get(args, ai)), env)
+      if String::length(assigned) > 0 {
+        let which = match Array::get(args, ai) {
+          ELabeledArg(label, _, _) => "`" + label + " = ..`",
+          _ => "argument " + __to_string(ai + 1)
+        }
+        found = Some("bind " + which + " to a `let` before calling " + fname + ": it assigns `" + assigned + "`, the call runs its arguments in written order but binds them by name, and a labeled call to `" + assigned + "` beside it would be placed by the parameter names it had before that assignment" + placement_marker(off, String::length(fname)))
+      } else {
+        ()
+      }
+      ai = ai + 1
+    }
+    found
+  } else {
+    None
+  }
+}
+
 fn placement_uncertain_error(fname: String, off: Int) -> String {
   "cannot resolve labeled arguments for " + fname + ": a branch, loop or closure assigns it a lambda with different parameter names, so a label does not name a position here — call " + fname + " positionally, or give every lambda assigned to " + fname + " the same parameter names" + placement_marker(off, String::length(fname))
 }
@@ -423,7 +509,7 @@ fn placement_builtin(fname: String, off: Int, args: Array[Expr], call_off: Int, 
 /// Place `args` against a declaration header. `fname` / `off` name the callee
 /// for diagnostics. Returns the arguments to type: placed when the header
 /// places the call, else the written ones minus in-position labels.
-fn placement_with_header(fname: String, off: Int, args: Array[Expr], names: Array[String], call_off: Int, cell: Array[Int], errors: Array[String]) -> Array[Expr] {
+fn placement_with_header(fname: String, off: Int, args: Array[Expr], names: Array[String], call_off: Int, cell: Array[Int], env: TypeEnv, errors: Array[String]) -> Array[Expr] {
   let labeled = placement_label_count(args)
   if labeled == 0 && !placement_has_optional(names) {
     placement_forget(cell)
@@ -433,6 +519,10 @@ fn placement_with_header(fname: String, off: Int, args: Array[Expr], names: Arra
       Some(slots) => {
         let errs: Array[String] = []
         placement_default_errors(fname, off, args, names, slots, errs)
+        match placement_reorder_flow_error(fname, off, args, slots, env) {
+          Some(message) => Array::push(errs, message),
+          None => ()
+        }
         for e in errs {
           placement_push_error(errors, e)
         }
@@ -473,7 +563,7 @@ export fn checker_place_call(expr: Expr, env: TypeEnv, errors: Array[String]) ->
           ECall(callee, placement_builtin(name, off, args, call_off, cell, errors), call_off, cell)
         } else {
           match checker_call_header_names(env, name) {
-            Some(names) => ECall(callee, placement_with_header(name, off, args, names, call_off, cell, errors), call_off, cell),
+            Some(names) => ECall(callee, placement_with_header(name, off, args, names, call_off, cell, env, errors), call_off, cell),
             None => {
               if labeled > 0 && checker_call_header_uncertain(env, name) {
                 placement_push_error(errors, placement_uncertain_error(name, off))
@@ -508,7 +598,7 @@ export fn checker_place_method_args(qualified: String, off: Int, args: Array[Exp
       } else {
         all_names
       }
-      placement_with_header(qualified, off, args, names, call_off, cell, errors)
+      placement_with_header(qualified, off, args, names, call_off, cell, env, errors)
     },
     None => {
       checker_place_opaque(qualified, off, args, call_off, cell, errors)
