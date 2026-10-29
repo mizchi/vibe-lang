@@ -30,7 +30,6 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 
 ## Runtime & runners (wasm execution)
 - `wasm_vibe_host_runner.js` — **the** node host runner (fs/http/stdio imports)
-- `wasm_http_host_runner.js` — HTTP-host variant
 - `run_wasm_vibe_host_runner.sh` — wrapper (most-referenced sibling)
 - `wasmtime_run.sh` / `wasmtime_bin.sh` — wasmtime invocation + flags
 - `run_check_*_component.sh` / `run_cli_preview2_component.sh`
