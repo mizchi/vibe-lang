@@ -1,0 +1,57 @@
+// ADR-0120 (#3661): a method call is placed at the `T::m` binding the checker
+// resolves it to. The receiver fills the first parameter; the labels place the
+// rest, and the arguments still run in the order they are written.
+
+struct Meter {
+  base: Int
+}
+
+fn Meter::sub(m: Meter, a: Int, b: Int) -> Int {
+  m.base + a - b
+}
+
+fn Meter::pick(m: Meter, a: Int, b?: Int) -> Int {
+  match b {
+    Some(v) => m.base + a - v,
+    None => m.base + a
+  }
+}
+
+fn note(log: Array[String], s: String, v: Int) -> Int {
+  Array::push(log, s)
+  v
+}
+
+test "a method call binds its labels by name" {
+  let m = Meter::{ base: 100 }
+  inspect(m.sub(b = 1, a = 10), content = "109")
+  inspect(m.sub(a = 10, b = 1), content = "109")
+  inspect(m.sub(10, 1), content = "109")
+}
+
+test "a method call omits and wraps an optional argument" {
+  let m = Meter::{ base: 100 }
+  inspect(m.pick(a = 5), content = "105")
+  inspect(m.pick(b = 2, a = 5), content = "103")
+  inspect(m.pick(5, 2), content = "103")
+}
+
+test "a method call evaluates its labeled arguments in written order" {
+  let m = Meter::{ base: 0 }
+  let log: Array[String] = []
+  let r = m.sub(b = note(log, "b", 1), a = note(log, "a", 10))
+  inspect(String::join(log, ","), content = "b,a")
+  inspect(r, content = "9")
+}
+
+fn make(log: Array[String]) -> Meter {
+  Array::push(log, "recv")
+  Meter::{ base: 0 }
+}
+
+test "a method call evaluates its receiver before reordered arguments" {
+  let log: Array[String] = []
+  let r = make(log).sub(b = note(log, "b", 1), a = note(log, "a", 10))
+  inspect(String::join(log, ","), content = "recv,b,a")
+  inspect(r, content = "9")
+}
