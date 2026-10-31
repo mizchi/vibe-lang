@@ -1,0 +1,87 @@
+// ADR-0120 Phase 2a (#3679): `vibe refactor add-labels` inserts the labels the
+// checker resolves, and leaves alone the calls ADR-0120 keeps positional.
+
+import @vibe/compiler/checker {
+  check_program, label_sites_begin, label_sites_end
+}
+
+import @vibe/compiler/refactor {
+  AddLabelsResult, add_labels, add_labels_positional_none, add_labels_positional_receiver, add_labels_positional_receiver_single
+}
+
+import @vibe/parser {
+  lex_with_offsets, parse_program_located
+}
+
+fn run(source: String, policy: Int) -> AddLabelsResult with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
+  label_sites_begin()
+  let _ = check_program(stmts)
+  let sites = label_sites_end()
+  add_labels("t.vibe", source, 0, sites, policy)
+}
+
+fn edited(source: String, policy: Int) -> String with Exception {
+  run(source, policy).source
+}
+
+/// The edited program still checks, and a second run makes no edits.
+fn settled(source: String, policy: Int) -> Bool with Exception {
+  let once = edited(source, policy)
+  let twice = run(once, policy)
+  twice.labels == 0 && twice.source == once
+}
+
+fn sub_decl() -> String {
+  "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n"
+}
+
+test "a call to a declared function gets its parameter names" {
+  let source = sub_decl() + "fn main() -> Int {\n  sub(10, 3)\n}\n"
+  inspect(edited(source, add_labels_positional_receiver_single), content = "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\nfn main() -> Int {\n  sub(x = 10, y = 3)\n}\n")
+  inspect(settled(source, add_labels_positional_receiver_single), content = "true")
+}
+
+test "the slot policy decides whether a lone parameter is labeled" {
+  let source = "fn neg(x: Int) -> Int {\n  0 - x\n}\nfn main() -> Int {\n  neg(1)\n}\n"
+  inspect(run(source, add_labels_positional_receiver_single).labels, content = "0")
+  inspect(run(source, add_labels_positional_receiver).labels, content = "1")
+  inspect(edited(source, add_labels_positional_none), content = "fn neg(x: Int) -> Int {\n  0 - x\n}\nfn main() -> Int {\n  neg(x = 1)\n}\n")
+}
+
+test "a receiver stays positional, written or implied" {
+  let source = "struct P {\n  v: Int\n}\nfn P::add(p: P, n: Int) -> Int {\n  p.v + n\n}\nfn main() -> Int {\n  let p = P::{ v: 1 }\n  P::add(p, 2) + p.add(3)\n}\n"
+  // The method call has no written receiver, so it is labeled now. The
+  // qualified call would mix `p` with `n = 2`, which waits for `_` (#3681).
+  let result = run(source, add_labels_positional_receiver)
+  inspect(result.source, content = "struct P {\n  v: Int\n}\nfn P::add(p: P, n: Int) -> Int {\n  p.v + n\n}\nfn main() -> Int {\n  let p = P::{ v: 1 }\n  P::add(p, 2) + p.add(n = 3)\n}\n")
+  inspect(result.deferred_calls, content = "1")
+  inspect(result.deferred_labels, content = "1")
+  inspect(settled(source, add_labels_positional_receiver), content = "true")
+}
+
+test "a builtin is labeled at its named slots only" {
+  let source = "fn main() -> Int {\n  let xs = [1, 2]\n  let s = String::concat(\"a\", \"b\")\n  Array::get(xs, 0) + String::length(s)\n}\n"
+  inspect(edited(source, add_labels_positional_none), content = "fn main() -> Int {\n  let xs = [1, 2]\n  let s = String::concat(\"a\", \"b\")\n  Array::get(xs, at = 0) + String::length(s)\n}\n")
+}
+
+test "calls ADR-0120 keeps positional are left alone and counted" {
+  let source = sub_decl() + "fn main() -> Int {\n  let f = (a: Int, b: Int) -> Int { a - b }\n  let piped = 10 |> sub(3)\n  f(1, 2) + piped + sub(x = 1, y = 2)\n}\n"
+  let result = run(source, add_labels_positional_none)
+  inspect(result.source == source, content = "true")
+  inspect(result.through_local, content = "1")
+  inspect(result.other_shape, content = "1")
+  inspect(result.already_labeled, content = "1")
+}
+
+test "an optional parameter is labeled where it is written" {
+  let source = "fn g(a: Int, b?: Int) -> Int {\n  match b {\n    Some(v) => a + v,\n    None => a\n  }\n}\nfn main() -> Int {\n  g(1, 2) + g(1)\n}\n"
+  inspect(edited(source, add_labels_positional_none), content = "fn g(a: Int, b?: Int) -> Int {\n  match b {\n    Some(v) => a + v,\n    None => a\n  }\n}\nfn main() -> Int {\n  g(a = 1, b = 2) + g(a = 1)\n}\n")
+}
+
+test "layout and comments around the arguments survive" {
+  let source = sub_decl() + "fn main() -> Int {\n  sub(\n    // the minuend\n    10,\n    sub(5, 2)\n  )\n}\n"
+  inspect(edited(source, add_labels_positional_none), content = "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\nfn main() -> Int {\n  sub(\n    // the minuend\n    x = 10,\n    y = sub(x = 5, y = 2)\n  )\n}\n")
+  inspect(settled(source, add_labels_positional_none), content = "true")
+}

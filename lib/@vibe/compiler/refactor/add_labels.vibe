@@ -15,7 +15,11 @@
 //   argument (a pipe `x |> f(y)` fills one outside the parentheses, and a
 //   call inside an interpolation has no token of its own);
 // - the callee is a local `let` lambda rather than a declaration, which
-//   ADR-0120 keeps positional.
+//   ADR-0120 keeps positional;
+// - labeling it would leave a declared function's call mixing positional and
+//   labeled arguments, which the checker refuses until the declaration can
+//   mark its positional slots `_` (#3681). Such a call is reported with the
+//   labels it will take, so a policy can be measured before `_` exists.
 
 import @vibe/compiler/checker {
   LabelSite, label_site_builtin, label_site_declared
@@ -281,6 +285,8 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
   let mut shape = 0
   let mut partial = 0
   let mut local = 0
+  let mut deferred = 0
+  let mut deferred_labels = 0
   for site in sites {
     let mut labeled = 0
     for flag in site.labeled {
@@ -311,10 +317,29 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
         i = i + 1
       }
       let mut any = false
+      let mut kept = false
       for w in wanted {
         any = any || String::length(w) > 0
+        kept = kept || String::length(w) == 0
       }
-      if any {
+      // A declared function's call may not mix positional and labeled
+      // arguments until its declaration can mark the positional slot `_`
+      // (#3681), so such a call is deferred and only counted. A builtin
+      // already accepts a label at its named slots beside positional ones.
+      if any && kept && site.kind != label_site_builtin {
+        let mut wanted_labels = 0
+        for w in wanted {
+          if String::length(w) > 0 {
+            wanted_labels = wanted_labels + 1
+          } else {
+            ()
+          }
+        }
+        deferred = deferred + 1
+        deferred_labels = deferred_labels + wanted_labels
+        let (line, col) = offset_to_line_col(source, site.offset - offset_delta)
+        Array::push(lines, path + ":" + __to_string(line) + ":" + __to_string(col) + ": " + site.callee + " +" + __to_string(wanted_labels) + " after `_` (#3681)")
+      } else if any {
         let k = add_labels_token_at(starts, site.offset - offset_delta)
         let paren = if k >= 0 {
           add_labels_open_paren(tokens, k)
@@ -369,5 +394,16 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
   }
   StringBuilder::push(out, source[prev: String::length(source)])
   let text = StringBuilder::freeze(out)
-  AddLabelsResult::{ source: text, calls: calls, labels: labels, already_labeled: done, partly_labeled: partial, through_local: local, other_shape: shape, lines: lines }
+  AddLabelsResult::{
+    source: text,
+    calls: calls,
+    labels: labels,
+    already_labeled: done,
+    partly_labeled: partial,
+    through_local: local,
+    other_shape: shape,
+    deferred_calls: deferred,
+    deferred_labels: deferred_labels,
+    lines: lines
+  }
 }
