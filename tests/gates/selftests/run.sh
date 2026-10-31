@@ -68,7 +68,9 @@ in_shard() { [ $(($1 % shard_n)) -eq "$shard_i" ]; }
 echo "[compiler-gate] selftests: every gate self-test, serially"
 echo "  shard $shard_i/$shard_n"
 VIBE_GATE_SELF_TESTS_SHARD="$shard_i/$shard_n" bash "$ROOT_DIR/scripts/check_gate_self_tests.sh"
-if in_shard 0; then bash "$ROOT_DIR/scripts/check_gate_self_tests_test.sh"; fi
+# The discovery loop already owns check_gate_self_tests_test.sh.
+# This runtime probe guards the real release DAG and CI shard partition.
+if in_shard 0; then bash "$ROOT_DIR/tests/gates/release_selftests_test.sh"; fi
 # The gate LIBRARY's own helpers. check_gate_self_tests.sh discovers companions
 # by globbing scripts/, so anything under tests/gates/ is invisible to it --
 # and `gate_split_cli_cache_is_current` decides WHICH compiler the #2305 lane

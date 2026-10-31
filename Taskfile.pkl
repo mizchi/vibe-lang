@@ -550,16 +550,26 @@ local testVibeMdGuard = new Task {
 // ADR-0108 / docs/user/reference/source-range-contract.md: six editor-query surfaces share one
 // position unit. A surface that switched units would fail SILENTLY (a wrong
 // column answers about an earlier position, and empty reads as clean).
-local checkSourceRangeContract =
-  scriptTask("check-source-ranges", "scripts/check_source_range_contract.sh")
+// The standalone query must answer from this checkout's compiler.
+local checkSourceRangeContract = new Task {
+  name = "check-source-ranges"
+  cmd = "bash scripts/check_source_range_contract.sh"
+  inputs { ...compilerProbeInputs; ...scriptSources }
+  deps { selfhostGeneration }
+}
 local checkSourceFileSize = new Task {
   name = "check-source-file-size"
   description = "limit maintained source files to 3000 lines"
   cmd = "node scripts/check_source_file_size.mjs"
   cache = false
 }
-local testCheckSourceRangeContract =
-  scriptTask("test-check-source-ranges", "scripts/check_source_range_contract_test.sh")
+// The standalone query must answer from this checkout's compiler.
+local testCheckSourceRangeContract = new Task {
+  name = "test-check-source-ranges"
+  cmd = "bash scripts/check_source_range_contract_test.sh"
+  inputs { ...compilerProbeInputs; ...scriptSources }
+  deps { selfhostGeneration }
+}
 // #2134: the host's JS stack, not the compiler, caps how many top-level
 // declarations a module may have (~1300 on node's default). A VALID file
 // simply stopped compiling. The gate generates unique content every run --
@@ -2374,6 +2384,64 @@ local selfhostOnlyGate = new Task {
     // Lane entrypoints and their Python mutation tests affect this verdict.
     "tests/gates/**/*.sh"
     "tests/gates/**/*.py"
+    // The ownership probe executes the actual task graph.
+    "Taskfile.pkl"
+    ".github/pkfire-version"
+    "scripts/gate_self_test*.txt"
+    // Preserve every declared input of the delegated standalone tasks.
+    "integrations/treesitter-vibe/generated.sha256"
+    "integrations/treesitter-vibe/src/parser.c"
+    "integrations/treesitter-vibe/test/corpus/*.txt"
+    "integrations/treesitter-vibe/test/fixtures/*.wasm"
+    "integrations/zed-vibe/grammars/vibe.wasm"
+    "playground/package.json"
+    "playground/pnpm-lock.yaml"
+    "playground/public/tree-sitter-vibe.wasm"
+    "runtime/vibe"
+    "scripts/README.md"
+    "scripts/check_doc_classification.sh"
+    "scripts/check_doc_classification_test.sh"
+    "scripts/check_doc_path_citations.sh"
+    "scripts/check_doc_path_citations_test.sh"
+    "scripts/check_scripts_readme.sh"
+    "scripts/check_scripts_readme_test.sh"
+  }
+  deps { ensureViberun }
+}
+
+// Narrow lane/shard selectors remain supported by compiler-gate. The release
+// entry always owns the complete suite, even when called from a CI lane or a
+// scratch self-test environment. Unset RUN so its default is 1 without adding
+// an irrelevant variable to the seed-validation receipt's environment.
+local releaseCompilerGate = new Task {
+  name = "release-compiler-gate"
+  cmd =
+    "env -u COMPILER_GATE_LANE -u COMPILER_GATE_SELFTESTS_SHARD -u VIBE_GATE_SELF_TESTS_SHARD -u VIBE_GATE_SELF_TESTS_RUN -u VIBE_GATE_SELF_TEST_ROOT -u VIBE_GATE_SELF_TEST_BASELINE -u VIBE_GATE_SELF_TEST_BASELINE_FAILING bash scripts/compiler_gate.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "tests/gates/**/*.sh"
+    "tests/gates/**/*.py"
+    "Taskfile.pkl"
+    ".github/pkfire-version"
+    "scripts/gate_self_test*.txt"
+    // Preserve every declared input of the delegated standalone tasks.
+    "integrations/treesitter-vibe/generated.sha256"
+    "integrations/treesitter-vibe/src/parser.c"
+    "integrations/treesitter-vibe/test/corpus/*.txt"
+    "integrations/treesitter-vibe/test/fixtures/*.wasm"
+    "integrations/zed-vibe/grammars/vibe.wasm"
+    "playground/package.json"
+    "playground/pnpm-lock.yaml"
+    "playground/public/tree-sitter-vibe.wasm"
+    "runtime/vibe"
+    "scripts/README.md"
+    "scripts/check_doc_classification.sh"
+    "scripts/check_doc_classification_test.sh"
+    "scripts/check_doc_path_citations.sh"
+    "scripts/check_doc_path_citations_test.sh"
+    "scripts/check_scripts_readme.sh"
+    "scripts/check_scripts_readme_test.sh"
   }
   deps { ensureViberun }
 }
@@ -2383,7 +2451,9 @@ local releaseCheck = new Task {
   description =
     "selfhost-only sign-off: bundle/module-source sync + seed->stage1->stage2->stage3 fixpoint + compile/run validation"
   deps {
-    selfhostOnlyGate
+    releaseCompilerGate
+    // Host/query companions have one owner in the selftests lane (#3669).
+    // Keep allocator-dependent sibling variants and all standalone tasks.
     testViberunNativeCache
     testBundleSourceFunctions
     testSeedValidationReuse
@@ -2429,66 +2499,45 @@ local releaseCheck = new Task {
     // so the row has something watching it.
     checkTaskEnvSanitized
     checkGateWiring
-    testCheckGateWiring
     checkGatePortability
-    testCheckGatePortability
     checkGeneratedStampReport
-    testCheckGeneratedStampReport
     checkBenchCorpus
-    testCheckBenchCorpus
     checkBodyCacheDiscard
     testCheckBodyCacheDiscard
     checkDaemonMemoryDiagnostic
     testCheckDaemonMemoryDiagnostic
     checkTreesitterArtifacts
-    testCheckTreesitterArtifacts
     checkTreesitterWasmCorpus
-    testCheckTreesitterWasmCorpus
     checkDocPathCitations
-    testDocPathCitations
     checkDocClassification
-    testDocClassification
     checkScriptsReadme
-    testCheckScriptsReadme
-    testLintArchitecture
     testLintReviewRegressions
     testSessionStartGrep
     testVibeGrepBin
-    testCheckBuiltinEmits
     testPreCommit
-    testCheckMethodStyleNaming
     checkMethodStyleNaming
     testNormalizerScalarScan
     testDesugarModuleLayout
-    testCheckCanonicalIteratorCalls
     checkCanonicalIteratorCalls
-    testCheckAstBinaryTags
     checkAstBinaryTags
     testCheckFreezeSurface
     checkFreezeSurface
-    testCheckVersionLadder
     checkVersionLadder
-    testCheckBookLinks
     checkBookLinks
     checkBookOrder
     checkBookSkipBlocks
     testVibeMdGuard
     checkSourceRangeContract
     checkSourceFileSize
-    testCheckSourceRangeContract
     checkDeclarationScale
     checkCliLineTermination
     checkCheatsheetSignatures
     checkBuiltinShadowing
     testCheckBuiltinShadowing
     checkDocumentedDecls
-    testCheckDocumentedDecls
     checkGrepMemoryBudget
-    testCheckGrepMemoryBudget
     checkGrepChunkedSweep
-    testCheckGrepChunkedSweep
     checkGrepDriverParity
-    testCheckGrepDriverParity
     checkPackageSiblingScope
     checkDocCommands
     checkRcDefault
@@ -2505,10 +2554,8 @@ local releaseCheck = new Task {
     testCheckHostRemoveParity
     testCheckHostSemanticParity
     checkGcHostImportCounts
-    testCheckGcHostImportCounts
     checkImportReservation
     testCheckImportReservation
-    testCheckHostRuntimeContract
     testHostMemoryGrowth
     testProfileCompile
     testSelfbuildMeasurement
@@ -2516,7 +2563,6 @@ local releaseCheck = new Task {
     checkCompileOnlyLanes
     testCheckCompileOnlyLanes
     checkTaskInputs
-    testCheckTaskInputs
     doctestGated
     vibeMdTutorialGated
     checkTutorialTranslationParity
@@ -2833,6 +2879,7 @@ tasks {
   releaseSelfhostGates
   selfhostGate
   selfhostOnlyGate
+  releaseCompilerGate
   releaseCheck
   checkRelease
 }
