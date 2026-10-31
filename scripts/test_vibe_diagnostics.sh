@@ -246,8 +246,8 @@ else
 fi
 
 # Codex on #3039: a DIRECT adapter-protocol run of the compiler
-# (`viberun cli.wasm <in> <out>`, what scripts/vibe_pkg.sh does in launcher
-# mode) gets the checker's overflow diagnostic when the caller names the
+# (`viberun cli.wasm <in> <out>`, what scripts/parallel_warm_pool.sh does)
+# gets the checker's overflow diagnostic when the caller names the
 # sidecar with VIBE_CRASH_DIAG_OUT. Nothing the module exports can vouch for
 # it being the compiler (#3031), so the caller does.
 deepdirect_cli="$(find "$VIBE_HOME" -type f -name 'vibe-cli.wasm' 2>/dev/null | head -1)"

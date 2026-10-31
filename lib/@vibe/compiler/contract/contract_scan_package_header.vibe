@@ -1659,6 +1659,34 @@ export fn extract_require_pins(source: String) -> (Array[(String, String, String
   (Array::slice(pins, 0, Array::length(pins)), blanked)
 }
 
+/// #3673: (name, constraint, pin, source) for every `require` line, in line
+/// order. The source is the spec `vibe add` recorded in the line's `from`
+/// clause, "" when there is none. The header is validated by the same scan
+/// `extract_require_pins` runs, so a malformed line is refused here too.
+export fn extract_require_sources(source: String) -> Array[(String, String, String, String)] with Exception {
+  let (pins, _) = extract_require_pins(source)
+  let out = array_empty()
+  let lines = String::split(source, "\n")
+  let mut li = 0
+  let mut pi = 0
+  while pi < Array::length(pins) && li < Array::length(lines) {
+    let line = Array::get(lines, li)
+    if String::starts_with(String::trim(line), "require ") {
+      let (name, constraint, pin) = Array::get(pins, pi)
+      let clause = require_line_source_clause(line)
+      let src = if clause == "" {
+        ""
+      } else {
+        String::substring(clause, 6, String::length(clause))
+      }
+      Array::push(out, (name, constraint, pin, src))
+      pi = pi + 1
+    } else ()
+    li = li + 1
+  }
+  out
+}
+
 /// #754/#1128: read the `version = x.y.z` directive ("" when absent).
 export fn extract_package_version(source: String) -> String with Exception {
   if !may_have_package_header(source) {

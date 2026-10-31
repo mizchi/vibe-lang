@@ -33,7 +33,6 @@ export VIBE_HOME="$W/home"
 mkdir -p "$VIBE_HOME"
 VIBE="$ROOT_DIR/runtime/vibe"
 export VIBE_CLI_WASM="$STAGE2"
-export VIBE_PKG_CLI_WASM="$STAGE2"
 # The checkout launcher looks for $TOOLCHAIN_DIR/bin/viberun; point it at the
 # built runner rather than installing a toolchain.
 export VIBE_RUNNER="${VIBE_RUNNER:-$ROOT_DIR/runtime/viberun/target/release/viberun}"
@@ -197,14 +196,14 @@ export fn triple(x: Int) -> Int {
   x * 3
 }
 V
-bash "$ROOT_DIR/scripts/vibe_pkg.sh" publish "$W/dep" > "$W/pub1.log" 2>&1
+bash "$VIBE" pkg publish "$W/dep" > "$W/pub1.log" 2>&1
 check "republish of the SAME content is idempotent" "$?" "0"
 cat > "$W/dep/impl.vibe" <<'V'
 export fn triple(x: Int) -> Int {
   x * 5
 }
 V
-bash "$ROOT_DIR/scripts/vibe_pkg.sh" publish "$W/dep" > "$W/pub2.log" 2>&1
+bash "$VIBE" pkg publish "$W/dep" > "$W/pub2.log" 2>&1
 rc9=$?
 check "differing republish (nonzero = refused)" "$([ "$rc9" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
 sed 's/^/      /' "$W/pub2.log" | tail -3
@@ -215,12 +214,12 @@ if [ -f "$logrec" ]; then
   ok "transparency log written by publish: $(wc -l < "$logrec" | tr -d ' ') record(s)"
   cp "$logrec" "$W/records.bak"
   sed -i.bak 's/1\.0\.0/1.0.1/' "$logrec"; rm -f "$logrec.bak"
-  bash "$ROOT_DIR/scripts/vibe_pkg.sh" install "@rt/mathx@1.0.0" > "$W/inst_tamper.log" 2>&1
+  bash "$VIBE" pkg install "@rt/mathx@1.0.0" > "$W/inst_tamper.log" 2>&1
   rc10=$?
   check "install (nonzero = refused)" "$([ "$rc10" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
   sed 's/^/      /' "$W/inst_tamper.log" | tail -4
   cp "$W/records.bak" "$logrec"
-  bash "$ROOT_DIR/scripts/vibe_pkg.sh" install "@rt/mathx@1.0.0" > "$W/inst_ok.log" 2>&1
+  bash "$VIBE" pkg install "@rt/mathx@1.0.0" > "$W/inst_ok.log" 2>&1
   check "and the untampered log installs cleanly" "$?" "0"
 else
   bad "no transparency log at $logrec"

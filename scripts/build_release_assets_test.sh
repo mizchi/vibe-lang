@@ -119,7 +119,7 @@ set -eu
 [ "$(cat "$3")" = "current compiler" ]
 printf 'package test-hash\n' > "$5"
 SH
-for script in vibe_pkg.sh parallel_warm_pool.sh run_bounded.sh; do
+for script in parallel_warm_pool.sh run_bounded.sh; do
   : > "$WORK/t/scripts/$script"
 done
 cat > "$WORK/t/scripts/build_taskgroup_checker.sh" <<'SH'

@@ -1284,7 +1284,7 @@ fn run_core(
                 // verb's own words, so no sidecar is derived from them. A
                 // direct adapter-protocol caller (`viberun compiler.wasm <in>
                 // <out>`) vouches the same way, naming `<out>.diag`
-                // (scripts/vibe_pkg.sh, scripts/parallel_warm_pool.sh):
+                // (scripts/parallel_warm_pool.sh):
                 // nothing the module exports can say it is the compiler
                 // (#3031, Codex on #3039).
                 let _ = std::fs::write(

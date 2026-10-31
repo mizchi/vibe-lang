@@ -77,7 +77,7 @@ $VIBE_HOME/                           default ~/.vibe
     lib/vibe-cli.wasm                 portable compiler
     lib/vibe-cli.cwasm                host-specific AOT build of it
     lib/{lsp_server.js,symbol_index.js,graph_query.js}
-    lib/{vibe_pkg.sh,parallel_warm_pool.sh,context-pack.md}
+    lib/{parallel_warm_pool.sh,context-pack.md}
     lib/@vibe/{core,ast,parser,builtin,console,wit_runtime,concurrent}
                                       stdlib, per toolchain
     manifest.json                     version, ref, commit, installed_at, source,
@@ -414,7 +414,7 @@ Per `vX.Y.Z` tag, `.github/workflows/release.yml` publishes:
 | asset | content |
 | --- | --- |
 | `viberun-<tag>-<target>.tar.gz` | one prebuilt runner per target: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin` (and `x86_64-apple-darwin` while a CI runner exists) |
-| `vibe-toolchain-<tag>.tar.gz` | the platform-independent part of `toolchains/<name>/`: launcher, `vibe_pkg.sh`, `parallel_warm_pool.sh`, the LSP scripts, `context-pack.md`, the stdlib packages with their hashes |
+| `vibe-toolchain-<tag>.tar.gz` | the platform-independent part of `toolchains/<name>/`: launcher, `parallel_warm_pool.sh`, the LSP scripts, `context-pack.md`, the stdlib packages with their hashes |
 | `vibe-cli-<tag>.wasm` | the compiler CLI an install runs (`compiler_wasm` in the manifest) |
 | `vibe-compiler-<tag>.wasm`, `vibe-compiler-module-source-<tag>.vibe`, `vibe-compiler-seed-<tag>.json` | the seed trio `scripts/fetch_compiler.sh` uses to bootstrap a reproducible build |
 | `release-manifest.json` | every asset with its sha256, the runner per target, and the wasmtime version the runners embed |

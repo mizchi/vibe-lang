@@ -95,7 +95,6 @@ tc_stage="$OUT_DIR/.toolchain"
 rm -rf "$tc_stage"
 mkdir -p "$tc_stage/bin" "$tc_stage/lib"
 install -m 0755 "$PROJECT_ROOT/runtime/vibe" "$tc_stage/bin/vibe"
-install -m 0644 "$PROJECT_ROOT/scripts/vibe_pkg.sh" "$tc_stage/lib/vibe_pkg.sh"
 install -m 0644 "$PROJECT_ROOT/scripts/parallel_warm_pool.sh" "$tc_stage/lib/parallel_warm_pool.sh"
 # Sourced by the pool from its own directory (#2958).
 install -m 0644 "$PROJECT_ROOT/scripts/run_bounded.sh" "$tc_stage/lib/run_bounded.sh"

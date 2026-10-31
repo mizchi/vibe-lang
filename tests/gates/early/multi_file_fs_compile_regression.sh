@@ -1064,7 +1064,7 @@ echo "[compiler-gate] cross-package contract import resolution regression ok"
 echo "[compiler-gate] 6c content-addressed store regression (#730)"
 sdir=".vibe/store/@gate/d2pkg"
 rm -rf ".vibe/store/@gate"; mkdir -p "$sdir"
-# The store copy declares its version (the vibe_pkg.sh publish contract
+# The store copy declares its version (the `vibe pkg publish` contract
 # requires the directive) -- the fill verifies it against the require
 # constraint before pinning, and a versionless copy never fills (#2260).
 printf 'version 1.0.0\nimport ./impl.vibe {}\nfn triple(x: Int) -> Int\n' > "$sdir/index.vibei"
@@ -1350,6 +1350,14 @@ echo "[compiler-gate] owned-head spelling outside the selected package ok (refus
 #     root) -> name resolution -> build&run; then the pinned store lane
 #     under freeze; then the two rejections that make version->hash an
 #     immutable mapping (same-version republish; dishonest semver claim).
+# `vibe pkg` runs in the compiler CLI (#3673): drive the launcher with THIS
+# checkout's stage2 through the node runner, the same lane the late gates use
+# for `vibe type-at`. VIBE_HOME (and VIBE_REGISTRY_LOG_DIR) ride in from the
+# caller's prefix assignments.
+gate_vibe_pkg() {
+  VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WASM="$stage2_wasm" \
+    VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/runtime/vibe" pkg "$@"
+}
 echo "[compiler-gate] 6j distribution pipeline: publish/cache/materialize (#754)"
 jhome="$(mktemp -d)"
 jsrc="$jhome/src/@gate754/mathx"
@@ -1358,14 +1366,14 @@ printf 'name = @gate754/mathx\nversion = 1.0.0\n\nfn quad(x: Int) -> Int\n' > "$
 printf 'export fn quad(x: Int) -> Int { x * 4 }\n' > "$jsrc/impl.vibe"
 jdir="_build/_gate_pkg754"
 rm -rf "$jdir" ".vibe/store/@gate754"; mkdir -p "$jdir"
-if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub1.log" 2>&1; then
+if ! VIBE_HOME="$jhome" gate_vibe_pkg publish "$jsrc" > "$jdir/pub1.log" 2>&1; then
   echo "[compiler-gate] FAIL: publish of @gate754/mathx@1.0.0 failed (#754)" >&2
   cat "$jdir/pub1.log" >&2; exit 1
 fi
 if ! grep -q "@gate754/mathx@1.0.0" "$jhome/cache/versions.tsv" 2>/dev/null; then
   echo "[compiler-gate] FAIL: publish did not record the version mapping (#754)" >&2; exit 1
 fi
-if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate754/mathx@1.0.0" > "$jdir/inst1.log" 2>&1; then
+if ! VIBE_HOME="$jhome" gate_vibe_pkg install "@gate754/mathx@1.0.0" > "$jdir/inst1.log" 2>&1; then
   echo "[compiler-gate] FAIL: install/materialize into VIBE_HOME/lib failed (#754)" >&2
   cat "$jdir/inst1.log" >&2; exit 1
 fi
@@ -1382,7 +1390,7 @@ if [ "$juse_out" != "44" ]; then
   echo "[compiler-gate] FAIL: materialized package returned '$juse_out' (want 44) (#754)" >&2; exit 1
 fi
 # pinned store lane under freeze: install --store, consumer carries the pin
-if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate754/mathx@1.0.0" --store > "$jdir/inst2.log" 2>&1; then
+if ! VIBE_HOME="$jhome" gate_vibe_pkg install "@gate754/mathx@1.0.0" --store > "$jdir/inst2.log" 2>&1; then
   echo "[compiler-gate] FAIL: install --store failed (#754)" >&2
   cat "$jdir/inst2.log" >&2; exit 1
 fi
@@ -1397,7 +1405,7 @@ if [ ! -s "$jdir/pinned.wasm" ]; then
 fi
 # same-version republish with different content must be rejected
 printf 'export fn quad(x: Int) -> Int { x * 5 }\n' > "$jsrc/impl.vibe"
-if VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub2.log" 2>&1; then
+if VIBE_HOME="$jhome" gate_vibe_pkg publish "$jsrc" > "$jdir/pub2.log" 2>&1; then
   echo "[compiler-gate] FAIL: same-version republish was accepted (#754)" >&2; exit 1
 fi
 if ! grep -q "same-version republish rejected" "$jdir/pub2.log"; then
@@ -1407,12 +1415,12 @@ fi
 # dishonest bump: surface grows but only the patch level is bumped
 printf 'name = @gate754/mathx\nversion = 1.0.1\n\nfn quad(x: Int) -> Int\nfn oct(x: Int) -> Int\n' > "$jsrc/index.vpkg"
 printf 'export fn quad(x: Int) -> Int { x * 4 }\nexport fn oct(x: Int) -> Int { x * 8 }\n' > "$jsrc/impl.vibe"
-if VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub3.log" 2>&1; then
+if VIBE_HOME="$jhome" gate_vibe_pkg publish "$jsrc" > "$jdir/pub3.log" 2>&1; then
   echo "[compiler-gate] FAIL: dishonest patch bump was accepted by publish (#754)" >&2; exit 1
 fi
 # honest minor bump passes (versions come from the directives, no env)
 printf 'name = @gate754/mathx\nversion = 1.1.0\n\nfn quad(x: Int) -> Int\nfn oct(x: Int) -> Int\n' > "$jsrc/index.vpkg"
-if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub4.log" 2>&1; then
+if ! VIBE_HOME="$jhome" gate_vibe_pkg publish "$jsrc" > "$jdir/pub4.log" 2>&1; then
   echo "[compiler-gate] FAIL: honest minor bump was rejected by publish (#754)" >&2
   cat "$jdir/pub4.log" >&2; exit 1
 fi
@@ -1431,11 +1439,11 @@ printf 'name = @gate2829/upx\nversion = 1.0.0\n\nfn twice(x: Int) -> Int\n' > "$
 printf 'export fn twice(x: Int) -> Int { x * 2 }\n' > "$usrc/impl.vibe"
 udir="_build/_gate_pkg2829"
 rm -rf "$udir"; mkdir -p "$udir"
-if ! VIBE_HOME="$uhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$usrc" > "$udir/pub.log" 2>&1; then
+if ! VIBE_HOME="$uhome" gate_vibe_pkg publish "$usrc" > "$udir/pub.log" 2>&1; then
   echo "[compiler-gate] FAIL: publish of @gate2829/upx@1.0.0 failed (#2829)" >&2
   cat "$udir/pub.log" >&2; exit 1
 fi
-if ! VIBE_HOME="$uhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate2829/upx@1.0.0" > "$udir/inst.log" 2>&1; then
+if ! VIBE_HOME="$uhome" gate_vibe_pkg install "@gate2829/upx@1.0.0" > "$udir/inst.log" 2>&1; then
   echo "[compiler-gate] FAIL: install of @gate2829/upx@1.0.0 failed (#2829)" >&2
   cat "$udir/inst.log" >&2; exit 1
 fi
@@ -1454,7 +1462,7 @@ awk -F'\t' -v n="@gate2829/upx@1.0.0" -v h="$uhash_sha1" 'BEGIN { OFS="\t" } $1 
   "$uhome/cache/versions.tsv" > "$uhome/cache/versions.tsv.new"
 mv "$uhome/cache/versions.tsv.new" "$uhome/cache/versions.tsv"
 rm -rf "$uhome/cache/pkg/b3"
-if ! VIBE_HOME="$uhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh update "@gate2829/upx" > "$udir/upd.log" 2>&1; then
+if ! VIBE_HOME="$uhome" gate_vibe_pkg update "@gate2829/upx" > "$udir/upd.log" 2>&1; then
   echo "[compiler-gate] FAIL: update of a SHA-1-recorded install failed (#2829)" >&2
   cat "$udir/upd.log" >&2; exit 1
 fi
@@ -1469,7 +1477,7 @@ fi
 rm -rf "$udir" "$uhome"
 echo "[compiler-gate] update matches an installed SHA-1 identity ok"
 
-# 6k. registry-less git resolution (#755 Phase 0): `vibe_pkg.sh add` fetches
+# 6k. registry-less git resolution (#755 Phase 0): `vibe pkg add` fetches
 #     a package from a git source (github: is sugar over the same path),
 #     resolves the ref to a COMMIT (provenance), hashes the fetched sources
 #     LOCALLY, and installs only when the hash agrees with the expected pin
@@ -1490,7 +1498,7 @@ git -C "$krepo" -c user.email=gate@vibe -c user.name=gate commit -qm pkg
 git -C "$krepo" branch -m main
 kspec="git:file://$krepo@main#packages/@gate755/hex"
 # (1) TOFU add: fetch, record, materialize into $VIBE_HOME/lib; consumer runs
-if ! VIBE_HOME="$khome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" > "$kdir/add1.log" 2>&1; then
+if ! VIBE_HOME="$khome" gate_vibe_pkg add "$kspec" > "$kdir/add1.log" 2>&1; then
   echo "[compiler-gate] FAIL: git add (TOFU) failed (#755)" >&2
   cat "$kdir/add1.log" >&2; exit 1
 fi
@@ -1515,7 +1523,7 @@ if [ "$kuse_out" != "42" ]; then
 fi
 # (2) wrong expected pin rejects BEFORE any side effect (fresh home)
 khome2="$(mktemp -d)"
-if VIBE_HOME="$khome2" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" "#pkg:sha1:0000000000000000000000000000000000000000" > "$kdir/add2.log" 2>&1; then
+if VIBE_HOME="$khome2" gate_vibe_pkg add "$kspec" "#pkg:sha1:0000000000000000000000000000000000000000" > "$kdir/add2.log" 2>&1; then
   echo "[compiler-gate] FAIL: wrong expected pin was accepted (#755)" >&2; exit 1
 fi
 if ! grep -q "hash mismatch" "$kdir/add2.log" || [ -f "$khome2/cache/versions.tsv" ]; then
@@ -1539,7 +1547,7 @@ if ! printf '%s' "$khash_sha1" | grep -qE '^pkg:sha1:[0-9a-f]{40}$'; then
   exit 1
 fi
 khome_sha1="$(mktemp -d)"
-if ! VIBE_HOME="$khome_sha1" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" "#$khash_sha1" > "$kdir/add_sha1.log" 2>&1; then
+if ! VIBE_HOME="$khome_sha1" gate_vibe_pkg add "$kspec" "#$khash_sha1" > "$kdir/add_sha1.log" 2>&1; then
   echo "[compiler-gate] FAIL: correct SHA-1 expected pin was rejected (#2829)" >&2
   cat "$kdir/add_sha1.log" >&2; exit 1
 fi
@@ -1554,7 +1562,7 @@ if [ ! -f "$khome_sha1/cache/pkg/sha1/$khex_sha1/index.vpkg" ]; then
 fi
 printf 'name = @local/app\nversion = 0.1.0\nrequire @gate755/hex 1.0.0 = #%s from %s\n\ngenerated_hash =\n' "$khash_sha1" "$kspec" > "$kdir/app_sha1.vpkg"
 rm -rf "$khome_sha1/cache/pkg" "$khome_sha1/lib/@gate755"
-if ! VIBE_HOME="$khome_sha1" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh fetch-pins "$kdir/app_sha1.vpkg" > "$kdir/fetch_sha1.log" 2>&1; then
+if ! VIBE_HOME="$khome_sha1" gate_vibe_pkg fetch-pins "$kdir/app_sha1.vpkg" > "$kdir/fetch_sha1.log" 2>&1; then
   echo "[compiler-gate] FAIL: fetch-pins could not restore a SHA-1 pin from source (#2829)" >&2
   cat "$kdir/fetch_sha1.log" >&2; exit 1
 fi
@@ -1564,7 +1572,7 @@ if [ ! -f "$khome_sha1/lib/@gate755/hex/index.vpkg" ]; then
 fi
 rm -rf "$khome_sha1"
 # (3) correct expected pin verifies a fresh fetch
-if ! VIBE_HOME="$khome2" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" "#$khash" > "$kdir/add3.log" 2>&1; then
+if ! VIBE_HOME="$khome2" gate_vibe_pkg add "$kspec" "#$khash" > "$kdir/add3.log" 2>&1; then
   echo "[compiler-gate] FAIL: correct expected pin was rejected (#755)" >&2
   cat "$kdir/add3.log" >&2; exit 1
 fi
@@ -1573,7 +1581,7 @@ fi
 printf 'export fn hex_n(x: Int) -> Int { x + 7 }\n' > "$krepo/packages/@gate755/hex/impl.vibe"
 git -C "$krepo" add -A
 git -C "$krepo" -c user.email=gate@vibe -c user.name=gate commit -qm tamper
-if VIBE_HOME="$khome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" > "$kdir/add4.log" 2>&1; then
+if VIBE_HOME="$khome" gate_vibe_pkg add "$kspec" > "$kdir/add4.log" 2>&1; then
   echo "[compiler-gate] FAIL: tampered same-version fetch was accepted (#755)" >&2; exit 1
 fi
 if ! grep -q "version->hash is immutable" "$kdir/add4.log"; then
@@ -1602,7 +1610,7 @@ printf 'export fn triple(x: Int) -> Int { x * 3 }\n' > "$lsrc805/impl.vibe"
 ldir805="_build/_gate_pkg805"
 rm -rf "$ldir805"; mkdir -p "$ldir805"
 # (1) publish appends a publish record and writes a merkle head
-if ! VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$lsrc805" > "$ldir805/pub1.log" 2>&1; then
+if ! VIBE_HOME="$lhome805" gate_vibe_pkg publish "$lsrc805" > "$ldir805/pub1.log" 2>&1; then
   echo "[compiler-gate] FAIL: publish of @gate805/logx@1.0.0 failed (#805)" >&2
   cat "$ldir805/pub1.log" >&2; exit 1
 fi
@@ -1618,7 +1626,7 @@ cp "$lhome805/log/head" "$ldir805/log1.head"
 # (2) a second publish extends the log; install verifies an inclusion proof
 printf 'name = @gate805/logx\nversion = 1.1.0\n\nfn triple(x: Int) -> Int\nfn nona(x: Int) -> Int\n' > "$lsrc805/index.vpkg"
 printf 'export fn triple(x: Int) -> Int { x * 3 }\nexport fn nona(x: Int) -> Int { x * 9 }\n' > "$lsrc805/impl.vibe"
-if ! VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$lsrc805" > "$ldir805/pub2.log" 2>&1; then
+if ! VIBE_HOME="$lhome805" gate_vibe_pkg publish "$lsrc805" > "$ldir805/pub2.log" 2>&1; then
   echo "[compiler-gate] FAIL: publish of @gate805/logx@1.1.0 failed (#805)" >&2
   cat "$ldir805/pub2.log" >&2; exit 1
 fi
@@ -1626,7 +1634,7 @@ if [ "$(wc -l < "$lhome805/log/records.tsv" | tr -d '[:space:]')" != "2" ]; then
   echo "[compiler-gate] FAIL: second publish did not extend the log to 2 records (#805)" >&2
   cat "$lhome805/log/records.tsv" >&2; exit 1
 fi
-if ! VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate805/logx@1.0.0" > "$ldir805/inst1.log" 2>&1; then
+if ! VIBE_HOME="$lhome805" gate_vibe_pkg install "@gate805/logx@1.0.0" > "$ldir805/inst1.log" 2>&1; then
   echo "[compiler-gate] FAIL: install of a logged version failed (#805)" >&2
   cat "$ldir805/inst1.log" >&2; exit 1
 fi
@@ -1639,7 +1647,7 @@ cp "$lhome805/log/head" "$ldir805/log2.head"
 # (3) same-version republish with different content is still rejected — and
 #     the rejected publish must NOT grow the log
 printf 'export fn triple(x: Int) -> Int { x * 3 + 1 }\nexport fn nona(x: Int) -> Int { x * 9 }\n' > "$lsrc805/impl.vibe"
-if VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$lsrc805" > "$ldir805/pub3.log" 2>&1; then
+if VIBE_HOME="$lhome805" gate_vibe_pkg publish "$lsrc805" > "$ldir805/pub3.log" 2>&1; then
   echo "[compiler-gate] FAIL: same-version republish was accepted (#805)" >&2; exit 1
 fi
 if ! grep -q "same-version republish rejected" "$ldir805/pub3.log"; then
@@ -1651,7 +1659,7 @@ if [ "$(wc -l < "$lhome805/log/records.tsv" | tr -d '[:space:]')" != "2" ]; then
 fi
 # (4) a tampered log head is detected before anything installs
 sed 's/\t/\tf00dfeed/' "$ldir805/log2.head" > "$lhome805/log/head"
-if VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate805/logx@1.1.0" > "$ldir805/inst2.log" 2>&1; then
+if VIBE_HOME="$lhome805" gate_vibe_pkg install "@gate805/logx@1.1.0" > "$ldir805/inst2.log" 2>&1; then
   echo "[compiler-gate] FAIL: install accepted a tampered log head (#805)" >&2; exit 1
 fi
 if ! grep -q "tampered log head" "$ldir805/inst2.log"; then
@@ -1663,7 +1671,7 @@ cp "$ldir805/log2.head" "$lhome805/log/head"
 #     1-record state must be refused by a client that already saw 2 records
 cp "$ldir805/log1.records" "$lhome805/log/records.tsv"
 cp "$ldir805/log1.head" "$lhome805/log/head"
-if VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate805/logx@1.0.0" > "$ldir805/inst3.log" 2>&1; then
+if VIBE_HOME="$lhome805" gate_vibe_pkg install "@gate805/logx@1.0.0" > "$ldir805/inst3.log" 2>&1; then
   echo "[compiler-gate] FAIL: install accepted a truncated (rolled-back) log (#805)" >&2; exit 1
 fi
 if ! grep -q "log consistency violation" "$ldir805/inst3.log"; then
@@ -1674,21 +1682,21 @@ cp "$ldir805/log2.records" "$lhome805/log/records.tsv"
 cp "$ldir805/log2.head" "$lhome805/log/head"
 # (6) yank: an append-only marking; install refuses it without --allow-yanked;
 #     the version->hash mapping stays immutable
-if ! VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh yank "@gate805/logx@1.1.0" > "$ldir805/yank.log" 2>&1; then
+if ! VIBE_HOME="$lhome805" gate_vibe_pkg yank "@gate805/logx@1.1.0" > "$ldir805/yank.log" 2>&1; then
   echo "[compiler-gate] FAIL: yank failed (#805)" >&2
   cat "$ldir805/yank.log" >&2; exit 1
 fi
 if [ "$(wc -l < "$lhome805/log/records.tsv" | tr -d '[:space:]')" != "3" ]; then
   echo "[compiler-gate] FAIL: yank did not append a log record (#805)" >&2; exit 1
 fi
-if VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate805/logx@1.1.0" > "$ldir805/inst4.log" 2>&1; then
+if VIBE_HOME="$lhome805" gate_vibe_pkg install "@gate805/logx@1.1.0" > "$ldir805/inst4.log" 2>&1; then
   echo "[compiler-gate] FAIL: install accepted a yanked version without --allow-yanked (#805)" >&2; exit 1
 fi
 if ! grep -q "yanked in the registry log" "$ldir805/inst4.log"; then
   echo "[compiler-gate] FAIL: yank rejection lacks the expected message (#805)" >&2
   cat "$ldir805/inst4.log" >&2; exit 1
 fi
-if ! VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate805/logx@1.1.0" --allow-yanked > "$ldir805/inst5.log" 2>&1; then
+if ! VIBE_HOME="$lhome805" gate_vibe_pkg install "@gate805/logx@1.1.0" --allow-yanked > "$ldir805/inst5.log" 2>&1; then
   echo "[compiler-gate] FAIL: --allow-yanked did not override the yank refusal (#805)" >&2
   cat "$ldir805/inst5.log" >&2; exit 1
 fi
@@ -1699,8 +1707,8 @@ fi
 #     VIBE_REGISTRY_LOG_DIR verifies the same way
 rm -rf "$ldir805/served"
 cp -R "$lhome805/log" "$ldir805/served"
-if ! VIBE_HOME="$lhome805" VIBE_REGISTRY_LOG_DIR="$ldir805/served" VIBE_PKG_CLI_WASM="$stage2_wasm" \
-  bash scripts/vibe_pkg.sh install "@gate805/logx@1.0.0" > "$ldir805/inst6.log" 2>&1; then
+if ! VIBE_HOME="$lhome805" VIBE_REGISTRY_LOG_DIR="$ldir805/served" \
+  gate_vibe_pkg install "@gate805/logx@1.0.0" > "$ldir805/inst6.log" 2>&1; then
   echo "[compiler-gate] FAIL: install against a served log copy failed (#805)" >&2
   cat "$ldir805/inst6.log" >&2; exit 1
 fi
