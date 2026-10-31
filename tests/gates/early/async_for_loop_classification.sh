@@ -1457,3 +1457,7 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash "$ROOT_DIR/scripts/test_extract_function.
 # The label codemod edits only files that check, and its edit is a fixpoint (#3679).
 echo "[compiler-gate] label codemod (#3679)"
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash "$ROOT_DIR/scripts/test_refactor_add_labels.sh"
+
+# The missing-label warnings are the codemod's own edits (#3680).
+echo "[compiler-gate] missing-label warnings (#3680)"
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash "$ROOT_DIR/scripts/test_check_warn_missing_labels.sh"

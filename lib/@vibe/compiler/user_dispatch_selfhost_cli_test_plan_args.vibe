@@ -73,7 +73,7 @@ import @vibe/lsp {
 }
 
 import ./user_refactor.vibe {
-  selfhost_cli_user_refactor_args
+  selfhost_cli_user_refactor_args, user_check_missing_label_rows_single
 }
 
 //# Helpers
@@ -745,6 +745,10 @@ export fn parse_user_check_args(args: Array[String]) -> (String, Bool, Bool) wit
       } else if arg == "--deps-missing" {
         deps_missing = true
         ()
+      } else if arg == "--warn-missing-labels" {
+        // Read by `user_check_warn_missing_labels`; validated here so the
+        // flag is not an unknown option.
+        ()
       } else if arg == "--profile" || arg == "--profile-tsv" || arg == "--profile-callstack" {
         i = i + 1
         let _ = need_value(args, i, "check", arg)
@@ -763,7 +767,7 @@ export fn parse_user_check_args(args: Array[String]) -> (String, Bool, Bool) wit
       i = i + 1
     }
     if src == "" {
-      throw("usage: vibe check [--jobs N] [--single-file] [--json] <file.vibe>...")
+      throw("usage: vibe check [--jobs N] [--single-file] [--json] [--warn-missing-labels] <file.vibe>...")
     } else {
       (src, single, json)
     }
@@ -799,7 +803,18 @@ export fn user_check_scan(root: String, missing_vpkg: Bool) -> Int with Env + Ex
   }
 }
 
-export fn user_check_single(src: String, json: Bool) -> Int with Exception + Fs + Env + Console + Stderr {
+/// `vibe check --warn-missing-labels` (ADR-0120 Phase 2b, #3680): report
+/// each argument the label codemod would label, as a warning that leaves the
+/// exit status alone.
+export fn user_check_warn_missing_labels(args: Array[String]) -> Bool {
+  let mut found = false
+  for arg in args {
+    found = found || arg == "--warn-missing-labels"
+  }
+  found
+}
+
+export fn user_check_single(src: String, json: Bool, warn_labels: Bool) -> Int with Exception + Fs + Env + Console + Stderr {
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
@@ -819,13 +834,24 @@ export fn user_check_single(src: String, json: Bool) -> Int with Exception + Fs 
     // `user_diagnostics_report` below keeps the swallow on purpose: that verb
     // is deprecated and FROZEN at exit 0 for the editors still calling it, so
     // unfreezing it is a separate decision, not this fix.
-    let diags = handle {
+    let collected = handle {
       collect_all_diagnostics_with_unstable_for_path(src, text, unstable_opt_in())
     } with { Exception::Throw(message) => {
       let failed: Array[String] = []
       Array::push(failed, String::concat("check failed: ", message))
       failed
     } }
+    let diags: Array[String] = []
+    for d in collected {
+      Array::push(diags, d)
+    }
+    if warn_labels {
+      for row in user_check_missing_label_rows_single(src, text) {
+        Array::push(diags, row)
+      }
+    } else {
+      ()
+    }
     if json {
       print(line_terminated(lsp_diagnostics_json_of_messages(text, diags)))
       let mut has_error = false

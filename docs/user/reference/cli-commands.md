@@ -206,7 +206,16 @@ vibe check <file...>
 vibe check --single-file <file>          # this buffer only, imports not followed
 vibe check --json <file>                 # LSP Diagnostic array (`[]` when nothing is reported)
 vibe check --profile-tsv timing.tsv <file...>
+vibe check --warn-missing-labels <file...>   # also warn where an argument label will be required
 ```
+
+`--warn-missing-labels` adds one warning per argument that will need its
+parameter's label once labels are required (ADR-0120):
+``line 5:7-9: warning: label this argument: write `y = 3` ``. The warnings are exactly the
+edits `vibe refactor add-labels` would make with its default `--positional`
+policy, so a file it has rewritten reports none. Like every warning they leave
+the exit code alone. Unlike the other warnings, they are in the `--json` array
+on both lanes, with severity 2. A file with errors reports only its errors.
 
 `--single-file` is the editor's mode for unsaved text: a name that comes from
 an import reports as unknown there, so it does not answer whether the file

@@ -108,3 +108,18 @@ test "a keyword parameter name is written as a raw identifier" {
   inspect(edited(source, add_labels_positional_none), content = "fn f(r#match: Int, n: Int) -> Int {\n  r#match - n\n}\nfn main() -> Int {\n  f(r#match = 10, n = 3)\n}\n")
   inspect(settled(source, add_labels_positional_none), content = "true")
 }
+
+test "each inserted label is recorded with its argument's span and edit" {
+  // `vibe check --warn-missing-labels` reports these rows, so they must name
+  // exactly what the edit writes, a parenthesized lambda included.
+  let source = "fn apply(f: (Int) -> Int, n: Int) -> Int {\n  f(n)\n}\nfn main() -> Int {\n  apply(x -> x * 2, 1 + 2)\n}\n"
+  let result = run(source, add_labels_positional_none)
+  let rows: Array[String] = []
+  let missing: Array[(Int, Int, String, String)] = result.missing
+  for entry in missing {
+    let (start, end, label, written) = entry
+    Array::push(rows, source[start: end] + " | " + label + " | " + written)
+  }
+  inspect(String::join(rows, "\n"), content = "x -> x * 2 | f | f = (x) -> x * 2\n1 + 2 | n | n = 1 + 2")
+  inspect(Array::length(result.missing) == result.labels, content = "true")
+}
