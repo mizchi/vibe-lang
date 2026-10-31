@@ -24,8 +24,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   background+wait) instead of spawning one process per file -- see that
   file's header comment for why.
 - `vibe_cli.sh` (+ smoke) — drive the selfhost CLI wasm
-- `vibe_pkg.sh` — package publish/install/add/yank/update (hash-verified,
-  transparency-log backed #805; `vibe pkg` delegates here). `vibe_core_install.sh`
+- `vibe_core_install.sh` — install the in-repo `@vibe/core` into a store
 - `vibe_graph.js` — graph/symbol-index query
 
 ## Runtime & runners (wasm execution)

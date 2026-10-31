@@ -89,7 +89,7 @@ RUNNER
   chmod +x "$stage/runner/viberun"
   tar -czf "$d/viberun-$tag-$rtarget.tar.gz" -C "$stage/runner" viberun
   install -m 0755 "$ROOT_DIR/runtime/vibe" "$stage/tc/bin/vibe"
-  cp "$ROOT_DIR/scripts/vibe_pkg.sh" "$ROOT_DIR/scripts/parallel_warm_pool.sh" "$ROOT_DIR/scripts/run_bounded.sh" "$stage/tc/lib/"
+  cp "$ROOT_DIR/scripts/parallel_warm_pool.sh" "$ROOT_DIR/scripts/run_bounded.sh" "$stage/tc/lib/"
   cp "$ROOT_DIR/lib/@vibe/console/index.vpkg" "$stage/tc/lib/@vibe/console/"
   printf '@vibe/console\tpkg:sha1:0000000000000000000000000000000000000000\n' > "$stage/tc/stdlib-hashes.tsv"
   printf 'context pack of release %s\n' "$version" > "$stage/tc/lib/context-pack.md"
@@ -124,7 +124,7 @@ home="$WORK/home"
 check "install.sh --version installs with bash, curl and tar" "0" "$rc"
 [ "$rc" = 0 ] || sed 's/^/  | /' "$WORK/install.log" >&2
 tc="$home/toolchains/0.9.9"
-check "release install lays out the toolchain" "yes" "$([ -x "$tc/bin/vibe" ] && [ -x "$tc/bin/viberun" ] && [ -s "$tc/lib/vibe-cli.wasm" ] && [ -s "$tc/lib/vibe-cli.cwasm" ] && [ -f "$tc/lib/vibe_pkg.sh" ] && [ -f "$tc/lib/@vibe/console/index.vpkg" ] && [ -f "$tc/lib/context-pack.md" ] && echo yes || echo no)"
+check "release install lays out the toolchain" "yes" "$([ -x "$tc/bin/vibe" ] && [ -x "$tc/bin/viberun" ] && [ -s "$tc/lib/vibe-cli.wasm" ] && [ -s "$tc/lib/vibe-cli.cwasm" ] && [ -f "$tc/lib/@vibe/console/index.vpkg" ] && [ -f "$tc/lib/context-pack.md" ] && echo yes || echo no)"
 check "release install writes the manifest" "yes" "$(grep -q '"source": "release"' "$tc/manifest.json" && grep -q '"version": "0.9.9"' "$tc/manifest.json" && grep -q '"ref": "v0.9.9"' "$tc/manifest.json" && grep -q '"commit": "0123456789abcdef0123456789abcdef01234567"' "$tc/manifest.json" && echo yes || echo no)"
 check "release install writes the dispatcher, env and default" "yes" "$([ -x "$home/bin/vibe" ] && [ -f "$home/env" ] && [ "$(cat "$home/toolchain")" = 0.9.9 ] && [ -L "$WORK/bin/vibe" ] && echo yes || echo no)"
 check "the assets stay in the download cache" "yes" "$([ -f "$home/cache/downloads/v0.9.9/release-manifest.json" ] && [ -f "$home/cache/downloads/v0.9.9/vibe-toolchain-v0.9.9.tar.gz" ] && [ -f "$home/cache/downloads/v0.9.9/viberun-v0.9.9-$TARGET.tar.gz" ] && echo yes || echo no)"

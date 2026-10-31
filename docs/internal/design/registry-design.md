@@ -12,8 +12,9 @@ the design of the registry itself (Phase 1+).
 ## Phase 0 — direct git/GitHub resolution (shipped, #755)
 
 A hash pin makes any transport untrusted even when no registry exists.
-`scripts/vibe_pkg.sh add` implements that against git. Two launcher verbs sit
-on top of it (#2676): `vibe add`, which materialises into the project's
+`vibe pkg add` implements that against git: the launcher fetches the ref, and
+the compiler CLI hashes and verifies what it fetched (#3673). Two launcher
+verbs sit on top of it (#2676): `vibe add`, which materialises into the project's
 `.vibe/store/` and writes a pin line into the root `index.vpkg`, and
 `vibe pkg add`, which only installs into `$VIBE_HOME/lib`:
 
@@ -120,10 +121,12 @@ A file-based implementation of requirement 1 (transparency log) and
 requirement 5 (immutable yank). No database, no server code — the
 "registry" is one directory that rsync / static HTTP can serve as-is.
 `VIBE_REGISTRY_LOG_DIR` (default `$VIBE_HOME/log`) points at it.
-`vibe pkg publish|install|add|yank|update` (launcher #805) and
-`scripts/vibe_pkg.sh` (in-repo) share the implementation
-(`VIBE_PKG_RUNNER`/`VIBE_PKG_CLI_WASM` swap the hash engine; an installed
-toolchain ships `lib/vibe_pkg.sh`, so no checkout is required).
+`vibe pkg publish|install|add|yank|update` (#805) runs in the compiler CLI
+(`lib/@vibe/compiler/user_pkg.vibe`, over `lib/@vibe/pkgstore`, #3673), so an
+installed toolchain needs nothing beyond its compiler and runner. The one host
+step is `git fetch`: the launcher fetches a source into a directory and hands
+it to `vibe pkg add-fetched`, and `vibe pkg fetch-pins` reports the pins it
+cannot satisfy offline as `need` rows for the launcher to fetch.
 
 ### Log layout
 
@@ -169,12 +172,12 @@ toolchain ships `lib/vibe_pkg.sh`, so no checkout is required).
 ### Implemented scope and known gaps
 
 - `vibe pkg update <name>` switches to the newest **non-yanked** version and,
-  before switching, prints the contract-hash change and a textual diff of
-  the contract (`index.vpkg`). Requirement 4's canonical diff (set-diff of
-  `contract_surface_lines` + capability classification of the effect row)
-  is not implemented yet — the compiler still has no adapter mode the shell
-  can invoke. Adding that adapter mode (something like `VIBE_SURFACE=1`) is
-  the next step.
+  before switching, prints the contract-hash change and the lines of the
+  contract file (`index.vpkg`) the new version drops and adds. Requirement
+  4's canonical diff (set-diff of `contract_surface_lines` + capability
+  classification of the effect row) is not implemented yet. `update` runs in
+  the compiler CLI now, so it needs no adapter mode: what is missing is
+  parsing both contracts and calling `contract_surface_lines` on them.
 - Scope ownership / signatures (requirement 2), typosquat checks, and
   publish attestation (requirement 6 on the log) are not implemented — the
   `source`/`commit` columns of a log record are seats for them; a local
@@ -191,4 +194,5 @@ toolchain ships `lib/vibe_pkg.sh`, so no checkout is required).
 - #751 (resolution order + VIBE_LIB + freeze), #754 (version directive /
   cache / materialise / same-version republish forbidden), #755 (this
   design), #805 (Phase 1 minimum slice: transparency log + yank + `vibe pkg`)
-- `scripts/vibe_pkg.sh` (publish / install / add / yank / update), gates 6h–6l
+- `lib/@vibe/compiler/user_pkg.vibe` and `lib/@vibe/pkgstore` (publish /
+  install / add / yank / update), gates 6h–6l

@@ -6,7 +6,7 @@
 //# the line-by-line copy produced.
 
 import @vibe/compiler/contract {
-  extract_require_pins, is_require_source_spec, require_line_source_clause
+  extract_require_pins, extract_require_sources, is_require_source_spec, require_line_source_clause
 }
 
 fn spaces(n: Int) -> String {
@@ -138,4 +138,43 @@ test "#2676: require_line_source_clause is the tail the fill lane re-attaches" {
   assert_eq(require_line_source_clause(String::concat("require @a/b 1.2.3 = ", String::concat(zero_pin, "   from   git:x@y"))), " from git:x@y")
   assert_eq(require_line_source_clause("require @a/b 1.2.3"), "")
   assert_eq(require_line_source_clause(String::concat("require @a/b 1.2.3 = ", zero_pin)), "")
+}
+
+fn source_rows(src: String) -> String with Exception {
+  let rows = extract_require_sources(src)
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (name, constraint, pin, from) = Array::get(rows, i)
+    StringBuilder::push(sb, "\{name} \{constraint} [\{pin}] [\{from}]|")
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+test "#3673: extract_require_sources pairs every pin with its from clause, in order" {
+  let h = "pkg:b3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+  let src = "name = @me/app\nversion = 1.0.0\nrequire @a/one 1.0.0\nrequire @a/two 1.0.0 = #\{h}\ndeps = {\n  @a/one : 1.0.0\n}\nrequire @a/three 2.0.0 from git:/tmp/r@abc\nrequire @a/four 3.0.0 = #\{h} from github:o/r@def\nfn main() -> Int {\n  1\n}\n"
+  let rows = source_rows(src)
+  assert(String::contains(rows, "@a/one 1.0.0 [] []|"))
+  assert(String::contains(rows, "@a/three 2.0.0 [] [git:/tmp/r@abc]|"))
+  assert(String::contains(rows, "[github:o/r@def]|"))
+  assert_eq(Array::length(extract_require_sources(src)), 4)
+  let (second, _, _, second_from) = Array::get(extract_require_sources(src), 1)
+  assert_eq(second, "@a/two")
+  assert_eq(second_from, "")
+  let (fourth, _, _, _) = Array::get(extract_require_sources(src), 3)
+  assert_eq(fourth, "@a/four")
+}
+
+test "#3673: extract_require_sources of a source with no header is empty" {
+  assert_eq(Array::length(extract_require_sources("fn main() -> Int {\n  1\n}\n")), 0)
+}
+
+test "#3673: extract_require_sources refuses a malformed require line" {
+  let refused = handle {
+    let _ = extract_require_sources("require @a/one\nfn main() -> Int {\n  1\n}\n")
+    false
+  } with { Exception::Throw(_) => true }
+  assert(refused)
 }

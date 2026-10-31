@@ -11,7 +11,6 @@ mkdir -p "$repo/install" "$repo/bootstrap" "$repo/runtime" "$repo/scripts"
 cp "$ROOT_DIR/install/install.sh" "$repo/install/install.sh"
 cp "$ROOT_DIR/bootstrap/seed.json" "$repo/bootstrap/seed.json"
 cp "$ROOT_DIR/runtime/vibe" "$repo/runtime/vibe"
-cp "$ROOT_DIR/scripts/vibe_pkg.sh" "$repo/scripts/vibe_pkg.sh"
 cp "$ROOT_DIR/scripts/parallel_warm_pool.sh" "$repo/scripts/parallel_warm_pool.sh"
 cp "$ROOT_DIR/scripts/run_bounded.sh" "$repo/scripts/run_bounded.sh"
 (

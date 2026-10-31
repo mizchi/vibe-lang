@@ -1,0 +1,888 @@
+//# `vibe pkg` — the local package store (#754, #755, #805, #2676,
+//# ADR-0065 / ADR-0093), moved out of a repository shell script in #3673.
+//#
+//#   $VIBE_HOME/cache/pkg/<algo>/<hex>/   passive CAS, never a resolution root
+//#   $VIBE_HOME/cache/versions.tsv        name@version -> package id (immutable)
+//#   $VIBE_HOME/cache/provenance.tsv      name@version, id, source spec, commit
+//#   $VIBE_REGISTRY_LOG_DIR (default $VIBE_HOME/log)
+//#                                        records.tsv + head: the transparency log
+//#
+//# The decisions over those files live in @vibe/pkgstore; this file does the
+//# IO and the commands. Fetching from git is the one step the compiler does
+//# not do: it has no Process authority, so the launcher fetches a source into
+//# a directory and hands it over with `pkg add-fetched`, and `pkg fetch-pins`
+//# reports the pins it could not satisfy offline as `need` rows.
+
+//# Imports
+
+import @vibe/compiler/contract {
+  extract_package_name, extract_package_version, extract_require_sources
+}
+
+import @vibe/compiler/loader {
+  contract_package_hashes_fs, contract_package_hashes_fs_algo, publish_check_fs
+}
+
+import @vibe/pkgstore {
+  LogAbsent,
+  LogPublished,
+  PkgId,
+  SourceSpec,
+  cas_dir,
+  is_package_file,
+  latest_version_of,
+  log_check_extends,
+  log_check_served,
+  log_format_head,
+  log_has_publish,
+  log_inclusion_proof,
+  log_is_yanked,
+  log_leaf_hash,
+  log_leaves,
+  log_lookup,
+  log_parse_head,
+  log_record,
+  log_record_lines,
+  log_root,
+  log_seen_file_name,
+  log_verify_inclusion,
+  parse_pkg_id,
+  parse_source_spec,
+  provenance_has,
+  provenance_line,
+  versions_lookup,
+  versions_of,
+  versions_row
+}
+
+//# Paths
+
+struct PkgPaths {
+  home: String;
+  cache: String;
+  versions: String;
+  provenance: String;
+  log_dir: String;
+  records: String;
+  head: String
+}
+
+fn pkg_paths() -> PkgPaths with Env {
+  let env_home = Env::get("VIBE_HOME")
+  let home = if env_home != "" {
+    env_home
+  } else {
+    String::concat(Env::get("HOME"), "/.vibe")
+  }
+  let cache = String::concat(home, "/cache")
+  let env_log = Env::get("VIBE_REGISTRY_LOG_DIR")
+  let log_dir = if env_log != "" {
+    env_log
+  } else {
+    String::concat(home, "/log")
+  }
+  PkgPaths::{
+    home: home,
+    cache: cache,
+    versions: String::concat(cache, "/versions.tsv"),
+    provenance: String::concat(cache, "/provenance.tsv"),
+    log_dir: log_dir,
+    records: String::concat(log_dir, "/records.tsv"),
+    head: String::concat(log_dir, "/head")
+  }
+}
+
+/// Where a package is materialized: the workspace store with `--store` (the
+/// pinned lane), else $VIBE_HOME/lib (the default VIBE_LIB root, #751).
+fn install_root(paths: PkgPaths, store: Bool) -> String {
+  if store {
+    ".vibe/store"
+  } else {
+    String::concat(paths.home, "/lib")
+  }
+}
+
+//# IO helpers
+
+fn say(msg: String) -> Unit with Console {
+  println(String::concat("[vibe-pkg] ", msg))
+}
+
+fn read_or_empty(path: String) -> String with Fs {
+  if Fs::exists(path) {
+    Fs::read_file(path)
+  } else {
+    ""
+  }
+}
+
+fn read_opt(path: String) -> Option[String] with Fs {
+  if Fs::exists(path) {
+    Some(Fs::read_file(path))
+  } else {
+    None
+  }
+}
+
+fn short_root(root: String) -> String {
+  if String::length(root) > 12 {
+    String::substring(root, 0, 12)
+  } else {
+    root
+  }
+}
+
+fn id_or_throw(text: String) -> PkgId with Exception {
+  match parse_pkg_id(text) {
+    Some(id) => id,
+    None => throw("not a package identity: \{text}")
+  }
+}
+
+fn id_text(text: String) -> String with Exception {
+  PkgId::to_string(id_or_throw(text))
+}
+
+fn cas_of(paths: PkgPaths, hash: String) -> String with Exception {
+  cas_dir(paths.cache, id_or_throw(hash))
+}
+
+/// Copy a package's files (the contract and its implementation, not tests
+/// or benches) from `src` into a fresh `dest`.
+fn copy_package_files(src: String, dest: String) -> Unit with Fs {
+  Fs::mkdir_p(dest)
+  let names = Fs::readdir(src)
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    let from = "\{src}/\{name}"
+    if is_package_file(name) && Fs::is_file(from) {
+      Fs::copy(from, "\{dest}/\{name}")
+    } else ()
+    i = i + 1
+  }
+}
+
+fn remove_if_present(path: String) -> Unit with Fs {
+  if Fs::exists(path) {
+    Fs::remove_tree(path)
+  } else ()
+}
+
+//# Hashing
+
+/// The current-write identities of the contract at `index`: the package id
+/// (`pkg:b3:<64hex>`, no leading `#`) and the contract hash.
+fn package_hashes(index: String) -> (String, String) with Env + Exception + Fs {
+  contract_package_hashes_fs(index)
+}
+
+/// Whether the contract at `index` hashes to `recorded` under the algorithm
+/// `recorded` names (a historical `pkg:sha1:` row verifies under SHA-1).
+fn hash_matches_index(recorded: String, index: String) -> Bool with Env + Exception + Fs {
+  match parse_pkg_id(recorded) {
+    None => false,
+    Some(id) => {
+      let (got, _) = if id.algo == "sha1" {
+        contract_package_hashes_fs_algo(index, "sha1")
+      } else {
+        contract_package_hashes_fs(index)
+      }
+      got == PkgId::to_string(id)
+    }
+  }
+}
+
+//# Package headers
+
+fn index_of_dir(dir: String) -> String {
+  String::concat(dir, "/index.vpkg")
+}
+
+fn basename_of(path: String) -> String {
+  let trimmed = if String::ends_with(path, "/") {
+    String::substring(path, 0, String::length(path) - 1)
+  } else {
+    path
+  }
+  let slash = String::last_index_of(trimmed, "/")
+  if slash < 0 {
+    trimmed
+  } else {
+    String::substring(trimmed, slash + 1, String::length(trimmed))
+  }
+}
+
+fn dirname_of(path: String) -> String {
+  let trimmed = if String::ends_with(path, "/") {
+    String::substring(path, 0, String::length(path) - 1)
+  } else {
+    path
+  }
+  let slash = String::last_index_of(trimmed, "/")
+  if slash < 0 {
+    "."
+  } else {
+    String::substring(trimmed, 0, slash)
+  }
+}
+
+/// The package name: the header's `name =` is authoritative; a package
+/// written before #1128 is named by its `.../@scope/name` layout.
+fn package_name_of(dir: String) -> String with Exception + Fs {
+  let from_header = extract_package_name(Fs::read_file(index_of_dir(dir)))
+  let name = if from_header != "" {
+    from_header
+  } else {
+    "\{basename_of(dirname_of(dir))}/\{basename_of(dir)}"
+  }
+  if String::starts_with(name, "@") && String::index_of(name, "/") > 1 {
+    name
+  } else {
+    throw("package name must be @scope/name (header `name = @scope/name` in \{dir}/index.vpkg, or a .../@scope/name directory layout; got: \{name})")
+  }
+}
+
+fn package_version_of(index: String) -> String with Exception + Fs {
+  extract_package_version(Fs::read_file(index))
+}
+
+/// Split `@scope/name@x.y.z` at its LAST `@`.
+fn split_key(spec: String) -> (String, String) {
+  let at = String::last_index_of(spec, "@")
+  (String::substring(spec, 0, at), String::substring(spec, at + 1, String::length(spec)))
+}
+
+fn is_versioned_key(spec: String) -> Bool {
+  String::starts_with(spec, "@") && String::index_of(spec, "/") > 1 && String::last_index_of(spec, "@") > String::index_of(spec, "/")
+}
+
+//# Transparency log IO
+
+/// The served log must commit to its records (tamper check) and extend the
+/// head this client last saw (consistency); advances the seen head.
+fn log_check_current(paths: PkgPaths) -> Unit with Exception + Fs {
+  let records = read_opt(paths.records)
+  let head = read_opt(paths.head)
+  log_check_served(records, head)
+  match head {
+    None => (),
+    Some(head_text) => {
+      let parsed = log_parse_head(head_text)
+      let seen_path = "\{paths.cache}/\{log_seen_file_name(paths.log_dir)}"
+      let seen = match read_opt(seen_path) {
+        None => None,
+        Some(text) => Some(log_parse_head(text))
+      }
+      log_check_extends(read_or_empty(paths.records), parsed, seen)
+      Fs::mkdir_p(paths.cache)
+      Fs::write_file(seen_path, log_format_head(parsed.size, parsed.root))
+    }
+  }
+}
+
+/// Append one record, recompute the head, advance this client's seen head.
+fn log_append(paths: PkgPaths, op: String, key: String, hash: String, contract_hash: String, source: String, commit: String) -> Unit with Exception + Fs + Console {
+  log_check_current(paths)
+  Fs::mkdir_p(paths.log_dir)
+  let lines = log_record_lines(read_or_empty(paths.records))
+  let ordinal = Array::length(lines)
+  let record = log_record(ordinal, op, key, hash, contract_hash, source, commit)
+  Fs::append(paths.records, String::concat(record, "\n"))
+  Array::push(lines, record)
+  let size = ordinal + 1
+  let root = log_root(log_leaves(lines, size))
+  Fs::write_file(paths.head, log_format_head(size, root))
+  Fs::mkdir_p(paths.cache)
+  Fs::write_file("\{paths.cache}/\{log_seen_file_name(paths.log_dir)}", log_format_head(size, root))
+  say("log: \{op} \{key} recorded (ordinal \{ordinal}, head \{size}:\{short_root(root)})")
+}
+
+/// Client-side verification of `key` -> `hash` against the log: "absent"
+/// (no log, or no publish record: the phase-0 lane), "ok", or "yanked".
+/// Throws on tamper, consistency violation, or a hash the log disagrees with.
+fn log_client_verify(paths: PkgPaths, key: String, hash: String) -> String with Exception + Fs + Console {
+  if !Fs::exists(paths.records) && !Fs::exists(paths.head) {
+    "absent"
+  } else {
+    log_check_current(paths)
+    let lines = log_record_lines(read_or_empty(paths.records))
+    match log_lookup(lines, key) {
+      LogAbsent => "absent",
+      LogPublished(index, recorded, yanked) => {
+        if recorded != hash {
+          throw("transparency log says \{key} is #\{recorded}, local record says #\{hash} — rejected (split-view or tampered cache)")
+        } else ()
+        let head = log_parse_head(Fs::read_file(paths.head))
+        let leaves = log_leaves(lines, Array::length(lines))
+        let leaf = log_leaf_hash(Array::get(lines, index))
+        if !log_verify_inclusion(leaf, head.root, log_inclusion_proof(leaves, index)) {
+          throw("inclusion proof for \{key} (record \{index}) failed against log head \{head.size}:\{short_root(head.root)}")
+        } else ()
+        say("log: inclusion verified for \{key} (record \{index}, head \{head.size}:\{short_root(head.root)})")
+        if yanked {
+          "yanked"
+        } else {
+          "ok"
+        }
+      }
+    }
+  }
+}
+
+//# Materialize
+
+/// Copy `name@version` out of the CAS into its install root and re-verify
+/// the copy against the recorded id.
+fn materialize(paths: PkgPaths, name: String, version: String, hash: String, store: Bool) -> Unit with Env + Exception + Fs + Console {
+  let cas = cas_of(paths, hash)
+  if !Fs::exists(index_of_dir(cas)) {
+    throw("cache is missing \{name}@\{version} (\{hash}) at \{cas}")
+  } else ()
+  let dest = "\{install_root(paths, store)}/\{name}"
+  remove_if_present(dest)
+  copy_package_files(cas, dest)
+  if !hash_matches_index(hash, index_of_dir(dest)) {
+    Fs::remove_tree(dest)
+    throw("materialized copy of \{name}@\{version} does not match recorded #\{hash} — rejected (version->hash is immutable)")
+  } else ()
+  say("installed \{name}@\{version} -> \{dest} (#\{hash})")
+  say("pin line: require \{name} \{version} = #\{hash}")
+}
+
+//# publish
+
+fn pkg_publish(paths: PkgPaths, dir: String) -> Int with Env + Exception + Fs + Console {
+  if dir == "" || !Fs::exists(index_of_dir(dir)) {
+    throw("usage: vibe pkg publish <pkg_dir> (with index.vpkg)")
+  } else ()
+  let index = index_of_dir(dir)
+  let name = package_name_of(dir)
+  if String::starts_with(name, "@local/") {
+    throw("refusing to publish \{name}: `@local` is the scope `vibe new` scaffolds for a project that is not a published package; set `name = @<your-scope>/<name>` in \{index} first (#2676)")
+  } else ()
+  let version = package_version_of(index)
+  if version == "" {
+    throw("publish requires a `version = x.y.z` directive in \{index} (#754)")
+  } else ()
+  let versions = read_or_empty(paths.versions)
+  // The semver gate against the previously published version of this name.
+  let prev = latest_version_of(versions, name)
+  if prev != "" && prev != version {
+    let prev_hash = versions_lookup(versions, "\{name}@\{prev}")
+    let prev_index = index_of_dir(cas_of(paths, prev_hash))
+    if !Fs::exists(prev_index) {
+      throw("cache is missing the previous release \{name}@\{prev} (\{prev_hash})")
+    } else ()
+    let errors = publish_check_fs(prev_index, index, "", "")
+    if Array::length(errors) > 0 {
+      throw("publish gate rejected \{name} \{prev} -> \{version}: \{String::join(errors, "; ")}")
+    } else ()
+  } else ()
+  let (computed, contract_hash) = package_hashes(index)
+  let key = "\{name}@\{version}"
+  let recorded = versions_lookup(versions, key)
+  if recorded != "" {
+    if recorded == computed || hash_matches_index(recorded, index) {
+      // Idempotent, but REPAIR a missing transparency record first: a publish
+      // that died between the versions.tsv append and the log append would
+      // otherwise stay mapped without a record, and every retry would return
+      // here, bypassing transparency and yank handling for good.
+      if !log_has_publish(log_record_lines(read_or_empty(paths.records)), key) {
+        say("\{key} is mapped in versions.tsv but has no publish record — repairing the transparency log")
+        log_append(paths, "publish", key, recorded, contract_hash, "local", "-")
+      } else ()
+      say("\{key} already published as #\{recorded} (idempotent)")
+      0
+    } else {
+      throw("same-version republish rejected: \{key} is #\{recorded}, refusing #\{computed} (bump the version; version->hash is immutable, ADR-0065)")
+    }
+  } else {
+    // A tampered or rewritten log must refuse the publish BEFORE any side
+    // effect.
+    log_check_current(paths)
+    let cas = cas_of(paths, computed)
+    remove_if_present(cas)
+    copy_package_files(dir, cas)
+    if !hash_matches_index(computed, index_of_dir(cas)) {
+      throw("CAS self-check failed: \{cas} does not match #\{computed}")
+    } else ()
+    Fs::mkdir_p(paths.cache)
+    Fs::append(paths.versions, versions_row(key, computed))
+    // Local publishes carry no source/commit provenance yet (attestation is
+    // the signing work of registry-design Phase 2).
+    log_append(paths, "publish", key, computed, contract_hash, "local", "-")
+    say("published \{key} -> #\{computed}")
+    say("cache: \{cas}")
+    0
+  }
+}
+
+//# install
+
+fn pkg_install(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception + Fs + Console {
+  let usage = "usage: vibe pkg install @scope/name@x.y.z [--store] [--allow-yanked]"
+  let mut spec = ""
+  let mut store = false
+  let mut allow_yanked = false
+  let mut i = 2
+  while i < Array::length(args) {
+    let a = Array::get(args, i)
+    if a == "--store" {
+      store = true
+    } else if a == "--allow-yanked" {
+      allow_yanked = true
+    } else if spec != "" {
+      throw("unexpected argument: \{a}")
+    } else {
+      spec = a
+    }
+    i = i + 1
+  }
+  if !is_versioned_key(spec) {
+    throw(usage)
+  } else ()
+  let (name, version) = split_key(spec)
+  let hash = versions_lookup(read_or_empty(paths.versions), spec)
+  if hash == "" {
+    throw("unknown version: \{spec} (publish it first, or `vibe add` it from a git source — #755)")
+  } else ()
+  // Tamper, consistency and inclusion. A version the log never saw (a
+  // git-added TOFU mapping) stays on the phase-0 lane.
+  let state = log_client_verify(paths, spec, hash)
+  if state == "yanked" {
+    if allow_yanked {
+      say("WARNING: \{spec} is yanked in the registry log — installing anyway (--allow-yanked)")
+    } else {
+      throw("\{spec} is yanked in the registry log — refusing to install (pass --allow-yanked to override; existing pins keep working)")
+    }
+  } else ()
+  materialize(paths, name, version, hash, store)
+  0
+}
+
+//# add (the half after the launcher's git fetch)
+
+/// `pkg add-fetched <src_dir> <spec> <commit> [#pkg:...] [--store]`: verify
+/// and install a package the launcher fetched from `spec` at `commit`. The
+/// hash is computed HERE over the fetched sources, so the transport is
+/// untrusted; an expected pin refuses before any cache or install effect.
+/// The last stdout row is machine-readable for the launcher's `vibe add`:
+/// `added<TAB>name<TAB>version<TAB>id<TAB>spec<TAB>commit<TAB>pinned-spec`.
+fn pkg_add_fetched(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception + Fs + Console {
+  let usage = "usage: vibe pkg add-fetched <src_dir> <source-spec> <commit> [#pkg:b3:<64hex>|#pkg:sha1:<40hex>] [--store]"
+  let positional: Array[String] = []
+  let mut expected = ""
+  let mut store = false
+  let mut i = 2
+  while i < Array::length(args) {
+    let a = Array::get(args, i)
+    if a == "--store" {
+      store = true
+    } else if String::starts_with(a, "#pkg:") || String::starts_with(a, "pkg:") {
+      expected = id_text(a)
+    } else {
+      Array::push(positional, a)
+    }
+    i = i + 1
+  }
+  if Array::length(positional) != 3 {
+    throw(usage)
+  } else ()
+  let src = Array::get(positional, 0)
+  let spec = Array::get(positional, 1)
+  let commit = Array::get(positional, 2)
+  let parsed = parse_source_spec(spec)
+  if !Fs::exists(index_of_dir(src)) {
+    throw("fetched source has no index.vpkg at '\{if parsed.subdir == "" {
+      "."
+    } else {
+      parsed.subdir
+    }}' (\{spec})")
+  } else ()
+  let index = index_of_dir(src)
+  let name = package_name_of(src)
+  let version = package_version_of(index)
+  if version == "" {
+    throw("fetched package \{name} has no `version = x.y.z` directive in index.vpkg (#754)")
+  } else ()
+  let (computed, _) = package_hashes(index)
+  // A SHA-1 expected pin still verifies under SHA-1 of the same payload, so
+  // a historical pin can be restored when its CAS entry is absent (#2829).
+  let hash = if expected != "" && computed != expected {
+    if hash_matches_index(expected, index) {
+      expected
+    } else {
+      throw("hash mismatch for \{name}@\{version} from \{spec}: fetched #\{computed}, expected #\{expected} — rejected")
+    }
+  } else {
+    computed
+  }
+  let key = "\{name}@\{version}"
+  let recorded = versions_lookup(read_or_empty(paths.versions), key)
+  let final_hash = if recorded != "" && recorded != hash {
+    if hash_matches_index(recorded, index) {
+      recorded
+    } else {
+      throw("known version \{key} is #\{recorded} but \{spec} serves #\{hash} — rejected (version->hash is immutable, ADR-0065)")
+    }
+  } else {
+    hash
+  }
+  // When the registry log knows this key the fetched hash must agree. A yank
+  // only warns: this is the explicit-source lane, install is the one that
+  // refuses.
+  if log_client_verify(paths, key, final_hash) == "yanked" {
+    say("WARNING: \{key} is yanked in the registry log")
+  } else ()
+  let cas = cas_of(paths, final_hash)
+  remove_if_present(cas)
+  copy_package_files(src, cas)
+  if !hash_matches_index(final_hash, index_of_dir(cas)) {
+    throw("CAS self-check failed: \{cas} does not match #\{final_hash}")
+  } else ()
+  Fs::mkdir_p(paths.cache)
+  if recorded == "" {
+    Fs::append(paths.versions, versions_row(key, final_hash))
+    if expected == "" {
+      say("TRUST-ON-FIRST-USE: recorded \{key} -> #\{final_hash} (re-run with the pin to verify a fresh fetch)")
+    } else ()
+  } else ()
+  let line = provenance_line(key, final_hash, spec, commit)
+  if !provenance_has(read_or_empty(paths.provenance), line) {
+    Fs::append(paths.provenance, String::concat(line, "\n"))
+  } else ()
+  say("fetched \{key} from \{spec} @ \{commit}")
+  materialize(paths, name, version, final_hash, store)
+  println("added\t\{name}\t\{version}\t\{final_hash}\t\{spec}\t\{commit}\t\{SourceSpec::pinned(parsed, commit)}")
+  0
+}
+
+/// `pkg spec <source-spec>`: the URL, ref and subdirectory the launcher
+/// fetches, one `KEY<TAB>VALUE` row each. The launcher never parses a spec
+/// itself, so the CLI's parser is the only one.
+fn pkg_spec(args: Array[String]) -> Int with Exception + Console {
+  if Array::length(args) != 3 {
+    throw("usage: vibe pkg spec <source-spec>")
+  } else ()
+  let s = parse_source_spec(Array::get(args, 2))
+  println("url\t\{s.url}")
+  println("ref\t\{s.git_ref}")
+  println("subdir\t\{s.subdir}")
+  0
+}
+
+//# fetch-pins
+
+fn seen_has(seen: Array[String], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(seen) {
+    found = Array::get(seen, i) == name
+    i = i + 1
+  }
+  found
+}
+
+fn enqueue_pins(queue: Array[(String, String, String, String)], index: String) -> Unit with Exception + Fs {
+  let pins = extract_require_sources(Fs::read_file(index))
+  let mut i = 0
+  while i < Array::length(pins) {
+    Array::push(queue, Array::get(pins, i))
+    i = i + 1
+  }
+}
+
+/// `pkg fetch-pins <index.vpkg> [--store]` (#2676): satisfy every `require`
+/// pin of a manifest, then the pins of every package installed on the way. A
+/// pin whose id is in the CAS is materialized from it; one that has to come
+/// from its recorded source is printed as
+/// `need<TAB>name<TAB>version<TAB>id<TAB>source` for the launcher to fetch
+/// (`pkg add-fetched`) before it runs this again. A `@vibe/*` pin with no
+/// source resolves from the toolchain.
+fn pkg_fetch_pins(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception + Fs + Console {
+  let usage = "usage: vibe pkg fetch-pins <index.vpkg> [--store]"
+  let mut manifest = ""
+  let mut store = false
+  let mut i = 2
+  while i < Array::length(args) {
+    let a = Array::get(args, i)
+    if a == "--store" {
+      store = true
+    } else if manifest != "" {
+      throw("unexpected argument: \{a}")
+    } else {
+      manifest = a
+    }
+    i = i + 1
+  }
+  if manifest == "" || !Fs::exists(manifest) {
+    throw(usage)
+  } else ()
+  let root = install_root(paths, store)
+  let queue: Array[(String, String, String, String)] = []
+  enqueue_pins(queue, manifest)
+  let seen: Array[String] = []
+  let needs: Array[String] = []
+  let mut fetched = 0
+  let mut up_to_date = 0
+  let mut qi = 0
+  while qi < Array::length(queue) {
+    let (name, version, pin, src) = Array::get(queue, qi)
+    qi = qi + 1
+    if !seen_has(seen, name) {
+      Array::push(seen, name)
+      if String::starts_with(name, "@vibe/") && src == "" {
+        say("\{name}@\{version} resolves from the toolchain (no source recorded); skipped")
+      } else if pin == "" {
+        throw("require line for \{name}@\{version} in \{manifest} has no pin; run `vibe add` (or `vibe fmt` with the package in the store) to pin it")
+      } else {
+        let hash = id_text(pin)
+        let dest = "\{root}/\{name}"
+        let current = Fs::exists(index_of_dir(dest)) && hash_matches_index(hash, index_of_dir(dest))
+        if current {
+          up_to_date = up_to_date + 1
+          enqueue_pins(queue, index_of_dir(dest))
+        } else {
+          if Fs::exists(index_of_dir(dest)) {
+            say("\{name} at \{dest} does not match pin #\{hash}: replacing it")
+          } else ()
+          if Fs::exists(index_of_dir(cas_of(paths, hash))) {
+            materialize(paths, name, version, hash, store)
+            fetched = fetched + 1
+            enqueue_pins(queue, index_of_dir(dest))
+          } else if src != "" {
+            Array::push(needs, "need\t\{name}\t\{version}\t\{hash}\t\{src}")
+          } else {
+            throw("no source recorded for \{name}@\{version} and the cache has no #\{hash}: run `vibe add <source-spec>` to fetch it and record where it came from")
+          }
+        }
+      }
+    } else ()
+  }
+  let mut n = 0
+  while n < Array::length(needs) {
+    println(Array::get(needs, n))
+    n = n + 1
+  }
+  let pending = if Array::length(needs) == 0 {
+    ""
+  } else {
+    ", \{Array::length(needs)} to fetch from source"
+  }
+  say("fetch-pins: \{fetched} package(s) materialized, \{up_to_date} already at their pin\{pending}")
+  0
+}
+
+//# yank
+
+fn pkg_yank(paths: PkgPaths, spec: String) -> Int with Exception + Fs + Console {
+  if !is_versioned_key(spec) {
+    throw("usage: vibe pkg yank @scope/name@x.y.z")
+  } else ()
+  let hash = versions_lookup(read_or_empty(paths.versions), spec)
+  if hash == "" {
+    throw("unknown version: \{spec} (nothing to yank)")
+  } else ()
+  if !Fs::exists(paths.records) {
+    throw("cannot yank \{spec}: no transparency log at \{paths.log_dir} (only logged publishes can be yanked — #805)")
+  } else ()
+  let lines = log_record_lines(Fs::read_file(paths.records))
+  if !log_has_publish(lines, spec) {
+    throw("cannot yank \{spec}: no publish record in the transparency log (git-added versions live on the phase-0 lane — #805)")
+  } else if log_is_yanked(lines, spec) {
+    say("\{spec} is already yanked (idempotent)")
+    0
+  } else {
+    // A yank is a MARKING: the log only appends; versions.tsv and the CAS are
+    // untouched, and existing pins keep building.
+    log_append(paths, "yank", spec, hash, "-", "-", "-")
+    say("yanked \{spec} (append-only marking; version->hash mapping unchanged)")
+    0
+  }
+}
+
+//# update
+
+/// The lines of `a` that `b` lacks, in order, each matched at most once.
+fn lines_missing(a: Array[String], b: Array[String]) -> Array[String] {
+  let used: Array[Bool] = []
+  let mut j = 0
+  while j < Array::length(b) {
+    Array::push(used, false)
+    j = j + 1
+  }
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(a) {
+    let line = Array::get(a, i)
+    let mut k = 0
+    let mut hit = false
+    while !hit && k < Array::length(b) {
+      if !Array::get(used, k) && Array::get(b, k) == line {
+        Array::set(used, k, true)
+        hit = true
+      } else ()
+      k = k + 1
+    }
+    if !hit {
+      Array::push(out, line)
+    } else ()
+    i = i + 1
+  }
+  out
+}
+
+fn pkg_update(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception + Fs + Console {
+  let usage = "usage: vibe pkg update @scope/name [--store]"
+  let mut name = ""
+  let mut store = false
+  let mut i = 2
+  while i < Array::length(args) {
+    let a = Array::get(args, i)
+    if a == "--store" {
+      store = true
+    } else if name != "" {
+      throw("unexpected argument: \{a}")
+    } else {
+      name = a
+    }
+    i = i + 1
+  }
+  if is_versioned_key(name) {
+    throw("usage: vibe pkg update @scope/name [--store] (no @version — update resolves the newest non-yanked one)")
+  } else if !String::starts_with(name, "@") || String::index_of(name, "/") <= 1 {
+    throw(usage)
+  } else ()
+  let installed = "\{install_root(paths, store)}/\{name}"
+  let installed_index = index_of_dir(installed)
+  if !Fs::exists(installed_index) {
+    throw("not installed: \{name} (\{installed}) — `vibe pkg install` it first")
+  } else ()
+  if !Fs::exists(paths.versions) {
+    throw("no published versions known (empty cache index)")
+  } else ()
+  let all = versions_of(Fs::read_file(paths.versions), name)
+  let (cur_computed, cur_contract) = package_hashes(installed_index)
+  // The current version is a reverse lookup of the installed copy; a
+  // historical `pkg:sha1:` row verifies under SHA-1.
+  let mut cur_version = ""
+  let mut cur_hash = cur_computed
+  let mut c = 0
+  while c < Array::length(all) {
+    let (v, h) = Array::get(all, c)
+    if h == cur_computed {
+      cur_version = v
+    } else ()
+    c = c + 1
+  }
+  if cur_version == "" {
+    let mut s = 0
+    while cur_version == "" && s < Array::length(all) {
+      let (v, h) = Array::get(all, s)
+      if hash_matches_index(h, installed_index) {
+        cur_version = v
+        cur_hash = h
+      } else ()
+      s = s + 1
+    }
+  } else ()
+  // The newest non-yanked LOGGED publish. versions.tsv also holds TOFU
+  // mappings `vibe add` created with no publish record; picking one would
+  // install it with the log check absent, bypassing inclusion and yank
+  // verification.
+  let lines = log_record_lines(read_or_empty(paths.records))
+  let mut best = ""
+  let mut best_hash = ""
+  let mut b = 0
+  while b < Array::length(all) {
+    let (v, h) = Array::get(all, b)
+    let key = "\{name}@\{v}"
+    if log_has_publish(lines, key) && !log_is_yanked(lines, key) {
+      best = v
+      best_hash = h
+    } else ()
+    b = b + 1
+  }
+  if best == "" {
+    throw("no logged (published) non-yanked version of \{name} — git-added versions are updated by re-running `vibe add` with a new ref")
+  } else if best == cur_version {
+    say("\{name} is up to date (\{cur_version} = #\{cur_hash})")
+    0
+  } else {
+    let _ = log_client_verify(paths, "\{name}@\{best}", best_hash)
+    let best_index = index_of_dir(cas_of(paths, best_hash))
+    if !Fs::exists(best_index) {
+      throw("cache is missing \{name}@\{best} (\{best_hash})")
+    } else ()
+    let (_, best_contract) = package_hashes(best_index)
+    let from = if cur_version == "" {
+      "<untracked local copy>"
+    } else {
+      cur_version
+    }
+    say("update \{name}: \{from} -> \{best}")
+    if cur_contract == best_contract {
+      say("contract surface: unchanged (\{cur_contract})")
+    } else {
+      say("contract surface: \{cur_contract} -> \{best_contract}")
+      // A line set difference of the contract files: the lines the new
+      // contract drops, then the ones it adds.
+      let old_lines = String::split(Fs::read_file(installed_index), "\n")
+      let new_lines = String::split(Fs::read_file(best_index), "\n")
+      say("contract diff (\{installed_index} -> \{name}@\{best}):")
+      let removed = lines_missing(old_lines, new_lines)
+      let added = lines_missing(new_lines, old_lines)
+      let mut r = 0
+      while r < Array::length(removed) {
+        say("  -\{Array::get(removed, r)}")
+        r = r + 1
+      }
+      let mut a = 0
+      while a < Array::length(added) {
+        say("  +\{Array::get(added, a)}")
+        a = a + 1
+      }
+    }
+    materialize(paths, name, best, best_hash, store)
+    0
+  }
+}
+
+//# Command
+
+let pkg_usage: String = "usage: vibe pkg publish <pkg_dir> | install @scope/name@x.y.z [--store] [--allow-yanked] | add <source-spec> [#pkg:b3:<64hex>|#pkg:sha1:<40hex>] [--store] | fetch-pins <index.vpkg> [--store] | yank @scope/name@x.y.z | update @scope/name [--store]"
+
+/// `vibe pkg <subcommand> ...`. `add` and the source-fetching half of
+/// `fetch-pins` need git, so the launcher drives those through `spec`,
+/// `add-fetched` and the `need` rows of `fetch-pins`.
+export fn selfhost_cli_user_pkg_args(args: Array[String]) -> Int with Env + Exception + Fs + Console {
+  let sub = if Array::length(args) > 1 {
+    Array::get(args, 1)
+  } else {
+    ""
+  }
+  let paths = pkg_paths()
+  match sub {
+    "publish" => pkg_publish(paths, if Array::length(args) > 2 {
+      Array::get(args, 2)
+    } else {
+      ""
+    }),
+    "install" => pkg_install(paths, args),
+    "add-fetched" => pkg_add_fetched(paths, args),
+    "spec" => pkg_spec(args),
+    "fetch-pins" => pkg_fetch_pins(paths, args),
+    "yank" => pkg_yank(paths, if Array::length(args) > 2 {
+      Array::get(args, 2)
+    } else {
+      ""
+    }),
+    "update" => pkg_update(paths, args),
+    "--help" => {
+      println(pkg_usage)
+      0
+    },
+    _ => throw(pkg_usage)
+  }
+}
