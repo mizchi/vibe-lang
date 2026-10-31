@@ -1453,3 +1453,7 @@ VIBE_STAGE2_WASM="$stage2_wasm" bash scripts/test_capability_dce_reachability.sh
 # Function extraction validates edits before publication.
 echo "[compiler-gate] function extraction"
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash "$ROOT_DIR/scripts/test_extract_function.sh"
+
+# The label codemod edits only files that check, and its edit is a fixpoint (#3679).
+echo "[compiler-gate] label codemod (#3679)"
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash "$ROOT_DIR/scripts/test_refactor_add_labels.sh"
