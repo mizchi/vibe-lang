@@ -1,0 +1,29 @@
+// A qualified entry shadow keeps its own Exception row. Registering the
+// native signature must not make the throwing source call look inert.
+effect DirectoryProbe {
+  Size() -> Int
+}
+
+fn Fs::readdir(path: String) -> Int with Exception[String] {
+  throw("directory shadow")
+  0
+}
+
+fn guarded_directory_probe() -> Int with DirectoryProbe {
+  handle {
+    perform DirectoryProbe::Size() + 1
+  } with { Exception[Int]::Throw(code) => code * 2 }
+}
+
+test "a throwing directory shadow bypasses the handled body's integer catch" {
+  let result = handle {
+    handle {
+      guarded_directory_probe()
+    } with { DirectoryProbe::Size() => resume(Fs::readdir("not-a-directory")) }
+  } with { Exception[String]::Throw(message) => if message == "directory shadow" {
+    -1
+  } else {
+    -2
+  } }
+  assert_eq(result, -1)
+}

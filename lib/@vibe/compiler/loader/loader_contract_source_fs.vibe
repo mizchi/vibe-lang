@@ -30,7 +30,7 @@ import @vibe/compiler/core {
   path_in_dir,
   reject_user_iterator_serialized_boundaries,
   resolve_import_path_candidates,
-  resolve_import_path_probe,
+  resolve_import_path_probe_fs,
   text_mentions_unstable_package,
   vpkg_path_in_dir
 }
@@ -175,7 +175,7 @@ fn exported_type_params_entry_cfg_matches(path: String, cfg: String) -> Bool {
 
 /// A recorded answer is fresh when every file it read has the stat token it
 /// was read under and every path resolution it made answers the same. A plain
-/// function, not the match arm: `resolve_path_fs` discharges the Source
+/// function, not the match arm: `resolve_import_path_probe_fs` discharges the Source
 /// effect with a handler, and that call chain inside an Option match arm is
 /// the #708 trap shape (it trapped here, `unreachable`, on the first hit
 /// with a recorded resolution).
@@ -698,16 +698,7 @@ export fn resolve_path_in_sources(base_dir: String, raw_path: String, sources: A
 }
 
 export fn loader_resolve_path_fs(base_dir: String, raw_path: String) -> String with Env + Fs {
-  // #1872 pilot: the probe loop lives once in core (resolve_import_path_probe,
-  // `with Source`); this wrapper only discharges Source with the real
-  // capability builtins. self_path = "" -- this call site never needed the
-  // self-import skip (no candidate equals ""). The old #768/#778 direct-call
-  // retreat is deliberately revisited here: `perform Source::Exists` inside
-  // the probe is the pilot's live test of perform in this compiled unit,
-  // pinned by fixtures/effect_source_pilot_test.vibe and the bootstrap gate.
-  handle {
-    resolve_import_path_probe(base_dir, raw_path, "")
-  } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)) }
+  resolve_import_path_probe_fs(base_dir, raw_path, "")
 }
 
 /// #740: normalized for the same reason as manifest_sources' join_path —
@@ -926,20 +917,27 @@ fn empty_manifest_header_cache_rows() -> Array[(String, String, String, String)]
 /// NOTE: no Fs::is_dir guards here — the fixed seed compiler predates that
 /// builtin (bootstrap bump required first). Scope/package levels are
 /// directories by layout convention (resolver assumes the same).
-fn push_context_packages_under(sb: StringBuilder, root: String) -> Unit with Exception + Fs {
-  if Fs::exists(root) {
-    let scopes = Fs::readdir(root)
+fn push_context_packages_under_source(sb: StringBuilder, root: String) -> Unit with Source {
+  let root_exists = perform Source::Exists(root)
+  if root_exists {
+    let scopes = perform Source::List(root)
     let mut i = 0
     while i < Array::length(scopes) {
       let scope = Array::get(scopes, i)
       if String::starts_with(scope, "@") {
         let scope_dir = String::concat(root, String::concat("/", scope))
-        let names = Fs::readdir(scope_dir)
+        let names = perform Source::List(scope_dir)
         let mut j = 0
         while j < Array::length(names) {
           let name = Array::get(names, j)
           let pkg_dir = String::concat(scope_dir, String::concat("/", name))
-          if Fs::exists(String::concat(pkg_dir, "/index.vpkg")) || Fs::exists(String::concat(pkg_dir, "/index.vibei")) {
+          let vpkg_exists = perform Source::Exists(String::concat(pkg_dir, "/index.vpkg"))
+          let contract_exists = if vpkg_exists {
+            true
+          } else {
+            perform Source::Exists(String::concat(pkg_dir, "/index.vibei"))
+          }
+          if contract_exists {
             StringBuilder::push(sb, root)
             StringBuilder::push(sb, "|")
             StringBuilder::push(sb, scope)
@@ -961,17 +959,26 @@ fn push_context_packages_under(sb: StringBuilder, root: String) -> Unit with Exc
   }
 }
 
-export fn resolution_context_fingerprint_fs() -> String with Env + Exception + Fs {
+/// Fingerprint visible packages without ambient filesystem or environment reads.
+/// Root order and each provider's byte-sorted listing remain part of the key.
+export fn resolution_context_fingerprint_source(roots: Array[String]) -> String with Source {
   let sb = StringBuilder::new()
-  push_context_packages_under(sb, ".vibe/store")
-  push_context_packages_under(sb, "lib")
-  let roots = external_lib_roots()
+  push_context_packages_under_source(sb, ".vibe/store")
+  push_context_packages_under_source(sb, "lib")
   let mut i = 0
   while i < Array::length(roots) {
-    push_context_packages_under(sb, Array::get(roots, i))
+    push_context_packages_under_source(sb, Array::get(roots, i))
     i = i + 1
   }
   compact_string_fingerprint(StringBuilder::freeze(sb))
+}
+
+/// Preserve the existing filesystem boundary and its environment-selected roots.
+export fn resolution_context_fingerprint_fs() -> String with Env + Exception + Fs {
+  let roots = external_lib_roots()
+  handle {
+    resolution_context_fingerprint_source(roots)
+  } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 /// Persistent source caches contain a resolved graph, so local package policy is
@@ -2074,7 +2081,7 @@ export fn desugar_contract_source_fs(path: String, source: String) -> String wit
   while fpi < Array::length(impl_raws) {
     let fp_raw = Array::get(impl_raws, fpi)
     // #842: probe directory/contract candidates the same way the regular
-    // loader does (resolve_path_fs) instead of assuming the plain-file form
+    // loader does (resolve_import_path_probe_fs) instead of assuming the plain-file form
     // — a bare `import ../pkg { ... }` inside a .vibei must resolve to
     // `../pkg/index.vibei` (or `/index.vibe`) when `../pkg.vibe` does not
     // exist, exactly like the same import spelled inside a .vibe impl file.

@@ -23,7 +23,6 @@ import @vibe/compiler/syntax {
 import @vibe/compiler/core {
   ExportRenamePlan,
   Expr,
-  Source,
   Stmt,
   append_builtin_iterator_plan_operation_markers,
   append_import_alias_rewritten_non_import_stmts_with_renames,
@@ -53,7 +52,7 @@ import @vibe/compiler/core {
   refuse_linked_impl_overlaps,
   resolve_import_path,
   resolve_import_path_candidates,
-  resolve_import_path_probe,
+  resolve_import_path_probe_fs,
   rewrite_imported_value_stmt_to_local,
   stmts_have_import_deep,
   trait_import_local_operation_renames,
@@ -91,22 +90,6 @@ fn string_array_contains_local(items: Array[String], target: String) -> Bool {
   found
 }
 
-/// #726: directory-style imports (`import ../core { .. }` -> core/index.vibe)
-/// need the CANDIDATE list + existence probe; the single-candidate
-/// resolve_import_path returns `core.vibe`, which does not exist. Falls back
-/// to the first candidate so a genuinely missing import still reports its
-/// plain-file path.
-fn resolve_existing_import_path(base_dir: String, raw_path: String, self_path: String) -> String with Env + Fs {
-  // #1872 pilot: probe loop unified in core (resolve_import_path_probe,
-  // `with Source`); observable behavior is unchanged (this copy broke out of
-  // the scan early on a hit and set fallback only on a miss, but `found`
-  // guards both continuations, so first-hit/first-non-self-fallback answers
-  // are identical). The wrapper only discharges Source with the builtins.
-  handle {
-    resolve_import_path_probe(base_dir, raw_path, self_path)
-  } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)) }
-}
-
 /// #716: collision-def fallback. `excluded_locals` are the import locals the
 /// export-rename plan already rewrites — emitting an inline copy for those too
 /// would double-bind the local. The copy gets the target file's export renames
@@ -118,7 +101,7 @@ fn resolve_existing_import_path(base_dir: String, raw_path: String, self_path: S
 /// provider's code, so it takes a range of its own past every file, where the
 /// whole-program check files its `Float` rows apart from the original's.
 fn append_fs_import_local_def(merged: Array[Stmt], current_path: String, raw_path: String, original: String, local: String, plan: ExportRenamePlan, clone_base: Array[Int]) -> Bool with Env + Exception + Fs {
-  let resolved = resolve_existing_import_path(dir_of_path(current_path), raw_path, current_path)
+  let resolved = resolve_import_path_probe_fs(dir_of_path(current_path), raw_path, current_path)
   // Builtin read + ingest, same as collect_parsed_sources_recursive
   // (flatten-lane wiring constraint / #741).
   let source = ingest_source_text_fs(resolved, Fs::read_file(resolved))
@@ -313,11 +296,11 @@ fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], fil
         SImport(raw_path, _) => if is_builtin_iterator_serialized_boundary_path(raw_path) {
           ()
         } else {
-          let resolved = resolve_existing_import_path(base_dir, raw_path, path)
+          let resolved = resolve_import_path_probe_fs(base_dir, raw_path, path)
           collect_parsed_sources_recursive(resolved, file_paths, file_sources, file_stmts, visited, located)
         },
         SReExport(raw_path, _) => {
-          let resolved = resolve_existing_import_path(base_dir, raw_path, path)
+          let resolved = resolve_import_path_probe_fs(base_dir, raw_path, path)
           collect_parsed_sources_recursive(resolved, file_paths, file_sources, file_stmts, visited, located)
         },
         _ => ()

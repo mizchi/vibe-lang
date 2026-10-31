@@ -210,9 +210,12 @@ if wrapper_only_found != wrapper_only_expected:
 # exemption is mutation-checked against the arms that actually serve it, so a
 # lowering that is deleted or renamed fails here instead of being waved
 # through as "a name nobody registered".
-callsite_only_expected = {"abort"}
-lin_callsite_text = read_source_group(LIN_CALLSITE)
-gc_callsite_text = read_source_group(GC_CALLSITE)
+# Fs::readdir likewise has a checker signature but lowers to a raw directory
+# import plus String::split at each call, without a func-table slot. Require
+# both real dispatch arms; a spelling left in a comment is not implementation.
+callsite_only_expected = {"abort", "Fs::readdir"}
+lin_callsite_text = strip_line_comments(read_source_group(LIN_CALLSITE))
+gc_callsite_text = strip_line_comments(read_source_group(GC_CALLSITE))
 callsite_only_found = {
     n for n in callsite_only_expected
     if f'fname == "{n}"' in lin_callsite_text and f'fname == "{n}"' in gc_callsite_text

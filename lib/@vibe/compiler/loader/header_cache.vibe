@@ -27,6 +27,7 @@ import @vibe/compiler/core {
   Stmt,
   dir_of_path,
   ensure_regular_source_fs,
+  ensure_regular_source_token,
   is_builtin_iterator_serialized_boundary_path,
   is_contract_ext,
   loader_physical_located,
@@ -34,7 +35,7 @@ import @vibe/compiler/core {
   nearest_vpkg_path_fs,
   path_has_relative_prefix,
   resolve_import_path_candidates,
-  resolve_import_path_probe
+  resolve_import_path_probe_fs
 }
 
 import @vibe/compiler/runtime/checked_module_cache {
@@ -53,15 +54,6 @@ import @vibe/compiler/contract {
 }
 
 //# Functions
-
-fn resolve_path_fs(base_dir: String, raw_path: String, self_path: String) -> String with Env + Fs {
-  // #1872 pilot: probe loop unified in core (resolve_import_path_probe,
-  // `with Source` -- carries this copy's self-import skip and first-non-self
-  // fallback); this wrapper only discharges Source with the real builtins.
-  handle {
-    resolve_import_path_probe(base_dir, raw_path, self_path)
-  } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)) }
-}
 
 fn is_special_bundle_path(path: String) -> Bool {
   String::ends_with(path, "compiler_sources_bundle.vibe") || String::ends_with(path, "cli_adapter_bundle.vibe") || String::ends_with(path, "selfbuild_runtime_entry_bundle.vibe")
@@ -188,7 +180,7 @@ fn enforce_relative_import_package_boundary_fs(raw_path: String, self_path: Stri
 }
 
 fn resolve_checked_path_fs(base_dir: String, raw_path: String, self_path: String, source: String, keyword: String) -> String with Env + Exception + Fs {
-  let resolved = resolve_path_fs(base_dir, raw_path, self_path)
+  let resolved = resolve_import_path_probe_fs(base_dir, raw_path, self_path)
   if String::starts_with(raw_path, "@") || Fs::exists(resolved) {
     enforce_relative_import_package_boundary_fs(raw_path, self_path, resolved, source, keyword)
     resolved
@@ -476,20 +468,24 @@ fn directory_entry_path(dir: String, name: String) -> String {
   }
 }
 
-export fn contract_sibling_impl_raws(dir: String) -> Array[String] with Exception + Fs {
+/// Discover direct production members through a read-only source provider.
+/// Source::List supplies byte-sorted basenames; only selected members are
+/// statted, preserving the filesystem lane's order and symlink policy.
+export fn contract_sibling_impl_raws_source(dir: String) -> Array[String] with Exception + Source {
   let out = array_empty()
   let scan_dir = if dir == "" {
     "."
   } else {
     dir
   }
-  let names = Fs::readdir(scan_dir)
+  let names = perform Source::List(scan_dir)
   let mut i = 0
   while i < Array::length(names) {
     let name = Array::get(names, i)
     if name != "index.vibei" && name != "index.vibe" && name != "index.vpkg" && String::ends_with(name, ".vibe") && !String::ends_with(name, "_test.vibe") && !String::ends_with(name, "_bench.vibe") && !String::ends_with(name, ".draft.vibe") && !String::starts_with(name, "_") {
       let full = directory_entry_path(dir, name)
-      ensure_regular_source_fs(full)
+      let token = perform Source::StatToken(full)
+      ensure_regular_source_token(full, token)
       Array::push(out, String::concat("./", name))
     } else {
       ()
@@ -497,6 +493,13 @@ export fn contract_sibling_impl_raws(dir: String) -> Array[String] with Exceptio
     i = i + 1
   }
   out
+}
+
+/// Filesystem adapter for the shared sibling-discovery policy.
+export fn contract_sibling_impl_raws(dir: String) -> Array[String] with Exception + Fs {
+  handle {
+    contract_sibling_impl_raws_source(dir)
+  } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 /// #897/#855 (ADR-0070 Phase 1): a .vpkg contract gets implicit membership
@@ -1005,7 +1008,7 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
         let resolved = array_empty()
         let mut cri = 0
         while cri < Array::length(craws) {
-          Array::push(resolved, resolve_path_fs(dir_of_path(path), Array::get(craws, cri), path))
+          Array::push(resolved, resolve_import_path_probe_fs(dir_of_path(path), Array::get(craws, cri), path))
           cri = cri + 1
         }
         resolved

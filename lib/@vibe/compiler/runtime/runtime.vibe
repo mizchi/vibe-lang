@@ -498,13 +498,26 @@ fn db_module_ships_owned_heads(rdb: RippleDb, path: String) -> Bool with Env {
   if String::ends_with(normalize_path(path), "@vibe/concurrent/experimental/concurrent.vibe") {
     handle {
       is_owned_head_source_location(path, external_lib_roots())
-    } with { Source::Read(p) => resume(match ripple_get_source(rdb, p) {
-      Some(source) => source,
-      None => ""
-    }); Source::Exists(p) => resume(match ripple_get_source(rdb, p) {
-      Some(_) => true,
-      None => false
-    }) }
+    } with {
+      Source::Read(p) => resume(match ripple_get_source(rdb, p) {
+        Some(source) => source,
+        None => ""
+      });
+      Source::Exists(p) => resume(match ripple_get_source(rdb, p) {
+        Some(_) => true,
+        None => false
+      });
+      // This existence-only provider must never receive metadata operations.
+      // Abort on an internal contract violation; the typed resumes cannot run.
+      Source::List(_) => {
+        abort("internal compiler error: owned-head resolution cannot list source directories")
+        resume([])
+      };
+      Source::StatToken(_) => {
+        abort("internal compiler error: owned-head resolution cannot stat source entries")
+        resume(0)
+      }
+    }
   } else {
     false
   }

@@ -1,0 +1,187 @@
+import @vibe/compiler/core {
+  Source, ensure_regular_source_token
+}
+import @vibe/compiler/cache {
+  compact_string_fingerprint
+}
+import @vibe/compiler/loader {
+  contract_sibling_impl_raws, contract_sibling_impl_raws_source, resolution_context_fingerprint_source
+}
+
+// The explicit row proves discovery needs no ambient filesystem authority.
+fn siblings_in_memory(dir: String, names: Array[String], symlink: String) -> (Array[String], Array[String]) with Exception {
+  let checked: Array[String] = []
+  let answer = handle {
+    contract_sibling_impl_raws_source(dir)
+  } with { Source::Read(_) => throw("sibling discovery must not read source contents"); Source::Exists(_) => throw("sibling discovery must not probe existence"); Source::List(path) => {
+    assert_eq(path, if dir == "" {
+      "."
+    } else {
+      dir
+    })
+    resume(names)
+  }; Source::StatToken(path) => {
+    Array::push(checked, path)
+    resume(if path == symlink {
+      -1
+    } else {
+      17
+    })
+  } }
+  (answer, checked)
+}
+
+test "Source sibling discovery preserves membership, order and stat scope" {
+  let (names, checked) = siblings_in_memory("pkg", [
+    "_hidden.vibe",
+    "a.vibe",
+    "a_bench.vibe",
+    "a_test.vibe",
+    "b.vibe",
+    "c.draft.vibe",
+    "index.vibe",
+    "index.vibei",
+    "index.vpkg",
+    "nested",
+    "notes.md"
+  ], "pkg/_hidden.vibe")
+  inspect(names, "[./a.vibe, ./b.vibe]")
+  inspect(checked, "[pkg/a.vibe, pkg/b.vibe]")
+}
+
+test "Source sibling discovery keeps relative and filesystem-root spellings" {
+  let (local, local_checked) = siblings_in_memory("", ["a.vibe"], "")
+  inspect(local, "[./a.vibe]")
+  inspect(local_checked, "[a.vibe]")
+  let (root, root_checked) = siblings_in_memory("/", ["a.vibe"], "")
+  inspect(root, "[./a.vibe]")
+  inspect(root_checked, "[/a.vibe]")
+}
+
+test "Source sibling discovery refuses a symlink before publishing membership" {
+  let message = handle {
+    let _ = siblings_in_memory("pkg", ["link.vibe"], "pkg/link.vibe")
+    "accepted"
+  } with { Exception::Throw(message) => message }
+  assert_eq(message, "symlink module source is not allowed: pkg/link.vibe")
+}
+
+test "source stat tokens reserve only the symlink sentinel" {
+  for token in [0, 1, -2, 12345] {
+    ensure_regular_source_token("source.vibe", token)
+  }
+}
+
+test "the filesystem sibling adapter retains the production filter" {
+  let dir = "/tmp/vibe_source_1872_sibling_adapter"
+  Fs::mkdir_p(dir)
+  for name in [
+    "a.vibe",
+    "b.vibe",
+    "_hidden.vibe",
+    "a_test.vibe",
+    "a_bench.vibe",
+    "c.draft.vibe",
+    "index.vibe",
+    "index.vpkg"
+  ] {
+    Fs::write_file(String::concat(dir, String::concat("/", name)), "")
+  }
+  inspect(contract_sibling_impl_raws(dir), "[./a.vibe, ./b.vibe]")
+}
+
+fn memory_exists(paths: Array[String], path: String) -> Bool {
+  let mut found = false
+  for p in paths {
+    if p == path {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+// Providers own byte-sorted directory entries, just as Fs::readdir does.
+// Unknown requests fail so an accidental new source dependency cannot hide.
+fn context_in_memory(paths: Array[String], directories: Array[(String, Array[String])], roots: Array[String]) -> String with Exception {
+  handle {
+    resolution_context_fingerprint_source(roots)
+  } with { Source::Read(_) => throw("resolution context must not read source contents"); Source::Exists(path) => resume(memory_exists(paths, path)); Source::List(path) => {
+    let mut names = None
+    for entry in directories {
+      let (dir, children) = entry
+      if dir == path {
+        names = Some(children)
+      } else {
+        ()
+      }
+    }
+    let found = match names {
+      Some(children) => children,
+      None => throw("unexpected directory: \{path}")
+    }
+    resume(found)
+  }; Source::StatToken(_) => throw("resolution context must not stat source contents") }
+}
+
+test "Source resolution context sees store, workspace and external packages" {
+  let fp = context_in_memory([
+    ".vibe/store",
+    ".vibe/store/@alpha/first/index.vpkg",
+    "lib",
+    "lib/@beta/second/index.vibei",
+    "vendor",
+    "vendor/@gamma/third/index.vpkg"
+  ], [
+    (".vibe/store", ["@alpha", "notes.txt"]),
+    (".vibe/store/@alpha", ["first", "not-a-package"]),
+    ("lib", ["@beta"]),
+    ("lib/@beta", ["second"]),
+    ("vendor", ["@gamma"]),
+    ("vendor/@gamma", ["third"])
+  ], ["vendor"])
+  let expected = ".vibe/store|@alpha/first\nlib|@beta/second\nvendor|@gamma/third\n"
+  assert_eq(fp, compact_string_fingerprint(expected))
+}
+
+test "Source resolution context skips missing roots without listing them" {
+  assert_eq(context_in_memory([], [], ["absent"]), compact_string_fingerprint(""))
+}
+
+test "Source resolution context invalidates when a visible package appears" {
+  let directories = [("lib", ["@scope"]), ("lib/@scope", ["first", "second"])]
+  let before = context_in_memory(["lib", "lib/@scope/first/index.vpkg"], directories, [
+  ])
+  let after = context_in_memory([
+    "lib",
+    "lib/@scope/first/index.vpkg",
+    "lib/@scope/second/index.vpkg"
+  ], directories, [])
+  assert(before != after)
+  assert_eq(after, compact_string_fingerprint("lib|@scope/first\nlib|@scope/second\n"))
+}
+
+test "Source resolution context does not probe the legacy spelling after a vpkg hit" {
+  let probes: Array[String] = []
+  let fp = handle {
+    resolution_context_fingerprint_source([])
+  } with { Source::Read(_) => throw("resolution context must not read source contents"); Source::Exists(path) => {
+    Array::push(probes, path)
+    if String::ends_with(path, "/index.vibei") {
+      throw("legacy spelling probed after a vpkg hit")
+    } else {
+      resume(path == "lib" || path == "lib/@scope/pkg/index.vpkg")
+    }
+  }; Source::List(path) => {
+    if path == "lib" {
+      resume(["@scope"])
+    } else if path == "lib/@scope" {
+      resume(["pkg"])
+    } else {
+      throw("unexpected directory: \{path}")
+    }
+  }; Source::StatToken(_) => throw("resolution context must not stat source contents") }
+  assert_eq(fp, compact_string_fingerprint("lib|@scope/pkg\n"))
+  inspect(probes, "[.vibe/store, lib, lib/@scope/pkg/index.vpkg]")
+}

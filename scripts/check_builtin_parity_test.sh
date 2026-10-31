@@ -118,6 +118,40 @@ if ! grep -qi "call-site-lowered builtin has no" "$WORK/callsite.log"; then
 fi
 echo "builtin-parity-selftest:   red ok: callsite-exemption"
 
+# The directory surface has a registry signature but no func-table slot.
+# Removing either real lowering must fail, even with the spelling left in a
+# comment. This is a served surface, not permission to add arbitrary dead rows.
+for lane in LIN GC; do
+  if [ "$lane" = LIN ]; then
+    source_path="lib/@vibe/compiler/codegen/expr/compile_call.vibe"
+  else
+    source_path="lib/@vibe/compiler/codegen/gc/backend_call.vibe"
+  fi
+  original="$WORK/directory_$lane.original.vibe"
+  copy="$WORK/directory_$lane.vibe"
+  python3 scripts/source_files.py "$source_path" > "$original"
+  python3 - "$original" "$copy" <<'PY'
+import sys
+src, dst = sys.argv[1:]
+s = open(src, encoding="utf-8").read()
+needle = 'fname == "Fs::readdir"'
+assert s.count(needle) == 1, "directory dispatch arm not found exactly once"
+mutated = s.replace(needle, 'fname == "Fs::readdir_MUTATED"', 1)
+assert needle not in mutated, "directory dispatch arm was not removed"
+open(dst, "w", encoding="utf-8").write(mutated + "\n// " + needle + "\n")
+PY
+  if env "VIBE_BUILTIN_PARITY_${lane}_CALLSITE=$copy" bash "$GATE" >"$WORK/directory_$lane.log" 2>&1; then
+    cat "$WORK/directory_$lane.log" >&2
+    fail "the gate PASSED with the $lane directory arm replaced by a comment"
+  fi
+  if ! grep -qF 'call-site-lowered builtin has no' "$WORK/directory_$lane.log" || \
+     ! grep -qF 'Fs::readdir' "$WORK/directory_$lane.log"; then
+    cat "$WORK/directory_$lane.log" >&2
+    fail "the $lane directory mutation failed for another reason"
+  fi
+  echo "builtin-parity-selftest:   red ok: directory-callsite-$lane"
+done
+
 # The GC future rows remain classified as linear-only only while their
 # callsite condition refuses builtin calls and preserves user shadowing.
 FUTURE_COPY="$WORK/backend_future_call.vibe"

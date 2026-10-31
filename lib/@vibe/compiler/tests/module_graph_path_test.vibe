@@ -9,7 +9,8 @@ import @vibe/compiler/core {
   owned_head_source_candidates,
   owned_head_source_location,
   parse_vibe_lib_roots,
-  resolve_import_path_candidates
+  resolve_import_path_candidates,
+  resolve_import_path_probe_fs
 }
 
 //# Misc
@@ -143,7 +144,13 @@ fn owned_head_answers(existing: Array[String]) -> String {
       Array::push(answers, "\{path}: \{is_owned_head_source_location(path, roots)}")
     }
     String::join(answers, "\n")
-  } with { Source::Read(_) => resume(""); Source::Exists(p) => resume(names_existing(existing, p)) }
+  } with { Source::Read(_) => resume(""); Source::Exists(p) => resume(names_existing(existing, p)); Source::List(_) => {
+    abort("owned-head resolution must not list directories")
+    resume([])
+  }; Source::StatToken(_) => {
+    abort("owned-head resolution must not stat entries")
+    resume(0)
+  } }
 }
 
 /// #3551 review: being a candidate location is not being the shipped file.
@@ -182,4 +189,17 @@ test "the shipped file is the one beside the contract the resolver selects" {
     Array::push(answers, owned_head_answers(existing))
   }
   inspect(String::join(answers, "\n--\n"), "selected: lib/@vibe/concurrent/experimental/concurrent.vibe\n.vibe/store/@vibe/concurrent/experimental/concurrent.vibe: false\nlib/@vibe/concurrent/experimental/concurrent.vibe: true\n./lib/@vibe/concurrent/experimental/concurrent.vibe: true\n/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe: false\n--\nselected: lib/@vibe/concurrent/experimental/concurrent.vibe\n.vibe/store/@vibe/concurrent/experimental/concurrent.vibe: false\nlib/@vibe/concurrent/experimental/concurrent.vibe: true\n./lib/@vibe/concurrent/experimental/concurrent.vibe: true\n/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe: false\n--\nselected: .vibe/store/@vibe/concurrent/experimental/concurrent.vibe\n.vibe/store/@vibe/concurrent/experimental/concurrent.vibe: true\nlib/@vibe/concurrent/experimental/concurrent.vibe: false\n./lib/@vibe/concurrent/experimental/concurrent.vibe: false\n/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe: false\n--\nselected: /opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe\n.vibe/store/@vibe/concurrent/experimental/concurrent.vibe: false\nlib/@vibe/concurrent/experimental/concurrent.vibe: false\n./lib/@vibe/concurrent/experimental/concurrent.vibe: false\n/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe: true\n--\nselected: lib/@vibe/concurrent/experimental/concurrent.vibe\n.vibe/store/@vibe/concurrent/experimental/concurrent.vibe: false\nlib/@vibe/concurrent/experimental/concurrent.vibe: true\n./lib/@vibe/concurrent/experimental/concurrent.vibe: true\n/opt/vibe/lib/@vibe/concurrent/experimental/concurrent.vibe: false")
+}
+
+/// All filesystem lanes share this boundary while choosing their own self skip.
+test "shared Source FS probe preserves first hit, self skip and missing fallback" {
+  let root = "/tmp/vibe_source_probe_1872"
+  Fs::mkdir_p(String::concat(root, "/pkg"))
+  let facade = String::concat(root, "/pkg.vibe")
+  let contract = String::concat(root, "/pkg/index.vpkg")
+  Fs::write_file(facade, "")
+  Fs::write_file(contract, "")
+  assert_eq(resolve_import_path_probe_fs(root, "./pkg", ""), facade)
+  assert_eq(resolve_import_path_probe_fs(root, "./pkg", facade), contract)
+  assert_eq(resolve_import_path_probe_fs(root, "./missing", ""), String::concat(root, "/missing.vibe"))
 }
