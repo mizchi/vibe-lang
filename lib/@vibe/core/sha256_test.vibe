@@ -1,0 +1,59 @@
+//# Imports
+
+import ./sha256.vibe {
+  sha256
+}
+
+//# Functions
+
+fn sha256_repeat_a(n: Int) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    StringBuilder::push(sb, "a")
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+//# Misc
+
+// FIPS 180-4 / NIST CSRC example vectors, plus the two shapes the
+// transparency log in the package store hashes: `leaf:` / `node:` prefixed
+// ASCII and the `empty` root.
+
+test "sha256 empty string" {
+  inspect(sha256(""), content = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+}
+
+test "sha256 abc" {
+  inspect(sha256("abc"), content = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+}
+
+test "sha256 of 56 bytes pads into a second block" {
+  // 56 bytes leave no room for the length in the first block, so padding
+  // spills into a second block and the multi-block path runs.
+  inspect(sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"), content = "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
+}
+
+test "sha256 of 55 bytes fits padding and length in one block" {
+  inspect(sha256(sha256_repeat_a(55)), content = "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318")
+}
+
+test "sha256 of 64 bytes is exactly one data block" {
+  inspect(sha256(sha256_repeat_a(64)), content = "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb")
+}
+
+test "sha256 of 1000 bytes sets the second length byte" {
+  // 8000 bits = 0x1F40: the length field's second-lowest byte is non-zero.
+  inspect(sha256(sha256_repeat_a(1000)), content = "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3")
+}
+
+test "sha256 of a byte above 0x7f" {
+  inspect(sha256(String::from_byte(255)), content = "a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89")
+}
+
+test "sha256 of the transparency log's leaf and empty shapes" {
+  inspect(sha256("empty"), content = "2e1cfa82b035c26cbbbdae632cea070514eb8b773f616aaeaf668e2f0be8f10d")
+  inspect(sha256("leaf:0\tpublish\t@a/b@1.0.0\tpkg:b3:00\tct\tlocal\t-"), content = "ca1925039090caf55ad3f174d77517c1b775f4a147e28aa6fea8f85255325468")
+}

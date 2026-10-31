@@ -1,0 +1,308 @@
+//# @vibe/pkgstore/log — the registry transparency log (#805,
+//# docs/internal/design/registry-design.md).
+//#
+//# The log is a directory of two static files:
+//#
+//#   records.tsv   one TAB-separated record per publish/yank event:
+//#                 <ordinal> <op> <name@version> <pkg-hash> <contract-hash> <source> <commit>
+//#   head          "<size>\t<root>" over every record
+//#
+//# Hashing is sha256 over ASCII, domain-separated RFC6962-style:
+//# leaf = sha256("leaf:" + record), node = sha256("node:" + L + ":" + R),
+//# and the root of an empty log is sha256("empty"). The tree splits at the
+//# largest power of two below the leaf count, so proofs have the RFC6962
+//# shape. These functions are byte-compatible with the log files the
+//# shell implementation (`scripts/vibe_pkg.sh`) wrote, and they read the
+//# file CONTENTS, not paths: the caller does the IO.
+
+//# Imports
+
+import @vibe/builtin {
+  String::count, String::trim_end
+}
+import @vibe/core {
+  sha256
+}
+
+//# Types
+
+/// One step of an inclusion proof, leaf to root. `sibling_right` is true
+/// when the sibling is the RIGHT child (combine `node(h, sibling)`).
+export struct LogProofStep {
+  sibling_right: Bool;
+  hash: String
+}
+
+/// A parsed `head` file.
+export struct LogHead {
+  size: Int;
+  root: String
+}
+
+/// What the log says about one `name@version`.
+export enum LogLookup {
+  /// No publish record for the key: the git-added (phase-0) lane.
+  LogAbsent;
+  /// The LAST publish record: its 0-based index, its package hash, and
+  /// whether a yank record follows it.
+  LogPublished(Int, String, Bool)
+}
+
+//# Hashing
+
+export fn log_leaf_hash(record: String) -> String {
+  sha256(String::concat("leaf:", record))
+}
+
+export fn log_node_hash(left: String, right: String) -> String {
+  sha256("node:\{left}:\{right}")
+}
+
+/// The largest power of two strictly below `n` (n >= 2).
+fn log_split(n: Int) -> Int {
+  let mut k = 1
+  while k * 2 < n {
+    k = k * 2
+  }
+  k
+}
+
+fn log_range_root(leaves: Array[String], lo: Int, hi: Int) -> String {
+  if hi - lo == 1 {
+    Array::get(leaves, lo)
+  } else {
+    let k = log_split(hi - lo)
+    log_node_hash(log_range_root(leaves, lo, lo + k), log_range_root(leaves, lo + k, hi))
+  }
+}
+
+/// The Merkle root over `leaves` (leaf hashes, in log order).
+export fn log_root(leaves: Array[String]) -> String {
+  if Array::length(leaves) == 0 {
+    sha256("empty")
+  } else {
+    log_range_root(leaves, 0, Array::length(leaves))
+  }
+}
+
+/// Leaf hashes of the first `limit` records (all of them when `limit` is
+/// at least the record count).
+export fn log_leaves(records: Array[String], limit: Int) -> Array[String] {
+  let n = if limit < Array::length(records) {
+    limit
+  } else {
+    Array::length(records)
+  }
+  let out: Array[String] = []
+  let mut i = 0
+  while i < n {
+    Array::push(out, log_leaf_hash(Array::get(records, i)))
+    i = i + 1
+  }
+  out
+}
+
+fn log_proof_into(out: Array[LogProofStep], leaves: Array[String], m: Int, lo: Int, hi: Int) -> Unit {
+  if hi - lo > 1 {
+    let k = log_split(hi - lo)
+    if m < lo + k {
+      log_proof_into(out, leaves, m, lo, lo + k)
+      Array::push(out, LogProofStep::{
+        sibling_right: true,
+        hash: log_range_root(leaves, lo + k, hi)
+      })
+    } else {
+      log_proof_into(out, leaves, m, lo + k, hi)
+      Array::push(out, LogProofStep::{
+        sibling_right: false,
+        hash: log_range_root(leaves, lo, lo + k)
+      })
+    }
+  }
+}
+
+/// The audit path for leaf `index`, leaf-to-root order.
+export fn log_inclusion_proof(leaves: Array[String], index: Int) -> Array[LogProofStep] {
+  let out: Array[LogProofStep] = []
+  log_proof_into(out, leaves, index, 0, Array::length(leaves))
+  out
+}
+
+/// Recompute the root from a leaf hash and its audit path.
+export fn log_verify_inclusion(leaf: String, root: String, proof: Array[LogProofStep]) -> Bool {
+  let mut h = leaf
+  let mut i = 0
+  while i < Array::length(proof) {
+    let step = Array::get(proof, i)
+    h = if step.sibling_right {
+      log_node_hash(h, step.hash)
+    } else {
+      log_node_hash(step.hash, h)
+    }
+    i = i + 1
+  }
+  h == root
+}
+
+//# Files
+
+/// The records of a `records.tsv` body: the newline-TERMINATED lines. A
+/// final line without its newline is not a record, which is how the shell's
+/// `while read` loop read the file (it never runs its body for that line).
+export fn log_record_lines(text: String) -> Array[String] {
+  let out: Array[String] = []
+  let parts = String::split(text, "\n")
+  let mut i = 0
+  while i < Array::length(parts) - 1 {
+    Array::push(out, Array::get(parts, i))
+    i = i + 1
+  }
+  out
+}
+
+/// The record line for one event. Ordinal is the record's position in the
+/// log: there is no wall clock, so the bytes are reproducible.
+export fn log_record(ordinal: Int, op: String, key: String, hash: String, contract_hash: String, source: String, commit: String) -> String {
+  "\{Int::to_string(ordinal)}\t\{op}\t\{key}\t\{hash}\t\{contract_hash}\t\{source}\t\{commit}"
+}
+
+export fn log_format_head(size: Int, root: String) -> String {
+  "\{Int::to_string(size)}\t\{root}\n"
+}
+
+/// Parse a `head` (or seen-head) file: `<size>\t<root>`, newline optional.
+export fn log_parse_head(text: String) -> LogHead with Exception {
+  let line = String::trim_end(text)
+  let tab = String::index_of(line, "\t")
+  if tab < 0 {
+    throw("malformed log head: expected `<size>\\t<root>`, got `\{line}`")
+  } else {
+    match Int::parse(String::substring(line, 0, tab)) {
+      Some(size) => LogHead::{
+        size: size,
+        root: String::substring(line, tab + 1, String::length(line))
+      },
+      None => throw("malformed log head: size is not a number in `\{line}`")
+    }
+  }
+}
+
+fn log_field(record: String, index: Int) -> String {
+  let fields = String::split(record, "\t")
+  if index < Array::length(fields) {
+    Array::get(fields, index)
+  } else {
+    ""
+  }
+}
+
+//# Checks
+
+/// The served head must commit to the served records exactly (tamper
+/// check). `records` / `head` are the file bodies, `None` when the file is
+/// absent. No log at all is fine: that is the phase-0 lane.
+export fn log_check_served(records: Option[String], head: Option[String]) -> Unit with Exception {
+  match (records, head) {
+    (None, None) => (),
+    (Some(_), None) => throw("tampered log head: records.tsv exists but head is missing"),
+    (None, Some(_)) => throw("tampered log head: head exists but records.tsv is missing"),
+    (Some(body), Some(head_text)) => {
+      let parsed = log_parse_head(head_text)
+      let lines = log_record_lines(body)
+      if body != "" && !String::ends_with(body, "\n") {
+        // A record without its newline is a truncated write; the next
+        // append would glue onto it. The head cannot commit to it either
+        // way, so refuse the file rather than read around it.
+        throw("tampered log head: records.tsv ends inside a record (no final newline)")
+      } else if parsed.size != Array::length(lines) {
+        throw("tampered log head: head claims \{Int::to_string(parsed.size)} record(s), records.tsv has \{Int::to_string(Array::length(lines))}")
+      } else {
+        let got = log_root(log_leaves(lines, Array::length(lines)))
+        if got != parsed.root {
+          throw("tampered log head: head root \{parsed.root} does not match recomputed \{got}")
+        } else {
+          ()
+        }
+      }
+    }
+  }
+}
+
+/// Append-only guarantee: the served head may only EXTEND the head this
+/// client last saw (`seen`, `None` on first contact). With the full records
+/// file in hand this recomputes the root of the old-size prefix.
+export fn log_check_extends(records: String, head: LogHead, seen: Option[LogHead]) -> Unit with Exception {
+  match seen {
+    None => (),
+    Some(prev) => {
+      if head.size < prev.size {
+        throw("log consistency violation: head regressed to \{Int::to_string(head.size)} record(s), this client already saw \{Int::to_string(prev.size)} (append-only log was truncated/rewritten)")
+      } else if prev.size > 0 {
+        let prefix = log_root(log_leaves(log_record_lines(records), prev.size))
+        if prefix != prev.root {
+          throw("log consistency violation: the first \{Int::to_string(prev.size)} record(s) no longer hash to the head this client saw (append-only history was rewritten)")
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    }
+  }
+}
+
+/// The last publish of `key`, and whether a yank follows it. A yank that
+/// precedes a later re-publish does not count.
+export fn log_lookup(records: Array[String], key: String) -> LogLookup {
+  let mut index = -1
+  let mut hash = ""
+  let mut yanked = false
+  let mut i = 0
+  while i < Array::length(records) {
+    let record = Array::get(records, i)
+    if log_field(record, 2) == key {
+      let op = log_field(record, 1)
+      if op == "publish" {
+        index = i
+        hash = log_field(record, 3)
+        yanked = false
+      } else if op == "yank" {
+        yanked = true
+      }
+    }
+    i = i + 1
+  }
+  if index < 0 {
+    LogAbsent
+  } else {
+    LogPublished(index, hash, yanked)
+  }
+}
+
+export fn log_has_publish(records: Array[String], key: String) -> Bool {
+  match log_lookup(records, key) {
+    LogAbsent => false,
+    LogPublished(_, _, _) => true
+  }
+}
+
+/// Whether the LAST record for `key`, of any op, is a yank.
+export fn log_is_yanked(records: Array[String], key: String) -> Bool {
+  let mut last = ""
+  let mut i = 0
+  while i < Array::length(records) {
+    let record = Array::get(records, i)
+    if log_field(record, 2) == key {
+      last = log_field(record, 1)
+    }
+    i = i + 1
+  }
+  last == "yank"
+}
+
+/// The per-log file name for the head this client last saw:
+/// `log-head.seen.<first 12 hex of sha256(log_dir)>`, keyed by the log
+/// directory so two registries cannot cross-fire the consistency check.
+export fn log_seen_file_name(log_dir: String) -> String {
+  String::concat("log-head.seen.", String::substring(sha256(log_dir), 0, 12))
+}

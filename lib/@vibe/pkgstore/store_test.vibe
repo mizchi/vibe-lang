@@ -1,0 +1,159 @@
+//# Imports
+
+import @vibe/builtin {
+  String::to_upper
+}
+import ./store.vibe {
+  PkgId,
+  cas_dir,
+  is_package_file,
+  latest_version_of,
+  parse_pkg_id,
+  provenance_has,
+  provenance_line,
+  versions_lookup,
+  versions_of,
+  versions_row
+}
+import ./spec.vibe {
+  SourceSpec, parse_source_spec
+}
+
+//# Fixture
+
+fn b3_hex() -> String {
+  "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+}
+
+fn sha1_hex() -> String {
+  "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+}
+
+fn versions_fixture() -> String {
+  String::concat(String::concat(versions_row("@a/x@1.0.0", "pkg:b3:aa"), versions_row("@a/y@0.1.0", "pkg:sha1:bb")), versions_row("@a/x@1.1.0", "pkg:b3:cc"))
+}
+
+fn id_or_none(text: String) -> String {
+  match parse_pkg_id(text) {
+    Some(id) => PkgId::to_string(id),
+    None => "none"
+  }
+}
+
+fn spec_or_error(spec: String) -> String {
+  handle {
+    let s = parse_source_spec(spec)
+    "\{s.url} ref=\{s.git_ref} sub=\{s.subdir} pinned=\{SourceSpec::pinned(s, "c0ffee")}"
+  } with { Exception::Throw(e) => e }
+}
+
+//# Identities
+
+test "package ids parse with or without the leading #" {
+  inspect(id_or_none(String::concat("pkg:b3:", b3_hex())), content = "pkg:b3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
+  inspect(id_or_none(String::concat("#pkg:sha1:", sha1_hex())), content = "pkg:sha1:da39a3ee5e6b4b0d3255bfef95601890afd80709")
+}
+
+test "malformed package ids are refused" {
+  inspect(id_or_none("pkg:b3:abc"), content = "none")
+  inspect(id_or_none(String::concat("pkg:sha1:", b3_hex())), content = "none")
+  inspect(id_or_none(String::concat("pkg:b3:", String::to_upper(b3_hex()))), content = "none")
+  inspect(id_or_none(String::concat("ct:b3:", b3_hex())), content = "none")
+  inspect(id_or_none(""), content = "none")
+}
+
+test "the CAS directory is keyed by algorithm" {
+  inspect(cas_dir("/h/cache", PkgId::{ algo: "sha1", hex: sha1_hex() }), content = "/h/cache/pkg/sha1/da39a3ee5e6b4b0d3255bfef95601890afd80709")
+}
+
+test "package files are the contract and the implementation" {
+  assert(is_package_file("index.vpkg"))
+  assert(is_package_file("log.vibe"))
+  assert(!is_package_file("log_test.vibe"))
+  assert(!is_package_file("log_bench.vibe"))
+  assert(!is_package_file("README.md"))
+  assert(!is_package_file("index.vibe.bak"))
+}
+
+//# Version index
+
+test "lookup reads the first row for a key" {
+  inspect(versions_lookup(versions_fixture(), "@a/x@1.1.0"), content = "pkg:b3:cc")
+  inspect(versions_lookup(versions_fixture(), "@a/x@9.9.9"), content = "")
+  inspect(versions_lookup(String::concat(versions_fixture(), versions_row("@a/x@1.0.0", "pkg:b3:zz")), "@a/x@1.0.0"), content = "pkg:b3:aa")
+  inspect(versions_lookup("", "@a/x@1.0.0"), content = "")
+}
+
+test "versions of a name are in publish order and do not match a longer name" {
+  let rows = String::concat(versions_fixture(), versions_row("@a/xy@2.0.0", "pkg:b3:dd"))
+  inspect(Array::length(versions_of(rows, "@a/x")), content = "2")
+  inspect(latest_version_of(rows, "@a/x"), content = "1.1.0")
+  inspect(latest_version_of(rows, "@a/xy"), content = "2.0.0")
+  inspect(latest_version_of(rows, "@a/z"), content = "")
+}
+
+test "provenance rows are recognised exactly" {
+  let line = provenance_line("@a/x@1.0.0", "pkg:b3:aa", "github:o/r@main", "0123")
+  inspect(line, content = "@a/x@1.0.0\tpkg:b3:aa\tgithub:o/r@main\t0123")
+  assert(provenance_has(String::concat(line, "\n"), line))
+  assert(!provenance_has(String::concat(line, "\n"), provenance_line("@a/x@1.0.0", "pkg:b3:aa", "github:o/r@main", "4567")))
+  assert(!provenance_has("", line))
+}
+
+//# Source specs
+
+test "github specs" {
+  inspect(spec_or_error("github:owner/repo@v1"), content = "https://github.com/owner/repo.git ref=v1 sub= pinned=github:owner/repo@c0ffee")
+  inspect(spec_or_error("github:owner/repo/pkgs/mathx@main"), content = "https://github.com/owner/repo.git ref=main sub=pkgs/mathx pinned=github:owner/repo/pkgs/mathx@c0ffee")
+}
+
+test "git specs, including an @ inside the URL" {
+  inspect(spec_or_error("git:https://example.com/r.git@main"), content = "https://example.com/r.git ref=main sub= pinned=git:https://example.com/r.git@c0ffee")
+  inspect(spec_or_error("git:git@example.com:o/r.git@v2#pkg/a"), content = "git@example.com:o/r.git ref=v2 sub=pkg/a pinned=git:git@example.com:o/r.git@c0ffee#pkg/a")
+  inspect(spec_or_error("git:/tmp/repo@abc123"), content = "/tmp/repo ref=abc123 sub= pinned=git:/tmp/repo@c0ffee")
+}
+
+test "malformed specs are refused with the expected shape" {
+  inspect(spec_or_error("github:owner/repo"), content = "github spec needs @<ref>: github:owner/repo")
+  inspect(spec_or_error("github:owner/repo@"), content = "github spec needs @<ref>: github:owner/repo@")
+  inspect(spec_or_error("github:repo@main"), content = "malformed github spec (expected github:owner/repo[/sub/dir]@<ref>): github:repo@main")
+  inspect(spec_or_error("github:owner/@main"), content = "malformed github spec (expected github:owner/repo[/sub/dir]@<ref>): github:owner/@main")
+  inspect(spec_or_error("git:https://example.com/r.git"), content = "git spec needs <url>@<ref>: git:https://example.com/r.git")
+  inspect(spec_or_error("git:@main"), content = "git spec needs <url>@<ref>: git:@main")
+  inspect(spec_or_error("https://example.com/r.git"), content = "unknown source spec (github:owner/repo[/dir]@ref | git:<url>@<ref>[#<dir>]): https://example.com/r.git")
+}
+
+//# Edges found by `vibe mutate`
+
+test "every hex digit is checked, the first one included" {
+  inspect(id_or_none(String::concat("pkg:b3:g", String::substring(b3_hex(), 1, 64))), content = "none")
+}
+
+test "a string that is not prefixed is not an id, whatever its length" {
+  inspect(id_or_none(String::concat("xxxxxxxxx", sha1_hex())), content = "none")
+}
+
+test "rows without their tab do not trap, and blank lines are not rows" {
+  inspect(versions_lookup("keyonly\n", "keyonly"), content = "")
+  assert(!provenance_has("a\n\nb\n", ""))
+}
+
+test "versions_of carries the recorded ids" {
+  let all = versions_of(versions_fixture(), "@a/x")
+  let (v0, id0) = Array::get(all, 0)
+  let (v1, id1) = Array::get(all, 1)
+  inspect("\{v0}=\{id0} \{v1}=\{id1}", content = "1.0.0=pkg:b3:aa 1.1.0=pkg:b3:cc")
+}
+
+test "specs with an empty owner, repo, URL or ref are refused" {
+  inspect(spec_or_error("github:@main"), content = "malformed github spec (expected github:owner/repo[/sub/dir]@<ref>): github:@main")
+  inspect(spec_or_error("github:/repo@main"), content = "malformed github spec (expected github:owner/repo[/sub/dir]@<ref>): github:/repo@main")
+  inspect(spec_or_error("github:o//x@main"), content = "malformed github spec (expected github:owner/repo[/sub/dir]@<ref>): github:o//x@main")
+  inspect(spec_or_error("git:#x@y"), content = "git spec needs <url>@<ref>: git:#x@y")
+  inspect(spec_or_error("git:/tmp/r@"), content = "git spec needs <url>@<ref>: git:/tmp/r@")
+}
+
+test "a one-character URL and a ref-less subdirectory are accepted" {
+  inspect(spec_or_error("git:a@main"), content = "a ref=main sub= pinned=git:a@c0ffee")
+  inspect(spec_or_error("github:o/r@v1"), content = "https://github.com/o/r.git ref=v1 sub= pinned=github:o/r@c0ffee")
+}

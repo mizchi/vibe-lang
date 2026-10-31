@@ -1,0 +1,183 @@
+//# @vibe/pkgstore/store — package identities, the fetch CAS, and the
+//# version / provenance index (#754, #755, ADR-0065, ADR-0093).
+//#
+//#   $VIBE_HOME/cache/pkg/<algo>/<hex>/   passive CAS, never a resolution root
+//#   $VIBE_HOME/cache/versions.tsv        name@version -> package id (immutable)
+//#   $VIBE_HOME/cache/provenance.tsv      name@version, id, source spec, commit
+//#
+//# These functions read and produce file CONTENTS and paths; the caller
+//# does the IO. Row formats are the ones `scripts/vibe_pkg.sh` wrote.
+
+//# Imports
+
+import @vibe/builtin {
+  String::join
+}
+
+//# Types
+
+/// An algorithm-tagged package identity (ADR-0093): `pkg:b3:<64 hex>` for
+/// new writes, `pkg:sha1:<40 hex>` for historical ones.
+export struct PkgId {
+  algo: String;
+  hex: String
+}
+
+//# Identities
+
+fn is_lower_hex(s: String) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while ok && i < String::length(s) {
+    let c = String::byte_at(s, i)
+    ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+    i = i + 1
+  }
+  ok
+}
+
+/// Parse `pkg:b3:<64 hex>` / `pkg:sha1:<40 hex>`, with an optional leading
+/// `#`. Anything else, uppercase hex included, is `None`.
+export fn parse_pkg_id(text: String) -> Option[PkgId] {
+  let id = if String::starts_with(text, "#") {
+    String::substring(text, 1, String::length(text))
+  } else {
+    text
+  }
+  if String::starts_with(id, "pkg:b3:") {
+    let hex = String::substring(id, 7, String::length(id))
+    if String::length(hex) == 64 && is_lower_hex(hex) {
+      Some(PkgId::{ algo: "b3", hex: hex })
+    } else {
+      None
+    }
+  } else if String::starts_with(id, "pkg:sha1:") {
+    let hex = String::substring(id, 9, String::length(id))
+    if String::length(hex) == 40 && is_lower_hex(hex) {
+      Some(PkgId::{ algo: "sha1", hex: hex })
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}
+
+export fn PkgId::to_string(id: PkgId) -> String {
+  "pkg:\{id.algo}:\{id.hex}"
+}
+
+/// The CAS directory for an identity under `cache_dir` ($VIBE_HOME/cache).
+export fn cas_dir(cache_dir: String, id: PkgId) -> String {
+  "\{cache_dir}/pkg/\{id.algo}/\{id.hex}"
+}
+
+//# Package files
+
+/// Whether a file of a package directory belongs to the package: the
+/// contract and the implementation `.vibe` files. Tests and benches stay
+/// behind.
+export fn is_package_file(name: String) -> Bool {
+  if name == "index.vpkg" {
+    true
+  } else if String::ends_with(name, "_test.vibe") || String::ends_with(name, "_bench.vibe") {
+    false
+  } else {
+    String::ends_with(name, ".vibe")
+  }
+}
+
+//# Version index
+
+fn tsv_rows(text: String) -> Array[String] {
+  let out: Array[String] = []
+  let parts = String::split(text, "\n")
+  let mut i = 0
+  while i < Array::length(parts) {
+    let line = Array::get(parts, i)
+    if line != "" {
+      Array::push(out, line)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn tsv_field(row: String, index: Int) -> String {
+  let fields = String::split(row, "\t")
+  if index < Array::length(fields) {
+    Array::get(fields, index)
+  } else {
+    ""
+  }
+}
+
+/// The recorded id for `key` (`name@version`): the FIRST row for it, ""
+/// when there is none. The mapping is immutable, so a second row for a
+/// key is never written; reading the first matches what the shell read.
+export fn versions_lookup(versions: String, key: String) -> String {
+  let rows = tsv_rows(versions)
+  let mut found = ""
+  let mut i = 0
+  while found == "" && i < Array::length(rows) {
+    let row = Array::get(rows, i)
+    if tsv_field(row, 0) == key {
+      found = tsv_field(row, 1)
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Every `(version, id)` recorded for package `name`, in file order (which
+/// is publish order).
+export fn versions_of(versions: String, name: String) -> Array[(String, String)] {
+  let prefix = String::concat(name, "@")
+  let out: Array[(String, String)] = []
+  let rows = tsv_rows(versions)
+  let mut i = 0
+  while i < Array::length(rows) {
+    let row = Array::get(rows, i)
+    let key = tsv_field(row, 0)
+    if String::starts_with(key, prefix) {
+      Array::push(out, (String::substring(key, String::length(prefix), String::length(key)), tsv_field(row, 1)))
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The most recently recorded version of `name`, "" when none.
+export fn latest_version_of(versions: String, name: String) -> String {
+  let all = versions_of(versions, name)
+  if Array::length(all) == 0 {
+    ""
+  } else {
+    let (version, _) = Array::get(all, Array::length(all) - 1)
+    version
+  }
+}
+
+export fn versions_row(key: String, id: String) -> String {
+  "\{key}\t\{id}\n"
+}
+
+//# Provenance
+
+/// One provenance row (without its newline): where `key` was fetched from.
+export fn provenance_line(key: String, id: String, spec: String, commit: String) -> String {
+  String::join([key, id, spec, commit], "\t")
+}
+
+/// Whether `line` is already a row of `provenance` (rows are appended at
+/// most once).
+export fn provenance_has(provenance: String, line: String) -> Bool {
+  let rows = tsv_rows(provenance)
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(rows) {
+    found = Array::get(rows, i) == line
+    i = i + 1
+  }
+  found
+}
