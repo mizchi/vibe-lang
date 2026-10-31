@@ -229,6 +229,14 @@ fn add_labels_open_paren(tokens: Array[Token], k: Int) -> Int {
   }
 }
 
+/// Does the argument starting at token `t` read `x -> ..`?
+fn add_labels_shorthand_lambda(tokens: Array[Token], t: Int) -> Bool {
+  t + 1 < Array::length(tokens) && match (Array::get(tokens, t), Array::get(tokens, t + 1)) {
+    (TIdent(_), TThinArrow) => true,
+    _ => false
+  }
+}
+
 /// The first token of each argument between the `(` at `paren` and its `)`.
 fn add_labels_argument_starts(tokens: Array[Token], paren: Int) -> Array[Int] {
   let out: Array[Int] = []
@@ -276,8 +284,11 @@ fn add_labels_argument_starts(tokens: Array[Token], paren: Int) -> Array[Int] {
 /// source) back to `source`.
 export fn add_labels(path: String, source: String, offset_delta: Int, sites: Array[LabelSite], policy: Int) -> AddLabelsResult with Exception {
   let declared = add_labels_declared(source)
-  let (tokens, starts, _) = lex_with_offsets(source)
+  let (tokens, starts, ends) = lex_with_offsets(source)
   let edits: MutMap[Int, String] = MutMap::new_int()
+  // Insertions after a token's last byte: the `)` that closes a shorthand
+  // lambda's parameter.
+  let closes: MutMap[Int, String] = MutMap::new_int()
   let lines: Array[String] = []
   let mut calls = 0
   let mut labels = 0
@@ -360,7 +371,16 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
           while ai < n {
             let w = Array::get(wanted, ai)
             if String::length(w) > 0 {
-              MutMap::set(edits, Array::get(starts, Array::get(arg_tokens, ai)), w + " = ")
+              let t = Array::get(arg_tokens, ai)
+              // `f = x -> e` does not parse (on the seed either): the
+              // shorthand lambda is a bare argument only. `f = (x) -> e`
+              // does, and means the same.
+              if add_labels_shorthand_lambda(tokens, t) {
+                MutMap::set(edits, Array::get(starts, t), w + " = (")
+                MutMap::set(closes, Array::get(ends, t), ")")
+              } else {
+                MutMap::set(edits, Array::get(starts, t), w + " = ")
+              }
               inserted = inserted + 1
             } else {
               ()
@@ -376,12 +396,15 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
       }
     }
   }
-  // Token starts ascend, so one pass copies the source with each insertion
-  // in place. An offset is used once: a synthesized `;` can share a start
-  // with the token after it.
+  // Token starts and ends ascend together (a token ends at or before the
+  // next one starts), so one pass copies the source with each insertion in
+  // place. An offset is used once: a synthesized `;` can share a start with
+  // the token after it.
   let out = StringBuilder::new()
   let mut prev = 0
-  for at in starts {
+  let mut k = 0
+  while k < Array::length(starts) {
+    let at = Array::get(starts, k)
     match MutMap::get(edits, at) {
       Some(insert) => {
         StringBuilder::push(out, source[prev: at])
@@ -391,6 +414,17 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
       },
       None => ()
     }
+    let end = Array::get(ends, k)
+    match MutMap::get(closes, end) {
+      Some(insert) => {
+        StringBuilder::push(out, source[prev: end])
+        StringBuilder::push(out, insert)
+        let _ = MutMap::delete(closes, end)
+        prev = end
+      },
+      None => ()
+    }
+    k = k + 1
   }
   StringBuilder::push(out, source[prev: String::length(source)])
   let text = StringBuilder::freeze(out)

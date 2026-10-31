@@ -280,4 +280,28 @@ This becomes `accepted` when all of the following hold:
 - **`_` heuristics for the codemod.** Should a one-parameter function become
   `_` by default? This decides where the label count lands between 188,875
   and 335,578. It should be settled by measuring a sample package before
-  the full run.
+  the full run. The first sample is measured below; the rule is not yet
+  chosen.
+
+  `vibe refactor add-labels` (#3679) was run over `lib/@vibe/core` (65 files,
+  all of them checked), at `main` 3f6a506 plus the codemod. Each policy
+  names the slots it leaves positional. Builtins always use their own `_`
+  slots. "After `_`" counts the calls that keep a positional slot beside a
+  labeled one. The checker refuses that mix until #3681 lets the declaration
+  mark the slot `_`, so the codemod reports those calls and leaves them for
+  now.
+
+  | `--positional` | Labels written now | More after `_` | Total |
+  |---|---:|---:|---:|
+  | `none` | 4,851 in 2,969 calls | 0 | 4,851 |
+  | `receiver` (a `T::f` receiver) | 2,967 in 1,831 calls | 746 in 596 calls | 3,713 |
+  | `receiver+single` (also a lone parameter) | 2,392 in 1,256 calls | 746 in 596 calls | 3,138 |
+
+  Every policy skipped the same calls:
+  - 62 calls through a local lambda, which D1 keeps positional;
+  - 10 to 13 calls whose written arguments do not line up with the
+    checker's, which are pipes and calls inside interpolation.
+
+  On this package, `receiver+single` writes 35% fewer labels than labeling
+  every argument. The receiver rule alone accounts for 1,138 of those
+  1,713 labels, the lone-parameter rule for the other 575.
