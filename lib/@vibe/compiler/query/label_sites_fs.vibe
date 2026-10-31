@@ -89,8 +89,10 @@ fn label_sites_failed(path: String, source: String, message: String) -> LabelSit
 
 /// One file: its answer and the three caches after it. The caches are
 /// returned rather than assigned from inside the `handle`, the shape
-/// grep_fs_typed_context uses.
-fn label_sites_file(path: String, source: String, cache_in: Array[(String, TypeEnv)], rdb_in: RippleDb, dep_sources_in: Array[(String, String)]) -> (LabelSiteFile, Array[(String, TypeEnv)], RippleDb, Array[(String, String)]) with Env + Fs {
+/// grep_fs_typed_context uses. With a `replacement`, the file is typed as if
+/// `source` read `replacement` instead: the ingested prefix is kept, and the
+/// answer's `source` is the replacement.
+fn label_sites_file(path: String, source: String, replacement: Option[String], cache_in: Array[(String, TypeEnv)], rdb_in: RippleDb, dep_sources_in: Array[(String, String)]) -> (LabelSiteFile, Array[(String, TypeEnv)], RippleDb, Array[(String, String)]) with Env + Fs {
   handle {
     let groups = collect_source_groups_fs(path)
     let mut rdb = rdb_in
@@ -100,7 +102,12 @@ fn label_sites_file(path: String, source: String, cache_in: Array[(String, TypeE
       let (_, sources) = Array::get(groups, gi)
       let mut si = 0
       while si < Array::length(sources) {
-        let (p, text) = Array::get(sources, si)
+        let (p, ingested) = Array::get(sources, si)
+        let text = if p == path {
+          label_sites_replace(ingested, source, replacement)
+        } else {
+          ingested
+        }
         rdb = ripple_set_source(rdb, p, text)
         if p == path {
           entry_source = text
@@ -117,8 +124,29 @@ fn label_sites_file(path: String, source: String, cache_in: Array[(String, TypeE
       None => array_empty()
     }
     let import_env = projected_import_env_for_test(entry_source, path, deps, label_sites_fill_dep_envs(walked, env_cache, deps))
-    (label_sites_typed(path, source, entry_source, import_env), env_cache, walked, dep_sources)
+    let written = match replacement {
+      Some(r) => r,
+      None => source
+    }
+    (label_sites_typed(path, written, entry_source, import_env), env_cache, walked, dep_sources)
   } with { Exception::Throw(message) => (label_sites_failed(path, source, message), cache_in, rdb_in, dep_sources_in) }
+}
+
+/// The ingested text with the file's own bytes swapped for `replacement`. The
+/// ingested text is the file plus a prefix; when it is not, it is returned
+/// unchanged and `label_sites_typed` refuses the file.
+fn label_sites_replace(ingested: String, source: String, replacement: Option[String]) -> String {
+  match replacement {
+    Some(r) => {
+      let cut = String::length(ingested) - String::length(source)
+      if cut >= 0 && ingested[cut: String::length(ingested)] == source {
+        ingested[0: cut] + r
+      } else {
+        ingested
+      }
+    },
+    None => ingested
+  }
 }
 
 /// Check the ingested `entry_source` against `import_env` with the site
@@ -161,7 +189,7 @@ export fn query_label_sites_fs(files: Array[String]) -> Array[LabelSiteFile] wit
   let mut i = 0
   while i < Array::length(files) {
     let path = Array::get(files, i)
-    let (answer, next_cache, next_rdb, next_dep_sources) = label_sites_file(path, Fs::read_file(path), env_cache, rdb, dep_sources)
+    let (answer, next_cache, next_rdb, next_dep_sources) = label_sites_file(path, Fs::read_file(path), None, env_cache, rdb, dep_sources)
     env_cache = next_cache
     rdb = next_rdb
     dep_sources = next_dep_sources
@@ -169,4 +197,12 @@ export fn query_label_sites_fs(files: Array[String]) -> Array[LabelSiteFile] wit
     i = i + 1
   }
   out
+}
+
+/// Does `edited`, standing in for the file at `path` (which reads `source`),
+/// still check? "" when it does, else the checker's message. The codemod asks
+/// this of every edit before it reports or writes it.
+export fn query_label_sites_recheck_fs(path: String, source: String, edited: String) -> String with Env + Fs {
+  let (answer, _, _, _) = label_sites_file(path, source, Some(edited), array_empty(), ripple_new(), array_empty())
+  answer.error
 }

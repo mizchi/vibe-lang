@@ -1,0 +1,29 @@
+//# Imports
+
+// ADR-0120 Phase 2a (#3679): the FS sweep behind `vibe refactor add-labels`
+// and the recheck every edit must pass before it is reported or written.
+
+import ./label_sites_fs.vibe {
+  query_label_sites_fs, query_label_sites_recheck_fs
+}
+
+//# Tests
+
+test "the recheck types a replacement through the file's imports" {
+  let dir = "_build/vibe_label_sites_fs"
+  Fs::mkdir_p(dir)
+  Fs::write_file(dir + "/dep.vibe", "export fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n")
+  let path = dir + "/main.vibe"
+  let source = "import ./dep.vibe { sub }\n\nfn main() -> Int {\n  sub(10, 3)\n}\n"
+  Fs::write_file(path, source)
+  let answers = query_label_sites_fs([path])
+  inspect(Array::length(answers), content = "1")
+  inspect(Array::get(answers, 0).error, content = "")
+  // The imported `sub` resolves, so its labels check...
+  inspect(query_label_sites_recheck_fs(path, source, "import ./dep.vibe { sub }\n\nfn main() -> Int {\n  sub(x = 10, y = 3)\n}\n"), content = "")
+  // ...and an edit that no longer checks is refused with the checker's answer.
+  let broken = query_label_sites_recheck_fs(path, source, "import ./dep.vibe { sub }\n\nfn main() -> Int {\n  sub(x = 10, z = 3)\n}\n")
+  inspect(String::length(broken) > 0, content = "true")
+  // The file itself is never written.
+  inspect(Fs::read_file(path) == source, content = "true")
+}
