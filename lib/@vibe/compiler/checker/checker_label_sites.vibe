@@ -1,0 +1,125 @@
+// ADR-0120 Phase 2a (#3679): the call sites a label codemod may edit.
+//
+// While the capture is on, the checker records each call it resolves to a
+// declaration header or a builtin: the call's offset, the callee spelling,
+// what kind of declaration answered, the parameter names that the written
+// arguments bind to (a method call's receiver already removed), and which
+// written arguments carry a label. The codemod applies its slot policy to
+// these rows; nothing here decides which slots get a label. The capture is
+// off unless a codemod asks for it, so ordinary checking pays one array read
+// per call.
+
+import ./checker_call_header.vibe {
+  checker_call_header_names
+}
+
+import ./checker_call_header_flow.vibe {
+  checker_call_header_is_probe
+}
+
+import @vibe/compiler/core {
+  Expr, TypeEnv, builtin_param_labels, env_lookup_binding
+}
+
+import @vibe/compiler/checker/builtin_sigs {
+  builtin_resolves_at, lookup_builtin
+}
+
+import @vibe/core {
+  struct MutMap
+}
+
+/// A declaration of the module being checked (or a local binding of the same
+/// shape -- the codemod tells them apart).
+export let label_site_declared: Int = 0
+
+/// A builtin; its names are `builtin_param_labels`, with `_` for a positional
+/// slot.
+export let label_site_builtin: Int = 1
+
+/// A function imported from another module.
+export let label_site_imported: Int = 2
+
+/// One resolved call: (call offset, callee spelling, kind, parameter names of
+/// the written arguments' slots, labeled flag per written argument, whether a
+/// method receiver was removed from the names).
+// `LabelSite` is defined in the package contract (index.vpkg), its single
+// definition site.
+
+let label_sites_active: Array[Bool] = [false]
+let label_sites: Array[LabelSite] = []
+let label_site_offsets: Array[MutMap[Int, Bool]] = [MutMap::new_int()]
+
+/// Start recording, forgetting any earlier capture.
+export fn label_sites_begin() -> Unit {
+  Array::truncate(label_sites, 0)
+  Array::set(label_site_offsets, 0, MutMap::new_int())
+  Array::set(label_sites_active, 0, true)
+}
+
+/// Stop recording and hand back what was recorded, in the order the checker
+/// first reached each call.
+export fn label_sites_end() -> Array[LabelSite] {
+  Array::set(label_sites_active, 0, false)
+  for site in label_sites {
+    site
+  }
+}
+
+fn label_site_imported_origin(env: TypeEnv, name: String) -> Bool {
+  match env_lookup_binding(env, name) {
+    Some(binding) => match binding.origin {
+      BindingOriginModuleExport(_, _) => true,
+      BindingOriginModuleFunctionHeader(_, _, _) => true,
+      _ => false
+    },
+    None => false
+  }
+}
+
+/// Record the call at `offset` to `name`, resolved in `env`. A call through a
+/// value (no declaration header) is not recorded: ADR-0120 keeps those
+/// positional. A call reached twice (a re-entered qualified call, a body
+/// checked again) keeps its first record.
+export fn checker_note_label_site(env: TypeEnv, name: String, ident_offset: Int, offset: Int, args: Array[Expr], method_call: Bool) -> Unit {
+  if !Array::get(label_sites_active, 0) || checker_call_header_is_probe() || offset < 0 || MutMap::has(Array::get(label_site_offsets, 0), offset) {
+    ()
+  } else {
+    let found = if builtin_resolves_at(env, name, ident_offset) && (lookup_builtin(name) is Some(_)) {
+      match builtin_param_labels(name) {
+        Some(names) => Some((label_site_builtin, names)),
+        None => None
+      }
+    } else {
+      match checker_call_header_names(env, name) {
+        Some(all_names) => {
+          let names = if method_call && Array::length(all_names) > 0 {
+            Array::slice(all_names, 1, Array::length(all_names))
+          } else {
+            all_names
+          }
+          let kind = if label_site_imported_origin(env, name) {
+            label_site_imported
+          } else {
+            label_site_declared
+          }
+          Some((kind, names))
+        },
+        None => None
+      }
+    }
+    match found {
+      Some((kind, names)) => {
+        MutMap::set(Array::get(label_site_offsets, 0), offset, true)
+        let labeled = for arg in args {
+          match arg {
+            ELabeledArg(_, _, _) => true,
+            _ => false
+          }
+        }
+        Array::push(label_sites, LabelSite::{ offset: offset, callee: name, kind: kind, names: names, labeled: labeled, method_call: method_call })
+      },
+      None => ()
+    }
+  }
+}
