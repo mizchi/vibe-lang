@@ -1,0 +1,121 @@
+//# Imports
+
+import ./report.vibe {
+  launcher_trap_report, pct_decode, script_failure_report
+}
+
+//# Fixture
+
+// The canned dumps the two awk condensers were pinned with in
+// scripts/vibe_test_smoke.sh before #3674. Every report expectation below
+// was checked byte for byte against those awk programs on the same input.
+
+fn node_trap(name: String) -> String {
+  "RuntimeError: unreachable\n    at __test_\{name} (wasm://wasm/00000000:wasm-function[3]:0x42)\n    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)\n"
+}
+
+fn wasmtime_trap(name: String) -> String {
+  "error while executing at wasm backtrace:\n    0: 0x42 - <unknown>!__test_\{name}\n    1: 0x10 - <unknown>!_start\n   wasm trap: wasm `unreachable` instruction executed\n"
+}
+
+fn helper_trap() -> String {
+  "RuntimeError: unreachable\n    at some_helper (wasm://wasm/00000000:wasm-function[7]:0x99)\n    at other_helper (wasm://wasm/00000000:wasm-function[8]:0xaa)\n    at __test_annot_pin (wasm://wasm/00000000:wasm-function[3]:0x42)\n    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)\n"
+}
+
+fn assert_block() -> String {
+  "assert_eq failed\n  expected: 2\n  actual:   1\n"
+}
+
+//# Names
+
+test "percent escapes decode byte by byte" {
+  inspect(pct_decode("has%20spaces"), content = "has spaces")
+  inspect(pct_decode("caf%C3%A9"), content = "café")
+  inspect(pct_decode("100%"), content = "100%")
+  inspect(pct_decode("%zz%4"), content = "%zz%4")
+}
+
+test "the failing test comes from a Node or wasmtime frame, not guest output" {
+  inspect(launcher_trap_report(String::concat("__test_!!!\n", node_trap("real name")), "", "canned.vibe", false), content = "       failing test: real name\n       trap: RuntimeError: unreachable\n")
+  inspect(launcher_trap_report(String::concat("__test_!!!\n", wasmtime_trap("real name")), "", "canned.vibe", false), content = "       failing test: real name\n       trap: wasm trap: wasm `unreachable` instruction executed\n")
+}
+
+test "a percent-encoded test name decodes on both backends" {
+  inspect(launcher_trap_report(node_trap("has%20spaces"), "", "canned.vibe", false), content = "       failing test: has spaces\n       trap: RuntimeError: unreachable\n")
+  inspect(launcher_trap_report(wasmtime_trap("has%20spaces"), "", "canned.vibe", false), content = "       failing test: has spaces\n       trap: wasm trap: wasm `unreachable` instruction executed\n")
+}
+
+//# Frames
+
+test "frames are annotated from the funcmap, and only the ones it names" {
+  inspect(launcher_trap_report(helper_trap(), "some_helper\t17\nother\t0\n", "canned.vibe", false), content = "       failing test: annot_pin\n       trap: RuntimeError: unreachable\n       at some_helper (canned.vibe:17)\n       at other_helper\n")
+}
+
+test "a missing funcmap degrades to bare frames" {
+  inspect(launcher_trap_report(helper_trap(), "", "canned.vibe", false), content = "       failing test: annot_pin\n       trap: RuntimeError: unreachable\n       at some_helper\n       at other_helper\n")
+}
+
+test "at most six frames, and a numbered viberun reason is normalized" {
+  let many = "RuntimeError: memory access out of bounds\n    at a1 (wasm://w:1)\n    at a2 (wasm://w:1)\n    at a3 (wasm://w:1)\n    at $a.4 (wasm://w:1)\n    at a5 (wasm://w:1)\n    at a6 (wasm://w:1)\n    at a7 (wasm://w:1)\n"
+  inspect(launcher_trap_report(many, "", "canned.vibe", false), content = "       trap: RuntimeError: memory access out of bounds\n       at a1\n       at a2\n       at a3\n       at $a.4\n       at a5\n       at a6\n")
+  inspect(launcher_trap_report("error while executing\n  2: viberun: wasm trap: integer divide by zero\n    0: 0x42 - <unknown>!foo_bar\n", "", "canned.vibe", false), content = "       trap: wasm trap: integer divide by zero\n       at foo_bar\n")
+}
+
+//# Launcher report
+
+test "the launcher hides the assert's own abort trap only after the marker" {
+  inspect(launcher_trap_report(node_trap("bad"), "", "canned.vibe", true), content = "       failing test: bad\n")
+  inspect(launcher_trap_report(node_trap("bad"), "", "canned.vibe", false), content = "       failing test: bad\n       trap: RuntimeError: unreachable\n")
+}
+
+test "unrecognized stderr is replayed, unless it is only the assert abort" {
+  inspect(launcher_trap_report("Error: failed to instantiate\n  missing import vibe.foo\n", "", "canned.vibe", false), content = "       Error: failed to instantiate\n         missing import vibe.foo\n")
+  assert(launcher_trap_report("something unreachable here\n", "", "canned.vibe", true) == "")
+  assert(launcher_trap_report("", "", "canned.vibe", false) == "")
+}
+
+//# Script report
+
+test "an assert_eq block is surfaced and its abort trap is not echoed" {
+  let src = "test \"bad\" {\n  let x = 1\n  assert_eq(x, 2)\n}\n"
+  inspect(script_failure_report("assert_eq failed\n  at off=25\n  expected: 2\n  actual:   1\nassert failed: aborting\n", node_trap("bad"), "", "canned.vibe", src), content = "       failing test: bad\n       assert_eq failed\n       at line 3\n         expected: 2\n         actual:   1\n")
+}
+
+test "a trap with no assert diagnostic keeps its reason" {
+  inspect(script_failure_report("", node_trap("bad"), "", "canned.vibe", ""), content = "       failing test: bad\n       trap: RuntimeError: unreachable\n")
+}
+
+test "an imitated assert block followed by other output keeps the real trap" {
+  inspect(script_failure_report(String::concat(assert_block(), "some ordinary println output after the fake block\n"), node_trap("bad"), "", "canned.vibe", ""), content = "       failing test: bad\n       assert_eq failed\n         expected: 2\n         actual:   1\n       trap: RuntimeError: unreachable\n")
+}
+
+test "crash-debug lines between the marker and the trap do not break adjacency" {
+  inspect(script_failure_report("assert_eq failed\n  expected: 5\n  actual:   4\nassert failed: aborting\n\n", "[crash debug] heap_ptr=480 (0x1e0)\n[crash debug] mem[0..32]: 00\nRuntimeError: unreachable\n    at __test_bad (wasm://w:1)\n", "", "canned.vibe", ""), content = "       failing test: bad\n       assert_eq failed\n         expected: 5\n         actual:   4\n")
+}
+
+test "a marker-less block keeps the trap and is still surfaced" {
+  inspect(script_failure_report(assert_block(), "[crash debug] heap_ptr=480\nRuntimeError: unreachable\n    at __test_bad (wasm://w:1)\n", "", "canned.vibe", ""), content = "       failing test: bad\n       assert_eq failed\n         expected: 2\n         actual:   1\n       trap: RuntimeError: unreachable\n")
+}
+
+test "a multiline value with its marker suppresses the trap and hides the marker" {
+  inspect(script_failure_report("assert_eq failed\n  expected: a\nc\n  actual:   a\nb\nassert failed: aborting\n", "[crash debug] heap_ptr=496\nRuntimeError: unreachable\n    at __test_bad (wasm://w:1)\n", "", "canned.vibe", ""), content = "       failing test: bad\n       assert_eq failed\n         expected: a\n         actual:   a\n")
+}
+
+test "a stale marker does not suppress" {
+  inspect(script_failure_report("assert failed: aborting\nsome unrelated output afterwards\n", node_trap("bad"), "", "canned.vibe", ""), content = "       failing test: bad\n       trap: RuntimeError: unreachable\n")
+}
+
+test "runtime-check lines are captured exactly, lookalikes are not" {
+  let out = "my thing: index 10 out of bounds for length 3\nArray::get: index 10 out of bounds for length 3 and then some\nArray::get: index 10 out of bounds for length 3\nBytes::set: index -1 out of bounds for length 0\nString::byte_at: index 5 out of bounds for length 3\nInt `/` by zero at fixtures/x.vibe:7:5\nInt `%` by zero\nInt `/` by zero at fixtures/x.vibe:7:5 and then some\nInt `/` by zero at :1:2\nMap::get: key not found: k\n"
+  inspect(script_failure_report(out, "[crash debug] heap_ptr=500\nRuntimeError: unreachable\n    at __test_bad (wasm://w:1)\n", "", "canned.vibe", ""), content = "       failing test: bad\n       Array::get: index 10 out of bounds for length 3\n       Bytes::set: index -1 out of bounds for length 0\n       String::byte_at: index 5 out of bounds for length 3\n       Int `/` by zero at fixtures/x.vibe:7:5\n       Int `%` by zero\n       Map::get: key not found: k\n       trap: RuntimeError: unreachable\n")
+}
+
+test "a multiline inspect value keeps its continuation lines" {
+  let out = "inspect mismatch:\n  actual:   line one\nRuntimeError: actual line\nwasm trap: actual detail\nassert failed: aborting\n  expected: line one\nRuntimeError: expected line\nassert failed: aborting\n"
+  inspect(script_failure_report(out, "RuntimeError: unreachable\n    at __test_bad (wasm://w:1)\n", "", "canned.vibe", ""), content = "       failing test: bad\n         actual:   line one\n         | RuntimeError: actual line\n         | wasm trap: actual detail\n         | assert failed: aborting\n         expected: line one\n         | RuntimeError: expected line\n         | assert failed: aborting\n       trap: RuntimeError: unreachable\n")
+}
+
+test "assert offsets become source lines; a negative one is dropped" {
+  inspect(script_failure_report("assert_eq failed\n  at off=-1\n  at off=abc\n  at off=99999\nassert failed: aborting\n", node_trap("bad"), "", "canned.vibe", "a\nb\nc"), content = "       failing test: bad\n       assert_eq failed\n       at line 1\n       at line 4\n")
+  inspect(script_failure_report("assert_eq failed\n  at off=4\nassert failed: aborting\n", node_trap("bad"), "", "canned.vibe", ""), content = "       failing test: bad\n       assert_eq failed\n         at off=4\n")
+}

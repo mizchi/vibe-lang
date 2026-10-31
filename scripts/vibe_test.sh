@@ -299,230 +299,44 @@ export -f vt_count_tests
 # lines that coverage_suite.sh & friends parse.
 #   $1 = guest stdout, $2 = runner stderr, $3 = funcmap path (may be missing),
 #   $4 = source basename, $5 = source path (optional; maps assert_eq at off=N)
-vt_fail_detail() {
-  local outf="$1" errf="$2" fm="$3" base="$4" srcfile="${5:-}"
-  [ -s "$outf" ] || [ -s "$errf" ] || return 0
-  awk -v base="$base" -v fmfile="$fm" -v srcfile="$srcfile" -v stderrfile="$errf" '
-    function hexval(c) {
-      if (c >= "0" && c <= "9") return c + 0
-      if (c >= "A" && c <= "F") return index("ABCDEF", c) + 9
-      if (c >= "a" && c <= "f") return index("abcdef", c) + 9
-      return -1
-    }
-    # Quoted names may appear percent-encoded (`has%20spaces`). Keep
-    # this decoder in lockstep with runtime/vibe condense_test_trap.
-    function pct_decode(s,    out, i, n, c, v1, v2) {
-      out = ""
-      n = length(s)
-      i = 1
-      while (i <= n) {
-        c = substr(s, i, 1)
-        if (c == "%" && i + 2 <= n) {
-          v1 = hexval(substr(s, i + 1, 1))
-          v2 = hexval(substr(s, i + 2, 1))
-          if (v1 >= 0 && v2 >= 0) {
-            out = out sprintf("%c", v1 * 16 + v2)
-            i += 3
-            continue
-          }
-        }
-        out = out c
-        i++
-      }
-      return out
-    }
-    BEGIN {
-      if (fmfile != "") {
-        while ((getline l < fmfile) > 0) {
-          n = split(l, a, "\t")
-          if (n >= 2 && a[1] != "" && a[2]+0 > 0) fmln[a[1]] = a[2]+0
-        }
-        close(fmfile)
-      }
-      src = ""
-      if (srcfile != "") {
-        while ((getline l < srcfile) > 0) src = src l "\n"
-        close(srcfile)
-      }
-    }
-    function byte_to_line(off,    i, line, n, ch) {
-      line = 1
-      n = length(src)
-      i = 0
-      while (i < off && i < n) {
-        ch = substr(src, i + 1, 1)
-        if (ch == "\n") line++
-        i++
-      }
-      return line
-    }
-    function normalize_reason(line) {
-      sub(/^[[:space:]]+/, "", line)
-      sub(/^[0-9]+: /, "", line)
-      sub(/^viberun: /, "", line)
-      return line
-    }
-    # First __test_<name> stack frame = the failing test. Quoted names
-    # keep spaces and Unicode in the wasm name section; some frames
-    # percent-encode those bytes (`has%20spaces`). Cut at the frame
-    # delimiter (` (wasm:` on Node/V8, EOL on wasmtime), not at the
-    # first non-[A-Za-z0-9_%] character (#1946). Guest stderr can
-    # contain `__test_` (e.g. `__test_!!!`); only Node `at ... (wasm:`
-    # and wasmtime `<unknown>!` frames count.
-    FILENAME == stderrfile && !seen_test && match($0, /at __test_/) {
-      rest = substr($0, RSTART + length("at __test_"))
-      if (match(rest, / \(wasm:/)) {
-        failing = substr(rest, 1, RSTART - 1)
-        if (failing != "") seen_test = 1
-      }
-    }
-    FILENAME == stderrfile && !seen_test && match($0, /<unknown>!__test_/) {
-      failing = substr($0, RSTART + length("<unknown>!__test_"))
-      sub(/[[:space:]]+$/, "", failing)
-      if (failing != "") seen_test = 1
-    }
-    # Assert-abort recognizer (#2202, narrowed by #2219). Suppressing the
-    # trailing trap must not trust arbitrary captured output that happens to
-    # contain these lines: a test can println them and then hit a REAL
-    # unrelated trap. The ONE signal is the closing marker the generated abort
-    # prints (`assert failed: aborting`, `lower_assert_eq`), and it must
-    # directly precede the trap reason -- only the host crash-debug dump or
-    # blank lines may come between.
-    #
-    # #2219 deleted the second recognizer that sat here: a COMPLETE
-    # consecutive failed/expected/actual block, adjacent to the trap, also
-    # suppressed it. That existed ONLY because the committed seed predated the
-    # marker and `vibe test` compiles with the seed by default. It no longer
-    # does -- `assert failed: aborting` is present in
-    # `bootstrap/seed/compiler.wasm` (seed `bytes-capacity-2026-09-15`,
-    # verified 2026-09-18) -- so the fallback bought nothing and cost the one
-    # thing a text recognizer can lose: a marker-less block is exactly what
-    # ordinary program output can imitate, and imitating it suppressed a real
-    # trap. The lines below still BUILD the report; they no longer vote on
-    # whether the trap belongs to the assert.
-    { __blk = 0 }
-    FILENAME == stderrfile { in_inspect = 0; inspect_part = 0 }
-    FILENAME != stderrfile && $0 == "inspect mismatch:" {
-      in_inspect = 1
-      inspect_part = 0
-    }
-    $0 == "assert_eq failed" {
-      __blk = 1
-      ndiag++
-      diags[ndiag] = "       " $0
-    }
-    # #2202: compiler-baked byte offset of the assert_eq call. Convert to a
-    # 1-based source line so two asserts in one test are distinguishable.
-    $0 ~ /^  at off=/ {
-      __blk = 1
-      off = $0
-      sub(/^  at off=/, "", off)
-      ndiag++
-      if (off + 0 >= 0 && src != "") diags[ndiag] = "       at line " byte_to_line(off + 0)
-      else if (off + 0 >= 0) diags[ndiag] = "       " $0
-      else ndiag--
-    }
-    $0 ~ /^  expected:/ {
-      __blk = 1
-      if (in_inspect) inspect_part = 2
-      ndiag++
-      diags[ndiag] = "       " $0
-    }
-    $0 ~ /^  actual:/ {
-      __blk = 1
-      if (in_inspect) inspect_part = 1
-      ndiag++
-      diags[ndiag] = "       " $0
-    }
-    # Snapshot values can contain newlines. Keep continuation lines under
-    # their actual/expected heading; the updater still reads untouched stdout.
-    in_inspect && inspect_part > 0 && __blk == 0 {
-      __blk = 1
-      ndiag++
-      diags[ndiag] = "         | " $0
-    }
-    # #2199: an OOB abort prints its operation plus the index and length
-    # before trapping; keep that line in the condensed report -- it is the
-    # whole explanation of the trap that follows. The full-line anchored
-    # match (fixed operation names, decimal index, decimal length) keeps
-    # ordinary program output from masquerading as a runtime diagnostic.
-    # Deliberately NOT marked __blk: it is not part of an assert diagnostic,
-    # so it must still break assert-abort adjacency like any other output.
-    # #3126: the same for an Int `/` or `%` by zero, which prints the
-    # operation and, when the compile could place it, `path:line:col`.
-    $0 ~ /^Int `[\/%]` by zero( at .+:[0-9]+:[0-9]+)?$/ {
-      ndiag++
-      diags[ndiag] = "       " $0
-    }
-    $0 ~ /^(Array::get|Array::set|Bytes::get|Bytes::set|String::byte_at): index -?[0-9]+ out of bounds for length [0-9]+$/ {
-      ndiag++
-      diags[ndiag] = "       " $0
-    }
-    $0 ~ /^Map::get: key not found/ {
-      ndiag++
-      diags[ndiag] = "       " $0
-    }
-    # The closing line the generated assert_eq abort prints (lower_assert_eq
-    # in normalize/desugar_trait_dict.vibe): the definitive signal, immune to
-    # multiline rendered values and to output that imitates the block. Hidden
-    # from the report (the block above already told the story). Since #2219 it
-    # is the ONLY signal, which is also what the condenser in `runtime/vibe`
-    # has been reading.
-    FILENAME != stderrfile && !in_inspect && $0 == "assert failed: aborting" {
-      __blk = 1
-      pending_abort = 1
-    }
-    # Guest stdout can contain runtime-looking text. Only the runner stderr
-    # carries the trap reason; the two capture files keep that boundary exact.
-    # Backtrace frames never contain these markers; strip chain numbering and
-    # runner prefixes from the first reason line.
-    FILENAME == stderrfile && !seen_reason && /RuntimeError:|wasm trap:/ {
-      __blk = 1
-      seen_reason = 1
-      # #2219: `ablk == 3` (the marker-less block) was the other disjunct.
-      # The two condensers were NOT the same expression -- the one in
-      # `runtime/vibe` reads `pre_abort`, its own marker test on the last
-      # stdout line of the guest -- so each had its remaining condition
-      # checked on its own rather than assumed identical. What is left here is
-      # the marker, with adjacency enforced by the reset rule below.
-      assert_abort = (pending_abort == 1)
-      reason = normalize_reason($0)
-    }
-    # Any other non-blank, non-crash-debug line between the block/marker and
-    # the trap breaks the adjacency: the trap is then not the assert abort.
-    !seen_reason && __blk == 0 && $0 != "" && $0 !~ /^\[crash debug\]/ {
-      pending_abort = 0
-    }
-    # Wasm backtrace frames (node: `at <fn> (wasm://...)`, wasmtime:
-    # `N: 0x.. - <unknown>!<fn>`), capped, annotated via the funcmap.
-    FILENAME == stderrfile && nframes < 6 {
-      fn = ""
-      if (match($0, /^[[:space:]]+at [A-Za-z0-9_$.]+ \(wasm:/)) {
-        fn = $0; sub(/^[[:space:]]+at /, "", fn); sub(/ \(wasm:.*/, "", fn)
-      } else if ($0 ~ /<unknown>!/ && match($0, /![A-Za-z0-9_]+/)) {
-        fn = substr($0, RSTART + 1, RLENGTH - 1)
-      }
-      # `__test_*` is reported as the failing test; `_start` is scaffolding.
-      if (fn != "" && fn != "_start" && fn !~ /^__test_/) {
-        nframes++
-        if (fn in fmln) frames[nframes] = "       at " fn " (" base ":" fmln[fn] ")"
-        else            frames[nframes] = "       at " fn
-      }
-    }
-    END {
-      if (failing != "") print "       failing test: " pct_decode(failing)
-      for (i = 1; i <= ndiag; i++) print diags[i]
-      # An assert failure aborts via a deliberate `unreachable` trap; once the
-      # assert block above already told the story, echoing that trap reads as
-      # a second, unexplained failure (#2202). Any OTHER trap -- a different
-      # reason, or an unreachable that does not directly follow a complete
-      # assert block -- is still real and still printed.
-      if (reason != "" && !(assert_abort && reason ~ /unreachable/)) print "       trap: " reason
-      for (i = 1; i <= nframes; i++) print frames[i]
-    }
-  ' "$outf" "$errf"
+# The report under `FAIL <file>` is @vibe/testreport (#3674), the same
+# implementation the launcher's `vibe test` reaches through `vibe test-report`.
+# This script compiles with the committed seed, which may predate that
+# command, so it compiles scripts/test_report.vibex instead: once per run, on
+# the first failure, into the run's results directory. The lock keeps the
+# parallel workers from compiling it twice; the first one to take it does.
+vt_report_wasm() {
+  local wasm="$vt_results/test_report.wasm" lock="$vt_results/test_report.lock" waited=0
+  [ -s "$wasm" ] && { printf '%s' "$wasm"; return 0; }
+  if mkdir "$lock" 2>/dev/null; then
+    ( cd "$ROOT_DIR" && VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$cli_wasm" \
+        scripts/test_report.vibex "$wasm.tmp" main ) >"$vt_results/test_report.compile.log" 2>&1 || true
+    [ -s "$wasm.tmp" ] && mv "$wasm.tmp" "$wasm"
+    : > "$lock/done"
+  else
+    while [ ! -f "$lock/done" ] && [ "$waited" -lt 600 ]; do sleep 0.5; waited=$((waited + 1)); done
+  fi
+  [ -s "$wasm" ] && { printf '%s' "$wasm"; return 0; }
+  return 1
 }
-export -f vt_fail_detail
+vt_fail_detail() {
+  local outf="$1" errf="$2" fm="$3" base="$4" srcfile="${5:-}" wasm
+  [ -s "$outf" ] || [ -s "$errf" ] || return 0
+  if wasm="$(vt_report_wasm)"; then
+    ( cd "$ROOT_DIR" && VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_RUNNER_QUIET_RESULT=1 \
+        bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke main "$wasm" \
+        script "$outf" "$errf" "$fm" "$base" "$srcfile" )
+  else
+    # Never a silent FAIL: say the report could not be built, and replay what
+    # the run printed so the reason is still on screen.
+    echo "       (failure report unavailable: scripts/test_report.vibex did not compile with $cli_wasm; see $vt_results/test_report.compile.log)"
+    [ -s "$outf" ] && sed 's/^/       /' "$outf"
+    [ -s "$errf" ] && sed 's/^/       /' "$errf"
+  fi
+  return 0
+}
+export -f vt_report_wasm vt_fail_detail
 
 # #2886 `--update`: patch a failing file's stale `inspect(value, content)`
 # literals to the values this run actually printed, then let the caller

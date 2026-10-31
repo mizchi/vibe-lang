@@ -1,0 +1,55 @@
+//# `vibe test-report` — the condensed failure report under `FAIL <file>`
+//# (#3674). The launcher's `vibe test` calls it when a test file traps; the
+//# report itself is @vibe/testreport, which scripts/vibe_test.sh reaches
+//# through scripts/test_report.vibex.
+//#
+//#   vibe test-report launcher <stderr> <funcmap> <base> <pre_abort 0|1>
+//#   vibe test-report script   <stdout> <stderr> <funcmap> <base> <source>
+//#
+//# File arguments are paths; one that does not exist reads as empty. A `--`
+//# after the mode is accepted and dropped: the launcher passes it so that
+//# `<base>` (a bare file name) is not rewritten as a path relative to the
+//# directory `vibe` was invoked from.
+
+//# Imports
+
+import @vibe/testreport {
+  launcher_trap_report, script_failure_report
+}
+
+//# Functions
+
+fn report_input(path: String) -> String with Fs {
+  if path != "" && Fs::is_file(path) {
+    Fs::read_file(path)
+  } else {
+    ""
+  }
+}
+
+/// `vibe test-report <launcher|script> ...`: print the report, exit 0.
+export fn selfhost_cli_user_test_report_args(argv: Array[String]) -> Int with Exception + Fs + Console {
+  let usage = "usage: vibe test-report launcher <stderr> <funcmap> <base> <pre_abort 0|1> | script <stdout> <stderr> <funcmap> <base> <source>"
+  let args: Array[String] = []
+  let mut i = 0
+  while i < Array::length(argv) {
+    if !(i == 2 && Array::get(argv, i) == "--") {
+      Array::push(args, Array::get(argv, i))
+    } else ()
+    i = i + 1
+  }
+  let mode = if Array::length(args) > 1 {
+    Array::get(args, 1)
+  } else {
+    ""
+  }
+  if mode == "launcher" && Array::length(args) == 6 {
+    print(launcher_trap_report(report_input(Array::get(args, 2)), report_input(Array::get(args, 3)), Array::get(args, 4), Array::get(args, 5) == "1"))
+    0
+  } else if mode == "script" && Array::length(args) == 7 {
+    print(script_failure_report(report_input(Array::get(args, 2)), report_input(Array::get(args, 3)), report_input(Array::get(args, 4)), Array::get(args, 5), report_input(Array::get(args, 6))))
+    0
+  } else {
+    throw(usage)
+  }
+}
