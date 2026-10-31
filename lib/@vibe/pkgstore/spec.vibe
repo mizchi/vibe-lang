@@ -1,0 +1,114 @@
+//# @vibe/pkgstore/spec — registry-less source specs (#755 Phase 0, #2676).
+//#
+//#   github:owner/repo[/sub/dir]@<ref>
+//#   git:<url>@<ref>[#<sub/dir>]
+//#
+//# The ref is resolved to a commit by the caller's fetch; `spec_pinned`
+//# then spells the source with that commit, which is what a `require ...
+//# from <source>` line records.
+
+//# Types
+
+/// A parsed source spec. `github` is true for the `github:` spelling, whose
+/// `path` (`owner/repo[/sub/dir]`) is kept so the pinned form round-trips.
+export struct SourceSpec {
+  github: Bool;
+  url: String;
+  git_ref: String;
+  subdir: String;
+  path: String
+}
+
+//# Parsing
+
+fn after(s: String, i: Int) -> String {
+  String::substring(s, i + 1, String::length(s))
+}
+
+fn before(s: String, i: Int) -> String {
+  String::substring(s, 0, i)
+}
+
+let spec_usage: String = "unknown source spec (github:owner/repo[/dir]@ref | git:<url>@<ref>[#<dir>])"
+
+/// Parse a source spec. The ref is everything after the LAST `@`, so a URL
+/// may itself contain `@` (`git:git@host:o/r.git@main`).
+export fn parse_source_spec(spec: String) -> SourceSpec with Exception {
+  if String::starts_with(spec, "github:") {
+    let rest = after(spec, 6)
+    let at = String::last_index_of(rest, "@")
+    if at < 0 || at == String::length(rest) - 1 {
+      throw("github spec needs @<ref>: \{spec}")
+    } else {
+      let path = before(rest, at)
+      let slash = String::index_of(path, "/")
+      if slash <= 0 {
+        throw("malformed github spec (expected github:owner/repo[/sub/dir]@<ref>): \{spec}")
+      } else {
+        let owner = before(path, slash)
+        let rr = after(path, slash)
+        let slash2 = String::index_of(rr, "/")
+        let repo = if slash2 < 0 {
+          rr
+        } else {
+          before(rr, slash2)
+        }
+        let subdir = if slash2 < 0 {
+          ""
+        } else {
+          after(rr, slash2)
+        }
+        if repo == "" {
+          throw("malformed github spec (expected github:owner/repo[/sub/dir]@<ref>): \{spec}")
+        } else {
+          SourceSpec::{
+            github: true,
+            url: "https://github.com/\{owner}/\{repo}.git",
+            git_ref: after(rest, at),
+            subdir: subdir,
+            path: path
+          }
+        }
+      }
+    }
+  } else if String::starts_with(spec, "git:") {
+    let whole = after(spec, 3)
+    let hash = String::last_index_of(whole, "#")
+    let rest = if hash < 0 {
+      whole
+    } else {
+      before(whole, hash)
+    }
+    let subdir = if hash < 0 {
+      ""
+    } else {
+      after(whole, hash)
+    }
+    let at = String::last_index_of(rest, "@")
+    if at <= 0 || at == String::length(rest) - 1 {
+      throw("git spec needs <url>@<ref>: \{spec}")
+    } else {
+      SourceSpec::{
+        github: false,
+        url: before(rest, at),
+        git_ref: after(rest, at),
+        subdir: subdir,
+        path: ""
+      }
+    }
+  } else {
+    throw("\{spec_usage}: \{spec}")
+  }
+}
+
+/// The spec with its ref replaced by the resolved commit: the `from`
+/// clause of a pinned `require` line.
+export fn spec_pinned(s: SourceSpec, commit: String) -> String {
+  if s.github {
+    "github:\{s.path}@\{commit}"
+  } else if s.subdir == "" {
+    "git:\{s.url}@\{commit}"
+  } else {
+    "git:\{s.url}@\{commit}#\{s.subdir}"
+  }
+}
