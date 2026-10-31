@@ -209,3 +209,60 @@ test "has_publish and is_yanked" {
   assert(log_is_yanked(recs, "@a/x@1.1.0"))
   assert(!log_is_yanked(recs, "@a/x@1.0.0"))
 }
+
+//# Edges found by `vibe mutate`
+
+test "a leaf limit above the record count takes every record" {
+  inspect(Array::length(log_leaves(fixture_records(), 10)), content = "5")
+  inspect(log_root(log_leaves(fixture_records(), 10)), content = "9655a06430fb65ed252cdfb85bc69d3be4d08c365589accd5dd3fa49b7680ab5")
+}
+
+test "a head line that starts with its tab has no size" {
+  inspect(error_of(() -> {
+    let _ = log_parse_head("\tabc")
+  }), content = "malformed log head: size is not a number in `\tabc`")
+}
+
+test "a last record without its newline is not counted, as wc -l did not" {
+  let body = String::join(fixture_records(), "\n")
+  inspect(error_of(() -> log_check_served(Some(body), Some(log_format_head(5, root_of_first(5))))), content = "tampered log head: head claims 5 record(s), records.tsv has 4")
+}
+
+test "a head equal to the seen one is consistent" {
+  let head = LogHead::{ size: 5, root: root_of_first(5) }
+  inspect(error_of(() -> log_check_extends(fixture_body(), head, Some(head))), content = "ok")
+}
+
+test "a seen head of size 0 carries no prefix to check, and size 1 does" {
+  let head = LogHead::{ size: 5, root: root_of_first(5) }
+  inspect(error_of(() -> log_check_extends(fixture_body(), head, Some(LogHead::{
+    size: 0,
+    root: "anything"
+  }))), content = "ok")
+  inspect(error_of(() -> log_check_extends(fixture_body(), head, Some(LogHead::{
+    size: 1,
+    root: "wrong"
+  }))), content = "log consistency violation: the first 1 record(s) no longer hash to the head this client saw (append-only history was rewritten)")
+}
+
+test "short and unknown records do not count as publish or yank" {
+  let recs = [
+    "garbage",
+    log_record(0, "publish", "@a/x@1.0.0", "pkg:b3:aa", "ct", "local", "-"),
+    log_record(1, "note", "@a/x@1.0.0", "-", "-", "-", "-")
+  ]
+  inspect(match log_lookup(recs, "@a/x@1.0.0") {
+    LogAbsent => "absent",
+    LogPublished(i, _, y) => "\{Int::to_string(i)} \{if y {
+      "yanked"
+    } else {
+      "live"
+    }}"
+  }, content = "1 live")
+  assert(!log_is_yanked(recs, "garbage"))
+}
+
+test "a yank as the first record is seen" {
+  let recs = [log_record(0, "yank", "@a/x@1.0.0", "pkg:b3:aa", "-", "-", "-")]
+  assert(log_is_yanked(recs, "@a/x@1.0.0"))
+}

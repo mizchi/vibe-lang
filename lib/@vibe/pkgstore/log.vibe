@@ -18,7 +18,7 @@
 //# Imports
 
 import @vibe/builtin {
-  String::trim_end
+  String::count, String::trim_end
 }
 import @vibe/core {
   sha256
@@ -151,20 +151,17 @@ export fn log_verify_inclusion(leaf: String, root: String, proof: Array[LogProof
 /// read the way the shell's `read` loop read it.
 export fn log_record_lines(text: String) -> Array[String] {
   let out: Array[String] = []
-  if text != "" {
-    let parts = String::split(text, "\n")
-    let n = Array::length(parts)
-    let last_empty = Array::get(parts, n - 1) == ""
-    let keep = if last_empty {
-      n - 1
-    } else {
-      n
-    }
-    let mut i = 0
-    while i < keep {
-      Array::push(out, Array::get(parts, i))
-      i = i + 1
-    }
+  let parts = String::split(text, "\n")
+  let n = Array::length(parts)
+  let keep = if Array::get(parts, n - 1) == "" {
+    n - 1
+  } else {
+    n
+  }
+  let mut i = 0
+  while i < keep {
+    Array::push(out, Array::get(parts, i))
+    i = i + 1
   }
   out
 }
@@ -218,8 +215,12 @@ export fn log_check_served(records: Option[String], head: Option[String]) -> Uni
     (Some(body), Some(head_text)) => {
       let parsed = log_parse_head(head_text)
       let lines = log_record_lines(body)
-      if parsed.size != Array::length(lines) {
-        throw("tampered log head: head claims \{Int::to_string(parsed.size)} record(s), records.tsv has \{Int::to_string(Array::length(lines))}")
+      // The size is checked against the NEWLINE count, as `wc -l` did: a
+      // last record without its newline is not a complete record, and the
+      // next append would glue onto it.
+      let terminated = String::count(body, "\n")
+      if parsed.size != terminated {
+        throw("tampered log head: head claims \{Int::to_string(parsed.size)} record(s), records.tsv has \{Int::to_string(terminated)}")
       } else {
         let got = log_root(log_leaves(lines, Array::length(lines)))
         if got != parsed.root {
