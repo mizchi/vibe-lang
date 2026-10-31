@@ -237,6 +237,57 @@ fn add_labels_shorthand_lambda(tokens: Array[Token], t: Int) -> Bool {
   }
 }
 
+/// Does the argument starting at token `t` hold a `_` placeholder? A bare `_`
+/// is a pipe hole (`3 |> f(1, _)`) and `_` inside an operator tree is a
+/// section (`f(_ * 2)`); the parser recognizes neither under a label, so
+/// `b = _` would change what the call means. Only a `_` inside braces (a
+/// match arm, a block) is certainly not one; any other `_` skips the call.
+fn add_labels_has_placeholder(tokens: Array[Token], t: Int) -> Bool {
+  let mut j = t
+  let mut depth = 0
+  let mut braces = 0
+  let mut found = false
+  let mut done = false
+  while j < Array::length(tokens) && !done {
+    let tok = Array::get(tokens, j)
+    match tok {
+      TEof => done = true,
+      TComma => if depth == 0 {
+        done = true
+      } else {
+        ()
+      },
+      TIdent(n) => if n == "_" && braces == 0 {
+        found = true
+        done = true
+      } else {
+        ()
+      },
+      _ => if add_labels_opens(tok) {
+        depth = depth + 1
+        match tok {
+          TLBrace => braces = braces + 1,
+          _ => ()
+        }
+      } else if add_labels_closes(tok) {
+        if depth == 0 {
+          done = true
+        } else {
+          depth = depth - 1
+          match tok {
+            TRBrace => braces = braces - 1,
+            _ => ()
+          }
+        }
+      } else {
+        ()
+      }
+    }
+    j = j + 1
+  }
+  found
+}
+
 /// The first token of each argument between the `(` at `paren` and its `)`.
 fn add_labels_argument_starts(tokens: Array[Token], paren: Int) -> Array[Int] {
   let out: Array[Int] = []
@@ -362,7 +413,11 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
         } else {
           []
         }
-        if Array::length(arg_tokens) != n {
+        let mut placeholder = false
+        for t in arg_tokens {
+          placeholder = placeholder || add_labels_has_placeholder(tokens, t)
+        }
+        if Array::length(arg_tokens) != n || placeholder {
           shape = shape + 1
         } else {
           calls = calls + 1

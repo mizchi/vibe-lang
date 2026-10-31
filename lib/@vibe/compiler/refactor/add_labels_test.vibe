@@ -91,3 +91,14 @@ test "a shorthand lambda argument gets its parameter parenthesized" {
   inspect(edited(source, add_labels_positional_none), content = "fn apply(f: (Int) -> Int, n: Int) -> Int {\n  f(n)\n}\nfn main() -> Int {\n  apply(f = (x) -> x * 2, n = 3) + apply(f = (y) -> y, n = 1)\n}\n")
   inspect(settled(source, add_labels_positional_none), content = "true")
 }
+
+test "a call with a `_` placeholder is left alone" {
+  // A label would hide the pipe hole and the operator section from the parser,
+  // which recognizes them only as bare arguments. A `_` inside braces is a
+  // match arm, not a placeholder, so that call is still labeled.
+  let source = "fn pair(a: Int, b: Int) -> Int {\n  a - b\n}\nfn twice(f: (Int) -> Int, n: Int) -> Int {\n  f(f(n))\n}\nfn main() -> Int {\n  let p = 3 |> pair(1, _)\n  let q = twice(_ * 2, 5)\n  p + q + pair(match p {\n    _ => 1\n  }, 2)\n}\n"
+  let result = run(source, add_labels_positional_none)
+  inspect(result.other_shape, content = "2")
+  inspect(result.source, content = "fn pair(a: Int, b: Int) -> Int {\n  a - b\n}\nfn twice(f: (Int) -> Int, n: Int) -> Int {\n  f(f(n))\n}\nfn main() -> Int {\n  let p = 3 |> pair(1, _)\n  let q = twice(_ * 2, 5)\n  p + q + pair(a = match p {\n    _ => 1\n  }, b = 2)\n}\n")
+  inspect(settled(source, add_labels_positional_none), content = "true")
+}
