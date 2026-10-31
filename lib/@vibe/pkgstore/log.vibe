@@ -146,20 +146,14 @@ export fn log_verify_inclusion(leaf: String, root: String, proof: Array[LogProof
 
 //# Files
 
-/// The records of a `records.tsv` body: one per newline-terminated line.
-/// A final line without its newline still counts, so a truncated write is
-/// read the way the shell's `read` loop read it.
+/// The records of a `records.tsv` body: the newline-TERMINATED lines. A
+/// final line without its newline is not a record, which is how the shell's
+/// `while read` loop read the file (it never runs its body for that line).
 export fn log_record_lines(text: String) -> Array[String] {
   let out: Array[String] = []
   let parts = String::split(text, "\n")
-  let n = Array::length(parts)
-  let keep = if Array::get(parts, n - 1) == "" {
-    n - 1
-  } else {
-    n
-  }
   let mut i = 0
-  while i < keep {
+  while i < Array::length(parts) - 1 {
     Array::push(out, Array::get(parts, i))
     i = i + 1
   }
@@ -215,12 +209,13 @@ export fn log_check_served(records: Option[String], head: Option[String]) -> Uni
     (Some(body), Some(head_text)) => {
       let parsed = log_parse_head(head_text)
       let lines = log_record_lines(body)
-      // The size is checked against the NEWLINE count, as `wc -l` did: a
-      // last record without its newline is not a complete record, and the
-      // next append would glue onto it.
-      let terminated = String::count(body, "\n")
-      if parsed.size != terminated {
-        throw("tampered log head: head claims \{Int::to_string(parsed.size)} record(s), records.tsv has \{Int::to_string(terminated)}")
+      if body != "" && !String::ends_with(body, "\n") {
+        // A record without its newline is a truncated write; the next
+        // append would glue onto it. The head cannot commit to it either
+        // way, so refuse the file rather than read around it.
+        throw("tampered log head: records.tsv ends inside a record (no final newline)")
+      } else if parsed.size != Array::length(lines) {
+        throw("tampered log head: head claims \{Int::to_string(parsed.size)} record(s), records.tsv has \{Int::to_string(Array::length(lines))}")
       } else {
         let got = log_root(log_leaves(lines, Array::length(lines)))
         if got != parsed.root {

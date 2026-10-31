@@ -122,3 +122,38 @@ test "malformed specs are refused with the expected shape" {
   inspect(spec_or_error("git:@main"), content = "git spec needs <url>@<ref>: git:@main")
   inspect(spec_or_error("https://example.com/r.git"), content = "unknown source spec (github:owner/repo[/dir]@ref | git:<url>@<ref>[#<dir>]): https://example.com/r.git")
 }
+
+//# Edges found by `vibe mutate`
+
+test "every hex digit is checked, the first one included" {
+  inspect(id_or_none(String::concat("pkg:b3:g", String::substring(b3_hex(), 1, 64))), content = "none")
+}
+
+test "a string that is not prefixed is not an id, whatever its length" {
+  inspect(id_or_none(String::concat("xxxxxxxxx", sha1_hex())), content = "none")
+}
+
+test "rows without their tab do not trap, and blank lines are not rows" {
+  inspect(versions_lookup("keyonly\n", "keyonly"), content = "")
+  assert(!provenance_has("a\n\nb\n", ""))
+}
+
+test "versions_of carries the recorded ids" {
+  let all = versions_of(versions_fixture(), "@a/x")
+  let (v0, id0) = Array::get(all, 0)
+  let (v1, id1) = Array::get(all, 1)
+  inspect("\{v0}=\{id0} \{v1}=\{id1}", content = "1.0.0=pkg:b3:aa 1.1.0=pkg:b3:cc")
+}
+
+test "specs with an empty owner, repo, URL or ref are refused" {
+  inspect(spec_or_error("github:@main"), content = "malformed github spec (expected github:owner/repo[/sub/dir]@<ref>): github:@main")
+  inspect(spec_or_error("github:/repo@main"), content = "malformed github spec (expected github:owner/repo[/sub/dir]@<ref>): github:/repo@main")
+  inspect(spec_or_error("github:o//x@main"), content = "malformed github spec (expected github:owner/repo[/sub/dir]@<ref>): github:o//x@main")
+  inspect(spec_or_error("git:#x@y"), content = "git spec needs <url>@<ref>: git:#x@y")
+  inspect(spec_or_error("git:/tmp/r@"), content = "git spec needs <url>@<ref>: git:/tmp/r@")
+}
+
+test "a one-character URL and a ref-less subdirectory are accepted" {
+  inspect(spec_or_error("git:a@main"), content = "a ref=main sub= pinned=git:a@c0ffee")
+  inspect(spec_or_error("github:o/r@v1"), content = "https://github.com/o/r.git ref=v1 sub= pinned=github:o/r@c0ffee")
+}

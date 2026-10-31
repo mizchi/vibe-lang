@@ -113,7 +113,6 @@ test "every proof verifies, and a proof for another leaf does not" {
 test "record lines split newline-terminated records" {
   inspect(Array::length(log_record_lines(fixture_body())), content = "5")
   inspect(Array::length(log_record_lines("")), content = "0")
-  inspect(Array::length(log_record_lines("a\nb")), content = "2")
 }
 
 test "head round-trips" {
@@ -223,9 +222,19 @@ test "a head line that starts with its tab has no size" {
   }), content = "malformed log head: size is not a number in `\tabc`")
 }
 
-test "a last record without its newline is not counted, as wc -l did not" {
+test "a records file that ends inside a record is refused" {
   let body = String::join(fixture_records(), "\n")
-  inspect(error_of(() -> log_check_served(Some(body), Some(log_format_head(5, root_of_first(5))))), content = "tampered log head: head claims 5 record(s), records.tsv has 4")
+  inspect(error_of(() -> log_check_served(Some(body), Some(log_format_head(5, root_of_first(5))))), content = "tampered log head: records.tsv ends inside a record (no final newline)")
+  // A head whose size matches the newline count but whose root commits to
+  // the unterminated record as well (Codex review of #3678).
+  let one = Array::get(fixture_records(), 0)
+  inspect(error_of(() -> log_check_served(Some(one), Some(log_format_head(0, root_of_first(1))))), content = "tampered log head: records.tsv ends inside a record (no final newline)")
+  inspect(error_of(() -> log_check_served(Some(one), Some(log_format_head(0, root_of_first(0))))), content = "tampered log head: records.tsv ends inside a record (no final newline)")
+}
+
+test "an unterminated last line is not a record" {
+  inspect(Array::length(log_record_lines("a\nb")), content = "1")
+  inspect(Array::length(log_record_lines("a\nb\n")), content = "2")
 }
 
 test "a head equal to the seen one is consistent" {
