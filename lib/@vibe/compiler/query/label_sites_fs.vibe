@@ -87,6 +87,70 @@ fn label_sites_failed(path: String, source: String, message: String) -> LabelSit
   }
 }
 
+/// One file: its answer and the three caches after it. The caches are
+/// returned rather than assigned from inside the `handle`, the shape
+/// grep_fs_typed_context uses.
+fn label_sites_file(path: String, source: String, cache_in: Array[(String, TypeEnv)], rdb_in: RippleDb, dep_sources_in: Array[(String, String)]) -> (LabelSiteFile, Array[(String, TypeEnv)], RippleDb, Array[(String, String)]) with Env + Fs {
+  handle {
+    let groups = collect_source_groups_fs(path)
+    let mut rdb = rdb_in
+    let mut entry_source = source
+    let mut gi = 0
+    while gi < Array::length(groups) {
+      let (_, sources) = Array::get(groups, gi)
+      let mut si = 0
+      while si < Array::length(sources) {
+        let (p, text) = Array::get(sources, si)
+        rdb = ripple_set_source(rdb, p, text)
+        if p == path {
+          entry_source = text
+        } else {
+          ()
+        }
+        si = si + 1
+      }
+      gi = gi + 1
+    }
+    let (_, walked, env_cache, dep_sources, _) = ensure_fingerprint_fs_impl(rdb, cache_in, dep_sources_in, 0, path)
+    let deps = match ripple_get_deps(walked, path) {
+      Some(d) => d,
+      None => array_empty()
+    }
+    let import_env = projected_import_env_for_test(entry_source, path, deps, label_sites_fill_dep_envs(walked, env_cache, deps))
+    (label_sites_typed(path, source, entry_source, import_env), env_cache, walked, dep_sources)
+  } with { Exception::Throw(message) => (label_sites_failed(path, source, message), cache_in, rdb_in, dep_sources_in) }
+}
+
+/// Check the ingested `entry_source` against `import_env` with the site
+/// capture on.
+fn label_sites_typed(path: String, source: String, entry_source: String, import_env: TypeEnv) -> LabelSiteFile {
+  let delta = String::length(entry_source) - String::length(source)
+  if delta < 0 {
+    label_sites_failed(path, source, "add-labels: refusing to edit this file -- its ingested source is not the file plus a prefix")
+  } else {
+    label_sites_begin()
+    let checked = handle {
+      // A fresh parse: the checker mutates the statements it is handed.
+      let (tokens, starts, _) = lex_with_offsets(entry_source)
+      let stmts = parse_program_located(tokens, starts, entry_source)
+      let _ = check_program_with_projected_import_env_result(stmts, import_env)
+      ""
+    } with { Exception::Throw(message) => message }
+    let sites = label_sites_end()
+    if String::length(checked) > 0 {
+      label_sites_failed(path, source, checked)
+    } else {
+      LabelSiteFile::{
+        path: path,
+        source: source,
+        offset_delta: delta,
+        sites: sites,
+        error: ""
+      }
+    }
+  }
+}
+
 /// Type every file in `files` (paths to `.vibe` sources) and record its
 /// resolved call sites.
 export fn query_label_sites_fs(files: Array[String]) -> Array[LabelSiteFile] with Env + Exception + Fs {
@@ -94,59 +158,15 @@ export fn query_label_sites_fs(files: Array[String]) -> Array[LabelSiteFile] wit
   let mut env_cache: Array[(String, TypeEnv)] = array_empty()
   let mut rdb = ripple_new()
   let mut dep_sources: Array[(String, String)] = array_empty()
-  for path in files {
-    let source = Fs::read_file(path)
-    let answer = handle {
-      let groups = collect_source_groups_fs(path)
-      let mut entry_source = source
-      for group in groups {
-        let (_, sources) = group
-        for pair in sources {
-          let (p, text) = pair
-          rdb = ripple_set_source(rdb, p, text)
-          if p == path {
-            entry_source = text
-          } else {
-            ()
-          }
-        }
-      }
-      let (_, walked, next_cache, next_dep_sources, _) = ensure_fingerprint_fs_impl(rdb, env_cache, dep_sources, 0, path)
-      rdb = walked
-      env_cache = next_cache
-      dep_sources = next_dep_sources
-      let deps = match ripple_get_deps(walked, path) {
-        Some(d) => d,
-        None => array_empty()
-      }
-      let import_env = projected_import_env_for_test(entry_source, path, deps, label_sites_fill_dep_envs(walked, env_cache, deps))
-      let delta = String::length(entry_source) - String::length(source)
-      if delta < 0 {
-        label_sites_failed(path, source, "add-labels: refusing to edit this file -- its ingested source is not the file plus a prefix")
-      } else {
-        // A fresh parse: the checker mutates the statements it is handed.
-        let (tokens, starts, _) = lex_with_offsets(entry_source)
-        let stmts = parse_program_located(tokens, starts, entry_source)
-        label_sites_begin()
-        let checked = handle {
-          let _ = check_program_with_projected_import_env_result(stmts, import_env)
-          ""
-        } with { Exception::Throw(message) => message }
-        let sites = label_sites_end()
-        if String::length(checked) > 0 {
-          label_sites_failed(path, source, checked)
-        } else {
-          LabelSiteFile::{
-            path: path,
-            source: source,
-            offset_delta: delta,
-            sites: sites,
-            error: ""
-          }
-        }
-      }
-    } with { Exception::Throw(message) => label_sites_failed(path, source, message) }
+  let mut i = 0
+  while i < Array::length(files) {
+    let path = Array::get(files, i)
+    let (answer, next_cache, next_rdb, next_dep_sources) = label_sites_file(path, Fs::read_file(path), env_cache, rdb, dep_sources)
+    env_cache = next_cache
+    rdb = next_rdb
+    dep_sources = next_dep_sources
     Array::push(out, answer)
+    i = i + 1
   }
   out
 }
