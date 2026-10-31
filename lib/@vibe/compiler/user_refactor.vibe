@@ -1,5 +1,9 @@
 import @vibe/compiler/refactor {
-  extract_function
+  AddLabelsResult, add_labels, add_labels_policy_named, add_labels_positional_receiver_single, extract_function
+}
+
+import @vibe/compiler/query {
+  LabelSiteFile, grep_collect_files, query_label_sites_fs, query_label_sites_recheck_fs
 }
 
 fn refactor_byte_offset(text: String) -> Int with Exception {
@@ -22,14 +26,138 @@ fn refactor_byte_offset(text: String) -> Int with Exception {
   value
 }
 
+fn refactor_first_line(message: String) -> String {
+  let cut = String::index_of(message, "\n")
+  if cut < 0 {
+    message
+  } else {
+    message[0: cut]
+  }
+}
+
+/// ADR-0120 Phase 2a (#3679): `vibe refactor add-labels`. Each named file, or
+/// each `.vibe` file under a named directory, is typed through the same import
+/// walk `vibe check` uses, and the parameter name is inserted before each
+/// unlabeled argument of a call the checker resolved to a declaration. The
+/// default prints one `path:line:col: callee +N` row per call it would edit and
+/// a summary; `--write` rewrites the files. A file that does not check is named
+/// and left alone, and so is a file whose edit would not check.
+fn refactor_add_labels(args: Array[String]) -> Int with Env + Exception + Fs + Console {
+  let usage = "usage: vibe refactor add-labels [--write] [--positional=none|receiver|receiver+single] <path>..."
+  let mut write = false
+  let mut policy = add_labels_positional_receiver_single
+  let paths: Array[String] = []
+  let mut i = 2
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    if arg == "--write" {
+      write = true
+    } else if String::starts_with(arg, "--positional=") {
+      match add_labels_policy_named(arg[13: String::length(arg)]) {
+        Some(p) => policy = p,
+        None => throw(usage)
+      }
+    } else if String::starts_with(arg, "-") {
+      throw(usage)
+    } else {
+      Array::push(paths, arg)
+    }
+    i = i + 1
+  }
+  if Array::length(paths) == 0 {
+    throw(usage)
+  } else {
+    ()
+  }
+  let files: Array[String] = []
+  for path in paths {
+    if Fs::is_dir(path) {
+      for f in grep_collect_files(path) {
+        if String::ends_with(f, ".vibe") {
+          Array::push(files, f)
+        } else {
+          ()
+        }
+      }
+    } else {
+      Array::push(files, path)
+    }
+  }
+  let mut calls = 0
+  let mut labels = 0
+  let mut done = 0
+  let mut partial = 0
+  let mut local = 0
+  let mut shape = 0
+  let mut deferred = 0
+  let mut deferred_labels = 0
+  let mut unchecked = 0
+  let mut refused = 0
+  let answers: Array[LabelSiteFile] = query_label_sites_fs(files)
+  for answer in answers {
+    if String::length(answer.error) > 0 {
+      unchecked = unchecked + 1
+      println(answer.path + ": not checked, left alone: " + refactor_first_line(answer.error))
+    } else {
+      let result: AddLabelsResult = add_labels(answer.path, answer.source, answer.offset_delta, answer.sites, policy)
+      // An edit is reported or written only once the edited file checks: the
+      // edit is a token splice, and a shape it misreads must cost a refusal,
+      // not a broken file.
+      let problem: String = if result.labels > 0 {
+        query_label_sites_recheck_fs(answer.path, answer.source, result.source)
+      } else {
+        ""
+      }
+      if String::length(problem) > 0 {
+        refused = refused + 1
+        println(answer.path + ": the edit would not check, left alone: " + refactor_first_line(problem))
+      } else {
+        calls = calls + result.calls
+        labels = labels + result.labels
+        done = done + result.already_labeled
+        partial = partial + result.partly_labeled
+        local = local + result.through_local
+        shape = shape + result.other_shape
+        deferred = deferred + result.deferred_calls
+        deferred_labels = deferred_labels + result.deferred_labels
+        if write {
+          if result.labels > 0 {
+            if Fs::read_file(answer.path) != answer.source {
+              throw("refactor: " + answer.path + " changed during the check; retry against the current file")
+            } else {
+              Fs::write_file(answer.path, result.source)
+            }
+          } else {
+            ()
+          }
+        } else {
+          let rows: Array[String] = result.lines
+          for line in rows {
+            println(line)
+          }
+        }
+      }
+    }
+  }
+  println("add-labels: " + __to_string(labels) + " labels in " + __to_string(calls) + " calls; " + __to_string(deferred_labels) + " more in " + __to_string(deferred) + " calls after `_` (#3681); skipped " + __to_string(done) + " already labeled, " + __to_string(partial) + " partly labeled, " + __to_string(local) + " through a local lambda, " + __to_string(shape) + " whose written arguments differ (a pipe, an interpolation or a `_` placeholder); " + __to_string(unchecked) + " of " + __to_string(Array::length(files)) + " files not checked; " + __to_string(refused) + " files whose edit would not check")
+  if unchecked > 0 || refused > 0 {
+    1
+  } else {
+    0
+  }
+}
+
 /// Preview validated edits on stdout; --write publishes the same result only
 /// after every range, binding, and type check has succeeded.
-export fn selfhost_cli_user_refactor_args(args: Array[String]) -> Int with Exception + Fs + Console {
-  let usage = "usage: vibe refactor extract-function <file.vibe> <start-byte> <end-byte> <name> [--write]"
+export fn selfhost_cli_user_refactor_args(args: Array[String]) -> Int with Env + Exception + Fs + Console {
+  let usage = "usage: vibe refactor extract-function <file.vibe> <start-byte> <end-byte> <name> [--write]\n       vibe refactor add-labels [--write] [--positional=none|receiver|receiver+single] <path>..."
   if Array::length(args) == 2 && (Array::get(args, 1) == "--help" || Array::get(args, 1) == "-h") {
     println(usage)
-    println("The range is half-open. The default prints the edited source; --write updates the file after validation.")
+    println("extract-function: the range is half-open. The default prints the edited source; --write updates the file after validation.")
+    println("add-labels: inserts `name = ` before each unlabeled argument of a call the checker resolved to a declaration (ADR-0120). The default reports one row per call it would edit; --write rewrites the files. --positional picks the slots left positional (default receiver+single).")
     0
+  } else if Array::length(args) >= 2 && Array::get(args, 1) == "add-labels" {
+    refactor_add_labels(args)
   } else if Array::length(args) < 6 || Array::length(args) > 7 || Array::get(args, 1) != "extract-function" {
     throw(usage)
   } else {
