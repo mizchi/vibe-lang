@@ -11,6 +11,10 @@ import @vibe/compiler/refactor {
   add_labels, add_labels_positional_none
 }
 
+import @vibe/compiler/contract {
+  contract_hash, parse_contract_program
+}
+
 import @vibe/compiler/core {
   Stmt
 }
@@ -119,4 +123,21 @@ test "an inactive `#cfg` declaration leaves no `_` slots behind" {
   let source = "#cfg(never_set_flag)\nfn f(_ x: Int) -> Int {\n  x\n}\n\nfn f(x: Int) -> Int {\n  x + 1\n}\n\nfn main() -> Int {\n  f(x = 1)\n}\n"
   inspect(slots(source), content = "")
   inspect(first_error(source), content = "")
+}
+
+fn contract_sig(source: String) -> (String, String) with Exception {
+  let (tokens, _, _) = lex_with_offsets(source)
+  let (decls, opaque, stmts) = parse_contract_program(tokens)
+  let (_, sig) = Array::get(decls, 0)
+  (sig, contract_hash(decls, opaque, stmts))
+}
+
+test "a `_` slot is part of a contract's signature and hash" {
+  // Codex review of #3691: adding `_` rejects calls that labeled the slot, so
+  // a contract that adds one has changed, and its hash must say so.
+  let (plain_sig, plain_hash) = contract_sig("fn get(xs: Array[Int], at: Int) -> Int\n")
+  let (marked_sig, marked_hash) = contract_sig("fn get(_ xs: Array[Int], at: Int) -> Int\n")
+  inspect(marked_sig, content = "(_ Array[Int], Int) -> Int")
+  inspect(plain_sig == marked_sig, content = "false")
+  inspect(plain_hash == marked_hash, content = "false")
 }
