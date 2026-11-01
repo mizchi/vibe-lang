@@ -13,6 +13,7 @@ import @vibe/compiler/core {
   is_exception_effect_name,
   merged_offset_locations_snapshot,
   rename_builtin_shadow_defs,
+  sort_perm_by_names,
   sorted_names_of,
   verify_lane_builtins
 }
@@ -763,9 +764,25 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
         Array::push(__new_stmts, __pad_stmt_idx)
         __pin_p = __pin_p + 1
       }
+      // The synthesized region in NAME order, not in the order the prelude
+      // left them in the program. That order is where each was inserted, and
+      // it is not a property of the program: the per-module prelude (#2826)
+      // links the same definitions in a different order, which made its
+      // output differ from the whole-program lane only by where 27
+      // comparators sat (measured on the CLI closure). A name-ordered region
+      // is the same for both, and an edit that moves an insertion point no
+      // longer reorders it. Same safety argument as the reorder itself: a
+      // consistent permutation applied before any index is consumed.
+      let __pin_synth_names = lc_fresh_string_array()
+      let mut __pin_n = 0
+      while __pin_n < Array::length(__pin_synth_idx) {
+        Array::push(__pin_synth_names, Array::get(fn_names_list, Array::get(__pin_synth_idx, __pin_n)))
+        __pin_n = __pin_n + 1
+      }
+      let __pin_synth_order = sort_perm_by_names(__pin_synth_names)
       let mut __pin_y = 0
       while __pin_y < Array::length(__pin_synth_idx) {
-        let __pin_from2 = Array::get(__pin_synth_idx, __pin_y)
+        let __pin_from2 = Array::get(__pin_synth_idx, Array::get(__pin_synth_order, __pin_y))
         Array::push(__new_names, Array::get(fn_names_list, __pin_from2))
         Array::push(__new_params, Array::get(fn_param_counts, __pin_from2))
         Array::push(__new_env, Array::get(fn_needs_env_list, __pin_from2))

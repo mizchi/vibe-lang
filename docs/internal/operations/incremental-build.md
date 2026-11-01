@@ -185,6 +185,34 @@ whole-program prelude exactly.
 module's context further, and a closure built from every edge and one built from
 half of them otherwise look identical.
 
+### The production split lane, compiled to wasm (#2826)
+
+The oracle compares declarations; #2826 asks for output parity. Compiling the
+CLI closure (686 modules) through `compile_file_fs_mode_rc_body_cached_split`
+with `use_split` false and true:
+
+- **Byte-identical**, once the synthesized function region is laid out in
+  NAME order. Before that, both lanes emitted the same 14842 functions but 27
+  synthesized comparators sat in a different order (the split lane links a
+  module's helpers after that module's statements; the whole-program lane
+  emits them where its passes inserted them), so every call into them moved
+  and 698 bodies differed. The pin reorder now sorts that region by name, the
+  same consistent-permutation argument the reorder already relies on. Pinned
+  by `prelude_split_fs_lane_test.vibe`, whose two-module case differs without
+  the sort.
+- **What a per-module prelude cache could save is bounded.** Cold, CPU inside
+  the compile: the whole-program prelude is 13.0 s, of which the evidence pass
+  is 7.7 s and suspend CPS 0.95 s. Both run at the link boundary on either
+  lane. The per-module share is ~4.4 s, mostly trait-dict desugaring, and the
+  split lane spends 16.6 s on the prelude today, +3.6 s. Even a perfect
+  per-module cache would save at most ~4.4 s of a ~37 s cold compile; the
+  evidence pass is the larger target.
+- **The split lane refuses a valid program.** Interpolating a value whose
+  `derive(Show)` lives in another module (`"\{zeta(2)}"` with `Zeta` imported)
+  fails with ``cannot interpolate a value of type `Zeta`: it has no Show
+  renderer`` on the split lane and compiles on the whole-program lane. That is
+  a diagnostic-parity gap the promotion criteria cover; it is not fixed here.
+
 ### The four counters
 
 Four counters name what a green would otherwise hide. `invisible_whole` /
