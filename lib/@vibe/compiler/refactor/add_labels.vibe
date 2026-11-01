@@ -33,6 +33,10 @@ import @vibe/core {
   struct MutMap
 }
 
+import @vibe/compiler/contract {
+  extract_require_pins
+}
+
 import @vibe/parser {
   Token, lex_with_offsets, offset_to_line_col, parse_program
 }
@@ -388,8 +392,13 @@ fn add_labels_argument_starts(tokens: Array[Token], paren: Int) -> Array[Int] {
 /// for this file; `offset_delta` maps their offsets (into the ingested
 /// source) back to `source`.
 export fn add_labels(path: String, source: String, offset_delta: Int, sites: Array[LabelSite], policy: Int) -> AddLabelsResult with Exception {
-  let declared = add_labels_declared(source)
-  let (tokens, starts, ends) = lex_with_offsets(source)
+  // A leading `require ... = #pkg:sha1:..` head is a loader directive, not
+  // vibe: the loader blanks it before the checker reads the file, and so must
+  // this pass. The blanked copy keeps every byte offset, so edits found in it
+  // are spliced into `source` as written.
+  let (_, parsed) = extract_require_pins(source)
+  let declared = add_labels_declared(parsed)
+  let (tokens, starts, ends) = lex_with_offsets(parsed)
   let edits: MutMap[Int, String] = MutMap::new_int()
   // Insertions after a token's last byte: the `)` that closes a shorthand
   // lambda's parameter.
