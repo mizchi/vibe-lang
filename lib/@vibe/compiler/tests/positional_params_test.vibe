@@ -20,7 +20,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/parser {
-  lex_with_offsets, parse_program_located, print_program
+  lex_with_offsets, parse_program_located, print_program, print_stmt
 }
 
 fn parsed(source: String) -> Array[Stmt] with Exception {
@@ -185,4 +185,13 @@ test "a `_` slot's internal name is not part of the signature" {
   inspect(a == b, content = "true")
   let (c, _) = contract_sig("fn f(x?: Int) -> Int\n")
   inspect(a == c, content = "false")
+}
+
+test "a printed program's `_` slots do not outlive it" {
+  // Codex review of #3691: `print_program` registers the slots; a later
+  // `print_stmt` of another program's same-named `f` must not print them.
+  let _ = print_program(parsed("fn f(_ x: Int) -> Int {\n  x\n}\n"))
+  let other = parsed("fn f(x: Int) -> Int {\n  x\n}\n")
+  let shown = print_stmt(Array::get(other, 0))
+  inspect(String::contains(shown, "_ x"), content = "false")
 }
