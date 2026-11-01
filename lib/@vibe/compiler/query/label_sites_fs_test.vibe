@@ -27,3 +27,20 @@ test "the recheck types a replacement through the file's imports" {
   // The file itself is never written.
   inspect(Fs::read_file(path) == source, content = "true")
 }
+
+test "the recheck types the edit, not the original, under a require head" {
+  // The loader may hand the file over with its `require` head blanked, so the
+  // replacement is matched and written blanked too. Typing the unedited file
+  // instead would let a broken edit through.
+  let dir = "_build/vibe_label_sites_fs_pinned"
+  Fs::mkdir_p(dir)
+  let path = dir + "/main.vibe"
+  let head = "require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\n"
+  let body = "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nfn main() -> Int {\n  sub(10, 3)\n}\n"
+  let source = head + body
+  Fs::write_file(path, source)
+  inspect(Array::get(query_label_sites_fs([path]), 0).error, content = "")
+  inspect(query_label_sites_recheck_fs(path, source, head + "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nfn main() -> Int {\n  sub(x = 10, y = 3)\n}\n"), content = "")
+  let broken = query_label_sites_recheck_fs(path, source, head + "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nfn main() -> Int {\n  sub(x = 10, z = 3)\n}\n")
+  inspect(String::length(broken) > 0, content = "true")
+}

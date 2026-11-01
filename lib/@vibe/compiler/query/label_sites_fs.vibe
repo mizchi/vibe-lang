@@ -30,6 +30,10 @@ import @vibe/compiler/runtime {
   ensure_fingerprint_fs_impl, load_persistent_type_env, projected_import_env_for_test
 }
 
+import @vibe/compiler/contract {
+  extract_require_pins
+}
+
 import @vibe/compiler/checker {
   LabelSite, check_program_with_projected_import_env_result, label_sites_begin, label_sites_end
 }
@@ -104,7 +108,7 @@ fn label_sites_file(path: String, source: String, replacement: Option[String], c
       while si < Array::length(sources) {
         let (p, ingested) = Array::get(sources, si)
         let text = if p == path {
-          label_sites_replace(ingested, source, replacement)
+          label_sites_entry_text(ingested, source, replacement)
         } else {
           ingested
         }
@@ -132,20 +136,42 @@ fn label_sites_file(path: String, source: String, replacement: Option[String], c
   } with { Exception::Throw(message) => (label_sites_failed(path, source, message), cache_in, rdb_in, dep_sources_in) }
 }
 
-/// The ingested text with the file's own bytes swapped for `replacement`. The
-/// ingested text is the file plus a prefix; when it is not, it is returned
-/// unchanged and `label_sites_typed` refuses the file.
-fn label_sites_replace(ingested: String, source: String, replacement: Option[String]) -> String {
-  match replacement {
-    Some(r) => {
-      let cut = String::length(ingested) - String::length(source)
-      if cut >= 0 && ingested[cut: String::length(ingested)] == source {
-        ingested[0: cut] + r
+/// The ingested text with the file's own bytes swapped for `replacement`, or
+/// None when it cannot be. The ingested text is the file plus a prefix, and a
+/// leading `require ... = #pkg:..` head may arrive blanked to spaces -- then
+/// the tail is compared, and the replacement written, blanked the same way.
+/// None makes the recheck refuse: typing the unedited file instead would
+/// certify an edit nobody checked.
+fn label_sites_replace(ingested: String, source: String, replacement: String) -> Option[String] with Exception {
+  let cut = String::length(ingested) - String::length(source)
+  if cut < 0 {
+    None
+  } else {
+    let tail = ingested[cut: String::length(ingested)]
+    if tail == source {
+      Some(ingested[0: cut] + replacement)
+    } else {
+      let (_, blanked_source) = extract_require_pins(source)
+      if tail == blanked_source {
+        let (_, blanked_replacement) = extract_require_pins(replacement)
+        Some(ingested[0: cut] + blanked_replacement)
       } else {
-        ingested
+        None
       }
-    },
-    None => ingested
+    }
+  }
+}
+
+/// The entry's text to type: as ingested, or with `replacement` standing in
+/// for the file. A replacement that cannot stand in is refused rather than
+/// typed as the unedited file.
+fn label_sites_entry_text(ingested: String, source: String, replacement: Option[String]) -> String with Exception {
+  match replacement {
+    None => ingested,
+    Some(r) => match label_sites_replace(ingested, source, r) {
+      Some(t) => t,
+      None => throw("add-labels: the edited file cannot stand in for the ingested one; leaving it alone")
+    }
   }
 }
 

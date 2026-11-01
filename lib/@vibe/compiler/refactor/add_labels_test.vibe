@@ -9,6 +9,10 @@ import @vibe/compiler/refactor {
   AddLabelsResult, add_labels, add_labels_positional_none, add_labels_positional_receiver, add_labels_positional_receiver_single
 }
 
+import @vibe/compiler/contract {
+  extract_require_pins
+}
+
 import @vibe/parser {
   lex_with_offsets, parse_program_located
 }
@@ -122,4 +126,16 @@ test "each inserted label is recorded with its argument's span and edit" {
   }
   inspect(String::join(rows, "\n"), content = "x -> x * 2 | f | f = (x) -> x * 2\n1 + 2 | n | n = 1 + 2")
   inspect(Array::length(result.missing) == result.labels, content = "true")
+}
+
+test "a leading require head is read as the loader reads it and kept" {
+  let head = "require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\n"
+  let source = head + sub_decl() + "fn main() -> Int {\n  sub(10, 3)\n}\n"
+  let (_, blanked) = extract_require_pins(source)
+  let (tokens, starts, _) = lex_with_offsets(blanked)
+  label_sites_begin()
+  let _ = check_program(parse_program_located(tokens, starts, blanked))
+  let sites = label_sites_end()
+  let result = add_labels("t.vibe", source, 0, sites, add_labels_positional_none)
+  inspect(result.source == head + sub_decl() + "fn main() -> Int {\n  sub(x = 10, y = 3)\n}\n", content = "true")
 }

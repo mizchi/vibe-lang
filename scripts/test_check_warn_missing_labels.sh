@@ -74,4 +74,28 @@ if invoke check --warn-missing-labels "$rel/broken.vibe" > "$work/broken.out" 2>
   fail "a file with an error passed"
 fi
 if grep -q 'label this argument' "$work/broken.out" "$work/broken.err"; then fail "label rows on a file with errors"; fi
-echo 'warn-missing-labels: lanes, exit status, JSON parity, codemod agreement and error files checked'
+# A leading `require ... = #pkg:..` head is a loader directive the check
+# blanks; the warning pass and the codemod must read the file the same way
+# (Codex review of #3686). The lanes agree, and the codemod keeps the head.
+printf 'require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nexport fn main() -> Int {\n  sub(10, 3)\n}\n' > "$rel/pinned.vibe"
+invoke check --warn-missing-labels "$rel/pinned.vibe" > "$work/pinned.out" 2> "$work/pinned.err" || fail "a require head turned a clean check into a failure: $(cat "$work/pinned.out")"
+[ "$(grep -c 'label this argument' "$work/pinned.err")" = 2 ] || fail "require head rows: $(cat "$work/pinned.err")"
+invoke check --warn-missing-labels --json "$rel/pinned.vibe" > "$work/pinned.fs.json" || fail "require head FS JSON exit"
+invoke check --single-file --warn-missing-labels --json "$rel/pinned.vibe" > "$work/pinned.sf.json" || fail "require head single-file JSON exit"
+cmp "$work/pinned.fs.json" "$work/pinned.sf.json" || fail "require head: the lanes disagree: $(cat "$work/pinned.fs.json") vs $(cat "$work/pinned.sf.json")"
+invoke refactor add-labels --write "$rel/pinned.vibe" > "$work/pinned.write" || fail "the codemod refused a require head: $(cat "$work/pinned.write")"
+grep -Fq 'sub(x = 10, y = 3)' "$rel/pinned.vibe" || fail "the codemod did not edit the require-headed file"
+head -1 "$rel/pinned.vibe" | grep -q '^require @vibe/core 0.2.0 = #pkg:sha1:' || fail "the codemod lost the require head"
+invoke check "$rel/pinned.vibe" > "$work/pinned.after" || fail "the edited require-headed file does not check: $(cat "$work/pinned.after")"
+
+# An error from a pass after typing (an inline-wasm lane index) still means
+# errors only, on both lanes (Codex review of #3686).
+printf 'fn bad_lane(a: Int) -> Int = wasm "(i8x16.extract_lane_s 16 (local.get $a))"\n\nfn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nexport fn main() -> Int {\n  bad_lane(1) + sub(10, 3)\n}\n' > "$rel/lane.vibe"
+for lane in "" "--single-file"; do
+  if invoke check $lane --warn-missing-labels --json "$rel/lane.vibe" > "$work/lane.json"; then
+    fail "the lane-index error passed (${lane:-FS lane})"
+  fi
+  if grep -q 'label this argument' "$work/lane.json"; then fail "label rows beside an error (${lane:-FS lane}): $(cat "$work/lane.json")"; fi
+  grep -q 'lane index' "$work/lane.json" || fail "the lane-index error is missing (${lane:-FS lane}): $(cat "$work/lane.json")"
+done
+echo 'warn-missing-labels: lanes, exit status, JSON parity, codemod agreement, require heads and error files checked'
