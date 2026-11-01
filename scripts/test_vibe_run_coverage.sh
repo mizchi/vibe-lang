@@ -94,4 +94,21 @@ refused 'cannot be combined with --trace' -- --coverage --trace "$WORK/prog.vibe
 refused 'cannot be combined with --trace' -- --coverage --break pick "$WORK/prog.vibex"
 refused 'instruments the linear backend' VIBE_BACKEND=gc -- --coverage "$WORK/prog.vibex"
 
-echo "[vibe-run-coverage] ok (report written; missing report, --trace/--break and VIBE_BACKEND=gc refused)"
+# 4. An optional grant would answer NotGranted in the instrumented build even
+#    under --allow-fs, so the report would measure another execution.
+cat > "$WORK/optional.vibex" <<'EOF'
+fn cached() -> Attempt[String, String] with Fs::read_file? {
+  perform? Fs::read_file("prog.vibex")
+}
+
+fn main() -> Unit allows Console + Fs? {
+  match cached() {
+    NotGranted => println("not-granted"),
+    Errored(_) => println("errored"),
+    Granted(_) => println("granted")
+  }
+}
+EOF
+refused 'declares the optional grant `Fs?`' -- --coverage --allow-fs --allow-console "$WORK/optional.vibex"
+
+echo "[vibe-run-coverage] ok (report written; missing report, --trace/--break, VIBE_BACKEND=gc and optional grants refused)"

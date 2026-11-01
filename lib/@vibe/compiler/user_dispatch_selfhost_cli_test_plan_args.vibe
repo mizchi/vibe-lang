@@ -1119,18 +1119,43 @@ fn preflight_entry_authority(src: String, allows: Array[String], denies: Array[S
 /// run of an entry that declares an optional grade is refused rather than
 /// answered differently.
 fn refuse_gc_optional_entry_authority(src: String) -> Unit with Exception + Fs {
+  let label = first_optional_entry_grant(src)
+  if label != "" {
+    throw("VIBE_BACKEND=gc cannot run `main`: it declares the optional grant `\{label}`, and the wasm-gc backend does not apply `--allow-*` grants to `perform?` yet (every one would answer `NotGranted`). Run without VIBE_BACKEND=gc, or make the grant required.")
+  } else {
+    ()
+  }
+}
+
+/// The same refusal for `vibe run --coverage`, whose instrumented compile
+/// carries no grants either: under `--allow-fs` the ordinary run answers
+/// `Granted` and the measured one `NotGranted`, so the report would describe
+/// a different execution.
+fn refuse_coverage_optional_entry_authority(src: String) -> Unit with Exception + Fs {
+  let label = first_optional_entry_grant(src)
+  if label != "" {
+    throw("vibe run --coverage cannot run `main`: it declares the optional grant `\{label}`, and the coverage build does not apply `--allow-*` grants to `perform?` yet (every one would answer `NotGranted`). Measure without --coverage, or make the grant required.")
+  } else {
+    ()
+  }
+}
+
+/// The first optional (`?`) grant `main` declares, or "" when it has none.
+fn first_optional_entry_grant(src: String) -> String with Exception + Fs {
   let labels = entry_declared_authority(parse_user_entry_file(src))
+  let mut found = ""
   let mut i = 0
-  while i < Array::length(labels) {
+  while found == "" && i < Array::length(labels) {
     let label = Array::get(labels, i)
     let n = String::length(label)
     if n > 0 && String::byte_at(label, n - 1) == 63 {
-      throw("VIBE_BACKEND=gc cannot run `main`: it declares the optional grant `\{label}`, and the wasm-gc backend does not apply `--allow-*` grants to `perform?` yet (every one would answer `NotGranted`). Run without VIBE_BACKEND=gc, or make the grant required.")
+      found = label
     } else {
       ()
     }
     i = i + 1
   }
+  found
 }
 
 /// `--coverage` instruments the linear backend only; under `VIBE_BACKEND=gc`
@@ -1284,6 +1309,7 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -
       "break"
     } else if coverage {
       refuse_gc_coverage()
+      refuse_coverage_optional_entry_authority(src)
       "coverage"
     } else {
       user_artifact_backend_kind()
