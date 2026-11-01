@@ -5,11 +5,13 @@ import @vibe/compiler/loader {
   ContractIngest,
   ModuleParse,
   SourceIngest,
+  apply_vpkg_directory_shared_imports_fs,
   collect_all_sources_fs,
   collect_sources_source,
   desugar_contract_source,
   module_header_source,
-  parse_program_located_shared
+  parse_program_located_shared,
+  share_imports_source
 }
 
 // #1872: the source-collection core runs over a provider. These tests give it
@@ -145,6 +147,22 @@ fn mem_record(verified: Array[String], row: String) -> (Unit, Option[String]) {
   ((), None)
 }
 
+// The real shared-import core over the tree; a types module it computes is
+// added to the tree, as the filesystem lane publishes it.
+fn mem_share(tree: MemTree, path: String, text: String) -> (String, Option[String]) {
+  handle {
+    let (shared, types_path, types_text) = handle {
+      share_imports_source(path, text)
+    } with { Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+    if types_path != "" && !mem_has(tree, types_path) {
+      Array::push(tree.files, (types_path, types_text))
+    } else {
+      ()
+    }
+    (shared, None)
+  } with { Exception::Throw(message) => ("", Some(message)) }
+}
+
 // Collect from `entry` over the tree. Contracts desugar to `facades` (path,
 // facade text) or, when not listed, through the real desugaring core;
 // ordinary modules ingest unchanged. Every package-hash
@@ -152,7 +170,7 @@ fn mem_record(verified: Array[String], row: String) -> (Unit, Option[String]) {
 fn mem_collect(tree: MemTree, facades: Array[(String, String)], verified: Array[String], entry: String) -> Array[(String, String)] with Env + Exception {
   handle {
     collect_sources_source(entry)
-  } with { SourceIngest::Header(p, text) => resume(mem_header(tree, p, text)); SourceIngest::DesugarContract(p, text) => resume(mem_facade(tree, facades, p, text)); SourceIngest::ShareImports(_, text) => resume((text, None)); SourceIngest::VerifyPackageHash(importer, name, pin_hash, index_path, copy_kind) => resume(mem_record(verified, "\{importer} \{name} \{pin_hash} \{index_path} \{copy_kind}")); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+  } with { SourceIngest::Header(p, text) => resume(mem_header(tree, p, text)); SourceIngest::DesugarContract(p, text) => resume(mem_facade(tree, facades, p, text)); SourceIngest::ShareImports(p, text) => resume(mem_share(tree, p, text)); SourceIngest::VerifyPackageHash(importer, name, pin_hash, index_path, copy_kind) => resume(mem_record(verified, "\{importer} \{name} \{pin_hash} \{index_path} \{copy_kind}")); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
 }
 
 fn collected_paths(sources: Array[(String, String)]) -> Array[String] {
@@ -315,6 +333,43 @@ test "the filesystem adapter desugars a contract to the in-memory facade" {
   let on_disk = collect_all_sources_fs(String::concat(root, "/app/main.vibe"))
   let in_memory = mem_collect(relative_package_tree(), [], [], "app/main.vibe")
   assert_eq(source_of(on_disk, String::concat(root, "/pkg/index.vpkg")), source_of(in_memory, "pkg/index.vpkg"))
+}
+
+fn share_tree(root: String) -> MemTree {
+  MemTree::{
+    files: [
+      (String::concat(root, "/loose.vibe"), "export fn loose() -> Int { 3 }\n"),
+      (String::concat(root, "/pkg/base.vibe"), "export fn greet() -> Int { 1 }\n"),
+      (String::concat(root, "/pkg/base_test.vibe"), "test { assert_eq(1, 1) }\n"),
+      (String::concat(root, "/pkg/index.vpkg"), "import @vibe/core { array_empty }\nfn greet() -> Int\n")
+    ],
+    symlinks: []
+  }
+}
+
+fn mem_shared_text(tree: MemTree, path: String) -> String {
+  let (text, _) = mem_share(tree, path, mem_read(tree, path))
+  text
+}
+
+// The owner rule, over the provider: a direct sibling and a test companion
+// inherit the contract's `@scope` imports, a file outside any package does
+// not, and the result is the same text the filesystem lane writes.
+test "the shared-import core matches the filesystem lane" {
+  let root = "/tmp/vibe_source_1872_share"
+  let tree = share_tree(root)
+  Fs::mkdir_p(String::concat(root, "/pkg"))
+  for entry in tree.files {
+    let (p, text) = entry
+    Fs::write_file(p, text)
+  }
+  for name in ["/pkg/base.vibe", "/pkg/base_test.vibe", "/loose.vibe"] {
+    let path = String::concat(root, name)
+    assert_eq(mem_shared_text(tree, path), apply_vpkg_directory_shared_imports_fs(path, mem_read(tree, path)))
+  }
+  assert_true(String::contains(mem_shared_text(tree, String::concat(root, "/pkg/base.vibe")), "import @vibe/core { array_empty }"))
+  assert_true(String::contains(mem_shared_text(tree, String::concat(root, "/pkg/base_test.vibe")), "import @vibe/core { array_empty }"))
+  assert_eq(mem_shared_text(tree, String::concat(root, "/loose.vibe")), "export fn loose() -> Int { 3 }\n")
 }
 
 // The filesystem adapter is the same core over `Fs`: the same tree written to

@@ -26,6 +26,7 @@ import @vibe/compiler/core {
   is_contract_ext,
   loader_prepended_prefix_bytes,
   loader_shared_imports_end_marker,
+  nearest_vpkg_path,
   nearest_vpkg_path_fs,
   normalize_path,
   path_in_dir,
@@ -1546,16 +1547,22 @@ fn relative_spelling_from_dir(dir: String, canonical: String) -> String {
   StringBuilder::freeze(sb)
 }
 
-fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Env + Exception + Fs {
+/// #1872: the contract whose directory-shared imports `path` inherits, or ""
+/// (ADR-0070 #897): direct production siblings use their own directory's
+/// vpkg; explicitly-run test/bench companions and explicitly-reached
+/// private/draft sources use their nearest enclosing vpkg. Read-only over
+/// `Source`, and refuses a symlinked owner.
+export fn vpkg_shared_prefix_owner(path: String) -> String with Exception + Source {
   if is_contract_ext(path) {
     ""
   } else {
     let basename = path_basename(path)
     let vpkg_path = if is_vpkg_companion_basename(basename) || is_vpkg_explicit_only_basename(basename) {
-      nearest_vpkg_path_fs(path)
+      nearest_vpkg_path(path)
     } else if is_vpkg_direct_production_basename(basename) {
       let direct = vpkg_path_in_dir(dir_of_path(path))
-      if Fs::exists(direct) {
+      let direct_exists = perform Source::Exists(direct)
+      if direct_exists {
         direct
       } else {
         ""
@@ -1564,9 +1571,58 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Env + Exc
       ""
     }
     if vpkg_path == "" {
-      ""
+      ()
     } else {
-      ensure_regular_source_fs(vpkg_path)
+      ensure_regular_source(vpkg_path)
+    }
+    vpkg_path
+  }
+}
+
+fn vpkg_shared_prefix_owner_fs(path: String) -> String with Exception + Fs {
+  handle {
+    vpkg_shared_prefix_owner(path)
+  } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+}
+
+/// #1872: the shared-import prefix a contract hands its siblings, from the
+/// contract's raw text, with the types module it imports (path and text,
+/// "" when the contract has no type family). Pure: publishing the types
+/// module and caching the prefix are the filesystem lane's.
+fn vpkg_shared_prefix_of_contract(vpkg_path: String, vpkg_raw: String) -> (String, String, String) with Exception {
+  let (_, vpkg_pin_blanked) = extract_require_pins(vpkg_raw)
+  let (vpkg_tokens, vpkg_starts, _ve) = lex_with_offsets(vpkg_pin_blanked)
+  let (_, vpkg_opaques, vpkg_extra, vpkg_stmt_at, _vd) = parse_contract_program_spans(vpkg_tokens)
+  let shared_text = contract_directory_shared_import_prefix_text(vpkg_extra)
+  // #1840: siblings import the contract's type family from the
+  // materialized types module — this is what gives enum constructors
+  // real value bindings inside impl units (the facade cannot be
+  // imported from a sibling: facade → impl is already an edge).
+  // #2317: positions come from the SAME blanked text the parse used, so
+  // the offsets and the source agree. Blanking is offset-preserving, so
+  // a line:col computed here is the line:col in the real contract too.
+  let vpkg_decl_pos = contract_type_family_decl_positions(vpkg_pin_blanked, vpkg_extra, vpkg_stmt_at, vpkg_starts)
+  let (types_path, types_text) = vpkg_types_module(vpkg_path, vpkg_extra, vpkg_opaques, vpkg_decl_pos)
+  // #2968: the contract's effect and effectset names, for the unknown-
+  // effect check in this sibling (v5 of this cache carries it, with ops).
+  let (_, vpkg_effect_defs) = classify_contract_stmts(vpkg_extra)
+  let effects_line = contract_effect_names_line(vpkg_effect_defs)
+  let prefix_text = String::concat(effects_line, if types_path == "" {
+    shared_text
+  } else {
+    let (_, vpkg_type_defs) = classify_contract_stmts(vpkg_extra)
+    let types_rel = relative_spelling_from_dir(dir_of_path(vpkg_path), types_path)
+    String::concat(contract_types_module_line("import", types_rel, contract_type_family_defs(vpkg_type_defs)), shared_text)
+  })
+  (prefix_text, types_path, types_text)
+}
+
+fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Env + Exception + Fs {
+  let vpkg_path = vpkg_shared_prefix_owner_fs(path)
+  if vpkg_path == "" {
+    ""
+  } else {
+    {
       // #1100: this runs once per MEMBER file of the directory package, and
       // used to re-lex + re-parse the same index.vpkg contract every time
       // (20 members = 20 contract parses; ~14% of the cold collect walk's
@@ -1644,30 +1700,9 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Env + Exc
         cached_hit
       } else {
         let vpkg_raw = cache_read_source_fs(vpkg_path)
-        let (_, vpkg_pin_blanked) = extract_require_pins(vpkg_raw)
-        let (vpkg_tokens, vpkg_starts, _ve) = lex_with_offsets(vpkg_pin_blanked)
-        let (_, vpkg_opaques, vpkg_extra, vpkg_stmt_at, _vd) = parse_contract_program_spans(vpkg_tokens)
-        let shared_text = contract_directory_shared_import_prefix_text(vpkg_extra)
-        // #1840: siblings import the contract's type family from the
-        // materialized types module — this is what gives enum constructors
-        // real value bindings inside impl units (the facade cannot be
-        // imported from a sibling: facade → impl is already an edge).
-        // #2317: positions come from the SAME blanked text the parse used, so
-        // the offsets and the source agree. Blanking is offset-preserving, so
-        // a line:col computed here is the line:col in the real contract too.
-        let vpkg_decl_pos = contract_type_family_decl_positions(vpkg_pin_blanked, vpkg_extra, vpkg_stmt_at, vpkg_starts)
-        let types_path = ensure_vpkg_types_module_fs(vpkg_path, vpkg_extra, vpkg_opaques, vpkg_decl_pos)
-        // #2968: the contract's effect and effectset names, for the unknown-
-        // effect check in this sibling (v5 of this cache carries it, with ops).
-        let (_, vpkg_effect_defs) = classify_contract_stmts(vpkg_extra)
-        let effects_line = contract_effect_names_line(vpkg_effect_defs)
-        let prefix_text = String::concat(effects_line, if types_path == "" {
-          shared_text
-        } else {
-          let (_, vpkg_type_defs) = classify_contract_stmts(vpkg_extra)
-          let types_rel = relative_spelling_from_dir(dir_of_path(vpkg_path), types_path)
-          String::concat(contract_types_module_line("import", types_rel, contract_type_family_defs(vpkg_type_defs)), shared_text)
-        })
+        let (computed_prefix, computed_types_path, computed_types_text) = vpkg_shared_prefix_of_contract(vpkg_path, vpkg_raw)
+        let types_path = publish_vpkg_types_module_fs(vpkg_path, computed_types_path, computed_types_text)
+        let prefix_text = computed_prefix
         Fs::write_file(prefix_cache_path, String::concat("v5\n", String::concat(types_path, String::concat("\n", prefix_text))))
         prefix_text
       }
@@ -1920,14 +1955,15 @@ fn shared_import_prefix_unshadowed(prefix: String, sibling: String) -> String wi
   }
 }
 
-export fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: String) -> String with Env + Exception + Fs {
+/// #1872: prepend `prefix` (a contract's shared imports, "" for none) to a
+/// sibling's pin-blanked text; a text already carrying the block is left as is.
+fn apply_shared_import_prefix(path: String, pin_blanked: String, prefix: String) -> String with Exception {
   // An ingested text opens with the marker and holds the end marker; a file
   // whose author merely began it with the marker comment still gets its
   // imports.
   if String::starts_with(pin_blanked, vpkg_shared_import_marker) && loader_prepended_prefix_bytes(pin_blanked) > 0 {
     pin_blanked
   } else {
-    let prefix = vpkg_directory_shared_import_prefix_fs(path)
     if prefix == "" {
       pin_blanked
     } else {
@@ -1942,6 +1978,33 @@ export fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: Stri
       // (`loader_physical_located`): everything after the marker is the file,
       // byte for byte.
       String::concat(String::concat(vpkg_shared_import_marker, String::concat(own_prefix, loader_shared_imports_end_marker)), pin_blanked)
+    }
+  }
+}
+
+export fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: String) -> String with Env + Exception + Fs {
+  if String::starts_with(pin_blanked, vpkg_shared_import_marker) && loader_prepended_prefix_bytes(pin_blanked) > 0 {
+    pin_blanked
+  } else {
+    apply_shared_import_prefix(path, pin_blanked, vpkg_directory_shared_import_prefix_fs(path))
+  }
+}
+
+/// #1872: a sibling's text with its directory-shared imports, and the types
+/// module the prefix imports (path, text), computed by the read-only core
+/// with no prefix cache. `apply_vpkg_directory_shared_imports_fs` is the
+/// filesystem lane, which caches the prefix and publishes the module.
+export fn share_imports_source(path: String, pin_blanked: String) -> (String, String, String) with Exception + Source {
+  if String::starts_with(pin_blanked, vpkg_shared_import_marker) && loader_prepended_prefix_bytes(pin_blanked) > 0 {
+    (pin_blanked, "", "")
+  } else {
+    let vpkg_path = vpkg_shared_prefix_owner(path)
+    if vpkg_path == "" {
+      (pin_blanked, "", "")
+    } else {
+      let vpkg_raw = perform Source::Read(vpkg_path)
+      let (prefix, types_path, types_text) = vpkg_shared_prefix_of_contract(vpkg_path, vpkg_raw)
+      (apply_shared_import_prefix(path, pin_blanked, prefix), types_path, types_text)
     }
   }
 }
