@@ -9,7 +9,7 @@ import @vibe/compiler/core {
   builtin_registry,
   builtin_shadow_entry_name,
   dce_stmts,
-  fold_const_bool_params,
+  fold_const_bool_params_signed,
   is_exception_effect_name,
   merged_offset_locations_snapshot,
   rename_builtin_shadow_defs,
@@ -71,7 +71,9 @@ import @vibe/compiler/codegen/common_base {
   bcc_guard_synth_matches,
   bcc_int_lists_equal,
   bcc_string_lists_equal,
+  codegen_body_cache_filter_fold_sigs,
   codegen_body_cache_filter_src_below,
+  codegen_body_cache_set_fold_table,
   compute_agg_returning,
   ctor_sorted_index,
   desugar_trait_dicts,
@@ -380,17 +382,20 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
   // already replaced the `%wasm` marker bodies with a neutral literal, so a
   // `(call $f ..)` in one of them is invisible to the pass's own scan.
   //
-  // A folded body no longer matches its source text, so a fold still refuses
-  // the body-cache guards below (`late_dce_rewrote_bodies`): a replayed
-  // body from a compile whose other call sites passed a different literal
-  // would be silently wrong, and refusing the cache for that compile is the
-  // honest answer.
-  let mut late_dce_rewrote_bodies = false
+  // A folded body no longer matches its source text, and its bytes depend on
+  // call sites in other files that the body cache's file table cannot see. So
+  // the fold reports a signature per function it rewrote (#2818): every
+  // harvested entry carries the one its body was compiled under, and a cached
+  // entry is replayed only into a compile that folds that function the same
+  // way. Before the signatures, any fold withheld every guard, and since the
+  // fold runs whenever there is an entry, no real build ever replayed a body.
+  let fold_sig_names: Array[String] = []
+  let fold_sig_values: Array[String] = []
   if enable_late_dce && late_dce_has_entry {
-    let folded_param_reads = if library_mode || coverage || debug_trace || debug_break || rc_shadow {
+    let _ = if library_mode || coverage || debug_trace || debug_break || rc_shadow {
       0
     } else {
-      fold_const_bool_params(stmts, entry_name, iw_wats)
+      fold_const_bool_params_signed(stmts, entry_name, iw_wats, fold_sig_names, fold_sig_values)
     }
     lc_late_dce_wat_roots(late_dce_roots, stmts, iw_names, iw_wats)
     let dce_pruned = dce_stmts(stmts, late_dce_roots)
@@ -403,10 +408,12 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
       Array::push(stmts, Array::get(dce_pruned, dce_i))
       dce_i = dce_i + 1
     }
-    late_dce_rewrote_bodies = folded_param_reads > 0
   } else {
     ()
   }
+  // Before the body phase, so `codegen_body_cache_record` stamps each entry --
+  // here and in a function worker, whose template is this cache.
+  codegen_body_cache_set_fold_table(body_cache_out, fold_sig_names, fold_sig_values)
   // #3150 / #3189 review: whether a host STREAM read survived is a fact about
   // the program the prune LEFT, like the host-future half below
   // (`lc_stmts_call_host_future`). Asked before the prune it over-counts: the
@@ -1435,7 +1442,7 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
   } else {
     lc_fresh_string_array()
   }
-  if pin_region_capacity >= 0 && !late_dce_rewrote_bodies {
+  if pin_region_capacity >= 0 {
     Array::push(body_cache_out.guard_meta, pin_region_src_n)
     Array::push(body_cache_out.guard_meta, pin_region_capacity)
     Array::push(body_cache_out.guard_meta, lambda_slot_base)
@@ -1481,7 +1488,19 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
     lc_ufn_i = lc_ufn_i + 1
   }
   let lc_name_unique = unique_name_flags(lc_user_fn_names)
-  let body_cache_in_ok = if Array::length(body_cache_in.fn_indices) == 0 {
+  // #2818: drop exactly the cached entries whose function this compile folds
+  // differently from the compile that recorded them. Not under
+  // `pin_region_capacity < 0`, for the reason `body_cache_in_ok` gives below:
+  // that compile re-feeds stmts an earlier compile in this process already
+  // lowered AND folded, so its own fold sees no parameter read left to
+  // substitute and reports different rounds for the same bodies. The verify
+  // lane, which takes that path, filters against the fresh harvest instead.
+  let body_cache_in_fold = if pin_region_capacity >= 0 {
+    codegen_body_cache_filter_fold_sigs(body_cache_in, fold_sig_names, fold_sig_values)
+  } else {
+    body_cache_in
+  }
+  let body_cache_in_ok = if Array::length(body_cache_in_fold.fn_indices) == 0 {
     true
   } else if pin_region_capacity < 0 {
     // This compile did not run the pin reorder. Either the stmts were
@@ -1494,14 +1513,14 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
     // lane never lands here, because a fresh closure compile always
     // lowers, always synthesizes, and therefore always reorders.
     true
-  } else if Array::length(body_cache_in.guard_meta) == 0 {
+  } else if Array::length(body_cache_in_fold.guard_meta) == 0 {
     // Guard-less but non-empty under a reordering compile: only hand-built
     // test caches look like this (a real harvest of a reordering compile
     // records guards, and codegen_body_cache_filter_src_below empties a
     // guard-less cache before it can cross compiles). Accept unchanged.
     true
   } else {
-    !late_dce_rewrote_bodies && Array::length(body_cache_in.guard_meta) == 5 && Array::get(body_cache_in.guard_meta, 0) == pin_region_src_n && Array::get(body_cache_in.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in.guard_meta, 2) == lambda_slot_base && Array::get(body_cache_in.guard_meta, 3) == num_imported_funcs && Array::get(body_cache_in.guard_meta, 4) == num_generated && Array::length(body_cache_in.guard_synth_names) == num_user_funcs - pin_region_capacity && bcc_guard_synth_matches(body_cache_in, fn_names_list, fn_stmt_indices, pin_region_capacity, num_user_funcs) && bcc_string_lists_equal(body_cache_in.guard_import_names, guard_import_names_now) && bcc_string_lists_equal(body_cache_in.guard_borrow_names, lc_borrow_param_user_srt) && bcc_int_lists_equal(body_cache_in.guard_borrow_masks, lc_borrow_param_mask) && bcc_string_lists_equal(body_cache_in.guard_unmangled_names, guard_unmangled_now)
+    Array::length(body_cache_in_fold.guard_meta) == 5 && Array::get(body_cache_in_fold.guard_meta, 0) == pin_region_src_n && Array::get(body_cache_in_fold.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in_fold.guard_meta, 2) == lambda_slot_base && Array::get(body_cache_in_fold.guard_meta, 3) == num_imported_funcs && Array::get(body_cache_in_fold.guard_meta, 4) == num_generated && Array::length(body_cache_in_fold.guard_synth_names) == num_user_funcs - pin_region_capacity && bcc_guard_synth_matches(body_cache_in_fold, fn_names_list, fn_stmt_indices, pin_region_capacity, num_user_funcs) && bcc_string_lists_equal(body_cache_in_fold.guard_import_names, guard_import_names_now) && bcc_string_lists_equal(body_cache_in_fold.guard_borrow_names, lc_borrow_param_user_srt) && bcc_int_lists_equal(body_cache_in_fold.guard_borrow_masks, lc_borrow_param_mask) && bcc_string_lists_equal(body_cache_in_fold.guard_unmangled_names, guard_unmangled_now)
   }
   let fn_indices_list = lc_fresh_int_array()
   let fn_returns_list = lc_fresh_int_array()
@@ -1878,7 +1897,7 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
     blind_offsets: blind_offsets,
     blind_owners: blind_owners,
     blind_syms: blind_syms,
-    body_cache_in: body_cache_in,
+    body_cache_in: body_cache_in_fold,
     body_cache_in_ok: body_cache_in_ok,
     body_cache_out: body_cache_out,
     bool_render_offsets: bool_render_offsets,
@@ -1922,7 +1941,6 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
     iw_names: iw_names,
     iw_wats: iw_wats,
     lambda_slot_base: lambda_slot_base,
-    late_dce_rewrote_bodies: late_dce_rewrote_bodies,
     lc_agg_ret_infos: lc_agg_ret_infos,
     lc_agg_ret_names: lc_agg_ret_names,
     lc_agg_ret_names_sorted: lc_agg_ret_names_sorted,

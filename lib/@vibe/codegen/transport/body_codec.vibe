@@ -46,6 +46,9 @@ export fn codegen_body_cache_new() -> CodegenBodyCache {
     guard_layout: array_empty(),
     guard_typed_lowering: array_empty(),
     consumer_src_limit: array_empty(),
+    fn_fold_sigs: array_empty(),
+    guard_fold_names: array_empty(),
+    guard_fold_sigs: array_empty(),
     collect: [1]
   }
 }
@@ -62,7 +65,7 @@ export fn codegen_body_cache_discard() -> CodegenBodyCache {
 
 //# CodegenBodyCache codec (#2388 step 3)
 
-// Length-prefixed binary layout, "VBC6" magic. Every integer is LEB128 of
+// Length-prefixed binary layout, "VBC7" magic. Every integer is LEB128 of
 // (value + 1), so -1 (a recording site with no statement) round-trips and
 // any other negative -- which no field legitimately holds -- fails loudly at
 // encode time instead of corrupting the stream. Deserialize is fail-safe:
@@ -179,7 +182,10 @@ export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exc
   // old compacted position against a source-prefix boundary is unsound.
   // '5' -> '6': per-function vibe.linemap rows, so a replayed body still
   // contributes production trap provenance (#2199).
-  Bytes::push(buf, '6')
+  // '6' -> '7': per-entry constant-Bool fold signatures and the compile's
+  // fold table (#2818). A '6' artifact has no signatures, so reading it as
+  // "nothing was folded" would replay folded bodies unchecked.
+  Bytes::push(buf, '7')
   bcc_push_int_array(buf, cache.fn_indices)
   bcc_push_string_array(buf, cache.fn_names)
   bcc_push_int_array(buf, cache.fn_files)
@@ -215,10 +221,13 @@ export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exc
   bcc_push_string_array(buf, cache.guard_unmangled_names)
   bcc_push_int_array(buf, cache.guard_layout)
   bcc_push_int_array(buf, cache.guard_typed_lowering)
+  bcc_push_string_array(buf, cache.fn_fold_sigs)
+  bcc_push_string_array(buf, cache.guard_fold_names)
+  bcc_push_string_array(buf, cache.guard_fold_sigs)
   buf
 }
 
-/// Encode the cache with the same VBC6 wire format as the compatibility function.
+/// Encode the cache with the same VBC7 wire format as the compatibility function.
 export fn CodegenBodyCache::codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exception {
   codegen_body_cache_to_bytes(cache)
 }
@@ -414,11 +423,11 @@ export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
   codegen_body_cache_from_bytes_with_string_copy(b, bcc_copy_string)
 }
 
-/// Decode VBC6 with an owned raw-byte string copier. Each callback receives
+/// Decode VBC7 with an owned raw-byte string copier. Each callback receives
 /// a checked span; it must copy every byte, including NUL and invalid UTF-8,
 /// without retaining a view of the mutable input. Wire validation stays here.
 export fn codegen_body_cache_from_bytes_with_string_copy(b: Bytes, copy: (Bytes, Int, Int) -> String) -> Option[CodegenBodyCache] {
-  if Bytes::length(b) < 4 || Bytes::get(b, 0) != 'V' || Bytes::get(b, 1) != 'B' || Bytes::get(b, 2) != 'C' || Bytes::get(b, 3) != '6' {
+  if Bytes::length(b) < 4 || Bytes::get(b, 0) != 'V' || Bytes::get(b, 1) != 'B' || Bytes::get(b, 2) != 'C' || Bytes::get(b, 3) != '7' {
     None
   } else {
     let out = codegen_body_cache_new()
@@ -594,6 +603,21 @@ export fn codegen_body_cache_from_bytes_with_string_copy(b: Bytes, copy: (Bytes,
     } else {
       ()
     }
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.fn_fold_sigs, copy)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.guard_fold_names, copy)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.guard_fold_sigs, copy)
+    } else {
+      ()
+    }
     let fn_n = Array::length(out.fn_indices)
     let lam_n = Array::length(out.lam_owner)
     let guard_n = Array::length(out.guard_meta)
@@ -615,7 +639,7 @@ export fn codegen_body_cache_from_bytes_with_string_copy(b: Bytes, copy: (Bytes,
       }
       fni = fni + 1
     }
-    if p < 0 || fn_index_negative || Array::length(out.fn_names) != fn_n || Array::length(out.fn_files) != fn_n || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || Array::length(out.blind_body) != Array::length(out.blind_fn) || Array::length(out.blind_offsets) != Array::length(out.blind_fn) || Array::length(out.blind_kinds) != Array::length(out.blind_fn) || Array::length(out.blind_syms) != Array::length(out.blind_fn) || Array::length(out.lm_offsets) != Array::length(out.lm_owner) || Array::length(out.lm_file_ids) != Array::length(out.lm_owner) || Array::length(out.lm_lines) != Array::length(out.lm_owner) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) || Array::length(out.guard_borrow_names) != Array::length(out.guard_borrow_masks) || Array::length(out.guard_layout) % 2 != 0 || Array::length(out.guard_typed_lowering) % 2 != 0 {
+    if p < 0 || fn_index_negative || Array::length(out.fn_names) != fn_n || Array::length(out.fn_files) != fn_n || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || Array::length(out.blind_body) != Array::length(out.blind_fn) || Array::length(out.blind_offsets) != Array::length(out.blind_fn) || Array::length(out.blind_kinds) != Array::length(out.blind_fn) || Array::length(out.blind_syms) != Array::length(out.blind_fn) || Array::length(out.lm_offsets) != Array::length(out.lm_owner) || Array::length(out.lm_file_ids) != Array::length(out.lm_owner) || Array::length(out.lm_lines) != Array::length(out.lm_owner) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) || Array::length(out.guard_borrow_names) != Array::length(out.guard_borrow_masks) || Array::length(out.guard_layout) % 2 != 0 || Array::length(out.guard_typed_lowering) % 2 != 0 || Array::length(out.fn_fold_sigs) != fn_n || Array::length(out.guard_fold_names) != Array::length(out.guard_fold_sigs) {
       None
     } else {
       Some(out)

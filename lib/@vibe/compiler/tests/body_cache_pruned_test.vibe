@@ -49,11 +49,36 @@ test "#2721: unused structs and enums preserve body-cache guards" {
   ], content = "[5, 5, 5]")
 }
 
-test "#2721: constant-parameter rewriting still refuses cache publication" {
+test "#2818: constant-parameter rewriting publishes guards and signs the rewritten body" {
+  // This used to pin the refusal: any fold withheld every guard, so a build
+  // with an entry point never published a replayable harvest. Now the guards
+  // are published and the folded function's entry names the substitution its
+  // body was compiled under -- `choose`'s parameter 0 fixed to `true` -- while
+  // every other entry is its source text.
   let source = "let same: () -> Bool = () -> { [1] == [1] }\nfn choose(flag: Bool) -> Int { if flag { 7 } else { 9 } }\nfn main() -> Int { choose(true) + (if same() { 1 } else { 0 }) }"
   let cache = codegen_body_cache_new()
   let _out = compile_wasi_module_rc_body_cached(parse_program(lex(source)), "main", codegen_body_cache_new(), cache)
-  inspect([Array::length(cache.guard_meta), Array::length(cache.guard_layout)], content = "[0, 0]")
+  inspect(Array::length(cache.guard_meta), content = "5")
+  assert(Array::length(cache.guard_layout) > 0)
+  let fold_names: Array[String] = cache.guard_fold_names
+  let fold_sigs: Array[String] = cache.guard_fold_sigs
+  inspect(fold_names, content = "[choose]")
+  inspect(fold_sigs, content = "[0t]")
+  let mut choose_sig = "absent"
+  let mut main_sig = "absent"
+  let mut i = 0
+  while i < Array::length(cache.fn_names) {
+    if Array::get(cache.fn_names, i) == "choose" {
+      choose_sig = Array::get(cache.fn_fold_sigs, i)
+    } else if Array::get(cache.fn_names, i) == "main" {
+      main_sig = Array::get(cache.fn_fold_sigs, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  inspect(choose_sig, content = "0t")
+  inspect(main_sig, content = "")
 }
 
 test "#2721: harvested source positions precede DCE compaction" {
@@ -77,10 +102,10 @@ test "#2721: harvested source positions precede DCE compaction" {
 
 test "#2721: the codec refuses the old post-prelude position format" {
   let bytes = codegen_body_cache_to_bytes(codegen_body_cache_new())
-  // '6' == 54. VBC5 had no per-function linemap rows; a warm/verify replay
+  // '7' == 55. VBC5 had no per-function linemap rows; a warm/verify replay
   // of that stream would emit a shorter (or empty) `vibe.linemap` than a
-  // fresh compile (#2199).
-  inspect(Bytes::get(bytes, 3), content = "54")
+  // fresh compile (#2199). VBC6 had no fold signatures (#2818).
+  inspect(Bytes::get(bytes, 3), content = "55")
   Bytes::set(bytes, 3, '5')
   match codegen_body_cache_from_bytes(bytes) {
     None => (),

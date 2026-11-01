@@ -46,6 +46,10 @@ import @vibe/compiler/syntax {
   lex, parse_program
 }
 
+import @vibe/compiler/core {
+  set_executable_exports_stripped
+}
+
 //# Functions
 
 fn string_to_bytes(s: String) -> Bytes {
@@ -99,6 +103,7 @@ fn sample_cache() -> CodegenBodyCache {
   Array::push(c.fn_meta_i32, 1)
   Array::push(c.fn_meta_i64, 2)
   Array::push(c.fn_meta_v128, 0)
+  Array::push(c.fn_fold_sigs, "")
   Array::push(c.fn_indices, 3)
   Array::push(c.fn_names, "beta")
   Array::push(c.fn_files, 1)
@@ -107,6 +112,7 @@ fn sample_cache() -> CodegenBodyCache {
   Array::push(c.fn_meta_i32, 4)
   Array::push(c.fn_meta_i64, 5)
   Array::push(c.fn_meta_v128, 1)
+  Array::push(c.fn_fold_sigs, "")
   Array::push(c.lam_owner, 0)
   Array::push(c.lam_indices, 5)
   Array::push(c.lam_bodies, string_to_bytes("xyz"))
@@ -180,6 +186,7 @@ fn cache_two_files() -> CodegenBodyCache {
   Array::push(c.fn_meta_i32, 0)
   Array::push(c.fn_meta_i64, 0)
   Array::push(c.fn_meta_v128, 0)
+  Array::push(c.fn_fold_sigs, "")
   Array::push(c.fn_indices, 1)
   Array::push(c.fn_names, "late")
   Array::push(c.fn_files, 2)
@@ -188,6 +195,7 @@ fn cache_two_files() -> CodegenBodyCache {
   Array::push(c.fn_meta_i32, 0)
   Array::push(c.fn_meta_i64, 0)
   Array::push(c.fn_meta_v128, 0)
+  Array::push(c.fn_fold_sigs, "")
   Array::push(c.slot_owner, 1)
   Array::push(c.slot_values, 2048)
   // pin_src_n = 2, so BOTH entries are in the source region and the region
@@ -818,6 +826,7 @@ test "a persisted cache carrying a negative function index is refused" {
     Array::push(bad.fn_meta_i32, 0)
     Array::push(bad.fn_meta_i64, 0)
     Array::push(bad.fn_meta_v128, 0)
+    Array::push(bad.fn_fold_sigs, "")
     i = i + 1
   }
   let refused = match codegen_body_cache_from_bytes(codegen_body_cache_to_bytes(bad)) {
@@ -835,6 +844,7 @@ test "a persisted cache carrying a negative function index is refused" {
     Array::push(ok.fn_meta_i32, 0)
     Array::push(ok.fn_meta_i64, 0)
     Array::push(ok.fn_meta_v128, 0)
+    Array::push(ok.fn_fold_sigs, "")
     i = i + 1
   }
   let accepted = match codegen_body_cache_from_bytes(codegen_body_cache_to_bytes(ok)) {
@@ -1074,38 +1084,22 @@ test "#2669: a narrowed build keeps its replayed prefix in the artifact" {
 //# IDENTITY and relocate the references -- at which point the precondition is
 //# no longer needed and the filter can keep every unchanged file.
 
-//# #2818: a harvest whose guards were withheld
+//# #2818: a build the constant-Bool fold rewrote
 
 /// `fold_const_bool_params` rewrites a body whose Bool parameter is a literal
-/// at every call site. A folded body no longer matches its source text, so
-/// linked_compile deliberately withholds `guard_meta` -- replaying such a body
-/// into a compile whose call sites passed a different literal would be
-/// silently wrong, and refusing is the honest answer.
+/// at every call site, so a folded body no longer matches its source text and
+/// its bytes depend on call sites the file table cannot see. linked_compile
+/// used to answer that by withholding every guard from any compile that
+/// folded, and the fold runs whenever there is an entry point -- so no
+/// `vibe build` / `run` / `test` ever replayed a body. Every published
+/// measurement of this cache used `__no_entry__`, where the fold cannot fire.
 ///
-/// What was NOT deliberate is that the compile still PERSISTED that harvest.
-/// The fold runs only when there is an entry point, so every `vibe build` /
-/// `run` / `test` wrote megabytes of bodies that the next build loads,
-/// decodes, and drops in full -- measured on the CLI closure, 6.9 MB written
-/// and read per build for `offered=0`. Every published measurement of this
-/// cache used `__no_entry__`, where the fold cannot fire, so the shape that
-/// every real build takes had never been measured.
-/// #2818: `fold_const_bool_params` rewrites a body whose Bool parameter is a
-/// literal at every call site, and a folded body no longer matches its source
-/// text -- so linked_compile deliberately withholds `guard_meta`. Replaying
-/// such a body into a compile whose call sites passed a different literal
-/// would be silently wrong, and refusing is the honest answer.
+/// Now each entry carries the fold signature it was compiled under, and only
+/// an entry whose function the consuming compile folds differently is dropped.
 ///
-/// What was NOT deliberate is that the compile still PERSISTED that harvest.
-/// The fold runs only when there is an entry point, so every `vibe build` /
-/// `run` / `test` wrote its whole body set for a cache that can never accept
-/// it -- measured on the CLI closure, 6.9 MB written and read per build for
-/// `offered=0`. Every published measurement of this cache used `__no_entry__`,
-/// where the fold cannot fire, so the shape every real build takes had never
-/// been measured.
-///
-/// Both programs below synthesize a derived comparator, which is what makes
-/// the compile run the #2388 pin reorder and record guards at all. They differ
-/// only in whether a Bool parameter is foldable.
+/// Both single-file programs below synthesize a derived comparator, which is
+/// what makes the compile run the #2388 pin reorder and record guards at all.
+/// They differ only in whether a Bool parameter is foldable.
 fn body_cache_reuse_counts(path: String, source: String) -> (Int, Int) with Env + Exception + Fs {
   Fs::write_bytes(path, string_to_bytes(source))
   let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(path)))
@@ -1126,16 +1120,68 @@ test "#2818: a warm entry build replays its bodies when nothing was folded" {
   inspect(offered > 0, content = "true")
 }
 
-test "#2818: a folded entry build cannot replay, so it persists nothing" {
+test "#2818: a folded entry build replays, and persists a harvest that can" {
   let path = "/tmp/vibe_bc_2818_folded.vibe"
   let (offered, _) = body_cache_reuse_counts(path, folded_body_source)
-  // The fold withholds the guards, so the harvest is unusable however warm
-  // the cache is. This row is the limitation, not the fix.
-  inspect(offered, content = "0")
-  // The fix: an unreplayable harvest is not written. Before #2818 this stored
-  // the whole body set and every later build paid to read and drop it.
+  inspect(offered > 0, content = "true")
   let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(path)))
-  inspect(Fs::exists(artifact_path), content = "false")
+  inspect(Fs::exists(artifact_path), content = "true")
   // And the compile itself is unchanged by any of this.
   assert(bytes_eq(compile_file_fs_mode_rc_body_cached(path, "run", "on"), compile_file_fs_mode_rc(path, "run")))
+}
+
+test "#2818: flipping a caller's literal in ANOTHER file recompiles the folded body" {
+  // The dependence the file table cannot see. `gate`'s file never changes;
+  // the only call to it is in the entry file, and editing that call from
+  // `gate(true)` to `gate(false)` must change `gate`'s compiled body from the
+  // `11` arm to the `22` arm. Nothing program-wide moves -- the same
+  // functions survive DCE, the string pool and the lambda plan are
+  // identical -- so every layout guard holds and the file table offers
+  // `gate`'s cached `true` body. Only the fold signature (`0t` vs `0f`) can
+  // refuse it; without it, the warm build below returns 11 where a fresh
+  // compile returns 22.
+  //
+  // `gate` is an export, which keeps it external (unfoldable) unless the
+  // build strips executable exports -- the CLI's own setting for `vibe run`
+  // and `vibe build`, made explicit here.
+  set_executable_exports_stripped(true)
+  let gate_path = "/tmp/vibe_bc_2818_gate.vibe"
+  let main_path = "/tmp/vibe_bc_2818_gate_main.vibe"
+  let gate_source = "export let g_eq: () -> Bool = () -> { [1, 2] == [1, 2] }\nexport fn gate(on: Bool) -> Int {\n  if on {\n    11\n  } else {\n    22\n  }\n}\nexport let g_other: () -> Int = () -> { 5 }"
+  let main_true = "import ./vibe_bc_2818_gate.vibe { g_eq, g_other, gate }\nlet run: () -> Int = () -> { if g_eq() { gate(true) + g_other() } else { 0 } }"
+  let main_false = "import ./vibe_bc_2818_gate.vibe { g_eq, g_other, gate }\nlet run: () -> Int = () -> { if g_eq() { gate(false) + g_other() } else { 0 } }"
+  Fs::write_bytes(gate_path, string_to_bytes(gate_source))
+  Fs::write_bytes(main_path, string_to_bytes(main_true))
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(main_path)))
+  remove_file_if_exists(artifact_path)
+  let cold: Array[Int] = []
+  let _ = compile_file_fs_mode_rc_body_cached_counted(main_path, "run", "on", cold)
+  let cold_n = Array::get(cold, 1)
+  // Unchanged: the folded `gate` replays like everything else.
+  let warm: Array[Int] = []
+  let warm_bytes = compile_file_fs_mode_rc_body_cached_counted(main_path, "run", "on", warm)
+  assert(Array::get(warm, 0) > 0)
+  assert(Array::get(warm, 1) < cold_n)
+  assert(bytes_eq(warm_bytes, compile_file_fs_mode_rc(main_path, "run")))
+  // The flip. The gate file is still offered -- it did not change -- and the
+  // answer must still be a fresh compile's, byte for byte.
+  Fs::write_bytes(main_path, string_to_bytes(main_false))
+  let flipped: Array[Int] = []
+  let flipped_bytes = compile_file_fs_mode_rc_body_cached_counted(main_path, "run", "on", flipped)
+  assert(Array::get(flipped, 0) > 0)
+  assert(bytes_eq(flipped_bytes, compile_file_fs_mode_rc(main_path, "run")))
+  // The artifact that build refreshed holds `gate` under its NEW signature
+  // only: flipping back must not find the `false` body under `0t`, nor the
+  // stale `true` body carried over by the merge under `0f`.
+  Fs::write_bytes(main_path, string_to_bytes(main_true))
+  let back: Array[Int] = []
+  let back_bytes = compile_file_fs_mode_rc_body_cached_counted(main_path, "run", "on", back)
+  assert(bytes_eq(back_bytes, compile_file_fs_mode_rc(main_path, "run")))
+  // And verify, which compiles twice and throws on the first differing byte,
+  // agrees across another flip.
+  Fs::write_bytes(main_path, string_to_bytes(main_false))
+  let verify: Array[Int] = []
+  let verified = compile_file_fs_mode_rc_body_cached_counted(main_path, "run", "verify", verify)
+  assert(bytes_eq(verified, compile_file_fs_mode_rc(main_path, "run")))
+  set_executable_exports_stripped(false)
 }

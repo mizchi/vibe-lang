@@ -991,7 +991,8 @@ by reading:
   `fn_src_stmts` uses the corresponding original merged-statement position
   for the prefix fallback, before insertion or DCE compaction (#2721).
   Ambiguous or synthesized names have no source position and cannot enter
-  that prefix. The VBC5 codec rejects the former post-prelude coordinates.
+  that prefix. The codec (VBC5 and later) rejects the former post-prelude
+  coordinates.
 - **The typed-lowering OFFSET arrays must not be pinned.** They are source
   positions in the merged text, so appending a comment to any file shifts every
   offset after it. Measured on the compiler's own closure, comment-edited: with
@@ -1690,7 +1691,7 @@ snapshot that carries the trend.
 Three sizes, because every incremental number this document used to carry was
 measured on the compiler's own 420-module closure, and that closure turns out
 not to represent the sizes people actually build. Each corpus is a committed
-root with a REAL entry — a `__no_entry__` root skips the capability const-fold
+root with a REAL entry — a `__no_entry__` root skips the constant-Bool fold
 and the late DCE, which is most of what a build does after the checker (#2818).
 
 Measured at `3869051`:
@@ -2214,69 +2215,94 @@ while the heavier one carries the free one. At the current codec's measured
 ~22 MB/s that is 0.7 s to decode against ~8.2 s, so the codec's speed stops
 being the binding constraint once the granularity is right.
 
-**But the body cache does not fire on a real build at all (2026-09-15).**
-Everything published about it — the `offered=4431 recompiled=832` table above
-and its successors — was measured through `scripts/body_cache_reuse.sh`, which
-hardcoded the entry to `__no_entry__`. That is the LIBRARY shape. Same corpus,
-same leaf, same cache directory, only the entry changed:
+**A build with an entry point replays too (#2818).** `vibe build`, `vibe run`
+and `vibe test` all compile with an entry, and until #2818 the body cache
+never replayed a body for one: every published number came from
+`scripts/body_cache_reuse.sh` with the entry hardcoded to `__no_entry__`, the
+library shape. With `cli_main` the warm build offered **0** bodies on every
+row, so it recompiled exactly what a cold one did.
 
-| entry | cold | warm (unchanged) |
-|---|---|---|
-| `__no_entry__` | offered 0 / recompiled 10478 | **offered 9752** / recompiled 726 |
-| `cli_main` | offered 0 / recompiled 10287 | **offered 0** / recompiled 10287 |
+The cause was `fold_const_bool_params` (#2497 unit 2, not the capability
+lowering). It rewrites a body whose `Bool` parameter receives the same literal
+at every call site, and it runs only when there is an entry. A folded body is
+no longer its source text, and its bytes depend on call sites in OTHER files
+that the file table cannot see: `gate(on: Bool)` called only as `gate(true)`
+compiles to its `true` arm, and changing that call in another file must change
+`gate`'s body while `gate`'s file stays byte-identical. The compile answered
+that by withholding every guard whenever anything was folded, which made the
+whole harvest unusable.
 
-With an entry point the cache offers **nothing**, on every row — unchanged,
-comment-edited and reverted alike — so a warm build recompiles exactly what a
-cold one does. The artifact is not missing: a `cli_main` build stores 6.9 MB
-under `codegen-body-cache` just as a `__no_entry__` build stores 7.3 MB.
+**The fold signs what it did, and the cache keys on it.**
+`fold_const_bool_params_signed` reports, per rewritten function, the ordered
+list of substitutions it applied (`0t` = parameter 0 fixed to `true`). That
+names the folded body exactly, because a round keeps a substitution only when
+it replaced a read: one that replaced nothing would still re-simplify literal
+shapes the source already had, which would make the body depend on how many
+rounds the whole program took. Every harvested entry carries the signature its
+body was compiled under (`fn_fold_sigs`, VBC7), stamped at record time from
+the compile's fold table (`guard_fold_names` / `guard_fold_sigs`, installed on
+the out cache before the body phase so a function worker's template carries it
+too). `codegen_body_cache_filter_fold_sigs` drops exactly the entries whose
+function the consuming compile folds differently; everything else replays.
+The signature is per entry rather than per compile because the persisted
+artifact is a harvest MERGED with the entries it replayed, and no single
+compile's table describes a merged cache.
 
-**The cause is the capability const-fold.** `fold_const_bool_params` rewrites a
-body whose Bool parameter is a literal at every call site, and
-`linked_compile.vibe` then withholds `guard_meta` from the harvest —
-deliberately, and correctly: a folded body no longer matches its source text,
-so replaying it into a compile whose call sites passed a different literal
-would be silently wrong. That fold runs only when `late_dce_has_entry`, which
-is why `__no_entry__` never hits it.
+Three places apply the filter, each against the compile that will use the
+entries:
 
-What was not deliberate is that the compile still **persisted** the guardless
-harvest. `bcc_src_region_n` reads `guard_meta[0]` and answers 0 for anything
-that is not exactly five values, so
-`codegen_body_cache_filter_src_keep` drops every entry however generous the
-keep mask is — measured, a stored harvest of 10288 bodies decoding to 0. The
-file table matches perfectly (`layout_same=1`, `limit=10633`, no file
-mismatched); the refusal is entirely downstream of it.
+- linked_compile, before the guards are checked, against its own fold table.
+  It stands down under `pin_region_capacity < 0`, for the reason the other
+  guards do: that compile re-feeds statements an earlier compile in this
+  process already folded, so its own fold finds no read left to substitute.
+- the verify lane, against the FRESH compile's table, because its second
+  compile is exactly that re-feed.
+- the refreshed artifact's merge, so an entry the compile recompiled is not
+  carried back in as a duplicate.
 
-An earlier revision of this paragraph blamed the leading-prefix rule in
-`decode_body_cache_artifact_for`. That was inferred from `offered=0` and is
-wrong: the prefix rule accepts every file.
+`lib/@vibe/compiler/tests/codegen_body_cache_persist_test.vibe` pins the
+cross-file case: flipping the only caller of an imported `gate` from `true`
+to `false` keeps every layout guard intact and offers `gate`'s cached `true`
+body. With the filter disabled, the warm build is not what a fresh compile
+emits. With it, the build is byte-identical to a fresh compile, in both
+directions and under `verify`.
 
-This is why turning the body cache on changes nothing on a real closure —
-measured, `VIBE_CODEGEN_BODY_CACHE=on` moved the CLI closure's warm wall from
-9.47 s to 9.53 s and its heap from 1957 MB to 2091 MB, both slightly worse,
-which is the artifact being written and read and discarded. It also explains
-the phase table above: with the cache "on" and 93 % of bodies notionally
-replayed, `compile_expr`, the prelude and the lowering passes are all
-unchanged to within noise, because nothing was replayed.
+Measured on the CLI closure (`lib/@vibe/cli/entry.vibe`, 685 files),
+`scripts/body_cache_reuse.sh lib/@vibe/cli/entry.vibe lib/@vibe/core/defaults.vibe cli_main`,
+seed-compiled harness, one cache directory per tree:
 
-**Fixed in part (#2818): the guardless harvest is no longer written.**
-`body_cache_harvest_is_replayable` gates both store sites, so a compile whose
-fold withheld the guards persists nothing — measured on the CLI closure, the
-cache directory goes from 16 MB to 9 MB with zero artifact files, exactly the
-`off` lane's size, and the emitted wasm is byte-identical. What that fix does
-NOT do is make a folded build replayable; for that, the fold's own result has
-to become part of the cache identity — or, per the ADR-0088 amendment that
-supersedes that approach, for the fold to stop happening at compile time at
-all (#2825). That is the remaining half, and it is
-the same shape the capability discussion below arrives at independently. A
-guardless artifact written before the fix is still read and refused until
-something replaces it.
+| temperature | before: offered / recompiled | after: offered / recompiled |
+|---|---:|---:|
+| cold | 0 / 15416 | 0 / 15416 |
+| unchanged | 0 / 15416 | **14498 / 918** |
+| comment-edited | 0 / 15416 | **14498 / 918** |
+| reverted | 0 / 15416 | **14498 / 918** |
 
-`vibe build`, `vibe run` and `vibe test` all compile with an entry, so this
-cache has never accelerated one. `scripts/body_cache_reuse.sh` now takes the
-entry as its third argument, defaulting to `__no_entry__` so the historical
-rows still reproduce; the harness itself did not compile until 2026-09-15
-(`fn main` still used `with` where an entry now requires `allows`), which is
-how a measurement stopped being run without anyone noticing.
+Wall time does not move the way the counts do, and the reason is in the
+phase table above: replay skips per-function codegen (`compile_expr`, the
+Perceus plan, locals), about a tenth of a warm compile, while the prelude,
+merge, borrow fixpoint, DCE and assembly still run whole-program. Same
+protocol, isolated cache per tree, cold then two warm runs, the seed-compiled
+harness on a 4-core container:
+
+| tree | cold | warm 1 | warm 2 |
+|---|---:|---:|---:|
+| before (offered 0) | 105.2 s | 93.6 s | 85.9 s |
+| after | 91.6 s | 86.2 s | 76.5 s |
+
+Cold runs alone vary by 10 s in this setting, so read the warm difference as
+"replay no longer costs more than it saves", not as a measured speedup. It
+did cost more at first. The filter that carries an entry's lambdas, slots,
+blind references and linemap rows (`bcc_filter_entries`) tested each row's
+owner against the kept-function list linearly. That is quadratic, and with
+~14k kept functions it made warm runs SLOWER than cold ones (100.1 s and
+102.2 s). It is a direct-address table now. The artifact adds ~12 MB to the
+cache directory.
+
+The body cache is still opt-in (`VIBE_CODEGEN_BODY_CACHE=on|verify`). This
+makes the lane usable on the shape every real build takes, which is the
+precondition for measuring it at all; it does not by itself meet #2826's
+promotion bar.
 
 **The constraint to design around** is not size but the capability lane.
 `--allow-*` drives const-fold plus DCE (ADR-0075/0084/0088), so a dependency's
