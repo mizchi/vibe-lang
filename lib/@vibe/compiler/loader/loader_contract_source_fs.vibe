@@ -31,6 +31,7 @@ import @vibe/compiler/core {
   path_in_dir,
   reject_user_iterator_serialized_boundaries,
   resolve_import_path_candidates,
+  resolve_import_path_probe,
   resolve_import_path_probe_fs,
   text_mentions_unstable_package,
   vpkg_path_in_dir
@@ -45,7 +46,14 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 import ./header_cache.vibe {
-  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe, parse_program_located_shared_fs
+  ModuleParse,
+  contract_sibling_impl_raws,
+  contract_sibling_impl_raws_source,
+  load_or_parse_module_header_fs_impl,
+  merge_impl_raws_dedupe,
+  parse_answer_fs,
+  parse_program_located_shared_fs,
+  source_answer
 }
 
 import @vibe/compiler/contract {
@@ -1429,16 +1437,16 @@ export let vpkg_types_module_path_prefix: String = ".vibe/build/vpkg_types/types
 /// the package lives outside the repo-relative tree (an absolute VIBE_LIB
 /// external root — the relative import spelling below cannot reach _build
 /// from there, so those packages keep the verbatim-facade behavior).
-fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt], opaque_names: Array[(String, Array[String])], decl_pos: Array[String]) -> String with Exception + Fs {
+fn vpkg_types_module(vpkg_path: String, extra: Array[Stmt], opaque_names: Array[(String, Array[String])], decl_pos: Array[String]) -> (String, String) with Exception {
   if String::starts_with(vpkg_path, "/") {
-    return ""
+    return ("", "")
   } else {
     ()
   }
   let (_, type_defs) = classify_contract_stmts(extra)
   let tds = contract_type_family_defs(type_defs)
   if Array::length(tds) == 0 {
-    ""
+    ("", "")
   } else {
     // #2125: `uniq` keeps the deferred-names sentinel binding (see
     // contract_types_module_text) collision-free across contracts whose
@@ -1481,6 +1489,17 @@ fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt], opaque_nam
       kci = kci + 1
     }
     let types_path = String::concat(vpkg_types_module_path_prefix, String::concat(StringBuilder::freeze(key_sb), ".vibe"))
+    (types_path, text)
+  }
+}
+
+/// #1872: publish a computed types module (`vpkg_types_module`) at the
+/// filesystem boundary: the content-keyed file is written once, and the
+/// process-local registry learns it either way. "" when there is none.
+fn publish_vpkg_types_module_fs(vpkg_path: String, types_path: String, text: String) -> String with Fs {
+  if types_path == "" {
+    ""
+  } else {
     if Fs::exists(types_path) {
       ()
     } else {
@@ -1489,6 +1508,11 @@ fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt], opaque_nam
     vpkg_types_registry_note(vpkg_path, types_path, text)
     types_path
   }
+}
+
+fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt], opaque_names: Array[(String, Array[String])], decl_pos: Array[String]) -> String with Exception + Fs {
+  let (types_path, text) = vpkg_types_module(vpkg_path, extra, opaque_names, decl_pos)
+  publish_vpkg_types_module_fs(vpkg_path, types_path, text)
 }
 
 /// #1840: the RELATIVE spelling of `canonical` (a repo-root-relative path)
@@ -2012,9 +2036,52 @@ export fn ingest_source_text_fs(path: String, raw: String) -> String with Env + 
 /// no .vibei awareness. Implementation files are DECLARED by the contract
 /// (`import ./impl.vibe {}`) rather than discovered: the Fs effect has no
 /// directory listing yet (auto-discovery arrives with Fs::ReadDir, #730).
-export fn desugar_contract_source_fs(path: String, source: String) -> String with Env + Exception + Fs {
+/// #1872: what a contract's desugaring is computed from -- its parsed
+/// surface, its resolved members, and its original text -- independent of
+/// any cache.
+struct ContractPlan {
+  original: String;
+  decls: Array[(String, String)];
+  opaque_names: Array[(String, Array[String])];
+  extra: Array[Stmt];
+  stmt_at: Array[Int];
+  src_starts: Array[Int];
+  type_defs: Array[Stmt];
+  member_raws: Array[String];
+  member_paths: Array[String];
+  pkg_version: String
+}
+
+/// #1872: a desugared contract before anything is published: the facade, the
+/// materialized types module (path and text, "" when the contract has no
+/// type family), the re-export sources that contributed kind metadata with
+/// their fingerprints, and the closure key of the member bodies actually
+/// used.
+struct ContractDesugared {
+  facade: String;
+  types_path: String;
+  types_text: String;
+  dep_paths: Array[String];
+  dep_fingerprints: Array[String];
+  closure_key: String
+}
+
+/// #1872: the per-member requests of contract desugaring that the filesystem
+/// lane serves from process memos and persistent caches. Like
+/// `SourceIngest`, an answer carries its failure (`source_answer`), so a
+/// provider's arm never throws.
+export effect ContractIngest {
+  // A member's ingested text from its raw text (`ingest_source_text_fs`).
+  IngestMember(String, String) -> (String, Option[String])
+  // The type parameters a member re-exports (exported name, params), with
+  // the re-export sources read for them and those sources' fingerprints.
+  ReexportedTypes(String, Array[Stmt]) -> ((Array[(String, Array[String])], Array[String], Array[String]), Option[String])
+}
+
+/// #1872: parse a contract and resolve its members, over `Source` only.
+fn contract_plan(path: String, source: String) -> ContractPlan with Env + Exception + Source {
   let dir = dir_of_path(path)
-  validate_index_layout_fs(path)
+  validate_index_layout(path)
   // `lex_with_offsets`, because the declaration positions below need byte
   // offsets and `stmt_at` records token indices.
   let (src_tokens, src_starts, _src_ends) = lex_with_offsets(source)
@@ -2022,7 +2089,8 @@ export fn desugar_contract_source_fs(path: String, source: String) -> String wit
   // `source` here has already had its leading directive region blanked by
   // extract_require_pins (see ingest_source_text_fs), so the directive must
   // be read back from the ORIGINAL on-disk text via `path`.
-  let pkg_version = extract_package_version(Fs::read_file(path))
+  let original = perform Source::Read(path)
+  let pkg_version = extract_package_version(original)
   // #<version-synthesis>: `version` is already carried by the package's own
   // leading `version x.y.z` directive (ADR-0065/#754) -- a contract no
   // longer needs to also declare `let version: String`, nor does any impl
@@ -2064,18 +2132,223 @@ export fn desugar_contract_source_fs(path: String, source: String) -> String wit
     ()
   }
   // #730: explicit `import ./impl.vibe {}` declarations win; a contract that
-  // declares none auto-discovers its sibling *.vibe files (Fs::readdir,
-  // byte-sorted by the host so the facade is deterministic).
+  // declares none auto-discovers its sibling *.vibe files (Source::List,
+  // byte-sorted by the provider so the facade is deterministic).
   // #897/#855 (ADR-0070 Phase 1): .vpkg gets implicit membership
   // unconditionally -- explicit declarations (if any) are MERGED with
   // discovery rather than suppressing it, replacing the empty-import idiom.
   let impl_raws = if String::ends_with(path, ".vpkg") {
-    merge_impl_raws_dedupe(impl_raws0, contract_sibling_impl_raws(dir))
+    merge_impl_raws_dedupe(impl_raws0, contract_sibling_impl_raws_source(dir))
   } else if Array::length(impl_raws0) == 0 {
-    contract_sibling_impl_raws(dir)
+    contract_sibling_impl_raws_source(dir)
   } else {
     impl_raws0
   }
+  let member_paths = array_empty()
+  let member_raws = array_empty()
+  let mut mi = 0
+  while mi < Array::length(impl_raws) {
+    let raw = Array::get(impl_raws, mi)
+    // #842: probe directory/contract candidates the same way the regular
+    // loader does instead of assuming the plain-file form -- a bare
+    // `import ../pkg { ... }` inside a .vibei must resolve to
+    // `../pkg/index.vibei` (or `/index.vibe`) when `../pkg.vibe` does not
+    // exist, exactly like the same import spelled inside a .vibe impl file.
+    let resolved = resolve_import_path_probe(dir, raw, "")
+    ensure_regular_source(resolved)
+    Array::push(member_paths, resolved)
+    Array::push(member_raws, raw)
+    mi = mi + 1
+  }
+  ContractPlan::{
+    original: original,
+    decls: decls,
+    opaque_names: opaque_names,
+    extra: extra,
+    stmt_at: stmt_at,
+    src_starts: src_starts,
+    type_defs: type_defs,
+    member_raws: member_raws,
+    member_paths: member_paths,
+    pkg_version: pkg_version
+  }
+}
+
+/// #1872: conformance-check a planned contract against its members and build
+/// its facade, with no cache and no ambient `Fs`. Throws the contract
+/// violation; publishes nothing.
+fn contract_build(path: String, source: String, plan: ContractPlan) -> ContractDesugared with Env + Exception + ContractIngest + ModuleParse + Source {
+  let decls = plan.decls
+  let opaque_names = plan.opaque_names
+  let extra = plan.extra
+  let stmt_at = plan.stmt_at
+  let src_starts = plan.src_starts
+  let type_defs = plan.type_defs
+  let member_raws = plan.member_raws
+  let member_paths = plan.member_paths
+  let pkg_version = plan.pkg_version
+  let contract_fp = compact_source_fingerprint_memo(path, plan.original)
+  // #1308/Codex P2: the probe key above pairs member FINGERPRINTS taken
+  // before this point with member BODIES read below — a member rewritten in
+  // between would get its new body persisted under the old closure key, and
+  // a later revert of the file would then serve that mismatched facade with
+  // conformance skipped. Rebuild the closure fingerprint from the bodies
+  // actually read (same row format as the probe key) and publish the cache
+  // entry under THAT key: in the no-race case the two keys are equal, and
+  // under a mid-compile rewrite the entry lands under a key no stale probe
+  // can hit. The rebuilt row's fingerprint comes from the source-fingerprint
+  // memo, which verifies the text it answers for (#2386): a member whose body
+  // is the one the probe fingerprinted costs no second hash, and a rewritten
+  // body is hashed afresh.
+  let fresh_fp_sb = StringBuilder::new()
+  StringBuilder::push(fresh_fp_sb, contract_fp)
+  let impl_units = array_empty()
+  let union_stmts = array_empty()
+  let resolved_reexported_type_defs = array_empty()
+  let reexport_dep_paths = array_empty()
+  let reexport_dep_fingerprints = array_empty()
+  let mut ri = 0
+  while ri < Array::length(member_raws) {
+    let raw = Array::get(member_raws, ri)
+    let resolved = Array::get(member_paths, ri)
+    let resolved_content = perform Source::Read(resolved)
+    StringBuilder::push(fresh_fp_sb, "|")
+    StringBuilder::push(fresh_fp_sb, resolved)
+    StringBuilder::push(fresh_fp_sb, ":")
+    StringBuilder::push(fresh_fp_sb, compact_source_fingerprint_memo(resolved, resolved_content))
+    // #842: an impl raw may itself resolve to ANOTHER package's contract
+    // (a cross-package `import ../pkg { ... }`, not just this package's own
+    // sibling impl files) — route it through the same ingestion transform
+    // every other on-disk source goes through (ingest_source_text_fs), so a
+    // `.vibei` target is recursively desugared to its facade text instead of
+    // being handed to parse_program as raw (bodyless) contract grammar.
+    let impl_ingested = source_answer(perform ContractIngest::IngestMember(resolved, resolved_content))
+    // #2386: the member is parsed through the shared located memo, so the
+    // header pass that later collects this member as a source (the same
+    // ingested text) answers from this parse instead of parsing it again.
+    let impl_stmts = source_answer(perform ModuleParse::Parse(resolved, impl_ingested))
+    Array::push(impl_units, (raw, impl_stmts))
+    // #847: a raw resolving to ANOTHER package's own index.vibei/index.vibe
+    // (a cross-package or nested-boundary reference, e.g. `import ../pkgb
+    // { X }` written purely so the contract's own bodyless signatures
+    // can NAME `X`) is that OTHER package's already-conformance-checked
+    // facade, not this package's own implementation surface. Its stmts are
+    // excluded from `union_stmts` (this package's own conformance input) —
+    // otherwise pkgb's synthetic `export ./impl.vibe { X, make, value }`
+    // facade line reads as pkga re-exporting undeclared symbols, a false
+    // positive `check_contract`'s SReExport check would otherwise raise.
+    // `impl_units` (facade generation) is unaffected: a boundary unit's defs
+    // are already invisible to `collect_impl_fn_defs`/`collect_impl_type_defs`
+    // (a facade is SReExport-only, no SLet/SStruct), so it never allocates a
+    // re-export line under this package's own name anyway.
+    let is_boundary_unit = String::ends_with(resolved, "/index.vibei") || String::ends_with(resolved, "/index.vpkg") || String::ends_with(resolved, "/index.vibe")
+    if is_boundary_unit {
+      ()
+    } else {
+      // Only local implementation units participate in this contract's type
+      // conformance. Imported package boundaries are dependencies, not
+      // alternate definitions of a same-spelled local opaque type.
+      let (resolved_types, rt_dep_paths, rt_dep_fingerprints) = source_answer(perform ContractIngest::ReexportedTypes(resolved, impl_stmts))
+      let mut rdi = 0
+      while rdi < Array::length(rt_dep_paths) {
+        Array::push(reexport_dep_paths, Array::get(rt_dep_paths, rdi))
+        Array::push(reexport_dep_fingerprints, Array::get(rt_dep_fingerprints, rdi))
+        rdi = rdi + 1
+      }
+      let mut rti = 0
+      while rti < Array::length(resolved_types) {
+        Array::push(resolved_reexported_type_defs, Array::get(resolved_types, rti))
+        rti = rti + 1
+      }
+      let mut si = 0
+      while si < Array::length(impl_stmts) {
+        Array::push(union_stmts, Array::get(impl_stmts, si))
+        si = si + 1
+      }
+    }
+    ri = ri + 1
+  }
+  let errors = check_contract_with_reexported_types(decls, opaque_names, union_stmts, type_defs, resolved_reexported_type_defs)
+  if Array::length(errors) > 0 {
+    throw("\{path}: contract violation: \{String::join(errors, "; ")}")
+  } else ()
+  // #1840: materialize the type family once and hand the facade its path —
+  // the facade re-exports it, siblings import it (shared prefix). The facade
+  // text needs the package-dir-RELATIVE spelling (the export grammar rejects
+  // a bare root-relative head token); the cache row below keeps the
+  // canonical root-relative path for its existence re-check.
+  // #2317: the contract's own line:col for each materialized declaration, so a
+  // located diagnostic about the generated module can name the contract.
+  let facade_decl_pos = contract_type_family_decl_positions(source, extra, stmt_at, src_starts)
+  let (facade_types_path, facade_types_text) = vpkg_types_module(path, extra, opaque_names, facade_decl_pos)
+  let facade_types_rel = if facade_types_path == "" {
+    ""
+  } else {
+    relative_spelling_from_dir(dir_of_path(path), facade_types_path)
+  }
+  let facade = contract_facade_source(decls, opaque_names, type_defs, impl_units, facade_types_rel)
+  let facade_final = if pkg_version == "" {
+    facade
+  } else {
+    String::concat(facade, "\nexport let version: String = \"\{pkg_version}\"\n")
+  }
+  // #1100: publish the finished facade under the closure fingerprint
+  // computed above — the next desugar of this unchanged package (same run
+  // or a later cold compile) skips the whole member-parse + conformance
+  // pass. Only a PASSING conformance result ever reaches this line (the
+  // throw above aborts first), so a hit can never mask a violation.
+  // #1308/Codex P2: publish under the fingerprint of the bodies actually
+  // used (equal to the probed closure_fp unless a member changed between
+  // the fingerprint pass and the reads above — see the comment at
+  // fresh_fp_sb's construction).
+  let fresh_closure_fp = compact_string_fingerprint(StringBuilder::freeze(fresh_fp_sb))
+  ContractDesugared::{
+    facade: facade_final,
+    types_path: facade_types_path,
+    types_text: facade_types_text,
+    dep_paths: reexport_dep_paths,
+    dep_fingerprints: reexport_dep_fingerprints,
+    closure_key: fresh_closure_fp
+  }
+}
+
+/// #1872: a contract's facade and its types module (path, text), computed by
+/// the read-only core. A provider discharges `Source`, `ModuleParse` and
+/// `ContractIngest`; `desugar_contract_source_fs` is the filesystem one,
+/// which adds the persistent facade cache and publishes the types module.
+export fn desugar_contract_source(path: String, source: String) -> (String, String, String) with Env + Exception + ContractIngest + ModuleParse + Source {
+  let built = contract_build(path, source, contract_plan(path, source))
+  (built.facade, built.types_path, built.types_text)
+}
+
+fn contract_plan_on_fs(path: String, source: String) -> ContractPlan with Env + Exception + Fs {
+  handle {
+    contract_plan(path, source)
+  } with { Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+}
+
+fn ingest_member_answer_fs(path: String, raw: String) -> (String, Option[String]) with Env + Fs {
+  handle {
+    (ingest_source_text_fs(path, raw), None)
+  } with { Exception::Throw(message) => ("", Some(message)) }
+}
+
+fn reexported_types_answer_fs(unit_path: String, stmts: Array[Stmt]) -> ((Array[(String, Array[String])], Array[String], Array[String]), Option[String]) with Env + Fs {
+  let dep_paths = array_empty()
+  let dep_fingerprints = array_empty()
+  handle {
+    ((resolved_reexported_type_defs_fs(unit_path, stmts, dep_paths, dep_fingerprints), dep_paths, dep_fingerprints), None)
+  } with { Exception::Throw(message) => ((array_empty(), array_empty(), array_empty()), Some(message)) }
+}
+
+fn contract_build_on_fs(path: String, source: String, plan: ContractPlan) -> ContractDesugared with Env + Exception + Fs {
+  handle {
+    contract_build(path, source, plan)
+  } with { ContractIngest::IngestMember(p, raw) => resume(ingest_member_answer_fs(p, raw)); ContractIngest::ReexportedTypes(p, stmts) => resume(reexported_types_answer_fs(p, stmts)); ModuleParse::Parse(p, text) => resume(parse_answer_fs(p, text)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+}
+
+export fn desugar_contract_source_fs(path: String, source: String) -> String with Env + Exception + Fs {
+  let plan = contract_plan_on_fs(path, source)
   // #1100 (selfcompile-heap): everything below this point — per-member
   // ingest + full parse, conformance check, facade generation — is a pure
   // function of the contract's original on-disk text plus every resolved
@@ -2088,18 +2361,9 @@ export fn desugar_contract_source_fs(path: String, source: String) -> String wit
   let contract_fp = fingerprint_file_fs(path)
   let closure_fp_sb = StringBuilder::new()
   StringBuilder::push(closure_fp_sb, contract_fp)
-  let member_paths = array_empty()
-  let member_raws = array_empty()
   let mut fpi = 0
-  while fpi < Array::length(impl_raws) {
-    let fp_raw = Array::get(impl_raws, fpi)
-    // #842: probe directory/contract candidates the same way the regular
-    // loader does (resolve_import_path_probe_fs) instead of assuming the plain-file form
-    // — a bare `import ../pkg { ... }` inside a .vibei must resolve to
-    // `../pkg/index.vibei` (or `/index.vibe`) when `../pkg.vibe` does not
-    // exist, exactly like the same import spelled inside a .vibe impl file.
-    let fp_resolved = loader_resolve_path_fs(dir, fp_raw)
-    ensure_regular_source_fs(fp_resolved)
+  while fpi < Array::length(plan.member_paths) {
+    let fp_resolved = Array::get(plan.member_paths, fpi)
     // #1308: fingerprint via the stat-token memo and don't read the member
     // body here — on a facade-cache hit (the common case) every member's
     // content was read only to be thrown away with the hit's early return.
@@ -2107,8 +2371,6 @@ export fn desugar_contract_source_fs(path: String, source: String) -> String wit
     StringBuilder::push(closure_fp_sb, fp_resolved)
     StringBuilder::push(closure_fp_sb, ":")
     StringBuilder::push(closure_fp_sb, fingerprint_file_fs(fp_resolved))
-    Array::push(member_paths, fp_resolved)
-    Array::push(member_raws, fp_raw)
     fpi = fpi + 1
   }
   let closure_fp = compact_string_fingerprint(StringBuilder::freeze(closure_fp_sb))
@@ -2198,114 +2460,12 @@ export fn desugar_contract_source_fs(path: String, source: String) -> String wit
   } else {
     ()
   }
-  // #1308/Codex P2: the probe key above pairs member FINGERPRINTS taken
-  // before this point with member BODIES read below — a member rewritten in
-  // between would get its new body persisted under the old closure key, and
-  // a later revert of the file would then serve that mismatched facade with
-  // conformance skipped. Rebuild the closure fingerprint from the bodies
-  // actually read (same row format as the probe key) and publish the cache
-  // entry under THAT key: in the no-race case the two keys are equal, and
-  // under a mid-compile rewrite the entry lands under a key no stale probe
-  // can hit. The rebuilt row's fingerprint comes from the source-fingerprint
-  // memo, which verifies the text it answers for (#2386): a member whose body
-  // is the one the probe fingerprinted costs no second hash, and a rewritten
-  // body is hashed afresh.
-  let fresh_fp_sb = StringBuilder::new()
-  StringBuilder::push(fresh_fp_sb, contract_fp)
-  let impl_units = array_empty()
-  let union_stmts = array_empty()
-  let resolved_reexported_type_defs = array_empty()
-  let reexport_dep_paths = array_empty()
-  let reexport_dep_fingerprints = array_empty()
-  let mut ri = 0
-  while ri < Array::length(member_raws) {
-    let raw = Array::get(member_raws, ri)
-    let resolved = Array::get(member_paths, ri)
-    let resolved_content = cache_read_source_fs(resolved)
-    StringBuilder::push(fresh_fp_sb, "|")
-    StringBuilder::push(fresh_fp_sb, resolved)
-    StringBuilder::push(fresh_fp_sb, ":")
-    StringBuilder::push(fresh_fp_sb, compact_source_fingerprint_memo(resolved, resolved_content))
-    // #842: an impl raw may itself resolve to ANOTHER package's contract
-    // (a cross-package `import ../pkg { ... }`, not just this package's own
-    // sibling impl files) — route it through the same ingestion transform
-    // every other on-disk source goes through (ingest_source_text_fs), so a
-    // `.vibei` target is recursively desugared to its facade text instead of
-    // being handed to parse_program as raw (bodyless) contract grammar.
-    let impl_ingested = ingest_source_text_fs(resolved, resolved_content)
-    // #2386: the member is parsed through the shared located memo, so the
-    // header pass that later collects this member as a source (the same
-    // ingested text) answers from this parse instead of parsing it again.
-    let impl_stmts = parse_program_located_shared_fs(resolved, impl_ingested)
-    Array::push(impl_units, (raw, impl_stmts))
-    // #847: a raw resolving to ANOTHER package's own index.vibei/index.vibe
-    // (a cross-package or nested-boundary reference, e.g. `import ../pkgb
-    // { X }` written purely so the contract's own bodyless signatures
-    // can NAME `X`) is that OTHER package's already-conformance-checked
-    // facade, not this package's own implementation surface. Its stmts are
-    // excluded from `union_stmts` (this package's own conformance input) —
-    // otherwise pkgb's synthetic `export ./impl.vibe { X, make, value }`
-    // facade line reads as pkga re-exporting undeclared symbols, a false
-    // positive `check_contract`'s SReExport check would otherwise raise.
-    // `impl_units` (facade generation) is unaffected: a boundary unit's defs
-    // are already invisible to `collect_impl_fn_defs`/`collect_impl_type_defs`
-    // (a facade is SReExport-only, no SLet/SStruct), so it never allocates a
-    // re-export line under this package's own name anyway.
-    let is_boundary_unit = String::ends_with(resolved, "/index.vibei") || String::ends_with(resolved, "/index.vpkg") || String::ends_with(resolved, "/index.vibe")
-    if is_boundary_unit {
-      ()
-    } else {
-      // Only local implementation units participate in this contract's type
-      // conformance. Imported package boundaries are dependencies, not
-      // alternate definitions of a same-spelled local opaque type.
-      let resolved_types = resolved_reexported_type_defs_fs(resolved, impl_stmts, reexport_dep_paths, reexport_dep_fingerprints)
-      let mut rti = 0
-      while rti < Array::length(resolved_types) {
-        Array::push(resolved_reexported_type_defs, Array::get(resolved_types, rti))
-        rti = rti + 1
-      }
-      let mut si = 0
-      while si < Array::length(impl_stmts) {
-        Array::push(union_stmts, Array::get(impl_stmts, si))
-        si = si + 1
-      }
-    }
-    ri = ri + 1
-  }
-  let errors = check_contract_with_reexported_types(decls, opaque_names, union_stmts, type_defs, resolved_reexported_type_defs)
-  if Array::length(errors) > 0 {
-    throw("\{path}: contract violation: \{String::join(errors, "; ")}")
-  } else ()
-  // #1840: materialize the type family once and hand the facade its path —
-  // the facade re-exports it, siblings import it (shared prefix). The facade
-  // text needs the package-dir-RELATIVE spelling (the export grammar rejects
-  // a bare root-relative head token); the cache row below keeps the
-  // canonical root-relative path for its existence re-check.
-  // #2317: the contract's own line:col for each materialized declaration, so a
-  // located diagnostic about the generated module can name the contract.
-  let facade_decl_pos = contract_type_family_decl_positions(source, extra, stmt_at, src_starts)
-  let facade_types_path = ensure_vpkg_types_module_fs(path, extra, opaque_names, facade_decl_pos)
-  let facade_types_rel = if facade_types_path == "" {
-    ""
-  } else {
-    relative_spelling_from_dir(dir_of_path(path), facade_types_path)
-  }
-  let facade = contract_facade_source(decls, opaque_names, type_defs, impl_units, facade_types_rel)
-  let facade_final = if pkg_version == "" {
-    facade
-  } else {
-    String::concat(facade, "\nexport let version: String = \"\{pkg_version}\"\n")
-  }
-  // #1100: publish the finished facade under the closure fingerprint
-  // computed above — the next desugar of this unchanged package (same run
-  // or a later cold compile) skips the whole member-parse + conformance
-  // pass. Only a PASSING conformance result ever reaches this line (the
-  // throw above aborts first), so a hit can never mask a violation.
-  // #1308/Codex P2: publish under the fingerprint of the bodies actually
-  // used (equal to the probed closure_fp unless a member changed between
-  // the fingerprint pass and the reads above — see the comment at
-  // fresh_fp_sb's construction).
-  let fresh_closure_fp = compact_string_fingerprint(StringBuilder::freeze(fresh_fp_sb))
+  let built = contract_build_on_fs(path, source, plan)
+  let facade_types_path = publish_vpkg_types_module_fs(path, built.types_path, built.types_text)
+  let facade_final = built.facade
+  let reexport_dep_paths = built.dep_paths
+  let reexport_dep_fingerprints = built.dep_fingerprints
+  let fresh_closure_fp = built.closure_key
   let reexport_dep_rows = array_empty()
   let mut rdi = 0
   while rdi < Array::length(reexport_dep_paths) {

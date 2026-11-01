@@ -2,7 +2,14 @@ import @vibe/compiler/core {
   Source, Stmt
 }
 import @vibe/compiler/loader {
-  ModuleParse, SourceIngest, collect_all_sources_fs, collect_sources_source, module_header_source, parse_program_located_shared
+  ContractIngest,
+  ModuleParse,
+  SourceIngest,
+  collect_all_sources_fs,
+  collect_sources_source,
+  desugar_contract_source,
+  module_header_source,
+  parse_program_located_shared
 }
 
 // #1872: the source-collection core runs over a provider. These tests give it
@@ -103,19 +110,33 @@ fn mem_header(tree: MemTree, path: String, source: String) -> (Array[String], Op
   } with { Exception::Throw(message) => ([], Some(message)) }
 }
 
-fn mem_facade(facades: Array[(String, String)], path: String) -> (String, Option[String]) {
+// The real desugaring core over the tree: members ingest unchanged and
+// re-export no type parameters.
+fn mem_desugar(tree: MemTree, path: String, text: String) -> (String, Option[String]) with Env {
+  handle {
+    let (facade, _, _) = handle {
+      desugar_contract_source(path, text)
+    } with { ContractIngest::IngestMember(_, raw) => resume((raw, None)); ContractIngest::ReexportedTypes(_, _) => resume((([
+    ], [], []), None)); ModuleParse::Parse(p, t) => resume(mem_parse(p, t)); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+    (facade, None)
+  } with { Exception::Throw(message) => ("", Some(message)) }
+}
+
+// A contract listed in `facades` desugars to that stub; any other contract
+// goes through the real desugaring core.
+fn mem_facade(tree: MemTree, facades: Array[(String, String)], path: String, text: String) -> (String, Option[String]) with Env {
   let mut facade = None
   for f in facades {
-    let (fp, text) = f
+    let (fp, t) = f
     if fp == path {
-      facade = Some(text)
+      facade = Some(t)
     } else {
       ()
     }
   }
   match facade {
     Some(t) => (t, None),
-    None => ("", Some("no facade for \{path}"))
+    None => mem_desugar(tree, path, text)
   }
 }
 
@@ -125,12 +146,13 @@ fn mem_record(verified: Array[String], row: String) -> (Unit, Option[String]) {
 }
 
 // Collect from `entry` over the tree. Contracts desugar to `facades` (path,
-// facade text); ordinary modules ingest unchanged. Every package-hash
+// facade text) or, when not listed, through the real desugaring core;
+// ordinary modules ingest unchanged. Every package-hash
 // verification the core asks for is recorded in `verified`.
 fn mem_collect(tree: MemTree, facades: Array[(String, String)], verified: Array[String], entry: String) -> Array[(String, String)] with Env + Exception {
   handle {
     collect_sources_source(entry)
-  } with { SourceIngest::Header(p, text) => resume(mem_header(tree, p, text)); SourceIngest::DesugarContract(p, _) => resume(mem_facade(facades, p)); SourceIngest::ShareImports(_, text) => resume((text, None)); SourceIngest::VerifyPackageHash(importer, name, pin_hash, index_path, copy_kind) => resume(mem_record(verified, "\{importer} \{name} \{pin_hash} \{index_path} \{copy_kind}")); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+  } with { SourceIngest::Header(p, text) => resume(mem_header(tree, p, text)); SourceIngest::DesugarContract(p, text) => resume(mem_facade(tree, facades, p, text)); SourceIngest::ShareImports(_, text) => resume((text, None)); SourceIngest::VerifyPackageHash(importer, name, pin_hash, index_path, copy_kind) => resume(mem_record(verified, "\{importer} \{name} \{pin_hash} \{index_path} \{copy_kind}")); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
 }
 
 fn collected_paths(sources: Array[(String, String)]) -> Array[String] {
@@ -236,6 +258,63 @@ test "the collection core verifies a pinned package against the importer's pin" 
   let verified: Array[String] = []
   let _ = mem_collect(package_tree("require @acme/base 0.1.0 = #pkg:b3:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n"), package_facades, verified, "app/main.vibe")
   inspect(verified, "[app/main.vibe @acme/base pkg:b3:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f lib/@acme/base/index.vpkg lib/]")
+}
+
+fn source_of(sources: Array[(String, String)], path: String) -> String {
+  let mut found = ""
+  for entry in sources {
+    let (p, text) = entry
+    if p == path {
+      found = text
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+test "the collection core desugars a package contract with the shared core" {
+  let sources = mem_collect(package_tree(""), [], [], "app/main.vibe")
+  inspect(collected_paths(sources), "[lib/@acme/base/base.vibe, lib/@acme/base/index.vpkg, app/main.vibe]")
+  inspect(source_of(sources, "lib/@acme/base/index.vpkg"), "// vibe: contract facade (desugared from .vibei)\nexport ./base.vibe { greet }\n")
+}
+
+test "the desugaring core refuses a declaration no member implements" {
+  let tree = MemTree::{
+    files: [
+      ("app/main.vibe", "import @acme/base { greet }\nfn main() -> Int { greet() }\n"),
+      ("lib/@acme/base/base.vibe", "export fn greet() -> Int { 1 }\n"),
+      ("lib/@acme/base/index.vpkg", "fn greet() -> Int\nfn missing() -> Int\n")
+    ],
+    symlinks: []
+  }
+  inspect(mem_collect_error(tree, "app/main.vibe"), "lib/@acme/base/index.vpkg: contract violation: contract declaration 'missing' has no implementation")
+}
+
+fn relative_package_tree() -> MemTree {
+  MemTree::{
+    files: [
+      ("app/main.vibe", "import ../pkg { greet }\nfn main() -> Int { greet() }\n"),
+      ("pkg/base.vibe", "export fn greet() -> Int { 1 }\n"),
+      ("pkg/index.vpkg", "fn greet() -> Int\n")
+    ],
+    symlinks: []
+  }
+}
+
+// The same contract on disk desugars, through the filesystem adapter and its
+// facade cache, to the facade the in-memory provider builds.
+test "the filesystem adapter desugars a contract to the in-memory facade" {
+  let root = "/tmp/vibe_source_1872_contract"
+  Fs::mkdir_p(String::concat(root, "/app"))
+  Fs::mkdir_p(String::concat(root, "/pkg"))
+  for entry in relative_package_tree().files {
+    let (p, text) = entry
+    Fs::write_file(String::concat(root, String::concat("/", p)), text)
+  }
+  let on_disk = collect_all_sources_fs(String::concat(root, "/app/main.vibe"))
+  let in_memory = mem_collect(relative_package_tree(), [], [], "app/main.vibe")
+  assert_eq(source_of(on_disk, String::concat(root, "/pkg/index.vpkg")), source_of(in_memory, "pkg/index.vpkg"))
 }
 
 // The filesystem adapter is the same core over `Fs`: the same tree written to
