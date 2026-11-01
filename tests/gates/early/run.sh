@@ -9,6 +9,9 @@ GATES_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 source "$GATES_LIB"
 gate_resolve_stage2
 
+echo "[compiler-gate] repository normalize delegates policy to the pinned CLI (#3674)"
+bash "$ROOT_DIR/scripts/vibe_normalize_smoke.sh"
+
 echo "[compiler-gate] SIMD BLAKE3 allocator parity (#3507)"
 python3 "$ROOT_DIR/scripts/check_blake3_simd_allocators.py" "$stage2_wasm"
 
