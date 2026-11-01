@@ -191,7 +191,7 @@ fi
 echo "[compiler-gate] deep-recursion effect resume ok (42)"
 
 # 4c. missing-import diagnostic regression (#831): a file that imports a path
-#     which does not exist on disk used to crash raw -- `collect_sources_rec`
+#     which does not exist on disk used to crash raw -- `collect_sources_rec_source`
 #     called the host `Fs::read_file` primitive unguarded on the (silently
 #     best-effort-resolved) missing path, and a host-level ENOENT there is a
 #     JS exception that crosses the wasm/JS boundary uncaught (not a guest

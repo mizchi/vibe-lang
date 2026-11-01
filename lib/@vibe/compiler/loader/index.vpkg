@@ -19,7 +19,7 @@ generated_hash =
 // @vibe/compiler/loader — ADR-0070 / #897 compiler-internal contract,
 // compiler-internal batch 7. Module-graph loading: source collection off
 // disk (collect_all_sources_fs / collect_source_groups_fs /
-// collect_sources_rec), persistent list/group/manifest-header caching (the
+// collect_sources_rec_source), persistent list/group/manifest-header caching (the
 // resolution_context_*, load_persistent_*, store_persistent_* families),
 // contract/publish-bump plumbing (contract_package_hashes_fs,
 // fill_require_pins_fs*, publish_check_fs), package-boundary enforcement
@@ -120,6 +120,15 @@ fn fill_require_pins_fs(source: String) -> String with Env + Exception + Fs
 fn fill_require_pins_fs_mode(source: String, repin: Bool) -> String with Env + Exception + Fs
 fn fill_require_pins_lenient(source: String) -> String with Env + Fs
 fn publish_check_fs(prev_contract_path: String, next_contract_path: String, prev_version: String, next_version: String) -> Array[String] with Exception + Fs
+// #1872: the read-only source-collection core. A provider discharges
+// `Source` and `SourceIngest`; collect_all_sources_fs is the filesystem one.
+effect SourceIngest {
+  Header(String, String) -> (Array[String], Option[String]);
+  DesugarContract(String, String) -> (String, Option[String]);
+  ShareImports(String, String) -> (String, Option[String]);
+  VerifyPackageHash(String, String, String, String, String) -> (Unit, Option[String])
+}
+fn collect_sources_source(entry_path: String) -> Array[(String, String)] with Env + Exception + Source + SourceIngest
 fn collect_all_sources_fs(entry_path: String) -> Array[(String, String)] with Env + Exception + Fs
 fn build_persistent_sources_cache_text(entry_path: String, manifest_path: Option[String], sources: Array[(String, String)]) -> String with Env + Exception + Fs
 fn collect_source_groups_fs(entry_path: String) -> Array[(String, Array[(String, String)])] with Env + Exception + Fs
@@ -132,6 +141,12 @@ fn find_deps_missing(root: String) -> Array[String] with Env + Exception + Fs
 fn check_deps_missing(root: String) -> Int with Env + Exception + Fs
 
 // --- header_cache.vibe
+// #1872: the cold module-header computation, over `Source` + `ModuleParse`.
+effect ModuleParse {
+  Parse(String, String) -> (Array[Stmt], Option[String])
+}
+fn source_answer[T](answer: (T, Option[String])) -> T with Exception
+fn module_header_source(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Env + Exception + ModuleParse + Source
 fn module_reexport_deps_fs(path: String, source: String) -> Array[String] with Env + Exception + Fs
 fn contract_sibling_impl_raws(dir: String) -> Array[String] with Exception + Fs
 fn contract_sibling_impl_raws_source(dir: String) -> Array[String] with Exception + Source
@@ -190,6 +205,7 @@ fn parse_persistent_source_group_cache(raw: String) -> (Int, Option[(String, Str
 fn loader_matches_cached_file_spec(path: String, stat_token_text: String, source_fingerprint: String) -> Bool with Env + Exception + Fs
 fn load_source_if_cached_file_spec_matches(path: String, stat_token_text: String, source_fingerprint: String) -> Option[String] with Exception + Fs
 fn path_basename(path: String) -> String
+fn validate_index_layout(path: String) -> Unit with Exception + Source
 fn validate_index_layout_fs(path: String) -> Unit with Exception + Fs
 let vpkg_types_registry_contracts: Array[String]
 let vpkg_types_registry_paths: Array[String]

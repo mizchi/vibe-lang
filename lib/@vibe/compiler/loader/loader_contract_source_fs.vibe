@@ -20,6 +20,7 @@ import @vibe/compiler/core {
   TypeExpr,
   contains_path,
   dir_of_path,
+  ensure_regular_source,
   ensure_regular_source_fs,
   external_lib_roots,
   is_contract_ext,
@@ -1296,7 +1297,7 @@ export fn load_source_if_cached_file_spec_matches(path: String, stat_token_text:
 // #729/#730: EVERY path that turns an on-disk file into an in-memory source
 // must apply the same ingestion transform — require-pin blanking, and for
 // index.vibei contracts the conformance-checked facade desugar. The cold
-// walk (collect_sources_rec) did; the persistent-cache reconstruction lanes
+// walk (collect_sources_rec_source) did; the persistent-cache reconstruction lanes
 // below re-read RAW disk bytes, so a warm cache leaked undesugared contracts
 // into the merge (masked until now because every compiler-bundle change
 // invalidated the caches). Cache validity stays keyed on the RAW file.
@@ -1326,22 +1327,34 @@ export fn path_basename(path: String) -> String {
 // `vpkg_directory_shared_import_prefix_fs` about which sources inherit a
 // package's directory-shared imports.
 
-export fn validate_index_layout_fs(path: String) -> Unit with Exception + Fs {
-  ensure_regular_source_fs(path)
+/// A boundary directory has exactly one index. Read-only over `Source`, so
+/// the collection core and the filesystem adapter apply the same rule.
+export fn validate_index_layout(path: String) -> Unit with Exception + Source {
+  ensure_regular_source(path)
   let dir = dir_of_path(path)
   let present = array_empty()
-  if Fs::exists(path_in_dir(dir, "index.vibe")) {
+  let has_vibe = perform Source::Exists(path_in_dir(dir, "index.vibe"))
+  if has_vibe {
     Array::push(present, "index.vibe")
   } else ()
-  if Fs::exists(path_in_dir(dir, "index.vibei")) {
+  let has_vibei = perform Source::Exists(path_in_dir(dir, "index.vibei"))
+  if has_vibei {
     Array::push(present, "index.vibei")
   } else ()
-  if Fs::exists(vpkg_path_in_dir(dir)) {
+  let has_vpkg = perform Source::Exists(vpkg_path_in_dir(dir))
+  if has_vpkg {
     Array::push(present, "index.vpkg")
   } else ()
   if Array::length(present) > 1 {
     throw("\{String::join(present, " and ")} exist in \{dir} (#729/#897): a boundary has exactly one index")
   } else ()
+}
+
+/// The filesystem adapter for `validate_index_layout`.
+export fn validate_index_layout_fs(path: String) -> Unit with Exception + Fs {
+  handle {
+    validate_index_layout(path)
+  } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 /// #897: the directory-shared `import @user/mod { x, y }` text to PREPEND to

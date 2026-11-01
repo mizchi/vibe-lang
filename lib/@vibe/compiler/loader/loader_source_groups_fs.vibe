@@ -29,6 +29,7 @@ import @vibe/compiler/core {
   env_lookup,
   is_builtin_iterator_serialized_boundary_path,
   is_contract_ext,
+  nearest_vpkg_path,
   nearest_vpkg_path_fs,
   normalize_path,
   path_set_add,
@@ -48,7 +49,7 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 import ./header_cache.vibe {
-  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe
+  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe, source_answer
 }
 
 import @vibe/compiler/contract {
@@ -122,6 +123,7 @@ import ./loader_contract_source_fs.vibe {
   resolve_path_in_sources,
   source_cache_spec_paths,
   source_paths,
+  validate_index_layout,
   validate_index_layout_fs,
   validate_vibex_entry_source,
   vpkg_types_registry_contracts,
@@ -971,12 +973,12 @@ export fn publish_check_fs(prev_contract_path: String, next_contract_path: Strin
 /// pin the importer spells itself still wins over the manifest's. A
 /// contract is its own owner and contributes nothing twice; a file with no
 /// enclosing index.vpkg keeps exactly its own pins.
-fn with_owner_pins_fs(path: String, own: Array[(String, String, String)]) -> Array[(String, String, String)] with Exception + Fs {
-  let owner = nearest_vpkg_path_fs(path)
+fn with_owner_pins(path: String, own: Array[(String, String, String)]) -> Array[(String, String, String)] with Exception + Source {
+  let owner = nearest_vpkg_path(path)
   if owner == "" || owner == path {
     own
   } else {
-    let (owner_pins, _) = extract_require_pins(cache_read_source_fs(owner))
+    let (owner_pins, _) = extract_require_pins(perform Source::Read(owner))
     let merged = array_empty()
     let mut i = 0
     while i < Array::length(owner_pins) {
@@ -995,7 +997,7 @@ fn with_owner_pins_fs(path: String, own: Array[(String, String, String)]) -> Arr
 /// #730 (D-2): verify a store-resolved package against the importer's require
 /// pin. The store is laid out BY NAME (.vibe/store/@scope/name/) and trusted
 /// only through this hash check, so any mirror/copy mechanism is fine.
-fn verify_store_package_fs(importer: String, pins: Array[(String, String, String)], store_index_path: String) -> Unit with Env + Exception + Fs {
+fn verify_store_package(importer: String, pins: Array[(String, String, String)], store_index_path: String) -> Unit with Env + Exception + Source + SourceIngest {
   let prefix = ".vibe/store/"
   // #897: `store_index_path` is already the RESOLVED dep (the caller reads
   // it off the collected import graph), so its own suffix tells us which
@@ -1025,12 +1027,13 @@ fn verify_store_package_fs(importer: String, pins: Array[(String, String, String
   if pin_hash == "" {
     throw("unpinned require for \{name} in \{importer}: run `vibe fmt` (VIBE_FILL_PINS=1) to insert the pin from the store")
   } else ()
-  if Fs::exists(store_index_path) {
+  let installed = perform Source::Exists(store_index_path)
+  if installed {
     ()
   } else {
     throw("package \{name} is not installed in the store (.vibe/store/\{name}/)")
   }
-  verify_recorded_package_id_fs(importer, name, pin_hash, store_index_path, "store")
+  source_answer(perform SourceIngest::VerifyPackageHash(importer, name, pin_hash, store_index_path, "store"))
 }
 
 /// #751 (ADR-0065): a `lib/`-resolved package is the dev-mode lane — no
@@ -1041,7 +1044,7 @@ fn verify_store_package_fs(importer: String, pins: Array[(String, String, String
 /// VIBE_REQUIRE_PINS=1 (the release/publish freeze switch; `vibe run
 /// --freeze` maps to it) the pin stops being optional: dev-mode name
 /// resolution without a pin is an error.
-fn verify_lib_package_fs(importer: String, pins: Array[(String, String, String)], lib_index_path: String) -> Unit with Env + Exception + Fs {
+fn verify_lib_package(importer: String, pins: Array[(String, String, String)], lib_index_path: String) -> Unit with Env + Exception + Source + SourceIngest {
   // The package name starts at the "@" — works for both the workspace
   // spelling ("lib/@scope/name/index.vibei") and an absolute VIBE_LIB root
   // ("/home/u/.vibe/lib/@scope/name/index.vibei"), and (#897) either's
@@ -1066,17 +1069,17 @@ fn verify_lib_package_fs(importer: String, pins: Array[(String, String, String)]
   if pin_hash == "" {
     if vibe_env_flag("VIBE_REQUIRE_PINS") {
       throw("pin required for \{name} (VIBE_REQUIRE_PINS=1): \{importer} resolves it via the dev-mode lib lane; add `require \{name} <version> = #pkg:b3:<hash>` (or a legacy #pkg:sha1:<hash>)")
-    } else if !(Fs::exists(lib_index_path)) {
+    } else if !(perform Source::Exists(lib_index_path)) {
       // #831: an unpinned lib/VIBE_LIB package reference with no installed
       // copy used to fall through here silently and only fail later, deep
-      // inside the raw `Fs::read_file` primitive in `collect_sources_rec`
+      // inside the raw `Fs::read_file` primitive in the collection walk
       // (an uncaught host-level crash, not a diagnostic). Catch it here,
       // at resolution time, with the same guidance shape as the pin-mismatch
       // and store-install errors below/above.
       throw("cannot resolve import \{name}: not found via lib/ or VIBE_LIB (looked for \{lib_index_path})")
     } else ()
   } else {
-    verify_recorded_package_id_fs(importer, name, pin_hash, lib_index_path, "lib/")
+    source_answer(perform SourceIngest::VerifyPackageHash(importer, name, pin_hash, lib_index_path, "lib/"))
   }
 }
 
@@ -1086,7 +1089,7 @@ fn verify_lib_package_fs(importer: String, pins: Array[(String, String, String)]
 /// Every owned implementation target requires the importer to have that same
 /// nearest owner, so nested -> parent and parent -> nested internal imports are
 /// both rejected.
-fn enforce_incoming_boundary_fs(importer: String, target: String) -> Unit with Exception + Fs {
+fn enforce_incoming_boundary(importer: String, target: String) -> Unit with Exception + Source {
   if is_vpkg_companion_basename(path_basename(target)) {
     throw("cannot import test/bench companion as a module target: \{target}")
   } else ()
@@ -1100,20 +1103,27 @@ fn enforce_incoming_boundary_fs(importer: String, target: String) -> Unit with E
   let target_owner = if is_contract_ext(target) {
     target
   } else {
-    nearest_vpkg_path_fs(target)
+    nearest_vpkg_path(target)
   }
   if target_owner == "" {
     ()
   } else if target == target_owner {
     ()
   } else {
-    let importer_owner = nearest_vpkg_path_fs(importer)
+    let importer_owner = nearest_vpkg_path(importer)
     if importer_owner == target_owner {
       ()
     } else {
       throw("cannot import \{target} across a package boundary; target owner is \{target_owner} (#729); import the owner contract instead")
     }
   }
+}
+
+/// The filesystem adapter for `enforce_incoming_boundary`.
+fn enforce_incoming_boundary_fs(importer: String, target: String) -> Unit with Exception + Fs {
+  handle {
+    enforce_incoming_boundary(importer, target)
+  } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 fn package_relative_hash_key(package_dir: String, source_path: String) -> String with Exception {
@@ -1163,29 +1173,59 @@ fn collect_package_hash_source_closure_fs(package_contract: String, package_dir:
   }
 }
 
-fn collect_sources_rec(path: String, sources: Array[(String, String)], visited: Array[Array[String]]) -> Unit with Env + Exception + Fs {
+/// #1872: the cache-backed steps of source collection. The collection core
+/// (`collect_sources_source`) decides WHAT to read, in which order, and which
+/// rules a module must pass; a provider answers these requests, which on the
+/// filesystem lane are served from persistent caches (module headers,
+/// contract facades, directory-shared import prefixes) or need a whole
+/// package's bytes (its content hash). Cache writes therefore happen in the
+/// provider, at the filesystem boundary, never in the core.
+///
+/// Each answer carries its failure as `Some(message)` and the core rethrows
+/// it (`source_answer`; see `ModuleParse` for why an arm must not throw).
+export effect SourceIngest {
+  // The resolved dependency paths of `path` whose ingested text is the
+  // second argument (`module_header_source`'s deps).
+  Header(String, String) -> (Array[String], Option[String])
+  // A contract's facade, from its pin-blanked text (without the facade
+  // marker, which the core adds).
+  DesugarContract(String, String) -> (String, Option[String])
+  // An ordinary module's text with its directory-shared vpkg imports applied.
+  ShareImports(String, String) -> (String, Option[String])
+  // Verify the package at an index path against a recorded pin hash:
+  // (importer, package name, pin hash, index path, copy kind).
+  VerifyPackageHash(String, String, String, String, String) -> (Unit, Option[String])
+}
+
+/// #1872: the recursive source-collection walk, over `Source` and
+/// `SourceIngest` only -- no ambient filesystem authority. Dependencies come
+/// before their importer; every module passes the existence, regular-entry
+/// and one-index checks, the package-boundary rule, and pin verification of
+/// the packages it imports, in the same order on every provider.
+fn collect_sources_rec_source(path: String, sources: Array[(String, String)], visited: Array[Array[String]]) -> Unit with Env + Exception + Source + SourceIngest {
   if path_set_contains(visited, path) {
     ()
   }
   else {
     path_set_add(visited, path)
     // #831: safety net. `path` normally already passed the located,
-    // raw-import-spelling-aware existence check in
-    // header_cache.vibe's `resolve_checked_path_fs` before it ever became a
-    // dep here -- but this recursion is also entered directly for the
-    // top-level entry path (no importer, no located import site) and can
-    // replay a WARM persistent header cache written before that check
-    // existed (stale fallback dep). `Fs::read_file` is a raw host
-    // primitive: a missing file there is a JS-level throw from the host
-    // runner, not a guest `Error` effect, so it crosses the wasm/JS
-    // boundary uncaught and prints a low-level crash dump instead of a
-    // diagnostic. Guard it here too so no path through this recursion can
-    // still reach that raw primitive with a nonexistent file.
-    if !(Fs::exists(path)) {
+    // raw-import-spelling-aware existence check in header_cache.vibe's
+    // `resolve_checked_path` before it ever became a dep here -- but this
+    // recursion is also entered directly for the top-level entry path (no
+    // importer, no located import site) and can replay a WARM persistent
+    // header cache written before that check existed (stale fallback dep).
+    // On the filesystem provider `Fs::read_file` is a raw host primitive: a
+    // missing file there is a JS-level throw from the host runner, not a
+    // guest `Error` effect, so it crosses the wasm/JS boundary uncaught and
+    // prints a low-level crash dump instead of a diagnostic. Guard it here
+    // too so no path through this recursion can still reach that raw read
+    // with a nonexistent file.
+    let exists = perform Source::Exists(path)
+    if !exists {
       throw("cannot resolve module: \{path} does not exist")
     } else ()
-    validate_index_layout_fs(path)
-    let raw_source = cache_read_source_fs(path)
+    validate_index_layout(path)
+    let raw_source = perform Source::Read(path)
     // #730 (D-2): require pin lines are a leading directive, extracted and
     // blanked (offset-preserving) before anything parses the source.
     let (own_pins, pin_blanked) = extract_require_pins(raw_source)
@@ -1194,7 +1234,7 @@ fn collect_sources_rec(path: String, sources: Array[(String, String)], visited: 
     // index.vpkg, ADR-0070): a project's root index.vpkg is its manifest,
     // and `vibe add` writes the pin there, not into every file that
     // imports the package.
-    let pins = with_owner_pins_fs(path, own_pins)
+    let pins = with_owner_pins(path, own_pins)
     // #749: the facade MUST carry contract_facade_marker — every collected
     // source is re-ingested at the collect_source_groups_fs chokepoint, and
     // an unmarked facade re-enters desugar_contract_source_fs as if it were
@@ -1203,38 +1243,86 @@ fn collect_sources_rec(path: String, sources: Array[(String, String)], visited: 
     // pass reaches it, so the failure hid behind the runner's module-init
     // re-run (#749).
     let source = if is_contract_ext(path) {
-      String::concat(contract_facade_marker, desugar_contract_source_fs(path, pin_blanked))
+      let facade = source_answer(perform SourceIngest::DesugarContract(path, pin_blanked))
+      String::concat(contract_facade_marker, facade)
     } else {
       // #897: directory-shared vpkg imports (see
-      // `apply_vpkg_directory_shared_imports_fs` above) apply here too --
-      // this cold walk builds `source` independently of `ingest_source_text_fs`
+      // `apply_vpkg_directory_shared_imports_fs`) apply here too -- this
+      // cold walk builds `source` independently of `ingest_source_text_fs`
       // (it needs `pins` separately, for pin verification below), so it must
       // repeat the same ingestion step rather than silently skip it.
-      apply_vpkg_directory_shared_imports_fs(path, pin_blanked)
+      source_answer(perform SourceIngest::ShareImports(path, pin_blanked))
     }
-    let (deps, _, _) = load_or_parse_module_header_fs(path, source, 0)
+    let deps = source_answer(perform SourceIngest::Header(path, source))
     // First, recurse into dependencies (imports and re-exports)
     let mut i = 0
     while i < Array::length(deps) {
       let dep = Array::get(deps, i)
-      enforce_incoming_boundary_fs(path, dep)
+      enforce_incoming_boundary(path, dep)
       // Only a store PACKAGE reference (its contract) is pin-verified;
       // paths inside an already-verified store package (its impl files)
       // are covered by that package's hash.
       if String::starts_with(dep, ".vibe/store/") && is_contract_ext(dep) {
-        verify_store_package_fs(path, pins, dep)
+        verify_store_package(path, pins, dep)
       } else if is_contract_ext(dep) && String::last_index_of(dep, "@") >= 0 {
         // #751: dev-mode lane (workspace lib/ OR a VIBE_LIB external root —
         // any @-named package contract that is not the store) — pin
         // optional but verified when present; VIBE_REQUIRE_PINS=1 demands it.
-        verify_lib_package_fs(path, pins, dep)
+        verify_lib_package(path, pins, dep)
       } else ()
-      collect_sources_rec(dep, sources, visited)
+      collect_sources_rec_source(dep, sources, visited)
       i = i + 1
     }
     // Then add this module (dependencies come first)
     Array::push(sources, (path, source))
   }
+}
+
+/// #1872: every source reachable from `entry_path`, in dependency order
+/// (dependencies first), as (path, ingested text). The read-only collection
+/// core: a provider supplies `Source` and `SourceIngest`.
+export fn collect_sources_source(entry_path: String) -> Array[(String, String)] with Env + Exception + Source + SourceIngest {
+  let sources = array_empty()
+  let visited = path_set_new()
+  collect_sources_rec_source(entry_path, sources, visited)
+  sources
+}
+
+/// The filesystem provider of `SourceIngest` for the collection walk: each
+/// request is the cache-backed filesystem step the walk used to call
+/// directly, with its failure handed back rather than thrown.
+fn ingest_header_answer_fs(path: String, source: String) -> (Array[String], Option[String]) with Env + Fs {
+  handle {
+    let (deps, _, _) = load_or_parse_module_header_fs(path, source, 0)
+    (deps, None)
+  } with { Exception::Throw(message) => (array_empty(), Some(message)) }
+}
+
+fn ingest_contract_answer_fs(path: String, pin_blanked: String) -> (String, Option[String]) with Env + Fs {
+  handle {
+    (desugar_contract_source_fs(path, pin_blanked), None)
+  } with { Exception::Throw(message) => ("", Some(message)) }
+}
+
+fn ingest_shared_imports_answer_fs(path: String, pin_blanked: String) -> (String, Option[String]) with Env + Fs {
+  handle {
+    (apply_vpkg_directory_shared_imports_fs(path, pin_blanked), None)
+  } with { Exception::Throw(message) => ("", Some(message)) }
+}
+
+fn verify_package_hash_answer_fs(importer: String, name: String, pin_hash: String, index_path: String, copy_kind: String) -> (Unit, Option[String]) with Env + Fs {
+  handle {
+    verify_recorded_package_id_fs(importer, name, pin_hash, index_path, copy_kind)
+    ((), None)
+  } with { Exception::Throw(message) => ((), Some(message)) }
+}
+
+/// The filesystem adapter of the collection core. Source reads take the
+/// stat-token text memo (`cache_read_source_fs`), as the walk always did.
+fn collect_sources_walk_fs(entry_path: String) -> Array[(String, String)] with Env + Exception + Fs {
+  handle {
+    collect_sources_source(entry_path)
+  } with { SourceIngest::Header(p, text) => resume(ingest_header_answer_fs(p, text)); SourceIngest::DesugarContract(p, text) => resume(ingest_contract_answer_fs(p, text)); SourceIngest::ShareImports(p, text) => resume(ingest_shared_imports_answer_fs(p, text)); SourceIngest::VerifyPackageHash(importer, name, pin_hash, index_path, copy_kind) => resume(verify_package_hash_answer_fs(importer, name, pin_hash, index_path, copy_kind)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 /// Recursively collect all source files from filesystem, following imports and re-exports.
@@ -1271,9 +1359,7 @@ export fn collect_all_sources_fs(entry_path: String) -> Array[(String, String)] 
                   preloaded_sources
                 },
                 None => {
-                  let sources = array_empty()
-                  let visited = path_set_new()
-                  collect_sources_rec(entry_path, sources, visited)
+                  let sources = collect_sources_walk_fs(entry_path)
                   store_persistent_sources_cache(entry_path, None, sources)
                   sources
                 }
