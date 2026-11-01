@@ -1,0 +1,46 @@
+import @vibe/compiler/core {
+  Expr, Pat, Type, builtin_registry, lookup_registry_builtin
+}
+import @vibe/compiler/lowering/effects/queries {
+  EdpReadQuery, edp_rq_fold
+}
+
+fn list_handler(callee: String) -> Expr {
+  let call = ECall(EIdent(callee, -1), [EIdent("path", -1)], -1, [])
+  let arm = ECall(EIdent("resume", -1), [call], -1, [])
+  EHandle(EUnit, [(PCtor("Source::List", [PBind("path")]), arm)])
+}
+
+test "directory listing has one authoritative Fs signature and no func-table slot" {
+  match lookup_registry_builtin("Fs::readdir") {
+    Some(CtFn(params, CtArray(CtString), Some(row))) => {
+      assert_eq(Array::length(params), 1)
+      assert_eq(Array::get(params, 0), CtString)
+      assert_eq(row, "Fs")
+    },
+    _ => assert(false)
+  }
+  let mut found = false
+  for entry in builtin_registry() {
+    let (name, params, returns, linear, gc) = entry
+    if name == "Fs::readdir" {
+      found = true
+      assert_eq(params, 1)
+      assert_eq(returns, 1)
+      assert(!linear && !gc)
+    } else {
+      ()
+    }
+  }
+  assert(found)
+}
+
+test "native directory callback needs no conservative exception-driver scan" {
+  assert_eq(edp_rq_fold(RQTrigger, list_handler("Fs::readdir")), 0)
+  assert_eq(edp_rq_fold(RQTrigger, list_handler("Fs::read_file")), 0)
+}
+
+test "unknown and throwing directory callbacks retain the conservative driver scan" {
+  assert_eq(edp_rq_fold(RQTrigger, list_handler("user_directory_callback")), 1)
+  assert_eq(edp_rq_fold(RQTrigger, list_handler("throw")), 1)
+}

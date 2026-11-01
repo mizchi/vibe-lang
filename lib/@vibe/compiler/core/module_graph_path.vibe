@@ -31,16 +31,19 @@ export fn dir_of_path(file_path: String) -> String {
   }
 }
 
-/// Module/package sources must be regular filesystem entries.
-export fn ensure_regular_source_fs(path: String) -> Unit with Exception + Fs {
-  // The Fs::stat_token host ABI reserves -1 for a symbolic link. This keeps
-  // symlink rejection bootstrap-compatible without adding a new builtin that
-  // the pinned seed compiler could not yet type-check.
-  if Fs::stat_token(path) == -1 {
+/// Apply the shared source-entry policy to a provider's stat token.
+/// The host ABI reserves -1 for a symbolic link; other tokens remain opaque.
+export fn ensure_regular_source_token(path: String, token: Int) -> Unit with Exception {
+  if token == -1 {
     throw("symlink module source is not allowed: \{path}")
   } else {
     ()
   }
+}
+
+/// Module/package sources must be regular filesystem entries.
+export fn ensure_regular_source_fs(path: String) -> Unit with Exception + Fs {
+  ensure_regular_source_token(path, Fs::stat_token(path))
 }
 
 export fn path_in_dir(dir: String, basename: String) -> String {
@@ -500,7 +503,8 @@ export fn resolve_import_path_candidates_with_roots(base_dir: String, raw_path: 
 
 /// #1872 (#1770 Phase 2): the compiler's read-side source-access effect.
 /// The FS lane discharges it with the real capability builtins
-/// (`Fs::exists` / `Fs::read_file`) at the call boundary; an in-memory lane
+/// (`Fs::exists`, `Fs::read_file`, `Fs::readdir`, `Fs::stat_token`) at the
+/// call boundary; an in-memory lane
 /// (tests, LSP overlay) discharges the SAME code with a lookup handler, so
 /// the two lanes can no longer drift (#729/#730/#740/#749 were all
 /// lane-drift bugs). Read-only by design — cache writes stay on `Fs`
@@ -510,6 +514,10 @@ export fn resolve_import_path_candidates_with_roots(base_dir: String, raw_path: 
 export effect Source {
   Read(String) -> String
   Exists(String) -> Bool
+  // Entries are direct basenames, byte-sorted as Fs::readdir returns them.
+  List(String) -> Array[String]
+  // Tokens are opaque validity hints; -1 identifies a symbolic link.
+  StatToken(String) -> Int
 }
 
 /// #1872 pilot: THE import-path existence probe, unified from the three
@@ -546,6 +554,14 @@ export fn resolve_import_path_probe(base_dir: String, raw_path: String, self_pat
   } else {
     found
   }
+}
+
+/// The shared filesystem boundary for every import-path probe. Keeping the
+/// handler here avoids repeating the Source dictionary in each loader lane.
+export fn resolve_import_path_probe_fs(base_dir: String, raw_path: String, self_path: String) -> String with Env + Fs {
+  handle {
+    resolve_import_path_probe(base_dir, raw_path, self_path)
+  } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 /// The candidate the resolver SELECTS: the first of `candidates` that exists,
@@ -629,7 +645,7 @@ export fn is_owned_head_source_location(path: String, roots: Array[String]) -> B
 export fn is_owned_head_source_location_fs(path: String, roots: Array[String]) -> Bool with Fs {
   handle {
     is_owned_head_source_location(path, roots)
-  } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)) }
+  } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 /// `is_owned_head_source_location_fs` under the library roots the environment
