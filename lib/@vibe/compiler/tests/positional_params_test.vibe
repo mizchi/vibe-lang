@@ -12,7 +12,7 @@ import @vibe/compiler/refactor {
 }
 
 import @vibe/compiler/contract {
-  contract_hash, parse_contract_program
+  collect_impl_fn_defs, contract_hash, parse_contract_program
 }
 
 import @vibe/compiler/core {
@@ -140,4 +140,49 @@ test "a `_` slot is part of a contract's signature and hash" {
   inspect(marked_sig, content = "(_ Array[Int], Int) -> Int")
   inspect(plain_sig == marked_sig, content = "false")
   inspect(plain_hash == marked_hash, content = "false")
+}
+
+/// The conformance signatures of the units concatenated the way the package
+/// loader concatenates them: each unit followed by an empty marker.
+fn union_sigs(units: Array[String]) -> String with Exception {
+  let union: Array[Stmt] = []
+  for unit in units {
+    for stmt in parsed(unit) {
+      Array::push(union, stmt)
+    }
+    Array::push(union, SPositionalParams([]))
+  }
+  let out: Array[String] = []
+  for def in collect_impl_fn_defs(union) {
+    let (name, sig, exported) = def
+    let shown = match sig {
+      Some(text) => text,
+      None => "?"
+    }
+    Array::push(out, name + (if exported {
+      " export "
+    } else {
+      " private "
+    }) + shown)
+  }
+  String::join(out, "\n")
+}
+
+test "a unit's `_` slots never mark another unit's same-named function" {
+  // Codex review of #3691: conformance reads one concatenation of every
+  // implementation file, where a private helper may share an exported name.
+  let exported = "export fn f(x: Int) -> Int {\n  x\n}\n"
+  let private = "fn f(_ x: Int) -> Int {\n  x\n}\n"
+  inspect(union_sigs([exported, private]), content = "f export (Int) -> Int\nf private (_ Int) -> Int")
+  inspect(union_sigs([private, exported]), content = "f private (_ Int) -> Int\nf export (Int) -> Int")
+}
+
+test "a `_` slot's internal name is not part of the signature" {
+  // Codex review of #3691: neither declaration accepts a label there.
+  let (a, _) = contract_sig("fn f(_ x?: Int) -> Int\n")
+  let (b, _) = contract_sig("fn f(_ y?: Int) -> Int\n")
+  inspect(a, content = "(_ ?: Option[Int]) -> Int")
+  inspect(a == b, content = "true")
+  let (c, _) = contract_sig("fn f(x?: Int) -> Int\n")
+  inspect(a == c, content = "false")
 }

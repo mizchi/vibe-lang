@@ -75,18 +75,30 @@ fn fn_sig_text(tps: Array[String], tbs: Array[(String, Array[String])], params: 
         // A labeled (`x~`) or optional (`x?`, #3432) parameter's NAME is
         // API: an importer passes it by label, and a contract that names it
         // differently from the implementation would publish the wrong one.
-        let entry = if String::ends_with(pname, "~") || String::ends_with(pname, "?") {
-          "\{pname}: \{tystr}"
-        } else tystr
         let mut slot = false
         for at in positional {
           slot = slot || at == i
         }
-        Array::push(parts, if slot {
-          "_ " + entry
+        // A `_` slot takes no label, so its internal name is not API: it is
+        // written `_ T`, or `_ ?: T` for an optional one, and two
+        // declarations that differ only in that name conform.
+        let marker = if String::ends_with(pname, "~") {
+          "~"
+        } else if String::ends_with(pname, "?") {
+          "?"
         } else {
-          entry
-        })
+          ""
+        }
+        let entry = if slot {
+          if String::length(marker) > 0 {
+            "_ \{marker}: \{tystr}"
+          } else {
+            "_ \{tystr}"
+          }
+        } else if String::length(marker) > 0 {
+          "\{pname}: \{tystr}"
+        } else tystr
+        Array::push(parts, entry)
       },
       None => {
         missing = true
@@ -664,17 +676,33 @@ fn impl_positional_slots(rows: Array[(String, Array[Int])], name: String) -> Arr
 /// value is a function. A None signature means the def lacks the full
 /// annotations needed to compare against a contract (e.g. an unannotated
 /// lambda) — reported as a conformance error if the name is declared.
+///
+/// A function's `_` slots (ADR-0120 D3) come from the `SPositionalParams`
+/// marker that ends its own unit: a parsed file appends one last, and the
+/// package loader ends every unit it concatenates with one (empty when the
+/// file writes no `_`). So a marker's rows apply to the declarations since the
+/// previous marker only, and a private `fn f(_ x)` in one file never marks an
+/// exported `fn f(x)` in another.
 export fn collect_impl_fn_defs(stmts: Array[Stmt]) -> Array[(String, Option[String], Bool)] {
   let out = array_empty()
-  // The implementation's `_` slots, from its trailing `SPositionalParams`.
-  let slot_rows: Array[(String, Array[Int])] = []
-  for stmt in stmts {
-    match stmt {
-      SPositionalParams(rows) => for row in rows {
-        Array::push(slot_rows, row)
-      },
+  // Each declaration's segment: the index of the first marker after it.
+  let segment_rows: Array[Array[(String, Array[Int])]] = []
+  let no_rows: Array[(String, Array[Int])] = []
+  let mut si = Array::length(stmts)
+  let mut current = no_rows
+  let reversed: Array[Array[(String, Array[Int])]] = []
+  while si > 0 {
+    si = si - 1
+    match Array::get(stmts, si) {
+      SPositionalParams(rows) => current = rows,
       _ => ()
     }
+    Array::push(reversed, current)
+  }
+  let mut ri = Array::length(reversed)
+  while ri > 0 {
+    ri = ri - 1
+    Array::push(segment_rows, Array::get(reversed, ri))
   }
   let mut i = 0
   while i < Array::length(stmts) {
@@ -682,7 +710,7 @@ export fn collect_impl_fn_defs(stmts: Array[Stmt]) -> Array[(String, Option[Stri
       SLet(exported, _, name, ty_opt, val) => match val {
         EFn(tps, tbs, params, ret_opt, eff_opt, _) => {
           let sig = match ret_opt {
-            Some(ret_ty) => fn_sig_text(tps, tbs, params, ret_ty, eff_opt, impl_positional_slots(slot_rows, name)),
+            Some(ret_ty) => fn_sig_text(tps, tbs, params, ret_ty, eff_opt, impl_positional_slots(Array::get(segment_rows, i), name)),
             None => None
           }
           Array::push(out, (name, sig, exported))
