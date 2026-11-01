@@ -1039,7 +1039,7 @@ fn fn_param_defaults_wrap(body: Expr, defaults: Array[(String, TypeExpr, Expr)])
   out
 }
 
-fn parse_fn_signature_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext], contract_rows: Option[(ArrayBuilder[SourceBinder], ArrayBuilder[SourceBinder])]) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Array[(String, TypeExpr, Expr)], Int) with Exception {
+fn parse_fn_signature_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext], contract_rows: Option[(ArrayBuilder[SourceBinder], ArrayBuilder[SourceBinder])]) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Array[(String, TypeExpr, Expr)], Int, Array[Int]) with Exception {
   let (name, name_next) = parse_fn_name(tokens, pos, context)
   let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next, context)
   let lp = expect_tk(tokens, after_gen, "(")
@@ -1166,19 +1166,26 @@ fn parse_fn_signature_with_binder_context(tokens: Array[Token], starts: Array[In
   } else {
     ()
   }
-  ((name, tps, tbs), (params, ret_ty, eff_opt), (reqs, enss), param_defaults, where_next)
+  ((name, tps, tbs), (params, ret_ty, eff_opt), (reqs, enss), param_defaults, where_next, positional)
 }
 
 export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
+  let (head, sig, contracts, next, _) = parse_contract_fn_signature(tokens, pos)
+  (head, sig, contracts, next)
+}
+
+/// `parse_fn_signature`, with the declaration's `_` slots (ADR-0120 D3) last:
+/// a contract publishes them, so its signature fingerprint must carry them.
+export fn parse_contract_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int, Array[Int]) with Exception {
   let no_starts: Array[Int] = []
-  let (head, sig, contracts, defaults, next) = parse_fn_signature_with_binder_context(tokens, no_starts, pos, None, None)
+  let (head, sig, contracts, defaults, next, positional) = parse_fn_signature_with_binder_context(tokens, no_starts, pos, None, None)
   // #3120: a bodyless declaration (a `.vpkg` contract) has no body to run a
   // default in; the implementation owns it.
   if Array::length(defaults) > 0 {
     let (fname, _, _) = head
     throw("the declaration of `\{fname}` gives a parameter default, which only a `fn` with a body can carry; declare the parameter `x?: T` here")
   } else {
-    (head, sig, contracts, next)
+    (head, sig, contracts, next, positional)
   }
 }
 
@@ -1346,7 +1353,7 @@ fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exp
     Some(_) => Some((ArrayBuilder::new(), ArrayBuilder::new())),
     None => None
   }
-  let (head, sig, contracts, param_defaults, where_next) = parse_fn_signature_with_binder_context(tokens, starts, pos, context, contract_rows)
+  let (head, sig, contracts, param_defaults, where_next, _) = parse_fn_signature_with_binder_context(tokens, starts, pos, context, contract_rows)
   let (name, tps, tbs) = head
   let (params, ret_ty, eff_opt) = sig
   let (reqs, enss) = contracts

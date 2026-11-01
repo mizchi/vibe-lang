@@ -318,19 +318,24 @@ fn empty_pats() -> Array[Pat] {
 let qualified_pattern_refs: Array[(String, String)] = Array::slice([("", "")], 0, 0)
 let bare_pattern_refs: Array[String] = []
 
-export fn pattern_ref_mark() -> (Int, Int) {
-  (Array::length(qualified_pattern_refs), Array::length(bare_pattern_refs))
+/// The parser side channels' lengths, for a parse that may be discarded (an
+/// inactive `#cfg`) or a fresh program (`(0, 0, 0)`). The third is the
+/// positional-parameter log (ADR-0120 D3): a discarded `fn f(_ x: Int)` must
+/// not leave its slots for an active `fn f(x: Int)` of the same name.
+export fn pattern_ref_mark() -> (Int, Int, Int) {
+  (Array::length(qualified_pattern_refs), Array::length(bare_pattern_refs), Array::length(positional_param_rows))
 }
 
-export fn restore_pattern_refs(mark: (Int, Int)) -> Unit {
+export fn restore_pattern_refs(mark: (Int, Int, Int)) -> Unit {
   Array::truncate(qualified_pattern_refs, mark.0)
   Array::truncate(bare_pattern_refs, mark.1)
+  Array::truncate(positional_param_rows, mark.2)
 }
 
 /// A handler's operation pattern is qualified in the AST itself. Its parser
 /// side-channel row would falsely compete with an enum constructor pattern.
 /// Keep any nested constructor refs in the operation's payload.
-export fn discard_handler_operation_ref(mark: (Int, Int), qualifier: String, variant: String) -> Unit {
+export fn discard_handler_operation_ref(mark: (Int, Int, Int), qualifier: String, variant: String) -> Unit {
   if qualifier == "" {
     let mut i = mark.1
     let n = Array::length(bare_pattern_refs)
