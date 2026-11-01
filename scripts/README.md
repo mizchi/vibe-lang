@@ -13,6 +13,8 @@ Categorized so you can find things without `ls | grep`. `*_test.sh` /
 The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `vibe_run.sh` — compile+run a `.vibe` (seed → runner). `vibe_run_smoke.sh`
 - `vibe_test.sh` — run `test {}` blocks. `vibe_test_smoke.sh`
+- `test_report.vibex` — the `FAIL <file>` report for `vibe_test.sh`, over
+  `@vibe/testreport` (the launcher reaches the same library via `vibe test-report`)
 - `vibe_fmt.sh` / `vibe_normalize.sh` (+ `*_smoke.sh`) — format / normalize
   a single file (`--check`/`--stdout`/write); `ensure_vibe_fmt_entry.sh`
   compiles its wasm entry (`lib/@vibe/cli/fmt_entry.vibe`). `vibe_fmt_apply.sh`

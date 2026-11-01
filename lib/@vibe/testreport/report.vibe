@@ -1,0 +1,566 @@
+//# @vibe/testreport/report — the condensed report printed under `FAIL <file>`
+//# when a test file traps (#3674). One implementation for both test runners:
+//# the launcher's `vibe test` (through the `vibe test-report` CLI command) and
+//# scripts/vibe_test.sh (through scripts/test_report.vibex). Each used to keep
+//# its own awk copy of the frame decoder in lockstep with the other (#2228).
+//#
+//# Every report line starts with a 7-space indent, the format
+//# book/en/12_tests.vibe.md documents:
+//#
+//#          failing test: <name>        the first `__test_<name>` frame
+//#          <diagnostic lines>          (script report only, see below)
+//#          trap: <reason>              the first RuntimeError / wasm trap line
+//#          at <fn> (<file>:<line>)     up to six frames, via the funcmap
+//#
+//# Strings are byte strings (ADR-0098), so a percent-encoded multibyte test
+//# name decodes back to its UTF-8 bytes and a source offset is a byte offset.
+
+//# Lines
+
+/// The lines of `text`: a final line without its newline still counts, and
+/// an empty text has none (the records awk read).
+fn report_lines(text: String) -> Array[String] {
+  let out: Array[String] = []
+  if text != "" {
+    let parts = String::split(text, "\n")
+    let n = Array::length(parts)
+    let keep = if Array::get(parts, n - 1) == "" {
+      n - 1
+    } else {
+      n
+    }
+    let mut i = 0
+    while i < keep {
+      Array::push(out, Array::get(parts, i))
+      i = i + 1
+    }
+  }
+  out
+}
+
+fn is_space(c: Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 11 || c == 12 || c == 13
+}
+
+fn is_digit(c: Int) -> Bool {
+  c >= '0' && c <= '9'
+}
+
+fn is_word(c: Int) -> Bool {
+  is_digit(c) || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+fn all_digits(s: String) -> Bool {
+  let mut ok = String::length(s) > 0
+  let mut i = 0
+  while ok && i < String::length(s) {
+    ok = is_digit(String::byte_at(s, i))
+    i = i + 1
+  }
+  ok
+}
+
+fn drop_leading_space(s: String) -> String {
+  let mut i = 0
+  while i < String::length(s) && is_space(String::byte_at(s, i)) {
+    i = i + 1
+  }
+  String::substring(s, i, String::length(s))
+}
+
+fn drop_trailing_space(s: String) -> String {
+  let mut end = String::length(s)
+  while end > 0 && is_space(String::byte_at(s, end - 1)) {
+    end = end - 1
+  }
+  String::substring(s, 0, end)
+}
+
+fn after_first(s: String, needle: String) -> String {
+  let at = String::index_of(s, needle)
+  String::substring(s, at + String::length(needle), String::length(s))
+}
+
+/// The leading integer of `s`, the way awk's `s + 0` reads it: optional
+/// leading space and sign, then digits; anything else stops it (0 if none).
+fn leading_int(s: String) -> Int {
+  let t = drop_leading_space(s)
+  let mut i = 0
+  let negative = String::length(t) > 0 && String::byte_at(t, 0) == '-'
+  if negative || (String::length(t) > 0 && String::byte_at(t, 0) == '+') {
+    i = 1
+  }
+  let mut n = 0
+  while i < String::length(t) && is_digit(String::byte_at(t, i)) {
+    n = n * 10 + (String::byte_at(t, i) - '0')
+    i = i + 1
+  }
+  if negative {
+    0 - n
+  } else {
+    n
+  }
+}
+
+//# Names
+
+fn hex_value(c: Int) -> Int {
+  if is_digit(c) {
+    c - '0'
+  } else if c >= 'A' && c <= 'F' {
+    c - 'A' + 10
+  } else if c >= 'a' && c <= 'f' {
+    c - 'a' + 10
+  } else {
+    -1
+  }
+}
+
+/// Decode `%XX` escapes byte by byte; a `%` not followed by two hex digits
+/// stays as it is. Quoted test names can reach a frame percent-encoded
+/// (`has%20spaces`, a multibyte name as `%C3%A9`).
+export fn pct_decode(s: String) -> String {
+  let sb = StringBuilder::new()
+  let n = String::length(s)
+  let mut i = 0
+  while i < n {
+    let c = String::byte_at(s, i)
+    let v1 = if c == '%' && i + 2 < n {
+      hex_value(String::byte_at(s, i + 1))
+    } else {
+      -1
+    }
+    let v2 = if v1 >= 0 {
+      hex_value(String::byte_at(s, i + 2))
+    } else {
+      -1
+    }
+    if v1 >= 0 && v2 >= 0 {
+      StringBuilder::push(sb, String::from_byte(v1 * 16 + v2))
+      i = i + 3
+    } else {
+      StringBuilder::push(sb, String::from_byte(c))
+      i = i + 1
+    }
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// The test a frame line names, "" when the line is not a test frame. Only
+/// a Node frame (`at __test_<name> (wasm:...`) or a wasmtime frame
+/// (`<unknown>!__test_<name>`) counts: guest output can contain `__test_`.
+/// A name may hold spaces, so the Node name ends at ` (wasm:` and the
+/// wasmtime one at the end of the line.
+fn test_frame_name(line: String) -> String {
+  let node = if String::contains(line, "at __test_") {
+    let rest = after_first(line, "at __test_")
+    let cut = String::index_of(rest, " (wasm:")
+    if cut >= 0 {
+      String::substring(rest, 0, cut)
+    } else {
+      ""
+    }
+  } else {
+    ""
+  }
+  if node != "" {
+    node
+  } else if String::contains(line, "<unknown>!__test_") {
+    drop_trailing_space(after_first(line, "<unknown>!__test_"))
+  } else {
+    ""
+  }
+}
+
+//# Trap reason
+
+fn is_reason_line(line: String) -> Bool {
+  String::contains(line, "RuntimeError:") || String::contains(line, "wasm trap:")
+}
+
+/// The reason line without its indent, its `N: ` chain number or a
+/// `viberun: ` prefix.
+fn normalize_reason(line: String) -> String {
+  let t = drop_leading_space(line)
+  let colon = String::index_of(t, ": ")
+  let numbered = colon > 0 && all_digits(String::substring(t, 0, colon))
+  let u = if numbered {
+    String::substring(t, colon + 2, String::length(t))
+  } else {
+    t
+  }
+  if String::starts_with(u, "viberun: ") {
+    String::substring(u, 9, String::length(u))
+  } else {
+    u
+  }
+}
+
+//# Frames
+
+fn is_frame_name_byte(c: Int) -> Bool {
+  is_word(c) || c == '$' || c == '.'
+}
+
+/// The function a backtrace line names, "" when it names none: a Node frame
+/// (`    at <fn> (wasm:...`) or a wasmtime one (`N: 0x.. - <unknown>!<fn>`).
+fn frame_function(line: String) -> String {
+  let n = String::length(line)
+  let mut i = 0
+  while i < n && is_space(String::byte_at(line, i)) {
+    i = i + 1
+  }
+  let node = if i > 0 && String::starts_with(String::substring(line, i, n), "at ") {
+    let start = i + 3
+    let mut j = start
+    while j < n && is_frame_name_byte(String::byte_at(line, j)) {
+      j = j + 1
+    }
+    if j > start && String::starts_with(String::substring(line, j, n), " (wasm:") {
+      String::substring(line, start, j)
+    } else {
+      ""
+    }
+  } else {
+    ""
+  }
+  if node != "" {
+    node
+  } else if String::contains(line, "<unknown>!") {
+    // The first `!` followed by a word byte, and the run of word bytes after it.
+    let mut found = ""
+    let mut k = 0
+    while found == "" && k + 1 < n {
+      if String::byte_at(line, k) == '!' && is_word(String::byte_at(line, k + 1)) {
+        let mut e = k + 1
+        while e < n && is_word(String::byte_at(line, e)) {
+          e = e + 1
+        }
+        found = String::substring(line, k + 1, e)
+      } else ()
+      k = k + 1
+    }
+    found
+  } else {
+    ""
+  }
+}
+
+/// `name<TAB>declLine` rows of a `.funcmap` sidecar; a row with an empty
+/// name or a line below 1 is skipped, and a later row for a name wins.
+fn funcmap_line(funcmap: String, name: String) -> Int {
+  let rows = report_lines(funcmap)
+  let mut line = 0
+  let mut i = 0
+  while i < Array::length(rows) {
+    let fields = String::split(Array::get(rows, i), "\t")
+    if Array::length(fields) >= 2 && Array::get(fields, 0) == name && Array::get(fields, 0) != "" {
+      let l = leading_int(Array::get(fields, 1))
+      if l > 0 {
+        line = l
+      } else ()
+    } else ()
+    i = i + 1
+  }
+  line
+}
+
+/// Up to six annotated frames from the stderr lines. `__test_*` is reported
+/// as the failing test and `_start` is scaffolding, so neither is a frame.
+fn frames_of(err: Array[String], funcmap: String, base: String) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(err) && Array::length(out) < 6 {
+    let f = frame_function(Array::get(err, i))
+    if f != "" && f != "_start" && !String::starts_with(f, "__test_") {
+      let line = funcmap_line(funcmap, f)
+      if line > 0 {
+        Array::push(out, "       at \{f} (\{base}:\{line})")
+      } else {
+        Array::push(out, "       at \{f}")
+      }
+    } else ()
+    i = i + 1
+  }
+  out
+}
+
+fn failing_test_of(err: Array[String]) -> String {
+  let mut name = ""
+  let mut i = 0
+  while name == "" && i < Array::length(err) {
+    name = test_frame_name(Array::get(err, i))
+    i = i + 1
+  }
+  name
+}
+
+fn first_reason_of(err: Array[String]) -> String {
+  let mut reason = ""
+  let mut i = 0
+  while reason == "" && i < Array::length(err) {
+    let line = Array::get(err, i)
+    if is_reason_line(line) {
+      reason = normalize_reason(line)
+    } else ()
+    i = i + 1
+  }
+  reason
+}
+
+fn joined_lines(lines: Array[String]) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(lines) {
+    StringBuilder::push(sb, Array::get(lines, i))
+    StringBuilder::push(sb, "\n")
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+//# Launcher report
+
+/// The report `vibe test` prints for a trap. `stderr` is the runner's
+/// stderr; the launcher replays the guest's stdout itself, so only stderr is
+/// read here. `pre_abort` is true when the guest's last stdout line was the
+/// assert abort marker: the `unreachable` trap that follows is then the
+/// assert's own abort, already explained by its block, and is not echoed.
+/// When nothing in stderr is recognised (a runner or instantiation failure),
+/// the raw stream is replayed, indented, rather than leaving `FAIL <file>`
+/// without a reason; an assert abort whose only stderr is that trap replays
+/// nothing.
+export fn launcher_trap_report(stderr: String, funcmap: String, base: String, pre_abort: Bool) -> String {
+  let err = report_lines(stderr)
+  let lines: Array[String] = []
+  let name = failing_test_of(err)
+  if name != "" {
+    Array::push(lines, "       failing test: \{pct_decode(name)}")
+  } else ()
+  let reason = first_reason_of(err)
+  if reason != "" && !(pre_abort && String::contains(reason, "unreachable")) {
+    Array::push(lines, "       trap: \{reason}")
+  } else ()
+  let frames = frames_of(err, funcmap, base)
+  let mut i = 0
+  while i < Array::length(frames) {
+    Array::push(lines, Array::get(frames, i))
+    i = i + 1
+  }
+  if Array::length(lines) > 0 {
+    joined_lines(lines)
+  } else if pre_abort && String::contains(stderr, "unreachable") {
+    ""
+  } else {
+    let raw: Array[String] = []
+    let mut r = 0
+    while r < Array::length(err) {
+      Array::push(raw, String::concat("       ", Array::get(err, r)))
+      r = r + 1
+    }
+    joined_lines(raw)
+  }
+}
+
+//# Script report
+
+/// `Int `/` by zero` or `Int `%` by zero`, optionally ` at <path>:<l>:<c>`.
+fn is_division_by_zero_line(line: String) -> Bool {
+  let slash = String::starts_with(line, "Int `/` by zero")
+  let rem = String::starts_with(line, "Int `%` by zero")
+  if !slash && !rem {
+    false
+  } else {
+    let rest = String::substring(line, 15, String::length(line))
+    if rest == "" {
+      true
+    } else if !String::starts_with(rest, " at ") {
+      false
+    } else {
+      let place = String::substring(rest, 4, String::length(rest))
+      let c2 = String::last_index_of(place, ":")
+      if c2 < 0 || !all_digits(String::substring(place, c2 + 1, String::length(place))) {
+        false
+      } else {
+        let before = String::substring(place, 0, c2)
+        let c1 = String::last_index_of(before, ":")
+        c1 > 0 && all_digits(String::substring(before, c1 + 1, String::length(before)))
+      }
+    }
+  }
+}
+
+let oob_operations: Array[String] = [
+  "Array::get",
+  "Array::set",
+  "Bytes::get",
+  "Bytes::set",
+  "String::byte_at"
+]
+
+/// `<op>: index <n> out of bounds for length <n>` for one of the generated
+/// operations, the whole line: user output that merely resembles it is not a
+/// runtime diagnostic.
+fn is_out_of_bounds_line(line: String) -> Bool {
+  let mut matched = false
+  let mut i = 0
+  while !matched && i < Array::length(oob_operations) {
+    let prefix = String::concat(Array::get(oob_operations, i), ": index ")
+    if String::starts_with(line, prefix) {
+      let rest = String::substring(line, String::length(prefix), String::length(line))
+      let mid = " out of bounds for length "
+      let at = String::index_of(rest, mid)
+      if at > 0 {
+        let index = String::substring(rest, 0, at)
+        let digits = if String::starts_with(index, "-") {
+          String::substring(index, 1, String::length(index))
+        } else {
+          index
+        }
+        let length = String::substring(rest, at + String::length(mid), String::length(rest))
+        matched = all_digits(digits) && all_digits(length)
+      } else ()
+    } else ()
+    i = i + 1
+  }
+  matched
+}
+
+/// The 1-based line of a byte offset. The source counts as newline-terminated
+/// (a last line without its newline still ends one), so an offset past the
+/// end lands on the line after the last.
+fn line_of_offset(source: String, offset: Int) -> Int {
+  let text = if String::ends_with(source, "\n") {
+    source
+  } else {
+    String::concat(source, "\n")
+  }
+  let mut line = 1
+  let mut i = 0
+  let n = String::length(text)
+  while i < offset && i < n {
+    if String::byte_at(text, i) == 10 {
+      line = line + 1
+    } else ()
+    i = i + 1
+  }
+  line
+}
+
+/// The report scripts/vibe_test.sh prints for a failing file. The guest's
+/// stdout and the runner's stderr arrive apart, so the trap reason and the
+/// frames are read from stderr only, while the diagnostics a failing assert
+/// or a runtime check prints are surfaced from both:
+///
+/// - an `assert_eq failed` block (`expected:` / `actual:`), with its
+///   `at off=N` turned into a source line when `source` is given;
+/// - the continuation lines of a multiline `inspect` value;
+/// - `Int `/` by zero`, an out-of-bounds index, `Map::get: key not found`.
+///
+/// The `unreachable` trap is suppressed only when the generated abort marker
+/// (`assert failed: aborting`) directly precedes it: only blank lines, the
+/// host's `[crash debug]` dump, or more of the assert block may come between.
+/// Any other line in between means the trap is something else, and it is
+/// reported (#2202, #2219).
+export fn script_failure_report(stdout: String, stderr: String, funcmap: String, base: String, source: String) -> String {
+  let out_lines = report_lines(stdout)
+  let err = report_lines(stderr)
+  let diags: Array[String] = []
+  let mut in_inspect = false
+  let mut inspect_part = 0
+  let mut pending_abort = false
+  let mut assert_abort = false
+  let mut seen_reason = false
+  let mut reason = ""
+  let total = Array::length(out_lines) + Array::length(err)
+  let mut k = 0
+  while k < total {
+    let from_stderr = k >= Array::length(out_lines)
+    let line = if from_stderr {
+      Array::get(err, k - Array::length(out_lines))
+    } else {
+      Array::get(out_lines, k)
+    }
+    let mut blk = false
+    if from_stderr {
+      in_inspect = false
+      inspect_part = 0
+    } else ()
+    if !from_stderr && line == "inspect mismatch:" {
+      in_inspect = true
+      inspect_part = 0
+    } else ()
+    if line == "assert_eq failed" {
+      blk = true
+      Array::push(diags, String::concat("       ", line))
+    } else ()
+    if String::starts_with(line, "  at off=") {
+      blk = true
+      let off = leading_int(String::substring(line, 9, String::length(line)))
+      if off >= 0 && source != "" {
+        Array::push(diags, "       at line \{line_of_offset(source, off)}")
+      } else if off >= 0 {
+        Array::push(diags, String::concat("       ", line))
+      } else ()
+    } else ()
+    if String::starts_with(line, "  expected:") {
+      blk = true
+      if in_inspect {
+        inspect_part = 2
+      } else ()
+      Array::push(diags, String::concat("       ", line))
+    } else ()
+    if String::starts_with(line, "  actual:") {
+      blk = true
+      if in_inspect {
+        inspect_part = 1
+      } else ()
+      Array::push(diags, String::concat("       ", line))
+    } else ()
+    // A snapshot value can span lines: keep each continuation under its
+    // actual / expected heading.
+    if in_inspect && inspect_part > 0 && !blk {
+      blk = true
+      Array::push(diags, String::concat("         | ", line))
+    } else ()
+    // Runtime-check lines explain the trap that follows. They are not part
+    // of an assert block, so they still break the abort adjacency below.
+    if is_division_by_zero_line(line) || is_out_of_bounds_line(line) || String::starts_with(line, "Map::get: key not found") {
+      Array::push(diags, String::concat("       ", line))
+    } else ()
+    if !from_stderr && !in_inspect && line == "assert failed: aborting" {
+      blk = true
+      pending_abort = true
+    } else ()
+    if from_stderr && !seen_reason && is_reason_line(line) {
+      blk = true
+      seen_reason = true
+      assert_abort = pending_abort
+      reason = normalize_reason(line)
+    } else ()
+    if !seen_reason && !blk && line != "" && !String::starts_with(line, "[crash debug]") {
+      pending_abort = false
+    } else ()
+    k = k + 1
+  }
+  let lines: Array[String] = []
+  let name = failing_test_of(err)
+  if name != "" {
+    Array::push(lines, "       failing test: \{pct_decode(name)}")
+  } else ()
+  let mut d = 0
+  while d < Array::length(diags) {
+    Array::push(lines, Array::get(diags, d))
+    d = d + 1
+  }
+  if reason != "" && !(assert_abort && String::contains(reason, "unreachable")) {
+    Array::push(lines, "       trap: \{reason}")
+  } else ()
+  let frames = frames_of(err, funcmap, base)
+  let mut f = 0
+  while f < Array::length(frames) {
+    Array::push(lines, Array::get(frames, f))
+    f = f + 1
+  }
+  joined_lines(lines)
+}
