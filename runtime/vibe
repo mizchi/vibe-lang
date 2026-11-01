@@ -1493,13 +1493,15 @@ case "$cmd" in
       # place, so a long edit session leaves orphans behind. The artifacts
       # beside it (run/, test/, out/, vpkg_types/) stay. The directory is the
       # one the compiler writes: VIBE_BUILD_CACHE_DIR, resolved against the
-      # root it runs in, else <build>/cache.
+      # root it runs in, else <build>/cache. `find -H` follows the directory
+      # itself when it is a symlink, as the compiler's writes beneath it do;
+      # the entries inside are matched as they are (`-type f`).
       cache_dir="${VIBE_BUILD_CACHE_DIR:-$BUILD_DIR/cache}"
       case "$cache_dir" in /*) ;; *) cache_dir="$PROJECT_ROOT/$cache_dir" ;; esac
       cache_n=0; cache_bytes=0
       if [ -d "$cache_dir" ]; then
-        cache_n="$(find "$cache_dir" -mindepth 1 -maxdepth 1 -type f -name 'vibe_*' | awk 'END { print NR }')"
-        cache_bytes="$(find "$cache_dir" -mindepth 1 -maxdepth 1 -type f -name 'vibe_*' -exec wc -c {} + |
+        cache_n="$(find -H "$cache_dir" -mindepth 1 -maxdepth 1 -type f -name 'vibe_*' | awk 'END { print NR }')"
+        cache_bytes="$(find -H "$cache_dir" -mindepth 1 -maxdepth 1 -type f -name 'vibe_*' -exec wc -c {} + |
           awk '$2 != "total" { s += $1 } END { print s + 0 }')"
       fi
       if [ "$cache_n" = 0 ]; then
@@ -1509,7 +1511,7 @@ case "$cmd" in
         if [ "$clean_dry" = 1 ]; then
           echo "would remove $cache_n cache file(s), $cache_size, from $(display_path "$cache_dir")"
         else
-          find "$cache_dir" -mindepth 1 -maxdepth 1 -type f -name 'vibe_*' -exec rm -f {} +
+          find -H "$cache_dir" -mindepth 1 -maxdepth 1 -type f -name 'vibe_*' -exec rm -f {} +
           echo "removed $cache_n cache file(s), $cache_size, from $(display_path "$cache_dir")"
         fi
       fi
