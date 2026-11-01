@@ -101,9 +101,9 @@ for themselves: today only trailing optionals can be omitted.
 Every parameter is labeled by default, and its label is its name. A
 declaration writes `_` before a parameter to make it positional:
 
-<!-- doctest-skip: proposed syntax the compiler does not parse yet -->
+<!-- doctest-skip: bodyless declarations, shown for their signatures -->
 ```vibe skip
-// doctest-skip: proposed syntax the compiler does not parse yet
+// doctest-skip: bodyless declarations, shown for their signatures
 fn Array::get[T](_ xs: Array[T], at: Int) -> T
 fn Int::to_string(_ n: Int) -> String
 fn greet(name: String, times: Int = 1) -> String

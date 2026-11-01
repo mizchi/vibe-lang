@@ -498,6 +498,27 @@ of order, or naming no parameter. A builtin's labels never reorder its
 arguments. `sh_lines` is the exception: its labels after the command are
 flags, so `sh_lines("ls", a = true)` runs `ls -a`.
 
+A declaration makes one of its own parameters positional by writing `_`
+before its name (ADR-0120, #3681). The argument for that slot is written
+without a label, and the rest can still be named:
+
+```vibe
+fn value_at(_ xs: Array[Int], at: Int) -> Int {
+  Array::get(xs, at)
+}
+
+test "a `_` slot is filled by position" {
+  assert_eq(value_at([1, 2], at = 1), 2)
+  assert_eq(value_at([3], 0), 3)
+}
+```
+
+A label on a `_` slot is a build error naming the edit
+(``remove `xs = ` ``). `_` is accepted in a `fn` declaration (`T::f` and
+`.vpkg` declarations included) and on the lambda a top-level `let` is bound to;
+on any other lambda, and on an `impl` method, it is a parse error. An imported
+function keeps its `_` slots. A lone `_` is still the wildcard parameter.
+
 ### Optional arguments: `x: T = default` (#3120) and `x?: T` (#1500)
 
 A parameter with a **default** can be left out by the caller. The body sees
