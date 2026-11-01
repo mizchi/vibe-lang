@@ -2278,26 +2278,30 @@ seed-compiled harness, one cache directory per tree:
 | comment-edited | 0 / 15416 | **14498 / 918** |
 | reverted | 0 / 15416 | **14498 / 918** |
 
-Wall time does not move the way the counts do, and the reason is in the
-phase table above: replay skips per-function codegen (`compile_expr`, the
-Perceus plan, locals), about a tenth of a warm compile, while the prelude,
-merge, borrow fixpoint, DCE and assembly still run whole-program. Same
-protocol, isolated cache per tree, cold then two warm runs, the seed-compiled
-harness on a 4-core container:
+What replay buys, on the production compiler: a stage2 built from this tree
+compiling the same closure (`VIBE_FS_COMPILE=1 VIBE_RC=1`, the incremental
+KPI's environment), one isolated cache per mode, a cold run and three warm
+ones, the mode the only change. The emitted 51 MB module is byte-identical
+either way.
 
-| tree | cold | warm 1 | warm 2 |
-|---|---:|---:|---:|
-| before (offered 0) | 105.2 s | 93.6 s | 85.9 s |
-| after | 91.6 s | 86.2 s | 76.5 s |
+| `VIBE_CODEGEN_BODY_CACHE` | cold | warm 1 | warm 2 | warm 3 |
+|---|---:|---:|---:|---:|
+| `off` | 32.3 s | 18.6 s | 18.8 s | 18.5 s |
+| `on` | 29.6 s | 16.6 s | 15.7 s | 16.4 s |
 
-Cold runs alone vary by 10 s in this setting, so read the warm difference as
-"replay no longer costs more than it saves", not as a measured speedup. It
-did cost more at first. The filter that carries an entry's lambdas, slots,
-blind references and linemap rows (`bcc_filter_entries`) tested each row's
-owner against the kept-function list linearly. That is quadratic, and with
-~14k kept functions it made warm runs SLOWER than cold ones (100.1 s and
-102.2 s). It is a direct-address table now. The artifact adds ~12 MB to the
-cache directory.
+About 12 % of a warm build. A CPU profile of the same warm compile through
+the harness puts it where expected: the body phase (`lc_execute_function_plan`)
+drops from 4.0 s to 0.37 s, decoding the artifact costs 0.26 s, and nothing
+else moves. The effect-lowering prelude, merge, borrow fixpoint, DCE and
+assembly still run whole-program, and the prelude alone is over half of what
+remains. (`scripts/body_cache_reuse.sh` is the wrong tool for wall time: each
+of its rows recompiles the seed-built harness first, ~60 s of ~90 s.)
+
+Before the filter that carries an entry's lambdas, slots, blind references and
+linemap rows (`bcc_filter_entries`) used a direct-address table, it tested each
+row's owner against the kept-function list linearly. That is quadratic, and
+with ~14k kept functions it cost more than the replay saved. The artifact adds
+~12 MB to the cache directory.
 
 The body cache is still opt-in (`VIBE_CODEGEN_BODY_CACHE=on|verify`). This
 makes the lane usable on the shape every real build takes, which is the
