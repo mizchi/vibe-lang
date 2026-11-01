@@ -2314,7 +2314,14 @@ startup and instantiating a 5 MB compiler); no cache of compiler phases can
 remove it. That is an inference from the absolute times, not something these
 two corpora were profiled for. The price of the cache is heap. The bump heap
 never frees, so decoding the ~12 MB artifact, re-encoding the refreshed one
-and the intermediate copies show up as +170 MB at selfhost size.
+and the intermediate copies show up as +170 MB at selfhost size. Two of those
+copies are gone: the decoder reads the stream in place
+(`codegen_body_cache_from_bytes_at`), the encoder writes it into the artifact
+buffer (`codegen_body_cache_write_to`), and the typed-lowering refilter is
+skipped when it would drop nothing (`codegen_body_cache_src_keep_drops_any`).
+Measured with heap marks on a warm CLI-closure compile: decode 153 → 100 MB,
+store 98 → 74 MB, the whole compile 2468 → 2391 MB, with the same replay
+counts.
 
 Before the filter that carries an entry's lambdas, slots, blind references and
 linemap rows (`bcc_filter_entries`) used a direct-address table, it tested each

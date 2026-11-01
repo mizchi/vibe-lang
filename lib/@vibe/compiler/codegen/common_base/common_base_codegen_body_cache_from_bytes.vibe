@@ -870,6 +870,26 @@ fn bcc_src_region_n(cache: CodegenBodyCache) -> Int {
 /// to could have moved. `guard_layout` is what replaces that, and the body
 /// loop narrows back to the prefix when it does not hold.
 export fn codegen_body_cache_filter_src_keep(cache: CodegenBodyCache, keep_file: Array[Int]) -> CodegenBodyCache {
+  bcc_filter_entries(cache, bcc_keep_flags_files(cache, keep_file))
+}
+
+/// Would `codegen_body_cache_filter_src_keep(cache, keep_file)` drop any
+/// entry? A caller that refilters an already-filtered cache can skip the copy
+/// when it would not (#2818): the filter rebuilds every column, and on a warm
+/// build of the CLI closure that is ~15k entries and their lambda, slot,
+/// blind and linemap rows, for nothing.
+export fn codegen_body_cache_src_keep_drops_any(cache: CodegenBodyCache, keep_file: Array[Int]) -> Bool {
+  let flags = bcc_keep_flags_files(cache, keep_file)
+  let mut drops = false
+  let mut i = 0
+  while !drops && i < Array::length(flags) {
+    drops = Array::get(flags, i) == 0
+    i = i + 1
+  }
+  drops
+}
+
+fn bcc_keep_flags_files(cache: CodegenBodyCache, keep_file: Array[Int]) -> Array[Int] {
   let src_region_n = bcc_src_region_n(cache)
   let flags = array_empty()
   let mut i = 0
@@ -887,7 +907,7 @@ export fn codegen_body_cache_filter_src_keep(cache: CodegenBodyCache, keep_file:
     }
     i = i + 1
   }
-  bcc_filter_entries(cache, flags)
+  flags
 }
 
 /// The subset of `cache` whose entry flag is 1, with each kept function's

@@ -82,10 +82,11 @@ import @vibe/compiler/codegen/common_base {
   codegen_body_cache_filter_fold_sigs,
   codegen_body_cache_filter_src_below,
   codegen_body_cache_filter_src_keep,
-  codegen_body_cache_from_bytes,
+  codegen_body_cache_from_bytes_at,
   codegen_body_cache_merge,
   codegen_body_cache_new,
-  codegen_body_cache_to_bytes,
+  codegen_body_cache_src_keep_drops_any,
+  codegen_body_cache_write_to,
   module_split_none
 }
 
@@ -1787,7 +1788,7 @@ fn encode_body_cache_artifact(paths: Array[String], fps: Array[String], counts: 
     bcw_push_int(payload, Array::get(counts, i))
     i = i + 1
   }
-  Bytes::append(payload, codegen_body_cache_to_bytes(cache))
+  codegen_body_cache_write_to(payload, cache)
   let (h1, h2) = bcw_checksum(payload, 0)
   let buf = Bytes::new()
   Bytes::push(buf, 'V')
@@ -1890,7 +1891,7 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
     if malformed || (!layout_same && limit == 0) {
       codegen_body_cache_new()
     } else {
-      match codegen_body_cache_from_bytes(Bytes::slice(b, p, Bytes::length(b))) {
+      match codegen_body_cache_from_bytes_at(b, p) {
         Some(cache) => {
           let kept = if layout_same {
             codegen_body_cache_filter_src_keep(cache, keep_file)
@@ -2336,13 +2337,18 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
       Array::push(tl_keep_file, tl_same)
       tl_f = tl_f + 1
     }
-    let kept = codegen_body_cache_filter_src_keep(cache_in_decoded, tl_keep_file)
-    let mut tl_c = 0
-    while tl_c < Array::length(cache_in_decoded.consumer_src_limit) {
-      Array::push(kept.consumer_src_limit, Array::get(cache_in_decoded.consumer_src_limit, tl_c))
-      tl_c = tl_c + 1
+    if !codegen_body_cache_src_keep_drops_any(cache_in_decoded, tl_keep_file) {
+      // The common case: nothing moved, so the copy would be the input.
+      cache_in_decoded
+    } else {
+      let kept = codegen_body_cache_filter_src_keep(cache_in_decoded, tl_keep_file)
+      let mut tl_c = 0
+      while tl_c < Array::length(cache_in_decoded.consumer_src_limit) {
+        Array::push(kept.consumer_src_limit, Array::get(cache_in_decoded.consumer_src_limit, tl_c))
+        tl_c = tl_c + 1
+      }
+      kept
     }
-    kept
   } else if Array::length(cache_in_decoded.consumer_src_limit) == 1 {
     let narrowed = codegen_body_cache_filter_src_below(cache_in_decoded, Array::get(cache_in_decoded.consumer_src_limit, 0))
     Array::push(narrowed.consumer_src_limit, Array::get(cache_in_decoded.consumer_src_limit, 0))

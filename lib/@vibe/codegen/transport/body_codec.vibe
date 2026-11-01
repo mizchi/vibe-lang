@@ -168,6 +168,15 @@ fn bcc_push_string_arrays(buf: Bytes, xs: Array[Array[String]]) -> Unit with Exc
 
 export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exception {
   let buf = Bytes::new()
+  codegen_body_cache_write_to(buf, cache)
+  buf
+}
+
+/// Append the VBC7 stream for `cache` to `buf`, which may already hold a
+/// header. The persisted artifact writes its file table first and the stream
+/// after it; encoding into a separate buffer and appending cost one more copy
+/// of the whole cache on every store (#2818).
+export fn codegen_body_cache_write_to(buf: Bytes, cache: CodegenBodyCache) -> Unit with Exception {
   Bytes::push(buf, 'V')
   Bytes::push(buf, 'B')
   Bytes::push(buf, 'C')
@@ -224,7 +233,6 @@ export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exc
   bcc_push_string_array(buf, cache.fn_fold_sigs)
   bcc_push_string_array(buf, cache.guard_fold_names)
   bcc_push_string_array(buf, cache.guard_fold_sigs)
-  buf
 }
 
 /// Encode the cache with the same VBC7 wire format as the compatibility function.
@@ -427,11 +435,23 @@ export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
 /// a checked span; it must copy every byte, including NUL and invalid UTF-8,
 /// without retaining a view of the mutable input. Wire validation stays here.
 export fn codegen_body_cache_from_bytes_with_string_copy(b: Bytes, copy: (Bytes, Int, Int) -> String) -> Option[CodegenBodyCache] {
-  if Bytes::length(b) < 4 || Bytes::get(b, 0) != 'V' || Bytes::get(b, 1) != 'B' || Bytes::get(b, 2) != 'C' || Bytes::get(b, 3) != '7' {
+  bcc_decode_from(b, 0, copy)
+}
+
+/// Decode a VBC7 stream that starts at `start` inside `b` and runs to its end,
+/// without first copying it out. The persisted artifact wraps the stream in a
+/// header and a file table; slicing the stream out cost a second copy of the
+/// whole cache on every warm build (#2818).
+export fn codegen_body_cache_from_bytes_at(b: Bytes, start: Int) -> Option[CodegenBodyCache] {
+  bcc_decode_from(b, start, bcc_copy_string)
+}
+
+fn bcc_decode_from(b: Bytes, start: Int, copy: (Bytes, Int, Int) -> String) -> Option[CodegenBodyCache] {
+  if start < 0 || Bytes::length(b) < start + 4 || Bytes::get(b, start) != 'V' || Bytes::get(b, start + 1) != 'B' || Bytes::get(b, start + 2) != 'C' || Bytes::get(b, start + 3) != '7' {
     None
   } else {
     let out = codegen_body_cache_new()
-    let mut p = 4
+    let mut p = start + 4
     p = bcc_read_int_array(b, p, out.fn_indices)
     if p >= 0 {
       p = bcc_read_string_array(b, p, out.fn_names, copy)

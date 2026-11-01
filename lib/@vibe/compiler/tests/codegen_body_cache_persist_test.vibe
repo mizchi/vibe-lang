@@ -24,6 +24,7 @@ import @vibe/compiler/codegen/common_base {
   codegen_body_cache_new,
   codegen_body_cache_replay,
   codegen_body_cache_slot_index,
+  codegen_body_cache_src_keep_drops_any,
   codegen_body_cache_to_bytes,
   linemap_disabled,
   linemap_flush_fn,
@@ -464,6 +465,20 @@ test "#2669: filter_src_keep keeps a LATE unchanged file the prefix rule cannot 
   let unguarded = cache_two_files()
   Array::truncate(unguarded.guard_meta, 0)
   inspect(Array::length(codegen_body_cache_filter_src_keep(unguarded, [1, 1, 1]).fn_indices), content = "0")
+}
+
+test "#2818: src_keep_drops_any answers exactly whether filter_src_keep drops" {
+  // The warm build refilters an already-filtered cache by the typed-lowering
+  // guard and skips the copy when this says nothing would go.
+  let c = cache_two_files()
+  inspect(codegen_body_cache_src_keep_drops_any(c, [1, 1, 1]), content = "false")
+  inspect(Array::length(codegen_body_cache_filter_src_keep(c, [1, 1, 1]).fn_indices), content = "2")
+  inspect(codegen_body_cache_src_keep_drops_any(c, [1, 1, 0]), content = "true")
+  inspect(Array::length(codegen_body_cache_filter_src_keep(c, [1, 1, 0]).fn_indices), content = "1")
+  // An entry with no file id is dropped by the filter, so it counts.
+  let unplaced = cache_two_files()
+  Array::set(unplaced.fn_files, 0, 0 - 1)
+  inspect(codegen_body_cache_src_keep_drops_any(unplaced, [1, 1, 1]), content = "true")
 }
 
 test "#2669: the layout fingerprint separates the values that move a body's bytes" {
