@@ -2297,6 +2297,25 @@ assembly still run whole-program, and the prelude alone is over half of what
 remains. (`scripts/body_cache_reuse.sh` is the wrong tool for wall time: each
 of its rows recompiles the seed-built harness first, ~60 s of ~90 s.)
 
+**At the KPI's three sizes** (`scripts/incremental_kpi.mjs`, same stage2,
+`VIBE_CODEGEN_BODY_CACHE` the only change, absolute times):
+
+| corpus | cold | warm, `off` | warm, `on` | warm heap `off` → `on` |
+|---|---:|---:|---:|---:|
+| small (2 modules) | ~190 ms | 165 ms | 160 ms | 2 → 2 MB |
+| medium (16 modules) | ~380 ms | 300 ms | 295 ms | 16 → 19 MB |
+| selfhost (686 modules) | ~29.7 s | 18.9 s | 17.2 s | 2922 → 3092 MB |
+
+Only the selfhost size gains. The small corpus publishes no artifact at all:
+a program with no derived comparator never runs the pin reorder, so it
+records no guards (`body_cache_harvest_is_replayable`). Below a few hundred
+milliseconds the remaining cost is most likely the process itself (node
+startup and instantiating a 5 MB compiler); no cache of compiler phases can
+remove it. That is an inference from the absolute times, not something these
+two corpora were profiled for. The price of the cache is heap. The bump heap
+never frees, so decoding the ~12 MB artifact, re-encoding the refreshed one
+and the intermediate copies show up as +170 MB at selfhost size.
+
 Before the filter that carries an entry's lambdas, slots, blind references and
 linemap rows (`bcc_filter_entries`) used a direct-address table, it tested each
 row's owner against the kept-function list linearly. That is quadratic, and
