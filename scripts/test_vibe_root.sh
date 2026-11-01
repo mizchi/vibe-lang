@@ -13,7 +13,9 @@
 #     path is still relative to where the user stood;
 #   * the compiled program itself runs from the invoking directory (its own
 #     relative file reads do not move because of where the cache lives);
-#   * `vibe clean` removes .vibe/build and `--all` the store as well;
+#   * `vibe clean` removes .vibe/build, `--all` the store as well, and
+#     `--cache` only the compiler cache (where the compiler writes it);
+#     `--dry-run` reports and removes nothing;
 #   * the launcher leaves nothing behind in the OS temp dir.
 #
 # Every assertion compares an exact string or path, so a regression in any of
@@ -404,7 +406,38 @@ got="$(cd "$app" && vibe clean --all)"
 got="$(cd "$app" && vibe clean)"
 [ "$got" = "nothing to clean under $app" ] || fail "vibe clean on a clean project: unexpected report: $got"
 ( cd "$app" && vibe clean --bogus >/dev/null 2>&1 ) && fail "vibe clean accepted an unknown flag"
-pass "vibe clean removes .vibe/build, --all the store too"
+# --cache removes the compiler's `vibe_*` cache files and nothing beside them;
+# --dry-run reports the same count and size and removes nothing (#3674).
+mkdir -p "$app/.vibe/build/cache" "$app/.vibe/build/run"
+printf 'abc' > "$app/.vibe/build/cache/vibe_selfhost_a.txt"
+printf 'defgh' > "$app/.vibe/build/cache/vibe_selfhost_b.txt"
+printf 'mine' > "$app/.vibe/build/cache/notes.txt"
+printf 'wasm' > "$app/.vibe/build/run/prog.wasm"
+got="$(cd "$app/sub" && vibe clean --cache --dry-run)"
+[ "$got" = "would remove 2 cache file(s), 8.0 B, from .vibe/build/cache" ] || fail "vibe clean --cache --dry-run: unexpected report: $got"
+[ -f "$app/.vibe/build/cache/vibe_selfhost_a.txt" ] || fail "vibe clean --cache --dry-run removed a cache file"
+got="$(cd "$app/sub" && vibe clean --cache)"
+[ "$got" = "removed 2 cache file(s), 8.0 B, from .vibe/build/cache" ] || fail "vibe clean --cache: unexpected report: $got"
+[ -z "$(find "$app/.vibe/build/cache" -name 'vibe_*')" ] || fail "vibe clean --cache left a cache file"
+[ -f "$app/.vibe/build/cache/notes.txt" ] || fail "vibe clean --cache removed a file that is not a cache entry"
+[ -f "$app/.vibe/build/run/prog.wasm" ] || fail "vibe clean --cache removed an artifact"
+got="$(cd "$app" && vibe clean --cache)"
+[ "$got" = "nothing to clean in .vibe/build/cache" ] || fail "vibe clean --cache on an empty cache: unexpected report: $got"
+# A VIBE_BUILD_CACHE_DIR that is a symlink to a directory is cleaned through
+# the link: the compiler writes beneath it the same way.
+mkdir -p "$WORK/real_cache"
+printf 'abc' > "$WORK/real_cache/vibe_selfhost_c.txt"
+ln -s "$WORK/real_cache" "$WORK/cache_link"
+got="$(cd "$app" && VIBE_BUILD_CACHE_DIR="$WORK/cache_link" vibe clean --cache)"
+[ "$got" = "removed 1 cache file(s), 3.0 B, from $WORK/cache_link" ] || fail "vibe clean --cache through a symlinked cache dir: unexpected report: $got"
+[ ! -e "$WORK/real_cache/vibe_selfhost_c.txt" ] || fail "vibe clean --cache did not follow a symlinked cache dir"
+got="$(cd "$app" && vibe clean --dry-run)"
+[ "$got" = "would clean: .vibe/build" ] || fail "vibe clean --dry-run: unexpected report: $got"
+[ -f "$app/.vibe/build/run/prog.wasm" ] || fail "vibe clean --dry-run removed .vibe/build"
+( cd "$app" && vibe clean --all --cache >/dev/null 2>&1 ) && fail "vibe clean accepted --all with --cache"
+got="$(cd "$app" && vibe clean)"
+[ "$got" = "cleaned: .vibe/build" ] || fail "vibe clean after --cache: unexpected report: $got"
+pass "vibe clean removes .vibe/build, --all the store too, --cache only the compiler cache; --dry-run removes nothing"
 
 # --- 5b. VIBE_BUILD_DIR carries the compiler cache with it ------------------
 # The compiler roots its cache at the literal `.vibe/build/cache/` under its
@@ -426,10 +459,14 @@ mkdir -p "$iso"
 ( cd "$app/sub" && VIBE_BUILD_DIR="$bd" VIBE_BUILD_CACHE_DIR="$iso" vibe run deep.vibex >/dev/null 2>&1 ) || fail "vibe run with VIBE_BUILD_DIR and VIBE_BUILD_CACHE_DIR failed"
 n_iso="$(find "$iso" -maxdepth 1 -name 'vibe_*' | wc -l | tr -d ' ')"
 [ "$n_iso" -gt 0 ] || fail "an explicit VIBE_BUILD_CACHE_DIR must win over the derived one: nothing landed under $iso"
+got="$(cd "$app/sub" && VIBE_BUILD_DIR="$bd" VIBE_BUILD_CACHE_DIR="$iso" vibe clean --cache)"
+case "$got" in "removed $n_iso cache file(s), "*", from $iso") ;; *) fail "vibe clean --cache with VIBE_BUILD_CACHE_DIR: unexpected report: $got" ;; esac
+[ -z "$(find "$iso" -name 'vibe_*')" ] || fail "vibe clean --cache left a file in the explicit VIBE_BUILD_CACHE_DIR"
+[ -n "$(find "$bd/cache" -name 'vibe_*')" ] || fail "vibe clean --cache under VIBE_BUILD_CACHE_DIR also emptied the derived cache"
 got="$(cd "$app/sub" && VIBE_BUILD_DIR="$bd" vibe clean)"
 [ "$got" = "cleaned: $bd" ] || fail "vibe clean with VIBE_BUILD_DIR: unexpected report: $got"
 [ ! -e "$bd" ] || fail "vibe clean with VIBE_BUILD_DIR left $bd"
-pass "VIBE_BUILD_DIR moves the artifacts and the compiler cache; an explicit VIBE_BUILD_CACHE_DIR still wins; vibe clean removes the override"
+pass "VIBE_BUILD_DIR moves the artifacts and the compiler cache; an explicit VIBE_BUILD_CACHE_DIR still wins, for vibe clean --cache too; vibe clean removes the override"
 
 # --- 6. nothing left in the OS temp dir -------------------------------------
 leftover="$(find "$WORK/tmp" -mindepth 1 | wc -l | tr -d ' ')"
