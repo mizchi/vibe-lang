@@ -11,7 +11,9 @@ Categorized so you can find things without `ls | grep`. `*_test.sh` /
 
 ## CLI / dev entrypoints (`vibe_*`)
 The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
-- `vibe_run.sh` — compile+run a `.vibe` (seed → runner). `vibe_run_smoke.sh`
+- `vibe_run.sh` — `runtime/vibe run` on the seed compiler and the node runner
+  (`vibe_run_runner.sh` hands the program its caller's `VIBE_CLI_WASM` /
+  `VIBE_RUNNER`). `vibe_run_smoke.sh`
 - `vibe_test.sh` — run `test {}` blocks. `vibe_test_smoke.sh`
 - `test_report.vibex` — the `FAIL <file>` report for `vibe_test.sh`, over
   `@vibe/testreport` (the launcher reaches the same library via `vibe test-report`)
@@ -54,7 +56,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - **LSP / IDE:** `test_vibe_lsp.js`, `test_vibe_lsp_workspace.js`,
   `test_symbol_index.js`, `test_graph_query.js`
 - **Compiler component/CLI:** `test_check_*`, `test_cli_*`, `test_rc_bootstrap.sh`
-- **Runtime / mem / perf:** `test_vibe_{alloc_site,mem,bench}.sh`,
+- **Runtime / mem / perf:** `test_vibe_{alloc_site,mem,bench,run_coverage}.sh`,
   `test_gc_selfbuild.sh`, `test_name_section.sh`, `test_simd_emit_wasmtime.sh`
 - **Host ABI / library / install:** `test_host_abi.js`, `test_vibe_library.sh`,
   `test_vibe_install_hello.sh` (#1949 first-program

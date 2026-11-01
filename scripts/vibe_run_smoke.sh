@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Smoke test for selfhost `vibe run` (scripts/vibe_run.sh): compile + execute a
-# single-file and a multi-file program via the seed, asserting their results.
+# Smoke test for scripts/vibe_run.sh (`runtime/vibe run` on the seed): compile +
+# execute a single-file and a multi-file program, asserting their results.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 WORK="$ROOT_DIR/_build/vibe_run_smoke"
 mkdir -p "$WORK"
-trap 'rm -rf "$WORK" "$ROOT_DIR/_build/vibe_run"' EXIT
+trap 'rm -rf "$WORK"' EXIT
 
 # single-file executable root
 printf 'fn main allows Stdout {\n  let xs = [1, 2, 3, 4]\n  let total = Array::fold(xs, 0, _ + _)\n  Stdout::write_stream("\\{total}\\n")\n}\n' > "$WORK/prog.vibex"

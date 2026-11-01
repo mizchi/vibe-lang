@@ -24,6 +24,9 @@
 #                                         total allocated) to stderr after exit
 #   vibe run --alloc-site[=N] <file.vibex>  run + report per-line alloc
 #                                         attribution (top N sites) to stderr
+#   vibe run --coverage <file.vibex>      run an instrumented build; function /
+#                                         branch hits go to a JSON report beside
+#                                         the artifact (node runner only)
 #   vibe profile <file.vibex> [--out FILE] [--interval-us N]
 #                                         capture a Wasmtime guest CPU profile
 #   vibe compile <file.vibe> [-o <out>]   compile to a .wasm (default:
@@ -836,6 +839,28 @@ execute_host_action() {
         "$(sed -n '7p' "$plan")" "$(sed -n '8p' "$plan")" "$(sed -n '9p' "$plan")" \
         "$(sed -n '10p' "$plan")" "$(sed -n '11p' "$plan")" "$(sed -n '12p' "$plan")" \
         ${args[@]+"${args[@]}"}
+      ;;
+    run-guest-coverage)
+      # `vibe run --coverage`: run-guest one line down, with the report path in
+      # line 3. The runner dumps the instrumented module's hit bitmaps to
+      # VIBE_COV_OUT when the program ends (or traps), so a report that is
+      # missing afterwards means this runner does not implement the dump; that
+      # is said rather than read as "nothing was covered".
+      local cov_out cov_status=0
+      cov_out="$(sed -n '3p' "$plan")"; wasm="$(sed -n '4p' "$plan")"
+      local args=()
+      while IFS= read -r line; do args+=("$line"); done < <(sed -n '14,$p' "$plan")
+      case "$cov_out" in /*) ;; *) cov_out="$PROJECT_ROOT/$cov_out" ;; esac
+      rm -f "$cov_out"
+      VIBE_COV_OUT="$cov_out" host_run_guest "$wasm" "$(sed -n '5p' "$plan")" "$(sed -n '6p' "$plan")" "$(sed -n '7p' "$plan")" \
+        "$(sed -n '8p' "$plan")" "$(sed -n '9p' "$plan")" "$(sed -n '10p' "$plan")" \
+        "$(sed -n '11p' "$plan")" "$(sed -n '12p' "$plan")" "$(sed -n '13p' "$plan")" \
+        ${args[@]+"${args[@]}"} || cov_status=$?
+      if [ ! -s "$cov_out" ]; then
+        echo "error: vibe run --coverage: the runner wrote no coverage report ($RUNNER); the node runner writes one (VIBE_RUNNER=scripts/viberun_node.sh)" >&2
+        [ "$cov_status" = 0 ] && cov_status=1
+      fi
+      return "$cov_status"
       ;;
     run-guest-profile)
       src="$(sed -n '3p' "$plan")"; profile_out="$(sed -n '4p' "$plan")"; interval="$(sed -n '5p' "$plan")"
