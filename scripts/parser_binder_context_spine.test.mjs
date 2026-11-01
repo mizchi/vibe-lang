@@ -230,6 +230,9 @@ test("balanced-token inventory classifies every production EFn site", () => {
     ["parser_expr.vibe:apply_value_bracket_type_params", [3, "slot-preserving reconstruction"]],
     ["parser_expr.vibe:parse_fn_main_stmt", [1, "source-captured"]],
     ["parser_expr.vibe:parse_fn_wasm_body", [1, "source-captured"]],
+    // ADR-0120 D3 (#3681): only pattern-reads whether a top-level `let`'s
+    // initializer is a lambda, to keep its `_` slots; it rebuilds nothing.
+    ["parser_expr.vibe:record_let_lambda_positional", [1, "deliberately ineligible"]],
     ["parser_expr.vibe:parse_fn_stmt_general", [1, "source-captured"]],
     ["parser_expr.vibe:lower_fn_decl_stmt_with_binder_context", [2, "slot-preserving reconstruction"]],
     // #3120: the ascription a parameter default's unwrap is spelled with. A
@@ -315,6 +318,9 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
     "parse_impl(tokens,",
   ]);
   assertBody(exprSource, "parse_fn_signature", [
+    "parse_contract_fn_signature(tokens, pos)",
+  ], ["Some(ParserBinderContext"]);
+  assertBody(exprSource, "parse_contract_fn_signature", [
     "parse_fn_signature_with_binder_context(tokens, no_starts, pos, None, None)",
   ], ["Some(ParserBinderContext"]);
   assertContextual(exprSource, "parse_fn_main_stmt", [
@@ -620,6 +626,7 @@ const authorityArmSpecs = {
     SReExport: authoritySpec("AuthorityStmtReExport", "leaf(AuthorityStmtReExport)"),
     SQualifiedPatternRefs: authoritySpec("AuthorityStmtQualifiedPatternRefs", "leaf(AuthorityStmtQualifiedPatternRefs)"),
     STestEffectRows: authoritySpec("AuthorityStmtTestEffectRows", "leaf(AuthorityStmtTestEffectRows)"),
+    SPositionalParams: authoritySpec("AuthorityStmtPositionalParams", "leaf(AuthorityStmtPositionalParams)"),
   },
 };
 
