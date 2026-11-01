@@ -1,0 +1,430 @@
+//# @vibe/testrun/run — the command policy of scripts/vibe_test.sh (#3674):
+//# its argument grammar, the line and result record each test file gets, and
+//# the `[vibe-test]` summary. The script keeps what only a host can do --
+//# launching the compiler and the runner, timeouts, the worker fan-out and the
+//# exit status -- and asks scripts/test_report.vibex for every decision here.
+//#
+//# A result record is one line, `<ok|fail> <fn hit> <fn total> <branch hit>
+//# <branch total> <coverage 0|1> <tests>`, written per file and read back by
+//# the summary. `<tests>` is empty where the count is unknown (the gc
+//# backend strips the `__test_` names).
+
+import @vibe/json {
+  Json
+}
+
+//# Strings
+
+fn starts_with_dash(s: String) -> Bool {
+  String::length(s) > 0 && String::byte_at(s, 0) == '-'
+}
+
+/// Every non-overlapping occurrence of `needle`, left to right (bash's
+/// `${s//needle/by}`).
+fn replace_all(s: String, needle: String, by: String) -> String {
+  let acc = StringBuilder::new()
+  let n = String::length(needle)
+  let mut i = 0
+  while i < String::length(s) {
+    if i + n <= String::length(s) && String::substring(s, i, i + n) == needle {
+      StringBuilder::push(acc, by)
+      i = i + n
+    } else {
+      StringBuilder::push(acc, String::substring(s, i, i + 1))
+      i = i + 1
+    }
+  }
+  StringBuilder::freeze(acc)
+}
+
+fn digits_or_zero(s: String) -> Int {
+  let mut ok = String::length(s) > 0
+  let mut v = 0
+  let mut i = 0
+  while ok && i < String::length(s) {
+    let c = String::byte_at(s, i)
+    if c >= '0' && c <= '9' {
+      v = v * 10 + (c - '0')
+    } else {
+      ok = false
+    }
+    i = i + 1
+  }
+  if ok {
+    v
+  } else {
+    0
+  }
+}
+
+/// Whitespace-separated fields, the way `read -r a b c` splits a record.
+fn fields(line: String) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  let n = String::length(line)
+  while i < n {
+    while i < n && (String::byte_at(line, i) == ' ' || String::byte_at(line, i) == '\t') {
+      i = i + 1
+    }
+    let start = i
+    while i < n && String::byte_at(line, i) != ' ' && String::byte_at(line, i) != '\t' && String::byte_at(line, i) != '\n' {
+      i = i + 1
+    }
+    if i > start {
+      Array::push(out, String::substring(line, start, i))
+    } else {
+      ()
+    }
+    if i < n && String::byte_at(line, i) == '\n' {
+      i = n
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+fn field_or(fs: Array[String], i: Int) -> String {
+  if i < Array::length(fs) {
+    Array::get(fs, i)
+  } else {
+    ""
+  }
+}
+
+/// `hit / total * 100` with two decimals, `n/a` when there is nothing to
+/// measure: Python's `f'{hit/total*100:.2f}%'`, which the script printed.
+/// Python rounds the double it computed, half to even on that double's exact
+/// value, so the same double is computed here and its exact value recovered:
+/// a finite double is `m / 2^k` for integers `m < 2^53` and `k`, and doubling
+/// is exact, so doubling until the value is an integer yields both. Rounding
+/// the exact ratio instead differs at ties (23/160 is 14.375 exactly, but the
+/// double is just below it, so Python prints 14.37).
+fn percent2(hit: Int, total: Int) -> String {
+  if total == 0 {
+    "n/a"
+  } else {
+    let v = Int::to_double(hit) / Int::to_double(total) * 100.0
+    let mut q = 0
+    // Below 0.004 the hundredths are 0 whatever the rounding, and above it
+    // k stays at most 60, so `m * 100` and `2^k` both fit an Int.
+    if v >= 0.004 {
+      let mut m = v
+      let mut k = 0
+      while m != Double::floor(m) {
+        m = m * 2.0
+        k = k + 1
+      }
+      let num = Double::to_int(m) * 100
+      let den = 1<<k
+      q = num / den
+      let r = num - q * den
+      if r * 2 > den || (r * 2 == den && q % 2 == 1) {
+        q = q + 1
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    let frac = q % 100
+    let pad = if frac < 10 {
+      "0"
+    } else {
+      ""
+    }
+    "\{q / 100}.\{pad}\{frac}%"
+  }
+}
+
+//# Arguments
+
+/// The plan for `vibe_test.sh <argv>`: `coverage 0|1`, `update 0|1`, then one
+/// `path <arg>` line per positional argument, in order. `backend` is
+/// VIBE_TEST_BACKEND (empty means linear). Throws the message to print, after
+/// which the script exits 2.
+///
+/// An unrecognised option is named as one (#2886): it used to fall through to
+/// the path check and read `not found: --update`, the wording a missing file
+/// gets.
+export fn test_run_plan(argv: Array[String], backend: String) -> String with Exception {
+  let mut coverage = false
+  let mut update = false
+  let paths: Array[String] = []
+  let mut i = 0
+  while i < Array::length(argv) {
+    let a = Array::get(argv, i)
+    if a == "--coverage" {
+      coverage = true
+    } else if a == "--update" {
+      update = true
+    } else if starts_with_dash(a) {
+      throw("vibe_test.sh: unrecognised option: \{a}\n  Supported flags: --coverage --update\n  (a path that begins with '-' can be passed as ./\{a})")
+    } else {
+      Array::push(paths, a)
+    }
+    i = i + 1
+  }
+  if Array::length(paths) == 0 {
+    throw("usage: vibe_test.sh [--coverage] [--update] <path.vibe | dir> [more paths...]")
+  } else if backend == "gc" && coverage {
+    throw("vibe_test.sh: --coverage is linear-backend only (unset VIBE_TEST_BACKEND=gc)")
+  } else {
+    let acc = StringBuilder::new()
+    StringBuilder::push(acc, if coverage {
+      "coverage 1\n"
+    } else {
+      "coverage 0\n"
+    })
+    StringBuilder::push(acc, if update {
+      "update 1\n"
+    } else {
+      "update 0\n"
+    })
+    let mut j = 0
+    while j < Array::length(paths) {
+      StringBuilder::push(acc, "path \{Array::get(paths, j)}\n")
+      j = j + 1
+    }
+    StringBuilder::freeze(acc)
+  }
+}
+
+//# Paths
+
+/// The repository-relative spelling of a test path (#3505): `./`, `/./` and
+/// `//` are dropped, so every spelling of a file names the artifact its plain
+/// form does. Applied in this order until nothing changes, as the script's
+/// `case` loop did.
+export fn test_run_normalize(src_rel: String) -> String {
+  let mut s = src_rel
+  let mut done = false
+  while !done {
+    if String::starts_with(s, "./") {
+      s = String::substring(s, 2, String::length(s))
+    } else if String::contains(s, "/./") {
+      s = replace_all(s, "/./", "/")
+    } else if String::contains(s, "//") {
+      s = replace_all(s, "//", "/")
+    } else {
+      done = true
+    }
+  }
+  s
+}
+
+/// The flat artifact name of a repository-relative test path: `/` becomes
+/// `_` and a trailing `.vibe` is dropped.
+export fn test_run_flat(src_rel: String) -> String {
+  let flat = replace_all(src_rel, "/", "_")
+  if String::ends_with(flat, ".vibe") {
+    String::substring(flat, 0, String::length(flat) - 5)
+  } else {
+    flat
+  }
+}
+
+/// One line per test path, `file<TAB><src_rel><TAB><flat>`, or
+/// `outside<TAB><src><TAB><flat>` for an absolute path that is not under
+/// `root` (the runner preopens only the repository). Each spelling is the one
+/// the script compiles, runs and reports.
+export fn test_run_entry(root: String, src: String) -> String {
+  let prefix = "\{root}/"
+  if String::starts_with(src, prefix) {
+    let rel = test_run_normalize(String::substring(src, String::length(prefix), String::length(src)))
+    "file\t\{rel}\t\{test_run_flat(rel)}\n"
+  } else if String::starts_with(src, "/") {
+    "outside\t\{src}\t\{replace_all(src, "/", "_")}\n"
+  } else {
+    let rel = test_run_normalize(src)
+    "file\t\{rel}\t\{test_run_flat(rel)}\n"
+  }
+}
+
+//# One file
+
+/// The record of a file that failed for any reason; `tests` may be empty.
+export fn test_run_fail_record(tests: String) -> String {
+  "fail 0 0 0 0 0 \{tests}\n"
+}
+
+/// `FAIL (compile)`, with the first line of the compiler's diagnostic when it
+/// wrote one (#948). Its record is `test_run_fail_record("")`.
+export fn test_run_compile_failure(src_rel: String, diag: String) -> String {
+  let at = String::index_of(diag, "\n")
+  let first = if at < 0 {
+    diag
+  } else {
+    String::substring(diag, 0, at)
+  }
+  if first == "" {
+    "FAIL (compile) \{src_rel}\n"
+  } else {
+    "FAIL (compile) \{src_rel}\n       \{first}\n"
+  }
+}
+
+/// `ok`, annotated when the file has no recognised `test {}` block (#948) and
+/// when `--update` patched it first (#2886).
+export fn test_run_pass(src_rel: String, tests: String, patches: Int) -> String {
+  let note = if tests == "0" {
+    " (no tests found)"
+  } else {
+    ""
+  }
+  let updated = if patches > 0 {
+    " (updated \{patches} snapshot(s))"
+  } else {
+    ""
+  }
+  "ok   \{src_rel}\{note}\{updated}\n"
+}
+
+export fn test_run_pass_record(tests: String) -> String {
+  "ok 0 0 0 0 0 \{tests}\n"
+}
+
+fn json_int(j: Json, key: String) -> Int {
+  Double::to_int(Json::number(Json::field(j, key)))
+}
+
+/// A passing `--coverage` run: the counts from its report, and with
+/// `show_gaps` (VIBE_COV_SHOW_GAPS=1) what is uncovered.
+export fn test_run_coverage_pass(src_rel: String, report: String, show_gaps: Bool) -> String {
+  let r = Json::parse(report)
+  let b = Json::field(r, "branch")
+  let acc = StringBuilder::new()
+  StringBuilder::push(acc, "ok   \{src_rel}  [cov fn \{json_int(r, "hit")}/\{json_int(r, "total")}, branch \{json_int(b, "hit")}/\{json_int(b, "total")}]\n")
+  if show_gaps {
+    let missed = Json::field(r, "missed_fns")
+    if Json::length(missed) > 0 {
+      let names: Array[String] = []
+      let mut i = 0
+      while i < Json::length(missed) {
+        Array::push(names, Json::string(Json::index(missed, i)))
+        i = i + 1
+      }
+      StringBuilder::push(acc, "       uncovered functions: \{String::join(names, ", ")}\n")
+    } else {
+      ()
+    }
+    let gaps = Json::field(b, "top_gaps")
+    let mut g = 0
+    while g < Json::length(gaps) {
+      let gap = Json::index(gaps, g)
+      StringBuilder::push(acc, "       branch gap: \{Json::string(Json::field(gap, "fn"))} \{json_int(gap, "taken")}/\{json_int(gap, "total")} taken\n")
+      g = g + 1
+    }
+  } else {
+    ()
+  }
+  StringBuilder::freeze(acc)
+}
+
+export fn test_run_coverage_record(report: String, tests: String) -> String {
+  let r = Json::parse(report)
+  let b = Json::field(r, "branch")
+  "ok \{json_int(r, "hit")} \{json_int(r, "total")} \{json_int(b, "hit")} \{json_int(b, "total")} 1 \{tests}\n"
+}
+
+/// A passing `--coverage` run that left no fresh report is a failure: an old
+/// report must not stand in for a measurement (#2153).
+export fn test_run_coverage_missing(src_rel: String, cov_out: String) -> String {
+  "FAIL (coverage) \{src_rel}\n       test passed but produced no fresh coverage report: \{cov_out}\n"
+}
+
+/// `FAIL` and the condensed report under it (@vibe/testreport), noting when
+/// `--update` rewrote the file and it still fails (#2886).
+export fn test_run_failure(src_rel: String, patches: Int, detail: String) -> String {
+  let note = if patches > 0 {
+    " (after \{patches} snapshot patch(es))"
+  } else {
+    ""
+  }
+  "FAIL \{src_rel}\{note}\n\{detail}"
+}
+
+//# Summary
+
+/// Whether any record is a failure: the run's exit status.
+export fn test_run_failed(records: Array[String]) -> Bool {
+  let mut failed = false
+  let mut i = 0
+  while i < Array::length(records) {
+    if field_or(fields(Array::get(records, i)), 0) != "ok" {
+      failed = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  failed
+}
+
+/// The `[vibe-test]` summary over every file's record. `files` is how many
+/// files the run was given and `compile_fails` how many did not compile;
+/// `seed_default` says the compiler was the committed seed by default, whose
+/// compile failures may only mean the file is newer than it.
+export fn test_run_summary(records: Array[String], files: Int, compile_fails: Int, backend: String, coverage: Bool, seed_default: Bool, seed: String, covdir: String) -> String {
+  let mut pass = 0
+  let mut fail = 0
+  let mut tests = 0
+  let mut notest = 0
+  let mut fn_hit = 0
+  let mut fn_total = 0
+  let mut br_hit = 0
+  let mut br_total = 0
+  let mut cov_files = 0
+  let mut i = 0
+  while i < Array::length(records) {
+    let fs = fields(Array::get(records, i))
+    let nt = digits_or_zero(field_or(fs, 6))
+    tests = tests + nt
+    if field_or(fs, 0) == "ok" {
+      pass = pass + 1
+      if nt == 0 {
+        notest = notest + 1
+      } else {
+        ()
+      }
+      if field_or(fs, 5) == "1" {
+        fn_hit = fn_hit + digits_or_zero(field_or(fs, 1))
+        fn_total = fn_total + digits_or_zero(field_or(fs, 2))
+        br_hit = br_hit + digits_or_zero(field_or(fs, 3))
+        br_total = br_total + digits_or_zero(field_or(fs, 4))
+        cov_files = cov_files + 1
+      } else {
+        ()
+      }
+    } else {
+      fail = fail + 1
+    }
+    i = i + 1
+  }
+  let acc = StringBuilder::new()
+  if backend == "gc" {
+    StringBuilder::push(acc, "[vibe-test] \{pass} passed, \{fail} failed (\{files} files)\n")
+  } else {
+    StringBuilder::push(acc, "[vibe-test] \{pass} passed, \{fail} failed (\{files} files, \{tests} tests)\n")
+    if notest > 0 {
+      StringBuilder::push(acc, "[vibe-test] note: \{notest} file(s) with no tests found\n")
+    } else {
+      ()
+    }
+  }
+  if compile_fails > 0 && seed_default {
+    StringBuilder::push(acc, "[vibe-test] note: compiled with the committed seed (\{seed}).\n")
+    StringBuilder::push(acc, "[vibe-test]       A file that uses anything newer than the seed fails here even when it is correct.\n")
+    StringBuilder::push(acc, "[vibe-test]       Re-check against this checkout's compiler with:\n")
+    StringBuilder::push(acc, "[vibe-test]         VIBE_TEST_CLI_WASM=_build/selfhost/generations/<gen>_$(git rev-parse --short HEAD)/stage2.wasm\n")
+  } else {
+    ()
+  }
+  if coverage && cov_files > 0 {
+    StringBuilder::push(acc, "[vibe-test] coverage: functions \{fn_hit}/\{fn_total} (\{percent2(fn_hit, fn_total)}), branches \{br_hit}/\{br_total} (\{percent2(br_hit, br_total)}) over \{cov_files} file(s)\n")
+    StringBuilder::push(acc, "[vibe-test] per-file coverage JSON: \{covdir}/\n")
+  } else {
+    ()
+  }
+  StringBuilder::freeze(acc)
+}

@@ -1,0 +1,120 @@
+//# Imports
+
+import ./run.vibe {
+  test_run_compile_failure,
+  test_run_coverage_missing,
+  test_run_coverage_pass,
+  test_run_coverage_record,
+  test_run_entry,
+  test_run_fail_record,
+  test_run_failed,
+  test_run_failure,
+  test_run_flat,
+  test_run_normalize,
+  test_run_pass,
+  test_run_pass_record,
+  test_run_plan,
+  test_run_summary
+}
+
+//# Fixture
+
+fn plan_or_error(argv: Array[String], backend: String) -> String {
+  handle {
+    test_run_plan(argv, backend)
+  } with { Exception::Throw(m) => "error: \{m}" }
+}
+
+fn cov_report() -> String {
+  "{\"total\": 4, \"hit\": 3, \"missed\": 1, \"missed_fns\": [\"f_unused\"], \"branch\": {\"total\": 6, \"hit\": 5, \"top_gaps\": [{\"fn\": \"f_pick\", \"taken\": 1, \"total\": 2}]}}"
+}
+
+//# Arguments
+
+test "flags and paths keep their order; a dash-led argument is not a path" {
+  inspect(plan_or_error(["--update", "a_test.vibe", "--coverage", "dir"], ""), content = "coverage 1\nupdate 1\npath a_test.vibe\npath dir\n")
+  inspect(plan_or_error(["-x"], ""), content = "error: vibe_test.sh: unrecognised option: -x\n  Supported flags: --coverage --update\n  (a path that begins with '-' can be passed as ./-x)")
+  inspect(plan_or_error(["a_test.vibe", "--jobs"], ""), content = "error: vibe_test.sh: unrecognised option: --jobs\n  Supported flags: --coverage --update\n  (a path that begins with '-' can be passed as ./--jobs)")
+}
+
+test "no path is the usage line, and gc refuses --coverage" {
+  inspect(plan_or_error(["--update"], ""), content = "error: usage: vibe_test.sh [--coverage] [--update] <path.vibe | dir> [more paths...]")
+  inspect(plan_or_error(["--coverage", "a_test.vibe"], "gc"), content = "error: vibe_test.sh: --coverage is linear-backend only (unset VIBE_TEST_BACKEND=gc)")
+  inspect(plan_or_error(["a_test.vibe"], "gc"), content = "coverage 0\nupdate 0\npath a_test.vibe\n")
+}
+
+//# Paths
+
+test "every spelling of a path names the artifact its plain form does" {
+  inspect(test_run_normalize("./a/./b//c_test.vibe"), content = "a/b/c_test.vibe")
+  inspect(test_run_normalize("././x_test.vibe"), content = "x_test.vibe")
+  inspect(test_run_normalize("../up_test.vibe"), content = "../up_test.vibe")
+  inspect(test_run_flat("lib/@vibe/core/a_test.vibe"), content = "lib_@vibe_core_a_test")
+}
+
+test "a path under the root is made relative; one outside it is refused" {
+  inspect(test_run_entry("/r", "/r/lib/./a_test.vibe"), content = "file\tlib/a_test.vibe\tlib_a_test\n")
+  inspect(test_run_entry("/r", "./lib/b_test.vibe"), content = "file\tlib/b_test.vibe\tlib_b_test\n")
+  inspect(test_run_entry("/r", "/elsewhere/c_test.vibe"), content = "outside\t/elsewhere/c_test.vibe\t_elsewhere_c_test.vibe\n")
+  inspect(test_run_entry("/r", "/rx/d_test.vibe"), content = "outside\t/rx/d_test.vibe\t_rx_d_test.vibe\n")
+}
+
+//# One file
+
+test "a compile failure carries the first line of its diagnostic" {
+  inspect(test_run_compile_failure("a_test.vibe", "unknown name: foo\nsecond line"), content = "FAIL (compile) a_test.vibe\n       unknown name: foo\n")
+  inspect(test_run_compile_failure("a_test.vibe", ""), content = "FAIL (compile) a_test.vibe\n")
+  inspect(test_run_fail_record(""), content = "fail 0 0 0 0 0 \n")
+}
+
+test "a pass is annotated for no tests and for patched snapshots" {
+  inspect(test_run_pass("a_test.vibe", "3", 0), content = "ok   a_test.vibe\n")
+  inspect(test_run_pass("a_test.vibe", "0", 2), content = "ok   a_test.vibe (no tests found) (updated 2 snapshot(s))\n")
+  inspect(test_run_pass("a_test.vibe", "", 0), content = "ok   a_test.vibe\n")
+  inspect(test_run_pass_record("3"), content = "ok 0 0 0 0 0 3\n")
+  inspect(test_run_pass_record(""), content = "ok 0 0 0 0 0 \n")
+}
+
+test "a coverage pass reports its counts, and its gaps on request" {
+  inspect(test_run_coverage_pass("a_test.vibe", cov_report(), false), content = "ok   a_test.vibe  [cov fn 3/4, branch 5/6]\n")
+  inspect(test_run_coverage_pass("a_test.vibe", cov_report(), true), content = "ok   a_test.vibe  [cov fn 3/4, branch 5/6]\n       uncovered functions: f_unused\n       branch gap: f_pick 1/2 taken\n")
+  inspect(test_run_coverage_record(cov_report(), "2"), content = "ok 3 4 5 6 1 2\n")
+  inspect(test_run_coverage_missing("a_test.vibe", "_build/vibe_test/coverage/a_test.json"), content = "FAIL (coverage) a_test.vibe\n       test passed but produced no fresh coverage report: _build/vibe_test/coverage/a_test.json\n")
+}
+
+test "a failure is followed by its report, and notes patched snapshots" {
+  inspect(test_run_failure("a_test.vibe", 0, "       failing test: bad\n"), content = "FAIL a_test.vibe\n       failing test: bad\n")
+  inspect(test_run_failure("a_test.vibe", 1, ""), content = "FAIL a_test.vibe (after 1 snapshot patch(es))\n")
+}
+
+//# Summary
+
+test "the summary counts files, tests and files without tests" {
+  let records = ["ok 0 0 0 0 0 3\n", "ok 0 0 0 0 0 0\n", "fail 0 0 0 0 0 2\n"]
+  inspect(test_run_summary(records, 3, 0, "", false, true, "/s/compiler.wasm", "/c"), content = "[vibe-test] 2 passed, 1 failed (3 files, 5 tests)\n[vibe-test] note: 1 file(s) with no tests found\n")
+  assert(test_run_failed(records))
+  assert(!test_run_failed(["ok 0 0 0 0 0 1\n"]))
+}
+
+test "the gc summary has no test count, and a seed compile failure gets its note" {
+  let records = ["ok 0 0 0 0 0 \n", "fail 0 0 0 0 0 \n"]
+  inspect(test_run_summary(records, 2, 1, "gc", false, true, "/s/compiler.wasm", "/c"), content = "[vibe-test] 1 passed, 1 failed (2 files)\n[vibe-test] note: compiled with the committed seed (/s/compiler.wasm).\n[vibe-test]       A file that uses anything newer than the seed fails here even when it is correct.\n[vibe-test]       Re-check against this checkout's compiler with:\n[vibe-test]         VIBE_TEST_CLI_WASM=_build/selfhost/generations/<gen>_$(git rev-parse --short HEAD)/stage2.wasm\n")
+  inspect(test_run_summary(records, 2, 1, "gc", false, false, "/s/compiler.wasm", "/c"), content = "[vibe-test] 1 passed, 1 failed (2 files)\n")
+}
+
+test "coverage totals count passing coverage records only, to two decimals" {
+  let records = [
+    "ok 3 4 5 6 1 2\n",
+    "ok 1 3 0 0 1 1\n",
+    "fail 0 0 0 0 0 1\n",
+    "ok 0 0 0 0 0 1\n"
+  ]
+  inspect(test_run_summary(records, 4, 0, "", true, false, "/s/compiler.wasm", "/c"), content = "[vibe-test] 3 passed, 1 failed (4 files, 5 tests)\n[vibe-test] coverage: functions 4/7 (57.14%), branches 5/6 (83.33%) over 2 file(s)\n[vibe-test] per-file coverage JSON: /c/\n")
+  inspect(test_run_summary(["ok 1 8000 0 0 1 1\n"], 1, 0, "", true, false, "/s", "/c"), content = "[vibe-test] 1 passed, 0 failed (1 files, 1 tests)\n[vibe-test] coverage: functions 1/8000 (0.01%), branches 0/0 (n/a) over 1 file(s)\n[vibe-test] per-file coverage JSON: /c/\n")
+  inspect(test_run_summary(["ok 0 0 0 0 0 1\n"], 1, 0, "", true, false, "/s", "/c"), content = "[vibe-test] 1 passed, 0 failed (1 files, 1 tests)\n")
+}
+
+test "a percentage rounds the double Python formatted, not the exact ratio" {
+  // 23/160 is 14.375 exactly; the double the script printed is just below it.
+  inspect(test_run_summary(["ok 23 160 0 0 1 1\n"], 1, 0, "", true, false, "/s", "/c"), content = "[vibe-test] 1 passed, 0 failed (1 files, 1 tests)\n[vibe-test] coverage: functions 23/160 (14.37%), branches 0/0 (n/a) over 1 file(s)\n[vibe-test] per-file coverage JSON: /c/\n")
+}
