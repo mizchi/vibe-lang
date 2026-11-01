@@ -1,5 +1,5 @@
 import ./checker_call_header.vibe {
-  checker_bind_call_header
+  checker_bind_declaration_call_header, checker_positional_rows_of, checker_swap_positional_rows
 }
 
 // lib/@vibe/compiler/checker/checker_stmt.vibe — stmts with binders.
@@ -848,7 +848,7 @@ fn hoist_merged_source_values(stmts: Array[Stmt], start: Int, env: TypeEnv, defs
       SLet(_, _, name, annotation, value) => {
         let (ty, nc) = hoisted_value_type(annotation, value, hdefs, next_c)
         next_c = nc
-        out = checker_bind_call_header(out, name, ty, value)
+        out = checker_bind_declaration_call_header(out, name, ty, value)
       },
       _ => ()
     }
@@ -1203,7 +1203,7 @@ fn infer_recursive_values(stmts: Array[Stmt], start: Int, end: Int, env: TypeEnv
   while at < end {
     match Array::get(stmts, at) {
       SLet(_, _, name, _, value) => {
-        out = checker_bind_call_header(out, name, CtVar(next), value)
+        out = checker_bind_declaration_call_header(out, name, CtVar(next), value)
         next = next + 1
       },
       _ => ()
@@ -1232,7 +1232,7 @@ fn infer_recursive_values(stmts: Array[Stmt], start: Int, end: Int, env: TypeEnv
             Some(te) => preserve_generic_instantiation(resolve_type_expr(te, defs), subst_apply(cur_s, vt)),
             None => vt
           }
-          out = checker_bind_call_header(out, name, ty, value)
+          out = checker_bind_declaration_call_header(out, name, ty, value)
         },
         _ => ()
       }
@@ -1338,6 +1338,15 @@ export fn derived_hash_renderer_withheld(name: String) -> Bool {
 
 export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool, validate_completed_decls: Bool) -> (TypeEnv, Subst, Int) {
   let mut stmts = reorder_type_decls_first(raw_stmts, i)
+  // ADR-0120 D3 (#3681): the root list publishes its `_` slots for the
+  // headers its declarations bind; a nested module or a recheck of the same
+  // list reads the root's. Restored below, so one program's rows never reach
+  // the next program's headers.
+  let positional_saved = if validate_completed_decls {
+    Some(checker_swap_positional_rows(checker_positional_rows_of(raw_stmts)))
+  } else {
+    None
+  }
   // #3538: impl methods are paired with their `SImpl` in PARSE order, which
   // the scheduling below does not keep.
   let impl_origins = collect_impl_method_origins(raw_stmts, i, env)
@@ -1414,7 +1423,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         let (ht, hnc) = hoisted_value_type(hann, hval, hdefs, cur_c)
         Array::push(original_headers, Some(ht))
         cur_c = hnc
-        cur_env = checker_bind_call_header(cur_env, hname, ht, hval)
+        cur_env = checker_bind_declaration_call_header(cur_env, hname, ht, hval)
         note_toplevel_generic_binding(hname, hval, Some(ht), cur_env)
         // #2773: mark a top-level rendering shim's NAME, by the same predicate
         // that grants its body the `check_interp_formal` exemption. The body
@@ -1655,7 +1664,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         let val = expand_impl_owner_bare_heads(val, defs, val_env)
         let head_bound_mark = efn_head_bound_mark()
         let (vt, checked_s, nc) = if is_rec && recursive_end == 0 {
-          check_expr_capture(val, checker_bind_call_header(val_env, name, CtUnknown, val), defs, s, c, errors, tytab, role_lane_capture, "Primary")
+          check_expr_capture(val, checker_bind_declaration_call_header(val_env, name, CtUnknown, val), defs, s, c, errors, tytab, role_lane_capture, "Primary")
         } else {
           check_expr_capture(val, val_env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
         }
@@ -1809,7 +1818,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           EFn(_, _, _, _, _, _) => quantify_own_rows_of(published, val, env, ns, name),
           _ => published
         }
-        let env1 = bind_function_dependency_contracts(checker_bind_call_header(env, name, bound, val), name, val)
+        let env1 = bind_function_dependency_contracts(checker_bind_declaration_call_header(env, name, bound, val), name, val)
         capture_statement_root_type(capture, statement_path, "SLet", vt)
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
@@ -2668,7 +2677,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
                     EFn(_, _, _, _, _, _) => quantify_own_rows_of(published, value, cur_env, cur_s, name),
                     _ => published
                   }
-                  cur_env = bind_function_dependency_contracts(checker_bind_call_header(cur_env, name, bound, value), name, value)
+                  cur_env = bind_function_dependency_contracts(checker_bind_declaration_call_header(cur_env, name, bound, value), name, value)
                   cur_env = bind_value_or_annotation_return(cur_env, name, value, None, defs)
                   note_toplevel_generic_binding(name, value, Some(bound), outer_env)
                 },
@@ -2788,5 +2797,11 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     None => cur_env
   }
   forward_restore_root_order(capture, root_capture_start)
+  match positional_saved {
+    Some(rows) => {
+      let _ = checker_swap_positional_rows(rows)
+    },
+    None => ()
+  }
   (final_env, cur_s, cur_c)
 }

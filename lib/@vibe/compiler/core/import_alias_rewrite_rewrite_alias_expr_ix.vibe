@@ -1007,6 +1007,11 @@ fn rewrite_impl_method_binding(stmt: Stmt, owner_aliases: Array[(String, String)
   match stmt {
     SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, rewrite_impl_method_binding_name(name, owner_aliases), ty, body),
     SFnDecl(exported, name, body, requires, ensures) => SFnDecl(exported, rewrite_impl_method_binding_name(name, owner_aliases), body, requires, ensures),
+    // ADR-0120 D3: a declaration's `_` slots follow its name.
+    SPositionalParams(rows) => SPositionalParams(for row in rows {
+      let (decl, slots) = row
+      (rewrite_impl_method_binding_name(decl, owner_aliases), slots)
+    }),
     _ => stmt
   }
 }
@@ -2208,6 +2213,10 @@ export fn export_renamed_head(stmt: Stmt, exports: AliasIdx) -> Stmt {
     SExport(items) => SExport(for item in items {
       aliasidx_rename(exports, item)
     }),
+    SPositionalParams(rows) => SPositionalParams(for row in rows {
+      let (decl, slots) = row
+      (aliasidx_rename(exports, decl), slots)
+    }),
     _ => stmt
   }
 }
@@ -2440,6 +2449,13 @@ fn namespace_private_stmt(stmt: Stmt, ram: AliasIdx) -> Stmt {
       }
       SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(body, ram))
     },
+    SPositionalParams(rows) => SPositionalParams(for row in rows {
+      let (decl, slots) = row
+      match aliasidx_get(ram, decl) {
+        Some(renamed) => (renamed, slots),
+        None => (decl, slots)
+      }
+    }),
     SLetMut(name, ty, body) => {
       let next_name = match aliasidx_get(ram, name) {
         Some(renamed) => renamed,

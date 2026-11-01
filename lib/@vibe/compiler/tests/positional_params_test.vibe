@@ -1,0 +1,113 @@
+// ADR-0120 D3 (#3681): `_` before a parameter's name makes that slot
+// positional. The parameter keeps its plain name; the declaration's slots
+// travel in a trailing `SPositionalParams` statement, and the checker spells
+// them into the call header.
+
+import @vibe/compiler/checker {
+  check_program, label_sites_begin, label_sites_end
+}
+
+import @vibe/compiler/refactor {
+  add_labels, add_labels_positional_none
+}
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/parser {
+  lex_with_offsets, parse_program_located, print_program
+}
+
+fn parsed(source: String) -> Array[Stmt] with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  parse_program_located(tokens, starts, source)
+}
+
+/// The `SPositionalParams` rows of `source`, as `name:slot,slot` lines.
+fn slots(source: String) -> String with Exception {
+  let rows: Array[String] = []
+  for stmt in parsed(source) {
+    match stmt {
+      SPositionalParams(found) => for row in found {
+        let (name, at) = row
+        Array::push(rows, name + ":" + String::join(for i in at {
+          __to_string(i)
+        }, ","))
+      },
+      _ => ()
+    }
+  }
+  String::join(rows, "\n")
+}
+
+/// The checker's first error, "" when the program checks.
+fn first_error(source: String) -> String with Exception {
+  handle {
+    let _ = check_program(parsed(source))
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+/// The parse error, "" when the source parses.
+fn parse_error(source: String) -> String {
+  handle {
+    let _ = parsed(source)
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+fn get_decl() -> String {
+  "fn get(_ xs: Array[Int], at: Int) -> Int {\n  Array::get(xs, at)\n}\n"
+}
+
+test "each declaration form records its `_` slots" {
+  inspect(slots(get_decl()), content = "get:0")
+  inspect(slots("struct P {\n  v: Int\n}\nfn P::plus(_ p: P, n: Int, _ m: Int) -> Int {\n  p.v + n + m\n}\n"), content = "P::plus:0,2")
+  inspect(slots("let twice = (_ x: Int) -> Int { x * 2 }\n"), content = "twice:0")
+  inspect(slots("fn plain(a: Int, b: Int) -> Int {\n  a - b\n}\n"), content = "")
+  // A lone `_` is still the wildcard parameter, not a marker.
+  inspect(slots("fn ignore(_: Int, b: Int) -> Int {\n  b\n}\n"), content = "")
+}
+
+test "the parameter keeps its plain name" {
+  let source = get_decl() + "fn main() -> Int {\n  get([1, 2], at = 1)\n}\n"
+  inspect(first_error(source), content = "")
+}
+
+test "`_` on a lambda that is not a declaration is refused" {
+  inspect(String::contains(parse_error("fn main() -> Int {\n  let f = (_ x: Int) -> Int { x }\n  f(1)\n}\n"), "remove `_ `"), content = "true")
+  inspect(String::contains(parse_error("let g = apply((_ x: Int) -> Int { x })\n"), "remove `_ `"), content = "true")
+}
+
+test "a `_` slot is filled by position, beside labels" {
+  let ok = get_decl() + "fn main() -> Int {\n  get([1, 2], at = 1) + get([3], 0)\n}\n"
+  inspect(first_error(ok), content = "")
+}
+
+test "a label on a `_` slot names the edit" {
+  let bad = get_decl() + "fn main() -> Int {\n  get(xs = [1, 2], at = 1)\n}\n"
+  inspect(String::contains(first_error(bad), "argument 1 of get is positional (the declaration writes `_` before it): remove `xs = `"), content = "true")
+}
+
+test "a call that mixes forms off the `_` slots is still refused" {
+  let source = "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\nfn main() -> Int {\n  sub(10, y = 3)\n}\n"
+  inspect(String::contains(first_error(source), "mixes positional and labeled arguments"), content = "true")
+}
+
+test "the printer writes `_` back" {
+  let printed = print_program(parsed(get_decl() + "let twice = (_ x: Int) -> Int { x * 2 }\n"))
+  inspect(String::contains(printed, "(_ xs: Array[Int], at: Int)"), content = "true")
+  inspect(String::contains(printed, "(_ x: Int)"), content = "true")
+  inspect(slots(printed), content = "get:0\ntwice:0")
+}
+
+test "the codemod leaves a declared `_` positional under every policy" {
+  let source = get_decl() + "fn main() -> Int {\n  get([1, 2], 1)\n}\n"
+  label_sites_begin()
+  let _ = check_program(parsed(source))
+  let sites = label_sites_end()
+  let result = add_labels("t.vibe", source, 0, sites, add_labels_positional_none)
+  inspect(String::contains(result.source, "get([1, 2], at = 1)"), content = "true")
+  inspect(result.deferred_calls, content = "0")
+}

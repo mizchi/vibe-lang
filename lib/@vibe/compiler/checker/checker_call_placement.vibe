@@ -32,16 +32,39 @@ import @vibe/compiler/checker/builtin_sigs {
 }
 
 import ./checker_call_header.vibe {
-  checker_call_header_defaults, checker_call_header_has_optional, checker_call_header_names
+  checker_call_header_defaults, checker_call_header_has_optional, checker_call_header_names, checker_header_name_is_positional
 }
 
 fn placement_param_name(raw: String) -> String {
-  let size = String::length(raw)
-  if String::ends_with(raw, "~") || String::ends_with(raw, "?") {
-    raw[0: size - 1]
+  // ADR-0120 D3 (#3681): a `_` slot's header name is `"_ " + name`.
+  let named = if checker_header_name_is_positional(raw) {
+    raw[2: String::length(raw)]
   } else {
     raw
   }
+  let size = String::length(named)
+  if String::ends_with(named, "~") || String::ends_with(named, "?") {
+    named[0: size - 1]
+  } else {
+    named
+  }
+}
+
+/// ADR-0120 D3: a call may mix the two forms only when each unlabeled
+/// argument stands at a `_` slot of the declaration (`get(xs, at = 0)` for
+/// `fn get(_ xs: Array[Int], at: Int)`); such an argument fills its slot by
+/// position, and the labels name the rest.
+fn placement_plain_at_positional_slots(args: Array[Expr], names: Array[String]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(args) && ok {
+    match Array::get(args, i) {
+      ELabeledArg(_, _, _) => (),
+      _ => ok = i < Array::length(names) && checker_header_name_is_positional(Array::get(names, i))
+    }
+    i = i + 1
+  }
+  ok
 }
 
 fn placement_value(arg: Expr) -> Expr {
@@ -82,7 +105,7 @@ fn placement_for_header(args: Array[Expr], names: Array[String]) -> Option[Array
       _ => ()
     }
   }
-  let mut valid = labeled == 0 || labeled == Array::length(args)
+  let mut valid = labeled == 0 || labeled == Array::length(args) || placement_plain_at_positional_slots(args, names)
   let mut written = 0
   while written < Array::length(args) && valid {
     let slot = match Array::get(args, written) {
@@ -379,7 +402,11 @@ fn placement_check_builtin(name: String, offset: Int, args: Array[Expr], errors:
 }
 
 fn placement_check_declared(name: String, offset: Int, args: Array[Expr], names: Array[String], slots: Option[Array[Int]], defaults: Option[Array[Bool]], errors: Array[String]) -> Unit {
-  placement_check_mixed(name, offset, args, errors)
+  if placement_plain_at_positional_slots(args, names) {
+    ()
+  } else {
+    placement_check_mixed(name, offset, args, errors)
+  }
   let marker = off_marker_len(offset, String::length(name))
   let mut ai = 0
   while ai < Array::length(args) {
@@ -395,6 +422,11 @@ fn placement_check_declared(name: String, offset: Int, args: Array[Expr], names:
             ()
           }
           pi = pi + 1
+        }
+        if found >= 0 && checker_header_name_is_positional(Array::get(names, found)) {
+          Array::push(errors, "argument " + __to_string(found + 1) + " of " + name + " is positional (the declaration writes `_` before it): remove `" + label + " = `" + marker)
+        } else {
+          ()
         }
         match slots {
           Some(_) => (),

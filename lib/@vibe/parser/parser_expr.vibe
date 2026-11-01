@@ -16,9 +16,11 @@ import ./parser_base.vibe {
   _no_tb,
   _no_tp,
   allows_outside_entry_error,
+  arm_lambda_positional,
   binder_name_error,
   collect_effect_names,
   collect_import_path,
+  disarm_lambda_positional,
   empty_exprs,
   empty_fields,
   empty_import_items,
@@ -51,6 +53,7 @@ import ./parser_base.vibe {
   parse_type_with_source_context,
   peek,
   peek_is_allows,
+  record_positional_params,
   skip_braced_body,
   tk_name
 }
@@ -657,6 +660,21 @@ fn emit_top_level_pat_projection(out: ArrayBuilder[Stmt], sub: Pat, read: Expr, 
   }
 }
 
+/// After a top-level `let` armed `arm_lambda_positional` and parsed its
+/// initializer: the `_` slots the armed list wrote belong to `name` when the
+/// initializer is that lambda, and are refused otherwise.
+fn record_let_lambda_positional(name: String, value: Expr, at: Int) -> Unit with Exception {
+  let lambda_slots = disarm_lambda_positional()
+  if Array::length(lambda_slots) > 0 {
+    match source_expr(value) {
+      EFn(_, _, _, _, _, _) => record_positional_params(name, lambda_slots),
+      _ => throw("`_` before a parameter marks a positional slot of a declaration, and only the lambda a top-level `let` is bound to is one: remove `_ ` from the inner lambda's parameter at #\{at}")
+    }
+  } else {
+    ()
+  }
+}
+
 export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TRec => {
@@ -672,7 +690,10 @@ export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array
       let ep = expect_tk(tokens, eq_pos, "=")
       let value_header_mark = binder_capture_mark(context)
       let (bracket_tps, bracket_tbs, val_start_r) = parse_value_bracket_header(tokens, ep, context)
+      // `let rec f = (_ x: Int) -> ..` is also how the printer writes a `fn`.
+      arm_lambda_positional()
       let val_pair = parse_impl_with_binder_context(tokens, starts, val_start_r, 0, context)
+      record_let_lambda_positional(name, val_pair.0, val_start_r)
       let (val_with_tp, retained_header_mark, retained_header_count) = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0, value_header_mark, context)
       let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp, annotation_mark, retained_header_mark, retained_header_count, context)
       let val_next = val_pair.1
@@ -783,7 +804,11 @@ export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array
         let ep = expect_tk(tokens, eq_pos, "=")
         let value_header_mark = binder_capture_mark(context)
         let (bracket_tps, bracket_tbs, val_start) = parse_value_bracket_header(tokens, ep, context)
+        // ADR-0120 D3 (#3681): `let f = (_ x: Int) -> ..` declares `f` the
+        // way `fn f(_ x: Int)` does; see `arm_lambda_positional`.
+        arm_lambda_positional()
         let val_pair = parse_impl_with_binder_context(tokens, starts, val_start, 0, context)
+        record_let_lambda_positional(name, val_pair.0, val_start)
         let (val_with_tp, retained_header_mark, retained_header_count) = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0, value_header_mark, context)
         let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp, annotation_mark, retained_header_mark, retained_header_count, context)
         let val_next = val_pair.1
@@ -826,17 +851,34 @@ fn parse_fn_name(tokens: Array[Token], pos: Int, context: Option[ParserBinderCon
 /// (#1500) and stopped at the `=`; this reads the default expression and
 /// returns it beside the parameter's bare name. `fn_param_defaults_wrap`
 /// unwraps the parameter at the top of the body.
-fn parse_fn_param_list_with_defaults(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Array[(String, TypeExpr, Expr)], Int) with Exception {
+///
+/// ADR-0120 D3 (#3681): a `_` before a parameter's name makes that slot
+/// positional (`fn get(_ xs: Array[Int], at: Int)`). The `_` is not part of
+/// the parameter -- its name stays `xs` -- and its index is returned in the
+/// fourth slot, for the declaration to record. A lone `_` is still the
+/// wildcard parameter.
+fn parse_fn_param_list_with_defaults(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Array[(String, TypeExpr, Expr)], Int, Array[Int]) with Exception {
   let params: Array[(String, Option[TypeExpr])] = []
   let defaults: Array[(String, TypeExpr, Expr)] = []
+  let positional: Array[Int] = []
   // (parameter index, first token, end token) of each default expression.
   let default_spans: Array[(Int, Int, Int)] = []
   match peek(tokens, pos) {
-    TRParen => (params, defaults, pos + 1),
+    TRParen => (params, defaults, pos + 1, positional),
     _ => {
       let mut p = pos
       let mut done = false
       while !done {
+        let marked = match (peek(tokens, p), peek(tokens, p + 1)) {
+          (TIdent(u), TIdent(_)) => u == "_",
+          _ => false
+        }
+        if marked {
+          Array::push(positional, Array::length(params))
+          p = p + 1
+        } else {
+          ()
+        }
         let (param, pn) = parse_one_param_with_binder_context(tokens, p, context)
         Array::push(params, param)
         let after = match peek(tokens, pn) {
@@ -886,7 +928,7 @@ fn parse_fn_param_list_with_defaults(tokens: Array[Token], starts: Array[Int], p
         }
       }
       fn_param_defaults_refuse_forward_refs(tokens, params, default_spans)
-      (params, defaults, p)
+      (params, defaults, p, positional)
     }
   }
 }
@@ -1001,7 +1043,12 @@ fn parse_fn_signature_with_binder_context(tokens: Array[Token], starts: Array[In
   let (name, name_next) = parse_fn_name(tokens, pos, context)
   let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next, context)
   let lp = expect_tk(tokens, after_gen, "(")
-  let (params, param_defaults, after_params) = parse_fn_param_list_with_defaults(tokens, starts, lp, context)
+  let (params, param_defaults, after_params, positional) = parse_fn_param_list_with_defaults(tokens, starts, lp, context)
+  if Array::length(positional) > 0 {
+    record_positional_params(name, positional)
+  } else {
+    ()
+  }
   let mut pi = 0
   while pi < Array::length(params) {
     let param = Array::get(params, pi)

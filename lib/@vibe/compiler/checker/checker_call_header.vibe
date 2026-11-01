@@ -3,17 +3,93 @@ import ./checker_parameter_defaults.vibe {
 }
 
 import @vibe/compiler/core {
-  BindingOrigin, Expr, Type, TypeEnv, env_bind, env_bind_with_origin, env_lookup, env_lookup_binding, param_names_prefix
+  BindingOrigin, Expr, Stmt, Type, TypeEnv, env_bind, env_bind_with_origin, env_lookup, env_lookup_binding, param_names_prefix
+}
+
+/// ADR-0120 D3 (#3681): the `_` slots of the program being checked, from its
+/// trailing `SPositionalParams` statement. The root statement list publishes
+/// them for the duration of its check (`checker_swap_positional_rows`); a
+/// header built meanwhile spells each `_` slot `"_ " + name`. The space is
+/// what no identifier holds, so only code that reads a header -- call
+/// placement, the label sites -- ever sees the marker.
+let positional_rows: Array[(String, Array[Int])] = Array::slice([("", [0])], 0, 0)
+
+/// The `_` slots written in `stmts`, empty when none.
+export fn checker_positional_rows_of(stmts: Array[Stmt]) -> Array[(String, Array[Int])] {
+  let out: Array[(String, Array[Int])] = []
+  for stmt in stmts {
+    match stmt {
+      SPositionalParams(rows) => for row in rows {
+        Array::push(out, row)
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// Publish `rows` and return the ones they replace, for the caller to restore.
+export fn checker_swap_positional_rows(rows: Array[(String, Array[Int])]) -> Array[(String, Array[Int])] {
+  let saved = Array::slice(positional_rows, 0, Array::length(positional_rows))
+  Array::truncate(positional_rows, 0)
+  for row in rows {
+    Array::push(positional_rows, row)
+  }
+  saved
+}
+
+/// Is header name `raw` a `_` slot?
+export fn checker_header_name_is_positional(raw: String) -> Bool {
+  String::starts_with(raw, "_ ")
+}
+
+fn positional_header_names(name: String, raw: Array[String]) -> Array[String] {
+  if Array::length(positional_rows) == 0 {
+    raw
+  } else {
+    let names = Array::slice(raw, 0, Array::length(raw))
+    for row in positional_rows {
+      let (decl, slots) = row
+      if decl == name {
+        for slot in slots {
+          if slot >= 0 && slot < Array::length(names) && !checker_header_name_is_positional(Array::get(names, slot)) {
+            Array::set(names, slot, "_ " + Array::get(names, slot))
+          } else {
+            ()
+          }
+        }
+      } else {
+        ()
+      }
+    }
+    names
+  }
 }
 
 /// Bind a declaration header on the same value binding typing will resolve.
 /// Later calls can request labels, so every declaration retains its names.
+/// A local `let` lambda comes here too, and has no `_` slots of its own.
 export fn checker_bind_call_header(env: TypeEnv, name: String, ty: Type, value: Expr) -> TypeEnv {
+  bind_call_header(env, name, ty, value, false)
+}
+
+/// The same, for a declaration in a program or module statement list, whose
+/// `_` slots the published rows name.
+export fn checker_bind_declaration_call_header(env: TypeEnv, name: String, ty: Type, value: Expr) -> TypeEnv {
+  bind_call_header(env, name, ty, value, true)
+}
+
+fn bind_call_header(env: TypeEnv, name: String, ty: Type, value: Expr, declaration: Bool) -> TypeEnv {
   match value {
     EFn(_, _, params, _, _, _) => {
-      let names = for param in params {
+      let raw_names = for param in params {
         let (raw, _) = param
         raw
+      }
+      let names = if declaration {
+        positional_header_names(name, raw_names)
+      } else {
+        raw_names
       }
       let origin = match checker_parameter_defaults(value) {
         Some(flags) => BindingOriginDefaultedFunctionHeader(names, flags),
