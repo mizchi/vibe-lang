@@ -207,11 +207,20 @@ with `use_split` false and true:
   split lane spends 16.6 s on the prelude today, +3.6 s. Even a perfect
   per-module cache would save at most ~4.4 s of a ~37 s cold compile; the
   evidence pass is the larger target.
-- **The split lane refuses a valid program.** Interpolating a value whose
-  `derive(Show)` lives in another module (`"\{zeta(2)}"` with `Zeta` imported)
-  fails with ``cannot interpolate a value of type `Zeta`: it has no Show
-  renderer`` on the split lane and compiles on the whole-program lane. That is
-  a diagnostic-parity gap the promotion criteria cover; it is not fixed here.
+- **A dependency's derived `Show` now renders on the split lane.** It used to
+  refuse `"\{zeta(2)}"` with `Zeta`'s `derive(Show)` in another module
+  (``cannot interpolate a value of type `Zeta`: it has no Show renderer``),
+  which the whole-program lane compiles. A module's run derives only for its
+  own declarations, and the renderer check needs `Zeta::to_string` in a
+  return table built from this run's statements, while the definition is in
+  the dependency's output. The derive pass now records context types whose own
+  module will generate a renderer (the generating arms' condition, evaluated
+  on the same statements), and the return table gains their
+  `T::to_string -> String` rows, inserted in sorted order because the table is
+  searched by bisection. The link joins the call to the dependency's
+  definition; nothing is generated twice. Pinned by the cross-module `Show`
+  case in `prelude_split_fs_lane_test.vibe` (byte-identical to the
+  whole-program lane; refused without the fix).
 
 ### The four counters
 

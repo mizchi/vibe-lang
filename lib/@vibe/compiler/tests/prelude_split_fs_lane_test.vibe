@@ -91,6 +91,31 @@ test "#2826: helpers synthesized in two modules lay out the same both ways" {
   inspect(whole == split, content = "true")
 }
 
+fn write_cross_module_show(tag: String) -> String with Exception + Fs {
+  // A `derive (Show)` struct and enum declared in the dependency, interpolated
+  // in the root. The dependency's run generates their renderers; the root's
+  // run sees only their declarations.
+  let dep = String::concat("/tmp/vibe_split_show_dep_", String::concat(tag, ".vibe"))
+  let main = String::concat("/tmp/vibe_split_show_main_", String::concat(tag, ".vibe"))
+  Fs::write_file(dep, "export struct Zeta {\n  z: Int;\n  label: String\n} derive (Eq, Show)\n\nexport enum Mode {\n  Fast;\n  Slow(Int)\n} derive (Show)\n\nexport fn zeta(n: Int) -> Zeta {\n  Zeta::{ z: n, label: \"zeta\" }\n}\n\nexport fn mode(n: Int) -> Mode {\n  if n > 0 {\n    Slow(n)\n  } else {\n    Fast\n  }\n}\n")
+  Fs::write_file(main, String::concat("import ./vibe_split_show_dep_", String::concat(tag, ".vibe {\n  Mode, Zeta, mode, zeta\n}\n\nfn main() -> Int allows Console {\n  println(\"\\{zeta(2)} \\{mode(3)}\")\n  1\n}\n")))
+  main
+}
+
+test "#2826: a dependency's derived Show renders on the split lane" {
+  // The split lane refused this valid program -- ``cannot interpolate a value
+  // of type `Zeta`: it has no Show renderer`` -- because the root's run only
+  // derives for its own declarations, and the renderer check needs
+  // `Zeta::to_string` in a return table that holds only this run's
+  // statements. The whole-program lane compiled it.
+  let main = write_cross_module_show("show")
+  let (modules, _) = ordinary_lane_split_shape(main)
+  inspect(modules, content = "2")
+  let whole = compile_file_fs_mode_rc_body_cached(main, "main", "off")
+  let split = compile_file_fs_mode_rc_body_cached_split(main, "main", "off", true)
+  inspect(whole == split, content = "true")
+}
+
 fn write_reexport_chain(tag: String) -> String with Exception + Fs {
   // C declares, B RE-EXPORTS it, A uses it without naming C. This is the
   // shape a direct-edges-only closure cannot describe: A's partition needs
