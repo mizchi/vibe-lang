@@ -17,8 +17,11 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `vibe_test.sh` — run `test {}` blocks. `vibe_test_smoke.sh`
 - `test_report.vibex` — the `FAIL <file>` report for `vibe_test.sh`, over
   `@vibe/testreport` (the launcher reaches the same library via `vibe test-report`)
-- `vibe_fmt.sh` / `vibe_normalize.sh` (+ `*_smoke.sh`) — format / normalize
-  a single file (`--check`/`--stdout`/write); `ensure_vibe_fmt_entry.sh`
+- `vibe_normalize.sh` (+ `*_smoke.sh`) — `runtime/vibe normalize` on the
+  pinned seed and Node runner; the CLI owns `--check`/`--stdout`/write policy.
+  Like the CLI, usage errors exit 1 and a non-normalized `--check` reports
+  on stdout; the former wrapper used exit 2 and stderr respectively.
+- `vibe_fmt.sh` (+ `*_smoke.sh`) — format a single file; `ensure_vibe_fmt_entry.sh`
   compiles its wasm entry (`lib/@vibe/cli/fmt_entry.vibe`). `vibe_fmt_apply.sh`
   (`pkf run fmt`) is the tree-wide write-mode counterpart, and
   `check_vibe_fmt.sh` the read-only one -- both run through

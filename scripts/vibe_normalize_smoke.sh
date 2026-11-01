@@ -173,4 +173,35 @@ if ! bash "$ROOT_DIR/scripts/vibe_normalize.sh" --check "$WORK/01.normalized.vib
   echo "[vibe-normalize-smoke] FAIL: --check rejected normalized file" >&2; exit 1
 fi
 
-echo "[vibe-normalize-smoke] ok (fixtures 01 + agg + hoist + generic + fold + annot + idempotent + --check)"
+# The CLI's write mode, a path with spaces, and flags after the filename.
+cp "$WORK/01.in.vibe" "$WORK/space name.vibe"
+bash "$ROOT_DIR/scripts/vibe_normalize.sh" "$WORK/space name.vibe" > "$WORK/write.out" 2> "$WORK/write.err"
+cmp -s "$WORK/01.expected.vibe" "$WORK/space name.vibe"
+[ ! -s "$WORK/write.out" ]
+bash "$ROOT_DIR/scripts/vibe_normalize.sh" "$WORK/space name.vibe" --check
+
+# Checkout adapters choose their compiler/runner explicitly; an installed or
+# unrelated caller override must not silently select a different normalizer.
+VIBE_CLI_WASM="$WORK/no-compiler.wasm" VIBE_RUNNER="$WORK/no-runner" \
+  bash "$ROOT_DIR/scripts/vibe_normalize.sh" --stdout "$WORK/01.in.vibe" > "$WORK/selected.out" 2> "$WORK/selected.err"
+cmp -s "$WORK/01.expected.vibe" "$WORK/selected.out"
+
+refuses() {
+  local message="$1"; shift
+  if bash "$ROOT_DIR/scripts/vibe_normalize.sh" "$@" > "$WORK/refused.out" 2> "$WORK/refused.err"; then
+    echo "[vibe-normalize-smoke] FAIL: accepted $*" >&2; exit 1
+  fi
+  if ! grep -Fq "$message" "$WORK/refused.err"; then
+    echo "[vibe-normalize-smoke] FAIL: missing diagnostic: $message" >&2
+    cat "$WORK/refused.err" >&2; exit 1
+  fi
+  [ ! -s "$WORK/refused.out" ]
+}
+refuses 'takes ONE file' --stdout "$WORK/01.in.vibe" "$WORK/agg.in.vibe"
+refuses 'usage: vibe normalize'
+refuses 'unknown flag: --unknown' --unknown "$WORK/01.in.vibe"
+refuses 'not found:' "$WORK/missing.vibe"
+printf 'export let broken = (\n' > "$WORK/broken.vibe"
+refuses 'error:' --stdout "$WORK/broken.vibe"
+
+echo "[vibe-normalize-smoke] ok (goldens, idempotence, check/write/stdout, CLI arguments, explicit seed, diagnostics)"
