@@ -12,6 +12,9 @@ gate_resolve_stage2
 echo "[compiler-gate] SIMD BLAKE3 allocator parity (#3507)"
 python3 "$ROOT_DIR/scripts/check_blake3_simd_allocators.py" "$stage2_wasm"
 
+echo "[compiler-gate] vibe run --coverage writes a report, or fails saying why (#3674)"
+bash "$ROOT_DIR/scripts/test_vibe_run_coverage.sh" "$stage2_wasm"
+
 source "$ROOT_DIR/tests/gates/early/multi_file_fs_compile_regression.sh"
 source "$ROOT_DIR/tests/gates/early/extended_derive.sh"
 source "$ROOT_DIR/tests/gates/early/async_for_loop_classification.sh"

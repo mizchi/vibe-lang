@@ -30,11 +30,14 @@ ok   foo_test.vibe  [cov fn 3/3, branch 3/4]
 `vibe run --coverage` measures one program while running it:
 
 ```bash
-bash scripts/vibe_run.sh --coverage path/to/prog.vibex [-- args...]
+VIBE_RUNNER=scripts/viberun_node.sh vibe run --coverage path/to/prog.vibex [-- args...]
 ```
 
 The program's output goes to stdout, the `[vibe-cov]` summary to stderr, and
-the JSON to `_build/vibe_run/<name>.cov.json`. Per-file test JSON is
+the JSON to `.vibe/build/run/<name>.cov.json`, beside the artifact. The node
+runner writes the report; a runner that does not (the Rust `viberun`) makes
+the command fail rather than report nothing. `scripts/vibe_run.sh` passes the
+flag through, and accepts it once the committed seed includes it. Per-file test JSON is
 `_build/vibe_test/coverage/<file>.json`
 (`{total,hit,missed,rate,hit_fns,missed_fns,branch{...}}`). Both work by
 passing `VIBE_COVERAGE=1` to the FS compile lane, which then compiles with

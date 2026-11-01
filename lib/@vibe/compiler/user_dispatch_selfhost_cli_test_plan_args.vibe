@@ -11,6 +11,7 @@ import @vibe/compiler/contract {
 import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode,
   compile_file_fs_mode_break,
+  compile_file_fs_mode_coverage,
   compile_file_fs_mode_gc,
   compile_file_fs_mode_grants,
   compile_file_fs_mode_rc_grants,
@@ -277,6 +278,8 @@ fn compile_user_wasm(input_path: String, entry_name: String, kind: String, grant
     compile_file_fs_mode_trace(input_path, entry_name)
   } else if kind == "break" {
     compile_file_fs_mode_break(input_path, entry_name)
+  } else if kind == "coverage" {
+    compile_file_fs_mode_coverage(input_path, entry_name)
   } else if kind == "gc" {
     compile_file_fs_mode_gc(input_path, entry_name)
   } else if kind == "component" {
@@ -387,10 +390,11 @@ export fn write_user_executable(output_path: String, bytes: Bytes, entry_name: S
 /// (`<unknown>!boom`) and an editable path:line. The launcher's funcmap
 /// annotation and `vibe profile`'s frame names key on the name section
 /// (scripts/test_vibe_trace.sh, scripts/test_vibe_bench.sh). The debug lanes
-/// carry their own sections and are written as compiled.
+/// carry their own sections and are written as compiled: the coverage dump
+/// reads the `vibe_cov` sections, which the strip would drop.
 fn write_user_run_executable(output_path: String, bytes: Bytes, kind: String) -> Unit with Fs + Env {
   ensure_parent_dir(output_path)
-  if kind == "trace" || kind == "break" {
+  if kind == "trace" || kind == "break" || kind == "coverage" {
     Fs::write_bytes(output_path, bytes)
   } else {
     Fs::write_bytes(output_path, strip_executable_wasm(bytes, "main", false, Env::get("VIBE_WASM_KEEP_EXPORTS") != "1"))
@@ -1129,8 +1133,19 @@ fn refuse_gc_optional_entry_authority(src: String) -> Unit with Exception + Fs {
   }
 }
 
-fn parse_run_flags(args: Array[String]) -> (String, String, Bool, String, Bool, String, Bool, String, String, String, Array[String]) with Exception {
+/// `--coverage` instruments the linear backend only; under `VIBE_BACKEND=gc`
+/// it would measure a different artifact than the one the variable asks for.
+fn refuse_gc_coverage() -> Unit with Exception + Env {
+  if user_artifact_backend_kind() == "gc" {
+    throw("vibe run --coverage instruments the linear backend; unset VIBE_BACKEND=gc")
+  } else {
+    ()
+  }
+}
+
+fn parse_run_flags(args: Array[String]) -> (String, Bool, Bool, String, Bool, String, Bool, String, String, String, Array[String]) with Exception {
   let mut src = ""
+  let mut coverage = false
   let mut trace = false
   let mut brk = false
   let mut break_spec = ""
@@ -1153,6 +1168,9 @@ fn parse_run_flags(args: Array[String]) -> (String, String, Bool, String, Bool, 
       i = i + 1
     } else if arg == "--trace" {
       trace = true
+      i = i + 1
+    } else if arg == "--coverage" {
+      coverage = true
       i = i + 1
     } else if arg == "--break" {
       i = i + 1
@@ -1195,13 +1213,17 @@ fn parse_run_flags(args: Array[String]) -> (String, String, Bool, String, Bool, 
     }
   }
   if src == "" {
-    throw("usage: vibe run [--trace] [--break <fn>[,<fn>...]] [--mem] [--alloc-site[=N]] <file.vibex> [-- args]")
+    throw("usage: vibe run [--trace] [--coverage] [--break <fn>[,<fn>...]] [--mem] [--alloc-site[=N]] <file.vibex> [-- args]")
   } else if !is_vibex_path(src) {
     throw(String::concat("vibe run requires a .vibex executable root: ", src))
   } else if brk && break_spec == "" {
     throw("usage: vibe run --break <fn>[,<fn>...] <file.vibex>")
+  } else if coverage && (trace || brk || allocsite) {
+    // Each of these selects its own instrumented compile, and one artifact
+    // carries one instrumentation.
+    throw("vibe run: --coverage cannot be combined with --trace, --break or --alloc-site; run them separately")
   } else {
-    (src, "", trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args)
+    (src, coverage, trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args)
   }
 }
 
@@ -1242,7 +1264,7 @@ fn args_contain_newline(args: Array[String]) -> Bool {
 
 export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env {
   let (run_args, allows, denies) = split_capability_flags(args)
-  let (src, _, trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args) = parse_run_flags(run_args)
+  let (src, coverage, trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args) = parse_run_flags(run_args)
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else if String::contains(src, "\n") || String::contains(guest_profile, "\n") {
@@ -1260,6 +1282,9 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -
       "trace"
     } else if break_spec != "" || allocsite {
       "break"
+    } else if coverage {
+      refuse_gc_coverage()
+      "coverage"
     } else {
       user_artifact_backend_kind()
     }
@@ -1272,7 +1297,17 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -
     write_user_run_executable(out, bytes, kind)
     write_user_funcmap(src, out)
     let acc = StringBuilder::new()
-    StringBuilder::push(acc, "vibe-host-action-v1\nrun-guest\n")
+    // `run-guest-coverage` is `run-guest` with the report path in line 3 and
+    // every other line one further down. A separate kind, not a new line in
+    // `run-guest`: a launcher reads `run-guest` positionally, guest argv
+    // last, so an extra line there would arrive as a guest argument.
+    if coverage {
+      StringBuilder::push(acc, "vibe-host-action-v1\nrun-guest-coverage\n")
+      StringBuilder::push(acc, String::concat(out[0: String::length(out) - 5], ".cov.json"))
+      StringBuilder::push(acc, "\n")
+    } else {
+      StringBuilder::push(acc, "vibe-host-action-v1\nrun-guest\n")
+    }
     StringBuilder::push(acc, out)
     StringBuilder::push(acc, "\n")
     StringBuilder::push(acc, src)
