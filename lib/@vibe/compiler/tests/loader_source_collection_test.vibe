@@ -1,0 +1,255 @@
+import @vibe/compiler/core {
+  Source, Stmt
+}
+import @vibe/compiler/loader {
+  ModuleParse, SourceIngest, collect_all_sources_fs, collect_sources_source, module_header_source, parse_program_located_shared
+}
+
+// #1872: the source-collection core runs over a provider. These tests give it
+// an in-memory tree and no filesystem authority at all (no `Fs` in any row
+// below), then check that the filesystem adapter answers the same tree the
+// same way.
+
+// A provider's files: (path, text), plus the paths whose stat token reports a
+// symbolic link. Directory listings are derived from the paths, byte-sorted
+// because the paths are written sorted.
+struct MemTree {
+  files: Array[(String, String)];
+  symlinks: Array[String]
+}
+
+fn mem_lookup(tree: MemTree, path: String) -> Option[String] {
+  let mut found = None
+  for entry in tree.files {
+    let (p, text) = entry
+    if p == path {
+      found = Some(text)
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+fn mem_has(tree: MemTree, path: String) -> Bool {
+  match mem_lookup(tree, path) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+// The core probes existence before it reads, so a read of a missing path
+// answers "" rather than throwing: a provider's arms do not throw (see
+// `ModuleParse`).
+fn mem_read(tree: MemTree, path: String) -> String {
+  match mem_lookup(tree, path) {
+    Some(text) => text,
+    None => ""
+  }
+}
+
+// Direct children of `dir` that are files ("." lists the root).
+fn mem_list(tree: MemTree, dir: String) -> Array[String] {
+  let prefix = if dir == "." || dir == "" {
+    ""
+  } else {
+    String::concat(dir, "/")
+  }
+  let out: Array[String] = []
+  for entry in tree.files {
+    let (p, _) = entry
+    if String::starts_with(p, prefix) {
+      let rest = p[String::length(prefix): String::length(p)]
+      if String::index_of(rest, "/") < 0 {
+        Array::push(out, rest)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+fn mem_token(tree: MemTree, path: String) -> Int {
+  let mut link = false
+  for p in tree.symlinks {
+    if p == path {
+      link = true
+    } else {
+      ()
+    }
+  }
+  if link {
+    -1
+  } else {
+    7
+  }
+}
+
+fn mem_parse(path: String, source: String) -> (Array[Stmt], Option[String]) {
+  handle {
+    (parse_program_located_shared(path, source), None)
+  } with { Exception::Throw(message) => ([], Some(message)) }
+}
+
+fn mem_header(tree: MemTree, path: String, source: String) -> (Array[String], Option[String]) with Env {
+  handle {
+    let (deps, _, _) = handle {
+      module_header_source(path, source, 0)
+    } with { ModuleParse::Parse(p, text) => resume(mem_parse(p, text)); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+    (deps, None)
+  } with { Exception::Throw(message) => ([], Some(message)) }
+}
+
+fn mem_facade(facades: Array[(String, String)], path: String) -> (String, Option[String]) {
+  let mut facade = None
+  for f in facades {
+    let (fp, text) = f
+    if fp == path {
+      facade = Some(text)
+    } else {
+      ()
+    }
+  }
+  match facade {
+    Some(t) => (t, None),
+    None => ("", Some("no facade for \{path}"))
+  }
+}
+
+fn mem_record(verified: Array[String], row: String) -> (Unit, Option[String]) {
+  Array::push(verified, row)
+  ((), None)
+}
+
+// Collect from `entry` over the tree. Contracts desugar to `facades` (path,
+// facade text); ordinary modules ingest unchanged. Every package-hash
+// verification the core asks for is recorded in `verified`.
+fn mem_collect(tree: MemTree, facades: Array[(String, String)], verified: Array[String], entry: String) -> Array[(String, String)] with Env + Exception {
+  handle {
+    collect_sources_source(entry)
+  } with { SourceIngest::Header(p, text) => resume(mem_header(tree, p, text)); SourceIngest::DesugarContract(p, _) => resume(mem_facade(facades, p)); SourceIngest::ShareImports(_, text) => resume((text, None)); SourceIngest::VerifyPackageHash(importer, name, pin_hash, index_path, copy_kind) => resume(mem_record(verified, "\{importer} \{name} \{pin_hash} \{index_path} \{copy_kind}")); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+}
+
+fn collected_paths(sources: Array[(String, String)]) -> Array[String] {
+  let out: Array[String] = []
+  for entry in sources {
+    let (p, _) = entry
+    Array::push(out, p)
+  }
+  out
+}
+
+fn mem_collect_error(tree: MemTree, entry: String) -> String with Env {
+  handle {
+    let _ = mem_collect(tree, [], [], entry)
+    "accepted"
+  } with { Exception::Throw(message) => message }
+}
+
+fn diamond() -> MemTree {
+  MemTree::{
+    files: [
+      ("app/a.vibe", "import ./b.vibe { b }\nexport fn a() -> Int { b() + 1 }\n"),
+      ("app/b.vibe", "export fn b() -> Int { 1 }\n"),
+      ("app/main.vibe", "import ./a.vibe { a }\nimport ./b.vibe { b }\nfn main() -> Int { a() + b() }\n")
+    ],
+    symlinks: []
+  }
+}
+
+test "the collection core orders dependencies first and visits each module once" {
+  let sources = mem_collect(diamond(), [], [], "app/main.vibe")
+  inspect(collected_paths(sources), "[app/b.vibe, app/a.vibe, app/main.vibe]")
+}
+
+test "the collection core reports a missing import at its import site" {
+  let tree = MemTree::{
+    files: [
+      ("app/main.vibe", "import ./gone.vibe { g }\nfn main() -> Int { g() }\n")
+    ],
+    symlinks: []
+  }
+  inspect(mem_collect_error(tree, "app/main.vibe"), "line 1:8: cannot resolve import './gone.vibe' (resolved to app/gone.vibe)")
+}
+
+test "the collection core refuses a missing entry" {
+  inspect(mem_collect_error(diamond(), "app/none.vibe"), "cannot resolve module: app/none.vibe does not exist")
+}
+
+test "the collection core refuses a symlinked module before reading it" {
+  let tree = diamond()
+  let linked = MemTree::{ files: tree.files, symlinks: ["app/b.vibe"] }
+  inspect(mem_collect_error(linked, "app/main.vibe"), "symlink module source is not allowed: app/b.vibe")
+}
+
+test "the collection core refuses a directory with two indexes" {
+  let tree = MemTree::{
+    files: [
+      ("app/index.vibe", "export fn x() -> Int { 1 }\n"),
+      ("app/index.vpkg", "fn x() -> Int\n"),
+      ("app/main.vibe", "fn main() -> Int { 1 }\n")
+    ],
+    symlinks: []
+  }
+  inspect(mem_collect_error(tree, "app/main.vibe"), "index.vibe and index.vpkg exist in app (#729/#897): a boundary has exactly one index")
+}
+
+test "the collection core refuses an import into another package's internals" {
+  let tree = MemTree::{
+    files: [
+      ("main.vibe", "import ./pkg/inner.vibe { inner }\nfn main() -> Int { inner() }\n"),
+      ("pkg/index.vpkg", "fn inner() -> Int\n"),
+      ("pkg/inner.vibe", "export fn inner() -> Int { 1 }\n")
+    ],
+    symlinks: []
+  }
+  inspect(mem_collect_error(tree, "main.vibe"), "cannot import pkg/inner.vibe across a package boundary; target owner is pkg/index.vpkg (#729); import the owner contract instead")
+}
+
+fn package_tree(head: String) -> MemTree {
+  MemTree::{
+    files: [
+      ("app/main.vibe", "\{head}import @acme/base { greet }\nfn main() -> Int { greet() }\n"),
+      ("lib/@acme/base/base.vibe", "export fn greet() -> Int { 1 }\n"),
+      ("lib/@acme/base/index.vpkg", "fn greet() -> Int\n")
+    ],
+    symlinks: []
+  }
+}
+
+let package_facades: Array[(String, String)] = [
+  ("lib/@acme/base/index.vpkg", "export ./base.vibe { greet }\n")
+]
+
+test "the collection core ingests a package contract through its facade" {
+  let verified: Array[String] = []
+  let sources = mem_collect(package_tree(""), package_facades, verified, "app/main.vibe")
+  inspect(collected_paths(sources), "[lib/@acme/base/base.vibe, lib/@acme/base/index.vpkg, app/main.vibe]")
+  // An unpinned dev-mode package is not hash-verified.
+  inspect(verified, "[]")
+}
+
+test "the collection core verifies a pinned package against the importer's pin" {
+  let verified: Array[String] = []
+  let _ = mem_collect(package_tree("require @acme/base 0.1.0 = #pkg:b3:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n"), package_facades, verified, "app/main.vibe")
+  inspect(verified, "[app/main.vibe @acme/base pkg:b3:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f lib/@acme/base/index.vpkg lib/]")
+}
+
+// The filesystem adapter is the same core over `Fs`: the same tree written to
+// disk collects in the same order.
+test "the filesystem adapter collects the in-memory tree in the same order" {
+  let root = "/tmp/vibe_source_1872_collection"
+  Fs::mkdir_p(String::concat(root, "/app"))
+  for entry in diamond().files {
+    let (p, text) = entry
+    Fs::write_file(String::concat(root, String::concat("/", p)), text)
+  }
+  let on_disk: Array[String] = []
+  for p in collected_paths(collect_all_sources_fs(String::concat(root, "/app/main.vibe"))) {
+    Array::push(on_disk, p[String::length(root) + 1: String::length(p)])
+  }
+  assert_eq(on_disk, collected_paths(mem_collect(diamond(), [], [], "app/main.vibe")))
+}

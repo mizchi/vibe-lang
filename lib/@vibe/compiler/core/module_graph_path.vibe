@@ -41,6 +41,12 @@ export fn ensure_regular_source_token(path: String, token: Int) -> Unit with Exc
   }
 }
 
+/// Module/package sources must be regular entries of their provider.
+export fn ensure_regular_source(path: String) -> Unit with Exception + Source {
+  let token = perform Source::StatToken(path)
+  ensure_regular_source_token(path, token)
+}
+
 /// Module/package sources must be regular filesystem entries.
 export fn ensure_regular_source_fs(path: String) -> Unit with Exception + Fs {
   ensure_regular_source_token(path, Fs::stat_token(path))
@@ -69,14 +75,15 @@ export fn vpkg_path_in_dir(dir: String) -> String {
 /// spelled it, so `./pkg/x_test.vibe` answered `./pkg/index.vpkg` while its own
 /// `import ./y.vibe` answered `pkg/index.vpkg` -- one package, two strings,
 /// and the import was refused as a package-boundary crossing.
-export fn nearest_vpkg_path_fs(path: String) -> String with Exception + Fs {
+export fn nearest_vpkg_path(path: String) -> String with Exception + Source {
   let mut current = dir_of_path(normalize_path(path))
   let mut found = ""
   let mut searching = true
   while searching {
     let candidate = vpkg_path_in_dir(current)
-    if Fs::exists(candidate) {
-      ensure_regular_source_fs(candidate)
+    let exists = perform Source::Exists(candidate)
+    if exists {
+      ensure_regular_source(candidate)
       found = candidate
       searching = false
     } else {
@@ -89,6 +96,13 @@ export fn nearest_vpkg_path_fs(path: String) -> String with Exception + Fs {
     }
   }
   found
+}
+
+/// The filesystem adapter for `nearest_vpkg_path`.
+export fn nearest_vpkg_path_fs(path: String) -> String with Exception + Fs {
+  handle {
+    nearest_vpkg_path(path)
+  } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 /// Linear membership scan used by `resolve_reexport_chain` to filter
@@ -146,7 +160,7 @@ export fn contains_path(visited: Array[String], path: String) -> Bool {
 ///
 /// The per-module `contains_name` / `contains_path` scans above are fine
 /// (small bounded N — see the notes on each), but the graph-traversal
-/// dedup sites (`collect_sources_rec`, `collect_merged_stmts_recursive`,
+/// dedup sites (`collect_sources_rec_source`, `collect_merged_stmts_recursive`,
 /// the manifest worklist loops) test membership against a set that grows
 /// to ALL modules, once per import edge — O(edges × modules) string
 /// compares, plus O(modules²) entry copying where the set was a
