@@ -6,6 +6,18 @@ import @vibe/compiler/query {
   LabelSiteFile, grep_collect_files, query_label_sites_fs, query_label_sites_recheck_fs
 }
 
+import @vibe/compiler/checker {
+  check_program, label_sites_begin, label_sites_end
+}
+
+import @vibe/compiler/runtime {
+  offset_line_col_range_prefix
+}
+
+import @vibe/parser {
+  lex_with_offsets, parse_program_located
+}
+
 fn refactor_byte_offset(text: String) -> Int with Exception {
   if String::length(text) == 0 {
     throw("refactor: offsets must be nonnegative decimal byte offsets")
@@ -144,6 +156,65 @@ fn refactor_add_labels(args: Array[String]) -> Int with Env + Exception + Fs + C
     1
   } else {
     0
+  }
+}
+
+//# vibe check --warn-missing-labels (ADR-0120 Phase 2b, #3680)
+
+/// One `line L:C-E: warning: ...` row per label the codemod would insert,
+/// spanning the argument. The row names the edit: the labeled argument when it
+/// is short and on one line, else the label to write before it.
+fn missing_label_rows(source: String, result: AddLabelsResult) -> Array[String] {
+  let rows: Array[String] = []
+  let missing: Array[(Int, Int, String, String)] = result.missing
+  for entry in missing {
+    let (start, end, label, written) = entry
+    let edit = if String::length(written) <= 60 && String::index_of(written, "\n") < 0 {
+      "write `" + written + "`"
+    } else {
+      "write `" + label + " = ` before this argument"
+    }
+    Array::push(rows, offset_line_col_range_prefix(source, start, end) + "warning: label this argument: " + edit)
+  }
+  rows
+}
+
+/// The rows for `src` on the import-resolving lane. They are the codemod's
+/// own answer -- the same sweep, the same `add_labels`, the default slot
+/// policy -- so a file `vibe refactor add-labels --write` has rewritten
+/// reports nothing. A file that does not check reports no rows here; its
+/// errors are the check's report.
+export fn user_check_missing_label_rows(src: String) -> Array[String] with Env + Exception + Fs {
+  let answers: Array[LabelSiteFile] = query_label_sites_fs([src])
+  let rows: Array[String] = []
+  for answer in answers {
+    if String::length(answer.error) == 0 {
+      let result: AddLabelsResult = add_labels(answer.path, answer.source, answer.offset_delta, answer.sites, add_labels_positional_receiver_single)
+      for row in missing_label_rows(answer.source, result) {
+        Array::push(rows, row)
+      }
+    } else {
+      ()
+    }
+  }
+  rows
+}
+
+/// The same rows for `--single-file`: the buffer is typed on its own, so a
+/// call to an imported function has no declaration to read and reports
+/// nothing, as every other answer of that lane does.
+export fn user_check_missing_label_rows_single(path: String, source: String) -> Array[String] with Exception {
+  label_sites_begin()
+  let typed = handle {
+    let (tokens, starts, _) = lex_with_offsets(source)
+    let _ = check_program(parse_program_located(tokens, starts, source))
+    true
+  } with { Exception::Throw(_) => false }
+  let sites = label_sites_end()
+  if typed {
+    missing_label_rows(source, add_labels(path, source, 0, sites, add_labels_positional_receiver_single))
+  } else {
+    []
   }
 }
 

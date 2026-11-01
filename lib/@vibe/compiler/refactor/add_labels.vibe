@@ -306,6 +306,42 @@ fn add_labels_has_placeholder(tokens: Array[Token], t: Int) -> Bool {
   found
 }
 
+/// The last token of the argument starting at token `t`: the one before the
+/// depth-0 `,` or the closing bracket. A synthesized `;` at a line end is not
+/// part of it.
+fn add_labels_argument_last(tokens: Array[Token], t: Int) -> Int {
+  let mut j = t
+  let mut last = t
+  let mut depth = 0
+  let mut done = false
+  while j < Array::length(tokens) && !done {
+    let tok = Array::get(tokens, j)
+    match tok {
+      TEof => done = true,
+      TSemicolon => (),
+      TComma => if depth == 0 {
+        done = true
+      } else {
+        last = j
+      },
+      _ => if add_labels_closes(tok) && depth == 0 {
+        done = true
+      } else {
+        if add_labels_opens(tok) {
+          depth = depth + 1
+        } else if add_labels_closes(tok) {
+          depth = depth - 1
+        } else {
+          ()
+        }
+        last = j
+      }
+    }
+    j = j + 1
+  }
+  last
+}
+
 /// The first token of each argument between the `(` at `paren` and its `)`.
 fn add_labels_argument_starts(tokens: Array[Token], paren: Int) -> Array[Int] {
   let out: Array[Int] = []
@@ -359,6 +395,7 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
   // lambda's parameter.
   let closes: MutMap[Int, String] = MutMap::new_int()
   let lines: Array[String] = []
+  let missing: Array[(Int, Int, String, String)] = []
   let mut calls = 0
   let mut labels = 0
   let mut done = 0
@@ -449,11 +486,15 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
               // shorthand lambda is a bare argument only. `f = (x) -> e`
               // does, and means the same.
               let label = add_labels_spelling(w)
+              let arg_start = Array::get(starts, t)
+              let arg_end = Array::get(ends, add_labels_argument_last(tokens, t))
               if add_labels_shorthand_lambda(tokens, t) {
-                MutMap::set(edits, Array::get(starts, t), label + " = (")
+                MutMap::set(edits, arg_start, label + " = (")
                 MutMap::set(closes, Array::get(ends, t), ")")
+                Array::push(missing, (arg_start, arg_end, label, label + " = (" + source[arg_start: Array::get(ends, t)] + ")" + source[Array::get(ends, t): arg_end]))
               } else {
-                MutMap::set(edits, Array::get(starts, t), label + " = ")
+                MutMap::set(edits, arg_start, label + " = ")
+                Array::push(missing, (arg_start, arg_end, label, label + " = " + source[arg_start: arg_end]))
               }
               inserted = inserted + 1
             } else {
@@ -512,6 +553,7 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
     other_shape: shape,
     deferred_calls: deferred,
     deferred_labels: deferred_labels,
-    lines: lines
+    lines: lines,
+    missing: missing
   }
 }
