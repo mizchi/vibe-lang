@@ -183,7 +183,10 @@ vibe fetch                            restore .vibe/store/ from the pins
 vibe new     [--name @scope/name] <dir>
                                       scaffold main.vibex, a root index.vpkg and .gitignore
 vibe root                             print the project root (outermost index.vpkg)
-vibe clean   [--all]                  remove .vibe/build (--all: .vibe/store too)
+vibe clean   [--all | --cache] [--dry-run]
+                                      remove .vibe/build (--all: .vibe/store too;
+                                      --cache: only the compiler cache files;
+                                      --dry-run: report, remove nothing)
 vibe lsp                              start the stdio LSP server (diagnostics)
 vibe context-pack [--out FILE]        emit cheatsheet + verified golden examples
                                        as one file (AI-harness context, #820)
@@ -246,7 +249,9 @@ workspace root.
 **`.vibe/` is the only directory the toolchain writes into a project.** It is
 reproducible from the sources and the pins, which is why `vibe new` puts the
 whole directory in `.gitignore`. `vibe clean` removes `.vibe/build/`; `vibe
-clean --all` also removes `.vibe/store/`. The cache is per project on
+clean --all` also removes `.vibe/store/`, and `vibe clean --cache` removes only
+the compiler's persistent cache, keeping the artifacts beside it. `--dry-run`
+reports what any of them would remove. The cache is per project on
 purpose: `rm -rf .vibe` is the whole story of cleaning up, and one project
 cannot poison another. Sharing a build directory or a cache across worktrees
 or CI jobs is what `VIBE_BUILD_DIR` and `VIBE_BUILD_CACHE_DIR` are for

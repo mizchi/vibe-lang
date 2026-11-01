@@ -61,15 +61,16 @@ mark-sweep and risks evicting entries a concurrent build still wants. Instead,
 reclaiming is an **explicit, first-class command**:
 
 ```bash
-vibe clean                       # a project: remove .vibe/build entirely
-pkf run cache-clean              # this repository: delete every persistent-cache entry
-bash scripts/cache_clean.sh -n   # dry-run: report what would be reclaimed
+vibe clean                    # remove .vibe/build entirely
+vibe clean --cache            # delete only the persistent-cache entries
+vibe clean --cache --dry-run  # report what would be reclaimed, delete nothing
+pkf run cache-clean           # this repository: `runtime/vibe clean --cache`
 ```
 
-`scripts/cache_clean.sh` removes only the persistent-cache files
-(`.vibe/build/cache/vibe_*`, plus any `_build/vibe_*` rows left by compilers
-from before #2675); generation builds, fixtures, the vpkg type stubs and
-everything else are untouched. A full rebuild simply repopulates the cache.
+`vibe clean --cache` removes only the persistent-cache files (the `vibe_*`
+entries of `VIBE_BUILD_CACHE_DIR`, else `.vibe/build/cache/`) and reports how
+many and how much; the artifacts under `.vibe/build/`, the vpkg type stubs,
+generation builds, fixtures and everything else are untouched. A full rebuild simply repopulates the cache.
 Because the key already version-tags on every codegen change, a clean is never
 *required* for correctness — only to reclaim disk.
 

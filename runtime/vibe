@@ -139,7 +139,10 @@
 #                                         root index.vpkg (the project marker
 #                                         and manifest) and a .gitignore
 #   vibe root                             print the project root
-#   vibe clean   [--all]                  remove .vibe/build (--all: .vibe/store too)
+#   vibe clean   [--all | --cache] [--dry-run]
+#                                         remove .vibe/build (--all: .vibe/store too;
+#                                         --cache: only the compiler cache files;
+#                                         --dry-run: report, remove nothing)
 #   vibe add     <source-spec> [#pkg:b3:<64hex>]
 #                                         fetch a package into .vibe/store/ and
 #                                         pin it in the root index.vpkg
@@ -1473,17 +1476,55 @@ case "$cmd" in
     ;;
   root) [ "$#" -eq 0 ] || die "usage: vibe root"; printf '%s\n' "$PROJECT_ROOT" ;;
   clean)
-    clean_all=0
+    clean_all=0; clean_cache=0; clean_dry=0
     for clean_arg in "$@"; do
-      case "$clean_arg" in --all) clean_all=1 ;; *) die "usage: vibe clean [--all]" ;; esac
+      case "$clean_arg" in
+        --all) clean_all=1 ;;
+        --cache) clean_cache=1 ;;
+        --dry-run|-n) clean_dry=1 ;;
+        *) die "usage: vibe clean [--all | --cache] [--dry-run]" ;;
+      esac
     done
-    cleaned=""
-    if [ -e "$BUILD_DIR" ]; then rm -rf "$BUILD_DIR"; cleaned="$cleaned $(display_path "$BUILD_DIR")"; fi
-    if [ "$clean_all" = 1 ] && [ -e "$PROJECT_ROOT/.vibe/store" ]; then
-      rm -rf "$PROJECT_ROOT/.vibe/store"; cleaned="$cleaned .vibe/store"
+    [ "$clean_all" = 1 ] && [ "$clean_cache" = 1 ] && \
+      die "clean: --cache keeps everything but the compiler cache and --all removes the store too; pick one"
+    if [ "$clean_cache" = 1 ]; then
+      # The compiler's persistent cache only (#631, #3674): every entry is a
+      # flat `vibe_*` file, written content-addressed and never deleted in
+      # place, so a long edit session leaves orphans behind. The artifacts
+      # beside it (run/, test/, out/, vpkg_types/) stay. The directory is the
+      # one the compiler writes: VIBE_BUILD_CACHE_DIR, resolved against the
+      # root it runs in, else <build>/cache.
+      cache_dir="${VIBE_BUILD_CACHE_DIR:-$BUILD_DIR/cache}"
+      case "$cache_dir" in /*) ;; *) cache_dir="$PROJECT_ROOT/$cache_dir" ;; esac
+      cache_n=0; cache_bytes=0
+      if [ -d "$cache_dir" ]; then
+        cache_n="$(find "$cache_dir" -mindepth 1 -maxdepth 1 -type f -name 'vibe_*' | awk 'END { print NR }')"
+        cache_bytes="$(find "$cache_dir" -mindepth 1 -maxdepth 1 -type f -name 'vibe_*' -exec wc -c {} + |
+          awk '$2 != "total" { s += $1 } END { print s + 0 }')"
+      fi
+      if [ "$cache_n" = 0 ]; then
+        echo "nothing to clean in $(display_path "$cache_dir")"
+      else
+        cache_size="$(awk -v b="$cache_bytes" 'BEGIN { split("B KB MB GB", u); i = 1; while (b >= 1024 && i < 4) { b /= 1024; i++ } printf("%.1f %s", b, u[i]) }')"
+        if [ "$clean_dry" = 1 ]; then
+          echo "would remove $cache_n cache file(s), $cache_size, from $(display_path "$cache_dir")"
+        else
+          find "$cache_dir" -mindepth 1 -maxdepth 1 -type f -name 'vibe_*' -exec rm -f {} +
+          echo "removed $cache_n cache file(s), $cache_size, from $(display_path "$cache_dir")"
+        fi
+      fi
+    else
+      cleaned=""
+      [ -e "$BUILD_DIR" ] && cleaned="$cleaned $(display_path "$BUILD_DIR")"
+      [ "$clean_all" = 1 ] && [ -e "$PROJECT_ROOT/.vibe/store" ] && cleaned="$cleaned .vibe/store"
+      if [ -z "$cleaned" ]; then echo "nothing to clean under $PROJECT_ROOT"
+      elif [ "$clean_dry" = 1 ]; then echo "would clean:$cleaned"
+      else
+        [ -e "$BUILD_DIR" ] && rm -rf "$BUILD_DIR"
+        [ "$clean_all" = 1 ] && rm -rf "$PROJECT_ROOT/.vibe/store"
+        echo "cleaned:$cleaned"
+      fi
     fi
-    if [ -n "$cleaned" ]; then echo "cleaned:$cleaned"
-    else echo "nothing to clean under $PROJECT_ROOT"; fi
     ;;
   version|--version|-V)
     # An installed toolchain answers from its manifest.json (#2677) -- version,

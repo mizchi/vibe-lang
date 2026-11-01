@@ -119,7 +119,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `emit_async_lift_fixture.sh`
 
 ## Misc infra
-- `cache_clean.sh`, `flaker_run.sh` (+ `_test`), `measure_heap.mjs`
+- `flaker_run.sh` (+ `_test`), `measure_heap.mjs`
 
 ## Subdirs
 - `scripts/pkfire/` — pkfire CI shard helpers (`gates_shard.sh`, …)
