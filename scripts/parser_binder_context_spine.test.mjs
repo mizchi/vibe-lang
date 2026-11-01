@@ -318,9 +318,6 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
     "parse_impl(tokens,",
   ]);
   assertBody(exprSource, "parse_fn_signature", [
-    "parse_contract_fn_signature(tokens, pos)",
-  ], ["Some(ParserBinderContext"]);
-  assertBody(exprSource, "parse_contract_fn_signature", [
     "parse_fn_signature_with_binder_context(tokens, no_starts, pos, None, None)",
   ], ["Some(ParserBinderContext"]);
   assertContextual(exprSource, "parse_fn_main_stmt", [

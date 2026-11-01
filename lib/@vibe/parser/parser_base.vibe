@@ -318,24 +318,27 @@ fn empty_pats() -> Array[Pat] {
 let qualified_pattern_refs: Array[(String, String)] = Array::slice([("", "")], 0, 0)
 let bare_pattern_refs: Array[String] = []
 
-/// The parser side channels' lengths, for a parse that may be discarded (an
-/// inactive `#cfg`) or a fresh program (`(0, 0, 0)`). The third is the
-/// positional-parameter log (ADR-0120 D3): a discarded `fn f(_ x: Int)` must
-/// not leave its slots for an active `fn f(x: Int)` of the same name.
-export fn pattern_ref_mark() -> (Int, Int, Int) {
-  (Array::length(qualified_pattern_refs), Array::length(bare_pattern_refs), Array::length(positional_param_rows))
+export fn pattern_ref_mark() -> (Int, Int) {
+  (Array::length(qualified_pattern_refs), Array::length(bare_pattern_refs))
 }
 
-export fn restore_pattern_refs(mark: (Int, Int, Int)) -> Unit {
+/// The pattern refs and the positional log for a fresh program, without
+/// building a mark: every parse entry calls it.
+export fn reset_pattern_refs() -> Unit {
+  Array::truncate(qualified_pattern_refs, 0)
+  Array::truncate(bare_pattern_refs, 0)
+  Array::truncate(positional_param_rows, 0)
+}
+
+export fn restore_pattern_refs(mark: (Int, Int)) -> Unit {
   Array::truncate(qualified_pattern_refs, mark.0)
   Array::truncate(bare_pattern_refs, mark.1)
-  Array::truncate(positional_param_rows, mark.2)
 }
 
 /// A handler's operation pattern is qualified in the AST itself. Its parser
 /// side-channel row would falsely compete with an enum constructor pattern.
 /// Keep any nested constructor refs in the operation's payload.
-export fn discard_handler_operation_ref(mark: (Int, Int, Int), qualifier: String, variant: String) -> Unit {
+export fn discard_handler_operation_ref(mark: (Int, Int), qualifier: String, variant: String) -> Unit {
   if qualifier == "" {
     let mut i = mark.1
     let n = Array::length(bare_pattern_refs)
@@ -480,7 +483,7 @@ export fn has_positional_params() -> Bool {
 /// it -- the initializer's own, when the initializer is a lambda. Any other
 /// list that writes `_` before a parameter is refused, so the marker can
 /// never ride a nested lambda unread.
-let lambda_positional_armed: Array[Bool] = [false]
+let lambda_positional_armed: Array[Bool] = Array::slice([false, false], 0, 1)
 let lambda_positional_slots: Array[Int] = Array::slice([0], 0, 0)
 
 export fn arm_lambda_positional() -> Unit {
@@ -504,6 +507,19 @@ export fn disarm_lambda_positional() -> Array[Int] {
 
 let no_lambda_positional_slots: Array[Int] = Array::slice([0], 0, 0)
 
+/// Is the token at `pos` a `_` written before a parameter's name? Nested
+/// matches, not a match on a tuple: this runs for every parameter parsed, and
+/// the tuple was a per-parameter allocation the parser benches caught.
+export fn positional_marker_at(tokens: Array[Token], pos: Int) -> Bool {
+  match peek(tokens, pos) {
+    TIdent(u) => u == "_" && match peek(tokens, pos + 1) {
+      TIdent(_) => true,
+      _ => false
+    },
+    _ => false
+  }
+}
+
 fn take_lambda_positional_armed() -> Bool {
   let armed = Array::get(lambda_positional_armed, 0)
   Array::set(lambda_positional_armed, 0, false)
@@ -513,10 +529,7 @@ fn take_lambda_positional_armed() -> Bool {
 /// A `_` before a lambda parameter's name: skipped and recorded when this
 /// list took the arming, refused otherwise.
 fn lambda_param_marker(tokens: Array[Token], pos: Int, index: Int, armed: Bool) -> Int with Exception {
-  let marked = match (peek(tokens, pos), peek(tokens, pos + 1)) {
-    (TIdent(u), TIdent(_)) => u == "_",
-    _ => false
-  }
+  let marked = positional_marker_at(tokens, pos)
   if !marked {
     pos
   } else if armed {
@@ -525,6 +538,29 @@ fn lambda_param_marker(tokens: Array[Token], pos: Int, index: Int, armed: Bool) 
   } else {
     throw("`_` before a parameter marks a positional slot, which only a `fn` declaration or the lambda a top-level `let` is bound to can declare: remove `_ `, or declare the function with `fn` (`fn f(_ x: T) -> R { .. }`) at #\{pos}")
   }
+}
+
+/// The positional log's length, for `take_positional_params_since`.
+export fn positional_params_mark() -> Int {
+  Array::length(positional_param_rows)
+}
+
+/// Drop the rows recorded since `mark` (ADR-0120 D3): a discarded parse, such
+/// as an inactive `#cfg` statement, must not leave a `fn f(_ x: Int)`'s slots
+/// for an active `fn f(x: Int)` of the same name. An `Int` mark beside the
+/// pattern-ref pair rather than a third member of it: the recovering parse
+/// takes that pair for every statement, and the parser benches gate bytes
+/// per op.
+export fn restore_positional_params(mark: Int) -> Unit {
+  Array::truncate(positional_param_rows, mark)
+}
+
+/// The rows recorded since `mark`, removed from the log.
+export fn take_positional_params_since(mark: Int) -> Array[(String, Array[Int])] {
+  let n = Array::length(positional_param_rows)
+  let out = Array::slice(positional_param_rows, mark, n)
+  Array::truncate(positional_param_rows, mark)
+  out
 }
 
 export fn take_positional_params() -> Array[(String, Array[Int])] {
