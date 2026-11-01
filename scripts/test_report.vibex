@@ -22,7 +22,8 @@
 //   fail <src> <tests> <patches> <stdout> <stderr> <funcmap> <base> <source> <res>
 //                                      a failing file
 //   summary <results-dir> <files> <coverage 0|1> <seed-default 0|1> <seed> <covdir>
-//                                      the `[vibe-test]` lines; exit 1 on a failure
+//                                      the `[vibe-test]` lines; exit 1 on a failure,
+//                                      including an entry that left no record
 //   script <stdout> <stderr> <funcmap> <base> <source>
 //   launcher <stderr> <funcmap> <base> <pre_abort 0|1>
 //                                      the failure report alone
@@ -38,7 +39,7 @@ import ../lib/@vibe/testreport {
 import ../lib/@vibe/testrun {
   test_run_compile_failure, test_run_coverage_missing, test_run_coverage_pass, test_run_coverage_record, test_run_entry,
   test_run_fail_record, test_run_failed, test_run_failure, test_run_pass, test_run_pass_record, test_run_plan,
-  test_run_summary
+  test_run_summary, test_run_unrecorded
 }
 import @vibe/process {
   exit
@@ -169,6 +170,27 @@ fn main() -> Unit allows Env + Fs + Console + Stderr + Process {
     Fs::write_file(arg(9), test_run_fail_record(arg(2)))
   } else if mode == "summary" {
     let (records, compile_fails) = read_results(arg(1))
+    // Every file the workers were handed (`entries.tsv`) must have left a
+    // record. One that did not -- a worker or a report killed before it wrote
+    // -- is a failure, never a silent omission from the counts.
+    let entries = String::split(read_or_empty("\{arg(1)}/entries.tsv"), "\n")
+    let mut e = 0
+    while e < Array::length(entries) {
+      let line = Array::get(entries, e)
+      let tab = String::index_of(line, "\t")
+      if tab > 0 {
+        let flat = String::substring(line, tab + 1, String::length(line))
+        if !Fs::is_file("\{arg(1)}/\{flat}.res") {
+          print(test_run_unrecorded(String::substring(line, 0, tab)))
+          Array::push(records, test_run_fail_record(""))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      e = e + 1
+    }
     print(test_run_summary(records, int_arg(2), compile_fails, backend(), arg(3) == "1", arg(4) == "1", arg(5), arg(6)))
     if test_run_failed(records) {
       exit(1)
