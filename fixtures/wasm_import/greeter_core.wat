@@ -1,0 +1,28 @@
+;; Core module of the greeter component fixture (greeter.wit), built into
+;; greeter.component.wasm by scripts/build_wasm_import_fixtures.sh.
+(module
+  (memory (export "memory") 1)
+  (global $heap (mut i32) (i32.const 1024))
+  (global $n (mut i64) (i64.const 0))
+  (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+    (local $p i32)
+    (local.set $p (global.get $heap))
+    (global.set $heap (i32.add (global.get $heap) (local.get 3)))
+    (local.get $p))
+  (func (export "add") (param i32 i32) (result i32) (i32.add (local.get 0) (local.get 1)))
+  (func (export "counter") (result i64)
+    (global.set $n (i64.add (global.get $n) (i64.const 1))) (global.get $n))
+  ;; greet(name) -> "hi, " ++ name ; result via retptr at 512
+  (func (export "greet") (param $p i32) (param $len i32) (result i32)
+    (local $out i32)
+    (local.set $out (global.get $heap))
+    (global.set $heap (i32.add (global.get $heap) (i32.add (local.get $len) (i32.const 4))))
+    (i32.store8 (local.get $out) (i32.const 104))
+    (i32.store8 offset=1 (local.get $out) (i32.const 105))
+    (i32.store8 offset=2 (local.get $out) (i32.const 44))
+    (i32.store8 offset=3 (local.get $out) (i32.const 32))
+    (memory.copy (i32.add (local.get $out) (i32.const 4)) (local.get $p) (local.get $len))
+    (i32.store (i32.const 512) (local.get $out))
+    (i32.store offset=4 (i32.const 512) (i32.add (local.get $len) (i32.const 4)))
+    (i32.const 512))
+)

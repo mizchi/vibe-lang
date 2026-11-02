@@ -2688,4 +2688,132 @@ function writeProfileRequest(req, elapsedUs) {
   };
 }
 
-module.exports = { createHostRuntime };
+// ---------------------------------------------------------------------------
+// Linking for typed core-wasm imports (`import ./x.wasm { .. }`).
+//
+// The compiler turns such an import into core imports whose module is
+// `vibe:wasm:<path>` (lib/@vibe/compiler/core/wasm_import_binding.vibe):
+//
+//   - one field per exported function, named exactly as the export;
+//   - `vibe:memory.load8_u (i32) -> i32`, `vibe:memory.store8 (i32, i32)` and
+//     `vibe:memory.size () -> i64` in the separate module
+//     `vibe:wasm-memory:<path>` when the foreign module has a memory --
+//     the foreign memory is not the vibe module's, so the host reads and
+//     writes it on the program's behalf.
+//
+// `linkForeignWasmModules` instantiates each such module from `<path>`
+// (relative to `VIBE_WASM_LINK_DIR`, default the working directory, which is
+// where the compiler resolved the import) and returns the import namespaces.
+// A foreign module that itself imports something is refused with the list of
+// what it needs: nothing here satisfies another module's host imports, and
+// answering them with stubs would run it wrong.
+
+// Module-level: createHostRuntime keeps its requires in its own scope.
+const foreignFs = require("node:fs");
+const foreignPath = require("node:path");
+
+const FOREIGN_PREFIX = "vibe:wasm:";
+const COMPONENT_PREFIX = "vibe:component:";
+
+const FOREIGN_MEMORY_PREFIX = "vibe:wasm-memory:";
+
+// The foreign module paths a program imports from, through the functions'
+// namespace or the memory accessors' separate one (`vibe:wasm-memory:<path>`,
+// kept apart so no export of the module can collide with an accessor), each
+// once.
+function foreignModulePaths(wasmModule) {
+  const paths = new Set();
+  for (const imp of WebAssembly.Module.imports(wasmModule)) {
+    if (imp.module.startsWith(FOREIGN_PREFIX)) paths.add(imp.module.slice(FOREIGN_PREFIX.length));
+    else if (imp.module.startsWith(FOREIGN_MEMORY_PREFIX)) paths.add(imp.module.slice(FOREIGN_MEMORY_PREFIX.length));
+  }
+  return [...paths];
+}
+
+function outOfBounds(name, addr, size) {
+  return new WebAssembly.RuntimeError(
+    `${name}: address ${addr} is outside the foreign memory (${size} bytes)`,
+  );
+}
+
+// Whether `f` is the reactor initializer `_initialize: () -> ()`. The JS API
+// does not show a wasm function's result types, but importing a wasm-exported
+// function checks its type exactly: a module whose one import is `() -> ()`
+// instantiates with `f` only when `f` has that signature. viberun asks the
+// same question through `get_typed_func::<(), ()>`.
+const REACTOR_INIT_PROBE = new WebAssembly.Module(new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+  0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type 0: () -> ()
+  0x02, 0x07, 0x01, 0x01, 0x6d, 0x01, 0x66, 0x00, 0x00, // import "m" "f" (func (type 0))
+]));
+function isReactorInitializer(f) {
+  if (typeof f !== "function") return false;
+  try {
+    new WebAssembly.Instance(REACTOR_INIT_PROBE, { m: { f } });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function linkForeignWasmModules(wasmModule, opts = {}) {
+  const baseDir = opts.baseDir ?? process.env.VIBE_WASM_LINK_DIR ?? process.cwd();
+  // A component import (`vibe:component:<path>`) needs the canonical ABI,
+  // which viberun gets from wasmtime. Refuse it here: left to the runner's
+  // fallback stub, every call would silently answer 0.
+  const components = WebAssembly.Module.imports(wasmModule)
+    .filter((i) => i.module.startsWith(COMPONENT_PREFIX))
+    .map((i) => i.module);
+  if (components.length > 0) {
+    throw new Error(
+      `cannot link '${components[0]}': importing a wasm component runs on viberun; the node runner cannot instantiate components`,
+    );
+  }
+  const out = {};
+  for (const rel of foreignModulePaths(wasmModule)) {
+    const name = FOREIGN_PREFIX + rel;
+    const file = foreignPath.isAbsolute(rel) ? rel : foreignPath.join(baseDir, rel);
+    let bytes;
+    try {
+      bytes = foreignFs.readFileSync(file);
+    } catch (e) {
+      throw new Error(`cannot link '${name}': ${e.message}`);
+    }
+    const mod = await WebAssembly.compile(bytes);
+    const needs = WebAssembly.Module.imports(mod);
+    if (needs.length > 0) {
+      const shown = needs.slice(0, 8).map((i) => `${i.module}.${i.name} (${i.kind})`);
+      throw new Error(
+        `cannot link '${name}': it imports ${needs.length} item(s) and this runner provides none to a foreign module: ` +
+          shown.join(", ") + (needs.length > 8 ? ", ..." : ""),
+      );
+    }
+    const instance = await WebAssembly.instantiate(mod, {});
+    if (isReactorInitializer(instance.exports._initialize)) {
+      instance.exports._initialize();
+    }
+    const memory = Object.values(instance.exports).find((v) => v instanceof WebAssembly.Memory) ?? null;
+    const ns = { ...instance.exports };
+    if (memory) {
+      const mem = {};
+      mem["vibe:memory.load8_u"] = (addr) => {
+        const a = addr >>> 0;
+        const view = new Uint8Array(memory.buffer);
+        if (a >= view.length) throw outOfBounds("vibe:memory.load8_u", a, view.length);
+        return view[a];
+      };
+      mem["vibe:memory.store8"] = (addr, value) => {
+        const a = addr >>> 0;
+        const view = new Uint8Array(memory.buffer);
+        if (a >= view.length) throw outOfBounds("vibe:memory.store8", a, view.length);
+        view[a] = value & 0xff;
+      };
+      mem["vibe:memory.size"] = () => BigInt(memory.buffer.byteLength);
+      out[FOREIGN_MEMORY_PREFIX + rel] = mem;
+    }
+    out[name] = ns;
+  }
+  return out;
+}
+
+module.exports = { createHostRuntime, linkForeignWasmModules };
