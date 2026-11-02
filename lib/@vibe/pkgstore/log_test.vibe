@@ -32,41 +32,41 @@ import ./log.vibe {
 
 fn fixture_records() -> Array[String] {
   [
-    log_record(0, "publish", "@a/x@1.0.0", "pkg:b3:aa", "ct:b3:11", "local", "-"),
-    log_record(1, "publish", "@a/x@1.1.0", "pkg:b3:bb", "ct:b3:22", "local", "-"),
-    log_record(2, "yank", "@a/x@1.1.0", "pkg:b3:bb", "-", "-", "-"),
-    log_record(3, "publish", "@a/y@0.1.0", "pkg:b3:cc", "ct:b3:33", "github:o/r@abc", "0123"),
-    log_record(4, "publish", "@a/x@1.2.0", "pkg:b3:dd", "ct:b3:44", "local", "-")
+    log_record(ordinal = 0, op = "publish", key = "@a/x@1.0.0", hash = "pkg:b3:aa", contract_hash = "ct:b3:11", source = "local", commit = "-"),
+    log_record(ordinal = 1, op = "publish", key = "@a/x@1.1.0", hash = "pkg:b3:bb", contract_hash = "ct:b3:22", source = "local", commit = "-"),
+    log_record(ordinal = 2, op = "yank", key = "@a/x@1.1.0", hash = "pkg:b3:bb", contract_hash = "-", source = "-", commit = "-"),
+    log_record(ordinal = 3, op = "publish", key = "@a/y@0.1.0", hash = "pkg:b3:cc", contract_hash = "ct:b3:33", source = "github:o/r@abc", commit = "0123"),
+    log_record(ordinal = 4, op = "publish", key = "@a/x@1.2.0", hash = "pkg:b3:dd", contract_hash = "ct:b3:44", source = "local", commit = "-")
   ]
 }
 
 fn fixture_body() -> String {
-  String::concat(String::join(fixture_records(), "\n"), "\n")
+  String::concat(String::join(fixture_records(), sep = "\n"), "\n")
 }
 
-fn root_of_first(n: Int) -> String {
-  log_root(log_leaves(fixture_records(), n))
+fn root_of_first(_ n: Int) -> String {
+  log_root(log_leaves(records = fixture_records(), limit = n))
 }
 
-fn proof_text(index: Int) -> String {
-  let proof = log_inclusion_proof(log_leaves(fixture_records(), 5), index)
+fn proof_text(_ index: Int) -> String {
+  let proof = log_inclusion_proof(leaves = log_leaves(records = fixture_records(), limit = 5), index = index)
   let sb = StringBuilder::new()
   let mut i = 0
   while i < Array::length(proof) {
-    let step = Array::get(proof, i)
-    StringBuilder::push(sb, if step.sibling_right {
+    let step = Array::get(proof, at = i)
+    StringBuilder::push(sb, value = if step.sibling_right {
       "R "
     } else {
       "L "
     })
-    StringBuilder::push(sb, step.hash)
-    StringBuilder::push(sb, "|")
+    StringBuilder::push(sb, value = step.hash)
+    StringBuilder::push(sb, value = "|")
     i = i + 1
   }
   StringBuilder::freeze(sb)
 }
 
-fn error_of(f: () -> Unit with Exception) -> String {
+fn error_of(_ f: () -> Unit with Exception) -> String {
   handle {
     f()
     "ok"
@@ -76,7 +76,7 @@ fn error_of(f: () -> Unit with Exception) -> String {
 //# Hashing
 
 test "leaf hash of the first record" {
-  inspect(log_leaf_hash(Array::get(fixture_records(), 0)), content = "813c5cc4ca882fdb95f315179daf1149368dfaa795c571450bd4f4150a7373a4")
+  inspect(log_leaf_hash(Array::get(fixture_records(), at = 0)), content = "813c5cc4ca882fdb95f315179daf1149368dfaa795c571450bd4f4150a7373a4")
 }
 
 test "roots of every prefix match the shell" {
@@ -97,15 +97,15 @@ test "inclusion proofs match the shell for every leaf of five" {
 }
 
 test "every proof verifies, and a proof for another leaf does not" {
-  let leaves = log_leaves(fixture_records(), 5)
+  let leaves = log_leaves(records = fixture_records(), limit = 5)
   let root = log_root(leaves)
   let mut i = 0
   while i < 5 {
-    assert(log_verify_inclusion(Array::get(leaves, i), root, log_inclusion_proof(leaves, i)))
+    assert(log_verify_inclusion(leaf = Array::get(leaves, at = i), root = root, proof = log_inclusion_proof(leaves = leaves, index = i)))
     i = i + 1
   }
-  assert(!log_verify_inclusion(Array::get(leaves, 0), root, log_inclusion_proof(leaves, 1)))
-  assert(!log_verify_inclusion(Array::get(leaves, 2), root_of_first(4), log_inclusion_proof(leaves, 2)))
+  assert(!log_verify_inclusion(leaf = Array::get(leaves, at = 0), root = root, proof = log_inclusion_proof(leaves = leaves, index = 1)))
+  assert(!log_verify_inclusion(leaf = Array::get(leaves, at = 2), root = root_of_first(4), proof = log_inclusion_proof(leaves = leaves, index = 2)))
 }
 
 //# Files
@@ -116,7 +116,7 @@ test "record lines split newline-terminated records" {
 }
 
 test "head round-trips" {
-  let head = log_parse_head(log_format_head(5, "abc"))
+  let head = log_parse_head(log_format_head(size = 5, root = "abc"))
   inspect(head.size, content = "5")
   inspect(head.root, content = "abc")
   inspect(error_of(() -> {
@@ -131,33 +131,33 @@ test "seen-head file name matches the shell's" {
 //# Checks
 
 test "a served log that is consistent passes" {
-  inspect(error_of(() -> log_check_served(None, None)), content = "ok")
-  inspect(error_of(() -> log_check_served(Some(fixture_body()), Some(log_format_head(5, root_of_first(5))))), content = "ok")
+  inspect(error_of(() -> log_check_served(records = None, head = None)), content = "ok")
+  inspect(error_of(() -> log_check_served(records = Some(fixture_body()), head = Some(log_format_head(size = 5, root = root_of_first(5))))), content = "ok")
 }
 
 test "tampered served logs are refused" {
-  inspect(error_of(() -> log_check_served(Some(fixture_body()), None)), content = "tampered log head: records.tsv exists but head is missing")
-  inspect(error_of(() -> log_check_served(None, Some("0\tx\n"))), content = "tampered log head: head exists but records.tsv is missing")
-  inspect(error_of(() -> log_check_served(Some(fixture_body()), Some(log_format_head(4, root_of_first(5))))), content = "tampered log head: head claims 4 record(s), records.tsv has 5")
-  inspect(error_of(() -> log_check_served(Some(String::replace(fixture_body(), "pkg:b3:cc", "pkg:b3:ee")), Some(log_format_head(5, root_of_first(5))))), content = "tampered log head: head root 9655a06430fb65ed252cdfb85bc69d3be4d08c365589accd5dd3fa49b7680ab5 does not match recomputed b8ef25517018eac1174f9f5fe85e4404ab09478add7a1b71ab972f507b87aa1b")
+  inspect(error_of(() -> log_check_served(records = Some(fixture_body()), head = None)), content = "tampered log head: records.tsv exists but head is missing")
+  inspect(error_of(() -> log_check_served(records = None, head = Some("0\tx\n"))), content = "tampered log head: head exists but records.tsv is missing")
+  inspect(error_of(() -> log_check_served(records = Some(fixture_body()), head = Some(log_format_head(size = 4, root = root_of_first(5))))), content = "tampered log head: head claims 4 record(s), records.tsv has 5")
+  inspect(error_of(() -> log_check_served(records = Some(String::replace(fixture_body(), pattern = "pkg:b3:cc", replacement = "pkg:b3:ee")), head = Some(log_format_head(size = 5, root = root_of_first(5))))), content = "tampered log head: head root 9655a06430fb65ed252cdfb85bc69d3be4d08c365589accd5dd3fa49b7680ab5 does not match recomputed b8ef25517018eac1174f9f5fe85e4404ab09478add7a1b71ab972f507b87aa1b")
 }
 
 test "a head may only extend the one this client saw" {
   let head = LogHead::{ size: 5, root: root_of_first(5) }
-  inspect(error_of(() -> log_check_extends(fixture_body(), head, None)), content = "ok")
-  inspect(error_of(() -> log_check_extends(fixture_body(), head, Some(LogHead::{
+  inspect(error_of(() -> log_check_extends(records = fixture_body(), head = head, seen = None)), content = "ok")
+  inspect(error_of(() -> log_check_extends(records = fixture_body(), head = head, seen = Some(LogHead::{
     size: 3,
     root: root_of_first(3)
   }))), content = "ok")
-  inspect(error_of(() -> log_check_extends(fixture_body(), head, Some(LogHead::{
+  inspect(error_of(() -> log_check_extends(records = fixture_body(), head = head, seen = Some(LogHead::{
     size: 0,
     root: root_of_first(0)
   }))), content = "ok")
-  inspect(error_of(() -> log_check_extends(fixture_body(), LogHead::{
+  inspect(error_of(() -> log_check_extends(records = fixture_body(), head = LogHead::{
     size: 2,
     root: root_of_first(2)
-  }, Some(LogHead::{ size: 3, root: root_of_first(3) }))), content = "log consistency violation: head regressed to 2 record(s), this client already saw 3 (append-only log was truncated/rewritten)")
-  inspect(error_of(() -> log_check_extends(fixture_body(), head, Some(LogHead::{
+  }, seen = Some(LogHead::{ size: 3, root: root_of_first(3) }))), content = "log consistency violation: head regressed to 2 record(s), this client already saw 3 (append-only log was truncated/rewritten)")
+  inspect(error_of(() -> log_check_extends(records = fixture_body(), head = head, seen = Some(LogHead::{
     size: 3,
     root: root_of_first(2)
   }))), content = "log consistency violation: the first 3 record(s) no longer hash to the head this client saw (append-only history was rewritten)")
@@ -165,7 +165,7 @@ test "a head may only extend the one this client saw" {
 
 test "lookup takes the last publish and a yank after it" {
   let recs = fixture_records()
-  inspect(match log_lookup(recs, "@a/x@1.0.0") {
+  inspect(match log_lookup(records = recs, key = "@a/x@1.0.0") {
     LogAbsent => "absent",
     LogPublished(i, h, y) => "\{Int::to_string(i)} \{h} \{if y {
       "yanked"
@@ -173,7 +173,7 @@ test "lookup takes the last publish and a yank after it" {
       "live"
     }}"
   }, content = "0 pkg:b3:aa live")
-  inspect(match log_lookup(recs, "@a/x@1.1.0") {
+  inspect(match log_lookup(records = recs, key = "@a/x@1.1.0") {
     LogAbsent => "absent",
     LogPublished(i, h, y) => "\{Int::to_string(i)} \{h} \{if y {
       "yanked"
@@ -181,7 +181,7 @@ test "lookup takes the last publish and a yank after it" {
       "live"
     }}"
   }, content = "1 pkg:b3:bb yanked")
-  inspect(match log_lookup(recs, "@a/z@1.0.0") {
+  inspect(match log_lookup(records = recs, key = "@a/z@1.0.0") {
     LogAbsent => "absent",
     LogPublished(_, _, _) => "published"
   }, content = "absent")
@@ -189,8 +189,8 @@ test "lookup takes the last publish and a yank after it" {
 
 test "a re-publish after a yank is live again" {
   let recs = fixture_records()
-  Array::push(recs, log_record(5, "publish", "@a/x@1.1.0", "pkg:b3:bb", "ct:b3:22", "local", "-"))
-  inspect(match log_lookup(recs, "@a/x@1.1.0") {
+  Array::push(recs, value = log_record(ordinal = 5, op = "publish", key = "@a/x@1.1.0", hash = "pkg:b3:bb", contract_hash = "ct:b3:22", source = "local", commit = "-"))
+  inspect(match log_lookup(records = recs, key = "@a/x@1.1.0") {
     LogAbsent => "absent",
     LogPublished(i, _, y) => "\{Int::to_string(i)} \{if y {
       "yanked"
@@ -198,22 +198,22 @@ test "a re-publish after a yank is live again" {
       "live"
     }}"
   }, content = "5 live")
-  assert(!log_is_yanked(recs, "@a/x@1.1.0"))
+  assert(!log_is_yanked(records = recs, key = "@a/x@1.1.0"))
 }
 
 test "has_publish and is_yanked" {
   let recs = fixture_records()
-  assert(log_has_publish(recs, "@a/y@0.1.0"))
-  assert(!log_has_publish(recs, "@a/y@0.2.0"))
-  assert(log_is_yanked(recs, "@a/x@1.1.0"))
-  assert(!log_is_yanked(recs, "@a/x@1.0.0"))
+  assert(log_has_publish(records = recs, key = "@a/y@0.1.0"))
+  assert(!log_has_publish(records = recs, key = "@a/y@0.2.0"))
+  assert(log_is_yanked(records = recs, key = "@a/x@1.1.0"))
+  assert(!log_is_yanked(records = recs, key = "@a/x@1.0.0"))
 }
 
 //# Edges found by `vibe mutate`
 
 test "a leaf limit above the record count takes every record" {
-  inspect(Array::length(log_leaves(fixture_records(), 10)), content = "5")
-  inspect(log_root(log_leaves(fixture_records(), 10)), content = "9655a06430fb65ed252cdfb85bc69d3be4d08c365589accd5dd3fa49b7680ab5")
+  inspect(Array::length(log_leaves(records = fixture_records(), limit = 10)), content = "5")
+  inspect(log_root(log_leaves(records = fixture_records(), limit = 10)), content = "9655a06430fb65ed252cdfb85bc69d3be4d08c365589accd5dd3fa49b7680ab5")
 }
 
 test "a head line that starts with its tab has no size" {
@@ -223,13 +223,13 @@ test "a head line that starts with its tab has no size" {
 }
 
 test "a records file that ends inside a record is refused" {
-  let body = String::join(fixture_records(), "\n")
-  inspect(error_of(() -> log_check_served(Some(body), Some(log_format_head(5, root_of_first(5))))), content = "tampered log head: records.tsv ends inside a record (no final newline)")
+  let body = String::join(fixture_records(), sep = "\n")
+  inspect(error_of(() -> log_check_served(records = Some(body), head = Some(log_format_head(size = 5, root = root_of_first(5))))), content = "tampered log head: records.tsv ends inside a record (no final newline)")
   // A head whose size matches the newline count but whose root commits to
   // the unterminated record as well (Codex review of #3678).
-  let one = Array::get(fixture_records(), 0)
-  inspect(error_of(() -> log_check_served(Some(one), Some(log_format_head(0, root_of_first(1))))), content = "tampered log head: records.tsv ends inside a record (no final newline)")
-  inspect(error_of(() -> log_check_served(Some(one), Some(log_format_head(0, root_of_first(0))))), content = "tampered log head: records.tsv ends inside a record (no final newline)")
+  let one = Array::get(fixture_records(), at = 0)
+  inspect(error_of(() -> log_check_served(records = Some(one), head = Some(log_format_head(size = 0, root = root_of_first(1))))), content = "tampered log head: records.tsv ends inside a record (no final newline)")
+  inspect(error_of(() -> log_check_served(records = Some(one), head = Some(log_format_head(size = 0, root = root_of_first(0))))), content = "tampered log head: records.tsv ends inside a record (no final newline)")
 }
 
 test "an unterminated last line is not a record" {
@@ -239,16 +239,16 @@ test "an unterminated last line is not a record" {
 
 test "a head equal to the seen one is consistent" {
   let head = LogHead::{ size: 5, root: root_of_first(5) }
-  inspect(error_of(() -> log_check_extends(fixture_body(), head, Some(head))), content = "ok")
+  inspect(error_of(() -> log_check_extends(records = fixture_body(), head = head, seen = Some(head))), content = "ok")
 }
 
 test "a seen head of size 0 carries no prefix to check, and size 1 does" {
   let head = LogHead::{ size: 5, root: root_of_first(5) }
-  inspect(error_of(() -> log_check_extends(fixture_body(), head, Some(LogHead::{
+  inspect(error_of(() -> log_check_extends(records = fixture_body(), head = head, seen = Some(LogHead::{
     size: 0,
     root: "anything"
   }))), content = "ok")
-  inspect(error_of(() -> log_check_extends(fixture_body(), head, Some(LogHead::{
+  inspect(error_of(() -> log_check_extends(records = fixture_body(), head = head, seen = Some(LogHead::{
     size: 1,
     root: "wrong"
   }))), content = "log consistency violation: the first 1 record(s) no longer hash to the head this client saw (append-only history was rewritten)")
@@ -257,10 +257,10 @@ test "a seen head of size 0 carries no prefix to check, and size 1 does" {
 test "short and unknown records do not count as publish or yank" {
   let recs = [
     "garbage",
-    log_record(0, "publish", "@a/x@1.0.0", "pkg:b3:aa", "ct", "local", "-"),
-    log_record(1, "note", "@a/x@1.0.0", "-", "-", "-", "-")
+    log_record(ordinal = 0, op = "publish", key = "@a/x@1.0.0", hash = "pkg:b3:aa", contract_hash = "ct", source = "local", commit = "-"),
+    log_record(ordinal = 1, op = "note", key = "@a/x@1.0.0", hash = "-", contract_hash = "-", source = "-", commit = "-")
   ]
-  inspect(match log_lookup(recs, "@a/x@1.0.0") {
+  inspect(match log_lookup(records = recs, key = "@a/x@1.0.0") {
     LogAbsent => "absent",
     LogPublished(i, _, y) => "\{Int::to_string(i)} \{if y {
       "yanked"
@@ -268,10 +268,12 @@ test "short and unknown records do not count as publish or yank" {
       "live"
     }}"
   }, content = "1 live")
-  assert(!log_is_yanked(recs, "garbage"))
+  assert(!log_is_yanked(records = recs, key = "garbage"))
 }
 
 test "a yank as the first record is seen" {
-  let recs = [log_record(0, "yank", "@a/x@1.0.0", "pkg:b3:aa", "-", "-", "-")]
-  assert(log_is_yanked(recs, "@a/x@1.0.0"))
+  let recs = [
+    log_record(ordinal = 0, op = "yank", key = "@a/x@1.0.0", hash = "pkg:b3:aa", contract_hash = "-", source = "-", commit = "-")
+  ]
+  assert(log_is_yanked(records = recs, key = "@a/x@1.0.0"))
 }

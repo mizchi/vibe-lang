@@ -192,13 +192,20 @@ function efnInventory(file, source) {
   return sites;
 }
 
+// Layout is the formatter's: a call whose labels push it past the width is
+// wrapped (`starts = [\n  ]`), so a needle is compared with whitespace runs
+// collapsed and an empty array closed up, on both sides.
+function squash(text) {
+  return text.replace(/\s+/g, " ").replace(/\[ \]/g, "[]");
+}
+
 function assertBody(source, name, required, forbidden = []) {
-  const body = functionBody(source, name);
+  const body = squash(functionBody(source, name));
   for (const needle of required) {
-    assert.ok(body.includes(needle), `${name}: missing contextual call/text: ${needle}`);
+    assert.ok(body.includes(squash(needle)), `${name}: missing contextual call/text: ${needle}`);
   }
   for (const needle of forbidden) {
-    assert.ok(!body.includes(needle), `${name}: legacy fallback is forbidden: ${needle}`);
+    assert.ok(!body.includes(squash(needle)), `${name}: legacy fallback is forbidden: ${needle}`);
   }
 }
 
@@ -276,122 +283,122 @@ test("balanced-token inventory classifies every production EFn site", () => {
 test("B2 expression helper bodies carry context without private duplicate wrappers", () => {
   assertContextual(exprSource, "parse_let_type_params", [], ["parse_let_type_params_with_binder_context"]);
   assertContextual(exprSource, "parse_let_annotation", [
-    "parse_let_type_params(tokens, pos + 1, context)",
+    "parse_let_type_params(tokens = tokens, pos = pos + 1, context = context)",
   ], ["parse_let_type_params_with_binder_context"]);
   assertContextual(exprSource, "parse_value_bracket_header", [
-    "parse_let_type_params(tokens, pos + 1, context)",
+    "parse_let_type_params(tokens = tokens, pos = pos + 1, context = context)",
   ], ["parse_let_type_params_with_binder_context"]);
   assertContextual(exprSource, "parse_let_stmt_with_binder_context", [
-    "parse_binding_name_with_binder_context(tokens, pos + 1, context)",
-    "parse_binding_name_with_binder_context(tokens, pos, context)",
-    "parse_pattern_with_binder_context(tokens, pos, context)",
-    "parse_let_annotation(tokens, name_next + 1, context)",
-    "parse_value_bracket_header(tokens, ep, context)",
-    "parse_impl_with_binder_context(tokens, starts, ep, 0, context)",
+    "parse_binding_name_with_binder_context(tokens = tokens, pos = pos + 1, context = context)",
+    "parse_binding_name_with_binder_context(tokens = tokens, pos = pos, context = context)",
+    "parse_pattern_with_binder_context(tokens = tokens, pos = pos, context = context)",
+    "parse_let_annotation(tokens = tokens, pos = name_next + 1, context = context)",
+    "parse_value_bracket_header(tokens = tokens, pos = ep, context = context)",
+    "parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = ep, mode = 0, context = context)",
   ], [
-    "parse_binding_name(tokens,",
+    "parse_binding_name(tokens = tokens,",
     "parse_pattern(tokens,",
-    "parse_impl(tokens,",
+    "parse_impl(tokens = tokens,",
   ]);
   assertContextual(exprSource, "parse_fn_name", [
-    "parse_binding_name_with_binder_context(tokens, pos, context)",
-  ], ["parse_binding_name(tokens,"]);
+    "parse_binding_name_with_binder_context(tokens = tokens, pos = pos, context = context)",
+  ], ["parse_binding_name(tokens = tokens,"]);
   // #3120: the `fn` parameter list (defaults included) threads the context
   // into each parameter and each default expression.
   assertContextual(exprSource, "parse_fn_param_list_with_defaults", [
-    "parse_one_param_with_binder_context(tokens, p, context)",
-    "parse_impl_with_binder_context(tokens, starts, pn + 1, 0, context)",
+    "parse_one_param_with_binder_context(tokens = tokens, pos = p, context = context)",
+    "parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = pn + 1, mode = 0, context = context)",
   ], [
     "parse_param_list(tokens,",
-    "parse_impl(tokens,",
+    "parse_impl(tokens = tokens,",
   ]);
   assertContextual(exprSource, "parse_fn_signature_with_binder_context", [
-    "parse_fn_name(tokens, pos, context)",
-    "parse_value_bracket_header(tokens, name_next, context)",
-    "parse_fn_param_list_with_defaults(tokens, starts, lp, context)",
+    "parse_fn_name(tokens = tokens, pos = pos, context = context)",
+    "parse_value_bracket_header(tokens = tokens, pos = name_next, context = context)",
+    "parse_fn_param_list_with_defaults(tokens = tokens, starts = starts, pos = lp, context = context)",
     // Contract conditions get the token offsets only under a context.
     "Some(_) => starts,",
-    "parse_impl_with_binder_context(tokens, cond_starts, cp, 0, context)",
+    "parse_impl_with_binder_context(tokens = tokens, starts = cond_starts, pos = cp, mode = 0, context = context)",
   ], [
     "parse_fn_name_with_binder_context",
     "parse_param_list(tokens,",
-    "parse_impl(tokens,",
+    "parse_impl(tokens = tokens,",
   ]);
   assertBody(exprSource, "parse_fn_signature", [
-    "parse_fn_signature_with_binder_context(tokens, no_starts, pos, None, None)",
+    "parse_fn_signature_with_binder_context(tokens = tokens, starts = no_starts, pos = pos, context = None, contract_rows = None)",
   ], ["Some(ParserBinderContext"]);
   assertContextual(exprSource, "parse_fn_main_stmt", [
-    "parse_impl_with_binder_context(tokens, starts, br, mode_block, context)",
-  ], ["parse_impl(tokens,"]);
+    "parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = br, mode = mode_block, context = context)",
+  ], ["parse_impl(tokens = tokens,"]);
   assertContextual(exprSource, "parse_fn_stmt_with_binder_context", [
-    "parse_fn_main_stmt(tokens, starts, pos, exported, context)",
-    "parse_fn_stmt_general(tokens, starts, pos, exported, context)",
+    "parse_fn_main_stmt(tokens = tokens, starts = starts, pos = pos, exported = exported, context = context)",
+    "parse_fn_stmt_general(tokens = tokens, starts = starts, pos = pos, exported = exported, context = context)",
   ], [
     "parse_fn_main_stmt_with_binder_context",
     "parse_fn_stmt_general_with_binder_context",
   ]);
   assertContextual(exprSource, "parse_fn_stmt_general", [
-    "parse_fn_signature_with_binder_context(tokens, starts, pos, context, contract_rows)",
-    "parse_impl_with_binder_context(tokens, starts, br, mode_block, context)",
+    "parse_fn_signature_with_binder_context(tokens = tokens, starts = starts, pos = pos, context = context, contract_rows = contract_rows)",
+    "parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = br, mode = mode_block, context = context)",
   ], [
-    "parse_fn_signature(tokens,",
-    "parse_impl(tokens,",
+    "parse_fn_signature(tokens = tokens,",
+    "parse_impl(tokens = tokens,",
   ]);
 });
 
 test("B2 top-level helper bodies carry context and ordinary entries pass None", () => {
-  assertContextual(parserSource, "parse_test_stmt", ["parse_impl_with_binder_context(tokens, starts, br, parser_mode_block, context)"], ["parse_impl(tokens,"]);
-  assertContextual(parserSource, "parse_example_stmt", ["parse_impl_with_binder_context(tokens, starts, br, parser_mode_block, context)"], ["parse_impl(tokens,"]);
-  assertContextual(parserSource, "parse_bench_stmt", ["parse_impl_with_binder_context(tokens, starts, br, parser_mode_block, context)"], ["parse_impl(tokens,"]);
+  assertContextual(parserSource, "parse_test_stmt", ["parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = br, mode = parser_mode_block, context = context)"], ["parse_impl(tokens = tokens,"]);
+  assertContextual(parserSource, "parse_example_stmt", ["parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = br, mode = parser_mode_block, context = context)"], ["parse_impl(tokens = tokens,"]);
+  assertContextual(parserSource, "parse_bench_stmt", ["parse_impl_with_binder_context(tokens = tokens, starts = starts, pos = br, mode = parser_mode_block, context = context)"], ["parse_impl(tokens = tokens,"]);
   assertContextual(parserSource, "parse_import_items_rest", [
-    "parse_import_item_with_binder_context(tokens, pos + 1, context)",
-    "parse_import_items_rest(tokens, next, b, context)",
+    "parse_import_item_with_binder_context(tokens = tokens, pos = pos + 1, context = context)",
+    "parse_import_items_rest(tokens = tokens, pos = next, b = b, context = context)",
   ], ["parse_import_item(tokens,"]);
   assertContextual(parserSource, "parse_import_items", [
-    "parse_import_item_with_binder_context(tokens, pos, context)",
-    "parse_import_items_rest(tokens, next, b, context)",
+    "parse_import_item_with_binder_context(tokens = tokens, pos = pos, context = context)",
+    "parse_import_items_rest(tokens = tokens, pos = next, b = b, context = context)",
   ], ["parse_import_item(tokens,"]);
-  assertContextual(parserSource, "parse_qualified_import_tail", ["parse_import_items(tokens, br, context)"], ["parse_import_items_with_binder_context"]);
+  assertContextual(parserSource, "parse_qualified_import_tail", ["parse_import_items(tokens = tokens, pos = br, context = context)"], ["parse_import_items_with_binder_context"]);
   assertContextual(parserSource, "parse_import_path_tail", [
-    "parse_qualified_import_tail(tokens, bp + 2, path, mod_name, context)",
-    "parse_import_items(tokens, br, context)",
+    "parse_qualified_import_tail(tokens = tokens, pos = bp + 2, path = path, mod_name = mod_name, context = context)",
+    "parse_import_items(tokens = tokens, pos = br, context = context)",
   ], [
     "parse_qualified_import_tail_with_binder_context",
     "parse_import_items_with_binder_context",
   ]);
   assertContextual(parserSource, "parse_import_stmt", [
-    "parse_import_path_tail(tokens, bp, path, context)",
-    "parse_import_path_tail(tokens, pos + 1, name, context)",
+    "parse_import_path_tail(tokens = tokens, bp = bp, path = path, context = context)",
+    "parse_import_path_tail(tokens = tokens, bp = pos + 1, path = name, context = context)",
   ], ["parse_import_path_tail_with_binder_context"]);
   assertContextual(parserSource, "parse_toplevel_struct_fields_rest", [
-    "parse_struct_field_with_binder_context(tokens, pos + 1, context)",
-    "parse_toplevel_struct_fields_rest(tokens, next, b, mb, context)",
+    "parse_struct_field_with_binder_context(tokens = tokens, pos = pos + 1, context = context)",
+    "parse_toplevel_struct_fields_rest(tokens = tokens, pos = next, b = b, mb = mb, context = context)",
   ], ["parse_struct_field(tokens,"]);
   assertContextual(parserSource, "parse_toplevel_struct_fields", [
-    "parse_struct_field_with_binder_context(tokens, pos, context)",
-    "parse_toplevel_struct_fields_rest(tokens, next, b, mb, context)",
+    "parse_struct_field_with_binder_context(tokens = tokens, pos = pos, context = context)",
+    "parse_toplevel_struct_fields_rest(tokens = tokens, pos = next, b = b, mb = mb, context = context)",
   ], ["parse_struct_field(tokens,"]);
   assertContextual(parserSource, "parse_toplevel_struct_stmt", [
-    "parse_tparam_names_with_binder_context(tokens, pos + 1, context)",
-    "parse_toplevel_struct_fields(tokens, br, context)",
+    "parse_tparam_names_with_binder_context(tokens = tokens, pos = pos + 1, context = context)",
+    "parse_toplevel_struct_fields(tokens = tokens, pos = br, context = context)",
   ], ["parse_tparam_names(tokens,"]);
-  assertContextual(parserSource, "parse_effectset_stmt", ["parse_binding_name_with_binder_context(tokens, pos, context)"], ["parse_binding_name(tokens,"]);
+  assertContextual(parserSource, "parse_effectset_stmt", ["parse_binding_name_with_binder_context(tokens = tokens, pos = pos, context = context)"], ["parse_binding_name(tokens = tokens,"]);
 
   // Intentional allowlist: the resource kind after ':' is a reference, not a
   // binder. Legacy parse_binding_name is allowed only at that exact call.
-  assertContextual(parserSource, "parse_resource_stmt", ["let (kind, end) = parse_binding_name(tokens, cp)"], ["parse_binding_name(tokens, pos)"]);
+  assertContextual(parserSource, "parse_resource_stmt", ["let (kind, end) = parse_binding_name(tokens = tokens, pos = cp)"], ["parse_binding_name(tokens, pos)"]);
 
   assertContextual(parserSource, "parse_export_stmt", [
-    "parse_let_stmt_with_binder_context(tokens, starts, pos + 1, true, context)",
-    "parse_enum_stmt_with_binder_context(tokens, pos + 1, true, context)",
-    "parse_suberror_stmt_with_binder_context(tokens, pos + 1, true, context)",
-    "parse_toplevel_struct_stmt(tokens, pos + 1, true, context)",
-    "parse_fn_stmt_with_binder_context(tokens, starts, pos + 1, true, context)",
-    "parse_effect_stmt_with_binder_context(tokens, pos + 1, true, context)",
-    "parse_effectset_stmt(tokens, pos + 1, true, context)",
-    "parse_type_alias_stmt_with_binder_context(tokens, pos + 1, true, context)",
-    "parse_trait_stmt_with_binder_context(tokens, pos + 1, true, context)",
-    "parse_import_items(tokens, br, None)",
+    "parse_let_stmt_with_binder_context(tokens = tokens, starts = starts, pos = pos + 1, exported = true, context = context)",
+    "parse_enum_stmt_with_binder_context(tokens = tokens, pos = pos + 1, exported = true, context = context)",
+    "parse_suberror_stmt_with_binder_context(tokens = tokens, pos = pos + 1, exported = true, context = context)",
+    "parse_toplevel_struct_stmt(tokens = tokens, pos = pos + 1, exported = true, context = context)",
+    "parse_fn_stmt_with_binder_context(tokens = tokens, starts = starts, pos = pos + 1, exported = true, context = context)",
+    "parse_effect_stmt_with_binder_context(tokens = tokens, pos = pos + 1, exported = true, context = context)",
+    "parse_effectset_stmt(tokens = tokens, pos = pos + 1, exported = true, context = context)",
+    "parse_type_alias_stmt_with_binder_context(tokens = tokens, pos = pos + 1, exported = true, context = context)",
+    "parse_trait_stmt_with_binder_context(tokens = tokens, pos = pos + 1, exported = true, context = context)",
+    "parse_import_items(tokens = tokens, pos = br, context = None)",
   ], [
     "parse_let_stmt(tokens,",
     "parse_fn_stmt(tokens,",
@@ -400,29 +407,29 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
     "parse_effect_stmt(tokens,",
     "parse_type_alias_stmt(tokens,",
     "parse_trait_stmt(tokens,",
-    "parse_import_items(tokens, br, context)",
+    "parse_import_items(tokens = tokens, pos = br, context = context)",
   ]);
-  assert.equal((functionBody(parserSource, "parse_export_stmt").match(/parse_import_items\(tokens, br, None\)/g) ?? []).length, 2, "both relative re-export path forms must suppress local binder capture");
+  assert.equal((functionBody(parserSource, "parse_export_stmt").match(/parse_import_items\(tokens = tokens, pos = br, context = None\)/g) ?? []).length, 2, "both relative re-export path forms must suppress local binder capture");
   assertContextual(parserSource, "parse_percent_symbol_name", [], ["parse_percent_symbol_name_with_binder_context"]);
-  assertContextual(parserSource, "parse_extern_let_stmt", ['parse_percent_symbol_name(tokens, lp, "extern symbol name", context)'], ["parse_percent_symbol_name_with_binder_context"]);
+  assertContextual(parserSource, "parse_extern_let_stmt", ['parse_percent_symbol_name(tokens = tokens, pos = lp, label = "extern symbol name", context = context)'], ["parse_percent_symbol_name_with_binder_context"]);
 
   assertContextual(parserSource, "parse_stmt_preserving_with_binder_context", [
     "TLet => parse_let_stmt_with_binder_context",
-    "_ => parse_export_stmt(tokens, starts, pos + 1, context)",
-    "TImport => parse_import_stmt(tokens, pos + 1, context)",
-    "TTest => parse_test_stmt(tokens, starts, pos + 1, context)",
-    "TExample => parse_example_stmt(tokens, starts, pos + 1, context)",
-    "TBench => parse_bench_stmt(tokens, starts, pos + 1, context)",
+    "_ => parse_export_stmt(tokens = tokens, starts = starts, pos = pos + 1, context = context)",
+    "TImport => parse_import_stmt(tokens = tokens, pos = pos + 1, context = context)",
+    "TTest => parse_test_stmt(tokens = tokens, starts = starts, pos = pos + 1, context = context)",
+    "TExample => parse_example_stmt(tokens = tokens, starts = starts, pos = pos + 1, context = context)",
+    "TBench => parse_bench_stmt(tokens = tokens, starts = starts, pos = pos + 1, context = context)",
     "TFn => parse_fn_stmt_with_binder_context",
     "TEnum => parse_enum_stmt_with_binder_context",
     "TSuberror => parse_suberror_stmt_with_binder_context",
-    "TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, false, context)",
+    "TStruct => parse_toplevel_struct_stmt(tokens = tokens, pos = pos + 1, exported = false, context = context)",
     "TType => parse_type_alias_stmt_with_binder_context",
     "TTrait => parse_trait_stmt_with_binder_context",
     '"effect" => parse_effect_stmt_with_binder_context',
-    '"effectset" => parse_effectset_stmt(tokens, pos + 1, false, context)',
-    '"resource" => parse_resource_stmt(tokens, pos + 1, context)',
-    '"extern" => parse_extern_let_stmt(tokens, pos + 1, context)',
+    '"effectset" => parse_effectset_stmt(tokens = tokens, pos = pos + 1, exported = false, context = context)',
+    '"resource" => parse_resource_stmt(tokens = tokens, pos = pos + 1, context = context)',
+    '"extern" => parse_extern_let_stmt(tokens = tokens, pos = pos + 1, context = context)',
   ], [
     "parse_let_stmt(tokens,",
     "parse_export_stmt(tokens, starts, pos + 1)",
@@ -433,29 +440,29 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
     "parse_type_alias_stmt(tokens,",
     "parse_trait_stmt(tokens,",
     "parse_effect_stmt(tokens,",
-    "parse_impl(tokens,",
+    "parse_impl(tokens = tokens,",
   ]);
-  assertNoneWrapper(parserSource, "parse_stmt_preserving", "parse_stmt_preserving_with_binder_context(tokens, starts, pos, None)");
-  assertContextual(parserSource, "parse_stmt_with_binder_context", ["parse_stmt_preserving_with_binder_context(tokens, starts, pos, context)"], ["parse_stmt_preserving(tokens,"]);
+  assertNoneWrapper(parserSource, "parse_stmt_preserving", "parse_stmt_preserving_with_binder_context(tokens = tokens, starts = starts, pos = pos, context = None)");
+  assertContextual(parserSource, "parse_stmt_with_binder_context", ["parse_stmt_preserving_with_binder_context(tokens = tokens, starts = starts, pos = pos, context = context)"], ["parse_stmt_preserving(tokens = tokens,"]);
 
   // The tooling parse (a context) hands the method bodies the token offsets;
   // a compile parse hands them none, so its AST is unchanged.
   assertContextual(parserSource, "parse_impl_methods", [
     "Some(_) => starts,",
-    "parse_impl_with_binder_context(tokens, method_starts, p + 1, 0, context)",
+    "parse_impl_with_binder_context(tokens = tokens, starts = method_starts, pos = p + 1, mode = 0, context = context)",
   ], [
     "parse_expr(tokens,",
-    "parse_impl(tokens,",
+    "parse_impl(tokens = tokens,",
   ]);
   // #2948: the located preserving parse splits its loop into two helpers --
   // the `#cfg` directive and the top-level statement -- and both are ordinary
   // entries too.
-  assertBody(parserSource, "preserving_cfg_directive", ["parse_impl_methods(tokens, [], hp_d, simpl_d, None)"], ["parse_impl_methods(tokens, [], hp_d, simpl_d, context)"]);
-  assertBody(parserSource, "parse_preserving_top_stmt", ["parse_impl_methods(tokens, [], hp, simpl, None)"], ["parse_impl_methods(tokens, [], hp, simpl, context)"]);
+  assertBody(parserSource, "preserving_cfg_directive", ["parse_impl_methods(tokens = tokens, starts = [], pos = hp_d, simpl = simpl_d, context = None)"], ["parse_impl_methods(tokens, [], hp_d, simpl_d, context)"]);
+  assertBody(parserSource, "parse_preserving_top_stmt", ["parse_impl_methods(tokens = tokens, starts = [], pos = hp, simpl = simpl, context = None)"], ["parse_impl_methods(tokens, [], hp, simpl, context)"]);
   for (const ordinaryProgram of ["parse_program_preserving", "parse_program_recovering"]) {
     assertBody(parserSource, ordinaryProgram, [
-      "parse_impl_methods(tokens, [], hp_d, simpl_d, None)",
-      "parse_impl_methods(tokens, [], hp, simpl, None)",
+      "parse_impl_methods(tokens = tokens, starts = [], pos = hp_d, simpl = simpl_d, context = None)",
+      "parse_impl_methods(tokens = tokens, starts = [], pos = hp, simpl = simpl, context = None)",
     ], [
       "parse_impl_methods(tokens, [], hp_d, simpl_d, context)",
       "parse_impl_methods(tokens, [], hp, simpl, context)",
@@ -463,76 +470,76 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
   }
 
   assertContextual(parserSource, "parse_program_located_with_context_impl", [
-    "parse_impl_stmt_dispatch_with_binder_context(tokens, dnext + 1, context)",
-    "parse_impl_methods(tokens, starts, hp_d, simpl_d, context)",
-    "parse_impl_stmt_dispatch_with_binder_context(tokens, pos + 1, context)",
-    "parse_impl_methods(tokens, starts, hp, simpl, context)",
-    "parse_stmt_with_binder_context(tokens, starts, dnext, context)",
-    "parse_stmt_with_binder_context(tokens, starts, pos, context)",
+    "parse_impl_stmt_dispatch_with_binder_context(tokens = tokens, pos = dnext + 1, context = context)",
+    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp_d, simpl = simpl_d, context = context)",
+    "parse_impl_stmt_dispatch_with_binder_context(tokens = tokens, pos = pos + 1, context = context)",
+    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = context)",
+    "parse_stmt_with_binder_context(tokens = tokens, starts = starts, pos = dnext, context = context)",
+    "parse_stmt_with_binder_context(tokens = tokens, starts = starts, pos = pos, context = context)",
   ], [
-    "parse_impl_stmt_dispatch(tokens,",
+    "parse_impl_stmt_dispatch(tokens = tokens,",
     "parse_impl_methods(tokens, starts, hp_d, simpl_d)",
     "parse_impl_methods(tokens, starts, hp, simpl)",
-    "parse_stmt(tokens,",
+    "parse_stmt(tokens = tokens,",
   ]);
 
-  assertNoneWrapper(parserSource, "parse_program_located", "parse_program_located_with_context_impl(tokens, starts, source, None).0");
-  assertContextual(parserSource, "parse_program_located_with_untrusted_binder_context", ["parse_program_located_with_context_impl(tokens, starts, source, context)"], ["ParserBinderContext::{"]);
+  assertNoneWrapper(parserSource, "parse_program_located", "parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = None).0");
+  assertContextual(parserSource, "parse_program_located_with_untrusted_binder_context", ["parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = context)"], ["ParserBinderContext::{"]);
   // Compatibility entry remains authority-free; only the source-owning entry
   // may mint a context with exact start/end tables.
-  assertBody(parserSource, "parse_program_located_with_binder_context", ["parse_program_located_with_context_impl(tokens, starts, source, None).0"], ["Some(ParserBinderContext::{", "binder_capture_context"]);
+  assertBody(parserSource, "parse_program_located_with_binder_context", ["parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = None).0"], ["Some(ParserBinderContext::{", "binder_capture_context"]);
 });
 
 test("atomic binder authority is source-owned, validated, fail-closed, and bundled", () => {
   assertBody(binderAuthoritySource, "parse_source_located_with_binder_authority", [
     "lex_with_offsets(source)",
-    "binder_capture_context(starts, ends)",
-    "parse_program_located_with_untrusted_binder_context(tokens, starts, source, Some(context))",
+    "binder_capture_context(starts = starts, ends = ends)",
+    "parse_program_located_with_untrusted_binder_context(tokens = tokens, starts = starts, source = source, context = Some(context))",
     "binder_capture_is_eligible(context)",
-    "build_program_binder_authority(program, rows, source)",
+    "build_program_binder_authority(program = program, rows = rows, source = source)",
     "LocatedProgramBinderAuthority::{",
     "binders: rows",
     "nodes",
   ], ["tokens: Array[Token]", "context: Option[ParserBinderContext]"]);
   assertBody(binderContextSource, "binder_capture_source", [
-    "Array::get(starts, first_token)",
-    "Array::get(ends, last_token)",
+    "Array::get(starts, at = first_token)",
+    "Array::get(ends, at = last_token)",
   ]);
   assertBody(binderContextSource, "binder_capture_swap_segments", [
-    "binder_capture_take_from(context, start)",
-    "Array::slice(all, cut, Array::length(all))",
-    "Array::slice(all, 0, cut)",
+    "binder_capture_take_from(context = context, mark = start)",
+    "Array::slice(all, start = cut, end = Array::length(all))",
+    "Array::slice(all, start = 0, end = cut)",
   ]);
   assertBody(binderContextSource, "binder_capture_discard_segment", [
     "start < 0 || end < start || end > length",
-    "Array::set(c.rows, i - removed, Array::get(c.rows, i))",
-    "Array::truncate(c.rows, length - removed)",
+    "Array::set(c.rows, at = i - removed, value = Array::get(c.rows, at = i))",
+    "Array::truncate(c.rows, length = length - removed)",
     "None => ()",
   ], ["Array::slice", "SourceToken", "Synthetic"]);
   assertBody(binderAuthoritySource, "parse_source_located_with_binder_authority", [
-    "binder_capture_context(starts, ends)",
+    "binder_capture_context(starts = starts, ends = ends)",
   ]);
   assertBody(binderAuthoritySource, "validate_program_binder_rows", [
-    "build_program_binder_authority(program, rows, source)",
+    "build_program_binder_authority(program = program, rows = rows, source = source)",
     "Some(_) => true",
     "None => false",
   ]);
   assertBody(binderAuthoritySource, "build_program_binder_authority", [
     "next == Array::length(rows)",
-    "ArrayBuilder::push(nodes, result.0)",
+    "ArrayBuilder::push(nodes, value = result.0)",
   ]);
   assert.match(parserContract, /opaque type LocatedProgramBinderAuthority/);
-  assert.match(parserContract, /fn parse_source_located_with_binder_authority\(source: String\)/);
+  assert.match(parserContract, /fn parse_source_located_with_binder_authority\(_ source: String\)/);
   assert.match(compilerManifest, /parser_binder_authority\.vibe/);
   // The opt-in grep parse owns token extents but returns only syntax. It must
   // not publish binder authority, and no ordinary parse entry may acquire this
   // lexing path. The ordinary None wrappers are pinned separately above.
   const toolingBody = functionBody(parserSource, "parse_source_with_ranges");
-  assert.match(parserSource, /export fn parse_source_with_ranges\(source: String\) -> Array\[Stmt\] with Exception/);
+  assert.match(parserSource, /export fn parse_source_with_ranges\(_ source: String\) -> Array\[Stmt\] with Exception/);
   assertBody(parserSource, "parse_source_with_ranges", [
     "lex_with_offsets(source)",
-    "source_expr_context(starts, ends)",
-    "parse_program_located_with_context_impl(tokens, starts, source, Some(context)).0",
+    "source_expr_context(starts = starts, ends = ends)",
+    "parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = Some(context)).0",
   ], ["LocatedProgramBinderAuthority", "build_program_binder_authority", "binder_capture_is_eligible"]);
   assert.equal((toolingBody.match(/lex_with_offsets\(source\)/g) ?? []).length, 1);
   assert.equal((parserSource.match(/lex_with_offsets\(source\)/g) ?? []).length, 1, "only the syntax-only tooling entry may lex source in the ordinary parser module");
@@ -548,7 +555,7 @@ test("atomic binder authority is source-owned, validated, fail-closed, and bundl
   assert.ok(aggregateBlock.includes("nodes: StoredBinderAuthority"), "aggregate must retain the private persistent topology");
   assert.ok(!vibeTokens(storedBlock).some((token) => token.text === "Array"), "no mutable Array may be reachable from stored node topology");
   assertBody(binderAuthoritySource, "located_program_binder_authority_nodes", [
-    "append_materialized_nodes(authority.nodes, out)",
+    "append_materialized_nodes(stored = authority.nodes, out = out)",
     "ArrayBuilder::freeze(out)",
   ], ["Array::slice"]);
   for (const leafAccessor of ["binder_authority_node_kind", "binder_authority_node_slots", "binder_authority_node_children"]) {
@@ -562,10 +569,10 @@ function authoritySpec(kind, build, roles = [], order = []) {
 
 const authorityArmSpecs = {
   validate_pattern: {
-    PBind: authoritySpec("AuthorityPatBind", "authority_node(AuthorityPatBind, [result.0], no_nodes())", ["PatternBinder"]),
-    PCtor: authoritySpec("AuthorityPatCtor", "authority_node(AuthorityPatCtor, no_slots(), result.0)", [], ["validate_patterns(args, rows, source, at)"]),
-    PTuple: authoritySpec("AuthorityPatTuple", "authority_node(AuthorityPatTuple, no_slots(), result.0)", [], ["validate_patterns(args, rows, source, at)"]),
-    PStruct: authoritySpec("AuthorityPatStruct", "authority_node(AuthorityPatStruct, no_slots(), ArrayBuilder::freeze(children))", [], ["for field in fields", "validate_pattern(field.1, rows, source, next)", "ArrayBuilder::push(children, result.0)"]),
+    PBind: authoritySpec("AuthorityPatBind", "authority_node(kind = AuthorityPatBind, slots = [result.0], children = no_nodes())", ["PatternBinder"]),
+    PCtor: authoritySpec("AuthorityPatCtor", "authority_node(kind = AuthorityPatCtor, slots = no_slots(), children = result.0)", [], ["validate_patterns(pats = args, rows = rows, source = source, at = at)"]),
+    PTuple: authoritySpec("AuthorityPatTuple", "authority_node(kind = AuthorityPatTuple, slots = no_slots(), children = result.0)", [], ["validate_patterns(pats = args, rows = rows, source = source, at = at)"]),
+    PStruct: authoritySpec("AuthorityPatStruct", "authority_node(kind = AuthorityPatStruct, slots = no_slots(), children = ArrayBuilder::freeze(children))", [], ["for field in fields", "validate_pattern(pat = field.1, rows = rows, source = source, at = next)", "ArrayBuilder::push(children, value = result.0)"]),
     PWild: authoritySpec("AuthorityPatWild", "leaf(AuthorityPatWild)"),
     PInt: authoritySpec("AuthorityPatInt", "leaf(AuthorityPatInt)"),
     PFloat: authoritySpec("AuthorityPatFloat", "leaf(AuthorityPatFloat)"),
@@ -573,31 +580,31 @@ const authorityArmSpecs = {
     PBool: authoritySpec("AuthorityPatBool", "leaf(AuthorityPatBool)"),
   },
   validate_expr: {
-    ELet: authoritySpec("AuthorityExprLet", "authority_node(AuthorityExprLet, [slot.0], two_nodes(v.0, b.0))", ["ExpressionLetBinder"]),
-    ELetRec: authoritySpec("AuthorityExprLetRec", "authority_node(AuthorityExprLetRec, [slot.0], two_nodes(v.0, b.0))", ["ExpressionLetRecBinder"]),
-    ELetMut: authoritySpec("AuthorityExprLetMut", "authority_node(AuthorityExprLetMut, [slot.0], two_nodes(v.0, b.0))", ["ExpressionLetMutBinder"]),
-    EMatch: authoritySpec("AuthorityExprMatch", "authority_node(AuthorityExprMatch, no_slots(), ArrayBuilder::freeze(children))", [], ["validate_expr(scrutinee, rows, source, at)", "validate_arms(arms, rows, source, s.1)", "ArrayBuilder::push(children, s.0)", "for child in a.0", "ArrayBuilder::push(children, child)"]),
-    EHandle: authoritySpec("AuthorityExprHandle", "authority_node(AuthorityExprHandle, no_slots(), ArrayBuilder::freeze(children))", [], ["validate_expr(body, rows, source, at)", "validate_arms(arms, rows, source, b.1)", "ArrayBuilder::push(children, b.0)", "for child in a.0", "ArrayBuilder::push(children, child)"]),
-    EFn: authoritySpec("AuthorityExprFn", "authority_node(AuthorityExprFn, ArrayBuilder::freeze(slots), one_node(result.0))", ["ExpressionFunctionTypeParameterBinder", "ExpressionFunctionParameterBinder"], ["for name in type_params", "for param in params", "validate_expr(body, rows, source, next)"]),
-    EForIn: authoritySpec("AuthorityExprForIn", "authority_node(AuthorityExprForIn, ArrayBuilder::freeze(slots), two_nodes(i.0, b.0))", ["ExpressionForValueBinder", "ExpressionForIndexBinder"], ["validate_expr(iter, rows, source, next)", "validate_expr(body, rows, source, i.1)"]),
-    ETuple: authoritySpec("AuthorityExprTuple", "authority_node(AuthorityExprTuple, no_slots(), result.0)", [], ["validate_exprs(items, rows, source, at)"]),
-    EArray: authoritySpec("AuthorityExprArray", "authority_node(AuthorityExprArray, no_slots(), result.0)", [], ["validate_exprs(items, rows, source, at)"]),
-    ERecord: authoritySpec("AuthorityExprRecord", "authority_node(AuthorityExprRecord, no_slots(), result.0)", [], ["validate_named_exprs(fields, rows, source, at)"]),
-    EIf: authoritySpec("AuthorityExprIf", "authority_node(AuthorityExprIf, no_slots(), [c.0, y.0, n.0])", [], ["validate_expr(cond, rows, source, at)", "validate_expr(yes, rows, source, c.1)", "validate_expr(no, rows, source, y.1)"]),
-    EAssign: authoritySpec("AuthorityExprAssign", "authority_node(AuthorityExprAssign, no_slots(), two_nodes(v.0, b.0))"),
-    EAssignOp: authoritySpec("AuthorityExprAssignOp", "authority_node(AuthorityExprAssignOp, no_slots(), two_nodes(v.0, b.0))"),
-    ESeq: authoritySpec("AuthorityExprSeq", "authority_node(AuthorityExprSeq, no_slots(), two_nodes(f.0, s.0))"),
-    EWhile: authoritySpec("AuthorityExprWhile", "authority_node(AuthorityExprWhile, no_slots(), two_nodes(c.0, b.0))"),
-    ECall: authoritySpec("AuthorityExprCall", "authority_node(AuthorityExprCall, no_slots(), ArrayBuilder::freeze(children))", [], ["validate_expr(callee, rows, source, at)", "ArrayBuilder::push(children, c.0)", "for child in a.0", "ArrayBuilder::push(children, child)"]),
-    EBinOp: authoritySpec("AuthorityExprBinOp", "authority_node(AuthorityExprBinOp, no_slots(), two_nodes(l.0, r.0))"),
-    EUnaryOp: authoritySpec("AuthorityExprUnaryOp", "authority_node(AuthorityExprUnaryOp, no_slots(), one_node(result.0))"),
-    EDot: authoritySpec("AuthorityExprDot", "authority_node(AuthorityExprDot, no_slots(), one_node(result.0))"),
-    ELabeledArg: authoritySpec("AuthorityExprLabeledArg", "authority_node(AuthorityExprLabeledArg, no_slots(), one_node(result.0))"),
-    EReturn: authoritySpec("AuthorityExprReturn", "authority_node(AuthorityExprReturn, no_slots(), one_node(result.0))"),
-    EBreak: authoritySpec("AuthorityExprBreak", ["authority_node(AuthorityExprBreak, no_slots(), one_node(result.0))", "leaf(AuthorityExprBreak)"]),
-    EContinue: authoritySpec("AuthorityExprContinue", "authority_node(AuthorityExprContinue, no_slots(), result.0)", [], ["validate_exprs(values, rows, source, at)"]),
-    EMap: authoritySpec("AuthorityExprMap", "authority_node(AuthorityExprMap, no_slots(), result.0)", [], ["validate_named_exprs(items, rows, source, at)"]),
-    ESpread: authoritySpec("AuthorityExprSpread", "authority_node(AuthorityExprSpread, no_slots(), one_node(result.0))"),
+    ELet: authoritySpec("AuthorityExprLet", "authority_node(kind = AuthorityExprLet, slots = [slot.0], children = two_nodes(first = v.0, second = b.0))", ["ExpressionLetBinder"]),
+    ELetRec: authoritySpec("AuthorityExprLetRec", "authority_node(kind = AuthorityExprLetRec, slots = [slot.0], children = two_nodes(first = v.0, second = b.0))", ["ExpressionLetRecBinder"]),
+    ELetMut: authoritySpec("AuthorityExprLetMut", "authority_node(kind = AuthorityExprLetMut, slots = [slot.0], children = two_nodes(first = v.0, second = b.0))", ["ExpressionLetMutBinder"]),
+    EMatch: authoritySpec("AuthorityExprMatch", "authority_node(kind = AuthorityExprMatch, slots = no_slots(), children = ArrayBuilder::freeze(children))", [], ["validate_expr(expr = scrutinee, rows = rows, source = source, at = at)", "validate_arms(arms = arms, rows = rows, source = source, at = s.1)", "ArrayBuilder::push(children, value = s.0)", "for child in a.0", "ArrayBuilder::push(children, value = child)"]),
+    EHandle: authoritySpec("AuthorityExprHandle", "authority_node(kind = AuthorityExprHandle, slots = no_slots(), children = ArrayBuilder::freeze(children))", [], ["validate_expr(expr = body, rows = rows, source = source, at = at)", "validate_arms(arms = arms, rows = rows, source = source, at = b.1)", "ArrayBuilder::push(children, value = b.0)", "for child in a.0", "ArrayBuilder::push(children, value = child)"]),
+    EFn: authoritySpec("AuthorityExprFn", "authority_node(kind = AuthorityExprFn, slots = ArrayBuilder::freeze(slots), children = one_node(result.0))", ["ExpressionFunctionTypeParameterBinder", "ExpressionFunctionParameterBinder"], ["for name in type_params", "for param in params", "validate_expr(expr = body, rows = rows, source = source, at = next)"]),
+    EForIn: authoritySpec("AuthorityExprForIn", "authority_node(kind = AuthorityExprForIn, slots = ArrayBuilder::freeze(slots), children = two_nodes(first = i.0, second = b.0))", ["ExpressionForValueBinder", "ExpressionForIndexBinder"], ["validate_expr(expr = iter, rows = rows, source = source, at = next)", "validate_expr(expr = body, rows = rows, source = source, at = i.1)"]),
+    ETuple: authoritySpec("AuthorityExprTuple", "authority_node(kind = AuthorityExprTuple, slots = no_slots(), children = result.0)", [], ["validate_exprs(exprs = items, rows = rows, source = source, at = at)"]),
+    EArray: authoritySpec("AuthorityExprArray", "authority_node(kind = AuthorityExprArray, slots = no_slots(), children = result.0)", [], ["validate_exprs(exprs = items, rows = rows, source = source, at = at)"]),
+    ERecord: authoritySpec("AuthorityExprRecord", "authority_node(kind = AuthorityExprRecord, slots = no_slots(), children = result.0)", [], ["validate_named_exprs(items = fields, rows = rows, source = source, at = at)"]),
+    EIf: authoritySpec("AuthorityExprIf", "authority_node(kind = AuthorityExprIf, slots = no_slots(), children = [c.0, y.0, n.0])", [], ["validate_expr(expr = cond, rows = rows, source = source, at = at)", "validate_expr(expr = yes, rows = rows, source = source, at = c.1)", "validate_expr(expr = no, rows = rows, source = source, at = y.1)"]),
+    EAssign: authoritySpec("AuthorityExprAssign", "authority_node(kind = AuthorityExprAssign, slots = no_slots(), children = two_nodes(first = v.0, second = b.0))"),
+    EAssignOp: authoritySpec("AuthorityExprAssignOp", "authority_node(kind = AuthorityExprAssignOp, slots = no_slots(), children = two_nodes(first = v.0, second = b.0))"),
+    ESeq: authoritySpec("AuthorityExprSeq", "authority_node(kind = AuthorityExprSeq, slots = no_slots(), children = two_nodes(first = f.0, second = s.0))"),
+    EWhile: authoritySpec("AuthorityExprWhile", "authority_node(kind = AuthorityExprWhile, slots = no_slots(), children = two_nodes(first = c.0, second = b.0))"),
+    ECall: authoritySpec("AuthorityExprCall", "authority_node(kind = AuthorityExprCall, slots = no_slots(), children = ArrayBuilder::freeze(children))", [], ["validate_expr(expr = callee, rows = rows, source = source, at = at)", "ArrayBuilder::push(children, value = c.0)", "for child in a.0", "ArrayBuilder::push(children, value = child)"]),
+    EBinOp: authoritySpec("AuthorityExprBinOp", "authority_node(kind = AuthorityExprBinOp, slots = no_slots(), children = two_nodes(first = l.0, second = r.0))"),
+    EUnaryOp: authoritySpec("AuthorityExprUnaryOp", "authority_node(kind = AuthorityExprUnaryOp, slots = no_slots(), children = one_node(result.0))"),
+    EDot: authoritySpec("AuthorityExprDot", "authority_node(kind = AuthorityExprDot, slots = no_slots(), children = one_node(result.0))"),
+    ELabeledArg: authoritySpec("AuthorityExprLabeledArg", "authority_node(kind = AuthorityExprLabeledArg, slots = no_slots(), children = one_node(result.0))"),
+    EReturn: authoritySpec("AuthorityExprReturn", "authority_node(kind = AuthorityExprReturn, slots = no_slots(), children = one_node(result.0))"),
+    EBreak: authoritySpec("AuthorityExprBreak", ["authority_node(kind = AuthorityExprBreak, slots = no_slots(), children = one_node(result.0))", "leaf(AuthorityExprBreak)"]),
+    EContinue: authoritySpec("AuthorityExprContinue", "authority_node(kind = AuthorityExprContinue, slots = no_slots(), children = result.0)", [], ["validate_exprs(exprs = values, rows = rows, source = source, at = at)"]),
+    EMap: authoritySpec("AuthorityExprMap", "authority_node(kind = AuthorityExprMap, slots = no_slots(), children = result.0)", [], ["validate_named_exprs(items = items, rows = rows, source = source, at = at)"]),
+    ESpread: authoritySpec("AuthorityExprSpread", "authority_node(kind = AuthorityExprSpread, slots = no_slots(), children = one_node(result.0))"),
     EInt: authoritySpec("AuthorityExprInt", "leaf(AuthorityExprInt)"),
     EFloat: authoritySpec("AuthorityExprFloat", "leaf(AuthorityExprFloat)"),
     EString: authoritySpec("AuthorityExprString", "leaf(AuthorityExprString)"),
@@ -607,18 +614,18 @@ const authorityArmSpecs = {
     EUnit: authoritySpec("AuthorityExprUnit", "leaf(AuthorityExprUnit)"),
   },
   validate_stmt: {
-    SLet: authoritySpec("AuthorityStmtLet", "authority_node(AuthorityStmtLet, [slot.0], one_node(expr.0))", ["StatementLetBinder"]),
-    SLetMut: authoritySpec("AuthorityStmtLetMut", "authority_node(AuthorityStmtLetMut, [slot.0], one_node(expr.0))", ["StatementLetMutBinder"]),
-    SExternLet: authoritySpec("AuthorityStmtExternLet", "authority_node(AuthorityStmtExternLet, [slot.0], no_nodes())", ["StatementExternBinder"]),
-    SImport: authoritySpec("AuthorityStmtImport", "authority_node(AuthorityStmtImport, ArrayBuilder::freeze(slots), no_nodes())", ["StatementImportBinder"], ["for item in items", "ArrayBuilder::push(slots, slot.0)"]),
-    SAliasDecl: authoritySpec("AuthorityStmtAliasDecl", "authority_node(AuthorityStmtAliasDecl, [slot.0], no_nodes())", ["StatementAliasBinder"]),
-    STypeAlias: authoritySpec("AuthorityStmtTypeAlias", "authority_node(AuthorityStmtTypeAlias, ArrayBuilder::freeze(slots), no_nodes())", ["StatementTypeBinder", "StatementTypeParameterBinder"], ["ArrayBuilder::push(slots, first.0)", "for param in params", "ArrayBuilder::push(slots, slot.0)"]),
-    SEffectSet: authoritySpec("AuthorityStmtEffectSet", "authority_node(AuthorityStmtEffectSet, [slot.0], no_nodes())", ["StatementEffectSetBinder"]),
-    SResource: authoritySpec("AuthorityStmtResource", "authority_node(AuthorityStmtResource, [slot.0], no_nodes())", ["StatementResourceBinder"]),
-    STest: authoritySpec("AuthorityStmtTest", "authority_node(AuthorityStmtTest, no_slots(), one_node(expr.0))"),
-    SBench: authoritySpec("AuthorityStmtBench", "authority_node(AuthorityStmtBench, no_slots(), one_node(expr.0))"),
-    SExample: authoritySpec("AuthorityStmtExample", "authority_node(AuthorityStmtExample, no_slots(), one_node(expr.0))"),
-    SExpr: authoritySpec("AuthorityStmtExpr", "authority_node(AuthorityStmtExpr, no_slots(), one_node(expr.0))"),
+    SLet: authoritySpec("AuthorityStmtLet", "authority_node(kind = AuthorityStmtLet, slots = [slot.0], children = one_node(expr.0))", ["StatementLetBinder"]),
+    SLetMut: authoritySpec("AuthorityStmtLetMut", "authority_node(kind = AuthorityStmtLetMut, slots = [slot.0], children = one_node(expr.0))", ["StatementLetMutBinder"]),
+    SExternLet: authoritySpec("AuthorityStmtExternLet", "authority_node(kind = AuthorityStmtExternLet, slots = [slot.0], children = no_nodes())", ["StatementExternBinder"]),
+    SImport: authoritySpec("AuthorityStmtImport", "authority_node(kind = AuthorityStmtImport, slots = ArrayBuilder::freeze(slots), children = no_nodes())", ["StatementImportBinder"], ["for item in items", "ArrayBuilder::push(slots, value = slot.0)"]),
+    SAliasDecl: authoritySpec("AuthorityStmtAliasDecl", "authority_node(kind = AuthorityStmtAliasDecl, slots = [slot.0], children = no_nodes())", ["StatementAliasBinder"]),
+    STypeAlias: authoritySpec("AuthorityStmtTypeAlias", "authority_node(kind = AuthorityStmtTypeAlias, slots = ArrayBuilder::freeze(slots), children = no_nodes())", ["StatementTypeBinder", "StatementTypeParameterBinder"], ["ArrayBuilder::push(slots, value = first.0)", "for param in params", "ArrayBuilder::push(slots, value = slot.0)"]),
+    SEffectSet: authoritySpec("AuthorityStmtEffectSet", "authority_node(kind = AuthorityStmtEffectSet, slots = [slot.0], children = no_nodes())", ["StatementEffectSetBinder"]),
+    SResource: authoritySpec("AuthorityStmtResource", "authority_node(kind = AuthorityStmtResource, slots = [slot.0], children = no_nodes())", ["StatementResourceBinder"]),
+    STest: authoritySpec("AuthorityStmtTest", "authority_node(kind = AuthorityStmtTest, slots = no_slots(), children = one_node(expr.0))"),
+    SBench: authoritySpec("AuthorityStmtBench", "authority_node(kind = AuthorityStmtBench, slots = no_slots(), children = one_node(expr.0))"),
+    SExample: authoritySpec("AuthorityStmtExample", "authority_node(kind = AuthorityStmtExample, slots = no_slots(), children = one_node(expr.0))"),
+    SExpr: authoritySpec("AuthorityStmtExpr", "authority_node(kind = AuthorityStmtExpr, slots = no_slots(), children = one_node(expr.0))"),
     SExport: authoritySpec("AuthorityStmtExport", "leaf(AuthorityStmtExport)"),
     SReExport: authoritySpec("AuthorityStmtReExport", "leaf(AuthorityStmtReExport)"),
     SQualifiedPatternRefs: authoritySpec("AuthorityStmtQualifiedPatternRefs", "leaf(AuthorityStmtQualifiedPatternRefs)"),
@@ -674,16 +681,16 @@ test("arm-local authority oracle rejects wrong kinds, missing children, and swap
     .replace("EInt(_) => Some((leaf(AuthorityExprInt)", "EInt(_) => Some((leaf(AuthorityExprFloat)")
     .replace("EFloat(_) => Some((leaf(AuthorityExprFloat)", "EFloat(_) => Some((leaf(AuthorityExprInt)");
   assert.throws(() => assertAuthorityArmStructure(swappedKinds), /validate_expr:E(Int|Float): arm-local kind association/);
-  const omittedLetBody = binderAuthoritySource.replace("two_nodes(v.0, b.0)", "one_node(v.0)");
+  const omittedLetBody = binderAuthoritySource.replace("two_nodes(first = v.0, second = b.0)", "one_node(v.0)");
   assert.throws(() => assertAuthorityArmStructure(omittedLetBody), /validate_expr:ELet: missing exact child\/slot construction/);
-  const swappedRole = binderAuthoritySource.replace("validate_slot(name, ExpressionLetBinder, rows", "validate_slot(name, ExpressionLetRecBinder, rows");
+  const swappedRole = binderAuthoritySource.replace("validate_slot(name = name, role = ExpressionLetBinder, rows", "validate_slot(name = name, role = ExpressionLetRecBinder, rows");
   assert.throws(() => assertAuthorityArmStructure(swappedRole), /validate_expr:ELet: arm-local semantic roles/);
 });
 
 test("malformed binder context failures use guarded poison and fixed append bounds", () => {
   assertBody(binderContextSource, "binder_capture_poison", [
     "Array::length(context.eligible) == 1",
-    "Array::set(context.eligible, 0, false)",
+    "Array::set(context.eligible, at = 0, value = false)",
   ]);
   assertBody(binderContextSource, "binder_capture_shape_is_valid", [
     "Array::length(context.eligible) != 1",
@@ -713,21 +720,21 @@ test("malformed binder context failures use guarded poison and fixed append boun
 
 test("new source EFn slots capture exact header tokens before params and bodies", () => {
   const generic = functionBody(primarySource, "parse_generic_fn_type_params_with_binder_context");
-  assert.ok(generic.indexOf("binder_capture_source(context, name, p, p)") < generic.indexOf("parse_generic_type_param_bound_names(tokens, p + 1)"));
+  assert.ok(generic.indexOf("binder_capture_source(context = context, name = name, first_token = p, last_token = p)") < generic.indexOf("parse_generic_type_param_bound_names(tokens = tokens, pos = p + 1)"));
   const dispatch = functionBody(dispatchSource, "parse_impl_dispatch_with_binder_context");
-  assert.ok(dispatch.indexOf("binder_capture_source(context, gname, br, br)") < dispatch.indexOf("parse_recur(tokens, arrow, 0, context)"));
-  assert.ok(dispatch.indexOf("binder_capture_source(context, rname, pos, pos)") < dispatch.lastIndexOf("parse_recur(tokens, br, 20, context)"));
-  assertBody(exprSource, "apply_generic_fn_annotation", ["binder_capture_discard_segment(context, retained_value_header_mark, retained_value_header_mark + retained_value_header_count)"]);
+  assert.ok(dispatch.indexOf("binder_capture_source(context = context, name = gname, first_token = br, last_token = br)") < dispatch.indexOf("parse_recur(tokens, arrow, 0, context)"));
+  assert.ok(dispatch.indexOf("binder_capture_source(context = context, name = rname, first_token = pos, last_token = pos)") < dispatch.lastIndexOf("parse_recur(tokens, br, 20, context)"));
+  assertBody(exprSource, "apply_generic_fn_annotation", ["binder_capture_discard_segment(context = context, start = retained_value_header_mark, end = retained_value_header_mark + retained_value_header_count)"]);
   assertBody(exprSource, "apply_value_bracket_type_params", [
-    "binder_capture_discard_segment(context, header_mark, header_mark + count)",
+    "binder_capture_discard_segment(context = context, start = header_mark, end = header_mark + count)",
     "header_mark, Array::length(existing_tp)",
   ]);
-  assertBody(dispatchSource, "apply_local_let_tp", ["binder_capture_discard_segment(context, value_mark, value_mark + Array::length(existing_tps))"]);
+  assertBody(dispatchSource, "apply_local_let_tp", ["binder_capture_discard_segment(context = context, start = value_mark, end = value_mark + Array::length(existing_tps))"]);
 });
 
 test("call shorthand captures its parameter before parsing its body", () => {
   const body = functionBody(coreSource, "parse_call_arg");
-  const capture = body.indexOf("binder_capture_source(context, name, pos, pos)");
+  const capture = body.indexOf("binder_capture_source(context = context, name = name, first_token = pos, last_token = pos)");
   const parseBody = body.indexOf("parse_recur(tokens, pos + 2, 0, context)");
   assert.notEqual(capture, -1, "parse_call_arg: missing shorthand source capture");
   assert.notEqual(parseBody, -1, "parse_call_arg: missing shorthand body parse");
@@ -749,49 +756,49 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
     assertContextual(exprSource, helper, []);
   }
   assertContextual(exprSource, "expand_top_level_pattern_lets_with_binder_context", [
-    "emit_top_level_pat_bindings(out, pat, tmp, context)",
+    "emit_top_level_pat_bindings(out = out, pat = pat, src = tmp, context = context)",
   ], ["emit_top_level_pat_bindings(out, pat, tmp)"]);
-  assertNoneWrapper(exprSource, "expand_top_level_pattern_lets", "expand_top_level_pattern_lets_with_binder_context(stmts, None)");
+  assertNoneWrapper(exprSource, "expand_top_level_pattern_lets", "expand_top_level_pattern_lets_with_binder_context(stmts = stmts, context = None)");
   assertContextual(exprSource, "lower_fn_decl_stmt_with_binder_context", [
     'ELet("result", body, exit_expr, -1)',
     "SLet(exported, true, name, None, EFn",
   ]);
-  assertNoneWrapper(exprSource, "lower_fn_decl_stmt", "lower_fn_decl_stmt_with_binder_context(stmt, None)");
-  assertBody(exprSource, "lower_fn_decl_stmts", ["lower_fn_decl_stmt_with_binder_context(s, None)"], ["lower_fn_decl_stmt(s)"]);
+  assertNoneWrapper(exprSource, "lower_fn_decl_stmt", "lower_fn_decl_stmt_with_binder_context(stmt = stmt, context = None)");
+  assertBody(exprSource, "lower_fn_decl_stmts", ["lower_fn_decl_stmt_with_binder_context(stmt = s, context = None)"], ["lower_fn_decl_stmt(s)"]);
 
   assertContextual(parserSource, "parse_stmt_with_binder_context", [
-    "lower_fn_decl_stmt_with_binder_context(stmt, context)",
+    "lower_fn_decl_stmt_with_binder_context(stmt = stmt, context = context)",
   ], ["lower_fn_decl_stmt(stmt)"]);
   assertContextual(parserSource, "parse_program_located_with_context_impl", [
-    "expand_top_level_pattern_lets_with_binder_context(ArrayBuilder::freeze(b), context)",
-    "parse_impl_methods(tokens, starts, hp, simpl, context)",
+    "expand_top_level_pattern_lets_with_binder_context(stmts = ArrayBuilder::freeze(b), context = context)",
+    "parse_impl_methods(tokens = tokens, starts = starts, pos = hp, simpl = simpl, context = context)",
   ], ["expand_top_level_pattern_lets(ArrayBuilder::freeze(b))"]);
 
   assertContextual(coreSource, "wrap_placeholder_arg", ['String::concat("__ph", __to_string(pc))']);
-  assertContextual(coreSource, "desugar_placeholder_args", ["wrap_placeholder_arg(arg, context)"], ["wrap_placeholder_arg(arg)"]);
+  assertContextual(coreSource, "desugar_placeholder_args", ["wrap_placeholder_arg(arg = arg, _context = context)"], ["wrap_placeholder_arg(arg)"]);
   // #3385: the call suffix lives in `parse_postfix_call`, shared by a bare
   // callee and a parenthesized control form; `parse_postfix` hands it context.
-  assertContextual(coreSource, "parse_postfix_call", ["desugar_placeholder_args(args, context)"], ["desugar_placeholder_args(args)"]);
-  assertContextual(coreSource, "parse_postfix", ["parse_postfix_call(tokens, starts, first, pos, expr, parse_recur, context)"]);
+  assertContextual(coreSource, "parse_postfix_call", ["desugar_placeholder_args(args = args, context = context)"], ["desugar_placeholder_args(args)"]);
+  assertContextual(coreSource, "parse_postfix", ["parse_postfix_call(tokens = tokens, starts = starts, first = first, pos = pos, expr = expr, parse_recur = parse_recur, context = context)"]);
 
   for (const helper of ["map_expr_offsets", "map_exprs", "map_named_exprs", "map_arm_exprs"]) {
     assertContextual(primarySource, helper, []);
   }
-  assertContextual(baseSource, "parse_bounded_type_params_with_binder_context", ["parse_trait_bound_names(tokens, p + 1)"], ["parse_trait_bound_names(tokens, p + 1, context)"]);
+  assertContextual(baseSource, "parse_bounded_type_params_with_binder_context", ["parse_trait_bound_names(tokens = tokens, pos = p + 1)"], ["parse_trait_bound_names(tokens, p + 1, context)"]);
   assertBody(baseSource, "parse_trait_bound_names", [], ["context"]);
-  assertContextual(dispatchSource, "dispatch_type_params_with_binder_context", ["dispatch_tp_bound_names(tokens, p + 1)"], ["dispatch_tp_bound_names(tokens, p + 1, context)"]);
+  assertContextual(dispatchSource, "dispatch_type_params_with_binder_context", ["dispatch_tp_bound_names(tokens = tokens, pos = p + 1)"], ["dispatch_tp_bound_names(tokens, p + 1, context)"]);
   assertBody(dispatchSource, "dispatch_tp_bound_names", [], ["context"]);
-  assertContextual(primarySource, "parse_generic_fn_type_params_with_binder_context", ["parse_generic_type_param_bound_names(tokens, p + 1)"], ["parse_generic_type_param_bound_names(tokens, p + 1, context)"]);
+  assertContextual(primarySource, "parse_generic_fn_type_params_with_binder_context", ["parse_generic_type_param_bound_names(tokens = tokens, pos = p + 1)"], ["parse_generic_type_param_bound_names(tokens, p + 1, context)"]);
   assertBody(primarySource, "parse_generic_type_param_bound_names", [], ["context"]);
   assertContextual(primarySource, "build_interp_expr", [
-    "map_expr_offsets(pe0, (o) -> remap_frag_off(o, outer_starts, fstarts, frag_off), context)",
+    "map_expr_offsets(expr = pe0, f = (o) -> remap_frag_off(off = o, outer_starts = outer_starts, frag_starts = fstarts, frag_base = frag_off), context = context)",
   ], ["map_expr_offsets(pe0, (o) -> remap_frag_off(o, outer_starts, fstarts, frag_off))"]);
   assertContextual(primarySource, "desugar_loop_body", [
-    "desugar_loop_body(val, param_names, context)",
+    "desugar_loop_body(expr = val, param_names = param_names, context = context)",
     'String::concat("__lt", __to_string(ci2))',
   ], ["desugar_loop_body(val, param_names)"]);
   assertContextual(primarySource, "parse_loop_primary", [
-    "desugar_loop_body(body, pnames, context)",
+    "desugar_loop_body(expr = body, param_names = pnames, context = context)",
     'ELetMut("__loop_result"',
   ], ["desugar_loop_body(body, pnames)"]);
 
@@ -809,14 +816,14 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
     assertContextual(dispatchSource, helper, []);
   }
   assertContextual(dispatchSource, "parse_impl_block", [
-    "fold_block_steps(ArrayBuilder::freeze(steps), context)",
+    "fold_block_steps(steps = ArrayBuilder::freeze(steps), context = context)",
     // The offset argument is required, not incidental: ascribe_wrap's synthetic
     // ECall used to carry -1, and a local `let x: T = <literal>` then produced a
     // type error with no line:col at all, because a literal has no offset of its
     // own to fall back to. Pinning `blk_offset_at(starts, ...)` here keeps the
     // binder-name anchor from silently regressing to nothing.
-    "ascribe_wrap(val, the_type, value_mark, context, blk_offset_at(starts,",
-    "push_pattern_let_step(tokens, steps, pat, val, blk_offset_at(starts, next), next_pos, context)",
+    "ascribe_wrap(val = val, ty = the_type, capture_mark = value_mark, context = context, binder_off = blk_offset_at(starts = starts,",
+    "push_pattern_let_step(tokens = tokens, steps = steps, pat = pat, val = val, pat_off = blk_offset_at(starts = starts, p = next), next_pos = next_pos, context = context)",
   ], [
     "fold_block_steps(ArrayBuilder::freeze(steps))",
     "ascribe_wrap(val, the_type)",
@@ -824,7 +831,7 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
     "push_pattern_let_step(tokens, steps, pat, val, next_pos)",
   ]);
   assertContextual(dispatchSource, "parse_impl_dispatch_with_binder_context", [
-    'desugar_guarded(arms3, 0, EIdent(mg, 0 - 1), context)',
+    'desugar_guarded(arms = arms3, i = 0, scrut = EIdent(mg, 0 - 1), context = context)',
     "parse_recur(tokens, arrow, 0, context)",
     "parse_recur(tokens, br, 20, context)",
     "(gname, None)",

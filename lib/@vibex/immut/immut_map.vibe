@@ -32,23 +32,23 @@ export enum MapHamt[V] {
 
 /// 32-bit SWAR popcount (bit trick; no builtin popcount). Input is a 32-bit
 /// non-negative bitmap, so every intermediate stays far below 2^61.
-fn popcount32(x: Int) -> Int {
+fn popcount32(_ x: Int) -> Int {
   let a = x - ((x>>1)&0x55555555)
   let b = (a&0x33333333) + ((a>>2)&0x33333333)
   let c = (b + (b>>4))&0x0F0F0F0F
   ((c * 0x01010101)>>24)&0x3F
 }
 
-fn arr1[T](a: T) -> Array[T] {
+fn arr1[T](_ a: T) -> Array[T] {
   let b = ArrayBuilder::new()
-  ArrayBuilder::push(b, a)
+  ArrayBuilder::push(b, value = a)
   ArrayBuilder::freeze(b)
 }
 
 fn arr2[T](a: T, b2: T) -> Array[T] {
   let b = ArrayBuilder::new()
-  ArrayBuilder::push(b, a)
-  ArrayBuilder::push(b, b2)
+  ArrayBuilder::push(b, value = a)
+  ArrayBuilder::push(b, value = b2)
   ArrayBuilder::freeze(b)
 }
 
@@ -59,9 +59,9 @@ fn arr_set_at[T](xs: Array[T], idx: Int, v: T) -> Array[T] {
   let mut i = 0
   while i < n {
     if i == idx {
-      ArrayBuilder::push(b, v)
+      ArrayBuilder::push(b, value = v)
     } else {
-      ArrayBuilder::push(b, Array::get(xs, i))
+      ArrayBuilder::push(b, value = Array::get(xs, at = i))
     }
     i = i + 1
   }
@@ -75,13 +75,13 @@ fn arr_insert_at[T](xs: Array[T], idx: Int, v: T) -> Array[T] {
   let mut i = 0
   while i < n {
     if i == idx {
-      ArrayBuilder::push(b, v)
+      ArrayBuilder::push(b, value = v)
     }
-    ArrayBuilder::push(b, Array::get(xs, i))
+    ArrayBuilder::push(b, value = Array::get(xs, at = i))
     i = i + 1
   }
   if idx >= n {
-    ArrayBuilder::push(b, v)
+    ArrayBuilder::push(b, value = v)
   }
   ArrayBuilder::freeze(b)
 }
@@ -93,7 +93,7 @@ fn arr_remove_at[T](xs: Array[T], idx: Int) -> Array[T] {
   let mut i = 0
   while i < n {
     if i != idx {
-      ArrayBuilder::push(b, Array::get(xs, i))
+      ArrayBuilder::push(b, value = Array::get(xs, at = i))
     }
     i = i + 1
   }
@@ -106,10 +106,10 @@ fn arr_append_one[T](xs: Array[T], v: T) -> Array[T] {
   let b = ArrayBuilder::new()
   let mut i = 0
   while i < n {
-    ArrayBuilder::push(b, Array::get(xs, i))
+    ArrayBuilder::push(b, value = Array::get(xs, at = i))
     i = i + 1
   }
-  ArrayBuilder::push(b, v)
+  ArrayBuilder::push(b, value = v)
   ArrayBuilder::freeze(b)
 }
 
@@ -118,7 +118,7 @@ fn collision_index(ks: Array[String], key: String) -> Int {
   let mut i = 0
   let mut found = -1
   while i < n {
-    if found < 0 && Array::get(ks, i) == key {
+    if found < 0 && Array::get(ks, at = i) == key {
       found = i
     }
     i = i + 1
@@ -132,13 +132,13 @@ fn merge_nodes[V](shift: Int, h1: Int, n1: MapHamt[V], h2: Int, n2: MapHamt[V]) 
   let i1 = (h1>>shift)&0x1F
   let i2 = (h2>>shift)&0x1F
   if i1 == i2 {
-    MBranch(1<<i1, arr1(merge_nodes(shift + 5, h1, n1, h2, n2)))
+    MBranch(1<<i1, arr1(merge_nodes(shift = shift + 5, h1 = h1, n1 = n1, h2 = h2, n2 = n2)))
   }
   else if i1 < i2 {
-    MBranch((1<<i1)|(1<<i2), arr2(n1, n2))
+    MBranch((1<<i1)|(1<<i2), arr2(a = n1, b2 = n2))
   }
   else {
-    MBranch((1<<i1)|(1<<i2), arr2(n2, n1))
+    MBranch((1<<i1)|(1<<i2), arr2(a = n2, b2 = n1))
   }
 }
 
@@ -156,18 +156,18 @@ fn map_get_at[V](node: MapHamt[V], h: Int, key: String, shift: Int) -> Option[V]
       if (bitmap&bit) == 0 {
         None
       } else {
-        map_get_at(Array::get(kids, popcount32(bitmap&(bit - 1))), h, key, shift + 5)
+        map_get_at(node = Array::get(kids, at = popcount32(bitmap&(bit - 1))), h = h, key = key, shift = shift + 5)
       }
     },
     MCollision(ch, ks, vs) => {
       if ch != h {
         None
       } else {
-        let i = collision_index(ks, key)
+        let i = collision_index(ks = ks, key = key)
         if i < 0 {
           None
         } else {
-          Some(Array::get(vs, i))
+          Some(Array::get(vs, at = i))
         }
       }
     }
@@ -182,32 +182,32 @@ fn map_set_at[V](node: MapHamt[V], h: Int, key: String, value: V, shift: Int) ->
         MLeaf(h, key, value)
       }
       else if lh == h {
-        MCollision(h, arr2(lk, key), arr2(lv, value))
+        MCollision(h, arr2(a = lk, b2 = key), arr2(a = lv, b2 = value))
       }
       else {
-        merge_nodes(shift, lh, MLeaf(lh, lk, lv), h, MLeaf(h, key, value))
+        merge_nodes(shift = shift, h1 = lh, n1 = MLeaf(lh, lk, lv), h2 = h, n2 = MLeaf(h, key, value))
       }
     },
     MBranch(bitmap, kids) => {
       let bit = 1<<((h>>shift)&0x1F)
       let pos = popcount32(bitmap&(bit - 1))
       if (bitmap&bit) == 0 {
-        MBranch(bitmap|bit, arr_insert_at(kids, pos, MLeaf(h, key, value)))
+        MBranch(bitmap|bit, arr_insert_at(xs = kids, idx = pos, v = MLeaf(h, key, value)))
       } else {
-        let child = Array::get(kids, pos)
-        MBranch(bitmap, arr_set_at(kids, pos, map_set_at(child, h, key, value, shift + 5)))
+        let child = Array::get(kids, at = pos)
+        MBranch(bitmap, arr_set_at(xs = kids, idx = pos, v = map_set_at(node = child, h = h, key = key, value = value, shift = shift + 5)))
       }
     },
     MCollision(ch, ks, vs) => {
       if ch == h {
-        let i = collision_index(ks, key)
+        let i = collision_index(ks = ks, key = key)
         if i >= 0 {
-          MCollision(ch, ks, arr_set_at(vs, i, value))
+          MCollision(ch, ks, arr_set_at(xs = vs, idx = i, v = value))
         } else {
-          MCollision(ch, arr_append_one(ks, key), arr_append_one(vs, value))
+          MCollision(ch, arr_append_one(xs = ks, v = key), arr_append_one(xs = vs, v = value))
         }
       } else {
-        merge_nodes(shift, ch, MCollision(ch, ks, vs), h, MLeaf(h, key, value))
+        merge_nodes(shift = shift, h1 = ch, n1 = MCollision(ch, ks, vs), h2 = h, n2 = MLeaf(h, key, value))
       }
     }
   }
@@ -228,7 +228,7 @@ fn map_delete_at[V](node: MapHamt[V], h: Int, key: String, shift: Int) -> MapHam
         MBranch(bitmap, kids)
       } else {
         let pos = popcount32(bitmap&(bit - 1))
-        let child2 = map_delete_at(Array::get(kids, pos), h, key, shift + 5)
+        let child2 = map_delete_at(node = Array::get(kids, at = pos), h = h, key = key, shift = shift + 5)
         match child2 {
           MEmpty => {
             // child vanished: clear its bit (`^` — no `~` in vibe) and
@@ -237,9 +237,9 @@ fn map_delete_at[V](node: MapHamt[V], h: Int, key: String, shift: Int) -> MapHam
             if bm2 == 0 {
               MEmpty
             } else {
-              let kids2 = arr_remove_at(kids, pos)
+              let kids2 = arr_remove_at(xs = kids, idx = pos)
               if Array::length(kids2) == 1 {
-                let only = Array::get(kids2, 0)
+                let only = Array::get(kids2, at = 0)
                 match only {
                   MBranch(_, _) => MBranch(bm2, kids2),
                   _ => only
@@ -250,7 +250,7 @@ fn map_delete_at[V](node: MapHamt[V], h: Int, key: String, shift: Int) -> MapHam
             }
           },
           _ => {
-            let kids2 = arr_set_at(kids, pos, child2)
+            let kids2 = arr_set_at(xs = kids, idx = pos, v = child2)
             if bitmap == bit {
               // single-child branch: collapse when the child no longer
               // needs deeper hash bits (leaf / collision).
@@ -269,23 +269,23 @@ fn map_delete_at[V](node: MapHamt[V], h: Int, key: String, shift: Int) -> MapHam
       if ch != h {
         MCollision(ch, ks, vs)
       } else {
-        let i = collision_index(ks, key)
+        let i = collision_index(ks = ks, key = key)
         if i < 0 {
           MCollision(ch, ks, vs)
         }
         else if Array::length(ks) == 2 {
           let j = 1 - i
-          MLeaf(ch, Array::get(ks, j), Array::get(vs, j))
+          MLeaf(ch, Array::get(ks, at = j), Array::get(vs, at = j))
         }
         else {
-          MCollision(ch, arr_remove_at(ks, i), arr_remove_at(vs, i))
+          MCollision(ch, arr_remove_at(xs = ks, idx = i), arr_remove_at(xs = vs, idx = i))
         }
       }
     }
   }
 }
 
-fn map_size[V](node: MapHamt[V]) -> Int {
+fn map_size[V](_ node: MapHamt[V]) -> Int {
   match node {
     MEmpty => 0,
     MLeaf(_, _, _) => 1,
@@ -295,7 +295,7 @@ fn map_size[V](node: MapHamt[V]) -> Int {
       let mut total = 0
       let mut i = 0
       while i < n {
-        total = total + map_size(Array::get(kids, i))
+        total = total + map_size(Array::get(kids, at = i))
         i = i + 1
       }
       total
@@ -306,14 +306,14 @@ fn map_size[V](node: MapHamt[V]) -> Int {
 fn map_keys_acc[V](node: MapHamt[V], acc: Array[String]) -> Array[String] {
   match node {
     MEmpty => acc,
-    MLeaf(_, k, _) => arr_append_one(acc, k),
+    MLeaf(_, k, _) => arr_append_one(xs = acc, v = k),
     MCollision(_, ks, _) => Array::concat(acc, ks),
     MBranch(_, kids) => {
       let n = Array::length(kids)
       let mut out = acc
       let mut i = 0
       while i < n {
-        out = map_keys_acc(Array::get(kids, i), out)
+        out = map_keys_acc(node = Array::get(kids, at = i), acc = out)
         i = i + 1
       }
       out
@@ -325,12 +325,12 @@ fn map_keys_acc[V](node: MapHamt[V], acc: Array[String]) -> Array[String] {
 
 /// FNV-1a hash of a key, masked to 31 bits at every step. Exported so tests
 /// (and users constructing adversarial inputs) can predict collisions.
-export fn MapHamt::hash_key(key: String) -> Int {
+export fn MapHamt::hash_key(_ key: String) -> Int {
   let len = String::length(key)
   let mut h = 2166136261&0x7FFFFFFF
   let mut i = 0
   while i < len {
-    h = ((h^String::char_code_at(key, i)) * 16777619)&0x7FFFFFFF
+    h = ((h^String::char_code_at(key, at = i)) * 16777619)&0x7FFFFFFF
     i = i + 1
   }
   h
@@ -341,33 +341,33 @@ export fn MapHamt::empty[V]() -> MapHamt[V] {
 }
 
 /// Returns a NEW map with key set to value; the receiver is unchanged.
-export fn MapHamt::set[V](m: MapHamt[V], key: String, value: V) -> MapHamt[V] {
-  map_set_at(m, MapHamt::hash_key(key), key, value, 0)
+export fn MapHamt::set[V](_ m: MapHamt[V], key: String, value: V) -> MapHamt[V] {
+  map_set_at(node = m, h = MapHamt::hash_key(key), key = key, value = value, shift = 0)
 }
 
-export fn MapHamt::get[V](m: MapHamt[V], key: String) -> Option[V] {
-  map_get_at(m, MapHamt::hash_key(key), key, 0)
+export fn MapHamt::get[V](_ m: MapHamt[V], key: String) -> Option[V] {
+  map_get_at(node = m, h = MapHamt::hash_key(key), key = key, shift = 0)
 }
 
-export fn MapHamt::has_key[V](m: MapHamt[V], key: String) -> Bool {
-  match MapHamt::get(m, key) {
+export fn MapHamt::has_key[V](_ m: MapHamt[V], key: String) -> Bool {
+  match MapHamt::get(m, key = key) {
     Some(_) => true,
     None => false
   }
 }
 
 /// Returns a NEW map without key; the receiver is unchanged.
-export fn MapHamt::delete[V](m: MapHamt[V], key: String) -> MapHamt[V] {
-  map_delete_at(m, MapHamt::hash_key(key), key, 0)
+export fn MapHamt::delete[V](_ m: MapHamt[V], key: String) -> MapHamt[V] {
+  map_delete_at(node = m, h = MapHamt::hash_key(key), key = key, shift = 0)
 }
 
-export fn MapHamt::size[V](m: MapHamt[V]) -> Int {
+export fn MapHamt::size[V](_ m: MapHamt[V]) -> Int {
   map_size(m)
 }
 
 /// All keys, hash-trie order (unordered from the caller's viewpoint).
-export fn MapHamt::keys[V](m: MapHamt[V]) -> Array[String] {
-  map_keys_acc(m, ArrayBuilder::freeze(ArrayBuilder::new()))
+export fn MapHamt::keys[V](_ m: MapHamt[V]) -> Array[String] {
+  map_keys_acc(node = m, acc = ArrayBuilder::freeze(ArrayBuilder::new()))
 }
 
 //# Deprecated legacy spelling (ADR-0100 (3) / #1262)
@@ -391,7 +391,7 @@ export fn MapHamt::keys[V](m: MapHamt[V]) -> Array[String] {
 //# ANNOTATION is the one thing this rename breaks.
 
 #deprecated("use MapHamt::hash_key")
-export fn ImmutMap::hash_key(key: String) -> Int {
+export fn ImmutMap::hash_key(_ key: String) -> Int {
   MapHamt::hash_key(key)
 }
 
@@ -402,30 +402,30 @@ export fn ImmutMap::empty[V]() -> MapHamt[V] {
 
 #deprecated("use MapHamt::set")
 export fn ImmutMap::set[V](m: MapHamt[V], key: String, value: V) -> MapHamt[V] {
-  MapHamt::set(m, key, value)
+  MapHamt::set(m, key = key, value = value)
 }
 
 #deprecated("use MapHamt::get")
 export fn ImmutMap::get[V](m: MapHamt[V], key: String) -> Option[V] {
-  MapHamt::get(m, key)
+  MapHamt::get(m, key = key)
 }
 
 #deprecated("use MapHamt::has_key")
 export fn ImmutMap::has_key[V](m: MapHamt[V], key: String) -> Bool {
-  MapHamt::has_key(m, key)
+  MapHamt::has_key(m, key = key)
 }
 
 #deprecated("use MapHamt::delete")
 export fn ImmutMap::delete[V](m: MapHamt[V], key: String) -> MapHamt[V] {
-  MapHamt::delete(m, key)
+  MapHamt::delete(m, key = key)
 }
 
 #deprecated("use MapHamt::size")
-export fn ImmutMap::size[V](m: MapHamt[V]) -> Int {
+export fn ImmutMap::size[V](_ m: MapHamt[V]) -> Int {
   MapHamt::size(m)
 }
 
 #deprecated("use MapHamt::keys")
-export fn ImmutMap::keys[V](m: MapHamt[V]) -> Array[String] {
+export fn ImmutMap::keys[V](_ m: MapHamt[V]) -> Array[String] {
   MapHamt::keys(m)
 }

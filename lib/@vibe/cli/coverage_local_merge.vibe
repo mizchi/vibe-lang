@@ -73,7 +73,7 @@ import @vibe/json {
 
 //# Functions
 
-fn is_truthy(j: Json) -> Bool {
+fn is_truthy(_ j: Json) -> Bool {
   let ty = Json::type_of(j)
   if ty == "boolean" {
     Json::bool(j)
@@ -89,7 +89,7 @@ fn make_int_array(n: Int, fill: Int) -> Array[Int] {
   let a = array_new()
   let mut i = 0
   while i < n {
-    Array::push(a, fill)
+    Array::push(a, value = fill)
     i = i + 1
   }
   a
@@ -99,42 +99,42 @@ fn make_int_array(n: Int, fill: Int) -> Array[Int] {
 /// default-to-empty shape is a `handle`. This is the direction of the
 /// migration that gets LONGER -- call sites that deliberately ignore the
 /// failure pay for it, while the ones that propagated get shorter.
-fn json_arr_or_empty(j: Json) -> Array[Json] {
+fn json_arr_or_empty(_ j: Json) -> Array[Json] {
   handle {
     json_as_arr(j)
   } with { Exception::Throw(_) => [] }
 }
 
-fn json_int_array(j: Json) -> Array[Int] {
+fn json_int_array(_ j: Json) -> Array[Int] {
   let arr = json_arr_or_empty(j)
   let n = Array::length(arr)
   let out = array_new()
   let mut i = 0
   while i < n {
-    Array::push(out, Double::to_int(Json::number(Array::get(arr, i))))
+    Array::push(out, value = Double::to_int(Json::number(Array::get(arr, at = i))))
     i = i + 1
   }
   out
 }
 
-fn json_str_array(j: Json) -> Array[String] {
+fn json_str_array(_ j: Json) -> Array[String] {
   let arr = json_arr_or_empty(j)
   let n = Array::length(arr)
   let out = array_new()
   let mut i = 0
   while i < n {
-    Array::push(out, Json::string(Array::get(arr, i)))
+    Array::push(out, value = Json::string(Array::get(arr, at = i)))
     i = i + 1
   }
   out
 }
 
-fn sum_br(arr: Array[Json]) -> Int {
+fn sum_br(_ arr: Array[Json]) -> Int {
   let n = Array::length(arr)
   let mut i = 0
   let mut s = 0
   while i < n {
-    if is_truthy(Array::get(arr, i)) {
+    if is_truthy(Array::get(arr, at = i)) {
       s = s + 1
     } else {
       ()
@@ -146,8 +146,8 @@ fn sum_br(arr: Array[Json]) -> Int {
 
 fn write_json_atomic(path: String, j: Json) -> Unit with Fs {
   let tmp = path + ".tmp"
-  Fs::write_file(tmp, Json::stringify(j))
-  Fs::rename(tmp, path)
+  Fs::write_file(tmp, contents = Json::stringify(j))
+  Fs::rename(tmp, to = path)
 }
 
 /// name_to_fid: acc function name -> its index into fn_names.
@@ -159,20 +159,20 @@ fn build_index(fnC: Array[String], owC: Array[Int]) -> (Map[String, Int], Array[
   let mb = MapBuilder::new()
   let mut ni = 0
   while ni < nf {
-    MapBuilder::set(mb, Array::get(fnC, ni), ni)
+    MapBuilder::set(mb, key = Array::get(fnC, at = ni), value = ni)
     ni = ni + 1
   }
   let name_to_fid = MapBuilder::freeze(mb)
-  let counts = make_int_array(nf, 0)
-  let local_idx = make_int_array(no, -1)
+  let counts = make_int_array(n = nf, fill = 0)
+  let local_idx = make_int_array(n = no, fill = -1)
   let mut g = 0
   let mut max_occ = 0
   while g < no {
-    let fid = Array::get(owC, g)
+    let fid = Array::get(owC, at = g)
     if fid >= 0 && fid < nf {
-      let c = Array::get(counts, fid)
-      Array::set(local_idx, g, c)
-      Array::set(counts, fid, c + 1)
+      let c = Array::get(counts, at = fid)
+      Array::set(local_idx, at = g, value = c)
+      Array::set(counts, at = fid, value = c + 1)
       if c + 1 > max_occ {
         max_occ = c + 1
       } else {
@@ -188,14 +188,14 @@ fn build_index(fnC: Array[String], owC: Array[Int]) -> (Map[String, Int], Array[
   } else {
     1
   }
-  let gid_for = make_int_array(nf * occ_stride, -1)
+  let gid_for = make_int_array(n = nf * occ_stride, fill = -1)
   let mut g2 = 0
   while g2 < no {
-    let fid2 = Array::get(owC, g2)
+    let fid2 = Array::get(owC, at = g2)
     if fid2 >= 0 && fid2 < nf {
-      let li = Array::get(local_idx, g2)
+      let li = Array::get(local_idx, at = g2)
       if li >= 0 {
-        Array::set(gid_for, fid2 * occ_stride + li, g2)
+        Array::set(gid_for, at = fid2 * occ_stride + li, value = g2)
       } else {
         ()
       }
@@ -210,29 +210,29 @@ fn build_index(fnC: Array[String], owC: Array[Int]) -> (Map[String, Int], Array[
 /// OR one run's raw dump into br_arr (acc's mutable "br" array) via the
 /// (name, occurrence-index) correlation built by build_index.
 fn apply_run(br_arr: Array[Json], name_to_fid: Map[String, Int], gid_for: Array[Int], occ_stride: Int, raw: Json) -> Unit {
-  let nT = json_str_array(Json::field(raw, "fn_names"))
-  let owT = json_int_array(Json::field(raw, "branch_owners"))
-  let bmT = Json::field(raw, "branch_bitmap")
+  let nT = json_str_array(Json::field(raw, key = "fn_names"))
+  let owT = json_int_array(Json::field(raw, key = "branch_owners"))
+  let bmT = Json::field(raw, key = "branch_bitmap")
   let ntf = Array::length(nT)
   let n_owT = Array::length(owT)
-  let counts_run = make_int_array(ntf, 0)
+  let counts_run = make_int_array(n = ntf, fill = 0)
   let gid_for_len = Array::length(gid_for)
   let mut i = 0
   while i < n_owT {
-    let fid_run = Array::get(owT, i)
+    let fid_run = Array::get(owT, at = i)
     if fid_run >= 0 && fid_run < ntf {
-      let li = Array::get(counts_run, fid_run)
-      Array::set(counts_run, fid_run, li + 1)
-      if is_truthy(Json::index(bmT, i)) {
-        let nm = Array::get(nT, fid_run)
-        if Map::has_key(name_to_fid, nm) {
-          let fid_acc = Map::get(name_to_fid, nm)
+      let li = Array::get(counts_run, at = fid_run)
+      Array::set(counts_run, at = fid_run, value = li + 1)
+      if is_truthy(Json::index(bmT, idx = i)) {
+        let nm = Array::get(nT, at = fid_run)
+        if Map::has_key(name_to_fid, key = nm) {
+          let fid_acc = Map::get(name_to_fid, key = nm)
           if li < occ_stride {
             let idx = fid_acc * occ_stride + li
             if idx >= 0 && idx < gid_for_len {
-              let gid = Array::get(gid_for, idx)
+              let gid = Array::get(gid_for, at = idx)
               if gid >= 0 {
-                Array::set(br_arr, gid, JNum(1.0))
+                Array::set(br_arr, at = gid, value = JNum(1.0))
               } else {
                 ()
               }
@@ -257,12 +257,12 @@ fn apply_run(br_arr: Array[Json], name_to_fid: Map[String, Int], gid_for: Array[
 
 /// Loads acc + its br array + the correlation index once; returns them for
 /// the caller to apply one or more runs against before a single write.
-fn load_acc(acc_path: String) -> (Json, Array[Json], Map[String, Int], Array[Int], Int) with Fs {
+fn load_acc(_ acc_path: String) -> (Json, Array[Json], Map[String, Int], Array[Int], Int) with Fs {
   let acc = Json::parse(Fs::read_file(acc_path))
-  let fnC = json_str_array(Json::field(acc, "fn_names"))
-  let owC = json_int_array(Json::field(acc, "br_owners"))
-  let br_arr = json_arr_or_empty(Json::field(acc, "br"))
-  let idx = build_index(fnC, owC)
+  let fnC = json_str_array(Json::field(acc, key = "fn_names"))
+  let owC = json_int_array(Json::field(acc, key = "br_owners"))
+  let br_arr = json_arr_or_empty(Json::field(acc, key = "br"))
+  let idx = build_index(fnC = fnC, owC = owC)
   let (name_to_fid, gid_for, occ_stride) = idx
   (acc, br_arr, name_to_fid, gid_for, occ_stride)
 }
@@ -270,11 +270,11 @@ fn load_acc(acc_path: String) -> (Json, Array[Json], Map[String, Int], Array[Int
 fn merge_one_run(br_arr: Array[Json], name_to_fid: Map[String, Int], gid_for: Array[Int], occ_stride: Int, run_path: String) -> Unit with Fs {
   if Fs::exists(run_path) {
     let run = Json::parse(Fs::read_file(run_path))
-    let raw = Json::field(run, "raw")
+    let raw = Json::field(run, key = "raw")
     if Json::is_null(raw) {
       ()
     } else {
-      apply_run(br_arr, name_to_fid, gid_for, occ_stride, raw)
+      apply_run(br_arr = br_arr, name_to_fid = name_to_fid, gid_for = gid_for, occ_stride = occ_stride, raw = raw)
     }
   } else {
     ()
@@ -285,8 +285,8 @@ fn cmd_merge(acc_path: String, run_path: String) -> Unit with Fs + Console {
   let loaded = load_acc(acc_path)
   let (acc, br_arr, name_to_fid, gid_for, occ_stride) = loaded
   let base = sum_br(br_arr)
-  merge_one_run(br_arr, name_to_fid, gid_for, occ_stride, run_path)
-  write_json_atomic(acc_path, acc)
+  merge_one_run(br_arr = br_arr, name_to_fid = name_to_fid, gid_for = gid_for, occ_stride = occ_stride, run_path = run_path)
+  write_json_atomic(path = acc_path, j = acc)
   let now = sum_br(br_arr)
   let tot = Array::length(br_arr)
   println(Int::to_string(base) + " " + Int::to_string(now) + " " + Int::to_string(tot) + "")
@@ -296,19 +296,19 @@ fn cmd_merge_list(acc_path: String, list_path: String) -> Unit with Fs + Console
   let loaded = load_acc(acc_path)
   let (acc, br_arr, name_to_fid, gid_for, occ_stride) = loaded
   let base = sum_br(br_arr)
-  let lines = String::split(Fs::read_file(list_path), "\n")
+  let lines = String::split(Fs::read_file(list_path), sep = "\n")
   let n = Array::length(lines)
   let mut i = 0
   while i < n {
-    let trimmed = String::trim(Array::get(lines, i))
+    let trimmed = String::trim(Array::get(lines, at = i))
     if trimmed != "" {
-      merge_one_run(br_arr, name_to_fid, gid_for, occ_stride, trimmed)
+      merge_one_run(br_arr = br_arr, name_to_fid = name_to_fid, gid_for = gid_for, occ_stride = occ_stride, run_path = trimmed)
     } else {
       ()
     }
     i = i + 1
   }
-  write_json_atomic(acc_path, acc)
+  write_json_atomic(path = acc_path, j = acc)
   let now = sum_br(br_arr)
   let tot = Array::length(br_arr)
   println(Int::to_string(base) + " " + Int::to_string(now) + " " + Int::to_string(tot) + "")
@@ -322,9 +322,9 @@ fn main allows Fs + Env + Console + Stderr + Process {
   } else {
     let sub = Env::args_get(0)
     if sub == "merge" && argc >= 3 {
-      cmd_merge(Env::args_get(1), Env::args_get(2))
+      cmd_merge(acc_path = Env::args_get(1), run_path = Env::args_get(2))
     } else if sub == "merge-list" && argc >= 3 {
-      cmd_merge_list(Env::args_get(1), Env::args_get(2))
+      cmd_merge_list(acc_path = Env::args_get(1), list_path = Env::args_get(2))
     } else {
       Stderr::write_stream("usage: coverage_local_merge merge <acc> <run> | merge-list <acc> <list>\n")
       vibe_process_exit_raw(2)

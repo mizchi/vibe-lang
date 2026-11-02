@@ -2,7 +2,7 @@
 
 //# Functions
 
-export fn is_component(bytes: Bytes) -> Bool {
+export fn is_component(_ bytes: Bytes) -> Bool {
   if Bytes::length(bytes) < 8 {
     false
   }
@@ -18,7 +18,7 @@ export fn is_component(bytes: Bytes) -> Bool {
   }
 }
 
-export fn is_core_wasm(bytes: Bytes) -> Bool {
+export fn is_core_wasm(_ bytes: Bytes) -> Bool {
   if Bytes::length(bytes) < 8 {
     false
   }
@@ -54,12 +54,12 @@ fn read_uleb128(buf: Bytes, offset: Int) -> (Int, Int) {
 }
 
 fn read_name(bytes: Bytes, offset: Int) -> (String, Int) {
-  let (name_len, pos) = read_uleb128(bytes, offset)
+  let (name_len, pos) = read_uleb128(buf = bytes, offset = offset)
   // O(N) build via StringBuilder; per-char String::concat was O(L²) (issue #366).
   let s = StringBuilder::new()
   let mut i = 0
   while i < name_len {
-    StringBuilder::push(s, String::from_char_code(bytes[pos + i]))
+    StringBuilder::push(s, value = String::from_char_code(bytes[pos + i]))
     i = i + 1
   }
   (StringBuilder::freeze(s), pos + name_len)
@@ -67,48 +67,48 @@ fn read_name(bytes: Bytes, offset: Int) -> (String, Int) {
 
 export fn parse_canon(bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([(0, 0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([(0, 0, 0)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
     let op = bytes[pos]
     pos = pos + 1
     if op == 0 {
-      let (func_idx, np) = read_uleb128(bytes, pos)
+      let (func_idx, np) = read_uleb128(buf = bytes, offset = pos)
       pos = np
-      let (opt_count, np2) = read_uleb128(bytes, pos)
+      let (opt_count, np2) = read_uleb128(buf = bytes, offset = pos)
       pos = np2
       let mut o = 0
       while (o < opt_count) && (pos < end_pos) {
         let opt_kind = bytes[pos]
         pos = pos + 1
         if (opt_kind == 3) || (opt_kind == 4) {
-          let (_, np3) = read_uleb128(bytes, pos)
+          let (_, np3) = read_uleb128(buf = bytes, offset = pos)
           pos = np3
         }
         o = o + 1
       }
-      let (_, np4) = read_uleb128(bytes, pos)
+      let (_, np4) = read_uleb128(buf = bytes, offset = pos)
       pos = np4
-      Array::push(result, (0, func_idx, opt_count))
+      Array::push(result, value = (0, func_idx, opt_count))
     } else {
       if op == 1 {
-        let (func_idx, np) = read_uleb128(bytes, pos)
+        let (func_idx, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
-        let (opt_count, np2) = read_uleb128(bytes, pos)
+        let (opt_count, np2) = read_uleb128(buf = bytes, offset = pos)
         pos = np2
         let mut o = 0
         while (o < opt_count) && (pos < end_pos) {
           let opt_kind = bytes[pos]
           pos = pos + 1
           if (opt_kind == 3) || (opt_kind == 4) {
-            let (_, np3) = read_uleb128(bytes, pos)
+            let (_, np3) = read_uleb128(buf = bytes, offset = pos)
             pos = np3
           }
           o = o + 1
         }
-        Array::push(result, (1, func_idx, opt_count))
+        Array::push(result, value = (1, func_idx, opt_count))
       } else {
         i = cnt
       }
@@ -119,18 +119,18 @@ export fn parse_canon(bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, 
 }
 
 export fn count_exports(bytes: Bytes, offset: Int, size: Int) -> Int {
-  let (cnt, _) = read_uleb128(bytes, offset)
+  let (cnt, _) = read_uleb128(buf = bytes, offset = offset)
   cnt
 }
 
 export fn count_imports(bytes: Bytes, offset: Int, size: Int) -> Int {
-  let (cnt, _) = read_uleb128(bytes, offset)
+  let (cnt, _) = read_uleb128(buf = bytes, offset = offset)
   cnt
 }
 
-export fn list_sections(bytes: Bytes) -> Array[(Int, Int, Int)] {
+export fn list_sections(_ bytes: Bytes) -> Array[(Int, Int, Int)] {
   let len = Bytes::length(bytes)
-  let result = Array::slice([(0, 0, 0)], 0, 0)
+  let result = Array::slice([(0, 0, 0)], start = 0, end = 0)
   if len < 8 {
     result
   }
@@ -139,13 +139,13 @@ export fn list_sections(bytes: Bytes) -> Array[(Int, Int, Int)] {
     while i < len {
       let sec_id = bytes[i]
       i = i + 1
-      let (sec_size, content_start) = read_uleb128(bytes, i)
+      let (sec_size, content_start) = read_uleb128(buf = bytes, offset = i)
       let sec_end = content_start + sec_size
       if sec_end > len {
         i = len
       }
       else {
-        Array::push(result, (sec_id, content_start, sec_size))
+        Array::push(result, value = (sec_id, content_start, sec_size))
         i = sec_end
       }
     }
@@ -161,7 +161,7 @@ export fn find_section(bytes: Bytes, target_id: Int) -> (Int, Int, Int) {
   let mut r_off = 0
   let mut r_sz = 0
   while (i < len) && (found == 0) {
-    let (sid, off, sz) = Array::get(sections, i)
+    let (sid, off, sz) = Array::get(sections, at = i)
     if sid == target_id {
       found = 1
       r_off = off
@@ -174,8 +174,8 @@ export fn find_section(bytes: Bytes, target_id: Int) -> (Int, Int, Int) {
 
 export fn parse_aliases(bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int, String)] {
   let end_pos = offset + size
-  let result = Array::slice([(0, 0, 0, "")], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([(0, 0, 0, "")], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
@@ -185,18 +185,18 @@ export fn parse_aliases(bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int
       let alias_kind = bytes[pos]
       pos = pos + 1
       if alias_kind == 1 {
-        let (instance_idx, np) = read_uleb128(bytes, pos)
+        let (instance_idx, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
-        let (name, np2) = read_name(bytes, pos)
+        let (name, np2) = read_name(bytes = bytes, offset = pos)
         pos = np2
-        Array::push(result, (sort, 0, instance_idx, name))
+        Array::push(result, value = (sort, 0, instance_idx, name))
       } else {
         if alias_kind == 2 {
-          let (outer_count, np) = read_uleb128(bytes, pos)
+          let (outer_count, np) = read_uleb128(buf = bytes, offset = pos)
           pos = np
-          let (outer_idx, np2) = read_uleb128(bytes, pos)
+          let (outer_idx, np2) = read_uleb128(buf = bytes, offset = pos)
           pos = np2
-          Array::push(result, (sort, 1, outer_idx, ""))
+          Array::push(result, value = (sort, 1, outer_idx, ""))
         } else {
           i = cnt
         }
@@ -207,7 +207,7 @@ export fn parse_aliases(bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int
   result
 }
 
-export fn extern_kind_name(kind: Int) -> String {
+export fn extern_kind_name(_ kind: Int) -> String {
   if kind == 0 {
     "module"
   }
@@ -234,22 +234,22 @@ export fn extern_kind_name(kind: Int) -> String {
 fn skip_extern_desc(bytes: Bytes, offset: Int, end_pos: Int, kind: Int) -> Int {
   let mut pos = offset
   if kind == 1 {
-    let (_, np) = read_uleb128(bytes, pos)
+    let (_, np) = read_uleb128(buf = bytes, offset = pos)
     pos = np
   } else {
     if kind == 3 {
       if pos < end_pos {
         let bounds = bytes[pos]
         pos = pos + 1
-        let (_, np) = read_uleb128(bytes, pos)
+        let (_, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
       }
     } else {
       if kind == 5 {
-        let (_, np) = read_uleb128(bytes, pos)
+        let (_, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
       } else {
-        let (_, np) = read_uleb128(bytes, pos)
+        let (_, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
       }
     }
@@ -263,28 +263,28 @@ fn skip_extern_desc(bytes: Bytes, offset: Int, end_pos: Int, kind: Int) -> Int {
 
 export fn parse_exports(bytes: Bytes, offset: Int, size: Int) -> Array[(String, Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([("", 0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([("", 0, 0)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
-    let (name, np) = read_name(bytes, pos)
+    let (name, np) = read_name(bytes = bytes, offset = pos)
     pos = np
     if pos < end_pos {
       let sort = bytes[pos]
       pos = pos + 1
-      let (index, np2) = read_uleb128(bytes, pos)
+      let (index, np2) = read_uleb128(buf = bytes, offset = pos)
       pos = np2
       if (pos < end_pos) && (bytes[pos] != 0) {
         let kind = bytes[pos]
         pos = pos + 1
-        pos = skip_extern_desc(bytes, pos, end_pos, kind)
+        pos = skip_extern_desc(bytes = bytes, offset = pos, end_pos = end_pos, kind = kind)
       } else {
         if pos < end_pos {
           pos = pos + 1
         }
       }
-      Array::push(result, (name, sort, index))
+      Array::push(result, value = (name, sort, index))
     }
     i = i + 1
   }
@@ -293,25 +293,25 @@ export fn parse_exports(bytes: Bytes, offset: Int, size: Int) -> Array[(String, 
 
 export fn parse_imports(bytes: Bytes, offset: Int, size: Int) -> Array[(String, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([("", 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([("", 0)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
-    let (name, np) = read_name(bytes, pos)
+    let (name, np) = read_name(bytes = bytes, offset = pos)
     pos = np
     if pos < end_pos {
       let kind = bytes[pos]
       pos = pos + 1
-      pos = skip_extern_desc(bytes, pos, end_pos, kind)
-      Array::push(result, (name, kind))
+      pos = skip_extern_desc(bytes = bytes, offset = pos, end_pos = end_pos, kind = kind)
+      Array::push(result, value = (name, kind))
     }
     i = i + 1
   }
   result
 }
 
-export fn comp_section_name(id: Int) -> String {
+export fn comp_section_name(_ id: Int) -> String {
   if id == 0 {
     "custom"
   }
@@ -353,7 +353,7 @@ export fn comp_section_name(id: Int) -> String {
   }
 }
 
-export fn comp_valtype_name(vt: Int) -> String {
+export fn comp_valtype_name(_ vt: Int) -> String {
   if vt == 122 {
     "s32"
   }
@@ -410,13 +410,13 @@ export fn comp_valtype_name(vt: Int) -> String {
   }
 }
 
-export fn count_core_modules(bytes: Bytes) -> Int {
+export fn count_core_modules(_ bytes: Bytes) -> Int {
   let sections = list_sections(bytes)
   let len = Array::length(sections)
   let mut i = 0
   let mut count = 0
   while i < len {
-    let (sid, _, _) = Array::get(sections, i)
+    let (sid, _, _) = Array::get(sections, at = i)
     if sid == 1 {
       count = count + 1
     }
@@ -429,7 +429,7 @@ export fn extract_core_module(bytes: Bytes, offset: Int, size: Int) -> Bytes {
   let result = Bytes::new()
   let mut i = 0
   while i < size {
-    Bytes::push(result, bytes[offset + i])
+    Bytes::push(result, value = bytes[offset + i])
     i = i + 1
   }
   result
@@ -437,57 +437,57 @@ export fn extract_core_module(bytes: Bytes, offset: Int, size: Int) -> Bytes {
 
 export fn parse_canon_options(bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Array[(Int, Int)])] {
   let end_pos = offset + size
-  let empty_opts = Array::slice([(0, 0)], 0, 0)
-  let result = Array::slice([(0, 0, empty_opts)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let empty_opts = Array::slice([(0, 0)], start = 0, end = 0)
+  let result = Array::slice([(0, 0, empty_opts)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
     let op = bytes[pos]
     pos = pos + 1
     if op == 0 {
-      let (func_idx, np) = read_uleb128(bytes, pos)
+      let (func_idx, np) = read_uleb128(buf = bytes, offset = pos)
       pos = np
-      let (opt_count, np2) = read_uleb128(bytes, pos)
+      let (opt_count, np2) = read_uleb128(buf = bytes, offset = pos)
       pos = np2
-      let opts = Array::slice([(0, 0)], 0, 0)
+      let opts = Array::slice([(0, 0)], start = 0, end = 0)
       let mut o = 0
       while (o < opt_count) && (pos < end_pos) {
         let opt_kind = bytes[pos]
         pos = pos + 1
         if (opt_kind == 3) || (opt_kind == 4) || (opt_kind == 5) {
-          let (opt_val, np3) = read_uleb128(bytes, pos)
+          let (opt_val, np3) = read_uleb128(buf = bytes, offset = pos)
           pos = np3
-          Array::push(opts, (opt_kind, opt_val))
+          Array::push(opts, value = (opt_kind, opt_val))
         } else {
-          Array::push(opts, (opt_kind, 0))
+          Array::push(opts, value = (opt_kind, 0))
         }
         o = o + 1
       }
-      let (_, np4) = read_uleb128(bytes, pos)
+      let (_, np4) = read_uleb128(buf = bytes, offset = pos)
       pos = np4
-      Array::push(result, (0, func_idx, opts))
+      Array::push(result, value = (0, func_idx, opts))
     } else {
       if op == 1 {
-        let (func_idx, np) = read_uleb128(bytes, pos)
+        let (func_idx, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
-        let (opt_count, np2) = read_uleb128(bytes, pos)
+        let (opt_count, np2) = read_uleb128(buf = bytes, offset = pos)
         pos = np2
-        let opts = Array::slice([(0, 0)], 0, 0)
+        let opts = Array::slice([(0, 0)], start = 0, end = 0)
         let mut o = 0
         while (o < opt_count) && (pos < end_pos) {
           let opt_kind = bytes[pos]
           pos = pos + 1
           if (opt_kind == 3) || (opt_kind == 4) || (opt_kind == 5) {
-            let (opt_val, np3) = read_uleb128(bytes, pos)
+            let (opt_val, np3) = read_uleb128(buf = bytes, offset = pos)
             pos = np3
-            Array::push(opts, (opt_kind, opt_val))
+            Array::push(opts, value = (opt_kind, opt_val))
           } else {
-            Array::push(opts, (opt_kind, 0))
+            Array::push(opts, value = (opt_kind, 0))
           }
           o = o + 1
         }
-        Array::push(result, (1, func_idx, opts))
+        Array::push(result, value = (1, func_idx, opts))
       } else {
         i = cnt
       }
@@ -499,48 +499,48 @@ export fn parse_canon_options(bytes: Bytes, offset: Int, size: Int) -> Array[(In
 
 export fn parse_core_instances(bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([(0, 0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([(0, 0, 0)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
     let kind = bytes[pos]
     pos = pos + 1
     if kind == 0 {
-      let (module_idx, np) = read_uleb128(bytes, pos)
+      let (module_idx, np) = read_uleb128(buf = bytes, offset = pos)
       pos = np
-      let (arg_count, np2) = read_uleb128(bytes, pos)
+      let (arg_count, np2) = read_uleb128(buf = bytes, offset = pos)
       pos = np2
       let mut a = 0
       while (a < arg_count) && (pos < end_pos) {
-        let (_, np3) = read_name(bytes, pos)
+        let (_, np3) = read_name(bytes = bytes, offset = pos)
         pos = np3
         if pos < end_pos {
           let _ = bytes[pos]
           pos = pos + 1
-          let (_, np4) = read_uleb128(bytes, pos)
+          let (_, np4) = read_uleb128(buf = bytes, offset = pos)
           pos = np4
         }
         a = a + 1
       }
-      Array::push(result, (0, module_idx, arg_count))
+      Array::push(result, value = (0, module_idx, arg_count))
     } else {
       if kind == 1 {
-        let (export_count, np) = read_uleb128(bytes, pos)
+        let (export_count, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
         let mut e = 0
         while (e < export_count) && (pos < end_pos) {
-          let (_, np2) = read_name(bytes, pos)
+          let (_, np2) = read_name(bytes = bytes, offset = pos)
           pos = np2
           if pos < end_pos {
             let _ = bytes[pos]
             pos = pos + 1
-            let (_, np3) = read_uleb128(bytes, pos)
+            let (_, np3) = read_uleb128(buf = bytes, offset = pos)
             pos = np3
           }
           e = e + 1
         }
-        Array::push(result, (1, 0, export_count))
+        Array::push(result, value = (1, 0, export_count))
       } else {
         i = cnt
       }
@@ -556,41 +556,41 @@ export fn get_custom_section_name(bytes: Bytes, offset: Int, size: Int) -> Strin
     ""
   }
   else {
-    let (name, _) = read_name(bytes, offset)
+    let (name, _) = read_name(bytes = bytes, offset = offset)
     name
   }
 }
 
 export fn parse_core_type_section(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int], Array[Int])] {
   let end_pos = offset + size
-  let empty_ints = Array::slice([0], 0, 0)
-  let result = Array::slice([(empty_ints, empty_ints)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let empty_ints = Array::slice([0], start = 0, end = 0)
+  let result = Array::slice([(empty_ints, empty_ints)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
     let tag = bytes[pos]
     pos = pos + 1
     if tag == 0x60 {
-      let (param_count, np) = read_uleb128(bytes, pos)
+      let (param_count, np) = read_uleb128(buf = bytes, offset = pos)
       pos = np
-      let params = Array::slice([0], 0, 0)
+      let params = Array::slice([0], start = 0, end = 0)
       let mut p = 0
       while (p < param_count) && (pos < end_pos) {
-        Array::push(params, bytes[pos])
+        Array::push(params, value = bytes[pos])
         pos = pos + 1
         p = p + 1
       }
-      let (result_count, np2) = read_uleb128(bytes, pos)
+      let (result_count, np2) = read_uleb128(buf = bytes, offset = pos)
       pos = np2
-      let results = Array::slice([0], 0, 0)
+      let results = Array::slice([0], start = 0, end = 0)
       let mut r = 0
       while (r < result_count) && (pos < end_pos) {
-        Array::push(results, bytes[pos])
+        Array::push(results, value = bytes[pos])
         pos = pos + 1
         r = r + 1
       }
-      Array::push(result, (params, results))
+      Array::push(result, value = (params, results))
     } else {
       i = cnt
     }
@@ -599,18 +599,18 @@ export fn parse_core_type_section(bytes: Bytes, offset: Int, size: Int) -> Array
   result
 }
 
-export fn extract_all_core_modules(bytes: Bytes) -> Array[(Int, Bytes)] {
+export fn extract_all_core_modules(_ bytes: Bytes) -> Array[(Int, Bytes)] {
   let sections = list_sections(bytes)
   let len = Array::length(sections)
   let empty_bytes = Bytes::new()
-  let result = Array::slice([(0, empty_bytes)], 0, 0)
+  let result = Array::slice([(0, empty_bytes)], start = 0, end = 0)
   let mut i = 0
   let mut mod_idx = 0
   while i < len {
-    let (sid, off, sz) = Array::get(sections, i)
+    let (sid, off, sz) = Array::get(sections, at = i)
     if sid == 1 {
-      let mod_bytes = extract_core_module(bytes, off, sz)
-      Array::push(result, (mod_idx, mod_bytes))
+      let mod_bytes = extract_core_module(bytes = bytes, offset = off, size = sz)
+      Array::push(result, value = (mod_idx, mod_bytes))
       mod_idx = mod_idx + 1
     }
     i = i + 1
@@ -620,10 +620,10 @@ export fn extract_all_core_modules(bytes: Bytes) -> Array[(Int, Bytes)] {
 
 export fn parse_component_type_section(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[String], Array[Int], Array[Int])] {
   let end_pos = offset + size
-  let empty_strs = Array::slice([""], 0, 0)
-  let empty_ints = Array::slice([0], 0, 0)
-  let result = Array::slice([(empty_strs, empty_ints, empty_ints)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let empty_strs = Array::slice([""], start = 0, end = 0)
+  let empty_ints = Array::slice([0], start = 0, end = 0)
+  let result = Array::slice([(empty_strs, empty_ints, empty_ints)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
@@ -632,49 +632,49 @@ export fn parse_component_type_section(bytes: Bytes, offset: Int, size: Int) -> 
     if def_kind == 0x40 {
       let params_tag = bytes[pos]
       pos = pos + 1
-      let param_names = Array::slice([""], 0, 0)
-      let param_types = Array::slice([0], 0, 0)
+      let param_names = Array::slice([""], start = 0, end = 0)
+      let param_types = Array::slice([0], start = 0, end = 0)
       if params_tag == 1 {
-        let (param_count, np) = read_uleb128(bytes, pos)
+        let (param_count, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
         let mut p = 0
         while (p < param_count) && (pos < end_pos) {
-          let (pname, np2) = read_name(bytes, pos)
+          let (pname, np2) = read_name(bytes = bytes, offset = pos)
           pos = np2
-          let (vt, np3) = read_uleb128(bytes, pos)
+          let (vt, np3) = read_uleb128(buf = bytes, offset = pos)
           pos = np3
-          Array::push(param_names, pname)
-          Array::push(param_types, vt)
+          Array::push(param_names, value = pname)
+          Array::push(param_types, value = vt)
           p = p + 1
         }
       } else {
-        let (_, np) = read_uleb128(bytes, pos)
+        let (_, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
       }
       let result_tag = bytes[pos]
       pos = pos + 1
-      let result_types = Array::slice([0], 0, 0)
+      let result_types = Array::slice([0], start = 0, end = 0)
       if result_tag == 0 {
-        let (res_count, np) = read_uleb128(bytes, pos)
+        let (res_count, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
         let mut r = 0
         while (r < res_count) && (pos < end_pos) {
-          let (_, np2) = read_name(bytes, pos)
+          let (_, np2) = read_name(bytes = bytes, offset = pos)
           pos = np2
-          let (vt, np3) = read_uleb128(bytes, pos)
+          let (vt, np3) = read_uleb128(buf = bytes, offset = pos)
           pos = np3
-          Array::push(result_types, vt)
+          Array::push(result_types, value = vt)
           r = r + 1
         }
       } else {
-        let (vt, np) = read_uleb128(bytes, pos)
+        let (vt, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
-        Array::push(result_types, vt)
+        Array::push(result_types, value = vt)
       }
-      Array::push(result, (param_names, param_types, result_types))
+      Array::push(result, value = (param_names, param_types, result_types))
     } else {
       if def_kind == 0x41 {
-        let (inner_cnt, np) = read_uleb128(bytes, pos)
+        let (inner_cnt, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
         let mut j = 0
         while (j < inner_cnt) && (pos < end_pos) {
@@ -687,65 +687,65 @@ export fn parse_component_type_section(bytes: Bytes, offset: Int, size: Int) -> 
               let pt = bytes[pos]
               pos = pos + 1
               if pt == 1 {
-                let (pc, np2) = read_uleb128(bytes, pos)
+                let (pc, np2) = read_uleb128(buf = bytes, offset = pos)
                 pos = np2
                 let mut k = 0
                 while (k < pc) && (pos < end_pos) {
-                  let (_, np3) = read_name(bytes, pos)
+                  let (_, np3) = read_name(bytes = bytes, offset = pos)
                   pos = np3
-                  let (_, np4) = read_uleb128(bytes, pos)
+                  let (_, np4) = read_uleb128(buf = bytes, offset = pos)
                   pos = np4
                   k = k + 1
                 }
               } else {
-                let (_, np2) = read_uleb128(bytes, pos)
+                let (_, np2) = read_uleb128(buf = bytes, offset = pos)
                 pos = np2
               }
               let rt = bytes[pos]
               pos = pos + 1
               if rt == 0 {
-                let (rc, np2) = read_uleb128(bytes, pos)
+                let (rc, np2) = read_uleb128(buf = bytes, offset = pos)
                 pos = np2
                 let mut k = 0
                 while (k < rc) && (pos < end_pos) {
-                  let (_, np3) = read_name(bytes, pos)
+                  let (_, np3) = read_name(bytes = bytes, offset = pos)
                   pos = np3
-                  let (_, np4) = read_uleb128(bytes, pos)
+                  let (_, np4) = read_uleb128(buf = bytes, offset = pos)
                   pos = np4
                   k = k + 1
                 }
               } else {
-                let (_, np2) = read_uleb128(bytes, pos)
+                let (_, np2) = read_uleb128(buf = bytes, offset = pos)
                 pos = np2
               }
             } else {
-              let (_, np2) = read_uleb128(bytes, pos)
+              let (_, np2) = read_uleb128(buf = bytes, offset = pos)
               pos = np2
             }
           } else {
             if inner_kind == 0x04 {
-              let (_, np2) = read_name(bytes, pos)
+              let (_, np2) = read_name(bytes = bytes, offset = pos)
               pos = np2
               let ek = bytes[pos]
               pos = pos + 1
-              pos = skip_extern_desc(bytes, pos, end_pos, ek)
+              pos = skip_extern_desc(bytes = bytes, offset = pos, end_pos = end_pos, kind = ek)
             } else {
               j = inner_cnt
             }
           }
           j = j + 1
         }
-        let e_s = Array::slice([""], 0, 0)
-        let e_i = Array::slice([0], 0, 0)
-        let e_r = Array::slice([0], 0, 0)
-        Array::push(result, (e_s, e_i, e_r))
+        let e_s = Array::slice([""], start = 0, end = 0)
+        let e_i = Array::slice([0], start = 0, end = 0)
+        let e_r = Array::slice([0], start = 0, end = 0)
+        Array::push(result, value = (e_s, e_i, e_r))
       } else {
-        let (_, np) = read_uleb128(bytes, pos)
+        let (_, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
-        let e_s = Array::slice([""], 0, 0)
-        let e_i = Array::slice([0], 0, 0)
-        let e_r = Array::slice([0], 0, 0)
-        Array::push(result, (e_s, e_i, e_r))
+        let e_s = Array::slice([""], start = 0, end = 0)
+        let e_i = Array::slice([0], start = 0, end = 0)
+        let e_r = Array::slice([0], start = 0, end = 0)
+        Array::push(result, value = (e_s, e_i, e_r))
       }
     }
     i = i + 1

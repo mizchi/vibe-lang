@@ -18,37 +18,37 @@ test "linear string reference: exact capacity, checked pool and unchanged refusa
   let bytes = Bytes::with_capacity(64)
   let mut padding = 0
   while padding < 54 {
-    Bytes::push(bytes, 127); padding = padding + 1
+    Bytes::push(bytes, value = 127); padding = padding + 1
   }
-  linear_write_string_index(bytes, 0)
+  linear_write_string_index(bytes = bytes, index = 0)
   assert_eq(Bytes::length(bytes), 64)
-  let reader = ast_binary_reader_with_string_pool(linear_string_reader(bytes), FrozenArray::from_array([
+  let reader = ast_binary_reader_with_string_pool(r = linear_string_reader(bytes), strings = FrozenArray::from_array([
     value
   ]))
   reader.pos = 54
-  assert(ast_binary_read_string_checked(reader) == value)
-  assert_eq(ast_binary_reader_remaining(reader), 0)
+  assert(ast_binary_read_string_checked(r = reader) == value)
+  assert_eq(ast_binary_reader_remaining(r = reader), 0)
   let short = Bytes::with_capacity(64)
   padding = 0
   while padding < 55 {
-    Bytes::push(short, 127); padding = padding + 1
+    Bytes::push(short, value = 127); padding = padding + 1
   }
   let error = handle {
-    linear_write_string_index(short, 0); "accepted"
+    linear_write_string_index(bytes = short, index = 0); "accepted"
   } with { Exception::Throw(msg) => msg }
   inspect(error, "linear string writer: insufficient reserved capacity")
   assert_eq(Bytes::length(short), 55)
-  assert_eq(Bytes::get(short, 54), 127)
+  assert_eq(Bytes::get(short, at = 54), 127)
   let invalid = handle {
-    linear_write_string_index(short, -1); "accepted"
+    linear_write_string_index(bytes = short, index = -1); "accepted"
   } with { Exception::Throw(msg) => msg }
   inspect(invalid, "linear string writer: invalid pool index")
   assert_eq(Bytes::length(short), 55)
   let absent = handle {
-    let missing = ast_binary_reader_with_string_pool(linear_string_reader(bytes), FrozenArray::from_array([
+    let missing = ast_binary_reader_with_string_pool(r = linear_string_reader(bytes), strings = FrozenArray::from_array([
     ]))
     missing.pos = 54
-    ast_binary_read_string_checked(missing); "accepted"
+    ast_binary_read_string_checked(r = missing); "accepted"
   } with { Exception::Throw(msg) => msg }
   inspect(absent, "ast_binary: string reference is outside the immutable pool")
 }
@@ -57,26 +57,26 @@ test "linear string writes: capacity boundary is identical on bump and RC" {
   let full = Bytes::with_capacity(64)
   let mut i = 0
   while i < 62 {
-    Bytes::push(full, 127); i = i + 1
+    Bytes::push(full, value = 127); i = i + 1
   }
-  linear_write_string(full, "a")
+  linear_write_string(bytes = full, value = "a")
   assert_eq(Bytes::length(full), 64)
   let error = handle {
-    linear_write_string(full, ""); "accepted"
+    linear_write_string(bytes = full, value = ""); "accepted"
   } with { Exception::Throw(msg) => msg }
   inspect(error, "linear string writer: insufficient reserved capacity")
   assert_eq(Bytes::length(full), 64)
-  assert_eq(Bytes::get(full, 63), 97)
+  assert_eq(Bytes::get(full, at = 63), 97)
   for index in [0, 127, 128, 16383, 16384, 1152921504606846976] {
     let ordinary = Bytes::new()
-    ast_binary_write_varint(ordinary, 1152921504606846976)
-    ast_binary_write_varint(ordinary, index)
+    ast_binary_write_varint(buf = ordinary, v = 1152921504606846976)
+    ast_binary_write_varint(buf = ordinary, v = index)
     let encoded = Bytes::with_capacity(64)
-    linear_write_string_index(encoded, index)
+    linear_write_string_index(bytes = encoded, index = index)
     assert_eq(Bytes::length(encoded), Bytes::length(ordinary))
     i = 0
     while i < Bytes::length(ordinary) {
-      assert_eq(Bytes::get(encoded, i), Bytes::get(ordinary, i)); i = i + 1
+      assert_eq(Bytes::get(encoded, at = i), Bytes::get(ordinary, at = i)); i = i + 1
     }
   }
 }
@@ -86,68 +86,68 @@ test "linear string writer: byte-identical UTF-8 and NUL framing" {
     let chunks: Array[String] = []
     let mut i = 0
     while i < size {
-      Array::push(chunks, "x"); i = i + 1
+      Array::push(chunks, value = "x"); i = i + 1
     }
-    let value = String::concat(String::join(chunks, ""), String::concat("é🍣", String::from_byte(0)))
+    let value = String::concat(String::join(chunks, sep = ""), String::concat("é🍣", String::from_byte(0)))
     let ordinary = Bytes::new()
-    ast_binary_write_string(ordinary, value)
+    ast_binary_write_string(buf = ordinary, s = value)
     let bytes = Bytes::with_capacity(String::length(value) + 16)
-    linear_write_string(bytes, value)
+    linear_write_string(bytes = bytes, value = value)
     assert_eq(Bytes::length(bytes), Bytes::length(ordinary))
     let mut j = 0
     while j < Bytes::length(bytes) {
-      assert_eq(Bytes::get(bytes, j), Bytes::get(ordinary, j)); j = j + 1
+      assert_eq(Bytes::get(bytes, at = j), Bytes::get(ordinary, at = j)); j = j + 1
     }
     let reader = linear_string_reader(bytes)
-    assert(ast_binary_read_string_checked(reader) == value)
-    assert_eq(ast_binary_reader_remaining(reader), 0)
+    assert(ast_binary_read_string_checked(r = reader) == value)
+    assert_eq(ast_binary_reader_remaining(r = reader), 0)
   }
 }
 
 test "linear string writer: insufficient capacity preserves the complete prefix" {
   let bytes = Bytes::with_capacity(128)
-  linear_write_string(bytes, "first")
-  let before = Bytes::slice(bytes, 0, Bytes::length(bytes))
+  linear_write_string(bytes = bytes, value = "first")
+  let before = Bytes::slice(bytes, start = 0, end = Bytes::length(bytes))
   let mut value = "x"
   while String::length(value) < 256 {
     value = String::concat(value, value)
   }
   let error = handle {
-    linear_write_string(bytes, value); "accepted"
+    linear_write_string(bytes = bytes, value = value); "accepted"
   } with { Exception::Throw(msg) => msg }
   inspect(error, "linear string writer: insufficient reserved capacity")
   assert_eq(Bytes::length(bytes), Bytes::length(before))
   let mut i = 0
   while i < Bytes::length(before) {
-    assert_eq(Bytes::get(bytes, i), Bytes::get(before, i)); i = i + 1
+    assert_eq(Bytes::get(bytes, at = i), Bytes::get(before, at = i)); i = i + 1
   }
-  linear_write_string(bytes, "second")
+  linear_write_string(bytes = bytes, value = "second")
   let reader = linear_string_reader(bytes)
-  assert(ast_binary_read_string_checked(reader) == "first")
-  assert(ast_binary_read_string_checked(reader) == "second")
+  assert(ast_binary_read_string_checked(r = reader) == "first")
+  assert(ast_binary_read_string_checked(r = reader) == "second")
 }
 
 test "linear string reader: owned UTF-8 and NUL survive input reuse" {
   for padding in [0, 1016, 1017, 1018, 65536] {
     let bytes = Bytes::new()
-    ast_binary_write_varint(bytes, padding + 7)
+    ast_binary_write_varint(buf = bytes, v = padding + 7)
     let mut i = 0
     while i < padding {
-      Bytes::push(bytes, 97); i = i + 1
+      Bytes::push(bytes, value = 97); i = i + 1
     }
     for byte in [195, 169, 240, 159, 141, 163, 0] {
-      Bytes::push(bytes, byte)
+      Bytes::push(bytes, value = byte)
     }
-    Bytes::push(bytes, 127)
-    let slow = ast_binary_read_string_checked(ast_binary_reader_new(bytes))
+    Bytes::push(bytes, value = 127)
+    let slow = ast_binary_read_string_checked(r = ast_binary_reader_new(bytes = bytes))
     let reader = linear_string_reader(bytes)
-    let fast = ast_binary_read_string_checked(reader)
+    let fast = ast_binary_read_string_checked(r = reader)
     assert(fast == slow)
-    inspect(ast_binary_read_byte(reader), content = "127")
-    Bytes::fill(bytes, 0, Bytes::length(bytes))
+    inspect(ast_binary_read_byte(r = reader), content = "127")
+    Bytes::fill(bytes, value = 0, count = Bytes::length(bytes))
     assert(fast == slow)
     inspect(String::length(fast) == padding + 7, content = "true")
-    inspect(String::byte_at(fast, padding + 1), content = "169")
+    inspect(String::byte_at(fast, at = padding + 1), content = "169")
   }
 }
 
@@ -162,47 +162,47 @@ test "linear string reader: child boundaries and malformed UTF-8 are checked" {
   ] {
     let bytes = Bytes::from_array(raw)
     let slow = handle {
-      ast_binary_read_string_checked(ast_binary_reader_new(bytes)); "accepted"
+      ast_binary_read_string_checked(r = ast_binary_reader_new(bytes = bytes)); "accepted"
     } with { Exception::Throw(msg) => msg }
     let fast = handle {
-      ast_binary_read_string_checked(linear_string_reader(bytes)); "accepted"
+      ast_binary_read_string_checked(r = linear_string_reader(bytes)); "accepted"
     } with { Exception::Throw(msg) => msg }
     assert(fast == slow)
     assert(fast != "accepted")
   }
   let reader = linear_string_reader(Bytes::from_array([2, 195, 169, 127]))
-  let child = ast_binary_reader_take(reader, 2)
+  let child = ast_binary_reader_take(r = reader, length = 2)
   let error = handle {
-    ast_binary_read_string_checked(child); "accepted"
+    ast_binary_read_string_checked(r = child); "accepted"
   } with { Exception::Throw(msg) => msg }
   inspect(error, content = "ast_binary: string length exceeds remaining input")
-  inspect(ast_binary_read_byte(reader), content = "169")
-  let nested = ast_binary_reader_take(reader, 1)
-  inspect(ast_binary_read_byte(nested), content = "127")
-  inspect(ast_binary_reader_remaining(reader), content = "0")
+  inspect(ast_binary_read_byte(r = reader), content = "169")
+  let nested = ast_binary_reader_take(r = reader, length = 1)
+  inspect(ast_binary_read_byte(r = nested), content = "127")
+  inspect(ast_binary_reader_remaining(r = reader), content = "0")
 }
 
 test "linear string reader: raw clipping and empty strings keep cursor behavior" {
   for raw in [[0, 127], [1, 97, 127], [5, 97, 98, 195, 169], [3, 0, 0, 127]] {
     let bytes = Bytes::from_array(raw)
-    let slow = ast_binary_reader_new(bytes)
+    let slow = ast_binary_reader_new(bytes = bytes)
     let fast = linear_string_reader(bytes)
-    assert(ast_binary_read_string(fast) == ast_binary_read_string(slow))
-    inspect(ast_binary_reader_remaining(fast) == ast_binary_reader_remaining(slow), content = "true")
-    inspect(ast_binary_read_byte(fast) == ast_binary_read_byte(slow), content = "true")
+    assert(ast_binary_read_string(r = fast) == ast_binary_read_string(r = slow))
+    inspect(ast_binary_reader_remaining(r = fast) == ast_binary_reader_remaining(r = slow), content = "true")
+    inspect(ast_binary_read_byte(r = fast) == ast_binary_read_byte(r = slow), content = "true")
   }
 }
 
 test "linear string reader: valid child strings stay owned after buffer reuse" {
   let bytes = Bytes::from_array([3, 195, 169, 0, 127])
   let reader = linear_string_reader(bytes)
-  let child = ast_binary_reader_take(reader, 4)
-  let value = ast_binary_read_string_checked(child)
-  inspect(ast_binary_reader_remaining(child), content = "0")
-  inspect(ast_binary_read_byte(reader), content = "127")
-  Bytes::fill(bytes, 0, Bytes::length(bytes))
+  let child = ast_binary_reader_take(r = reader, length = 4)
+  let value = ast_binary_read_string_checked(r = child)
+  inspect(ast_binary_reader_remaining(r = child), content = "0")
+  inspect(ast_binary_read_byte(r = reader), content = "127")
+  Bytes::fill(bytes, value = 0, count = Bytes::length(bytes))
   inspect(String::length(value), content = "3")
-  inspect(String::byte_at(value, 0), content = "195")
-  inspect(String::byte_at(value, 1), content = "169")
-  inspect(String::byte_at(value, 2), content = "0")
+  inspect(String::byte_at(value, at = 0), content = "195")
+  inspect(String::byte_at(value, at = 1), content = "169")
+  inspect(String::byte_at(value, at = 2), content = "0")
 }

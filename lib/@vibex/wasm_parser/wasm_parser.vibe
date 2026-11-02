@@ -2,11 +2,11 @@
 
 //# Functions
 
-export fn count_locals(local_decls: Array[(Int, Int)]) -> Int {
+export fn count_locals(_ local_decls: Array[(Int, Int)]) -> Int {
   let mut total = 0
   let mut i = 0
   while i < Array::length(local_decls) {
-    let (c, _) = Array::get(local_decls, i)
+    let (c, _) = Array::get(local_decls, at = i)
     total = total + c
     i = i + 1
   }
@@ -55,12 +55,12 @@ fn read_uleb128(buf: Bytes, offset: Int) -> (Int, Int) {
 }
 
 export fn read_name(bytes: Bytes, offset: Int) -> (String, Int) {
-  let (name_len, pos) = read_uleb128(bytes, offset)
+  let (name_len, pos) = read_uleb128(buf = bytes, offset = offset)
   // O(N) build via StringBuilder; per-char String::concat was O(L²) (issue #366).
   let s = StringBuilder::new()
   let mut i = 0
   while i < name_len {
-    StringBuilder::push(s, String::from_char_code(bytes[pos + i]))
+    StringBuilder::push(s, value = String::from_char_code(bytes[pos + i]))
     i = i + 1
   }
   (StringBuilder::freeze(s), pos + name_len)
@@ -71,7 +71,7 @@ export fn parse_start(bytes: Bytes, offset: Int, size: Int) -> Int {
     -1
   }
   else {
-    let (func_idx, _) = read_uleb128(bytes, offset); func_idx
+    let (func_idx, _) = read_uleb128(buf = bytes, offset = offset); func_idx
   }
 }
 
@@ -92,7 +92,7 @@ export fn parse_start(bytes: Bytes, offset: Int, size: Int) -> Int {
 fn read_valtype(bytes: Bytes, pos: Int) -> (Int, Int) {
   let vt = bytes[pos]
   if (vt == 0x63) || (vt == 0x64) {
-    let (_, np) = read_sleb128(bytes, pos + 1)
+    let (_, np) = read_sleb128(buf = bytes, offset = pos + 1)
     (vt, np)
   } else {
     (vt, pos + 1)
@@ -116,7 +116,7 @@ fn read_valtype(bytes: Bytes, pos: Int) -> (Int, Int) {
 /// reference to the group's second type out of range. Counting entries would
 /// have been the same bug in a different place.
 export fn parse_type_forms(bytes: Bytes, offset: Int, size: Int) -> Array[Int] {
-  let (forms, _) = parse_type_forms_checked(bytes, offset, size)
+  let (forms, _) = parse_type_forms_checked(bytes = bytes, offset = offset, size = size)
   forms
 }
 
@@ -129,8 +129,8 @@ export fn parse_type_forms(bytes: Bytes, offset: Int, size: Int) -> Array[Int] {
 fn parse_type_forms_checked(bytes: Bytes, offset: Int, size: Int) -> (Array[Int], Bool) {
   let end_pos = offset + size
   let mut complete = true
-  let forms = Array::slice([0], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let forms = Array::slice([0], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut t = 0
   // A rec group's members are read by the same loop, so `remaining_in_rec`
@@ -147,7 +147,7 @@ fn parse_type_forms_checked(bytes: Bytes, offset: Int, size: Int) -> (Array[Int]
     if form == 0x4E {
       // Recursive group: a count, then that many types, none of which consumes
       // a top-level entry of its own.
-      let (n, np) = read_uleb128(bytes, pos)
+      let (n, np) = read_uleb128(buf = bytes, offset = pos)
       pos = np
       remaining_in_rec = remaining_in_rec + n
       if n == 0 {
@@ -159,17 +159,17 @@ fn parse_type_forms_checked(bytes: Bytes, offset: Int, size: Int) -> (Array[Int]
     else if (form == 0x50) || (form == 0x4F) {
       // Sub type: a vector of supertype indices, then the concrete form. The
       // wrapper is not a type of its own, so re-read the form byte after it.
-      let (sup, np) = read_uleb128(bytes, pos)
+      let (sup, np) = read_uleb128(buf = bytes, offset = pos)
       pos = np
       let mut s = 0
       while (s < sup) && (pos < end_pos) {
-        let (_, nq) = read_uleb128(bytes, pos)
+        let (_, nq) = read_uleb128(buf = bytes, offset = pos)
         pos = nq
         s = s + 1
       }
       if pos < end_pos {
         walk_form = bytes[pos]
-        Array::push(forms, walk_form)
+        Array::push(forms, value = walk_form)
         pos = pos + 1
       } else {
         // The wrapper ran to the section end with no form after it. Nothing was
@@ -180,41 +180,41 @@ fn parse_type_forms_checked(bytes: Bytes, offset: Int, size: Int) -> (Array[Int]
       }
     } else {
       walk_form = form
-      Array::push(forms, form)
+      Array::push(forms, value = form)
     }
     if walk_form < 0 {
       ()
     }
     else if walk_form == 0x60 {
-      let (param_count, pp) = read_uleb128(bytes, pos)
+      let (param_count, pp) = read_uleb128(buf = bytes, offset = pos)
       pos = pp
       let mut p = 0
       while (p < param_count) && (pos < end_pos) {
-        let (_, np) = read_valtype(bytes, pos)
+        let (_, np) = read_valtype(bytes = bytes, pos = pos)
         pos = np
         p = p + 1
       }
-      let (result_count, rp) = read_uleb128(bytes, pos)
+      let (result_count, rp) = read_uleb128(buf = bytes, offset = pos)
       pos = rp
       let mut r = 0
       while (r < result_count) && (pos < end_pos) {
-        let (_, np) = read_valtype(bytes, pos)
+        let (_, np) = read_valtype(bytes = bytes, pos = pos)
         pos = np
         r = r + 1
       }
     }
     else if walk_form == 0x5F {
-      let (field_count, fp) = read_uleb128(bytes, pos)
+      let (field_count, fp) = read_uleb128(buf = bytes, offset = pos)
       pos = fp
       let mut f = 0
       while (f < field_count) && (pos < end_pos) {
-        let (_, np) = read_valtype(bytes, pos)
+        let (_, np) = read_valtype(bytes = bytes, pos = pos)
         pos = np + 1
         f = f + 1
       }
     }
     else if walk_form == 0x5E {
-      let (_, np) = read_valtype(bytes, pos)
+      let (_, np) = read_valtype(bytes = bytes, pos = pos)
       pos = np + 1
     } else {
       // A form this function does not decode: stop rather than guess, so a
@@ -249,45 +249,45 @@ fn parse_type_forms_checked(bytes: Bytes, offset: Int, size: Int) -> (Array[Int]
 
 export fn parse_types(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int], Array[Int])] {
   let end_pos = offset + size
-  let result = Array::slice([([0], [0])], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([([0], [0])], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut t = 0
   while (t < cnt) && (pos < end_pos) {
     let form = bytes[pos]
     pos = pos + 1
     if form == 96 {
-      let (param_count, pp) = read_uleb128(bytes, pos)
+      let (param_count, pp) = read_uleb128(buf = bytes, offset = pos)
       pos = pp
-      let params = Array::slice([0], 0, 0)
+      let params = Array::slice([0], start = 0, end = 0)
       let mut p = 0
       while (p < param_count) && (pos < end_pos) {
-        let (vt, np) = read_valtype(bytes, pos)
-        Array::push(params, vt)
+        let (vt, np) = read_valtype(bytes = bytes, pos = pos)
+        Array::push(params, value = vt)
         pos = np
         p = p + 1
       }
-      let (result_count, rp) = read_uleb128(bytes, pos)
+      let (result_count, rp) = read_uleb128(buf = bytes, offset = pos)
       pos = rp
-      let results = Array::slice([0], 0, 0)
+      let results = Array::slice([0], start = 0, end = 0)
       let mut r = 0
       while (r < result_count) && (pos < end_pos) {
-        let (vt, np) = read_valtype(bytes, pos)
-        Array::push(results, vt)
+        let (vt, np) = read_valtype(bytes = bytes, pos = pos)
+        Array::push(results, value = vt)
         pos = np
         r = r + 1
       }
-      Array::push(result, (params, results))
+      Array::push(result, value = (params, results))
     }
     else if form == 0x5F {
-      let (field_count, fp) = read_uleb128(bytes, pos)
+      let (field_count, fp) = read_uleb128(buf = bytes, offset = pos)
       pos = fp
       let mut f = 0
       while (f < field_count) && (pos < end_pos) {
         let ft = bytes[pos]
         pos = pos + 1
         if (ft == 0x63) || (ft == 0x64) {
-          let (_, np) = read_sleb128(bytes, pos)
+          let (_, np) = read_sleb128(buf = bytes, offset = pos)
           pos = np
         } else {
           ()
@@ -299,13 +299,15 @@ export fn parse_types(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int]
         }
         f = f + 1
       }
-      Array::push(result, (Array::slice([0], 0, 0), Array::slice([0], 0, 0)))
+      Array::push(result, value = (Array::slice([0], start = 0, end = 0), Array::slice([
+        0
+      ], start = 0, end = 0)))
     }
     else if form == 0x5E {
       let et = bytes[pos]
       pos = pos + 1
       if (et == 0x63) || (et == 0x64) {
-        let (_, np) = read_sleb128(bytes, pos)
+        let (_, np) = read_sleb128(buf = bytes, offset = pos)
         pos = np
       } else {
         ()
@@ -315,14 +317,16 @@ export fn parse_types(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int]
       } else {
         ()
       }
-      Array::push(result, (Array::slice([0], 0, 0), Array::slice([0], 0, 0)))
+      Array::push(result, value = (Array::slice([0], start = 0, end = 0), Array::slice([
+        0
+      ], start = 0, end = 0)))
     }
     else if form == 0x50 {
-      let (super_count, sp) = read_uleb128(bytes, pos)
+      let (super_count, sp) = read_uleb128(buf = bytes, offset = pos)
       pos = sp
       let mut si = 0
       while (si < super_count) && (pos < end_pos) {
-        let (_, np) = read_uleb128(bytes, pos)
+        let (_, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
         si = si + 1
       }
@@ -330,20 +334,20 @@ export fn parse_types(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int]
         let inner_form = bytes[pos]
         pos = pos + 1
         if inner_form == 0x60 {
-          let (pc2, pp2) = read_uleb128(bytes, pos)
+          let (pc2, pp2) = read_uleb128(buf = bytes, offset = pos)
           pos = pp2 + pc2
-          let (rc2, rp2) = read_uleb128(bytes, pos)
+          let (rc2, rp2) = read_uleb128(buf = bytes, offset = pos)
           pos = rp2 + rc2
         }
         else if inner_form == 0x5F {
-          let (fc2, fp2) = read_uleb128(bytes, pos)
+          let (fc2, fp2) = read_uleb128(buf = bytes, offset = pos)
           pos = fp2
           let mut f2 = 0
           while (f2 < fc2) && (pos < end_pos) {
             let ft2 = bytes[pos]
             pos = pos + 1
             if (ft2 == 0x63) || (ft2 == 0x64) {
-              let (_, np2) = read_sleb128(bytes, pos)
+              let (_, np2) = read_sleb128(buf = bytes, offset = pos)
               pos = np2
             } else {
               ()
@@ -360,7 +364,7 @@ export fn parse_types(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int]
           let et2 = bytes[pos]
           pos = pos + 1
           if (et2 == 0x63) || (et2 == 0x64) {
-            let (_, np2) = read_sleb128(bytes, pos)
+            let (_, np2) = read_sleb128(buf = bytes, offset = pos)
             pos = np2
           } else {
             ()
@@ -377,7 +381,9 @@ export fn parse_types(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int]
       } else {
         ()
       }
-      Array::push(result, (Array::slice([0], 0, 0), Array::slice([0], 0, 0)))
+      Array::push(result, value = (Array::slice([0], start = 0, end = 0), Array::slice([
+        0
+      ], start = 0, end = 0)))
     }
     else {
       ()
@@ -395,10 +401,10 @@ fn parse_limits(bytes: Bytes, offset: Int, end_pos: Int) -> (Int, Int, Int, Int)
   else {
     let flags = bytes[pos]
     pos = pos + 1
-    let (min_val, p1) = read_uleb128(bytes, pos)
+    let (min_val, p1) = read_uleb128(buf = bytes, offset = pos)
     pos = p1
     if (flags&1) != 0 {
-      let (max_val, p2) = read_uleb128(bytes, pos)
+      let (max_val, p2) = read_uleb128(buf = bytes, offset = pos)
       (flags, min_val, max_val, p2)
     } else {
       (flags, min_val, -1, pos)
@@ -407,7 +413,7 @@ fn parse_limits(bytes: Bytes, offset: Int, end_pos: Int) -> (Int, Int, Int, Int)
 }
 
 fn skip_limits(bytes: Bytes, offset: Int, end_pos: Int) -> Int {
-  let (_, _, _, np) = parse_limits(bytes, offset, end_pos)
+  let (_, _, _, np) = parse_limits(bytes = bytes, offset = offset, end_pos = end_pos)
   if np > end_pos {
     end_pos
   } else {
@@ -417,22 +423,22 @@ fn skip_limits(bytes: Bytes, offset: Int, end_pos: Int) -> Int {
 
 export fn parse_tables(bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([(0, 0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([(0, 0, 0)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
     let reftype = bytes[pos]
     pos = pos + 1
-    let (_, min_val, max_val, np) = parse_limits(bytes, pos, end_pos)
+    let (_, min_val, max_val, np) = parse_limits(bytes = bytes, offset = pos, end_pos = end_pos)
     pos = np
-    Array::push(result, (reftype, min_val, max_val))
+    Array::push(result, value = (reftype, min_val, max_val))
     i = i + 1
   }
   result
 }
 
-export fn read_version(bytes: Bytes) -> Int {
+export fn read_version(_ bytes: Bytes) -> Int {
   if Bytes::length(bytes) < 8 {
     -1
   }
@@ -441,7 +447,7 @@ export fn read_version(bytes: Bytes) -> Int {
   }
 }
 
-export fn section_name(id: Int) -> String {
+export fn section_name(_ id: Int) -> String {
   if id == 0 {
     "custom"
   }
@@ -486,7 +492,7 @@ export fn section_name(id: Int) -> String {
   }
 }
 
-export fn valtype_name(vt: Int) -> String {
+export fn valtype_name(_ vt: Int) -> String {
   if vt == 127 {
     "i32"
   }
@@ -525,22 +531,22 @@ export fn valtype_name(vt: Int) -> String {
   }
 }
 
-fn valtypes_str(types: Array[Int]) -> String {
+fn valtypes_str(_ types: Array[Int]) -> String {
   let s = StringBuilder::new()
   let mut i = 0
   while i < Array::length(types) {
     if i > 0 {
-      StringBuilder::push(s, " ")
+      StringBuilder::push(s, value = " ")
     } else {
       ()
     }
-    StringBuilder::push(s, valtype_name(Array::get(types, i)))
+    StringBuilder::push(s, value = valtype_name(Array::get(types, at = i)))
     i = i + 1
   }
   StringBuilder::freeze(s)
 }
 
-fn int_to_string(n: Int) -> String {
+fn int_to_string(_ n: Int) -> String {
   if n == 0 {
     "0"
   }
@@ -564,9 +570,9 @@ fn int_to_string(n: Int) -> String {
   }
 }
 
-export fn list_sections(bytes: Bytes) -> Array[(Int, Int, Int)] {
+export fn list_sections(_ bytes: Bytes) -> Array[(Int, Int, Int)] {
   let len = Bytes::length(bytes)
-  let result = Array::slice([(0, 0, 0)], 0, 0)
+  let result = Array::slice([(0, 0, 0)], start = 0, end = 0)
   if len < 8 {
     result
   }
@@ -575,13 +581,13 @@ export fn list_sections(bytes: Bytes) -> Array[(Int, Int, Int)] {
     while i < len {
       let sec_id = bytes[i]
       i = i + 1
-      let (sec_size, content_start) = read_uleb128(bytes, i)
+      let (sec_size, content_start) = read_uleb128(buf = bytes, offset = i)
       let sec_end = content_start + sec_size
       if sec_end > len {
         i = len
       }
       else {
-        Array::push(result, (sec_id, content_start, sec_size))
+        Array::push(result, value = (sec_id, content_start, sec_size))
         i = sec_end
       }
     }
@@ -596,7 +602,7 @@ export fn find_section(bytes: Bytes, section_id: Int) -> (Int, Int) {
   let mut found_offset = -1
   let mut found_size = 0
   while idx < cnt {
-    let (sid, off, sz) = Array::get(sections, idx)
+    let (sid, off, sz) = Array::get(sections, at = idx)
     if sid == section_id {
       found_offset = off
       found_size = sz
@@ -609,7 +615,7 @@ export fn find_section(bytes: Bytes, section_id: Int) -> (Int, Int) {
 }
 
 fn find_sec(bytes: Bytes, target_id: Int) -> (Int, Int) {
-  let (off, sz) = find_section(bytes, target_id)
+  let (off, sz) = find_section(bytes = bytes, section_id = target_id)
   if off < 0 {
     (0, 0)
   } else {
@@ -617,51 +623,51 @@ fn find_sec(bytes: Bytes, target_id: Int) -> (Int, Int) {
   }
 }
 
-export fn module_start(bytes: Bytes) -> Int {
-  let (off, sz) = find_sec(bytes, 8)
+export fn module_start(_ bytes: Bytes) -> Int {
+  let (off, sz) = find_sec(bytes = bytes, target_id = 8)
   if sz == 0 {
     -1
   }
   else {
-    parse_start(bytes, off, sz)
+    parse_start(bytes = bytes, offset = off, size = sz)
   }
 }
 
-export fn module_types(bytes: Bytes) -> Array[(Array[Int], Array[Int])] {
-  let (off, sz) = find_sec(bytes, 1)
+export fn module_types(_ bytes: Bytes) -> Array[(Array[Int], Array[Int])] {
+  let (off, sz) = find_sec(bytes = bytes, target_id = 1)
   if sz == 0 {
-    Array::slice([([0], [0])], 0, 0)
+    Array::slice([([0], [0])], start = 0, end = 0)
   }
   else {
-    parse_types(bytes, off, sz)
+    parse_types(bytes = bytes, offset = off, size = sz)
   }
 }
 
-export fn module_tables(bytes: Bytes) -> Array[(Int, Int, Int)] {
-  let (off, sz) = find_sec(bytes, 4)
+export fn module_tables(_ bytes: Bytes) -> Array[(Int, Int, Int)] {
+  let (off, sz) = find_sec(bytes = bytes, target_id = 4)
   if sz == 0 {
-    Array::slice([(0, 0, 0)], 0, 0)
+    Array::slice([(0, 0, 0)], start = 0, end = 0)
   }
   else {
-    parse_tables(bytes, off, sz)
+    parse_tables(bytes = bytes, offset = off, size = sz)
   }
 }
 
 export fn parse_exports(bytes: Bytes, offset: Int, size: Int) -> Array[(String, Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([("", 0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([("", 0, 0)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
-    let (name, np) = read_name(bytes, pos)
+    let (name, np) = read_name(bytes = bytes, offset = pos)
     pos = np
     if pos < end_pos {
       let kind = bytes[pos]
       pos = pos + 1
-      let (index, np2) = read_uleb128(bytes, pos)
+      let (index, np2) = read_uleb128(buf = bytes, offset = pos)
       pos = np2
-      Array::push(result, (name, kind, index))
+      Array::push(result, value = (name, kind, index))
     } else {
       ()
     }
@@ -672,21 +678,21 @@ export fn parse_exports(bytes: Bytes, offset: Int, size: Int) -> Array[(String, 
 
 export fn parse_imports(bytes: Bytes, offset: Int, size: Int) -> Array[(String, String, Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([("", "", 0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([("", "", 0, 0)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
-    let (mod_name, p1) = read_name(bytes, pos)
-    let (field_name, p2) = read_name(bytes, p1)
+    let (mod_name, p1) = read_name(bytes = bytes, offset = pos)
+    let (field_name, p2) = read_name(bytes = bytes, offset = p1)
     pos = p2
     if pos < end_pos {
       let kind = bytes[pos]
       pos = pos + 1
       if kind == 0 {
-        let (type_idx, np) = read_uleb128(bytes, pos)
+        let (type_idx, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
-        Array::push(result, (mod_name, field_name, 0, type_idx))
+        Array::push(result, value = (mod_name, field_name, 0, type_idx))
       } else {
         if kind == 1 {
           if pos < end_pos {
@@ -694,12 +700,12 @@ export fn parse_imports(bytes: Bytes, offset: Int, size: Int) -> Array[(String, 
           } else {
             ()
           }
-          pos = skip_limits(bytes, pos, end_pos)
-          Array::push(result, (mod_name, field_name, 1, 0))
+          pos = skip_limits(bytes = bytes, offset = pos, end_pos = end_pos)
+          Array::push(result, value = (mod_name, field_name, 1, 0))
         } else {
           if kind == 2 {
-            pos = skip_limits(bytes, pos, end_pos)
-            Array::push(result, (mod_name, field_name, 2, 0))
+            pos = skip_limits(bytes = bytes, offset = pos, end_pos = end_pos)
+            Array::push(result, value = (mod_name, field_name, 2, 0))
           } else {
             if kind == 3 {
               if (pos + 2) <= end_pos {
@@ -707,9 +713,9 @@ export fn parse_imports(bytes: Bytes, offset: Int, size: Int) -> Array[(String, 
               } else {
                 ()
               }
-              Array::push(result, (mod_name, field_name, 3, 0))
+              Array::push(result, value = (mod_name, field_name, 3, 0))
             } else {
-              Array::push(result, (mod_name, field_name, kind, 0))
+              Array::push(result, value = (mod_name, field_name, kind, 0))
               i = cnt
             }
           }
@@ -723,36 +729,36 @@ export fn parse_imports(bytes: Bytes, offset: Int, size: Int) -> Array[(String, 
   result
 }
 
-export fn module_exports(bytes: Bytes) -> Array[(String, Int, Int)] {
-  let (off, sz) = find_sec(bytes, 7)
+export fn module_exports(_ bytes: Bytes) -> Array[(String, Int, Int)] {
+  let (off, sz) = find_sec(bytes = bytes, target_id = 7)
   if sz == 0 {
-    Array::slice([("", 0, 0)], 0, 0)
+    Array::slice([("", 0, 0)], start = 0, end = 0)
   }
   else {
-    parse_exports(bytes, off, sz)
+    parse_exports(bytes = bytes, offset = off, size = sz)
   }
 }
 
-export fn module_imports(bytes: Bytes) -> Array[(String, String, Int, Int)] {
-  let (off, sz) = find_sec(bytes, 2)
+export fn module_imports(_ bytes: Bytes) -> Array[(String, String, Int, Int)] {
+  let (off, sz) = find_sec(bytes = bytes, target_id = 2)
   if sz == 0 {
-    Array::slice([("", "", 0, 0)], 0, 0)
+    Array::slice([("", "", 0, 0)], start = 0, end = 0)
   }
   else {
-    parse_imports(bytes, off, sz)
+    parse_imports(bytes = bytes, offset = off, size = sz)
   }
 }
 
 export fn parse_memories(bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([(0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([(0, 0)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
-    let (_, min_val, max_val, np) = parse_limits(bytes, pos, end_pos)
+    let (_, min_val, max_val, np) = parse_limits(bytes = bytes, offset = pos, end_pos = end_pos)
     pos = np
-    Array::push(result, (min_val, max_val))
+    Array::push(result, value = (min_val, max_val))
     i = i + 1
   }
   result
@@ -766,7 +772,7 @@ export fn read_init_expr(bytes: Bytes, offset: Int, end_pos: Int) -> (Int, Int, 
     let op = bytes[offset]
     let mut pos = offset + 1
     if (op == 0x41) || (op == 0x42) {
-      let (val, np) = read_sleb128(bytes, pos)
+      let (val, np) = read_sleb128(buf = bytes, offset = pos)
       pos = np
       if (pos < end_pos) && (bytes[pos] == 0x0B) {
         pos = pos + 1
@@ -809,7 +815,7 @@ export fn read_init_expr(bytes: Bytes, offset: Int, end_pos: Int) -> (Int, Int, 
           (op, lo|(hi<<32), pos)
         } else {
           if op == 0x23 {
-            let (idx, np) = read_uleb128(bytes, pos)
+            let (idx, np) = read_uleb128(buf = bytes, offset = pos)
             pos = np
             if (pos < end_pos) && (bytes[pos] == 0x0B) {
               pos = pos + 1
@@ -836,89 +842,89 @@ export fn read_init_expr(bytes: Bytes, offset: Int, end_pos: Int) -> (Int, Int, 
 
 export fn parse_globals(bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([(0, 0, 0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([(0, 0, 0, 0)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
     let valtype = bytes[pos]
     let mutability = bytes[pos + 1]
     pos = pos + 2
-    let (init_op, init_val, np) = read_init_expr(bytes, pos, end_pos)
+    let (init_op, init_val, np) = read_init_expr(bytes = bytes, offset = pos, end_pos = end_pos)
     pos = np
-    Array::push(result, (valtype, mutability, init_op, init_val))
+    Array::push(result, value = (valtype, mutability, init_op, init_val))
     i = i + 1
   }
   result
 }
 
-export fn module_globals(bytes: Bytes) -> Array[(Int, Int, Int, Int)] {
-  let (off, sz) = find_sec(bytes, 6)
+export fn module_globals(_ bytes: Bytes) -> Array[(Int, Int, Int, Int)] {
+  let (off, sz) = find_sec(bytes = bytes, target_id = 6)
   if sz == 0 {
-    Array::slice([(0, 0, 0, 0)], 0, 0)
+    Array::slice([(0, 0, 0, 0)], start = 0, end = 0)
   }
   else {
-    parse_globals(bytes, off, sz)
+    parse_globals(bytes = bytes, offset = off, size = sz)
   }
 }
 
 export fn parse_elements(bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int, Array[Int])] {
   let end_pos = offset + size
-  let result = Array::slice([(0, 0, 0, Array::slice([0], 0, 0))], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([(0, 0, 0, Array::slice([0], start = 0, end = 0))], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
     let mode = bytes[pos]
     pos = pos + 1
     if mode == 0 {
-      let (init_op, init_val, np) = read_init_expr(bytes, pos, end_pos)
+      let (init_op, init_val, np) = read_init_expr(bytes = bytes, offset = pos, end_pos = end_pos)
       pos = np
-      let (func_count, fp) = read_uleb128(bytes, pos)
+      let (func_count, fp) = read_uleb128(buf = bytes, offset = pos)
       pos = fp
-      let indices = Array::slice([0], 0, 0)
+      let indices = Array::slice([0], start = 0, end = 0)
       let mut f = 0
       while (f < func_count) && (pos < end_pos) {
-        let (fi, np2) = read_uleb128(bytes, pos)
+        let (fi, np2) = read_uleb128(buf = bytes, offset = pos)
         pos = np2
-        Array::push(indices, fi)
+        Array::push(indices, value = fi)
         f = f + 1
       }
-      Array::push(result, (0, init_op, init_val, indices))
+      Array::push(result, value = (0, init_op, init_val, indices))
     } else {
       if mode == 1 {
         let elemkind = bytes[pos]
         pos = pos + 1
-        let (func_count, fp) = read_uleb128(bytes, pos)
+        let (func_count, fp) = read_uleb128(buf = bytes, offset = pos)
         pos = fp
-        let indices = Array::slice([0], 0, 0)
+        let indices = Array::slice([0], start = 0, end = 0)
         let mut f = 0
         while (f < func_count) && (pos < end_pos) {
-          let (fi, np2) = read_uleb128(bytes, pos)
+          let (fi, np2) = read_uleb128(buf = bytes, offset = pos)
           pos = np2
-          Array::push(indices, fi)
+          Array::push(indices, value = fi)
           f = f + 1
         }
-        Array::push(result, (-1, 0, 0, indices))
+        Array::push(result, value = (-1, 0, 0, indices))
       } else {
         if mode == 2 {
-          let (table_idx, tp) = read_uleb128(bytes, pos)
+          let (table_idx, tp) = read_uleb128(buf = bytes, offset = pos)
           pos = tp
-          let (init_op, init_val, np) = read_init_expr(bytes, pos, end_pos)
+          let (init_op, init_val, np) = read_init_expr(bytes = bytes, offset = pos, end_pos = end_pos)
           pos = np
           let elemkind = bytes[pos]
           pos = pos + 1
-          let (func_count, fp) = read_uleb128(bytes, pos)
+          let (func_count, fp) = read_uleb128(buf = bytes, offset = pos)
           pos = fp
-          let indices = Array::slice([0], 0, 0)
+          let indices = Array::slice([0], start = 0, end = 0)
           let mut f = 0
           while (f < func_count) && (pos < end_pos) {
-            let (fi, np2) = read_uleb128(bytes, pos)
+            let (fi, np2) = read_uleb128(buf = bytes, offset = pos)
             pos = np2
-            Array::push(indices, fi)
+            Array::push(indices, value = fi)
             f = f + 1
           }
-          Array::push(result, (table_idx, init_op, init_val, indices))
+          Array::push(result, value = (table_idx, init_op, init_val, indices))
         } else {
           i = cnt
         }
@@ -929,7 +935,7 @@ export fn parse_elements(bytes: Bytes, offset: Int, size: Int) -> Array[(Int, In
   result
 }
 
-export fn validate_magic(bytes: Bytes) -> Bool {
+export fn validate_magic(_ bytes: Bytes) -> Bool {
   if Bytes::length(bytes) < 8 {
     false
   }
@@ -938,48 +944,48 @@ export fn validate_magic(bytes: Bytes) -> Bool {
   }
 }
 
-export fn module_elements(bytes: Bytes) -> Array[(Int, Int, Int, Array[Int])] {
-  let (off, sz) = find_sec(bytes, 9)
+export fn module_elements(_ bytes: Bytes) -> Array[(Int, Int, Int, Array[Int])] {
+  let (off, sz) = find_sec(bytes = bytes, target_id = 9)
   if sz == 0 {
-    Array::slice([(0, 0, 0, Array::slice([0], 0, 0))], 0, 0)
+    Array::slice([(0, 0, 0, Array::slice([0], start = 0, end = 0))], start = 0, end = 0)
   }
   else {
-    parse_elements(bytes, off, sz)
+    parse_elements(bytes = bytes, offset = off, size = sz)
   }
 }
 
-export fn module_memories(bytes: Bytes) -> Array[(Int, Int)] {
-  let (off, sz) = find_sec(bytes, 5)
+export fn module_memories(_ bytes: Bytes) -> Array[(Int, Int)] {
+  let (off, sz) = find_sec(bytes = bytes, target_id = 5)
   if sz == 0 {
-    Array::slice([(0, 0)], 0, 0)
+    Array::slice([(0, 0)], start = 0, end = 0)
   }
   else {
-    parse_memories(bytes, off, sz)
+    parse_memories(bytes = bytes, offset = off, size = sz)
   }
 }
 
 export fn parse_functions(bytes: Bytes, offset: Int, size: Int) -> Array[Int] {
   let end_pos = offset + size
-  let result = Array::slice([0], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([0], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
-    let (type_idx, np) = read_uleb128(bytes, pos)
+    let (type_idx, np) = read_uleb128(buf = bytes, offset = pos)
     pos = np
-    Array::push(result, type_idx)
+    Array::push(result, value = type_idx)
     i = i + 1
   }
   result
 }
 
-export fn module_functions(bytes: Bytes) -> Array[Int] {
-  let (off, sz) = find_sec(bytes, 3)
+export fn module_functions(_ bytes: Bytes) -> Array[Int] {
+  let (off, sz) = find_sec(bytes = bytes, target_id = 3)
   if sz == 0 {
-    Array::slice([0], 0, 0)
+    Array::slice([0], start = 0, end = 0)
   }
   else {
-    parse_functions(bytes, off, sz)
+    parse_functions(bytes = bytes, offset = off, size = sz)
   }
 }
 
@@ -987,7 +993,7 @@ export fn extract_data_bytes(bytes: Bytes, data_offset: Int, data_size: Int) -> 
   let result = Bytes::new()
   let mut i = 0
   while i < data_size {
-    Bytes::push(result, bytes[data_offset + i])
+    Bytes::push(result, value = bytes[data_offset + i])
     i = i + 1
   }
   result
@@ -995,67 +1001,69 @@ export fn extract_data_bytes(bytes: Bytes, data_offset: Int, data_size: Int) -> 
 
 export fn parse_code_entries(bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Array[(Int, Int)])] {
   let end_pos = offset + size
-  let empty_locals = Array::slice([(0, 0)], 0, 0)
-  let result = Array::slice([(0, 0, empty_locals)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let empty_locals = Array::slice([(0, 0)], start = 0, end = 0)
+  let result = Array::slice([(0, 0, empty_locals)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
-    let (body_size, body_start) = read_uleb128(bytes, pos)
+    let (body_size, body_start) = read_uleb128(buf = bytes, offset = pos)
     let body_end = body_start + body_size
-    let (local_decl_count, lp0) = read_uleb128(bytes, body_start)
+    let (local_decl_count, lp0) = read_uleb128(buf = bytes, offset = body_start)
     let mut lp = lp0
-    let locals = Array::slice([(0, 0)], 0, 0)
+    let locals = Array::slice([(0, 0)], start = 0, end = 0)
     let mut d = 0
     while (d < local_decl_count) && (lp < body_end) {
-      let (lcount, p1) = read_uleb128(bytes, lp)
+      let (lcount, p1) = read_uleb128(buf = bytes, offset = lp)
       lp = p1
       if lp < body_end {
         // A `(local (ref null $t))` is two-plus bytes, same as a typed
         // reference anywhere else. Reading one byte here left the type index
         // to be taken as the next declaration's count.
-        let (ltype, lnext) = read_valtype(bytes, lp)
+        let (ltype, lnext) = read_valtype(bytes = bytes, pos = lp)
         lp = lnext
-        Array::push(locals, (lcount, ltype))
+        Array::push(locals, value = (lcount, ltype))
       } else {
         ()
       }
       d = d + 1
     }
-    Array::push(result, (body_start, body_size, locals))
+    Array::push(result, value = (body_start, body_size, locals))
     pos = body_end
     i = i + 1
   }
   result
 }
 
-export fn module_code(bytes: Bytes) -> Array[(Int, Int, Array[(Int, Int)])] {
-  let (off, sz) = find_sec(bytes, 10)
+export fn module_code(_ bytes: Bytes) -> Array[(Int, Int, Array[(Int, Int)])] {
+  let (off, sz) = find_sec(bytes = bytes, target_id = 10)
   if sz == 0 {
-    let el = Array::slice([(0, 0)], 0, 0); Array::slice([(0, 0, el)], 0, 0)
+    let el = Array::slice([(0, 0)], start = 0, end = 0); Array::slice([
+      (0, 0, el)
+    ], start = 0, end = 0)
   }
   else {
-    parse_code_entries(bytes, off, sz)
+    parse_code_entries(bytes = bytes, offset = off, size = sz)
   }
 }
 
 export fn parse_imports_full(bytes: Bytes, offset: Int, size: Int) -> Array[(String, String, Int, Int, Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([("", "", 0, 0, 0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([("", "", 0, 0, 0, 0)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
-    let (mod_name, p1) = read_name(bytes, pos)
-    let (field_name, p2) = read_name(bytes, p1)
+    let (mod_name, p1) = read_name(bytes = bytes, offset = pos)
+    let (field_name, p2) = read_name(bytes = bytes, offset = p1)
     pos = p2
     if pos < end_pos {
       let kind = bytes[pos]
       pos = pos + 1
       if kind == 0 {
-        let (type_idx, np) = read_uleb128(bytes, pos)
+        let (type_idx, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
-        Array::push(result, (mod_name, field_name, 0, type_idx, type_idx, 0))
+        Array::push(result, value = (mod_name, field_name, 0, type_idx, type_idx, 0))
       } else {
         if kind == 1 {
           let reftype = if pos < end_pos {
@@ -1063,14 +1071,14 @@ export fn parse_imports_full(bytes: Bytes, offset: Int, size: Int) -> Array[(Str
           } else {
             0
           }
-          let (_, min_v, max_v, np) = parse_limits(bytes, pos, end_pos)
+          let (_, min_v, max_v, np) = parse_limits(bytes = bytes, offset = pos, end_pos = end_pos)
           pos = np
-          Array::push(result, (mod_name, field_name, 1, 0, reftype, min_v))
+          Array::push(result, value = (mod_name, field_name, 1, 0, reftype, min_v))
         } else {
           if kind == 2 {
-            let (_, min_v, max_v, np) = parse_limits(bytes, pos, end_pos)
+            let (_, min_v, max_v, np) = parse_limits(bytes = bytes, offset = pos, end_pos = end_pos)
             pos = np
-            Array::push(result, (mod_name, field_name, 2, 0, min_v, max_v))
+            Array::push(result, value = (mod_name, field_name, 2, 0, min_v, max_v))
           } else {
             if kind == 3 {
               let valtype = if pos < end_pos {
@@ -1083,9 +1091,9 @@ export fn parse_imports_full(bytes: Bytes, offset: Int, size: Int) -> Array[(Str
               } else {
                 0
               }
-              Array::push(result, (mod_name, field_name, 3, 0, valtype, mutability))
+              Array::push(result, value = (mod_name, field_name, 3, 0, valtype, mutability))
             } else {
-              Array::push(result, (mod_name, field_name, kind, 0, 0, 0))
+              Array::push(result, value = (mod_name, field_name, kind, 0, 0, 0))
               i = cnt
             }
           }
@@ -1129,7 +1137,7 @@ export fn get_code_body_range(bytes: Bytes, body_offset: Int, body_size: Int) ->
   if (body_offset < 0) || (body_offset >= limit) {
     (0 - 1, body_end)
   } else {
-    let (local_decl_count, pos0) = read_uleb128(bytes, body_offset)
+    let (local_decl_count, pos0) = read_uleb128(buf = bytes, offset = body_offset)
     let mut pos = pos0
     let mut d = 0
     let mut overrun = pos > limit
@@ -1139,11 +1147,11 @@ export fn get_code_body_range(bytes: Bytes, body_offset: Int, body_size: Int) ->
       if pos >= limit {
         overrun = true
       } else {
-        let (_, np) = read_uleb128(bytes, pos)
+        let (_, np) = read_uleb128(buf = bytes, offset = pos)
         if np >= limit {
           overrun = true
         } else {
-          let (_, np2) = read_valtype(bytes, np)
+          let (_, np2) = read_valtype(bytes = bytes, pos = np)
           if np2 > limit {
             overrun = true
           } else {
@@ -1165,7 +1173,7 @@ export fn get_code_body_range(bytes: Bytes, body_offset: Int, body_size: Int) ->
 /// Starting the copy at -1 would index `bytes` backwards, which is the same
 /// class of host death the bound exists to stop, one call further out.
 export fn extract_code_body(bytes: Bytes, body_offset: Int, body_size: Int) -> Bytes {
-  let (expr_start, expr_end) = get_code_body_range(bytes, body_offset, body_size)
+  let (expr_start, expr_end) = get_code_body_range(bytes = bytes, body_offset = body_offset, body_size = body_size)
   let result = Bytes::new()
   if expr_start < 0 {
     result
@@ -1177,54 +1185,54 @@ export fn extract_code_body(bytes: Bytes, body_offset: Int, body_size: Int) -> B
     }
     let mut i = expr_start
     while i < limit {
-      Bytes::push(result, bytes[i])
+      Bytes::push(result, value = bytes[i])
       i = i + 1
     }
     result
   }
 }
 
-export fn module_imports_full(bytes: Bytes) -> Array[(String, String, Int, Int, Int, Int)] {
-  let (off, sz) = find_sec(bytes, 2)
+export fn module_imports_full(_ bytes: Bytes) -> Array[(String, String, Int, Int, Int, Int)] {
+  let (off, sz) = find_sec(bytes = bytes, target_id = 2)
   if sz == 0 {
-    Array::slice([("", "", 0, 0, 0, 0)], 0, 0)
+    Array::slice([("", "", 0, 0, 0, 0)], start = 0, end = 0)
   }
   else {
-    parse_imports_full(bytes, off, sz)
+    parse_imports_full(bytes = bytes, offset = off, size = sz)
   }
 }
 
 export fn parse_data_segments(bytes: Bytes, offset: Int, size: Int) -> Array[(Int, Int, Int, Int, Int, Int)] {
   let end_pos = offset + size
-  let result = Array::slice([(0, 0, 0, 0, 0, 0)], 0, 0)
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let result = Array::slice([(0, 0, 0, 0, 0, 0)], start = 0, end = 0)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
     let mode = bytes[pos]
     pos = pos + 1
     if mode == 0 {
-      let (init_op, init_val, np) = read_init_expr(bytes, pos, end_pos)
+      let (init_op, init_val, np) = read_init_expr(bytes = bytes, offset = pos, end_pos = end_pos)
       pos = np
-      let (data_len, dp) = read_uleb128(bytes, pos)
+      let (data_len, dp) = read_uleb128(buf = bytes, offset = pos)
       pos = dp
-      Array::push(result, (0, 0, init_op, init_val, pos, data_len))
+      Array::push(result, value = (0, 0, init_op, init_val, pos, data_len))
       pos = pos + data_len
     } else {
       if mode == 1 {
-        let (data_len, dp) = read_uleb128(bytes, pos)
+        let (data_len, dp) = read_uleb128(buf = bytes, offset = pos)
         pos = dp
-        Array::push(result, (1, 0, 0, 0, pos, data_len))
+        Array::push(result, value = (1, 0, 0, 0, pos, data_len))
         pos = pos + data_len
       } else {
         if mode == 2 {
-          let (mem_idx, mp) = read_uleb128(bytes, pos)
+          let (mem_idx, mp) = read_uleb128(buf = bytes, offset = pos)
           pos = mp
-          let (init_op, init_val, np) = read_init_expr(bytes, pos, end_pos)
+          let (init_op, init_val, np) = read_init_expr(bytes = bytes, offset = pos, end_pos = end_pos)
           pos = np
-          let (data_len, dp) = read_uleb128(bytes, pos)
+          let (data_len, dp) = read_uleb128(buf = bytes, offset = pos)
           pos = dp
-          Array::push(result, (2, mem_idx, init_op, init_val, pos, data_len))
+          Array::push(result, value = (2, mem_idx, init_op, init_val, pos, data_len))
           pos = pos + data_len
         } else {
           i = cnt
@@ -1236,31 +1244,31 @@ export fn parse_data_segments(bytes: Bytes, offset: Int, size: Int) -> Array[(In
   result
 }
 
-export fn module_data(bytes: Bytes) -> Array[(Int, Int, Int, Int, Int, Int)] {
-  let (off, sz) = find_sec(bytes, 11)
+export fn module_data(_ bytes: Bytes) -> Array[(Int, Int, Int, Int, Int, Int)] {
+  let (off, sz) = find_sec(bytes = bytes, target_id = 11)
   if sz == 0 {
-    Array::slice([(0, 0, 0, 0, 0, 0)], 0, 0)
+    Array::slice([(0, 0, 0, 0, 0, 0)], start = 0, end = 0)
   }
   else {
-    parse_data_segments(bytes, off, sz)
+    parse_data_segments(bytes = bytes, offset = off, size = sz)
   }
 }
 
 export fn parse_custom_section(bytes: Bytes, offset: Int, size: Int) -> (String, Int, Int) {
-  let (name, payload_start) = read_name(bytes, offset)
+  let (name, payload_start) = read_name(bytes = bytes, offset = offset)
   let payload_size = size - (payload_start - offset)
   (name, payload_start, payload_size)
 }
 
-export fn module_custom_sections(bytes: Bytes) -> Array[(String, Int, Int)] {
+export fn module_custom_sections(_ bytes: Bytes) -> Array[(String, Int, Int)] {
   let sections = list_sections(bytes)
-  let result = Array::slice([("", 0, 0)], 0, 0)
+  let result = Array::slice([("", 0, 0)], start = 0, end = 0)
   let mut i = 0
   while i < Array::length(sections) {
-    let (sid, off, sz) = Array::get(sections, i)
+    let (sid, off, sz) = Array::get(sections, at = i)
     if sid == 0 {
-      let (name, payload_off, payload_sz) = parse_custom_section(bytes, off, sz)
-      Array::push(result, (name, payload_off, payload_sz))
+      let (name, payload_off, payload_sz) = parse_custom_section(bytes = bytes, offset = off, size = sz)
+      Array::push(result, value = (name, payload_off, payload_sz))
     } else {
       ()
     }
@@ -1269,7 +1277,7 @@ export fn module_custom_sections(bytes: Bytes) -> Array[(String, Int, Int)] {
   result
 }
 
-export fn module_summary(bytes: Bytes) -> String {
+export fn module_summary(_ bytes: Bytes) -> String {
   if not(validate_magic(bytes)) {
     "invalid WASM binary"
   }
@@ -1277,24 +1285,24 @@ export fn module_summary(bytes: Bytes) -> String {
     // O(N) build via StringBuilder; the `StringBuilder::push(out, ...)` dump
     // loops over types/imports/funcs were O(N²) over the module size (issue #366).
     let out = StringBuilder::new()
-    StringBuilder::push(out, String::concat("wasm version ", int_to_string(read_version(bytes))))
-    StringBuilder::push(out, String::concat(", size ", String::concat(int_to_string(Bytes::length(bytes)), " bytes\n")))
+    StringBuilder::push(out, value = String::concat("wasm version ", int_to_string(read_version(bytes))))
+    StringBuilder::push(out, value = String::concat(", size ", String::concat(int_to_string(Bytes::length(bytes)), " bytes\n")))
     let types = module_types(bytes)
-    StringBuilder::push(out, String::concat("types: ", String::concat(int_to_string(Array::length(types)), "\n")))
+    StringBuilder::push(out, value = String::concat("types: ", String::concat(int_to_string(Array::length(types)), "\n")))
     let mut ti = 0
     while ti < Array::length(types) {
-      let (params, results) = Array::get(types, ti)
-      StringBuilder::push(out, String::concat("  [", String::concat(int_to_string(ti), "] (")))
-      StringBuilder::push(out, String::concat(valtypes_str(params), ") -> ("))
-      StringBuilder::push(out, String::concat(valtypes_str(results), ")\n"))
+      let (params, results) = Array::get(types, at = ti)
+      StringBuilder::push(out, value = String::concat("  [", String::concat(int_to_string(ti), "] (")))
+      StringBuilder::push(out, value = String::concat(valtypes_str(params), ") -> ("))
+      StringBuilder::push(out, value = String::concat(valtypes_str(results), ")\n"))
       ti = ti + 1
     }
     let imports = module_imports(bytes)
     if Array::length(imports) > 0 {
-      StringBuilder::push(out, String::concat("imports: ", String::concat(int_to_string(Array::length(imports)), "\n")))
+      StringBuilder::push(out, value = String::concat("imports: ", String::concat(int_to_string(Array::length(imports)), "\n")))
       let mut ii = 0
       while ii < Array::length(imports) {
-        let (m, f, k, idx) = Array::get(imports, ii)
+        let (m, f, k, idx) = Array::get(imports, at = ii)
         let kind_str = if k == 0 {
           "func"
         } else if k == 1 {
@@ -1304,32 +1312,32 @@ export fn module_summary(bytes: Bytes) -> String {
         } else {
           "global"
         }
-        StringBuilder::push(out, String::concat("  ", String::concat(m, String::concat(".", String::concat(f, String::concat(" : ", String::concat(kind_str, "\n")))))))
+        StringBuilder::push(out, value = String::concat("  ", String::concat(m, String::concat(".", String::concat(f, String::concat(" : ", String::concat(kind_str, "\n")))))))
         ii = ii + 1
       }
     } else {
       ()
     }
     let funcs = module_functions(bytes)
-    StringBuilder::push(out, String::concat("functions: ", String::concat(int_to_string(Array::length(funcs)), "\n")))
+    StringBuilder::push(out, value = String::concat("functions: ", String::concat(int_to_string(Array::length(funcs)), "\n")))
     let tables = module_tables(bytes)
     if Array::length(tables) > 0 {
-      StringBuilder::push(out, String::concat("tables: ", String::concat(int_to_string(Array::length(tables)), "\n")))
+      StringBuilder::push(out, value = String::concat("tables: ", String::concat(int_to_string(Array::length(tables)), "\n")))
     } else {
       ()
     }
     let mems = module_memories(bytes)
     if Array::length(mems) > 0 {
-      StringBuilder::push(out, String::concat("memories: ", String::concat(int_to_string(Array::length(mems)), "\n")))
+      StringBuilder::push(out, value = String::concat("memories: ", String::concat(int_to_string(Array::length(mems)), "\n")))
       let mut mi = 0
       while mi < Array::length(mems) {
-        let (min_p, max_p) = Array::get(mems, mi)
-        StringBuilder::push(out, String::concat("  min=", String::concat(int_to_string(min_p), if max_p >= 0 {
+        let (min_p, max_p) = Array::get(mems, at = mi)
+        StringBuilder::push(out, value = String::concat("  min=", String::concat(int_to_string(min_p), if max_p >= 0 {
           String::concat(" max=", int_to_string(max_p))
         } else {
           ""
         })))
-        StringBuilder::push(out, "\n")
+        StringBuilder::push(out, value = "\n")
         mi = mi + 1
       }
     } else {
@@ -1337,26 +1345,26 @@ export fn module_summary(bytes: Bytes) -> String {
     }
     let globals = module_globals(bytes)
     if Array::length(globals) > 0 {
-      StringBuilder::push(out, String::concat("globals: ", String::concat(int_to_string(Array::length(globals)), "\n")))
+      StringBuilder::push(out, value = String::concat("globals: ", String::concat(int_to_string(Array::length(globals)), "\n")))
       let mut gi = 0
       while gi < Array::length(globals) {
-        let (vt, mut_f, _, init_val) = Array::get(globals, gi)
-        StringBuilder::push(out, String::concat("  ", String::concat(valtype_name(vt), if mut_f == 1 {
+        let (vt, mut_f, _, init_val) = Array::get(globals, at = gi)
+        StringBuilder::push(out, value = String::concat("  ", String::concat(valtype_name(vt), if mut_f == 1 {
           " mut"
         } else {
           ""
         })))
-        StringBuilder::push(out, String::concat(" = ", String::concat(int_to_string(init_val), "\n")))
+        StringBuilder::push(out, value = String::concat(" = ", String::concat(int_to_string(init_val), "\n")))
         gi = gi + 1
       }
     } else {
       ()
     }
     let exports = module_exports(bytes)
-    StringBuilder::push(out, String::concat("exports: ", String::concat(int_to_string(Array::length(exports)), "\n")))
+    StringBuilder::push(out, value = String::concat("exports: ", String::concat(int_to_string(Array::length(exports)), "\n")))
     let mut ei = 0
     while ei < Array::length(exports) {
-      let (name, kind, idx) = Array::get(exports, ei)
+      let (name, kind, idx) = Array::get(exports, at = ei)
       let kind_str = if kind == 0 {
         "func"
       } else if kind == 1 {
@@ -1366,29 +1374,29 @@ export fn module_summary(bytes: Bytes) -> String {
       } else {
         "global"
       }
-      StringBuilder::push(out, String::concat("  ", String::concat(name, String::concat(" : ", String::concat(kind_str, String::concat(" ", String::concat(int_to_string(idx), "\n")))))))
+      StringBuilder::push(out, value = String::concat("  ", String::concat(name, String::concat(" : ", String::concat(kind_str, String::concat(" ", String::concat(int_to_string(idx), "\n")))))))
       ei = ei + 1
     }
     let start_idx = module_start(bytes)
     if start_idx >= 0 {
-      StringBuilder::push(out, String::concat("start: func ", String::concat(int_to_string(start_idx), "\n")))
+      StringBuilder::push(out, value = String::concat("start: func ", String::concat(int_to_string(start_idx), "\n")))
     } else {
       ()
     }
     let elems = module_elements(bytes)
     if Array::length(elems) > 0 {
-      StringBuilder::push(out, String::concat("elements: ", String::concat(int_to_string(Array::length(elems)), " segments\n")))
+      StringBuilder::push(out, value = String::concat("elements: ", String::concat(int_to_string(Array::length(elems)), " segments\n")))
     } else {
       ()
     }
     let code = module_code(bytes)
     if Array::length(code) > 0 {
-      StringBuilder::push(out, String::concat("code: ", String::concat(int_to_string(Array::length(code)), " bodies\n")))
+      StringBuilder::push(out, value = String::concat("code: ", String::concat(int_to_string(Array::length(code)), " bodies\n")))
       let mut ci = 0
       while ci < Array::length(code) {
-        let (_, bsz, locals) = Array::get(code, ci)
+        let (_, bsz, locals) = Array::get(code, at = ci)
         let nloc = count_locals(locals)
-        StringBuilder::push(out, String::concat("  [", String::concat(int_to_string(ci), String::concat("] size=", String::concat(int_to_string(bsz), String::concat(" locals=", String::concat(int_to_string(nloc), "\n")))))))
+        StringBuilder::push(out, value = String::concat("  [", String::concat(int_to_string(ci), String::concat("] size=", String::concat(int_to_string(bsz), String::concat(" locals=", String::concat(int_to_string(nloc), "\n")))))))
         ci = ci + 1
       }
     } else {
@@ -1396,10 +1404,10 @@ export fn module_summary(bytes: Bytes) -> String {
     }
     let data = module_data(bytes)
     if Array::length(data) > 0 {
-      StringBuilder::push(out, String::concat("data: ", String::concat(int_to_string(Array::length(data)), " segments\n")))
+      StringBuilder::push(out, value = String::concat("data: ", String::concat(int_to_string(Array::length(data)), " segments\n")))
       let mut di = 0
       while di < Array::length(data) {
-        let (mode, _, _, _, _, dlen) = Array::get(data, di)
+        let (mode, _, _, _, _, dlen) = Array::get(data, at = di)
         let mode_str = if mode == 0 {
           "active"
         } else if mode == 1 {
@@ -1407,7 +1415,7 @@ export fn module_summary(bytes: Bytes) -> String {
         } else {
           "active"
         }
-        StringBuilder::push(out, String::concat("  ", String::concat(mode_str, String::concat(" size=", String::concat(int_to_string(dlen), "\n")))))
+        StringBuilder::push(out, value = String::concat("  ", String::concat(mode_str, String::concat(" size=", String::concat(int_to_string(dlen), "\n")))))
         di = di + 1
       }
     } else {
@@ -1415,11 +1423,11 @@ export fn module_summary(bytes: Bytes) -> String {
     }
     let customs = module_custom_sections(bytes)
     if Array::length(customs) > 0 {
-      StringBuilder::push(out, String::concat("custom sections: ", String::concat(int_to_string(Array::length(customs)), "\n")))
+      StringBuilder::push(out, value = String::concat("custom sections: ", String::concat(int_to_string(Array::length(customs)), "\n")))
       let mut ci = 0
       while ci < Array::length(customs) {
-        let (name, _, psz) = Array::get(customs, ci)
-        StringBuilder::push(out, String::concat("  \"", String::concat(name, String::concat("\" size=", String::concat(int_to_string(psz), "\n")))))
+        let (name, _, psz) = Array::get(customs, at = ci)
+        StringBuilder::push(out, value = String::concat("  \"", String::concat(name, String::concat("\" size=", String::concat(int_to_string(psz), "\n")))))
         ci = ci + 1
       }
     } else {
@@ -1451,7 +1459,7 @@ export fn module_summary(bytes: Bytes) -> String {
 /// reports whether every body was walked. Callers comparing against a
 /// declaration should use that one: an under-report reads as "the declaration
 /// claims too much", which is the opposite of the truth.
-export fn scan_features(wasm_bytes: Bytes) -> Array[String] {
+export fn scan_features(_ wasm_bytes: Bytes) -> Array[String] {
   let (found, _) = scan_features_checked(wasm_bytes)
   found
 }
@@ -1460,8 +1468,8 @@ export fn scan_features(wasm_bytes: Bytes) -> Array[String] {
 ///
 /// False means some body stopped at an instruction the stepper cannot decode,
 /// so the feature list is a SUBSET of what the module requires.
-export fn scan_features_checked(wasm_bytes: Bytes) -> (Array[String], Bool) {
-  let found = Array::slice([""], 0, 0)
+export fn scan_features_checked(_ wasm_bytes: Bytes) -> (Array[String], Bool) {
+  let found = Array::slice([""], start = 0, end = 0)
   if !validate_magic(wasm_bytes) {
     (found, false)
   } else {
@@ -1478,12 +1486,12 @@ export fn scan_features_checked(wasm_bytes: Bytes) -> (Array[String], Bool) {
     let mut complete = true
     let mut i = 0
     while i < Array::length(sections) {
-      let (sid, off, sz) = Array::get(sections, i)
+      let (sid, off, sz) = Array::get(sections, at = i)
       if sid == 1 {
-        let forms = parse_type_forms(wasm_bytes, off, sz)
+        let forms = parse_type_forms(bytes = wasm_bytes, offset = off, size = sz)
         let mut f = 0
         while f < Array::length(forms) {
-          let form = Array::get(forms, f)
+          let form = Array::get(forms, at = f)
           if (form == 0x5F) || (form == 0x5E) || (form == 0x50) || (form == 0x4E) {
             uses_gc_types = true
           } else {
@@ -1491,10 +1499,10 @@ export fn scan_features_checked(wasm_bytes: Bytes) -> (Array[String], Bool) {
           }
           f = f + 1
         }
-        let types = parse_types(wasm_bytes, off, sz)
+        let types = parse_types(bytes = wasm_bytes, offset = off, size = sz)
         let mut t = 0
         while t < Array::length(types) {
-          let (params, results) = Array::get(types, t)
+          let (params, results) = Array::get(types, at = t)
           if valtypes_mention_typed_ref(params) || valtypes_mention_typed_ref(results) {
             uses_typed_ref = true
           } else {
@@ -1512,16 +1520,16 @@ export fn scan_features_checked(wasm_bytes: Bytes) -> (Array[String], Bool) {
         uses_exceptions = true
       }
       else if sid == 5 {
-        memory_count = Array::length(parse_memories(wasm_bytes, off, sz))
+        memory_count = Array::length(parse_memories(bytes = wasm_bytes, offset = off, size = sz))
       }
       else if sid == 10 {
-        let entries = parse_code_entries(wasm_bytes, off, sz)
+        let entries = parse_code_entries(bytes = wasm_bytes, offset = off, size = sz)
         let mut e = 0
         while e < Array::length(entries) {
-          let (body_off, body_size, locals) = Array::get(entries, e)
+          let (body_off, body_size, locals) = Array::get(entries, at = e)
           let mut l = 0
           while l < Array::length(locals) {
-            let (_, lt) = Array::get(locals, l)
+            let (_, lt) = Array::get(locals, at = l)
             if (lt == 0x63) || (lt == 0x64) {
               uses_typed_ref = true
             } else {
@@ -1540,11 +1548,11 @@ export fn scan_features_checked(wasm_bytes: Bytes) -> (Array[String], Bool) {
           // module does not use. A body the walk cannot finish is not guessed
           // at -- it clears `complete`, and the caller decides what an
           // incomplete answer is worth.
-          let (cs, ce) = get_code_body_range(wasm_bytes, body_off, body_size)
+          let (cs, ce) = get_code_body_range(bytes = wasm_bytes, body_offset = body_off, body_size = body_size)
           let mut pc = cs
           let mut done = false
           while (pc < ce) && !done {
-            let (op, np) = next_instruction(wasm_bytes, pc, ce)
+            let (op, np) = next_instruction(code = wasm_bytes, pc = pc, end_pos = ce)
             if np < 0 {
               complete = false
               done = true
@@ -1572,7 +1580,7 @@ export fn scan_features_checked(wasm_bytes: Bytes) -> (Array[String], Bool) {
                 uses_exceptions = true
               }
               else if op == 0xFC {
-                let (sub, _) = read_uleb128(wasm_bytes, pc + 1)
+                let (sub, _) = read_uleb128(buf = wasm_bytes, offset = pc + 1)
                 if sub <= 7 {
                   uses_sat_float = true
                 } else {
@@ -1594,22 +1602,22 @@ export fn scan_features_checked(wasm_bytes: Bytes) -> (Array[String], Bool) {
     // Alphabetical, so the result can be compared against a sorted declaration
     // without the caller sorting first.
     if uses_bulk_memory {
-      Array::push(found, "bulkMemory")
+      Array::push(found, value = "bulkMemory")
     } else {
       ()
     }
     if uses_exceptions {
-      Array::push(found, "exceptionsFinal")
+      Array::push(found, value = "exceptionsFinal")
     } else {
       ()
     }
     if uses_gc_types {
-      Array::push(found, "gc")
+      Array::push(found, value = "gc")
     } else {
       ()
     }
     if memory_count > 1 {
-      Array::push(found, "multiMemory")
+      Array::push(found, value = "multiMemory")
     } else {
       ()
     }
@@ -1617,27 +1625,27 @@ export fn scan_features_checked(wasm_bytes: Bytes) -> (Array[String], Bool) {
     // reference type, and reporting both would make the result read as two
     // independent requirements.
     if uses_ref_types && !uses_typed_ref {
-      Array::push(found, "referenceTypes")
+      Array::push(found, value = "referenceTypes")
     } else {
       ()
     }
     if uses_sat_float {
-      Array::push(found, "saturatedFloatToInt")
+      Array::push(found, value = "saturatedFloatToInt")
     } else {
       ()
     }
     if uses_simd {
-      Array::push(found, "simd")
+      Array::push(found, value = "simd")
     } else {
       ()
     }
     if uses_tail_call {
-      Array::push(found, "tailCall")
+      Array::push(found, value = "tailCall")
     } else {
       ()
     }
     if uses_typed_ref {
-      Array::push(found, "typedFunctionReferences")
+      Array::push(found, value = "typedFunctionReferences")
     } else {
       ()
     }
@@ -1645,11 +1653,11 @@ export fn scan_features_checked(wasm_bytes: Bytes) -> (Array[String], Bool) {
   }
 }
 
-fn valtypes_mention_typed_ref(vts: Array[Int]) -> Bool {
+fn valtypes_mention_typed_ref(_ vts: Array[Int]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(vts) {
-    let vt = Array::get(vts, i)
+    let vt = Array::get(vts, at = i)
     if (vt == 0x63) || (vt == 0x64) {
       found = true
     } else {
@@ -1660,11 +1668,11 @@ fn valtypes_mention_typed_ref(vts: Array[Int]) -> Bool {
   found
 }
 
-fn valtypes_mention_ref_type(vts: Array[Int]) -> Bool {
+fn valtypes_mention_ref_type(_ vts: Array[Int]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(vts) {
-    let vt = Array::get(vts, i)
+    let vt = Array::get(vts, at = i)
     if (vt == 0x70) || (vt == 0x6F) {
       found = true
     } else {
@@ -1692,7 +1700,7 @@ fn valtypes_mention_ref_type(vts: Array[Int]) -> Bool {
 ///
 /// Measured both ways against `wasm-tools validate` -- see the harness in
 /// scripts/test_wasm_validate_parity.sh.
-export fn validate_structure(wasm_bytes: Bytes) -> Option[String] {
+export fn validate_structure(_ wasm_bytes: Bytes) -> Option[String] {
   let len = Bytes::length(wasm_bytes)
   if len < 8 {
     Some("module is shorter than the 8-byte header")
@@ -1709,7 +1717,7 @@ export fn validate_structure(wasm_bytes: Bytes) -> Option[String] {
       if sid > 13 {
         err = Some("unknown section id")
       } else {
-        let (size, np) = read_uleb128(wasm_bytes, pos + 1)
+        let (size, np) = read_uleb128(buf = wasm_bytes, offset = pos + 1)
         // The size is the section's own claim; a module can claim more than it
         // carries, which is how a truncated file reads as a section running off
         // the end. Checking it here is what keeps every parse_* below in range.
@@ -1732,20 +1740,20 @@ export fn validate_structure(wasm_bytes: Bytes) -> Option[String] {
           // reaches the executor, so walk it here rather than leaving the
           // section boundaries as the only thing checked.
           if sid == 10 {
-            err = validate_code_section(wasm_bytes, np, size)
+            err = validate_code_section(wasm_bytes = wasm_bytes, offset = np, size = size)
           }
           else if sid == 3 {
             // Index-space bounds are decidable from the sections alone -- no
             // operand typing needed -- so they belong in this layer even though
             // "the type this function claims" sounds like a typing question.
-            err = validate_function_type_indices(wasm_bytes, np, size)
+            err = validate_function_type_indices(wasm_bytes = wasm_bytes, offset = np, size = size)
           }
           else if sid == 7 {
             // Export names and indices are consumed by the executor before it
             // can return a trap tuple. Keep that parser inside this section;
             // otherwise a guest-controlled name length reads the next section
             // as export metadata and can trap the host process.
-            err = validate_export_section(wasm_bytes, np, size)
+            err = validate_export_section(wasm_bytes = wasm_bytes, offset = np, size = size)
           } else {
             ()
           }
@@ -1764,7 +1772,7 @@ export fn validate_structure(wasm_bytes: Bytes) -> Option[String] {
 /// type, import, function, table, memory, TAG, global, export, start, element,
 /// DATACOUNT, code, data. Comparing ids instead of ranks rejects every module
 /// with an exception tag -- which this compiler emits whenever a module throws.
-fn section_rank(sid: Int) -> Int {
+fn section_rank(_ sid: Int) -> Int {
   if sid == 13 {
     6
   }
@@ -1810,47 +1818,47 @@ export fn next_instruction(code: Bytes, pc: Int, end_pos: Int) -> (Int, Int) {
     else if (op == 0x0C) || (op == 0x0D) || (op == 0x10) || (op == 0x20) || (op == 0x21) || (op == 0x22) || (op == 0x23) || (op == 0x24) || (op == 0x12) || (op == 0x14) || (op == 0x15) || (op == 0x25) || (op == 0x26) || (op == 0x3F) || (op == 0x40) || (op == 0xD2) || (op == 0xD5) || (op == 0xD6) || (op == 0x08) {
       // One unsigned index: label, function, local, global, table, memory --
       // or, for 0x14/0x15 (call_ref/return_call_ref), a type.
-      let (_, np) = read_uleb128(code, p)
-      (op, bounded(np, end_pos))
+      let (_, np) = read_uleb128(buf = code, offset = p)
+      (op, bounded(np = np, end_pos = end_pos))
     }
     else if op == 0xD0 {
       // ref.null takes a heap type, which is a signed LEB: negative for the
       // abstract types, non-negative for a concrete type index.
-      let (_, np) = read_sleb128(code, p)
-      (op, bounded(np, end_pos))
+      let (_, np) = read_sleb128(buf = code, offset = p)
+      (op, bounded(np = np, end_pos = end_pos))
     }
     else if op == 0x43 {
-      (op, bounded(p + 4, end_pos))
+      (op, bounded(np = p + 4, end_pos = end_pos))
     }
     else if op == 0x44 {
-      (op, bounded(p + 8, end_pos))
+      (op, bounded(np = p + 8, end_pos = end_pos))
     }
     else if op == 0x1C {
       // select with an explicit result-type vector.
-      let (cnt, np) = read_uleb128(code, p)
+      let (cnt, np) = read_uleb128(buf = code, offset = p)
       let mut q = np
       let mut i = 0
       while (i < cnt) && (q < end_pos) {
-        let (_, nq) = read_valtype(code, q)
+        let (_, nq) = read_valtype(bytes = code, pos = q)
         q = nq
         i = i + 1
       }
       if i < cnt {
         (op, 0 - 1)
       } else {
-        (op, bounded(q, end_pos))
+        (op, bounded(np = q, end_pos = end_pos))
       }
     }
     else if op == 0x13 {
-      let (_, np) = read_uleb128(code, p)
-      let (_, np2) = read_uleb128(code, np)
-      (op, bounded(np2, end_pos))
+      let (_, np) = read_uleb128(buf = code, offset = p)
+      let (_, np2) = read_uleb128(buf = code, offset = np)
+      (op, bounded(np = np2, end_pos = end_pos))
     }
     else if op == 0x1F {
       // try_table: a blocktype, then a vector of catch clauses. The clause kind
       // decides whether a tag index precedes the label.
-      let (_, np) = read_sleb128(code, p)
-      let (cnt, np2) = read_uleb128(code, np)
+      let (_, np) = read_sleb128(buf = code, offset = p)
+      let (cnt, np2) = read_uleb128(buf = code, offset = np)
       let mut q = np2
       let mut i = 0
       let mut bad = false
@@ -1858,12 +1866,12 @@ export fn next_instruction(code: Bytes, pc: Int, end_pos: Int) -> (Int, Int) {
         let kind = code[q]
         let r = q + 1
         if (kind == 0x00) || (kind == 0x01) {
-          let (_, nr) = read_uleb128(code, r)
-          let (_, nr2) = read_uleb128(code, nr)
+          let (_, nr) = read_uleb128(buf = code, offset = r)
+          let (_, nr2) = read_uleb128(buf = code, offset = nr)
           q = nr2
         }
         else if (kind == 0x02) || (kind == 0x03) {
-          let (_, nr) = read_uleb128(code, r)
+          let (_, nr) = read_uleb128(buf = code, offset = r)
           q = nr
         } else {
           bad = true
@@ -1873,67 +1881,67 @@ export fn next_instruction(code: Bytes, pc: Int, end_pos: Int) -> (Int, Int) {
       if bad || (i < cnt) {
         (op, 0 - 1)
       } else {
-        (op, bounded(q, end_pos))
+        (op, bounded(np = q, end_pos = end_pos))
       }
     }
     else if op == 0x06 {
       // Legacy exception handling: `try` takes a blocktype, like block/loop/if.
-      let (_, np) = read_sleb128(code, p)
-      (op, bounded(np, end_pos))
+      let (_, np) = read_sleb128(buf = code, offset = p)
+      (op, bounded(np = np, end_pos = end_pos))
     }
     else if (op == 0x07) || (op == 0x09) || (op == 0x18) {
       // Legacy `catch` (tag), `rethrow` (label), `delegate` (label).
-      let (_, np) = read_uleb128(code, p)
-      (op, bounded(np, end_pos))
+      let (_, np) = read_uleb128(buf = code, offset = p)
+      (op, bounded(np = np, end_pos = end_pos))
     }
     else if op == 0xFC {
-      let (sub, np) = read_uleb128(code, p)
-      (op, bounded(misc_immediate_end(code, sub, np), end_pos))
+      let (sub, np) = read_uleb128(buf = code, offset = p)
+      (op, bounded(np = misc_immediate_end(code = code, sub = sub, p = np), end_pos = end_pos))
     }
     else if op == 0xFB {
-      let (sub, np) = read_uleb128(code, p)
-      (op, bounded(gc_immediate_end(code, sub, np), end_pos))
+      let (sub, np) = read_uleb128(buf = code, offset = p)
+      (op, bounded(np = gc_immediate_end(code = code, sub = sub, p = np), end_pos = end_pos))
     }
     else if op == 0xFD {
-      let (sub, np) = read_uleb128(code, p)
-      (op, bounded(simd_immediate_end(code, sub, np), end_pos))
+      let (sub, np) = read_uleb128(buf = code, offset = p)
+      (op, bounded(np = simd_immediate_end(code = code, sub = sub, p = np), end_pos = end_pos))
     }
     else if (op == 0x02) || (op == 0x03) || (op == 0x04) {
       // Blocktype: a negative value type, or a non-negative TYPE INDEX. Both
       // are one signed LEB, which is why a typed-reference blocktype (the shape
       // #1541 reserves) needs no special case here.
-      let (_, np) = read_sleb128(code, p)
-      (op, bounded(np, end_pos))
+      let (_, np) = read_sleb128(buf = code, offset = p)
+      (op, bounded(np = np, end_pos = end_pos))
     }
     else if (op == 0x41) || (op == 0x42) {
-      let (_, np) = read_sleb128(code, p)
-      (op, bounded(np, end_pos))
+      let (_, np) = read_sleb128(buf = code, offset = p)
+      (op, bounded(np = np, end_pos = end_pos))
     }
     else if op == 0x11 {
-      let (_, np) = read_uleb128(code, p)
-      let (_, np2) = read_uleb128(code, np)
-      (op, bounded(np2, end_pos))
+      let (_, np) = read_uleb128(buf = code, offset = p)
+      let (_, np2) = read_uleb128(buf = code, offset = np)
+      (op, bounded(np = np2, end_pos = end_pos))
     }
     else if instruction_is_memarg(op) {
-      let (_, np) = read_uleb128(code, p)
-      let (_, np2) = read_uleb128(code, np)
-      (op, bounded(np2, end_pos))
+      let (_, np) = read_uleb128(buf = code, offset = p)
+      let (_, np2) = read_uleb128(buf = code, offset = np)
+      (op, bounded(np = np2, end_pos = end_pos))
     }
     else if op == 0x0E {
       // br_table: a vector of label indices, then the default.
-      let (cnt, np) = read_uleb128(code, p)
+      let (cnt, np) = read_uleb128(buf = code, offset = p)
       let mut q = np
       let mut i = 0
       while (i < cnt) && (q < end_pos) {
-        let (_, nq) = read_uleb128(code, q)
+        let (_, nq) = read_uleb128(buf = code, offset = q)
         q = nq
         i = i + 1
       }
       if i < cnt {
         (op, 0 - 1)
       } else {
-        let (_, nq) = read_uleb128(code, q)
-        (op, bounded(nq, end_pos))
+        let (_, nq) = read_uleb128(buf = code, offset = q)
+        (op, bounded(np = nq, end_pos = end_pos))
       }
     } else {
       (op, 0 - 1)
@@ -1949,11 +1957,11 @@ fn bounded(np: Int, end_pos: Int) -> Int {
   }
 }
 
-fn instruction_has_no_immediate(op: Int) -> Bool {
+fn instruction_has_no_immediate(_ op: Int) -> Bool {
   (op == 0x00) || (op == 0x01) || (op == 0x05) || (op == 0x0B) || (op == 0x0F) || (op == 0x1A) || (op == 0x1B) || ((op >= 0x45) && (op <= 0xC4)) || (op == 0xD1) || (op == 0xD3) || (op == 0xD4) || (op == 0x0A) || (op == 0x19)
 }
 
-fn instruction_is_memarg(op: Int) -> Bool {
+fn instruction_is_memarg(_ op: Int) -> Bool {
   ((op >= 0x28) && (op <= 0x3E))
 }
 
@@ -1965,11 +1973,11 @@ fn misc_immediate_end(code: Bytes, sub: Int, p: Int) -> Int {
     p
   }
   else if sub == 8 {
-    let (_, np) = read_uleb128(code, p)
+    let (_, np) = read_uleb128(buf = code, offset = p)
     np + 1
   }
   else if (sub == 9) || (sub == 13) || (sub == 15) || (sub == 16) || (sub == 17) {
-    let (_, np) = read_uleb128(code, p)
+    let (_, np) = read_uleb128(buf = code, offset = p)
     np
   }
   else if sub == 10 {
@@ -1979,8 +1987,8 @@ fn misc_immediate_end(code: Bytes, sub: Int, p: Int) -> Int {
     p + 1
   }
   else if (sub == 12) || (sub == 14) {
-    let (_, np) = read_uleb128(code, p)
-    let (_, np2) = read_uleb128(code, np)
+    let (_, np) = read_uleb128(buf = code, offset = p)
+    let (_, np2) = read_uleb128(buf = code, offset = np)
     np2
   } else {
     0 - 1
@@ -2004,8 +2012,8 @@ fn misc_immediate_end(code: Bytes, sub: Int, p: Int) -> Int {
 fn simd_immediate_end(code: Bytes, sub: Int, p: Int) -> Int {
   if sub <= 11 {
     // v128.load* / v128.store: memarg.
-    let (_, np) = read_uleb128(code, p)
-    let (_, np2) = read_uleb128(code, np)
+    let (_, np) = read_uleb128(buf = code, offset = p)
+    let (_, np2) = read_uleb128(buf = code, offset = np)
     np2
   }
   else if (sub == 12) || (sub == 13) {
@@ -2018,14 +2026,14 @@ fn simd_immediate_end(code: Bytes, sub: Int, p: Int) -> Int {
   }
   else if (sub >= 84) && (sub <= 91) {
     // v128.loadN_lane / storeN_lane: memarg AND a lane index.
-    let (_, np) = read_uleb128(code, p)
-    let (_, np2) = read_uleb128(code, np)
+    let (_, np) = read_uleb128(buf = code, offset = p)
+    let (_, np2) = read_uleb128(buf = code, offset = np)
     np2 + 1
   }
   else if (sub == 92) || (sub == 93) {
     // v128.load32_zero / load64_zero: memarg.
-    let (_, np) = read_uleb128(code, p)
-    let (_, np2) = read_uleb128(code, np)
+    let (_, np) = read_uleb128(buf = code, offset = p)
+    let (_, np2) = read_uleb128(buf = code, offset = np)
     np2
   }
   else if sub <= 275 {
@@ -2042,14 +2050,14 @@ fn simd_immediate_end(code: Bytes, sub: Int, p: Int) -> Int {
 fn gc_immediate_end(code: Bytes, sub: Int, p: Int) -> Int {
   if (sub == 0) || (sub == 1) || (sub == 6) || (sub == 7) || (sub == 11) || (sub == 12) || (sub == 13) || (sub == 14) || (sub == 16) {
     // One type index: struct.new*, array.new*, array.get*/set, array.fill.
-    let (_, np) = read_uleb128(code, p)
+    let (_, np) = read_uleb128(buf = code, offset = p)
     np
   }
   else if (sub == 2) || (sub == 3) || (sub == 4) || (sub == 5) || (sub == 8) || (sub == 9) || (sub == 10) || (sub == 17) || (sub == 18) || (sub == 19) {
     // Two indices: struct.get*/set take a field, array.new_fixed a length,
     // array.copy a second type, array.new_data/init_data a segment.
-    let (_, np) = read_uleb128(code, p)
-    let (_, np2) = read_uleb128(code, np)
+    let (_, np) = read_uleb128(buf = code, offset = p)
+    let (_, np2) = read_uleb128(buf = code, offset = np)
     np2
   }
   else if sub == 15 {
@@ -2057,14 +2065,14 @@ fn gc_immediate_end(code: Bytes, sub: Int, p: Int) -> Int {
   }
   else if (sub >= 20) && (sub <= 23) {
     // ref.test / ref.cast, both null and non-null forms: one heap type.
-    let (_, np) = read_sleb128(code, p)
+    let (_, np) = read_sleb128(buf = code, offset = p)
     np
   }
   else if (sub == 24) || (sub == 25) {
     // br_on_cast{,_fail}: a flags byte, a label, then BOTH heap types.
-    let (_, np) = read_uleb128(code, p + 1)
-    let (_, np2) = read_sleb128(code, np)
-    let (_, np3) = read_sleb128(code, np2)
+    let (_, np) = read_uleb128(buf = code, offset = p + 1)
+    let (_, np2) = read_sleb128(buf = code, offset = np)
+    let (_, np3) = read_sleb128(buf = code, offset = np2)
     np3
   }
   else if (sub >= 26) && (sub <= 31) {
@@ -2092,7 +2100,7 @@ export fn validate_code_body(code: Bytes, start: Int, end_pos: Int) -> Option[St
     if instruction_is_reserved(op) {
       err = Some("reserved opcode")
     } else {
-      let (_, np) = next_instruction(code, pc, end_pos)
+      let (_, np) = next_instruction(code = code, pc = pc, end_pos = end_pos)
       if np < 0 {
         // Either an unknown-to-us opcode or an immediate past the end. The
         // second IS invalid, but this stepper cannot tell them apart, so it
@@ -2150,7 +2158,7 @@ export fn validate_code_body(code: Bytes, start: Int, end_pos: Int) -> Option[St
 /// trade under a contract whose hard half is "never reject what the oracle
 /// accepts": a rule that is only right for core wasm cannot be applied to
 /// modules that are not.
-fn instruction_is_reserved(op: Int) -> Bool {
+fn instruction_is_reserved(_ op: Int) -> Bool {
   op == 0x27
 }
 
@@ -2173,18 +2181,18 @@ fn leb_end_within(bytes: Bytes, offset: Int, end_pos: Int, max_bytes: Int) -> In
 }
 
 fn read_u32_leb_within(bytes: Bytes, offset: Int, end_pos: Int) -> (Int, Int, Bool) {
-  let leb_end = leb_end_within(bytes, offset, end_pos, 5)
+  let leb_end = leb_end_within(bytes = bytes, offset = offset, end_pos = end_pos, max_bytes = 5)
   if leb_end < 0 {
     (0, offset, false)
   } else {
-    let (value, _) = read_uleb128(bytes, offset)
+    let (value, _) = read_uleb128(buf = bytes, offset = offset)
     (value, leb_end, true)
   }
 }
 
 fn validate_export_section(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[String] {
   let end_pos = offset + size
-  let (entry_count, pos0, count_ok) = read_u32_leb_within(wasm_bytes, offset, end_pos)
+  let (entry_count, pos0, count_ok) = read_u32_leb_within(bytes = wasm_bytes, offset = offset, end_pos = end_pos)
   let mut pos = pos0
   let mut i = 0
   let mut err = if count_ok {
@@ -2193,7 +2201,7 @@ fn validate_export_section(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[
     Some("export section has a truncated entry count")
   }
   while (i < entry_count) && (err == None) {
-    let (name_size, name_start, name_ok) = read_u32_leb_within(wasm_bytes, pos, end_pos)
+    let (name_size, name_start, name_ok) = read_u32_leb_within(bytes = wasm_bytes, offset = pos, end_pos = end_pos)
     if !name_ok || (name_size > (end_pos - name_start)) {
       err = Some("export name runs outside the export section")
     } else {
@@ -2203,7 +2211,7 @@ fn validate_export_section(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[
       } else {
         let kind = wasm_bytes[pos]
         pos = pos + 1
-        let (_, next, index_ok) = read_u32_leb_within(wasm_bytes, pos, end_pos)
+        let (_, next, index_ok) = read_u32_leb_within(bytes = wasm_bytes, offset = pos, end_pos = end_pos)
         if kind > 4 {
           err = Some("export has an unknown descriptor kind")
         }
@@ -2237,7 +2245,7 @@ fn skip_valtype_within(bytes: Bytes, offset: Int, end_pos: Int) -> Int {
     if (valtype == 0x63) || (valtype == 0x64) {
       // Concrete heap types use a signed 33-bit LEB, hence at most five
       // bytes. We only need its boundary here; decoding belongs to the parser.
-      leb_end_within(bytes, offset + 1, end_pos, 5)
+      leb_end_within(bytes = bytes, offset = offset + 1, end_pos = end_pos, max_bytes = 5)
     } else {
       offset + 1
     }
@@ -2246,7 +2254,7 @@ fn skip_valtype_within(bytes: Bytes, offset: Int, end_pos: Int) -> Int {
 
 fn validate_code_section(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[String] {
   let end_pos = offset + size
-  let (entry_count, pos0, count_ok) = read_u32_leb_within(wasm_bytes, offset, end_pos)
+  let (entry_count, pos0, count_ok) = read_u32_leb_within(bytes = wasm_bytes, offset = offset, end_pos = end_pos)
   let mut pos = pos0
   let mut i = 0
   let mut err = if count_ok {
@@ -2255,23 +2263,23 @@ fn validate_code_section(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[St
     Some("code section has a truncated function count")
   }
   while (i < entry_count) && (err == None) {
-    let (body_size, body_start, size_ok) = read_u32_leb_within(wasm_bytes, pos, end_pos)
+    let (body_size, body_start, size_ok) = read_u32_leb_within(bytes = wasm_bytes, offset = pos, end_pos = end_pos)
     if !size_ok || (body_size > (end_pos - body_start)) {
       err = Some("function body runs outside the code section")
     } else {
       let body_end = body_start + body_size
-      let (local_count, locals_start, locals_ok) = read_u32_leb_within(wasm_bytes, body_start, body_end)
+      let (local_count, locals_start, locals_ok) = read_u32_leb_within(bytes = wasm_bytes, offset = body_start, end_pos = body_end)
       if !locals_ok {
         err = Some("function body has a truncated local declaration count")
       } else {
         let mut local_pos = locals_start
         let mut local_index = 0
         while (local_index < local_count) && (err == None) {
-          let (_, valtype_start, local_size_ok) = read_u32_leb_within(wasm_bytes, local_pos, body_end)
+          let (_, valtype_start, local_size_ok) = read_u32_leb_within(bytes = wasm_bytes, offset = local_pos, end_pos = body_end)
           if !local_size_ok {
             err = Some("function body has a truncated local declaration")
           } else {
-            let next = skip_valtype_within(wasm_bytes, valtype_start, body_end)
+            let next = skip_valtype_within(bytes = wasm_bytes, offset = valtype_start, end_pos = body_end)
             if next < 0 {
               err = Some("function body has a truncated local valtype")
             } else {
@@ -2281,7 +2289,7 @@ fn validate_code_section(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[St
           local_index = local_index + 1
         }
         if err == None {
-          err = validate_code_body(wasm_bytes, local_pos, body_end)
+          err = validate_code_body(code = wasm_bytes, start = local_pos, end_pos = body_end)
         } else {
           ()
         }
@@ -2311,25 +2319,25 @@ fn validate_code_section(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[St
 /// opcode range. So the check runs only when the walk consumed the whole type
 /// section, which is exactly when the count is known to be exact.
 fn validate_function_type_indices(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[String] {
-  let (type_off, type_size) = find_section(wasm_bytes, 1)
+  let (type_off, type_size) = find_section(bytes = wasm_bytes, section_id = 1)
   if type_off < 0 {
-    let indices = parse_functions(wasm_bytes, offset, size)
+    let indices = parse_functions(bytes = wasm_bytes, offset = offset, size = size)
     if Array::length(indices) > 0 {
       Some("function declares a type index that does not exist")
     } else {
       None
     }
   } else {
-    let (forms, complete) = parse_type_forms_checked(wasm_bytes, type_off, type_size)
+    let (forms, complete) = parse_type_forms_checked(bytes = wasm_bytes, offset = type_off, size = type_size)
     if !complete {
       None
     } else {
       let type_count = Array::length(forms)
-      let indices = parse_functions(wasm_bytes, offset, size)
+      let indices = parse_functions(bytes = wasm_bytes, offset = offset, size = size)
       let mut i = 0
       let mut err = None
       while (i < Array::length(indices)) && (err == None) {
-        if Array::get(indices, i) >= type_count {
+        if Array::get(indices, at = i) >= type_count {
           err = Some("function declares a type index that does not exist")
         } else {
           ()
