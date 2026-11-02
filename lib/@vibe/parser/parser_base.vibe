@@ -31,6 +31,10 @@ export fn peek(tokens: Array[Token], pos: Int) -> Token {
 /// Parse the optional constructor-kind suffix of a type binder. `F` has kind
 /// Type, `F[_]` has kind Type -> Type, and each additional underscore adds one
 /// input. The returned String is the AST contract key, not source spelling.
+/// ADR-0122 (#3728): a binder spelled `Float64` / `Float32` is keyed as
+/// `Double` / `Float`, the spelling every use of it is parsed to
+/// (`float_width_alias`), so `struct Box[Float64] { value: Float64 }` keeps
+/// its field a type parameter.
 export fn parse_type_param_kind(tokens: Array[Token], pos: Int, name: String) -> (String, Int) with Exception {
   // #2141 / #2474: `__Vfp_` is how normalize/desugar_trait_dict re-spells a
   // formal inside a synthesized `__arr_equals__` helper, and the checker's
@@ -74,9 +78,9 @@ export fn parse_type_param_kind(tokens: Array[Token], pos: Int, name: String) ->
           _ => throw("expected '_' in a constructor type parameter, such as F[_]")
         }
       }
-      (type_param_key(name, arity), p)
+      (type_param_key(float_width_alias(name), arity), p)
     },
-    _ => (type_param_key(name, 0), pos)
+    _ => (type_param_key(float_width_alias(name), 0), pos)
   }
 }
 
@@ -1004,7 +1008,7 @@ fn parse_bounded_type_params_with_binder_context(tokens: Array[Token], pos: Int,
         break
       },
       TIdent(name) => {
-        binder_capture_source(context, name, p, p)
+        binder_capture_source(context, float_width_alias(name), p, p)
         let (param_key, after_kind) = parse_type_param_kind(tokens, p + 1, name)
         ArrayBuilder::push(names, param_key)
         p = after_kind
@@ -1367,7 +1371,7 @@ export fn parse_tparam_names_with_binder_context(tokens: Array[Token], pos: Int,
           },
           TIdent(nm) => {
             if depth == 1 && expect_name {
-              binder_capture_source(context, nm, skip, skip)
+              binder_capture_source(context, float_width_alias(nm), skip, skip)
               let (param_key, after_kind) = parse_type_param_kind(tokens, skip + 1, nm)
               ArrayBuilder::push(b, param_key)
               expect_name = false
@@ -1841,13 +1845,13 @@ export fn parse_type_with_source_context(tokens: Array[Token], pos: Int, mode: I
         TLBracket => {
           let (first, n1) = parse_type_with_source_context(tokens, pos + 2, 0, context)
           match peek(tokens, n1) {
-            TRBracket => (TyApp(name, [first]), n1 + 1),
+            TRBracket => (TyApp(float_width_alias(name), [first]), n1 + 1),
             TComma => {
               let b = ArrayBuilder::new()
               ArrayBuilder::push(b, first)
               let (rest, end) = parse_type_list_rest(tokens, n1, b, context)
               let en = expect_tk(tokens, end, "]");
-              (TyApp(name, rest), en)
+              (TyApp(float_width_alias(name), rest), en)
             },
             _ => throw("expected ']' or ',' in type application")
           }
