@@ -1,0 +1,36 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+//# Misc
+
+// #3727: `i32` used to resolve to the 63-bit `Int`. It is refused now in
+// every type position, including the two that never run the unknown-type
+// check (a type alias's body and an effect operation's signature). The
+// refusal must not reach names that DO resolve: `i64` / `u8` .. `u64` /
+// `i16` / `v128` are their own builtin types, and a program may declare a
+// type called `usize`.
+
+test "i32 is refused in annotations, aliases and effect signatures" {
+  assert(check_source_err_contains("fn f(x: i32) -> Int { 1 }", "write `Int`"))
+  assert(check_source_err_contains("type Word = i32\nfn main() -> Int { 0 }", "unknown type `i32` in type alias `Word`"))
+  assert(check_source_err_contains("effect E {\n  Op() -> i32\n}\nfn main() -> Int { 0 }", "unknown type `i32` in operation `E::Op`"))
+  assert(check_source_err_contains("struct i32 { v: Int }\nfn main() -> Int { 0 }", "`i32` is reserved"))
+}
+
+test "the other builtin fixed-width types still resolve in aliases and effects" {
+  assert(check_source_ok("type Word = i64\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("type Byte = u8\ntype Lane = v128\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("effect E {\n  Op(i64) -> u32\n}\nfn main() -> Int { 0 }"))
+}
+
+test "a program's own type spelled like a fixed-width integer is untouched" {
+  assert(check_source_ok("struct usize { value: Int }\ntype Size = usize\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("struct usize { value: Int }\neffect E {\n  Op() -> usize\n}\nfn main() -> Int { 0 }"))
+}
+
+test "an unresolved fixed-width spelling names the edit" {
+  assert(check_source_err_contains("fn f(x: usize) -> Int { 1 }", "write `Int`"))
+}

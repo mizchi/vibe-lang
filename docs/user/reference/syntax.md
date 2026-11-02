@@ -851,8 +851,10 @@ Rules:
 - There is no `i32`: vibe's integer type is `Int`, which is 63-bit. `i32`
   used to be accepted as an alias of `Int`, so code that declared 32 bits got
   63-bit arithmetic (`2147483647 + 1` was `2147483648`); it is now an unknown
-  type whose message names `Int` (#3727). The same hint follows `i64`, `u32`
-  and the other fixed-width spellings.
+  type whose message names `Int` (#3727). The same hint follows the other
+  fixed-width spellings vibe does not define (`i8`, `i128`, `u128`, `isize`,
+  `usize`). `i64`, `u8`..`u64`, `i16` and `v128` are separate builtin types,
+  not spellings of `Int`.
 - Function effects appear after return type: `-> T with Effect`.
 - A type-constructor parameter may declare its arity with underscore slots:
   `F[_]` has one input and `F[_, _]` has two, and those forms are
