@@ -24,7 +24,8 @@
 #      with strings and Ints, an Int outside its WIT width is refused, and the
 #      node runner, which cannot instantiate components, refuses it;
 #   9. `vibe run` from a package's subdirectory links the binary it compiled
-#      against (the compile runs in the project root, the program does not).
+#      against (the compile runs in the project root, the program does not);
+#  10. `vibe bench` links the foreign module into each block's fresh store.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -160,5 +161,12 @@ out="$(cd "$PROJ/sub" && env -u VIBE_WASM_LINK_DIR VIBE_RC=1 VIBE_RUNNER="$VIBER
   "$ROOT_DIR/runtime/vibe" run main.vibex 2>"$WORK/err")" || status=$?
 [ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[subdirectory] run exited $status"; }
 [ "$out" = "r=42" ] || fail "[subdirectory] printed $(printf '%q' "$out"), want r=42"
+
+# 10. `vibe bench` gives each block a fresh instance; the foreign module has
+#     to be linked into that store too, or the artifact cannot instantiate.
+status=0
+vibe "$VIBERUN" bench "$FX/counter_bench.vibe" >"$WORK/out" 2>"$WORK/err" || status=$?
+[ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun] counter_bench exited $status"; }
+grep -q "^bench counter_bench.vibe::foreign add_i32: " "$WORK/out" "$WORK/err" || { cat "$WORK/out" "$WORK/err" >&2; fail "[viberun] counter_bench reported no measurement"; }
 
 echo "[wasm-import] ok (core: viberun + node, range traps, refusals; component: viberun, WIT range refusal, node refusal)"

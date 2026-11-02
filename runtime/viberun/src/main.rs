@@ -1574,7 +1574,7 @@ fn bench(args: Vec<String>) -> Result<i32> {
     // O(N²) concat bench leaving a ~200MB high-water mark) inflated the blocks
     // after it 8-10×. A fresh instance gives every block the same pristine
     // heap; per-block warmup below still pays lazy module init before timing.
-    let make_instance = |linker: &Linker<HostState>| -> Result<(Store<HostState>, Instance)> {
+    let make_instance = |linker: &mut Linker<HostState>| -> Result<(Store<HostState>, Instance)> {
         let mut state = HostState::new(
             vec!["viberun".to_string()],
             MemLimiter::new(store_mem_limits()),
@@ -1588,6 +1588,11 @@ fn bench(args: Vec<String>) -> Result<i32> {
         if profile_dir.is_some() {
             store.set_epoch_deadline(1_000_000_000);
         }
+        // A typed wasm import's module lives in the store, so each block's
+        // fresh store links its own foreign instances (and no block sees
+        // another's writes to them).
+        link_foreign_wasm_modules(linker, &mut store, &module)?;
+        link_component_modules(linker, &mut store, &module)?;
         let instance = linker.instantiate(&mut store, &module)?;
         Ok((store, instance))
     };
@@ -1691,7 +1696,7 @@ fn bench(args: Vec<String>) -> Result<i32> {
         for full in &bench_names {
             let name = full.strip_prefix("__bench_").unwrap_or(full);
             let block_label = format!("{label}::{name}");
-            let (mut store, instance) = make_instance(&linker)?;
+            let (mut store, instance) = make_instance(&mut linker)?;
             let func: TypedFunc<i64, i64> = instance.get_typed_func(&mut store, full)?;
             bench_one(
                 &mut store,
@@ -1729,7 +1734,7 @@ fn bench(args: Vec<String>) -> Result<i32> {
     }
 
     // Fallback (no per-block exports): time the whole `_start`.
-    let (mut store, instance) = make_instance(&linker)?;
+    let (mut store, instance) = make_instance(&mut linker)?;
     let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
     bench_one(
         &mut store,
