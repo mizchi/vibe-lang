@@ -116,6 +116,13 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   pre-commit self-test.
 - `check_import_reservation.vibex` (+ `check_import_reservation_test.sh`) — every user-callable
   capability spelling reserves the host import it lowers onto (#2905).
+- `check_vibex_grants.vibex` (+ `check_vibex_grants_test.sh`) — every
+  `scripts/**/*.vibex` `allows` row is least authority (#3676): each label is
+  needed, a capability is not granted where some of its operations are all a
+  script uses, and dropping any label is refused at check time with the edit to
+  make. The declarations come from `vibe symbols`. A grant spells its members:
+  an effectset label is refused, since the compiler names a set's members,
+  never the set.
 - `lint_architecture_debt.sh` (+ `architecture_debt_{rules.tsv,allowlist.txt}`),
   `lint_tracked_experiment_names.sh`
 - `verify_rc.sh`, `rc_corpus_parity.sh`, `rc_cutover_readiness.sh`
