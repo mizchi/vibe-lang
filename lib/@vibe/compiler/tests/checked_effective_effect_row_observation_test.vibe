@@ -58,7 +58,7 @@ test "effective row observation keeps raw source options and canonicalizes only 
   assert(String::contains(snapshot, needle = "S14:Source, Source"))
   assert(String::contains(snapshot, needle = "S0:"))
   assert(String::contains(snapshot, needle = canonical_checked_effect_row_snapshot(s = SubstEmpty, effect = Some("Error, Fs"))))
-  let no_source_row = checked_with([
+  let no_source_row = checked_with(stmts = [
     SLet(false, false, "f", Some(TyFn(array_empty(), TyUnit, Some("Source, Source"))), direct_fn(row = None, body = EUnit))
   ], env = EnvFlat([
     ("f", env_value_binding(CtFn(array_empty(), CtUnit, Some("Error, Fs"))))
@@ -69,7 +69,7 @@ test "effective row observation keeps raw source options and canonicalizes only 
 }
 
 test "effective row observation resolves transitive effect variables" {
-  let checked = checked_with([
+  let checked = checked_with(stmts = [
     SLet(false, false, "f", None, direct_fn(row = Some("e"), body = EUnit))
   ], env = EnvFlat([
     ("f", env_value_binding(CtFn(array_empty(), CtUnit, Some("e"))))
@@ -79,7 +79,7 @@ test "effective row observation resolves transitive effect variables" {
 }
 
 test "effective row observation selects active root shadows in source order and locates roots" {
-  let checked = checked_with([
+  let checked = checked_with(stmts = [
     SLet(false, false, "a", None, direct_fn(row = Some("A"), body = EUnit)),
     SLet(false, false, "f", None, direct_fn(row = Some("Old"), body = EUnit)),
     SLet(false, false, "f", None, direct_fn(row = Some("New"), body = EUnit))
@@ -88,7 +88,7 @@ test "effective row observation selects active root shadows in source order and 
   assert(String::starts_with(snapshot, prefix = "vibe-checked-effective-effect-rows-observation:v1\n2:0:1:a"))
   assert(String::contains(snapshot, needle = "2:1:f"))
   assert(!String::contains(snapshot, needle = "S3:Old"))
-  let shifted = checked_with([
+  let shifted = checked_with(stmts = [
     SExpr(EUnit),
     SLet(false, false, "a", None, direct_fn(row = Some("A"), body = EUnit)),
     SLet(false, false, "f", None, direct_fn(row = Some("Old"), body = EUnit)),
@@ -98,7 +98,7 @@ test "effective row observation selects active root shadows in source order and 
 }
 
 test "effective row observation excludes non-root and mutable candidates and fails closed" {
-  let checked = checked_with([
+  let checked = checked_with(stmts = [
     SLetMut("mut_fn", None, direct_fn(row = Some("Mut"), body = EUnit)),
     SModule(false, "Nested", [
       SLet(false, false, "hidden", None, direct_fn(row = Some("Hidden"), body = EUnit))
@@ -112,7 +112,7 @@ test "effective row observation excludes non-root and mutable candidates and fai
   assert(!String::contains(snapshot, needle = "Hidden"))
   assert(!String::contains(snapshot, needle = "NestedFn"))
   // An active selected owner without an authoritative final binding is rejected.
-  let malformed = checked_with([
+  let malformed = checked_with(stmts = [
     SLet(false, false, "missing", None, direct_fn(row = None, body = EUnit))
   ], env = EnvEmpty, subst = SubstEmpty)
   match observed_snapshot(malformed) {
@@ -120,7 +120,7 @@ test "effective row observation excludes non-root and mutable candidates and fai
     Some(_) => assert(false)
   }
   // EnvFlat is an association list: duplicate names select the first match.
-  let duplicate_flat = checked_with([
+  let duplicate_flat = checked_with(stmts = [
     SLet(false, false, "f", None, direct_fn(row = None, body = EUnit))
   ], env = EnvFlat([
     ("f", env_value_binding(CtFn(array_empty(), CtUnit, Some("First")))),
@@ -147,13 +147,13 @@ test "effectset expansion has identical direct-function association with importe
 }
 
 test "effective row observation skips any earlier root binding shadowed by final non-function root" {
-  let later_let = checked_with([
+  let later_let = checked_with(stmts = [
     SLet(false, false, "f", None, direct_fn(row = Some("Old"), body = EUnit)),
     SLet(false, false, "f", None, EInt(1))
   ], env = EnvFlat([("f", env_value_binding(CtInt))]), subst = SubstEmpty)
   let later_let_snapshot = assert_some_text(observed_snapshot(later_let))
   assert(later_let_snapshot == "vibe-checked-effective-effect-rows-observation:v1\n0:")
-  let later_mut = checked_with([
+  let later_mut = checked_with(stmts = [
     SLet(false, false, "f", None, direct_fn(row = Some("Old"), body = EUnit)),
     SLetMut("f", None, EInt(1))
   ], env = EnvFlat([("f", env_value_binding(CtInt))]), subst = SubstEmpty)
@@ -207,12 +207,12 @@ test "effective row observation accepts production generalized direct functions"
 }
 
 test "effective row observation resolves CtVar and effect chains without accepting cycles" {
-  let via_type_var = checked_with([
+  let via_type_var = checked_with(stmts = [
     SLet(false, false, "f", None, direct_fn(row = Some("e"), body = EUnit))
   ], env = EnvFlat([("f", env_value_binding(CtVar(1)))]), subst = SubstBind(1, CtVar(2), SubstBind(2, CtFn(array_empty(), CtUnit, Some("e")), SubstEffBind("e", "x", SubstEffBind("x", "Fs", SubstEmpty)))))
   let via_type_var_snapshot = assert_some_text(observed_snapshot(via_type_var))
   assert(String::contains(via_type_var_snapshot, needle = canonical_checked_effect_row_snapshot(s = SubstEmpty, effect = Some("Fs"))))
-  let cyclic_effect = checked_with([
+  let cyclic_effect = checked_with(stmts = [
     SLet(false, false, "f", None, direct_fn(row = Some("e"), body = EUnit))
   ], env = EnvFlat([
     ("f", env_value_binding(CtFn(array_empty(), CtUnit, Some("e"))))
