@@ -247,6 +247,25 @@ export fn float_width_alias(name: String) -> String {
   }
 }
 
+/// ADR-0122 (#3728): the width-named float conversions, as members of the
+/// already-canonicalized namespace (`Float64::to_float32` arrives here as
+/// `Double` / `to_float32`). Canonicalized at the same point as the namespace,
+/// so every pass that recognizes a conversion by name (the rowless-lane Float
+/// guard, the f32 rounding rewrite, ...) sees the one spelling it knows.
+fn float_width_conversion(space: String, member: String) -> String {
+  if space == "Int" && member == "to_float64" {
+    "to_double"
+  } else if space == "Int" && member == "to_float32" {
+    "to_float"
+  } else if space == "Double" && member == "to_float32" {
+    "to_float"
+  } else if space == "Float" && member == "to_float64" {
+    "to_double"
+  } else {
+    member
+  }
+}
+
 /// The canonical shared String for `ns ++ "::" ++ member`, without building
 /// the concatenation on a hit. This is the parser's qualified-name shape
 /// (`Array::push`, `Iterator::map`, ...): it used to allocate a fresh concat
@@ -255,7 +274,8 @@ export fn float_width_alias(name: String) -> String {
 /// (`float_width_alias`).
 export fn intern_qualified(ns: String, member: String) -> String {
   let space = float_width_alias(name = ns)
-  if String::length(space) == 0 && String::length(member) == 0 {
+  let leaf = float_width_conversion(space = space, member = member)
+  if String::length(space) == 0 && String::length(leaf) == 0 {
     ""
   } else {
     intern_ensure()
@@ -264,10 +284,10 @@ export fn intern_qualified(ns: String, member: String) -> String {
     let mut h = fnv_slice(s = space, start = 0, end = nlen)
     h = fnv_step(h = h, b = ':')
     h = fnv_step(h = h, b = ':')
-    let mlen = String::length(member)
+    let mlen = String::length(leaf)
     let mut mi = 0
     while mi < mlen {
-      h = fnv_step(h = h, b = String::char_code_at(member, at = mi))
+      h = fnv_step(h = h, b = String::char_code_at(leaf, at = mi))
       mi = mi + 1
     }
     let cap = Array::length(intern_slots)
@@ -277,12 +297,12 @@ export fn intern_qualified(ns: String, member: String) -> String {
     while !done {
       let k = Array::get(intern_slots, at = idx)
       if String::length(k) == 0 {
-        let fresh = String::concat(space, String::concat("::", member))
+        let fresh = String::concat(space, String::concat("::", leaf))
         Array::set(intern_slots, at = idx, value = fresh)
         Array::set(intern_count_cell, at = 0, value = Array::get(intern_count_cell, at = 0) + 1)
         out = fresh
         done = true
-      } else if intern_qualified_matches(key = k, ns = space, member = member) {
+      } else if intern_qualified_matches(key = k, ns = space, member = leaf) {
         out = k
         done = true
       } else {

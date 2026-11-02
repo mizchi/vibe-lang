@@ -104,6 +104,14 @@ test "a linked entry with no checked rows still refuses a Float" {
   inspect(linked_lane("/tmp/vibe_float_rowless_linked", "fn scale(x: Float) -> Float {\n  x * 2.0f\n}\n\nexport fn answer() -> Int {\n  1\n}\n") == refusal(), content = "true")
 }
 
+test "a linked entry refuses a Float made only through a width-named conversion" {
+  // ADR-0122 (#3728): `Int::to_float32` / `Float64::to_float32` make a Float
+  // as surely as `Int::to_float`; the guard must see them, or the sum below
+  // is computed in f64 (16777217) instead of rounding to the f32 16777216.
+  inspect(linked_lane("/tmp/vibe_float_rowless_linked_width", "export fn answer() -> Int {\n  let a = Int::to_float32(16777216)\n  let b = Int::to_float32(1)\n  let _ = a + b\n  1\n}\n") == refusal(), content = "true")
+  inspect(linked_lane("/tmp/vibe_float_rowless_linked_width64", "export fn answer() -> Int {\n  let a = Float64::to_float32(0.1)\n  let _ = a + a\n  1\n}\n") == refusal(), content = "true")
+}
+
 test "a program without a Float still compiles on every lane" {
   inspect(library_lane("/tmp/vibe_float_rowless_lib_ok", "export fn half(x: Double) -> Double {\n  x / 2.0\n}\n"), content = "wasm")
   inspect(entry_lane("/tmp/vibe_float_rowless_entry_ok", "export fn answer() -> Int {\n  1 + 2\n}\n"), content = "wasm")
