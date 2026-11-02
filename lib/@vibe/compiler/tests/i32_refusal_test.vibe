@@ -6,18 +6,34 @@ import ./checker_parity_test_support.vibe {
 
 //# Misc
 
-// #3727: `i32` used to resolve to the 63-bit `Int`. It is refused now in
-// every type position, including the two that never run the unknown-type
-// check (a type alias's body and an effect operation's signature). The
-// refusal must not reach names that DO resolve: `i64` / `u8` .. `u64` /
-// `i16` / `v128` are their own builtin types, and a program may declare a
-// type called `usize`.
+// #3727: `i32` used to resolve to the 63-bit `Int`. It is no type now, and
+// no declaration or type parameter may take the name, so the parser refuses
+// it in every type position -- including those the checker's unknown-type
+// check never visits (an alias body, an effect operation, a trait method, a
+// row argument). The refusal must not reach names that DO resolve: `i64` /
+// `u8` .. `u64` / `i16` / `v128` are their own builtin types, and a program
+// may declare a type called `usize`.
 
-test "i32 is refused in annotations, aliases and effect signatures" {
-  assert(check_source_err_contains("fn f(x: i32) -> Int { 1 }", "write `Int`"))
-  assert(check_source_err_contains("type Word = i32\nfn main() -> Int { 0 }", "unknown type `i32` in type alias `Word`"))
-  assert(check_source_err_contains("effect E {\n  Op() -> i32\n}\nfn main() -> Int { 0 }", "unknown type `i32` in operation `E::Op`"))
+fn i32_edit() -> String {
+  "unknown type `i32` -- write `Int`"
+}
+
+test "i32 is refused in every type position" {
+  assert(check_source_err_contains("fn f(x: i32) -> Int { 1 }", i32_edit()))
+  assert(check_source_err_contains("type Word = i32\nfn main() -> Int { 0 }", i32_edit()))
+  assert(check_source_err_contains("effect E {\n  Op() -> i32\n}\nfn main() -> Int { 0 }", i32_edit()))
+  // A trait method's signature: the checker relaxes an unresolved name there
+  // to `CtUnknown`, which would let a wrong return type check.
+  assert(check_source_err_contains("trait Produce {\n  produce(Self) -> i32\n}\nfn main() -> Int { 0 }", i32_edit()))
+  assert(check_source_err_contains("type Word = i32[Int]\nfn main() -> Int { 0 }", i32_edit()))
+  assert(check_source_err_contains("struct Box[T] { value: T }\ntype Word = Box[i32]\nfn main() -> Int { 0 }", i32_edit()))
+  assert(check_source_err_contains("effect Ask[T] {\n  Get() -> T\n}\nfn f(g: () -> Int with Ask[i32]) -> Int { 0 }\nfn main() -> Int { 0 }", i32_edit()))
+}
+
+test "i32 is reserved as a declaration and a type-parameter name" {
   assert(check_source_err_contains("struct i32 { v: Int }\nfn main() -> Int { 0 }", "`i32` is reserved"))
+  assert(check_source_err_contains("struct i32[T] { value: T }\nfn main() -> Int { 0 }", "`i32` is reserved"))
+  assert(check_source_err_contains("type Alias[i32] = Int\nfn main() -> Int { 0 }", "rename this type parameter: `i32` is reserved"))
 }
 
 test "the other builtin fixed-width types still resolve in aliases and effects" {
@@ -29,21 +45,6 @@ test "the other builtin fixed-width types still resolve in aliases and effects" 
 test "a program's own type spelled like a fixed-width integer is untouched" {
   assert(check_source_ok("struct usize { value: Int }\ntype Size = usize\nfn main() -> Int { 0 }"))
   assert(check_source_ok("struct usize { value: Int }\neffect E {\n  Op() -> usize\n}\nfn main() -> Int { 0 }"))
-}
-
-test "i32 is reserved at every arity, so no declared type can be named by it" {
-  // `struct i32[T]` used to be legal (only the bare spelling was reserved),
-  // which left `i32[Int]` and a bare `i32` in a constructor-argument slot
-  // ambiguous between the removed alias and a program's own type.
-  assert(check_source_err_contains("struct i32[T] { value: T }\nfn main() -> Int { 0 }", "`i32` is reserved"))
-  assert(check_source_err_contains("type Word = i32[Int]\nfn main() -> Int { 0 }", "unknown type `i32` in type alias `Word`"))
-  // ... and a bare `i32` inside an argument list is refused.
-  assert(check_source_err_contains("struct Box[T] { value: T }\ntype Word = Box[i32]\nfn main() -> Int { 0 }", "unknown type `i32` in type alias `Word`"))
-}
-
-test "a constructor parameter spelled i32 is the alias's own formal" {
-  // `shadow` holds binder keys; a kinded `i32[_]` is there encoded.
-  assert(check_source_ok("struct Holder[F[_]] { value: F[Int] }\ntype Alias[i32[_]] = Holder[i32]\nfn main() -> Int { 0 }"))
 }
 
 test "an unresolved fixed-width spelling names the edit" {
