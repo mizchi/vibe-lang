@@ -59,7 +59,11 @@ NODE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh"
 LANE_RC="${LANE_RC:-1}"
 vibe() { # <runner> <vibe args...>
   local runner="$1"; shift
-  VIBE_RC="$LANE_RC" VIBE_RUNNER="$runner" VIBE_CLI_WASM="$CLI" VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  # RUST_BACKTRACE / VIBE_RUNNER_BACKTRACE change how viberun prints a trap,
+  # and a dev shell often sets one: unset, so the refusal messages asserted
+  # below are the ones CI sees (#2252).
+  env -u RUST_BACKTRACE -u VIBE_RUNNER_BACKTRACE \
+    VIBE_RC="$LANE_RC" VIBE_RUNNER="$runner" VIBE_CLI_WASM="$CLI" VIBE_PREOPEN_DIR="$ROOT_DIR" \
     VIBE_BUILD_DIR="$WORK/build" "$ROOT_DIR/runtime/vibe" "$@"
 }
 
@@ -127,7 +131,7 @@ status=0
 out="$(vibe "$VIBERUN" run "$FX/trap_component_s32.vibex" 2>"$WORK/err")" || status=$?
 [ "$status" != 0 ] || fail "[viberun] trap_component_s32 exited 0 (printed $(printf '%q' "$out"))"
 [ "$out" = "before" ] || fail "[viberun] trap_component_s32 printed $(printf '%q' "$out"); want only 'before'"
-grep -q "add: 2147483648 does not fit the component's S32 parameter" "$WORK/err" || { cat "$WORK/err" >&2; fail "[viberun] the s32 refusal does not say why"; }
+grep -q "viberun: vibe wasm import: add: 2147483648 does not fit the component's S32 parameter" "$WORK/err" || { cat "$WORK/err" >&2; fail "[viberun] the s32 refusal does not say why"; }
 # 8. The node runner cannot instantiate a component, and says so instead of
 #    answering every call with its fallback stub.
 status=0

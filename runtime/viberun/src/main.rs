@@ -1331,6 +1331,11 @@ fn run_core(
             if let Some(refusal) = withheld_capability_refusal(&e) {
                 eprintln!("viberun: {refusal}");
             }
+            // The same rescue for a typed wasm import's bridge (an Int that
+            // does not fit the component's WIT width, ...).
+            if let Some(refusal) = foreign_call_refusal(&e) {
+                eprintln!("viberun: {refusal}");
+            }
             // #644 / #2199: a module with a non-empty `vibe.linemap`
             // (production trap provenance, and debug-break) that traps
             // mid-run -- not via an explicit `--break` pause -- still

@@ -21,6 +21,23 @@ use wasmtime::{bail, format_err, Caller, Extern, ExternType, Linker, Memory, Mod
 
 pub(super) const FOREIGN_PREFIX: &str = "vibe:wasm:";
 
+/// The start of every error a foreign-call bridge raises from inside a call
+/// (an Int that does not fit its WIT width, an out-of-range address, ...).
+/// wasmtime wraps a host error as "error while executing at wasm backtrace",
+/// and viberun prints the chain only under a debug variable, so main.rs looks
+/// for this prefix in the chain and prints the reason -- the same narrow
+/// rescue as CAPABILITY_WITHHELD_PREFIX (#2825). Measured: without it, CI
+/// (no RUST_BACKTRACE) showed the backtrace alone.
+pub(super) const FOREIGN_CALL_PREFIX: &str = "vibe wasm import: ";
+
+/// The bridge's own reason for a trap, when there is one in the chain.
+pub(super) fn foreign_call_refusal(error: &wasmtime::Error) -> Option<String> {
+    error
+        .chain()
+        .map(|cause| cause.to_string())
+        .find(|text| text.starts_with(FOREIGN_CALL_PREFIX))
+}
+
 fn foreign_module_names(module: &Module) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for import in module.imports() {
@@ -46,7 +63,7 @@ fn foreign_path(name: &str) -> PathBuf {
 fn check_addr(op: &str, addr: i32, size: usize) -> Result<usize> {
     let a = addr as u32 as usize;
     if a >= size {
-        bail!("{op}: address {a} is outside the foreign memory ({size} bytes)");
+        bail!("{FOREIGN_CALL_PREFIX}{op}: address {a} is outside the foreign memory ({size} bytes)");
     }
     Ok(a)
 }
@@ -153,7 +170,7 @@ pub(super) const COMPONENT_PREFIX: &str = "vibe:component:";
 
 fn int_to_cval(field: &str, ty: &CType, v: i64) -> Result<CVal> {
     let out_of_range = || {
-        format_err!("{field}: {v} does not fit the component's {ty:?} parameter")
+        format_err!("{FOREIGN_CALL_PREFIX}{field}: {v} does not fit the component's {ty:?} parameter")
     };
     Ok(match ty {
         CType::S8 => CVal::S8(i8::try_from(v).map_err(|_| out_of_range())?),
@@ -164,7 +181,7 @@ fn int_to_cval(field: &str, ty: &CType, v: i64) -> Result<CVal> {
         CType::U32 => CVal::U32(u32::try_from(v).map_err(|_| out_of_range())?),
         CType::S64 => CVal::S64(v),
         CType::U64 => CVal::U64(u64::try_from(v).map_err(|_| out_of_range())?),
-        other => bail!("{field}: parameter type {other:?} is not bridged"),
+        other => bail!("{FOREIGN_CALL_PREFIX}{field}: parameter type {other:?} is not bridged"),
     })
 }
 
@@ -180,12 +197,12 @@ fn cval_to_int(field: &str, v: &CVal) -> Result<i64> {
         CVal::U32(x) => *x as i128,
         CVal::S64(x) => *x as i128,
         CVal::U64(x) => *x as i128,
-        other => bail!("{field}: result {other:?} is not bridged"),
+        other => bail!("{FOREIGN_CALL_PREFIX}{field}: result {other:?} is not bridged"),
     };
     let min = -(1i128 << 62);
     let max = (1i128 << 62) - 1;
     if wide < min || wide > max {
-        bail!("{field}: result {wide} does not fit a 63-bit Int");
+        bail!("{FOREIGN_CALL_PREFIX}{field}: result {wide} does not fit a 63-bit Int");
     }
     Ok(wide as i64)
 }
@@ -267,7 +284,7 @@ pub(super) fn link_component_modules(
                             CType::String => {
                                 let bytes = vibe_read_packed_bytes(&mut caller, raw)?;
                                 CVal::String(String::from_utf8(bytes).map_err(|_| {
-                                    format_err!("{label}: argument {} is not valid UTF-8, which a component string must be", i + 1)
+                                    format_err!("{FOREIGN_CALL_PREFIX}{label}: argument {} is not valid UTF-8, which a component string must be", i + 1)
                                 })?)
                             }
                             other => int_to_cval(&label, other, raw)?,

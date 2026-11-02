@@ -31,24 +31,26 @@ test "a string round-trips through a foreign memory" {
     Array::get(mem, a)
   }
   let p = write_cstring("(check-sat)", alloc, store)
-  inspect(p, content="8")
-  inspect(Array::get(mem, 8 + 11), content="0")
-  inspect(read_cstring(p, load), content="(check-sat)")
+  inspect(p, content = "8")
+  inspect(Array::get(mem, 8 + 11), content = "0")
+  inspect(read_cstring(p, load), content = "(check-sat)")
 }
 
 test "a NUL byte is refused instead of truncating" {
+  // Built with from_byte rather than a `\u{0}` escape: the formatter emits
+  // unparsable output for a `\u{..}` string argument followed by a lambda
+  // argument, and refuses to format the file.
+  let with_nul = String::concat("a", String::concat(String::from_byte(0), "b"))
   let (mem, _) = fake_memory()
   let r = handle {
-    let _ = write_cstring("a\u{0}b", (n: Int) -> Int {
+    let _ = write_cstring(with_nul, (n: Int) -> Int {
       8
     }, (a: Int, v: Int) -> Unit {
       Array::set(mem, a, v)
     })
     "written"
-  } with {
-    Exception::Throw(m) => m
-  }
-  inspect(r, content="write_cstring: byte 1 is NUL, which a C string cannot hold")
+  } with { Exception::Throw(m) => m }
+  inspect(r, content = "write_cstring: byte 1 is NUL, which a C string cannot hold")
 }
 
 test "a null pointer is refused" {
@@ -56,8 +58,6 @@ test "a null pointer is refused" {
     read_cstring(0, (a: Int) -> Int {
       0
     })
-  } with {
-    Exception::Throw(m) => m
-  }
-  inspect(r, content="read_cstring: null pointer")
+  } with { Exception::Throw(m) => m }
+  inspect(r, content = "read_cstring: null pointer")
 }
