@@ -1,0 +1,63 @@
+import @vibe/compiler/runtime {
+  db_new, db_parse_count, db_set_source, db_typecheck, db_typecheck_count
+}
+
+test "memory walk counts survive a warm check and dependency edit" {
+  let db = db_set_source(db_set_source(db_new(), "counter/dep.vibe", "export let value = 1"), "counter/main.vibe", "import ./dep.vibe { value }\nlet answer = value")
+  let cold = db_typecheck(db, "counter/main.vibe")
+  inspect(db_parse_count(cold), content = "4")
+  inspect(db_typecheck_count(cold), content = "2")
+  let warm = db_typecheck(cold, "counter/main.vibe")
+  inspect(db_parse_count(warm), content = "4")
+  inspect(db_typecheck_count(warm), content = "2")
+  let changed = db_typecheck(db_set_source(warm, "counter/dep.vibe", "export let value = \"changed\""), "counter/main.vibe")
+  inspect(db_parse_count(changed), content = "7")
+  inspect(db_typecheck_count(changed), content = "4")
+}
+
+import @vibe/compiler/runtime {
+  db_program_source
+}
+import @vibe/checker/engine {
+  engine_typecheck_fs_build_fingerprint
+}
+import @vibe/compiler/checker {
+  typing_semantics_seed
+}
+
+test "memory directory imports and reexports use the production fingerprint" {
+  let dep = "virtual/cache/pkg/dep.vibe"
+  let facade = "virtual/cache/pkg/index.vibe"
+  let root = "virtual/cache/main.vibe"
+  let dep_text = "export let value = 1\n"
+  let facade_text = "export ./dep.vibe { value }\n"
+  let root_text = "import ./pkg { value }\nexport let answer = value\n"
+  let db = db_set_source(db_set_source(db_set_source(db_new(), dep, dep_text), facade, facade_text), root, root_text)
+  let (_, fingerprint, checked) = db_program_source(db, root)
+  let seed = typing_semantics_seed()
+  let dep_fp = engine_typecheck_fs_build_fingerprint(dep, dep_text, [], seed)
+  let facade_fp = engine_typecheck_fs_build_fingerprint(facade, facade_text, [
+    (dep, dep_fp)
+  ], seed)
+  let expected = engine_typecheck_fs_build_fingerprint(root, root_text, [
+    (facade, facade_fp)
+  ], seed)
+  assert(fingerprint == expected)
+  inspect(db_typecheck_count(checked), content = "3")
+  inspect(db_parse_count(checked), content = "6")
+  let warm = db_typecheck(checked, root)
+  inspect(db_typecheck_count(warm), content = "3")
+  inspect(db_parse_count(warm), content = "6")
+}
+
+test "memory import cycle is refused before checking any module" {
+  let db = db_set_source(db_set_source(db_new(), "cycle/a.vibe", "import ./b.vibe { y }\nexport let x = 1"), "cycle/b.vibe", "import ./a.vibe { x }\nexport let y = 2")
+  let message = handle {
+    db_typecheck(db, "cycle/a.vibe")
+    "accepted"
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(message, "import cycle"))
+  assert(String::contains(message, "cycle/a.vibe"))
+  assert(String::contains(message, "cycle/b.vibe"))
+  inspect(db_typecheck_count(db), content = "0")
+}

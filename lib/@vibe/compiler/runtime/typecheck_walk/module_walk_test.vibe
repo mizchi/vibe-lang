@@ -1,0 +1,142 @@
+import ./module_walk.vibe {
+  ModuleWalk, run_module_typecheck_walk
+}
+import @vibe/compiler/incremental {
+  ripple_new
+}
+
+// A provider with no Fs/Env authority records the publication boundary. A step
+// refuses if any declared dependency has not already published a fingerprint.
+fn mock_walk(edges: Array[(String, Array[String])], bad: Array[String], collect: Bool) -> (String, Array[String], Array[String], Array[String], Bool, Int) {
+  let steps: Array[String] = []
+  let published: Array[String] = []
+  let failed: Array[String] = []
+  let completed = [false]
+  let count = [0]
+  let answer = handle {
+    let fp = handle {
+      let initial = ModuleWalkState::{
+        rdb: ripple_new(),
+        env_cache: [],
+        dep_sources: [],
+        parse_count: 0
+      }
+      run_module_typecheck_walk(edges, [], initial, "root.vibe", collect)
+    } with { ModuleWalk::Planned(_, _, _) => resume(()); ModuleWalk::Visit(n) => {
+      let order: Array[Int] = []
+      let mut i = 0
+      while i < n {
+        Array::push(order, i); i = i + 1
+      }
+      resume(order)
+    }; ModuleWalk::Step(fps, current, path) => {
+      Array::push(steps, path)
+      let mut ready = true
+      for entry in edges {
+        if entry.0 == path {
+          for dep in entry.1 {
+            ready = ready && Array::any(fps, (known) -> known.0 == dep)
+          }
+        } else ()
+      }
+      if !ready {
+        resume(("", current, Some("step ran before its dependency")))
+      } else if Array::any(bad, (p) -> p == path) {
+        resume(("", current, Some("bad: " + path)))
+      } else {
+        resume(("fp:" + path, ModuleWalkState::{
+          rdb: current.rdb,
+          env_cache: current.env_cache,
+          dep_sources: current.dep_sources,
+          parse_count: current.parse_count + 1
+        }, None))
+      }
+    }; ModuleWalk::Published(path, _, state, _) => {
+      Array::push(published, path)
+      Array::set(count, 0, state.parse_count)
+      resume(())
+    }; ModuleWalk::Failed(path) => {
+      Array::push(failed, path); resume(())
+    }; ModuleWalk::Complete => {
+      Array::set(completed, 0, true); resume(())
+    }; ModuleWalk::Finish(state, _) => {
+      Array::set(count, 0, state.parse_count)
+      resume(None)
+    } }
+    fp
+  } with { Exception::Throw(message) => message }
+  (answer, steps, published, failed, Array::get(completed, 0), Array::get(count, 0))
+}
+
+test "shared walk steps a dependency diamond once, before its importers" {
+  let (answer, steps, published, failed, complete, count) = mock_walk([
+    ("root.vibe", ["left.vibe", "right.vibe"]),
+    ("left.vibe", ["dep.vibe"]),
+    ("right.vibe", ["dep.vibe"]),
+    ("dep.vibe", [])
+  ], [], false)
+  inspect(answer, content = "fp:root.vibe")
+  inspect(Array::length(steps), content = "4")
+  inspect(Array::get(steps, 0), content = "dep.vibe")
+  inspect(Array::get(published, 3), content = "root.vibe")
+  inspect(Array::length(failed), content = "0")
+  inspect(complete, content = "true")
+  inspect(count, content = "4")
+}
+
+test "shared walk collects independent failures and blocks their importer" {
+  let (answer, steps, published, failed, complete, count) = mock_walk([
+    ("root.vibe", ["bad.vibe", "good.vibe"]),
+    ("bad.vibe", []),
+    ("good.vibe", [])
+  ], ["bad.vibe"], true)
+  inspect(answer, content = "bad: bad.vibe")
+  inspect(Array::length(steps), content = "2")
+  inspect(Array::length(published), content = "1")
+  inspect(Array::get(published, 0), content = "good.vibe")
+  inspect(Array::length(failed), content = "2")
+  inspect(complete, content = "true")
+  inspect(count, content = "1")
+}
+
+test "shared walk fail-fast stops before another independent module" {
+  let (answer, steps, published, _, complete, _) = mock_walk([
+    ("root.vibe", ["bad.vibe", "good.vibe"]),
+    ("bad.vibe", []),
+    ("good.vibe", [])
+  ], ["bad.vibe"], false)
+  inspect(answer, content = "bad: bad.vibe")
+  inspect(Array::length(steps), content = "1")
+  inspect(Array::length(published), content = "0")
+  inspect(complete, content = "false")
+}
+
+test "shared walk refuses a cycle before a provider runs" {
+  let (answer, steps, published, _, complete, _) = mock_walk([
+    ("root.vibe", ["dep.vibe"]),
+    ("dep.vibe", ["root.vibe"])
+  ], [], false)
+  inspect(String::contains(answer, "import cycle"), content = "true")
+  inspect(Array::length(steps), content = "0")
+  inspect(Array::length(published), content = "0")
+  inspect(complete, content = "false")
+}
+
+import ./module_walk.vibe {
+  cached_module_dependencies
+}
+import @vibe/compiler/incremental {
+  ripple_record_eval
+}
+
+test "dependency reuse requires both the exact source stamp and recorded edges" {
+  let db = ripple_new()
+  assert(cached_module_dependencies(db, [("a.vibe", "text")], "a.vibe", "text") is None)
+  let db = ripple_record_eval(db, "a.vibe", "fp", ["dep.vibe"])
+  assert(cached_module_dependencies(db, [], "a.vibe", "text") is None)
+  assert(cached_module_dependencies(db, [("a.vibe", "old")], "a.vibe", "text") is None)
+  match cached_module_dependencies(db, [("a.vibe", "text")], "a.vibe", "text") {
+    Some(deps) => inspect(String::join(deps, ","), content = "dep.vibe"),
+    None => assert(false)
+  }
+}
