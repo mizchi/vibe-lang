@@ -3399,7 +3399,7 @@ same name are **both** withheld.
 | no result | `Unit` | |
 | `f32` / `f64` / `v128` / references / multiple results | — | not offered yet (a `Double` has no inline-wasm boundary) |
 
-A module with a memory (defined or imported) also gets
+A module whose memory a runner can reach (exported, or imported) also gets
 `wasm_memory_load_u8(addr) -> Int`, `wasm_memory_store_u8(addr, value)` and
 `wasm_memory_size() -> Int`. The foreign memory is not the program's; the
 runner serves these, which is how a binding moves strings across (see
@@ -3426,7 +3426,7 @@ module or component that itself has imports is refused with the list of what
 it needs — nothing provides another module's host imports yet. That is why
 `lib/@vibex/z3` (the npm z3-solver build, an emscripten module that imports
 its JS runtime) type-checks and builds against the real `z3.wasm` but does
-not run: `scripts/test_z3_binding.sh` asserts exactly that.
+not run: `scripts/test_z3_binding_gate.sh` asserts exactly that.
 
 **Tree shaking.** A `vibe build` / `vibe run` artifact imports only the
 foreign functions the program reaches: the late DCE drops the unused binding
@@ -3435,7 +3435,7 @@ of z3.wasm's functions imports those ten, not all 853. A `vibe test`
 artifact (no entry) still compiles, and imports, every offered function.
 
 Linear backend only (the binding is inline wasm). Fixtures:
-`fixtures/wasm_import/`, gate: `scripts/test_wasm_import.sh`.
+`fixtures/wasm_import/`, gate: `scripts/test_wasm_import_gate.sh`.
 
 ## RC Debug Mode (`VIBE_RC=shadow`)
 

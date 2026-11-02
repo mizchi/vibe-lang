@@ -8,7 +8,7 @@
 #                              wasm-tools component embed / new)
 #
 # --check rebuilds into a scratch directory and fails when a committed binary
-# differs, which is how scripts/test_wasm_import.sh keeps them honest.
+# differs, which is how scripts/test_wasm_import_gate.sh keeps them honest.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

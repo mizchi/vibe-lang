@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 
-const { createHostRuntime } = require("./wasm_vibe_host_runtime.js");
-const { linkForeignWasmModules } = require("./wasm_foreign_link.js");
+const { createHostRuntime, linkForeignWasmModules } = require("./wasm_vibe_host_runtime.js");
 const host = createHostRuntime();
 const {
   GuestExit,

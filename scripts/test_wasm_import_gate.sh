@@ -2,7 +2,7 @@
 # Typed wasm imports (`import ./x.wasm { .. }`): the binding the compiler
 # synthesizes from a core module or a component, linked and run.
 #
-#   bash scripts/test_wasm_import.sh <stage2.wasm>
+#   bash scripts/test_wasm_import_gate.sh <stage2.wasm>
 #
 # The compiler is an argument because the committed seed predates the
 # feature; the early compiler gate passes this checkout's stage2.
@@ -22,14 +22,22 @@
 #      `vibe check` (err_not_offered.vibe);
 #   6.-8. a wasm COMPONENT import (greeter.component.wasm): runs on viberun
 #      with strings and Ints, an Int outside its WIT width is refused, and the
-#      node runner, which cannot instantiate components, refuses it.
+#      node runner, which cannot instantiate components, refuses it;
+#   9. `vibe run` from a package's subdirectory links the binary it compiled
+#      against (the compile runs in the project root, the program does not).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 CLI="${1:-}"
-[ -n "$CLI" ] && [ -s "$CLI" ] || { echo "usage: test_wasm_import.sh <stage2.wasm>" >&2; exit 2; }
-FX=fixtures/wasm_import
+[ -n "$CLI" ] && [ -s "$CLI" ] || { echo "usage: test_wasm_import_gate.sh <stage2.wasm>" >&2; exit 2; }
+# The fixture directory, relative to the repository root (the imports record
+# paths as the compiler resolves them, so it must be inside the tree). Only
+# scripts/test_wasm_import_gate_test.sh overrides it, with a mutated copy.
+FX="${WASM_IMPORT_GATE_FIXTURES:-fixtures/wasm_import}"
+case "$FX" in
+  /*|*..*) echo "test_wasm_import_gate.sh: WASM_IMPORT_GATE_FIXTURES must be a path inside the tree, got $FX" >&2; exit 2 ;;
+esac
 
 WORK="$ROOT_DIR/_build/test_wasm_import"
 rm -rf "$WORK"; mkdir -p "$WORK"
@@ -56,7 +64,9 @@ vibe() { # <runner> <vibe args...>
 }
 
 # 4. The committed binaries are the committed text.
-if command -v wat2wasm >/dev/null 2>&1 && command -v wasm-tools >/dev/null 2>&1; then
+if [ "$FX" != fixtures/wasm_import ]; then
+  echo "[wasm-import] note: fixtures overridden ($FX); the committed binaries are checked on the default run"
+elif command -v wat2wasm >/dev/null 2>&1 && command -v wasm-tools >/dev/null 2>&1; then
   bash "$ROOT_DIR/scripts/build_wasm_import_fixtures.sh" --check || fail "fixture binaries are stale"
 else
   echo "[wasm-import] note: wat2wasm / wasm-tools not installed; not rebuilding the fixture binaries"
@@ -124,5 +134,27 @@ status=0
 out="$(vibe "$NODE_RUNNER" run "$FX/greeter_main.vibex" 2>"$WORK/err")" || status=$?
 [ "$status" != 0 ] || fail "[node] a component import ran on the node runner (printed $(printf '%q' "$out"))"
 grep -q "importing a wasm component runs on viberun" "$WORK/err" || { cat "$WORK/err" >&2; fail "[node] the component refusal does not say why"; }
+
+# 9. Paths are rooted where the compile ran. A program under a package's
+#    subdirectory is compiled in the PROJECT root but runs in the directory it
+#    was invoked from; the import still links the binary it was typed against.
+PROJ="$WORK/proj"
+mkdir -p "$PROJ/sub"
+printf 'name = @scratch/wasm-import-gate\nversion = 0.0.1\ndeps = {}\n' > "$PROJ/index.vpkg"
+cp "$FX/counter.wasm" "$PROJ/sub/counter.wasm"
+cat > "$PROJ/sub/main.vibex" <<'EOF2'
+import ./counter.wasm {
+  add_i32
+}
+
+fn main() -> Unit allows Console {
+  println("r=\{add_i32(40, 2)}")
+}
+EOF2
+status=0
+out="$(cd "$PROJ/sub" && env -u VIBE_WASM_LINK_DIR VIBE_RC=1 VIBE_RUNNER="$VIBERUN" VIBE_CLI_WASM="$CLI" \
+  "$ROOT_DIR/runtime/vibe" run main.vibex 2>"$WORK/err")" || status=$?
+[ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[subdirectory] run exited $status"; }
+[ "$out" = "r=42" ] || fail "[subdirectory] printed $(printf '%q' "$out"), want r=42"
 
 echo "[wasm-import] ok (core: viberun + node, range traps, refusals; component: viberun, WIT range refusal, node refusal)"

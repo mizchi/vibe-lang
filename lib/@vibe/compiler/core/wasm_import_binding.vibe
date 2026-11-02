@@ -49,7 +49,8 @@ import ./inline_wasm_marker.vibe {
 //     inline-wasm boundary for it exists yet; the binding lists these exports
 //     in a comment instead of exposing a wrong type.
 //
-// A module that has a memory (defined or imported) additionally gets
+// A module whose memory a runner can reach -- an exported one, or an
+// imported one the host supplies -- additionally gets
 // `wasm_memory_load_u8(addr) -> Int`, `wasm_memory_store_u8(addr, value)` and
 // `wasm_memory_size() -> Int` (bytes). The foreign memory is not this
 // module's memory; these go through runner-provided `vibe:memory.*` fields of
@@ -504,12 +505,10 @@ fn wib_read_module(bytes: Bytes) -> (Array[(Array[Int], Array[Int])], Array[Int]
         i = i + 1
       }
     } else if id == 5 {
-      let (count, _) = wib_leb_u(bytes, body)
-      if count > 0 {
-        has_memory = true
-      } else {
-        ()
-      }
+      // A DEFINED memory alone does not count: the runner reaches a foreign
+      // memory only through the module's exports (or, for an imported one,
+      // because the host supplied it), so the accessors would link to nothing.
+      ()
     } else if id == 7 {
       let (count, p0) = wib_leb_u(bytes, body)
       let mut q = p0
@@ -520,6 +519,8 @@ fn wib_read_module(bytes: Bytes) -> (Array[(Array[Int], Array[Int])], Array[Int]
         let (idx, q2) = wib_leb_u(bytes, q1 + 1)
         if kind == 0 {
           Array::push(exports, (nm, idx))
+        } else if kind == 2 {
+          has_memory = true
         } else {
           ()
         }

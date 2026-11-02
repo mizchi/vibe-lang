@@ -2,7 +2,7 @@
 # @vibex/z3 against the real z3.wasm: the typed core-wasm import of a 38 MB
 # third-party module.
 #
-#   bash scripts/test_z3_binding.sh <stage2.wasm>
+#   bash scripts/test_z3_binding_gate.sh <stage2.wasm>
 #
 # Asserted:
 #   1. lib/@vibex/z3 and fixtures/z3/smtlib_main.vibex type-check against the
@@ -20,8 +20,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 CLI="${1:-}"
-[ -n "$CLI" ] && [ -s "$CLI" ] || { echo "usage: test_z3_binding.sh <stage2.wasm>" >&2; exit 2; }
+[ -n "$CLI" ] && [ -s "$CLI" ] || { echo "usage: test_z3_binding_gate.sh <stage2.wasm>" >&2; exit 2; }
 
+# The program under test. Only scripts/test_z3_binding_gate_test.sh
+# overrides it, with a mutated copy; the expectations below are this one's.
+PROGRAM="${Z3_BINDING_GATE_PROGRAM:-fixtures/z3/smtlib_main.vibex}"
 WORK="$ROOT_DIR/_build/test_z3_binding"
 rm -rf "$WORK"; mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
@@ -39,15 +42,15 @@ vibe() {
 }
 
 # 1.
-for f in lib/@vibex/z3/z3.vibe fixtures/z3/smtlib_main.vibex; do
+for f in lib/@vibex/z3/z3.vibe "$PROGRAM"; do
   out="$(vibe check "$f" 2>&1)" || { printf '%s\n' "$out" >&2; fail "vibe check $f"; }
   [ -z "$out" ] || { printf '%s\n' "$out" >&2; fail "vibe check $f printed diagnostics"; }
 done
 
 # 2. and 3. `vibe run` builds the artifact first, then runs it.
 status=0
-vibe run fixtures/z3/smtlib_main.vibex >"$WORK/out" 2>"$WORK/err" || status=$?
-art="$WORK/build/run/smtlib_main.wasm"
+vibe run "$PROGRAM" >"$WORK/out" 2>"$WORK/err" || status=$?
+art="$WORK/build/run/$(basename "$PROGRAM" .vibex).wasm"
 [ -s "$art" ] || { cat "$WORK/err" >&2; fail "no artifact at $art"; }
 node - "$art" <<'JS' || fail "import signatures"
 const fs = require("node:fs");

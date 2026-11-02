@@ -13,7 +13,7 @@
 //! its exports in the linker. A foreign module that itself imports anything is
 //! refused with the list of what it needs: nothing here can satisfy another
 //! module's host imports, and stubs would run it wrong. The same contract is
-//! implemented for the node runner by scripts/wasm_foreign_link.js.
+//! implemented for the node runner by scripts/wasm_vibe_host_runtime.js (linkForeignWasmModules).
 
 use std::path::PathBuf;
 
