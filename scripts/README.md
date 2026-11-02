@@ -120,7 +120,9 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   `scripts/**/*.vibex` `allows` row is least authority (#3676): each label is
   needed, a capability is not granted where some of its operations are all a
   script uses, and dropping any label is refused at check time with the edit to
-  make. The declarations come from `vibe symbols`.
+  make. The declarations come from `vibe symbols`. A grant spells its members:
+  an effectset label is refused, since the compiler names a set's members,
+  never the set.
 - `lint_architecture_debt.sh` (+ `architecture_debt_{rules.tsv,allowlist.txt}`),
   `lint_tracked_experiment_names.sh`
 - `verify_rc.sh`, `rc_corpus_parity.sh`, `rc_cutover_readiness.sh`

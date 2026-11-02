@@ -18,10 +18,10 @@
 // 4. A whole capability is not granted where some of its operations are all
 //    the file uses: removing `Fs` must be refused for `Fs` itself, not only for
 //    `Fs::read_bytes`. `Console` counts the legacy tty labels as its own.
-// 5. An effectset the file declares (`effectset S = { .. }`) is judged by its
-//    members, since the compiler expands it before admission: each member must
-//    be named by the refusal, at its width. One imported from elsewhere is not
-//    read, and fails as unnamed.
+// 5. Every label is judged against what the refusal names. A refusal that
+//    names neither the label nor an operation of it fails -- which is how an
+//    effectset grant ends, since the compiler names its members: a grant
+//    under scripts/ spells its members instead.
 //
 // The declarations come from the compiler (`vibe symbols`, function rows), not
 // from a text pattern: a header is read from the function's name to the `{`
@@ -505,7 +505,7 @@ fn hint_names_allows(out: String) -> Bool {
 
 /// The verdict on one probe: "" when the label is needed at its width, else
 /// the failure line.
-fn verdict(job: Job, rc: Int, out: String) -> String with Fs {
+fn verdict(job: Job, rc: Int, out: String) -> String {
   let at = "\{job.file}:\{job.line}"
   if rc == 0 {
     "FAIL \{at}: `\{job.label}` is not needed -- the file checks clean without it; drop it from `allows`"
@@ -514,28 +514,8 @@ fn verdict(job: Job, rc: Int, out: String) -> String with Fs {
     "FAIL \{at}: dropping `\{job.label}` was refused, but not as a missing grant with an edit to make:\n       \{first}"
   } else {
     let missing = missing_labels(out)
-    let members = effectset_members(Fs::read_file(job.file), job.label)
-    if Array::length(members) == 0 {
-      let (coarse, ops) = matched(missing, job.label)
-      label_verdict(at, "", job.label, missing, coarse, ops)
-    } else {
-      // An effectset the file declares is expanded before admission, so the
-      // refusal names its members; each is judged as if granted alone.
-      let out_lines: Array[String] = []
-      let mut m = 0
-      while m < Array::length(members) {
-        let member = Array::get(members, m)
-        let (coarse, ops) = matched(missing, member)
-        let v = label_verdict(at, job.label, member, missing, coarse, ops)
-        if v != "" {
-          Array::push(out_lines, v)
-        } else {
-          ()
-        }
-        m = m + 1
-      }
-      String::join(out_lines, "\n")
-    }
+    let (coarse, ops) = matched(missing, job.label)
+    label_verdict(at, job.label, missing, coarse, ops)
   }
 }
 
@@ -561,66 +541,20 @@ fn matched(missing: Array[String], label: String) -> (Bool, Array[String]) {
 }
 
 /// A refusal that names neither the label nor an operation of it says nothing
-/// about the label, and fails rather than pass unread; a capability where only
-/// operations are named is wider than its use. `set` is the effectset the
-/// label is a member of, or "".
-fn label_verdict(at: String, set: String, label: String, missing: Array[String], coarse: Bool, ops: Array[String]) -> String {
-  let subject = if set == "" {
-    "`\{label}`"
-  } else {
-    "`\{set}` grants `\{label}`, which"
-  }
+/// about the label, and fails rather than pass unread. That is also how an
+/// effectset grant ends: the compiler expands a set before admission, so its
+/// refusal names members, never the set. This gate does not re-derive that
+/// expansion (it would be a second, drifting copy of the checker's); a grant
+/// under scripts/ spells its members, and the failure says so. A capability
+/// where only operations are named is wider than its use.
+fn label_verdict(at: String, label: String, missing: Array[String], coarse: Bool, ops: Array[String]) -> String {
   if !coarse && Array::length(ops) == 0 {
-    if set == "" {
-      "FAIL \{at}: dropping `\{label}` was refused, but the refusal names neither it nor an operation of it (missing: \{String::join(missing, ", ")})"
-    } else {
-      "FAIL \{at}: \{subject} the file does not use (dropping `\{set}` asks only for: \{String::join(missing, ", ")})"
-    }
+    "FAIL \{at}: dropping `\{label}` was refused, but the refusal names neither it nor an operation of it (missing: \{String::join(missing, ", ")}). If `\{label}` is an effectset, write its members in `allows` instead: this gate judges each granted label against what the compiler asks for"
   } else if !coarse && String::index_of(ungraded(label), "::") < 0 {
-    "FAIL \{at}: \{subject} is wider than its use -- the file needs only `\{String::join(sort_str(ops), " + ")}`"
+    "FAIL \{at}: `\{label}` is wider than its use -- the file needs only `\{String::join(sort_str(ops), " + ")}`"
   } else {
     ""
   }
-}
-
-/// The members of `effectset <name> = { a, b }` when the file declares one by
-/// that name, read with the label grammar; empty otherwise.
-fn effectset_members(src: String, name: String) -> Array[String] {
-  let out: Array[String] = []
-  let n = String::length(src)
-  let mut at = String::index_of(src, "effectset")
-  while at >= 0 && Array::length(out) == 0 {
-    let id = skip_blank(src, at + 9)
-    let id_end = label_end(src, id)
-    if (at == 0 || !is_word(String::byte_at(src, at - 1))) && id_end > id && canonical(String::substring(src, id, id_end)) == name {
-      let eq = skip_blank(src, id_end)
-      let brace = skip_blank(src, eq + 1)
-      if eq < n && String::byte_at(src, eq) == '=' && brace < n && String::byte_at(src, brace) == '{' {
-        let mut i = skip_blank(src, brace + 1)
-        let mut going = true
-        while going {
-          let e = label_end(src, i)
-          if e < 0 {
-            going = false
-          } else {
-            Array::push(out, canonical(String::substring(src, i, e)))
-            let next = skip_blank(src, e)
-            if next < n && String::byte_at(src, next) == ',' {
-              i = skip_blank(src, next + 1)
-            } else {
-              going = false
-            }
-          }
-        }
-      } else {
-        ()
-      }
-    } else {
-      ()
-    }
-    at = String::index_of_from(src, "effectset", at + 9)
-  }
-  out
 }
 
 //# Running the checks
