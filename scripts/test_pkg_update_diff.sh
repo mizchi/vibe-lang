@@ -142,4 +142,25 @@ update
 grep -q 'update @diff3673/geo: 2.2.0 -> 2.3.0' "$WORK/upd.out" || fail "2.3.0 was not the update"
 grep -qF 'warning: effect surface: now requires Process' "$WORK/upd.out" || fail "a capability behind a function type alias was not warned about"
 
-echo "[pkg-update-diff] ok (spelling-only change shows nothing; an addition lists one line and warns of Http; a removal lists it and drops Fs/Console; effectset and type aliases and function-valued lets are seen)"
+# 7. A struct field's function type: its bare row is followed by `;`.
+release 2.4.0 'effectset Disk = { Fs }
+type Clock = () -> Int with Process
+struct Probe { read: () -> Int with Stdin; id: Int }
+fn area(width: Int, height: Int) -> Int
+fn fetch(url: String) -> String with Http
+fn store(path: String) -> Unit with Disk
+let shout: (String) -> Unit with Console
+let tick: Clock
+' 'type Clock = () -> Int with Process
+export struct Probe { read: () -> Int with Stdin; id: Int }
+export fn area(width: Int, height: Int) -> Int { width * height }
+export fn fetch(url: String) -> String with Http { url }
+export fn store(path: String) -> Unit with Fs { Fs::write_file(path, "") }
+export let shout: (String) -> Unit with Console = (s) -> { println(s) }
+export let tick: Clock = () -> { 0 }
+'
+update
+grep -q 'update @diff3673/geo: 2.3.0 -> 2.4.0' "$WORK/upd.out" || fail "2.4.0 was not the update"
+grep -qF 'warning: effect surface: now requires Stdin' "$WORK/upd.out" || fail "a struct field's capability was not warned about"
+
+echo "[pkg-update-diff] ok (spelling-only change shows nothing; an addition lists one line and warns of Http; a removal lists it and drops Fs/Console; effectset and type aliases, function-valued lets and struct fields are seen)"
