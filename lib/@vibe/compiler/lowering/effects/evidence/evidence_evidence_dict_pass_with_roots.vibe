@@ -83,6 +83,7 @@ import ./evidence_handle_effect_names_expr.vibe {
   edp_mf_binders,
   edp_mf_new,
   edp_mf_refresh,
+  edp_mf_row_lit_scan,
   edp_rowvar_withheld_callees,
   edp_unmangle_shadow_name
 }
@@ -102,7 +103,6 @@ import ./evidence_poison_expr.vibe {
   edp_needing_names_tab,
   edp_pure_fn_names,
   edp_refresh_statement_perform_facts,
-  edp_row_lit_scan,
   edp_statement_perform_facts,
   empty_str_array
 }
@@ -730,7 +730,7 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
       edp_mf_refresh(statement_facts, stmts)
       (edp_mf_base(statement_facts, stmts, fn_defs), edp_mf_binders(statement_facts))
     }
-    edp_apply_migration_with_tree_facts(stmts, ename, ops, needing, handle_sites, fn_defs, fn_row_labels, keep, errs, Some(edp_handle_statement_indices(handle_statements, ename)), Some(base), Some(binders))
+    edp_apply_migration_with_tree_facts(stmts, ename, ops, needing, handle_sites, fn_defs, fn_row_labels, keep, errs, Some(edp_handle_statement_indices(handle_statements, ename)), Some(base), Some(binders), Some(statement_facts))
     pi = pi + 1
   }
   // V2 step 3: the replay frontier is gone from codegen, so any non-Error
@@ -1678,7 +1678,7 @@ fn edp_live_handle_opaque_info(stmts: Array[Stmt], keep: Array[Bool], ename: Str
 /// only if planning computed it. The only write planning makes is the eta
 /// rebuild, after which both are recomputed, so they describe the program
 /// the caller is about to order and migrate.
-fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool], errs: Array[String], row_labels: Array[Array[String]], out_binders: Array[MutSet[String]], out_base: Array[Array[String]], facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String])]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool], errs: Array[String], row_labels: Array[Array[String]], out_binders: Array[MutSet[String]], out_base: Array[Array[String]], facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)
@@ -1826,7 +1826,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       } else {
         ()
       }
-      match edp_try_plan_for_effect(stmts, ename, ops, needing_full, plan_sites, fn_defs, row_labels, eligibility_base, eligibility_binders, edp_handle_statement_indices(plan_handle_statements, ename)) {
+      match edp_try_plan_for_effect(stmts, ename, ops, needing_full, plan_sites, fn_defs, row_labels, eligibility_base, eligibility_binders, edp_handle_statement_indices(plan_handle_statements, ename), Some(facts)) {
         Some(plan) => if escaped == "" {
           Array::push(plans, plan)
         } else {
@@ -1851,7 +1851,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
           if Array::length(needing_live) == Array::length(needing_full) {
             ()
           } else {
-            match edp_try_plan_for_effect(stmts, ename, ops, needing_live, plan_sites, fn_defs, row_labels, eligibility_base, eligibility_binders, edp_handle_statement_indices(plan_handle_statements, ename)) {
+            match edp_try_plan_for_effect(stmts, ename, ops, needing_live, plan_sites, fn_defs, row_labels, eligibility_base, eligibility_binders, edp_handle_statement_indices(plan_handle_statements, ename), Some(facts)) {
               Some(plan2) => {
                 Array::push(plans, plan2)
                 planned2 = true
@@ -1867,7 +1867,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
           if !planned2 {
             let gb = empty_str_array()
             let gl = array_empty()
-            edp_row_lit_scan(stmts, ename, needing_full, es_names, es_members_list, gb, gl)
+            edp_mf_row_lit_scan(Some(facts), stmts, ename, needing_full, es_names, es_members_list, gb, gl)
             // Guard scope: only when HANDLE SITES for E remain in the tree.
             // Zero sites means nothing can fall to replay — the suspend
             // lane (ADR-0076 Phase 3a/3b) transforms its handles BEFORE
@@ -1917,7 +1917,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
 /// when there is neither a needing function NOR any proven owner param
 /// (nothing to gain; matches the old behavior for every previously-planned
 /// program exactly).
-fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], base_inert: Array[String], binders: Option[MutSet[String]], handle_statement_indices: Array[Int]) -> Option[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], base_inert: Array[String], binders: Option[MutSet[String]], handle_statement_indices: Array[Int], facts: Option[Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])]]) -> Option[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
   // ADR-0076 追記31 Vertical C (replay 撤去): a handle site EXISTING is
   // itself worth planning for — a self-discharging dispatcher whose body
   // performs the effect directly (lsp_server.vibe's Lsp handler is the
@@ -1932,7 +1932,7 @@ fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String
   if !worth {
     None
   } else {
-    if edp_all_sites_eligible_with_index(stmts, ename, needing, handle_sites, fn_defs, row_labels, Some(base_inert), binders, Some(handle_statement_indices)) {
+    if edp_all_sites_eligible_with_index(stmts, ename, needing, handle_sites, fn_defs, row_labels, Some(base_inert), binders, Some(handle_statement_indices), facts) {
       Some((ename, ops, needing, handle_sites))
     } else {
       None

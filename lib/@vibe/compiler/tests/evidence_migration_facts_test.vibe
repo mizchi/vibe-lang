@@ -16,7 +16,9 @@ import @vibe/compiler/lowering/effects/evidence {
   edp_mf_binders,
   edp_mf_new,
   edp_mf_refresh,
-  edp_pure_fn_names
+  edp_mf_row_lit_scan,
+  edp_pure_fn_names,
+  edp_row_lit_scan
 }
 
 fn call(name: String) -> Expr {
@@ -56,7 +58,7 @@ fn same_members(a: MutSet[String], b: MutSet[String]) -> Bool {
 
 // Refresh, then demand exactly the walked answer: same names in the same
 // order, and the same binder census.
-fn facts_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String])], stmts: Array[Stmt]) -> Bool {
+fn facts_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])], stmts: Array[Stmt]) -> Bool {
   edp_mf_refresh(facts, stmts)
   let from_facts = String::join(edp_mf_base(facts, stmts, edp_collect_fn_defs(stmts)), ",")
   from_facts == walked_base(stmts) && same_members(edp_mf_binders(facts), edp_collect_program_binders(stmts))
@@ -99,4 +101,42 @@ test "an unmarked rewrite is not seen, which is why every migration write is mar
   assert(facts_agree(facts, stmts))
   Array::set(stmts, 1, top_fn("other", [], EInt(0)))
   assert(!facts_agree(facts, stmts))
+}
+
+fn row_lambda(body: Expr) -> Expr {
+  EFn([], [], [], None, Some("Ask"), body)
+}
+
+// The facts-filtered scan must collect exactly what the whole scan collects:
+// the same binding names in the same order, and as many literals.
+fn row_scans_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])], stmts: Array[Stmt], needing: Array[String]) -> String {
+  let es_names: Array[String] = []
+  let es_members: Array[Array[String]] = []
+  let whole_binds: Array[String] = []
+  let whole_lits: Array[Expr] = []
+  edp_row_lit_scan(stmts, "Ask", needing, es_names, es_members, whole_binds, whole_lits)
+  let some_binds: Array[String] = []
+  let some_lits: Array[Expr] = []
+  edp_mf_row_lit_scan(Some(facts), stmts, "Ask", needing, es_names, es_members, some_binds, some_lits)
+  assert(String::join(whole_binds, ",") == String::join(some_binds, ","))
+  assert(Array::length(whole_lits) == Array::length(some_lits))
+  String::join(some_binds, ",") + " lits=" + Int::to_string(Array::length(some_lits))
+}
+
+test "the facts-filtered row-literal scan collects what the whole scan collects" {
+  let stmts = [
+    top_fn("owner", [], ELet("g", row_lambda(EInt(1)), EIdent("g", -1), -1)),
+    SExpr(ELet("h", EIdent("needy", -1), EInt(0), -1)),
+    SExpr(ELet("k", EIdent("other", -1), EInt(0), -1)),
+    top_fn("plain", [], EInt(0)),
+    // A top-level function with a row is the needing rewrite's, not a literal.
+    SLet(false, false, "rowed", None, row_lambda(EInt(2)))
+  ]
+  let facts = edp_mf_new()
+  edp_mf_refresh(facts, stmts)
+  inspect(row_scans_agree(facts, stmts, ["needy"]), content = "g,h lits=1")
+  inspect(row_scans_agree(facts, stmts, []), content = "g lits=1")
+  // A marked rewrite that introduces a row literal is seen by the next scan.
+  edp_mf_set_stmt(stmts, 3, top_fn("plain", [], ELet("late", row_lambda(EInt(3)), EInt(0), -1)))
+  inspect(row_scans_agree(facts, stmts, ["needy"]), content = "g,h,late lits=2")
 }

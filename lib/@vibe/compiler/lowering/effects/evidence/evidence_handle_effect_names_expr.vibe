@@ -54,6 +54,9 @@ import ./evidence_poison_expr.vibe {
   edp_performs_user_effect_expr,
   edp_pure_fn_names,
   edp_row_labels_have_var,
+  edp_row_lit_region,
+  edp_row_lit_scan,
+  edp_row_lit_scan_in,
   empty_str_array
 }
 
@@ -2016,12 +2019,14 @@ fn edp_collect_handle_effect_names_expr(expr: Expr, out: Array[String]) -> Unit 
 // merely an equivalent one.
 
 /// (lambda names, lambda literals, binder tally log, host-raw callees, binder
-/// log). The two logs keep repeats; replaying them gives the counts and the
-/// census without a map or a set per statement.
-type EdpStmtFacts = (Array[String], Array[Expr], Array[String], Array[String], Array[String])
+/// log, row-annotated lambda in the row-literal region, identifiers bound by
+/// `let` / `let rec` there). The two logs keep repeats; replaying them gives
+/// the counts and the census without a map or a set per statement. The last
+/// two decide whether edp_row_lit_scan can collect anything from it.
+type EdpStmtFacts = (Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])
 
 /// Facts of each statement, valid for the tree as of the last refresh.
-export fn edp_mf_new() -> Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String])] {
+export fn edp_mf_new() -> Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])] {
   edp_mf_dirty_reset()
   []
 }
@@ -2033,7 +2038,13 @@ fn edp_mf_stmt_facts(stmt: Stmt) -> EdpStmtFacts {
   edp_lambda_candidates_stmt(stmt, names, bodies, tallies)
   let host = empty_str_array()
   edp_host_raw_callees_stmt(stmt, host)
-  (names, bodies, tallies.2, host, edp_statement_binder_log(stmt))
+  let row_efn = [false]
+  let ident_lets = empty_str_array()
+  match edp_row_lit_region(stmt) {
+    Some(scanned) => edp_row_lit_shape(scanned, row_efn, ident_lets),
+    None => ()
+  }
+  (names, bodies, tallies.2, host, edp_statement_binder_log(stmt), Array::get(row_efn, 0), ident_lets)
 }
 
 /// Bring the facts up to the current tree: walk the statements replaced since
@@ -2041,7 +2052,7 @@ fn edp_mf_stmt_facts(stmt: Stmt) -> EdpStmtFacts {
 /// once per write (a migration's closure-binding rewrite replaces every
 /// statement once per candidate), so each statement is walked once, as it now
 /// stands.
-export fn edp_mf_refresh(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String])], stmts: Array[Stmt]) -> Unit {
+export fn edp_mf_refresh(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])], stmts: Array[Stmt]) -> Unit {
   let known = Array::length(facts)
   let walked = MutSet::new_int()
   for i in edp_mf_dirty_indices() {
@@ -2060,7 +2071,7 @@ export fn edp_mf_refresh(facts: Array[(Array[String], Array[Expr], Array[String]
 
 /// The inert base edp_apply_migration_with_tree_facts computes for `stmts`
 /// when it is given none, from refreshed facts.
-export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String])], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Array[String] {
+export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Array[String] {
   let fresh = edp_pure_fn_names(fn_defs)
   let top_names = empty_str_array()
   for stmt in stmts {
@@ -2072,7 +2083,7 @@ export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[String], A
   }
   let found = empty_str_array()
   for fact in facts {
-    let (_, _, _, host, _) = fact
+    let (_, _, _, host, _, _, _) = fact
     for nm in host {
       if !edp_str_array_contains(found, nm) {
         Array::push(found, nm)
@@ -2085,7 +2096,7 @@ export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[String], A
   let bodies: Array[Expr] = []
   let bcount = edp_binder_counts_new()
   for fact in facts {
-    let (fnames, fbodies, tallies, _, _) = fact
+    let (fnames, fbodies, tallies, _, _, _, _) = fact
     for nm in fnames {
       Array::push(names, nm)
     }
@@ -2101,13 +2112,64 @@ export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[String], A
 }
 
 /// edp_collect_program_binders of `stmts`, from refreshed facts.
-export fn edp_mf_binders(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String])]) -> MutSet[String] {
+export fn edp_mf_binders(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])]) -> MutSet[String] {
   let out = MutSet::new_string()
   for fact in facts {
-    let (_, _, _, _, binders) = fact
+    let (_, _, _, _, binders, _, _) = fact
     for nm in binders {
       MutSet::insert(out, nm)
     }
   }
   out
+}
+
+/// Every node edp_row_lit_scan_expr collects from: an `EFn` with a row
+/// annotation (a row literal, or the value a binding is collected for), and an
+/// identifier a `let` / `let rec` binds (collected when it names a needing
+/// function). expr_children reaches every node the scan does, so a region
+/// with neither holds nothing the scan collects.
+fn edp_row_lit_shape(expr: Expr, row_efn: Array[Bool], ident_lets: Array[String]) -> Unit {
+  match expr {
+    EFn(_, _, _, _, Some(_), _) => Array::set(row_efn, 0, true),
+    ELet(_, EIdent(v, _), _, _) => Array::push(ident_lets, v),
+    ELetRec(_, EIdent(v, _), _) => Array::push(ident_lets, v),
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    edp_row_lit_shape(expr_child_at(i), row_efn, ident_lets)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// edp_row_lit_scan, reading only the statements it can collect from when the
+/// statement facts are at hand: those with a row-annotated lambda in their
+/// region, or a `let` of an identifier in `needing`. The facts are brought up
+/// to `stmts` first, so they describe the tree being scanned.
+export fn edp_mf_row_lit_scan(facts: Option[Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])]], stmts: Array[Stmt], ename: String, needing: Array[String], es_names: Array[String], es_members_list: Array[Array[String]], binds: Array[String], lits: Array[Expr]) -> Unit {
+  match facts {
+    Some(known) => {
+      edp_mf_refresh(known, stmts)
+      let candidates: Array[Int] = []
+      let mut i = 0
+      while i < Array::length(known) {
+        let (_, _, _, _, _, row_efn, ident_lets) = Array::get(known, i)
+        let mut hit = row_efn
+        let mut k = 0
+        while !hit && k < Array::length(ident_lets) {
+          hit = edp_str_array_contains(needing, Array::get(ident_lets, k))
+          k = k + 1
+        }
+        if hit {
+          Array::push(candidates, i)
+        } else ()
+        i = i + 1
+      }
+      edp_row_lit_scan_in(stmts, candidates, ename, needing, es_names, es_members_list, binds, lits)
+    },
+    None => edp_row_lit_scan(stmts, ename, needing, es_names, es_members_list, binds, lits)
+  }
 }
