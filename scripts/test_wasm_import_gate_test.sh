@@ -38,6 +38,15 @@ expect_fail() { # <label> <message substring>
 # 0. An unmutated copy passes, so a failure below is the mutation's.
 fresh
 run_gate || { cat "$SCRATCH.out" >&2; fail "the gate fails on an unmutated copy"; }
+# 0b. ...and so does the compiler named relative to the repository root, the
+#     way tests/gates/early/run.sh names it: step 9 runs from a project
+#     subdirectory, where a relative path no longer resolves.
+REL_CLI="$(python3 -c 'import os,sys; print(os.path.relpath(os.path.abspath(sys.argv[1]), sys.argv[2]))' "$CLI" "$ROOT_DIR")"
+case "$REL_CLI" in
+  /*|../*) echo "ok: relative compiler path (skipped: $CLI is outside the tree)" ;;
+  *) WASM_IMPORT_GATE_FIXTURES="$REL/fx" bash "$ROOT_DIR/scripts/test_wasm_import_gate.sh" "$REL_CLI" >"$SCRATCH.out" 2>&1 || { cat "$SCRATCH.out" >&2; fail "the gate fails when the compiler is named relative to the repository root"; }
+     echo "ok: relative compiler path" ;;
+esac
 echo "ok: unmutated copy passes"
 
 # 1. A wrong answer is caught.
