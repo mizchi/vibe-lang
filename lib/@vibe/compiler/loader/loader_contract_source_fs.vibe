@@ -328,16 +328,17 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
   }
 }
 
-fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Env + Exception + Fs {
+/// #1872: the type parameters `path` exports, (exported name, params), with
+/// the sources read for them (`path` first) and their fingerprints, and the
+/// re-export resolutions made on the way. Over any provider: a re-export's
+/// own answer is a `ContractIngest::TypeParams` request, which the
+/// filesystem lane serves from the memo below (`exported_type_params_fs`).
+fn exported_type_params_node(path: String) -> (Array[(String, Array[String])], Array[String], Array[String], Array[(String, String, String)]) with Env + Exception + ContractIngest + ModuleParse + Source {
   let out = array_empty()
-  let visiting_mark = Array::length(visiting)
-  Array::push(visiting, path)
-  // The token is taken BEFORE the read: a file rewritten between the two is
-  // parsed as its new body under the old token, so the next ask re-reads it;
-  // the other order would record the new token against the old parse.
-  let token = Fs::stat_token(path)
-  let raw = cache_read_source_with_token_fs(path, token)
-  Array::push(exported_type_params_read_log, (path, token))
+  let dep_paths = array_empty()
+  let dep_fingerprints = array_empty()
+  let resolves = array_empty()
+  let raw = perform Source::Read(path)
   Array::push(dep_paths, path)
   // Fingerprint the bytes that are parsed below. A second filesystem read
   // could observe a newer body and make stale metadata look current forever.
@@ -359,7 +360,8 @@ fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_
       ti = ti + 1
     }
   } else {
-    let stmts = exported_type_params_parse_fs(path, ingest_source_text_fs(path, raw))
+    let ingested = source_answer(perform ContractIngest::IngestMember(path, raw))
+    let stmts = exported_type_params_parse(path, ingested)
     let defs = collect_impl_type_defs(stmts)
     let mut ti = 0
     while ti < Array::length(defs) {
@@ -390,9 +392,15 @@ fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_
     while si < Array::length(stmts) {
       match Array::get(stmts, si) {
         SReExport(raw_path, items) => {
-          let resolved = loader_resolve_path_fs(dir_of_path(path), raw_path)
-          Array::push(exported_type_params_resolve_log, (dir_of_path(path), raw_path, resolved))
-          let source_types = exported_type_params_fs(resolved, dep_paths, dep_fingerprints, visiting)
+          let resolved = resolve_import_path_probe(dir_of_path(path), raw_path, "")
+          Array::push(resolves, (dir_of_path(path), raw_path, resolved))
+          let (source_types, nested_paths, nested_fingerprints) = source_answer(perform ContractIngest::TypeParams(resolved))
+          let mut ni = 0
+          while ni < Array::length(nested_paths) {
+            Array::push(dep_paths, Array::get(nested_paths, ni))
+            Array::push(dep_fingerprints, Array::get(nested_fingerprints, ni))
+            ni = ni + 1
+          }
           let mut ii = 0
           while ii < Array::length(items) {
             let item = Array::get(items, ii)
@@ -414,8 +422,64 @@ fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_
       si = si + 1
     }
   }
+  (out, dep_paths, dep_fingerprints, resolves)
+}
+
+/// #1872: the filesystem node of the memo: the read is logged with the stat
+/// token taken BEFORE the core reads the file (a file rewritten between the
+/// two is parsed as its new body under the old token, so the next ask
+/// re-reads it; the other order would record the new token against the old
+/// parse), and the node's sources and resolutions go to the memo's logs.
+fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Env + Exception + Fs {
+  let visiting_mark = Array::length(visiting)
+  Array::push(visiting, path)
+  let token = Fs::stat_token(path)
+  Array::push(exported_type_params_read_log, (path, token))
+  let (out, node_paths, node_fingerprints, resolves) = exported_type_params_node_on_fs(path)
+  let mut ni = 0
+  while ni < Array::length(node_paths) {
+    Array::push(dep_paths, Array::get(node_paths, ni))
+    Array::push(dep_fingerprints, Array::get(node_fingerprints, ni))
+    ni = ni + 1
+  }
+  let mut ri = 0
+  while ri < Array::length(resolves) {
+    Array::push(exported_type_params_resolve_log, Array::get(resolves, ri))
+    ri = ri + 1
+  }
   Array::truncate(visiting, visiting_mark)
   out
+}
+
+/// #1872: the re-export chain the memo is inside, shared by the nested
+/// `ContractIngest::TypeParams` answers of one recursion. Each answer
+/// restores it to its own mark, success or failure, so it is empty between
+/// top-level asks.
+let exported_type_params_visiting: Array[String] = []
+
+fn type_params_answer_fs(path: String) -> ((Array[(String, Array[String])], Array[String], Array[String]), Option[String]) with Env + Fs {
+  let mark = Array::length(exported_type_params_visiting)
+  let dep_paths = array_empty()
+  let dep_fingerprints = array_empty()
+  let answer = handle {
+    (exported_type_params_fs(path, dep_paths, dep_fingerprints, exported_type_params_visiting), None)
+  } with { Exception::Throw(message) => (array_empty(), Some(message)) }
+  Array::truncate(exported_type_params_visiting, mark)
+  let (out, failure) = answer
+  ((out, dep_paths, dep_fingerprints), failure)
+}
+
+fn exported_type_params_node_on_fs(path: String) -> (Array[(String, Array[String])], Array[String], Array[String], Array[(String, String, String)]) with Env + Exception + Fs {
+  handle {
+    exported_type_params_node(path)
+  } with { ContractIngest::IngestMember(p, raw) => resume(ingest_member_answer_fs(p, raw)); ContractIngest::TypeParams(p) => resume(type_params_answer_fs(p)); ModuleParse::Parse(p, text) => resume(parse_answer_fs(p, text)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+}
+
+/// #1872: the exported type parameters of `path` over any provider, with
+/// the sources read for them and their fingerprints.
+export fn exported_type_params_source(path: String) -> (Array[(String, Array[String])], Array[String], Array[String]) with Env + Exception + ContractIngest + ModuleParse + Source {
+  let (out, dep_paths, dep_fingerprints, _) = exported_type_params_node(path)
+  (out, dep_paths, dep_fingerprints)
 }
 
 /// The re-export source's statements through the shared located parse memo:
@@ -426,10 +490,18 @@ fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_
 /// spells identically. A text that does not parse is re-parsed the old way so
 /// the error a caller sees is the one it always saw; a throwing located parse
 /// is not memoized.
-fn exported_type_params_parse_fs(path: String, ingested: String) -> Array[Stmt] with Env + Exception + Fs {
-  handle {
-    parse_program_located_shared_fs(path, ingested)
-  } with { Exception::Throw(_) => parse_program(lex(ingested)) }
+fn exported_type_params_parse(path: String, ingested: String) -> Array[Stmt] with Exception + ModuleParse {
+  let (stmts, failure) = perform ModuleParse::Parse(path, ingested)
+  // A plain Bool, not the parser chain inside a match arm (the #708 shape).
+  let failed = match failure {
+    Some(_) => true,
+    None => false
+  }
+  if failed {
+    parse_program(lex(ingested))
+  } else {
+    stmts
+  }
 }
 
 fn lookup_exported_type_params(defs: Array[(String, Array[String])], name: String) -> Option[Array[String]] {
@@ -450,15 +522,20 @@ fn lookup_exported_type_params(defs: Array[(String, Array[String])], name: Strin
 /// Resolve the declared kinds behind implementation-file re-exports before
 /// contract conformance. SReExport itself carries names only; the source
 /// contract or source declaration owns the type-parameter keys.
-fn resolved_reexported_type_defs_fs(unit_path: String, stmts: Array[Stmt], dep_paths: Array[String], dep_fingerprints: Array[String]) -> Array[(String, Array[String])] with Env + Exception + Fs {
+fn member_reexported_type_defs(unit_path: String, stmts: Array[Stmt], dep_paths: Array[String], dep_fingerprints: Array[String]) -> Array[(String, Array[String])] with Env + Exception + ContractIngest + Source {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SReExport(raw_path, items) => {
-        let resolved = loader_resolve_path_fs(dir_of_path(unit_path), raw_path)
-        let source_types = exported_type_params_fs(resolved, dep_paths, dep_fingerprints, [
-        ])
+        let resolved = resolve_import_path_probe(dir_of_path(unit_path), raw_path, "")
+        let (source_types, nested_paths, nested_fingerprints) = source_answer(perform ContractIngest::TypeParams(resolved))
+        let mut ni = 0
+        while ni < Array::length(nested_paths) {
+          Array::push(dep_paths, Array::get(nested_paths, ni))
+          Array::push(dep_fingerprints, Array::get(nested_fingerprints, ni))
+          ni = ni + 1
+        }
         let mut ii = 0
         while ii < Array::length(items) {
           let item = Array::get(items, ii)
@@ -2136,9 +2213,10 @@ struct ContractDesugared {
 export effect ContractIngest {
   // A member's ingested text from its raw text (`ingest_source_text_fs`).
   IngestMember(String, String) -> (String, Option[String])
-  // The type parameters a member re-exports (exported name, params), with
-  // the re-export sources read for them and those sources' fingerprints.
-  ReexportedTypes(String, Array[Stmt]) -> ((Array[(String, Array[String])], Array[String], Array[String]), Option[String])
+  // The type parameters a module exports (exported name, params), with the
+  // sources read for them and those sources' fingerprints
+  // (`exported_type_params_source`).
+  TypeParams(String) -> ((Array[(String, Array[String])], Array[String], Array[String]), Option[String])
 }
 
 /// #1872: parse a contract and resolve its members, over `Source` only.
@@ -2311,13 +2389,7 @@ fn contract_build(path: String, source: String, plan: ContractPlan) -> ContractD
       // Only local implementation units participate in this contract's type
       // conformance. Imported package boundaries are dependencies, not
       // alternate definitions of a same-spelled local opaque type.
-      let (resolved_types, rt_dep_paths, rt_dep_fingerprints) = source_answer(perform ContractIngest::ReexportedTypes(resolved, impl_stmts))
-      let mut rdi = 0
-      while rdi < Array::length(rt_dep_paths) {
-        Array::push(reexport_dep_paths, Array::get(rt_dep_paths, rdi))
-        Array::push(reexport_dep_fingerprints, Array::get(rt_dep_fingerprints, rdi))
-        rdi = rdi + 1
-      }
+      let resolved_types = member_reexported_type_defs(resolved, impl_stmts, reexport_dep_paths, reexport_dep_fingerprints)
       let mut rti = 0
       while rti < Array::length(resolved_types) {
         Array::push(resolved_reexported_type_defs, Array::get(resolved_types, rti))
@@ -2400,18 +2472,10 @@ fn ingest_member_answer_fs(path: String, raw: String) -> (String, Option[String]
   } with { Exception::Throw(message) => ("", Some(message)) }
 }
 
-fn reexported_types_answer_fs(unit_path: String, stmts: Array[Stmt]) -> ((Array[(String, Array[String])], Array[String], Array[String]), Option[String]) with Env + Fs {
-  let dep_paths = array_empty()
-  let dep_fingerprints = array_empty()
-  handle {
-    ((resolved_reexported_type_defs_fs(unit_path, stmts, dep_paths, dep_fingerprints), dep_paths, dep_fingerprints), None)
-  } with { Exception::Throw(message) => ((array_empty(), array_empty(), array_empty()), Some(message)) }
-}
-
 fn contract_build_on_fs(path: String, source: String, plan: ContractPlan) -> ContractDesugared with Env + Exception + Fs {
   handle {
     contract_build(path, source, plan)
-  } with { ContractIngest::IngestMember(p, raw) => resume(ingest_member_answer_fs(p, raw)); ContractIngest::ReexportedTypes(p, stmts) => resume(reexported_types_answer_fs(p, stmts)); ModuleParse::Parse(p, text) => resume(parse_answer_fs(p, text)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+  } with { ContractIngest::IngestMember(p, raw) => resume(ingest_member_answer_fs(p, raw)); ContractIngest::TypeParams(p) => resume(type_params_answer_fs(p)); ModuleParse::Parse(p, text) => resume(parse_answer_fs(p, text)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 export fn desugar_contract_source_fs(path: String, source: String) -> String with Env + Exception + Fs {

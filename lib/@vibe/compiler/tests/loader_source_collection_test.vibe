@@ -11,6 +11,7 @@ import @vibe/compiler/loader {
   contract_package_hashes_fs,
   contract_package_hashes_source,
   desugar_contract_source,
+  exported_type_params_source,
   module_header_source,
   parse_program_located_shared,
   share_imports_source
@@ -114,14 +115,24 @@ fn mem_header(tree: MemTree, path: String, source: String) -> (Array[String], Op
   } with { Exception::Throw(message) => ([], Some(message)) }
 }
 
-// The real desugaring core over the tree: members ingest unchanged and
-// re-export no type parameters.
+// The real exported-type-parameters core over the tree, recursing through
+// its own `TypeParams` requests (no memo).
+fn mem_type_params(tree: MemTree, path: String) -> ((Array[(String, Array[String])], Array[String], Array[String]), Option[String]) with Env {
+  handle {
+    let answer = handle {
+      exported_type_params_source(path)
+    } with { ContractIngest::IngestMember(_, raw) => resume((raw, None)); ContractIngest::TypeParams(p) => resume(mem_type_params(tree, p)); ModuleParse::Parse(p, t) => resume(mem_parse(p, t)); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+    (answer, None)
+  } with { Exception::Throw(message) => (([], [], []), Some(message)) }
+}
+
+// The real desugaring core over the tree: members ingest unchanged, and a
+// re-export's type parameters come from the real core too.
 fn mem_desugar(tree: MemTree, path: String, text: String) -> (String, Option[String]) with Env {
   handle {
     let (facade, _, _) = handle {
       desugar_contract_source(path, text)
-    } with { ContractIngest::IngestMember(_, raw) => resume((raw, None)); ContractIngest::ReexportedTypes(_, _) => resume((([
-    ], [], []), None)); ModuleParse::Parse(p, t) => resume(mem_parse(p, t)); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+    } with { ContractIngest::IngestMember(_, raw) => resume((raw, None)); ContractIngest::TypeParams(p) => resume(mem_type_params(tree, p)); ModuleParse::Parse(p, t) => resume(mem_parse(p, t)); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
     (facade, None)
   } with { Exception::Throw(message) => ("", Some(message)) }
 }
@@ -356,6 +367,42 @@ test "the filesystem adapter hashes a package to the in-memory hash" {
   }
   let (on_disk, _) = contract_package_hashes_fs(String::concat(root, "/pkg/index.vpkg"))
   assert_eq(on_disk, mem_package_hash(relative_package_tree(), "pkg/index.vpkg"))
+}
+
+// A parent contract whose member re-exports `Container` from another
+// package: the conformance check compares the kind the parent declares with
+// the kind the re-export's source exports (`TypeParams`).
+fn reexport_tree(source_kind: String) -> MemTree {
+  MemTree::{
+    files: [
+      ("parent/index.vpkg", "opaque type Container[F[_]]\n"),
+      ("parent/mid.vibe", "export ../source { Container }\n"),
+      ("source/impl.vibe", "export type Container[F[_]] = F[Int]\n"),
+      ("source/index.vpkg", "opaque type \{source_kind}\n")
+    ],
+    symlinks: []
+  }
+}
+
+test "the desugaring core reads a re-exported type's kind from its source" {
+  let tree = reexport_tree("Container[F[_]]")
+  let (_, failure) = mem_desugar(tree, "parent/index.vpkg", mem_read(tree, "parent/index.vpkg"))
+  inspect(failure, "None")
+  let ((params, read, _), _) = mem_type_params(tree, "parent/mid.vibe")
+  let rows: Array[String] = []
+  for entry in params {
+    let (name, ps) = entry
+    Array::push(rows, "\{name}[\{String::join(ps, ", ")}]")
+  }
+  let read_paths: Array[String] = read
+  inspect(rows, "[Container[$type_param$1$F]]")
+  inspect(read_paths, "[parent/mid.vibe, source/index.vpkg]")
+}
+
+test "the desugaring core refuses a re-export whose source exports another kind" {
+  let tree = reexport_tree("Container[F]")
+  let (_, failure) = mem_desugar(tree, "parent/index.vpkg", mem_read(tree, "parent/index.vpkg"))
+  inspect(failure, "Some(parent/index.vpkg: contract violation: type 'Container' kind mismatch: contract declares [F[_]], re-exported implementation defines [F])")
 }
 
 fn share_tree(root: String) -> MemTree {
