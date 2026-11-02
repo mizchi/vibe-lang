@@ -57,7 +57,7 @@ import ./evidence_ecall_arg_idents_expr.vibe {
 }
 
 import ./evidence_edp_apply_migration.vibe {
-  edp_all_sites_eligible_with_index, edp_apply_migration_with_index, edp_handle_owner_cps
+  edp_all_sites_eligible_with_index, edp_apply_migration_with_tree_facts, edp_handle_owner_cps
 }
 
 import ./evidence_handler_sets.vibe {
@@ -678,7 +678,10 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   edp_stamp_slot_rows(stmts, fn_defs)
   let keep = dce_keep_flags(stmts, roots)
   // #3540: an arm's own effects are migrated before the arm is spliced.
-  let plans = edp_order_plans_for_arm_performs(stmts, edp_plan_migrations(stmts, effect_defs, fn_defs, keep, errs, fn_row_labels), fn_defs, fn_row_labels, errs)
+  let plan_binders: Array[MutSet[String]] = []
+  let plan_base: Array[Array[String]] = []
+  let planned_raw = edp_plan_migrations(stmts, effect_defs, fn_defs, keep, errs, fn_row_labels, plan_binders, plan_base)
+  let plans = edp_order_plans_for_arm_performs(stmts, planned_raw, fn_defs, fn_row_labels, errs, plan_binders)
   // #3424: a function value at such a parameter that the stamp could not
   // give the row is called with a dict it has no parameter for -- when the
   // row's effect is migrated, so the call passes one.
@@ -692,7 +695,20 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   let mut pi = 0
   while pi < Array::length(plans) {
     let (ename, ops, needing, handle_sites) = Array::get(plans, pi)
-    edp_apply_migration_with_index(stmts, ename, ops, needing, handle_sites, fn_defs, fn_row_labels, keep, errs, Some(edp_handle_statement_indices(handle_statements, ename)))
+    // Nothing writes the program between planning and the first migration,
+    // so that one reuses the planner's facts; every later one follows a
+    // migration's rewrite and recomputes them.
+    let first_base = if pi == 0 && Array::length(plan_base) == 1 {
+      Some(Array::get(plan_base, 0))
+    } else {
+      None
+    }
+    let first_binders = if pi == 0 && Array::length(plan_binders) == 1 {
+      Some(Array::get(plan_binders, 0))
+    } else {
+      None
+    }
+    edp_apply_migration_with_tree_facts(stmts, ename, ops, needing, handle_sites, fn_defs, fn_row_labels, keep, errs, Some(edp_handle_statement_indices(handle_statements, ename)), first_base, first_binders)
     pi = pi + 1
   }
   // V2 step 3: the replay frontier is gone from codegen, so any non-Error
@@ -1635,7 +1651,12 @@ fn edp_live_handle_opaque_info(stmts: Array[Stmt], keep: Array[Bool], ename: Str
 /// dead needing function can never cause a silent miscompile, only recover
 /// eligibility that a dead function's un-provable body would otherwise sink
 /// for the whole effect.
-fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool], errs: Array[String], row_labels: Array[Array[String]]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+/// `out_binders` / `out_base` receive, on return, the binder census and the
+/// effect-independent inert base for the tree as planning leaves it -- each
+/// only if planning computed it. The only write planning makes is the eta
+/// rebuild, after which both are recomputed, so they describe the program
+/// the caller is about to order and migrate.
+fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool], errs: Array[String], row_labels: Array[Array[String]], out_binders: Array[MutSet[String]], out_base: Array[Array[String]]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)
@@ -1853,6 +1874,11 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
     }
     ei = ei + 1
   }
+  match eligibility_binders {
+    Some(census) => Array::push(out_binders, census),
+    None => ()
+  }
+  Array::push(out_base, eligibility_base)
   plans
 }
 
@@ -1950,7 +1976,7 @@ fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[Str
 /// make a false cycle. Plans with no dependency keep their order. A real cycle
 /// has no order that is right for both handles; it is refused with the edit
 /// rather than answered.
-fn edp_order_plans_for_arm_performs(stmts: Array[Stmt], plans: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], errs: Array[String]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+fn edp_order_plans_for_arm_performs(stmts: Array[Stmt], plans: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], errs: Array[String], known_binders: Array[MutSet[String]]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
   if Array::length(plans) < 2 {
     plans
   } else {
@@ -1960,7 +1986,12 @@ fn edp_order_plans_for_arm_performs(stmts: Array[Stmt], plans: Array[(String, Ar
     }
     // A callee spelled like a top-level function may be a local binding that
     // shadows it: whole-program conservative, as edp_drop_shadowed_needing.
-    let binders = edp_collect_program_binders(stmts)
+    // The planner's census describes this same tree when it computed one.
+    let binders = if Array::length(known_binders) == 1 {
+      Array::get(known_binders, 0)
+    } else {
+      edp_collect_program_binders(stmts)
+    }
     let fx = (fn_defs, row_labels, binders)
     // (E, Y, offset of the arm's perform of Y): Y must be applied before E.
     let edges: Array[(String, String, Int)] = []
