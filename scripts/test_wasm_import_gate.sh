@@ -17,7 +17,10 @@
 #   3. an i64 result that needs the 64th bit TRAPS (trap_i64_result.vibex);
 #  12. the memory accessors work over an exported SHARED memory
 #      (shared_memory_main.vibex; wasmtime hands it over as a different
-#      object, `SharedMemory`).
+#      object, `SharedMemory`);
+#  13. a reactor's `_initialize: () -> ()` runs before the first call, and an
+#      export merely NAMED `_initialize` with another signature is not
+#      called at link time (init_main.vibex).
 # And once:
 #   4. the fixture binaries are built from their committed text (when
 #      wat2wasm and wasm-tools exist);
@@ -118,6 +121,11 @@ for lane_and_runner in "1 $VIBERUN" "0 $VIBERUN" "1 $NODE_RUNNER" "0 $NODE_RUNNE
   out="$(vibe "$runner" run "$FX/shared_memory_main.vibex" 2>"$WORK/err")" || status=$?
   [ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[$label] shared_memory_main exited $status"; }
   [ "$out" = "load=42 peek=7 size=65536" ] || fail "[$label] shared_memory_main printed $(printf '%q' "$out"), want load=42 peek=7 size=65536"
+  # 13.
+  status=0
+  out="$(vibe "$runner" run "$FX/init_main.vibex" 2>"$WORK/err")" || status=$?
+  [ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[$label] init_main exited $status"; }
+  [ "$out" = "value=7 foo=42 init=2" ] || fail "[$label] init_main printed $(printf '%q' "$out"), want value=7 foo=42 init=2"
 done
 
 # 5. Refusals are compile-time and name the import.
@@ -194,4 +202,4 @@ status=0
 grep -q "'counter' is now (->s64) but the program was compiled against (->u64); rebuild the program" "$WORK/err" \
   || { cat "$WORK/err" >&2; fail "[viberun] the signature-drift refusal does not say why"; }
 
-echo "[wasm-import] ok (core: viberun + node, range traps, shared memory, refusals; component: viberun, WIT range refusal, node refusal)"
+echo "[wasm-import] ok (core: viberun + node, range traps, shared memory, _initialize, refusals; component: viberun, WIT range refusal, node refusal)"

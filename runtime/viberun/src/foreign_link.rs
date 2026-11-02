@@ -157,8 +157,12 @@ pub(super) fn link_foreign_wasm_modules<T: 'static>(
         let instance = Linker::<T>::new(&engine)
             .instantiate(&mut *store, &foreign)
             .map_err(|e| format_err!("cannot link '{name}': instantiating {}: {e}", path.display()))?;
-        if let Some(init) = instance.get_func(&mut *store, "_initialize") {
-            init.call(&mut *store, &[], &mut [])
+        // Only the reactor initializer `_initialize: () -> ()` runs: an
+        // ordinary export that happens to have that name (another
+        // signature) is just an export, and calling it with no arguments
+        // would fail the whole link.
+        if let Ok(init) = instance.get_typed_func::<(), ()>(&mut *store, "_initialize") {
+            init.call(&mut *store, ())
                 .map_err(|e| format_err!("cannot link '{name}': _initialize trapped: {e}"))?;
         }
         // The first exported memory, plain or shared: a shared one (a

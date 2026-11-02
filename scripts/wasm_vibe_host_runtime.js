@@ -2736,6 +2736,26 @@ function outOfBounds(name, addr, size) {
   );
 }
 
+// Whether `f` is the reactor initializer `_initialize: () -> ()`. The JS API
+// does not show a wasm function's result types, but importing a wasm-exported
+// function checks its type exactly: a module whose one import is `() -> ()`
+// instantiates with `f` only when `f` has that signature. viberun asks the
+// same question through `get_typed_func::<(), ()>`.
+const REACTOR_INIT_PROBE = new WebAssembly.Module(new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+  0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type 0: () -> ()
+  0x02, 0x07, 0x01, 0x01, 0x6d, 0x01, 0x66, 0x00, 0x00, // import "m" "f" (func (type 0))
+]));
+function isReactorInitializer(f) {
+  if (typeof f !== "function") return false;
+  try {
+    new WebAssembly.Instance(REACTOR_INIT_PROBE, { m: { f } });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function linkForeignWasmModules(wasmModule, opts = {}) {
   const baseDir = opts.baseDir ?? process.env.VIBE_WASM_LINK_DIR ?? process.cwd();
   // A component import (`vibe:component:<path>`) needs the canonical ABI,
@@ -2769,7 +2789,7 @@ async function linkForeignWasmModules(wasmModule, opts = {}) {
       );
     }
     const instance = await WebAssembly.instantiate(mod, {});
-    if (typeof instance.exports._initialize === "function") {
+    if (isReactorInitializer(instance.exports._initialize)) {
       instance.exports._initialize();
     }
     const memory = Object.values(instance.exports).find((v) => v instanceof WebAssembly.Memory) ?? null;

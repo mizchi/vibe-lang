@@ -62,4 +62,11 @@ expect_fail "a different component answer" "greeter_main printed"
 fresh; mutate shared_memory_main.vibex "wasm_memory_store_u8(5, 7)" "wasm_memory_store_u8(5, 8)"
 expect_fail "a different shared-memory answer" "peek=8\\ size=65536, want load=42 peek=7"
 
-echo "[wasm-import-gate-test] ok (6 cases)"
+# 6. An initializer whose effect differs is caught.
+# The gate links the committed binary, so patch it (`i64.const 7` is the
+# byte pair 42 07, once in the file) rather than needing wat2wasm here.
+fresh
+python3 -c 'import sys; p=sys.argv[1]; b=open(p,"rb").read(); assert b.count(b"\x42\x07")==1, "patch target not unique"; open(p,"wb").write(b.replace(b"\x42\x07", b"\x42\x08"))' "$SCRATCH/fx/reactor.wasm" || fail "could not patch reactor.wasm"
+expect_fail "a different initializer effect" "init_main printed value=8\\ foo=42"
+
+echo "[wasm-import-gate-test] ok (7 cases)"
