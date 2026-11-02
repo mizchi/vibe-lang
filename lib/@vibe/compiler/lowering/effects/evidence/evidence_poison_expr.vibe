@@ -19,7 +19,10 @@ import @vibe/compiler/lowering/effects/queries {
   edp_has_unsafe_construct,
   edp_is_pure_builtin_call,
   edp_pat_binds,
+  edp_perform_facts,
+  edp_perform_facts_performs,
   edp_performing_names,
+  edp_performing_names_from_facts,
   edp_resolve_effect_names_into,
   edp_row_is_exactly,
   edp_rq_exprs,
@@ -208,6 +211,78 @@ export fn edp_all_fn_names(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeE
     i = i + 1
   }
   out
+}
+
+/// edp_perform_facts of each statement edp_program_user_performs reads, and
+/// None for every other form. A `fn` statement's facts are its body's: an
+/// `EFn` node is no call and no perform, and the walk descends into its body
+/// alone, so edp_collect_performing_fns_from_facts can read them by index.
+export fn edp_statement_perform_facts(stmts: Array[Stmt], inert: MutSet[String], fn_names: MutSet[String]) -> Array[Option[(Bool, Array[String], Array[String])]] {
+  let out: Array[Option[(Bool, Array[String], Array[String])]] = Array::with_capacity(Array::length(stmts))
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::push(out, edp_one_statement_perform_facts(Array::get(stmts, i), inert, fn_names))
+    i = i + 1
+  }
+  out
+}
+
+fn edp_one_statement_perform_facts(stmt: Stmt, inert: MutSet[String], fn_names: MutSet[String]) -> Option[(Bool, Array[String], Array[String])] {
+  match stmt {
+    SLet(_, _, _, _, expr) => Some(edp_perform_facts(expr, inert, fn_names)),
+    SLetMut(_, _, expr) => Some(edp_perform_facts(expr, inert, fn_names)),
+    SExpr(expr) => Some(edp_perform_facts(expr, inert, fn_names)),
+    STest(_, expr) => Some(edp_perform_facts(expr, inert, fn_names)),
+    SBench(_, expr) => Some(edp_perform_facts(expr, inert, fn_names)),
+    _ => None
+  }
+}
+
+/// Recompute the facts of the statements a rewrite may have replaced. The
+/// caller names a superset of them; an unchanged statement recomputes to the
+/// facts it already had.
+export fn edp_refresh_statement_perform_facts(stmts: Array[Stmt], facts: Array[Option[(Bool, Array[String], Array[String])]], indices: Array[Int], inert: MutSet[String], fn_names: MutSet[String]) -> Unit {
+  let mut k = 0
+  while k < Array::length(indices) {
+    let i = Array::get(indices, k)
+    if i >= 0 && i < Array::length(stmts) {
+      Array::set(facts, i, edp_one_statement_perform_facts(Array::get(stmts, i), inert, fn_names))
+    } else ()
+    k = k + 1
+  }
+}
+
+/// edp_program_user_performs, answered from edp_statement_perform_facts of
+/// the same statements.
+export fn edp_facts_program_user_performs(facts: Array[Option[(Bool, Array[String], Array[String])]], ename: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(facts) && !found {
+    match Array::get(facts, i) {
+      Some(fact) => {
+        found = edp_perform_facts_performs(fact, ename)
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// edp_collect_performing_fns, answered from edp_statement_perform_facts of
+/// the same statements, built with the same `inert` / `fn_names`.
+export fn edp_collect_performing_fns_from_facts(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], facts: Array[Option[(Bool, Array[String], Array[String])]], ename: String) -> Array[String] {
+  let names: Array[String] = []
+  let body_facts: Array[Option[(Bool, Array[String], Array[String])]] = []
+  for def in fn_defs {
+    let (idx, _, _, name, _, _) = def
+    Array::push(names, name)
+    Array::push(body_facts, match Array::get(stmts, idx) {
+      SLet(_, _, _, _, EFn(_, _, _, _, _, _)) => Array::get(facts, idx),
+      _ => None
+    })
+  }
+  edp_performing_names_from_facts(names, body_facts, ename)
 }
 
 export fn edp_program_user_performs(stmts: Array[Stmt], ename: String) -> Bool {
