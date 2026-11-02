@@ -31,10 +31,7 @@ echo "[compiler-gate] the vibe test parity gate fails on a mutated runner (#3703
 bash "$ROOT_DIR/scripts/test_vibe_test_parity_test.sh" "$stage2_wasm"
 
 echo "[compiler-gate] every scripts/*.vibex grant is least authority, and dropping it is refused (#3676)"
-bash "$ROOT_DIR/scripts/check_vibex_grants.sh" "$stage2_wasm"
-
-echo "[compiler-gate] the vibex grant gate refuses each kind of over-grant (#3676)"
-bash "$ROOT_DIR/scripts/check_vibex_grants_test.sh" "$stage2_wasm"
+( cd "$ROOT_DIR" && bash scripts/vibe_run.sh scripts/check_vibex_grants.vibex -- "$stage2_wasm" )
 
 source "$ROOT_DIR/tests/gates/early/multi_file_fs_compile_regression.sh"
 source "$ROOT_DIR/tests/gates/early/extended_derive.sh"

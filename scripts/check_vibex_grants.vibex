@@ -1,0 +1,523 @@
+// Every scripts/**/*.vibex declares the least authority it runs with, and
+// dropping any of it is refused before the tool runs (#3676):
+//
+//   bash scripts/vibe_run.sh scripts/check_vibex_grants.vibex -- <cli.wasm> [file.vibex ...]
+//
+// Run from the repository root. For each `fn ... allows <row>` declaration
+// (every scripts/**/*.vibex by default):
+//
+// 1. The file checks clean as written.
+// 2. Each label in the row is needed: with that label removed (the last one
+//    becomes `allows ()`), `vibe check` must refuse the file. A label the file
+//    still checks clean without is authority it does not use -- `Stderr` next
+//    to `Console` is one, since `Console` already authorizes it.
+// 3. The refusal is actionable: an `effect row mismatch` that names what is
+//    missing and the edit (`hint: change 'allows ...' to ...`).
+// 4. A whole capability is not granted where some of its operations are all
+//    the file uses: removing `Fs` must be refused for `Fs` itself, not only for
+//    `Fs::read_bytes`. `Console` counts the legacy tty labels as its own.
+//
+// The declarations come from the compiler (`vibe symbols`), not from a text
+// pattern: a header is read from the function's name to the `{` that opens
+// its body, so a row written across lines is read like any other. A probe is
+// the file with one label removed, written next to it (its relative imports
+// must still resolve) under a dot-name and removed afterwards. The checks run
+// four at a time through one generated job script.
+
+import @vibe/builtin {
+  String::index_of_from, String::replace_all
+}
+import @vibe/process {
+  exit, sh_capture
+}
+import @vibex/shell {
+  find, sort_str
+}
+
+struct Clause {
+  file: String;
+  line: Int;
+  row_start: Int;
+  row_end: Int;
+  labels: Array[String]
+}
+
+struct Job {
+  file: String;
+  probe: String;
+  line: Int;
+  label: String
+}
+
+//# Arguments and files
+
+fn arg(i: Int) -> String with Env {
+  if i < Env::args_len() {
+    Env::args_get(i)
+  } else {
+    ""
+  }
+}
+
+fn shell_quote(s: String) -> String {
+  "'" + String::replace_all(s, "'", "'\\''") + "'"
+}
+
+fn basename(path: String) -> String {
+  let parts = String::split(path, "/")
+  Array::get(parts, Array::length(parts) - 1)
+}
+
+fn dirname(path: String) -> String {
+  let base = basename(path)
+  if String::length(path) == String::length(base) {
+    "."
+  } else {
+    String::substring(path, 0, String::length(path) - String::length(base) - 1)
+  }
+}
+
+/// Every scripts/**/*.vibex, without the dot-named probes.
+fn default_files() -> Array[String] with Fs {
+  let out: Array[String] = []
+  let entries = find("scripts")
+  let mut i = 0
+  while i < Array::length(entries) {
+    let e = Array::get(entries, i)
+    if !e.is_dir && String::ends_with(e.path, ".vibex") && !String::starts_with(basename(e.path), ".") {
+      Array::push(out, e.path)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  sort_str(out)
+}
+
+//# Declarations
+
+fn is_space(c: Int) -> Bool {
+  c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+fn is_word(c: Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+fn line_of(src: String, at: Int) -> Int {
+  let mut n = 1
+  let mut i = 0
+  while i < at && i < String::length(src) {
+    if String::byte_at(src, i) == '\n' {
+      n = n + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  n
+}
+
+/// The `allows` row of the function named at `name_start`, as the byte range
+/// of its text: from after `allows` to the `{` that opens the body, at bracket
+/// depth 0. `(-1, -1)` when the name is not a function's, or it has no row.
+fn row_of(src: String, name_start: Int, name_end: Int) -> (Int, Int) {
+  let n = String::length(src)
+  let mut k = name_start - 1
+  while k >= 0 && is_space(String::byte_at(src, k)) {
+    k = k - 1
+  }
+  let after_fn = k >= 1 && String::byte_at(src, k) == 'n' && String::byte_at(src, k - 1) == 'f' && (k < 2 || !is_word(String::byte_at(src, k - 2)))
+  if !after_fn {
+    (-1, -1)
+  } else {
+    let mut depth = 0
+    let mut i = name_end
+    let mut row = -1
+    let mut stop = -1
+    while stop < 0 && i < n {
+      let c = String::byte_at(src, i)
+      if c == '(' || c == '[' {
+        depth = depth + 1
+      } else if c == ')' || c == ']' {
+        depth = depth - 1
+      } else if c == '{' && depth == 0 {
+        stop = i
+      } else if depth == 0 && c == 'a' && row < 0 && i > 0 && i + 6 <= n && String::substring(src, i, i + 6) == "allows" && !is_word(String::byte_at(src, i - 1)) && (i + 6 >= n || !is_word(String::byte_at(src, i + 6))) {
+        row = i + 6
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if row < 0 || stop < 0 {
+      (-1, -1)
+    } else {
+      let mut s = row
+      while s < stop && is_space(String::byte_at(src, s)) {
+        s = s + 1
+      }
+      let mut e = stop
+      while e > s && is_space(String::byte_at(src, e - 1)) {
+        e = e - 1
+      }
+      (s, e)
+    }
+  }
+}
+
+fn row_labels(row: String) -> Array[String] {
+  let out: Array[String] = []
+  if String::trim(row) != "()" {
+    let parts = String::split(row, "+")
+    let mut i = 0
+    while i < Array::length(parts) {
+      let p = String::trim(Array::get(parts, i))
+      if p != "" {
+        Array::push(out, p)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  out
+}
+
+/// The row with `label` removed; `()` when nothing is left.
+fn row_without(labels: Array[String], label: String) -> String {
+  let kept: Array[String] = []
+  let mut i = 0
+  while i < Array::length(labels) {
+    if Array::get(labels, i) != label {
+      Array::push(kept, Array::get(labels, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if Array::length(kept) == 0 {
+    "()"
+  } else {
+    String::join(kept, " + ")
+  }
+}
+
+/// `path name kind start end [doc]` rows of `vibe symbols --with-path`.
+fn clauses_of(symbols: String) -> Array[Clause] with Fs {
+  let out: Array[Clause] = []
+  let lines = String::split(symbols, "\n")
+  let mut i = 0
+  while i < Array::length(lines) {
+    let f = String::split(Array::get(lines, i), " ")
+    if Array::length(f) >= 5 {
+      let path = Array::get(f, 0)
+      let src = Fs::read_file(path)
+      let (s, e) = row_of(src, parse_int(Array::get(f, 3)), parse_int(Array::get(f, 4)))
+      if s >= 0 {
+        let labels = row_labels(String::substring(src, s, e))
+        if Array::length(labels) > 0 {
+          Array::push(out, Clause::{
+            file: path,
+            line: line_of(src, s),
+            row_start: s,
+            row_end: e,
+            labels: labels
+          })
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn parse_int(s: String) -> Int {
+  let mut v = 0
+  let mut i = 0
+  while i < String::length(s) && String::byte_at(s, i) >= '0' && String::byte_at(s, i) <= '9' {
+    v = v * 10 + (String::byte_at(s, i) - '0')
+    i = i + 1
+  }
+  v
+}
+
+//# Verdicts
+
+/// The labels a refusal names as missing, across all its diagnostics.
+fn missing_labels(out: String) -> Array[String] {
+  let found: Array[String] = []
+  let mut at = String::index_of(out, "missing { ")
+  while at >= 0 {
+    let from = at + 10
+    let close = String::index_of_from(out, " }", from)
+    if close < 0 {
+      at = -1
+    } else {
+      let parts = String::split(String::substring(out, from, close), ",")
+      let mut i = 0
+      while i < Array::length(parts) {
+        Array::push(found, String::trim(Array::get(parts, i)))
+        i = i + 1
+      }
+      at = String::index_of_from(out, "missing { ", close)
+    }
+  }
+  found
+}
+
+fn contains(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == x {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn in_family(item: String, label: String) -> Bool {
+  if label == "Console" {
+    in_family(item, "Stdin") || in_family(item, "Stdout") || in_family(item, "Stderr") || item == "Console" || String::starts_with(item, "Console[")
+  } else {
+    item == label || String::starts_with(item, label + "[")
+  }
+}
+
+fn op_of(item: String, label: String) -> Bool {
+  if label == "Console" {
+    String::starts_with(item, "Console::") || String::starts_with(item, "Stdin::") || String::starts_with(item, "Stdout::") || String::starts_with(item, "Stderr::")
+  } else {
+    String::starts_with(item, label + "::")
+  }
+}
+
+/// The verdict on one probe: "" when the label is needed at its width, else
+/// the failure line.
+fn verdict(job: Job, rc: Int, out: String) -> String {
+  let at = "\{job.file}:\{job.line}"
+  if rc == 0 {
+    "FAIL \{at}: `\{job.label}` is not needed -- the file checks clean without it; drop it from `allows`"
+  } else if String::index_of(out, "effect row mismatch") < 0 || String::index_of(out, "hint: change 'allows") < 0 {
+    let first = Array::get(String::split(out, "\n"), 0)
+    "FAIL \{at}: dropping `\{job.label}` was refused, but not as a missing grant with an edit to make:\n       \{first}"
+  } else if String::index_of(job.label, "::") >= 0 {
+    ""
+  } else {
+    let missing = missing_labels(out)
+    let ops: Array[String] = []
+    let mut coarse = false
+    let mut i = 0
+    while i < Array::length(missing) {
+      let item = Array::get(missing, i)
+      if in_family(item, job.label) {
+        coarse = true
+      } else if op_of(item, job.label) && !contains(ops, item) {
+        Array::push(ops, item)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if !coarse && Array::length(ops) > 0 {
+      "FAIL \{at}: `\{job.label}` is wider than its use -- the file needs only `\{String::join(sort_str(ops), " + ")}`"
+    } else {
+      ""
+    }
+  }
+}
+
+//# Running the checks
+
+fn check_command(cli: String, path: String) -> String {
+  "VIBE_CLI_WASM=\{shell_quote(cli)} VIBE_RUNNER=scripts/viberun_node.sh bash runtime/vibe check \{shell_quote(path)}"
+}
+
+/// Runs `vibe check` on every path, four at a time, and returns each one's
+/// (exit status, output) in order.
+fn check_all(cli: String, paths: Array[String], work: String) -> Array[(Int, String)] with Fs + Process {
+  let script = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(paths) {
+    StringBuilder::push(script, "( \{check_command(cli, Array::get(paths, i))} > \{work}/\{i}.out 2>&1; echo $? > \{work}/\{i}.rc ) &\n")
+    if i % 4 == 3 {
+      StringBuilder::push(script, "wait\n")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  StringBuilder::push(script, "wait\n")
+  Fs::write_file("\{work}/jobs.sh", StringBuilder::freeze(script))
+  let _ = sh_capture("bash \{shell_quote(work + "/jobs.sh")}")
+  let out: Array[(Int, String)] = []
+  let mut j = 0
+  while j < Array::length(paths) {
+    let rc_path = "\{work}/\{j}.rc"
+    let rc = if Fs::is_file(rc_path) {
+      parse_int(String::trim(Fs::read_file(rc_path)))
+    } else {
+      -1
+    }
+    let text = if Fs::is_file("\{work}/\{j}.out") {
+      Fs::read_file("\{work}/\{j}.out")
+    } else {
+      ""
+    }
+    Array::push(out, (rc, text))
+    j = j + 1
+  }
+  out
+}
+
+fn run(cli: String, files: Array[String]) -> Int with Env + Fs + Process + Console {
+  // VIBE_GRANTS_TAG keeps concurrent runs (the self-test beside the gate
+  // lane) out of each other's work directory and probe names.
+  let tag = if Env::get("VIBE_GRANTS_TAG") == "" {
+    "run"
+  } else {
+    Env::get("VIBE_GRANTS_TAG")
+  }
+  let work = "_build/vibex_grants.\{tag}"
+  Fs::remove_tree(work)
+  Fs::mkdir_p(work)
+  let mut failures = 0
+  // 1. As written.
+  let written = check_all(cli, files, work)
+  let checked: Array[String] = []
+  let mut i = 0
+  while i < Array::length(files) {
+    let (rc, out) = Array::get(written, i)
+    if rc != 0 {
+      Stderr::write_stream("FAIL \{Array::get(files, i)}: does not check clean as written:\n       \{Array::get(String::split(out, "\n"), 0)}\n")
+      failures = failures + 1
+    } else {
+      Array::push(checked, Array::get(files, i))
+    }
+    i = i + 1
+  }
+  // 2-4. One probe per label.
+  let quoted: Array[String] = []
+  let mut q = 0
+  while q < Array::length(checked) {
+    Array::push(quoted, shell_quote(Array::get(checked, q)))
+    q = q + 1
+  }
+  let clauses = if Array::length(checked) > 0 {
+    let sym = sh_capture("VIBE_CLI_WASM=\{shell_quote(cli)} VIBE_RUNNER=scripts/viberun_node.sh bash runtime/vibe symbols --with-path \{String::join(quoted, " ")}")
+    if sym.exit_code != 0 {
+      Stderr::write_stream("FAIL: vibe symbols did not read the files:\n\{sym.stderr}\n")
+      failures = failures + 1
+    } else {
+      ()
+    }
+    clauses_of(sym.stdout)
+  } else {
+    []
+  }
+  let jobs: Array[Job] = []
+  let probes: Array[String] = []
+  let mut c = 0
+  while c < Array::length(clauses) {
+    let cl = Array::get(clauses, c)
+    let src = Fs::read_file(cl.file)
+    let mut l = 0
+    while l < Array::length(cl.labels) {
+      let label = Array::get(cl.labels, l)
+      let probe = "\{dirname(cl.file)}/.grant_probe_\{tag}_\{Array::length(jobs)}_\{basename(cl.file)}"
+      Fs::write_file(probe, String::substring(src, 0, cl.row_start) + row_without(cl.labels, label) + String::substring(src, cl.row_end, String::length(src)))
+      Array::push(jobs, Job::{
+        file: cl.file,
+        probe: probe,
+        line: cl.line,
+        label: label
+      })
+      Array::push(probes, probe)
+      l = l + 1
+    }
+    c = c + 1
+  }
+  let results = check_all(cli, probes, work)
+  let mut p = 0
+  while p < Array::length(jobs) {
+    let (rc, out) = Array::get(results, p)
+    let v = verdict(Array::get(jobs, p), rc, out)
+    if v != "" {
+      Stderr::write_stream("\{v}\n")
+      failures = failures + 1
+    } else {
+      ()
+    }
+    Fs::remove(Array::get(probes, p))
+    p = p + 1
+  }
+  // A file with an entry point but no row this gate read is not checked.
+  let mut f = 0
+  while f < Array::length(checked) {
+    let path = Array::get(checked, f)
+    let mut has = false
+    let mut k = 0
+    while k < Array::length(clauses) {
+      if Array::get(clauses, k).file == path {
+        has = true
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    if !has && String::index_of(Fs::read_file(path), "fn main") >= 0 {
+      Stderr::write_stream("FAIL \{path}: no `allows` row on a function was found to check\n")
+      failures = failures + 1
+    } else {
+      ()
+    }
+    f = f + 1
+  }
+  Fs::remove_tree(work)
+  if failures == 0 {
+    Console::write_stream("[vibex-grants] ok (\{Array::length(files)} files, \{Array::length(jobs)} grant labels: each one needed, and dropping it is refused with the edit)\n")
+    0
+  } else {
+    1
+  }
+}
+
+fn main allows Env + Fs + Process + Console {
+  let cli = arg(0)
+  if cli == "" || !Fs::is_file(cli) {
+    Stderr::write_stream("usage: check_vibex_grants.vibex <cli.wasm> [file.vibex ...] (from the repository root)\n")
+    exit(2)
+  } else if !Fs::is_file("runtime/vibe") {
+    Stderr::write_stream("check_vibex_grants.vibex: run from the repository root\n")
+    exit(2)
+  } else {
+    let given: Array[String] = []
+    let mut i = 1
+    while i < Env::args_len() {
+      Array::push(given, Env::args_get(i))
+      i = i + 1
+    }
+    let files = if Array::length(given) > 0 {
+      given
+    } else {
+      default_files()
+    }
+    if run(cli, files) != 0 {
+      exit(1)
+    } else {
+      ()
+    }
+  }
+}
