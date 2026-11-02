@@ -1,0 +1,78 @@
+// ADR-0122 (#3728): `Float64` / `Float32` are the width-named spellings of
+// `Double` / `Float`. Each case below writes only the new names and checks a
+// VALUE, so a spelling that resolved to the wrong type, or to no builtin at
+// all, fails here rather than compiling to something else.
+
+struct Reading {
+  value: Float64;
+  coarse: Float32
+} derive (Eq, Ord, Show)
+
+trait Describe {
+  describe(Self) -> String
+}
+
+impl Describe for Float64 {
+  // Annotated: an unannotated `describe(x)` interpolates a float as its
+  // address on every spelling, `Double` included (a separate bug).
+  describe(x: Float64) -> String {
+    "f64 \{x}"
+  }
+}
+
+fn Float64::twice(x: Float64) -> Float64 {
+  x * 2.0
+}
+
+fn half(x: Float64) -> Float64 {
+  x / 2.0
+}
+
+fn bare_eq[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}
+
+enum Tagged {
+  Float64(Int);
+  Other
+} derive (Show)
+
+test "annotations and arithmetic" {
+  let a: Float64 = 1.5
+  let b: Float32 = 1.5f
+  inspect(half(a), "0.75")
+  inspect(b * 2.0f, "3")
+}
+
+test "builtin namespaces" {
+  inspect(Float64::to_string(0.1), "0.1")
+  inspect(Float32::to_string(1.0f / 3.0f), "0.33333334")
+  inspect(Float64::parse("2.5"), "Some(2.5)")
+  inspect(Float64::to_int(2.9), "2")
+}
+
+test "conversions" {
+  inspect(Int::to_float64(3), "3")
+  inspect(Int::to_float32(16777217), "16777216")
+  inspect(Float64::to_float32(0.1), "0.1")
+  // `0.1f` widened is the f32 value, not 0.1.
+  inspect(Float32::to_float64(0.1f) == 0.1, "false")
+  inspect(Float32::to_int(2.5f), "2")
+}
+
+test "a user impl, a user method and generic bounds" {
+  inspect(Describe::describe(1.25), "f64 1.25")
+  inspect(Float64::twice(1.25), "2.5")
+  inspect(bare_eq(1.5, 1.5), "true")
+}
+
+test "derived traits over Float64 / Float32 fields" {
+  let r = Reading::{ value: 1.5, coarse: 2.5f }
+  inspect(r == Reading::{ value: 1.5, coarse: 2.5f }, "true")
+  inspect(Reading::compare(r, Reading::{ value: 2.5, coarse: 0.5f }), "Less")
+  inspect(r, "Reading { value: 1.5, coarse: 2.5 }")
+}
+
+test "a constructor named Float64 keeps its spelling" {
+  inspect(Tagged::Float64(3), "Float64(3)")
+}

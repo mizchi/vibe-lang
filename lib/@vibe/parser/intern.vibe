@@ -229,18 +229,39 @@ export fn intern_str(s: String) -> String {
   intern_slice(s, 0, String::length(s))
 }
 
+/// ADR-0122 (#3728): `Float64` / `Float32` are the width-named spellings of
+/// `Double` / `Float`. The parser canonicalizes them to the existing names at
+/// the two places a type name is formed -- a type expression and the
+/// namespace of a qualified name -- so every later pass, including the many
+/// that compare type spellings as strings, sees exactly what it sees today.
+/// A bare constructor named `Float64` is neither, and keeps its spelling.
+export fn float_width_alias(name: String) -> String {
+  if String::length(name) != 7 {
+    name
+  } else if name == "Float64" {
+    "Double"
+  } else if name == "Float32" {
+    "Float"
+  } else {
+    name
+  }
+}
+
 /// The canonical shared String for `ns ++ "::" ++ member`, without building
 /// the concatenation on a hit. This is the parser's qualified-name shape
 /// (`Array::push`, `Iterator::map`, ...): it used to allocate a fresh concat
 /// per OCCURRENCE; now each distinct spelling allocates once, ever.
+/// `Float64::x` / `Float32::x` intern as `Double::x` / `Float::x`
+/// (`float_width_alias`).
 export fn intern_qualified(ns: String, member: String) -> String {
-  if String::length(ns) == 0 && String::length(member) == 0 {
+  let space = float_width_alias(ns)
+  if String::length(space) == 0 && String::length(member) == 0 {
     ""
   } else {
     intern_ensure()
     intern_grow_if_needed()
-    let nlen = String::length(ns)
-    let mut h = fnv_slice(ns, 0, nlen)
+    let nlen = String::length(space)
+    let mut h = fnv_slice(space, 0, nlen)
     h = fnv_step(h, ':')
     h = fnv_step(h, ':')
     let mlen = String::length(member)
@@ -256,12 +277,12 @@ export fn intern_qualified(ns: String, member: String) -> String {
     while !done {
       let k = Array::get(intern_slots, idx)
       if String::length(k) == 0 {
-        let fresh = String::concat(ns, String::concat("::", member))
+        let fresh = String::concat(space, String::concat("::", member))
         Array::set(intern_slots, idx, fresh)
         Array::set(intern_count_cell, 0, Array::get(intern_count_cell, 0) + 1)
         out = fresh
         done = true
-      } else if intern_qualified_matches(k, ns, member) {
+      } else if intern_qualified_matches(k, space, member) {
         out = k
         done = true
       } else {

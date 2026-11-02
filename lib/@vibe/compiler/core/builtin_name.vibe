@@ -9,16 +9,33 @@ import ./builtin_registry.vibe {
 export fn canonical_builtin_name(name: String) -> String {
   // #2386: every legacy spelling below starts with `F`, `E`, `P` or `S`, so
   // any other first byte (a bare user name, `Array::`, `MutMap::`, ...) is
-  // its own canonical spelling without the 25 compares of the ladder.
+  // its own canonical spelling without the 25 compares of the ladder. The
+  // width-named conversions (ADR-0122) start with `I` or `D` and take a
+  // three-arm match of their own.
   let first = if String::length(name) == 0 {
     0
   } else {
     String::char_code_at(name, 0)
   }
-  if first != 'F' && first != 'E' && first != 'P' && first != 'S' {
+  if first == 'I' || first == 'D' {
+    float_width_conversion(name)
+  } else if first != 'F' && first != 'E' && first != 'P' && first != 'S' {
     name
   } else {
     canonical_builtin_name_ladder(name)
+  }
+}
+
+/// ADR-0122 (#3728): the width-named conversions. The parser has already
+/// turned the `Float64::` / `Float32::` namespaces into `Double::` /
+/// `Float::` (`float_width_alias`), so `Float64::to_float32` arrives here as
+/// `Double::to_float32`.
+fn float_width_conversion(name: String) -> String {
+  match name {
+    "Int::to_float64" => "Int::to_double",
+    "Int::to_float32" => "Int::to_float",
+    "Double::to_float32" => "Double::to_float",
+    _ => name
   }
 }
 
@@ -62,6 +79,8 @@ fn canonical_builtin_name_ladder(name: String) -> String {
     // list until a bootstrap bump: compiler source must keep `freeze`
     // while the seed does not know `build`.
     "StringBuilder::build" => "StringBuilder::freeze",
+    // ADR-0122 (#3728): `Float32::to_float64` arrives as `Float::to_float64`.
+    "Float::to_float64" => "Float::to_double",
     _ => name
   }
 }

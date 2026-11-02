@@ -831,6 +831,8 @@ Bool
 Char
 String
 Unit
+Float64
+Float32
 f32
 f64
 
@@ -846,8 +848,10 @@ Option[T]
 
 Rules:
 
-- `f32` and `f64` are aliases for `Float` and `Double` in type positions
-  (both retire in favour of `Float32` / `Float64`, ADR-0122).
+- `Float64` and `Float32` are the width-named spellings of `Double` and
+  `Float`, in type positions and as a namespace (`Float64::to_string`)
+  (ADR-0122). `f32` and `f64` are aliases for `Float` and `Double` in type
+  positions; they and the old names retire in favour of the width names.
 - There is no `i32`: vibe's integer type is `Int`, which is 63-bit. `i32`
   used to be accepted as an alias of `Int`, so code that declared 32 bits got
   63-bit arithmetic (`2147483647 + 1` was `2147483648`); it is now an unknown
