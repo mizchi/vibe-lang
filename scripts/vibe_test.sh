@@ -24,64 +24,65 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# Parse flags; leave the rest as positional paths.
-#
-# #2886: an UNRECOGNISED option used to fall through to the positional list and
-# be reported by the path check below as `not found: --update` -- the wording a
-# genuinely missing file gets, so it reads as a typo in a filename rather than
-# as a flag this script does not take. That is the same shape #2870 fixed a few
-# lines further down, where a failed directory scan was reported with the words
-# an empty directory gets.
-#
-# `--update` in particular was REAL everywhere else: `runtime/vibe` documents
-# `vibe test --update`, and CLAUDE.md tells a compiler change to run its tests
-# through THIS script (it is the only route that takes VIBE_TEST_CLI_WASM).
-# Those two instructions could not both be followed. It is now implemented
-# here too (see vt_try_update_patch), against the SAME compiler the run used,
-# which is the whole point of routing a compiler change through this script.
-coverage=0
-update=0
-_args=()
-for _a in "$@"; do
-  case "$_a" in
-    --coverage)
-      coverage=1
-      ;;
-    --update)
-      update=1
-      ;;
-    -*)
-      echo "vibe_test.sh: unrecognised option: $_a" >&2
-      echo "  Supported flags: --coverage --update" >&2
-      echo "  (a path that begins with '-' can be passed as ./$_a)" >&2
-      exit 2
-      ;;
-    *)
-      _args+=("$_a")
-      ;;
-  esac
-done
-set -- ${_args[@]+"${_args[@]}"}
-
-if [ "$#" -lt 1 ]; then
-  echo "usage: vibe_test.sh [--coverage] [--update] <path.vibe | dir> [more paths...]" >&2
-  exit 2
-fi
-
 bash "$ROOT_DIR/scripts/ensure_seed.sh"
 seed="$ROOT_DIR/bootstrap/seed/compiler.wasm"
 outdir="$ROOT_DIR/_build/vibe_test"
 mkdir -p "$outdir"
+vt_results="$(mktemp -d -t vibe-test-results-XXXXXX)"
+trap 'rm -rf "$vt_results"' EXIT
+
+# Every decision this script prints is scripts/test_report.vibex's (#3674):
+# the argument grammar, each file's line and result record, the summary and
+# the report under `FAIL <file>` (@vibe/testrun, @vibe/testreport). What stays
+# here is what only a host does: choosing and launching the compiler and the
+# runner, timeouts, the worker fan-out and the exit status.
+#
+# The tool is compiled with the committed SEED, never with VIBE_TEST_CLI_WASM:
+# the compiler under test must not be able to change how its own results are
+# reported. Once per run, before anything else, into the run's results dir.
+vt_tool_wasm="$vt_results/test_report.wasm"
+if ! ( cd "$ROOT_DIR" && VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    "$BASH" "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$seed" \
+    scripts/test_report.vibex "$vt_tool_wasm" main ) >"$vt_results/test_report.compile.log" 2>&1 \
+    || [ ! -s "$vt_tool_wasm" ]; then
+  echo "vibe_test.sh: scripts/test_report.vibex did not compile with the seed ($seed):" >&2
+  sed 's/^/  /' "$vt_results/test_report.compile.log" >&2
+  [ -s "$vt_tool_wasm.diag" ] && sed 's/^/  /' "$vt_tool_wasm.diag" >&2
+  exit 2
+fi
+# Both run through "$BASH", the interpreter running this script, rather than
+# whatever `bash` PATH names: scripts/vibe_test_smoke.sh fakes the compiler and
+# runner with a PATH `bash`, and the tool must keep answering under it.
+vt_tool() {
+  ( cd "$ROOT_DIR" && VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_RUNNER_QUIET_RESULT=1 \
+      "$BASH" "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke main "$vt_tool_wasm" "$@" )
+}
+export ROOT_DIR vt_tool_wasm
+export -f vt_tool
+
+# The options and paths, or the grammar's own message and exit 2: an
+# unrecognised option is named as one (#2886), no path is the usage line, and
+# VIBE_TEST_BACKEND=gc refuses --coverage (linear-only instrumentation).
+vt_plan_status=0
+vt_plan="$(vt_tool plan "$@")" || vt_plan_status=$?
+[ "$vt_plan_status" = 0 ] || exit "$vt_plan_status"
+coverage=0
+update=0
+_args=()
+while IFS= read -r vt_line; do
+  case "$vt_line" in
+    "coverage "*) coverage="${vt_line#coverage }" ;;
+    "update "*) update="${vt_line#update }" ;;
+    "path "*) _args+=("${vt_line#path }") ;;
+  esac
+done <<<"$vt_plan"
+set -- ${_args[@]+"${_args[@]}"}
 
 # #683/#2376: VIBE_TEST_BACKEND=gc resolves the same filesystem module graph as
 # the linear lane and selects wasm-gc only at the final codegen boundary. It
 # runs the result under wasmtime with the gc feature flags instead of the node
-# host runner. Not combinable with --coverage (linear-only instrumentation).
+# host runner.
 backend="${VIBE_TEST_BACKEND:-linear}"
-if [ "$backend" = "gc" ] && [ "$coverage" = "1" ]; then
-  echo "vibe_test.sh: --coverage is linear-backend only (unset VIBE_TEST_BACKEND=gc)" >&2
-  exit 2
-fi
 # VIBE_TEST_CLI_WASM overrides the compiling CLI (default: the committed
 # seed). The gc lane's test-block lowering (#683) postdates older seeds, so
 # gc runs typically pass a freshly built stage2 here.
@@ -227,8 +228,7 @@ VT_JOBS="${VIBE_TEST_JOBS:-$vt_hw_jobs}"
 # shared persistent build cache while sources move underneath it, and would
 # interleave the per-file retry output. Serialize, as runtime/vibe does.
 [ "$update" = "1" ] && VT_JOBS=1
-vt_results="$(mktemp -d -t vibe-test-results-XXXXXX)"
-export ROOT_DIR coverage update backend cli_wasm covdir vt_results
+export coverage update backend cli_wasm covdir vt_results
 
 # #948: count the lowered `__test_<name>` functions in a compiled test wasm.
 # Prefer a real name-section parse (a raw `grep -c __test_` double-counts under
@@ -289,55 +289,6 @@ PY
 }
 export -f vt_count_tests
 
-# #948: condense a failed run's captured stderr into indented detail lines.
-# The raw stream is a full node/V8 (or wasmtime) trap dump; the useful signal is
-#   * the `__test_<name>` frame  -> which test failed,
-#   * the trap reason line       -> why (RuntimeError / wasm trap ...),
-#   * the wasm frames            -> where (annotated file:line via the
-#     `<out>.funcmap` sidecar the FS compile already writes, same as `vibe run`).
-# Lines are indented so they can never collide with the `ok`/`FAIL` per-file
-# lines that coverage_suite.sh & friends parse.
-#   $1 = guest stdout, $2 = runner stderr, $3 = funcmap path (may be missing),
-#   $4 = source basename, $5 = source path (optional; maps assert_eq at off=N)
-# The report under `FAIL <file>` is @vibe/testreport (#3674), the same
-# implementation the launcher's `vibe test` reaches through `vibe test-report`.
-# This script compiles with the committed seed, which may predate that
-# command, so it compiles scripts/test_report.vibex instead: once per run, on
-# the first failure, into the run's results directory. The lock keeps the
-# parallel workers from compiling it twice; the first one to take it does.
-vt_report_wasm() {
-  local wasm="$vt_results/test_report.wasm" lock="$vt_results/test_report.lock" waited=0
-  [ -s "$wasm" ] && { printf '%s' "$wasm"; return 0; }
-  if mkdir "$lock" 2>/dev/null; then
-    ( cd "$ROOT_DIR" && VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-        bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$cli_wasm" \
-        scripts/test_report.vibex "$wasm.tmp" main ) >"$vt_results/test_report.compile.log" 2>&1 || true
-    [ -s "$wasm.tmp" ] && mv "$wasm.tmp" "$wasm"
-    : > "$lock/done"
-  else
-    while [ ! -f "$lock/done" ] && [ "$waited" -lt 600 ]; do sleep 0.5; waited=$((waited + 1)); done
-  fi
-  [ -s "$wasm" ] && { printf '%s' "$wasm"; return 0; }
-  return 1
-}
-vt_fail_detail() {
-  local outf="$1" errf="$2" fm="$3" base="$4" srcfile="${5:-}" wasm
-  [ -s "$outf" ] || [ -s "$errf" ] || return 0
-  if wasm="$(vt_report_wasm)"; then
-    ( cd "$ROOT_DIR" && VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_RUNNER_QUIET_RESULT=1 \
-        bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke main "$wasm" \
-        script "$outf" "$errf" "$fm" "$base" "$srcfile" )
-  else
-    # Never a silent FAIL: say the report could not be built, and replay what
-    # the run printed so the reason is still on screen.
-    echo "       (failure report unavailable: scripts/test_report.vibex did not compile with $cli_wasm; see $vt_results/test_report.compile.log)"
-    [ -s "$outf" ] && sed 's/^/       /' "$outf"
-    [ -s "$errf" ] && sed 's/^/       /' "$errf"
-  fi
-  return 0
-}
-export -f vt_report_wasm vt_fail_detail
-
 # #2886 `--update`: patch a failing file's stale `inspect(value, content)`
 # literals to the values this run actually printed, then let the caller
 # recompile and re-run. The patch itself is done by the COMPILER, through
@@ -381,33 +332,12 @@ vt_try_update_patch() {
 }
 export -f vt_try_update_patch
 
+# $1 = one `<src_rel><TAB><flat>` line of the run's entries: the spelling
+# @vibe/testrun gave the path (#3505) and the artifact name it maps to.
 vt_worker() {
-  local src="$1"
-  local src_rel
-  case "$src" in
-    "$ROOT_DIR"/*) src_rel="${src#"$ROOT_DIR"/}" ;;
-    /*)
-      echo "vibe_test.sh: path must be under the repo root: $src" >&2
-      printf 'fail 0 0 0 0 0\n' > "$vt_results/$(printf '%s' "$src" | tr '/' '_').res"
-      return 0
-      ;;
-    *) src_rel="$src" ;;
-  esac
-  # #3505: `./x_test.vibe` (and every path `find ./dir` prints) flattened to
-  # `._x_test`, and the summary below globs `*.res`, which does not match a
-  # dot-file -- so the file's result vanished: a FAILING `./bad_test.vibe`
-  # printed FAIL, then `0 passed, 0 failed` and exit 0. Drop `.` segments and
-  # repeated slashes so a spelling names the artifact its plain form does; the
-  # summary also globs dot-files, for the `..` a path may still lead with.
-  while :; do
-    case "$src_rel" in
-      ./*) src_rel="${src_rel#./}" ;;
-      */./*) src_rel="${src_rel//\/.\//\/}" ;;
-      *//*) src_rel="${src_rel//\/\//\/}" ;;
-      *) break ;;
-    esac
-  done
-  local flat; flat="$(echo "$src_rel" | tr '/' '_' | sed 's/\.vibe$//')"
+  local entry="$1" src_rel flat
+  src_rel="${entry%%$'\t'*}"
+  flat="${entry#*$'\t'}"
   local out_rel="_build/vibe_test/$flat.wasm"
   local cov_out=""
   if [ "$coverage" = "1" ]; then
@@ -433,19 +363,12 @@ vt_worker() {
       bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
       --invoke cli_main "$cli_wasm" "$src_rel" "$out_rel" "__no_entry__" \
       >/dev/null 2>&1 || [ ! -s "$ROOT_DIR/$out_rel" ]; then
-    # #948: surface the compiler's structured diagnostic (message + location)
-    # from the `<out>.diag` sidecar instead of a bare FAIL.
-    local cdetail=""
-    if [ -s "$ROOT_DIR/$out_rel.diag" ]; then
-      cdetail="$(head -1 "$ROOT_DIR/$out_rel.diag")"
-    fi
-    if [ -n "$cdetail" ]; then
-      printf 'FAIL (compile) %s\n       %s\n' "$src_rel" "$cdetail"
-    else
-      echo "FAIL (compile) $src_rel"
-    fi
-    printf 'fail 0 0 0 0 0\n' > "$vt_results/$flat.res"
-    printf 'seed\n' > "$vt_results/$flat.compilefail"
+    # #948: the line carries the compiler's diagnostic from the `<out>.diag`
+    # sidecar instead of a bare FAIL. Each per-file block is printed in ONE
+    # write, so parallel workers cannot interleave inside it.
+    local shown
+    shown="$(vt_tool compile-fail "$src_rel" "$ROOT_DIR/$out_rel.diag" "$vt_results/$flat.res")"
+    printf '%s\n' "$shown"
     return 0
   fi
 
@@ -485,48 +408,15 @@ vt_worker() {
     fi
   fi
   if [ "$run_ok" = "1" ]; then
-    if [ "$coverage" = "1" ] && [ -s "$cov_out" ]; then
-      local f_hit f_total b_hit b_total
-      read -r f_hit f_total b_hit b_total < <(python3 - "$cov_out" <<'PY'
-import json, sys
-r = json.load(open(sys.argv[1]))
-b = r.get("branch") or {}
-print(r.get("hit", 0), r.get("total", 0), b.get("hit", 0), b.get("total", 0))
-PY
-)
-      printf 'ok   %s  [cov fn %d/%d, branch %d/%d]\n' "$src_rel" "$f_hit" "$f_total" "$b_hit" "$b_total"
-      if [ "${VIBE_COV_SHOW_GAPS:-0}" = "1" ]; then
-        # Surface WHAT is uncovered (the CLI summary alone is not actionable):
-        # never-called functions and functions with untaken if/match branches.
-        python3 - "$cov_out" <<'PY'
-import json, sys
-r = json.load(open(sys.argv[1]))
-missed = r.get("missed_fns", [])
-if missed:
-    print("       uncovered functions: " + ", ".join(missed))
-for g in (r.get("branch") or {}).get("top_gaps", []):
-    print(f"       branch gap: {g['fn']} {g['taken']}/{g['total']} taken")
-PY
-      fi
-      printf 'ok %s %s %s %s 1 %s\n' "$f_hit" "$f_total" "$b_hit" "$b_total" "$n_tests" > "$vt_results/$flat.res"
-    elif [ "$coverage" = "1" ]; then
-      echo "FAIL (coverage) $src_rel"
-      echo "       test passed but produced no fresh coverage report: $cov_out"
-      printf 'fail 0 0 0 0 0 %s\n' "$n_tests" > "$vt_results/$flat.res"
+    # A --coverage pass needs a fresh report (one cleared above, #2153);
+    # VIBE_COV_SHOW_GAPS=1 also lists what it did not reach.
+    local shown
+    if [ "$coverage" = "1" ]; then
+      shown="$(vt_tool coverage "$src_rel" "$cov_out" "$n_tests" "${VIBE_COV_SHOW_GAPS:-0}" "$vt_results/$flat.res")"
     else
-      # #948: annotate (don't fail) a file with zero recognized `test {}`
-      # blocks — a typo'd block otherwise passes silently via an empty _start.
-      local upd_note=""
-      if [ "${VIBE_TEST_UPDATE_PATCHES:-0}" -gt 0 ]; then
-        upd_note=" (updated ${VIBE_TEST_UPDATE_PATCHES} snapshot(s))"
-      fi
-      if [ "$n_tests" = "0" ]; then
-        echo "ok   $src_rel (no tests found)$upd_note"
-      else
-        echo "ok   $src_rel$upd_note"
-      fi
-      printf 'ok 0 0 0 0 0 %s\n' "$n_tests" > "$vt_results/$flat.res"
+      shown="$(vt_tool pass "$src_rel" "$n_tests" "${VIBE_TEST_UPDATE_PATCHES:-0}" "$vt_results/$flat.res")"
     fi
+    printf '%s\n' "$shown"
     rm -f "$run_out" "$run_errf"
   else
     # #2886 `--update`: before reporting, try to bring the file's stale
@@ -542,30 +432,17 @@ PY
       rm -f "$run_out" "$run_errf"
       VIBE_TEST_UPDATE_DEPTH=$((_depth + 1)) \
         VIBE_TEST_UPDATE_PATCHES=$((${VIBE_TEST_UPDATE_PATCHES:-0} + 1)) \
-        vt_worker "$src"
+        vt_worker "$entry"
       return 0
     fi
-    # #948: FAIL + condensed detail in ONE write so parallel workers cannot
-    # interleave inside the block; detail lines are indented, so downstream
-    # `^(ok|FAIL) <file>` parsers (coverage_suite.sh) are unaffected.
-    local detail
-    detail="$(vt_fail_detail "$run_out" "$run_errf" "$ROOT_DIR/$out_rel.funcmap" "$(basename "$src_rel")" "$ROOT_DIR/$src_rel")"
-    # #2886: say so when --update rewrote the file and it STILL fails. Without
-    # it the two outcomes -- "nothing here was a stale snapshot" and "snapshots
-    # were patched and something else is wrong" -- print identically, and the
-    # source on disk is no longer the one the reader is looking at. The note
-    # goes after the path, which the `^(ok|FAIL)\s+(\S+\.vibe)` parsers
-    # (coverage_suite_report.py) already tolerate, same as `(no tests found)`.
-    local fail_note=""
-    if [ "${VIBE_TEST_UPDATE_PATCHES:-0}" -gt 0 ]; then
-      fail_note=" (after ${VIBE_TEST_UPDATE_PATCHES} snapshot patch(es))"
-    fi
-    if [ -n "$detail" ]; then
-      printf 'FAIL %s%s\n%s\n' "$src_rel" "$fail_note" "$detail"
-    else
-      echo "FAIL $src_rel$fail_note"
-    fi
-    printf 'fail 0 0 0 0 0 %s\n' "$n_tests" > "$vt_results/$flat.res"
+    # #948: FAIL, then the condensed report (@vibe/testreport), in ONE write;
+    # the report's lines are indented, so `^(ok|FAIL) <file>` parsers
+    # (coverage_suite.sh) are unaffected. A file --update rewrote that still
+    # fails says so (#2886).
+    local shown
+    shown="$(vt_tool fail "$src_rel" "$n_tests" "${VIBE_TEST_UPDATE_PATCHES:-0}" "$run_out" "$run_errf" \
+      "$ROOT_DIR/$out_rel.funcmap" "$(basename "$src_rel")" "$ROOT_DIR/$src_rel" "$vt_results/$flat.res")"
+    printf '%s\n' "$shown"
     rm -f "$run_out" "$run_errf"
   fi
   return 0
@@ -577,75 +454,21 @@ export -f vt_worker
 # counts/contents they assert on shift underneath them (same split as
 # unit_test_runner.sh). Anything with "cache" in its path runs in a
 # sequential tail after the fan-out instead.
-printf '%s\n' "${files[@]}" | grep -vi cache \
+# One `<src_rel><TAB><flat>` line per file the run compiles; a path outside
+# the repository is reported and recorded by the tool instead.
+vt_tool entries "$ROOT_DIR" "$vt_results" "${files[@]}" > "$vt_results/entries.tsv"
+grep -vi cache "$vt_results/entries.tsv" \
   | xargs -P "$VT_JOBS" -I{} bash -c 'vt_worker "$@"' _ {} || true
 while IFS= read -r f; do
   [ -n "$f" ] && vt_worker "$f"
-done < <(printf '%s\n' "${files[@]}" | grep -i cache)
+done < <(grep -i cache "$vt_results/entries.tsv" || true)
 
-pass=0
-fail=0
-tests_total=0
-notest_files=0
-cov_fn_total=0
-cov_fn_hit=0
-cov_br_total=0
-cov_br_hit=0
-cov_files=0
-# dotglob: a result file whose flat name starts with `.` (`.._x_test.res` for
-# `../x_test.vibe`) is still a result (#3505). `.` and `..` never match.
-shopt -s dotglob
-for res in "$vt_results"/*.res; do
-  [ -f "$res" ] || continue
-  read -r r_status r_fh r_ft r_bh r_bt r_cov r_nt < "$res"
-  case "${r_nt:-}" in ''|*[!0-9]*) r_nt=0 ;; esac
-  tests_total=$((tests_total + r_nt))
-  if [ "$r_status" = "ok" ]; then
-    pass=$((pass + 1))
-    [ "$r_nt" = "0" ] && notest_files=$((notest_files + 1))
-    if [ "$r_cov" = "1" ]; then
-      cov_fn_hit=$((cov_fn_hit + r_fh)); cov_fn_total=$((cov_fn_total + r_ft))
-      cov_br_hit=$((cov_br_hit + r_bh)); cov_br_total=$((cov_br_total + r_bt))
-      cov_files=$((cov_files + 1))
-    fi
-  else
-    fail=$((fail + 1))
-  fi
-done
-compile_fails=0
-for marker in "$vt_results"/*.compilefail; do
-  [ -f "$marker" ] || continue
-  compile_fails=$((compile_fails + 1))
-done
-rm -rf "$vt_results"
-
-# #948: report the test-block total alongside the per-file counts (reporting
-# is still per file / all-or-nothing; true per-test pass/fail is a follow-up).
-# The gc backend cannot count tests (names stripped) — keep the legacy summary.
-if [ "$backend" = "gc" ]; then
-  echo "[vibe-test] $pass passed, $fail failed (${#files[@]} files)"
-else
-  echo "[vibe-test] $pass passed, $fail failed (${#files[@]} files, $tests_total tests)"
-  if [ "$notest_files" -gt 0 ]; then
-    echo "[vibe-test] note: $notest_files file(s) with no tests found"
-  fi
-fi
-# `FAIL (compile)` from the SEED is ambiguous: the file may be perfectly good
-# and merely use something the seed predates. `inspect` is the standing example
-# -- #1571 made it import-free by desugaring it in the checker, so every
-# `inspect` call in a current, CI-green test file compiles under stage2 and
-# reports `unknown name: inspect` under the seed. Reading that line at face
-# value costs a debugging session on a file that is not broken.
-if [ "$compile_fails" -gt 0 ] && [ -z "${VIBE_TEST_CLI_WASM:-}" ]; then
-  echo "[vibe-test] note: compiled with the committed seed ($seed)."
-  echo "[vibe-test]       A file that uses anything newer than the seed fails here even when it is correct."
-  echo "[vibe-test]       Re-check against this checkout's compiler with:"
-  echo "[vibe-test]         VIBE_TEST_CLI_WASM=_build/selfhost/generations/<gen>_\$(git rev-parse --short HEAD)/stage2.wasm"
-fi
-if [ "$coverage" = "1" ] && [ "$cov_files" -gt 0 ]; then
-  fn_pct=$(python3 -c "print(f'{($cov_fn_hit/$cov_fn_total*100):.2f}%' if $cov_fn_total else 'n/a')")
-  br_pct=$(python3 -c "print(f'{($cov_br_hit/$cov_br_total*100):.2f}%' if $cov_br_total else 'n/a')")
-  echo "[vibe-test] coverage: functions $cov_fn_hit/$cov_fn_total ($fn_pct), branches $cov_br_hit/$cov_br_total ($br_pct) over $cov_files file(s)"
-  echo "[vibe-test] per-file coverage JSON: $covdir/"
-fi
-[ "$fail" -eq 0 ]
+# The `[vibe-test]` lines (#948: the test-block total beside the per-file
+# counts; the gc backend strips the names, so it keeps the files-only line),
+# the seed note after a compile failure, and the coverage totals. The tool's
+# status is the run's: 1 when any file failed.
+vt_seed_default=0
+[ -z "${VIBE_TEST_CLI_WASM:-}" ] && vt_seed_default=1
+vt_status=0
+vt_tool summary "$vt_results" "${#files[@]}" "$coverage" "$vt_seed_default" "$seed" "$covdir" || vt_status=$?
+exit "$vt_status"
