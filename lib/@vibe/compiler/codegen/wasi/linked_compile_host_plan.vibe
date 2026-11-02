@@ -1764,13 +1764,33 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
 }
 
 /// `linked_imports` plus one `(module, callee, -1, -1)` entry per distinct
-/// foreign core-wasm function the inline-wasm bodies `iw_wats` call
+/// foreign core-wasm function the surviving inline-wasm bodies call
 /// (`import ./x.wasm`, see core/wasm_import_binding.vibe). The callee
 /// spelling carries the field name and signature; the -1 param count is what
 /// tells the import emission and the builtin registration apart from a vibe
 /// linked import.
-export fn lc_with_foreign_imports(linked_imports: Array[(String, String, Int, Int)], iw_wats: Array[String]) -> Array[(String, String, Int, Int)] {
-  let foreign = wasm_import_callees_in(iw_wats)
+export fn lc_with_foreign_imports(linked_imports: Array[(String, String, Int, Int)], stmts: Array[Stmt], iw_names: Array[String], iw_wats: Array[String]) -> Array[(String, String, Int, Int)] {
+  // Only the bodies late DCE left in the program: a binding offers every
+  // export of its module (z3.wasm has 853), and an import nothing reaches is
+  // still one the runner has to satisfy.
+  let defined: MutMap[String, Bool] = MutMap::new_string()
+  for st in stmts {
+    match st {
+      SLet(_, _, name, _, _) => MutMap::set(defined, name, true),
+      _ => ()
+    }
+  }
+  let live_wats: Array[String] = []
+  let mut wi = 0
+  while wi < Array::length(iw_wats) && wi < Array::length(iw_names) {
+    if MutMap::has(defined, Array::get(iw_names, wi)) {
+      Array::push(live_wats, Array::get(iw_wats, wi))
+    } else {
+      ()
+    }
+    wi = wi + 1
+  }
+  let foreign = wasm_import_callees_in(live_wats)
   if Array::length(foreign) == 0 {
     linked_imports
   } else {

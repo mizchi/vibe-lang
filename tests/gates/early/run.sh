@@ -27,6 +27,9 @@ bash "$ROOT_DIR/scripts/test_pkg_update_diff.sh" "$stage2_wasm"
 echo "[compiler-gate] typed core-wasm import links and runs on viberun and node"
 bash "$ROOT_DIR/scripts/test_wasm_import.sh" "$stage2_wasm"
 
+echo "[compiler-gate] @vibex/z3 binds the real z3.wasm by its declared types"
+bash "$ROOT_DIR/scripts/test_z3_binding.sh" "$stage2_wasm"
+
 source "$ROOT_DIR/tests/gates/early/multi_file_fs_compile_regression.sh"
 source "$ROOT_DIR/tests/gates/early/extended_derive.sh"
 source "$ROOT_DIR/tests/gates/early/async_for_loop_classification.sh"

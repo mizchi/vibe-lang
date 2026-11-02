@@ -1,0 +1,63 @@
+//# Imports
+
+import ./cstring.vibe {
+  read_cstring, write_cstring
+}
+
+//# Misc
+
+// A fake foreign memory: 64 zeroed bytes and a bump allocator from 8.
+fn fake_memory() -> (Array[Int], Array[Int]) {
+  let bytes: Array[Int] = []
+  let mut i = 0
+  while i < 64 {
+    Array::push(bytes, 0)
+    i = i + 1
+  }
+  (bytes, [8])
+}
+
+test "a string round-trips through a foreign memory" {
+  let (mem, next) = fake_memory()
+  let alloc = (n: Int) -> Int {
+    let p = Array::get(next, 0)
+    Array::set(next, 0, p + n)
+    p
+  }
+  let store = (a: Int, v: Int) -> Unit {
+    Array::set(mem, a, v)
+  }
+  let load = (a: Int) -> Int {
+    Array::get(mem, a)
+  }
+  let p = write_cstring("(check-sat)", alloc, store)
+  inspect(p, content="8")
+  inspect(Array::get(mem, 8 + 11), content="0")
+  inspect(read_cstring(p, load), content="(check-sat)")
+}
+
+test "a NUL byte is refused instead of truncating" {
+  let (mem, _) = fake_memory()
+  let r = handle {
+    let _ = write_cstring("a\u{0}b", (n: Int) -> Int {
+      8
+    }, (a: Int, v: Int) -> Unit {
+      Array::set(mem, a, v)
+    })
+    "written"
+  } with {
+    Exception::Throw(m) => m
+  }
+  inspect(r, content="write_cstring: byte 1 is NUL, which a C string cannot hold")
+}
+
+test "a null pointer is refused" {
+  let r = handle {
+    read_cstring(0, (a: Int) -> Int {
+      0
+    })
+  } with {
+    Exception::Throw(m) => m
+  }
+  inspect(r, content="read_cstring: null pointer")
+}
