@@ -21,6 +21,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const FOREIGN_PREFIX = "vibe:wasm:";
+const COMPONENT_PREFIX = "vibe:component:";
 
 function foreignModuleNames(wasmModule) {
   const names = new Set();
@@ -38,6 +39,17 @@ function outOfBounds(name, addr, size) {
 
 async function linkForeignWasmModules(wasmModule, opts = {}) {
   const baseDir = opts.baseDir ?? process.env.VIBE_WASM_LINK_DIR ?? process.cwd();
+  // A component import (`vibe:component:<path>`) needs the canonical ABI,
+  // which viberun gets from wasmtime. Refuse it here: left to the runner's
+  // fallback stub, every call would silently answer 0.
+  const components = WebAssembly.Module.imports(wasmModule)
+    .filter((i) => i.module.startsWith(COMPONENT_PREFIX))
+    .map((i) => i.module);
+  if (components.length > 0) {
+    throw new Error(
+      `cannot link '${components[0]}': importing a wasm component runs on viberun; the node runner cannot instantiate components`,
+    );
+  }
   const out = {};
   for (const name of foreignModuleNames(wasmModule)) {
     const rel = name.slice(FOREIGN_PREFIX.length);
@@ -83,4 +95,4 @@ async function linkForeignWasmModules(wasmModule, opts = {}) {
   return out;
 }
 
-module.exports = { FOREIGN_PREFIX, foreignModuleNames, linkForeignWasmModules };
+module.exports = { COMPONENT_PREFIX, FOREIGN_PREFIX, foreignModuleNames, linkForeignWasmModules };

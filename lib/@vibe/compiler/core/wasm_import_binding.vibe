@@ -442,7 +442,7 @@ fn wib_read_module(bytes: Bytes) -> (Array[(Array[Int], Array[Int])], Array[Int]
     throw("not a wasm binary (missing the \\0asm header)")
   } else if Bytes::get(bytes, 4) != 1 || Bytes::get(bytes, 5) != 0 || Bytes::get(bytes, 6) != 0 || Bytes::get(bytes, 7) != 0 {
     if Bytes::get(bytes, 4) == 0x0D && Bytes::get(bytes, 6) == 1 {
-      throw("this is a wasm COMPONENT, not a core module; importing a component is not supported yet -- import a core module, or build bindings from the component's WIT")
+      throw("unsupported wasm component layer (only layer 1, binary version 0x0d, is read)")
     } else {
       throw("unsupported wasm binary version (only core wasm version 1 is read)")
     }
@@ -804,6 +804,18 @@ fn wib_emit_fn(out: Array[String], vibe_name: String, doc: String, callee: Strin
 /// at `path`. Throws a located-by-path message when the binary cannot be
 /// read.
 export fn wasm_import_binding_source(path: String, bytes: Bytes) -> String with Exception {
+  if wib_is_component(bytes) {
+    wib_component_binding_source(path, bytes)
+  } else {
+    wib_core_binding_source(path, bytes)
+  }
+}
+
+fn wib_is_component(bytes: Bytes) -> Bool {
+  Bytes::length(bytes) >= 8 && Bytes::get(bytes, 0) == 0 && Bytes::get(bytes, 1) == 97 && Bytes::get(bytes, 2) == 115 && Bytes::get(bytes, 3) == 109 && Bytes::get(bytes, 4) == 0x0D && Bytes::get(bytes, 5) == 0 && Bytes::get(bytes, 6) == 1 && Bytes::get(bytes, 7) == 0
+}
+
+fn wib_core_binding_source(path: String, bytes: Bytes) -> String with Exception {
   let (fn_sigs, _, exports, has_memory) = handle {
     wib_read_module(bytes)
   } with { Exception::Throw(msg) => throw("cannot import \{path}: \{msg}") }
@@ -923,4 +935,549 @@ export fn refuse_failed_wasm_import(text: String) -> Unit with Exception {
     Some(msg) => throw(msg),
     None => ()
   }
+}
+
+// ---------------------------------------------------------------------------
+// Components (`import ./greeter.component.wasm { greet }`)
+//
+// A component's exported functions are typed by its component type section,
+// in WIT terms, so the binding takes their types from there instead of from
+// core valtypes. What is read, and what is refused rather than guessed:
+//
+//   - world-level function exports (`export greet: func(..)`); an exported
+//     INTERFACE (an instance) is listed as not offered;
+//   - params and result of `s8`..`u64` -> `Int`, `string` -> `String`, and no
+//     result -> `Unit`. Everything else (bool, char, floats, lists, records,
+//     variants, resources, ...) is not offered yet;
+//   - the type / func index spaces are followed through the type, canon,
+//     alias, import and export sections. A form this reader does not follow
+//     (a component or instance type -- what an imported interface declares --
+//     or an unknown canon or type form) stops it, and every function typed
+//     after that point is listed as not offered.
+//
+// The call itself goes through a core import of module `vibe:component:<path>`
+// whose field is the export's name: Int params pass untagged, a string passes
+// as the raw Bytes object pointer of its bytes, and an Int / string result
+// comes back as an untagged i64 / packed string. The runner instantiates the
+// component and does the canonical-ABI lifting and lowering on the program's
+// behalf -- including the range check of each Int against its WIT width.
+
+/// The core import module a component binding of `path` calls through.
+export fn wasm_component_module_name(path: String) -> String {
+  String::concat("vibe:component:", path)
+}
+
+/// WIT name of a primitive component valtype code, or "" for anything else.
+fn wib_cv_name(code: Int) -> String {
+  if code == 0x7f {
+    "bool"
+  } else if code == 0x7e {
+    "s8"
+  } else if code == 0x7d {
+    "u8"
+  } else if code == 0x7c {
+    "s16"
+  } else if code == 0x7b {
+    "u16"
+  } else if code == 0x7a {
+    "s32"
+  } else if code == 0x79 {
+    "u32"
+  } else if code == 0x78 {
+    "s64"
+  } else if code == 0x77 {
+    "u64"
+  } else if code == 0x76 {
+    "f32"
+  } else if code == 0x75 {
+    "f64"
+  } else if code == 0x74 {
+    "char"
+  } else if code == 0x73 {
+    "string"
+  } else {
+    ""
+  }
+}
+
+fn wib_cv_is_int(code: Int) -> Bool {
+  code >= 0x77 && code <= 0x7e
+}
+
+fn wib_cv_admitted(code: Int) -> Bool {
+  wib_cv_is_int(code) || code == 0x73
+}
+
+/// A valtype: a primitive code (0x64..0x7f), or 0x100 + a type index.
+fn wib_read_cvaltype(bytes: Bytes, pos: Int) -> (Int, Int) with Exception {
+  let b = wib_byte(bytes, pos)
+  if b >= 0x64 && b <= 0x7f {
+    (b, pos + 1)
+  } else {
+    let (idx, p) = wib_leb_u(bytes, pos)
+    (0x100 + idx, p)
+  }
+}
+
+fn wib_cv_show(code: Int) -> String {
+  let n = wib_cv_name(code)
+  if n != "" {
+    n
+  } else if code >= 0x100 {
+    "<type \{code - 0x100}>"
+  } else {
+    "<type form 0x\{wib_hex_digit((code >> 4) & 15)}\{wib_hex_digit(code & 15)}>"
+  }
+}
+
+/// A component export name (`importname'` / `exportname'`): a 0x00 or 0x01
+/// discriminant and the name; 0x01 also carries a version suffix.
+fn wib_component_extern_name(bytes: Bytes, pos: Int) -> (String, Int) with Exception {
+  let d = wib_byte(bytes, pos)
+  let (nm, p) = wib_name(bytes, pos + 1)
+  if d == 0x00 {
+    (nm, p)
+  } else if d == 0x01 {
+    let (_, p2) = wib_name(bytes, p)
+    (nm, p2)
+  } else {
+    throw("unknown component name form 0x\{wib_hex_digit((d >> 4) & 15)}\{wib_hex_digit(d & 15)}")
+  }
+}
+
+/// Skip an `externdesc`; answers `(func type index or -1, adds a type?, next)`.
+fn wib_component_externdesc(bytes: Bytes, pos: Int) -> (Int, Bool, Int) with Exception {
+  let k = wib_byte(bytes, pos)
+  if k == 0x00 {
+    let (_, p) = wib_leb_u(bytes, pos + 2)
+    (-1, false, p)
+  } else if k == 0x01 {
+    let (ti, p) = wib_leb_u(bytes, pos + 1)
+    (ti, false, p)
+  } else if k == 0x02 {
+    let vb = wib_byte(bytes, pos + 1)
+    if vb == 0x00 {
+      let (_, p) = wib_leb_u(bytes, pos + 2)
+      (-1, false, p)
+    } else {
+      let (_, p) = wib_read_cvaltype(bytes, pos + 2)
+      (-1, false, p)
+    }
+  } else if k == 0x03 {
+    let tb = wib_byte(bytes, pos + 1)
+    if tb == 0x00 {
+      let (_, p) = wib_leb_u(bytes, pos + 2)
+      (-1, true, p)
+    } else {
+      (-1, true, pos + 2)
+    }
+  } else if k == 0x04 || k == 0x05 {
+    let (_, p) = wib_leb_u(bytes, pos + 1)
+    (-1, false, p)
+  } else {
+    throw("unknown component externdesc 0x\{wib_hex_digit((k >> 4) & 15)}\{wib_hex_digit(k & 15)}")
+  }
+}
+
+/// `(exports as (name, func type index or -1, why-not-offered or ""),
+/// types as (params, param labels, results))` of a component. A type entry
+/// that is not a function type has params `[-1]`.
+fn wib_read_component(bytes: Bytes) -> (Array[(String, Int, String)], Array[(Array[Int], Array[String], Array[Int])]) with Exception {
+  let types: Array[(Array[Int], Array[String], Array[Int])] = []
+  let funcs = wib_fresh_ints()
+  let exports: Array[(String, Int, String)] = []
+  // Once a form this reader cannot follow appears, later indices are
+  // unknown: `lost` is the reason, and every later entry records it.
+  let mut lost = ""
+  let mut p = 8
+  let n = Bytes::length(bytes)
+  while p < n {
+    let id = wib_byte(bytes, p)
+    let (size, body) = wib_leb_u(bytes, p + 1)
+    let end = body + size
+    if end > n {
+      throw("truncated component (section \{id} runs past the end)")
+    } else {
+      ()
+    }
+    if lost != "" {
+      ()
+    } else if id == 7 {
+      let (count, p0) = wib_leb_u(bytes, body)
+      let mut q = p0
+      let mut i = 0
+      while i < count && lost == "" {
+        let form = wib_byte(bytes, q)
+        if form == 0x40 {
+          let ps = wib_fresh_ints()
+          let labels = wib_fresh_strings()
+          let (np, pp) = wib_leb_u(bytes, q + 1)
+          let mut r = pp
+          let mut k = 0
+          while k < np {
+            let (label, r1) = wib_name(bytes, r)
+            let (vt, r2) = wib_read_cvaltype(bytes, r1)
+            Array::push(labels, label)
+            Array::push(ps, vt)
+            r = r2
+            k = k + 1
+          }
+          let rs = wib_fresh_ints()
+          let rk = wib_byte(bytes, r)
+          if rk == 0x00 {
+            let (vt, r3) = wib_read_cvaltype(bytes, r + 1)
+            Array::push(rs, vt)
+            r = r3
+          } else if rk == 0x01 {
+            let (nr, r3) = wib_leb_u(bytes, r + 1)
+            r = r3
+            let mut j = 0
+            while j < nr {
+              let (_, r4) = wib_name(bytes, r)
+              let (vt, r5) = wib_read_cvaltype(bytes, r4)
+              Array::push(rs, vt)
+              Array::push(rs, -1)
+              r = r5
+              j = j + 1
+            }
+          } else {
+            lost = "an unknown function result form"
+          }
+          Array::push(types, (ps, labels, rs))
+          q = r
+        } else if form >= 0x73 && form <= 0x7f {
+          Array::push(types, ([-1], wib_fresh_strings(), wib_fresh_ints()))
+          q = q + 1
+        } else if form == 0x6b || form == 0x70 {
+          let (_, r) = wib_read_cvaltype(bytes, q + 1)
+          Array::push(types, ([-1], wib_fresh_strings(), wib_fresh_ints()))
+          q = r
+        } else if form == 0x6f {
+          let (cnt, r0) = wib_leb_u(bytes, q + 1)
+          let mut r = r0
+          let mut k = 0
+          while k < cnt {
+            let (_, r1) = wib_read_cvaltype(bytes, r)
+            r = r1
+            k = k + 1
+          }
+          Array::push(types, ([-1], wib_fresh_strings(), wib_fresh_ints()))
+          q = r
+        } else if form == 0x72 {
+          let (cnt, r0) = wib_leb_u(bytes, q + 1)
+          let mut r = r0
+          let mut k = 0
+          while k < cnt {
+            let (_, r1) = wib_name(bytes, r)
+            let (_, r2) = wib_read_cvaltype(bytes, r1)
+            r = r2
+            k = k + 1
+          }
+          Array::push(types, ([-1], wib_fresh_strings(), wib_fresh_ints()))
+          q = r
+        } else if form == 0x6e || form == 0x6d {
+          let (cnt, r0) = wib_leb_u(bytes, q + 1)
+          let mut r = r0
+          let mut k = 0
+          while k < cnt {
+            let (_, r1) = wib_name(bytes, r)
+            r = r1
+            k = k + 1
+          }
+          Array::push(types, ([-1], wib_fresh_strings(), wib_fresh_ints()))
+          q = r
+        } else if form == 0x69 || form == 0x68 {
+          let (_, r) = wib_leb_u(bytes, q + 1)
+          Array::push(types, ([-1], wib_fresh_strings(), wib_fresh_ints()))
+          q = r
+        } else {
+          lost = "a type form this reader does not follow (0x\{wib_hex_digit((form >> 4) & 15)}\{wib_hex_digit(form & 15)}; a component or instance type is what an imported interface declares)"
+        }
+        i = i + 1
+      }
+    } else if id == 8 {
+      let (count, p0) = wib_leb_u(bytes, body)
+      let mut q = p0
+      let mut i = 0
+      while i < count && lost == "" {
+        let op = wib_byte(bytes, q)
+        if op == 0x00 || op == 0x01 {
+          // lift `0x00 0x00 corefunc opts type` / lower `0x01 0x00 func opts`
+          let (_, q1) = wib_leb_u(bytes, q + 2)
+          let (nopt, q2) = wib_leb_u(bytes, q1)
+          let mut r = q2
+          let mut k = 0
+          while k < nopt && lost == "" {
+            let o = wib_byte(bytes, r)
+            if o <= 0x02 || o == 0x06 {
+              r = r + 1
+            } else if o >= 0x03 && o <= 0x07 {
+              let (_, r1) = wib_leb_u(bytes, r + 1)
+              r = r1
+            } else {
+              lost = "an unknown canonical option"
+            }
+            k = k + 1
+          }
+          if op == 0x00 {
+            let (ti, r1) = wib_leb_u(bytes, r)
+            Array::push(funcs, ti)
+            q = r1
+          } else {
+            q = r
+          }
+        } else if op == 0x02 || op == 0x03 || op == 0x04 {
+          let (_, q1) = wib_leb_u(bytes, q + 1)
+          q = q1
+        } else {
+          lost = "a canonical builtin this reader does not follow"
+        }
+        i = i + 1
+      }
+    } else if id == 6 {
+      let (count, p0) = wib_leb_u(bytes, body)
+      let mut q = p0
+      let mut i = 0
+      while i < count {
+        let sort = wib_byte(bytes, q)
+        let after_sort = if sort == 0x00 {
+          q + 2
+        } else {
+          q + 1
+        }
+        let tk = wib_byte(bytes, after_sort)
+        let after_target = if tk == 0x00 || tk == 0x01 {
+          let (_, t1) = wib_leb_u(bytes, after_sort + 1)
+          let (_, t2) = wib_name(bytes, t1)
+          t2
+        } else {
+          let (_, t1) = wib_leb_u(bytes, after_sort + 1)
+          let (_, t2) = wib_leb_u(bytes, t1)
+          t2
+        }
+        if sort == 0x01 {
+          Array::push(funcs, -1)
+        } else if sort == 0x03 {
+          Array::push(types, ([-1], wib_fresh_strings(), wib_fresh_ints()))
+        } else {
+          ()
+        }
+        q = after_target
+        i = i + 1
+      }
+    } else if id == 10 {
+      let (count, p0) = wib_leb_u(bytes, body)
+      let mut q = p0
+      let mut i = 0
+      while i < count {
+        let (_, q1) = wib_component_extern_name(bytes, q)
+        let (fti, adds_type, q2) = wib_component_externdesc(bytes, q1)
+        if wib_byte(bytes, q1) == 0x01 {
+          Array::push(funcs, fti)
+        } else if adds_type {
+          Array::push(types, ([-1], wib_fresh_strings(), wib_fresh_ints()))
+        } else {
+          ()
+        }
+        q = q2
+        i = i + 1
+      }
+    } else if id == 11 {
+      let (count, p0) = wib_leb_u(bytes, body)
+      let mut q = p0
+      let mut i = 0
+      while i < count {
+        let (nm, q1) = wib_component_extern_name(bytes, q)
+        let sort = wib_byte(bytes, q1)
+        let after_sort = if sort == 0x00 {
+          q1 + 2
+        } else {
+          q1 + 1
+        }
+        let (idx, q2) = wib_leb_u(bytes, after_sort)
+        let has_desc = wib_byte(bytes, q2)
+        let (desc_fti, desc_type, q3) = if has_desc == 0x01 {
+          wib_component_externdesc(bytes, q2 + 1)
+        } else {
+          (-1, false, q2 + 1)
+        }
+        if sort == 0x01 {
+          let fti = if desc_fti >= 0 {
+            desc_fti
+          } else if idx < Array::length(funcs) {
+            Array::get(funcs, idx)
+          } else {
+            -1
+          }
+          Array::push(funcs, fti)
+          Array::push(exports, (nm, fti, ""))
+        } else if sort == 0x05 {
+          Array::push(exports, (nm, -1, "an exported interface (instance); only world-level functions are read yet"))
+        } else if sort == 0x03 || desc_type {
+          Array::push(types, ([-1], wib_fresh_strings(), wib_fresh_ints()))
+        } else {
+          ()
+        }
+        q = q3
+        i = i + 1
+      }
+    } else {
+      ()
+    }
+    if lost != "" {
+      Array::push(exports, ("", -2, lost))
+    } else {
+      ()
+    }
+    p = end
+  }
+  (exports, types)
+}
+
+fn wib_component_sig_text(params: Array[Int], labels: Array[String], results: Array[Int]) -> String {
+  let parts = wib_fresh_strings()
+  let mut i = 0
+  while i < Array::length(params) {
+    let label = if i < Array::length(labels) {
+      Array::get(labels, i)
+    } else {
+      "p\{i}"
+    }
+    Array::push(parts, "\{label}: \{wib_cv_show(Array::get(params, i))}")
+    i = i + 1
+  }
+  let ps = String::join(parts, ", ")
+  if Array::length(results) == 0 {
+    "func(\{ps})"
+  } else if Array::length(results) == 1 {
+    "func(\{ps}) -> \{wib_cv_show(Array::get(results, 0))}"
+  } else {
+    "func(\{ps}) -> <\{Array::length(results) / 2} named results>"
+  }
+}
+
+fn wib_component_emit(out: Array[String], vibe_name: String, doc: String, callee: String, params: Array[Int], results: Array[Int]) -> Unit {
+  let raw_params = wib_fresh_strings()
+  let wrap_params = wib_fresh_strings()
+  let wrap_args = wib_fresh_strings()
+  let mut args = ""
+  let mut i = 0
+  while i < Array::length(params) {
+    if Array::get(params, i) == 0x73 {
+      Array::push(raw_params, "a\{i}: Bytes")
+      Array::push(wrap_params, "a\{i}: String")
+      Array::push(wrap_args, "wasm_raw__string_bytes(a\{i})")
+      args = String::concat(args, " (local.get $a\{i})")
+    } else {
+      Array::push(raw_params, "a\{i}: Int")
+      Array::push(wrap_params, "a\{i}: Int")
+      Array::push(wrap_args, "a\{i}")
+      args = String::concat(args, " \{wib_untag("a\{i}")}")
+    }
+    i = i + 1
+  }
+  let call = "(call $\{callee}\{args})"
+  let has_result = Array::length(results) == 1
+  let result_is_string = has_result && Array::get(results, 0) == 0x73
+  let (raw_ret, body, wrap_ret) = if !has_result {
+    ("Int", "\{call} (i64.const 0)", "Unit")
+  } else if result_is_string {
+    ("String", call, "String")
+  } else {
+    ("Int", "(i64.shl \{call} (i64.const 1))", "Int")
+  }
+  Array::push(out, "/// \{doc}\n")
+  Array::push(out, "fn wasm_raw_\{vibe_name}(\{String::join(raw_params, ", ")}) -> \{raw_ret} = wasm \"\{body}\"\n")
+  if has_result {
+    Array::push(out, "export fn \{vibe_name}(\{String::join(wrap_params, ", ")}) -> \{wrap_ret} {\n  wasm_raw_\{vibe_name}(\{String::join(wrap_args, ", ")})\n}\n\n")
+  } else {
+    Array::push(out, "export fn \{vibe_name}(\{String::join(wrap_params, ", ")}) -> Unit {\n  let _ = wasm_raw_\{vibe_name}(\{String::join(wrap_args, ", ")})\n  ()\n}\n\n")
+  }
+}
+
+fn wib_component_binding_source(path: String, bytes: Bytes) -> String with Exception {
+  let (exports, types) = handle {
+    wib_read_component(bytes)
+  } with { Exception::Throw(msg) => throw("cannot import \{path}: \{msg}") }
+  let module_name = wasm_component_module_name(path)
+  let out = wib_fresh_strings()
+  let withheld = wib_fresh_strings()
+  Array::push(out, "// Bindings synthesized from the wasm component \{wib_display_name(path)}.\n// Calls resolve through `\{wib_display_name(module_name)}`.\n\n")
+  let names = wib_fresh_strings()
+  for ex in exports {
+    let (nm, _, _) = ex
+    Array::push(names, wasm_import_vibe_name(nm))
+  }
+  // The bytes of a `string` argument, copied into the Bytes object the
+  // runner reads (wasm_raw_<name> of the export `_string_bytes` would be the
+  // same name, so that export is withheld below).
+  Array::push(out, "fn wasm_raw__string_bytes(s: String) -> Bytes {\n  let b = Bytes::with_capacity(String::length(s))\n  let mut i = 0\n  while i < String::length(s) {\n    Bytes::push(b, String::byte_at(s, i))\n    i = i + 1\n  }\n  b\n}\n\n")
+  let mut i = 0
+  while i < Array::length(exports) {
+    let (nm, fti, why) = Array::get(exports, i)
+    let vn = Array::get(names, i)
+    let shown = wib_display_name(nm)
+    let mut dup = vn == "_string_bytes"
+    let mut j = 0
+    while j < Array::length(names) {
+      if j != i && Array::get(names, j) == vn {
+        dup = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    if fti == -2 {
+      Array::push(withheld, "everything typed after this point: the reader stopped at \{why}")
+    } else if why != "" {
+      Array::push(withheld, "`\{shown}`: \{why}")
+    } else if vn == "" {
+      Array::push(withheld, "`\{shown}`: no vibe identifier can be formed from the name")
+    } else if dup {
+      Array::push(withheld, "`\{shown}`: its vibe name `\{vn}` is shared with another export")
+    } else if fti < 0 || fti >= Array::length(types) {
+      Array::push(withheld, "`\{shown}`: its function type could not be followed")
+    } else {
+      let (ps, labels, rs) = Array::get(types, fti)
+      let mut ok = !(Array::length(ps) == 1 && Array::get(ps, 0) == -1) && Array::length(rs) <= 1
+      for c in ps {
+        if !wib_cv_admitted(c) {
+          ok = false
+        } else {
+          ()
+        }
+      }
+      for c in rs {
+        if !wib_cv_admitted(c) {
+          ok = false
+        } else {
+          ()
+        }
+      }
+      let sig = wib_component_sig_text(ps, labels, rs)
+      if !ok {
+        Array::push(withheld, "`\{shown}`: \{sig} -- only s8..u64 (as Int) and string params, and at most one such result, cross the boundary yet")
+      } else {
+        let core_params = wib_fresh_ints()
+        for _c in ps {
+          Array::push(core_params, 0x7E)
+        }
+        let core_results = wib_fresh_ints()
+        for _c in rs {
+          Array::push(core_results, 0x7E)
+        }
+        wib_component_emit(out, vn, "`\{shown}: \{sig}` from the component \{wib_display_name(path)}.", wasm_import_callee(module_name, nm, core_params, core_results), ps, rs)
+      }
+    }
+    i = i + 1
+  }
+  if Array::length(withheld) > 0 {
+    Array::push(out, "// Exports not offered:\n")
+    for w in withheld {
+      Array::push(out, String::concat("//   ", String::concat(w, "\n")))
+    }
+  } else {
+    ()
+  }
+  String::join(out, "")
 }

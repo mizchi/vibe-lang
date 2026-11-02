@@ -268,6 +268,8 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
             // one block's writes to a linked module cannot leak into the next.
             link_foreign_wasm_modules(&mut linker, &mut store, &module)
                 .map_err(|e| (false, first_line(&e)))?;
+            link_component_modules(&mut linker, &mut store, &module)
+                .map_err(|e| (false, first_line(&e)))?;
             let instance = linker
                 .instantiate(&mut store, &module)
                 .map_err(|e| (false, first_line(&e)))?;

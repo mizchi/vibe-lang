@@ -3355,6 +3355,76 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   understands the syntax (same bump discipline as `#cfg`, docs/internal/operations/bootstrap.md).
 - Examples: `fixtures/inline_wasm_test.vibe`.
 
+## Importing a wasm module (`import ./x.wasm { .. }`)
+
+A `.wasm` path imports a foreign module with the types **its own binary
+declares**. The compiler reads the binary (no `.vibe` file is involved) and
+synthesizes the binding module, so the import list, `as` renames, `vibe check`
+and "is not exported by" behave as for any other import. Both a **core
+module** and a **component** are accepted.
+
+<!-- doctest-skip: needs fixtures/wasm_import/counter.wasm next to the importing file -->
+```vibe skip
+import ./counter.wasm {
+  add_i32, bump, count, wasm_memory_load_u8
+}
+
+fn main() -> Unit allows Console {
+  bump(40)
+  bump(add_i32(1, 1))
+  println("count=\{count()}")
+}
+```
+
+**Names.** An export is offered under a vibe identifier: ASCII letters
+lower-cased, every other character outside `[a-z0-9_]` replaced by `_`, a
+leading digit prefixed with `_`, a keyword suffixed with `_` (`Z3_mk_config`
+-> `z3_mk_config`, `get-price` -> `get_price`). Two exports that map to the
+same name are **both** withheld.
+
+**Core module types** (from the type section):
+
+| core | vibe | at the boundary |
+|---|---|---|
+| `i32` param | `Int` | -2^31 .. 2^32-1 is accepted (the signed and the unsigned reading of the same bits); anything else **traps** instead of truncating |
+| `i32` result | `Int` | read as signed, so it round-trips bit-exactly when passed back |
+| `i64` param | `Int` | exact |
+| `i64` result | `Int` | **traps** when it needs the 64th bit (a 63-bit `Int` cannot hold it) |
+| no result | `Unit` | |
+| `f32` / `f64` / `v128` / references / multiple results | — | not offered yet (a `Double` has no inline-wasm boundary) |
+
+A module with a memory (defined or imported) also gets
+`wasm_memory_load_u8(addr) -> Int`, `wasm_memory_store_u8(addr, value)` and
+`wasm_memory_size() -> Int`. The foreign memory is not the program's; the
+runner serves these, which is how a binding moves strings across (see
+`lib/@vibex/z3/cstring.vibe`).
+
+**Component types** (from the component's type section, i.e. its WIT): a
+world-level exported function with `s8`..`u64` (as `Int`) and `string`
+params and at most one such result. The runner range-checks each `Int`
+against its WIT width and refuses one that does not fit. Exported
+interfaces, `bool`, `char`, floats, lists, records, variants and resources
+are not offered yet. A component whose type section declares component or
+instance types (what an imported interface looks like) is read up to that
+point.
+
+What is not offered is listed in the synthesized binding's trailing comment,
+and importing it is an "is not exported by" error.
+
+**Running.** The program imports each foreign function from a core module
+named `vibe:wasm:<path>` (core) or `vibe:component:<path>` (component), with
+`<path>` as the compiler resolved it. viberun and the node runner instantiate
+a core module from `<path>` (relative to `VIBE_WASM_LINK_DIR`, default the
+working directory) and link it; only viberun runs a component. A foreign
+module or component that itself has imports is refused with the list of what
+it needs — nothing provides another module's host imports yet. That is why
+`lib/@vibex/z3` (the npm z3-solver build, an emscripten module that imports
+its JS runtime) type-checks and builds against the real `z3.wasm` but does
+not run: `scripts/test_z3_binding.sh` asserts exactly that.
+
+Linear backend only (the binding is inline wasm). Fixtures:
+`fixtures/wasm_import/`, gate: `scripts/test_wasm_import.sh`.
+
 ## RC Debug Mode (`VIBE_RC=shadow`)
 
 `VIBE_RC=shadow vibe build app.vibe` compiles on the Perceus RC path with **shadow-liveness instrumentation**: every freed heap block is marked in a shadow byte table, and the FIRST `rc_dup`/`rc_drop` touching a freed block executes `unreachable` — a deterministic trap at the faulting operation, instead of free-list corruption that crashes later at an unrelated location ("moving target", see issue #715). Debug-only: adds a memory pad + per-dup/drop checks. Normal builds (`VIBE_RC=1`/unset) are byte-identical to before this feature.

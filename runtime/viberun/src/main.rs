@@ -1038,6 +1038,7 @@ fn run_core(
         function_phases::restrict_finisher(&mut linker, &module, scope)?;
     }
     link_foreign_wasm_modules(&mut linker, &mut store, &module)?;
+    link_component_modules(&mut linker, &mut store, &module)?;
 
     let instance = linker.instantiate(&mut store, &module)?;
     let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;

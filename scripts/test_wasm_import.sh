@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Typed core-wasm imports (`import ./x.wasm { .. }`): the binding the compiler
-# synthesizes from the binary, linked and run on BOTH runners.
+# Typed wasm imports (`import ./x.wasm { .. }`): the binding the compiler
+# synthesizes from a core module or a component, linked and run.
 #
 #   bash scripts/test_wasm_import.sh <stage2.wasm>
 #
@@ -15,9 +15,13 @@
 #      truncated value, so `r=` is never printed;
 #   3. an i64 result that needs the 64th bit TRAPS (trap_i64_result.vibex).
 # And once:
-#   4. counter.wasm is the assembly of counter.wat (when wat2wasm exists);
+#   4. the fixture binaries are built from their committed text (when
+#      wat2wasm and wasm-tools exist);
 #   5. importing an export whose signature has no binding is refused by
-#      `vibe check` (err_not_offered.vibe), and so is a component binary.
+#      `vibe check` (err_not_offered.vibe);
+#   6.-8. a wasm COMPONENT import (greeter.component.wasm): runs on viberun
+#      with strings and Ints, an Int outside its WIT width is refused, and the
+#      node runner, which cannot instantiate components, refuses it.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -44,12 +48,11 @@ vibe() { # <runner> <vibe args...>
     VIBE_BUILD_DIR="$WORK/build" "$ROOT_DIR/runtime/vibe" "$@"
 }
 
-# 4. The committed binary is the committed text.
-if command -v wat2wasm >/dev/null 2>&1; then
-  wat2wasm "$FX/counter.wat" -o "$WORK/counter.wasm"
-  cmp -s "$WORK/counter.wasm" "$FX/counter.wasm" || fail "$FX/counter.wasm is stale: rebuild it with wat2wasm $FX/counter.wat -o $FX/counter.wasm"
+# 4. The committed binaries are the committed text.
+if command -v wat2wasm >/dev/null 2>&1 && command -v wasm-tools >/dev/null 2>&1; then
+  bash "$ROOT_DIR/scripts/build_wasm_import_fixtures.sh" --check || fail "fixture binaries are stale"
 else
-  echo "[wasm-import] note: wat2wasm not installed; not re-assembling $FX/counter.wat"
+  echo "[wasm-import] note: wat2wasm / wasm-tools not installed; not rebuilding the fixture binaries"
 fi
 
 for runner in "$VIBERUN" "$NODE_RUNNER"; do
@@ -75,17 +78,24 @@ vibe "$NODE_RUNNER" check "$FX/err_not_offered.vibe" >"$WORK/out" 2>&1 || status
 [ "$status" != 0 ] || fail "importing an export with no binding (half: f64) was accepted"
 grep -q "'half' is not exported by './counter.wasm'" "$WORK/out" || { cat "$WORK/out" >&2; fail "refusal does not name 'half'"; }
 
-printf '\0asm\r\0\1\0' > "$WORK/comp.wasm"
-cat > "$WORK/use_comp.vibe" <<'EOF'
-import ./comp.wasm {
-  f
-}
-
-let x: Int = 1
-EOF
+# 6. A COMPONENT import (greeter.component.wasm, typed by greeter.wit) runs on
+#    viberun: a string crosses both ways, Ints cross and state persists.
 status=0
-vibe "$NODE_RUNNER" check "$WORK/use_comp.vibe" >"$WORK/out" 2>&1 || status=$?
-[ "$status" != 0 ] || fail "a component binary was accepted as a core-wasm import"
-grep -q "is a wasm COMPONENT" "$WORK/out" || { cat "$WORK/out" >&2; fail "component refusal does not say why"; }
+out="$(vibe "$VIBERUN" run "$FX/greeter_main.vibex" 2>"$WORK/err")" || status=$?
+[ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun] greeter_main exited $status"; }
+want="$(printf 'hi, vibe\nadd=42\ncounter=2')"
+[ "$out" = "$want" ] || fail "[viberun] greeter_main printed $(printf '%q' "$out"), want $(printf '%q' "$want")"
+# 7. An Int outside the WIT width is refused by the lowering, not truncated.
+status=0
+out="$(vibe "$VIBERUN" run "$FX/trap_component_s32.vibex" 2>"$WORK/err")" || status=$?
+[ "$status" != 0 ] || fail "[viberun] trap_component_s32 exited 0 (printed $(printf '%q' "$out"))"
+[ "$out" = "before" ] || fail "[viberun] trap_component_s32 printed $(printf '%q' "$out"); want only 'before'"
+grep -q "add: 2147483648 does not fit the component's S32 parameter" "$WORK/err" || { cat "$WORK/err" >&2; fail "[viberun] the s32 refusal does not say why"; }
+# 8. The node runner cannot instantiate a component, and says so instead of
+#    answering every call with its fallback stub.
+status=0
+out="$(vibe "$NODE_RUNNER" run "$FX/greeter_main.vibex" 2>"$WORK/err")" || status=$?
+[ "$status" != 0 ] || fail "[node] a component import ran on the node runner (printed $(printf '%q' "$out"))"
+grep -q "importing a wasm component runs on viberun" "$WORK/err" || { cat "$WORK/err" >&2; fail "[node] the component refusal does not say why"; }
 
-echo "[wasm-import] ok (viberun + node: run, i32/i64 range traps; check: refusals)"
+echo "[wasm-import] ok (core: viberun + node, range traps, refusals; component: viberun, WIT range refusal, node refusal)"
