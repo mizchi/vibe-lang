@@ -48,6 +48,10 @@ import @vibe/compiler/core {
   Stmt, standard_host_provider_names
 }
 
+import @vibe/testrun {
+  test_run_compile_failure, test_run_count_label, test_run_failure, test_run_pass
+}
+
 import @vibe/compiler/syntax {
   lex, lex_with_offsets, located_lex_message, parse_program, parse_program_located
 }
@@ -1481,6 +1485,42 @@ export fn test_artifact_out(build_dir: String, src: String, index: Int, seen_src
   out
 }
 
+/// The spelling a test file's line names it by. A `--update` re-run compiles
+/// one file again through an absolute path; the launcher passes the spelling
+/// the outer run used in VIBE_TEST_DISPLAY_SRC, so the line names the file the
+/// way the run was asked to (#3703).
+fn test_plan_display(src: String, files: Int) -> String with Env {
+  let given = Env::get("VIBE_TEST_DISPLAY_SRC")
+  if files == 1 && given != "" && Env::get("VIBE_TEST_NESTED") == "1" {
+    given
+  } else {
+    src
+  }
+}
+
+/// How many snapshot patches `--update` applied before this compile: the
+/// launcher counts them across its re-runs in VIBE_TEST_UPDATE_PATCHES.
+fn test_plan_patches() -> Int with Env {
+  let s = Env::get("VIBE_TEST_UPDATE_PATCHES")
+  let mut v = 0
+  let mut i = 0
+  while i < String::length(s) && String::byte_at(s, i) >= '0' && String::byte_at(s, i) <= '9' {
+    v = v * 10 + (String::byte_at(s, i) - '0')
+    i = i + 1
+  }
+  v
+}
+
+/// `text` up to its first newline.
+fn test_plan_first_line(text: String) -> String {
+  let at = String::index_of(text, "\n")
+  if at < 0 {
+    text
+  } else {
+    String::substring(text, 0, at)
+  }
+}
+
 export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env + Stderr {
   let mut update = false
   let mut no_cache = false
@@ -1547,6 +1587,9 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
       // the record carries an EMPTY wasm path, which the launcher's run-tests
       // arm reports as `FAIL (compile) <src>` and counts, so `vibe test bad
       // good` still runs and reports `good`.
+      // The file's test-count label (@vibe/testrun, #3703) rides as the
+      // record's third field, read from the bytes just written: the one
+      // counter both test runners use.
       let compiled = handle {
         reject_unstable_entry_surface(src)
         unstable_closure_reset()
@@ -1557,8 +1600,15 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
         // default there is no verdict, and a verdict left by an earlier
         // bump-lane compile of the same file is removed rather than read for
         // these bytes.
+        //
+        // The mode is `no-dce`, as `cli_adapter.vibe`'s FsLaneBumpTestmeta
+        // has it (#3706). `mvp` roots dead-code elimination at the entry, and
+        // a test build's entry is the `__no_entry__` sentinel: a file whose
+        // only declarations are helpers was pruned to nothing and refused as
+        // `no functions found to compile`, where scripts/vibe_test.sh and the
+        // RC default report it `ok ... (no tests found)` (#948).
         let bytes = if backend_kind == "mvp" && Env::get("VIBE_RC") == "0" {
-          compile_file_fs_mode_testmeta(src, "__no_entry__", "mvp", meta)
+          compile_file_fs_mode_testmeta(src, "__no_entry__", "no-dce", meta)
         } else {
           if Fs::exists(meta) {
             Fs::remove(meta)
@@ -1579,17 +1629,33 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
         // its own failure and removes a stale sidecar first, so a map it
         // cannot build costs an unannotated frame and never a failed test run.
         write_user_funcmap(src, out)
-        true
+        Some(test_run_count_label(bytes))
       } with { Exception::Throw(e) => {
         Stderr::write_stream(line_terminated(format_check_report(e)))
-        false
+        None
       } }
+      // The record's last two fields are the file's line when it passes and
+      // when it fails, rendered by @vibe/testrun exactly as
+      // scripts/vibe_test.sh renders them (#3703); the launcher prints one of
+      // them and adds only ` (cached)`. A compile failure has no pass line.
+      let shown = test_plan_display(src, Array::length(expanded))
+      let patches = test_plan_patches()
       StringBuilder::push(acc, src)
       StringBuilder::push(acc, "\t")
-      if compiled {
-        StringBuilder::push(acc, out)
-      } else {
-        ()
+      match compiled {
+        Some(label) => {
+          StringBuilder::push(acc, out)
+          StringBuilder::push(acc, "\t")
+          StringBuilder::push(acc, label)
+          StringBuilder::push(acc, "\t")
+          StringBuilder::push(acc, test_plan_first_line(test_run_pass(shown, label, patches)))
+          StringBuilder::push(acc, "\t")
+          StringBuilder::push(acc, test_plan_first_line(test_run_failure(shown, patches, "")))
+        }
+        None => {
+          StringBuilder::push(acc, "\t\t\t")
+          StringBuilder::push(acc, test_plan_first_line(test_run_compile_failure(shown, "")))
+        }
       }
       StringBuilder::push(acc, "\n")
       fi = fi + 1

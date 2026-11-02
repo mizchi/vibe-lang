@@ -227,10 +227,13 @@ own sources use it.
 3. **Migrate.** Run the codemod package by package: `lib/`, then
    `fixtures/`, `bench/`, `examples/`, then `book/` and `docs/`, keeping the
    `book/en` and `book/ja` outputs identical. Each PR passes
-   `pkf run release-check`.
-4. **Enforce.** The warning becomes an error. Retire `x~` and the labeled
-   function-type spelling. Rewrite the cheatsheet's labeled-argument
-   sections and `syntax.md` to the final state.
+   `pkf run release-check`. Per package, `vibe refactor mark-positional
+   --write` first declares `_` on every `T::f` receiver (a first parameter
+   typed as the owner `T`) and on every lone parameter, in the `.vibe`
+   sources and the `index.vpkg` contract alike; then
+   `vibe refactor add-labels --write --positional=none` labels the rest.
+   The declaration fixes the spelling, so the codemod no longer guesses
+   which slots stay positional (see [Positional slots](#positional-slots)).
 
 Phase 1c (#3661) keeps the source argument order through checking. The
 checker publishes a placement on each call that needs labels or optional
@@ -238,6 +241,34 @@ slots; lowering consumes its source indices and inserts `Some` / `None`.
 The syntactic resolver and paired binder-authority normalization are removed.
 Declaration reordering and opaque value-call behavior remain until Phase 4.
 Rowless build lanes refuse labeled calls and ask for checked source.
+
+### Positional slots
+
+The `_` rule follows the D3 guidance mechanically: a receiver, and a lone
+parameter, are named by the function. It was chosen by measuring
+`lib/@vibe/core` (65 files, all of them checked) at `main` 3f6a506 plus
+the codemod. Each policy names the slots it leaves positional; builtins
+always use their own `_` slots.
+
+| `--positional` | Labels written | Calls |
+|---|---:|---:|
+| `none` | 4,851 | 2,969 |
+| `receiver` (a `T::f` receiver) | 3,713 | 2,427 |
+| `receiver+single` (also a lone parameter) | 3,138 | 1,852 |
+
+`receiver+single` writes 35% fewer labels than labeling every argument;
+the receiver rule accounts for 1,138 of those 1,713 labels, the
+lone-parameter rule for the other 575.
+
+Applied as declarations, the same rule marked 478 slots `_` in
+`lib/@vibe/core`, and `add-labels` then wrote 3,372 labels in 1,937 calls,
+with every edited file rechecked clean. In both runs the codemod skips
+the same calls: 62 through a local lambda, which D1 keeps positional, and
+10 whose written arguments do not line up with the checked call (pipes
+and calls inside interpolation).
+4. **Enforce.** The warning becomes an error. Retire `x~` and the labeled
+   function-type spelling. Rewrite the cheatsheet's labeled-argument
+   sections and `syntax.md` to the final state.
 
 ## Acceptance
 
@@ -277,31 +308,3 @@ This becomes `accepted` when all of the following hold:
 - **External and internal names** (`fn move(to point: Point)`). This is
   additive, so it can follow without breaking anything. It is not needed
   for the migration.
-- **`_` heuristics for the codemod.** Should a one-parameter function become
-  `_` by default? This decides where the label count lands between 188,875
-  and 335,578. It should be settled by measuring a sample package before
-  the full run. The first sample is measured below; the rule is not yet
-  chosen.
-
-  `vibe refactor add-labels` (#3679) was run over `lib/@vibe/core` (65 files,
-  all of them checked), at `main` 3f6a506 plus the codemod. Each policy
-  names the slots it leaves positional. Builtins always use their own `_`
-  slots. "After `_`" counts the calls that keep a positional slot beside a
-  labeled one. The checker refuses that mix until #3681 lets the declaration
-  mark the slot `_`, so the codemod reports those calls and leaves them for
-  now.
-
-  | `--positional` | Labels written now | More after `_` | Total |
-  |---|---:|---:|---:|
-  | `none` | 4,851 in 2,969 calls | 0 | 4,851 |
-  | `receiver` (a `T::f` receiver) | 2,967 in 1,831 calls | 746 in 596 calls | 3,713 |
-  | `receiver+single` (also a lone parameter) | 2,392 in 1,256 calls | 746 in 596 calls | 3,138 |
-
-  Every policy skipped the same calls:
-  - 62 calls through a local lambda, which D1 keeps positional;
-  - 10 to 13 calls whose written arguments do not line up with the
-    checker's, which are pipes and calls inside interpolation.
-
-  On this package, `receiver+single` writes 35% fewer labels than labeling
-  every argument. The receiver rule alone accounts for 1,138 of those
-  1,713 labels, the lone-parameter rule for the other 575.

@@ -238,7 +238,20 @@ vibe symbols [--with-path] <path>...       # declaration outline (NAME KIND STAR
 vibe escapes [--strict] <file.vibe>        # `let mut` bindings a closure captures (NAME START END)
 vibe refactor extract-function <file.vibe> <start-byte> <end-byte> <name> [--write]
                                            # preview, or with --write apply, a checked extraction
+vibe refactor mark-positional [--write] <path>...
+                                           # declare `_` on each `T::f` receiver and lone parameter
+vibe refactor add-labels [--write] [--positional=none|receiver|receiver+single] <path>...
+                                           # write the argument labels a call will need
 ```
+
+The two label verbs migrate a package to required argument labels
+(ADR-0120): `mark-positional` first, so the declaration fixes which slots
+stay positional, then `add-labels --positional=none`. Both take files or
+directories, print one `path:line:col:` row per edit, and change nothing
+without `--write`. `mark-positional` also rewrites a directory's
+`index.vpkg` contract, whose declarations must match the sources.
+`add-labels` rechecks each rewritten file and leaves a file untouched when
+its edit would not check.
 
 [editor-and-debugging.md](editor-and-debugging.md) documents the output of each
 one and how the LSP builds on them.

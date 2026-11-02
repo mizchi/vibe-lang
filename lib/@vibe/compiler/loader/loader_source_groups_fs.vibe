@@ -24,6 +24,7 @@ import @vibe/compiler/core {
   append_import_alias_rewritten_non_import_stmts_skipping,
   contains_path,
   dir_of_path,
+  ensure_regular_source,
   ensure_regular_source_fs,
   env_bind,
   env_lookup,
@@ -37,6 +38,7 @@ import @vibe/compiler/core {
   path_set_new,
   resolve_import_path,
   resolve_import_path_candidates,
+  resolve_import_path_probe,
   vibe_env_flag
 }
 
@@ -49,7 +51,7 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 import ./header_cache.vibe {
-  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe, source_answer
+  contract_sibling_impl_raws, contract_sibling_impl_raws_source, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe, source_answer
 }
 
 import @vibe/compiler/contract {
@@ -57,7 +59,11 @@ import @vibe/compiler/contract {
   classify_contract_stmts,
   contract_facade_marker,
   contract_hash_with,
+  contract_surface_effects,
   contract_surface_lines,
+  contract_surface_rows_sorted,
+  ctr_es_collect_tables,
+  ctr_es_expand_row_string,
   deps_missing_for_imports,
   extract_package_deps,
   extract_package_name,
@@ -651,9 +657,9 @@ export fn check_module(source: String, path: String, sources: Array[(String, Str
 /// each impl's raw import spelling), so the hash is location-independent —
 /// the same function serves `vibe hash` on a working directory and store
 /// verification of an installed copy.
-fn collect_package_hash_inputs_fs(path: String) -> (Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Array[Stmt]) with Env + Exception + Fs {
-  validate_index_layout_fs(path)
-  let raw = cache_read_source_fs(path)
+fn collect_package_hash_inputs(path: String) -> (Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Array[Stmt]) with Env + Exception + Source + SourceIngest {
+  validate_index_layout(path)
+  let raw = perform Source::Read(path)
   let (_, blanked) = extract_require_pins(raw)
   let (decls, opaques, extra) = parse_contract_program(lex(blanked))
   let (impl_raws0, type_defs) = classify_contract_stmts(extra)
@@ -668,9 +674,9 @@ fn collect_package_hash_inputs_fs(path: String) -> (Array[(String, String)], Arr
   // was built from (a mismatch here would make the content-addressed hash
   // silently stale relative to what actually got conformance-checked).
   let impl_raws = if String::ends_with(path, ".vpkg") {
-    merge_impl_raws_dedupe(impl_raws0, contract_sibling_impl_raws(dir))
+    merge_impl_raws_dedupe(impl_raws0, contract_sibling_impl_raws_source(dir))
   } else if Array::length(impl_raws0) == 0 {
-    contract_sibling_impl_raws(dir)
+    contract_sibling_impl_raws_source(dir)
   } else {
     impl_raws0
   }
@@ -681,12 +687,9 @@ fn collect_package_hash_inputs_fs(path: String) -> (Array[(String, String)], Arr
   // its basename is read off directly instead of re-probing the filesystem.
   // A directory that migrates from index.vibei to index.vpkg intentionally
   // gets a different hash (the rename is a real content/identity change).
-  let contract_last_slash = String::last_index_of(path, "/")
-  let contract_basename = if contract_last_slash < 0 {
-    path
-  } else {
-    path[contract_last_slash + 1: String::length(path)]
-  }
+  // `path_basename`, not an inline slice: the suspend lowering cannot clone
+  // a `Source`-row body that slices (#1872).
+  let contract_basename = path_basename(path)
   // #1145 follow-up 3: `generated_hash` stores this package's own content
   // hash -- feed it back into what gets hashed and the hash would depend on
   // hash-writing history instead of on the file, so it's always blanked to
@@ -697,17 +700,17 @@ fn collect_package_hash_inputs_fs(path: String) -> (Array[(String, String)], Arr
   if String::ends_with(package_contract, ".vpkg") {
     let visited = path_set_new()
     while ri < Array::length(impl_raws) {
-      let resolved = loader_resolve_path_fs(dir, Array::get(impl_raws, ri))
-      collect_package_hash_source_closure_fs(package_contract, dir, resolved, sources, visited)
+      let resolved = resolve_import_path_probe(dir, Array::get(impl_raws, ri), "")
+      collect_package_hash_source_closure(package_contract, dir, resolved, sources, visited)
       ri = ri + 1
     }
   } else {
     // Legacy .vibei hashing preserves its declared/direct implementation set.
     while ri < Array::length(impl_raws) {
       let iraw = Array::get(impl_raws, ri)
-      let resolved = loader_resolve_path_fs(dir, iraw)
-      ensure_regular_source_fs(resolved)
-      let itext = cache_read_source_fs(resolved)
+      let resolved = resolve_import_path_probe(dir, iraw, "")
+      ensure_regular_source(resolved)
+      let itext = perform Source::Read(resolved)
       Array::push(sources, (iraw, itext))
       ri = ri + 1
     }
@@ -715,8 +718,22 @@ fn collect_package_hash_inputs_fs(path: String) -> (Array[(String, String)], Arr
   (sources, decls, opaques, type_defs)
 }
 
+fn collect_package_hash_inputs_fs(path: String) -> (Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Array[Stmt]) with Env + Exception + Fs {
+  handle {
+    collect_package_hash_inputs(path)
+  } with { SourceIngest::Header(p, text) => resume(ingest_header_answer_fs(p, text)); SourceIngest::DesugarContract(p, text) => resume(ingest_contract_answer_fs(p, text)); SourceIngest::ShareImports(p, text) => resume(ingest_shared_imports_answer_fs(p, text)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+}
+
 export fn contract_package_hashes_fs(path: String) -> (String, String) with Env + Exception + Fs {
   contract_package_hashes_fs_algo(path, "b3")
+}
+
+/// #1872: both content-addressing hashes of the package whose contract is
+/// at `path`, over any provider (`contract_package_hashes_fs_algo` is the
+/// filesystem one).
+export fn contract_package_hashes_source(path: String, algo: String) -> (String, String) with Env + Exception + Source + SourceIngest {
+  let (sources, decls, opaques, type_defs) = collect_package_hash_inputs(path)
+  (package_hash_from_sources_with(algo, sources), contract_hash_with(algo, decls, opaques, type_defs))
 }
 
 export fn contract_package_hashes_fs_algo(path: String, algo: String) -> (String, String) with Env + Exception + Fs {
@@ -724,8 +741,8 @@ export fn contract_package_hashes_fs_algo(path: String, algo: String) -> (String
   (package_hash_from_sources_with(algo, sources), contract_hash_with(algo, decls, opaques, type_defs))
 }
 
-fn verify_recorded_package_id_fs(importer: String, name: String, pin_hash: String, index_path: String, copy_kind: String) -> Unit with Env + Exception + Fs {
-  let (sources, _, _, _) = collect_package_hash_inputs_fs(index_path)
+fn verify_recorded_package_id(importer: String, name: String, pin_hash: String, index_path: String, copy_kind: String) -> Unit with Env + Exception + Source + SourceIngest {
+  let (sources, _, _, _) = collect_package_hash_inputs(index_path)
   if package_id_matches(pin_hash, sources) {
     ()
   } else {
@@ -962,8 +979,48 @@ export fn publish_check_fs(prev_contract_path: String, next_contract_path: Strin
   } else if Array::length(errors) > 0 {
     errors
   } else {
-    verify_publish_bump(pv, nv, contract_surface_lines(pd, po, ptypes), contract_surface_lines(nd, no, ntypes))
+    // Rows sorted: `with { Fs, Console }` and `with { Console, Fs }` require
+    // the same authority, so reordering one is not a breaking change (#3673).
+    verify_publish_bump(pv, nv, contract_surface_rows_sorted(contract_surface_lines(pd, po, ptypes)), contract_surface_rows_sorted(contract_surface_lines(nd, no, ntypes)))
   }
+}
+
+/// The canonical surface of the contract at `path`, as `contract_surface_lines`
+/// reads it (the lines `contract_hash` is computed over, before sorting):
+/// what `vibe pkg update` compares, so a reordered contract is unchanged.
+export fn contract_surface_lines_fs(path: String) -> Array[String] with Exception + Fs {
+  let (_, blanked) = extract_require_pins(Fs::read_file(path))
+  let (d, o, extra) = parse_contract_program(lex(blanked))
+  let (_, types) = classify_contract_stmts(extra)
+  contract_surface_lines(d, o, types)
+}
+
+/// `contract_surface_effects` of the contract at `path`, with every effectset
+/// alias expanded through the contract's own `effectset` definitions, the
+/// way conformance expands them: `fn fetch() -> String with Network` under
+/// `effectset Network = { Http }` requires Http, and a report keyed on the
+/// alias would miss it.
+export fn contract_surface_effects_fs(path: String) -> Array[String] with Exception + Fs {
+  let (_, blanked) = extract_require_pins(Fs::read_file(path))
+  let (d, o, extra) = parse_contract_program(lex(blanked))
+  let (_, types) = classify_contract_stmts(extra)
+  let (es_names, es_members) = ctr_es_collect_tables(types)
+  let effects = contract_surface_effects(contract_surface_lines(d, o, types))
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(effects) {
+    let entry = Array::get(effects, i)
+    let tab = String::index_of(entry, "\t")
+    let name = String::substring(entry, 0, tab)
+    let labels = String::split(ctr_es_expand_row_string(String::substring(entry, tab + 1, String::length(entry)), es_names, es_members), ", ")
+    let mut j = 0
+    while j < Array::length(labels) {
+      Array::push(out, "\{name}\t\{Array::get(labels, j)}")
+      j = j + 1
+    }
+    i = i + 1
+  }
+  out
 }
 
 /// #2676: the require pins that apply to `path`: those of its owning
@@ -1033,7 +1090,7 @@ fn verify_store_package(importer: String, pins: Array[(String, String, String)],
   } else {
     throw("package \{name} is not installed in the store (.vibe/store/\{name}/)")
   }
-  source_answer(perform SourceIngest::VerifyPackageHash(importer, name, pin_hash, store_index_path, "store"))
+  verify_recorded_package_id(importer, name, pin_hash, store_index_path, "store")
 }
 
 /// #751 (ADR-0065): a `lib/`-resolved package is the dev-mode lane — no
@@ -1079,7 +1136,7 @@ fn verify_lib_package(importer: String, pins: Array[(String, String, String)], l
       throw("cannot resolve import \{name}: not found via lib/ or VIBE_LIB (looked for \{lib_index_path})")
     } else ()
   } else {
-    source_answer(perform SourceIngest::VerifyPackageHash(importer, name, pin_hash, lib_index_path, "lib/"))
+    verify_recorded_package_id(importer, name, pin_hash, lib_index_path, "lib/")
   }
 }
 
@@ -1149,22 +1206,22 @@ fn package_relative_hash_key(package_dir: String, source_path: String) -> String
 /// discovery, but enter this closure when a production source imports them.
 /// Cross-package contracts remain represented by the importing source's text
 /// and require pin; their implementation bytes belong to their own hash.
-fn collect_package_hash_source_closure_fs(package_contract: String, package_dir: String, source_path: String, sources: Array[(String, String)], visited: Array[Array[String]]) -> Unit with Env + Exception + Fs {
+fn collect_package_hash_source_closure(package_contract: String, package_dir: String, source_path: String, sources: Array[(String, String)], visited: Array[Array[String]]) -> Unit with Env + Exception + Source + SourceIngest {
   if path_set_contains(visited, source_path) {
     ()
   } else {
     path_set_add(visited, source_path)
-    validate_index_layout_fs(source_path)
-    let source = cache_read_source_fs(source_path)
+    validate_index_layout(source_path)
+    let source = perform Source::Read(source_path)
     Array::push(sources, (package_relative_hash_key(package_dir, source_path), source))
-    let (deps, _, _) = load_or_parse_module_header_fs(source_path, source, 0)
+    let deps = source_answer(perform SourceIngest::Header(source_path, source))
     let mut i = 0
     while i < Array::length(deps) {
       let dep = Array::get(deps, i)
-      enforce_incoming_boundary_fs(source_path, dep)
-      let dep_owner = nearest_vpkg_path_fs(dep)
+      enforce_incoming_boundary(source_path, dep)
+      let dep_owner = nearest_vpkg_path(dep)
       if dep_owner == package_contract && dep != package_contract {
-        collect_package_hash_source_closure_fs(package_contract, package_dir, dep, sources, visited)
+        collect_package_hash_source_closure(package_contract, package_dir, dep, sources, visited)
       } else {
         ()
       }
@@ -1177,9 +1234,10 @@ fn collect_package_hash_source_closure_fs(package_contract: String, package_dir:
 /// (`collect_sources_source`) decides WHAT to read, in which order, and which
 /// rules a module must pass; a provider answers these requests, which on the
 /// filesystem lane are served from persistent caches (module headers,
-/// contract facades, directory-shared import prefixes) or need a whole
-/// package's bytes (its content hash). Cache writes therefore happen in the
-/// provider, at the filesystem boundary, never in the core.
+/// contract facades, directory-shared import prefixes). Cache writes
+/// therefore happen in the provider, at the filesystem boundary, never in the
+/// core. Pin verification is the core's own: it hashes the package's
+/// sources over `Source` (`verify_recorded_package_id`).
 ///
 /// Each answer carries its failure as `Some(message)` and the core rethrows
 /// it (`source_answer`; see `ModuleParse` for why an arm must not throw).
@@ -1192,9 +1250,6 @@ export effect SourceIngest {
   DesugarContract(String, String) -> (String, Option[String])
   // An ordinary module's text with its directory-shared vpkg imports applied.
   ShareImports(String, String) -> (String, Option[String])
-  // Verify the package at an index path against a recorded pin hash:
-  // (importer, package name, pin hash, index path, copy kind).
-  VerifyPackageHash(String, String, String, String, String) -> (Unit, Option[String])
 }
 
 /// #1872: the recursive source-collection walk, over `Source` and
@@ -1310,19 +1365,12 @@ fn ingest_shared_imports_answer_fs(path: String, pin_blanked: String) -> (String
   } with { Exception::Throw(message) => ("", Some(message)) }
 }
 
-fn verify_package_hash_answer_fs(importer: String, name: String, pin_hash: String, index_path: String, copy_kind: String) -> (Unit, Option[String]) with Env + Fs {
-  handle {
-    verify_recorded_package_id_fs(importer, name, pin_hash, index_path, copy_kind)
-    ((), None)
-  } with { Exception::Throw(message) => ((), Some(message)) }
-}
-
 /// The filesystem adapter of the collection core. Source reads take the
 /// stat-token text memo (`cache_read_source_fs`), as the walk always did.
 fn collect_sources_walk_fs(entry_path: String) -> Array[(String, String)] with Env + Exception + Fs {
   handle {
     collect_sources_source(entry_path)
-  } with { SourceIngest::Header(p, text) => resume(ingest_header_answer_fs(p, text)); SourceIngest::DesugarContract(p, text) => resume(ingest_contract_answer_fs(p, text)); SourceIngest::ShareImports(p, text) => resume(ingest_shared_imports_answer_fs(p, text)); SourceIngest::VerifyPackageHash(importer, name, pin_hash, index_path, copy_kind) => resume(verify_package_hash_answer_fs(importer, name, pin_hash, index_path, copy_kind)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+  } with { SourceIngest::Header(p, text) => resume(ingest_header_answer_fs(p, text)); SourceIngest::DesugarContract(p, text) => resume(ingest_contract_answer_fs(p, text)); SourceIngest::ShareImports(p, text) => resume(ingest_shared_imports_answer_fs(p, text)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 /// Recursively collect all source files from filesystem, following imports and re-exports.

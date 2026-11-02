@@ -838,16 +838,37 @@ export fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(Str
 /// Reuse statement candidates while lowering preserves statement ownership.
 /// Every candidate is checked against its current expression before use.
 export fn edp_apply_migration_with_index(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], keep: Array[Bool], errs: Array[String], statement_indices: Option[Array[Int]]) -> Unit {
+  edp_apply_migration_with_tree_facts(stmts, ename, ops, needing, handle_sites, fn_defs, row_labels, keep, errs, statement_indices, None, None)
+}
+
+/// `edp_apply_migration_with_index`, given facts already computed for THIS
+/// tree: the effect-independent inert base (`edp_pure_fn_names` plus the free
+/// host, constructor and visible-pure-lambda appends, in that order) and the
+/// binder census. The planner holds both for the tree its last write left,
+/// and nothing writes the program between planning and the first migration,
+/// so that migration reuses them instead of re-walking the program twice.
+/// A later migration must not: the one before it rewrote the program.
+/// `base` is copied before the effect-specific appends below.
+export fn edp_apply_migration_with_tree_facts(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], keep: Array[Bool], errs: Array[String], statement_indices: Option[Array[Int]], base: Option[Array[String]], binders: Option[MutSet[String]]) -> Unit {
   edp_set_declared_op_order(ename, ops)
   let dict_pname = edp_dict_param_name(ename)
   let dict_tyname = edp_dict_struct_name(ename)
-  let pure_fns = edp_pure_fn_names(fn_defs)
-  edp_append_free_host_inert_names(stmts, pure_fns)
-  edp_append_ctor_inert_names(stmts, pure_fns)
-  edp_append_visible_pure_lambda_names(stmts, pure_fns)
+  let pure_fns = match base {
+    Some(known) => Array::concat(known, array_empty()),
+    None => {
+      let fresh = edp_pure_fn_names(fn_defs)
+      edp_append_free_host_inert_names(stmts, fresh)
+      edp_append_ctor_inert_names(stmts, fresh)
+      edp_append_visible_pure_lambda_names(stmts, fresh)
+      fresh
+    }
+  }
   edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
   edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
-  edp_append_effect_irrelevant_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+  match binders {
+    Some(census) => edp_append_effect_irrelevant_row_fns_with_binders(stmts, fn_defs, ename, pure_fns, row_labels, census),
+    None => edp_append_effect_irrelevant_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+  }
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)

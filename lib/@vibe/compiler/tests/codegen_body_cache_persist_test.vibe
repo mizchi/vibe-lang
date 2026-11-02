@@ -467,6 +467,39 @@ test "#2669: filter_src_keep keeps a LATE unchanged file the prefix rule cannot 
   inspect(Array::length(codegen_body_cache_filter_src_keep(unguarded, [1, 1, 1]).fn_indices), content = "0")
 }
 
+test "the entry filter is sized by entry count, not by a stored index" {
+  // Codex P2 on #3695: membership was a table addressed by the function
+  // index, so a malformed artifact carrying `1 << 40` would allocate that
+  // many slots and abort the compile instead of costing a miss. The index
+  // itself is only compared now.
+  let c = cache_two_files()
+  Array::set(c.fn_indices, 1, 1<<40)
+  Array::set(c.slot_owner, 0, 1<<40)
+  let kept = codegen_body_cache_filter_src_keep(c, [1, 1, 1])
+  // `1 << 40` is past the recorded source region, so the filter drops it --
+  // and its slot row goes with it, which is the owner lookup working.
+  inspect(Array::length(kept.fn_indices), content = "1")
+  inspect(Array::length(kept.slot_owner), content = "0")
+}
+
+test "the entry filter keeps owner rows whatever order the entries arrive in" {
+  // A merged cache concatenates two harvests, so kept indices are not sorted.
+  let c = cache_two_files()
+  Array::set(c.guard_meta, 0, 8)
+  Array::set(c.fn_indices, 0, 5)
+  Array::set(c.fn_indices, 1, 2)
+  Array::set(c.slot_owner, 0, 2)
+  Array::push(c.slot_owner, 5)
+  Array::push(c.slot_values, 4096)
+  Array::push(c.slot_owner, 3)
+  Array::push(c.slot_values, 8192)
+  let kept = codegen_body_cache_filter_src_keep(c, [1, 1, 1])
+  inspect(Array::length(kept.fn_indices), content = "2")
+  // Index 3 owns no kept entry, so only the rows of 2 and 5 remain.
+  let owners: Array[Int] = kept.slot_owner
+  inspect(owners, content = "[2, 5]")
+}
+
 test "#2818: src_keep_drops_any answers exactly whether filter_src_keep drops" {
   // The warm build refilters an already-filtered cache by the typed-lowering
   // guard and skips the copy when this says nothing would go.

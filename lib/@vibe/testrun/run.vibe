@@ -6,8 +6,9 @@
 //#
 //# A result record is one line, `<ok|fail> <fn hit> <fn total> <branch hit>
 //# <branch total> <coverage 0|1> <tests>`, written per file and read back by
-//# the summary. `<tests>` is empty where the count is unknown (the gc
-//# backend strips the `__test_` names).
+//# the summary. `<tests>` is a count label (`test_run_count_label`): `N`,
+//# `~N` where only raw occurrences could be counted (the gc backend strips the
+//# names), or empty where nothing was counted (a file that did not compile).
 
 import @vibe/json {
   Json
@@ -372,7 +373,8 @@ export fn test_run_failed(records: Array[String]) -> Bool {
 /// files the run was given and `compile_fails` how many did not compile;
 /// `seed_default` says the compiler was the committed seed by default, whose
 /// compile failures may only mean the file is newer than it.
-export fn test_run_summary(records: Array[String], files: Int, compile_fails: Int, backend: String, coverage: Bool, seed_default: Bool, seed: String, covdir: String) -> String {
+export fn test_run_summary(records: Array[String], files: Int, compile_fails: Int, coverage: Bool, seed_default: Bool, seed: String, covdir: String) -> String {
+  let mut exact = true
   let mut pass = 0
   let mut fail = 0
   let mut tests = 0
@@ -385,11 +387,17 @@ export fn test_run_summary(records: Array[String], files: Int, compile_fails: In
   let mut i = 0
   while i < Array::length(records) {
     let fs = fields(Array::get(records, i))
-    let nt = digits_or_zero(field_or(fs, 6))
+    let label = field_or(fs, 6)
+    let nt = digits_or_zero(label)
+    if label == "" || String::byte_at(label, 0) == '~' {
+      exact = false
+    } else {
+      ()
+    }
     tests = tests + nt
     if field_or(fs, 0) == "ok" {
       pass = pass + 1
-      if nt == 0 {
+      if label == "0" {
         notest = notest + 1
       } else {
         ()
@@ -409,7 +417,11 @@ export fn test_run_summary(records: Array[String], files: Int, compile_fails: In
     i = i + 1
   }
   let acc = StringBuilder::new()
-  if backend == "gc" {
+  // A total is printed only when every file's count is exact: a raw count
+  // over-counts, and a file with no count (it did not compile, or never
+  // reported) would make the sum too small. Either way the line stays
+  // files-only rather than present a wrong total (#3703).
+  if !exact {
     StringBuilder::push(acc, "[vibe-test] \{pass} passed, \{fail} failed (\{files} files)\n")
   } else {
     StringBuilder::push(acc, "[vibe-test] \{pass} passed, \{fail} failed (\{files} files, \{tests} tests)\n")

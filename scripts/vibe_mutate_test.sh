@@ -443,10 +443,26 @@ test "one" {
   assert(one() == 1)
 }
 EOF
+# Prove pruning does not use timestamps as an insertion witness. Backdate
+# every cache file after a compiler invocation; the original time-based
+# pruning then retains mutants, while a baseline key set remains exact.
+cat > "$WORK/backdated_cache_runner.sh" <<EOF
+#!/usr/bin/env bash
+if [ "\${2:-}" = test ]; then
+  "$RUNNER" "\$@"
+  rc=\$?
+  if [ -d "\${VIBE_BUILD_CACHE_DIR:-}" ]; then
+    find "\$VIBE_BUILD_CACHE_DIR" -type f -exec sh -c 'marker=\$1; shift; touch -t 200001010000 "\$@" && : > "\$marker"' sh "$WORK/cache-backdated" {} +
+  fi
+  exit "\$rc"
+fi
+exec "$RUNNER" "\$@"
+EOF
+chmod +x "$WORK/backdated_cache_runner.sh"
 cache_footprint() {
   rm -rf "$WORK/caches"
   (cd "$WORK" && VIBE_BUILD_CACHE_DIR="$WORK/caches/build" VIBE_NATIVE_CACHE_DIR="$WORK/caches/native" \
-    VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
+    VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$WORK/backdated_cache_runner.sh" run_bounded 900 \
     bash "$ROOT_DIR/runtime/vibe" mutate "$1" "$2" >/dev/null 2>"$WORK/caches.err")
   printf 'build=%s native=%s run=%s' "$(find "$WORK/caches/build" -type f 2>/dev/null | wc -l | tr -d ' ')" \
     "$(find "$WORK/caches/native" -type f 2>/dev/null | wc -l | tr -d ' ')" \
@@ -454,6 +470,11 @@ cache_footprint() {
 }
 one_fp="$(cache_footprint one.vibe one_test.vibe)"
 lib_fp="$(cache_footprint lib.vibe lib_test.vibe)"
+if [ -f "$WORK/cache-backdated" ]; then
+  note "  ok   the cache timestamp mutation was applied"
+else
+  note "  FAIL no cache timestamp mutation was applied"; fail=1
+fi
 if [ "$one_fp" = "$lib_fp" ] && ! printf '%s' "$lib_fp" | grep -q 'run=$'; then
   note "  ok   the same cache footprint for 1 and 8 mutants ($lib_fp)"
 else
