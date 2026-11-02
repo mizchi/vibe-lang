@@ -591,8 +591,9 @@ let e = label("v", "rc")   // => "v-rc"
 - Defaults apply only to a direct call of a top-level `fn` by its name. A
   function with defaults cannot be used as a value (wrap it in a lambda that
   calls it, `(n) -> greet(n)`), and a namespaced `T::f` cannot carry one,
-  since a method call (`x.f(..)`) bypasses them. An exported function cannot
-  carry one yet: an importer cannot tell a default from a plain `x?` (#3440).
+  since a method call (`x.f(..)`) bypasses them. An exported function keeps
+  its defaults across the import, through an alias or a re-export, and the
+  same refusals apply to the importer (#3440).
   A written `None` / `Some(..)` passed to a defaulted parameter is refused,
   since it would read as an omitted argument; bind the value and pass the
   name.

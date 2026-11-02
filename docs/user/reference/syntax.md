@@ -254,9 +254,12 @@ export let g2: () -> String = () -> { greet("hi", 3) }
 - Defaults apply only to a direct call of a top-level `fn` by its name. A
   function with defaults cannot be used as a value (wrap it in a lambda that
   calls it, `(a) -> greet(a)`), and a namespaced `T::f` cannot carry one,
-  since a method call (`x.f(..)`) bypasses them. An exported function cannot
-  carry one yet either: an importer cannot tell a default from a plain `x?`
-  (#3440).
+  since a method call (`x.f(..)`) bypasses them.
+- An exported function keeps its defaults across the import (#3440): an
+  importer, an alias and a re-export may omit the argument, and a written
+  `None` / `Some(..)` or use as a value is refused there too. A `.vpkg`
+  contract declares the parameter as `x?: T`, so a package's importer sees a
+  plain optional parameter.
 
 `x?` is an optional parameter (#1500). It is declared at type `Option[T]` and
 the call site may omit it:
