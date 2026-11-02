@@ -18,6 +18,10 @@
 // 4. A whole capability is not granted where some of its operations are all
 //    the file uses: removing `Fs` must be refused for `Fs` itself, not only for
 //    `Fs::read_bytes`. `Console` counts the legacy tty labels as its own.
+// 5. An effectset the file declares (`effectset S = { .. }`) is judged by its
+//    members, since the compiler expands it before admission: each member must
+//    be named by the refusal, at its width. One imported from elsewhere is not
+//    read, and fails as unnamed.
 //
 // The declarations come from the compiler (`vibe symbols`, function rows), not
 // from a text pattern: a header is read from the function's name to the `{`
@@ -501,7 +505,7 @@ fn hint_names_allows(out: String) -> Bool {
 
 /// The verdict on one probe: "" when the label is needed at its width, else
 /// the failure line.
-fn verdict(job: Job, rc: Int, out: String) -> String {
+fn verdict(job: Job, rc: Int, out: String) -> String with Fs {
   let at = "\{job.file}:\{job.line}"
   if rc == 0 {
     "FAIL \{at}: `\{job.label}` is not needed -- the file checks clean without it; drop it from `allows`"
@@ -509,33 +513,114 @@ fn verdict(job: Job, rc: Int, out: String) -> String {
     let first = Array::get(String::split(out, "\n"), 0)
     "FAIL \{at}: dropping `\{job.label}` was refused, but not as a missing grant with an edit to make:\n       \{first}"
   } else {
-    // What the refusal asks for, read against the removed label: the label
-    // itself (any grade), or operations of it. A refusal that names neither
-    // says nothing about this label, and fails rather than pass unread.
     let missing = missing_labels(out)
-    let base = ungraded(job.label)
-    let ops: Array[String] = []
-    let mut coarse = false
-    let mut i = 0
-    while i < Array::length(missing) {
-      let item = Array::get(missing, i)
-      if in_family(ungraded(item), base) {
-        coarse = true
-      } else if op_of(ungraded(item), base) && !contains(ops, item) {
-        Array::push(ops, item)
+    let members = effectset_members(Fs::read_file(job.file), job.label)
+    if Array::length(members) == 0 {
+      let (coarse, ops) = matched(missing, job.label)
+      label_verdict(at, "", job.label, missing, coarse, ops)
+    } else {
+      // An effectset the file declares is expanded before admission, so the
+      // refusal names its members; each is judged as if granted alone.
+      let out_lines: Array[String] = []
+      let mut m = 0
+      while m < Array::length(members) {
+        let member = Array::get(members, m)
+        let (coarse, ops) = matched(missing, member)
+        let v = label_verdict(at, job.label, member, missing, coarse, ops)
+        if v != "" {
+          Array::push(out_lines, v)
+        } else {
+          ()
+        }
+        m = m + 1
+      }
+      String::join(out_lines, "\n")
+    }
+  }
+}
+
+/// What the refusal asks for, read against one label: whether it names the
+/// label itself (any grade), and which of its operations it names.
+fn matched(missing: Array[String], label: String) -> (Bool, Array[String]) {
+  let base = ungraded(label)
+  let ops: Array[String] = []
+  let mut coarse = false
+  let mut i = 0
+  while i < Array::length(missing) {
+    let item = Array::get(missing, i)
+    if in_family(ungraded(item), base) {
+      coarse = true
+    } else if op_of(ungraded(item), base) && !contains(ops, item) {
+      Array::push(ops, item)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  (coarse, ops)
+}
+
+/// A refusal that names neither the label nor an operation of it says nothing
+/// about the label, and fails rather than pass unread; a capability where only
+/// operations are named is wider than its use. `set` is the effectset the
+/// label is a member of, or "".
+fn label_verdict(at: String, set: String, label: String, missing: Array[String], coarse: Bool, ops: Array[String]) -> String {
+  let subject = if set == "" {
+    "`\{label}`"
+  } else {
+    "`\{set}` grants `\{label}`, which"
+  }
+  if !coarse && Array::length(ops) == 0 {
+    if set == "" {
+      "FAIL \{at}: dropping `\{label}` was refused, but the refusal names neither it nor an operation of it (missing: \{String::join(missing, ", ")})"
+    } else {
+      "FAIL \{at}: \{subject} the file does not use (dropping `\{set}` asks only for: \{String::join(missing, ", ")})"
+    }
+  } else if !coarse && String::index_of(ungraded(label), "::") < 0 {
+    "FAIL \{at}: \{subject} is wider than its use -- the file needs only `\{String::join(sort_str(ops), " + ")}`"
+  } else {
+    ""
+  }
+}
+
+/// The members of `effectset <name> = { a, b }` when the file declares one by
+/// that name, read with the label grammar; empty otherwise.
+fn effectset_members(src: String, name: String) -> Array[String] {
+  let out: Array[String] = []
+  let n = String::length(src)
+  let mut at = String::index_of(src, "effectset")
+  while at >= 0 && Array::length(out) == 0 {
+    let id = skip_blank(src, at + 9)
+    let id_end = label_end(src, id)
+    if (at == 0 || !is_word(String::byte_at(src, at - 1))) && id_end > id && canonical(String::substring(src, id, id_end)) == name {
+      let eq = skip_blank(src, id_end)
+      let brace = skip_blank(src, eq + 1)
+      if eq < n && String::byte_at(src, eq) == '=' && brace < n && String::byte_at(src, brace) == '{' {
+        let mut i = skip_blank(src, brace + 1)
+        let mut going = true
+        while going {
+          let e = label_end(src, i)
+          if e < 0 {
+            going = false
+          } else {
+            Array::push(out, canonical(String::substring(src, i, e)))
+            let next = skip_blank(src, e)
+            if next < n && String::byte_at(src, next) == ',' {
+              i = skip_blank(src, next + 1)
+            } else {
+              going = false
+            }
+          }
+        }
       } else {
         ()
       }
-      i = i + 1
-    }
-    if !coarse && Array::length(ops) == 0 {
-      "FAIL \{at}: dropping `\{job.label}` was refused, but the refusal names neither it nor an operation of it (missing: \{String::join(missing, ", ")})"
-    } else if !coarse && String::index_of(base, "::") < 0 {
-      "FAIL \{at}: `\{job.label}` is wider than its use -- the file needs only `\{String::join(sort_str(ops), " + ")}`"
     } else {
-      ""
+      ()
     }
+    at = String::index_of_from(src, "effectset", at + 9)
   }
+  out
 }
 
 //# Running the checks
