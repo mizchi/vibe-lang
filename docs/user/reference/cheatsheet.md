@@ -104,7 +104,9 @@ conversions take width names too: `Int::to_float64`, `Int::to_float32`,
 the old spellings keep working; the tree moves to the new names in #3729.
 Because every `Float64` / `Float32` in a type or a `X::` path names the
 builtin, neither can be the name of a declared type, trait, effect, alias or
-type parameter (a constructor may still be called `Float64`).
+type parameter (a constructor may still be called `Float64`). A type
+parameter may not take any builtin float spelling (`Double`, `Float`, `f64`,
+`f32` too), since it would capture the `Float64` written beside it.
 
 ```vibe
 test "width-named floats" {
