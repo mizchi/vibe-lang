@@ -13,6 +13,8 @@ import ./diagnostics_parse.vibe {
 import ./type_members.vibe {
   engine_bind_enum_constructor_companions,
   engine_dependency_trait_projection_mappings,
+  engine_float_type_head,
+  engine_names_contain_type_head,
   engine_resolve_cached_import_path,
   engine_selected_module_binding_origin,
   engine_starts_with_upper,
@@ -1869,7 +1871,7 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
           // Declaration authority travels explicitly in EnvTypeDefs, so
           // uppercase is never evidence that an import is valid. Effects and
           // effectsets use the same selected declaration channel.
-          if dep_known && !contains_str(arr = dep_selectable_type_defs, target = name) && !engine_trait_in_list(traits = dep_traits, name = name) {
+          if dep_known && !engine_names_contain_type_head(names = dep_selectable_type_defs, name = name) && !engine_trait_in_list(traits = dep_traits, name = name) {
             Array::push(unresolved, value = String::concat(String::concat(String::concat("imported name '", name), "' is not exported by '"), String::concat(raw_path, "'")))
           } else {
             ()
@@ -1925,7 +1927,14 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
       let with_companions = match ty {
         CtEnum(enum_name) => engine_bind_enum_constructor_companions(acc = with_name, dep_env = dep_env, resolved = resolved, dep_bindings = dep_bindings, source_owner = enum_name, local_owner = bound_name, trait_mappings = trait_mappings, reexport_surface_only = surface_only_item),
         _ => if engine_starts_with_upper(name) {
-          engine_bind_enum_constructor_companions(acc = with_name, dep_env = dep_env, resolved = resolved, dep_bindings = dep_bindings, source_owner = name, local_owner = bound_name, trait_mappings = trait_mappings, reexport_surface_only = surface_only_item)
+          // `{ Float }` brings the `Float32::` members every reference names
+          // (`engine_float_type_head`); an alias keeps its own spelling.
+          let owner = engine_float_type_head(name)
+          let local_owner = match alias {
+            Some(a) => a,
+            None => owner
+          }
+          engine_bind_enum_constructor_companions(acc = with_name, dep_env = dep_env, resolved = resolved, dep_bindings = dep_bindings, source_owner = owner, local_owner = local_owner, trait_mappings = trait_mappings, reexport_surface_only = surface_only_item)
         } else {
           with_name
         }
