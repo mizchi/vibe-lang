@@ -75,6 +75,14 @@ import @vibe/core {
   array_empty, struct MutMap
 }
 
+import ./polyfill.vibe {
+  __to_string
+}
+
+import ./sorted_index.vibe {
+  sort_perm_by_names
+}
+
 //# Candidate table
 
 // Per-parameter observation, flat across all candidates (`base + i`):
@@ -545,7 +553,7 @@ fn cbf_method_named(t: CbfTable, name: String) -> Bool {
 
 /// One round: index, scan, substitute. The number of parameter reads
 /// replaced (0 = the program is at its fixpoint).
-fn cbf_round(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String]) -> Int {
+fn cbf_round(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String], sigs: CbfSigs) -> Int {
   let t = cbf_collect_candidates(stmts, entry_name)
   let mut wi = 0
   while wi < Array::length(wat_texts) {
@@ -578,7 +586,19 @@ fn cbf_round(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String]) -
                 if cbf_binds(body2, pname) {
                   ()
                 } else {
-                  body2 = cbf_subst(body2, pname, st == 1, count)
+                  // Only a substitution that replaced a read is kept. One that
+                  // replaced none would still re-simplify literal shapes the
+                  // source already had, so keeping it would make the body
+                  // depend on how many rounds the WHOLE program took -- and
+                  // the fold signature could not name the body exactly.
+                  let before = Array::get(count, 0)
+                  let next = cbf_subst(body2, pname, st == 1, count)
+                  if Array::get(count, 0) != before {
+                    body2 = next
+                    cbf_sig_note(sigs, fname, pi, st == 1)
+                  } else {
+                    ()
+                  }
                 }
               } else {
                 ()
@@ -603,14 +623,79 @@ fn cbf_round(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String]) -
 /// prelude extracted. Returns the total number of parameter reads replaced;
 /// 0 means nothing changed.
 export fn fold_const_bool_params(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String]) -> Int {
+  fold_const_bool_params_signed(stmts, entry_name, wat_texts, array_empty(), array_empty())
+}
+
+/// `fold_const_bool_params`, also reporting WHAT it did to each function, so a
+/// consumer can tell a rewritten body from its source text.
+///
+/// On return `sig_names` holds, sorted, every function the pass rewrote, and
+/// `sig_values[i]` that function's fold signature: one `<param><t|f>` per
+/// substitution, in the order they were applied (`0f`, `2t1f`; the letter
+/// ends each item, so no separator is needed). A function absent from
+/// `sig_names` is exactly its source text.
+///
+/// The signature names the body EXACTLY, by construction: `cbf_round` keeps a
+/// substitution only when it replaced a read, so the folded body is the source
+/// body with these substitutions applied in this order and nothing else. Two
+/// compiles that agree on a function's signature produced the same body from
+/// the same source, whatever the rest of the program did -- including how many
+/// rounds it took to reach the fixpoint. That is the property the codegen body
+/// cache keys a rewritten body on (#2818): a cached body is replayed only into
+/// a compile whose signature for that function is the one it was compiled
+/// under.
+export fn fold_const_bool_params_signed(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String], sig_names: Array[String], sig_values: Array[String]) -> Int {
+  let sigs = CbfSigs::{
+    names: array_empty(),
+    values: array_empty(),
+    idx: MutMap::new_string()
+  }
   let mut total = 0
   let mut rounds = 0
   let mut again = true
   while again && rounds < 16 {
-    let n = cbf_round(stmts, entry_name, wat_texts)
+    let n = cbf_round(stmts, entry_name, wat_texts, sigs)
     total = total + n
     again = n > 0
     rounds = rounds + 1
   }
+  let order = sort_perm_by_names(sigs.names)
+  let mut oi = 0
+  while oi < Array::length(order) {
+    let at = Array::get(order, oi)
+    Array::push(sig_names, Array::get(sigs.names, at))
+    Array::push(sig_values, StringBuilder::freeze(Array::get(sigs.values, at)))
+    oi = oi + 1
+  }
   total
+}
+
+/// The per-function fold signatures being built (see
+/// `fold_const_bool_params_signed`), in first-substituted order.
+struct CbfSigs {
+  names: Array[String];
+  values: Array[StringBuilder];
+  idx: MutMap[String, Int]
+}
+
+/// Record that a substitution of `value` for parameter `param` of `name`
+/// replaced at least one read. Appended in application order.
+fn cbf_sig_note(sigs: CbfSigs, name: String, param: Int, value: Bool) -> Unit {
+  let at = match MutMap::get(sigs.idx, name) {
+    Some(i) => i,
+    None => {
+      let i = Array::length(sigs.names)
+      Array::push(sigs.names, name)
+      Array::push(sigs.values, StringBuilder::new())
+      MutMap::set(sigs.idx, name, i)
+      i
+    }
+  }
+  let sb = Array::get(sigs.values, at)
+  StringBuilder::push(sb, __to_string(param))
+  StringBuilder::push(sb, if value {
+    "t"
+  } else {
+    "f"
+  })
 }

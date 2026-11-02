@@ -50,7 +50,7 @@ import ./name_encoding.vibe {
 }
 
 import ./renderer_scope.vibe {
-  derived_renderer_record
+  context_renderer_record, derived_renderer_record
 }
 
 import ./show_generation.vibe {
@@ -205,7 +205,7 @@ import ./equality_aliases.vibe {
 }
 
 import ./typed_row_queries.vibe {
-  dtd_own_end
+  dtd_is_own_index, dtd_own_end
 }
 
 import ./utilities.vibe {
@@ -449,6 +449,38 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
       _ => ()
     }
     i = i + 1
+  }
+  // #2826: a DEPENDENCY's derived renderer. On the per-module prelude a
+  // module's run sees its dependencies' declarations as a context block after
+  // `own_end`, and the dependency's own run generates `T::to_string` -- the
+  // link joins the two. This run must not generate it again, but it must know
+  // the renderer exists: the interpolation rewrite asks `has_derived_renderer`,
+  // and without the record `"\{dep_value}"` was refused as having no Show
+  // renderer on the split lane while the whole-program lane compiled it. The
+  // condition is the generating arms' own, evaluated on the same statements
+  // (`dtd_hash_renderless` is computed over context too), so a type is
+  // recorded here exactly when its own module generates its renderer. The
+  // whole-program lane has no context block, so this loop is empty there.
+  let mut ci = own_end
+  while ci < Array::length(stmts) {
+    if dtd_is_own_index(ci) {
+      ()
+    } else {
+      match Array::get(stmts, ci) {
+        SStruct(_, name, _, derives, _, _) => if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(name, "to_string")) && !str_array_contains(dtd_hash_renderless, name) {
+          context_renderer_record(name)
+        } else {
+          ()
+        },
+        SEnum(_, ename, _, _, derives) => if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(ename, "to_string")) && !str_array_contains(dtd_hash_renderless, ename) {
+          context_renderer_record(ename)
+        } else {
+          ()
+        },
+        _ => ()
+      }
+    }
+    ci = ci + 1
   }
   // #695: collect every `Array[e]` element type referenced by struct fields /
   // enum payloads (transitively) plus those surfaced by bare-array `==` sites in

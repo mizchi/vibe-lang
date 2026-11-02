@@ -14,9 +14,12 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `vibe_run.sh` — `runtime/vibe run` on the seed compiler and the node runner
   (`vibe_run_runner.sh` hands the program its caller's `VIBE_CLI_WASM` /
   `VIBE_RUNNER`). `vibe_run_smoke.sh`
-- `vibe_test.sh` — run `test {}` blocks. `vibe_test_smoke.sh`
-- `test_report.vibex` — the `FAIL <file>` report for `vibe_test.sh`, over
-  `@vibe/testreport` (the launcher reaches the same library via `vibe test-report`)
+- `vibe_test.sh` — run `test {}` blocks: launches the compiler and the runner,
+  fans the files out, propagates the status. `vibe_test_smoke.sh`
+- `test_report.vibex` — every decision `vibe_test.sh` prints, compiled with the
+  seed: arguments, per-file lines and records, the summary (`@vibe/testrun`) and
+  the `FAIL <file>` report (`@vibe/testreport`, which the launcher reaches via
+  `vibe test-report`)
 - `vibe_normalize.sh` (+ `*_smoke.sh`) — `runtime/vibe normalize` on the
   pinned seed and Node runner; the CLI owns `--check`/`--stdout`/write policy.
   Like the CLI, usage errors exit 1 and a non-normalized `--check` reports

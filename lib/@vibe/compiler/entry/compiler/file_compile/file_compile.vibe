@@ -79,12 +79,14 @@ import @vibe/compiler/codegen/common_base {
   bcc_layout_fp_strings,
   bcc_string_lists_equal,
   codegen_body_cache_discard,
+  codegen_body_cache_filter_fold_sigs,
   codegen_body_cache_filter_src_below,
   codegen_body_cache_filter_src_keep,
-  codegen_body_cache_from_bytes,
+  codegen_body_cache_from_bytes_at,
   codegen_body_cache_merge,
   codegen_body_cache_new,
-  codegen_body_cache_to_bytes,
+  codegen_body_cache_src_keep_drops_any,
+  codegen_body_cache_write_to,
   module_split_none
 }
 
@@ -1786,7 +1788,7 @@ fn encode_body_cache_artifact(paths: Array[String], fps: Array[String], counts: 
     bcw_push_int(payload, Array::get(counts, i))
     i = i + 1
   }
-  Bytes::append(payload, codegen_body_cache_to_bytes(cache))
+  codegen_body_cache_write_to(payload, cache)
   let (h1, h2) = bcw_checksum(payload, 0)
   let buf = Bytes::new()
   Bytes::push(buf, 'V')
@@ -1889,7 +1891,7 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
     if malformed || (!layout_same && limit == 0) {
       codegen_body_cache_new()
     } else {
-      match codegen_body_cache_from_bytes(Bytes::slice(b, p, Bytes::length(b))) {
+      match codegen_body_cache_from_bytes_at(b, p) {
         Some(cache) => {
           let kept = if layout_same {
             codegen_body_cache_filter_src_keep(cache, keep_file)
@@ -2208,21 +2210,14 @@ export fn compile_file_fs_mode_rc_body_cached_counted(entry_path: String, entry_
 /// `bcc_src_region_n` reads `guard_meta[0]` and answers 0 for anything that is
 /// not exactly five values, so a guardless harvest loses every entry to
 /// `codegen_body_cache_filter_src_keep` / `_filter_src_below` before it can
-/// cross a compile. linked_compile withholds those guards on purpose when
-/// `fold_const_bool_params` rewrote a body -- a folded body no longer matches
-/// its source text, and replaying it into a compile whose call sites passed a
-/// different literal would be silently wrong.
+/// cross a compile. Persisting one would write the program's whole body set
+/// for a cache guaranteed to drop it -- measured on the compiler's own CLI
+/// closure when the constant-Bool fold still withheld the guards, 6.9 MB
+/// written and then read and discarded on every build, for `offered=0`.
 ///
-/// The fold runs only when there IS an entry point, so this is the shape every
-/// `vibe build` / `vibe run` / `vibe test` takes. Persisting that harvest wrote
-/// the program's whole body set for a cache guaranteed to drop it: measured on
-/// the compiler's own CLI closure, 6.9 MB written and then read and discarded
-/// on every build, for `offered=0`. Storing nothing is the same reuse and less
-/// work.
-///
-/// This does not make a folded build replayable -- that needs the fold's own
-/// result to become part of the cache identity, which is #2818's remaining
-/// half. It stops paying for a harvest that cannot be used.
+/// A folded compile records its guards now (each entry carries its fold
+/// signature, `codegen_body_cache_filter_fold_sigs`); what still lands here is
+/// a compile that did not run the pin reorder.
 fn body_cache_harvest_is_replayable(cache: CodegenBodyCache) -> Bool {
   Array::length(cache.guard_meta) == 5
 }
@@ -2342,13 +2337,18 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
       Array::push(tl_keep_file, tl_same)
       tl_f = tl_f + 1
     }
-    let kept = codegen_body_cache_filter_src_keep(cache_in_decoded, tl_keep_file)
-    let mut tl_c = 0
-    while tl_c < Array::length(cache_in_decoded.consumer_src_limit) {
-      Array::push(kept.consumer_src_limit, Array::get(cache_in_decoded.consumer_src_limit, tl_c))
-      tl_c = tl_c + 1
+    if !codegen_body_cache_src_keep_drops_any(cache_in_decoded, tl_keep_file) {
+      // The common case: nothing moved, so the copy would be the input.
+      cache_in_decoded
+    } else {
+      let kept = codegen_body_cache_filter_src_keep(cache_in_decoded, tl_keep_file)
+      let mut tl_c = 0
+      while tl_c < Array::length(cache_in_decoded.consumer_src_limit) {
+        Array::push(kept.consumer_src_limit, Array::get(cache_in_decoded.consumer_src_limit, tl_c))
+        tl_c = tl_c + 1
+      }
+      kept
     }
-    kept
   } else if Array::length(cache_in_decoded.consumer_src_limit) == 1 {
     let narrowed = codegen_body_cache_filter_src_below(cache_in_decoded, Array::get(cache_in_decoded.consumer_src_limit, 0))
     Array::push(narrowed.consumer_src_limit, Array::get(cache_in_decoded.consumer_src_limit, 0))
@@ -2374,7 +2374,10 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
     // reported count is -1 rather than a number that reads like reuse.
     let verify_replay_recompiled: Array[Int] = []
     record_typed_lowering_guard(fresh_out, typed_lowering_guard)
-    if Array::length(cache_in.fn_indices) > 0 && body_cache_guards_equal(cache_in, fresh_out) {
+    // #2818: the re-fed second compile below stands its fold-signature
+    // filter down, so apply it here against the fresh compile's fold table.
+    let cache_in_v = codegen_body_cache_filter_fold_sigs(cache_in, fresh_out.guard_fold_names, fresh_out.guard_fold_sigs)
+    if Array::length(cache_in_v.fn_indices) > 0 && body_cache_guards_equal(cache_in_v, fresh_out) {
       // Guard drift (an edit flipped a whole-program fact the guards pin)
       // is an EXPECTED cache miss, checked above against the fresh
       // harvest's guards -- the second compile below re-feeds the
@@ -2386,7 +2389,7 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
       // first, so any difference here is attributable to the persisted
       // bodies being replayed.
       let replay_out = codegen_body_cache_new()
-      let replayed = compile_wasi_module_rc_cached_impl_with_split(merged_stmts, entry_name, cache_in, replay_out, lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, lane_split, print_stmt)
+      let replayed = compile_wasi_module_rc_cached_impl_with_split(merged_stmts, entry_name, cache_in_v, replay_out, lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, lane_split, print_stmt)
       Array::push(verify_replay_recompiled, Array::length(replay_out.fn_indices))
       let fresh_n = Bytes::length(fresh)
       let rn = Bytes::length(replayed)
@@ -2432,8 +2435,11 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
     // Merging a guard-rejected cache would re-persist every entry the
     // compile just recompiled, growing the artifact by a full duplicate
     // set on each guard-flipping edit.
+    // #2818: an entry this compile folds differently was recompiled into
+    // `cache_out`; carrying it back too would persist a duplicate per flip.
+    let cache_in_m = codegen_body_cache_filter_fold_sigs(cache_in, cache_out.guard_fold_names, cache_out.guard_fold_sigs)
     let refreshed = if Array::length(cache_in.fn_indices) > 0 && body_cache_guards_equal(cache_out, cache_in) {
-      codegen_body_cache_merge(cache_out, cache_in)
+      codegen_body_cache_merge(cache_out, cache_in_m)
     } else if Array::length(cache_in.fn_indices) > 0 && Array::length(cache_in.consumer_src_limit) == 1 && body_cache_guards_equal_except_layout(cache_out, cache_in) {
       // A layout guard drifted, so the body loop replayed only the leading
       // prefix -- and a replayed function is not re-recorded, so `cache_out`
@@ -2442,7 +2448,7 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
       // the SAME one the body loop narrowed to, computed from the same
       // annotation, so the two cannot disagree about which entries were
       // replayed.
-      codegen_body_cache_merge(cache_out, codegen_body_cache_filter_src_below(cache_in, Array::get(cache_in.consumer_src_limit, 0)))
+      codegen_body_cache_merge(cache_out, codegen_body_cache_filter_src_below(cache_in_m, Array::get(cache_in.consumer_src_limit, 0)))
     } else {
       cache_out
     }

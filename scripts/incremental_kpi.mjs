@@ -36,13 +36,12 @@
 // artifacts of each kind it left in the cache directory. Measured 2026-09-15:
 // `checked_module` 0 everywhere (that cache is off on this lane) and
 // `codegen_body_cache` small 0 / medium 1 / selfhost 0. Publication needs a
-// replayable harvest (#2811), which linked_compile writes only under
-// `pin_region_capacity >= 0 && !late_dce_rewrote_bodies`, so the two zeroes
-// are #2825 §6 in view -- but WHICH of the two conditions each corpus misses
-// is not established by these counts, and all three corpora have a real entry.
-// Hence reported and not asserted: today's honest value is 0 on two of three,
-// so a threshold would encode the open bug, and when §6 lands these zeroes
-// become nonzero on the run that lands it.
+// replayable harvest (#2811). Until #2818 linked_compile withheld the guards
+// from any compile the constant-Bool fold touched, which every real entry
+// is; it now records them whenever `pin_region_capacity >= 0` and signs each
+// folded body instead. Whether that turns these zeroes nonzero also depends
+// on the lane running the body cache at all, which these counts do not
+// establish. Hence reported and not asserted.
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -61,7 +60,7 @@ const outPath = resolve(root, positional[0] || "_build/incremental_kpi.json");
 
 // Three sizes, each a committed root so the corpus cannot drift with unrelated
 // edits, and each with a real ENTRY -- a `__no_entry__` root skips the
-// capability const-fold and the late DCE, which is most of what a real build
+// constant-Bool fold and the late DCE, which is most of what a real build
 // does after the checker (#2818).
 const allCorpora = [
   { name: "small", input: "bench/incremental/edit_cycle/entry.vibe", entry: "main" },

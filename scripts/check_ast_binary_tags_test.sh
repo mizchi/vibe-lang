@@ -74,13 +74,13 @@ grep -q '^| 0x01 | `TyApp' "$tmp_root/$DOC_REL" || fail "case 3: mutation did no
 assert_red "case 3 (duplicate tag)" 'TypeExpr has a duplicate tag 0x01'
 
 # 4. The heading's variant count is wrong -- the mistake that actually
-#    happened: a note recorded 27 Stmt variants when the enum has 26.
+#    happened: a note recorded one more Stmt variant than the enum had.
 reset_tree
-grep -q '^### Stmt tags (26 variants)$' "$tmp_root/$DOC_REL" || fail "case 4: Stmt heading not in expected form"
-sed 's|^### Stmt tags (26 variants)$|### Stmt tags (27 variants)|' "$tmp_root/$DOC_REL" > "$tmp_root/t" &&
+grep -q '^### Stmt tags (27 variants)$' "$tmp_root/$DOC_REL" || fail "case 4: Stmt heading not in expected form"
+sed 's|^### Stmt tags (27 variants)$|### Stmt tags (28 variants)|' "$tmp_root/$DOC_REL" > "$tmp_root/t" &&
   mv "$tmp_root/t" "$tmp_root/$DOC_REL"
-grep -q '^### Stmt tags (27 variants)$' "$tmp_root/$DOC_REL" || fail "case 4: mutation did not land"
-assert_red "case 4 (wrong heading count)" 'Stmt heading says 27 variants'
+grep -q '^### Stmt tags (28 variants)$' "$tmp_root/$DOC_REL" || fail "case 4: mutation did not land"
+assert_red "case 4 (wrong heading count)" 'Stmt heading says 28 variants'
 
 # 5. The AST gains a variant and the doc is not updated -- the drift this
 #    gate exists for, driven from the SOURCE side rather than the doc side.

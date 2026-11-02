@@ -90,6 +90,37 @@ if [ -e "$stale_cov" ]; then
 fi
 echo "[vibe-test-smoke] ok (fresh coverage required)"
 
+# #3674: a file whose report never completes is a failure, not an omission.
+# The per-file record is written by scripts/test_report.vibex; a fake `node`
+# kills exactly that call (its `pass` mode) for a passing file, so no record
+# is written. The summary must still name the file and fail the run, rather
+# than count the files that did report and exit 0.
+unrecorded_src="$WORK/unrecorded_test.vibe"
+printf 'test "t" { assert(true) }\n' > "$unrecorded_src"
+fake_node_bin="$WORK/fake-node-bin"
+mkdir -p "$fake_node_bin"
+real_node="$(command -v node)"
+cat > "$fake_node_bin/node" <<EOF
+#!/usr/bin/env bash
+case " \$* " in
+  *test_report.wasm\ pass\ *) exit 137 ;;
+esac
+exec "$real_node" "\$@"
+EOF
+chmod +x "$fake_node_bin/node"
+unrecorded_out="$WORK/unrecorded.out"
+set +e
+PATH="$fake_node_bin:$PATH" bash "$ROOT_DIR/scripts/vibe_test.sh" "$unrecorded_src" >"$unrecorded_out" 2>&1
+unrecorded_code=$?
+set -e
+if [ "$unrecorded_code" -eq 0 ] || ! grep -qF "FAIL ${unrecorded_src#"$ROOT_DIR/"} (no result recorded" "$unrecorded_out" \
+    || ! grep -qF "0 passed, 1 failed" "$unrecorded_out"; then
+  echo "[vibe-test-smoke] FAIL: a file whose report was killed was not counted as a failure" >&2
+  sed 's/^/  /' "$unrecorded_out" >&2
+  exit 1
+fi
+echo "[vibe-test-smoke] ok (a file that left no result fails the run)"
+
 # #1946: a quoted test name must appear in full on FAIL. The runner used to
 # match `__test_[A-Za-z0-9_]+` and cut the name at the first space (and drop
 # Unicode). Exit status stays non-zero; the line is still `failing test: ...`.

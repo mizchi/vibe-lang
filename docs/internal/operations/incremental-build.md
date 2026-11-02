@@ -185,6 +185,43 @@ whole-program prelude exactly.
 module's context further, and a closure built from every edge and one built from
 half of them otherwise look identical.
 
+### The production split lane, compiled to wasm (#2826)
+
+The oracle compares declarations; #2826 asks for output parity. Compiling the
+CLI closure (686 modules) through `compile_file_fs_mode_rc_body_cached_split`
+with `use_split` false and true:
+
+- **Byte-identical**, once the synthesized function region is laid out in
+  NAME order. Before that, both lanes emitted the same 14842 functions but 27
+  synthesized comparators sat in a different order (the split lane links a
+  module's helpers after that module's statements; the whole-program lane
+  emits them where its passes inserted them), so every call into them moved
+  and 698 bodies differed. The pin reorder now sorts that region by name, the
+  same consistent-permutation argument the reorder already relies on. Pinned
+  by `prelude_split_fs_lane_test.vibe`, whose two-module case differs without
+  the sort.
+- **What a per-module prelude cache could save is bounded.** Cold, CPU inside
+  the compile: the whole-program prelude is 13.0 s, of which the evidence pass
+  is 7.7 s and suspend CPS 0.95 s. Both run at the link boundary on either
+  lane. The per-module share is ~4.4 s, mostly trait-dict desugaring, and the
+  split lane spends 16.6 s on the prelude today, +3.6 s. Even a perfect
+  per-module cache would save at most ~4.4 s of a ~37 s cold compile; the
+  evidence pass is the larger target.
+- **A dependency's derived `Show` now renders on the split lane.** It used to
+  refuse `"\{zeta(2)}"` with `Zeta`'s `derive(Show)` in another module
+  (``cannot interpolate a value of type `Zeta`: it has no Show renderer``),
+  which the whole-program lane compiles. A module's run derives only for its
+  own declarations, and the renderer check needs `Zeta::to_string` in a
+  return table built from this run's statements, while the definition is in
+  the dependency's output. The derive pass now records context types whose own
+  module will generate a renderer (the generating arms' condition, evaluated
+  on the same statements), and the return table gains their
+  `T::to_string -> String` rows, inserted in sorted order because the table is
+  searched by bisection. The link joins the call to the dependency's
+  definition; nothing is generated twice. Pinned by the cross-module `Show`
+  case in `prelude_split_fs_lane_test.vibe` (byte-identical to the
+  whole-program lane; refused without the fix).
+
 ### The four counters
 
 Four counters name what a green would otherwise hide. `invisible_whole` /
@@ -991,7 +1028,8 @@ by reading:
   `fn_src_stmts` uses the corresponding original merged-statement position
   for the prefix fallback, before insertion or DCE compaction (#2721).
   Ambiguous or synthesized names have no source position and cannot enter
-  that prefix. The VBC5 codec rejects the former post-prelude coordinates.
+  that prefix. The codec (VBC5 and later) rejects the former post-prelude
+  coordinates.
 - **The typed-lowering OFFSET arrays must not be pinned.** They are source
   positions in the merged text, so appending a comment to any file shifts every
   offset after it. Measured on the compiler's own closure, comment-edited: with
@@ -1690,7 +1728,7 @@ snapshot that carries the trend.
 Three sizes, because every incremental number this document used to carry was
 measured on the compiler's own 420-module closure, and that closure turns out
 not to represent the sizes people actually build. Each corpus is a committed
-root with a REAL entry — a `__no_entry__` root skips the capability const-fold
+root with a REAL entry — a `__no_entry__` root skips the constant-Bool fold
 and the late DCE, which is most of what a build does after the checker (#2818).
 
 Measured at `3869051`:
@@ -2214,69 +2252,124 @@ while the heavier one carries the free one. At the current codec's measured
 ~22 MB/s that is 0.7 s to decode against ~8.2 s, so the codec's speed stops
 being the binding constraint once the granularity is right.
 
-**But the body cache does not fire on a real build at all (2026-09-15).**
-Everything published about it — the `offered=4431 recompiled=832` table above
-and its successors — was measured through `scripts/body_cache_reuse.sh`, which
-hardcoded the entry to `__no_entry__`. That is the LIBRARY shape. Same corpus,
-same leaf, same cache directory, only the entry changed:
+**A build with an entry point replays too (#2818).** `vibe build`, `vibe run`
+and `vibe test` all compile with an entry, and until #2818 the body cache
+never replayed a body for one: every published number came from
+`scripts/body_cache_reuse.sh` with the entry hardcoded to `__no_entry__`, the
+library shape. With `cli_main` the warm build offered **0** bodies on every
+row, so it recompiled exactly what a cold one did.
 
-| entry | cold | warm (unchanged) |
-|---|---|---|
-| `__no_entry__` | offered 0 / recompiled 10478 | **offered 9752** / recompiled 726 |
-| `cli_main` | offered 0 / recompiled 10287 | **offered 0** / recompiled 10287 |
+The cause was `fold_const_bool_params` (#2497 unit 2, not the capability
+lowering). It rewrites a body whose `Bool` parameter receives the same literal
+at every call site, and it runs only when there is an entry. A folded body is
+no longer its source text, and its bytes depend on call sites in OTHER files
+that the file table cannot see: `gate(on: Bool)` called only as `gate(true)`
+compiles to its `true` arm, and changing that call in another file must change
+`gate`'s body while `gate`'s file stays byte-identical. The compile answered
+that by withholding every guard whenever anything was folded, which made the
+whole harvest unusable.
 
-With an entry point the cache offers **nothing**, on every row — unchanged,
-comment-edited and reverted alike — so a warm build recompiles exactly what a
-cold one does. The artifact is not missing: a `cli_main` build stores 6.9 MB
-under `codegen-body-cache` just as a `__no_entry__` build stores 7.3 MB.
+**The fold signs what it did, and the cache keys on it.**
+`fold_const_bool_params_signed` reports, per rewritten function, the ordered
+list of substitutions it applied (`0t` = parameter 0 fixed to `true`). That
+names the folded body exactly, because a round keeps a substitution only when
+it replaced a read: one that replaced nothing would still re-simplify literal
+shapes the source already had, which would make the body depend on how many
+rounds the whole program took. Every harvested entry carries the signature its
+body was compiled under (`fn_fold_sigs`, VBC7), stamped at record time from
+the compile's fold table (`guard_fold_names` / `guard_fold_sigs`, installed on
+the out cache before the body phase so a function worker's template carries it
+too). `codegen_body_cache_filter_fold_sigs` drops exactly the entries whose
+function the consuming compile folds differently; everything else replays.
+The signature is per entry rather than per compile because the persisted
+artifact is a harvest MERGED with the entries it replayed, and no single
+compile's table describes a merged cache.
 
-**The cause is the capability const-fold.** `fold_const_bool_params` rewrites a
-body whose Bool parameter is a literal at every call site, and
-`linked_compile.vibe` then withholds `guard_meta` from the harvest —
-deliberately, and correctly: a folded body no longer matches its source text,
-so replaying it into a compile whose call sites passed a different literal
-would be silently wrong. That fold runs only when `late_dce_has_entry`, which
-is why `__no_entry__` never hits it.
+Three places apply the filter, each against the compile that will use the
+entries:
 
-What was not deliberate is that the compile still **persisted** the guardless
-harvest. `bcc_src_region_n` reads `guard_meta[0]` and answers 0 for anything
-that is not exactly five values, so
-`codegen_body_cache_filter_src_keep` drops every entry however generous the
-keep mask is — measured, a stored harvest of 10288 bodies decoding to 0. The
-file table matches perfectly (`layout_same=1`, `limit=10633`, no file
-mismatched); the refusal is entirely downstream of it.
+- linked_compile, before the guards are checked, against its own fold table.
+  It stands down under `pin_region_capacity < 0`, for the reason the other
+  guards do: that compile re-feeds statements an earlier compile in this
+  process already folded, so its own fold finds no read left to substitute.
+- the verify lane, against the FRESH compile's table, because its second
+  compile is exactly that re-feed.
+- the refreshed artifact's merge, so an entry the compile recompiled is not
+  carried back in as a duplicate.
 
-An earlier revision of this paragraph blamed the leading-prefix rule in
-`decode_body_cache_artifact_for`. That was inferred from `offered=0` and is
-wrong: the prefix rule accepts every file.
+`lib/@vibe/compiler/tests/codegen_body_cache_persist_test.vibe` pins the
+cross-file case: flipping the only caller of an imported `gate` from `true`
+to `false` keeps every layout guard intact and offers `gate`'s cached `true`
+body. With the filter disabled, the warm build is not what a fresh compile
+emits. With it, the build is byte-identical to a fresh compile, in both
+directions and under `verify`.
 
-This is why turning the body cache on changes nothing on a real closure —
-measured, `VIBE_CODEGEN_BODY_CACHE=on` moved the CLI closure's warm wall from
-9.47 s to 9.53 s and its heap from 1957 MB to 2091 MB, both slightly worse,
-which is the artifact being written and read and discarded. It also explains
-the phase table above: with the cache "on" and 93 % of bodies notionally
-replayed, `compile_expr`, the prelude and the lowering passes are all
-unchanged to within noise, because nothing was replayed.
+Measured on the CLI closure (`lib/@vibe/cli/entry.vibe`, 685 files),
+`scripts/body_cache_reuse.sh lib/@vibe/cli/entry.vibe lib/@vibe/core/defaults.vibe cli_main`,
+seed-compiled harness, one cache directory per tree:
 
-**Fixed in part (#2818): the guardless harvest is no longer written.**
-`body_cache_harvest_is_replayable` gates both store sites, so a compile whose
-fold withheld the guards persists nothing — measured on the CLI closure, the
-cache directory goes from 16 MB to 9 MB with zero artifact files, exactly the
-`off` lane's size, and the emitted wasm is byte-identical. What that fix does
-NOT do is make a folded build replayable; for that, the fold's own result has
-to become part of the cache identity — or, per the ADR-0088 amendment that
-supersedes that approach, for the fold to stop happening at compile time at
-all (#2825). That is the remaining half, and it is
-the same shape the capability discussion below arrives at independently. A
-guardless artifact written before the fix is still read and refused until
-something replaces it.
+| temperature | before: offered / recompiled | after: offered / recompiled |
+|---|---:|---:|
+| cold | 0 / 15416 | 0 / 15416 |
+| unchanged | 0 / 15416 | **14498 / 918** |
+| comment-edited | 0 / 15416 | **14498 / 918** |
+| reverted | 0 / 15416 | **14498 / 918** |
 
-`vibe build`, `vibe run` and `vibe test` all compile with an entry, so this
-cache has never accelerated one. `scripts/body_cache_reuse.sh` now takes the
-entry as its third argument, defaulting to `__no_entry__` so the historical
-rows still reproduce; the harness itself did not compile until 2026-09-15
-(`fn main` still used `with` where an entry now requires `allows`), which is
-how a measurement stopped being run without anyone noticing.
+What replay buys, on the production compiler: a stage2 built from this tree
+compiling the same closure (`VIBE_FS_COMPILE=1 VIBE_RC=1`, the incremental
+KPI's environment), one isolated cache per mode, a cold run and three warm
+ones, the mode the only change. The emitted 51 MB module is byte-identical
+either way.
+
+| `VIBE_CODEGEN_BODY_CACHE` | cold | warm 1 | warm 2 | warm 3 |
+|---|---:|---:|---:|---:|
+| `off` | 32.3 s | 18.6 s | 18.8 s | 18.5 s |
+| `on` | 29.6 s | 16.6 s | 15.7 s | 16.4 s |
+
+About 12 % of a warm build. A CPU profile of the same warm compile through
+the harness puts it where expected: the body phase (`lc_execute_function_plan`)
+drops from 4.0 s to 0.37 s, decoding the artifact costs 0.26 s, and nothing
+else moves. The effect-lowering prelude, merge, borrow fixpoint, DCE and
+assembly still run whole-program, and the prelude alone is over half of what
+remains. (`scripts/body_cache_reuse.sh` is the wrong tool for wall time: each
+of its rows recompiles the seed-built harness first, ~60 s of ~90 s.)
+
+**At the KPI's three sizes** (`scripts/incremental_kpi.mjs`, same stage2,
+`VIBE_CODEGEN_BODY_CACHE` the only change, absolute times):
+
+| corpus | cold | warm, `off` | warm, `on` | warm heap `off` → `on` |
+|---|---:|---:|---:|---:|
+| small (2 modules) | ~190 ms | 165 ms | 160 ms | 2 → 2 MB |
+| medium (16 modules) | ~380 ms | 300 ms | 295 ms | 16 → 19 MB |
+| selfhost (686 modules) | ~29.7 s | 18.9 s | 17.2 s | 2922 → 3092 MB |
+
+Only the selfhost size gains. The small corpus publishes no artifact at all:
+a program with no derived comparator never runs the pin reorder, so it
+records no guards (`body_cache_harvest_is_replayable`). Below a few hundred
+milliseconds the remaining cost is most likely the process itself (node
+startup and instantiating a 5 MB compiler); no cache of compiler phases can
+remove it. That is an inference from the absolute times, not something these
+two corpora were profiled for. The price of the cache is heap. The bump heap
+never frees, so decoding the ~12 MB artifact, re-encoding the refreshed one
+and the intermediate copies show up as +170 MB at selfhost size. Two of those
+copies are gone: the decoder reads the stream in place
+(`codegen_body_cache_from_bytes_at`), the encoder writes it into the artifact
+buffer (`codegen_body_cache_write_to`), and the typed-lowering refilter is
+skipped when it would drop nothing (`codegen_body_cache_src_keep_drops_any`).
+Measured with heap marks on a warm CLI-closure compile: decode 153 → 100 MB,
+store 98 → 74 MB, the whole compile 2468 → 2391 MB, with the same replay
+counts.
+
+Before the filter that carries an entry's lambdas, slots, blind references and
+linemap rows (`bcc_filter_entries`) used a direct-address table, it tested each
+row's owner against the kept-function list linearly. That is quadratic, and
+with ~14k kept functions it cost more than the replay saved. The artifact adds
+~12 MB to the cache directory.
+
+The body cache is still opt-in (`VIBE_CODEGEN_BODY_CACHE=on|verify`). This
+makes the lane usable on the shape every real build takes, which is the
+precondition for measuring it at all; it does not by itself meet #2826's
+promotion bar.
 
 **The constraint to design around** is not size but the capability lane.
 `--allow-*` drives const-fold plus DCE (ADR-0075/0084/0088), so a dependency's

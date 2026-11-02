@@ -15,10 +15,12 @@ import ./intern.vibe {
 import ./parser_base.vibe {
   collect_effect_names,
   collect_import_path,
+  disarm_lambda_positional,
   empty_fields,
   empty_import_items,
   entry_with_row_message,
   expect_tk,
+  has_positional_params,
   has_qualified_pattern_refs,
   has_test_effect_rows,
   parse_allows_row,
@@ -47,10 +49,14 @@ import ./parser_base.vibe {
   pattern_ref_mark,
   peek,
   peek_is_allows,
+  positional_params_mark,
   record_test_effect_row,
+  reset_pattern_refs,
   restore_pattern_refs,
+  restore_positional_params,
   skip_derive,
   skip_semi,
+  take_positional_params,
   take_qualified_pattern_refs,
   take_test_effect_rows,
   tk_name
@@ -588,6 +594,9 @@ fn parse_extern_let_stmt(tokens: Array[Token], pos: Int, context: Option[ParserB
 /// codegen should use `parse_stmt` / `parse_program*` below, which lower
 /// SFnDecl to the legacy SLet shape.
 export fn parse_stmt_preserving_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  // A `let` that threw mid-initializer must not leave its arming for the
+  // next statement's first lambda (ADR-0120 D3).
+  let _ = disarm_lambda_positional()
   let raw_head = peek(tokens, pos)
   // #1343: rewrite `resource` to a name no identifier can have UNLESS it
   // starts a declaration, so the dispatch below routes `resource = f()` /
@@ -1070,7 +1079,7 @@ fn parse_preserving_top_stmt(tokens: Array[Token], starts: Array[Int], pos: Int)
 /// logs already drained; the markers were appended last here and the
 /// lowerings keep statement order, so they stay last.
 export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exception {
-  restore_pattern_refs((0, 0))
+  reset_pattern_refs()
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
@@ -1095,6 +1104,7 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
         } else {
           // Inactive #cfg: parse the guarded statement and discard it.
           let ref_mark = pattern_ref_mark()
+          let slot_mark = positional_params_mark()
           match peek(tokens, dnext) {
             TImpl => {
               let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
@@ -1107,6 +1117,7 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
             }
           }
           restore_pattern_refs(ref_mark)
+          restore_positional_params(slot_mark)
         }
       },
       TImpl => {
@@ -1131,7 +1142,7 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
   // common program has neither log, and the copy showed up as a +2% B/op
   // drift on parser_bench's parse_deep_binop_chain.
   let raw = ArrayBuilder::freeze(b)
-  if has_test_effect_rows() || has_qualified_pattern_refs() {
+  if has_test_effect_rows() || has_qualified_pattern_refs() || has_positional_params() {
     attach_qualified_pattern_refs(Array::slice(raw, 0, Array::length(raw)))
   } else {
     raw
@@ -1162,6 +1173,7 @@ fn preserving_cfg_directive(tokens: Array[Token], starts: Array[Int], pos: Int, 
     dnext
   } else {
     let ref_mark = pattern_ref_mark()
+    let slot_mark = positional_params_mark()
     let dn = match peek(tokens, dnext) {
       TImpl => {
         let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
@@ -1174,12 +1186,13 @@ fn preserving_cfg_directive(tokens: Array[Token], starts: Array[Int], pos: Int, 
       }
     }
     restore_pattern_refs(ref_mark)
+    restore_positional_params(slot_mark)
     dn
   }
 }
 
 fn parse_program_preserving_impl(tokens: Array[Token], starts: Array[Int], source: String, located: Bool) -> Array[Stmt] with Exception {
-  restore_pattern_refs((0, 0))
+  reset_pattern_refs()
   if located {
     remember_parse_source(source)
   } else {
@@ -1259,7 +1272,7 @@ fn parse_program_preserving_impl(tokens: Array[Token], starts: Array[Int], sourc
   // common program has neither log, and the copy showed up as a +2% B/op
   // drift on parser_bench's parse_deep_binop_chain.
   let raw = ArrayBuilder::freeze(b)
-  if has_test_effect_rows() || has_qualified_pattern_refs() {
+  if has_test_effect_rows() || has_qualified_pattern_refs() || has_positional_params() {
     attach_qualified_pattern_refs(Array::slice(raw, 0, Array::length(raw)))
   } else {
     raw
@@ -1293,11 +1306,18 @@ fn attach_qualified_pattern_refs(stmts: Array[Stmt]) -> Array[Stmt] {
   }
   // #1508: same placement rule -- appended LAST so no existing statement index
   // moves, and omitted entirely when no test declared a row.
-  if has_test_effect_rows() {
+  let with_rows = if has_test_effect_rows() {
     Array::push(with_refs, STestEffectRows(take_test_effect_rows()))
     with_refs
   } else {
     with_refs
+  }
+  // ADR-0120 D3 (#3681): the same placement rule, for `_` parameter slots.
+  if has_positional_params() {
+    Array::push(with_rows, SPositionalParams(take_positional_params()))
+    with_rows
+  } else {
+    with_rows
   }
 }
 
@@ -1393,7 +1413,7 @@ fn locate_parse_error(msg: String, fallback_pos: Int, starts: Array[Int], source
 }
 
 fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
-  restore_pattern_refs((0, 0))
+  reset_pattern_refs()
   remember_parse_source(source)
   let cfg_active = cfg_scan_enabled_located(tokens, starts, source)
   let b = ArrayBuilder::new()
@@ -1429,6 +1449,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
             let capture_mark = binder_capture_mark(context)
             let eligibility_mark = binder_capture_eligibility_mark(context)
             let ref_mark = pattern_ref_mark()
+            let slot_mark = positional_params_mark()
             let dn = match peek(tokens, dnext) {
               TImpl => {
                 let (simpl_d, hp_d) = parse_impl_stmt_dispatch_with_binder_context(tokens, dnext + 1, context)
@@ -1443,6 +1464,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
             binder_capture_discard_from(context, capture_mark)
             binder_capture_restore_eligibility(context, eligibility_mark)
             restore_pattern_refs(ref_mark)
+            restore_positional_params(slot_mark)
             dn
           }
         } with { Exception::Throw(msg) => {
@@ -1620,7 +1642,7 @@ export fn parse_program_located_with_binder_context(tokens: Array[Token], starts
 }
 
 export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], source: String) -> (Array[Stmt], Array[String]) with Exception {
-  restore_pattern_refs((0, 0))
+  reset_pattern_refs()
   remember_parse_source(source)
   let cfg_active = handle {
     cfg_scan_enabled(tokens)
@@ -1642,6 +1664,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
         // #cfg directive: on any malformed directive fall through to the
         // recovery machinery below by treating it like a failed statement.
         let ref_mark = pattern_ref_mark()
+        let slot_mark = positional_params_mark()
         let mut cfg_stmt_start = 0 - 1
         let cfg_res = handle {
           let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
@@ -1670,10 +1693,12 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
               }
             }
             restore_pattern_refs(ref_mark)
+            restore_positional_params(slot_mark)
             dn
           }
         } with { Exception::Throw(_) => {
           restore_pattern_refs(ref_mark)
+          restore_positional_params(slot_mark)
           0 - 1
         } }
         if cfg_res >= 0 {
@@ -1692,6 +1717,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
       _ => {
         let start_pos = pos
         let ref_mark = pattern_ref_mark()
+        let slot_mark = positional_params_mark()
         let res = handle {
           let (stmts, next) = match peek(tokens, pos) {
             TImpl => {
@@ -1706,6 +1732,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
           Some((stmts, next))
         } with { Exception::Throw(msg) => {
           restore_pattern_refs(ref_mark)
+          restore_positional_params(slot_mark)
           let err_pos = extract_err_token_pos(msg, start_pos).0
           let anchor_pos = if err_pos >= start_pos && err_pos < Array::length(starts) {
             err_pos
@@ -1786,7 +1813,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
 /// `lex_with_offsets`. start = first token's start offset; end = last token's
 /// end offset. The three returned arrays are parallel (one entry per stmt).
 export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Array[Int]) -> (Array[Stmt], Array[Int], Array[Int]) with Exception {
-  restore_pattern_refs((0, 0))
+  reset_pattern_refs()
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let span_start = ArrayBuilder::new()
@@ -1859,10 +1886,12 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
         } else {
           (0, 0)
         }
+        let slot_mark = positional_params_mark()
         let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
         let (_impl_stmts, next) = parse_impl_methods(tokens, [], hp, simpl, None)
         if drop_next {
           restore_pattern_refs(ref_mark)
+          restore_positional_params(slot_mark)
           drop_next = false
         } else {
           ArrayBuilder::push(b, simpl)
@@ -1878,9 +1907,11 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
         } else {
           (0, 0)
         }
+        let slot_mark = positional_params_mark()
         let (stmt, next) = parse_stmt(tokens, starts, pos)
         if drop_next {
           restore_pattern_refs(ref_mark)
+          restore_positional_params(slot_mark)
           drop_next = false
         } else {
           ArrayBuilder::push(b, stmt)
@@ -1902,6 +1933,11 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
   }
   if has_qualified_pattern_refs() {
     let _dropped = take_qualified_pattern_refs()
+  } else {
+    ()
+  }
+  if has_positional_params() {
+    let _dropped_slots = take_positional_params()
   } else {
     ()
   }

@@ -22,7 +22,7 @@
 //   labels it will take, so a policy can be measured before `_` exists.
 
 import @vibe/compiler/checker {
-  LabelSite, label_site_builtin, label_site_declared
+  LabelSite, checker_header_name_is_positional, label_site_builtin, label_site_declared
 }
 
 import @vibe/compiler/core {
@@ -67,9 +67,20 @@ export fn add_labels_policy_named(name: String) -> Option[Int] {
 }
 
 fn add_labels_base_name(raw: String) -> String {
-  let size = String::length(raw)
-  if size > 0 && (String::ends_with(raw, "~") || String::ends_with(raw, "?")) {
-    raw[0: size - 1]
+  let named = add_labels_unmarked(raw)
+  let size = String::length(named)
+  if size > 0 && (String::ends_with(named, "~") || String::ends_with(named, "?")) {
+    named[0: size - 1]
+  } else {
+    named
+  }
+}
+
+/// A header name without the `_ ` a declared positional slot carries
+/// (ADR-0120 D3, #3681); the parameter itself is named without it.
+fn add_labels_unmarked(raw: String) -> String {
+  if checker_header_name_is_positional(raw) {
+    raw[2: String::length(raw)]
   } else {
     raw
   }
@@ -80,6 +91,9 @@ fn add_labels_positional(site: LabelSite, i: Int, policy: Int) -> Bool {
   let raw = Array::get(site.names, i)
   if site.kind == label_site_builtin {
     raw == "_"
+  } else if checker_header_name_is_positional(raw) {
+    // The declaration wrote `_`: positional under every policy.
+    true
   } else {
     let receiver_slot = if site.method_call {
       i + 1
@@ -142,7 +156,7 @@ fn add_labels_is_declaration(site: LabelSite, declared: MutMap[String, Array[Str
         let mut same = Array::length(params) == Array::length(site.names) + skip
         let mut i = 0
         while i < Array::length(site.names) && same {
-          same = Array::get(params, i + skip) == Array::get(site.names, i)
+          same = Array::get(params, i + skip) == add_labels_unmarked(Array::get(site.names, i))
           i = i + 1
         }
         same
@@ -444,14 +458,20 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
       }
       let mut any = false
       let mut kept = false
-      for w in wanted {
+      let mut wi = 0
+      while wi < Array::length(wanted) {
+        let w = Array::get(wanted, wi)
         any = any || String::length(w) > 0
-        kept = kept || String::length(w) == 0
+        // A slot the declaration marks `_` may stand beside labels; one the
+        // policy keeps positional may not, yet.
+        kept = kept || (String::length(w) == 0 && !(wi < Array::length(site.names) && checker_header_name_is_positional(Array::get(site.names, wi))))
+        wi = wi + 1
       }
-      // A declared function's call may not mix positional and labeled
-      // arguments until its declaration can mark the positional slot `_`
-      // (#3681), so such a call is deferred and only counted. A builtin
-      // already accepts a label at its named slots beside positional ones.
+      // A declared function's call may mix positional and labeled arguments
+      // only where the declaration writes `_` (#3681). A slot the policy alone
+      // keeps positional would mix, so such a call is deferred and only
+      // counted until its declaration marks that slot. A builtin already
+      // accepts a label at its named slots beside positional ones.
       if any && kept && site.kind != label_site_builtin {
         let mut wanted_labels = 0
         for w in wanted {

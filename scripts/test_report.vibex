@@ -1,18 +1,48 @@
-// scripts/test_report.vibex -- the condensed failure report for
-// scripts/vibe_test.sh (#3674). The report itself is @vibe/testreport, the
-// same implementation the launcher's `vibe test` reaches through the
-// `vibe test-report` CLI command. This entry point exists because
-// vibe_test.sh compiles with the committed seed, which may predate that
-// command; the seed compiles this file and the library from source.
+// scripts/test_report.vibex -- the decisions scripts/vibe_test.sh asks for
+// (#3674). The script launches the compiler and the runner, fans the files out
+// and propagates the exit status; everything it prints about a run comes from
+// here: the argument grammar and the per-file lines and summary
+// (@vibe/testrun), and the condensed report under `FAIL <file>`
+// (@vibe/testreport, the same implementation the launcher's `vibe test`
+// reaches through the `vibe test-report` CLI command).
 //
-//   test_report.vibex script   <stdout> <stderr> <funcmap> <base> <source>
-//   test_report.vibex launcher <stderr> <funcmap> <base> <pre_abort 0|1>
+// vibe_test.sh compiles this file with the committed seed, never with the
+// compiler under test, so a broken candidate cannot change how its own
+// results are reported.
 //
-// A file argument that does not exist reads as empty, which is how a
-// missing `.funcmap` or source degrades: bare frames, raw offsets.
+//   plan <argv...>                     the run's options and paths, or exit 2
+//   entries <root> <results-dir> <path...>
+//                                      `<src>\t<flat>` per path the run compiles;
+//                                      a path outside <root> is refused here
+//   compile-fail <src> <diag> <res>    a file that did not compile (also
+//                                      leaves <res>'s `.compilefail` marker)
+//   pass <src> <tests> <patches> <res> a passing file
+//   coverage <src> <cov.json> <tests> <show-gaps 0|1> <res>
+//                                      a passing --coverage file
+//   fail <src> <tests> <patches> <stdout> <stderr> <funcmap> <base> <source> <res>
+//                                      a failing file
+//   summary <results-dir> <files> <coverage 0|1> <seed-default 0|1> <seed> <covdir>
+//                                      the `[vibe-test]` lines; exit 1 on a failure,
+//                                      including an entry that left no record
+//   script <stdout> <stderr> <funcmap> <base> <source>
+//   launcher <stderr> <funcmap> <base> <pre_abort 0|1>
+//                                      the failure report alone
+//
+// A per-file mode prints the file's lines and writes its result record to
+// <res>. VIBE_TEST_BACKEND (linear | gc) is read where it changes a decision.
+// A file argument that does not exist reads as empty, which is how a missing
+// `.funcmap` or source degrades: bare frames, raw offsets.
 
 import ../lib/@vibe/testreport {
   launcher_trap_report, script_failure_report
+}
+import ../lib/@vibe/testrun {
+  test_run_compile_failure, test_run_coverage_missing, test_run_coverage_pass, test_run_coverage_record, test_run_entry,
+  test_run_fail_record, test_run_failed, test_run_failure, test_run_pass, test_run_pass_record, test_run_plan,
+  test_run_summary, test_run_unrecorded
+}
+import @vibe/process {
+  exit
 }
 
 fn arg(i: Int) -> String with Env {
@@ -23,6 +53,16 @@ fn arg(i: Int) -> String with Env {
   }
 }
 
+fn args_from(i: Int) -> Array[String] with Env {
+  let out: Array[String] = []
+  let mut j = i
+  while j < Env::args_len() {
+    Array::push(out, Env::args_get(j))
+    j = j + 1
+  }
+  out
+}
+
 fn read_or_empty(path: String) -> String with Fs {
   if path != "" && Fs::is_file(path) {
     Fs::read_file(path)
@@ -31,13 +71,138 @@ fn read_or_empty(path: String) -> String with Fs {
   }
 }
 
-fn main() -> Unit allows Env + Fs + Console {
+fn int_arg(i: Int) -> Int with Env {
+  let s = arg(i)
+  let mut v = 0
+  let mut k = 0
+  while k < String::length(s) && String::byte_at(s, k) >= '0' && String::byte_at(s, k) <= '9' {
+    v = v * 10 + (String::byte_at(s, k) - '0')
+    k = k + 1
+  }
+  v
+}
+
+fn backend() -> String with Env {
+  Env::get("VIBE_TEST_BACKEND")
+}
+
+/// Every `*.res` record in the results directory, and how many files left a
+/// `*.compilefail` marker. Dot-led names count (#3505).
+fn read_results(dir: String) -> (Array[String], Int) with Fs {
+  let records: Array[String] = []
+  let mut compile_fails = 0
+  if Fs::is_dir(dir) {
+    let names = Fs::readdir(dir)
+    let mut i = 0
+    while i < Array::length(names) {
+      let name = Array::get(names, i)
+      if String::ends_with(name, ".res") {
+        Array::push(records, read_or_empty("\{dir}/\{name}"))
+      } else if String::ends_with(name, ".compilefail") {
+        compile_fails = compile_fails + 1
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  (records, compile_fails)
+}
+
+fn main() -> Unit allows Env + Fs + Console + Stderr + Process {
   let mode = arg(0)
-  if mode == "script" {
+  if mode == "plan" {
+    let failed = handle {
+      print(test_run_plan(args_from(1), backend()))
+      ""
+    } with { Exception::Throw(m) => m }
+    if failed != "" {
+      Stderr::write_stream("\{failed}\n")
+      exit(2)
+    } else {
+      ()
+    }
+  } else if mode == "entries" {
+    // An absolute path outside the repository cannot be compiled (the runner
+    // preopens only the repository), so it is a failed file of its own: named
+    // on stderr, recorded, and never handed to a worker.
+    let root = arg(1)
+    let results = arg(2)
+    let mut i = 3
+    while i < Env::args_len() {
+      let fs = String::split(test_run_entry(root, Env::args_get(i)), "\t")
+      let flat = String::substring(Array::get(fs, 2), 0, String::length(Array::get(fs, 2)) - 1)
+      if Array::get(fs, 0) == "outside" {
+        Stderr::write_stream("vibe_test.sh: path must be under the repo root: \{Array::get(fs, 1)}\n")
+        Fs::write_file("\{results}/\{flat}.res", test_run_fail_record(""))
+      } else {
+        print("\{Array::get(fs, 1)}\t\{flat}\n")
+      }
+      i = i + 1
+    }
+  } else if mode == "compile-fail" {
+    print(test_run_compile_failure(arg(1), read_or_empty(arg(2))))
+    Fs::write_file(arg(3), test_run_fail_record(""))
+    Fs::write_file(String::concat(String::substring(arg(3), 0, String::length(arg(3)) - 4), ".compilefail"), "seed\n")
+  } else if mode == "pass" {
+    print(test_run_pass(arg(1), arg(2), int_arg(3)))
+    Fs::write_file(arg(4), test_run_pass_record(arg(2)))
+  } else if mode == "coverage" {
+    let report = read_or_empty(arg(2))
+    if report != "" {
+      print(test_run_coverage_pass(arg(1), report, arg(4) == "1"))
+      Fs::write_file(arg(5), test_run_coverage_record(report, arg(3)))
+    } else {
+      print(test_run_coverage_missing(arg(1), arg(2)))
+      Fs::write_file(arg(5), test_run_fail_record(arg(3)))
+    }
+  } else if mode == "fail" {
+    let out = read_or_empty(arg(4))
+    let err = read_or_empty(arg(5))
+    let detail = if out == "" && err == "" {
+      ""
+    } else {
+      script_failure_report(out, err, read_or_empty(arg(6)), arg(7), read_or_empty(arg(8)))
+    }
+    print(test_run_failure(arg(1), int_arg(3), detail))
+    Fs::write_file(arg(9), test_run_fail_record(arg(2)))
+  } else if mode == "summary" {
+    let (records, compile_fails) = read_results(arg(1))
+    // Every file the workers were handed (`entries.tsv`) must have left a
+    // record. One that did not -- a worker or a report killed before it wrote
+    // -- is a failure, never a silent omission from the counts.
+    let entries = String::split(read_or_empty("\{arg(1)}/entries.tsv"), "\n")
+    let mut e = 0
+    while e < Array::length(entries) {
+      let line = Array::get(entries, e)
+      let tab = String::index_of(line, "\t")
+      if tab > 0 {
+        let flat = String::substring(line, tab + 1, String::length(line))
+        if !Fs::is_file("\{arg(1)}/\{flat}.res") {
+          print(test_run_unrecorded(String::substring(line, 0, tab)))
+          Array::push(records, test_run_fail_record(""))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      e = e + 1
+    }
+    print(test_run_summary(records, int_arg(2), compile_fails, backend(), arg(3) == "1", arg(4) == "1", arg(5), arg(6)))
+    if test_run_failed(records) {
+      exit(1)
+    } else {
+      ()
+    }
+  } else if mode == "script" {
     print(script_failure_report(read_or_empty(arg(1)), read_or_empty(arg(2)), read_or_empty(arg(3)), arg(4), read_or_empty(arg(5))))
   } else if mode == "launcher" {
     print(launcher_trap_report(read_or_empty(arg(1)), read_or_empty(arg(2)), arg(3), arg(4) == "1"))
   } else {
-    print("usage: test_report.vibex script <stdout> <stderr> <funcmap> <base> <source> | launcher <stderr> <funcmap> <base> <pre_abort>\n")
+    Stderr::write_stream("usage: test_report.vibex plan|entries|compile-fail|pass|coverage|fail|summary|script|launcher ... (see the header)\n")
+    exit(2)
   }
 }

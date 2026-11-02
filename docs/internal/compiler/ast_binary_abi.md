@@ -255,7 +255,7 @@ ImportItem : opt<ImportKind>(kind) string(name) optstr(alias)
 | 0x20 | `EStringInterp(Array[String])` | `array<string>(parts)` |
 | 0x21 | `EUnit` | — |
 
-### Stmt tags (26 variants)
+### Stmt tags (27 variants)
 
 | Tag  | Variant | Payload |
 |------|---------|---------|
@@ -285,6 +285,7 @@ ImportItem : opt<ImportKind>(kind) string(name) optstr(alias)
 | 0x18 | `SEffectSet(Bool, String, Array[String])` | `bool(exported) string(name) array<string>(members)` |
 | 0x19 | `SResource(String, String)` | `string(name) string(kind_path)` |
 | 0x1A | `SFnDecl(Bool, String, Expr, Array[Expr], Array[Expr])` | `bool(exported) string(name) Expr(fn_value) array<Expr>(requires) array<Expr>(ensures)` |
+| 0x1B | `SPositionalParams(Array[(String, Array[Int])])` | `array<(string, array<varint>)>(declaration_slot_rows)` |
 
 ## Error handling
 
