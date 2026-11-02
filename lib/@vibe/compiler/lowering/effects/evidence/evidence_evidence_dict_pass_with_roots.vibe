@@ -73,7 +73,7 @@ import ./evidence_handle_effect_names_expr.vibe {
   edp_append_self_discharging_row_fns,
   edp_append_visible_pure_lambda_names,
   edp_collect_handle_effect_names,
-  edp_collect_handle_sites,
+  edp_collect_handle_sites_in,
   edp_drop_self_discharging_needing,
   edp_drop_shadowed_needing_with_binders,
   edp_drop_unreachable_needing,
@@ -1768,7 +1768,11 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       // reach is then still an escape, and stays a hard error per ADR-0076
       // 追記34 V2. Both are only relevant while handle sites for E remain:
       // with none, nothing gets migrated in the first place.
-      let pre_sites = edp_collect_handle_sites(stmts, ename)
+      // Only the statements the plan-start index lists can hold a site; eta
+      // wrapping (the one write below) keeps statement order and adds no
+      // handle, which is the index's reuse condition.
+      let effect_statements = edp_handle_statement_indices(plan_handle_statements, ename)
+      let pre_sites = edp_collect_handle_sites_in(stmts, ename, effect_statements)
       let live_sites = Array::length(needing_full) > 0 && Array::length(pre_sites) > 0
       if live_sites {
         if edp_etawrap_stmts_with_rebuild(stmts, needing_full, ename, fn_defs, es_names, es_members_list) {
@@ -1789,7 +1793,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       // rebuilds the statements it touches, so refresh the collection when
       // it ran; otherwise the pre-wrap collection is still the live tree.
       let plan_sites = if live_sites {
-        edp_collect_handle_sites(stmts, ename)
+        edp_collect_handle_sites_in(stmts, ename, effect_statements)
       } else {
         pre_sites
       }
