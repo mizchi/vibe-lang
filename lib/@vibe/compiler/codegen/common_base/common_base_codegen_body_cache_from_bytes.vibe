@@ -915,33 +915,22 @@ fn bcc_keep_flags_files(cache: CodegenBodyCache, keep_file: Array[Int]) -> Array
 /// copied verbatim. The input is not mutated.
 fn bcc_filter_entries(cache: CodegenBodyCache, keep_entry: Array[Int]) -> CodegenBodyCache {
   let out = codegen_body_cache_new()
-  // Which function indices are kept, direct-addressed. The owner columns below
-  // (lambdas, slots, blind references, linemap rows) are each far longer than
-  // the function list, and a linear membership scan per row made this
-  // quadratic: on the CLI closure, ~14k kept functions against every linemap
-  // row, paid on every warm decode (#2818).
-  let mut max_fn = 0 - 1
-  let mut mi = 0
-  while mi < Array::length(cache.fn_indices) {
-    if Array::get(cache.fn_indices, mi) > max_fn {
-      max_fn = Array::get(cache.fn_indices, mi)
-    } else {
-      ()
-    }
-    mi = mi + 1
-  }
-  let keep_fn: Array[Int] = Array::with_capacity(max_fn + 1)
-  let mut zi = 0
-  while zi <= max_fn {
-    Array::push(keep_fn, 0)
-    zi = zi + 1
-  }
+  // Which function indices are kept, as a SORTED list searched by bisection.
+  // The owner columns below (lambdas, slots, blind references, linemap rows)
+  // are each far longer than the function list, and a linear membership scan
+  // per row made this quadratic: on the CLI closure, ~14k kept functions
+  // against every linemap row, paid on every warm decode (#2818). A table
+  // addressed by the index itself would be sized by a value read from the
+  // artifact, so a malformed cache holding a huge index would abort the
+  // compile instead of costing a miss (Codex P2 on #3695); this one is sized
+  // by the entry count.
+  let keep_fn: Array[Int] = []
   let mut i = 0
   while i < Array::length(cache.fn_indices) {
     let src_stmt = Array::get(cache.fn_src_stmts, i)
     if i < Array::length(keep_entry) && Array::get(keep_entry, i) == 1 {
       let fni = Array::get(cache.fn_indices, i)
-      Array::set(keep_fn, fni, 1)
+      Array::push(keep_fn, fni)
       Array::push(out.fn_indices, fni)
       Array::push(out.fn_names, Array::get(cache.fn_names, i))
       Array::push(out.fn_files, Array::get(cache.fn_files, i))
@@ -956,6 +945,7 @@ fn bcc_filter_entries(cache: CodegenBodyCache, keep_entry: Array[Int]) -> Codege
     }
     i = i + 1
   }
+  bcc_sort_ints(keep_fn)
   let mut j = 0
   while j < Array::length(cache.lam_owner) {
     let owner = Array::get(cache.lam_owner, j)
@@ -1015,7 +1005,65 @@ fn bcc_filter_entries(cache: CodegenBodyCache, keep_entry: Array[Int]) -> Codege
 }
 
 fn bcc_fn_kept(keep_fn: Array[Int], owner: Int) -> Bool {
-  owner >= 0 && owner < Array::length(keep_fn) && Array::get(keep_fn, owner) == 1
+  let mut lo = 0
+  let mut hi = Array::length(keep_fn)
+  while lo < hi {
+    let mid = (lo + hi) / 2
+    if Array::get(keep_fn, mid) < owner {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  lo < Array::length(keep_fn) && Array::get(keep_fn, lo) == owner
+}
+
+/// Sort `xs` ascending in place: bottom-up merge sort through one scratch
+/// array, so the cost is O(n log n) whatever order the entries arrive in (a
+/// merged cache concatenates two harvests).
+fn bcc_sort_ints(xs: Array[Int]) -> Unit {
+  let n = Array::length(xs)
+  let mut src: Array[Int] = Array::slice(xs, 0, n)
+  let mut dst: Array[Int] = Array::slice(xs, 0, n)
+  let mut width = 1
+  while width < n {
+    let mut lo = 0
+    while lo < n {
+      let mid = if lo + width < n {
+        lo + width
+      } else {
+        n
+      }
+      let hi = if lo + 2 * width < n {
+        lo + 2 * width
+      } else {
+        n
+      }
+      let mut a = lo
+      let mut b = mid
+      let mut k = lo
+      while k < hi {
+        if a < mid && (b >= hi || Array::get(src, a) <= Array::get(src, b)) {
+          Array::set(dst, k, Array::get(src, a))
+          a = a + 1
+        } else {
+          Array::set(dst, k, Array::get(src, b))
+          b = b + 1
+        }
+        k = k + 1
+      }
+      lo = lo + 2 * width
+    }
+    let t = src
+    src = dst
+    dst = t
+    width = width * 2
+  }
+  let mut i = 0
+  while i < n {
+    Array::set(xs, i, Array::get(src, i))
+    i = i + 1
+  }
 }
 
 export fn emit_i32_ge_u(buf: Bytes) -> Unit {
