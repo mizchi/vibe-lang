@@ -614,101 +614,44 @@ annotate_run_stream() {
     fi
   done
 }
-# Counts the `__test_` functions in a compiled test wasm. Assigns n_tests and
-# n_tests_exact directly (a `$()` subshell would drop both). Exact when the
-# count came from the name section's function-name subsection; 0 when it is
-# the raw-occurrence fallback (no python3, or a stripped name section), which
-# over-counts -- a test name appears in more than one wasm section -- and is
-# good enough only for the zero/nonzero "(no tests found)" note.
-host_count_tests() {
-  local wasm="$1" n="" g
-  n_tests_exact=0
-  if command -v python3 >/dev/null 2>&1; then
-    n="$(python3 - "$wasm" 2>/dev/null <<'PY' || true
-import sys
-b = open(sys.argv[1], "rb").read()
-def uleb(i):
-    r = s = 0
-    while True:
-        x = b[i]; i += 1
-        r |= (x & 0x7F) << s
-        if not (x & 0x80):
-            return r, i
-        s += 7
-i, count = 8, 0
-while i < len(b):
-    sid = b[i]; i += 1
-    size, i = uleb(i)
-    end = i + size
-    if sid == 0:
-        nlen, j = uleb(i)
-        if b[j:j + nlen] == b"name":
-            j += nlen
-            while j < end:
-                subid = b[j]; j += 1
-                ssize, j = uleb(j)
-                send = j + ssize
-                if subid == 1:
-                    cnt, k = uleb(j)
-                    for _ in range(cnt):
-                        _, k = uleb(k)
-                        ln, k = uleb(k)
-                        if b[k:k + ln].startswith(b"__test_"):
-                            count += 1
-                        k += ln
-                j = send
-    i = end
-print(count)
-PY
-)"
-  fi
-  case "$n" in ''|*[!0-9]*) n="" ;; esac
-  [ -n "$n" ] && n_tests_exact=1
-  if [ -z "$n" ] || [ "$n" = 0 ]; then
-    g="$({ grep -ao '__test_' "$wasm" 2>/dev/null || true; } | wc -l | tr -d '[:space:]')"
-    case "$g" in ''|*[!0-9]*) g=0 ;; esac
-    if [ "$g" -gt 0 ] || [ -z "$n" ]; then
-      [ "$g" -gt 0 ] && n_tests_exact=0
-      n="$g"
-    fi
-  fi
-  n_tests="$n"
-}
-# One `verdict<TAB>tests<TAB>exact` row per test file, appended to the results
-# file the run-tests arm owns (VIBE_TEST_RESULTS), from which the summary's
-# test total is read. A background batch job and a nested --update re-run
-# reach the same file through the environment.
+# One @vibe/testrun result record per test file (`<ok|fail> 0 0 0 0 0
+# <tests>`), appended to the results file the run-tests arm owns
+# (VIBE_TEST_RESULTS). <tests> is the count label the compiler put in the
+# plan (test_run_count_label, #3703): `N`, `~N` for a raw over-count, or empty
+# where nothing was counted. A background batch job and a nested --update
+# re-run reach the same file through the environment.
 host_test_record() {
   [ -n "${VIBE_TEST_RESULTS:-}" ] || return 0
-  printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$VIBE_TEST_RESULTS"
+  printf '%s 0 0 0 0 0 %s\n' "$1" "$2" >> "$VIBE_TEST_RESULTS"
 }
 # The `[vibe-test]` summary from a results file ($1; one record per file that
 # ran) plus $2 failures that recorded no verdict (a dispatcher that refused a
-# whole batch). The test total is printed only when every count is exact; a
-# raw-occurrence count (no python3, a stripped name section) or an unrecorded
-# failure would present an over-count as a total, so the summary stays
-# files-only there. Returns non-zero when anything failed.
+# whole batch), each recorded here as a failed file with no count. The lines
+# are @vibe/testrun's (`vibe test-report summary`), the same summary
+# scripts/vibe_test.sh prints; a compiler too old to print it gets the bare
+# pass/fail line. Returns non-zero when anything failed.
 host_test_summary() {
-  local results="$1" extra="${2:-0}" t_pass=0 t_fail=0 t_tests=0 t_exact=1 t_notest=0 total_files tab r_verdict r_ntests r_exact
-  tab="$(printf '\t')"
+  local results="$1" extra="${2:-0}" k=0 t_pass=0 t_all=0 shown
+  while [ "$k" -lt "$extra" ]; do printf 'fail 0 0 0 0 0 \n' >> "$results"; k=$((k + 1)); done
   if [ -s "$results" ]; then
-    while IFS="$tab" read -r r_verdict r_ntests r_exact || [ -n "$r_verdict" ]; do
-      if [ "$r_verdict" = ok ]; then t_pass=$((t_pass + 1)); else t_fail=$((t_fail + 1)); fi
-      case "$r_ntests" in ''|*[!0-9]*) r_ntests=0 ;; esac
-      t_tests=$((t_tests + r_ntests))
-      [ "$r_ntests" = 0 ] && [ "$r_verdict" = ok ] && t_notest=$((t_notest + 1))
-      [ "${r_exact:-0}" = 1 ] || t_exact=0
-    done < "$results"
+    t_all="$(grep -c . "$results" || true)"
+    t_pass="$(grep -c '^ok ' "$results" || true)"
   fi
-  t_fail=$((t_fail + extra)); total_files=$((t_pass + t_fail))
-  [ "$extra" -gt 0 ] && t_exact=0
-  if [ "$t_exact" = 1 ]; then
-    echo "[vibe-test] $t_pass passed, $t_fail failed ($total_files files, $t_tests tests)"
-    [ "$t_notest" -gt 0 ] && echo "[vibe-test] note: $t_notest file(s) with no tests found"
+  if shown="$(invoke_cli test-report summary -- "$results" 2>/dev/null)" && [ -n "$shown" ]; then
+    printf '%s\n' "$shown"
   else
-    echo "[vibe-test] $t_pass passed, $t_fail failed ($total_files files)"
+    echo "[vibe-test] $t_pass passed, $((t_all - t_pass)) failed ($t_all files)"
   fi
-  [ "$t_fail" -eq 0 ]
+  [ "$t_pass" = "$t_all" ]
+}
+# A run-tests plan record, `src<TAB>wasm<TAB>tests`, into src / wasm / tests.
+# A file that did not compile has an empty wasm and no count; a compiler that
+# predates the count (#3703) writes two fields, and its count is unknown.
+plan_test_record() {
+  local rest
+  src="${1%%	*}"; rest="${1#*	}"; wasm="${rest%%	*}"; tests=""
+  [ "$rest" != "$wasm" ] && tests="${rest#*	}"
+  return 0
 }
 # `vibe test`'s per-file runner. Stdout is captured ALWAYS (#2199/#2202): the
 # guest writes its diagnostics there (the assert_eq block, inspect()'s
@@ -723,24 +666,23 @@ host_test_summary() {
 # folds source, deps and compiler). Only PASS is cached -- a fail always
 # re-runs -- and --no-cache (implied by --update) bypasses it.
 # $1 = src as the plan spelled it, $2 = compiled test wasm, $3 = --update (0|1),
-# $4 = --no-cache (0|1).
+# $4 = --no-cache (0|1), $5 = the compiler's test-count label for the wasm.
 host_run_test() {
-  local src="$1" wasm="$2" update="$3" no_cache="${4:-0}" tout terr rc=0 src_abs="$1" key="" note="" n_tests n_tests_exact pre_abort
+  local src="$1" wasm="$2" update="$3" no_cache="${4:-0}" tests="${5:-}" tout terr rc=0 src_abs="$1" key="" note="" pre_abort
   local patches="${VIBE_TEST_UPDATE_PATCHES:-0}" depth="${VIBE_TEST_UPDATE_DEPTH:-0}" tcache="$VIBE_HOME/cache/test"
   case "$src_abs" in /*) ;; *) src_abs="$PROJECT_ROOT/$src_abs" ;; esac
   # An empty wasm path is the dispatcher's record of a file that did not
   # compile (its diagnostic already went to stderr): one FAILED file whose
   # test count is unknown, so the summary degrades to files-only.
-  if [ -z "$wasm" ]; then echo "FAIL (compile) $src"; host_test_record fail 0 0; return 1; fi
+  if [ -z "$wasm" ]; then echo "FAIL (compile) $src"; host_test_record fail ""; return 1; fi
   # #948: a file that lowers zero `__test_` functions (a typo'd block passes
   # silently via an empty `_start`) is annotated; zero tests stays ok so
   # helper-only files keep working.
-  host_count_tests "$wasm"
-  [ "$n_tests" = 0 ] && note=" (no tests found)"
+  [ "$tests" = 0 ] && note=" (no tests found)"
   if [ "$no_cache" = 0 ] && [ -s "$wasm.testmeta" ] && [ "$(cat "$wasm.testmeta" 2>/dev/null)" = "1" ]; then
     key="$(_sha256_file "$wasm")"
     if [ -n "$key" ] && [ -f "$tcache/$key.pass" ]; then
-      echo "ok   $src$note (cached)"; host_test_record ok "$n_tests" "$n_tests_exact"; return 0
+      echo "ok   $src$note (cached)"; host_test_record ok "$tests"; return 0
     fi
   fi
   tout="$(mktemp -t vibe-test-out-XXXXXX)"; terr="$(mktemp -t vibe-test-err-XXXXXX)"
@@ -750,7 +692,7 @@ host_run_test() {
     [ -s "$terr" ] && cat "$terr" >&2
     if [ "$patches" -gt 0 ]; then echo "ok   $src$note (updated $patches snapshot(s))"; else echo "ok   $src$note"; fi
     [ -n "$key" ] && mkdir -p "$tcache" && : > "$tcache/$key.pass"
-    host_test_record ok "$n_tests" "$n_tests_exact"
+    host_test_record ok "$tests"
     rm -f "$tout" "$terr"; return 0
   fi
   # --update (#1061 follow-up, #1235 review): patch the stale inspect()
@@ -770,7 +712,7 @@ host_run_test() {
   [ -s "$tout" ] && [ "$(tail -n 1 "$tout")" = "assert failed: aborting" ] && pre_abort=1
   condense_test_trap "$terr" "$wasm.funcmap" "$(basename "$src")" "$pre_abort"
   [ -s "$tout" ] && { grep -vx "assert failed: aborting" "$tout" || true; } | sed 's/^/       /'
-  host_test_record fail "$n_tests" "$n_tests_exact"
+  host_test_record fail "$tests"
   rm -f "$tout" "$terr"; return 1
 }
 # $1 = absolute source path, $2 = the failing run's captured stdout.
@@ -787,7 +729,7 @@ execute_host_action() {
   # The counters are local because a `--update` re-run re-enters this
   # function from host_run_test while the outer run-tests loop is live.
   local plan="$1" kind src wasm addr adapter line t_fail t_pass update no_cache body_stream be_backend
-  local own_results total_files t_tests t_exact t_notest r_verdict r_ntests r_exact tab
+  local own_results tests
   kind="$(sed -n '2p' "$plan")"
   case "$kind" in
     build-taskgroup)
@@ -940,9 +882,9 @@ execute_host_action() {
         while [ "$rec_i" -lt "${#recs[@]}" ]; do
           batch_logs=(); batch_pids=(); n=0
           while [ "$rec_i" -lt "${#recs[@]}" ] && [ "$n" -lt "$jobs" ]; do
-            rec="${recs[$rec_i]}"; src="${rec%%	*}"; wasm="${rec#*	}"
+            plan_test_record "${recs[$rec_i]}"
             log="$(mktemp -t vibe-test-batch-XXXXXX)"
-            ( host_run_test "$src" "$wasm" 0 "$no_cache" >"$log.out" 2>"$log.err"; echo $? >"$log.rc" ) &
+            ( host_run_test "$src" "$wasm" 0 "$no_cache" "$tests" >"$log.out" 2>"$log.err"; echo $? >"$log.rc" ) &
             batch_pids+=($!); batch_logs+=("$log"); rec_i=$((rec_i + 1)); n=$((n + 1))
           done
           for p in "${batch_pids[@]}"; do wait "$p" || true; done
@@ -956,14 +898,11 @@ execute_host_action() {
       else
         while IFS= read -r rec; do
           [ -n "$rec" ] || continue
-          src="${rec%%	*}"; wasm="${rec#*	}"
-          if host_run_test "$src" "$wasm" "$update" "$no_cache"; then t_pass=$((t_pass+1)); else t_fail=$((t_fail+1)); fi
+          plan_test_record "$rec"
+          if host_run_test "$src" "$wasm" "$update" "$no_cache" "$tests"; then t_pass=$((t_pass+1)); else t_fail=$((t_fail+1)); fi
         done < <(sed -n '6,$p' "$plan")
       fi
-      # A nested --update re-run reports through the outer run's summary. The
-      # test total is printed only when every file's count is exact; a raw-
-      # occurrence count (no python3, a stripped name section) would present an
-      # over-count as a total, so the summary stays files-only there.
+      # A nested --update re-run reports through the outer run's summary.
       if [ "$own_results" = 1 ]; then
         host_test_summary "$VIBE_TEST_RESULTS" 0 || t_fail=1
         rm -f "$VIBE_TEST_RESULTS"; unset VIBE_TEST_RESULTS
@@ -2096,8 +2035,8 @@ REPL_HELP
     # a mutant's and is deleted after it.
     mkdir -p "$mwork/cache"
     # Compile test files into a test plan WITHOUT running it; the plan's
-    # records (line 6 on) are `src<TAB>wasm`, an empty wasm being a compile
-    # failure. Extra environment (the overlay) comes from the caller.
+    # records (line 6 on) are `src<TAB>wasm<TAB>tests`, an empty wasm being a
+    # compile failure. Extra environment (the overlay) comes from the caller.
     mutate_compile() {
       local plan="$1"; shift
       rm -f "$plan"
@@ -2207,7 +2146,7 @@ REPL_HELP
     printf 'target\t%s\t%s\n' "$mtarget" "$msnap" > "$mresults"
     mfi=0; mtid=0; mbase_ok=1
     : > "$mwork/tests.tsv"
-    while IFS="$(printf '\t')" read -r msrc mwasm; do
+    while IFS="$(printf '\t')" read -r msrc mwasm _; do
       mwasm="$(mutate_wasm_path "$mwasm")"
       [ -n "$mwasm" ] || { cat "$mwork/compile.log" >&2; die "vibe mutate: $msrc did not compile"; }
       cp "$mwasm" "$mwork/base/$mfi.wasm"
@@ -2242,7 +2181,7 @@ REPL_HELP
       mkillers=""; mcompiled=0; mdiffer=0
       if VIBE_SOURCE_OVERLAY="$mabs" VIBE_SOURCE_OVERLAY_WITH="$mfile" mutate_compile "$mwork/m.plan" "${mrel[@]}"; then
         mfi=0
-        while IFS="$(printf '\t')" read -r _ mwasm; do
+        while IFS="$(printf '\t')" read -r _ mwasm _; do
           mwasm="$(mutate_wasm_path "$mwasm")"
           if [ -n "$mwasm" ]; then
             mcompiled=1

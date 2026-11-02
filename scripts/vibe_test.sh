@@ -230,64 +230,10 @@ VT_JOBS="${VIBE_TEST_JOBS:-$vt_hw_jobs}"
 [ "$update" = "1" ] && VT_JOBS=1
 export coverage update backend cli_wasm covdir vt_results
 
-# #948: count the lowered `__test_<name>` functions in a compiled test wasm.
-# Prefer a real name-section parse (a raw `grep -c __test_` double-counts under
-# --coverage, whose instrumentation embeds the names again in a data segment);
-# fall back to the grep occurrence count when python3 is unavailable — exact
-# for zero-vs-nonzero, which is all the "no tests found" note needs.
-vt_count_tests() {
-  local wasm="$1" n=""
-  if command -v python3 >/dev/null 2>&1; then
-    n="$(python3 - "$wasm" 2>/dev/null <<'PY' || true
-import sys
-b = open(sys.argv[1], "rb").read()
-def uleb(i):
-    r = s = 0
-    while True:
-        x = b[i]; i += 1
-        r |= (x & 0x7F) << s
-        if not (x & 0x80):
-            return r, i
-        s += 7
-i, count = 8, 0
-while i < len(b):
-    sid = b[i]; i += 1
-    size, i = uleb(i)
-    end = i + size
-    if sid == 0:
-        nlen, j = uleb(i)
-        if b[j:j + nlen] == b"name":
-            j += nlen
-            while j < end:
-                subid = b[j]; j += 1
-                ssize, j = uleb(j)
-                send = j + ssize
-                if subid == 1:  # function-name subsection
-                    cnt, k = uleb(j)
-                    for _ in range(cnt):
-                        _, k = uleb(k)
-                        ln, k = uleb(k)
-                        if b[k:k + ln].startswith(b"__test_"):
-                            count += 1
-                        k += ln
-                j = send
-    i = end
-print(count)
-PY
-)"
-  fi
-  case "$n" in ''|*[!0-9]*) n="" ;; esac
-  # No name section (the gc backend strips it) or no python3: fall back to the
-  # raw occurrence count (exports/data still carry the `__test_` strings).
-  if [ -z "$n" ] || [ "$n" = "0" ]; then
-    local g
-    g="$({ grep -ao '__test_' "$wasm" 2>/dev/null || true; } | wc -l | tr -d '[:space:]')"
-    case "$g" in ''|*[!0-9]*) g=0 ;; esac
-    if [ "$g" -gt 0 ] || [ -z "$n" ]; then n="$g"; fi
-  fi
-  printf '%s' "$n"
-}
-export -f vt_count_tests
+# #948/#3703: each file's test count is read from its compiled wasm by the
+# tool (`test_run_count_label` in @vibe/testrun), the counter the launcher's
+# `vibe test` uses too: exact from the name section, `~N` (raw occurrences,
+# never summed into a total) where the gc backend stripped the names.
 
 # #2886 `--update`: patch a failing file's stale `inspect(value, content)`
 # literals to the values this run actually printed, then let the caller
@@ -372,16 +318,11 @@ vt_worker() {
     return 0
   fi
 
-  # #948: count the file's lowered `__test_<name>` functions (wasm name
-  # section) so a file whose test blocks were never recognized is flagged
+  # #948: the tool counts the file's lowered `__test_<name>` functions from
+  # this wasm, so a file whose test blocks were never recognized is flagged
   # instead of silently passing as an empty `_start`. Zero tests keeps exit 0
   # (an annotated ok, not a failure) so suites with helper-only files survive.
-  # The gc backend strips every `__test_` name from its wasm, so the count is
-  # unknowable there — leave it empty (no note, legacy summary).
-  local n_tests=""
-  if [ "$backend" != "gc" ]; then
-    n_tests="$(vt_count_tests "$ROOT_DIR/$out_rel")"
-  fi
+  local wasm_abs="$ROOT_DIR/$out_rel"
 
   # #948: keep the runner's stderr — it names the failing `__test_` function
   # (previously discarded, leaving a bare `FAIL <file>` with no test name).
@@ -412,9 +353,9 @@ vt_worker() {
     # VIBE_COV_SHOW_GAPS=1 also lists what it did not reach.
     local shown
     if [ "$coverage" = "1" ]; then
-      shown="$(vt_tool coverage "$src_rel" "$cov_out" "$n_tests" "${VIBE_COV_SHOW_GAPS:-0}" "$vt_results/$flat.res")"
+      shown="$(vt_tool coverage "$src_rel" "$cov_out" "$wasm_abs" "${VIBE_COV_SHOW_GAPS:-0}" "$vt_results/$flat.res")"
     else
-      shown="$(vt_tool pass "$src_rel" "$n_tests" "${VIBE_TEST_UPDATE_PATCHES:-0}" "$vt_results/$flat.res")"
+      shown="$(vt_tool pass "$src_rel" "$wasm_abs" "${VIBE_TEST_UPDATE_PATCHES:-0}" "$vt_results/$flat.res")"
     fi
     printf '%s\n' "$shown"
     rm -f "$run_out" "$run_errf"
@@ -440,7 +381,7 @@ vt_worker() {
     # (coverage_suite.sh) are unaffected. A file --update rewrote that still
     # fails says so (#2886).
     local shown
-    shown="$(vt_tool fail "$src_rel" "$n_tests" "${VIBE_TEST_UPDATE_PATCHES:-0}" "$run_out" "$run_errf" \
+    shown="$(vt_tool fail "$src_rel" "$wasm_abs" "${VIBE_TEST_UPDATE_PATCHES:-0}" "$run_out" "$run_errf" \
       "$ROOT_DIR/$out_rel.funcmap" "$(basename "$src_rel")" "$ROOT_DIR/$src_rel" "$vt_results/$flat.res")"
     printf '%s\n' "$shown"
     rm -f "$run_out" "$run_errf"

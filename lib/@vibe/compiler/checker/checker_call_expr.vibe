@@ -3,8 +3,11 @@ import ./checker_call_arguments.vibe {
 }
 
 import ./checker_call_placement.vibe {
+  checker_bare_call_is_method_retry,
   checker_capture_resolved_call_placement,
+  checker_finish_method_retry_placement,
   checker_record_call_placement,
+  checker_record_declined_retry_call_placement,
   checker_record_opaque_call_placement,
   checker_record_resolved_call_placement
 }
@@ -2051,17 +2054,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               // bare name resolving to nothing (env/builtin) AND the qualified
               // name actually resolving, so a genuinely unknown callee still
               // reports `unknown name` from the normal path below.
-              let method_form = if String::index_of(name, "::") < 0 && Array::length(args) >= 1 {
-                match env_lookup(env, name) {
-                  Some(_) => false,
-                  None => match lookup_builtin_in_env(env, name) {
-                    Some(_) => false,
-                    None => true
-                  }
-                }
-              } else {
-                false
-              }
+              let method_form = checker_bare_call_is_method_retry(env, name, Array::length(args))
               let recv_method = if method_form {
                 let (a0_ty, sa, ca) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
                 let recv_ty = subst_apply(sa, a0_ty)
@@ -2103,7 +2096,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   retention_expr_callee_region_check(EIdent(name, callee_off), name, callee_off, region_args, env, defs, s, c, errors, check_child)
                 }
                 if has_qual || user_recv {
-                  Some(check_child(ECall(EDot(Array::get(args, 0), name, callee_off, callee_off), Array::slice(args, 1, Array::length(args)), call_off, callee_resolution), env, defs, sa, ca, errors, tytab, capture, "SyntheticRewrite"))
+                  let retried = check_child(ECall(EDot(Array::get(args, 0), name, callee_off, callee_off), Array::slice(args, 1, Array::length(args)), call_off, callee_resolution), env, defs, sa, ca, errors, tytab, capture, "SyntheticRewrite")
+                  checker_finish_method_retry_placement(callee_resolution, env, qual, callee_off, args, errors)
+                  Some(retried)
                 } else {
                   None
                 }
@@ -2113,6 +2108,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               match recv_method {
                 Some(rm) => rm,
                 None => {
+                  if method_form {
+                    checker_record_declined_retry_call_placement(expr, env, errors)
+                  }
                   // Call position: look up the callee type without going through
                   // the value-ident arm. That arm rejects call-only builtins
                   // (`StringBuilder::new`, `Map::size`); an ECall of those is

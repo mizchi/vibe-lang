@@ -30,6 +30,12 @@ bash "$ROOT_DIR/scripts/test_wasm_import.sh" "$stage2_wasm"
 echo "[compiler-gate] @vibex/z3 binds the real z3.wasm by its declared types"
 bash "$ROOT_DIR/scripts/test_z3_binding.sh" "$stage2_wasm"
 
+echo "[compiler-gate] vibe test and vibe_test.sh count tests and summarize a run the same way (#3703)"
+bash "$ROOT_DIR/scripts/test_vibe_test_parity.sh" "$stage2_wasm"
+
+echo "[compiler-gate] the vibe test parity gate fails on a mutated runner (#3703)"
+bash "$ROOT_DIR/scripts/test_vibe_test_parity_test.sh" "$stage2_wasm"
+
 source "$ROOT_DIR/tests/gates/early/multi_file_fs_compile_regression.sh"
 source "$ROOT_DIR/tests/gates/early/extended_derive.sh"
 source "$ROOT_DIR/tests/gates/early/async_for_loop_classification.sh"
