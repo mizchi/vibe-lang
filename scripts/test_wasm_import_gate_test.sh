@@ -13,6 +13,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 CLI="${VIBE_STAGE2_WASM:-}"
 [ -n "$CLI" ] && [ -s "$CLI" ] || { echo "test_wasm_import_gate_test.sh: set VIBE_STAGE2_WASM to a stage2 compiler" >&2; exit 2; }
+case "$CLI" in /*) ;; *) CLI="$ROOT_DIR/$CLI" ;; esac
 unset WASM_IMPORT_GATE_FIXTURES VIBE_WASM_LINK_DIR
 
 REL="_build/test_wasm_import_gate_test"
@@ -20,7 +21,12 @@ SCRATCH="$ROOT_DIR/$REL"
 trap 'rm -rf "$SCRATCH"' EXIT
 fail() { echo "[wasm-import-gate-test] FAIL $*" >&2; exit 1; }
 
-fresh() { rm -rf "$SCRATCH"; mkdir -p "$SCRATCH"; cp -R fixtures/wasm_import "$SCRATCH/fx"; }
+fresh() {
+  rm -rf "$SCRATCH"; mkdir -p "$SCRATCH"
+  cp -R fixtures/wasm_import "$SCRATCH/fx"
+  ln -s "$CLI" "$SCRATCH/compiler.wasm"
+  [ "$CLI" -ef "$SCRATCH/compiler.wasm" ] || fail "the selected compiler link does not match"
+}
 # mutate <file> <from> <to>: replace, and prove the edit landed.
 mutate() {
   local f="$SCRATCH/fx/$1"
@@ -28,7 +34,9 @@ mutate() {
   FROM="$2" TO="$3" python3 -c 'import os,sys; p=sys.argv[1]; s=open(p).read(); open(p,"w").write(s.replace(os.environ["FROM"], os.environ["TO"], 1))' "$f"
   grep -qF -- "$3" "$f" || fail "mutation of $1 did not land"
 }
-run_gate() { WASM_IMPORT_GATE_FIXTURES="$REL/fx" bash "$ROOT_DIR/scripts/test_wasm_import_gate.sh" "$CLI" >"$SCRATCH.out" 2>&1; }
+# A relative compiler path must still name this exact artifact after the
+# gate changes into a package subdirectory. Every control uses that path.
+run_gate() { WASM_IMPORT_GATE_FIXTURES="$REL/fx" bash "$ROOT_DIR/scripts/test_wasm_import_gate.sh" "$REL/compiler.wasm" >"$SCRATCH.out" 2>&1; }
 expect_fail() { # <label> <message substring>
   if run_gate; then cat "$SCRATCH.out" >&2; fail "$1: the gate passed"; fi
   grep -qF -- "$2" "$SCRATCH.out" || { cat "$SCRATCH.out" >&2; fail "$1: the gate failed for another reason"; }

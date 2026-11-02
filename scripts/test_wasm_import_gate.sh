@@ -40,6 +40,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 CLI="${1:-}"
 [ -n "$CLI" ] && [ -s "$CLI" ] || { echo "usage: test_wasm_import_gate.sh <stage2.wasm>" >&2; exit 2; }
+# Later probes change directory. Resolve the selected compiler once, while
+# relative arguments still refer to the repository root.
+case "$CLI" in /*) ;; *) CLI="$ROOT_DIR/$CLI" ;; esac
 # The fixture directory, relative to the repository root (the imports record
 # paths as the compiler resolves them, so it must be inside the tree). Only
 # scripts/test_wasm_import_gate_test.sh overrides it, with a mutated copy.
