@@ -1,8 +1,8 @@
 //# Imports
 
 // `vibe grep`'s filesystem tier (#1572 scope 3). Kept apart from grep.vibe on
-// purpose: this file imports the FS typecheck driver from
-// @vibe/compiler/runtime, so it can only be compiled with that package's
+// purpose: this file prepares imports through
+// @vibe/compiler/query/project_context, so it needs the FS walk's
 // contract in scope.
 // grep.vibe stays free of that dependency, which is what lets grep_test.vibe
 // drive the whole pattern language and every typed filter as plain sibling
@@ -13,22 +13,6 @@
 //   * any typed filter -> the file is typed through the SAME FS import walk
 //     `vibe check` uses, so this cannot reproduce the `vibe diagnostics`
 //     import-blind false positives the issue calls out.
-
-import @vibe/compiler/core {
-  TypeEnv
-}
-
-import @vibe/core {
-  array_empty
-}
-
-import @vibe/compiler/loader {
-  collect_source_groups_fs
-}
-
-import @vibe/compiler/incremental {
-  RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_new, ripple_set_source
-}
 
 import ./source_walk.vibe {
   source_walk_collect_files
@@ -49,150 +33,20 @@ import ./grep.vibe {
   grep_untyped_context
 }
 
-import @vibe/compiler/runtime {
-  ensure_fingerprint_fs_impl, load_persistent_type_env, projected_import_env_for_test
+import @vibe/compiler/query/project_context {
+  QueryProjectState, query_project_context_fs, query_project_state_new
 }
 
 //# Functions
 
-fn grep_fs_empty_env_cache() -> Array[(String, TypeEnv)] {
-  array_empty()
-}
-
-fn grep_fs_empty_pairs() -> Array[(String, String)] {
-  array_empty()
-}
-
-/// The typed context for `path`, resolved the way `vibe check` resolves it.
-///
-/// `vibe check`'s pipeline is: collect every reachable module's INGESTED source
-/// (collect_source_groups_fs), seed them all into the ripple db, then walk.
-/// The seeding is load-bearing -- the walk short-circuits on any module whose
-/// source it cannot find, so skipping it makes every import resolve to
-/// `CtUnknown` and quietly turns every typed filter into a coin flip.
-///
-/// `projected_import_env_for_test` is the exported name for the exact
-/// dependency projection production uses for `ModuleJob.dep_envs`
-/// (typecheck_fs.vibe) -- test-only in NAME, not in behaviour.
-///
-/// Degrades to single-file typing when the graph cannot be resolved at all, so
-/// one broken dependency costs precision on that file instead of killing the
-/// sweep. On a file with imports that fallback reports imported names as
-/// unknown, which makes `--only-ill-typed` over-report rather than miss sites.
-/// #2914: `cache_in` is threaded THROUGH, not reset. Each call used to pass
-/// `grep_fs_empty_env_cache()`, so every matching file re-typed its entire
-/// dependency closure from cold. On a package that is merely slow; on the tree
-/// it exhausted linear memory and the runtime reported `out of bounds memory
-/// access`, which reads like a pointer bug in the query engine and is not one.
-/// Proven by varying only the cap: a corpus that succeeds at the default 8192
-/// MB traps with the identical message at 512 MB.
-///
-/// The env cache is keyed by dependency PATH and `ensure_fingerprint_fs_impl`
-/// only records a module once it has actually checked it, so its entries are
-/// whole per module and reusable across entries. That is the same reuse the
-/// incremental build already relies on from this function; grep was the only
-/// caller discarding it.
-///
-/// `rdb_in` and `dep_sources_in` are threaded for the same reason, and they
-/// only pay off TOGETHER. Sharing the ripple db alone changes nothing
-/// measurable: the db supplies the FINGERPRINT half of `step_module_fs`'s
-/// reuse test, and the other half is `dep_source_cache_is_current`, which a
-/// per-call empty cache answers `false` for every time -- so the walk re-checked
-/// every module with the fingerprint sitting right there. Measured, sharing the
-/// db by itself was +0.2% wall and no memory change.
-///
-/// Neither shared value can carry one entry's context into another's answer.
-/// Both are keyed by dependency PATH: the ripple db maps a path to that file's
-/// own text, the dep-source cache maps a path to the text last walked for it,
-/// and a relative import resolves through the importing file's directory,
-/// which is part of the path. `valid_persistent_type_env` is content-addressed
-/// by fingerprint on top of that. `grep_fs_test.vibe` pins the property with
-/// two swept files binding the same name to different types.
-fn grep_fs_typed_context(path: String, raw_source: String, cache_in: Array[(String, TypeEnv)], rdb_in: RippleDb, dep_sources_in: Array[(String, String)]) -> (GrepTyped, Array[(String, TypeEnv)], RippleDb, Array[(String, String)]) with Env + Fs {
+/// Prepare imports once through the shared project query boundary. The final
+/// checker invocation belongs to grep, which captures types and effects for
+/// its filters. A failed dependency walk is an error, not a well-typed file.
+fn grep_fs_typed_context(path: String, raw_source: String, state: QueryProjectState) -> (GrepTyped, QueryProjectState) with Env + Fs {
   handle {
-    let groups = collect_source_groups_fs(path)
-    let mut rdb = rdb_in
-    let mut entry_source = raw_source
-    let mut gi = 0
-    while gi < Array::length(groups) {
-      let (_, sources) = Array::get(groups, gi)
-      let mut si = 0
-      while si < Array::length(sources) {
-        let (p, text) = Array::get(sources, si)
-        rdb = ripple_set_source(rdb, p, text)
-        if p == path {
-          entry_source = text
-        } else {
-          ()
-        }
-        si = si + 1
-      }
-      gi = gi + 1
-    }
-    let (_, walked, env_cache, dep_sources, _) = ensure_fingerprint_fs_impl(rdb, cache_in, dep_sources_in, 0, path)
-    let deps = match ripple_get_deps(walked, path) {
-      Some(d) => d,
-      None => grep_empty_strings()
-    }
-    let import_env = projected_import_env_for_test(entry_source, path, deps, grep_fs_fill_dep_envs(walked, env_cache, deps))
-    (grep_typed_context(raw_source, entry_source, import_env), env_cache, walked, dep_sources)
-  } with {
-    // The graph did not check. That is a real answer, not a reason to fall
-    // back to single-file typing: doing so would type-check this file against
-    // an empty environment, find nothing wrong with it, and report every match
-    // in a program that does not compile as `--only-well-typed`.
-    // `cache_in` and not an empty cache: entries are whole per module, so a
-    // file whose own walk threw leaves the ones already recorded valid for the
-    // files after it.
-    // `rdb_in` / `dep_sources_in` and not fresh ones, for the same reason as
-    // `cache_in`: both are per-path records of a file's own text, so the rows a
-    // thrown walk already wrote stay valid for the files after it.
-    Exception::Throw(msg) => (grep_typed_context_error(raw_source, msg), cache_in, rdb_in, dep_sources_in)
-  }
-}
-
-fn grep_fs_cache_has(cache: Array[(String, TypeEnv)], path: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while !found && i < Array::length(cache) {
-    let (p, _) = Array::get(cache, i)
-    if p == path {
-      found = true
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-/// Fill in the dependency environments the walk did NOT return in-memory.
-///
-/// `ensure_fingerprint_fs_impl` only adds a module to its env cache when it
-/// actually re-checks it; a module whose persistent environment was already on
-/// disk is recorded in the ripple db and skipped. That is the normal (warm)
-/// case, so without this step a repeat run resolves imports against an empty
-/// cache -- `projected_import_env_for_test` then throws and every imported name
-/// types as `CtUnknown`. Reading each missing dependency back from the same
-/// persistent store the walk published to is what makes the typed tier behave
-/// the same warm as cold.
-fn grep_fs_fill_dep_envs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], deps: Array[String]) -> Array[(String, TypeEnv)] with Env + Exception + Fs {
-  let mut i = 0
-  while i < Array::length(deps) {
-    let dep = Array::get(deps, i)
-    if !grep_fs_cache_has(env_cache, dep) {
-      match ripple_get_fingerprint(rdb, dep) {
-        Some(fingerprint) => match load_persistent_type_env(fingerprint) {
-          Some(dep_env) => Array::push(env_cache, (dep, dep_env)),
-          None => ()
-        },
-        None => ()
-      }
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  env_cache
+    let context = query_project_context_fs(path, raw_source, None, state)
+    (grep_typed_context(raw_source, context.entry_source, context.import_env), context.state)
+  } with { Exception::Throw(msg) => (grep_typed_context_error(raw_source, msg), state) }
 }
 
 /// The linear-memory ceiling this sweep must stay under, in bytes.
@@ -611,7 +465,7 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
   // was not enough: `step_module_fs` reuses a module only when the ripple db
   // has its fingerprint AND the dep-source cache says its text is unchanged,
   // so a fresh db or a fresh dep-source cache re-checks the closure either
-  // way. See grep_fs_typed_context for why sharing all three is sound.
+  // way. The project_context package owns and threads all three together.
   // #2914: the typed tier used to TRAP on a tree-wide sweep -- a bare wasm
   // `out of bounds memory access` naming neither the file nor the stage. The
   // budget below turns the common case into a diagnostic that names both.
@@ -639,9 +493,7 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
   }
   let memory_ceiling = grep_memory_ceiling_bytes()
   let mut max_typed_cost = 0
-  let mut typed_env_cache = grep_fs_empty_env_cache()
-  let mut typed_rdb = ripple_new()
-  let mut typed_dep_sources = grep_fs_empty_pairs()
+  let mut typed_state = query_project_state_new()
   let mut i = 0
   while i < Array::length(files) {
     let path = Array::get(files, i)
@@ -719,10 +571,8 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
         } else {
           ()
         }
-        let (typed_ctx, next_cache, next_rdb, next_dep_sources) = grep_fs_typed_context(path, source, typed_env_cache, typed_rdb, typed_dep_sources)
-        typed_env_cache = next_cache
-        typed_rdb = next_rdb
-        typed_dep_sources = next_dep_sources
+        let (typed_ctx, next_state) = grep_fs_typed_context(path, source, typed_state)
+        typed_state = next_state
         let cost = Profiler::heap_bytes() - heap_before
         if cost > max_typed_cost {
           max_typed_cost = cost
