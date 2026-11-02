@@ -66,10 +66,10 @@ fn log_split(_ n: Int) -> Int {
 
 fn log_range_root(leaves: Array[String], lo: Int, hi: Int) -> String {
   if hi - lo == 1 {
-    Array::get(leaves, lo)
+    Array::get(leaves, at = lo)
   } else {
     let k = log_split(hi - lo)
-    log_node_hash(log_range_root(leaves, lo, lo + k), log_range_root(leaves, lo + k, hi))
+    log_node_hash(left = log_range_root(leaves = leaves, lo = lo, hi = lo + k), right = log_range_root(leaves = leaves, lo = lo + k, hi = hi))
   }
 }
 
@@ -78,7 +78,7 @@ export fn log_root(_ leaves: Array[String]) -> String {
   if Array::length(leaves) == 0 {
     sha256("empty")
   } else {
-    log_range_root(leaves, 0, Array::length(leaves))
+    log_range_root(leaves = leaves, lo = 0, hi = Array::length(leaves))
   }
 }
 
@@ -93,7 +93,7 @@ export fn log_leaves(records: Array[String], limit: Int) -> Array[String] {
   let out: Array[String] = []
   let mut i = 0
   while i < n {
-    Array::push(out, log_leaf_hash(Array::get(records, i)))
+    Array::push(out, value = log_leaf_hash(Array::get(records, at = i)))
     i = i + 1
   }
   out
@@ -103,16 +103,16 @@ fn log_proof_into(out: Array[LogProofStep], leaves: Array[String], m: Int, lo: I
   if hi - lo > 1 {
     let k = log_split(hi - lo)
     if m < lo + k {
-      log_proof_into(out, leaves, m, lo, lo + k)
-      Array::push(out, LogProofStep::{
+      log_proof_into(out = out, leaves = leaves, m = m, lo = lo, hi = lo + k)
+      Array::push(out, value = LogProofStep::{
         sibling_right: true,
-        hash: log_range_root(leaves, lo + k, hi)
+        hash: log_range_root(leaves = leaves, lo = lo + k, hi = hi)
       })
     } else {
-      log_proof_into(out, leaves, m, lo + k, hi)
-      Array::push(out, LogProofStep::{
+      log_proof_into(out = out, leaves = leaves, m = m, lo = lo + k, hi = hi)
+      Array::push(out, value = LogProofStep::{
         sibling_right: false,
-        hash: log_range_root(leaves, lo, lo + k)
+        hash: log_range_root(leaves = leaves, lo = lo, hi = lo + k)
       })
     }
   }
@@ -121,7 +121,7 @@ fn log_proof_into(out: Array[LogProofStep], leaves: Array[String], m: Int, lo: I
 /// The audit path for leaf `index`, leaf-to-root order.
 export fn log_inclusion_proof(leaves: Array[String], index: Int) -> Array[LogProofStep] {
   let out: Array[LogProofStep] = []
-  log_proof_into(out, leaves, index, 0, Array::length(leaves))
+  log_proof_into(out = out, leaves = leaves, m = index, lo = 0, hi = Array::length(leaves))
   out
 }
 
@@ -130,11 +130,11 @@ export fn log_verify_inclusion(leaf: String, root: String, proof: Array[LogProof
   let mut h = leaf
   let mut i = 0
   while i < Array::length(proof) {
-    let step = Array::get(proof, i)
+    let step = Array::get(proof, at = i)
     h = if step.sibling_right {
-      log_node_hash(h, step.hash)
+      log_node_hash(left = h, right = step.hash)
     } else {
-      log_node_hash(step.hash, h)
+      log_node_hash(left = step.hash, right = h)
     }
     i = i + 1
   }
@@ -148,10 +148,10 @@ export fn log_verify_inclusion(leaf: String, root: String, proof: Array[LogProof
 /// `while read` loop read the file (it never runs its body for that line).
 export fn log_record_lines(_ text: String) -> Array[String] {
   let out: Array[String] = []
-  let parts = String::split(text, "\n")
+  let parts = String::split(text, sep = "\n")
   let mut i = 0
   while i < Array::length(parts) - 1 {
-    Array::push(out, Array::get(parts, i))
+    Array::push(out, value = Array::get(parts, at = i))
     i = i + 1
   }
   out
@@ -170,23 +170,23 @@ export fn log_format_head(size: Int, root: String) -> String {
 /// `text` without trailing spaces, tabs, carriage returns and newlines.
 fn trim_trailing_space(_ text: String) -> String {
   let mut end = String::length(text)
-  while end > 0 && (String::byte_at(text, end - 1) == 32 || String::byte_at(text, end - 1) == 9 || String::byte_at(text, end - 1) == 10 || String::byte_at(text, end - 1) == 13) {
+  while end > 0 && (String::byte_at(text, at = end - 1) == 32 || String::byte_at(text, at = end - 1) == 9 || String::byte_at(text, at = end - 1) == 10 || String::byte_at(text, at = end - 1) == 13) {
     end = end - 1
   }
-  String::substring(text, 0, end)
+  String::substring(text, start = 0, end = end)
 }
 
 /// Parse a `head` (or seen-head) file: `<size>\t<root>`, newline optional.
 export fn log_parse_head(_ text: String) -> LogHead with Exception {
   let line = trim_trailing_space(text)
-  let tab = String::index_of(line, "\t")
+  let tab = String::index_of(line, needle = "\t")
   if tab < 0 {
     throw("malformed log head: expected `<size>\\t<root>`, got `\{line}`")
   } else {
-    match Int::parse(String::substring(line, 0, tab)) {
+    match Int::parse(String::substring(line, start = 0, end = tab)) {
       Some(size) => LogHead::{
         size: size,
-        root: String::substring(line, tab + 1, String::length(line))
+        root: String::substring(line, start = tab + 1, end = String::length(line))
       },
       None => throw("malformed log head: size is not a number in `\{line}`")
     }
@@ -194,9 +194,9 @@ export fn log_parse_head(_ text: String) -> LogHead with Exception {
 }
 
 fn log_field(record: String, index: Int) -> String {
-  let fields = String::split(record, "\t")
+  let fields = String::split(record, sep = "\t")
   if index < Array::length(fields) {
-    Array::get(fields, index)
+    Array::get(fields, at = index)
   } else {
     ""
   }
@@ -215,7 +215,7 @@ export fn log_check_served(records: Option[String], head: Option[String]) -> Uni
     (Some(body), Some(head_text)) => {
       let parsed = log_parse_head(head_text)
       let lines = log_record_lines(body)
-      if body != "" && !String::ends_with(body, "\n") {
+      if body != "" && !String::ends_with(body, suffix = "\n") {
         // A record without its newline is a truncated write; the next
         // append would glue onto it. The head cannot commit to it either
         // way, so refuse the file rather than read around it.
@@ -223,7 +223,7 @@ export fn log_check_served(records: Option[String], head: Option[String]) -> Uni
       } else if parsed.size != Array::length(lines) {
         throw("tampered log head: head claims \{Int::to_string(parsed.size)} record(s), records.tsv has \{Int::to_string(Array::length(lines))}")
       } else {
-        let got = log_root(log_leaves(lines, Array::length(lines)))
+        let got = log_root(log_leaves(records = lines, limit = Array::length(lines)))
         if got != parsed.root {
           throw("tampered log head: head root \{parsed.root} does not match recomputed \{got}")
         } else {
@@ -244,7 +244,7 @@ export fn log_check_extends(records: String, head: LogHead, seen: Option[LogHead
       if head.size < prev.size {
         throw("log consistency violation: head regressed to \{Int::to_string(head.size)} record(s), this client already saw \{Int::to_string(prev.size)} (append-only log was truncated/rewritten)")
       } else if prev.size > 0 {
-        let prefix = log_root(log_leaves(log_record_lines(records), prev.size))
+        let prefix = log_root(log_leaves(records = log_record_lines(records), limit = prev.size))
         if prefix != prev.root {
           throw("log consistency violation: the first \{Int::to_string(prev.size)} record(s) no longer hash to the head this client saw (append-only history was rewritten)")
         } else {
@@ -265,12 +265,12 @@ export fn log_lookup(records: Array[String], key: String) -> LogLookup {
   let mut yanked = false
   let mut i = 0
   while i < Array::length(records) {
-    let record = Array::get(records, i)
-    if log_field(record, 2) == key {
-      let op = log_field(record, 1)
+    let record = Array::get(records, at = i)
+    if log_field(record = record, index = 2) == key {
+      let op = log_field(record = record, index = 1)
       if op == "publish" {
         index = i
-        hash = log_field(record, 3)
+        hash = log_field(record = record, index = 3)
         yanked = false
       } else if op == "yank" {
         yanked = true
@@ -286,7 +286,7 @@ export fn log_lookup(records: Array[String], key: String) -> LogLookup {
 }
 
 export fn log_has_publish(records: Array[String], key: String) -> Bool {
-  match log_lookup(records, key) {
+  match log_lookup(records = records, key = key) {
     LogAbsent => false,
     LogPublished(_, _, _) => true
   }
@@ -297,9 +297,9 @@ export fn log_is_yanked(records: Array[String], key: String) -> Bool {
   let mut last = ""
   let mut i = 0
   while i < Array::length(records) {
-    let record = Array::get(records, i)
-    if log_field(record, 2) == key {
-      last = log_field(record, 1)
+    let record = Array::get(records, at = i)
+    if log_field(record = record, index = 2) == key {
+      last = log_field(record = record, index = 1)
     }
     i = i + 1
   }
@@ -310,5 +310,5 @@ export fn log_is_yanked(records: Array[String], key: String) -> Bool {
 /// `log-head.seen.<first 12 hex of sha256(log_dir)>`, keyed by the log
 /// directory so two registries cannot cross-fire the consistency check.
 export fn log_seen_file_name(_ log_dir: String) -> String {
-  String::concat("log-head.seen.", String::substring(sha256(log_dir), 0, 12))
+  String::concat("log-head.seen.", String::substring(sha256(log_dir), start = 0, end = 12))
 }

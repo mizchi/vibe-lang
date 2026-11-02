@@ -30,7 +30,7 @@ fn sha1_hex() -> String {
 }
 
 fn versions_fixture() -> String {
-  String::concat(String::concat(versions_row("@a/x@1.0.0", "pkg:b3:aa"), versions_row("@a/y@0.1.0", "pkg:sha1:bb")), versions_row("@a/x@1.1.0", "pkg:b3:cc"))
+  String::concat(String::concat(versions_row(key = "@a/x@1.0.0", id = "pkg:b3:aa"), versions_row(key = "@a/y@0.1.0", id = "pkg:sha1:bb")), versions_row(key = "@a/x@1.1.0", id = "pkg:b3:cc"))
 }
 
 fn id_or_none(_ text: String) -> String {
@@ -63,7 +63,10 @@ test "malformed package ids are refused" {
 }
 
 test "the CAS directory is keyed by algorithm" {
-  inspect(cas_dir("/h/cache", PkgId::{ algo: "sha1", hex: sha1_hex() }), content = "/h/cache/pkg/sha1/da39a3ee5e6b4b0d3255bfef95601890afd80709")
+  inspect(cas_dir(cache_dir = "/h/cache", id = PkgId::{
+    algo: "sha1",
+    hex: sha1_hex()
+  }), content = "/h/cache/pkg/sha1/da39a3ee5e6b4b0d3255bfef95601890afd80709")
 }
 
 test "package files are the contract and the implementation" {
@@ -78,26 +81,26 @@ test "package files are the contract and the implementation" {
 //# Version index
 
 test "lookup reads the first row for a key" {
-  inspect(versions_lookup(versions_fixture(), "@a/x@1.1.0"), content = "pkg:b3:cc")
-  inspect(versions_lookup(versions_fixture(), "@a/x@9.9.9"), content = "")
-  inspect(versions_lookup(String::concat(versions_fixture(), versions_row("@a/x@1.0.0", "pkg:b3:zz")), "@a/x@1.0.0"), content = "pkg:b3:aa")
-  inspect(versions_lookup("", "@a/x@1.0.0"), content = "")
+  inspect(versions_lookup(versions = versions_fixture(), key = "@a/x@1.1.0"), content = "pkg:b3:cc")
+  inspect(versions_lookup(versions = versions_fixture(), key = "@a/x@9.9.9"), content = "")
+  inspect(versions_lookup(versions = String::concat(versions_fixture(), versions_row(key = "@a/x@1.0.0", id = "pkg:b3:zz")), key = "@a/x@1.0.0"), content = "pkg:b3:aa")
+  inspect(versions_lookup(versions = "", key = "@a/x@1.0.0"), content = "")
 }
 
 test "versions of a name are in publish order and do not match a longer name" {
-  let rows = String::concat(versions_fixture(), versions_row("@a/xy@2.0.0", "pkg:b3:dd"))
-  inspect(Array::length(versions_of(rows, "@a/x")), content = "2")
-  inspect(latest_version_of(rows, "@a/x"), content = "1.1.0")
-  inspect(latest_version_of(rows, "@a/xy"), content = "2.0.0")
-  inspect(latest_version_of(rows, "@a/z"), content = "")
+  let rows = String::concat(versions_fixture(), versions_row(key = "@a/xy@2.0.0", id = "pkg:b3:dd"))
+  inspect(Array::length(versions_of(versions = rows, name = "@a/x")), content = "2")
+  inspect(latest_version_of(versions = rows, name = "@a/x"), content = "1.1.0")
+  inspect(latest_version_of(versions = rows, name = "@a/xy"), content = "2.0.0")
+  inspect(latest_version_of(versions = rows, name = "@a/z"), content = "")
 }
 
 test "provenance rows are recognised exactly" {
-  let line = provenance_line("@a/x@1.0.0", "pkg:b3:aa", "github:o/r@main", "0123")
+  let line = provenance_line(key = "@a/x@1.0.0", id = "pkg:b3:aa", spec = "github:o/r@main", commit = "0123")
   inspect(line, content = "@a/x@1.0.0\tpkg:b3:aa\tgithub:o/r@main\t0123")
-  assert(provenance_has(String::concat(line, "\n"), line))
-  assert(!provenance_has(String::concat(line, "\n"), provenance_line("@a/x@1.0.0", "pkg:b3:aa", "github:o/r@main", "4567")))
-  assert(!provenance_has("", line))
+  assert(provenance_has(provenance = String::concat(line, "\n"), line = line))
+  assert(!provenance_has(provenance = String::concat(line, "\n"), line = provenance_line(key = "@a/x@1.0.0", id = "pkg:b3:aa", spec = "github:o/r@main", commit = "4567")))
+  assert(!provenance_has(provenance = "", line = line))
 }
 
 //# Source specs
@@ -126,7 +129,7 @@ test "malformed specs are refused with the expected shape" {
 //# Edges found by `vibe mutate`
 
 test "every hex digit is checked, the first one included" {
-  inspect(id_or_none(String::concat("pkg:b3:g", String::substring(b3_hex(), 1, 64))), content = "none")
+  inspect(id_or_none(String::concat("pkg:b3:g", String::substring(b3_hex(), start = 1, end = 64))), content = "none")
 }
 
 test "a string that is not prefixed is not an id, whatever its length" {
@@ -134,14 +137,14 @@ test "a string that is not prefixed is not an id, whatever its length" {
 }
 
 test "rows without their tab do not trap, and blank lines are not rows" {
-  inspect(versions_lookup("keyonly\n", "keyonly"), content = "")
-  assert(!provenance_has("a\n\nb\n", ""))
+  inspect(versions_lookup(versions = "keyonly\n", key = "keyonly"), content = "")
+  assert(!provenance_has(provenance = "a\n\nb\n", line = ""))
 }
 
 test "versions_of carries the recorded ids" {
-  let all = versions_of(versions_fixture(), "@a/x")
-  let (v0, id0) = Array::get(all, 0)
-  let (v1, id1) = Array::get(all, 1)
+  let all = versions_of(versions = versions_fixture(), name = "@a/x")
+  let (v0, id0) = Array::get(all, at = 0)
+  let (v1, id1) = Array::get(all, at = 1)
   inspect("\{v0}=\{id0} \{v1}=\{id1}", content = "1.0.0=pkg:b3:aa 1.1.0=pkg:b3:cc")
 }
 

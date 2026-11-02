@@ -34,26 +34,26 @@ export fn write_function_job_into(b: Bytes, ctx: FunctionContext, digest: String
   if Bytes::length(b) != 0 || String::length(digest) != 64 || lo < ctx.loaded_lo || hi > ctx.loaded_hi || lo < 0 || hi < lo || hi > ctx.input.num_user_funcs {
     throw("function job: invalid buffer, context digest or loaded range")
   } else ()
-  ast_binary_write_string(b, "vibe-function-job-2")
-  ast_binary_write_string(b, digest)
-  ast_binary_write_varint(b, lo)
-  ast_binary_write_varint(b, hi)
+  ast_binary_write_string(buf = b, s = "vibe-function-job-2")
+  ast_binary_write_string(buf = b, s = digest)
+  ast_binary_write_varint(buf = b, v = lo)
+  ast_binary_write_varint(buf = b, v = hi)
   let pool = FrozenArray::from_array(ctx.input.str_strs)
   // AST names are not necessarily runtime literals. A pool miss keeps the
   // ordinary inline bytes instead of applying the literal-only lookup contract.
-  ast_binary_with_indexed_string_pool(pool, (value) -> {
-    match MutMap::get(ctx.input.str_table_shared.index, value) {
+  ast_binary_with_indexed_string_pool(strings = pool, lookup = (value) -> {
+    match MutMap::get(ctx.input.str_table_shared.index, k = value) {
       Some(index) => index,
       None => -1
     }
-  }, () -> Bytes with Exception {
+  }, action = () -> Bytes with Exception {
     let mut i = lo
     while i < hi {
-      ast_binary_write_expr(b, Array::get(ctx.plan.bodies, i))
-      match Array::get(ctx.plan.source_types, i) {
-        None => ast_binary_write_bool(b, false),
+      ast_binary_write_expr(buf = b, e = Array::get(ctx.plan.bodies, at = i))
+      match Array::get(ctx.plan.source_types, at = i) {
+        None => ast_binary_write_bool(buf = b, b = false),
         Some(t) => {
-          ast_binary_write_bool(b, true); ast_binary_write_type_expr(b, t)
+          ast_binary_write_bool(buf = b, b = true); ast_binary_write_type_expr(buf = b, t = t)
         }
       }
       i = i + 1
@@ -66,7 +66,7 @@ export fn write_function_job_into(b: Bytes, ctx: FunctionContext, digest: String
 }
 
 export fn write_function_job(ctx: FunctionContext, digest: String, lo: Int, hi: Int) -> Bytes with Exception {
-  write_function_job_into(Bytes::new(), ctx, digest, lo, hi)
+  write_function_job_into(b = Bytes::new(), ctx = ctx, digest = digest, lo = lo, hi = hi)
 }
 
 /// Decode into private temporary arrays, validate the entire job, then replace
@@ -76,40 +76,40 @@ export fn read_function_job(ctx: FunctionContext, bytes: Bytes, digest: String) 
     throw("function job: exceeds 64 MiB")
   } else ()
   let prefix = linear_string_reader(bytes)
-  if ast_binary_read_string_checked(prefix) != "vibe-function-job-2" || ast_binary_read_string_checked(prefix) != digest {
+  if ast_binary_read_string_checked(r = prefix) != "vibe-function-job-2" || ast_binary_read_string_checked(r = prefix) != digest {
     throw("function job: context or format differs")
   } else ()
-  let lo = ast_binary_read_varint_checked(prefix)
-  let hi = ast_binary_read_varint_checked(prefix)
+  let lo = ast_binary_read_varint_checked(r = prefix)
+  let hi = ast_binary_read_varint_checked(r = prefix)
   if lo < 0 || hi < lo || hi > ctx.input.num_user_funcs {
     throw("function job: invalid range")
   } else ()
-  let r = ast_binary_reader_with_string_pool(prefix, FrozenArray::from_array(ctx.input.str_strs))
+  let r = ast_binary_reader_with_string_pool(r = prefix, strings = FrozenArray::from_array(ctx.input.str_strs))
   let bodies: Array[Expr] = []
   let hints: Array[Option[TypeExpr]] = []
   let mut i = lo
   while i < hi {
-    Array::push(bodies, ast_binary_read_expr(r))
-    Array::push(hints, if ast_binary_read_bool_checked(r) {
-      Some(ast_binary_read_type_expr(r))
+    Array::push(bodies, value = ast_binary_read_expr(r = r))
+    Array::push(hints, value = if ast_binary_read_bool_checked(r = r) {
+      Some(ast_binary_read_type_expr(r = r))
     } else {
       None
     })
     i = i + 1
   }
-  if ast_binary_reader_remaining(r) != 0 {
+  if ast_binary_reader_remaining(r = r) != 0 {
     throw("function job: trailing bytes")
   } else ()
   i = ctx.loaded_lo
   while i < ctx.loaded_hi {
-    Array::set(ctx.plan.bodies, i, EUnit)
-    Array::set(ctx.plan.source_types, i, None)
+    Array::set(ctx.plan.bodies, at = i, value = EUnit)
+    Array::set(ctx.plan.source_types, at = i, value = None)
     i = i + 1
   }
   i = lo
   while i < hi {
-    Array::set(ctx.plan.bodies, i, Array::get(bodies, i - lo))
-    Array::set(ctx.plan.source_types, i, Array::get(hints, i - lo))
+    Array::set(ctx.plan.bodies, at = i, value = Array::get(bodies, at = i - lo))
+    Array::set(ctx.plan.source_types, at = i, value = Array::get(hints, at = i - lo))
     i = i + 1
   }
   ctx.loaded_lo = lo
@@ -118,9 +118,9 @@ export fn read_function_job(ctx: FunctionContext, bytes: Bytes, digest: String) 
 }
 
 export fn FunctionContext::write_function_job(_ recv: FunctionContext, digest: String, lo: Int, hi: Int) -> Bytes with Exception {
-  write_function_job(recv, digest, lo, hi)
+  write_function_job(ctx = recv, digest = digest, lo = lo, hi = hi)
 }
 
 export fn FunctionContext::read_function_job(_ recv: FunctionContext, bytes: Bytes, digest: String) -> FunctionRange with Exception {
-  read_function_job(recv, bytes, digest)
+  read_function_job(ctx = recv, bytes = bytes, digest = digest)
 }

@@ -59,7 +59,7 @@ export fn codegen_body_cache_new() -> CodegenBodyCache {
 /// unchanged, and reading this cache afterwards is what the name refuses.
 export fn codegen_body_cache_discard() -> CodegenBodyCache {
   let c = codegen_body_cache_new()
-  Array::set(c.collect, 0, 0)
+  Array::set(c.collect, at = 0, value = 0)
   c
 }
 
@@ -78,14 +78,14 @@ fn bcc_push_int(buf: Bytes, v: Int) -> Unit with Exception {
   } else {
     ()
   }
-  write_uleb128(buf, v + 1)
+  write_uleb128(buf = buf, n = v + 1)
 }
 
 fn bcc_push_int_array(buf: Bytes, xs: Array[Int]) -> Unit with Exception {
-  bcc_push_int(buf, Array::length(xs))
+  bcc_push_int(buf = buf, v = Array::length(xs))
   let mut i = 0
   while i < Array::length(xs) {
-    bcc_push_int(buf, Array::get(xs, i))
+    bcc_push_int(buf = buf, v = Array::get(xs, at = i))
     i = i + 1
   }
 }
@@ -105,61 +105,61 @@ fn bcc_push_int_array(buf: Bytes, xs: Array[Int]) -> Unit with Exception {
 /// to `-2v - 1`, which is a bijection onto the non-negatives the plain
 /// encoder already accepts.
 fn bcc_push_zigzag_int_array(buf: Bytes, xs: Array[Int]) -> Unit with Exception {
-  bcc_push_int(buf, Array::length(xs))
+  bcc_push_int(buf = buf, v = Array::length(xs))
   let mut i = 0
   while i < Array::length(xs) {
-    let v = Array::get(xs, i)
+    let v = Array::get(xs, at = i)
     let z = if v >= 0 {
       v * 2
     } else {
       0 - v * 2 - 1
     }
-    bcc_push_int(buf, z)
+    bcc_push_int(buf = buf, v = z)
     i = i + 1
   }
 }
 
 fn bcc_push_bytes(buf: Bytes, b: Bytes) -> Unit with Exception {
-  bcc_push_int(buf, Bytes::length(b))
-  Bytes::append(buf, b)
+  bcc_push_int(buf = buf, v = Bytes::length(b))
+  Bytes::append(buf, bytes = b)
 }
 
 fn bcc_push_bytes_array(buf: Bytes, xs: Array[Bytes]) -> Unit with Exception {
-  bcc_push_int(buf, Array::length(xs))
+  bcc_push_int(buf = buf, v = Array::length(xs))
   let mut i = 0
   while i < Array::length(xs) {
-    bcc_push_bytes(buf, Array::get(xs, i))
+    bcc_push_bytes(buf = buf, b = Array::get(xs, at = i))
     i = i + 1
   }
 }
 
 fn bcc_push_string(buf: Bytes, s: String) -> Unit with Exception {
-  bcc_push_int(buf, String::length(s))
+  bcc_push_int(buf = buf, v = String::length(s))
   let mut i = 0
   while i < String::length(s) {
-    Bytes::push(buf, String::char_code_at(s, i))
+    Bytes::push(buf, value = String::char_code_at(s, at = i))
     i = i + 1
   }
 }
 
 fn bcc_push_string_array(buf: Bytes, xs: Array[String]) -> Unit with Exception {
-  bcc_push_int(buf, Array::length(xs))
+  bcc_push_int(buf = buf, v = Array::length(xs))
   let mut i = 0
   while i < Array::length(xs) {
-    bcc_push_string(buf, Array::get(xs, i))
+    bcc_push_string(buf = buf, s = Array::get(xs, at = i))
     i = i + 1
   }
 }
 
 fn bcc_push_string_arrays(buf: Bytes, xs: Array[Array[String]]) -> Unit with Exception {
-  bcc_push_int(buf, Array::length(xs))
+  bcc_push_int(buf = buf, v = Array::length(xs))
   let mut i = 0
   while i < Array::length(xs) {
-    let inner = Array::get(xs, i)
-    bcc_push_int(buf, Array::length(inner))
+    let inner = Array::get(xs, at = i)
+    bcc_push_int(buf = buf, v = Array::length(inner))
     let mut j = 0
     while j < Array::length(inner) {
-      bcc_push_string(buf, Array::get(inner, j))
+      bcc_push_string(buf = buf, s = Array::get(inner, at = j))
       j = j + 1
     }
     i = i + 1
@@ -168,7 +168,7 @@ fn bcc_push_string_arrays(buf: Bytes, xs: Array[Array[String]]) -> Unit with Exc
 
 export fn codegen_body_cache_to_bytes(_ cache: CodegenBodyCache) -> Bytes with Exception {
   let buf = Bytes::new()
-  codegen_body_cache_write_to(buf, cache)
+  codegen_body_cache_write_to(buf = buf, cache = cache)
   buf
 }
 
@@ -177,9 +177,9 @@ export fn codegen_body_cache_to_bytes(_ cache: CodegenBodyCache) -> Bytes with E
 /// after it; encoding into a separate buffer and appending cost one more copy
 /// of the whole cache on every store (#2818).
 export fn codegen_body_cache_write_to(buf: Bytes, cache: CodegenBodyCache) -> Unit with Exception {
-  Bytes::push(buf, 'V')
-  Bytes::push(buf, 'B')
-  Bytes::push(buf, 'C')
+  Bytes::push(buf, value = 'V')
+  Bytes::push(buf, value = 'B')
+  Bytes::push(buf, value = 'C')
   // Bumped on every stream change so an artifact written by an older compiler
   // is REJECTED rather than read short: '1' -> '2' when #2669 slice 3 added
   // the blind-reference arrays, '2' -> '3' when step 2a added fn_names. (The
@@ -194,45 +194,45 @@ export fn codegen_body_cache_write_to(buf: Bytes, cache: CodegenBodyCache) -> Un
   // '6' -> '7': per-entry constant-Bool fold signatures and the compile's
   // fold table (#2818). A '6' artifact has no signatures, so reading it as
   // "nothing was folded" would replay folded bodies unchecked.
-  Bytes::push(buf, '7')
-  bcc_push_int_array(buf, cache.fn_indices)
-  bcc_push_string_array(buf, cache.fn_names)
-  bcc_push_int_array(buf, cache.fn_files)
-  bcc_push_int_array(buf, cache.fn_src_stmts)
-  bcc_push_bytes_array(buf, cache.fn_bodies)
-  bcc_push_int_array(buf, cache.fn_meta_i32)
-  bcc_push_int_array(buf, cache.fn_meta_i64)
-  bcc_push_int_array(buf, cache.fn_meta_v128)
-  bcc_push_int_array(buf, cache.lam_owner)
-  bcc_push_int_array(buf, cache.lam_indices)
-  bcc_push_bytes_array(buf, cache.lam_bodies)
-  bcc_push_int_array(buf, cache.lam_param_counts)
-  bcc_push_string_arrays(buf, cache.lam_captures)
-  bcc_push_int_array(buf, cache.lam_meta_i32)
-  bcc_push_int_array(buf, cache.lam_meta_i64)
-  bcc_push_int_array(buf, cache.slot_owner)
-  bcc_push_int_array(buf, cache.slot_values)
-  bcc_push_int_array(buf, cache.blind_fn)
-  bcc_push_zigzag_int_array(buf, cache.blind_body)
-  bcc_push_int_array(buf, cache.blind_offsets)
-  bcc_push_int_array(buf, cache.blind_kinds)
-  bcc_push_int_array(buf, cache.blind_syms)
-  bcc_push_int_array(buf, cache.lm_owner)
-  bcc_push_int_array(buf, cache.lm_offsets)
-  bcc_push_int_array(buf, cache.lm_file_ids)
-  bcc_push_int_array(buf, cache.lm_lines)
-  bcc_push_int_array(buf, cache.guard_meta)
-  bcc_push_string_array(buf, cache.guard_synth_names)
-  bcc_push_int_array(buf, cache.guard_synth_stmts)
-  bcc_push_string_array(buf, cache.guard_import_names)
-  bcc_push_string_array(buf, cache.guard_borrow_names)
-  bcc_push_int_array(buf, cache.guard_borrow_masks)
-  bcc_push_string_array(buf, cache.guard_unmangled_names)
-  bcc_push_int_array(buf, cache.guard_layout)
-  bcc_push_int_array(buf, cache.guard_typed_lowering)
-  bcc_push_string_array(buf, cache.fn_fold_sigs)
-  bcc_push_string_array(buf, cache.guard_fold_names)
-  bcc_push_string_array(buf, cache.guard_fold_sigs)
+  Bytes::push(buf, value = '7')
+  bcc_push_int_array(buf = buf, xs = cache.fn_indices)
+  bcc_push_string_array(buf = buf, xs = cache.fn_names)
+  bcc_push_int_array(buf = buf, xs = cache.fn_files)
+  bcc_push_int_array(buf = buf, xs = cache.fn_src_stmts)
+  bcc_push_bytes_array(buf = buf, xs = cache.fn_bodies)
+  bcc_push_int_array(buf = buf, xs = cache.fn_meta_i32)
+  bcc_push_int_array(buf = buf, xs = cache.fn_meta_i64)
+  bcc_push_int_array(buf = buf, xs = cache.fn_meta_v128)
+  bcc_push_int_array(buf = buf, xs = cache.lam_owner)
+  bcc_push_int_array(buf = buf, xs = cache.lam_indices)
+  bcc_push_bytes_array(buf = buf, xs = cache.lam_bodies)
+  bcc_push_int_array(buf = buf, xs = cache.lam_param_counts)
+  bcc_push_string_arrays(buf = buf, xs = cache.lam_captures)
+  bcc_push_int_array(buf = buf, xs = cache.lam_meta_i32)
+  bcc_push_int_array(buf = buf, xs = cache.lam_meta_i64)
+  bcc_push_int_array(buf = buf, xs = cache.slot_owner)
+  bcc_push_int_array(buf = buf, xs = cache.slot_values)
+  bcc_push_int_array(buf = buf, xs = cache.blind_fn)
+  bcc_push_zigzag_int_array(buf = buf, xs = cache.blind_body)
+  bcc_push_int_array(buf = buf, xs = cache.blind_offsets)
+  bcc_push_int_array(buf = buf, xs = cache.blind_kinds)
+  bcc_push_int_array(buf = buf, xs = cache.blind_syms)
+  bcc_push_int_array(buf = buf, xs = cache.lm_owner)
+  bcc_push_int_array(buf = buf, xs = cache.lm_offsets)
+  bcc_push_int_array(buf = buf, xs = cache.lm_file_ids)
+  bcc_push_int_array(buf = buf, xs = cache.lm_lines)
+  bcc_push_int_array(buf = buf, xs = cache.guard_meta)
+  bcc_push_string_array(buf = buf, xs = cache.guard_synth_names)
+  bcc_push_int_array(buf = buf, xs = cache.guard_synth_stmts)
+  bcc_push_string_array(buf = buf, xs = cache.guard_import_names)
+  bcc_push_string_array(buf = buf, xs = cache.guard_borrow_names)
+  bcc_push_int_array(buf = buf, xs = cache.guard_borrow_masks)
+  bcc_push_string_array(buf = buf, xs = cache.guard_unmangled_names)
+  bcc_push_int_array(buf = buf, xs = cache.guard_layout)
+  bcc_push_int_array(buf = buf, xs = cache.guard_typed_lowering)
+  bcc_push_string_array(buf = buf, xs = cache.fn_fold_sigs)
+  bcc_push_string_array(buf = buf, xs = cache.guard_fold_names)
+  bcc_push_string_array(buf = buf, xs = cache.guard_fold_sigs)
 }
 
 /// Encode the cache with the same VBC7 wire format as the compatibility function.
@@ -253,7 +253,7 @@ fn bcc_read_int(b: Bytes, pos: Int) -> (Int, Int) {
     if p >= n || shift > 34 {
       bad = true
     } else {
-      let byte = Bytes::get(b, p)
+      let byte = Bytes::get(b, at = p)
       p = p + 1
       acc = acc|((byte&127)<<shift)
       shift = shift + 7
@@ -272,18 +272,18 @@ fn bcc_read_int(b: Bytes, pos: Int) -> (Int, Int) {
 }
 
 fn bcc_read_int_array(b: Bytes, pos: Int, out: Array[Int]) -> Int {
-  let (count, p0) = bcc_read_int(b, pos)
+  let (count, p0) = bcc_read_int(b = b, pos = pos)
   if p0 < 0 || count < 0 {
     0 - 1
   } else {
     let mut p = p0
     let mut i = 0
     while p >= 0 && i < count {
-      let (v, np) = bcc_read_int(b, p)
+      let (v, np) = bcc_read_int(b = b, pos = p)
       if np < 0 {
         p = 0 - 1
       } else {
-        Array::push(out, v)
+        Array::push(out, value = v)
         p = np
       }
       i = i + 1
@@ -294,14 +294,14 @@ fn bcc_read_int_array(b: Bytes, pos: Int, out: Array[Int]) -> Int {
 
 /// The inverse of bcc_push_zigzag_int_array.
 fn bcc_read_zigzag_int_array(b: Bytes, pos: Int, out: Array[Int]) -> Int {
-  let (count, p0) = bcc_read_int(b, pos)
+  let (count, p0) = bcc_read_int(b = b, pos = pos)
   if p0 < 0 || count < 0 {
     0 - 1
   } else {
     let mut p = p0
     let mut i = 0
     while p >= 0 && i < count {
-      let (z, np) = bcc_read_int(b, p)
+      let (z, np) = bcc_read_int(b = b, pos = p)
       if np < 0 || z < 0 {
         p = 0 - 1
       } else {
@@ -310,7 +310,7 @@ fn bcc_read_zigzag_int_array(b: Bytes, pos: Int, out: Array[Int]) -> Int {
         } else {
           0 - ((z + 1) / 2)
         }
-        Array::push(out, v)
+        Array::push(out, value = v)
         p = np
       }
       i = i + 1
@@ -320,27 +320,27 @@ fn bcc_read_zigzag_int_array(b: Bytes, pos: Int, out: Array[Int]) -> Int {
 }
 
 fn bcc_read_bytes(b: Bytes, pos: Int) -> (Bytes, Int) {
-  let (len, p0) = bcc_read_int(b, pos)
+  let (len, p0) = bcc_read_int(b = b, pos = pos)
   if p0 < 0 || len < 0 || p0 + len > Bytes::length(b) {
     (Bytes::new(), 0 - 1)
   } else {
-    (Bytes::slice(b, p0, p0 + len), p0 + len)
+    (Bytes::slice(b, start = p0, end = p0 + len), p0 + len)
   }
 }
 
 fn bcc_read_bytes_array(b: Bytes, pos: Int, out: Array[Bytes]) -> Int {
-  let (count, p0) = bcc_read_int(b, pos)
+  let (count, p0) = bcc_read_int(b = b, pos = pos)
   if p0 < 0 || count < 0 {
     0 - 1
   } else {
     let mut p = p0
     let mut i = 0
     while p >= 0 && i < count {
-      let (v, np) = bcc_read_bytes(b, p)
+      let (v, np) = bcc_read_bytes(b = b, pos = p)
       if np < 0 {
         p = 0 - 1
       } else {
-        Array::push(out, v)
+        Array::push(out, value = v)
         p = np
       }
       i = i + 1
@@ -353,14 +353,14 @@ fn bcc_copy_string(b: Bytes, at: Int, length: Int) -> String {
   let parts = array_empty()
   let mut i = 0
   while i < length {
-    Array::push(parts, String::from_byte(Bytes::get(b, at + i)))
+    Array::push(parts, value = String::from_byte(Bytes::get(b, at = at + i)))
     i = i + 1
   }
-  String::join(parts, "")
+  String::join(parts, sep = "")
 }
 
 fn bcc_read_string(b: Bytes, pos: Int, copy: (Bytes, Int, Int) -> String) -> (String, Int) {
-  let (len, p0) = bcc_read_int(b, pos)
+  let (len, p0) = bcc_read_int(b = b, pos = pos)
   if p0 < 0 || len < 0 || len > Bytes::length(b) - p0 {
     ("", 0 - 1)
   } else {
@@ -369,18 +369,18 @@ fn bcc_read_string(b: Bytes, pos: Int, copy: (Bytes, Int, Int) -> String) -> (St
 }
 
 fn bcc_read_string_array(b: Bytes, pos: Int, out: Array[String], copy: (Bytes, Int, Int) -> String) -> Int {
-  let (count, p0) = bcc_read_int(b, pos)
+  let (count, p0) = bcc_read_int(b = b, pos = pos)
   if p0 < 0 || count < 0 {
     0 - 1
   } else {
     let mut p = p0
     let mut i = 0
     while p >= 0 && i < count {
-      let (s, np) = bcc_read_string(b, p, copy)
+      let (s, np) = bcc_read_string(b = b, pos = p, copy = copy)
       if np < 0 {
         p = 0 - 1
       } else {
-        Array::push(out, s)
+        Array::push(out, value = s)
         p = np
       }
       i = i + 1
@@ -390,14 +390,14 @@ fn bcc_read_string_array(b: Bytes, pos: Int, out: Array[String], copy: (Bytes, I
 }
 
 fn bcc_read_string_arrays(b: Bytes, pos: Int, out: Array[Array[String]], copy: (Bytes, Int, Int) -> String) -> Int {
-  let (count, p0) = bcc_read_int(b, pos)
+  let (count, p0) = bcc_read_int(b = b, pos = pos)
   if p0 < 0 || count < 0 {
     0 - 1
   } else {
     let mut p = p0
     let mut i = 0
     while p >= 0 && i < count {
-      let (ilen, np0) = bcc_read_int(b, p)
+      let (ilen, np0) = bcc_read_int(b = b, pos = p)
       if np0 < 0 || ilen < 0 {
         p = 0 - 1
       } else {
@@ -405,11 +405,11 @@ fn bcc_read_string_arrays(b: Bytes, pos: Int, out: Array[Array[String]], copy: (
         let mut p2 = np0
         let mut j = 0
         while p2 >= 0 && j < ilen {
-          let (s, np) = bcc_read_string(b, p2, copy)
+          let (s, np) = bcc_read_string(b = b, pos = p2, copy = copy)
           if np < 0 {
             p2 = 0 - 1
           } else {
-            Array::push(inner, s)
+            Array::push(inner, value = s)
             p2 = np
           }
           j = j + 1
@@ -417,7 +417,7 @@ fn bcc_read_string_arrays(b: Bytes, pos: Int, out: Array[Array[String]], copy: (
         if p2 < 0 {
           p = 0 - 1
         } else {
-          Array::push(out, inner)
+          Array::push(out, value = inner)
           p = p2
         }
       }
@@ -428,14 +428,14 @@ fn bcc_read_string_arrays(b: Bytes, pos: Int, out: Array[Array[String]], copy: (
 }
 
 export fn codegen_body_cache_from_bytes(_ b: Bytes) -> Option[CodegenBodyCache] {
-  codegen_body_cache_from_bytes_with_string_copy(b, bcc_copy_string)
+  codegen_body_cache_from_bytes_with_string_copy(b = b, copy = bcc_copy_string)
 }
 
 /// Decode VBC7 with an owned raw-byte string copier. Each callback receives
 /// a checked span; it must copy every byte, including NUL and invalid UTF-8,
 /// without retaining a view of the mutable input. Wire validation stays here.
 export fn codegen_body_cache_from_bytes_with_string_copy(b: Bytes, copy: (Bytes, Int, Int) -> String) -> Option[CodegenBodyCache] {
-  bcc_decode_from(b, 0, copy)
+  bcc_decode_from(b = b, start = 0, copy = copy)
 }
 
 /// Decode a VBC7 stream that starts at `start` inside `b` and runs to its end,
@@ -443,198 +443,198 @@ export fn codegen_body_cache_from_bytes_with_string_copy(b: Bytes, copy: (Bytes,
 /// header and a file table; slicing the stream out cost a second copy of the
 /// whole cache on every warm build (#2818).
 export fn codegen_body_cache_from_bytes_at(b: Bytes, start: Int) -> Option[CodegenBodyCache] {
-  bcc_decode_from(b, start, bcc_copy_string)
+  bcc_decode_from(b = b, start = start, copy = bcc_copy_string)
 }
 
 fn bcc_decode_from(b: Bytes, start: Int, copy: (Bytes, Int, Int) -> String) -> Option[CodegenBodyCache] {
-  if start < 0 || Bytes::length(b) < start + 4 || Bytes::get(b, start) != 'V' || Bytes::get(b, start + 1) != 'B' || Bytes::get(b, start + 2) != 'C' || Bytes::get(b, start + 3) != '7' {
+  if start < 0 || Bytes::length(b) < start + 4 || Bytes::get(b, at = start) != 'V' || Bytes::get(b, at = start + 1) != 'B' || Bytes::get(b, at = start + 2) != 'C' || Bytes::get(b, at = start + 3) != '7' {
     None
   } else {
     let out = codegen_body_cache_new()
     let mut p = start + 4
-    p = bcc_read_int_array(b, p, out.fn_indices)
+    p = bcc_read_int_array(b = b, pos = p, out = out.fn_indices)
     if p >= 0 {
-      p = bcc_read_string_array(b, p, out.fn_names, copy)
+      p = bcc_read_string_array(b = b, pos = p, out = out.fn_names, copy = copy)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.fn_files)
+      p = bcc_read_int_array(b = b, pos = p, out = out.fn_files)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.fn_src_stmts)
+      p = bcc_read_int_array(b = b, pos = p, out = out.fn_src_stmts)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_bytes_array(b, p, out.fn_bodies)
+      p = bcc_read_bytes_array(b = b, pos = p, out = out.fn_bodies)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.fn_meta_i32)
+      p = bcc_read_int_array(b = b, pos = p, out = out.fn_meta_i32)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.fn_meta_i64)
+      p = bcc_read_int_array(b = b, pos = p, out = out.fn_meta_i64)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.fn_meta_v128)
+      p = bcc_read_int_array(b = b, pos = p, out = out.fn_meta_v128)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.lam_owner)
+      p = bcc_read_int_array(b = b, pos = p, out = out.lam_owner)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.lam_indices)
+      p = bcc_read_int_array(b = b, pos = p, out = out.lam_indices)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_bytes_array(b, p, out.lam_bodies)
+      p = bcc_read_bytes_array(b = b, pos = p, out = out.lam_bodies)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.lam_param_counts)
+      p = bcc_read_int_array(b = b, pos = p, out = out.lam_param_counts)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_string_arrays(b, p, out.lam_captures, copy)
+      p = bcc_read_string_arrays(b = b, pos = p, out = out.lam_captures, copy = copy)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.lam_meta_i32)
+      p = bcc_read_int_array(b = b, pos = p, out = out.lam_meta_i32)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.lam_meta_i64)
+      p = bcc_read_int_array(b = b, pos = p, out = out.lam_meta_i64)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.slot_owner)
+      p = bcc_read_int_array(b = b, pos = p, out = out.slot_owner)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.slot_values)
+      p = bcc_read_int_array(b = b, pos = p, out = out.slot_values)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.blind_fn)
+      p = bcc_read_int_array(b = b, pos = p, out = out.blind_fn)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_zigzag_int_array(b, p, out.blind_body)
+      p = bcc_read_zigzag_int_array(b = b, pos = p, out = out.blind_body)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.blind_offsets)
+      p = bcc_read_int_array(b = b, pos = p, out = out.blind_offsets)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.blind_kinds)
+      p = bcc_read_int_array(b = b, pos = p, out = out.blind_kinds)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.blind_syms)
+      p = bcc_read_int_array(b = b, pos = p, out = out.blind_syms)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.lm_owner)
+      p = bcc_read_int_array(b = b, pos = p, out = out.lm_owner)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.lm_offsets)
+      p = bcc_read_int_array(b = b, pos = p, out = out.lm_offsets)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.lm_file_ids)
+      p = bcc_read_int_array(b = b, pos = p, out = out.lm_file_ids)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.lm_lines)
+      p = bcc_read_int_array(b = b, pos = p, out = out.lm_lines)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.guard_meta)
+      p = bcc_read_int_array(b = b, pos = p, out = out.guard_meta)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_string_array(b, p, out.guard_synth_names, copy)
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_synth_names, copy = copy)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.guard_synth_stmts)
+      p = bcc_read_int_array(b = b, pos = p, out = out.guard_synth_stmts)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_string_array(b, p, out.guard_import_names, copy)
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_import_names, copy = copy)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_string_array(b, p, out.guard_borrow_names, copy)
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_borrow_names, copy = copy)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.guard_borrow_masks)
+      p = bcc_read_int_array(b = b, pos = p, out = out.guard_borrow_masks)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_string_array(b, p, out.guard_unmangled_names, copy)
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_unmangled_names, copy = copy)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.guard_layout)
+      p = bcc_read_int_array(b = b, pos = p, out = out.guard_layout)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.guard_typed_lowering)
+      p = bcc_read_int_array(b = b, pos = p, out = out.guard_typed_lowering)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_string_array(b, p, out.fn_fold_sigs, copy)
+      p = bcc_read_string_array(b = b, pos = p, out = out.fn_fold_sigs, copy = copy)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_string_array(b, p, out.guard_fold_names, copy)
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_fold_names, copy = copy)
     } else {
       ()
     }
     if p >= 0 {
-      p = bcc_read_string_array(b, p, out.guard_fold_sigs, copy)
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_fold_sigs, copy = copy)
     } else {
       ()
     }
@@ -652,7 +652,7 @@ fn bcc_decode_from(b: Bytes, start: Int, copy: (Bytes, Int, Int) -> String) -> O
     let mut fni = 0
     let mut fn_index_negative = false
     while fni < fn_n {
-      if Array::get(out.fn_indices, fni) < 0 {
+      if Array::get(out.fn_indices, at = fni) < 0 {
         fn_index_negative = true
       } else {
         ()
@@ -711,7 +711,7 @@ fn bcc_int_to_string(_ n: Int) -> String {
       else {
         "9"
       }
-      Array::push(digits, ch)
+      Array::push(digits, value = ch)
       val = val / 10
     }
     let mut result = if neg {
@@ -721,7 +721,7 @@ fn bcc_int_to_string(_ n: Int) -> String {
     }
     let mut i = Array::length(digits) - 1
     while i >= 0 {
-      result = String::concat(result, Array::get(digits, i))
+      result = String::concat(result, Array::get(digits, at = i))
       i = i - 1
     }
     result

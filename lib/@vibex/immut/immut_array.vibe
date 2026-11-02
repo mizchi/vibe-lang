@@ -35,14 +35,14 @@ fn va_empty[T]() -> Array[T] {
 
 fn va1[T](_ a: T) -> Array[T] {
   let b = ArrayBuilder::new()
-  ArrayBuilder::push(b, a)
+  ArrayBuilder::push(b, value = a)
   ArrayBuilder::freeze(b)
 }
 
 fn va2[T](a: T, b2: T) -> Array[T] {
   let b = ArrayBuilder::new()
-  ArrayBuilder::push(b, a)
-  ArrayBuilder::push(b, b2)
+  ArrayBuilder::push(b, value = a)
+  ArrayBuilder::push(b, value = b2)
   ArrayBuilder::freeze(b)
 }
 
@@ -53,9 +53,9 @@ fn va_set_at[T](xs: Array[T], idx: Int, v: T) -> Array[T] {
   let mut i = 0
   while i < n {
     if i == idx {
-      ArrayBuilder::push(b, v)
+      ArrayBuilder::push(b, value = v)
     } else {
-      ArrayBuilder::push(b, Array::get(xs, i))
+      ArrayBuilder::push(b, value = Array::get(xs, at = i))
     }
     i = i + 1
   }
@@ -68,10 +68,10 @@ fn va_append_one[T](xs: Array[T], v: T) -> Array[T] {
   let b = ArrayBuilder::new()
   let mut i = 0
   while i < n {
-    ArrayBuilder::push(b, Array::get(xs, i))
+    ArrayBuilder::push(b, value = Array::get(xs, at = i))
     i = i + 1
   }
-  ArrayBuilder::push(b, v)
+  ArrayBuilder::push(b, value = v)
   ArrayBuilder::freeze(b)
 }
 
@@ -80,7 +80,7 @@ fn new_path[T](shift: Int, v: T) -> VecNode[T] {
   if shift == 0 {
     VLeafN(va1(v))
   } else {
-    VBranchN(va1(new_path(shift - 5, v)))
+    VBranchN(va1(new_path(shift = shift - 5, v = v)))
   }
 }
 
@@ -88,13 +88,13 @@ fn new_path[T](shift: Int, v: T) -> VecNode[T] {
 /// copying only the touched path. Caller guarantees the subtree is not full.
 fn node_push[T](node: VecNode[T], shift: Int, idx: Int, v: T) -> VecNode[T] {
   match node {
-    VLeafN(vals) => VLeafN(va_append_one(vals, v)),
+    VLeafN(vals) => VLeafN(va_append_one(xs = vals, v = v)),
     VBranchN(kids) => {
       let ci = (idx>>shift)&0x1F
       if ci < Array::length(kids) {
-        VBranchN(va_set_at(kids, ci, node_push(Array::get(kids, ci), shift - 5, idx, v)))
+        VBranchN(va_set_at(xs = kids, idx = ci, v = node_push(node = Array::get(kids, at = ci), shift = shift - 5, idx = idx, v = v)))
       } else {
-        VBranchN(va_append_one(kids, new_path(shift - 5, v)))
+        VBranchN(va_append_one(xs = kids, v = new_path(shift = shift - 5, v = v)))
       }
     }
   }
@@ -102,17 +102,17 @@ fn node_push[T](node: VecNode[T], shift: Int, idx: Int, v: T) -> VecNode[T] {
 
 fn node_get[T](node: VecNode[T], shift: Int, i: Int) -> T {
   match node {
-    VLeafN(vals) => Array::get(vals, i&0x1F),
-    VBranchN(kids) => node_get(Array::get(kids, (i>>shift)&0x1F), shift - 5, i)
+    VLeafN(vals) => Array::get(vals, at = i&0x1F),
+    VBranchN(kids) => node_get(node = Array::get(kids, at = (i>>shift)&0x1F), shift = shift - 5, i = i)
   }
 }
 
 fn node_set[T](node: VecNode[T], shift: Int, i: Int, v: T) -> VecNode[T] {
   match node {
-    VLeafN(vals) => VLeafN(va_set_at(vals, i&0x1F, v)),
+    VLeafN(vals) => VLeafN(va_set_at(xs = vals, idx = i&0x1F, v = v)),
     VBranchN(kids) => {
       let ci = (i>>shift)&0x1F
-      VBranchN(va_set_at(kids, ci, node_set(Array::get(kids, ci), shift - 5, i, v)))
+      VBranchN(va_set_at(xs = kids, idx = ci, v = node_set(node = Array::get(kids, at = ci), shift = shift - 5, i = i, v = v)))
     }
   }
 }
@@ -138,10 +138,10 @@ export fn ImmutArray::push[T](_ a: ImmutArray[T], v: T) -> ImmutArray[T] {
       }
       else if len == (1<<(shift + 5)) {
         // root full: grow one level (old root left, new spine right)
-        IAVec(len + 1, shift + 5, VBranchN(va2(root, new_path(shift, v))))
+        IAVec(len + 1, shift + 5, VBranchN(va2(a = root, b2 = new_path(shift = shift, v = v))))
       }
       else {
-        IAVec(len + 1, shift, node_push(root, shift, len, v))
+        IAVec(len + 1, shift, node_push(node = root, shift = shift, idx = len, v = v))
       }
     }
   }
@@ -153,7 +153,7 @@ export fn ImmutArray::get[T](_ a: ImmutArray[T], i: Int) -> Option[T] {
       if i < 0 || i >= len {
         None
       } else {
-        Some(node_get(root, shift, i))
+        Some(node_get(node = root, shift = shift, i = i))
       }
     }
   }
@@ -167,7 +167,7 @@ export fn ImmutArray::set[T](_ a: ImmutArray[T], i: Int, v: T) -> ImmutArray[T] 
       if i < 0 || i >= len {
         IAVec(len, shift, root)
       } else {
-        IAVec(len, shift, node_set(root, shift, i, v))
+        IAVec(len, shift, node_set(node = root, shift = shift, i = i, v = v))
       }
     }
   }
@@ -178,7 +178,7 @@ export fn ImmutArray::from_array[T](_ xs: Array[T]) -> ImmutArray[T] {
   let mut out = ImmutArray::empty()
   let mut i = 0
   while i < n {
-    out = ImmutArray::push(out, Array::get(xs, i))
+    out = ImmutArray::push(out, v = Array::get(xs, at = i))
     i = i + 1
   }
   out
@@ -190,7 +190,7 @@ export fn ImmutArray::to_array[T](_ a: ImmutArray[T]) -> Array[T] {
       let b = ArrayBuilder::new()
       let mut i = 0
       while i < len {
-        ArrayBuilder::push(b, node_get(root, shift, i))
+        ArrayBuilder::push(b, value = node_get(node = root, shift = shift, i = i))
         i = i + 1
       }
       ArrayBuilder::freeze(b)

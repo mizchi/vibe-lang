@@ -104,7 +104,7 @@ fn callee_offset(_ callee: Expr) -> Int {
 /// entry (offset-less parse entry points).
 fn field_offset_at(starts: Array[Int], p: Int) -> Int {
   if p >= 0 && p < Array::length(starts) {
-    Array::get(starts, p)
+    Array::get(starts, at = p)
   } else {
     -1
   }
@@ -118,8 +118,8 @@ fn field_offset_at(starts: Array[Int], p: Int) -> Int {
 /// `callee_offset` does not read through it either.
 fn index_expr(cur_expr: Expr, idx: Expr, bracket_off: Int) -> Expr {
   let args = empty_exprs()
-  Array::push(args, cur_expr)
-  Array::push(args, idx)
+  Array::push(args, value = cur_expr)
+  Array::push(args, value = idx)
   ECall(index_ref(bracket_off), args, -1, [])
 }
 
@@ -142,7 +142,7 @@ fn pipe_desugar(lhs: Expr, rhs: Expr) -> Expr {
       let mut has_hole = false
       let mut i = 0
       while i < Array::length(args) {
-        if pipe_arg_is_hole(Array::get(args, i)) {
+        if pipe_arg_is_hole(Array::get(args, at = i)) {
           has_hole = true
           i = Array::length(args)
         } else {
@@ -153,11 +153,11 @@ fn pipe_desugar(lhs: Expr, rhs: Expr) -> Expr {
         let out = empty_exprs()
         let mut j = 0
         while j < Array::length(args) {
-          let a = Array::get(args, j)
+          let a = Array::get(args, at = j)
           if pipe_arg_is_hole(a) {
-            Array::push(out, lhs)
+            Array::push(out, value = lhs)
           } else {
-            Array::push(out, a)
+            Array::push(out, value = a)
           }
           j = j + 1
         }
@@ -183,15 +183,15 @@ fn pipe_desugar(lhs: Expr, rhs: Expr) -> Expr {
 }
 
 fn parse_call_arg(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  let (expr, next) = match peek(tokens, pos) {
-    TIdent(name) => match peek(tokens, pos + 1) {
+  let (expr, next) = match peek(tokens = tokens, pos = pos) {
+    TIdent(name) => match peek(tokens = tokens, pos = pos + 1) {
       TThinArrow => {
-        binder_capture_source(context, name, pos, pos)
-        source_record_slot("param", name, pos, pos + 1, context)
+        binder_capture_source(context = context, name = name, first_token = pos, last_token = pos)
+        source_record_slot(kind = "param", name = name, first = pos, next = pos + 1, context = context)
         let (body, end) = parse_recur(tokens, pos + 2, 0, context)
         (EFn(_no_tp(), _no_tb(), [(name, None)], None, None, body), end)
       },
-      TTilde => match peek(tokens, pos + 2) {
+      TTilde => match peek(tokens = tokens, pos = pos + 2) {
         TEq => {
           let (val, end) = parse_recur(tokens, pos + 3, 0, context)
           (ELabeledArg(name, "~", val), end)
@@ -202,7 +202,7 @@ fn parse_call_arg(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recu
         TColon => throw(String::concat("a labeled argument is passed as `", String::concat(name, String::concat("=value`, not `", String::concat(name, String::concat("~: value` (that is the parameter spelling) at #", __to_string(pos + 1))))))),
         _ => parse_recur(tokens, pos, 0, context)
       },
-      TQuestion => match peek(tokens, pos + 2) {
+      TQuestion => match peek(tokens = tokens, pos = pos + 2) {
         TEq => {
           let (val, end) = parse_recur(tokens, pos + 3, 0, context)
           (ELabeledArg(name, "?", val), end)
@@ -218,10 +218,10 @@ fn parse_call_arg(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recu
     _ => parse_recur(tokens, pos, 0, context)
   }
   match expr {
-    ELabeledArg(name, _, _) => source_record_slot("label", name, pos, pos + 1, context),
+    ELabeledArg(name, _, _) => source_record_slot(kind = "label", name = name, first = pos, next = pos + 1, context = context),
     _ => ()
   }
-  (source_wrap_expr(expr, pos, next, context), next)
+  (source_wrap_expr(expr = expr, first = pos, next = next, context = context), next)
 }
 
 /// Recurses into nested EBinOp trees so placeholders buried below the
@@ -242,9 +242,9 @@ fn has_placeholder_arg(_ arg: Expr) -> Bool {
 /// `[` token belongs to no other node, so the key collides with nothing.
 fn slice_from_idx_expr(cur_expr: Expr, idx: Expr, end_expr: Expr, off: Int) -> Expr {
   let args = empty_exprs()
-  Array::push(args, cur_expr)
-  Array::push(args, idx)
-  Array::push(args, end_expr)
+  Array::push(args, value = cur_expr)
+  Array::push(args, value = idx)
+  Array::push(args, value = end_expr)
   ECall(builtin_ref("__slice"), args, off, [])
 }
 
@@ -252,7 +252,7 @@ fn has_placeholder_args(_ args: Array[Expr]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(args) {
-    if has_placeholder_arg(Array::get(args, i)) {
+    if has_placeholder_arg(Array::get(args, at = i)) {
       found = true
       i = Array::length(args)
     } else {
@@ -266,19 +266,19 @@ fn parse_call_args_rest(tokens: Array[Token], starts: Array[Int], pos: Int, b: A
   let mut p = pos
   let mut done = false
   while !done {
-    match peek(tokens, p) {
-      TComma => match peek(tokens, p + 1) {
+    match peek(tokens = tokens, pos = p) {
+      TComma => match peek(tokens = tokens, pos = p + 1) {
         TRParen => {
           p = p + 1
           done = true
         },
         _ => {
           match row_marks {
-            Some(marks) => ArrayBuilder::push(marks, binder_capture_mark(context)),
+            Some(marks) => ArrayBuilder::push(marks, value = binder_capture_mark(context)),
             None => ()
           }
-          let (e, next) = parse_call_arg(tokens, starts, p + 1, parse_recur, context)
-          ArrayBuilder::push(b, e)
+          let (e, next) = parse_call_arg(tokens = tokens, starts = starts, pos = p + 1, parse_recur = parse_recur, context = context)
+          ArrayBuilder::push(b, value = e)
           p = next
         }
       }
@@ -294,15 +294,15 @@ fn parse_call_args_rest(tokens: Array[Token], starts: Array[Int], pos: Int, b: A
 /// #3080: see `slice_from_idx_expr`.
 fn slice_from_zero_expr(cur_expr: Expr, end_expr: Expr, off: Int) -> Expr {
   let args = empty_exprs()
-  Array::push(args, cur_expr)
-  Array::push(args, EInt(0))
-  Array::push(args, end_expr)
+  Array::push(args, value = cur_expr)
+  Array::push(args, value = EInt(0))
+  Array::push(args, value = end_expr)
   ECall(builtin_ref("__slice"), args, off, [])
 }
 
 fn wrap_placeholder_arg(arg: Expr, _context: Option[ParserBinderContext]) -> Expr {
   let mut pc = 0
-  let params = Array::slice([("", None)], 0, 0)
+  let params = Array::slice([("", None)], start = 0, end = 0)
   // Walks nested EBinOp trees (mirrors has_placeholder_arg) so every `_`
   // hole, however deeply nested under binary operators, becomes its own
   // lambda parameter in left-to-right order.
@@ -310,7 +310,7 @@ fn wrap_placeholder_arg(arg: Expr, _context: Option[ParserBinderContext]) -> Exp
     match source_expr(e) {
       EIdent(n, _) => if n == "_" {
         let pn = String::concat("__ph", __to_string(pc))
-        Array::push(params, (pn, None))
+        Array::push(params, value = (pn, None))
         pc = pc + 1
         EIdent(pn, -1)
       } else {
@@ -320,7 +320,7 @@ fn wrap_placeholder_arg(arg: Expr, _context: Option[ParserBinderContext]) -> Exp
       EBinOp(op, l, r, boff) => {
         let nl = replace_placeholders(l)
         let nr = replace_placeholders(r)
-        source_rewrap_expr(e, EBinOp(op, nl, nr, boff))
+        source_rewrap_expr(original = e, replacement = EBinOp(op, nl, nr, boff))
       },
       _ => e
     }
@@ -334,7 +334,7 @@ fn has_non_pipe_infix_top(tokens: Array[Token], start: Int, end: Int) -> Bool {
     if i >= end {
       false
     } else {
-      let tok = peek(tokens, i)
+      let tok = peek(tokens = tokens, pos = i)
       if depth == 0 {
         if is_non_pipe_infix(tok) {
           if prev_top_end {
@@ -393,11 +393,11 @@ fn placeholder_count(_ arg: Expr) -> Int {
 fn insert_placeholder_rows(args: Array[Expr], row_marks: Array[Int], context: Option[ParserBinderContext]) -> Unit {
   let mut i = Array::length(args) - 1
   while i >= 0 {
-    let arg = Array::get(args, i)
+    let arg = Array::get(args, at = i)
     if !pipe_arg_is_hole(arg) {
       let mut p = placeholder_count(arg) - 1
       while p >= 0 {
-        binder_capture_insert_synthetic_at(context, Array::get(row_marks, i), String::concat("__ph", __to_string(p)))
+        binder_capture_insert_synthetic_at(context = context, mark = Array::get(row_marks, at = i), name = String::concat("__ph", __to_string(p)))
         p = p - 1
       }
     } else {
@@ -408,18 +408,18 @@ fn insert_placeholder_rows(args: Array[Expr], row_marks: Array[Int], context: Op
 }
 
 fn desugar_placeholder_args(args: Array[Expr], context: Option[ParserBinderContext]) -> Array[Expr] {
-  let out = Array::slice([EUnit], 0, 0)
+  let out = Array::slice([EUnit], start = 0, end = 0)
   let mut i = 0
   while i < Array::length(args) {
-    let arg = Array::get(args, i)
+    let arg = Array::get(args, at = i)
     if pipe_arg_is_hole(arg) {
       // Bare `_` stays a hole so a surrounding `|>` can substitute the
       // piped value at this position; compound placeholders still lower.
-      Array::push(out, arg)
+      Array::push(out, value = arg)
     } else if has_placeholder_arg(arg) {
-      Array::push(out, wrap_placeholder_arg(arg, context))
+      Array::push(out, value = wrap_placeholder_arg(arg = arg, _context = context))
     } else {
-      Array::push(out, arg)
+      Array::push(out, value = arg)
     }
     i = i + 1
   }
@@ -442,21 +442,21 @@ fn desugar_placeholder_args(args: Array[Expr], context: Option[ParserBinderConte
 /// parse error. `pos` is the token index of the call's `(`, the "at #N"
 /// located-diagnostic anchor (#816).
 fn empty_map_fields() -> Array[(String, Expr)] {
-  Array::slice([("", EUnit)], 0, 0)
+  Array::slice([("", EUnit)], start = 0, end = 0)
 }
 
 fn map_from_pairs_fields(args: Array[Expr], pos: Int) -> Array[(String, Expr)] with Exception {
   if Array::length(args) != 1 {
     throw("Map::from_pairs requires an array literal of (string literal, value) pairs for now (#960) at #\{pos}")
   }
-  match source_expr(Array::get(args, 0)) {
+  match source_expr(Array::get(args, at = 0)) {
     EArray(elems) => {
       let b = ArrayBuilder::new()
       let mut i = 0
       while i < Array::length(elems) {
-        match source_expr(Array::get(elems, i)) {
+        match source_expr(Array::get(elems, at = i)) {
           ETuple(kv) => if Array::length(kv) == 2 {
-            match source_expr(Array::get(kv, 0)) {
+            match source_expr(Array::get(kv, at = 0)) {
               EString(k, _) => {
                 // A repeated key built a map holding the key twice: `size`
                 // counted both, `m["a"]` answered the first and `keys` listed
@@ -464,8 +464,8 @@ fn map_from_pairs_fields(args: Array[Expr], pos: Int) -> Array[(String, Expr)] w
                 // The keys are literals, so the repeat is visible here.
                 let mut j = 0
                 while j < i {
-                  match source_expr(Array::get(elems, j)) {
-                    ETuple(prev) => match source_expr(Array::get(prev, 0)) {
+                  match source_expr(Array::get(elems, at = j)) {
+                    ETuple(prev) => match source_expr(Array::get(prev, at = 0)) {
                       EString(pk, _) => if pk == k {
                         throw("Map::from_pairs lists the key \"\{k}\" twice: a map holds each key once, so remove one of the pairs at #\{pos}")
                       },
@@ -475,7 +475,7 @@ fn map_from_pairs_fields(args: Array[Expr], pos: Int) -> Array[(String, Expr)] w
                   }
                   j = j + 1
                 }
-                ArrayBuilder::push(b, (k, Array::get(kv, 1)))
+                ArrayBuilder::push(b, value = (k, Array::get(kv, at = 1)))
               },
               _ => throw("Map::from_pairs requires an array literal of (string literal, value) pairs for now (#960): pair key is not a string literal at #\{pos}")
             }
@@ -581,16 +581,17 @@ fn build_call_expr(expr: Expr, args: Array[Expr], pos: Int, lparen_off: Int) -> 
       throw("Map::new takes no arguments (#960): use Map::from_pairs([(\"key\", value), ...]) to build a non-empty map at #\{pos}")
     }
   } else if ctor_name == "Map::from_pairs" {
-    EMap(map_from_pairs_fields(args, pos))
+    EMap(map_from_pairs_fields(args = args, pos = pos))
   } else {
-    ECall(expr, args, call_site_offset(expr, lparen_off), [])
+    ECall(expr, args, call_site_offset(callee = expr, lparen_off = lparen_off), [
+    ])
   }
 }
 
 /// The `(args)` suffix of a call whose callee `expr` ends just before `pos`.
 fn parse_postfix_call(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int, expr: Expr, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  match peek(tokens, pos + 1) {
-    TRParen => parse_postfix(tokens, starts, first, pos + 2, build_call_expr(expr, empty_exprs(), pos, field_offset_at(starts, pos)), parse_recur, context),
+  match peek(tokens = tokens, pos = pos + 1) {
+    TRParen => parse_postfix(tokens = tokens, starts = starts, first = first, pos = pos + 2, expr = build_call_expr(expr = expr, args = empty_exprs(), pos = pos, lparen_off = field_offset_at(starts = starts, p = pos)), parse_recur = parse_recur, context = context),
     _ => {
       let b = ArrayBuilder::new()
       let row_marks = match context {
@@ -598,23 +599,23 @@ fn parse_postfix_call(tokens: Array[Token], starts: Array[Int], first: Int, pos:
         None => None
       }
       match row_marks {
-        Some(marks) => ArrayBuilder::push(marks, binder_capture_mark(context)),
+        Some(marks) => ArrayBuilder::push(marks, value = binder_capture_mark(context)),
         None => ()
       }
-      let (first_arg, next_pos) = parse_call_arg(tokens, starts, pos + 1, parse_recur, context)
-      ArrayBuilder::push(b, first_arg)
-      let (args, end_pos) = parse_call_args_rest(tokens, starts, next_pos, b, row_marks, parse_recur, context)
-      let close_pos = expect_tk(tokens, end_pos, ")")
+      let (first_arg, next_pos) = parse_call_arg(tokens = tokens, starts = starts, pos = pos + 1, parse_recur = parse_recur, context = context)
+      ArrayBuilder::push(b, value = first_arg)
+      let (args, end_pos) = parse_call_args_rest(tokens = tokens, starts = starts, pos = next_pos, b = b, row_marks = row_marks, parse_recur = parse_recur, context = context)
+      let close_pos = expect_tk(tokens = tokens, pos = end_pos, expected = ")")
       let call_args = if has_placeholder_args(args) {
         match row_marks {
-          Some(marks) => insert_placeholder_rows(args, ArrayBuilder::freeze(marks), context),
+          Some(marks) => insert_placeholder_rows(args = args, row_marks = ArrayBuilder::freeze(marks), context = context),
           None => ()
         }
-        desugar_placeholder_args(args, context)
+        desugar_placeholder_args(args = args, context = context)
       } else {
         args
       }
-      parse_postfix(tokens, starts, first, close_pos, build_call_expr(expr, call_args, pos, field_offset_at(starts, pos)), parse_recur, context)
+      parse_postfix(tokens = tokens, starts = starts, first = first, pos = close_pos, expr = build_call_expr(expr = expr, args = call_args, pos = pos, lparen_off = field_offset_at(starts = starts, p = pos)), parse_recur = parse_recur, context = context)
     }
   }
 }
@@ -626,8 +627,8 @@ fn parenthesized_primary(tokens: Array[Token], first: Int, pos: Int) -> Bool {
   if pos < first + 2 {
     false
   } else {
-    match peek(tokens, first) {
-      TLParen => match peek(tokens, pos - 1) {
+    match peek(tokens = tokens, pos = first) {
+      TLParen => match peek(tokens = tokens, pos = pos - 1) {
         TRParen => true,
         _ => false
       },
@@ -648,13 +649,13 @@ fn is_paren_callable_form(_ expr: Expr) -> Bool {
 }
 
 fn parse_postfix(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int, expr: Expr, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  let expr = source_wrap_expr(expr, first, pos, context)
-  match peek(tokens, pos) {
+  let expr = source_wrap_expr(expr = expr, first = first, next = pos, context = context)
+  match peek(tokens = tokens, pos = pos) {
     // #3385: a control form inside its own parentheses is a callee like any
     // other parenthesized expression: `(if c { f } else { g })(x)` calls the
     // chosen function. Only the bare forms below stop at the `(`.
-    TLParen => if parenthesized_primary(tokens, first, pos) && is_paren_callable_form(source_expr(expr)) {
-      parse_postfix_call(tokens, starts, first, pos, expr, parse_recur, context)
+    TLParen => if parenthesized_primary(tokens = tokens, first = first, pos = pos) && is_paren_callable_form(source_expr(expr)) {
+      parse_postfix_call(tokens = tokens, starts = starts, first = first, pos = pos, expr = expr, parse_recur = parse_recur, context = context)
     } else {
       match source_expr(expr) {
         // NOTE: an ECall left is deliberately NOT blocked here — a same-line
@@ -681,59 +682,59 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int,
         ELoop(_, _) => (expr, pos),
         EForIn(_, _, _, _) => (expr, pos),
         EHandle(_, _) => (expr, pos),
-        _ => parse_postfix_call(tokens, starts, first, pos, expr, parse_recur, context)
+        _ => parse_postfix_call(tokens = tokens, starts = starts, first = first, pos = pos, expr = expr, parse_recur = parse_recur, context = context)
       }
     },
-    TLBracket => match peek(tokens, pos + 1) {
-      TColon => match peek(tokens, pos + 2) {
+    TLBracket => match peek(tokens = tokens, pos = pos + 1) {
+      TColon => match peek(tokens = tokens, pos = pos + 2) {
         TRBracket => {
           let end_expr = ECall(builtin_ref("__len"), [expr], -1, [])
-          parse_postfix(tokens, starts, first, pos + 3, slice_from_zero_expr(expr, end_expr, field_offset_at(starts, pos)), parse_recur, context)
+          parse_postfix(tokens = tokens, starts = starts, first = first, pos = pos + 3, expr = slice_from_zero_expr(cur_expr = expr, end_expr = end_expr, off = field_offset_at(starts = starts, p = pos)), parse_recur = parse_recur, context = context)
         },
         _ => {
           let (end_expr, end_next) = parse_recur(tokens, pos + 2, 0, context)
-          let close_pos = match peek(tokens, end_next) {
+          let close_pos = match peek(tokens = tokens, pos = end_next) {
             TRBracket => end_next + 1,
             _ => throw("expected ']'")
           }
-          parse_postfix(tokens, starts, first, close_pos, slice_from_zero_expr(expr, end_expr, field_offset_at(starts, pos)), parse_recur, context)
+          parse_postfix(tokens = tokens, starts = starts, first = first, pos = close_pos, expr = slice_from_zero_expr(cur_expr = expr, end_expr = end_expr, off = field_offset_at(starts = starts, p = pos)), parse_recur = parse_recur, context = context)
         }
       },
       _ => {
         let (idx, idx_next) = parse_recur(tokens, pos + 1, 0, context)
-        match peek(tokens, idx_next) {
-          TColon => match peek(tokens, idx_next + 1) {
+        match peek(tokens = tokens, pos = idx_next) {
+          TColon => match peek(tokens = tokens, pos = idx_next + 1) {
             TRBracket => {
               let end_expr = ECall(builtin_ref("__len"), [expr], -1, [])
-              parse_postfix(tokens, starts, first, idx_next + 2, slice_from_idx_expr(expr, idx, end_expr, field_offset_at(starts, pos)), parse_recur, context)
+              parse_postfix(tokens = tokens, starts = starts, first = first, pos = idx_next + 2, expr = slice_from_idx_expr(cur_expr = expr, idx = idx, end_expr = end_expr, off = field_offset_at(starts = starts, p = pos)), parse_recur = parse_recur, context = context)
             },
             _ => {
               let (end_expr, end_next) = parse_recur(tokens, idx_next + 1, 0, context)
-              let close_pos = match peek(tokens, end_next) {
+              let close_pos = match peek(tokens = tokens, pos = end_next) {
                 TRBracket => end_next + 1,
                 _ => throw("expected ']'")
               }
-              parse_postfix(tokens, starts, first, close_pos, slice_from_idx_expr(expr, idx, end_expr, field_offset_at(starts, pos)), parse_recur, context)
+              parse_postfix(tokens = tokens, starts = starts, first = first, pos = close_pos, expr = slice_from_idx_expr(cur_expr = expr, idx = idx, end_expr = end_expr, off = field_offset_at(starts = starts, p = pos)), parse_recur = parse_recur, context = context)
             }
           },
           _ => {
-            let close_pos = match peek(tokens, idx_next) {
+            let close_pos = match peek(tokens = tokens, pos = idx_next) {
               TRBracket => idx_next + 1,
               _ => throw("expected ']'")
             }
-            parse_postfix(tokens, starts, first, close_pos, index_expr(expr, idx, field_offset_at(starts, pos)), parse_recur, context)
+            parse_postfix(tokens = tokens, starts = starts, first = first, pos = close_pos, expr = index_expr(cur_expr = expr, idx = idx, bracket_off = field_offset_at(starts = starts, p = pos)), parse_recur = parse_recur, context = context)
           }
         }
       }
     },
-    TDot => match peek(tokens, pos + 1) {
+    TDot => match peek(tokens = tokens, pos = pos + 1) {
       TIdent(field) => {
-        source_record_slot("dot_field", field, pos + 1, pos + 2, context)
-        parse_postfix(tokens, starts, first, pos + 2, EDot(expr, field, callee_offset(expr), field_offset_at(starts, pos + 1)), parse_recur, context)
+        source_record_slot(kind = "dot_field", name = field, first = pos + 1, next = pos + 2, context = context)
+        parse_postfix(tokens = tokens, starts = starts, first = first, pos = pos + 2, expr = EDot(expr, field, callee_offset(expr), field_offset_at(starts = starts, p = pos + 1)), parse_recur = parse_recur, context = context)
       },
       TInt(idx) => {
-        source_record_slot("dot_field", __to_string(idx), pos + 1, pos + 2, context)
-        parse_postfix(tokens, starts, first, pos + 2, EDot(expr, __to_string(idx), callee_offset(expr), field_offset_at(starts, pos + 1)), parse_recur, context)
+        source_record_slot(kind = "dot_field", name = __to_string(idx), first = pos + 1, next = pos + 2, context = context)
+        parse_postfix(tokens = tokens, starts = starts, first = first, pos = pos + 2, expr = EDot(expr, __to_string(idx), callee_offset(expr), field_offset_at(starts = starts, p = pos + 1)), parse_recur = parse_recur, context = context)
       },
       _ => (expr, pos)
     },
@@ -743,21 +744,21 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int,
     // default) -> yield inner on Ok, early-`return Err(e)` on Err. The parser
     // has no type info, so it defers the choice to the desugar. Continue postfix
     // parsing so `f(x)?.field` chains.
-    TQuestion => parse_postfix(tokens, starts, first, pos + 1, ECall(EIdent("__try_op", -1), [
+    TQuestion => parse_postfix(tokens = tokens, starts = starts, first = first, pos = pos + 1, expr = ECall(EIdent("__try_op", -1), [
       expr
-    ], -1, []), parse_recur, context),
+    ], -1, []), parse_recur = parse_recur, context = context),
     _ => (expr, pos)
   }
 }
 
 fn parse_prefix(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  let (expr, next) = match peek(tokens, pos) {
+  let (expr, next) = match peek(tokens = tokens, pos = pos) {
     TMinus => {
-      let (e, next) = parse_prefix(tokens, starts, pos + 1, parse_recur, context)
+      let (e, next) = parse_prefix(tokens = tokens, starts = starts, pos = pos + 1, parse_recur = parse_recur, context = context)
       (EUnaryOp("-", e), next)
     },
     TNot => {
-      let (e, next) = parse_prefix(tokens, starts, pos + 1, parse_recur, context)
+      let (e, next) = parse_prefix(tokens = tokens, starts = starts, pos = pos + 1, parse_recur = parse_recur, context = context)
       (EUnaryOp("!", e), next)
     },
     // #2344 slice C: `~x` is bit-not. The token already existed as the LABELED
@@ -765,15 +766,15 @@ fn parse_prefix(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur:
     // caller has already consumed -- in expression-start position it was
     // `unexpected token: ~`, so the prefix slot is free.
     TTilde => {
-      let (e, next) = parse_prefix(tokens, starts, pos + 1, parse_recur, context)
+      let (e, next) = parse_prefix(tokens = tokens, starts = starts, pos = pos + 1, parse_recur = parse_recur, context = context)
       (EUnaryOp("~", e), next)
     },
     _ => {
-      let (e, next) = parse_primary_with_binder_context(tokens, starts, pos, parse_recur, context)
-      parse_postfix(tokens, starts, pos, next, e, parse_recur, context)
+      let (e, next) = parse_primary_with_binder_context(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context)
+      parse_postfix(tokens = tokens, starts = starts, first = pos, pos = next, expr = e, parse_recur = parse_recur, context = context)
     }
   }
-  (source_wrap_expr(expr, pos, next, context), next)
+  (source_wrap_expr(expr = expr, first = pos, next = next, context = context), next)
 }
 
 /// #760(5): a loop-form expression (while / loop / for-in) evaluates to Unit,
@@ -810,8 +811,8 @@ fn is_is_token(_ tok: Token) -> Bool {
 }
 
 fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: Int, min_prec: Int, expr_start: Int, cmp_locked: Bool, consume_is: Bool, is_top_atom: Bool, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  let left = source_wrap_expr(left, expr_start, next, context)
-  let tok = peek(tokens, next)
+  let left = source_wrap_expr(expr = left, first = expr_start, next = next, context = context)
+  let tok = peek(tokens = tokens, pos = next)
   if consume_is && !cmp_locked && 3 >= min_prec && is_is_token(tok) && is_top_atom {
     // #979 review (if-cond): a trailing `is pattern` on the UNFOLDED top
     // atom (nothing combined onto `left` yet, e.g. bare `x is Some(v)`) is
@@ -827,9 +828,9 @@ fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: 
     // keep looping (cmp_locked, like a comparison, so a further `is`/`==`
     // right after would need explicit parens) so the resulting Bool can
     // still fold into an enclosing `&&`/`||`/`|>` at a looser tier.
-    let (pat, pn) = parse_pattern_with_binder_context(tokens, next + 1, context)
+    let (pat, pn) = parse_pattern_with_binder_context(tokens = tokens, pos = next + 1, context = context)
     let combined = EMatch(left, [(pat, EBool(true)), (PWild, EBool(false))])
-    parse_infix_loop(tokens, starts, combined, pn, min_prec, expr_start, true, consume_is, false, parse_recur, context)
+    parse_infix_loop(tokens = tokens, starts = starts, left = combined, next = pn, min_prec = min_prec, expr_start = expr_start, cmp_locked = true, consume_is = consume_is, is_top_atom = false, parse_recur = parse_recur, context = context)
   } else {
     let prec = binop_prec(tok)
     let should_stop = if prec < min_prec {
@@ -860,30 +861,30 @@ fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: 
       }
       let op = binop_op(tok)
       if is_pipe {
-        if has_non_pipe_infix_top(tokens, expr_start, next) {
+        if has_non_pipe_infix_top(tokens = tokens, start = expr_start, end = next) {
           throw("cannot mix '|>' with other infix operators without explicit parentheses")
         }
       }
-      let (right0, right_next0) = parse_prefix(tokens, starts, next + 1, parse_recur, context)
-      let (right, rn) = parse_infix_loop(tokens, starts, right0, right_next0, prec + 1, next + 1, false, consume_is, false, parse_recur, context)
+      let (right0, right_next0) = parse_prefix(tokens = tokens, starts = starts, pos = next + 1, parse_recur = parse_recur, context = context)
+      let (right, rn) = parse_infix_loop(tokens = tokens, starts = starts, left = right0, next = right_next0, min_prec = prec + 1, expr_start = next + 1, cmp_locked = false, consume_is = consume_is, is_top_atom = false, parse_recur = parse_recur, context = context)
       if is_pipe {
-        if has_non_pipe_infix_top(tokens, next + 1, rn) {
+        if has_non_pipe_infix_top(tokens = tokens, start = next + 1, end = rn) {
           throw("cannot mix '|>' with other infix operators without explicit parentheses")
         }
       }
       let combined = if is_pipe {
-        pipe_desugar(left, right)
+        pipe_desugar(lhs = left, rhs = right)
       } else {
         // #2435: the binop carries its OPERATOR token's source offset -- the
         // typed-lowering channel keys on it, and diagnostics can point at it.
-        EBinOp(op, left, right, field_offset_at(starts, next))
+        EBinOp(op, left, right, field_offset_at(starts = starts, p = next))
       }
       let next_cmp_locked = if prec == 3 {
         true
       } else {
         cmp_locked
       }
-      parse_infix_loop(tokens, starts, combined, rn, min_prec, expr_start, next_cmp_locked, consume_is, false, parse_recur, context)
+      parse_infix_loop(tokens = tokens, starts = starts, left = combined, next = rn, min_prec = min_prec, expr_start = expr_start, cmp_locked = next_cmp_locked, consume_is = consume_is, is_top_atom = false, parse_recur = parse_recur, context = context)
     }
   }
 }
@@ -910,13 +911,13 @@ fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: 
 /// documented precedence, while `if x is Some(v) { use(v) }` still binds
 /// `v` in the then-branch exactly as before.
 export fn parse_infix_no_is_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  let (left0, next0) = parse_prefix(tokens, starts, pos, parse_recur, context)
-  parse_infix_loop(tokens, starts, left0, next0, min_prec, expr_start, false, true, true, parse_recur, context)
+  let (left0, next0) = parse_prefix(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context)
+  parse_infix_loop(tokens = tokens, starts = starts, left = left0, next = next0, min_prec = min_prec, expr_start = expr_start, cmp_locked = false, consume_is = true, is_top_atom = true, parse_recur = parse_recur, context = context)
 }
 
 export fn parse_infix_no_is(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
   let adapted = (rtoks, rpos, rmode, _context) -> parse_recur(rtoks, rpos, rmode)
-  parse_infix_no_is_with_binder_context(tokens, starts, pos, min_prec, expr_start, adapted, None)
+  parse_infix_no_is_with_binder_context(tokens = tokens, starts = starts, pos = pos, min_prec = min_prec, expr_start = expr_start, parse_recur = adapted, context = None)
 }
 
 /// #979: `is` is folded directly into the precedence ladder (tier 3, same as
@@ -926,11 +927,11 @@ export fn parse_infix_no_is(tokens: Array[Token], starts: Array[Int], pos: Int, 
 /// an if-condition there is no special pattern-binding form, so even a bare
 /// `x is Some(v)` folds straight to a Bool `EMatch` with no binding.
 export fn parse_infix_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  let (left0, next0) = parse_prefix(tokens, starts, pos, parse_recur, context)
-  parse_infix_loop(tokens, starts, left0, next0, min_prec, expr_start, false, true, false, parse_recur, context)
+  let (left0, next0) = parse_prefix(tokens = tokens, starts = starts, pos = pos, parse_recur = parse_recur, context = context)
+  parse_infix_loop(tokens = tokens, starts = starts, left = left0, next = next0, min_prec = min_prec, expr_start = expr_start, cmp_locked = false, consume_is = true, is_top_atom = false, parse_recur = parse_recur, context = context)
 }
 
 export fn parse_infix(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
   let adapted = (rtoks, rpos, rmode, _context) -> parse_recur(rtoks, rpos, rmode)
-  parse_infix_with_binder_context(tokens, starts, pos, min_prec, expr_start, adapted, None)
+  parse_infix_with_binder_context(tokens = tokens, starts = starts, pos = pos, min_prec = min_prec, expr_start = expr_start, parse_recur = adapted, context = None)
 }

@@ -58,27 +58,27 @@ test "adopted tasks interleave mid-body via Async::Suspend" {
   let log: Array[Int] = []
   let out = TaskGroup::run((g) -> {
     let ha = TaskGroup::adopt(g)
-    TaskHandle::settle(ha, handle {
-      Array::push(log, 1)
+    TaskHandle::settle(ha, step = handle {
+      Array::push(log, value = 1)
       let _w1 = perform Async::Suspend(0)
-      Array::push(log, 3)
+      Array::push(log, value = 3)
       let _w2 = perform Async::Suspend(0)
-      Array::push(log, 5)
+      Array::push(log, value = 5)
       SDone(100)
     } with { Async::Suspend(r) => {
-      TaskHandle::park_poll(ha, resume, r == 1)
+      TaskHandle::park_poll(ha, k = resume, poll = r == 1)
       SParked
     } })
     let hb = TaskGroup::adopt(g)
-    TaskHandle::settle(hb, handle {
-      Array::push(log, 2)
+    TaskHandle::settle(hb, step = handle {
+      Array::push(log, value = 2)
       let _w1 = perform Async::Suspend(0)
-      Array::push(log, 4)
+      Array::push(log, value = 4)
       let _w2 = perform Async::Suspend(0)
-      Array::push(log, 6)
+      Array::push(log, value = 6)
       SDone(200)
     } with { Async::Suspend(r) => {
-      TaskHandle::park_poll(hb, resume, r == 1)
+      TaskHandle::park_poll(hb, k = resume, poll = r == 1)
       SParked
     } })
     TaskGroup::pump_all(g)
@@ -88,26 +88,26 @@ test "adopted tasks interleave mid-body via Async::Suspend" {
   })
   assert_eq(out, 300)
   assert(Array::length(log) == 6)
-  assert(Array::get(log, 0) == 1)
-  assert(Array::get(log, 1) == 2)
-  assert(Array::get(log, 2) == 3)
-  assert(Array::get(log, 3) == 4)
-  assert(Array::get(log, 4) == 5)
-  assert(Array::get(log, 5) == 6)
+  assert(Array::get(log, at = 0) == 1)
+  assert(Array::get(log, at = 1) == 2)
+  assert(Array::get(log, at = 2) == 3)
+  assert(Array::get(log, at = 3) == 4)
+  assert(Array::get(log, at = 4) == 5)
+  assert(Array::get(log, at = 5) == 6)
 }
 
 test "wake delivers the resume value to the suspension point" {
   let out = TaskGroup::run((g) -> {
     let h = TaskGroup::adopt(g)
-    TaskHandle::settle(h, handle {
+    TaskHandle::settle(h, step = handle {
       let got = perform Async::Suspend(7)
       SDone(got * 2)
     } with { Async::Suspend(r) => {
-      TaskHandle::park(h, resume)
+      TaskHandle::park(h, k = resume)
       SParked
     } })
-    let woke = TaskHandle::wake(h, 21)
-    let again = TaskHandle::wake(h, 99)
+    let woke = TaskHandle::wake(h, v = 21)
+    let again = TaskHandle::wake(h, v = 99)
     let r = TaskHandle::join(h)
     if woke && !again {
       r
@@ -121,15 +121,15 @@ test "wake delivers the resume value to the suspension point" {
 test "cancel on a parked task resolves Cancelled and drops the continuation" {
   let out = TaskGroup::run((g) -> {
     let h = TaskGroup::adopt(g)
-    TaskHandle::settle(h, handle {
+    TaskHandle::settle(h, step = handle {
       let got = perform Async::Suspend(0)
       SDone(got)
     } with { Async::Suspend(r) => {
-      TaskHandle::park(h, resume)
+      TaskHandle::park(h, k = resume)
       SParked
     } })
     TaskHandle::cancel(h)
-    let woke = TaskHandle::wake(h, 1)
+    let woke = TaskHandle::wake(h, v = 1)
     let cancelled = caught_join(h) is Some(TaskError::Cancelled)
     if !woke && cancelled {
       1
@@ -170,24 +170,24 @@ test "cancel on a parked task resolves Cancelled and drops the continuation" {
 test "spawn_suspend interleaves two plain closure bodies" {
   let out = TaskGroup::run((g) -> {
     {
-      let (tx, rx) = Channel::bounded(g, 6)
+      let (tx, rx) = Channel::bounded(n = g, capacity = 6)
       {
         let tx2 = Sender::clone(tx)
-        let ha = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
-          let _s1 = Sender::send_wait(tx, 1)
+        let ha = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
+          let _s1 = Sender::send_wait(tx, v = 1)
           let _a = perform Async::Suspend(0)
-          let _s3 = Sender::send_wait(tx, 3)
+          let _s3 = Sender::send_wait(tx, v = 3)
           let _b = perform Async::Suspend(0)
-          let _s5 = Sender::send_wait(tx, 5)
+          let _s5 = Sender::send_wait(tx, v = 5)
           Sender::release(tx)
           100
         })
-        let hb = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
-          let _s2 = Sender::send_wait(tx2, 2)
+        let hb = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
+          let _s2 = Sender::send_wait(tx2, v = 2)
           let _a = perform Async::Suspend(0)
-          let _s4 = Sender::send_wait(tx2, 4)
+          let _s4 = Sender::send_wait(tx2, v = 4)
           let _b = perform Async::Suspend(0)
-          let _s6 = Sender::send_wait(tx2, 6)
+          let _s6 = Sender::send_wait(tx2, v = 6)
           Sender::release(tx2)
           200
         })
@@ -198,26 +198,26 @@ test "spawn_suspend interleaves two plain closure bodies" {
         let mut going = true
         while going {
           match Receiver::recv(rx) {
-            Some(v) => ArrayBuilder::push(log, v),
+            Some(v) => ArrayBuilder::push(log, value = v),
             None => {
               going = false
             }
           }
         }
-        ArrayBuilder::push(log, ra + rb)
+        ArrayBuilder::push(log, value = ra + rb)
         ArrayBuilder::freeze(log)
       }
     }
   })
   let log = out
   assert_eq(Array::length(log), 7)
-  assert_eq(Array::get(log, 0), 1)
-  assert_eq(Array::get(log, 1), 2)
-  assert_eq(Array::get(log, 2), 3)
-  assert_eq(Array::get(log, 3), 4)
-  assert_eq(Array::get(log, 4), 5)
-  assert_eq(Array::get(log, 5), 6)
-  assert_eq(Array::get(log, 6), 300)
+  assert_eq(Array::get(log, at = 0), 1)
+  assert_eq(Array::get(log, at = 1), 2)
+  assert_eq(Array::get(log, at = 2), 3)
+  assert_eq(Array::get(log, at = 3), 4)
+  assert_eq(Array::get(log, at = 4), 5)
+  assert_eq(Array::get(log, at = 5), 6)
+  assert_eq(Array::get(log, at = 6), 300)
 }
 
 /// A pure body (no perform at all) passed to spawn_suspend still settles:
@@ -225,7 +225,7 @@ test "spawn_suspend interleaves two plain closure bodies" {
 /// convention spawn_suspend's transformed body expects.
 test "spawn_suspend with a pure body settles synchronously" {
   let out = TaskGroup::run((g) -> {
-    let h = TaskGroup::spawn_suspend(g, () -> 6 * 7)
+    let h = TaskGroup::spawn_suspend(g, f = () -> 6 * 7)
     TaskHandle::join(h)
   })
   assert_eq(out, 42)
@@ -240,11 +240,11 @@ test "spawn_suspend with a pure body settles synchronously" {
 test "adoption-lane recv_wait parks as a poller and resumes on delivery" {
   let out = TaskGroup::run((g) -> {
     {
-      let pair = Channel::bounded(g, 1)
+      let pair = Channel::bounded(n = g, capacity = 1)
       {
         let (tx, rx) = pair
         let h = TaskGroup::adopt(g)
-        TaskHandle::settle(h, handle {
+        TaskHandle::settle(h, step = handle {
           let r1 = Receiver::recv_wait(rx)
           let a = match r1 {
             Some(v) => v,
@@ -252,10 +252,10 @@ test "adoption-lane recv_wait parks as a poller and resumes on delivery" {
           }
           SDone(a * 3)
         } with { Async::Suspend(r) => {
-          TaskHandle::park_poll(h, resume, r == 1)
+          TaskHandle::park_poll(h, k = resume, poll = r == 1)
           SParked
         } })
-        let _s = Sender::send(tx, 14)
+        let _s = Sender::send(tx, v = 14)
         Sender::release(tx)
         TaskGroup::pump_all(g)
         TaskHandle::join(h)
@@ -272,7 +272,7 @@ test "adoption-lane recv_wait parks as a poller and resumes on delivery" {
 /// are never deadlock evidence; only pollers (Suspend(1)) are.
 test "a lone spawn_suspend task may yield three times without tripping the deadlock trap" {
   let out = TaskGroup::run((g) -> {
-    let h = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let h = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       let _y1 = perform Async::Suspend(0)
       let _y2 = perform Async::Suspend(0)
       let _y3 = perform Async::Suspend(0)
@@ -292,11 +292,11 @@ test "a lone spawn_suspend task may yield three times without tripping the deadl
 test "spawn_suspend Error on the settle leg fails fast and cancels the parked sibling" {
   let out = handle {
     TaskGroup::run((g) -> {
-      let ha = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let ha = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
         let _w = perform Async::Suspend(0)
         100
       })
-      let hb = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let hb = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
         throw("boom")
       })
       TaskGroup::pump_all(g)
@@ -334,7 +334,7 @@ test "spawn_suspend Error on the settle leg fails fast and cancels the parked si
 test "a typed throw on the settle leg is reported by kind, not as a pointer" {
   let out = handle {
     TaskGroup::run((g) -> {
-      let hb = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let hb = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
         throw(SettleBang(3))
       })
       TaskGroup::pump_all(g)
@@ -358,11 +358,11 @@ test "a typed throw on the settle leg is reported by kind, not as a pointer" {
 test "spawn_suspend Error after a resume fails fast from the pump stack" {
   let out = handle {
     TaskGroup::run((g) -> {
-      let ha = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let ha = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
         let _w = perform Async::Suspend(0)
         throw("later")
       })
-      let hb = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let hb = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
         let _w1 = perform Async::Suspend(0)
         let _w2 = perform Async::Suspend(0)
         200
@@ -395,11 +395,11 @@ test "spawn_suspend Error after a resume fails fast from the pump stack" {
 test "a spawn-lane failure cancels a parked spawn_suspend sibling" {
   let out = handle {
     TaskGroup::run((g) -> {
-      let ha = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let ha = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
         let _w = perform Async::Suspend(0)
         100
       })
-      let _hb = TaskGroup::spawn(g, () -> Int with Exception {
+      let _hb = TaskGroup::spawn(g, f = () -> Int with Exception {
         throw("spawn-lane")
       })
       7
@@ -440,44 +440,44 @@ test "a spawn-lane failure cancels a parked spawn_suspend sibling" {
 test "spawn_suspend producer/consumer block mid-body through a capacity-1 channel" {
   let out = TaskGroup::run((g) -> {
     {
-      let pair = Channel::bounded(g, 1)
+      let pair = Channel::bounded(n = g, capacity = 1)
       {
         let (tx, rx) = pair
         {
-          let logpair = Channel::bounded(g, 6)
+          let logpair = Channel::bounded(n = g, capacity = 6)
           {
             let (logtx, logrx) = logpair
             let logtx2 = Sender::clone(logtx)
-            let hp = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
-              let _a = Sender::send_wait(tx, 10)
-              let _l1 = Sender::send_wait(logtx, 1)
-              let _b = Sender::send_wait(tx, 20)
-              let _l2 = Sender::send_wait(logtx, 2)
-              let _c = Sender::send_wait(tx, 30)
-              let _l3 = Sender::send_wait(logtx, 3)
+            let hp = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
+              let _a = Sender::send_wait(tx, v = 10)
+              let _l1 = Sender::send_wait(logtx, v = 1)
+              let _b = Sender::send_wait(tx, v = 20)
+              let _l2 = Sender::send_wait(logtx, v = 2)
+              let _c = Sender::send_wait(tx, v = 30)
+              let _l3 = Sender::send_wait(logtx, v = 3)
               Sender::release(tx)
               Sender::release(logtx)
               0
             })
-            let hc = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+            let hc = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
               let r1 = Receiver::recv_wait(rx)
               let a = match r1 {
                 Some(v) => v,
                 None => 0 - 1
               }
-              let _l4 = Sender::send_wait(logtx2, 100 + a)
+              let _l4 = Sender::send_wait(logtx2, v = 100 + a)
               let r2 = Receiver::recv_wait(rx)
               let b = match r2 {
                 Some(v) => v,
                 None => 0 - 1
               }
-              let _l5 = Sender::send_wait(logtx2, 100 + b)
+              let _l5 = Sender::send_wait(logtx2, v = 100 + b)
               let r3 = Receiver::recv_wait(rx)
               let c = match r3 {
                 Some(v) => v,
                 None => 0 - 1
               }
-              let _l6 = Sender::send_wait(logtx2, 100 + c)
+              let _l6 = Sender::send_wait(logtx2, v = 100 + c)
               Sender::release(logtx2)
               a * 100 + b * 10 + c
             })
@@ -488,7 +488,7 @@ test "spawn_suspend producer/consumer block mid-body through a capacity-1 channe
             let mut going = true
             while going {
               match Receiver::recv(logrx) {
-                Some(v) => ArrayBuilder::push(log, v),
+                Some(v) => ArrayBuilder::push(log, value = v),
                 None => {
                   going = false
                 }
@@ -505,12 +505,12 @@ test "spawn_suspend producer/consumer block mid-body through a capacity-1 channe
     {
       assert_eq(v, 1230)
       assert_eq(Array::length(log), 6)
-      assert_eq(Array::get(log, 0), 1)
-      assert_eq(Array::get(log, 1), 110)
-      assert_eq(Array::get(log, 2), 120)
-      assert_eq(Array::get(log, 3), 2)
-      assert_eq(Array::get(log, 4), 3)
-      assert_eq(Array::get(log, 5), 130)
+      assert_eq(Array::get(log, at = 0), 1)
+      assert_eq(Array::get(log, at = 1), 110)
+      assert_eq(Array::get(log, at = 2), 120)
+      assert_eq(Array::get(log, at = 3), 2)
+      assert_eq(Array::get(log, at = 4), 3)
+      assert_eq(Array::get(log, at = 5), 130)
     }
   }
 }
@@ -519,15 +519,15 @@ test "spawn_suspend producer/consumer block mid-body through a capacity-1 channe
 /// linearization point), parks, and is woken after the receiver consumes.
 test "spawn_suspend rendezvous send_wait/recv_wait on a capacity-0 channel" {
   let out = TaskGroup::run((g) -> {
-    let pair = Channel::bounded(g, 0)
+    let pair = Channel::bounded(n = g, capacity = 0)
     {
       let (tx, rx) = pair
-      let hp = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
-        let _a = Sender::send_wait(tx, 7)
+      let hp = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
+        let _a = Sender::send_wait(tx, v = 7)
         Sender::release(tx)
         1
       })
-      let hc = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let hc = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
         let r = Receiver::recv_wait(rx)
         match r {
           Some(v) => v,
@@ -546,10 +546,10 @@ test "spawn_suspend rendezvous send_wait/recv_wait on a capacity-0 channel" {
 test "a body that never suspends settles synchronously" {
   let out = TaskGroup::run((g) -> {
     let h = TaskGroup::adopt(g)
-    TaskHandle::settle(h, handle {
+    TaskHandle::settle(h, step = handle {
       SDone(11 * 3)
     } with { Async::Suspend(r) => {
-      TaskHandle::park(h, resume)
+      TaskHandle::park(h, k = resume)
       SParked
     } })
     TaskHandle::join(h)
@@ -573,20 +573,20 @@ test "a body that never suspends settles synchronously" {
 test "plain sleep parks a spawn_suspend task instead of blocking it" {
   let out = TaskGroup::run((g) -> {
     {
-      let (tx, rx) = Channel::bounded(g, 4)
+      let (tx, rx) = Channel::bounded(n = g, capacity = 4)
       {
         let tx2 = Sender::clone(tx)
-        let ha = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
-          let _s1 = Sender::send_wait(tx, 1)
+        let ha = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
+          let _s1 = Sender::send_wait(tx, v = 1)
           sleep(10)
-          let _s3 = Sender::send_wait(tx, 3)
+          let _s3 = Sender::send_wait(tx, v = 3)
           Sender::release(tx)
           100
         })
-        let hb = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
-          let _s2 = Sender::send_wait(tx2, 2)
+        let hb = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
+          let _s2 = Sender::send_wait(tx2, v = 2)
           sleep(5)
-          let _s4 = Sender::send_wait(tx2, 4)
+          let _s4 = Sender::send_wait(tx2, v = 4)
           Sender::release(tx2)
           200
         })
@@ -597,24 +597,24 @@ test "plain sleep parks a spawn_suspend task instead of blocking it" {
         let mut going = true
         while going {
           match Receiver::recv(rx) {
-            Some(v) => ArrayBuilder::push(log, v),
+            Some(v) => ArrayBuilder::push(log, value = v),
             None => {
               going = false
             }
           }
         }
-        ArrayBuilder::push(log, ra + rb)
+        ArrayBuilder::push(log, value = ra + rb)
         ArrayBuilder::freeze(log)
       }
     }
   })
   let log = out
   assert_eq(Array::length(log), 5)
-  assert_eq(Array::get(log, 0), 1)
-  assert_eq(Array::get(log, 1), 2)
-  assert_eq(Array::get(log, 2), 4)
-  assert_eq(Array::get(log, 3), 3)
-  assert_eq(Array::get(log, 4), 300)
+  assert_eq(Array::get(log, at = 0), 1)
+  assert_eq(Array::get(log, at = 1), 2)
+  assert_eq(Array::get(log, at = 2), 4)
+  assert_eq(Array::get(log, at = 3), 3)
+  assert_eq(Array::get(log, at = 4), 300)
 }
 
 /// ADR-0089 Decision 2 (#1218): a Future cell is scheduler-visible data.
@@ -629,12 +629,12 @@ test "plain sleep parks a spawn_suspend task instead of blocking it" {
 test "await on a pending future parks until a sleeping sibling resolves it" {
   let out = TaskGroup::run((g) -> {
     let f = Future::pending()
-    let ha = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let ha = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       await(f) + 2
     })
-    let hb = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let hb = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       sleep(5)
-      Future::resolve(f, 40)
+      Future::resolve(f, value = 40)
       1
     })
     TaskGroup::pump_all(g)
@@ -652,12 +652,12 @@ test "await on a pending future parks until a sleeping sibling resolves it" {
 test "join on a parked task pumps the group instead of trapping" {
   let out = TaskGroup::run((g) -> {
     let f = Future::pending()
-    let ha = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let ha = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       await(f) + 2
     })
-    let hb = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let hb = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       sleep(5)
-      Future::resolve(f, 40)
+      Future::resolve(f, value = 40)
       1
     })
     let ra = TaskHandle::join(ha)
@@ -673,11 +673,11 @@ test "join on a parked task pumps the group instead of trapping" {
 test "join on a parked task dispatches a queued producer" {
   let out = TaskGroup::run((g) -> {
     let f = Future::pending()
-    let ha = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let ha = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       await(f) + 2
     })
-    let hb = TaskGroup::spawn(g, () -> Int {
-      Future::resolve(f, 40)
+    let hb = TaskGroup::spawn(g, f = () -> Int {
+      Future::resolve(f, value = 40)
       1
     })
     let ra = TaskHandle::join(ha)
@@ -696,14 +696,14 @@ test "a group closes by pumping the children its body left parked" {
   let out = TaskGroup::run((outer) -> {
     let f = Future::pending()
     let inner = TaskGroup::run((g) -> {
-      let _ = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let _ = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
         sleep(5)
-        Future::resolve(f, 40)
+        Future::resolve(f, value = 40)
         1
       })
       2
     })
-    let h = TaskGroup::spawn_suspend(outer, () -> Int with Async {
+    let h = TaskGroup::spawn_suspend(outer, f = () -> Int with Async {
       await(f)
     })
     inner + TaskHandle::join(h)
@@ -717,24 +717,24 @@ test "close join keeps a channel open for its remaining children" {
   let out = TaskGroup::run((outer) -> {
     let delivered = Future::pending()
     let inner = TaskGroup::run((g) -> {
-      let (tx, rx) = Channel::bounded(g, 0)
-      let _receiver = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let (tx, rx) = Channel::bounded(n = g, capacity = 0)
+      let _receiver = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
         let got = Receiver::recv_wait(rx)
         match got {
-          Some(v) => Future::resolve(delivered, v),
-          None => Future::resolve(delivered, -1)
+          Some(v) => Future::resolve(delivered, value = v),
+          None => Future::resolve(delivered, value = -1)
         }
         1
       })
-      let _sender = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let _sender = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
         sleep(5)
-        Sender::send_wait(tx, 40)
+        Sender::send_wait(tx, v = 40)
         Sender::release(tx)
         1
       })
       2
     })
-    let h = TaskGroup::spawn_suspend(outer, () -> Int with Async {
+    let h = TaskGroup::spawn_suspend(outer, f = () -> Int with Async {
       await(delivered)
     })
     inner + TaskHandle::join(h)
@@ -750,18 +750,18 @@ test "a group closes by running a queued producer before pumping its waiter" {
     let done = Future::pending()
     let inner = TaskGroup::run((g) -> {
       let f = Future::pending()
-      let _ = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let _ = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
         let v = await(f)
-        Future::resolve(done, v + 2)
+        Future::resolve(done, value = v + 2)
         v
       })
-      let _ = TaskGroup::spawn(g, () -> Int {
-        Future::resolve(f, 40)
+      let _ = TaskGroup::spawn(g, f = () -> Int {
+        Future::resolve(f, value = 40)
         1
       })
       0
     })
-    let h = TaskGroup::spawn_suspend(outer, () -> Int with Async {
+    let h = TaskGroup::spawn_suspend(outer, f = () -> Int with Async {
       await(done)
     })
     inner + TaskHandle::join(h)
@@ -775,9 +775,9 @@ test "a group closes by running a queued producer before pumping its waiter" {
 test "recv_wait on a sleeping producer advances virtual time instead of trapping" {
   let out = TaskGroup::run((g) -> {
     {
-      let (tx, rx) = Channel::bounded(g, 2)
+      let (tx, rx) = Channel::bounded(n = g, capacity = 2)
       {
-        let hc = TaskGroup::spawn_suspend(g, () -> Int with Async {
+        let hc = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
           // let-bound, not a match scrutinee: a suspending call is only
           // eligible on the let/seq/tail spine (ADR-0076 追記31).
           let got = Receiver::recv_wait(rx)
@@ -786,9 +786,9 @@ test "recv_wait on a sleeping producer advances virtual time instead of trapping
             None => -1
           }
         })
-        let hp = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        let hp = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
           sleep(5)
-          let _s = Sender::send_wait(tx, 40)
+          let _s = Sender::send_wait(tx, v = 40)
           Sender::release(tx)
           0
         })
@@ -808,11 +808,11 @@ test "recv_wait on a sleeping producer advances virtual time instead of trapping
 /// settle), and B resumes with A's value.
 test "result_wait awaits a sibling task's result" {
   let out = TaskGroup::run((g) -> {
-    let ha = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let ha = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       sleep(5)
       40
     })
-    let hb = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+    let hb = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
       // let-bound, not a match scrutinee (spine eligibility, ADR-0076).
       let got = TaskHandle::result_wait(ha)
       got + 2
@@ -841,11 +841,11 @@ test "result_wait awaits a sibling task's result" {
 test "result_wait propagates a cancelled sibling to the awaiter" {
   let out = handle {
     let v = TaskGroup::run((g) -> {
-      let ha = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let ha = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
         let _w = perform Async::Suspend(0)
         99
       })
-      let hb = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let hb = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
         // let-bound, not a match scrutinee (spine eligibility, ADR-0076).
         let got = TaskHandle::result_wait(ha)
         got + 1
@@ -873,20 +873,20 @@ test "result_wait propagates a cancelled sibling to the awaiter" {
 /// per-round re-poll.
 test "direct wake resumes every result_wait awaiter of one sibling" {
   let out = TaskGroup::run((g) -> {
-    let ha = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let ha = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       let _w1 = perform Async::Suspend(0)
       let _w2 = perform Async::Suspend(0)
       40
     })
-    let hb = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+    let hb = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
       let got = TaskHandle::result_wait(ha)
       got + 1
     })
-    let hc = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+    let hc = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
       let got = TaskHandle::result_wait(ha)
       got + 2
     })
-    let hd = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+    let hd = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
       let got = TaskHandle::result_wait(ha)
       got + 3
     })
@@ -906,11 +906,11 @@ test "direct wake resumes every result_wait awaiter of one sibling" {
 /// survive into an unrelated later park).
 test "manual wake of a direct-parked awaiter is a safe spurious poll" {
   let out = TaskGroup::run((g) -> {
-    let ha = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let ha = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       let _w1 = perform Async::Suspend(0)
       40
     })
-    let hb = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+    let hb = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
       let got = TaskHandle::result_wait(ha)
       // A cooperative yield AFTER the direct-parked wait: if the resume
       // left a stale direct_wait flag, this yield would be skipped by the
@@ -921,7 +921,7 @@ test "manual wake of a direct-parked awaiter is a safe spurious poll" {
     })
     // hb is now parked on ha (direct). Wake it manually: it must simply
     // re-check, re-park, and still complete once ha does.
-    let woke = TaskHandle::wake(hb, 0)
+    let woke = TaskHandle::wake(hb, v = 0)
     assert(woke)
     TaskGroup::pump_all(g)
     TaskHandle::join(hb)
@@ -936,18 +936,18 @@ test "manual wake of a direct-parked awaiter is a safe spurious poll" {
 test "direct-parked recv_wait does not block a sleeping producer's clock" {
   let out = TaskGroup::run((g) -> {
     {
-      let ends = Channel::bounded(g, 1)
+      let ends = Channel::bounded(n = g, capacity = 1)
       {
         let (tx, rx) = ends
-        let hp = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        let hp = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
           sleep(5)
-          let _s1 = Sender::send_wait(tx, 21)
+          let _s1 = Sender::send_wait(tx, v = 21)
           sleep(5)
-          let _s2 = Sender::send_wait(tx, 21)
+          let _s2 = Sender::send_wait(tx, v = 21)
           Sender::release(tx)
           0
         })
-        let hc = TaskGroup::spawn_suspend(g, () -> Int with Async {
+        let hc = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
           // Spine discipline: needing calls let-bound, matches in tail.
           let a0 = Receiver::recv_wait(rx)
           let b0 = Receiver::recv_wait(rx)
@@ -977,19 +977,19 @@ test "direct-parked recv_wait does not block a sleeping producer's clock" {
 test "resolve direct-wakes several awaiters of one pending future" {
   let out = TaskGroup::run((g) -> {
     let f = Future::pending()
-    let ha = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let ha = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       await(f) + 1
     })
-    let hb = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let hb = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       await(f) + 2
     })
-    let hc = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let hc = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       await(f) + 3
     })
-    let hr = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let hr = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       let _y1 = perform Async::Suspend(0)
       let _y2 = perform Async::Suspend(0)
-      Future::resolve(f, 10)
+      Future::resolve(f, value = 10)
       0
     })
     TaskGroup::pump_all(g)
@@ -1039,7 +1039,7 @@ fn needing_throws(_ x: Int) -> Int with Async + Exception {
 /// value. The task looked like it had SUCCEEDED, so nothing surfaced.
 test "a needing callee in tail position returns its value" {
   let out = TaskGroup::run((g) -> {
-    let h = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let h = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       needing_value(0)
     })
     TaskGroup::pump_all(g)
@@ -1053,7 +1053,7 @@ test "a needing callee in tail position returns its value" {
 /// breaks only one of the two spines is visibly asymmetric.
 test "a needing callee in non-tail position returns its value" {
   let out = TaskGroup::run((g) -> {
-    let h = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let h = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       let v = needing_value(0)
       v + 1000
     })
@@ -1067,7 +1067,7 @@ test "a needing callee in non-tail position returns its value" {
 /// continuation unreachable, so this leg never ran past the first one.
 test "a two-step needing callee in tail position runs to completion" {
   let out = TaskGroup::run((g) -> {
-    let h = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let h = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       needing_two_steps(0)
     })
     TaskGroup::pump_all(g)
@@ -1084,7 +1084,7 @@ test "a two-step needing callee in tail position runs to completion" {
 test "a throw past the first suspension in a needing callee fails the task" {
   let out = handle {
     TaskGroup::run((g) -> {
-      let h = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let h = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
         needing_throws(1)
       })
       TaskGroup::pump_all(g)
@@ -1114,14 +1114,14 @@ test "a future of a recursive payload with no stream may be shared" {
   let out = TaskGroup::run((g) -> {
     let f: Future[Chain[Int]] = Future::pending()
     let payload: Chain[Int] = Link(40, End)
-    let ha = TaskGroup::spawn_suspend(g, () -> Int with Async {
+    let ha = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
       match await(f) {
         Link(v, _) => v,
         End => 0
       }
     })
-    let hb = TaskGroup::spawn_suspend(g, () -> Int with Async {
-      Future::resolve(f, payload)
+    let hb = TaskGroup::spawn_suspend(g, f = () -> Int with Async {
+      Future::resolve(f, value = payload)
       2
     })
     TaskGroup::pump_all(g)

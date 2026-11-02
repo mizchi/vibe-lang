@@ -153,11 +153,11 @@ export fn binder_authority_node_kind(_ node: BinderAuthorityNode) -> BinderAutho
 }
 
 export fn binder_authority_node_slots(_ node: BinderAuthorityNode) -> Array[BinderAuthoritySlot] {
-  Array::slice(node.slots, 0, Array::length(node.slots))
+  Array::slice(node.slots, start = 0, end = Array::length(node.slots))
 }
 
 export fn binder_authority_node_children(_ node: BinderAuthorityNode) -> Array[BinderAuthorityNode] {
-  Array::slice(node.children, 0, Array::length(node.children))
+  Array::slice(node.children, start = 0, end = Array::length(node.children))
 }
 
 export fn binder_authority_slot_role(_ slot: BinderAuthoritySlot) -> BinderSemanticRole {
@@ -185,14 +185,14 @@ export fn LocatedProgramBinderAuthority::located_program_binder_authority_source
 }
 
 export fn located_program_binder_authority_rows(_ authority: LocatedProgramBinderAuthority) -> Array[SourceBinder] {
-  Array::slice(authority.binders, 0, Array::length(authority.binders))
+  Array::slice(authority.binders, start = 0, end = Array::length(authority.binders))
 }
 
 fn append_materialized_slots(stored: StoredBinderAuthority, out: ArrayBuilder[BinderAuthoritySlot]) -> Unit {
   match stored {
     StoredAuthoritySlot(slot, rest) => {
-      ArrayBuilder::push(out, slot)
-      append_materialized_slots(rest, out)
+      ArrayBuilder::push(out, value = slot)
+      append_materialized_slots(stored = rest, out = out)
     },
     _ => ()
   }
@@ -202,9 +202,9 @@ fn materialize_authority_node(_ stored: StoredBinderAuthority) -> BinderAuthorit
   match stored {
     StoredAuthorityNode(kind, slots, children) => {
       let slot_out = ArrayBuilder::new()
-      append_materialized_slots(slots, slot_out)
+      append_materialized_slots(stored = slots, out = slot_out)
       let child_out = ArrayBuilder::new()
-      append_materialized_nodes(children, child_out)
+      append_materialized_nodes(stored = children, out = child_out)
       BinderAuthorityNode::{
         kind,
         slots: ArrayBuilder::freeze(slot_out),
@@ -224,8 +224,8 @@ fn materialize_authority_node(_ stored: StoredBinderAuthority) -> BinderAuthorit
 fn append_materialized_nodes(stored: StoredBinderAuthority, out: ArrayBuilder[BinderAuthorityNode]) -> Unit {
   match stored {
     StoredAuthorityChild(node, rest) => {
-      ArrayBuilder::push(out, materialize_authority_node(node))
-      append_materialized_nodes(rest, out)
+      ArrayBuilder::push(out, value = materialize_authority_node(node))
+      append_materialized_nodes(stored = rest, out = out)
     },
     _ => ()
   }
@@ -236,7 +236,7 @@ fn append_materialized_nodes(stored: StoredBinderAuthority, out: ArrayBuilder[Bi
 /// arrays returned by previous calls.
 export fn located_program_binder_authority_nodes(_ authority: LocatedProgramBinderAuthority) -> Array[BinderAuthorityNode] {
   let out = ArrayBuilder::new()
-  append_materialized_nodes(authority.nodes, out)
+  append_materialized_nodes(stored = authority.nodes, out = out)
   ArrayBuilder::freeze(out)
 }
 
@@ -267,24 +267,24 @@ fn authority_node(kind: BinderAuthorityNodeKind, slots: Array[BinderAuthoritySlo
 }
 
 fn leaf(_ kind: BinderAuthorityNodeKind) -> BinderAuthorityNode {
-  authority_node(kind, no_slots(), no_nodes())
+  authority_node(kind = kind, slots = no_slots(), children = no_nodes())
 }
 
 fn validate_slot(name: String, role: BinderSemanticRole, rows: Array[SourceBinder], source: String, at: Int) -> Option[(BinderAuthoritySlot, Int)] {
   if at < 0 || at >= Array::length(rows) {
     None
-  } else match Array::get(rows, at) {
+  } else match Array::get(rows, at = at) {
     SourceToken(row_name, start, end) => {
       let n = String::length(source)
       let valid_span = start >= 0 && start < end && end <= n
       let exact = if valid_span {
-        let spelling = String::substring(source, start, end)
+        let spelling = String::substring(source, start = start, end = end)
         spelling == name || spelling == String::concat("@", name) || spelling == String::concat("r#", name)
       } else false
       if row_name == name && exact {
         Some((BinderAuthoritySlot::{
           role,
-          binder: Array::get(rows, at)
+          binder: Array::get(rows, at = at)
         }, at + 1))
       } else None
     },
@@ -295,7 +295,7 @@ fn validate_slot(name: String, role: BinderSemanticRole, rows: Array[SourceBinde
     Synthetic(row_name, _) => if row_name == name {
       Some((BinderAuthoritySlot::{
         role,
-        binder: Array::get(rows, at)
+        binder: Array::get(rows, at = at)
       }, at + 1))
     } else None
   }
@@ -303,31 +303,33 @@ fn validate_slot(name: String, role: BinderSemanticRole, rows: Array[SourceBinde
 
 fn validate_pattern(pat: Pat, rows: Array[SourceBinder], source: String, at: Int) -> Option[(BinderAuthorityNode, Int)] {
   match pat {
-    PBind(name) => match validate_slot(name, PatternBinder, rows, source, at) {
-      Some(result) => Some((authority_node(AuthorityPatBind, [result.0], no_nodes()), result.1)),
+    PBind(name) => match validate_slot(name = name, role = PatternBinder, rows = rows, source = source, at = at) {
+      Some(result) => Some((authority_node(kind = AuthorityPatBind, slots = [
+        result.0
+      ], children = no_nodes()), result.1)),
       None => None
     },
-    PCtor(_, args) => match validate_patterns(args, rows, source, at) {
-      Some(result) => Some((authority_node(AuthorityPatCtor, no_slots(), result.0), result.1)),
+    PCtor(_, args) => match validate_patterns(pats = args, rows = rows, source = source, at = at) {
+      Some(result) => Some((authority_node(kind = AuthorityPatCtor, slots = no_slots(), children = result.0), result.1)),
       None => None
     },
-    PTuple(args) => match validate_patterns(args, rows, source, at) {
-      Some(result) => Some((authority_node(AuthorityPatTuple, no_slots(), result.0), result.1)),
+    PTuple(args) => match validate_patterns(pats = args, rows = rows, source = source, at = at) {
+      Some(result) => Some((authority_node(kind = AuthorityPatTuple, slots = no_slots(), children = result.0), result.1)),
       None => None
     },
     PStruct(_, fields) => {
       let children = ArrayBuilder::new()
       let mut next = at
       for field in fields {
-        match validate_pattern(field.1, rows, source, next) {
+        match validate_pattern(pat = field.1, rows = rows, source = source, at = next) {
           Some(result) => {
-            ArrayBuilder::push(children, result.0)
+            ArrayBuilder::push(children, value = result.0)
             next = result.1
           },
           None => return None
         }
       }
-      Some((authority_node(AuthorityPatStruct, no_slots(), ArrayBuilder::freeze(children)), next))
+      Some((authority_node(kind = AuthorityPatStruct, slots = no_slots(), children = ArrayBuilder::freeze(children)), next))
     },
     // POr has two source declarations for one semantic binding and remains
     // deliberately unsupported until that semantic contract exists.
@@ -344,9 +346,9 @@ fn validate_patterns(pats: Array[Pat], rows: Array[SourceBinder], source: String
   let children = ArrayBuilder::new()
   let mut next = at
   for pat in pats {
-    match validate_pattern(pat, rows, source, next) {
+    match validate_pattern(pat = pat, rows = rows, source = source, at = next) {
       Some(result) => {
-        ArrayBuilder::push(children, result.0)
+        ArrayBuilder::push(children, value = result.0)
         next = result.1
       },
       None => return None
@@ -359,9 +361,9 @@ fn validate_exprs(exprs: Array[Expr], rows: Array[SourceBinder], source: String,
   let children = ArrayBuilder::new()
   let mut next = at
   for expr in exprs {
-    match validate_expr(expr, rows, source, next) {
+    match validate_expr(expr = expr, rows = rows, source = source, at = next) {
       Some(result) => {
-        ArrayBuilder::push(children, result.0)
+        ArrayBuilder::push(children, value = result.0)
         next = result.1
       },
       None => return None
@@ -374,12 +376,12 @@ fn validate_arms(arms: Array[(Pat, Expr)], rows: Array[SourceBinder], source: St
   let children = ArrayBuilder::new()
   let mut next = at
   for arm in arms {
-    match validate_pattern(arm.0, rows, source, next) {
+    match validate_pattern(pat = arm.0, rows = rows, source = source, at = next) {
       Some(pattern) => {
-        ArrayBuilder::push(children, pattern.0)
-        match validate_expr(arm.1, rows, source, pattern.1) {
+        ArrayBuilder::push(children, value = pattern.0)
+        match validate_expr(expr = arm.1, rows = rows, source = source, at = pattern.1) {
           Some(body) => {
-            ArrayBuilder::push(children, body.0)
+            ArrayBuilder::push(children, value = body.0)
             next = body.1
           },
           None => return None
@@ -395,9 +397,9 @@ fn validate_named_exprs(items: Array[(String, Expr)], rows: Array[SourceBinder],
   let children = ArrayBuilder::new()
   let mut next = at
   for item in items {
-    match validate_expr(item.1, rows, source, next) {
+    match validate_expr(expr = item.1, rows = rows, source = source, at = next) {
       Some(result) => {
-        ArrayBuilder::push(children, result.0)
+        ArrayBuilder::push(children, value = result.0)
         next = result.1
       },
       None => return None
@@ -408,59 +410,65 @@ fn validate_named_exprs(items: Array[(String, Expr)], rows: Array[SourceBinder],
 
 fn validate_expr(expr: Expr, rows: Array[SourceBinder], source: String, at: Int) -> Option[(BinderAuthorityNode, Int)] {
   match expr {
-    ELet(name, value, body, _) => match validate_slot(name, ExpressionLetBinder, rows, source, at) {
-      Some(slot) => match validate_expr(value, rows, source, slot.1) {
-        Some(v) => match validate_expr(body, rows, source, v.1) {
-          Some(b) => Some((authority_node(AuthorityExprLet, [slot.0], two_nodes(v.0, b.0)), b.1)),
+    ELet(name, value, body, _) => match validate_slot(name = name, role = ExpressionLetBinder, rows = rows, source = source, at = at) {
+      Some(slot) => match validate_expr(expr = value, rows = rows, source = source, at = slot.1) {
+        Some(v) => match validate_expr(expr = body, rows = rows, source = source, at = v.1) {
+          Some(b) => Some((authority_node(kind = AuthorityExprLet, slots = [
+            slot.0
+          ], children = two_nodes(first = v.0, second = b.0)), b.1)),
           None => None
         },
         None => None
       },
       None => None
     },
-    ELetRec(name, value, body) => match validate_slot(name, ExpressionLetRecBinder, rows, source, at) {
-      Some(slot) => match validate_expr(value, rows, source, slot.1) {
-        Some(v) => match validate_expr(body, rows, source, v.1) {
-          Some(b) => Some((authority_node(AuthorityExprLetRec, [slot.0], two_nodes(v.0, b.0)), b.1)),
+    ELetRec(name, value, body) => match validate_slot(name = name, role = ExpressionLetRecBinder, rows = rows, source = source, at = at) {
+      Some(slot) => match validate_expr(expr = value, rows = rows, source = source, at = slot.1) {
+        Some(v) => match validate_expr(expr = body, rows = rows, source = source, at = v.1) {
+          Some(b) => Some((authority_node(kind = AuthorityExprLetRec, slots = [
+            slot.0
+          ], children = two_nodes(first = v.0, second = b.0)), b.1)),
           None => None
         },
         None => None
       },
       None => None
     },
-    ELetMut(name, value, body, _) => match validate_slot(name, ExpressionLetMutBinder, rows, source, at) {
-      Some(slot) => match validate_expr(value, rows, source, slot.1) {
-        Some(v) => match validate_expr(body, rows, source, v.1) {
-          Some(b) => Some((authority_node(AuthorityExprLetMut, [slot.0], two_nodes(v.0, b.0)), b.1)),
+    ELetMut(name, value, body, _) => match validate_slot(name = name, role = ExpressionLetMutBinder, rows = rows, source = source, at = at) {
+      Some(slot) => match validate_expr(expr = value, rows = rows, source = source, at = slot.1) {
+        Some(v) => match validate_expr(expr = body, rows = rows, source = source, at = v.1) {
+          Some(b) => Some((authority_node(kind = AuthorityExprLetMut, slots = [
+            slot.0
+          ], children = two_nodes(first = v.0, second = b.0)), b.1)),
           None => None
         },
         None => None
       },
       None => None
     },
-    EMatch(scrutinee, arms) => match validate_expr(scrutinee, rows, source, at) {
-      Some(s) => match validate_arms(arms, rows, source, s.1) {
+    EMatch(scrutinee, arms) => match validate_expr(expr = scrutinee, rows = rows, source = source, at = at) {
+      Some(s) => match validate_arms(arms = arms, rows = rows, source = source, at = s.1) {
         Some(a) => {
           let children = ArrayBuilder::new()
-          ArrayBuilder::push(children, s.0)
+          ArrayBuilder::push(children, value = s.0)
           for child in a.0 {
-            ArrayBuilder::push(children, child)
+            ArrayBuilder::push(children, value = child)
           }
-          Some((authority_node(AuthorityExprMatch, no_slots(), ArrayBuilder::freeze(children)), a.1))
+          Some((authority_node(kind = AuthorityExprMatch, slots = no_slots(), children = ArrayBuilder::freeze(children)), a.1))
         },
         None => None
       },
       None => None
     },
-    EHandle(body, arms) => match validate_expr(body, rows, source, at) {
-      Some(b) => match validate_arms(arms, rows, source, b.1) {
+    EHandle(body, arms) => match validate_expr(expr = body, rows = rows, source = source, at = at) {
+      Some(b) => match validate_arms(arms = arms, rows = rows, source = source, at = b.1) {
         Some(a) => {
           let children = ArrayBuilder::new()
-          ArrayBuilder::push(children, b.0)
+          ArrayBuilder::push(children, value = b.0)
           for child in a.0 {
-            ArrayBuilder::push(children, child)
+            ArrayBuilder::push(children, value = child)
           }
-          Some((authority_node(AuthorityExprHandle, no_slots(), ArrayBuilder::freeze(children)), a.1))
+          Some((authority_node(kind = AuthorityExprHandle, slots = no_slots(), children = ArrayBuilder::freeze(children)), a.1))
         },
         None => None
       },
@@ -470,46 +478,46 @@ fn validate_expr(expr: Expr, rows: Array[SourceBinder], source: String, at: Int)
       let slots = ArrayBuilder::new()
       let mut next = at
       for name in type_params {
-        match validate_slot(type_param_name(name), ExpressionFunctionTypeParameterBinder, rows, source, next) {
+        match validate_slot(name = type_param_name(name), role = ExpressionFunctionTypeParameterBinder, rows = rows, source = source, at = next) {
           Some(result) => {
-            ArrayBuilder::push(slots, result.0)
+            ArrayBuilder::push(slots, value = result.0)
             next = result.1
           },
           None => return None
         }
       }
       for param in params {
-        match validate_slot(param.0, ExpressionFunctionParameterBinder, rows, source, next) {
+        match validate_slot(name = param.0, role = ExpressionFunctionParameterBinder, rows = rows, source = source, at = next) {
           Some(result) => {
-            ArrayBuilder::push(slots, result.0)
+            ArrayBuilder::push(slots, value = result.0)
             next = result.1
           },
           None => return None
         }
       }
-      match validate_expr(body, rows, source, next) {
-        Some(result) => Some((authority_node(AuthorityExprFn, ArrayBuilder::freeze(slots), one_node(result.0)), result.1)),
+      match validate_expr(expr = body, rows = rows, source = source, at = next) {
+        Some(result) => Some((authority_node(kind = AuthorityExprFn, slots = ArrayBuilder::freeze(slots), children = one_node(result.0)), result.1)),
         None => None
       }
     },
-    EForIn(name, index_name, iter, body) => match validate_slot(name, ExpressionForValueBinder, rows, source, at) {
+    EForIn(name, index_name, iter, body) => match validate_slot(name = name, role = ExpressionForValueBinder, rows = rows, source = source, at = at) {
       Some(first) => {
         let slots = ArrayBuilder::new()
-        ArrayBuilder::push(slots, first.0)
+        ArrayBuilder::push(slots, value = first.0)
         let mut next = first.1
         match index_name {
-          Some(index) => match validate_slot(index, ExpressionForIndexBinder, rows, source, next) {
+          Some(index) => match validate_slot(name = index, role = ExpressionForIndexBinder, rows = rows, source = source, at = next) {
             Some(second) => {
-              ArrayBuilder::push(slots, second.0)
+              ArrayBuilder::push(slots, value = second.0)
               next = second.1
             },
             None => return None
           },
           None => ()
         }
-        match validate_expr(iter, rows, source, next) {
-          Some(i) => match validate_expr(body, rows, source, i.1) {
-            Some(b) => Some((authority_node(AuthorityExprForIn, ArrayBuilder::freeze(slots), two_nodes(i.0, b.0)), b.1)),
+        match validate_expr(expr = iter, rows = rows, source = source, at = next) {
+          Some(i) => match validate_expr(expr = body, rows = rows, source = source, at = i.1) {
+            Some(b) => Some((authority_node(kind = AuthorityExprForIn, slots = ArrayBuilder::freeze(slots), children = two_nodes(first = i.0, second = b.0)), b.1)),
             None => None
           },
           None => None
@@ -519,22 +527,22 @@ fn validate_expr(expr: Expr, rows: Array[SourceBinder], source: String, at: Int)
     },
     // Loop lowering synthesizes binders and remains fail-closed.
     ELoop(_, _) => None,
-    ETuple(items) => match validate_exprs(items, rows, source, at) {
-      Some(result) => Some((authority_node(AuthorityExprTuple, no_slots(), result.0), result.1)),
+    ETuple(items) => match validate_exprs(exprs = items, rows = rows, source = source, at = at) {
+      Some(result) => Some((authority_node(kind = AuthorityExprTuple, slots = no_slots(), children = result.0), result.1)),
       None => None
     },
-    EArray(items) => match validate_exprs(items, rows, source, at) {
-      Some(result) => Some((authority_node(AuthorityExprArray, no_slots(), result.0), result.1)),
+    EArray(items) => match validate_exprs(exprs = items, rows = rows, source = source, at = at) {
+      Some(result) => Some((authority_node(kind = AuthorityExprArray, slots = no_slots(), children = result.0), result.1)),
       None => None
     },
-    ERecord(_, fields, _) => match validate_named_exprs(fields, rows, source, at) {
-      Some(result) => Some((authority_node(AuthorityExprRecord, no_slots(), result.0), result.1)),
+    ERecord(_, fields, _) => match validate_named_exprs(items = fields, rows = rows, source = source, at = at) {
+      Some(result) => Some((authority_node(kind = AuthorityExprRecord, slots = no_slots(), children = result.0), result.1)),
       None => None
     },
-    EIf(cond, yes, no) => match validate_expr(cond, rows, source, at) {
-      Some(c) => match validate_expr(yes, rows, source, c.1) {
-        Some(y) => match validate_expr(no, rows, source, y.1) {
-          Some(n) => Some((authority_node(AuthorityExprIf, no_slots(), [
+    EIf(cond, yes, no) => match validate_expr(expr = cond, rows = rows, source = source, at = at) {
+      Some(c) => match validate_expr(expr = yes, rows = rows, source = source, at = c.1) {
+        Some(y) => match validate_expr(expr = no, rows = rows, source = source, at = y.1) {
+          Some(n) => Some((authority_node(kind = AuthorityExprIf, slots = no_slots(), children = [
             c.0,
             y.0,
             n.0
@@ -545,88 +553,88 @@ fn validate_expr(expr: Expr, rows: Array[SourceBinder], source: String, at: Int)
       },
       None => None
     },
-    EAssign(_, value, body, _) => match validate_expr(value, rows, source, at) {
-      Some(v) => match validate_expr(body, rows, source, v.1) {
-        Some(b) => Some((authority_node(AuthorityExprAssign, no_slots(), two_nodes(v.0, b.0)), b.1)),
+    EAssign(_, value, body, _) => match validate_expr(expr = value, rows = rows, source = source, at = at) {
+      Some(v) => match validate_expr(expr = body, rows = rows, source = source, at = v.1) {
+        Some(b) => Some((authority_node(kind = AuthorityExprAssign, slots = no_slots(), children = two_nodes(first = v.0, second = b.0)), b.1)),
         None => None
       },
       None => None
     },
-    EAssignOp(_, _, value, body, _) => match validate_expr(value, rows, source, at) {
-      Some(v) => match validate_expr(body, rows, source, v.1) {
-        Some(b) => Some((authority_node(AuthorityExprAssignOp, no_slots(), two_nodes(v.0, b.0)), b.1)),
+    EAssignOp(_, _, value, body, _) => match validate_expr(expr = value, rows = rows, source = source, at = at) {
+      Some(v) => match validate_expr(expr = body, rows = rows, source = source, at = v.1) {
+        Some(b) => Some((authority_node(kind = AuthorityExprAssignOp, slots = no_slots(), children = two_nodes(first = v.0, second = b.0)), b.1)),
         None => None
       },
       None => None
     },
-    ESeq(first, second) => match validate_expr(first, rows, source, at) {
-      Some(f) => match validate_expr(second, rows, source, f.1) {
-        Some(s) => Some((authority_node(AuthorityExprSeq, no_slots(), two_nodes(f.0, s.0)), s.1)),
+    ESeq(first, second) => match validate_expr(expr = first, rows = rows, source = source, at = at) {
+      Some(f) => match validate_expr(expr = second, rows = rows, source = source, at = f.1) {
+        Some(s) => Some((authority_node(kind = AuthorityExprSeq, slots = no_slots(), children = two_nodes(first = f.0, second = s.0)), s.1)),
         None => None
       },
       None => None
     },
-    EWhile(cond, body) => match validate_expr(cond, rows, source, at) {
-      Some(c) => match validate_expr(body, rows, source, c.1) {
-        Some(b) => Some((authority_node(AuthorityExprWhile, no_slots(), two_nodes(c.0, b.0)), b.1)),
+    EWhile(cond, body) => match validate_expr(expr = cond, rows = rows, source = source, at = at) {
+      Some(c) => match validate_expr(expr = body, rows = rows, source = source, at = c.1) {
+        Some(b) => Some((authority_node(kind = AuthorityExprWhile, slots = no_slots(), children = two_nodes(first = c.0, second = b.0)), b.1)),
         None => None
       },
       None => None
     },
-    ECall(callee, args, _, _) => match validate_expr(callee, rows, source, at) {
-      Some(c) => match validate_exprs(args, rows, source, c.1) {
+    ECall(callee, args, _, _) => match validate_expr(expr = callee, rows = rows, source = source, at = at) {
+      Some(c) => match validate_exprs(exprs = args, rows = rows, source = source, at = c.1) {
         Some(a) => {
           let children = ArrayBuilder::new()
-          ArrayBuilder::push(children, c.0)
+          ArrayBuilder::push(children, value = c.0)
           for child in a.0 {
-            ArrayBuilder::push(children, child)
+            ArrayBuilder::push(children, value = child)
           }
-          Some((authority_node(AuthorityExprCall, no_slots(), ArrayBuilder::freeze(children)), a.1))
+          Some((authority_node(kind = AuthorityExprCall, slots = no_slots(), children = ArrayBuilder::freeze(children)), a.1))
         },
         None => None
       },
       None => None
     },
-    EBinOp(_, left, right, _) => match validate_expr(left, rows, source, at) {
-      Some(l) => match validate_expr(right, rows, source, l.1) {
-        Some(r) => Some((authority_node(AuthorityExprBinOp, no_slots(), two_nodes(l.0, r.0)), r.1)),
+    EBinOp(_, left, right, _) => match validate_expr(expr = left, rows = rows, source = source, at = at) {
+      Some(l) => match validate_expr(expr = right, rows = rows, source = source, at = l.1) {
+        Some(r) => Some((authority_node(kind = AuthorityExprBinOp, slots = no_slots(), children = two_nodes(first = l.0, second = r.0)), r.1)),
         None => None
       },
       None => None
     },
-    EUnaryOp(_, value) => match validate_expr(value, rows, source, at) {
-      Some(result) => Some((authority_node(AuthorityExprUnaryOp, no_slots(), one_node(result.0)), result.1)),
+    EUnaryOp(_, value) => match validate_expr(expr = value, rows = rows, source = source, at = at) {
+      Some(result) => Some((authority_node(kind = AuthorityExprUnaryOp, slots = no_slots(), children = one_node(result.0)), result.1)),
       None => None
     },
-    EDot(value, _, _, _) => match validate_expr(value, rows, source, at) {
-      Some(result) => Some((authority_node(AuthorityExprDot, no_slots(), one_node(result.0)), result.1)),
+    EDot(value, _, _, _) => match validate_expr(expr = value, rows = rows, source = source, at = at) {
+      Some(result) => Some((authority_node(kind = AuthorityExprDot, slots = no_slots(), children = one_node(result.0)), result.1)),
       None => None
     },
-    ELabeledArg(_, _, value) => match validate_expr(value, rows, source, at) {
-      Some(result) => Some((authority_node(AuthorityExprLabeledArg, no_slots(), one_node(result.0)), result.1)),
+    ELabeledArg(_, _, value) => match validate_expr(expr = value, rows = rows, source = source, at = at) {
+      Some(result) => Some((authority_node(kind = AuthorityExprLabeledArg, slots = no_slots(), children = one_node(result.0)), result.1)),
       None => None
     },
-    EReturn(value) => match validate_expr(value, rows, source, at) {
-      Some(result) => Some((authority_node(AuthorityExprReturn, no_slots(), one_node(result.0)), result.1)),
+    EReturn(value) => match validate_expr(expr = value, rows = rows, source = source, at = at) {
+      Some(result) => Some((authority_node(kind = AuthorityExprReturn, slots = no_slots(), children = one_node(result.0)), result.1)),
       None => None
     },
     EBreak(value) => match value {
-      Some(v) => match validate_expr(v, rows, source, at) {
-        Some(result) => Some((authority_node(AuthorityExprBreak, no_slots(), one_node(result.0)), result.1)),
+      Some(v) => match validate_expr(expr = v, rows = rows, source = source, at = at) {
+        Some(result) => Some((authority_node(kind = AuthorityExprBreak, slots = no_slots(), children = one_node(result.0)), result.1)),
         None => None
       },
       None => Some((leaf(AuthorityExprBreak), at))
     },
-    EContinue(values) => match validate_exprs(values, rows, source, at) {
-      Some(result) => Some((authority_node(AuthorityExprContinue, no_slots(), result.0), result.1)),
+    EContinue(values) => match validate_exprs(exprs = values, rows = rows, source = source, at = at) {
+      Some(result) => Some((authority_node(kind = AuthorityExprContinue, slots = no_slots(), children = result.0), result.1)),
       None => None
     },
-    EMap(items) => match validate_named_exprs(items, rows, source, at) {
-      Some(result) => Some((authority_node(AuthorityExprMap, no_slots(), result.0), result.1)),
+    EMap(items) => match validate_named_exprs(items = items, rows = rows, source = source, at = at) {
+      Some(result) => Some((authority_node(kind = AuthorityExprMap, slots = no_slots(), children = result.0), result.1)),
       None => None
     },
-    ESpread(value) => match validate_expr(value, rows, source, at) {
-      Some(result) => Some((authority_node(AuthorityExprSpread, no_slots(), one_node(result.0)), result.1)),
+    ESpread(value) => match validate_expr(expr = value, rows = rows, source = source, at = at) {
+      Some(result) => Some((authority_node(kind = AuthorityExprSpread, slots = no_slots(), children = one_node(result.0)), result.1)),
       None => None
     },
     EInt(_) => Some((leaf(AuthorityExprInt), at)),
@@ -641,22 +649,28 @@ fn validate_expr(expr: Expr, rows: Array[SourceBinder], source: String, at: Int)
 
 fn validate_stmt(stmt: Stmt, rows: Array[SourceBinder], source: String, at: Int) -> Option[(BinderAuthorityNode, Int)] {
   match stmt {
-    SLet(_, _, name, _, value) => match validate_slot(name, StatementLetBinder, rows, source, at) {
-      Some(slot) => match validate_expr(value, rows, source, slot.1) {
-        Some(expr) => Some((authority_node(AuthorityStmtLet, [slot.0], one_node(expr.0)), expr.1)),
+    SLet(_, _, name, _, value) => match validate_slot(name = name, role = StatementLetBinder, rows = rows, source = source, at = at) {
+      Some(slot) => match validate_expr(expr = value, rows = rows, source = source, at = slot.1) {
+        Some(expr) => Some((authority_node(kind = AuthorityStmtLet, slots = [
+          slot.0
+        ], children = one_node(expr.0)), expr.1)),
         None => None
       },
       None => None
     },
-    SLetMut(name, _, value) => match validate_slot(name, StatementLetMutBinder, rows, source, at) {
-      Some(slot) => match validate_expr(value, rows, source, slot.1) {
-        Some(expr) => Some((authority_node(AuthorityStmtLetMut, [slot.0], one_node(expr.0)), expr.1)),
+    SLetMut(name, _, value) => match validate_slot(name = name, role = StatementLetMutBinder, rows = rows, source = source, at = at) {
+      Some(slot) => match validate_expr(expr = value, rows = rows, source = source, at = slot.1) {
+        Some(expr) => Some((authority_node(kind = AuthorityStmtLetMut, slots = [
+          slot.0
+        ], children = one_node(expr.0)), expr.1)),
         None => None
       },
       None => None
     },
-    SExternLet(name, _) => match validate_slot(name, StatementExternBinder, rows, source, at) {
-      Some(slot) => Some((authority_node(AuthorityStmtExternLet, [slot.0], no_nodes()), slot.1)),
+    SExternLet(name, _) => match validate_slot(name = name, role = StatementExternBinder, rows = rows, source = source, at = at) {
+      Some(slot) => Some((authority_node(kind = AuthorityStmtExternLet, slots = [
+        slot.0
+      ], children = no_nodes()), slot.1)),
       None => None
     },
     SImport(_, items) => {
@@ -667,60 +681,66 @@ fn validate_stmt(stmt: Stmt, rows: Array[SourceBinder], source: String, at: Int)
           Some(alias) => alias,
           None => item.name
         }
-        match validate_slot(local, StatementImportBinder, rows, source, next) {
+        match validate_slot(name = local, role = StatementImportBinder, rows = rows, source = source, at = next) {
           Some(slot) => {
-            ArrayBuilder::push(slots, slot.0)
+            ArrayBuilder::push(slots, value = slot.0)
             next = slot.1
           },
           None => return None
         }
       }
-      Some((authority_node(AuthorityStmtImport, ArrayBuilder::freeze(slots), no_nodes()), next))
+      Some((authority_node(kind = AuthorityStmtImport, slots = ArrayBuilder::freeze(slots), children = no_nodes()), next))
     },
-    SAliasDecl(name, _) => match validate_slot(name, StatementAliasBinder, rows, source, at) {
-      Some(slot) => Some((authority_node(AuthorityStmtAliasDecl, [slot.0], no_nodes()), slot.1)),
+    SAliasDecl(name, _) => match validate_slot(name = name, role = StatementAliasBinder, rows = rows, source = source, at = at) {
+      Some(slot) => Some((authority_node(kind = AuthorityStmtAliasDecl, slots = [
+        slot.0
+      ], children = no_nodes()), slot.1)),
       None => None
     },
-    STypeAlias(_, name, params, _) => match validate_slot(name, StatementTypeBinder, rows, source, at) {
+    STypeAlias(_, name, params, _) => match validate_slot(name = name, role = StatementTypeBinder, rows = rows, source = source, at = at) {
       Some(first) => {
         let slots = ArrayBuilder::new()
-        ArrayBuilder::push(slots, first.0)
+        ArrayBuilder::push(slots, value = first.0)
         let mut next = first.1
         for param in params {
-          match validate_slot(type_param_name(param), StatementTypeParameterBinder, rows, source, next) {
+          match validate_slot(name = type_param_name(param), role = StatementTypeParameterBinder, rows = rows, source = source, at = next) {
             Some(slot) => {
-              ArrayBuilder::push(slots, slot.0)
+              ArrayBuilder::push(slots, value = slot.0)
               next = slot.1
             },
             None => return None
           }
         }
-        Some((authority_node(AuthorityStmtTypeAlias, ArrayBuilder::freeze(slots), no_nodes()), next))
+        Some((authority_node(kind = AuthorityStmtTypeAlias, slots = ArrayBuilder::freeze(slots), children = no_nodes()), next))
       },
       None => None
     },
-    SEffectSet(_, name, _) => match validate_slot(name, StatementEffectSetBinder, rows, source, at) {
-      Some(slot) => Some((authority_node(AuthorityStmtEffectSet, [slot.0], no_nodes()), slot.1)),
+    SEffectSet(_, name, _) => match validate_slot(name = name, role = StatementEffectSetBinder, rows = rows, source = source, at = at) {
+      Some(slot) => Some((authority_node(kind = AuthorityStmtEffectSet, slots = [
+        slot.0
+      ], children = no_nodes()), slot.1)),
       None => None
     },
-    SResource(name, _) => match validate_slot(name, StatementResourceBinder, rows, source, at) {
-      Some(slot) => Some((authority_node(AuthorityStmtResource, [slot.0], no_nodes()), slot.1)),
+    SResource(name, _) => match validate_slot(name = name, role = StatementResourceBinder, rows = rows, source = source, at = at) {
+      Some(slot) => Some((authority_node(kind = AuthorityStmtResource, slots = [
+        slot.0
+      ], children = no_nodes()), slot.1)),
       None => None
     },
-    STest(_, body) => match validate_expr(body, rows, source, at) {
-      Some(expr) => Some((authority_node(AuthorityStmtTest, no_slots(), one_node(expr.0)), expr.1)),
+    STest(_, body) => match validate_expr(expr = body, rows = rows, source = source, at = at) {
+      Some(expr) => Some((authority_node(kind = AuthorityStmtTest, slots = no_slots(), children = one_node(expr.0)), expr.1)),
       None => None
     },
-    SBench(_, body) => match validate_expr(body, rows, source, at) {
-      Some(expr) => Some((authority_node(AuthorityStmtBench, no_slots(), one_node(expr.0)), expr.1)),
+    SBench(_, body) => match validate_expr(expr = body, rows = rows, source = source, at = at) {
+      Some(expr) => Some((authority_node(kind = AuthorityStmtBench, slots = no_slots(), children = one_node(expr.0)), expr.1)),
       None => None
     },
-    SExample(_, body) => match validate_expr(body, rows, source, at) {
-      Some(expr) => Some((authority_node(AuthorityStmtExample, no_slots(), one_node(expr.0)), expr.1)),
+    SExample(_, body) => match validate_expr(expr = body, rows = rows, source = source, at = at) {
+      Some(expr) => Some((authority_node(kind = AuthorityStmtExample, slots = no_slots(), children = one_node(expr.0)), expr.1)),
       None => None
     },
-    SExpr(body) => match validate_expr(body, rows, source, at) {
-      Some(expr) => Some((authority_node(AuthorityStmtExpr, no_slots(), one_node(expr.0)), expr.1)),
+    SExpr(body) => match validate_expr(expr = body, rows = rows, source = source, at = at) {
+      Some(expr) => Some((authority_node(kind = AuthorityStmtExpr, slots = no_slots(), children = one_node(expr.0)), expr.1)),
       None => None
     },
     SExport(_) => Some((leaf(AuthorityStmtExport), at)),
@@ -736,7 +756,7 @@ fn validate_stmt(stmt: Stmt, rows: Array[SourceBinder], source: String, at: Int)
 /// Compatibility validator. It delegates to the same exhaustive constructor
 /// walk used by the source-owning aggregate and discards only the data tree.
 export fn validate_program_binder_rows(program: Array[Stmt], rows: Array[SourceBinder], source: String) -> Bool {
-  match build_program_binder_authority(program, rows, source) {
+  match build_program_binder_authority(program = program, rows = rows, source = source) {
     Some(_) => true,
     None => false
   }
@@ -746,19 +766,19 @@ fn stored_authority_slots(slots: Array[BinderAuthoritySlot], at: Int) -> StoredB
   if at >= Array::length(slots) {
     StoredAuthorityNil
   } else {
-    StoredAuthoritySlot(Array::get(slots, at), stored_authority_slots(slots, at + 1))
+    StoredAuthoritySlot(Array::get(slots, at = at), stored_authority_slots(slots = slots, at = at + 1))
   }
 }
 
 fn stored_authority_node(_ node: BinderAuthorityNode) -> StoredBinderAuthority {
-  StoredAuthorityNode(node.kind, stored_authority_slots(node.slots, 0), stored_authority_nodes(node.children, 0),)
+  StoredAuthorityNode(node.kind, stored_authority_slots(slots = node.slots, at = 0), stored_authority_nodes(nodes = node.children, at = 0),)
 }
 
 fn stored_authority_nodes(nodes: Array[BinderAuthorityNode], at: Int) -> StoredBinderAuthority {
   if at >= Array::length(nodes) {
     StoredAuthorityNil
   } else {
-    StoredAuthorityChild(stored_authority_node(Array::get(nodes, at)), stored_authority_nodes(nodes, at + 1))
+    StoredAuthorityChild(stored_authority_node(Array::get(nodes, at = at)), stored_authority_nodes(nodes = nodes, at = at + 1))
   }
 }
 
@@ -766,9 +786,9 @@ fn build_program_binder_authority(program: Array[Stmt], rows: Array[SourceBinder
   let nodes = ArrayBuilder::new()
   let mut next = 0
   for stmt in program {
-    match validate_stmt(stmt, rows, source, next) {
+    match validate_stmt(stmt = stmt, rows = rows, source = source, at = next) {
       Some(result) => {
-        ArrayBuilder::push(nodes, result.0)
+        ArrayBuilder::push(nodes, value = result.0)
         next = result.1
       },
       None => return None
@@ -786,19 +806,19 @@ fn build_program_binder_authority(program: Array[Stmt], rows: Array[SourceBinder
 /// and accessors remain forgeable data.
 export fn parse_source_located_with_binder_authority(_ source: String) -> Option[LocatedProgramBinderAuthority] with Exception {
   let (tokens, starts, ends) = lex_with_offsets(source)
-  let context = binder_capture_context(starts, ends)
-  let (program, next) = parse_program_located_with_untrusted_binder_context(tokens, starts, source, Some(context))
+  let context = binder_capture_context(starts = starts, ends = ends)
+  let (program, next) = parse_program_located_with_untrusted_binder_context(tokens = tokens, starts = starts, source = source, context = Some(context))
   let rows = binder_capture_rows(context)
-  if match peek(tokens, next) {
+  if match peek(tokens = tokens, pos = next) {
     TEof => true,
     _ => false
   } && binder_capture_is_eligible(context) {
-    match build_program_binder_authority(program, rows, source) {
+    match build_program_binder_authority(program = program, rows = rows, source = source) {
       Some(nodes) => Some(LocatedProgramBinderAuthority::{
         source: source,
         program: StoredLocatedProgramValue(program),
         binders: rows,
-        nodes: stored_authority_nodes(nodes, 0)
+        nodes: stored_authority_nodes(nodes = nodes, at = 0)
       }),
       None => None
     }

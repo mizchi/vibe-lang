@@ -157,7 +157,7 @@ fn clen_order() -> Array[Int] {
 
 /// Build the fixed Huffman tables (RFC 1951 §3.2.6).
 fn fixed_litlen_table() -> HuffTable with Exception {
-  let lengths = FixedArray::make(288, 0)
+  let lengths = FixedArray::make(288, value = 0)
   let mut i = 0
   while i < 288 {
     let len = if i < 144 {
@@ -169,27 +169,27 @@ fn fixed_litlen_table() -> HuffTable with Exception {
     } else {
       8
     }
-    Array::set(lengths, i, len)
+    Array::set(lengths, at = i, value = len)
     i = i + 1
   }
   build_table(lengths)
 }
 
 fn fixed_dist_table() -> HuffTable with Exception {
-  build_table(FixedArray::make(30, 5))
+  build_table(FixedArray::make(30, value = 5))
 }
 
 /// Decode a dynamic Huffman block header → (litlen table, dist table).
 fn read_dynamic_tables(_ r: BitReader) -> (HuffTable, HuffTable) with Exception {
-  let hlit = read_bits(r, 5) + 257
-  let hdist = read_bits(r, 5) + 1
-  let hclen = read_bits(r, 4) + 4
+  let hlit = read_bits(r = r, n = 5) + 257
+  let hdist = read_bits(r = r, n = 5) + 1
+  let hclen = read_bits(r = r, n = 4) + 4
   // Read code-length code lengths in the permuted order.
-  let clen_lengths = FixedArray::make(19, 0)
+  let clen_lengths = FixedArray::make(19, value = 0)
   let order = clen_order()
   let mut i = 0
   while i < hclen {
-    Array::set(clen_lengths, Array::get(order, i), read_bits(r, 3))
+    Array::set(clen_lengths, at = Array::get(order, at = i), value = read_bits(r = r, n = 3))
     i = i + 1
   }
   let clen_table = build_table(clen_lengths)
@@ -197,30 +197,30 @@ fn read_dynamic_tables(_ r: BitReader) -> (HuffTable, HuffTable) with Exception 
   let total = hlit + hdist
   let lengths = []
   while Array::length(lengths) < total {
-    let sym = decode_symbol(clen_table, r)
+    let sym = decode_symbol(t = clen_table, r = r)
     if sym < 16 {
-      Array::push(lengths, sym)
+      Array::push(lengths, value = sym)
     } else if sym == 16 {
       // Repeat previous length 3..6 times (extra 2 bits).
-      let prev = Array::get(lengths, Array::length(lengths) - 1)
-      let n = read_bits(r, 2) + 3
+      let prev = Array::get(lengths, at = Array::length(lengths) - 1)
+      let n = read_bits(r = r, n = 2) + 3
       let mut j = 0
       while j < n {
-        Array::push(lengths, prev)
+        Array::push(lengths, value = prev)
         j = j + 1
       }
     } else if sym == 17 {
-      let n = read_bits(r, 3) + 3
+      let n = read_bits(r = r, n = 3) + 3
       let mut j = 0
       while j < n {
-        Array::push(lengths, 0)
+        Array::push(lengths, value = 0)
         j = j + 1
       }
     } else if sym == 18 {
-      let n = read_bits(r, 7) + 11
+      let n = read_bits(r = r, n = 7) + 11
       let mut j = 0
       while j < n {
-        Array::push(lengths, 0)
+        Array::push(lengths, value = 0)
         j = j + 1
       }
     } else {
@@ -230,18 +230,18 @@ fn read_dynamic_tables(_ r: BitReader) -> (HuffTable, HuffTable) with Exception 
   // Split into litlen and dist arrays. Both sizes are known up front
   // (`hlit` and `hdist`), so preallocate and bulk-copy from `lengths`
   // — avoids the O(N) per Array::push that wasm-gc would otherwise pay.
-  let litlen_lens = FixedArray::make(hlit, 0)
-  FixedArray::blit(litlen_lens, 0, lengths, 0, hlit)
-  let dist_lens = FixedArray::make(hdist, 0)
-  FixedArray::blit(dist_lens, 0, lengths, hlit, hdist)
+  let litlen_lens = FixedArray::make(hlit, value = 0)
+  FixedArray::blit(litlen_lens, at = 0, src = lengths, src_start = 0, length = hlit)
+  let dist_lens = FixedArray::make(hdist, value = 0)
+  FixedArray::blit(dist_lens, at = 0, src = lengths, src_start = hlit, length = hdist)
   (build_table(litlen_lens), build_table(dist_lens))
 }
 
 /// Inflate a single block into the output buffer.
 /// Returns true if this was the final block.
 fn inflate_block(r: BitReader, out: Bytes) -> Bool with Exception {
-  let bfinal = read_bits(r, 1)
-  let btype = read_bits(r, 2)
+  let bfinal = read_bits(r = r, n = 1)
+  let btype = read_bits(r = r, n = 2)
   if btype == 0 {
     // Stored block: skip to next byte, then LEN (2B) / NLEN (2B) / LEN bytes.
     align_to_byte(r)
@@ -256,7 +256,7 @@ fn inflate_block(r: BitReader, out: Bytes) -> Bool with Exception {
     }
     let mut i = 0
     while i < len {
-      Bytes::push(out, read_byte(r))
+      Bytes::push(out, value = read_byte(r))
       i = i + 1
     }
     bfinal == 1
@@ -272,16 +272,16 @@ fn inflate_block(r: BitReader, out: Bytes) -> Bool with Exception {
     let dextra = dist_extra()
     let mut done = false
     while !done {
-      let sym = decode_symbol(litlen_t, r)
+      let sym = decode_symbol(t = litlen_t, r = r)
       if sym < 256 {
-        Bytes::push(out, sym)
+        Bytes::push(out, value = sym)
       } else if sym == 256 {
         done = true
       } else {
         let li = sym - 257
-        let length = Array::get(lbase, li) + read_bits(r, Array::get(lextra, li))
-        let dsym = decode_symbol(dist_t, r)
-        let distance = Array::get(dbase, dsym) + read_bits(r, Array::get(dextra, dsym))
+        let length = Array::get(lbase, at = li) + read_bits(r = r, n = Array::get(lextra, at = li))
+        let dsym = decode_symbol(t = dist_t, r = r)
+        let distance = Array::get(dbase, at = dsym) + read_bits(r = r, n = Array::get(dextra, at = dsym))
         let out_len = Bytes::length(out)
         if distance > out_len {
           throw("inflate: distance exceeds output buffer")
@@ -290,7 +290,7 @@ fn inflate_block(r: BitReader, out: Bytes) -> Bool with Exception {
         // Note: source and destination may overlap (RLE for repeats).
         let mut j = 0
         while j < length {
-          Bytes::push(out, Bytes::get(out, out_len - distance + j))
+          Bytes::push(out, value = Bytes::get(out, at = out_len - distance + j))
           j = j + 1
         }
       }
@@ -307,7 +307,7 @@ export fn inflate(_ data: Bytes) -> Bytes with Exception {
   let out = Bytes::new()
   let mut done = false
   while !done {
-    done = inflate_block(r, out)
+    done = inflate_block(r = r, out = out)
   }
   out
 }

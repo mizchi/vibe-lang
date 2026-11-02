@@ -59,7 +59,7 @@ import ../process {
 //# String / manifest helpers
 
 fn empty_strings() -> Array[String] {
-  Array::slice([""], 0, 0)
+  Array::slice([""], start = 0, end = 0)
 }
 
 fn split_lines(_ text: String) -> Array[String] {
@@ -68,14 +68,14 @@ fn split_lines(_ text: String) -> Array[String] {
   let mut start = 0
   let mut idx = 0
   while idx < len {
-    if String::char_code_at(text, idx) == '\n' {
-      Array::push(lines, text[start: idx])
+    if String::char_code_at(text, at = idx) == '\n' {
+      Array::push(lines, value = text[start: idx])
       start = idx + 1
     }
     idx = idx + 1
   }
   if start < len {
-    Array::push(lines, text[start: len])
+    Array::push(lines, value = text[start: len])
   }
   lines
 }
@@ -85,7 +85,7 @@ fn join_lines(_ lines: Array[String]) -> String {
   let mut acc = ""
   let mut i = 0
   while i < n {
-    let line = Array::get(lines, i)
+    let line = Array::get(lines, at = i)
     acc = if i == 0 {
       line
     } else {
@@ -102,9 +102,9 @@ fn read_manifest(_ path: String) -> Array[String] with Fs {
   let mut out = empty_strings()
   let mut i = 0
   while i < n {
-    let line = Array::get(raw, i)
+    let line = Array::get(raw, at = i)
     if String::length(line) > 0 {
-      Array::push(out, line)
+      Array::push(out, value = line)
     }
     i = i + 1
   }
@@ -128,7 +128,7 @@ fn has_suffix(s: String, suffix: String) -> Bool {
   if n < m {
     false
   } else {
-    String::substring(s, n - m, n) == suffix
+    String::substring(s, start = n - m, end = n) == suffix
   }
 }
 
@@ -136,16 +136,16 @@ fn has_suffix(s: String, suffix: String) -> Bool {
 /// verbatim require-pin head, which is not vibe syntax), "" when it parses.
 /// A `.vpkg` contract is not a program and is never asked.
 fn input_parse_error(rel_path: String, pre: String) -> String {
-  if has_suffix(rel_path, ".vpkg") {
+  if has_suffix(s = rel_path, suffix = ".vpkg") {
     ""
   } else {
-    let e = source_header_end(pre)
+    let e = source_header_end(src = pre)
     let head_end = if e > 0 {
       e
     } else {
       0
     }
-    parse_error_of(String::substring(pre, head_end, String::length(pre)))
+    parse_error_of(String::substring(pre, start = head_end, end = String::length(pre)))
   }
 }
 
@@ -156,25 +156,25 @@ fn format_one_line(mode: String, rel_path: String) -> String with Env + Fs {
   // (best-effort; an uninstalled package leaves its line verbatim). `.vpkg`
   // headers included (#2260 round 3). Check mode reports the fillable file
   // as DIFF via the comparison below, which is exactly "not canonical yet".
-  let pre = fill_require_pins_lenient(source)
+  let pre = fill_require_pins_lenient(source = source)
   // #2636: the formatter's grammar is the compiler's. A file the parser
   // rejects is REFUSED, never rewritten and never certified -- the same
   // guard the single-file entry (fmt_entry.vibe) runs, so `pkf run fmt` and
   // CI's vibe-fmt-check cannot mint a spelling for a construct the language
   // does not have.
-  let input_error = input_parse_error(rel_path, pre)
+  let input_error = input_parse_error(rel_path = rel_path, pre = pre)
   if String::length(input_error) > 0 {
     "REFUSED\t\{rel_path}\t\{input_error}"
   } else {
-    format_one_line_parsed(mode, rel_path, source, pre)
+    format_one_line_parsed(mode = mode, rel_path = rel_path, source = source, pre = pre)
   }
 }
 
 fn format_one_line_parsed(mode: String, rel_path: String, source: String, pre: String) -> String with Fs {
-  let formatted = format_source(rel_path, pre)
+  let formatted = format_source(path = rel_path, src = pre)
   let is_fixpoint = formatted == source
   if mode == "write" && !is_fixpoint {
-    Fs::write_file(rel_path, formatted)
+    Fs::write_file(rel_path, contents = formatted)
   }
   let status = if is_fixpoint {
     "OK"
@@ -189,7 +189,7 @@ fn format_sequential(mode: String, files: Array[String]) -> Array[String] with E
   let mut report = empty_strings()
   let mut i = 0
   while i < n {
-    Array::push(report, format_one_line(mode, Array::get(files, i)))
+    Array::push(report, value = format_one_line(mode = mode, rel_path = Array::get(files, at = i)))
     i = i + 1
   }
   report
@@ -218,7 +218,7 @@ fn shard_files(files: Array[String], jobs: Int, shard: Int) -> Array[String] {
   let mut i = 0
   while i < n {
     if i % jobs == shard {
-      Array::push(out, Array::get(files, i))
+      Array::push(out, value = Array::get(files, at = i))
     }
     i = i + 1
   }
@@ -228,7 +228,7 @@ fn shard_files(files: Array[String], jobs: Int, shard: Int) -> Array[String] {
 fn write_shard_manifests(files: Array[String], jobs: Int) -> Unit with Fs {
   let mut shard = 0
   while shard < jobs {
-    Fs::write_file(shard_manifest_path(shard), join_lines(shard_files(files, jobs, shard)))
+    Fs::write_file(shard_manifest_path(shard), contents = join_lines(shard_files(files = files, jobs = jobs, shard = shard)))
     shard = shard + 1
   }
 }
@@ -259,12 +259,12 @@ fn build_background_command(mode: String, jobs: Int) -> String {
 fn read_shard_report(mode: String, shard: Int, expected: Array[String]) -> Array[String] with Fs {
   let expected_n = Array::length(expected)
   if !Fs::exists(shard_report_path(shard)) {
-    fallback_error_report(expected, "shard \{Int::to_string(shard)} produced no report (crashed before writing output)")
+    fallback_error_report(files = expected, message = "shard \{Int::to_string(shard)} produced no report (crashed before writing output)")
   } else {
     let lines = split_lines(Fs::read_file(shard_report_path(shard)))
     let filtered_n = Array::length(lines)
     if filtered_n != expected_n {
-      fallback_error_report(expected, "shard \{Int::to_string(shard)} report has \{Int::to_string(filtered_n)} line(s), expected \{Int::to_string(expected_n)} (crashed partway through)")
+      fallback_error_report(files = expected, message = "shard \{Int::to_string(shard)} report has \{Int::to_string(filtered_n)} line(s), expected \{Int::to_string(expected_n)} (crashed partway through)")
     } else {
       lines
     }
@@ -276,24 +276,24 @@ fn fallback_error_report(files: Array[String], message: String) -> Array[String]
   let mut out = empty_strings()
   let mut i = 0
   while i < n {
-    Array::push(out, "ERROR\t\{Array::get(files, i)}\t\{message}")
+    Array::push(out, value = "ERROR\t\{Array::get(files, i)}\t\{message}")
     i = i + 1
   }
   out
 }
 
 fn format_sharded(mode: String, files: Array[String], jobs: Int) -> Array[String] with Fs + Process {
-  write_shard_manifests(files, jobs)
-  let _ = sh_capture(build_background_command(mode, jobs))
+  write_shard_manifests(files = files, jobs = jobs)
+  let _ = sh_capture(build_background_command(mode = mode, jobs = jobs))
   let mut report = empty_strings()
   let mut shard = 0
   while shard < jobs {
-    let expected = shard_files(files, jobs, shard)
-    let shard_report = read_shard_report(mode, shard, expected)
+    let expected = shard_files(files = files, jobs = jobs, shard = shard)
+    let shard_report = read_shard_report(mode = mode, shard = shard, expected = expected)
     let m = Array::length(shard_report)
     let mut i = 0
     while i < m {
-      Array::push(report, Array::get(shard_report, i))
+      Array::push(report, value = Array::get(shard_report, at = i))
       i = i + 1
     }
     shard = shard + 1
@@ -339,10 +339,10 @@ export fn main() -> Int allows Fs + Env + Process {
     min_shards
   }
   let report = if jobs <= 1 || n <= safety_chunk_cap {
-    format_sequential(mode, files)
+    format_sequential(mode = mode, files = files)
   } else {
-    format_sharded(mode, files, jobs)
+    format_sharded(mode = mode, files = files, jobs = jobs)
   }
-  Fs::write_file(report_path, join_lines(report))
+  Fs::write_file(report_path, contents = join_lines(report))
   0
 }

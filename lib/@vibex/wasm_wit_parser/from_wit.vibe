@@ -70,7 +70,7 @@ import ./wit_parser.vibe {
 
 /// The vibe type spelling of a WIT type, or a refusal naming it.
 export fn from_wit_type(_ t: WitTypeExpr) -> String with Exception {
-  fw_type(t, "")
+  fw_type(t = t, ctx = "")
 }
 
 /// The vibe declaration of a WIT function:
@@ -78,30 +78,30 @@ export fn from_wit_type(_ t: WitTypeExpr) -> String with Exception {
 /// `fn name(x: Int) -> String with Exception[String] + Async`.
 /// A refusal names the function as well as the type.
 export fn from_wit_func(name: String, is_async: Bool, params: Array[(String, WitTypeExpr)], result: Option[WitTypeExpr]) -> String with Exception {
-  fw_signature(fw_ident(fw_snake(name), " (in `\{name}`)"), is_async, params, result, name)
+  fw_signature(spelled = fw_ident(name = fw_snake(name), ctx = " (in `\{name}`)"), is_async = is_async, params = params, result = result, ctx_name = name)
 }
 
 /// `fn <spelled>(..) -> ..`, refusals naming `ctx_name`.
 fn fw_signature(spelled: String, is_async: Bool, params: Array[(String, WitTypeExpr)], result: Option[WitTypeExpr], ctx_name: String) -> String with Exception {
   let ctx = " (in `\{ctx_name}`)"
   let sb = StringBuilder::new()
-  StringBuilder::push(sb, "fn ")
-  StringBuilder::push(sb, spelled)
-  StringBuilder::push(sb, "(")
+  StringBuilder::push(sb, value = "fn ")
+  StringBuilder::push(sb, value = spelled)
+  StringBuilder::push(sb, value = "(")
   let mut i = 0
   while i < Array::length(params) {
-    let (pname, pty) = Array::get(params, i)
+    let (pname, pty) = Array::get(params, at = i)
     if i > 0 {
-      StringBuilder::push(sb, ", ")
+      StringBuilder::push(sb, value = ", ")
     } else {
       ()
     }
-    StringBuilder::push(sb, fw_ident(fw_snake(pname), ctx))
-    StringBuilder::push(sb, ": ")
-    StringBuilder::push(sb, fw_type(pty, ctx))
+    StringBuilder::push(sb, value = fw_ident(name = fw_snake(pname), ctx = ctx))
+    StringBuilder::push(sb, value = ": ")
+    StringBuilder::push(sb, value = fw_type(t = pty, ctx = ctx))
     i = i + 1
   }
-  StringBuilder::push(sb, ") -> ")
+  StringBuilder::push(sb, value = ") -> ")
   let rows: Array[String] = []
   match result {
     Some(TyResult(ok, err)) => match err {
@@ -112,26 +112,26 @@ fn fw_signature(spelled: String, is_async: Bool, params: Array[(String, WitTypeE
           TyTuple(items) => if Array::length(items) == 0 {
             "Unit"
           } else {
-            fw_type(ok, ctx)
+            fw_type(t = ok, ctx = ctx)
           },
-          _ => fw_type(ok, ctx)
+          _ => fw_type(t = ok, ctx = ctx)
         }
-        StringBuilder::push(sb, ok_text)
-        Array::push(rows, "Exception[\{fw_type(e, ctx)}]")
+        StringBuilder::push(sb, value = ok_text)
+        Array::push(rows, value = "Exception[\{fw_type(e, ctx)}]")
       },
-      None => throw(fw_refusal("result<..> with no error type", ctx))
+      None => throw(fw_refusal(what = "result<..> with no error type", ctx = ctx))
     },
-    Some(other) => StringBuilder::push(sb, fw_type(other, ctx)),
-    None => StringBuilder::push(sb, "Unit")
+    Some(other) => StringBuilder::push(sb, value = fw_type(t = other, ctx = ctx)),
+    None => StringBuilder::push(sb, value = "Unit")
   }
   if is_async {
-    Array::push(rows, "Async")
+    Array::push(rows, value = "Async")
   } else {
     ()
   }
   if Array::length(rows) > 0 {
-    StringBuilder::push(sb, " with ")
-    StringBuilder::push(sb, String::join(rows, " + "))
+    StringBuilder::push(sb, value = " with ")
+    StringBuilder::push(sb, value = String::join(rows, sep = " + "))
   } else {
     ()
   }
@@ -156,8 +156,8 @@ export fn from_wit_typedef(_ typedef: WitTypeDef) -> String with Exception {
       let lines: Array[String] = []
       let mut i = 0
       while i < Array::length(fields) {
-        let (fname, fty) = Array::get(fields, i)
-        Array::push(lines, "  \{fw_ident(fw_snake(fname), ctx)}: \{fw_type(fty, ctx)}")
+        let (fname, fty) = Array::get(fields, at = i)
+        Array::push(lines, value = "  \{fw_ident(fw_snake(fname), ctx)}: \{fw_type(fty, ctx)}")
         i = i + 1
       }
       "export struct \{fw_type_name(name)} {\n\{String::join(lines, ";\n")}\n}"
@@ -166,7 +166,7 @@ export fn from_wit_typedef(_ typedef: WitTypeDef) -> String with Exception {
       let parts: Array[String] = []
       let mut i = 0
       while i < Array::length(cases) {
-        Array::push(parts, "  \{fw_case_name(Array::get(cases, i), " (in enum `\{name}`)")}")
+        Array::push(parts, value = "  \{fw_case_name(Array::get(cases, i), " (in enum `\{name}`)")}")
         i = i + 1
       }
       "export enum \{fw_type_name(name)} {\n\{String::join(parts, ";\n")}\n}"
@@ -176,22 +176,22 @@ export fn from_wit_typedef(_ typedef: WitTypeDef) -> String with Exception {
       let parts: Array[String] = []
       let mut i = 0
       while i < Array::length(cases) {
-        let (cname, payload) = Array::get(cases, i)
-        let head = fw_case_name(cname, ctx)
-        Array::push(parts, match payload {
+        let (cname, payload) = Array::get(cases, at = i)
+        let head = fw_case_name(case = cname, ctx = ctx)
+        Array::push(parts, value = match payload {
           Some(TyTuple(items)) => {
             if Array::length(items) == 1 {
               // `c(tuple<T>)` would read back as `C(T)`, which projects to
               // `c(T)`: a different ABI shape (Codex on #3059), like the
               // one-element tuple `fw_type` refuses.
-              throw(fw_refusal("tuple<..> with one element", ctx))
+              throw(fw_refusal(what = "tuple<..> with one element", ctx = ctx))
             } else {
               ()
             }
             let tys: Array[String] = []
             let mut k = 0
             while k < Array::length(items) {
-              Array::push(tys, fw_type(Array::get(items, k), ctx))
+              Array::push(tys, value = fw_type(t = Array::get(items, at = k), ctx = ctx))
               k = k + 1
             }
             "  \{head}(\{String::join(tys, ", ")})"
@@ -204,7 +204,7 @@ export fn from_wit_typedef(_ typedef: WitTypeDef) -> String with Exception {
       "export enum \{fw_type_name(name)} {\n\{String::join(parts, ";\n")}\n}"
     },
     TDAlias(name, t, _) => "type \{fw_type_name(name)} = \{fw_type(t, " (in type `\{name}`)")}",
-    TDFlags(name, _, _) => throw(fw_refusal("flags \{name}", "")),
+    TDFlags(name, _, _) => throw(fw_refusal(what = "flags \{name}", ctx = "")),
     TDResource(name, funcs, _) => {
       let ty = fw_type_name(name)
       // The explicit release is spelled `drop` (§7); a resource whose own
@@ -212,9 +212,9 @@ export fn from_wit_typedef(_ typedef: WitTypeDef) -> String with Exception {
       // #3059), so it is refused rather than silently renamed.
       let mut fi = 0
       while fi < Array::length(funcs) {
-        let (fname, _, _, _, _, _) = Array::get(funcs, fi)
+        let (fname, _, _, _, _, _) = Array::get(funcs, at = fi)
         if fname == "drop" {
-          throw(fw_refusal("resource `\{name}` declaring its own `drop` (the derived handle release is `\{ty}::drop`)", ""))
+          throw(fw_refusal(what = "resource `\{name}` declaring its own `drop` (the derived handle release is `\{ty}::drop`)", ctx = ""))
         } else {
           ()
         }
@@ -226,7 +226,7 @@ export fn from_wit_typedef(_ typedef: WitTypeDef) -> String with Exception {
       let mut has_new = false
       let mut ci = 0
       while ci < Array::length(funcs) {
-        let (fname, kind, _, _, _, _) = Array::get(funcs, ci)
+        let (fname, kind, _, _, _, _) = Array::get(funcs, at = ci)
         match kind {
           FKConstructor(_) => {
             has_ctor = true
@@ -240,26 +240,26 @@ export fn from_wit_typedef(_ typedef: WitTypeDef) -> String with Exception {
         ci = ci + 1
       }
       if has_ctor && has_new {
-        throw(fw_refusal("resource `\{name}` declaring both a constructor and a function named `new` (the derived constructor is `\{ty}::new`)", ""))
+        throw(fw_refusal(what = "resource `\{name}` declaring both a constructor and a function named `new` (the derived constructor is `\{ty}::new`)", ctx = ""))
       } else {
         ()
       }
       let out: Array[String] = ["opaque type \{ty}"]
       let mut i = 0
       while i < Array::length(funcs) {
-        let (fname, kind, is_async, params, result, _) = Array::get(funcs, i)
+        let (fname, kind, is_async, params, result, _) = Array::get(funcs, at = i)
         let res_ctx = " (in resource `\{name}`)"
-        let method_name = fw_ident(fw_snake(fname), res_ctx)
+        let method_name = fw_ident(name = fw_snake(fname), ctx = res_ctx)
         let qualified = "\{ty}::\{method_name}"
         let decl = match kind {
-          FKConstructor(_) => fw_signature("\{ty}::new", is_async, params, Some(TyOwn(name)), qualified),
+          FKConstructor(_) => fw_signature(spelled = "\{ty}::new", is_async = is_async, params = params, result = Some(TyOwn(name)), ctx_name = qualified),
           FKMethod(_) => {
             // The receiver is spelled `self`; a method whose own parameter is
             // also `self` would declare it twice (Codex on #3059).
             let mut sp = 0
             while sp < Array::length(params) {
-              if fw_snake(Array::get(params, sp).0) == "self" {
-                throw(fw_refusal("method `\{fname}` with a parameter named `self` (the receiver is `self`)", res_ctx))
+              if fw_snake(Array::get(params, at = sp).0) == "self" {
+                throw(fw_refusal(what = "method `\{fname}` with a parameter named `self` (the receiver is `self`)", ctx = res_ctx))
               } else {
                 ()
               }
@@ -270,19 +270,19 @@ export fn from_wit_typedef(_ typedef: WitTypeDef) -> String with Exception {
             ]
             let mut p = 0
             while p < Array::length(params) {
-              Array::push(with_self, Array::get(params, p))
+              Array::push(with_self, value = Array::get(params, at = p))
               p = p + 1
             }
-            fw_signature(qualified, is_async, with_self, result, qualified)
+            fw_signature(spelled = qualified, is_async = is_async, params = with_self, result = result, ctx_name = qualified)
           },
-          FKStatic(_) => fw_signature(qualified, is_async, params, result, qualified),
-          FKFreestanding => fw_signature(qualified, is_async, params, result, qualified)
+          FKStatic(_) => fw_signature(spelled = qualified, is_async = is_async, params = params, result = result, ctx_name = qualified),
+          FKFreestanding => fw_signature(spelled = qualified, is_async = is_async, params = params, result = result, ctx_name = qualified)
         }
-        Array::push(out, decl)
+        Array::push(out, value = decl)
         i = i + 1
       }
-      Array::push(out, "fn \{ty}::drop(self: \{ty}) -> Unit")
-      String::join(out, "\n")
+      Array::push(out, value = "fn \{ty}::drop(self: \{ty}) -> Unit")
+      String::join(out, sep = "\n")
     }
   }
 }
@@ -310,14 +310,14 @@ export fn from_wit_typedefs(_ defs: Array[WitTypeDef]) -> String with Exception 
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(defs) {
-    let def = Array::get(defs, i)
+    let def = Array::get(defs, at = i)
     let (owner, cases) = match def {
       TDEnum(name, cs, _) => (name, cs),
       TDVariant(name, cs, _) => {
         let names: Array[String] = []
         let mut k = 0
         while k < Array::length(cs) {
-          Array::push(names, Array::get(cs, k).0)
+          Array::push(names, value = Array::get(cs, at = k).0)
           k = k + 1
         }
         (name, names)
@@ -326,25 +326,25 @@ export fn from_wit_typedefs(_ defs: Array[WitTypeDef]) -> String with Exception 
     }
     let mut c = 0
     while c < Array::length(cases) {
-      let ctor = fw_pascal(Array::get(cases, c))
+      let ctor = fw_pascal(Array::get(cases, at = c))
       let mut j = 0
       while j < Array::length(seen_ctor) {
-        if Array::get(seen_ctor, j) == ctor {
-          let first = Array::get(seen_owner, j)
-          throw(fw_refusal("case `\{Array::get(cases, c)}` in both `\{first}` and `\{owner}` (both would be the constructor `\{ctor}`)", ""))
+        if Array::get(seen_ctor, at = j) == ctor {
+          let first = Array::get(seen_owner, at = j)
+          throw(fw_refusal(what = "case `\{Array::get(cases, c)}` in both `\{first}` and `\{owner}` (both would be the constructor `\{ctor}`)", ctx = ""))
         } else {
           ()
         }
         j = j + 1
       }
-      Array::push(seen_ctor, ctor)
-      Array::push(seen_owner, owner)
+      Array::push(seen_ctor, value = ctor)
+      Array::push(seen_owner, value = owner)
       c = c + 1
     }
-    Array::push(out, from_wit_typedef(def))
+    Array::push(out, value = from_wit_typedef(def))
     i = i + 1
   }
-  String::join(out, "\n\n")
+  String::join(out, sep = "\n\n")
 }
 
 /// #2064: the vibe bindings for every function a WIT package's interfaces
@@ -369,21 +369,21 @@ export fn from_wit_future_imports(_ source: String) -> String with Exception {
   let (pkg, ifaces, _) = wit_parse(source)
   let (ns, pname, version) = match pkg {
     Some(p) => p,
-    None => throw(fw_refusal("a WIT file without a `package` line", " (the import address needs the package)"))
+    None => throw(fw_refusal(what = "a WIT file without a `package` line", ctx = " (the import address needs the package)"))
   }
   let ver = match version {
     Some(v) => v,
-    None => throw(fw_refusal("package `\{ns}:\{pname}` without a version", " (the composer imports a versioned interface)"))
+    None => throw(fw_refusal(what = "package `\{ns}:\{pname}` without a version", ctx = " (the composer imports a versioned interface)"))
   }
   let out: Array[String] = []
   let seen: Array[String] = []
   let mut i = 0
   while i < Array::length(ifaces) {
-    let (iname, _, items) = Array::get(ifaces, i)
+    let (iname, _, items) = Array::get(ifaces, at = i)
     let iface_id = "\{ns}:\{pname}/\{iname}@\{ver}"
     let mut k = 0
     while k < Array::length(items) {
-      match Array::get(items, k) {
+      match Array::get(items, at = k) {
         IIFunction(fname, kind, is_async, params, result, _) => {
           let ctx = " (in interface `\{iname}`)"
           let admitted = match kind {
@@ -404,12 +404,12 @@ export fn from_wit_future_imports(_ source: String) -> String with Exception {
             _ => false
           }
           if !admitted && !response {
-            throw(fw_refusal("function `\{fname}` as a host-future import (only `async func() -> s64`, or `async func() -> response` / `async func(<name>: string) -> response` over the `types` interface's `record response { status: s32, body: stream<u8> }`, is admitted)", ctx))
+            throw(fw_refusal(what = "function `\{fname}` as a host-future import (only `async func() -> s64`, or `async func() -> response` / `async func(<name>: string) -> response` over the `types` interface's `record response { status: s32, body: stream<u8> }`, is admitted)", ctx = ctx))
           } else {
             ()
           }
-          let vname = fw_ident(fw_snake(fname), ctx)
-          if vname == "host_future_get" || vname == "host_future_named" || vname == "host_response_named" || vname == "host_response_named_with" || vname == "host_stream_named" || vname == "host_stream_next" || vname == "host_stream_close" || vname == "sleep" || vname == "sleep_blocking" || vname == "assert" || String::starts_with(vname, "vibe_hf_") || String::starts_with(vname, "vibe_hs_") {
+          let vname = fw_ident(name = fw_snake(fname), ctx = ctx)
+          if vname == "host_future_get" || vname == "host_future_named" || vname == "host_response_named" || vname == "host_response_named_with" || vname == "host_stream_named" || vname == "host_stream_next" || vname == "host_stream_close" || vname == "sleep" || vname == "sleep_blocking" || vname == "assert" || String::starts_with(vname, prefix = "vibe_hf_") || String::starts_with(vname, prefix = "vibe_hs_") {
             // A binding's body calls one of these builtins, which this
             // declaration would shadow; a program defining any of them also
             // turns off the entry boundary that settles host futures or
@@ -417,50 +417,50 @@ export fn from_wit_future_imports(_ source: String) -> String with Exception {
             // scheduler hooks synthesize calls to `sleep_blocking`, `assert`
             // and the `vibe_hf_*` / `vibe_hs_*` raw halves after checking
             // (Codex on #3059).
-            throw(fw_refusal("function `\{fname}` (its binding `\{vname}` would shadow a compiler-owned builtin)", ctx))
+            throw(fw_refusal(what = "function `\{fname}` (its binding `\{vname}` would shadow a compiler-owned builtin)", ctx = ctx))
           } else if vname == "await" {
             // A program defining `await` turns off the builtin await lowering
             // for the whole merged program (Codex on #3059).
-            throw(fw_refusal("function `\{fname}` (its binding `await` would shadow the builtin every consumer awaits with)", ctx))
+            throw(fw_refusal(what = "function `\{fname}` (its binding `await` would shadow the builtin every consumer awaits with)", ctx = ctx))
           } else {
             ()
           }
           let mut j = 0
           while j < Array::length(seen) {
-            if Array::get(seen, j) == vname {
-              throw(fw_refusal("function `\{fname}` declared by two interfaces (both would be the binding `\{vname}`)", ctx))
+            if Array::get(seen, at = j) == vname {
+              throw(fw_refusal(what = "function `\{fname}` declared by two interfaces (both would be the binding `\{vname}`)", ctx = ctx))
             } else {
               ()
             }
             j = j + 1
           }
-          Array::push(seen, vname)
+          Array::push(seen, value = vname)
           if response && Array::length(params) == 1 {
             // The parameter's WIT label rides the address (`#<func>?<label>`)
             // so the composer can declare the function exactly as the WIT does.
-            let (plabel, _) = Array::get(params, 0)
+            let (plabel, _) = Array::get(params, at = 0)
             // The body calls `host_response_named_with`; a parameter spelled
             // that way would shadow it (Codex on #3091), so it takes another
             // name. The WIT label in the address stays as written.
-            let pname0 = fw_ident(fw_snake(plabel), ctx)
+            let pname0 = fw_ident(name = fw_snake(plabel), ctx = ctx)
             let pname = if pname0 == "host_response_named_with" {
               "request_arg"
             } else {
               pname0
             }
-            Array::push(out, "/// `\{iface_id}#\{fname}`, imported as a host response taking `\{plabel}` (#2066).\nexport fn \{vname}(\{pname}: String) -> Future[HostResponse] {\n  host_response_named_with(\"\{iface_id}#\{fname}?\{plabel}\", \{pname})\n}")
+            Array::push(out, value = "/// `\{iface_id}#\{fname}`, imported as a host response taking `\{plabel}` (#2066).\nexport fn \{vname}(\{pname}: String) -> Future[HostResponse] {\n  host_response_named_with(\"\{iface_id}#\{fname}?\{plabel}\", \{pname})\n}")
           } else if response {
-            Array::push(out, "/// `\{iface_id}#\{fname}`, imported as a host response (#2066).\nexport fn \{vname}() -> Future[HostResponse] {\n  host_response_named(\"\{iface_id}#\{fname}\")\n}")
+            Array::push(out, value = "/// `\{iface_id}#\{fname}`, imported as a host response (#2066).\nexport fn \{vname}() -> Future[HostResponse] {\n  host_response_named(\"\{iface_id}#\{fname}\")\n}")
           } else {
-            Array::push(out, "/// `\{iface_id}#\{fname}`, imported as a host future (#2064).\nexport fn \{vname}() -> Future[Int] {\n  host_future_named(\"\{iface_id}#\{fname}\")\n}")
+            Array::push(out, value = "/// `\{iface_id}#\{fname}`, imported as a host future (#2064).\nexport fn \{vname}() -> Future[Int] {\n  host_future_named(\"\{iface_id}#\{fname}\")\n}")
           }
         },
         // A resource's functions are functions of the interface too; none is
         // a host-future import, so they are refused rather than silently
         // missing from the bindings (Codex on #3059).
         IITypeDef(TDResource(rname, funcs, _)) => if Array::length(funcs) > 0 {
-          let (fname, _, _, _, _, _) = Array::get(funcs, 0)
-          throw(fw_refusal("function `\{fname}` of resource `\{rname}` as a host-future import (only a freestanding `async func() -> s64` is admitted)", " (in interface `\{iname}`)"))
+          let (fname, _, _, _, _, _) = Array::get(funcs, at = 0)
+          throw(fw_refusal(what = "function `\{fname}` of resource `\{rname}` as a host-future import (only a freestanding `async func() -> s64` is admitted)", ctx = " (in interface `\{iname}`)"))
         } else {
           ()
         },
@@ -470,7 +470,7 @@ export fn from_wit_future_imports(_ source: String) -> String with Exception {
     }
     i = i + 1
   }
-  String::join(out, "\n\n")
+  String::join(out, sep = "\n\n")
 }
 
 /// Does this interface bring `response` in from its package's `types`
@@ -481,7 +481,7 @@ fn fw_response_params_admitted(_ params: Array[(String, WitTypeExpr)]) -> Bool {
   if Array::length(params) == 0 {
     true
   } else if Array::length(params) == 1 {
-    let (_, pty) = Array::get(params, 0)
+    let (_, pty) = Array::get(params, at = 0)
     match pty {
       TyString => true,
       _ => false
@@ -495,11 +495,11 @@ fn fw_uses_types_response(_ items: Array[WitInterfaceItem]) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(items) {
-    match Array::get(items, i) {
+    match Array::get(items, at = i) {
       IIUse(ns, _, _, from, names) => if ns == "" && from == "types" {
         let mut n = 0
         while n < Array::length(names) {
-          if Array::get(names, n) == "response" {
+          if Array::get(names, at = n) == "response" {
             found = true
           } else {
             ()
@@ -522,17 +522,17 @@ fn fw_types_declares_response(_ ifaces: Array[(String, Option[String], Array[Wit
   let mut found = false
   let mut i = 0
   while i < Array::length(ifaces) {
-    let (iname, _, items) = Array::get(ifaces, i)
+    let (iname, _, items) = Array::get(ifaces, at = i)
     if iname == "types" {
       let mut k = 0
       while k < Array::length(items) {
-        match Array::get(items, k) {
+        match Array::get(items, at = k) {
           IITypeDef(TDRecord("response", fields, _)) => if Array::length(fields) == 2 {
-            let status_ok = match Array::get(fields, 0) {
+            let status_ok = match Array::get(fields, at = 0) {
               ("status", TyS32) => true,
               _ => false
             }
-            let body_ok = match Array::get(fields, 1) {
+            let body_ok = match Array::get(fields, at = 1) {
               ("body", TyStream(TyU8)) => true,
               _ => false
             }
@@ -574,40 +574,40 @@ fn fw_type(t: WitTypeExpr, ctx: String) -> String with Exception {
     // The host owns the producer end of a boundary byte stream (ADR-0089 D4),
     // which is the nominal `HostStream` handle.
     TyStream(TyU8) => "HostStream",
-    TyStream(_) => throw(fw_refusal("stream<..> of anything but u8", ctx)),
+    TyStream(_) => throw(fw_refusal(what = "stream<..> of anything but u8", ctx = ctx)),
     TyResult(ok, err) => match err {
       Some(e) => "Result[\{fw_type(ok, ctx)}, \{fw_type(e, ctx)}]",
-      None => throw(fw_refusal("result<..> with no error type", ctx))
+      None => throw(fw_refusal(what = "result<..> with no error type", ctx = ctx))
     },
     // `_` (the parser's empty tuple) as a type argument: `wit_type_text` has
     // no inverse for `Unit` outside a function's result, so the round trip
     // could not hold -- refuse it rather than emit `()`.
     TyTuple(items) => if Array::length(items) == 0 {
-      throw(fw_refusal("_ (no value) inside another type", ctx))
+      throw(fw_refusal(what = "_ (no value) inside another type", ctx = ctx))
     } else if Array::length(items) == 1 {
       // vibe reads `(T)` as grouping, not a one-element tuple, so `tuple<T>`
       // would come back as `T` -- a different ABI shape (Codex on #3059).
-      throw(fw_refusal("tuple<..> with one element", ctx))
+      throw(fw_refusal(what = "tuple<..> with one element", ctx = ctx))
     } else {
       let parts: Array[String] = []
       let mut i = 0
       while i < Array::length(items) {
-        Array::push(parts, fw_type(Array::get(items, i), ctx))
+        Array::push(parts, value = fw_type(t = Array::get(items, at = i), ctx = ctx))
         i = i + 1
       }
       "(\{String::join(parts, ", ")})"
     },
     TyId(name) => fw_type_name(name),
     TyOwn(name) => fw_type_name(name),
-    TyBorrow(name) => throw(fw_refusal("borrow<\{name}>", ctx)),
-    TyU8 => throw(fw_refusal("u8 outside list<u8>", ctx)),
-    TyU16 => throw(fw_refusal("u16", ctx)),
-    TyU32 => throw(fw_refusal("u32", ctx)),
-    TyU64 => throw(fw_refusal("u64", ctx)),
-    TyS8 => throw(fw_refusal("s8", ctx)),
-    TyS16 => throw(fw_refusal("s16", ctx)),
-    TyS32 => throw(fw_refusal("s32", ctx)),
-    TyF32 => throw(fw_refusal("f32", ctx))
+    TyBorrow(name) => throw(fw_refusal(what = "borrow<\{name}>", ctx = ctx)),
+    TyU8 => throw(fw_refusal(what = "u8 outside list<u8>", ctx = ctx)),
+    TyU16 => throw(fw_refusal(what = "u16", ctx = ctx)),
+    TyU32 => throw(fw_refusal(what = "u32", ctx = ctx)),
+    TyU64 => throw(fw_refusal(what = "u64", ctx = ctx)),
+    TyS8 => throw(fw_refusal(what = "s8", ctx = ctx)),
+    TyS16 => throw(fw_refusal(what = "s16", ctx = ctx)),
+    TyS32 => throw(fw_refusal(what = "s32", ctx = ctx)),
+    TyF32 => throw(fw_refusal(what = "f32", ctx = ctx))
   }
 }
 
@@ -661,16 +661,16 @@ let fw_vibe_keywords: Array[String] = [
 
 fn fw_ident(name: String, ctx: String) -> String with Exception {
   if name == "fn" {
-    throw(fw_refusal("identifier `fn` (a vibe keyword with no raw form)", ctx))
+    throw(fw_refusal(what = "identifier `fn` (a vibe keyword with no raw form)", ctx = ctx))
   } else if name == "true" || name == "false" {
     // `r#true` lexes to the identifier `true`, but the parser still reads
     // that as the boolean literal (Codex on #3059), so there is no spelling.
-    throw(fw_refusal("identifier `\{name}` (a vibe literal with no raw form)", ctx))
+    throw(fw_refusal(what = "identifier `\{name}` (a vibe literal with no raw form)", ctx = ctx))
   } else {
     let mut keyword = false
     let mut i = 0
     while i < Array::length(fw_vibe_keywords) {
-      if Array::get(fw_vibe_keywords, i) == name {
+      if Array::get(fw_vibe_keywords, at = i) == name {
         keyword = true
       } else {
         ()
@@ -692,7 +692,7 @@ fn fw_ident(name: String, ctx: String) -> String with Exception {
 fn fw_case_name(case: String, ctx: String) -> String with Exception {
   let ctor = fw_pascal(case)
   if ctor == "Some" || ctor == "None" || ctor == "Ok" || ctor == "Err" {
-    throw(fw_refusal("case `\{case}` (its vibe constructor `\{ctor}` is the builtin one)", ctx))
+    throw(fw_refusal(what = "case `\{case}` (its vibe constructor `\{ctor}` is the builtin one)", ctx = ctx))
   } else {
     ctor
   }
@@ -728,7 +728,7 @@ fn fw_type_name(_ name: String) -> String with Exception {
   let mut clash = false
   let mut i = 0
   while i < Array::length(builtins) {
-    if Array::get(builtins, i) == ty {
+    if Array::get(builtins, at = i) == ty {
       clash = true
     } else {
       ()
@@ -736,7 +736,7 @@ fn fw_type_name(_ name: String) -> String with Exception {
     i = i + 1
   }
   if clash {
-    throw(fw_refusal("type `\{name}` (its vibe name `\{ty}` is a builtin type)", ""))
+    throw(fw_refusal(what = "type `\{name}` (its vibe name `\{ty}` is a builtin type)", ctx = ""))
   } else {
     ty
   }
@@ -749,14 +749,14 @@ fn fw_pascal(_ name: String) -> String {
   let mut upper = true
   let mut i = 0
   while i < String::length(name) {
-    let c = String::byte_at(name, i)
+    let c = String::byte_at(name, at = i)
     if c == '-' {
       upper = true
     } else if upper && c >= 'a' && c <= 'z' {
-      StringBuilder::push(sb, String::from_byte(c - 32))
+      StringBuilder::push(sb, value = String::from_byte(c - 32))
       upper = false
     } else {
-      StringBuilder::push(sb, String::from_byte(c))
+      StringBuilder::push(sb, value = String::from_byte(c))
       upper = false
     }
     i = i + 1
@@ -770,11 +770,11 @@ fn fw_snake(_ name: String) -> String {
   let sb = StringBuilder::new()
   let mut i = 0
   while i < String::length(name) {
-    let c = String::byte_at(name, i)
+    let c = String::byte_at(name, at = i)
     if c == '-' {
-      StringBuilder::push(sb, "_")
+      StringBuilder::push(sb, value = "_")
     } else {
-      StringBuilder::push(sb, String::from_byte(c))
+      StringBuilder::push(sb, value = String::from_byte(c))
     }
     i = i + 1
   }

@@ -21,7 +21,7 @@ fn fw_positions(_ n: Int) -> Array[Int] {
   let xs: Array[Int] = []
   let mut i = 0
   while i < n {
-    Array::push(xs, -1); i = i + 1
+    Array::push(xs, value = -1); i = i + 1
   }
   xs
 }
@@ -48,27 +48,27 @@ export struct FunctionProductPlan {
 
 export fn function_product_plan_new(plan: LinkedFunctionPlan, input: LinkedBodyInputs) -> FunctionProductPlan with Exception {
   let total = input.num_user_funcs
-  fw_require(total >= 0 && Array::length(input.fn_names_list) >= total && Array::length(plan.lambda_bases) == total && plan.lambda_count >= 0, "invalid validation plan counts")
+  fw_require(ok = total >= 0 && Array::length(input.fn_names_list) >= total && Array::length(plan.lambda_bases) == total && plan.lambda_count >= 0, message = "invalid validation plan counts")
   let files: Array[Int] = []
   let statements: Array[Int] = []
   let mut i = 0
   while i < total {
-    let name = Array::get(input.fn_names_list, i)
-    Array::push(files, lc_fn_origin_lookup(input.lc_fn_file_of, name))
-    Array::push(statements, lc_fn_origin_lookup(input.lc_fn_stmt_of, name))
+    let name = Array::get(input.fn_names_list, at = i)
+    Array::push(files, value = lc_fn_origin_lookup(index = input.lc_fn_file_of, name = name))
+    Array::push(statements, value = lc_fn_origin_lookup(index = input.lc_fn_stmt_of, name = name))
     i = i + 1
   }
   let allowed: Array[Int] = []
   for index in input.all_fn_indices_list {
     if index >= input.func_offset {
-      Array::push(allowed, index - input.func_offset)
+      Array::push(allowed, value = index - input.func_offset)
     } else ()
   }
   FunctionProductPlan::{
     num_user_funcs: total,
-    lambda_bases: Array::slice(plan.lambda_bases, 0, total),
+    lambda_bases: Array::slice(plan.lambda_bases, start = 0, end = total),
     lambda_count: plan.lambda_count,
-    fn_names: Array::slice(input.fn_names_list, 0, total),
+    fn_names: Array::slice(input.fn_names_list, start = 0, end = total),
     fn_files: files,
     fn_src_stmts: statements,
     allowed_slots: allowed,
@@ -82,111 +82,111 @@ export fn function_product_plan_new(plan: LinkedFunctionPlan, input: LinkedBodyI
 /// The native input receipt additionally binds it to the exact context bytes.
 /// Lookup tables keep validation linear in the plan and contribution size.
 export fn validate_function_product(plan: LinkedFunctionPlan, input: LinkedBodyInputs, c: CodegenBodyCache, lo: Int, hi: Int) -> Unit with Exception {
-  validate_function_product_plan(function_product_plan_new(plan, input), c, lo, hi)
+  validate_function_product_plan(plan = function_product_plan_new(plan = plan, input = input), c = c, lo = lo, hi = hi)
 }
 
 export fn validate_function_product_plan(plan: FunctionProductPlan, c: CodegenBodyCache, lo: Int, hi: Int) -> Unit with Exception {
   let total = plan.num_user_funcs
-  fw_require(total >= 0 && plan.lambda_count >= 0 && plan.source_file_count >= 0 && Array::length(plan.lambda_bases) == total && Array::length(plan.fn_names) == total && Array::length(plan.fn_files) == total && Array::length(plan.fn_src_stmts) == total, "invalid validation plan counts")
-  fw_require(lo >= 0 && hi >= lo && hi <= total, "invalid assigned range")
+  fw_require(ok = total >= 0 && plan.lambda_count >= 0 && plan.source_file_count >= 0 && Array::length(plan.lambda_bases) == total && Array::length(plan.fn_names) == total && Array::length(plan.fn_files) == total && Array::length(plan.fn_src_stmts) == total, message = "invalid validation plan counts")
+  fw_require(ok = lo >= 0 && hi >= lo && hi <= total, message = "invalid assigned range")
   let n = Array::length(c.fn_indices)
-  fw_require(n == hi - lo && Array::length(c.fn_names) == n && Array::length(c.fn_files) == n && Array::length(c.fn_src_stmts) == n && Array::length(c.fn_bodies) == n && Array::length(c.fn_meta_i32) == n && Array::length(c.fn_meta_i64) == n && Array::length(c.fn_meta_v128) == n, "function columns or count differ")
+  fw_require(ok = n == hi - lo && Array::length(c.fn_names) == n && Array::length(c.fn_files) == n && Array::length(c.fn_src_stmts) == n && Array::length(c.fn_bodies) == n && Array::length(c.fn_meta_i32) == n && Array::length(c.fn_meta_i64) == n && Array::length(c.fn_meta_v128) == n, message = "function columns or count differ")
   let fn_pos = fw_positions(total)
   let lam_pos = fw_positions(plan.lambda_count)
   let lam_owner = fw_positions(plan.lambda_count)
   let mut expected_lambdas = 0
   let mut fi = lo
   while fi < hi {
-    let begin = Array::get(plan.lambda_bases, fi)
+    let begin = Array::get(plan.lambda_bases, at = fi)
     let end = if fi + 1 < total {
-      Array::get(plan.lambda_bases, fi + 1)
+      Array::get(plan.lambda_bases, at = fi + 1)
     } else {
       plan.lambda_count
     }
-    fw_require(begin >= 0 && end >= begin && end <= plan.lambda_count, "invalid planned lambda range")
+    fw_require(ok = begin >= 0 && end >= begin && end <= plan.lambda_count, message = "invalid planned lambda range")
     let mut li = begin
     while li < end {
-      Array::set(lam_owner, li, fi); li = li + 1
+      Array::set(lam_owner, at = li, value = fi); li = li + 1
     }
     expected_lambdas = expected_lambdas + end - begin
     fi = fi + 1
   }
   let mut i = 0
   while i < n {
-    let owner = Array::get(c.fn_indices, i)
-    fw_require(owner >= lo && owner < hi, "function outside assigned range")
-    fw_require(Array::get(fn_pos, owner) == -1, "duplicate function")
-    Array::set(fn_pos, owner, i)
-    let name = Array::get(plan.fn_names, owner)
-    fw_require(Array::get(c.fn_names, i) == name && Array::get(c.fn_files, i) == Array::get(plan.fn_files, owner) && Array::get(c.fn_src_stmts, i) == Array::get(plan.fn_src_stmts, owner), "function identity differs")
-    fw_require(fw_body_ok(Array::get(c.fn_bodies, i)) && Array::get(c.fn_meta_i32, i) >= 0 && Array::get(c.fn_meta_i64, i) >= 0 && Array::get(c.fn_meta_v128, i) >= 0, "invalid function body or locals")
+    let owner = Array::get(c.fn_indices, at = i)
+    fw_require(ok = owner >= lo && owner < hi, message = "function outside assigned range")
+    fw_require(ok = Array::get(fn_pos, at = owner) == -1, message = "duplicate function")
+    Array::set(fn_pos, at = owner, value = i)
+    let name = Array::get(plan.fn_names, at = owner)
+    fw_require(ok = Array::get(c.fn_names, at = i) == name && Array::get(c.fn_files, at = i) == Array::get(plan.fn_files, at = owner) && Array::get(c.fn_src_stmts, at = i) == Array::get(plan.fn_src_stmts, at = owner), message = "function identity differs")
+    fw_require(ok = fw_body_ok(Array::get(c.fn_bodies, at = i)) && Array::get(c.fn_meta_i32, at = i) >= 0 && Array::get(c.fn_meta_i64, at = i) >= 0 && Array::get(c.fn_meta_v128, at = i) >= 0, message = "invalid function body or locals")
     i = i + 1
   }
   let nl = Array::length(c.lam_indices)
-  fw_require(nl == expected_lambdas && Array::length(c.lam_owner) == nl && Array::length(c.lam_bodies) == nl && Array::length(c.lam_param_counts) == nl && Array::length(c.lam_captures) == nl && Array::length(c.lam_meta_i32) == nl && Array::length(c.lam_meta_i64) == nl, "lambda columns or count differ")
+  fw_require(ok = nl == expected_lambdas && Array::length(c.lam_owner) == nl && Array::length(c.lam_bodies) == nl && Array::length(c.lam_param_counts) == nl && Array::length(c.lam_captures) == nl && Array::length(c.lam_meta_i32) == nl && Array::length(c.lam_meta_i64) == nl, message = "lambda columns or count differ")
   i = 0
   while i < nl {
-    let index = Array::get(c.lam_indices, i)
-    fw_require(index >= 0 && index < plan.lambda_count, "lambda index outside plan")
-    fw_require(Array::get(lam_pos, index) == -1 && Array::get(lam_owner, index) == Array::get(c.lam_owner, i) && Array::get(lam_owner, index) >= lo && Array::get(lam_owner, index) < hi, "lambda owner or uniqueness differs")
+    let index = Array::get(c.lam_indices, at = i)
+    fw_require(ok = index >= 0 && index < plan.lambda_count, message = "lambda index outside plan")
+    fw_require(ok = Array::get(lam_pos, at = index) == -1 && Array::get(lam_owner, at = index) == Array::get(c.lam_owner, at = i) && Array::get(lam_owner, at = index) >= lo && Array::get(lam_owner, at = index) < hi, message = "lambda owner or uniqueness differs")
     // Replay appends each owner's rows. Its preceding planned lambda must
     // already be present; other owners may still be interleaved freely.
-    let owner = Array::get(lam_owner, index)
-    let first = Array::get(plan.lambda_bases, owner)
-    fw_require(index == first || Array::get(lam_pos, index - 1) >= 0, "lambda rows are not in planned order")
-    Array::set(lam_pos, index, i)
-    fw_require(fw_body_ok(Array::get(c.lam_bodies, i)) && Array::get(c.lam_param_counts, i) >= 0 && Array::get(c.lam_meta_i32, i) >= 0 && Array::get(c.lam_meta_i64, i) >= 0, "invalid lambda body or locals")
+    let owner = Array::get(lam_owner, at = index)
+    let first = Array::get(plan.lambda_bases, at = owner)
+    fw_require(ok = index == first || Array::get(lam_pos, at = index - 1) >= 0, message = "lambda rows are not in planned order")
+    Array::set(lam_pos, at = index, value = i)
+    fw_require(ok = fw_body_ok(Array::get(c.lam_bodies, at = i)) && Array::get(c.lam_param_counts, at = i) >= 0 && Array::get(c.lam_meta_i32, at = i) >= 0 && Array::get(c.lam_meta_i64, at = i) >= 0, message = "invalid lambda body or locals")
     i = i + 1
   }
   let ns = Array::length(c.slot_owner)
-  fw_require(Array::length(c.slot_values) == ns && Array::length(c.blind_fn) == ns && Array::length(c.blind_body) == ns && Array::length(c.blind_offsets) == ns && Array::length(c.blind_kinds) == ns && Array::length(c.blind_syms) == ns, "slot and blind-reference columns differ")
+  fw_require(ok = Array::length(c.slot_values) == ns && Array::length(c.blind_fn) == ns && Array::length(c.blind_body) == ns && Array::length(c.blind_offsets) == ns && Array::length(c.blind_kinds) == ns && Array::length(c.blind_syms) == ns, message = "slot and blind-reference columns differ")
   let allowed: MutMap[String, Int] = MutMap::new_string()
   for slot in plan.allowed_slots {
-    MutMap::set(allowed, Int::to_string(slot), 1)
+    MutMap::set(allowed, k = Int::to_string(slot), v = 1)
   }
   i = 0
   while i < ns {
-    let owner = Array::get(c.slot_owner, i)
-    let slot = Array::get(c.slot_values, i)
-    fw_require(owner >= lo && owner < hi && Array::get(c.blind_fn, i) == owner && Array::get(c.blind_syms, i) == slot, "slot and blind-reference ownership differ")
+    let owner = Array::get(c.slot_owner, at = i)
+    let slot = Array::get(c.slot_values, at = i)
+    fw_require(ok = owner >= lo && owner < hi && Array::get(c.blind_fn, at = i) == owner && Array::get(c.blind_syms, at = i) == slot, message = "slot and blind-reference ownership differ")
     let known = slot >= plan.lambda_slot_base && slot - plan.lambda_slot_base < plan.lambda_count
-    fw_require(slot >= 0 && (known || (match MutMap::get(allowed, Int::to_string(slot)) {
+    fw_require(ok = slot >= 0 && (known || (match MutMap::get(allowed, k = Int::to_string(slot)) {
       Some(_) => true,
       None => false
-    })), "unknown function-table slot")
-    let kind = Array::get(c.blind_kinds, i)
-    fw_require(kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32, "unknown blind-reference kind")
-    let body_owner = Array::get(c.blind_body, i)
-    let body = if blind_owner_is_lambda(body_owner) {
-      let li = blind_owner_lambda_index(body_owner)
-      fw_require(li >= 0 && li < plan.lambda_count, "blind-reference lambda outside plan")
-      fw_require(Array::get(lam_owner, li) == owner && Array::get(lam_pos, li) >= 0, "blind-reference lambda has another owner")
-      Array::get(c.lam_bodies, Array::get(lam_pos, li))
+    })), message = "unknown function-table slot")
+    let kind = Array::get(c.blind_kinds, at = i)
+    fw_require(ok = kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32, message = "unknown blind-reference kind")
+    let body_owner = Array::get(c.blind_body, at = i)
+    let body = if blind_owner_is_lambda(owner = body_owner) {
+      let li = blind_owner_lambda_index(owner = body_owner)
+      fw_require(ok = li >= 0 && li < plan.lambda_count, message = "blind-reference lambda outside plan")
+      fw_require(ok = Array::get(lam_owner, at = li) == owner && Array::get(lam_pos, at = li) >= 0, message = "blind-reference lambda has another owner")
+      Array::get(c.lam_bodies, at = Array::get(lam_pos, at = li))
     } else {
-      fw_require(body_owner == owner, "blind-reference function has another owner")
-      Array::get(c.fn_bodies, Array::get(fn_pos, owner))
+      fw_require(ok = body_owner == owner, message = "blind-reference function has another owner")
+      Array::get(c.fn_bodies, at = Array::get(fn_pos, at = owner))
     }
-    let at = Array::get(c.blind_offsets, i)
-    fw_require(at >= 0 && at < Bytes::length(body), "blind-reference offset outside body")
+    let at = Array::get(c.blind_offsets, at = i)
+    fw_require(ok = at >= 0 && at < Bytes::length(body), message = "blind-reference offset outside body")
     i = i + 1
   }
   let nm = Array::length(c.lm_owner)
-  fw_require(Array::length(c.lm_offsets) == nm && Array::length(c.lm_file_ids) == nm && Array::length(c.lm_lines) == nm, "line-map columns differ")
-  fw_require(plan.linemap_on || nm == 0, "unexpected line-map rows")
+  fw_require(ok = Array::length(c.lm_offsets) == nm && Array::length(c.lm_file_ids) == nm && Array::length(c.lm_lines) == nm, message = "line-map columns differ")
+  fw_require(ok = plan.linemap_on || nm == 0, message = "unexpected line-map rows")
   let last_offset = fw_positions(total)
   i = 0
   while i < nm {
-    let owner = Array::get(c.lm_owner, i)
-    fw_require(owner >= lo && owner < hi, "line-map owner outside assigned range")
-    let offset = Array::get(c.lm_offsets, i)
-    let file = Array::get(c.lm_file_ids, i)
-    fw_require(offset >= 0 && offset >= Array::get(last_offset, owner) && offset <= Bytes::length(Array::get(c.fn_bodies, Array::get(fn_pos, owner))) && file >= 0 && file < plan.source_file_count && Array::get(c.lm_lines, i) >= 1, "invalid line-map row")
-    Array::set(last_offset, owner, offset)
+    let owner = Array::get(c.lm_owner, at = i)
+    fw_require(ok = owner >= lo && owner < hi, message = "line-map owner outside assigned range")
+    let offset = Array::get(c.lm_offsets, at = i)
+    let file = Array::get(c.lm_file_ids, at = i)
+    fw_require(ok = offset >= 0 && offset >= Array::get(last_offset, at = owner) && offset <= Bytes::length(Array::get(c.fn_bodies, at = Array::get(fn_pos, at = owner))) && file >= 0 && file < plan.source_file_count && Array::get(c.lm_lines, at = i) >= 1, message = "invalid line-map row")
+    Array::set(last_offset, at = owner, value = offset)
     i = i + 1
   }
-  fw_require(Array::length(c.consumer_src_limit) == 0, "unexpected persistence filter")
+  fw_require(ok = Array::length(c.consumer_src_limit) == 0, message = "unexpected persistence filter")
 }
 
 export fn FunctionProductPlan::validate_function_product_plan(_ recv: FunctionProductPlan, c: CodegenBodyCache, lo: Int, hi: Int) -> Unit with Exception {
-  validate_function_product_plan(recv, c, lo, hi)
+  validate_function_product_plan(plan = recv, c = c, lo = lo, hi = hi)
 }

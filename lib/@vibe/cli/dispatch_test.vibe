@@ -40,7 +40,7 @@ import ../compiler {
 
 test "profile command plans a versioned host action without losing spaces" {
   let plan_path = "/tmp/vibe_selfhost_cli_profile_action.txt"
-  let status = selfhost_cli_profile_plan_args([
+  let status = selfhost_cli_profile_plan_args(args = [
     "profile",
     "program.vibex",
     "--out",
@@ -48,7 +48,7 @@ test "profile command plans a versioned host action without losing spaces" {
     "--interval-us=250",
     "--",
     "guest arg"
-  ], plan_path)
+  ], action_path = plan_path)
   assert(status == 0)
   let plan = Fs::read_file(plan_path)
   assert(plan == "vibe-host-action-v1\nrun-guest-profile\nprogram.vibex\n/tmp/cpu profiles/run.json\n250\nguest arg\n")
@@ -60,7 +60,7 @@ test "profile command rejects an empty output path" {
     ["profile", "program.vibex", "--out="]
   ] {
     let result = handle {
-      let _ = selfhost_cli_profile_plan_args(args, "/tmp/vibe_empty_profile_action.txt")
+      let _ = selfhost_cli_profile_plan_args(args = args, action_path = "/tmp/vibe_empty_profile_action.txt")
       "OK"
     } with { Exception::Throw(e) => e }
     assert(result == "profile: --out must not be empty")
@@ -69,7 +69,7 @@ test "profile command rejects an empty output path" {
 
 test "profile command rejects an --out that aliases the source" {
   let result = handle {
-    let _ = selfhost_cli_user_dispatch_args([
+    let _ = selfhost_cli_user_dispatch_args(args = [
       "profile",
       "program.vibex",
       "--out",
@@ -83,39 +83,44 @@ test "profile command rejects an --out that aliases the source" {
 test "user run plan accepts a require pin head on a vibex" {
   let plan_path = "/tmp/vibe_user_dispatch_run_pin_head.txt"
   let src_path = "/tmp/vibe_user_dispatch_run_pin_head.vibex"
-  Fs::write_bytes(src_path, string_to_bytes("require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn main allows Console {\n  println(\"pin head parsed\")\n}\n"))
-  let status = selfhost_cli_run_plan_args(["run", src_path], plan_path)
+  Fs::write_bytes(src_path, bytes = string_to_bytes("require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn main allows Console {\n  println(\"pin head parsed\")\n}\n"))
+  let status = selfhost_cli_run_plan_args(args = ["run", src_path], action_path = plan_path)
   assert(status == 0)
   let plan = Fs::read_file(plan_path)
-  assert(String::contains(plan, "run-guest\n"))
+  assert(String::contains(plan, needle = "run-guest\n"))
 }
 
 test "user run plan locates a malformed require pin" {
   let plan_path = "/tmp/vibe_user_dispatch_run_bad_pin.txt"
   let src_path = "/tmp/vibe_user_dispatch_run_bad_pin.vibex"
-  Fs::write_bytes(src_path, string_to_bytes("require bad/pkg 1.2.3 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn main() {\n  1\n}\n"))
+  Fs::write_bytes(src_path, bytes = string_to_bytes("require bad/pkg 1.2.3 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn main() {\n  1\n}\n"))
   let result = handle {
-    let _ = selfhost_cli_run_plan_args(["run", src_path], plan_path)
+    let _ = selfhost_cli_run_plan_args(args = ["run", src_path], action_path = plan_path)
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::contains(result, src_path))
-  assert(String::contains(result, "line 1:1:"))
-  assert(String::contains(result, "must start with '@'"))
+  assert(String::contains(result, needle = src_path))
+  assert(String::contains(result, needle = "line 1:1:"))
+  assert(String::contains(result, needle = "must start with '@'"))
 }
 
 test "user run plan keeps arguments after --" {
   let plan_path = "/tmp/vibe_user_dispatch_run_separator.txt"
   let src_path = "/tmp/vibe_user_dispatch_run_separator.vibex"
-  Fs::write_bytes(src_path, string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
-  let status = selfhost_cli_run_plan_args(["run", src_path, "--", "guest arg"], plan_path)
+  Fs::write_bytes(src_path, bytes = string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
+  let status = selfhost_cli_run_plan_args(args = [
+    "run",
+    src_path,
+    "--",
+    "guest arg"
+  ], action_path = plan_path)
   assert(status == 0)
   let plan = Fs::read_file(plan_path)
-  assert(String::contains(plan, "guest arg\n"))
+  assert(String::contains(plan, needle = "guest arg\n"))
 }
 
 test "user bench refuses an empty --guest-profile" {
   let result = handle {
-    let _ = selfhost_cli_user_dispatch_args([
+    let _ = selfhost_cli_user_dispatch_args(args = [
       "bench",
       "--guest-profile=",
       "missing.vibe"
@@ -134,11 +139,11 @@ effect Profiler {
 //# Functions
 
 fn string_to_bytes(_ s: String) -> Bytes {
-  let out = Array::slice([0], 0, 0)
+  let out = Array::slice([0], start = 0, end = 0)
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Array::push(out, String::char_code_at(s, i))
+    Array::push(out, value = String::char_code_at(s, at = i))
     i = i + 1
   }
   Bytes::from_array(out)
@@ -157,7 +162,7 @@ fn run_compile_lite_with_fake_profiler(_ args: Array[String]) -> Int with Except
 fn run_low_level_with_fake_profiler(input_path: String, output_path: String, entry_name: String, mode: String, profile_path: String, callstack_path: String) -> Int with Exception + Fs + Env {
   let mut tick = 1000
   handle {
-    selfhost_cli_low_level_args_profiled(input_path, output_path, entry_name, mode, profile_path, callstack_path)
+    selfhost_cli_low_level_args_profiled(input_path = input_path, output_path = output_path, entry_name = entry_name, mode = mode, profile_tsv_path = profile_path, profile_callstack_path = callstack_path)
   } with { Profiler::NowUs => {
     tick = tick + 1000
     resume(tick)
@@ -269,7 +274,7 @@ test "selfhost cli compile-lite command writes wasm" {
   let main_path = "/tmp/vibe_selfhost_cli_compile_lite_main.vibe"
   let output_path = "/tmp/vibe_selfhost_cli_compile_lite_out.wasm"
   let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   let status = run_compile_lite_with_fake_profiler([
     "compile-lite",
     "--wasm",
@@ -287,7 +292,7 @@ test "selfhost cli compile-lite command does not profile without profile args" {
   let main_path = "/tmp/vibe_selfhost_cli_compile_lite_no_profile_main.vibe"
   let output_path = "/tmp/vibe_selfhost_cli_compile_lite_no_profile_out.wasm"
   let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   let mut profiler_calls = 0
   let status = handle {
     selfhost_cli_compile_lite_args([
@@ -314,7 +319,7 @@ test "selfhost cli compile-lite command writes profile tsv" {
   let profile_path = "/tmp/vibe_selfhost_cli_compile_lite_profile.tsv"
   let callstack_path = "/tmp/vibe_selfhost_cli_compile_lite_callstack.tsv"
   let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   let status = run_compile_lite_with_fake_profiler([
     "compile-lite",
     "--wasm",
@@ -333,19 +338,19 @@ test "selfhost cli compile-lite command writes profile tsv" {
   assert(Fs::exists(profile_path))
   assert(Fs::exists(callstack_path))
   let profile = Fs::read_file(profile_path)
-  assert(String::contains(profile, "stage\telapsed_ms\telapsed_us"))
-  assert(String::contains(profile, "load\t"))
-  assert(String::contains(profile, "type\t"))
-  assert(String::contains(profile, "bundle\t"))
-  assert(String::contains(profile, "parse\t"))
-  assert(String::contains(profile, "compile\t"))
-  assert(String::contains(profile, "write\t"))
-  assert(String::contains(profile, "total\t"))
-  assert(!String::contains(profile, "write\t0\t0"))
-  assert(!String::contains(profile, "total\t0\t0"))
+  assert(String::contains(profile, needle = "stage\telapsed_ms\telapsed_us"))
+  assert(String::contains(profile, needle = "load\t"))
+  assert(String::contains(profile, needle = "type\t"))
+  assert(String::contains(profile, needle = "bundle\t"))
+  assert(String::contains(profile, needle = "parse\t"))
+  assert(String::contains(profile, needle = "compile\t"))
+  assert(String::contains(profile, needle = "write\t"))
+  assert(String::contains(profile, needle = "total\t"))
+  assert(!String::contains(profile, needle = "write\t0\t0"))
+  assert(!String::contains(profile, needle = "total\t0\t0"))
   let callstack = Fs::read_file(callstack_path)
-  assert(String::contains(callstack, "compile\t"))
-  assert(!String::contains(callstack, "compile\t0\t0"))
+  assert(String::contains(callstack, needle = "compile\t"))
+  assert(!String::contains(callstack, needle = "compile\t0\t0"))
 }
 
 /// Regression: the cli_main handler nesting (Profiler inner / Error outer) must
@@ -359,7 +364,7 @@ test "cli_main nesting: profiled compile succeeds (exit 0)" {
   let output_path = "/tmp/vibe_selfhost_cli_main_nest_out.wasm"
   let profile_path = "/tmp/vibe_selfhost_cli_main_nest_profile.tsv"
   let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   let status = run_cli_main_with_args([
     "compile-lite",
     "--wasm",
@@ -382,20 +387,20 @@ test "selfhost cli low-level entry writes profile tsv from env" {
   let profile_path = "/tmp/vibe_selfhost_cli_low_level_profile.tsv"
   let callstack_path = "/tmp/vibe_selfhost_cli_low_level_callstack.tsv"
   let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
-  let status = run_low_level_with_fake_profiler(main_path, output_path, "answer", "mvp", profile_path, callstack_path)
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
+  let status = run_low_level_with_fake_profiler(input_path = main_path, output_path = output_path, entry_name = "answer", mode = "mvp", profile_path = profile_path, callstack_path = callstack_path)
   assert(status == 0)
   assert(Fs::exists(output_path))
   assert(Fs::exists(profile_path))
   assert(Fs::exists(callstack_path))
   let profile = Fs::read_file(profile_path)
-  assert(String::contains(profile, "stage\telapsed_ms\telapsed_us"))
-  assert(String::contains(profile, "compile\t"))
-  assert(String::contains(profile, "write\t"))
-  assert(String::contains(profile, "total\t"))
-  assert(!String::contains(profile, "total\t0\t0"))
+  assert(String::contains(profile, needle = "stage\telapsed_ms\telapsed_us"))
+  assert(String::contains(profile, needle = "compile\t"))
+  assert(String::contains(profile, needle = "write\t"))
+  assert(String::contains(profile, needle = "total\t"))
+  assert(!String::contains(profile, needle = "total\t0\t0"))
   let callstack = Fs::read_file(callstack_path)
-  assert(String::contains(callstack, "compile\t"))
+  assert(String::contains(callstack, needle = "compile\t"))
 }
 
 test "selfhost cli parses compile command args" {
@@ -465,7 +470,7 @@ test "selfhost cli compile command writes wasm" {
   let main_path = "/tmp/vibe_selfhost_cli_compile_main.vibe"
   let output_path = "/tmp/vibe_selfhost_cli_compile_out.wasm"
   let source = "export let _start: () -> Int = () -> { 40 + 2 }\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   let status = selfhost_cli_compile_args([
     "compile",
     "--wasm",
@@ -518,7 +523,7 @@ test "selfhost cli build selects main and strips vibex suffix" {
 test "selfhost cli build accepts canonical vibex entry" {
   let main_path = "/tmp/vibe_selfhost_cli_canonical_entry.vibex"
   let output_path = "/tmp/vibe_selfhost_cli_canonical_entry.wasm"
-  Fs::write_bytes(main_path, string_to_bytes("fn main allows () { () }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("fn main allows () { () }\n"))
   let status = selfhost_cli_build_args(["build", main_path, "-o", output_path])
   assert(status == 0)
   assert(Fs::exists(output_path))
@@ -526,7 +531,7 @@ test "selfhost cli build accepts canonical vibex entry" {
 
 test "selfhost cli build rejects vibex without main" {
   let main_path = "/tmp/vibe_selfhost_cli_missing_main.vibex"
-  Fs::write_bytes(main_path, string_to_bytes("fn helper() -> Unit { () }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("fn helper() -> Unit { () }\n"))
   let result = handle {
     let _ = selfhost_cli_build_args([
       "build",
@@ -536,12 +541,12 @@ test "selfhost cli build rejects vibex without main" {
     ])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::contains(result, ".vibex executable requires exactly one fn main"))
+  assert(String::contains(result, needle = ".vibex executable requires exactly one fn main"))
 }
 
 test "selfhost cli build rejects multiple vibex main declarations" {
   let main_path = "/tmp/vibe_selfhost_cli_multiple_main.vibex"
-  Fs::write_bytes(main_path, string_to_bytes("fn main allows () { () }\nfn main allows () { () }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("fn main allows () { () }\nfn main allows () { () }\n"))
   let result = handle {
     let _ = selfhost_cli_build_args([
       "build",
@@ -551,12 +556,12 @@ test "selfhost cli build rejects multiple vibex main declarations" {
     ])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::contains(result, ".vibex executable requires exactly one fn main"))
+  assert(String::contains(result, needle = ".vibex executable requires exactly one fn main"))
 }
 
 test "selfhost cli build rejects value-bound main in vibex" {
   let main_path = "/tmp/vibe_selfhost_cli_value_main.vibex"
-  Fs::write_bytes(main_path, string_to_bytes("let main = () -> Int { 0 }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("let main = () -> Int { 0 }\n"))
   let result = handle {
     let _ = selfhost_cli_build_args([
       "build",
@@ -566,12 +571,12 @@ test "selfhost cli build rejects value-bound main in vibex" {
     ])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::contains(result, "value-bound main is not allowed in .vibex"))
+  assert(String::contains(result, needle = "value-bound main is not allowed in .vibex"))
 }
 
 test "selfhost cli build rejects exported vibex main" {
   let main_path = "/tmp/vibe_selfhost_cli_exported_main.vibex"
-  Fs::write_bytes(main_path, string_to_bytes("export fn main allows () { () }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("export fn main allows () { () }\n"))
   let result = handle {
     let _ = selfhost_cli_build_args([
       "build",
@@ -581,12 +586,12 @@ test "selfhost cli build rejects exported vibex main" {
     ])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::contains(result, ".vibex fn main is an entry declaration and cannot be exported"))
+  assert(String::contains(result, needle = ".vibex fn main is an entry declaration and cannot be exported"))
 }
 
 test "selfhost cli build rejects noncanonical vibex main signature" {
   let main_path = "/tmp/vibe_selfhost_cli_noncanonical_main.vibex"
-  Fs::write_bytes(main_path, string_to_bytes("fn main(x: Int) -> Int allows () { x }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("fn main(x: Int) -> Int allows () { x }\n"))
   let result = handle {
     let _ = selfhost_cli_build_args([
       "build",
@@ -596,12 +601,12 @@ test "selfhost cli build rejects noncanonical vibex main signature" {
     ])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::contains(result, ".vibex fn main must have type () -> Unit"))
+  assert(String::contains(result, needle = ".vibex fn main must have type () -> Unit"))
 }
 
 test "selfhost cli build requires explicit vibex main effect row" {
   let main_path = "/tmp/vibe_selfhost_cli_inferred_main_row.vibex"
-  Fs::write_bytes(main_path, string_to_bytes("fn main { () }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("fn main { () }\n"))
   let result = handle {
     let _ = selfhost_cli_build_args([
       "build",
@@ -611,18 +616,18 @@ test "selfhost cli build requires explicit vibex main effect row" {
     ])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::contains(result, ".vibex fn main requires an explicit effect row"))
+  assert(String::contains(result, needle = ".vibex fn main requires an explicit effect row"))
   // ADR-0088: the edit is the canonical row, not the legacy `with ()`. The
   // common effectful entry is named too, since a first program prints.
-  assert(String::contains(result, "write 'fn main allows Console { .. }' for a program that prints"))
-  assert(String::contains(result, "'allows ()' for a pure entry"))
+  assert(String::contains(result, needle = "write 'fn main allows Console { .. }' for a program that prints"))
+  assert(String::contains(result, needle = "'allows ()' for a pure entry"))
 }
 
 test "selfhost cli build rejects non-main export in vibex" {
   // #2229 (ADR-0075): nothing can import a .vibex, so an export in one is
   // unreachable by construction. The diagnostic names the move.
   let main_path = "/tmp/vibe_selfhost_cli_vibex_export.vibex"
-  Fs::write_bytes(main_path, string_to_bytes("export fn helper() -> Int { 7 }\nfn main allows () { () }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("export fn helper() -> Int { 7 }\nfn main allows () { () }\n"))
   let result = handle {
     let _ = selfhost_cli_build_args([
       "build",
@@ -632,8 +637,8 @@ test "selfhost cli build rejects non-main export in vibex" {
     ])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::contains(result, ".vibex is an executable root and has no export surface"))
-  assert(String::contains(result, "move 'export fn helper' to a .vibe module"))
+  assert(String::contains(result, needle = ".vibex is an executable root and has no export surface"))
+  assert(String::contains(result, needle = "move 'export fn helper' to a .vibe module"))
 }
 
 test "selfhost cli build accepts vibex with require pin head" {
@@ -641,7 +646,7 @@ test "selfhost cli build accepts vibex with require pin head" {
   // grammar. It used to be read as an unknown `#` directive on this lane.
   let main_path = "/tmp/vibe_selfhost_cli_vibex_pin_head.vibex"
   let output_path = "/tmp/vibe_selfhost_cli_vibex_pin_head.wasm"
-  Fs::write_bytes(main_path, string_to_bytes("require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn main allows () { () }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn main allows () { () }\n"))
   let status = selfhost_cli_build_args(["build", main_path, "-o", output_path])
   assert(status == 0)
   assert(Fs::exists(output_path))
@@ -727,8 +732,8 @@ test "selfhost cli build --component refuses a vibex" {
     let _ = parse_build_args(["build", "--component", "cmd/check.vibex"])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::index_of(result, "--component needs a .vibe module") >= 0)
-  assert(String::index_of(result, "export fn vibe_command(args: String) -> String") >= 0)
+  assert(String::index_of(result, needle = "--component needs a .vibe module") >= 0)
+  assert(String::index_of(result, needle = "export fn vibe_command(args: String) -> String") >= 0)
 }
 
 test "selfhost cli build refuses --component with --debug" {
@@ -736,7 +741,7 @@ test "selfhost cli build refuses --component with --debug" {
     let _ = parse_build_args(["build", "--component", "--debug", "main.vibe"])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::index_of(result, "--component and --debug cannot be combined") >= 0)
+  assert(String::index_of(result, needle = "--component and --debug cannot be combined") >= 0)
 }
 
 test "selfhost cli build rejects missing profile path" {
@@ -751,7 +756,7 @@ test "selfhost cli build release command writes wasm" {
   let main_path = "/tmp/vibe_selfhost_cli_build_main.vibe"
   let output_path = "/tmp/vibe_selfhost_cli_build_out.wasm"
   let source = "export let _start: () -> Int = () -> { 40 + 2 }\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   let status = selfhost_cli_build_args([
     "build",
     "--release",
@@ -772,8 +777,8 @@ test "selfhost cli parses check command args" {
     "b.vibe"
   ])
   assert(Array::length(paths) == 2)
-  assert(Array::get(paths, 0) == "a.vibe")
-  assert(Array::get(paths, 1) == "b.vibe")
+  assert(Array::get(paths, at = 0) == "a.vibe")
+  assert(Array::get(paths, at = 1) == "b.vibe")
 }
 
 test "selfhost cli check consumes profile flag" {
@@ -784,7 +789,7 @@ test "selfhost cli check consumes profile flag" {
     "a.vibe"
   ])
   assert(Array::length(paths) == 1)
-  assert(Array::get(paths, 0) == "a.vibe")
+  assert(Array::get(paths, at = 0) == "a.vibe")
 }
 
 test "selfhost cli check rejects missing profile path" {
@@ -806,7 +811,7 @@ test "selfhost cli check rejects missing tsv profile path" {
 test "selfhost cli check command accepts valid file" {
   let main_path = "/tmp/vibe_selfhost_cli_check_main.vibe"
   let source = "let answer: () -> Int = () -> { 40 + 2 }\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   let status = selfhost_cli_check_args(["check", main_path])
   assert(status == 0)
 }
@@ -819,7 +824,7 @@ test "selfhost cli check accepts a require pin head" {
   // compile".
   let main_path = "/tmp/vibe_selfhost_cli_check_pin_head.vibe"
   let source = "require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nlet answer: () -> Int = () -> { 40 + 2 }\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   let status = selfhost_cli_check_args(["check", main_path])
   assert(status == 0)
 }
@@ -829,7 +834,7 @@ test "selfhost cli check command writes profile tsv" {
   let profile_path = "/tmp/vibe_selfhost_cli_check_profile.tsv"
   let callstack_path = "/tmp/vibe_selfhost_cli_check_callstack.tsv"
   let source = "let answer: () -> Int = () -> { 40 + 2 }\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   let status = selfhost_cli_check_args([
     "check",
     "--profile-tsv",
@@ -842,9 +847,9 @@ test "selfhost cli check command writes profile tsv" {
   assert(Fs::exists(profile_path))
   assert(Fs::exists(callstack_path))
   let profile = Fs::read_file(profile_path)
-  assert(String::contains(profile, "stage\telapsed_ms\telapsed_us"))
-  assert(String::contains(profile, "type\t0\t0"))
-  assert(String::contains(profile, "total\t0\t0"))
+  assert(String::contains(profile, needle = "stage\telapsed_ms\telapsed_us"))
+  assert(String::contains(profile, needle = "type\t0\t0"))
+  assert(String::contains(profile, needle = "total\t0\t0"))
 }
 
 /// #1888: check throws a String payload (`Throw(e) => e` is String, same as
@@ -872,38 +877,38 @@ test "cli_main nesting: check usage throw is a printable String and exits 1" {
 /// makes that visible.
 fn low_level_throw(input_path: String, output_path: String, entry_name: String, mode: String) -> String with Env + Exception + Fs + Profiler {
   handle {
-    let _ = selfhost_cli_low_level_args(input_path, output_path, entry_name, mode)
+    let _ = selfhost_cli_low_level_args(input_path = input_path, output_path = output_path, entry_name = entry_name, mode = mode)
     "OK"
   } with { Exception::Throw(e) => e }
 }
 
 test "low-level form names what it read when an argument is missing" {
-  assert(String::contains(low_level_throw("", "", "", ""), "no input path"))
-  let no_output = low_level_throw("deps", "", "", "")
-  assert(String::contains(no_output, "no output path"))
-  assert(String::contains(no_output, "read `deps` as the input path"))
+  assert(String::contains(low_level_throw(input_path = "", output_path = "", entry_name = "", mode = ""), needle = "no input path"))
+  let no_output = low_level_throw(input_path = "deps", output_path = "", entry_name = "", mode = "")
+  assert(String::contains(no_output, needle = "no output path"))
+  assert(String::contains(no_output, needle = "read `deps` as the input path"))
   // `vibe_cli.sh deps foo.vibe`: not a subcommand, so `deps` became the input.
-  let no_entry = low_level_throw("deps", "lib/x.vibe", "", "")
-  assert(String::contains(no_entry, "no entry name"))
-  assert(String::contains(no_entry, "read `deps` as the input path"))
-  assert(String::contains(no_entry, "`lib/x.vibe` as the output path"))
+  let no_entry = low_level_throw(input_path = "deps", output_path = "lib/x.vibe", entry_name = "", mode = "")
+  assert(String::contains(no_entry, needle = "no entry name"))
+  assert(String::contains(no_entry, needle = "read `deps` as the input path"))
+  assert(String::contains(no_entry, needle = "`lib/x.vibe` as the output path"))
   // Every one of them points at the two things that ARE accepted.
   for message in [no_output, no_entry] {
-    assert(String::contains(message, "<input> <output> <entry> [mode]"))
-    assert(String::contains(message, "build, check, compile, compile-lite, profile, serve"))
+    assert(String::contains(message, needle = "<input> <output> <entry> [mode]"))
+    assert(String::contains(message, needle = "build, check, compile, compile-lite, profile, serve"))
   }
 }
 
 test "low-level form names a missing input file and an unknown mode" {
-  let missing = low_level_throw("/tmp/vibe_no_such_input_2361.vibe", "/tmp/vibe_2361_out.wasm", "main", "")
-  assert(String::contains(missing, "no such input file: /tmp/vibe_no_such_input_2361.vibe"))
+  let missing = low_level_throw(input_path = "/tmp/vibe_no_such_input_2361.vibe", output_path = "/tmp/vibe_2361_out.wasm", entry_name = "main", mode = "")
+  assert(String::contains(missing, needle = "no such input file: /tmp/vibe_no_such_input_2361.vibe"))
   let real_path = "/tmp/vibe_selfhost_cli_2361_mode.vibe"
-  Fs::write_bytes(real_path, string_to_bytes("export let answer: () -> Int = () -> { 42 }\n"))
-  let bad_mode = low_level_throw(real_path, "/tmp/vibe_2361_out.wasm", "answer", "frobnicate")
-  assert(String::contains(bad_mode, "unknown mode `frobnicate`"))
-  assert(String::contains(bad_mode, "release, no-dce, mvp, debug, check"))
+  Fs::write_bytes(real_path, bytes = string_to_bytes("export let answer: () -> Int = () -> { 42 }\n"))
+  let bad_mode = low_level_throw(input_path = real_path, output_path = "/tmp/vibe_2361_out.wasm", entry_name = "answer", mode = "frobnicate")
+  assert(String::contains(bad_mode, needle = "unknown mode `frobnicate`"))
+  assert(String::contains(bad_mode, needle = "release, no-dce, mvp, debug, check"))
   // The control: the same call with a mode that IS recognized does not throw.
-  assert(low_level_throw(real_path, "/tmp/vibe_2361_out.wasm", "answer", "release") == "OK")
+  assert(low_level_throw(input_path = real_path, output_path = "/tmp/vibe_2361_out.wasm", entry_name = "answer", mode = "release") == "OK")
 }
 
 /// The exit code these carry is the one they always had -- 1, via the entry
@@ -920,26 +925,26 @@ test "an unexplained low-level failure still exits 1" {
 /// diagnostic start, `hint:` / leading whitespace indented so
 /// `grep -c '^error: '` stays an exact count.
 test "format_check_report prefixes diagnostic starts and indents hint continuations" {
-  assert(format_check_report("type mismatch") == "error: type mismatch")
-  assert(format_check_report("parse a\nparse b") == "error: parse a\nerror: parse b")
-  assert(format_check_report("effect row mismatch\nhint: add 'with Env' to 'f'") == "error: effect row mismatch\n  hint: add 'with Env' to 'f'")
-  assert(format_check_report("msg\n  more") == "error: msg\n    more")
+  assert(format_check_report(payload = "type mismatch") == "error: type mismatch")
+  assert(format_check_report(payload = "parse a\nparse b") == "error: parse a\nerror: parse b")
+  assert(format_check_report(payload = "effect row mismatch\nhint: add 'with Env' to 'f'") == "error: effect row mismatch\n  hint: add 'with Env' to 'f'")
+  assert(format_check_report(payload = "msg\n  more") == "error: msg\n    more")
 }
 
 /// #1888: the reported hole — type error through the production check path.
 test "cli_main nesting: check type error throws a diagnostic and exits 1" {
   let main_path = "/tmp/vibe_selfhost_cli_check_type_error.vibe"
   let source = "fn f() -> Int {\n  \"s\"\n}\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   let thrown = handle {
     let _ = selfhost_cli_check_args(["check", main_path])
     "OK"
   } with { Exception::Throw(e) => e }
   assert(thrown != "OK")
   assert(String::length(thrown) > 0)
-  let report = format_check_report(thrown)
-  assert(String::starts_with(report, "error: "))
-  assert(!String::starts_with(report, "error: error:"))
+  let report = format_check_report(payload = thrown)
+  assert(String::starts_with(report, prefix = "error: "))
+  assert(!String::starts_with(report, prefix = "error: error:"))
   let status = run_cli_main_with_args(["check", main_path])
   assert(status == 1)
 }
@@ -950,21 +955,21 @@ test "cli_main nesting: check type error throws a diagnostic and exits 1" {
 test "cli_main nesting: check effect-row diagnostic frames hint as a continuation" {
   let main_path = "/tmp/vibe_selfhost_cli_check_effect_hint.vibe"
   let source = "fn leaky() -> String {\n  Env::get(\"HOME\")\n}\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   let thrown = handle {
     let _ = selfhost_cli_check_args(["check", main_path])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::contains(thrown, "effect row mismatch"))
-  assert(String::contains(thrown, "hint: "))
-  let report = format_check_report(thrown)
-  assert(String::starts_with(report, "error: "))
-  assert(String::contains(report, "\n  hint: "))
-  let lines = String::split(report, "\n")
+  assert(String::contains(thrown, needle = "effect row mismatch"))
+  assert(String::contains(thrown, needle = "hint: "))
+  let report = format_check_report(payload = thrown)
+  assert(String::starts_with(report, prefix = "error: "))
+  assert(String::contains(report, needle = "\n  hint: "))
+  let lines = String::split(report, sep = "\n")
   let mut error_starts = 0
   let mut i = 0
   while i < Array::length(lines) {
-    if String::starts_with(Array::get(lines, i), "error: ") {
+    if String::starts_with(Array::get(lines, at = i), prefix = "error: ") {
       error_starts = error_starts + 1
     }
     i = i + 1
@@ -975,141 +980,155 @@ test "cli_main nesting: check effect-row diagnostic frames hint as a continuatio
 }
 
 test "user dispatch recognizes launcher verbs" {
-  assert(user_dispatch_is_verb("check"))
-  assert(user_dispatch_is_verb("compile"))
-  assert(user_dispatch_is_verb("build"))
-  assert(user_dispatch_is_verb("fmt"))
-  assert(user_dispatch_is_verb("normalize"))
-  assert(user_dispatch_is_verb("type-at"))
-  assert(user_dispatch_is_verb("doc-at"))
-  assert(user_dispatch_is_verb("binding-at"))
-  assert(user_dispatch_is_verb("symbols"))
-  assert(user_dispatch_is_verb("escapes"))
-  assert(user_dispatch_is_verb("rc-classify"))
-  assert(user_dispatch_is_verb("rc-plan"))
-  assert(user_dispatch_is_verb("allocs"))
-  assert(user_dispatch_is_verb("deps"))
-  assert(user_dispatch_is_verb("diagnostics"))
-  assert(user_dispatch_is_verb("grep"))
-  assert(user_dispatch_is_verb("run"))
-  assert(user_dispatch_is_verb("test"))
-  assert(user_dispatch_is_verb("bench"))
-  assert(user_dispatch_is_verb("serve"))
-  assert(user_dispatch_is_verb("profile"))
-  assert(user_dispatch_is_verb("lsp"))
-  assert(user_dispatch_is_verb("hash"))
-  assert(user_dispatch_is_verb("inspect-update"))
-  assert(user_dispatch_is_verb("mutants"))
-  assert(user_dispatch_is_verb("mutate-report"))
-  assert(user_dispatch_is_verb("help"))
-  assert(user_dispatch_is_verb("--help"))
-  assert(user_dispatch_is_verb("-h"))
-  assert(!user_dispatch_is_verb("compile-lite"))
-  assert(!user_dispatch_is_verb("new"))
+  assert(user_dispatch_is_verb(name = "check"))
+  assert(user_dispatch_is_verb(name = "compile"))
+  assert(user_dispatch_is_verb(name = "build"))
+  assert(user_dispatch_is_verb(name = "fmt"))
+  assert(user_dispatch_is_verb(name = "normalize"))
+  assert(user_dispatch_is_verb(name = "type-at"))
+  assert(user_dispatch_is_verb(name = "doc-at"))
+  assert(user_dispatch_is_verb(name = "binding-at"))
+  assert(user_dispatch_is_verb(name = "symbols"))
+  assert(user_dispatch_is_verb(name = "escapes"))
+  assert(user_dispatch_is_verb(name = "rc-classify"))
+  assert(user_dispatch_is_verb(name = "rc-plan"))
+  assert(user_dispatch_is_verb(name = "allocs"))
+  assert(user_dispatch_is_verb(name = "deps"))
+  assert(user_dispatch_is_verb(name = "diagnostics"))
+  assert(user_dispatch_is_verb(name = "grep"))
+  assert(user_dispatch_is_verb(name = "run"))
+  assert(user_dispatch_is_verb(name = "test"))
+  assert(user_dispatch_is_verb(name = "bench"))
+  assert(user_dispatch_is_verb(name = "serve"))
+  assert(user_dispatch_is_verb(name = "profile"))
+  assert(user_dispatch_is_verb(name = "lsp"))
+  assert(user_dispatch_is_verb(name = "hash"))
+  assert(user_dispatch_is_verb(name = "inspect-update"))
+  assert(user_dispatch_is_verb(name = "mutants"))
+  assert(user_dispatch_is_verb(name = "mutate-report"))
+  assert(user_dispatch_is_verb(name = "help"))
+  assert(user_dispatch_is_verb(name = "--help"))
+  assert(user_dispatch_is_verb(name = "-h"))
+  assert(!user_dispatch_is_verb(name = "compile-lite"))
+  assert(!user_dispatch_is_verb(name = "new"))
   // `vibe mutate` runs tests, so the launcher owns it; the compiler's halves
   // are `mutants` and `mutate-report`.
-  assert(!user_dispatch_is_verb("mutate"))
-  assert(!user_dispatch_is_verb(""))
+  assert(!user_dispatch_is_verb(name = "mutate"))
+  assert(!user_dispatch_is_verb(name = ""))
 }
 
 test "display_under_root reports the default build dir relative to the project" {
-  assert(display_under_root(".vibe/build/out/deep.wasm", ".vibe/build") == ".vibe/build/out/deep.wasm")
-  assert(display_under_root("/proj/.vibe/build/out/deep.wasm", "/proj/.vibe/build") == ".vibe/build/out/deep.wasm")
-  assert(display_under_root("/tmp/bd/out/deep.wasm", "/tmp/bd") == "/tmp/bd/out/deep.wasm")
-  assert(display_under_root("sub/out.wasm", "/proj/.vibe/build") == "sub/out.wasm")
+  assert(display_under_root(path = ".vibe/build/out/deep.wasm", build_dir = ".vibe/build") == ".vibe/build/out/deep.wasm")
+  assert(display_under_root(path = "/proj/.vibe/build/out/deep.wasm", build_dir = "/proj/.vibe/build") == ".vibe/build/out/deep.wasm")
+  assert(display_under_root(path = "/tmp/bd/out/deep.wasm", build_dir = "/tmp/bd") == "/tmp/bd/out/deep.wasm")
+  assert(display_under_root(path = "sub/out.wasm", build_dir = "/proj/.vibe/build") == "sub/out.wasm")
 }
 
 test "root_rel_from_invoke prefixes relative paths and leaves absolute paths" {
-  assert(root_rel_from_invoke("sub", "deep.vibex") == "sub/deep.vibex")
-  assert(root_rel_from_invoke("sub", "./deep.vibex") == "sub/deep.vibex")
-  assert(root_rel_from_invoke("sub", ".") == "sub")
-  assert(root_rel_from_invoke("sub", "/abs/x.vibe") == "/abs/x.vibe")
-  assert(root_rel_from_invoke("", "deep.vibex") == "deep.vibex")
-  assert(root_rel_from_invoke("", ".") == ".")
+  assert(root_rel_from_invoke(invoke_rel = "sub", path = "deep.vibex") == "sub/deep.vibex")
+  assert(root_rel_from_invoke(invoke_rel = "sub", path = "./deep.vibex") == "sub/deep.vibex")
+  assert(root_rel_from_invoke(invoke_rel = "sub", path = ".") == "sub")
+  assert(root_rel_from_invoke(invoke_rel = "sub", path = "/abs/x.vibe") == "/abs/x.vibe")
+  assert(root_rel_from_invoke(invoke_rel = "", path = "deep.vibex") == "deep.vibex")
+  assert(root_rel_from_invoke(invoke_rel = "", path = ".") == ".")
 }
 
 test "rewrite_user_argv prefixes relative paths with the invoke dir" {
   let root = "/tmp/vibe_user_dispatch_rewrite_root"
   let sub = "/tmp/vibe_user_dispatch_rewrite_root/sub"
   Fs::mkdir_p(sub)
-  Fs::write_bytes(String::concat(sub, "/deep.vibex"), string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
-  let run_args = rewrite_user_argv(["run", "deep.vibex"], sub, root)
+  Fs::write_bytes(String::concat(sub, "/deep.vibex"), bytes = string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
+  let run_args = rewrite_user_argv(args = ["run", "deep.vibex"], invoke_dir = sub, project_root = root)
   assert(Array::length(run_args) == 2)
-  assert(Array::get(run_args, 0) == "run")
-  assert(Array::get(run_args, 1) == "sub/deep.vibex")
-  let build_args = rewrite_user_argv(["build", "deep.vibex", "-o", "out.wasm"], sub, root)
-  assert(Array::get(build_args, 1) == "sub/deep.vibex")
-  assert(Array::get(build_args, 3) == "sub/out.wasm")
-  let guest = rewrite_user_argv(["run", "deep.vibex", "--", "rel.txt"], sub, root)
-  assert(Array::get(guest, 3) == "rel.txt")
-  let abs = rewrite_user_argv([
+  assert(Array::get(run_args, at = 0) == "run")
+  assert(Array::get(run_args, at = 1) == "sub/deep.vibex")
+  let build_args = rewrite_user_argv(args = [
+    "build",
+    "deep.vibex",
+    "-o",
+    "out.wasm"
+  ], invoke_dir = sub, project_root = root)
+  assert(Array::get(build_args, at = 1) == "sub/deep.vibex")
+  assert(Array::get(build_args, at = 3) == "sub/out.wasm")
+  let guest = rewrite_user_argv(args = ["run", "deep.vibex", "--", "rel.txt"], invoke_dir = sub, project_root = root)
+  assert(Array::get(guest, at = 3) == "rel.txt")
+  let abs = rewrite_user_argv(args = [
     "check",
     "/tmp/vibe_user_dispatch_rewrite_root/sub/deep.vibex"
-  ], sub, root)
-  assert(Array::get(abs, 1) == "/tmp/vibe_user_dispatch_rewrite_root/sub/deep.vibex")
-  let at_root = rewrite_user_argv(["run", "deep.vibex"], root, root)
-  assert(Array::get(at_root, 1) == "deep.vibex")
-  let type_at = rewrite_user_argv(["type-at", "deep.vibex", "1", "2"], sub, root)
-  assert(Array::get(type_at, 1) == "sub/deep.vibex")
-  assert(Array::get(type_at, 2) == "1")
-  assert(Array::get(type_at, 3) == "2")
-  let jobs = rewrite_user_argv(["test", "--jobs", "4", "deep.vibex"], sub, root)
-  assert(Array::get(jobs, 2) == "4")
-  assert(Array::get(jobs, 3) == "sub/deep.vibex")
-  let entry = rewrite_user_argv(["compile", "--entry", "foo", "deep.vibex"], sub, root)
-  assert(Array::get(entry, 2) == "foo")
-  assert(Array::get(entry, 3) == "sub/deep.vibex")
-  let gp = rewrite_user_argv(["run", "--guest-profile=out.json", "deep.vibex"], sub, root)
-  assert(Array::get(gp, 1) == "--guest-profile=sub/out.json")
-  assert(Array::get(gp, 2) == "sub/deep.vibex")
+  ], invoke_dir = sub, project_root = root)
+  assert(Array::get(abs, at = 1) == "/tmp/vibe_user_dispatch_rewrite_root/sub/deep.vibex")
+  let at_root = rewrite_user_argv(args = ["run", "deep.vibex"], invoke_dir = root, project_root = root)
+  assert(Array::get(at_root, at = 1) == "deep.vibex")
+  let type_at = rewrite_user_argv(args = ["type-at", "deep.vibex", "1", "2"], invoke_dir = sub, project_root = root)
+  assert(Array::get(type_at, at = 1) == "sub/deep.vibex")
+  assert(Array::get(type_at, at = 2) == "1")
+  assert(Array::get(type_at, at = 3) == "2")
+  let jobs = rewrite_user_argv(args = ["test", "--jobs", "4", "deep.vibex"], invoke_dir = sub, project_root = root)
+  assert(Array::get(jobs, at = 2) == "4")
+  assert(Array::get(jobs, at = 3) == "sub/deep.vibex")
+  let entry = rewrite_user_argv(args = [
+    "compile",
+    "--entry",
+    "foo",
+    "deep.vibex"
+  ], invoke_dir = sub, project_root = root)
+  assert(Array::get(entry, at = 2) == "foo")
+  assert(Array::get(entry, at = 3) == "sub/deep.vibex")
+  let gp = rewrite_user_argv(args = [
+    "run",
+    "--guest-profile=out.json",
+    "deep.vibex"
+  ], invoke_dir = sub, project_root = root)
+  assert(Array::get(gp, at = 1) == "--guest-profile=sub/out.json")
+  assert(Array::get(gp, at = 2) == "sub/deep.vibex")
 }
 
 test "rewrite_user_argv rewrites the source after a valueless run flag" {
   let root = "/tmp/vibe_user_dispatch_rewrite_bare_root"
   let sub = "/tmp/vibe_user_dispatch_rewrite_bare_root/sub"
   Fs::mkdir_p(sub)
-  Fs::write_bytes(String::concat(sub, "/deep.vibex"), string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
+  Fs::write_bytes(String::concat(sub, "/deep.vibex"), bytes = string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
   // `--alloc-site` and `--mem-sample` take a value only in their `=`
   // spelling; the bare flag must not swallow the source that follows it.
-  let alloc = rewrite_user_argv(["run", "--alloc-site", "deep.vibex"], sub, root)
-  assert(Array::get(alloc, 1) == "--alloc-site")
-  assert(Array::get(alloc, 2) == "sub/deep.vibex")
-  let sample = rewrite_user_argv(["run", "--mem-sample", "deep.vibex"], sub, root)
-  assert(Array::get(sample, 2) == "sub/deep.vibex")
-  let alloc_n = rewrite_user_argv(["run", "--alloc-site=5", "deep.vibex"], sub, root)
-  assert(Array::get(alloc_n, 1) == "--alloc-site=5")
-  assert(Array::get(alloc_n, 2) == "sub/deep.vibex")
-  let mem = rewrite_user_argv(["run", "--mem", "--trace", "deep.vibex"], sub, root)
-  assert(Array::get(mem, 3) == "sub/deep.vibex")
+  let alloc = rewrite_user_argv(args = ["run", "--alloc-site", "deep.vibex"], invoke_dir = sub, project_root = root)
+  assert(Array::get(alloc, at = 1) == "--alloc-site")
+  assert(Array::get(alloc, at = 2) == "sub/deep.vibex")
+  let sample = rewrite_user_argv(args = ["run", "--mem-sample", "deep.vibex"], invoke_dir = sub, project_root = root)
+  assert(Array::get(sample, at = 2) == "sub/deep.vibex")
+  let alloc_n = rewrite_user_argv(args = ["run", "--alloc-site=5", "deep.vibex"], invoke_dir = sub, project_root = root)
+  assert(Array::get(alloc_n, at = 1) == "--alloc-site=5")
+  assert(Array::get(alloc_n, at = 2) == "sub/deep.vibex")
+  let mem = rewrite_user_argv(args = ["run", "--mem", "--trace", "deep.vibex"], invoke_dir = sub, project_root = root)
+  assert(Array::get(mem, at = 3) == "sub/deep.vibex")
 }
 
 test "expand_user_test_inputs collects *_test.vibe under a directory" {
   let dir = "/tmp/vibe_user_dispatch_test_dir"
   let nested = "/tmp/vibe_user_dispatch_test_dir/nested"
   Fs::mkdir_p(nested)
-  Fs::write_bytes(String::concat(dir, "/a_test.vibe"), string_to_bytes("test { assert(true) }\n"))
-  Fs::write_bytes(String::concat(dir, "/skip.vibe"), string_to_bytes("fn f() -> Int { 1 }\n"))
-  Fs::write_bytes(String::concat(nested, "/b_test.vibe"), string_to_bytes("test { assert(true) }\n"))
-  let files = expand_user_test_inputs([dir])
+  Fs::write_bytes(String::concat(dir, "/a_test.vibe"), bytes = string_to_bytes("test { assert(true) }\n"))
+  Fs::write_bytes(String::concat(dir, "/skip.vibe"), bytes = string_to_bytes("fn f() -> Int { 1 }\n"))
+  Fs::write_bytes(String::concat(nested, "/b_test.vibe"), bytes = string_to_bytes("test { assert(true) }\n"))
+  let files = expand_user_test_inputs(files = [dir])
   assert(Array::length(files) == 2)
-  assert(Array::get(files, 0) == "/tmp/vibe_user_dispatch_test_dir/a_test.vibe")
-  assert(Array::get(files, 1) == "/tmp/vibe_user_dispatch_test_dir/nested/b_test.vibe")
-  let named = expand_user_test_inputs([
+  assert(Array::get(files, at = 0) == "/tmp/vibe_user_dispatch_test_dir/a_test.vibe")
+  assert(Array::get(files, at = 1) == "/tmp/vibe_user_dispatch_test_dir/nested/b_test.vibe")
+  let named = expand_user_test_inputs(files = [
     "/tmp/vibe_user_dispatch_test_dir/skip.vibe"
   ])
   assert(Array::length(named) == 1)
-  assert(Array::get(named, 0) == "/tmp/vibe_user_dispatch_test_dir/skip.vibe")
+  assert(Array::get(named, at = 0) == "/tmp/vibe_user_dispatch_test_dir/skip.vibe")
   let missing = handle {
-    let _ = expand_user_test_inputs([
+    let _ = expand_user_test_inputs(files = [
       "/tmp/vibe_user_dispatch_test_dir/nope.vibe"
     ])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::starts_with(missing, "not found: "))
+  assert(String::starts_with(missing, prefix = "not found: "))
   let empty_dir = "/tmp/vibe_user_dispatch_empty_test_dir"
   Fs::mkdir_p(empty_dir)
   let empty = handle {
-    let _ = expand_user_test_inputs([empty_dir])
+    let _ = expand_user_test_inputs(files = [empty_dir])
     "OK"
   } with { Exception::Throw(e) => e }
   assert(empty == "vibe test: no test files found")
@@ -1118,9 +1137,13 @@ test "expand_user_test_inputs collects *_test.vibe under a directory" {
 test "user dispatch inspect-update patches a stale inspect content literal" {
   let src = "/tmp/vibe_user_dispatch_inspect_update.vibe"
   let cap = "/tmp/vibe_user_dispatch_inspect_update.out"
-  Fs::write_bytes(src, string_to_bytes("test {\n  inspect(1, \"0\")\n}\n"))
-  Fs::write_bytes(cap, string_to_bytes("inspect mismatch:\n  actual:   1\n  expected: 0\n"))
-  let status = selfhost_cli_user_dispatch_args(["inspect-update", src, cap])
+  Fs::write_bytes(src, bytes = string_to_bytes("test {\n  inspect(1, \"0\")\n}\n"))
+  Fs::write_bytes(cap, bytes = string_to_bytes("inspect mismatch:\n  actual:   1\n  expected: 0\n"))
+  let status = selfhost_cli_user_dispatch_args(args = [
+    "inspect-update",
+    src,
+    cap
+  ])
   assert(status == 0)
   assert(Fs::read_file(src) == "test {\n  inspect(1, \"1\")\n}\n")
 }
@@ -1128,25 +1151,25 @@ test "user dispatch inspect-update patches a stale inspect content literal" {
 test "user dispatch mutate-report exits 1 exactly when a mutant survived" {
   let target = "/tmp/vibe_user_dispatch_mutate_target.vibe"
   let rows = "/tmp/vibe_user_dispatch_mutate_results.tsv"
-  Fs::write_bytes(target, string_to_bytes("fn f(x: Int) -> Bool {\n  x < 10\n}\n"))
+  Fs::write_bytes(target, bytes = string_to_bytes("fn f(x: Int) -> Bool {\n  x < 10\n}\n"))
   let head = String::concat("target\t", String::concat(target, "\ntest\t0\tf_test.vibe\tt\n"))
-  Fs::write_bytes(rows, string_to_bytes(String::concat(head, "mutant\t1\t27\t28\tboundary\t<\t<=\tkilled\t0\n")))
-  assert(selfhost_cli_user_dispatch_args(["mutate-report", rows]) == 0)
-  Fs::write_bytes(rows, string_to_bytes(String::concat(head, "mutant\t1\t27\t28\tboundary\t<\t<=\tsurvived\t\n")))
-  assert(selfhost_cli_user_dispatch_args(["mutate-report", rows]) == 1)
+  Fs::write_bytes(rows, bytes = string_to_bytes(String::concat(head, "mutant\t1\t27\t28\tboundary\t<\t<=\tkilled\t0\n")))
+  assert(selfhost_cli_user_dispatch_args(args = ["mutate-report", rows]) == 0)
+  Fs::write_bytes(rows, bytes = string_to_bytes(String::concat(head, "mutant\t1\t27\t28\tboundary\t<\t<=\tsurvived\t\n")))
+  assert(selfhost_cli_user_dispatch_args(args = ["mutate-report", rows]) == 1)
 }
 
 test "user test plan expands a directory to *_test.vibe files" {
   let dir = "/tmp/vibe_user_dispatch_test_plan_dir"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(String::concat(dir, "/cwd_test.vibe"), string_to_bytes("test \"n\" {\n  assert_eq(1, 1)\n}\n"))
+  Fs::write_bytes(String::concat(dir, "/cwd_test.vibe"), bytes = string_to_bytes("test \"n\" {\n  assert_eq(1, 1)\n}\n"))
   let plan_path = "/tmp/vibe_user_dispatch_test_plan.txt"
-  let status = selfhost_cli_test_plan_args(["test", dir], plan_path)
+  let status = selfhost_cli_test_plan_args(args = ["test", dir], action_path = plan_path)
   assert(status == 0)
   let plan = Fs::read_file(plan_path)
-  assert(String::starts_with(plan, "vibe-host-action-v1\nrun-tests\n"))
-  assert(String::contains(plan, "/tmp/vibe_user_dispatch_test_plan_dir/cwd_test.vibe"))
-  assert(!String::contains(plan, "/tmp/vibe_user_dispatch_test_plan_dir\t"))
+  assert(String::starts_with(plan, prefix = "vibe-host-action-v1\nrun-tests\n"))
+  assert(String::contains(plan, needle = "/tmp/vibe_user_dispatch_test_plan_dir/cwd_test.vibe"))
+  assert(!String::contains(plan, needle = "/tmp/vibe_user_dispatch_test_plan_dir\t"))
 }
 
 test "test_artifact_out never hands one source another's artifact" {
@@ -1160,64 +1183,64 @@ test "test_artifact_out never hands one source another's artifact" {
     "../a_test.vibe",
     "../a_test.vibe"
   ] {
-    let out = test_artifact_out("b", src, Array::length(srcs), srcs, outs)
-    Array::push(srcs, src)
-    Array::push(outs, out)
+    let out = test_artifact_out(build_dir = "b", src = src, index = Array::length(srcs), seen_srcs = srcs, seen_outs = outs)
+    Array::push(srcs, value = src)
+    Array::push(outs, value = out)
   }
-  assert_eq(Array::get(outs, 0), "b/test/_up/a_test~2.wasm")
-  assert_eq(Array::get(outs, 1), "b/test/_up/a_test.wasm")
-  assert_eq(Array::get(outs, 2), "b/test/_up/a_test~2_1.wasm")
+  assert_eq(Array::get(outs, at = 0), "b/test/_up/a_test~2.wasm")
+  assert_eq(Array::get(outs, at = 1), "b/test/_up/a_test.wasm")
+  assert_eq(Array::get(outs, at = 2), "b/test/_up/a_test~2_1.wasm")
   // The same spelling again is the same file and shares its artifact.
-  assert_eq(Array::get(outs, 3), "b/test/_up/a_test~2_1.wasm")
+  assert_eq(Array::get(outs, at = 3), "b/test/_up/a_test~2_1.wasm")
 }
 
 // #3505: `vibe test ./a_test.vibe` and `vibe test .` died on
 // `fs_mkdir_p '<build>/test/.'`, because the artifact path was the source
 // spelling joined as written. Plain spellings keep the artifact they had.
 test "test_artifact_rel normalizes dot segments and keeps plain spellings" {
-  assert_eq(test_artifact_rel("a_test.vibe"), "a_test")
-  assert_eq(test_artifact_rel("sub/b_test.vibe"), "sub/b_test")
-  assert_eq(test_artifact_rel("/tmp/a_test.vibe"), "_abs/tmp/a_test")
-  assert_eq(test_artifact_rel("./a_test.vibe"), "a_test")
-  assert_eq(test_artifact_rel(".//a_test.vibe"), "a_test")
-  assert_eq(test_artifact_rel("./sub/b_test.vibe"), "sub/b_test")
-  assert_eq(test_artifact_rel("sub/./b_test.vibe"), "sub/b_test")
-  assert_eq(test_artifact_rel("/tmp/./x/a_test.vibe"), "_abs/tmp/x/a_test")
+  assert_eq(test_artifact_rel(src = "a_test.vibe"), "a_test")
+  assert_eq(test_artifact_rel(src = "sub/b_test.vibe"), "sub/b_test")
+  assert_eq(test_artifact_rel(src = "/tmp/a_test.vibe"), "_abs/tmp/a_test")
+  assert_eq(test_artifact_rel(src = "./a_test.vibe"), "a_test")
+  assert_eq(test_artifact_rel(src = ".//a_test.vibe"), "a_test")
+  assert_eq(test_artifact_rel(src = "./sub/b_test.vibe"), "sub/b_test")
+  assert_eq(test_artifact_rel(src = "sub/./b_test.vibe"), "sub/b_test")
+  assert_eq(test_artifact_rel(src = "/tmp/./x/a_test.vibe"), "_abs/tmp/x/a_test")
   // `..` must not climb out of `<build>/test/`.
-  assert_eq(test_artifact_rel("../a_test.vibe"), "_up/a_test")
-  assert_eq(test_artifact_rel("../../../a_test.vibe"), "_up/_up/_up/a_test")
-  assert_eq(test_artifact_rel("sub/../a_test.vibe"), "sub/_up/a_test")
+  assert_eq(test_artifact_rel(src = "../a_test.vibe"), "_up/a_test")
+  assert_eq(test_artifact_rel(src = "../../../a_test.vibe"), "_up/_up/_up/a_test")
+  assert_eq(test_artifact_rel(src = "sub/../a_test.vibe"), "sub/_up/a_test")
 }
 
 test "user test plan writes a normalized artifact path for dot and dot-dot spellings" {
   let dir = "/tmp/vibe_user_dispatch_dot_dir"
   Fs::mkdir_p(String::concat(dir, "/sub/_up"))
   let body = string_to_bytes("test \"n\" {\n  assert_eq(1, 1)\n}\n")
-  Fs::write_bytes(String::concat(dir, "/dot_test.vibe"), body)
-  Fs::write_bytes(String::concat(dir, "/sub/_up/dot_test.vibe"), body)
+  Fs::write_bytes(String::concat(dir, "/dot_test.vibe"), bytes = body)
+  Fs::write_bytes(String::concat(dir, "/sub/_up/dot_test.vibe"), bytes = body)
   let plan_path = "/tmp/vibe_user_dispatch_dot_plan.txt"
-  let status = selfhost_cli_test_plan_args([
+  let status = selfhost_cli_test_plan_args(args = [
     "test",
     "/tmp/vibe_user_dispatch_dot_dir/./dot_test.vibe",
     "/tmp/vibe_user_dispatch_dot_dir/sub/../dot_test.vibe",
     "/tmp/vibe_user_dispatch_dot_dir/sub/_up/dot_test.vibe"
-  ], plan_path)
+  ], action_path = plan_path)
   assert(status == 0)
   let plan = Fs::read_file(plan_path)
   // The record keeps the source as spelled; only the artifact is normalized.
-  assert(String::contains(plan, "/./dot_test.vibe\t"))
-  assert(String::contains(plan, "/sub/../dot_test.vibe\t"))
-  assert(!String::contains(plan, "/./dot_test.wasm"))
-  assert(!String::contains(plan, "/../dot_test.wasm"))
-  assert(String::contains(plan, "/test/_abs/tmp/vibe_user_dispatch_dot_dir/dot_test.wasm\t1\t"))
-  assert(String::contains(plan, "/test/_abs/tmp/vibe_user_dispatch_dot_dir/sub/_up/dot_test.wasm\t1\t"))
+  assert(String::contains(plan, needle = "/./dot_test.vibe\t"))
+  assert(String::contains(plan, needle = "/sub/../dot_test.vibe\t"))
+  assert(!String::contains(plan, needle = "/./dot_test.wasm"))
+  assert(!String::contains(plan, needle = "/../dot_test.wasm"))
+  assert(String::contains(plan, needle = "/test/_abs/tmp/vibe_user_dispatch_dot_dir/dot_test.wasm\t1\t"))
+  assert(String::contains(plan, needle = "/test/_abs/tmp/vibe_user_dispatch_dot_dir/sub/_up/dot_test.wasm\t1\t"))
   // A real `sub/_up/` directory meets `sub/..` at one artifact; the later
   // source gets its own instead of overwriting the earlier one's wasm.
-  assert(String::contains(plan, "/test/_abs/tmp/vibe_user_dispatch_dot_dir/sub/_up/dot_test~2.wasm\t1\t"))
+  assert(String::contains(plan, needle = "/test/_abs/tmp/vibe_user_dispatch_dot_dir/sub/_up/dot_test~2.wasm\t1\t"))
 }
 
 test "user compile parse defaults to the build-dir artifact" {
-  let (input_path, output_path, entry_name, wit, minify, component) = parse_user_compile_args([
+  let (input_path, output_path, entry_name, wit, minify, component) = parse_user_compile_args(args = [
     "compile",
     "app.vibe"
   ])
@@ -1230,7 +1253,7 @@ test "user compile parse defaults to the build-dir artifact" {
 }
 
 test "build jobs keeps the existing compile argument view" {
-  let (src, out, entry, wit, minify, component) = parse_user_compile_args([
+  let (src, out, entry, wit, minify, component) = parse_user_compile_args(args = [
     "build",
     "app.vibe",
     "--jobs",
@@ -1248,14 +1271,14 @@ test "build jobs keeps the existing compile argument view" {
 
 test "build jobs refuses unsupported TaskGroup slot counts" {
   let message = handle {
-    let _ = parse_user_compile_args(["build", "app.vibe", "--jobs", "3"])
+    let _ = parse_user_compile_args(args = ["build", "app.vibe", "--jobs", "3"])
     "accepted"
   } with { Exception::Throw(e) => e }
   assert(message == "build --jobs supports 1, 2 or 4 workers")
 }
 
 test "user compile parse honors -o and --wit" {
-  let (input_path, output_path, entry_name, wit, minify, component) = parse_user_compile_args([
+  let (input_path, output_path, entry_name, wit, minify, component) = parse_user_compile_args(args = [
     "compile",
     "--wit",
     "srv.vibe",
@@ -1280,12 +1303,12 @@ test "user compile parse honors -o and --wit" {
 /// why the pair below asks `user_dispatch_is_verb` WHICH door is live and then
 /// tests that one.
 test "build/compile go to the user-dispatch door, so that is where --component has to be" {
-  assert(user_dispatch_is_verb("build"))
-  assert(user_dispatch_is_verb("compile"))
+  assert(user_dispatch_is_verb(name = "build"))
+  assert(user_dispatch_is_verb(name = "compile"))
 }
 
 test "user compile parse accepts --component on the shared lane" {
-  let (input_path, output_path, entry_name, wit, minify, component) = parse_user_compile_args([
+  let (input_path, output_path, entry_name, wit, minify, component) = parse_user_compile_args(args = [
     "build",
     "--component",
     "cmd.vibe"
@@ -1302,7 +1325,7 @@ test "user compile parse accepts --component on the shared lane" {
 
 test "user compile parse refuses --component with --wit" {
   let result = handle {
-    let _ = parse_user_compile_args([
+    let _ = parse_user_compile_args(args = [
       "build",
       "--component",
       "--wit",
@@ -1315,7 +1338,7 @@ test "user compile parse refuses --component with --wit" {
 
 test "user compile parse refuses --component with --entry" {
   let result = handle {
-    let _ = parse_user_compile_args([
+    let _ = parse_user_compile_args(args = [
       "build",
       "--component",
       "--entry",
@@ -1329,7 +1352,7 @@ test "user compile parse refuses --component with --entry" {
 
 test "user compile parse refuses --component with --minify" {
   let result = handle {
-    let _ = parse_user_compile_args([
+    let _ = parse_user_compile_args(args = [
       "build",
       "--component",
       "--minify",
@@ -1342,10 +1365,10 @@ test "user compile parse refuses --component with --minify" {
 
 test "user compile parse refuses --component on a vibex" {
   let result = handle {
-    let _ = parse_user_compile_args(["build", "--component", "app.vibex"])
+    let _ = parse_user_compile_args(args = ["build", "--component", "app.vibex"])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::starts_with(result, "--component needs a .vibe module:"))
+  assert(String::starts_with(result, prefix = "--component needs a .vibe module:"))
 }
 
 /// The mode is the OTHER half of the shared lane. #2863 measured the same flag
@@ -1359,7 +1382,12 @@ test "the command-component compile mode is the one cli_support.vibe names" {
 
 test "user compile parse rejects --entry on vibex" {
   let result = handle {
-    let _ = parse_user_compile_args(["compile", "--entry", "foo", "app.vibex"])
+    let _ = parse_user_compile_args(args = [
+      "compile",
+      "--entry",
+      "foo",
+      "app.vibex"
+    ])
     "OK"
   } with { Exception::Throw(e) => e }
   assert(result == ".vibex entry is always main; --entry is not allowed")
@@ -1371,9 +1399,9 @@ test "user compile parse rejects --entry on vibex" {
 /// is refused instead of picking one silently.
 test "user build refuses --debug combined with another artifact kind" {
   let src = "/tmp/vibe_user_dispatch_debug_combo.vibe"
-  Fs::write_bytes(src, string_to_bytes("export fn main() -> Int { 42 }\n"))
+  Fs::write_bytes(src, bytes = string_to_bytes("export fn main() -> Int { 42 }\n"))
   let result = handle {
-    let _ = selfhost_cli_user_dispatch_args([
+    let _ = selfhost_cli_user_dispatch_args(args = [
       "build",
       "--debug",
       "--component",
@@ -1381,17 +1409,17 @@ test "user build refuses --debug combined with another artifact kind" {
     ])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::contains(result, "--debug selects the linked debug lane"))
+  assert(String::contains(result, needle = "--debug selects the linked debug lane"))
 }
 
 /// The frozen `vibe diagnostics` contract (#1567): raw lines, exit 0 even
 /// when the file is ill-typed. Editors that still call it rely on both.
 test "user diagnostics reports an ill-typed file and still exits 0" {
   let src = "/tmp/vibe_user_dispatch_diagnostics_bad.vibe"
-  Fs::write_bytes(src, string_to_bytes("let a: Int = \"not an int\"\n"))
-  let status = selfhost_cli_user_dispatch_args(["diagnostics", src])
+  Fs::write_bytes(src, bytes = string_to_bytes("let a: Int = \"not an int\"\n"))
+  let status = selfhost_cli_user_dispatch_args(args = ["diagnostics", src])
   assert(status == 0)
-  let status_json = selfhost_cli_user_dispatch_args([
+  let status_json = selfhost_cli_user_dispatch_args(args = [
     "diagnostics",
     "--json",
     src
@@ -1403,7 +1431,7 @@ test "user diagnostics reports an ill-typed file and still exits 0" {
 /// the verbs moved, and the dispatcher refuses it before sweeping anything.
 test "user grep refuses --json over more than one path" {
   let result = handle {
-    let _ = selfhost_cli_user_dispatch_args([
+    let _ = selfhost_cli_user_dispatch_args(args = [
       "grep",
       "--json",
       "--pattern",
@@ -1417,7 +1445,7 @@ test "user grep refuses --json over more than one path" {
 }
 
 test "user check parse accepts --single-file and --json" {
-  let (path, single, json) = parse_user_check_args([
+  let (path, single, json) = parse_user_check_args(args = [
     "check",
     "--single-file",
     "--json",
@@ -1429,7 +1457,11 @@ test "user check parse accepts --single-file and --json" {
 }
 
 test "user check parse accepts --json without --single-file (#2831)" {
-  let (path, single, json) = parse_user_check_args(["check", "--json", "a.vibe"])
+  let (path, single, json) = parse_user_check_args(args = [
+    "check",
+    "--json",
+    "a.vibe"
+  ])
   assert(path == "a.vibe")
   assert(!single)
   assert(json)
@@ -1437,29 +1469,37 @@ test "user check parse accepts --json without --single-file (#2831)" {
 
 test "user dispatch check --json without --single-file exits 1 on a mismatch (#2831)" {
   let main_path = "/tmp/vibe_user_dispatch_check_json_mismatch.vibe"
-  Fs::write_bytes(main_path, string_to_bytes("let a: Int = \"not an int\"\n"))
-  let status = selfhost_cli_user_dispatch_args(["check", "--json", main_path])
+  Fs::write_bytes(main_path, bytes = string_to_bytes("let a: Int = \"not an int\"\n"))
+  let status = selfhost_cli_user_dispatch_args(args = [
+    "check",
+    "--json",
+    main_path
+  ])
   assert(status == 1)
 }
 
 test "user dispatch check --json without --single-file exits 0 on a clean file (#2831)" {
   let main_path = "/tmp/vibe_user_dispatch_check_json_clean.vibe"
-  Fs::write_bytes(main_path, string_to_bytes("fn f() -> Int {\n  1 + 2\n}\n"))
-  let status = selfhost_cli_user_dispatch_args(["check", "--json", main_path])
+  Fs::write_bytes(main_path, bytes = string_to_bytes("fn f() -> Int {\n  1 + 2\n}\n"))
+  let status = selfhost_cli_user_dispatch_args(args = [
+    "check",
+    "--json",
+    main_path
+  ])
   assert(status == 0)
 }
 
 test "user fmt parse accepts --stdout and --check" {
-  let (path, mode) = parse_user_fmt_args(["fmt", "--stdout", "a.vibe"])
+  let (path, mode) = parse_user_fmt_args(args = ["fmt", "--stdout", "a.vibe"])
   assert(path == "a.vibe")
   assert(mode == "stdout")
-  let (path2, mode2) = parse_user_fmt_args(["fmt", "--check", "b.vibe"])
+  let (path2, mode2) = parse_user_fmt_args(args = ["fmt", "--check", "b.vibe"])
   assert(path2 == "b.vibe")
   assert(mode2 == "check")
 }
 
 test "user type-at parse takes file line col" {
-  let (path, line, col) = parse_user_type_at_args([
+  let (path, line, col) = parse_user_type_at_args(args = [
     "type-at",
     "a.vibe",
     "2",
@@ -1472,8 +1512,8 @@ test "user type-at parse takes file line col" {
 
 test "user dispatch check on a clean file is empty stdout and exit 0" {
   let main_path = "/tmp/vibe_user_dispatch_check_clean.vibe"
-  Fs::write_bytes(main_path, string_to_bytes("fn f() -> Int {\n  1 + 2\n}\n"))
-  let status = selfhost_cli_user_dispatch_args(["check", main_path])
+  Fs::write_bytes(main_path, bytes = string_to_bytes("fn f() -> Int {\n  1 + 2\n}\n"))
+  let status = selfhost_cli_user_dispatch_args(args = ["check", main_path])
   assert(status == 0)
   let wrapped = run_cli_main_with_args(["check", main_path])
   assert(wrapped == 0)
@@ -1481,7 +1521,7 @@ test "user dispatch check on a clean file is empty stdout and exit 0" {
 
 test "user dispatch check on an ill-typed file exits 1" {
   let main_path = "/tmp/vibe_user_dispatch_check_bad.vibe"
-  Fs::write_bytes(main_path, string_to_bytes("fn f() -> Int {\n  \"s\"\n}\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("fn f() -> Int {\n  \"s\"\n}\n"))
   let status = run_cli_main_with_args(["check", main_path])
   assert(status == 1)
 }
@@ -1489,8 +1529,8 @@ test "user dispatch check on an ill-typed file exits 1" {
 test "user dispatch compile writes a wasm artifact" {
   let main_path = "/tmp/vibe_user_dispatch_compile_main.vibex"
   let output_path = "/tmp/vibe_user_dispatch_compile_out.wasm"
-  Fs::write_bytes(main_path, string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
-  let status = selfhost_cli_user_dispatch_args([
+  Fs::write_bytes(main_path, bytes = string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
+  let status = selfhost_cli_user_dispatch_args(args = [
     "compile",
     main_path,
     "-o",
@@ -1503,16 +1543,20 @@ test "user dispatch compile writes a wasm artifact" {
 test "user dispatch fmt --stdout reprints a fixpoint" {
   let main_path = "/tmp/vibe_user_dispatch_fmt.vibe"
   let source = "fn f() -> Int {\n  1\n}\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
-  let status = selfhost_cli_user_dispatch_args(["fmt", "--stdout", main_path])
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
+  let status = selfhost_cli_user_dispatch_args(args = [
+    "fmt",
+    "--stdout",
+    main_path
+  ])
   assert(status == 0)
 }
 
 test "user dispatch type-at answers Int for a literal" {
   let main_path = "/tmp/vibe_user_dispatch_type_at.vibe"
   let source = "let answer: Int = 40 + 2\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
-  let (path, line, col) = parse_user_type_at_args([
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
+  let (path, line, col) = parse_user_type_at_args(args = [
     "type-at",
     main_path,
     "1",
@@ -1521,19 +1565,24 @@ test "user dispatch type-at answers Int for a literal" {
   assert(path == main_path)
   assert(line == 1)
   assert(col == 5)
-  let status = selfhost_cli_user_dispatch_args(["type-at", main_path, "1", "5"])
+  let status = selfhost_cli_user_dispatch_args(args = [
+    "type-at",
+    main_path,
+    "1",
+    "5"
+  ])
   assert(status == 0)
 }
 
 test "user dispatch run plans a versioned host action" {
   let plan_path = "/tmp/vibe_user_dispatch_run_plan.txt"
   let src_path = "/tmp/vibe_user_dispatch_run.vibex"
-  Fs::write_bytes(src_path, string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
-  let status = selfhost_cli_run_plan_args(["run", src_path], plan_path)
+  Fs::write_bytes(src_path, bytes = string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
+  let status = selfhost_cli_run_plan_args(args = ["run", src_path], action_path = plan_path)
   assert(status == 0)
   let plan = Fs::read_file(plan_path)
-  assert(String::starts_with(plan, "vibe-host-action-v1\nrun-guest\n"))
-  assert(String::contains(plan, src_path))
+  assert(String::starts_with(plan, prefix = "vibe-host-action-v1\nrun-guest\n"))
+  assert(String::contains(plan, needle = src_path))
 }
 
 /// `vibe check --profile-tsv P --profile-callstack Q` writes both sidecars,
@@ -1544,8 +1593,8 @@ test "user check writes the requested profiling sidecars" {
   let src = "/tmp/vibe_user_dispatch_check_profile.vibe"
   let tsv = "/tmp/vibe_user_dispatch_check_profile.tsv"
   let callstack = "/tmp/vibe_user_dispatch_check_callstack.tsv"
-  Fs::write_bytes(src, string_to_bytes("let answer = () -> Int { 40 + 2 }\n"))
-  let status = selfhost_cli_user_dispatch_args([
+  Fs::write_bytes(src, bytes = string_to_bytes("let answer = () -> Int { 40 + 2 }\n"))
+  let status = selfhost_cli_user_dispatch_args(args = [
     "check",
     "--profile-tsv",
     tsv,
@@ -1555,14 +1604,14 @@ test "user check writes the requested profiling sidecars" {
   ])
   assert(status == 0)
   let profile = Fs::read_file(tsv)
-  assert(String::starts_with(profile, "stage\telapsed_ms\telapsed_us\n"))
-  assert(String::contains(profile, "\ncheck\t"))
-  assert(String::contains(profile, "\ntotal\t"))
-  assert(!String::contains(profile, "\ntotal\t0\t0\n"))
+  assert(String::starts_with(profile, prefix = "stage\telapsed_ms\telapsed_us\n"))
+  assert(String::contains(profile, needle = "\ncheck\t"))
+  assert(String::contains(profile, needle = "\ntotal\t"))
+  assert(!String::contains(profile, needle = "\ntotal\t0\t0\n"))
   let stacks = Fs::read_file(callstack)
-  assert(String::starts_with(stacks, "stage\telapsed_ms\telapsed_us\n"))
-  assert(String::contains(stacks, "\ncheck\t"))
-  assert(!String::contains(stacks, "\ncheck\t0\t0\n"))
+  assert(String::starts_with(stacks, prefix = "stage\telapsed_ms\telapsed_us\n"))
+  assert(String::contains(stacks, needle = "\ncheck\t"))
+  assert(!String::contains(stacks, needle = "\ncheck\t0\t0\n"))
 }
 
 /// A test file that does not compile is one FAILED record, not the end of the
@@ -1572,17 +1621,17 @@ test "user test plan isolates a compile failure to its file" {
   let bad = "/tmp/vibe_user_dispatch_isolation_bad_test.vibe"
   let good = "/tmp/vibe_user_dispatch_isolation_good_test.vibe"
   let plan_path = "/tmp/vibe_user_dispatch_isolation_plan.txt"
-  Fs::write_bytes(bad, string_to_bytes("test \"bad\" {\n  let a: Int = \"x\"\n  assert(a == 1)\n}\n"))
-  Fs::write_bytes(good, string_to_bytes("test \"good\" {\n  assert(1 == 1)\n}\n"))
-  let status = selfhost_cli_test_plan_args(["test", bad, good], plan_path)
+  Fs::write_bytes(bad, bytes = string_to_bytes("test \"bad\" {\n  let a: Int = \"x\"\n  assert(a == 1)\n}\n"))
+  Fs::write_bytes(good, bytes = string_to_bytes("test \"good\" {\n  assert(1 == 1)\n}\n"))
+  let status = selfhost_cli_test_plan_args(args = ["test", bad, good], action_path = plan_path)
   assert(status == 0)
   let plan = Fs::read_file(plan_path)
   // A compile failure has no artifact, count or pass line, only its failure
   // line; a compiled file carries its test count and both lines (#3703).
-  assert(String::contains(plan, String::concat(bad, String::concat("\t\t\t\tFAIL (compile) ", String::concat(bad, "\n")))))
-  assert(String::contains(plan, String::concat(good, "\t")))
-  assert(!String::contains(plan, String::concat(good, "\t\n")))
-  assert(String::contains(plan, String::concat("vibe_user_dispatch_isolation_good_test.wasm\t1\tok   ", String::concat(good, String::concat("\tFAIL ", String::concat(good, "\n"))))))
+  assert(String::contains(plan, needle = String::concat(bad, String::concat("\t\t\t\tFAIL (compile) ", String::concat(bad, "\n")))))
+  assert(String::contains(plan, needle = String::concat(good, "\t")))
+  assert(!String::contains(plan, needle = String::concat(good, "\t\n")))
+  assert(String::contains(plan, needle = String::concat("vibe_user_dispatch_isolation_good_test.wasm\t1\tok   ", String::concat(good, String::concat("\tFAIL ", String::concat(good, "\n"))))))
 }
 
 /// A sweep refuses a root that does not exist BEFORE printing any row: rows
@@ -1590,9 +1639,9 @@ test "user test plan isolates a compile failure to its file" {
 /// question (scripts/test_vibe_symbols.sh, #2381).
 test "user symbols refuses a missing root in a sweep" {
   let present = "/tmp/vibe_user_dispatch_symbols_present.vibe"
-  Fs::write_bytes(present, string_to_bytes("export let alpha = 1\n"))
+  Fs::write_bytes(present, bytes = string_to_bytes("export let alpha = 1\n"))
   let result = handle {
-    let _ = selfhost_cli_user_dispatch_args([
+    let _ = selfhost_cli_user_dispatch_args(args = [
       "symbols",
       present,
       "/nonexistent/path.vibe"
@@ -1606,7 +1655,7 @@ test "user symbols refuses a missing root in a sweep" {
 /// one; a parse that reaches the file check has accepted every flag.
 test "user bench accepts the equals spelling of its options" {
   let result = handle {
-    let _ = selfhost_cli_user_dispatch_args([
+    let _ = selfhost_cli_user_dispatch_args(args = [
       "bench",
       "--iters=100",
       "--warmup=10",
@@ -1622,15 +1671,19 @@ test "user bench accepts the equals spelling of its options" {
 /// the real one: hashes printed, exit 0, nothing written.
 test "user hash refuses an unknown flag and a second target" {
   let flag = handle {
-    let _ = selfhost_cli_user_dispatch_args(["hash", "--writ", "index.vpkg"])
+    let _ = selfhost_cli_user_dispatch_args(args = [
+      "hash",
+      "--writ",
+      "index.vpkg"
+    ])
     "OK"
   } with { Exception::Throw(e) => e }
   assert(flag == "hash: unknown flag: --writ")
   let extra = handle {
-    let _ = selfhost_cli_user_dispatch_args(["hash", "a.vpkg", "b.vpkg"])
+    let _ = selfhost_cli_user_dispatch_args(args = ["hash", "a.vpkg", "b.vpkg"])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::starts_with(extra, "hash: takes ONE target"))
+  assert(String::starts_with(extra, prefix = "hash: takes ONE target"))
 }
 
 /// The host-action file is line-oriented: a guest argument holding a newline
@@ -1638,9 +1691,14 @@ test "user hash refuses an unknown flag and a second target" {
 test "user run plan refuses a guest argument with a newline" {
   let plan_path = "/tmp/vibe_user_dispatch_run_newline.txt"
   let src_path = "/tmp/vibe_user_dispatch_run_newline.vibex"
-  Fs::write_bytes(src_path, string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
+  Fs::write_bytes(src_path, bytes = string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
   let result = handle {
-    let _ = selfhost_cli_run_plan_args(["run", src_path, "--", "two\nlines"], plan_path)
+    let _ = selfhost_cli_run_plan_args(args = [
+      "run",
+      src_path,
+      "--",
+      "two\nlines"
+    ], action_path = plan_path)
     "OK"
   } with { Exception::Throw(e) => e }
   assert(result == "run: newlines are not supported in guest arguments")
@@ -1651,18 +1709,18 @@ test "user run plan refuses a guest argument with a newline" {
 test "user test plan keeps absolute sources in their own namespace" {
   let src = "/tmp/vibe_user_dispatch_abs_ns_test.vibe"
   let plan_path = "/tmp/vibe_user_dispatch_abs_ns_plan.txt"
-  Fs::write_bytes(src, string_to_bytes("test \"ns\" {\n  assert(1 == 1)\n}\n"))
-  let status = selfhost_cli_test_plan_args(["test", src], plan_path)
+  Fs::write_bytes(src, bytes = string_to_bytes("test \"ns\" {\n  assert(1 == 1)\n}\n"))
+  let status = selfhost_cli_test_plan_args(args = ["test", src], action_path = plan_path)
   assert(status == 0)
   let plan = Fs::read_file(plan_path)
-  assert(String::contains(plan, "/test/_abs/tmp/vibe_user_dispatch_abs_ns_test.wasm"))
+  assert(String::contains(plan, needle = "/test/_abs/tmp/vibe_user_dispatch_abs_ns_test.wasm"))
 }
 
 /// The equals spelling of the grep options is accepted alongside the split
 /// one: a parse that reaches the JSON multi-path refusal has read `--pattern=`.
 test "user grep accepts the equals spelling of --pattern" {
   let result = handle {
-    let _ = selfhost_cli_user_dispatch_args([
+    let _ = selfhost_cli_user_dispatch_args(args = [
       "grep",
       "--pattern=$(x:id)",
       "--where=$x : Int",
@@ -1681,12 +1739,12 @@ test "user grep accepts the equals spelling of --pattern" {
 test "user check takes several files" {
   let good = "/tmp/vibe_user_dispatch_check_multi_good.vibe"
   let bad = "/tmp/vibe_user_dispatch_check_multi_bad.vibe"
-  Fs::write_bytes(good, string_to_bytes("let answer = () -> Int { 40 + 2 }\n"))
-  Fs::write_bytes(bad, string_to_bytes("let a: Int = \"not an int\"\n"))
-  assert(selfhost_cli_user_dispatch_args(["check", good, good]) == 0)
-  assert(selfhost_cli_user_dispatch_args(["check", good, bad]) == 1)
+  Fs::write_bytes(good, bytes = string_to_bytes("let answer = () -> Int { 40 + 2 }\n"))
+  Fs::write_bytes(bad, bytes = string_to_bytes("let a: Int = \"not an int\"\n"))
+  assert(selfhost_cli_user_dispatch_args(args = ["check", good, good]) == 0)
+  assert(selfhost_cli_user_dispatch_args(args = ["check", good, bad]) == 1)
   let missing = handle {
-    let _ = selfhost_cli_user_dispatch_args([
+    let _ = selfhost_cli_user_dispatch_args(args = [
       "check",
       good,
       "/nonexistent/x.vibe"
@@ -1700,7 +1758,7 @@ test "user check takes several files" {
 /// file check has read the flag.
 test "user rc-plan accepts the equals spelling of --fn" {
   let result = handle {
-    let _ = selfhost_cli_user_dispatch_args([
+    let _ = selfhost_cli_user_dispatch_args(args = [
       "rc-plan",
       "--fn=make",
       "/nonexistent/rc.vibe"
@@ -1714,9 +1772,9 @@ test "user rc-plan accepts the equals spelling of --fn" {
 /// missing or non-directory root is a diagnostic, not a runner trap.
 test "user check scans refuse a missing or non-directory root" {
   let file = "/tmp/vibe_user_dispatch_scan_root.vibe"
-  Fs::write_bytes(file, string_to_bytes("let a = 1\n"))
+  Fs::write_bytes(file, bytes = string_to_bytes("let a = 1\n"))
   let missing = handle {
-    let _ = selfhost_cli_user_dispatch_args([
+    let _ = selfhost_cli_user_dispatch_args(args = [
       "check",
       "--missing-vpkg",
       "/nonexistent/tree"
@@ -1725,8 +1783,12 @@ test "user check scans refuse a missing or non-directory root" {
   } with { Exception::Throw(e) => e }
   assert(missing == "not found: /nonexistent/tree")
   let not_dir = handle {
-    let _ = selfhost_cli_user_dispatch_args(["check", "--deps-missing", file])
+    let _ = selfhost_cli_user_dispatch_args(args = [
+      "check",
+      "--deps-missing",
+      file
+    ])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::starts_with(not_dir, "check: /tmp/vibe_user_dispatch_scan_root.vibe is not a directory"))
+  assert(String::starts_with(not_dir, prefix = "check: /tmp/vibe_user_dispatch_scan_root.vibe is not a directory"))
 }

@@ -24,48 +24,48 @@ fn fp_wire_require(ok: Bool, message: String) -> Unit with Exception {
 
 fn fp_wire_check(_ plan: FunctionProductPlan) -> Unit with Exception {
   let n = plan.num_user_funcs
-  fp_wire_require(n >= 0 && plan.lambda_count >= 0 && plan.source_file_count >= 0 && plan.lambda_slot_base >= 0, "invalid scalar counts")
-  fp_wire_require(Array::length(plan.lambda_bases) == n && Array::length(plan.fn_names) == n && Array::length(plan.fn_files) == n && Array::length(plan.fn_src_stmts) == n, "function columns differ")
-  fp_wire_require(n > 0 || plan.lambda_count == 0, "lambdas without an owner")
+  fp_wire_require(ok = n >= 0 && plan.lambda_count >= 0 && plan.source_file_count >= 0 && plan.lambda_slot_base >= 0, message = "invalid scalar counts")
+  fp_wire_require(ok = Array::length(plan.lambda_bases) == n && Array::length(plan.fn_names) == n && Array::length(plan.fn_files) == n && Array::length(plan.fn_src_stmts) == n, message = "function columns differ")
+  fp_wire_require(ok = n > 0 || plan.lambda_count == 0, message = "lambdas without an owner")
   let mut previous = 0
   let mut i = 0
   while i < n {
-    let base = Array::get(plan.lambda_bases, i)
-    fp_wire_require(base >= previous && base <= plan.lambda_count && (i > 0 || base == 0), "invalid lambda bases")
+    let base = Array::get(plan.lambda_bases, at = i)
+    fp_wire_require(ok = base >= previous && base <= plan.lambda_count && (i > 0 || base == 0), message = "invalid lambda bases")
     previous = base
     i = i + 1
   }
   for slot in plan.allowed_slots {
-    fp_wire_require(slot >= 0, "invalid function-table slot")
+    fp_wire_require(ok = slot >= 0, message = "invalid function-table slot")
   }
   ()
 }
 
 fn fp_wire_put_ints(bytes: Bytes, values: Array[Int]) -> Unit {
-  ast_binary_write_varint(bytes, Array::length(values))
+  ast_binary_write_varint(buf = bytes, v = Array::length(values))
   for value in values {
-    ast_binary_write_svarint(bytes, value)
+    ast_binary_write_svarint(buf = bytes, v = value)
   }
   ()
 }
 
 // Standalone packets must not inherit an enclosing AST encoder's string pool.
 fn fp_wire_put_string(bytes: Bytes, value: String) -> Unit {
-  ast_binary_write_varint(bytes, String::length(value))
+  ast_binary_write_varint(buf = bytes, v = String::length(value))
   let mut i = 0
   while i < String::length(value) {
-    Bytes::push(bytes, String::char_code_at(value, i))
+    Bytes::push(bytes, value = String::char_code_at(value, at = i))
     i = i + 1
   }
 }
 
 fn fp_wire_get_ints(reader: AstBinaryReader, expected: Int) -> Array[Int] with Exception {
-  let n = ast_binary_read_count_checked(reader)
-  fp_wire_require(expected < 0 || n == expected, "integer column count differs")
+  let n = ast_binary_read_count_checked(r = reader)
+  fp_wire_require(ok = expected < 0 || n == expected, message = "integer column count differs")
   let values: Array[Int] = []
   let mut i = 0
   while i < n {
-    Array::push(values, ast_binary_read_svarint_checked(reader))
+    Array::push(values, value = ast_binary_read_svarint_checked(r = reader))
     i = i + 1
   }
   values
@@ -76,46 +76,46 @@ fn fp_wire_get_ints(reader: AstBinaryReader, expected: Int) -> Array[Int] with E
 export fn write_function_product_plan(_ plan: FunctionProductPlan) -> Bytes with Exception {
   fp_wire_check(plan)
   let bytes = Bytes::new()
-  fp_wire_put_string(bytes, "vibe-function-product-plan-1")
-  ast_binary_write_varint(bytes, plan.num_user_funcs)
-  ast_binary_write_svarint(bytes, plan.lambda_count)
-  ast_binary_write_svarint(bytes, plan.lambda_slot_base)
-  ast_binary_write_svarint(bytes, plan.source_file_count)
-  ast_binary_write_bool(bytes, plan.linemap_on)
-  ast_binary_write_varint(bytes, Array::length(plan.fn_names))
+  fp_wire_put_string(bytes = bytes, value = "vibe-function-product-plan-1")
+  ast_binary_write_varint(buf = bytes, v = plan.num_user_funcs)
+  ast_binary_write_svarint(buf = bytes, v = plan.lambda_count)
+  ast_binary_write_svarint(buf = bytes, v = plan.lambda_slot_base)
+  ast_binary_write_svarint(buf = bytes, v = plan.source_file_count)
+  ast_binary_write_bool(buf = bytes, b = plan.linemap_on)
+  ast_binary_write_varint(buf = bytes, v = Array::length(plan.fn_names))
   for name in plan.fn_names {
-    fp_wire_put_string(bytes, name)
+    fp_wire_put_string(bytes = bytes, value = name)
   }
-  fp_wire_put_ints(bytes, plan.fn_files)
-  fp_wire_put_ints(bytes, plan.fn_src_stmts)
-  fp_wire_put_ints(bytes, plan.lambda_bases)
-  fp_wire_put_ints(bytes, plan.allowed_slots)
-  fp_wire_require(Bytes::length(bytes) <= 64 * 1024 * 1024, "exceeds 64 MiB input limit")
+  fp_wire_put_ints(bytes = bytes, values = plan.fn_files)
+  fp_wire_put_ints(bytes = bytes, values = plan.fn_src_stmts)
+  fp_wire_put_ints(bytes = bytes, values = plan.lambda_bases)
+  fp_wire_put_ints(bytes = bytes, values = plan.allowed_slots)
+  fp_wire_require(ok = Bytes::length(bytes) <= 64 * 1024 * 1024, message = "exceeds 64 MiB input limit")
   bytes
 }
 
 export fn read_function_product_plan(_ bytes: Bytes) -> FunctionProductPlan with Exception {
-  fp_wire_require(Bytes::length(bytes) <= 64 * 1024 * 1024, "exceeds 64 MiB input limit")
+  fp_wire_require(ok = Bytes::length(bytes) <= 64 * 1024 * 1024, message = "exceeds 64 MiB input limit")
   let reader = linear_string_reader(bytes)
-  fp_wire_require(ast_binary_read_string_checked(reader) == "vibe-function-product-plan-1", "unsupported format")
-  let n = ast_binary_read_count_checked(reader)
-  let lambda_count = ast_binary_read_svarint_checked(reader)
-  let lambda_slot_base = ast_binary_read_svarint_checked(reader)
-  let source_file_count = ast_binary_read_svarint_checked(reader)
-  let linemap_on = ast_binary_read_bool_checked(reader)
-  let names_count = ast_binary_read_count_checked(reader)
-  fp_wire_require(names_count == n, "function name count differs")
+  fp_wire_require(ok = ast_binary_read_string_checked(r = reader) == "vibe-function-product-plan-1", message = "unsupported format")
+  let n = ast_binary_read_count_checked(r = reader)
+  let lambda_count = ast_binary_read_svarint_checked(r = reader)
+  let lambda_slot_base = ast_binary_read_svarint_checked(r = reader)
+  let source_file_count = ast_binary_read_svarint_checked(r = reader)
+  let linemap_on = ast_binary_read_bool_checked(r = reader)
+  let names_count = ast_binary_read_count_checked(r = reader)
+  fp_wire_require(ok = names_count == n, message = "function name count differs")
   let names: Array[String] = []
   let mut i = 0
   while i < n {
-    Array::push(names, ast_binary_read_string_checked(reader))
+    Array::push(names, value = ast_binary_read_string_checked(r = reader))
     i = i + 1
   }
-  let files = fp_wire_get_ints(reader, n)
-  let statements = fp_wire_get_ints(reader, n)
-  let bases = fp_wire_get_ints(reader, n)
-  let slots = fp_wire_get_ints(reader, -1)
-  fp_wire_require(ast_binary_reader_remaining(reader) == 0, "trailing bytes")
+  let files = fp_wire_get_ints(reader = reader, expected = n)
+  let statements = fp_wire_get_ints(reader = reader, expected = n)
+  let bases = fp_wire_get_ints(reader = reader, expected = n)
+  let slots = fp_wire_get_ints(reader = reader, expected = -1)
+  fp_wire_require(ok = ast_binary_reader_remaining(r = reader) == 0, message = "trailing bytes")
   let plan = FunctionProductPlan::{
     num_user_funcs: n,
     lambda_bases: bases,

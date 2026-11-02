@@ -32,32 +32,32 @@ fn context() -> PreludeSharedContext with Exception {
 }
 fn wire(own: Array[Stmt], indices: Array[Int]) -> Bytes with Exception {
   let b = Bytes::new()
-  write_prelude_shared_job(b, own, indices, "f7", "", "expected")
+  write_prelude_shared_job(b = b, own = own, indices = indices, tag = "f7", entry = "", digest = "expected")
   b
 }
 fn rendered(_ stmts: Array[Stmt]) -> String {
   let rows: Array[String] = []
   for stmt in stmts {
-    Array::push(rows, print_stmt(stmt))
+    Array::push(rows, value = print_stmt(stmt))
   }
-  String::join(rows, "\n")
+  String::join(rows, sep = "\n")
 }
 
 test "shared context roundtrip and ordered repeated interface positions" {
   let b = Bytes::new()
-  write_prelude_shared_context(b, context())
+  write_prelude_shared_context(b = b, context = context())
   let decoded = decode_prelude_shared_context(b)
   let again = Bytes::new()
-  write_prelude_shared_context(again, decoded)
+  write_prelude_shared_context(b = again, context = decoded)
   inspect(again == b, content = "true")
-  let job = decode_prelude_shared_job(wire([], [1, 0, 1]), decoded, "expected")
+  let job = decode_prelude_shared_job(bytes = wire(own = [], indices = [1, 0, 1]), context = decoded, digest = "expected")
   inspect(Array::length(job.trait_job.interfaces), content = "3")
-  inspect(print_stmt(Array::get(job.trait_job.interfaces, 0)) == print_stmt(Array::get(decoded.interfaces, 1)), content = "true")
-  inspect(print_stmt(Array::get(job.trait_job.interfaces, 1)) == print_stmt(Array::get(decoded.interfaces, 0)), content = "true")
-  inspect(Array::get(job.trait_job.typed_offsets, 0), content = "17")
-  inspect(Array::get(job.trait_job.typed_keys, 0), content = "row")
-  inspect(Array::get(job.alias_renames, 0).0, content = "old")
-  inspect(Array::get(job.alias_renames, 0).1, content = "new")
+  inspect(print_stmt(Array::get(job.trait_job.interfaces, at = 0)) == print_stmt(Array::get(decoded.interfaces, at = 1)), content = "true")
+  inspect(print_stmt(Array::get(job.trait_job.interfaces, at = 1)) == print_stmt(Array::get(decoded.interfaces, at = 0)), content = "true")
+  inspect(Array::get(job.trait_job.typed_offsets, at = 0), content = "17")
+  inspect(Array::get(job.trait_job.typed_keys, at = 0), content = "row")
+  inspect(Array::get(job.alias_renames, at = 0).0, content = "old")
+  inspect(Array::get(job.alias_renames, at = 0).1, content = "new")
   inspect(job.waiter_hooks, content = "true")
   inspect(job.aw_note, content = "note")
 }
@@ -65,17 +65,17 @@ test "shared context roundtrip and ordered repeated interface positions" {
 test "shared jobs refuse mismatched context bounds suffix and truncation" {
   let shared = context()
   let mismatch = handle {
-    let _ = decode_prelude_shared_job(wire([], []), shared, "different"); "accepted"
+    let _ = decode_prelude_shared_job(bytes = wire(own = [], indices = []), context = shared, digest = "different"); "accepted"
   } with { Exception::Throw(msg) => msg }
-  inspect(String::contains(mismatch, "context digest"), content = "true")
+  inspect(String::contains(mismatch, needle = "context digest"), content = "true")
   let bounds = handle {
-    let _ = decode_prelude_shared_job(wire([], [2]), shared, "expected"); "accepted"
+    let _ = decode_prelude_shared_job(bytes = wire(own = [], indices = [2]), context = shared, digest = "expected"); "accepted"
   } with { Exception::Throw(msg) => msg }
-  inspect(String::contains(bounds, "interface index"), content = "true")
-  let b = wire([], [])
-  Bytes::push(b, 0)
+  inspect(String::contains(bounds, needle = "interface index"), content = "true")
+  let b = wire(own = [], indices = [])
+  Bytes::push(b, value = 0)
   let suffix = handle {
-    let _ = decode_prelude_shared_job(b, shared, "expected"); "accepted"
+    let _ = decode_prelude_shared_job(bytes = b, context = shared, digest = "expected"); "accepted"
   } with { Exception::Throw(msg) => msg }
   inspect(suffix, content = "shared lowering: trailing bytes")
   let truncated = handle {
@@ -88,9 +88,9 @@ test "shared positions above 63 use unsigned encoding" {
   let shared = context()
   let mut i = 0
   while i < 100 {
-    Array::push(shared.interfaces, Array::get(shared.interfaces, 0)); i = i + 1
+    Array::push(shared.interfaces, value = Array::get(shared.interfaces, at = 0)); i = i + 1
   }
-  let job = decode_prelude_shared_job(wire([], [64, 101]), shared, "expected")
+  let job = decode_prelude_shared_job(bytes = wire(own = [], indices = [64, 101]), context = shared, digest = "expected")
   inspect(Array::length(job.trait_job.interfaces), content = "2")
 }
 
@@ -98,40 +98,40 @@ test "shared pool preserves provenance visibility exclusion and closure order" {
   let own = parse_program(lex("fn owned() -> Int { 1 }"))
   let first = parse_program(lex("fn same() -> Int { 10 }\nfn owned() -> Int { 0 }"))
   let second = parse_program(lex("fn same() -> Int { 20 }"))
-  let (pool, indices) = prelude_batch_context_indices([own, [], []], [
+  let (pool, indices) = prelude_batch_context_indices(parts = [own, [], []], interfaces = [
     [],
     first,
     second
-  ], [
+  ], interface_keys = [
     [],
     [
-      oracle_stmt_key(Array::get(first, 0)),
-      oracle_stmt_key(Array::get(first, 1))
+      oracle_stmt_key(s = Array::get(first, at = 0)),
+      oracle_stmt_key(s = Array::get(first, at = 1))
     ],
-    [oracle_stmt_key(Array::get(second, 0))]
-  ], [[2, 1, 2, 0, -1, 9], [], []])
+    [oracle_stmt_key(s = Array::get(second, at = 0))]
+  ], closure = [[2, 1, 2, 0, -1, 9], [], []])
   inspect(Array::length(pool), content = "3")
-  inspect(Array::get(indices, 0) == [2, 0, 2], content = "true")
-  inspect(print_stmt(Array::get(pool, 0)) != print_stmt(Array::get(pool, 2)), content = "true")
+  inspect(Array::get(indices, at = 0) == [2, 0, 2], content = "true")
+  inspect(print_stmt(Array::get(pool, at = 0)) != print_stmt(Array::get(pool, at = 2)), content = "true")
 }
 
 test "two lowered jobs leave the shared context and parent namespace unchanged" {
   let shared = context()
   let before = Bytes::new()
-  write_prelude_shared_context(before, shared)
-  namespace_rename_originals_restore([("Point", "ParentPoint")])
+  write_prelude_shared_context(b = before, context = shared)
+  namespace_rename_originals_restore(pairs = [("Point", "ParentPoint")])
   let own = "struct Point { x: Int } derive (Show)"
-  let one = run_prelude_module_job(decode_prelude_shared_job(wire(parse_program(lex(own)), [
+  let one = run_prelude_module_job(decode_prelude_shared_job(bytes = wire(own = parse_program(lex(own)), indices = [
     1
-  ]), shared, "expected"))
-  let two = run_prelude_module_job(decode_prelude_shared_job(wire(parse_program(lex(own)), [
+  ]), context = shared, digest = "expected"))
+  let two = run_prelude_module_job(decode_prelude_shared_job(bytes = wire(own = parse_program(lex(own)), indices = [
     1
-  ]), shared, "expected"))
+  ]), context = shared, digest = "expected"))
   inspect(rendered(one.own) == rendered(two.own), content = "true")
-  inspect(String::contains(rendered(one.own), "SourcePoint"), content = "true")
+  inspect(String::contains(rendered(one.own), needle = "SourcePoint"), content = "true")
   let after = Bytes::new()
-  write_prelude_shared_context(after, shared)
+  write_prelude_shared_context(b = after, context = shared)
   inspect(after == before, content = "true")
-  inspect(namespace_rename_original("Point"), content = "ParentPoint")
-  namespace_rename_originals_restore([])
+  inspect(namespace_rename_original(name = "Point"), content = "ParentPoint")
+  namespace_rename_originals_restore(pairs = [])
 }

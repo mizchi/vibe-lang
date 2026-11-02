@@ -340,29 +340,29 @@ fn b3_compress_kernel(io: Bytes, msg: Bytes, off: Int, counter: Int, blen: Int, 
 
 fn make_iv32() -> Bytes {
   let b = Bytes::new()
-  push_word_le(b, 0x6A09E667)
-  push_word_le(b, 0xBB67AE85)
-  push_word_le(b, 0x3C6EF372)
-  push_word_le(b, 0xA54FF53A)
-  push_word_le(b, 0x510E527F)
-  push_word_le(b, 0x9B05688C)
-  push_word_le(b, 0x1F83D9AB)
-  push_word_le(b, 0x5BE0CD19)
+  push_word_le(b = b, w = 0x6A09E667)
+  push_word_le(b = b, w = 0xBB67AE85)
+  push_word_le(b = b, w = 0x3C6EF372)
+  push_word_le(b = b, w = 0xA54FF53A)
+  push_word_le(b = b, w = 0x510E527F)
+  push_word_le(b = b, w = 0x9B05688C)
+  push_word_le(b = b, w = 0x1F83D9AB)
+  push_word_le(b = b, w = 0x5BE0CD19)
   b
 }
 
 fn push_word_le(b: Bytes, w: Int) -> Unit {
-  Bytes::push(b, w&255)
-  Bytes::push(b, (w>>8)&255)
-  Bytes::push(b, (w>>16)&255)
-  Bytes::push(b, (w>>24)&255)
+  Bytes::push(b, value = w&255)
+  Bytes::push(b, value = (w>>8)&255)
+  Bytes::push(b, value = (w>>16)&255)
+  Bytes::push(b, value = (w>>24)&255)
 }
 
 /// io buffer for one deferred compression: cv (32 bytes) + zero tail.
 fn new_io_with_cv(_ cv: Bytes) -> Bytes {
   let io = Bytes::new()
-  Bytes::blit(io, cv, 0, 32)
-  Bytes::fill(io, 0, 32)
+  Bytes::blit(io, src = cv, start = 0, end = 32)
+  Bytes::fill(io, value = 0, count = 32)
   io
 }
 
@@ -389,17 +389,17 @@ fn chunk_output_s(data: Bytes, start: Int, len: Int, counter: Int) -> SimdOutput
     } else {
       0
     }
-    let _ = b3_compress_kernel(io, data, start + b * 64, counter, 64, flags, 1)
+    let _ = b3_compress_kernel(io = io, msg = data, off = start + b * 64, counter = counter, blen = 64, flags = flags, one = 1)
     b = b + 1
   }
   let cv = Bytes::new()
-  Bytes::blit(cv, io, 0, 32)
+  Bytes::blit(cv, src = io, start = 0, end = 32)
   let last_start = start + (num_blocks - 1) * 64
   let last_len = len - (num_blocks - 1) * 64
   let block = Bytes::new()
   // Bytes::blit takes (dst, src, src_start, src_END) -- a slice, not a count.
-  Bytes::blit(block, data, last_start, last_start + last_len)
-  Bytes::fill(block, 0, 64 - last_len)
+  Bytes::blit(block, src = data, start = last_start, end = last_start + last_len)
+  Bytes::fill(block, value = 0, count = 64 - last_len)
   let start_flag = if num_blocks == 1 {
     s_flag_chunk_start
   } else {
@@ -416,16 +416,16 @@ fn chunk_output_s(data: Bytes, start: Int, len: Int, counter: Int) -> SimdOutput
 
 fn chaining_value_s(_ o: SimdOutput) -> Bytes {
   let io = new_io_with_cv(o.cv)
-  let _ = b3_compress_kernel(io, o.block, 0, o.counter, o.blen, o.flags, 1)
+  let _ = b3_compress_kernel(io = io, msg = o.block, off = 0, counter = o.counter, blen = o.blen, flags = o.flags, one = 1)
   let cv = Bytes::new()
-  Bytes::blit(cv, io, 0, 32)
+  Bytes::blit(cv, src = io, start = 0, end = 32)
   cv
 }
 
 fn parent_output_s(left_cv: Bytes, right_cv: Bytes) -> SimdOutput {
   let block = Bytes::new()
-  Bytes::blit(block, left_cv, 0, 32)
-  Bytes::blit(block, right_cv, 0, 32)
+  Bytes::blit(block, src = left_cv, start = 0, end = 32)
+  Bytes::blit(block, src = right_cv, start = 0, end = 32)
   SimdOutput::{
     cv: make_iv32(),
     block: block,
@@ -439,7 +439,7 @@ fn parent_output_s(left_cv: Bytes, right_cv: Bytes) -> SimdOutput {
 /// the largest power-of-two number of chunks strictly below the total.
 fn subtree_output_s(data: Bytes, start: Int, len: Int, chunk_counter: Int) -> SimdOutput {
   if len <= s_chunk_len {
-    chunk_output_s(data, start, len, chunk_counter)
+    chunk_output_s(data = data, start = start, len = len, counter = chunk_counter)
   } else {
     let full_chunks = (len - 1) / s_chunk_len
     let mut left_chunks = 1
@@ -447,9 +447,9 @@ fn subtree_output_s(data: Bytes, start: Int, len: Int, chunk_counter: Int) -> Si
       left_chunks = left_chunks * 2
     }
     let left_len = left_chunks * s_chunk_len
-    let left_cv = chaining_value_s(subtree_output_s(data, start, left_len, chunk_counter))
-    let right_cv = chaining_value_s(subtree_output_s(data, start + left_len, len - left_len, chunk_counter + left_chunks))
-    parent_output_s(left_cv, right_cv)
+    let left_cv = chaining_value_s(subtree_output_s(data = data, start = start, len = left_len, chunk_counter = chunk_counter))
+    let right_cv = chaining_value_s(subtree_output_s(data = data, start = start + left_len, len = len - left_len, chunk_counter = chunk_counter + left_chunks))
+    parent_output_s(left_cv = left_cv, right_cv = right_cv)
   }
 }
 
@@ -463,13 +463,13 @@ fn s_hex_digit(_ d: Int) -> Int {
 
 fn root_hex_s(_ o: SimdOutput) -> String {
   let io = new_io_with_cv(o.cv)
-  let _ = b3_compress_kernel(io, o.block, 0, 0, o.blen, o.flags|s_flag_root, 1)
+  let _ = b3_compress_kernel(io = io, msg = o.block, off = 0, counter = 0, blen = o.blen, flags = o.flags|s_flag_root, one = 1)
   let sb = StringBuilder::new()
   let mut i = 0
   while i < 32 {
-    let b = Bytes::get(io, i)
-    StringBuilder::push(sb, String::from_char_code(s_hex_digit((b>>4)&15)))
-    StringBuilder::push(sb, String::from_char_code(s_hex_digit(b&15)))
+    let b = Bytes::get(io, at = i)
+    StringBuilder::push(sb, value = String::from_char_code(s_hex_digit((b>>4)&15)))
+    StringBuilder::push(sb, value = String::from_char_code(s_hex_digit(b&15)))
     i = i + 1
   }
   StringBuilder::freeze(sb)
@@ -479,7 +479,7 @@ fn root_hex_s(_ o: SimdOutput) -> String {
 
 /// BLAKE3 digest (64 hex chars) of a byte buffer — SIMD kernel path.
 export fn blake3_bytes_simd(_ data: Bytes) -> String {
-  root_hex_s(subtree_output_s(data, 0, Bytes::length(data), 0))
+  root_hex_s(subtree_output_s(data = data, start = 0, len = Bytes::length(data), chunk_counter = 0))
 }
 
 /// BLAKE3 digest (64 hex chars) of a string — SIMD kernel path. Char codes
@@ -489,7 +489,7 @@ export fn blake3_simd(_ msg: String) -> String {
   let data = Bytes::new(len)
   let mut i = 0
   while i < len {
-    Bytes::set(data, i, String::char_code_at(msg, i)&255)
+    Bytes::set(data, at = i, value = String::char_code_at(msg, at = i)&255)
     i = i + 1
   }
   blake3_bytes_simd(data)

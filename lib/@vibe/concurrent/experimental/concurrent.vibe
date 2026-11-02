@@ -316,7 +316,7 @@ fn conc_progress[rg, e](_ n: TaskGroup[rg, e]) -> Unit {
 fn conc_notify_waiters(_ c: TaskCell) -> Unit {
   let mut i = 0
   while i < Array::length(c.waiters) {
-    let w = Array::get(c.waiters, i)
+    let w = Array::get(c.waiters, at = i)
     w.direct_wait = false
     i = i + 1
   }
@@ -328,7 +328,7 @@ fn conc_notify_waiters(_ c: TaskCell) -> Unit {
 fn conc_chan_notify[rg, e, T](_ c: Channel[rg, e, T]) -> Unit {
   let mut i = 0
   while i < Array::length(c.waiters) {
-    let w = Array::get(c.waiters, i)
+    let w = Array::get(c.waiters, at = i)
     w.direct_wait = false
     i = i + 1
   }
@@ -341,13 +341,13 @@ fn conc_chan_notify[rg, e, T](_ c: Channel[rg, e, T]) -> Unit {
 /// itself with these; the Error boundaries
 /// at both sites catch throws before the pop, so the bracket balances.
 fn conc_running_push(_ c: TaskCell) -> Unit {
-  Array::push(conc_running_stack, c)
+  Array::push(conc_running_stack, value = c)
 }
 
 fn conc_running_pop() -> Unit {
   let n = Array::length(conc_running_stack)
   if n > 0 {
-    Array::truncate(conc_running_stack, n - 1)
+    Array::truncate(conc_running_stack, length = n - 1)
   } else {
     ()
   }
@@ -360,8 +360,8 @@ fn conc_running_pop() -> Unit {
 fn conc_chan_register[rg, e, T](_ c: Channel[rg, e, T]) -> Unit {
   let depth = Array::length(conc_running_stack)
   if depth > 0 {
-    let me = Array::get(conc_running_stack, depth - 1)
-    Array::push(c.waiters, me)
+    let me = Array::get(conc_running_stack, at = depth - 1)
+    Array::push(c.waiters, value = me)
     me.direct_wait = true
   } else {
     ()
@@ -376,8 +376,8 @@ fn conc_chan_register[rg, e, T](_ c: Channel[rg, e, T]) -> Unit {
 fn conc_result_register[rg, e, T](_ h: TaskHandle[rg, e, T]) -> Unit {
   let depth = Array::length(conc_running_stack)
   if depth > 0 {
-    let me = Array::get(conc_running_stack, depth - 1)
-    Array::push(h.cell.waiters, me)
+    let me = Array::get(conc_running_stack, at = depth - 1)
+    Array::push(h.cell.waiters, value = me)
     me.direct_wait = true
   } else {
     ()
@@ -393,7 +393,7 @@ fn conc_clear_direct_waits[rg, e](_ n: TaskGroup[rg, e]) -> Bool {
   let mut any = false
   let mut i = 0
   while i < Array::length(n.adopted) {
-    let c = Array::get(n.adopted, i)
+    let c = Array::get(n.adopted, at = i)
     if c.status == 5 && c.direct_wait {
       c.direct_wait = false
       any = true
@@ -485,11 +485,11 @@ fn conc_cancel_parked[rg, e](_ n: TaskGroup[rg, e]) -> Unit {
   let host_serials: Array[Int] = []
   let mut i = 0
   while i < Array::length(n.adopted) {
-    let c = Array::get(n.adopted, i)
+    let c = Array::get(n.adopted, at = i)
     if c.status == 5 {
       if c.host_wait >= 0 {
-        Array::push(host_waits, c.host_wait)
-        Array::push(host_serials, c.serial)
+        Array::push(host_waits, value = c.host_wait)
+        Array::push(host_serials, value = c.serial)
       } else {
         ()
       }
@@ -506,7 +506,7 @@ fn conc_cancel_parked[rg, e](_ n: TaskGroup[rg, e]) -> Unit {
   }
   let mut k = 0
   while k < Array::length(host_waits) {
-    conc_host_release_orphan(n, Array::get(host_waits, k), Array::get(host_serials, k))
+    conc_host_release_orphan(n = n, waited = Array::get(host_waits, at = k), serial = Array::get(host_serials, at = k))
     k = k + 1
   }
 }
@@ -539,13 +539,13 @@ fn ring_grow[T](r: Ring[T], filler: T) -> Unit {
   let b = ArrayBuilder::new()
   let mut i = 0
   while i < new_cap {
-    ArrayBuilder::push(b, filler)
+    ArrayBuilder::push(b, value = filler)
     i = i + 1
   }
   let nbuf = ArrayBuilder::freeze(b)
   let mut j = 0
   while j < r.len {
-    Array::set(nbuf, j, Array::get(r.buf, (r.head + j) % old_cap))
+    Array::set(nbuf, at = j, value = Array::get(r.buf, at = (r.head + j) % old_cap))
     j = j + 1
   }
   r.buf = nbuf
@@ -554,10 +554,10 @@ fn ring_grow[T](r: Ring[T], filler: T) -> Unit {
 
 fn ring_push[T](r: Ring[T], v: T) -> Unit {
   if r.len >= Array::length(r.buf) {
-    ring_grow(r, v)
+    ring_grow(r = r, filler = v)
   }
   let cap = Array::length(r.buf)
-  Array::set(r.buf, (r.head + r.len) % cap, v)
+  Array::set(r.buf, at = (r.head + r.len) % cap, value = v)
   r.len = r.len + 1
 }
 
@@ -566,7 +566,7 @@ fn ring_push[T](r: Ring[T], v: T) -> Unit {
 fn ring_take[T](_ r: Ring[T]) -> T {
   conc_require(r.len > 0)
   let cap = Array::length(r.buf)
-  let v = Array::get(r.buf, r.head)
+  let v = Array::get(r.buf, at = r.head)
   r.head = (r.head + 1) % cap
   r.len = r.len - 1
   v
@@ -580,7 +580,7 @@ fn conc_has_ready[rg, e](_ n: TaskGroup[rg, e]) -> Bool {
   let mut found = false
   let mut i = n.next
   while !found && i < n.count {
-    if Array::get(n.tasks, i).status == 0 {
+    if Array::get(n.tasks, at = i).status == 0 {
       found = true
     } else {
       ()
@@ -595,7 +595,7 @@ fn drive_one[rg, e](_ n: TaskGroup[rg, e]) -> Bool with e {
     if i >= n.count {
       break -1
     }
-    let c = Array::get(n.tasks, i)
+    let c = Array::get(n.tasks, at = i)
     if c.status == 0 {
       break i
     } else {
@@ -606,7 +606,7 @@ fn drive_one[rg, e](_ n: TaskGroup[rg, e]) -> Bool with e {
     false
   } else {
     n.next = idx
-    let c = Array::get(n.tasks, idx)
+    let c = Array::get(n.tasks, at = idx)
     if c.cancel_requested || n.failing {
       // Ready -> dispatch is a cancel point: a cancel requested before
       // dispatch, or a failing task group (fail-fast sibling cancel),
@@ -615,7 +615,7 @@ fn drive_one[rg, e](_ n: TaskGroup[rg, e]) -> Bool with e {
       conc_notify_waiters(c)
     } else {
       c.status = 1
-      let r = Array::get(n.runners, idx)
+      let r = Array::get(n.runners, at = idx)
       // #2066 (Codex on #3091): an ordinary runner is a task too, so it runs
       // as the running task like every suspendable leg does. A stream
       // operation claims its cell for that task (`__conc_stream_claim`), and
@@ -719,10 +719,10 @@ export fn TaskGroup::run[T, rg, e](_ body: (TaskGroup[rg, e]) -> T with e) -> T 
 /// whose notify never comes). The pump's stall rule catches the first; the
 /// terminal check below catches what the pump leaves parked.
 fn conc_close_join[rg, e](_ n: TaskGroup[rg, e]) -> Unit {
-  conc_pump_rounds(n, [])
+  conc_pump_rounds(n = n, until = [])
   let mut ai = 0
   while ai < Array::length(n.adopted) {
-    let ac = Array::get(n.adopted, ai)
+    let ac = Array::get(n.adopted, at = ai)
     if ac.status == 2 || ac.status == 3 || ac.status == 4 {
       ()
     } else {
@@ -811,7 +811,7 @@ export fn TaskGroup::spawn[rg, e, T: Send](_ n: TaskGroup[rg, e], f: () -> T wit
     } with { Exception::Throw(payload) => {
       // #1372 review (Codex P1) / #1374: `payload` is not necessarily a
       // String -- see conc_exn_message.
-      let msg = conc_exn_message("\{payload}", __exn_kind())
+      let msg = conc_exn_message(rendered = "\{payload}", kind = __exn_kind())
       cell.status = 3
       cell.fail_msg = msg
       conc_notify_waiters(cell)
@@ -835,8 +835,8 @@ export fn TaskGroup::spawn[rg, e, T: Send](_ n: TaskGroup[rg, e], f: () -> T wit
   // always grow together.
   let cap = Array::length(n.runners)
   if n.count < cap {
-    Array::set(n.tasks, n.count, cell)
-    Array::set(n.runners, n.count, runner)
+    Array::set(n.tasks, at = n.count, value = cell)
+    Array::set(n.runners, at = n.count, value = runner)
   } else {
     let ncap = if cap > 0 {
       cap * 2
@@ -846,26 +846,26 @@ export fn TaskGroup::spawn[rg, e, T: Send](_ n: TaskGroup[rg, e], f: () -> T wit
     let rb = ArrayBuilder::new()
     let mut i = 0
     while i < ncap {
-      ArrayBuilder::push(rb, runner)
+      ArrayBuilder::push(rb, value = runner)
       i = i + 1
     }
     let nr = ArrayBuilder::freeze(rb)
     let mut j = 0
     while j < n.count {
-      Array::set(nr, j, Array::get(n.runners, j))
+      Array::set(nr, at = j, value = Array::get(n.runners, at = j))
       j = j + 1
     }
     n.runners = nr
     let tb = ArrayBuilder::new()
     let mut i2 = 0
     while i2 < ncap {
-      ArrayBuilder::push(tb, cell)
+      ArrayBuilder::push(tb, value = cell)
       i2 = i2 + 1
     }
     let nt = ArrayBuilder::freeze(tb)
     let mut j2 = 0
     while j2 < n.count {
-      Array::set(nt, j2, Array::get(n.tasks, j2))
+      Array::set(nt, at = j2, value = Array::get(n.tasks, at = j2))
       j2 = j2 + 1
     }
     n.tasks = nt
@@ -926,7 +926,7 @@ export fn TaskHandle::join[rg, e, T](_ h: TaskHandle[rg, e, T]) -> T with Except
       // rounds below never dispatch that lane (Codex on #3091).
       ()
     } else {
-      conc_pump_until_settled(h.group, h.cell)
+      conc_pump_until_settled(n = h.group, target = h.cell)
       // Nothing resumable, nothing queued, and the target still parked: a
       // deadlock. A task a resumed one spawned is dispatched next round.
       if h.cell.status == 5 && !conc_has_ready(h.group) {
@@ -954,7 +954,7 @@ export fn TaskHandle::cancel[rg, e, T](_ h: TaskHandle[rg, e, T]) -> Unit {
     c.cont = None
     c.host_wait = 0 - 1
     c.direct_wait = false
-    conc_host_release_orphan(h.group, waited, c.serial)
+    conc_host_release_orphan(n = h.group, waited = waited, serial = c.serial)
     conc_notify_waiters(c)
   } else {
     ()
@@ -1007,7 +1007,7 @@ export fn Sender::send[rg, e, T](_ s: Sender[rg, e, T], v: T) -> Unit with Excep
     throw(Closed)
   }
   if c.capacity > 0 && c.buf.len < c.capacity && c.pend.len == 0 {
-    ring_push(c.buf, v)
+    ring_push(r = c.buf, v = v)
     conc_progress(c.group)
     conc_chan_notify(c)
     return ()
@@ -1015,7 +1015,7 @@ export fn Sender::send[rg, e, T](_ s: Sender[rg, e, T], v: T) -> Unit with Excep
   if c.waiting_recv > 0 {
     // A receiver below us on the stack is committed to taking the next
     // message: deposit is the rendezvous linearization point.
-    ring_push(c.pend, v)
+    ring_push(r = c.pend, v = v)
     c.pend_seq = c.pend_seq + 1
     conc_progress(c.group)
     conc_chan_notify(c)
@@ -1024,7 +1024,7 @@ export fn Sender::send[rg, e, T](_ s: Sender[rg, e, T], v: T) -> Unit with Excep
   // Block: register the message and drive other tasks until a receiver
   // consumes it (FIFO by pend_seq). The deposit itself can satisfy a
   // direct-parked recv_wait, so notify before blocking.
-  ring_push(c.pend, v)
+  ring_push(r = c.pend, v = v)
   let myseq = c.pend_seq
   c.pend_seq = c.pend_seq + 1
   conc_chan_notify(c)
@@ -1086,7 +1086,7 @@ export fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[
   let hb = ArrayBuilder::new()
   let mut i = 0
   while i < len {
-    let x = Array::get(xs, i)
+    let x = Array::get(xs, at = i)
     // #944 checked-Error row discipline: annotate the thunk's row so the
     // latent { Error, e } stays on the closure value instead of being
     // attributed to Parallel::map's own perform set (map's own row comes
@@ -1095,8 +1095,8 @@ export fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[
     let thunk: () -> U with Exception + e = () -> {
       f(x)
     }
-    let t = TaskGroup::spawn(n, thunk)
-    ArrayBuilder::push(hb, t)
+    let t = TaskGroup::spawn(n, f = thunk)
+    ArrayBuilder::push(hb, value = t)
     i = i + 1
   }
   let handles = ArrayBuilder::freeze(hb)
@@ -1107,7 +1107,7 @@ export fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[
     }
     // #1324: join now THROWS its TaskError, so a child failure aborts this
     // loop by itself -- the old `Err(e) => break Err(e)` re-wrap is gone.
-    ArrayBuilder::push(rb, TaskHandle::join(Array::get(handles, j)))
+    ArrayBuilder::push(rb, value = TaskHandle::join(Array::get(handles, at = j)))
     continue (j + 1)
   }
 }
@@ -1127,7 +1127,7 @@ export fn Receiver::recv[rg, e, T](_ rh: Receiver[rg, e, T]) -> Option[T] with e
       // Promote the oldest blocked send into the freed buffer slot.
       if c.pend.len > 0 && c.capacity > 0 {
         let p = ring_take(c.pend)
-        ring_push(c.buf, p)
+        ring_push(r = c.buf, v = p)
         c.pend_consumed = c.pend_consumed + 1
       }
       conc_progress(c.group)
@@ -1240,18 +1240,18 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](_ n: TaskGroup[rg, e], f: () 
       // rather than to a silent yield livelock (a yielder is resumed for
       // free forever and never counts as stalled).
       if r < 0 {
-        TaskHandle::park_kind(h, resume, true, 0 - r)
+        TaskHandle::park_kind(h, k = resume, poll = true, sleep_ms = 0 - r)
       } else if r >= 2 && __conc_host_arm(r) >= 0 {
         // #1537: a host future (handle + 2) or host stream read (handle +
         // 2048) in a program whose entry boundary settles host waitables.
         // The group waits on it together with every other pending one
         // (conc_settle_host_waits); the payload itself names it.
-        TaskHandle::park_kind(h, resume, false, 0)
+        TaskHandle::park_kind(h, k = resume, poll = false, sleep_ms = 0)
         h.cell.host_wait = r
         conc_host_register_parked(h.cell)
         conc_host_record_cell(r)
       } else {
-        TaskHandle::park_kind(h, resume, r >= 1, 0)
+        TaskHandle::park_kind(h, k = resume, poll = r >= 1, sleep_ms = 0)
       }
       SParked
     } }
@@ -1260,11 +1260,11 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](_ n: TaskGroup[rg, e], f: () 
     // fail-fast, exactly like spawn's runner. The Async handle is
     // CPS-lowered (no exceptions), so only real throws land here.
     // #1374: same erased-arm hazard as the runner -- see conc_exn_message.
-    conc_fail_cell(n, h.cell, conc_exn_message("\{msg}", __exn_kind()))
+    conc_fail_cell(n = n, cell = h.cell, msg = conc_exn_message(rendered = "\{msg}", kind = __exn_kind()))
     SParked
   } }
   conc_running_pop()
-  TaskHandle::settle(h, step)
+  TaskHandle::settle(h, step = step)
   h
 }
 
@@ -1295,7 +1295,7 @@ export fn TaskGroup::adopt[rg, e, T: Send](_ n: TaskGroup[rg, e]) -> TaskHandle[
     serial: conc_next_cell_serial(),
     waiters: empty_cells()
   }
-  Array::push(n.adopted, cell)
+  Array::push(n.adopted, value = cell)
   TaskHandle::{
     group: n,
     cell: cell,
@@ -1329,7 +1329,7 @@ export fn TaskHandle::settle[rg, e, T](_ h: TaskHandle[rg, e, T], step: TaskStep
 /// Use park_poll with the arm's suspend payload when the body may block
 /// on a channel, or the deadlock trap cannot see the wait.
 export fn TaskHandle::park[rg, e, T](_ h: TaskHandle[rg, e, T], k: (Int) -> TaskStep[T]) -> Unit {
-  TaskHandle::park_poll(h, k, false)
+  TaskHandle::park_poll(h, k = k, poll = false)
 }
 
 /// Park with an explicit wait kind: `poll = true` marks the task as
@@ -1337,7 +1337,7 @@ export fn TaskHandle::park[rg, e, T](_ h: TaskHandle[rg, e, T], k: (Int) -> Task
 /// TaskCell.wait_poll). spawn_suspend derives it from the Suspend payload
 /// (1 = poll wait — the convention the blocking channel ops use).
 export fn TaskHandle::park_poll[rg, e, T](_ h: TaskHandle[rg, e, T], k: (Int) -> TaskStep[T], poll: Bool) -> Unit {
-  TaskHandle::park_kind(h, k, poll, 0)
+  TaskHandle::park_kind(h, k = k, poll = poll, sleep_ms = 0)
 }
 
 /// Park with a sleep debt (#1227): `sleep_ms > 0` means the task owes that
@@ -1367,7 +1367,7 @@ export fn TaskHandle::park_kind[rg, e, T](_ h: TaskHandle[rg, e, T], k: (Int) ->
       k(rv)
     } with { Exception::Throw(msg) => {
       // #1374: same erased-arm hazard as the runner -- see conc_exn_message.
-      conc_fail_cell(grp, cell, conc_exn_message("\{msg}", __exn_kind()))
+      conc_fail_cell(n = grp, cell = cell, msg = conc_exn_message(rendered = "\{msg}", kind = __exn_kind()))
       SParked
     } }
     conc_running_pop()
@@ -1431,7 +1431,7 @@ fn conc_settle_sleep_debt[rg, e](_ n: TaskGroup[rg, e]) -> Unit {
   let mut min_left = 0
   let mut i = 0
   while i < total {
-    let c = Array::get(n.adopted, i)
+    let c = Array::get(n.adopted, at = i)
     if c.status == 5 {
       if c.sleep_left > 0 {
         sleepers = sleepers + 1
@@ -1466,7 +1466,7 @@ fn conc_settle_sleep_debt[rg, e](_ n: TaskGroup[rg, e]) -> Unit {
     sleep_blocking(min_left)
     let mut j = 0
     while j < total {
-      let c = Array::get(n.adopted, j)
+      let c = Array::get(n.adopted, at = j)
       if c.status == 5 && c.sleep_left > 0 {
         c.sleep_left = c.sleep_left - min_left
       } else {
@@ -1499,7 +1499,7 @@ fn conc_force_settle_sleep_debt[rg, e](_ n: TaskGroup[rg, e]) -> Bool {
   let mut min_left = 0
   let mut i = 0
   while i < total {
-    let c = Array::get(n.adopted, i)
+    let c = Array::get(n.adopted, at = i)
     if c.status == 5 && c.sleep_left > 0 {
       sleepers = sleepers + 1
       if min_left == 0 || c.sleep_left < min_left {
@@ -1516,7 +1516,7 @@ fn conc_force_settle_sleep_debt[rg, e](_ n: TaskGroup[rg, e]) -> Bool {
     sleep_blocking(min_left)
     let mut j = 0
     while j < total {
-      let c = Array::get(n.adopted, j)
+      let c = Array::get(n.adopted, at = j)
       if c.status == 5 && c.sleep_left > 0 {
         c.sleep_left = c.sleep_left - min_left
       } else {
@@ -1565,7 +1565,7 @@ fn conc_pump_once[rg, e](_ n: TaskGroup[rg, e]) -> Bool {
       break false
     }
     let i = (n.pump_next + step) % total
-    let c = Array::get(n.adopted, i)
+    let c = Array::get(n.adopted, at = i)
     if c.status == 5 && c.sleep_left == 0 && !c.direct_wait && c.host_wait < 0 {
       n.pump_next = (i + 1) % total
       match c.cont {
@@ -1611,7 +1611,7 @@ fn conc_settle_host_waits_armed[rg, e](_ n: TaskGroup[rg, e]) -> Bool {
   let mut min_left = 0
   let mut i = 0
   while i < total {
-    let c = Array::get(n.adopted, i)
+    let c = Array::get(n.adopted, at = i)
     if c.timer_covered && c.status == 5 && c.sleep_left > 0 {
       covered = covered + 1
     } else {
@@ -1669,13 +1669,13 @@ fn conc_settle_host_waits_armed[rg, e](_ n: TaskGroup[rg, e]) -> Bool {
     } else {
       ()
     }
-    conc_host_settle_one(n, ready, arm, min_left)
+    conc_host_settle_one(n = n, ready = ready, arm = arm, min_left = min_left)
   }
 }
 
 fn conc_host_settle_one[rg, e](n: TaskGroup[rg, e], ready: Int, arm: Int, min_left: Int) -> Bool {
   if arm == 1 {
-    conc_host_sleep_elapsed(n, min_left)
+    conc_host_sleep_elapsed(n = n, ms = min_left)
     true
   } else {
     let fired = if ready >= 0 {
@@ -1690,11 +1690,11 @@ fn conc_host_settle_one[rg, e](n: TaskGroup[rg, e], ready: Int, arm: Int, min_le
         // Another group's timer (this group runs inside one of its tasks):
         // leave it for its owner rather than debiting sleepers it never
         // covered (Codex on #3059).
-        Array::push(conc_host_fired_timers, fired)
+        Array::push(conc_host_fired_timers, value = fired)
       }
       true
     } else {
-      conc_host_resume(n, fired)
+      conc_host_resume(n = n, fired = fired)
     }
   }
 }
@@ -1707,7 +1707,7 @@ fn conc_host_own_timer_fired[rg, e](_ n: TaskGroup[rg, e]) -> Unit {
   let elapsed = n.host_timer_ms
   n.host_timer = 0
   n.host_timer_ms = 0
-  conc_host_covered_elapsed(n, elapsed)
+  conc_host_covered_elapsed(n = n, ms = elapsed)
 }
 
 /// #1537: remove `timer` from the fired mailbox; false when it is not there.
@@ -1715,11 +1715,11 @@ fn conc_host_take_fired_timer(_ timer: Int) -> Bool {
   let mut found = false
   let mut k = 0
   while k < Array::length(conc_host_fired_timers) {
-    if !found && Array::get(conc_host_fired_timers, k) == timer {
+    if !found && Array::get(conc_host_fired_timers, at = k) == timer {
       found = true
       let last = Array::length(conc_host_fired_timers) - 1
-      Array::set(conc_host_fired_timers, k, Array::get(conc_host_fired_timers, last))
-      Array::truncate(conc_host_fired_timers, last)
+      Array::set(conc_host_fired_timers, at = k, value = Array::get(conc_host_fired_timers, at = last))
+      Array::truncate(conc_host_fired_timers, length = last)
     } else {
       k = k + 1
     }
@@ -1731,7 +1731,7 @@ fn conc_host_take_fired_timer(_ timer: Int) -> Bool {
 fn conc_host_cover_sleepers[rg, e](_ n: TaskGroup[rg, e]) -> Unit {
   let mut j = 0
   while j < Array::length(n.adopted) {
-    let c = Array::get(n.adopted, j)
+    let c = Array::get(n.adopted, at = j)
     c.timer_covered = c.status == 5 && c.sleep_left > 0
     j = j + 1
   }
@@ -1742,7 +1742,7 @@ fn conc_host_cover_sleepers[rg, e](_ n: TaskGroup[rg, e]) -> Unit {
 fn conc_host_covered_elapsed[rg, e](n: TaskGroup[rg, e], ms: Int) -> Unit {
   let mut j = 0
   while j < Array::length(n.adopted) {
-    let c = Array::get(n.adopted, j)
+    let c = Array::get(n.adopted, at = j)
     if c.timer_covered && c.status == 5 && c.sleep_left > 0 {
       c.sleep_left = if c.sleep_left > ms {
         c.sleep_left - ms
@@ -1761,7 +1761,7 @@ fn conc_host_covered_elapsed[rg, e](n: TaskGroup[rg, e], ms: Int) -> Unit {
 fn conc_host_sleep_elapsed[rg, e](n: TaskGroup[rg, e], ms: Int) -> Unit {
   let mut j = 0
   while j < Array::length(n.adopted) {
-    let c = Array::get(n.adopted, j)
+    let c = Array::get(n.adopted, at = j)
     if c.status == 5 && c.sleep_left > 0 {
       c.sleep_left = if c.sleep_left > ms {
         c.sleep_left - ms
@@ -1813,8 +1813,8 @@ let conc_host_cells: Array[Array[Int]] = []
 
 /// Called by the synthesized `__aw_pay` right before a host-future park.
 export fn __aw_note(_ f: Array[Int]) -> Int {
-  Array::truncate(conc_aw_noted, 0)
-  Array::push(conc_aw_noted, f)
+  Array::truncate(conc_aw_noted, length = 0)
+  Array::push(conc_aw_noted, value = f)
   0
 }
 
@@ -1827,13 +1827,13 @@ export fn __aw_note(_ f: Array[Int]) -> Int {
 /// starts clean.
 fn conc_host_claim_stream(f: Array[Int], serial: Int) -> Unit {
   if Array::length(f) >= 3 {
-    if Array::get(f, 2) != serial {
+    if Array::get(f, at = 2) != serial {
       abort("vibe: a host stream is read by two tasks; give it one owner")
     } else {
       ()
     }
   } else {
-    Array::push(f, serial)
+    Array::push(f, value = serial)
   }
 }
 
@@ -1847,38 +1847,38 @@ fn conc_host_claim_stream(f: Array[Int], serial: Int) -> Unit {
 export fn __conc_stream_claim(_ f: Array[Int]) -> Int {
   let depth = Array::length(conc_running_stack)
   let owner = if depth > 0 {
-    Array::get(conc_running_stack, depth - 1).serial
+    Array::get(conc_running_stack, at = depth - 1).serial
   } else {
     0
   }
-  conc_host_claim_stream(f, owner)
+  conc_host_claim_stream(f = f, serial = owner)
   0
 }
 
 fn conc_host_record_cell(_ payload: Int) -> Unit {
   if Array::length(conc_aw_noted) > 0 {
-    let f = Array::get(conc_aw_noted, 0)
-    Array::truncate(conc_aw_noted, 0)
-    if Array::get(f, 0) == 2 && Array::get(f, 1) + 2 == payload {
+    let f = Array::get(conc_aw_noted, at = 0)
+    Array::truncate(conc_aw_noted, length = 0)
+    if Array::get(f, at = 0) == 2 && Array::get(f, at = 1) + 2 == payload {
       // Settled cells are done with their handle; keep only the live ones.
       let live: Array[Array[Int]] = []
       let mut i = 0
       while i < Array::length(conc_host_cells) {
-        let c = Array::get(conc_host_cells, i)
-        if Array::get(c, 0) == 2 {
-          Array::push(live, c)
+        let c = Array::get(conc_host_cells, at = i)
+        if Array::get(c, at = 0) == 2 {
+          Array::push(live, value = c)
         } else {
           ()
         }
         i = i + 1
       }
-      Array::truncate(conc_host_cells, 0)
+      Array::truncate(conc_host_cells, length = 0)
       let mut k = 0
       while k < Array::length(live) {
-        Array::push(conc_host_cells, Array::get(live, k))
+        Array::push(conc_host_cells, value = Array::get(live, at = k))
         k = k + 1
       }
-      Array::push(conc_host_cells, f)
+      Array::push(conc_host_cells, value = f)
     } else {
       ()
     }
@@ -1893,9 +1893,9 @@ fn conc_host_release(_ waited: Int) -> Unit {
   let _ = __conc_host_cancel(waited)
   let mut i = 0
   while i < Array::length(conc_host_cells) {
-    let c = Array::get(conc_host_cells, i)
-    if Array::get(c, 0) == 2 && Array::get(c, 1) + 2 == waited {
-      Array::set(c, 0, 9)
+    let c = Array::get(conc_host_cells, at = i)
+    if Array::get(c, at = 0) == 2 && Array::get(c, at = 1) + 2 == waited {
+      Array::set(c, at = 0, value = 9)
     } else {
       ()
     }
@@ -1906,8 +1906,8 @@ fn conc_host_release(_ waited: Int) -> Unit {
 let conc_cell_serial_ctr: Array[Int] = [0]
 
 fn conc_next_cell_serial() -> Int {
-  Array::set(conc_cell_serial_ctr, 0, Array::get(conc_cell_serial_ctr, 0) + 1)
-  Array::get(conc_cell_serial_ctr, 0)
+  Array::set(conc_cell_serial_ctr, at = 0, value = Array::get(conc_cell_serial_ctr, at = 0) + 1)
+  Array::get(conc_cell_serial_ctr, at = 0)
 }
 
 /// #1537: record a task that just parked on a host waitable, dropping stale
@@ -1918,21 +1918,21 @@ fn conc_host_register_parked(_ cell: TaskCell) -> Unit {
   let live: Array[TaskCell] = []
   let mut i = 0
   while i < Array::length(conc_host_parked) {
-    let c = Array::get(conc_host_parked, i)
+    let c = Array::get(conc_host_parked, at = i)
     if c.status == 5 && c.host_wait >= 0 && c.serial != cell.serial {
-      Array::push(live, c)
+      Array::push(live, value = c)
     } else {
       ()
     }
     i = i + 1
   }
-  Array::truncate(conc_host_parked, 0)
+  Array::truncate(conc_host_parked, length = 0)
   let mut k = 0
   while k < Array::length(live) {
-    Array::push(conc_host_parked, Array::get(live, k))
+    Array::push(conc_host_parked, value = Array::get(live, at = k))
     k = k + 1
   }
-  Array::push(conc_host_parked, cell)
+  Array::push(conc_host_parked, value = cell)
 }
 
 /// #1537: how many tasks, in any group, are parked on `waitable` right now.
@@ -1942,7 +1942,7 @@ fn conc_host_waiters_on(_ waitable: Int) -> Int {
   let mut count = 0
   let mut i = 0
   while i < Array::length(conc_host_parked) {
-    let c = Array::get(conc_host_parked, i)
+    let c = Array::get(conc_host_parked, at = i)
     if c.status == 5 && c.host_wait == waitable && conc_host_landed_index(c.serial) < 0 {
       count = count + 1
     } else {
@@ -1955,10 +1955,10 @@ fn conc_host_waiters_on(_ waitable: Int) -> Int {
 
 fn conc_host_landed_remove(_ li: Int) -> Unit {
   let last = Array::length(conc_host_landed_keys) - 1
-  Array::set(conc_host_landed_keys, li, Array::get(conc_host_landed_keys, last))
-  Array::set(conc_host_landed_vals, li, Array::get(conc_host_landed_vals, last))
-  Array::truncate(conc_host_landed_keys, last)
-  Array::truncate(conc_host_landed_vals, last)
+  Array::set(conc_host_landed_keys, at = li, value = Array::get(conc_host_landed_keys, at = last))
+  Array::set(conc_host_landed_vals, at = li, value = Array::get(conc_host_landed_vals, at = last))
+  Array::truncate(conc_host_landed_keys, length = last)
+  Array::truncate(conc_host_landed_vals, length = last)
 }
 
 /// #1537: the mailbox entry of the task with cell serial `serial`, or -1.
@@ -1966,7 +1966,7 @@ fn conc_host_landed_index(_ serial: Int) -> Int {
   let mut found = 0 - 1
   let mut i = 0
   while i < Array::length(conc_host_landed_keys) {
-    if found < 0 && Array::get(conc_host_landed_keys, i) == serial {
+    if found < 0 && Array::get(conc_host_landed_keys, at = i) == serial {
       found = i
     } else {
       ()
@@ -1982,7 +1982,7 @@ fn conc_host_local_landed[rg, e](_ n: TaskGroup[rg, e]) -> Bool {
   if Array::length(conc_host_landed_keys) > 0 {
     let mut i = 0
     while i < Array::length(n.adopted) {
-      let c = Array::get(n.adopted, i)
+      let c = Array::get(n.adopted, at = i)
       if !found && c.status == 5 && conc_host_landed_index(c.serial) >= 0 {
         found = true
       } else {
@@ -2005,17 +2005,17 @@ fn conc_host_resume_landed[rg, e](_ n: TaskGroup[rg, e]) -> Unit {
   let vals: Array[Int] = []
   let mut j = 0
   while j < Array::length(n.adopted) {
-    let c = Array::get(n.adopted, j)
+    let c = Array::get(n.adopted, at = j)
     let li = if c.status == 5 {
       conc_host_landed_index(c.serial)
     } else {
       0 - 1
     }
     if li >= 0 {
-      Array::push(vals, Array::get(conc_host_landed_vals, li))
+      Array::push(vals, value = Array::get(conc_host_landed_vals, at = li))
       conc_host_landed_remove(li)
       c.host_wait = 0 - 1
-      Array::push(woken, c)
+      Array::push(woken, value = c)
     } else {
       ()
     }
@@ -2023,8 +2023,8 @@ fn conc_host_resume_landed[rg, e](_ n: TaskGroup[rg, e]) -> Unit {
   }
   let mut w = 0
   while w < Array::length(woken) {
-    let c = Array::get(woken, w)
-    let v = Array::get(vals, w)
+    let c = Array::get(woken, at = w)
+    let v = Array::get(vals, at = w)
     match c.cont {
       Some(k) => {
         c.cont = None
@@ -2046,12 +2046,12 @@ fn conc_host_resume[rg, e](n: TaskGroup[rg, e], fired: Int) -> Bool {
   let woken: Array[TaskCell] = []
   let mut j = 0
   while j < total {
-    let c = Array::get(n.adopted, j)
+    let c = Array::get(n.adopted, at = j)
     // A task with a mailbox entry waits on the released handle's OLD
     // future; `fired` may be a reused handle naming a new one.
     if c.status == 5 && c.host_wait == fired && conc_host_landed_index(c.serial) < 0 {
       c.host_wait = 0 - 1
-      Array::push(woken, c)
+      Array::push(woken, value = c)
     } else {
       ()
     }
@@ -2080,10 +2080,10 @@ fn conc_host_resume[rg, e](n: TaskGroup[rg, e], fired: Int) -> Bool {
     // just released (see conc_host_landed_keys).
     let mut o = 0
     while o < Array::length(conc_host_parked) {
-      let c = Array::get(conc_host_parked, o)
+      let c = Array::get(conc_host_parked, at = o)
       if c.status == 5 && c.host_wait == fired && conc_host_landed_index(c.serial) < 0 {
-        Array::push(conc_host_landed_keys, c.serial)
-        Array::push(conc_host_landed_vals, v)
+        Array::push(conc_host_landed_keys, value = c.serial)
+        Array::push(conc_host_landed_vals, value = v)
       } else {
         ()
       }
@@ -2091,7 +2091,7 @@ fn conc_host_resume[rg, e](n: TaskGroup[rg, e], fired: Int) -> Bool {
     }
     let mut w = 0
     while w < Array::length(woken) {
-      let c = Array::get(woken, w)
+      let c = Array::get(woken, at = w)
       match c.cont {
         Some(k) => {
           c.cont = None
@@ -2181,7 +2181,7 @@ export fn TaskGroup::pump[rg, e](_ n: TaskGroup[rg, e]) -> Bool {
 /// Pump until no adopted task is parked. Tasks that yield in a cycle
 /// against each other interleave deterministically (round-robin).
 export fn TaskGroup::pump_all[rg, e](_ n: TaskGroup[rg, e]) -> Unit {
-  conc_pump_rounds(n, [])
+  conc_pump_rounds(n = n, until = [])
   // The loop only exits when nothing is resumable. Pre-direct-wake that
   // implied nothing was parked at all; now it can also mean only
   // direct-parked waiters remain (their valve already spent) — nothing in
@@ -2189,7 +2189,7 @@ export fn TaskGroup::pump_all[rg, e](_ n: TaskGroup[rg, e]) -> Unit {
   // like the stalled-poller rule instead of returning with live tasks.
   let mut di = 0
   while di < Array::length(n.adopted) {
-    if Array::get(n.adopted, di).status == 5 {
+    if Array::get(n.adopted, at = di).status == 5 {
       conc_deadlock()
     } else {
       ()
@@ -2203,7 +2203,7 @@ export fn TaskGroup::pump_all[rg, e](_ n: TaskGroup[rg, e]) -> Unit {
 /// stops when a run-to-completion task is queued, which only join can
 /// dispatch (drive_one carries the group's row).
 fn conc_pump_until_settled[rg, e](n: TaskGroup[rg, e], target: TaskCell) -> Unit {
-  conc_pump_rounds(n, [target])
+  conc_pump_rounds(n = n, until = [target])
 }
 
 /// Pump rounds under the deadlock rules below, until nothing is resumable
@@ -2211,7 +2211,7 @@ fn conc_pump_until_settled[rg, e](n: TaskGroup[rg, e], target: TaskCell) -> Unit
 fn conc_pump_rounds[rg, e](n: TaskGroup[rg, e], until: Array[TaskCell]) -> Unit {
   let mut go = true
   let mut stall = 0
-  while go && (Array::length(until) == 0 || (Array::get(until, 0).status == 5 && !conc_has_ready(n))) {
+  while go && (Array::length(until) == 0 || (Array::get(until, at = 0).status == 5 && !conc_has_ready(n))) {
     let before = n.progress
     go = TaskGroup::pump(n)
     if go {
@@ -2271,7 +2271,7 @@ fn conc_all_parked_polling[rg, e](_ n: TaskGroup[rg, e]) -> Bool {
   let mut all = true
   let mut i = 0
   while i < Array::length(n.adopted) {
-    let c = Array::get(n.adopted, i)
+    let c = Array::get(n.adopted, at = i)
     if c.status == 5 {
       any = true
       if c.wait_poll {
@@ -2338,17 +2338,17 @@ export fn Sender::send_wait[rg, e, T](_ s: Sender[rg, e, T], v: T) -> Unit with 
   if chan_closed(c) {
     throw(Closed)
   } else if c.capacity > 0 && c.buf.len < c.capacity && c.pend.len == 0 {
-    ring_push(c.buf, v)
+    ring_push(r = c.buf, v = v)
     conc_progress(c.group)
     conc_chan_notify(c)
   } else {
     // The deposit itself can satisfy a direct-parked recv_wait, so
     // notify before suspending on our own consumption.
-    ring_push(c.pend, v)
+    ring_push(r = c.pend, v = v)
     let myseq = c.pend_seq
     c.pend_seq = c.pend_seq + 1
     conc_chan_notify(c)
-    conc_send_wait_consumed(c, myseq)
+    conc_send_wait_consumed(c = c, myseq = myseq)
   }
 }
 
@@ -2363,7 +2363,7 @@ fn conc_send_wait_consumed[rg, e, T](c: Channel[rg, e, T], myseq: Int) -> Unit w
   } else {
     conc_chan_register(c)
     let _w = perform Async::Suspend(1)
-    conc_send_wait_consumed(c, myseq)
+    conc_send_wait_consumed(c = c, myseq = myseq)
   }
 }
 
@@ -2379,7 +2379,7 @@ export fn Receiver::recv_wait[rg, e, T](_ rh: Receiver[rg, e, T]) -> Option[T] w
     let v = ring_take(c.buf)
     if c.pend.len > 0 && c.capacity > 0 {
       let p = ring_take(c.pend)
-      ring_push(c.buf, p)
+      ring_push(r = c.buf, v = p)
       c.pend_consumed = c.pend_consumed + 1
     } else {
       ()
@@ -2476,13 +2476,13 @@ export fn __aw_wait(_ f: Array[Int]) -> Int with Async {
 /// channel, never a correctness dependency.
 export fn __aw_notify_resolve(_ f: Array[Int]) -> Unit {
   if Array::length(f) >= 3 {
-    let id = Array::get(f, 2)
+    let id = Array::get(f, at = 2)
     let n = Array::length(conc_fut_waiter_ids)
     let mut w = 0
     let mut i = 0
     while i < n {
-      let wid = Array::get(conc_fut_waiter_ids, i)
-      let c = Array::get(conc_fut_waiter_cells, i)
+      let wid = Array::get(conc_fut_waiter_ids, at = i)
+      let c = Array::get(conc_fut_waiter_cells, at = i)
       if wid == id {
         // Woken: clear the flag, drop the entry.
         c.direct_wait = false
@@ -2491,14 +2491,14 @@ export fn __aw_notify_resolve(_ f: Array[Int]) -> Unit {
         // stale entry so a never-resolved future cannot pin it forever.
         ()
       } else {
-        Array::set(conc_fut_waiter_ids, w, wid)
-        Array::set(conc_fut_waiter_cells, w, c)
+        Array::set(conc_fut_waiter_ids, at = w, value = wid)
+        Array::set(conc_fut_waiter_cells, at = w, value = c)
         w = w + 1
       }
       i = i + 1
     }
-    Array::truncate(conc_fut_waiter_ids, w)
-    Array::truncate(conc_fut_waiter_cells, w)
+    Array::truncate(conc_fut_waiter_ids, length = w)
+    Array::truncate(conc_fut_waiter_cells, length = w)
   } else {
     ()
   }
@@ -2510,15 +2510,15 @@ export fn __aw_notify_resolve(_ f: Array[Int]) -> Unit {
 fn conc_await_register(_ f: Array[Int]) -> Unit {
   let depth = Array::length(conc_running_stack)
   if depth > 0 {
-    let me = Array::get(conc_running_stack, depth - 1)
+    let me = Array::get(conc_running_stack, at = depth - 1)
     if Array::length(f) < 3 {
-      Array::set(conc_fut_id_ctr, 0, Array::get(conc_fut_id_ctr, 0) + 1)
-      Array::push(f, Array::get(conc_fut_id_ctr, 0))
+      Array::set(conc_fut_id_ctr, at = 0, value = Array::get(conc_fut_id_ctr, at = 0) + 1)
+      Array::push(f, value = Array::get(conc_fut_id_ctr, at = 0))
     } else {
       ()
     }
-    Array::push(conc_fut_waiter_ids, Array::get(f, 2))
-    Array::push(conc_fut_waiter_cells, me)
+    Array::push(conc_fut_waiter_ids, value = Array::get(f, at = 2))
+    Array::push(conc_fut_waiter_cells, value = me)
     me.direct_wait = true
   } else {
     ()
