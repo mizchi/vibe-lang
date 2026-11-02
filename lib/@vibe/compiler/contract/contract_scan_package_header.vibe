@@ -1977,15 +1977,18 @@ export fn contract_surface_lines(fn_decls: Array[(String, String)], opaque_names
   lines
 }
 
-/// Where a `fn` surface line's own effect row is: the labels between the
-/// last `with {` outside every parenthesis and bracket and its `}`, as
-/// `(start, end)`, or `(-1, -1)` for a declaration without one. A row on a
+/// Where a `fn` surface line's own effect row is: `(start, end, braced)` for
+/// the labels after the last ` with ` outside every parenthesis and bracket,
+/// or `(-1, -1, false)` for a declaration without one. A declared `fn`
+/// prints its row braced (`with { Fs, Console }`); a function-valued `let`
+/// prints its type, whose single-label row is bare (`fn fetch val (String) ->
+/// String with Http`) and runs to the end of the line. A row on a
 /// parameter's function type belongs to that parameter, not to the
 /// declaration.
-fn surface_row_span(line: String) -> (Int, Int) {
+fn surface_row_span(line: String) -> (Int, Int, Bool) {
   let n = String::length(line)
   let mut depth = 0
-  let mut row_start = -1
+  let mut at = -1
   let mut k = 0
   while k < n {
     let c = String::byte_at(line, k)
@@ -1993,26 +1996,28 @@ fn surface_row_span(line: String) -> (Int, Int) {
       depth = depth + 1
     } else if c == 41 || c == 93 {
       depth = depth - 1
-    } else if depth == 0 && k + 7 <= n && line[k: k + 7] == " with {" {
-      row_start = k + 7
+    } else if depth == 0 && k + 6 <= n && line[k: k + 6] == " with " {
+      at = k + 6
     } else ()
     k = k + 1
   }
-  if row_start < 0 {
-    (-1, -1)
-  } else {
-    let close = String::index_of(line[row_start: n], "}")
+  if at < 0 {
+    (-1, -1, false)
+  } else if at < n && String::byte_at(line, at) == 123 {
+    let close = String::index_of(line[at + 1: n], "}")
     if close < 0 {
-      (row_start, n)
+      (at + 1, n, true)
     } else {
-      (row_start, row_start + close)
+      (at + 1, at + 1 + close, true)
     }
+  } else {
+    (at, n, false)
   }
 }
 
 fn surface_row_labels(line: String) -> Array[String] {
   let out = array_empty()
-  let (a, b) = surface_row_span(line)
+  let (a, b, _) = surface_row_span(line)
   if a >= 0 {
     let labels = String::split(line[a: b], ",")
     let mut j = 0
@@ -2064,8 +2069,8 @@ export fn contract_surface_rows_sorted(lines: Array[String]) -> Array[String] {
   let mut i = 0
   while i < Array::length(lines) {
     let line = Array::get(lines, i)
-    let (a, b) = surface_row_span(line)
-    if String::starts_with(line, "fn ") && a >= 0 {
+    let (a, b, braced) = surface_row_span(line)
+    if String::starts_with(line, "fn ") && a >= 0 && braced {
       let sorted = sorted_strings(surface_row_labels(line))
       Array::push(out, "\{line[0: a]} \{String::join(sorted, ", ")} \{line[b: String::length(line)]}")
     } else {

@@ -12,7 +12,7 @@
 # 3. A version that removes a declaration lists it, and says the capability
 #    only it needed is no longer required.
 # 4. A capability required through an effectset alias is reported as that
-#    capability.
+#    capability, and so is one a function-valued `let` requires.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -106,4 +106,20 @@ update
 grep -q 'update @diff3673/geo: 2.0.0 -> 2.1.0' "$WORK/upd.out" || fail "2.1.0 was not the update"
 grep -qF 'warning: effect surface: now requires Fs (store)' "$WORK/upd.out" || fail "a capability behind an effectset alias was not warned about"
 
-echo "[pkg-update-diff] ok (spelling-only change shows nothing; an addition lists one line and warns of Http; a removal lists it and drops Fs/Console; an effectset alias is expanded)"
+# 5. A function exported as an annotated value (`let f: (..) -> T with E`)
+#    prints its row unbraced; it is still a capability.
+release 2.2.0 'effectset Disk = { Fs }
+fn area(width: Int, height: Int) -> Int
+fn fetch(url: String) -> String with Http
+fn store(path: String) -> Unit with Disk
+let shout: (String) -> Unit with Console
+' 'export fn area(width: Int, height: Int) -> Int { width * height }
+export fn fetch(url: String) -> String with Http { url }
+export fn store(path: String) -> Unit with Fs { Fs::write_file(path, "") }
+export let shout: (String) -> Unit with Console = (s) -> { println(s) }
+'
+update
+grep -q 'update @diff3673/geo: 2.1.0 -> 2.2.0' "$WORK/upd.out" || fail "2.2.0 was not the update"
+grep -qF 'warning: effect surface: now requires Console (shout)' "$WORK/upd.out" || fail "a function-valued declaration's capability was not warned about"
+
+echo "[pkg-update-diff] ok (spelling-only change shows nothing; an addition lists one line and warns of Http; a removal lists it and drops Fs/Console; an effectset alias and a function-valued let are seen)"
