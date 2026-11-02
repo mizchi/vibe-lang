@@ -45,7 +45,7 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/core {
-  Stmt, standard_host_provider_names
+  Stmt, set_executable_exports_stripped, standard_host_provider_names
 }
 
 import @vibe/testrun {
@@ -60,6 +60,7 @@ import ./cli_support.vibe {
   check_unstable_surface_warnings_from_closure,
   check_unstable_surface_warnings_from_path,
   command_component_compile_mode,
+  executable_exports_stripped,
   strip_executable_wasm,
   strip_executable_wasm_env,
   unstable_closure_reset
@@ -295,7 +296,17 @@ fn compile_user_wasm(input_path: String, entry_name: String, kind: String, grant
     // through one door and 2.6 MB through the other).
     compile_file_fs_mode(input_path, entry_name, command_component_compile_mode())
   } else {
-    compile_release_lane(input_path, entry_name, grants)
+    // The release artifact is written with its exports stripped to the
+    // entry's keep list (`write_user_executable` / `write_user_run_executable`),
+    // so tell codegen first -- as `cli_adapter.vibe` does for the launcher's
+    // own lane -- and the late DCE stops rooting every dependency export.
+    // Without it, an unused export of an imported module was compiled in, and
+    // an unused export of an imported `.wasm` binding was also IMPORTED: a
+    // program calling 10 of z3.wasm's functions asked the runner for all 853.
+    set_executable_exports_stripped(executable_exports_stripped(entry_name))
+    let bytes = compile_release_lane(input_path, entry_name, grants)
+    set_executable_exports_stripped(false)
+    bytes
   }
 }
 

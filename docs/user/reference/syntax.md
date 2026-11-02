@@ -455,6 +455,9 @@ Rules:
 - `export <module-ref> { ... }` re-exports selected items from another module
   and uses the same optional qualifiers and kind checks.
 - Legacy `use <module-ref> { ... }` is not part of the current surface syntax.
+- A module ref ending in `.wasm` imports a foreign core module or component
+  with the types its binary declares (`import ./z3.wasm { z3_mk_config }`);
+  see the cheatsheet section "Importing a wasm module".
 
 Which module refs a given file is *allowed* to import — package boundaries,
 owner visibility, implicit build roots, and the dependency pin/update

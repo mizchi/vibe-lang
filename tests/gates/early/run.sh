@@ -24,11 +24,20 @@ bash "$ROOT_DIR/scripts/test_pkg_authority.sh" "$stage2_wasm"
 echo "[compiler-gate] vibe pkg update reports the canonical surface and effect change (#3673)"
 bash "$ROOT_DIR/scripts/test_pkg_update_diff.sh" "$stage2_wasm"
 
+echo "[compiler-gate] typed core-wasm import links and runs on viberun and node"
+bash "$ROOT_DIR/scripts/test_wasm_import_gate.sh" "$stage2_wasm"
+
+echo "[compiler-gate] @vibex/z3 binds the real z3.wasm by its declared types"
+bash "$ROOT_DIR/scripts/test_z3_binding_gate.sh" "$stage2_wasm"
+
 echo "[compiler-gate] vibe test and vibe_test.sh count tests and summarize a run the same way (#3703)"
 bash "$ROOT_DIR/scripts/test_vibe_test_parity.sh" "$stage2_wasm"
 
 echo "[compiler-gate] the vibe test parity gate fails on a mutated runner (#3703)"
 bash "$ROOT_DIR/scripts/test_vibe_test_parity_test.sh" "$stage2_wasm"
+
+echo "[compiler-gate] every scripts/*.vibex grant is least authority, and dropping it is refused (#3676)"
+( cd "$ROOT_DIR" && bash scripts/vibe_run.sh scripts/check_vibex_grants.vibex -- "$stage2_wasm" )
 
 source "$ROOT_DIR/tests/gates/early/multi_file_fs_compile_regression.sh"
 source "$ROOT_DIR/tests/gates/early/extended_derive.sh"

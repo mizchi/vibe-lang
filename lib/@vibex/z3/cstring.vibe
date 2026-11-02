@@ -1,0 +1,54 @@
+//# Functions
+
+// C strings in a foreign module's memory (`import ./x.wasm`). The foreign
+// memory is not this program's, so every byte goes through the accessors the
+// binding offers (`wasm_memory_load_u8` / `wasm_memory_store_u8`), passed in
+// here so this file does not depend on one particular module.
+
+/// Write `s` as a NUL-terminated C string into a block `alloc(n + 1)`
+/// returns, and return its address. A `s` holding a NUL byte is refused: C
+/// would read that byte as the end of the string, which would silently drop
+/// the rest.
+export fn write_cstring(s: String, alloc: (Int) -> Int, store_u8: (Int, Int) -> Unit) -> Int with Exception {
+  let n = String::length(s)
+  let mut i = 0
+  while i < n {
+    if String::byte_at(s, i) == 0 {
+      throw("write_cstring: byte \{i} is NUL, which a C string cannot hold")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let p = alloc(n + 1)
+  if p == 0 {
+    throw("write_cstring: allocating \{n + 1} bytes failed")
+  } else {
+    ()
+  }
+  let mut j = 0
+  while j < n {
+    store_u8(p + j, String::byte_at(s, j))
+    j = j + 1
+  }
+  store_u8(p + n, 0)
+  p
+}
+
+/// The bytes at `p` up to (not including) the first NUL.
+export fn read_cstring(p: Int, load_u8: (Int) -> Int) -> String with Exception {
+  if p == 0 {
+    throw("read_cstring: null pointer")
+  } else {
+    ()
+  }
+  let parts: Array[String] = []
+  let mut q = p
+  let mut b = load_u8(q)
+  while b != 0 {
+    Array::push(parts, String::from_byte(b))
+    q = q + 1
+    b = load_u8(q)
+  }
+  String::join(parts, "")
+}

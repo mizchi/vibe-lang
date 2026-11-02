@@ -73,7 +73,7 @@ import ./evidence_handle_effect_names_expr.vibe {
   edp_append_self_discharging_row_fns,
   edp_append_visible_pure_lambda_names,
   edp_collect_handle_effect_names,
-  edp_collect_handle_sites,
+  edp_collect_handle_sites_in,
   edp_drop_self_discharging_needing,
   edp_drop_shadowed_needing_with_binders,
   edp_drop_unreachable_needing,
@@ -88,16 +88,18 @@ import ./evidence_poison_expr.vibe {
   edp_ar_expr,
   edp_collect_effect_defs,
   edp_collect_fn_defs,
-  edp_collect_performing_fns,
+  edp_collect_performing_fns_from_facts,
   edp_collect_prefixed_names,
   edp_erase_effect_handles_with_index,
   edp_es_collect_into,
+  edp_facts_program_user_performs,
   edp_fn_row_label_table,
   edp_name_set,
   edp_needing_names_tab,
-  edp_program_user_performs,
   edp_pure_fn_names,
+  edp_refresh_statement_perform_facts,
   edp_row_lit_scan,
+  edp_statement_perform_facts,
   empty_str_array
 }
 
@@ -642,6 +644,12 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   // the array form ends here.
   let vhe_fn_names = edp_name_set(vhe_fn_names_arr)
   let vhe_inert = edp_name_set(vhe_inert_arr)
+  // One effect-independent walk per statement answers "does the program
+  // perform E" and "which functions reach E" for every E below, where each
+  // used to walk the program again. Built on first use; an erase rewrites
+  // only statements in its effect's handle index, so those are refreshed.
+  let vhe_facts: Array[Option[(Bool, Array[String], Array[String])]] = []
+  let mut vhe_facts_ready = false
   let mut vhi = 0
   while vhi < Array::length(vhe_names) {
     let vh_name = Array::get(vhe_names, vhi)
@@ -650,20 +658,30 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
       // nothing to erase, and both branches below reduce to the identity
       // walk. Skip them (#1875).
       ()
-    } else if edp_program_user_performs(stmts, vh_name) {
-      // Per-HANDLE vacuity: some sites of this effect may still be
-      // provably dead even though the program performs it elsewhere (see
-      // edp_body_may_perform). Erasing those is what keeps a client-only
-      // handle over a builtin effect label compilable next to unrelated
-      // server-side perform wrappers.
-      edp_erase_effect_handles_with_index(stmts, vh_name, true, edp_collect_performing_fns(stmts, vhe_fn_defs, vh_name, vhe_inert, vhe_fn_names), vhe_inert, vhe_fn_names, Some(edp_handle_statement_indices(handle_statements, vh_name)))
     } else {
-      // Nothing performs it ANYWHERE: every site is vacuous by
-      // construction, so erase unconditionally -- no reachability
-      // question to ask, and asking would wrongly keep sites whose body
-      // merely makes an opaque call (entry.vibe's Profiler handle wraps
-      // the whole CLI dispatch).
-      edp_erase_effect_handles_with_index(stmts, vh_name, false, empty_str_array(), vhe_inert, vhe_fn_names, Some(edp_handle_statement_indices(handle_statements, vh_name)))
+      if !vhe_facts_ready {
+        for fact in edp_statement_perform_facts(stmts, vhe_inert, vhe_fn_names) {
+          Array::push(vhe_facts, fact)
+        }
+        vhe_facts_ready = true
+      }
+      let vh_statements = edp_handle_statement_indices(handle_statements, vh_name)
+      if edp_facts_program_user_performs(vhe_facts, vh_name) {
+        // Per-HANDLE vacuity: some sites of this effect may still be
+        // provably dead even though the program performs it elsewhere (see
+        // edp_body_may_perform). Erasing those is what keeps a client-only
+        // handle over a builtin effect label compilable next to unrelated
+        // server-side perform wrappers.
+        edp_erase_effect_handles_with_index(stmts, vh_name, true, edp_collect_performing_fns_from_facts(stmts, vhe_fn_defs, vhe_facts, vh_name), vhe_inert, vhe_fn_names, Some(vh_statements))
+      } else {
+        // Nothing performs it ANYWHERE: every site is vacuous by
+        // construction, so erase unconditionally -- no reachability
+        // question to ask, and asking would wrongly keep sites whose body
+        // merely makes an opaque call (entry.vibe's Profiler handle wraps
+        // the whole CLI dispatch).
+        edp_erase_effect_handles_with_index(stmts, vh_name, false, empty_str_array(), vhe_inert, vhe_fn_names, Some(vh_statements))
+      }
+      edp_refresh_statement_perform_facts(stmts, vhe_facts, vh_statements, vhe_inert, vhe_fn_names)
     }
     vhi = vhi + 1
   }
@@ -1768,7 +1786,11 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       // reach is then still an escape, and stays a hard error per ADR-0076
       // 追記34 V2. Both are only relevant while handle sites for E remain:
       // with none, nothing gets migrated in the first place.
-      let pre_sites = edp_collect_handle_sites(stmts, ename)
+      // Only the statements the plan-start index lists can hold a site; eta
+      // wrapping (the one write below) keeps statement order and adds no
+      // handle, which is the index's reuse condition.
+      let effect_statements = edp_handle_statement_indices(plan_handle_statements, ename)
+      let pre_sites = edp_collect_handle_sites_in(stmts, ename, effect_statements)
       let live_sites = Array::length(needing_full) > 0 && Array::length(pre_sites) > 0
       if live_sites {
         if edp_etawrap_stmts_with_rebuild(stmts, needing_full, ename, fn_defs, es_names, es_members_list) {
@@ -1789,7 +1811,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       // rebuilds the statements it touches, so refresh the collection when
       // it ran; otherwise the pre-wrap collection is still the live tree.
       let plan_sites = if live_sites {
-        edp_collect_handle_sites(stmts, ename)
+        edp_collect_handle_sites_in(stmts, ename, effect_statements)
       } else {
         pre_sites
       }

@@ -3249,6 +3249,12 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   xor/compares) may skip the dance; mul/div/shift must not.
 - **Linear backend only** — the wasm-gc backend rejects it with a compile
   error. The declared signature is trusted (extern-let style).
+- **`(vibe.int.untag x)` / `(vibe.int.tag x)`** give the number an `Int`
+  slot holds and back, in the compiling lane's representation: `i64.shr_s 1`
+  / `i64.shl 1` on the RC lane, nothing on the bump lane (`VIBE_RC=0`), where
+  an `Int` is raw. A body that computes with the number should use these
+  rather than spelling the shift: the hand-written shift is right on RC only
+  (`fixtures/inline_wasm_int_tag_test.vibe`).
 - **v0.3 slice restrictions**: monomorphic only (no `[T]`), empty effect row,
   no `where` contracts, params typed `Int`, `Bytes` or `Array[Int]`, return
   type `Int` or `String`. An `Int` result uses the tagged integer ABI above;
@@ -3354,6 +3360,82 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 - Not usable inside the compiler's own source until the seed compiler
   understands the syntax (same bump discipline as `#cfg`, docs/internal/operations/bootstrap.md).
 - Examples: `fixtures/inline_wasm_test.vibe`.
+
+## Importing a wasm module (`import ./x.wasm { .. }`)
+
+A `.wasm` path imports a foreign module with the types **its own binary
+declares**. The compiler reads the binary (no `.vibe` file is involved) and
+synthesizes the binding module, so the import list, `as` renames, `vibe check`
+and "is not exported by" behave as for any other import. Both a **core
+module** and a **component** are accepted.
+
+<!-- doctest-skip: needs fixtures/wasm_import/counter.wasm next to the importing file -->
+```vibe skip
+import ./counter.wasm {
+  add_i32, bump, count, wasm_memory_load_u8
+}
+
+fn main() -> Unit allows Console {
+  bump(40)
+  bump(add_i32(1, 1))
+  println("count=\{count()}")
+}
+```
+
+**Names.** An export is offered under a vibe identifier: ASCII letters
+lower-cased, every other character outside `[a-z0-9_]` replaced by `_`, a
+leading digit prefixed with `_`, a keyword suffixed with `_` (`Z3_mk_config`
+-> `z3_mk_config`, `get-price` -> `get_price`). Two exports that map to the
+same name are **both** withheld.
+
+**Core module types** (from the type section):
+
+| core | vibe | at the boundary |
+|---|---|---|
+| `i32` param | `Int` | -2^31 .. 2^32-1 is accepted (the signed and the unsigned reading of the same bits); anything else **traps** instead of truncating |
+| `i32` result | `Int` | read as signed, so it round-trips bit-exactly when passed back |
+| `i64` param | `Int` | exact |
+| `i64` result | `Int` | **traps** when it needs the 64th bit (a 63-bit `Int` cannot hold it) |
+| no result | `Unit` | |
+| `f32` / `f64` / `v128` / references / multiple results | — | not offered yet (a `Double` has no inline-wasm boundary) |
+
+A module whose memory a runner can reach (exported, or imported) also gets
+`wasm_memory_load_u8(addr) -> Int`, `wasm_memory_store_u8(addr, value)` and
+`wasm_memory_size() -> Int`. A shared memory (a pthreads build) counts too.
+The foreign memory is not the program's; the runner serves these, which is
+how a binding moves strings across (see `lib/@vibex/z3/cstring.vibe`).
+
+**Component types** (from the component's type section, i.e. its WIT): a
+world-level exported function with `s8`..`u64` (as `Int`) and `string`
+params and at most one such result. The runner range-checks each `Int`
+against its WIT width and refuses one that does not fit. Exported
+interfaces, `bool`, `char`, floats, lists, records, variants and resources
+are not offered yet. A component whose type section declares component or
+instance types (what an imported interface looks like) is read up to that
+point.
+
+What is not offered is listed in the synthesized binding's trailing comment,
+and importing it is an "is not exported by" error.
+
+**Running.** The program imports each foreign function from a core module
+named `vibe:wasm:<path>` (core) or `vibe:component:<path>` (component), with
+`<path>` as the compiler resolved it. viberun and the node runner instantiate
+a core module from `<path>` (relative to `VIBE_WASM_LINK_DIR`, default the
+working directory) and link it; only viberun runs a component. A foreign
+module or component that itself has imports is refused with the list of what
+it needs — nothing provides another module's host imports yet. That is why
+`lib/@vibex/z3` (the npm z3-solver build, an emscripten module that imports
+its JS runtime) type-checks and builds against the real `z3.wasm` but does
+not run: `scripts/test_z3_binding_gate.sh` asserts exactly that.
+
+**Tree shaking.** A `vibe build` / `vibe run` artifact imports only the
+foreign functions the program reaches: the late DCE drops the unused binding
+stubs (and unused exports of any imported module), so a program calling ten
+of z3.wasm's functions imports those ten, not all 853. A `vibe test`
+artifact (no entry) still compiles, and imports, every offered function.
+
+Linear backend only (the binding is inline wasm). Fixtures:
+`fixtures/wasm_import/`, gate: `scripts/test_wasm_import_gate.sh`.
 
 ## RC Debug Mode (`VIBE_RC=shadow`)
 

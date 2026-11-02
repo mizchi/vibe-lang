@@ -1,0 +1,60 @@
+//# Imports
+
+// z3.wasm is the `build/z3-built.wasm` of the npm package z3-solver, pinned
+// and fetched by scripts/fetch_z3_wasm.sh (it is 38 MB and not committed).
+// Every name below is typed from that binary's own export signatures; see
+// docs/user/reference/cheatsheet.md "Importing a core wasm module".
+import ./z3.wasm {
+  free,
+  malloc,
+  wasm_memory_load_u8,
+  wasm_memory_store_u8,
+  z3_del_config,
+  z3_del_context,
+  z3_eval_smtlib2_string,
+  z3_get_full_version,
+  z3_mk_config,
+  z3_mk_context
+}
+
+import ./cstring.vibe {
+  read_cstring, write_cstring
+}
+
+//# Types
+
+/// A Z3 context: the owner of every term and solver made in it. Release it
+/// with `Context::close`.
+export struct Context {
+  raw: Int
+}
+
+//# Functions
+
+/// A fresh context with Z3's default configuration.
+export fn Context::new() -> Context {
+  let cfg = z3_mk_config()
+  let ctx = z3_mk_context(cfg)
+  z3_del_config(cfg)
+  Context::{ raw: ctx }
+}
+
+/// Release the context and everything made in it.
+export fn Context::close(ctx: Context) -> Unit {
+  z3_del_context(ctx.raw)
+}
+
+/// Run SMT-LIB2 commands in `ctx` and return Z3's textual response, e.g.
+/// `"sat\n(\n  (define-fun x () Int\n    4)\n)\n"` for
+/// `(declare-const x Int)(assert (> x 3))(assert (< x 5))(check-sat)(get-model)`.
+export fn Context::eval_smtlib2(ctx: Context, script: String) -> String with Exception {
+  let p = write_cstring(script, malloc, wasm_memory_store_u8)
+  let r = z3_eval_smtlib2_string(ctx.raw, p)
+  free(p)
+  read_cstring(r, wasm_memory_load_u8)
+}
+
+/// Z3's full version string.
+export fn full_version() -> String with Exception {
+  read_cstring(z3_get_full_version(), wasm_memory_load_u8)
+}
