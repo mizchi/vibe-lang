@@ -54,7 +54,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/loader {
-  collect_all_sources_fs, collect_source_groups_fs, load_persistent_source_group_fingerprint_if_valid
+  collect_all_sources_fs, collect_source_groups_fs, flatten_group_sources, load_persistent_source_group_fingerprint_if_valid
 }
 
 import @vibe/compiler/runtime {
@@ -104,21 +104,6 @@ fn seed_type_db(db: TypeDb, main_path: String, main_source: String, sources: Arr
     i = i + 1
   }
   db_set_source(seeded, main_path, main_source)
-}
-
-fn flatten_source_groups(source_groups: Array[(String, Array[(String, String)])]) -> Array[(String, String)] {
-  let flat = array_empty()
-  let mut gi = 0
-  while gi < Array::length(source_groups) {
-    let (_, sources) = Array::get(source_groups, gi)
-    let mut si = 0
-    while si < Array::length(sources) {
-      Array::push(flat, Array::get(sources, si))
-      si = si + 1
-    }
-    gi = gi + 1
-  }
-  flat
 }
 
 fn normalize_source_groups(source_groups: Array[(String, Array[(String, String)])], main_path: String, main_source: String) -> Array[(String, Array[(String, String)])] {
@@ -200,13 +185,13 @@ export fn source_group_total_source_count(source_groups: Array[(String, Array[(S
 
 export fn source_group_ordered_source_count(main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with Exception {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
-  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_source_groups(normalized_groups))
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_group_sources(normalized_groups))
   Array::length(ordered_sources)
 }
 
 export fn source_group_filtered_group_count(main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with Exception {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
-  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_source_groups(normalized_groups))
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_group_sources(normalized_groups))
   let filtered_groups = filter_source_groups(normalized_groups, ordered_sources)
   Array::length(filtered_groups)
 }
@@ -342,14 +327,14 @@ fn prepare_modules_persistent_fs_cached(db: TypeDb, main_path: String, main_sour
 
 export fn source_group_prepare_typecheck_count(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with Env + Exception {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
-  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_source_groups(normalized_groups))
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_group_sources(normalized_groups))
   let next_db = prepare_modules_cached(db, main_path, main_source, ordered_sources)
   db_typecheck_count(next_db)
 }
 
 export fn grouped_source_merged_len(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with Env + Exception {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
-  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_source_groups(normalized_groups))
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_group_sources(normalized_groups))
   let filtered_groups = filter_source_groups(normalized_groups, ordered_sources)
   let next_db = prepare_modules_cached(db, main_path, main_source, ordered_sources)
   let (merged_source, _, _) = db_grouped_merged_source(next_db, filtered_groups)
@@ -358,7 +343,7 @@ export fn grouped_source_merged_len(db: TypeDb, main_source: String, main_path: 
 
 export fn source_group_module_source_len(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with Env + Exception {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
-  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_source_groups(normalized_groups))
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_group_sources(normalized_groups))
   let filtered_groups = filter_source_groups(normalized_groups, ordered_sources)
   let (merged_source, merge_fingerprint, module_db) = db_grouped_merged_source(db, filtered_groups)
   let (module_source, _) = db_module_source(module_db, merge_fingerprint, merged_source)
@@ -578,7 +563,7 @@ export fn closure_pruned_stmt_count(main_source: String, main_path: String, sour
 
 export fn source_group_pruned_stmt_count(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> Int with Env + Exception {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
-  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_source_groups(normalized_groups))
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_group_sources(normalized_groups))
   let _ = db
   let merged_stmts = build_merged_stmts_inline(ordered_sources)
   let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
@@ -844,7 +829,7 @@ export fn compile_with_closure_sources_wasi_mode_uncached(main_source: String, m
 
 export fn compile_with_source_groups_wasi_cached(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> (Bytes, TypeDb) with Env + Exception {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
-  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_source_groups(normalized_groups))
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_group_sources(normalized_groups))
   let filtered_groups = filter_source_groups(normalized_groups, ordered_sources)
   let next_db = prepare_modules_cached(db, main_path, main_source, ordered_sources)
   let (merged_source, merge_fingerprint, codegen_db) = db_grouped_merged_source(next_db, filtered_groups)
@@ -862,7 +847,7 @@ export fn compile_with_source_groups_wasi_cached(db: TypeDb, main_source: String
 
 export fn compile_with_source_groups_wasi_unchecked_cached(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> (Bytes, TypeDb) with Env + Exception {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
-  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_source_groups(normalized_groups))
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_group_sources(normalized_groups))
   let filtered_groups = filter_source_groups(normalized_groups, ordered_sources)
   let (merged_source, merge_fingerprint, merge_db) = db_grouped_merged_source(db, filtered_groups)
   let artifact_fingerprint = artifact_fingerprint_from_source(String::concat(merge_fingerprint, String::concat("|", entry_name)))
@@ -879,7 +864,7 @@ export fn compile_with_source_groups_wasi_unchecked_cached(db: TypeDb, main_sour
 
 export fn compile_with_source_groups_via_module_source_wasi_unchecked_cached(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> (Bytes, TypeDb) with Env + Exception {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
-  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_source_groups(normalized_groups))
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_group_sources(normalized_groups))
   let filtered_groups = filter_source_groups(normalized_groups, ordered_sources)
   let (merged_source, merge_fingerprint, module_db) = db_grouped_merged_source(db, filtered_groups)
   let (module_source, codegen_db) = db_module_source(module_db, merge_fingerprint, merged_source)
@@ -904,7 +889,7 @@ export fn compile_with_source_groups_via_module_source_wasi_unchecked_cached(db:
 /// caches from colliding.
 export fn compile_with_source_groups_via_module_source_wasi_unchecked_rc(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> (Bytes, TypeDb) with Env + Exception {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
-  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_source_groups(normalized_groups))
+  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, flatten_group_sources(normalized_groups))
   let filtered_groups = filter_source_groups(normalized_groups, ordered_sources)
   let (merged_source, merge_fingerprint, module_db) = db_grouped_merged_source(db, filtered_groups)
   let (module_source, codegen_db) = db_module_source(module_db, merge_fingerprint, merged_source)
@@ -943,7 +928,7 @@ export fn prepare_file_fs_cached(db: TypeDb, entry_path: String) -> TypeDb with 
 }
 
 fn prepare_file_fs_from_source_groups_persistent_cached(db: TypeDb, entry_path: String, source_groups: Array[(String, Array[(String, String)])]) -> TypeDb with Env + Exception + Fs {
-  let sources = flatten_source_groups(source_groups)
+  let sources = flatten_group_sources(source_groups)
   let main_source = source_lookup_or_throw(sources, entry_path)
   prepare_modules_persistent_fs_cached(db, entry_path, main_source, sources)
 }

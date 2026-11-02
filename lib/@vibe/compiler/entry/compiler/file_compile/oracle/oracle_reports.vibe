@@ -1,0 +1,155 @@
+import @vibe/compiler/loader {
+  flatten_group_sources
+}
+
+import @vibe/compiler/syntax {
+  print_stmt, rewrite_string_binops_stmts
+}
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/compiler/codegen/wasi {
+  prelude_module_full_oracle_line, prelude_pass_module_oracle_step
+}
+
+import @vibe/compiler/checker {
+  typed_lowering_binop_anchor
+}
+
+import @vibe/compiler/linker/merge {
+  build_grouped_merged_stmts_prov, merged_stmts_and_offsets_prov
+}
+
+import @vibe/compiler/linker/import_closure {
+  exact_import_closure
+}
+
+import @vibe/checker/lowering {
+  split_checked_lowering, union_checked_eq_rows, union_checked_lowering_with_clones
+}
+
+/// A throwaway sink for the path out-param, for callers that do not want it.
+fn lc_ignored_paths() -> Array[String] {
+  []
+}
+
+fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])], out_paths: Array[String]) -> (Array[Stmt], Array[String], Array[Int], (Array[Int], Array[String])) with Env + Exception {
+  let flat_paths: Array[String] = []
+  let flat_bases: Array[Int] = []
+  let clone_float_offsets: Array[Int] = []
+  let (merged, files, _, stmt_file_id) = build_grouped_merged_stmts_prov(source_groups, flat_paths, flat_bases, clone_float_offsets)
+  let (_, rels, pluses, _, _) = split_checked_lowering(union_checked_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
+  let (eq_offs, eq_keys) = union_checked_eq_rows(flat_paths, flat_bases)
+  let stmts = rewrite_string_binops_stmts(merged, rels, pluses, typed_lowering_binop_anchor)
+  if Array::length(stmts) != Array::length(stmt_file_id) {
+    throw("prelude oracle: the binop rewrite changed the statement count")
+  } else {
+    ()
+  }
+  // #2704: the SOURCE PATHS, in merged-file-id order. `flat_paths` is filled
+  // from the very `file_paths` array the merge mangles with
+  // (`build_grouped_merged_stmts_impl` pushes `file_paths[source_idx]`), so
+  // `sanitize_namespace_path` of one of these IS a module's stamp -- no
+  // parsing, no ambiguity. `files` carries the same paths (#2199) but is a
+  // per-FILE table, not the per-statement one this builds.
+  let mut fp = 0
+  while fp < Array::length(flat_paths) {
+    Array::push(out_paths, Array::get(flat_paths, fp))
+    fp = fp + 1
+  }
+  (stmts, files, stmt_file_id, (eq_offs, eq_keys))
+}
+
+/// Render the module oracle report for prepared source groups.
+export fn prelude_module_oracle_report(source_groups: Array[(String, Array[(String, String)])], entry_name: String, pass_limit: Int) -> String with Env + Exception {
+  let (a, _, _, _) = prelude_oracle_merge(source_groups, lc_ignored_paths())
+  let mut report = ""
+  let mut k = 0
+  while k <= pass_limit {
+    let (c, files, c_file_id, eq) = prelude_oracle_merge(source_groups, lc_ignored_paths())
+    let (eq_offs, eq_keys) = eq
+    report = String::concat(report, prelude_pass_module_oracle_step(k, a, c, c_file_id, Array::length(files), entry_name, eq_offs, eq_keys, print_stmt))
+    k = k + 1
+  }
+  report
+}
+
+/// Render the module full oracle report for prepared source groups.
+export fn prelude_module_full_oracle_report(source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> String with Env + Exception + Fs {
+  let (a, _, _, _) = prelude_oracle_merge(source_groups, lc_ignored_paths())
+  let module_paths: Array[String] = []
+  let (c, files, c_file_id, eq) = prelude_oracle_merge(source_groups, module_paths)
+  let (eq_offs, eq_keys) = eq
+  // #2633: the closure PRODUCTION uses (`ordinary_lane_module_split`), not the
+  // direct-edge-only one. The oracle answers "does the per-module lane
+  // reproduce the whole-program one", and the per-module lane production runs
+  // has direct imports plus re-export chains, taken from the loader via
+  // `module_reexport_deps_fs`.
+  //
+  // The objection recorded in `direct_import_closure` is against a TRANSITIVE
+  // closure -- A imports B, B imports C privately, and a transitive closure
+  // hands A the declarations of C, which no real compile of A exposes. It does
+  // not reach this one: direct plus RE-EXPORT edges only is exactly what a real
+  // compile of that module sees, so this is not context a module lacks.
+  //
+  // Measured on `lib/@vibe/cli/entry.vibe`, 369 modules (2026-09-12), the two
+  // closures side by side:
+  //
+  //                        direct-only   exact
+  //   keyed content                  1       0
+  //   unresolved_exp                83       0
+  //   invisible_split                8       2
+  //   zero (modules given none)     37      30
+  //   decls handed out         121 981 167 382
+  //   seen (denominator)        25 556  25 556
+  //   missing / extra / collisions 0/0/0   0/0/0
+  //
+  // `content` reaching 0 is the per-module lane reproducing the whole-program
+  // prelude exactly. The row that closed was
+  // `parse_contract_program_spans`, whose thrown payload's type comes through
+  // `fn_returns` from `allows_outside_entry_error` -- declared in
+  // `@vibe/parser/parser_base.vibe` and reaching `contract.vibe` via a
+  // RE-EXPORT. It was recorded on #2633 three times as the `__exn_kind_cell`
+  // family (#2510's); the shape is that, the cause was this closure.
+  //
+  // The direct-only figures are a stricter lower bound on what a module needs.
+  // That signal is kept HERE, in writing, rather than by measuring a lane
+  // production does not run.
+  let (import_closure, unresolved_edges) = exact_import_closure(source_groups)
+  // The closure is indexed by FLAT SOURCE, the oracle by MERGED FILE ID. They
+  // are the same space only because the merge keeps one file entry per flat
+  // source; if that ever stops holding, every row would be read for the wrong
+  // module and the comparison would be quietly meaningless rather than wrong
+  // in a way anyone could see.
+  if Array::length(import_closure) != Array::length(files) {
+    throw(String::concat("prelude oracle: import closure is indexed by flat source but the merge reports a different file count -- ", String::concat(Int::to_string(Array::length(import_closure)), String::concat(" vs ", Int::to_string(Array::length(files))))))
+  } else {
+    ()
+  }
+  let line = prelude_module_full_oracle_line(a, c, c_file_id, Array::length(files), entry_name, eq_offs, eq_keys, import_closure, print_stmt, module_paths)
+  String::concat(String::concat(line, "edges_unresolved="), String::concat(Int::to_string(unresolved_edges), "\n"))
+}
+
+/// Render the ordinary lane prov report for prepared source groups.
+export fn prelude_ordinary_lane_prov_report(source_groups: Array[(String, Array[(String, String)])]) -> String with Env + Exception {
+  let stmt_file_id: Array[Int] = []
+  let (merged, _, _, _, _, _) = merged_stmts_and_offsets_prov(source_groups, stmt_file_id)
+  let files = flatten_group_sources(source_groups)
+  String::concat(String::concat("PROV stmts=", Int::to_string(Array::length(merged))), String::concat(String::concat(" ids=", Int::to_string(Array::length(stmt_file_id))), String::concat(" files=", String::concat(Int::to_string(Array::length(files)), "\n"))))
+}
+
+/// Render the module import closure report for prepared source groups.
+export fn prelude_module_import_closure_report(source_groups: Array[(String, Array[(String, String)])]) -> String with Env + Exception + Fs {
+  // #2633: the closure the full oracle ACTUALLY runs under, so this report
+  // cannot describe a different one than the lane it is named for.
+  let (closure, unresolved) = exact_import_closure(source_groups)
+  let mut edges = 0
+  let mut i = 0
+  while i < Array::length(closure) {
+    edges = edges + Array::length(Array::get(closure, i))
+    i = i + 1
+  }
+  String::concat(String::concat(String::concat("CLOSURE files=", Int::to_string(Array::length(closure))), String::concat(" edges=", Int::to_string(edges))), String::concat(" unresolved=", String::concat(Int::to_string(unresolved), "\n")))
+}

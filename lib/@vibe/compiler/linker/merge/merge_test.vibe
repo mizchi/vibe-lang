@@ -1,0 +1,69 @@
+import @vibe/compiler/linker/merge {
+  build_grouped_merged_stmts_counted, build_grouped_merged_stmts_prov, build_grouped_merged_stmts_with_offsets
+}
+
+import @vibe/compiler/syntax {
+  print_program
+}
+
+// A repeated empty source occupies a real file seat even when it contributes
+// only the merge boundary. Both observation lanes must describe those seats.
+test "counted and ordinary layouts describe the same repeated and empty sources" {
+  let first = "export fn answer() -> Int {\n  42\n}\n"
+  let last = "fn run() -> Int {\n  7\n}\n"
+  let groups = [
+    ("dep", [("merge_dep.vibe", first), ("merge_empty.vibe", "")]),
+    ("entry", [("merge_empty.vibe", ""), ("merge_entry.vibe", last)])
+  ]
+  let paths: Array[String] = []
+  let bases: Array[Int] = []
+  let clones: Array[Int] = []
+  let (ordinary, files, nls, ids) = build_grouped_merged_stmts_prov(groups, paths, bases, clones)
+  let ordinary_text = print_program(ordinary)
+  let (counted, cpaths, fps, counts, cbases, cclones) = build_grouped_merged_stmts_counted(groups)
+  assert_eq(print_program(counted), ordinary_text)
+  assert_eq(String::join(files, ","), "merge_dep.vibe,merge_empty.vibe,merge_empty.vibe,merge_entry.vibe")
+  assert_eq(String::join(cpaths, ","), String::join(paths, ","))
+  assert_eq(Array::length(fps), 4)
+  assert_eq(Array::length(counts), 4)
+  assert_eq(Array::length(nls), 4)
+  assert_eq(Array::length(ids), Array::length(counted))
+  let mut at = 0
+  let mut i = 0
+  while i < Array::length(counts) {
+    assert_eq(Array::get(cbases, i), Array::get(bases, i))
+    let mut k = 0
+    while k < Array::get(counts, i) {
+      assert_eq(Array::get(ids, at), i)
+      k = k + 1
+      at = at + 1
+    }
+    i = i + 1
+  }
+  assert_eq(at, Array::length(ordinary))
+  assert_eq(Array::get(bases, 0), 0)
+  assert_eq(Array::get(bases, 1), String::length(first) + 1)
+  assert_eq(Array::get(bases, 2), String::length(first) + 2)
+  assert_eq(Array::get(bases, 3), String::length(first) + 3)
+  assert_eq(Array::length(cclones), Array::length(clones))
+  let lean_paths: Array[String] = []
+  let lean_bases: Array[Int] = []
+  assert_eq(print_program(build_grouped_merged_stmts_with_offsets(groups, lean_paths, lean_bases)), ordinary_text)
+  assert_eq(String::join(lean_paths, ","), String::join(paths, ","))
+}
+
+test "counted identities change only for the edited source seat" {
+  let dep = "export fn value() -> Int { 1 }\n"
+  let entry = "fn run() -> Int { 2 }\n"
+  let (_, _, before, _, _, _) = build_grouped_merged_stmts_counted([
+    ("all", [("identity_dep.vibe", dep), ("identity_main.vibe", entry)])
+  ])
+  let (_, _, after, _, _, _) = build_grouped_merged_stmts_counted([
+    ("all", [
+      ("identity_dep.vibe", dep),
+      ("identity_main.vibe", "fn run() -> Int { 3 }\n")
+    ])
+  ])
+  assert_eq(Array::get(before, 0), Array::get(after, 0))
+  assert(Array::get(before, 1) != Array::get(after, 1))
+}
