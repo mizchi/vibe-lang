@@ -16,10 +16,10 @@
 //                                      a path outside <root> is refused here
 //   compile-fail <src> <diag> <res>    a file that did not compile (also
 //                                      leaves <res>'s `.compilefail` marker)
-//   pass <src> <tests> <patches> <res> a passing file
-//   coverage <src> <cov.json> <tests> <show-gaps 0|1> <res>
+//   pass <src> <wasm> <patches> <res> a passing file
+//   coverage <src> <cov.json> <wasm> <show-gaps 0|1> <res>
 //                                      a passing --coverage file
-//   fail <src> <tests> <patches> <stdout> <stderr> <funcmap> <base> <source> <res>
+//   fail <src> <wasm> <patches> <stdout> <stderr> <funcmap> <base> <source> <res>
 //                                      a failing file
 //   summary <results-dir> <files> <coverage 0|1> <seed-default 0|1> <seed> <covdir>
 //                                      the `[vibe-test]` lines; exit 1 on a failure,
@@ -29,7 +29,8 @@
 //                                      the failure report alone
 //
 // A per-file mode prints the file's lines and writes its result record to
-// <res>. VIBE_TEST_BACKEND (linear | gc) is read where it changes a decision.
+// <res>, whose test count it reads from <wasm> (`test_run_count_label`, the
+// counter the launcher's `vibe test` uses too). VIBE_TEST_BACKEND (linear | gc) is read where it changes a decision.
 // A file argument that does not exist reads as empty, which is how a missing
 // `.funcmap` or source degrades: bare frames, raw offsets.
 
@@ -39,7 +40,7 @@ import ../lib/@vibe/testreport {
 import ../lib/@vibe/testrun {
   test_run_compile_failure, test_run_coverage_missing, test_run_coverage_pass, test_run_coverage_record, test_run_entry,
   test_run_fail_record, test_run_failed, test_run_failure, test_run_pass, test_run_pass_record, test_run_plan,
-  test_run_summary, test_run_unrecorded
+  test_run_summary, test_run_unrecorded, test_run_count_label
 }
 import @vibe/process {
   exit
@@ -66,6 +67,17 @@ fn args_from(i: Int) -> Array[String] with Env {
 fn read_or_empty(path: String) -> String with Fs {
   if path != "" && Fs::is_file(path) {
     Fs::read_file(path)
+  } else {
+    ""
+  }
+}
+
+/// The count label of the compiled test wasm at `path`; empty when there is
+/// no such file.
+fn count_arg(i: Int) -> String with Env + Fs {
+  let path = arg(i)
+  if path != "" && Fs::is_file(path) {
+    test_run_count_label(Fs::read_bytes(path))
   } else {
     ""
   }
@@ -147,16 +159,18 @@ fn main() -> Unit allows Env + Fs + Console + Stderr + Process {
     Fs::write_file(arg(3), test_run_fail_record(""))
     Fs::write_file(String::concat(String::substring(arg(3), 0, String::length(arg(3)) - 4), ".compilefail"), "seed\n")
   } else if mode == "pass" {
-    print(test_run_pass(arg(1), arg(2), int_arg(3)))
-    Fs::write_file(arg(4), test_run_pass_record(arg(2)))
+    let tests = count_arg(2)
+    print(test_run_pass(arg(1), tests, int_arg(3)))
+    Fs::write_file(arg(4), test_run_pass_record(tests))
   } else if mode == "coverage" {
     let report = read_or_empty(arg(2))
+    let tests = count_arg(3)
     if report != "" {
       print(test_run_coverage_pass(arg(1), report, arg(4) == "1"))
-      Fs::write_file(arg(5), test_run_coverage_record(report, arg(3)))
+      Fs::write_file(arg(5), test_run_coverage_record(report, tests))
     } else {
       print(test_run_coverage_missing(arg(1), arg(2)))
-      Fs::write_file(arg(5), test_run_fail_record(arg(3)))
+      Fs::write_file(arg(5), test_run_fail_record(tests))
     }
   } else if mode == "fail" {
     let out = read_or_empty(arg(4))
@@ -167,7 +181,7 @@ fn main() -> Unit allows Env + Fs + Console + Stderr + Process {
       script_failure_report(out, err, read_or_empty(arg(6)), arg(7), read_or_empty(arg(8)))
     }
     print(test_run_failure(arg(1), int_arg(3), detail))
-    Fs::write_file(arg(9), test_run_fail_record(arg(2)))
+    Fs::write_file(arg(9), test_run_fail_record(count_arg(2)))
   } else if mode == "summary" {
     let (records, compile_fails) = read_results(arg(1))
     // Every file the workers were handed (`entries.tsv`) must have left a
@@ -191,7 +205,7 @@ fn main() -> Unit allows Env + Fs + Console + Stderr + Process {
       }
       e = e + 1
     }
-    print(test_run_summary(records, int_arg(2), compile_fails, backend(), arg(3) == "1", arg(4) == "1", arg(5), arg(6)))
+    print(test_run_summary(records, int_arg(2), compile_fails, arg(3) == "1", arg(4) == "1", arg(5), arg(6)))
     if test_run_failed(records) {
       exit(1)
     } else {
