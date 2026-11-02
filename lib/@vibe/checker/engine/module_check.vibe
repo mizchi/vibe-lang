@@ -1497,6 +1497,19 @@ export fn engine_checked_module_typing_artifact_observation_is_fresh_for_job(job
 /// the production incremental path must not allocate canonical shadow bytes for
 /// every checked module when no observer consumes them.
 export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool, program_transport: Option[Array[Bytes]], artifact_output: Option[(Bytes, Array[CheckedModuleArtifact])], interfaces: Option[DependencyInterfaceSet]) -> ModuleOutcome with Env + Exception {
+  engine_check_module_diagnostics(job, observe_typing_artifact, program_transport, artifact_output, interfaces, true)
+}
+
+/// Preserve checker diagnostics for APIs that own the final location rendering.
+/// The check, publication and lowering capture are the production invocation.
+export fn CheckJob::check_with_raw_diagnostics(job: CheckJob, interfaces: DependencyInterfaceSet) -> ModuleOutcome with Env + Exception {
+  engine_check_module_diagnostics(job, false, None, None, Some(interfaces), false)
+}
+
+// Keep presentation policy out of the provider's semantic check. In-memory
+// source APIs retain spans/markers for their own formatter; FS workers render
+// each diagnostic with this job's source and path.
+fn engine_check_module_diagnostics(job: CheckJob, observe_typing_artifact: Bool, program_transport: Option[Array[Bytes]], artifact_output: Option[(Bytes, Array[CheckedModuleArtifact])], interfaces: Option[DependencyInterfaceSet], render_diagnostics: Bool) -> ModuleOutcome with Env + Exception {
   // Parse stays OUTSIDE the handler below: parse errors currently
   // propagate verbatim, while type errors get located and path-prefixed.
   // Folding both into one handler would relabel every parse diagnostic.
@@ -1536,9 +1549,13 @@ export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool,
     // An alias that takes a builtin namespace's name is pointed at in the
     // import that wrote it; the other import diagnostics name the import
     // in their text.
-    Diagnosed(job.path, for msg in unresolved_imports {
-      String::concat(String::concat(job.path, ": "), engine_locate_import_alias_namespace_msg(job.source, msg))
-    })
+    if render_diagnostics {
+      Diagnosed(job.path, for msg in unresolved_imports {
+        String::concat(String::concat(job.path, ": "), engine_locate_import_alias_namespace_msg(job.source, msg))
+      })
+    } else {
+      Diagnosed(job.path, unresolved_imports)
+    }
   } else {
     handle {
       // Retain the opaque-producing checker result from this exact production
@@ -1630,7 +1647,11 @@ export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool,
       // markers are per-diagnostic, so running this over the joined string
       // would stamp the FIRST `[@off=]` it found onto the whole report and
       // leave the rest unlocated (measured).
-      Diagnosed(job.path, engine_locate_each_line(job.path, job.source, msg))
+      Diagnosed(job.path, if render_diagnostics {
+        engine_locate_each_line(job.path, job.source, msg)
+      } else {
+        [msg]
+      })
     } }
   }
 }

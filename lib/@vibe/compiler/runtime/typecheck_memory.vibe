@@ -4,9 +4,9 @@ import ./typecheck_fs_find_fn_anchor_off.vibe {
 
 import @vibe/checker/engine {
   CheckJob,
+  CheckJob::check_with_raw_diagnostics,
   DependencyInterfaceSet,
   ModuleOutcome,
-  engine_check_module_impl,
   engine_dependency_interface_set_new,
   engine_dependency_interface_set_publish,
   engine_typecheck_fs_build_fingerprint
@@ -93,8 +93,8 @@ fn memory_step(edges: Array[(String, Array[String])], fps: Array[(String, String
         None => false
       }
       let has_env = typecheck_fs_lookup_env_cache(state.env_cache, path) is Some(_)
-      let dep_sources = typecheck_fs_upsert_string_pair(state.dep_sources, path, source)
       if cached && has_env && ensure_module_typed_lowering_offsets_for_source(path, fingerprint, source) {
+        let dep_sources = typecheck_fs_upsert_string_pair(state.dep_sources, path, source)
         (fingerprint, ModuleWalkState::{
           rdb: state.rdb,
           env_cache: state.env_cache,
@@ -110,11 +110,16 @@ fn memory_step(edges: Array[(String, Array[String])], fps: Array[(String, String
           dep_envs,
           ships_owned_heads: memory_module_ships_owned_heads(sources, path)
         }
-        match engine_check_module_impl(job, false, None, None, Some(interfaces)) {
+        match CheckJob::check_with_raw_diagnostics(job, interfaces) {
           Diagnosed(_, diagnostics) => throw(String::join(diagnostics, "\n")),
           Checked(_, checked_fp, env, _, _, _, _) => {
+            // Source stamps alias the input TypeDb. Publish this stamp only
+            // after its matching dependency list has been committed: a failed
+            // check must leave the previous source/dependency witness intact.
+            let rdb = ripple_record_eval(state.rdb, path, checked_fp, deps)
+            let dep_sources = typecheck_fs_upsert_string_pair(state.dep_sources, path, source)
             (checked_fp, ModuleWalkState::{
-              rdb: ripple_record_eval(state.rdb, path, checked_fp, deps),
+              rdb,
               env_cache: typecheck_fs_upsert_env_cache(state.env_cache, path, env),
               dep_sources,
               parse_count: state.parse_count + 1

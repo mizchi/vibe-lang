@@ -61,3 +61,34 @@ test "memory import cycle is refused before checking any module" {
   assert(String::contains(message, "cycle/b.vibe"))
   inspect(db_typecheck_count(db), content = "0")
 }
+
+// A failed check returns no new TypeDb. Retrying the input value must not pair
+// its newly edited source with dependencies from the previous successful check.
+test "failed import edit preserves the source dependency cache witness for retry" {
+  let root = "retry_cache/main.vibe"
+  let old_dep = "retry_cache/old.vibe"
+  let new_dep = "retry_cache/new.vibe"
+  let old_source = "import ./old.vibe { value }\nexport fn read() -> Int { value }\n"
+  let new_source = "import ./new.vibe { value }\nexport fn read() -> Int { value }\n"
+  let db = db_set_source(db_set_source(db_set_source(db_new(), old_dep, "export let value = 1"), new_dep, "export let value = \"wrong\""), root, old_source)
+  let cold = db_typecheck(db, root)
+  let edited = db_set_source(cold, root, new_source)
+  let failed = handle {
+    db_typecheck(edited, root)
+    false
+  } with { Exception::Throw(_) => true }
+  assert(failed)
+  let fixed = db_set_source(edited, new_dep, "export let value = 2")
+  let checked = db_typecheck(fixed, root)
+  let count = db_parse_count(checked)
+  let warm = db_typecheck(checked, root)
+  assert(db_parse_count(warm) == count)
+  let (_, fp, _) = db_program_source(warm, root)
+  let seed = typing_semantics_seed()
+  let dependency_fp = engine_typecheck_fs_build_fingerprint(new_dep, "export let value = 2", [
+  ], seed)
+  let expected = engine_typecheck_fs_build_fingerprint(root, new_source, [
+    (new_dep, dependency_fp)
+  ], seed)
+  inspect(fp == expected, content = "true")
+}
