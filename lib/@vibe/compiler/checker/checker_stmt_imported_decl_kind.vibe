@@ -418,13 +418,14 @@ export fn bind_stmt_imports(env: TypeEnv, names: Array[ImportItem]) -> TypeEnv {
 /// nothing. They are one declaration per file because a declared type owns the
 /// applied spelling for type ARGUMENTS too: with `struct Int[T]` in scope,
 /// `Array[Int, String]` is itself refused.
-/// ADR-0122 (#3728): the parser reads `Float64` / `Float32` as `Double` /
-/// `Float` wherever it forms a type name or a namespace (`Float64::x`), so a
-/// trait, effect, effect set or import alias of that name would declare one
-/// spelling and be referenced by the other. Refused, naming the rename; the
-/// names are new, so nothing used them.
+/// ADR-0122 (#3728): the parser reads every builtin float spelling as the
+/// canonical `Float64` / `Float32` wherever it forms a type name or a namespace
+/// (`Double::x` is `Float64::x`), so a trait, effect, effect set or import
+/// alias named `Float64`, `Float32`, `Double` or `Float` would declare one
+/// spelling and be referenced by another, or collide with the builtin's own
+/// namespace. Refused, naming the rename.
 export fn float_width_decl_name_error(kind: String, name: String, errors: Array[String]) -> Unit {
-  if name == "Float64" || name == "Float32" {
+  if name == "Float64" || name == "Float32" || name == "Double" || name == "Float" {
     Array::push(errors, "rename this " + kind + ": `" + name + "` is reserved for the builtin float type, which every `" + name + "` in a type or a `" + name + "::` path names")
   } else {
     ()
@@ -432,10 +433,11 @@ export fn float_width_decl_name_error(kind: String, name: String, errors: Array[
 }
 
 export fn builtin_spelling_decl_error(kind: String, name: String, arity: Int, errors: Array[String]) -> Unit {
-  // ADR-0122 (#3728): the parser reads `Float64` / `Float32` as `Double` /
-  // `Float` in every type position and namespace, applied heads included, so a
-  // declaration of either name at ANY arity could never be named.
-  let collides = if name == "Float64" || name == "Float32" {
+  // ADR-0122 (#3728): the parser reads every builtin float spelling as the
+  // canonical `Float64` / `Float32` in every type position and namespace,
+  // applied heads included, so a declaration of any of them at ANY arity
+  // could never be named.
+  let collides = if name == "Float64" || name == "Float32" || name == "Double" || name == "Float" {
     true
   } else if arity == 0 {
     resolve_builtin(name) != None

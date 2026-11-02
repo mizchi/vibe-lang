@@ -100,8 +100,9 @@ does: annotations, `impl ... for Float64`, `fn Float64::m(..)`, and the
 builtins (`Float64::to_string`, `Float64::parse`, `Float32::to_string`). The
 conversions take width names too: `Int::to_float64`, `Int::to_float32`,
 `Float64::to_float32`, `Float32::to_float64`, and `Float64::to_int` /
-`Float32::to_int`. Diagnostics and hover still print `Double` / `Float`, and
-the old spellings keep working; the tree moves to the new names in #3729.
+`Float32::to_int`. `Float64` / `Float32` are the canonical names: diagnostics,
+hover and `vibe type-at` print them. The old spellings still parse as aliases
+of the same types; the tree moves to the new names in #3729.
 Because every `Float64` / `Float32` in a type or a `X::` path names the
 builtin, neither can be the name of a declared type, trait, effect, alias or
 type parameter (a constructor may still be called `Float64`). A type
