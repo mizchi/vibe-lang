@@ -1,0 +1,239 @@
+// ADR-0120 Phase 3 (#3650): `vibe refactor mark-positional` writes `_` before
+// the parameters D3 leaves positional, so the label codemod can label every
+// other slot and Phase 4 can require it:
+//
+// - the receiver of `T::f`: its first parameter, when that parameter's declared
+//   type is `T` itself (`fn Point::shift(p: Point, ..)`); a constructor such as
+//   `fn Point::new(x: Int, y: Int)` has no receiver and stays labeled;
+// - the only parameter of a one-parameter function.
+//
+// The edit is token-level, so layout and comments survive, and it applies to a
+// `.vibe` and to its `.vpkg` contract alike: both carry the same declaration,
+// so they get the same `_` and conformance keeps holding.
+
+import @vibe/compiler/core {
+  __to_string
+}
+
+import @vibe/compiler/contract {
+  extract_require_pins
+}
+
+import @vibe/parser {
+  Token, lex_with_offsets, offset_to_line_col
+}
+
+// `MarkPositionalResult` is defined in the package contract (index.vpkg).
+
+//# Parameters
+
+/// One parameter of a declaration: its first token (where `_ ` goes), whether
+/// it already carries `_`, its name and its type's head identifier.
+fn mp_param(tokens: Array[Token], t: Int, end: Int) -> (Int, Bool, String, String) {
+  let marked = match Array::get(tokens, t) {
+    TIdent(u) => u == "_" && t + 1 < end && match Array::get(tokens, t + 1) {
+      TIdent(_) => true,
+      _ => false
+    },
+    _ => false
+  }
+  let name_at = if marked {
+    t + 1
+  } else {
+    t
+  }
+  let name = match Array::get(tokens, name_at) {
+    TIdent(n) => n,
+    _ => ""
+  }
+  // The type's head: the first identifier after the `:`.
+  let mut head = ""
+  let mut j = name_at + 1
+  let mut seen_colon = false
+  while j < end && String::length(head) == 0 {
+    match Array::get(tokens, j) {
+      TColon => seen_colon = true,
+      TIdent(h) => if seen_colon {
+        head = h
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    j = j + 1
+  }
+  (t, marked, name, head)
+}
+
+fn mp_opens(t: Token) -> Bool {
+  match t {
+    TLParen => true,
+    TLBracket => true,
+    TLBrace => true,
+    _ => false
+  }
+}
+
+fn mp_closes(t: Token) -> Bool {
+  match t {
+    TRParen => true,
+    TRBracket => true,
+    TRBrace => true,
+    _ => false
+  }
+}
+
+/// The parameters between the `(` at `paren` and its `)`, and the index after.
+fn mp_params(tokens: Array[Token], paren: Int) -> (Array[(Int, Bool, String, String)], Int) {
+  let out: Array[(Int, Bool, String, String)] = []
+  let mut j = paren + 1
+  let mut depth = 0
+  let mut start = -1
+  let mut done = false
+  while j < Array::length(tokens) && !done {
+    let t = Array::get(tokens, j)
+    match t {
+      TSemicolon => (),
+      TEof => done = true,
+      TComma => if depth == 0 {
+        if start >= 0 {
+          Array::push(out, mp_param(tokens, start, j))
+        } else {
+          ()
+        }
+        start = -1
+      } else {
+        ()
+      },
+      _ => if mp_closes(t) && depth == 0 {
+        if start >= 0 {
+          Array::push(out, mp_param(tokens, start, j))
+        } else {
+          ()
+        }
+        done = true
+      } else {
+        if start < 0 {
+          start = j
+        } else {
+          ()
+        }
+        if mp_opens(t) {
+          depth = depth + 1
+        } else if mp_closes(t) {
+          depth = depth - 1
+        } else {
+          ()
+        }
+      }
+    }
+    j = j + 1
+  }
+  (out, j)
+}
+
+/// Past a balanced `[ .. ]` starting at `t`, or `t` itself.
+fn mp_skip_brackets(tokens: Array[Token], t: Int) -> Int {
+  match Array::get(tokens, t) {
+    TLBracket => {
+      let mut j = t + 1
+      let mut depth = 1
+      while j < Array::length(tokens) && depth > 0 {
+        match Array::get(tokens, j) {
+          TLBracket => depth = depth + 1,
+          TRBracket => depth = depth - 1,
+          TEof => depth = 0,
+          _ => ()
+        }
+        j = j + 1
+      }
+      j
+    },
+    _ => t
+  }
+}
+
+//# Driver
+
+/// `source` with `_ ` written before each parameter D3 leaves positional, and
+/// one `path:line:col: name slot N` row per mark.
+export fn mark_positional(path: String, source: String) -> MarkPositionalResult with Exception {
+  // A `.vpkg` header is not vibe syntax; the blanked copy keeps every offset.
+  let (_, parsed) = extract_require_pins(source)
+  let (tokens, starts, _) = lex_with_offsets(parsed)
+  let inserts: Array[Int] = []
+  let lines: Array[String] = []
+  let mut i = 0
+  while i < Array::length(tokens) {
+    match Array::get(tokens, i) {
+      TFn => {
+        // The name: identifiers joined by `::`.
+        let mut j = i + 1
+        let segments: Array[String] = []
+        let mut more = true
+        while more && j < Array::length(tokens) {
+          match Array::get(tokens, j) {
+            TIdent(s) => {
+              Array::push(segments, s)
+              j = j + 1
+              match Array::get(tokens, j) {
+                TDoubleColon => j = j + 1,
+                _ => more = false
+              }
+            },
+            _ => more = false
+          }
+        }
+        let at_paren = mp_skip_brackets(tokens, j)
+        let opens = at_paren < Array::length(tokens) && match Array::get(tokens, at_paren) {
+          TLParen => true,
+          _ => false
+        }
+        if opens && Array::length(segments) > 0 {
+          let (params, after) = mp_params(tokens, at_paren)
+          let n = Array::length(params)
+          let owner = if Array::length(segments) >= 2 {
+            Array::get(segments, Array::length(segments) - 2)
+          } else {
+            ""
+          }
+          if n >= 1 {
+            let (first_at, marked, pname, head) = Array::get(params, 0)
+            let receiver = String::length(owner) > 0 && head == owner
+            if !marked && pname != "_" && String::length(pname) > 0 && (receiver || n == 1) {
+              Array::push(inserts, Array::get(starts, first_at))
+              let (line, col) = offset_to_line_col(source, Array::get(starts, first_at))
+              Array::push(lines, path + ":" + __to_string(line) + ":" + __to_string(col) + ": " + String::join(segments, "::") + " " + pname + (if receiver {
+                " (receiver)"
+              } else {
+                " (single parameter)"
+              }))
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          i = after
+        } else {
+          i = j
+        }
+      },
+      _ => i = i + 1
+    }
+  }
+  // Insertion offsets ascend with the token stream.
+  let out = StringBuilder::new()
+  let mut prev = 0
+  for at in inserts {
+    StringBuilder::push(out, source[prev: at])
+    StringBuilder::push(out, "_ ")
+    prev = at
+  }
+  StringBuilder::push(out, source[prev: String::length(source)])
+  MarkPositionalResult::{
+    source: StringBuilder::freeze(out),
+    marked: Array::length(inserts),
+    lines: lines
+  }
+}

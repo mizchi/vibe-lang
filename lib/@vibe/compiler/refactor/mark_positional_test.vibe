@@ -1,0 +1,35 @@
+// ADR-0120 Phase 3: `vibe refactor mark-positional` writes `_` only before a
+// receiver and before the parameter of a one-parameter function.
+
+import @vibe/compiler/refactor {
+  mark_positional
+}
+
+fn marked(source: String) -> String with Exception {
+  mark_positional("t.vibe", source).source
+}
+
+test "a receiver typed as its owner is marked; a constructor is not" {
+  let source = "struct P {\n  v: Int\n}\nfn P::shift(p: P, by: Int) -> Int {\n  p.v + by\n}\nfn P::new(v: Int, w: Int) -> P {\n  P::{ v: v + w }\n}\n"
+  inspect(marked(source), content = "struct P {\n  v: Int\n}\nfn P::shift(_ p: P, by: Int) -> Int {\n  p.v + by\n}\nfn P::new(v: Int, w: Int) -> P {\n  P::{ v: v + w }\n}\n")
+}
+
+test "the only parameter of a function is marked" {
+  inspect(marked("fn neg(x: Int) -> Int {\n  0 - x\n}\nfn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n"), content = "fn neg(_ x: Int) -> Int {\n  0 - x\n}\nfn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n")
+}
+
+test "generic receivers, wildcards and marked slots" {
+  // A generic owner reads its head (`Box` of `Box[T]`); a wildcard `_` and an
+  // already marked slot are left alone, so a second run changes nothing.
+  let source = "struct Box[T] {\n  v: T\n}\nfn Box::get[T](b: Box[T], at: Int) -> T {\n  b.v\n}\nfn ignore(_: Int) -> Int {\n  0\n}\nfn twice(_ x: Int) -> Int {\n  x * 2\n}\n"
+  let once = marked(source)
+  inspect(once, content = "struct Box[T] {\n  v: T\n}\nfn Box::get[T](_ b: Box[T], at: Int) -> T {\n  b.v\n}\nfn ignore(_: Int) -> Int {\n  0\n}\nfn twice(_ x: Int) -> Int {\n  x * 2\n}\n")
+  inspect(mark_positional("t.vibe", once).marked, content = "0")
+}
+
+test "a contract's bodyless declarations are marked the same way" {
+  let source = "name = @t/pkg\nversion = 0.1.0\n\nimport ./impl.vibe {}\n\nfn Box::get[T](b: Box[T], at: Int) -> T\nfn neg(x: Int) -> Int\n"
+  let result = mark_positional("index.vpkg", source)
+  inspect(result.source, content = "name = @t/pkg\nversion = 0.1.0\n\nimport ./impl.vibe {}\n\nfn Box::get[T](_ b: Box[T], at: Int) -> T\nfn neg(_ x: Int) -> Int\n")
+  inspect(String::join(result.lines, "\n"), content = "index.vpkg:6:16: Box::get b (receiver)\nindex.vpkg:7:8: neg x (single parameter)")
+}
