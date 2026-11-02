@@ -644,16 +644,18 @@ fn report_function_header_bind_hits(raw: String, emit: Bool) -> Int with Stderr 
   count
 }
 
-// The evidence pass keeps per-statement facts across migrations and walks
-// again only the statements a migration marked as replaced. A raw write in a
-// migration would leave its statement's facts stale: the next migration would
-// read the old tree's inert base, with no error anywhere.
+// The evidence pass keeps per-statement facts from its vacuity loop through
+// the last migration, and walks again only the statements a step marked as
+// replaced. A raw write in one of those steps (erase, slot stamping, eta
+// wrapping, migration) would leave its statement's facts stale: the next step
+// would read the old tree's inert base, with no error anywhere.
 fn migration_write_pattern() -> String {
   "Array::set(stmts, $(index:exp), $(stmt:exp))"
 }
 
 fn is_migration_source(path: String) -> Bool {
-  String::ends_with(path, "/lowering/effects/evidence/evidence_edp_apply_migration.vibe")
+  let dir = "/lowering/effects/evidence/"
+  String::ends_with(path, dir + "evidence_edp_apply_migration.vibe") || String::ends_with(path, dir + "evidence_ecall_arg_idents_expr.vibe") || String::ends_with(path, dir + "evidence_poison_expr.vibe")
 }
 
 fn report_migration_write_hits(raw: String, emit: Bool) -> Int with Stderr {
@@ -666,7 +668,7 @@ fn report_migration_write_hits(raw: String, emit: Bool) -> Int with Stderr {
     if is_migration_source(path) {
       count = count + 1
       if emit {
-        report_finding(path, Double::to_int(Json::number(Json::field(hit, "line"))), Json::string(Json::field(hit, "text")), "a migration replaces a statement with edp_mf_set_stmt(stmts, index, stmt), which marks it for the per-statement migration facts")
+        report_finding(path, Double::to_int(Json::number(Json::field(hit, "line"))), Json::string(Json::field(hit, "text")), "replace the statement with edp_mf_set_stmt(stmts, index, stmt): the evidence pass walks again only the statements it marks")
       } else {
         ()
       }

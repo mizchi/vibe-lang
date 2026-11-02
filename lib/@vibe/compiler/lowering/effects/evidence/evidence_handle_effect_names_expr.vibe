@@ -34,6 +34,8 @@ import @vibe/compiler/lowering/effects/queries {
   edp_handle_matches_effect,
   edp_has_unsafe_construct,
   edp_is_pure_builtin_call,
+  edp_mf_dirty_indices,
+  edp_mf_dirty_reset,
   edp_name_is_host_raw_shape,
   edp_pat_qname,
   edp_rq_fold,
@@ -1998,25 +2000,18 @@ fn edp_collect_handle_effect_names_expr(expr: Expr, out: Array[String]) -> Unit 
 // adds binder counts, and the census is a union. So each statement's share is
 // kept, and only the statements a migration replaced are walked again.
 //
-// Exactness rests on one rule: every write a migration makes to the program
-// goes through edp_mf_set_stmt (which marks the index) or appends past the
-// end (which the refresh walks as new). The shares are combined in statement
-// order, so the result is the whole walk's, not merely an equivalent one.
+// Exactness rests on one rule: from the vacuity loop on, every write the pass
+// makes to the program goes through edp_mf_set_stmt (queries, which marks the
+// index) or appends past the end (which the refresh walks as new). The shares
+// are combined in statement order, so the result is the whole walk's, not
+// merely an equivalent one.
 
 /// (lambda names, lambda literals, binder counts, host-raw callees, binders)
 type EdpStmtFacts = (Array[String], Array[Expr], Array[(String, Int)], Array[String], Array[String])
 
-let edp_mf_dirty: Array[Int] = []
-
-/// Replace a statement during a migration, marking it for the facts.
-export fn edp_mf_set_stmt(stmts: Array[Stmt], i: Int, stmt: Stmt) -> Unit {
-  Array::set(stmts, i, stmt)
-  Array::push(edp_mf_dirty, i)
-}
-
 /// Facts of each statement, valid for the tree as of the last refresh.
 export fn edp_mf_new() -> Array[(Array[String], Array[Expr], Array[(String, Int)], Array[String], Array[String])] {
-  Array::truncate(edp_mf_dirty, 0)
+  edp_mf_dirty_reset()
   []
 }
 
@@ -2040,12 +2035,12 @@ fn edp_mf_stmt_facts(stmt: Stmt) -> EdpStmtFacts {
 /// the last refresh, and any appended after it.
 export fn edp_mf_refresh(facts: Array[(Array[String], Array[Expr], Array[(String, Int)], Array[String], Array[String])], stmts: Array[Stmt]) -> Unit {
   let known = Array::length(facts)
-  for i in edp_mf_dirty {
+  for i in edp_mf_dirty_indices() {
     if i >= 0 && i < known {
       Array::set(facts, i, edp_mf_stmt_facts(Array::get(stmts, i)))
     } else ()
   }
-  Array::truncate(edp_mf_dirty, 0)
+  edp_mf_dirty_reset()
   let mut i = known
   while i < Array::length(stmts) {
     Array::push(facts, edp_mf_stmt_facts(Array::get(stmts, i)))
