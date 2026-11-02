@@ -806,7 +806,33 @@ fn wib_display_name(name: String) -> String {
   out
 }
 
-fn wib_emit_fn(out: Array[String], vibe_name: String, doc: String, callee: String, params: Array[Int], results: Array[Int]) -> Unit {
+/// The prefix of this binding module's private stubs: `wasm_raw_`, with
+/// `_` appended until no public name in `public` starts with it. A private
+/// name is the prefix plus a public name, so it can equal neither another
+/// private one nor any public declaration -- an export called `wasm_raw_foo`
+/// next to `foo` gets the stub `wasm_raw__foo` instead of sharing one name.
+fn wib_private_prefix(public: Array[String]) -> String {
+  let mut prefix = "wasm_raw_"
+  let mut clash = true
+  while clash {
+    clash = false
+    for nm in public {
+      if String::starts_with(nm, prefix) {
+        clash = true
+      } else {
+        ()
+      }
+    }
+    if clash {
+      prefix = String::concat(prefix, "_")
+    } else {
+      ()
+    }
+  }
+  prefix
+}
+
+fn wib_emit_fn(out: Array[String], raw: String, vibe_name: String, doc: String, callee: String, params: Array[Int], results: Array[Int]) -> Unit {
   let n = Array::length(params)
   let ret = if Array::length(results) == 0 {
     "Unit"
@@ -814,11 +840,11 @@ fn wib_emit_fn(out: Array[String], vibe_name: String, doc: String, callee: Strin
     "Int"
   }
   Array::push(out, "/// \{doc}\n")
-  Array::push(out, "fn wasm_raw_\{vibe_name}(\{wib_param_list(n)}) -> Int = wasm \"\{wib_body(callee, params, results)}\"\n")
+  Array::push(out, "fn \{raw}\{vibe_name}(\{wib_param_list(n)}) -> Int = wasm \"\{wib_body(callee, params, results)}\"\n")
   if Array::length(results) == 0 {
-    Array::push(out, "export fn \{vibe_name}(\{wib_param_list(n)}) -> \{ret} {\n  let _ = wasm_raw_\{vibe_name}(\{wib_arg_list(n)})\n  ()\n}\n\n")
+    Array::push(out, "export fn \{vibe_name}(\{wib_param_list(n)}) -> \{ret} {\n  let _ = \{raw}\{vibe_name}(\{wib_arg_list(n)})\n  ()\n}\n\n")
   } else {
-    Array::push(out, "export fn \{vibe_name}(\{wib_param_list(n)}) -> \{ret} {\n  wasm_raw_\{vibe_name}(\{wib_arg_list(n)})\n}\n\n")
+    Array::push(out, "export fn \{vibe_name}(\{wib_param_list(n)}) -> \{ret} {\n  \{raw}\{vibe_name}(\{wib_arg_list(n)})\n}\n\n")
   }
 }
 
@@ -852,6 +878,14 @@ fn wib_core_binding_source(path: String, bytes: Bytes) -> String with Exception 
     "wasm_memory_store_u8",
     "wasm_memory_size"
   ]
+  let public = wib_fresh_strings()
+  for nm in names {
+    Array::push(public, nm)
+  }
+  for m in mem_names {
+    Array::push(public, m)
+  }
+  let raw = wib_private_prefix(public)
   let out = wib_fresh_strings()
   let withheld = wib_fresh_strings()
   Array::push(out, "// Bindings synthesized from the core wasm module \{wib_display_name(path)}.\n// Imports resolve through `\{wib_display_name(module_name)}`.\n\n")
@@ -889,19 +923,19 @@ fn wib_core_binding_source(path: String, bytes: Bytes) -> String with Exception 
     } else if !wib_sig_admitted(ps, rs) {
       Array::push(withheld, "`\{shown}` \{wib_sig_wat(ps, rs)}: only i32 / i64 params and at most one i32 / i64 result cross the boundary")
     } else {
-      wib_emit_fn(out, vn, "`\{shown}` from \{wib_display_name(path)}: core wasm \{wib_sig_wat(ps, rs)}.", wasm_import_callee(module_name, nm, ps, rs), ps, rs)
+      wib_emit_fn(out, raw, vn, "`\{shown}` from \{wib_display_name(path)}: core wasm \{wib_sig_wat(ps, rs)}.", wasm_import_callee(module_name, nm, ps, rs), ps, rs)
     }
     i = i + 1
   }
   if has_memory {
-    wib_emit_fn(out, "wasm_memory_load_u8", "The byte at `a0` in the module's memory (0..255).", wasm_import_callee(wasm_memory_module_name(path), "vibe:memory.load8_u", [
+    wib_emit_fn(out, raw, "wasm_memory_load_u8", "The byte at `a0` in the module's memory (0..255).", wasm_import_callee(wasm_memory_module_name(path), "vibe:memory.load8_u", [
       0x7F
     ], [0x7F]), [0x7F], [0x7F])
-    wib_emit_fn(out, "wasm_memory_store_u8", "Store the low 8 bits of `a1` at `a0` in the module's memory.", wasm_import_callee(wasm_memory_module_name(path), "vibe:memory.store8", [
+    wib_emit_fn(out, raw, "wasm_memory_store_u8", "Store the low 8 bits of `a1` at `a0` in the module's memory.", wasm_import_callee(wasm_memory_module_name(path), "vibe:memory.store8", [
       0x7F,
       0x7F
     ], wib_fresh_ints()), [0x7F, 0x7F], wib_fresh_ints())
-    wib_emit_fn(out, "wasm_memory_size", "The module's memory size in bytes.", wasm_import_callee(wasm_memory_module_name(path), "vibe:memory.size", wib_fresh_ints(), [
+    wib_emit_fn(out, raw, "wasm_memory_size", "The module's memory size in bytes.", wasm_import_callee(wasm_memory_module_name(path), "vibe:memory.size", wib_fresh_ints(), [
       0x7E
     ]), wib_fresh_ints(), [0x7E])
   } else {
@@ -1393,7 +1427,7 @@ fn wib_component_sig_text(params: Array[Int], labels: Array[String], results: Ar
   }
 }
 
-fn wib_component_emit(out: Array[String], vibe_name: String, doc: String, callee: String, params: Array[Int], results: Array[Int]) -> Unit {
+fn wib_component_emit(out: Array[String], raw: String, vibe_name: String, doc: String, callee: String, params: Array[Int], results: Array[Int]) -> Unit {
   let raw_params = wib_fresh_strings()
   let wrap_params = wib_fresh_strings()
   let wrap_args = wib_fresh_strings()
@@ -1403,7 +1437,7 @@ fn wib_component_emit(out: Array[String], vibe_name: String, doc: String, callee
     if Array::get(params, i) == 0x73 {
       Array::push(raw_params, "a\{i}: Bytes")
       Array::push(wrap_params, "a\{i}: String")
-      Array::push(wrap_args, "wasm_raw__string_bytes(a\{i})")
+      Array::push(wrap_args, "\{raw}_string_bytes(a\{i})")
       args = String::concat(args, " (local.get $a\{i})")
     } else {
       Array::push(raw_params, "a\{i}: Int")
@@ -1424,11 +1458,11 @@ fn wib_component_emit(out: Array[String], vibe_name: String, doc: String, callee
     ("Int", "(vibe.int.tag \{call})", "Int")
   }
   Array::push(out, "/// \{doc}\n")
-  Array::push(out, "fn wasm_raw_\{vibe_name}(\{String::join(raw_params, ", ")}) -> \{raw_ret} = wasm \"\{body}\"\n")
+  Array::push(out, "fn \{raw}\{vibe_name}(\{String::join(raw_params, ", ")}) -> \{raw_ret} = wasm \"\{body}\"\n")
   if has_result {
-    Array::push(out, "export fn \{vibe_name}(\{String::join(wrap_params, ", ")}) -> \{wrap_ret} {\n  wasm_raw_\{vibe_name}(\{String::join(wrap_args, ", ")})\n}\n\n")
+    Array::push(out, "export fn \{vibe_name}(\{String::join(wrap_params, ", ")}) -> \{wrap_ret} {\n  \{raw}\{vibe_name}(\{String::join(wrap_args, ", ")})\n}\n\n")
   } else {
-    Array::push(out, "export fn \{vibe_name}(\{String::join(wrap_params, ", ")}) -> Unit {\n  let _ = wasm_raw_\{vibe_name}(\{String::join(wrap_args, ", ")})\n  ()\n}\n\n")
+    Array::push(out, "export fn \{vibe_name}(\{String::join(wrap_params, ", ")}) -> Unit {\n  let _ = \{raw}\{vibe_name}(\{String::join(wrap_args, ", ")})\n  ()\n}\n\n")
   }
 }
 
@@ -1445,10 +1479,11 @@ fn wib_component_binding_source(path: String, bytes: Bytes) -> String with Excep
     let (nm, _, _) = ex
     Array::push(names, wasm_import_vibe_name(nm))
   }
+  let raw = wib_private_prefix(names)
   // The bytes of a `string` argument, copied into the Bytes object the
-  // runner reads (wasm_raw_<name> of the export `_string_bytes` would be the
+  // runner reads (the stub of an export named `_string_bytes` would be the
   // same name, so that export is withheld below).
-  Array::push(out, "fn wasm_raw__string_bytes(s: String) -> Bytes {\n  let b = Bytes::with_capacity(String::length(s))\n  let mut i = 0\n  while i < String::length(s) {\n    Bytes::push(b, String::byte_at(s, i))\n    i = i + 1\n  }\n  b\n}\n\n")
+  Array::push(out, "fn \{raw}_string_bytes(s: String) -> Bytes {\n  let b = Bytes::with_capacity(String::length(s))\n  let mut i = 0\n  while i < String::length(s) {\n    Bytes::push(b, String::byte_at(s, i))\n    i = i + 1\n  }\n  b\n}\n\n")
   let mut i = 0
   while i < Array::length(exports) {
     let (nm, fti, why) = Array::get(exports, i)
@@ -1508,7 +1543,7 @@ fn wib_component_binding_source(path: String, bytes: Bytes) -> String with Excep
         // core type cannot tell `-> s32` from `-> string`, and the runner
         // refuses a component whose export no longer matches instead of
         // converting by the new type.
-        wib_component_emit(out, vn, "`\{shown}: \{sig}` from the component \{wib_display_name(path)}.", wasm_import_callee(module_name, wasm_component_field(nm, ps, rs), core_params, core_results), ps, rs)
+        wib_component_emit(out, raw, vn, "`\{shown}: \{sig}` from the component \{wib_display_name(path)}.", wasm_import_callee(module_name, wasm_component_field(nm, ps, rs), core_params, core_results), ps, rs)
       }
     }
     i = i + 1

@@ -546,6 +546,11 @@ fn engine_config() -> Config {
     cfg.wasm_simd(true);
     cfg.wasm_relaxed_simd(true);
     cfg.wasm_tail_call(true);
+    // A typed `.wasm` import may be a pthreads build that exports (or
+    // imports) a shared memory; foreign_link.rs instantiates it in this
+    // engine and serves the memory accessors over the `SharedMemory`. The
+    // vibe module itself never declares one.
+    cfg.shared_memory(true);
     cfg.max_wasm_stack(wasm_stack_bytes());
     // The crate builds wasmtime with the async feature (the daemon path), and
     // wasmtime validates max_wasm_stack <= async_stack_size even for sync

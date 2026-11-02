@@ -58,4 +58,8 @@ expect_fail "a range trap that does not fire" "trap_i32_param exited 0"
 fresh; mutate greeter_main.vibex 'greet("vibe")' 'greet("vibes")'
 expect_fail "a different component answer" "greeter_main printed"
 
-echo "[wasm-import-gate-test] ok (5 cases)"
+# 5. The shared-memory accessors are checked by value, not by exit status.
+fresh; mutate shared_memory_main.vibex "wasm_memory_store_u8(5, 7)" "wasm_memory_store_u8(5, 8)"
+expect_fail "a different shared-memory answer" "peek=8\\ size=65536, want load=42 peek=7"
+
+echo "[wasm-import-gate-test] ok (6 cases)"

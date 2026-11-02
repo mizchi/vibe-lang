@@ -14,7 +14,10 @@
 #   2. an Int that fits no reading of 32 bits, passed as an i32, TRAPS
 #      (trap_i32_param.vibex) -- it must not reach the foreign function as a
 #      truncated value, so `r=` is never printed;
-#   3. an i64 result that needs the 64th bit TRAPS (trap_i64_result.vibex).
+#   3. an i64 result that needs the 64th bit TRAPS (trap_i64_result.vibex);
+#  12. the memory accessors work over an exported SHARED memory
+#      (shared_memory_main.vibex; wasmtime hands it over as a different
+#      object, `SharedMemory`).
 # And once:
 #   4. the fixture binaries are built from their committed text (when
 #      wat2wasm and wasm-tools exist);
@@ -110,6 +113,11 @@ for lane_and_runner in "1 $VIBERUN" "0 $VIBERUN" "1 $NODE_RUNNER" "0 $NODE_RUNNE
     [ "$out" = "before" ] || fail "[$label] $t printed $(printf '%q' "$out"); want only 'before' (the call must not answer)"
     grep -q 'wasm_raw_' "$WORK/err" || { cat "$WORK/err" >&2; fail "[$label] $t did not trap inside the binding"; }
   done
+  # 12.
+  status=0
+  out="$(vibe "$runner" run "$FX/shared_memory_main.vibex" 2>"$WORK/err")" || status=$?
+  [ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[$label] shared_memory_main exited $status"; }
+  [ "$out" = "load=42 peek=7 size=65536" ] || fail "[$label] shared_memory_main printed $(printf '%q' "$out"), want load=42 peek=7 size=65536"
 done
 
 # 5. Refusals are compile-time and name the import.
@@ -186,4 +194,4 @@ status=0
 grep -q "'counter' is now (->s64) but the program was compiled against (->u64); rebuild the program" "$WORK/err" \
   || { cat "$WORK/err" >&2; fail "[viberun] the signature-drift refusal does not say why"; }
 
-echo "[wasm-import] ok (core: viberun + node, range traps, refusals; component: viberun, WIT range refusal, node refusal)"
+echo "[wasm-import] ok (core: viberun + node, range traps, shared memory, refusals; component: viberun, WIT range refusal, node refusal)"

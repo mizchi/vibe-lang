@@ -3401,9 +3401,9 @@ same name are **both** withheld.
 
 A module whose memory a runner can reach (exported, or imported) also gets
 `wasm_memory_load_u8(addr) -> Int`, `wasm_memory_store_u8(addr, value)` and
-`wasm_memory_size() -> Int`. The foreign memory is not the program's; the
-runner serves these, which is how a binding moves strings across (see
-`lib/@vibex/z3/cstring.vibe`).
+`wasm_memory_size() -> Int`. A shared memory (a pthreads build) counts too.
+The foreign memory is not the program's; the runner serves these, which is
+how a binding moves strings across (see `lib/@vibex/z3/cstring.vibe`).
 
 **Component types** (from the component's type section, i.e. its WIT): a
 world-level exported function with `s8`..`u64` (as `Int`) and `string`

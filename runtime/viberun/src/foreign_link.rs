@@ -8,7 +8,8 @@
 //! imported from a SEPARATE module, `vibe:wasm-memory:<path>`, so that no
 //! export of the foreign module -- whatever it is named -- can collide with
 //! them. The foreign memory is not the vibe module's, so the host reads and
-//! writes it.
+//! writes it; a shared one (wasmtime's `SharedMemory`, a pthreads build's) is
+//! served the same way.
 //!
 //! `link_foreign_wasm_modules` instantiates each such module from `<path>`
 //! (relative to `VIBE_WASM_LINK_DIR`, default the working directory -- where
@@ -20,7 +21,9 @@
 
 use std::path::PathBuf;
 
-use wasmtime::{bail, format_err, Caller, Extern, ExternType, Linker, Memory, Module, Result, Store};
+use wasmtime::{
+    bail, format_err, Caller, Extern, ExternType, Linker, Memory, Module, Result, SharedMemory, Store,
+};
 
 pub(super) const FOREIGN_PREFIX: &str = "vibe:wasm:";
 pub(super) const FOREIGN_MEMORY_PREFIX: &str = "vibe:wasm-memory:";
@@ -82,6 +85,41 @@ fn check_addr(op: &str, addr: i32, size: usize) -> Result<usize> {
     Ok(a)
 }
 
+/// A foreign module's memory as the accessors reach it.
+#[derive(Clone)]
+enum ForeignMemory {
+    Plain(Memory),
+    Shared(SharedMemory),
+}
+
+impl ForeignMemory {
+    fn size<T: 'static>(&self, caller: &Caller<'_, T>) -> usize {
+        match self {
+            ForeignMemory::Plain(m) => m.data_size(caller),
+            ForeignMemory::Shared(m) => m.data_size(),
+        }
+    }
+
+    /// `a` has passed `check_addr` against `size`.
+    fn load<T: 'static>(&self, caller: &Caller<'_, T>, a: usize) -> u8 {
+        match self {
+            ForeignMemory::Plain(m) => m.data(caller)[a],
+            // SAFETY: `a` is in bounds, and a shared memory's bytes are
+            // `UnsafeCell`s precisely so that a plain read is allowed; viberun
+            // runs the foreign module on this thread only.
+            ForeignMemory::Shared(m) => unsafe { *m.data()[a].get() },
+        }
+    }
+
+    fn store<T: 'static>(&self, caller: &mut Caller<'_, T>, a: usize, value: u8) {
+        match self {
+            ForeignMemory::Plain(m) => m.data_mut(caller)[a] = value,
+            // SAFETY: as for `load`.
+            ForeignMemory::Shared(m) => unsafe { *m.data()[a].get() = value },
+        }
+    }
+}
+
 /// Instantiate and define every `vibe:wasm:<path>` module `module` imports.
 /// Returns how many were linked. Shadowing is enabled for the definitions so
 /// a linker reused for a fresh store (one instance per test block) can be
@@ -123,41 +161,46 @@ pub(super) fn link_foreign_wasm_modules<T: 'static>(
             init.call(&mut *store, &[], &mut [])
                 .map_err(|e| format_err!("cannot link '{name}': _initialize trapped: {e}"))?;
         }
-        let mut memory: Option<Memory> = None;
+        // The first exported memory, plain or shared: a shared one (a
+        // pthreads build) arrives as `Extern::SharedMemory`, a different
+        // object, and the binding offers the accessors for both kinds.
+        let mut memory: Option<ForeignMemory> = None;
         let exports: Vec<(String, Extern)> = instance
             .exports(&mut *store)
             .map(|e| (e.name().to_string(), e.into_extern()))
             .collect();
         for (field, ext) in exports {
             if memory.is_none() {
-                if let Extern::Memory(m) = &ext {
-                    memory = Some(*m);
+                match &ext {
+                    Extern::Memory(m) => memory = Some(ForeignMemory::Plain(*m)),
+                    Extern::SharedMemory(m) => memory = Some(ForeignMemory::Shared(m.clone())),
+                    _ => {}
                 }
             }
             linker.define(&mut *store, name.as_str(), field.as_str(), ext)?;
         }
         if let Some(mem) = memory {
+            let load = mem.clone();
             linker.func_wrap(
                 memory_name.as_str(),
                 "vibe:memory.load8_u",
                 move |caller: Caller<'_, T>, addr: i32| -> Result<i32> {
-                    let data = mem.data(&caller);
-                    let a = check_addr("vibe:memory.load8_u", addr, data.len())?;
-                    Ok(data[a] as i32)
+                    let a = check_addr("vibe:memory.load8_u", addr, load.size(&caller))?;
+                    Ok(load.load(&caller, a) as i32)
                 },
             )?;
+            let store8 = mem.clone();
             linker.func_wrap(
                 memory_name.as_str(),
                 "vibe:memory.store8",
                 move |mut caller: Caller<'_, T>, addr: i32, value: i32| -> Result<()> {
-                    let data = mem.data_mut(&mut caller);
-                    let a = check_addr("vibe:memory.store8", addr, data.len())?;
-                    data[a] = value as u8;
+                    let a = check_addr("vibe:memory.store8", addr, store8.size(&caller))?;
+                    store8.store(&mut caller, a, value as u8);
                     Ok(())
                 },
             )?;
             linker.func_wrap(memory_name.as_str(), "vibe:memory.size", move |caller: Caller<'_, T>| -> i64 {
-                mem.data_size(&caller) as i64
+                mem.size(&caller) as i64
             })?;
         }
     }
