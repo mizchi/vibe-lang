@@ -97,6 +97,8 @@ expect_refused commented '`Env` is not needed' "$WORK_REL/commented.vibex"
 # there is no label to probe.
 printf 'fn main allows () {\n  ()\n}\n' > "$WORK/pure.vibex"
 gate "$WORK_REL/pure.vibex" || { cat "$WORK/gate.out" >&2; fail "pure: an entry declaring allows () was refused"; }
+printf 'fn main allows ( // nothing\n) {\n  ()\n}\n' > "$WORK/pure_spaced.vibex"
+gate "$WORK_REL/pure_spaced.vibex" || { cat "$WORK/gate.out" >&2; fail "pure_spaced: an empty row spelled with blanks inside was refused"; }
 
 # A file that does not check as written is not graded at all.
 printf 'fn main() -> Unit allows Console {\n  let x: Int = "s"\n  println("x")\n}\n' > "$WORK/broken.vibex"
