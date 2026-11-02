@@ -207,3 +207,73 @@ test "a private stub never shares a name with an export" {
   inspect(String::index_of(src, "\nfn wasm_raw__wasm_raw_foo() -> Int = wasm") >= 0, content = "true")
   inspect(String::index_of(src, "\nfn wasm_raw_foo(") < 0, content = "true")
 }
+
+test "every hard keyword of the lexer is renamed" {
+  // The spellings `keyword_lookup` recognises, read from the lexer itself, so
+  // a keyword added there without being added to the binding's list fails
+  // here instead of producing an unparsable `export fn <keyword>(..)`.
+  let src = Fs::read_file("lib/@vibe/parser/lexer.vibe")
+  let pieces = String::split(src, "slice_eq(source, start, end, \"")
+  let mut seen = 0
+  let missed: Array[String] = []
+  let mut i = 1
+  while i < Array::length(pieces) {
+    let piece = Array::get(pieces, i)
+    let close = String::index_of(piece, "\"")
+    let word = if close > 0 {
+      piece[0: close]
+    } else {
+      ""
+    }
+    if word != "" {
+      seen = seen + 1
+      if wasm_import_vibe_name(word) == word {
+        Array::push(missed, word)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // The scan must have found the keywords at all, or it proves nothing.
+  inspect(seen >= 40, content = "true")
+  inspect(String::join(missed, " "), content = "")
+  inspect(wasm_import_vibe_name("taskgroup"), content = "taskgroup_")
+}
+
+test "a component export with the legacy 0x01 name discriminator is read" {
+  // The greeter component with the `counter` export's discriminator (the
+  // byte before `07 "counter"` followed by the func sort `01`) set to 0x01.
+  let b = Fs::read_bytes("fixtures/wasm_import/greeter.component.wasm")
+  let pat = [0, 7, 99, 111, 117, 110, 116, 101, 114, 1]
+  let mut at = -1
+  let mut i = 0
+  while i + Array::length(pat) <= Bytes::length(b) {
+    let mut j = 0
+    while j < Array::length(pat) && Bytes::get(b, i + j) == Array::get(pat, j) {
+      j = j + 1
+    }
+    if j == Array::length(pat) && at < 0 {
+      at = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  inspect(at >= 0, content = "true")
+  let legacy = Bytes::with_capacity(Bytes::length(b))
+  let mut k = 0
+  while k < Bytes::length(b) {
+    Bytes::push(legacy, if k == at {
+      1
+    } else {
+      Bytes::get(b, k)
+    })
+    k = k + 1
+  }
+  let src = wasm_import_binding_source("fixtures/wasm_import/greeter.component.wasm", legacy)
+  inspect(String::index_of(src, "export fn counter() -> Int {") >= 0, content = "true")
+  inspect(String::index_of(src, "export fn greet(a0: String) -> String {") >= 0, content = "true")
+}

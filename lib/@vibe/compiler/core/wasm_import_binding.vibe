@@ -564,6 +564,11 @@ fn wib_read_module(bytes: Bytes) -> (Array[(Array[Int], Array[Int])], Array[Int]
 // ---------------------------------------------------------------------------
 // Naming
 
+/// Words an offered name must not be spelled as. Every hard keyword of
+/// `keyword_lookup` (lib/@vibe/parser/lexer.vibe) is here --
+/// tests/wasm_import_binding_test.vibe reads that function's spellings and
+/// fails on one this list misses -- plus soft keywords that would read as
+/// syntax in a declaration position.
 fn wib_reserved_words() -> Array[String] {
   [
     "fn",
@@ -619,7 +624,14 @@ fn wib_reserved_words() -> Array[String] {
     "wasm",
     "and",
     "or",
-    "not"
+    "not",
+    "do",
+    "open",
+    "raise",
+    "yield",
+    "derive",
+    "declare",
+    "taskgroup"
   ]
 }
 
@@ -1086,16 +1098,26 @@ fn wib_cv_show(code: Int) -> String {
   }
 }
 
-/// A component export name (`importname'` / `exportname'`): a 0x00 or 0x01
-/// discriminant and the name; 0x01 also carries a version suffix.
+/// A component export name (`importname'` / `exportname'`): a discriminant,
+/// then the name. 0x00 is the current form and 0x01 the legacy one (both
+/// precede exactly one string, as wasmparser reads them); 0x02 adds a vector
+/// of options (`implements` / version suffix / external id), each a tag byte
+/// and a string, which are skipped.
 fn wib_component_extern_name(bytes: Bytes, pos: Int) -> (String, Int) with Exception {
   let d = wib_byte(bytes, pos)
   let (nm, p) = wib_name(bytes, pos + 1)
-  if d == 0x00 {
+  if d == 0x00 || d == 0x01 {
     (nm, p)
-  } else if d == 0x01 {
-    let (_, p2) = wib_name(bytes, p)
-    (nm, p2)
+  } else if d == 0x02 {
+    let (count, p1) = wib_leb_u(bytes, p)
+    let mut q = p1
+    let mut i = 0
+    while i < count {
+      let (_, q1) = wib_name(bytes, q + 1)
+      q = q1
+      i = i + 1
+    }
+    (nm, q)
   } else {
     throw("unknown component name form 0x\{wib_hex_digit((d >> 4) & 15)}\{wib_hex_digit(d & 15)}")
   }
