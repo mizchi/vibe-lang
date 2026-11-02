@@ -86,13 +86,13 @@ export struct MutMap[K, V] {
 /// (1.033x -> 1.053x against the pre-#2346 baseline), and nothing else.
 fn alloc_ctrl(_ cap: Int) -> Bytes {
   let b = Bytes::new()
-  Bytes::fill(b, 0, cap)
+  Bytes::fill(b, value = 0, count = cap)
   b
 }
 
 fn alloc_slots[T](_ cap: Int) -> Array[Option[T]] {
   let none_slot: Option[T] = None
-  Array::make(cap, none_slot)
+  Array::make(n = cap, init = none_slot)
 }
 
 /// Slot's home position. Kept separate from `ctrl_tag` so both can be derived
@@ -128,12 +128,12 @@ fn find_index[K, V](m: MutMap[K, V], k: K) -> Int {
   let cap = Bytes::length(m.ctrl)
   let h = (m.hash_fn)(k)
   let tag = ctrl_tag(h)
-  let mut idx = home_of(h, cap)
+  let mut idx = home_of(h = h, cap = cap)
   let mut result = 0 - cap - 1
   let mut scanning = true
   let mut steps = 0
   while scanning {
-    let c = Bytes::get(m.ctrl, idx)
+    let c = Bytes::get(m.ctrl, at = idx)
     if c == 0 {
       result = 0 - idx - 1
       scanning = false
@@ -143,7 +143,7 @@ fn find_index[K, V](m: MutMap[K, V], k: K) -> Int {
       // Tombstones (1) never equal a tag (>= 128), so they fall through here
       // too, without a separate branch.
       if c == tag {
-        match Array::get(m.keys, idx) {
+        match Array::get(m.keys, at = idx) {
           Some(sk) => {
             if (m.eq_fn)(sk, k) {
               result = idx
@@ -197,12 +197,12 @@ fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V, overwrite: Bool) -> Unit {
   let cap = Bytes::length(m.ctrl)
   let h = (m.hash_fn)(k)
   let tag = ctrl_tag(h)
-  let mut idx = home_of(h, cap)
+  let mut idx = home_of(h = h, cap = cap)
   let mut tomb_idx = -1
   let mut inserting = true
   let mut steps = 0
   while inserting {
-    let c = Bytes::get(m.ctrl, idx)
+    let c = Bytes::get(m.ctrl, at = idx)
     if c == 0 {
       let target = if tomb_idx >= 0 {
         tomb_idx
@@ -212,9 +212,9 @@ fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V, overwrite: Bool) -> Unit {
       if tomb_idx >= 0 {
         m.tombs = m.tombs - 1
       }
-      Array::set(m.keys, target, Some(k))
-      Array::set(m.vals, target, Some(v))
-      Bytes::set(m.ctrl, target, tag)
+      Array::set(m.keys, at = target, value = Some(k))
+      Array::set(m.vals, at = target, value = Some(v))
+      Bytes::set(m.ctrl, at = target, value = tag)
       m.size = m.size + 1
       inserting = false
     } else if c == 1 {
@@ -230,7 +230,7 @@ fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V, overwrite: Bool) -> Unit {
     } else {
       let mut matched = false
       if c == tag {
-        match Array::get(m.keys, idx) {
+        match Array::get(m.keys, at = idx) {
           Some(sk) => {
             if (m.eq_fn)(sk, k) {
               matched = true
@@ -241,7 +241,7 @@ fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V, overwrite: Bool) -> Unit {
       }
       if matched {
         if overwrite {
-          Array::set(m.vals, idx, Some(v))
+          Array::set(m.vals, at = idx, value = Some(v))
         }
         inserting = false
       } else {
@@ -262,9 +262,9 @@ fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V, overwrite: Bool) -> Unit {
 fn place_rehashed_slot[K, V](m: MutMap[K, V], key: K, key_slot: Option[K], value_slot: Option[V]) -> Unit {
   let cap = Bytes::length(m.ctrl)
   let hash = (m.hash_fn)(key)
-  let mut idx = home_of(hash, cap)
+  let mut idx = home_of(h = hash, cap = cap)
   let mut steps = 0
-  while Bytes::get(m.ctrl, idx) != 0 {
+  while Bytes::get(m.ctrl, at = idx) != 0 {
     idx = idx + 1
     if idx >= cap {
       idx = 0
@@ -272,9 +272,9 @@ fn place_rehashed_slot[K, V](m: MutMap[K, V], key: K, key_slot: Option[K], value
     steps = steps + 1
     assert(steps < cap)
   }
-  Array::set(m.keys, idx, key_slot)
-  Array::set(m.vals, idx, value_slot)
-  Bytes::set(m.ctrl, idx, ctrl_tag(hash))
+  Array::set(m.keys, at = idx, value = key_slot)
+  Array::set(m.vals, at = idx, value = value_slot)
+  Bytes::set(m.ctrl, at = idx, value = ctrl_tag(hash))
   m.size = m.size + 1
 }
 
@@ -295,13 +295,13 @@ fn rehash[K, V](m: MutMap[K, V], new_cap: Int) -> Unit {
   let n = Bytes::length(old_ctrl)
   let mut i = 0
   while i < n {
-    if Bytes::get(old_ctrl, i) >= 128 {
-      let key_slot = Array::get(old_keys, i)
-      let value_slot = Array::get(old_vals, i)
+    if Bytes::get(old_ctrl, at = i) >= 128 {
+      let key_slot = Array::get(old_keys, at = i)
+      let value_slot = Array::get(old_vals, at = i)
       match key_slot {
         Some(k) =>
         match value_slot {
-          Some(_) => place_rehashed_slot(m, k, key_slot, value_slot),
+          Some(_) => place_rehashed_slot(m = m, key = k, key_slot = key_slot, value_slot = value_slot),
           None => ()
         },
         None => ()
@@ -331,7 +331,7 @@ export fn MutMap::with_capacity[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Bool
 }
 
 export fn MutMap::new[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Bool) -> MutMap[K, V] {
-  MutMap::with_capacity(hash_fn, eq_fn, 16)
+  MutMap::with_capacity(hash_fn = hash_fn, eq_fn = eq_fn, capacity = 16)
 }
 
 /// Specialized constructors for the common key types.
@@ -341,22 +341,22 @@ export fn MutMap::new[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Bool) -> MutMa
 /// arguments ("return type mismatch: expected MutMap[Int, ?], got
 /// MutMap[K, ?]").
 export fn MutMap::new_int[V]() -> MutMap[Int, V] {
-  let m: MutMap[Int, V] = MutMap::new(hash_int, eq_int)
+  let m: MutMap[Int, V] = MutMap::new(hash_fn = hash_int, eq_fn = eq_int)
   m
 }
 
 export fn MutMap::new_string[V]() -> MutMap[String, V] {
-  let m: MutMap[String, V] = MutMap::new(hash_string, eq_string)
+  let m: MutMap[String, V] = MutMap::new(hash_fn = hash_string, eq_fn = eq_string)
   m
 }
 
 export fn MutMap::with_capacity_int[V](_ capacity: Int) -> MutMap[Int, V] {
-  let m: MutMap[Int, V] = MutMap::with_capacity(hash_int, eq_int, capacity)
+  let m: MutMap[Int, V] = MutMap::with_capacity(hash_fn = hash_int, eq_fn = eq_int, capacity = capacity)
   m
 }
 
 export fn MutMap::with_capacity_string[V](_ capacity: Int) -> MutMap[String, V] {
-  let m: MutMap[String, V] = MutMap::with_capacity(hash_string, eq_string, capacity)
+  let m: MutMap[String, V] = MutMap::with_capacity(hash_fn = hash_string, eq_fn = eq_string, capacity = capacity)
   m
 }
 
@@ -365,9 +365,9 @@ export fn MutMap::with_capacity_string[V](_ capacity: Int) -> MutMap[String, V] 
 export fn MutMap::set[K, V](_ m: MutMap[K, V], k: K, v: V) -> Unit {
   let cap = Bytes::length(m.ctrl)
   if (m.size + m.tombs + 1) * 10 > cap * 7 {
-    rehash(m, cap * 2)
+    rehash(m = m, new_cap = cap * 2)
   }
-  insert_raw(m, k, v, true)
+  insert_raw(m = m, k = k, v = v, overwrite = true)
 }
 
 /// Insert only a missing key; return true for a new entry, false for a hit.
@@ -377,22 +377,22 @@ export fn MutMap::set[K, V](_ m: MutMap[K, V], k: K, v: V) -> Unit {
 export fn MutMap::insert_if_absent[K, V](_ m: MutMap[K, V], k: K, v: V) -> Bool {
   let cap = Bytes::length(m.ctrl)
   if (m.size + m.tombs + 1) * 10 > cap * 7 {
-    if find_index(m, k) >= 0 {
+    if find_index(m = m, k = k) >= 0 {
       return false
     }
-    rehash(m, cap * 2)
+    rehash(m = m, new_cap = cap * 2)
   }
   let before = m.size
-  insert_raw(m, k, v, false)
+  insert_raw(m = m, k = k, v = v, overwrite = false)
   m.size > before
 }
 
 export fn MutMap::get[K, V](_ m: MutMap[K, V], k: K) -> Option[V] {
-  let idx = find_index(m, k)
+  let idx = find_index(m = m, k = k)
   if idx < 0 {
     let empty = 0 - idx - 1
     if empty < Array::length(m.vals) {
-      let slot = Array::get(m.vals, empty)
+      let slot = Array::get(m.vals, at = empty)
       // Keep the old None result if a caller violated the control/value
       // invariant; well-formed empty slots already contain immutable None.
       match slot {
@@ -403,26 +403,26 @@ export fn MutMap::get[K, V](_ m: MutMap[K, V], k: K) -> Option[V] {
       None
     }
   } else {
-    Array::get(m.vals, idx)
+    Array::get(m.vals, at = idx)
   }
 }
 
 export fn MutMap::has[K, V](_ m: MutMap[K, V], k: K) -> Bool {
-  find_index(m, k) >= 0
+  find_index(m = m, k = k) >= 0
 }
 
 /// Removes `k`; returns whether it was present. The slot becomes a tombstone
 /// and both Option slots are cleared so the K/V values are released.
 export fn MutMap::delete[K, V](_ m: MutMap[K, V], k: K) -> Bool {
-  let idx = find_index(m, k)
+  let idx = find_index(m = m, k = k)
   if idx < 0 {
     false
   } else {
-    Bytes::set(m.ctrl, idx, 1)
+    Bytes::set(m.ctrl, at = idx, value = 1)
     let none_k: Option[K] = None
-    Array::set(m.keys, idx, none_k)
+    Array::set(m.keys, at = idx, value = none_k)
     let none_v: Option[V] = None
-    Array::set(m.vals, idx, none_v)
+    Array::set(m.vals, at = idx, value = none_v)
     m.size = m.size - 1
     m.tombs = m.tombs + 1
     true
@@ -438,9 +438,9 @@ export fn MutMap::keys[K, V](_ m: MutMap[K, V]) -> Array[K] {
   let cap = Bytes::length(m.ctrl)
   let mut i = 0
   while i < cap {
-    if Bytes::get(m.ctrl, i) >= 128 {
-      match Array::get(m.keys, i) {
-        Some(k) => ArrayBuilder::push(b, k),
+    if Bytes::get(m.ctrl, at = i) >= 128 {
+      match Array::get(m.keys, at = i) {
+        Some(k) => ArrayBuilder::push(b, value = k),
         None => ()
       }
     }
@@ -454,9 +454,9 @@ export fn MutMap::values[K, V](_ m: MutMap[K, V]) -> Array[V] {
   let cap = Bytes::length(m.ctrl)
   let mut i = 0
   while i < cap {
-    if Bytes::get(m.ctrl, i) >= 128 {
-      match Array::get(m.vals, i) {
-        Some(v) => ArrayBuilder::push(b, v),
+    if Bytes::get(m.ctrl, at = i) >= 128 {
+      match Array::get(m.vals, at = i) {
+        Some(v) => ArrayBuilder::push(b, value = v),
         None => ()
       }
     }
@@ -470,11 +470,11 @@ export fn MutMap::to_array[K, V](_ m: MutMap[K, V]) -> Array[(K, V)] {
   let cap = Bytes::length(m.ctrl)
   let mut i = 0
   while i < cap {
-    if Bytes::get(m.ctrl, i) >= 128 {
-      match Array::get(m.keys, i) {
+    if Bytes::get(m.ctrl, at = i) >= 128 {
+      match Array::get(m.keys, at = i) {
         Some(k) =>
-        match Array::get(m.vals, i) {
-          Some(v) => ArrayBuilder::push(b, (k, v)),
+        match Array::get(m.vals, at = i) {
+          Some(v) => ArrayBuilder::push(b, value = (k, v)),
           None => ()
         },
         None => ()
@@ -503,12 +503,12 @@ export fn MutMap::to_array[K, V](_ m: MutMap[K, V]) -> Array[(K, V)] {
 
 #deprecated("use MutMap::with_capacity")
 export fn HashMap::with_capacity[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Bool, capacity: Int) -> MutMap[K, V] {
-  MutMap::with_capacity(hash_fn, eq_fn, capacity)
+  MutMap::with_capacity(hash_fn = hash_fn, eq_fn = eq_fn, capacity = capacity)
 }
 
 #deprecated("use MutMap::new")
 export fn HashMap::new[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Bool) -> MutMap[K, V] {
-  MutMap::new(hash_fn, eq_fn)
+  MutMap::new(hash_fn = hash_fn, eq_fn = eq_fn)
 }
 
 #deprecated("use MutMap::new_int")
@@ -533,22 +533,22 @@ export fn HashMap::with_capacity_string[V](_ capacity: Int) -> MutMap[String, V]
 
 #deprecated("use MutMap::set")
 export fn HashMap::set[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
-  MutMap::set(m, k, v)
+  MutMap::set(m, k = k, v = v)
 }
 
 #deprecated("use MutMap::get")
 export fn HashMap::get[K, V](m: MutMap[K, V], k: K) -> Option[V] {
-  MutMap::get(m, k)
+  MutMap::get(m, k = k)
 }
 
 #deprecated("use MutMap::has")
 export fn HashMap::has[K, V](m: MutMap[K, V], k: K) -> Bool {
-  MutMap::has(m, k)
+  MutMap::has(m, k = k)
 }
 
 #deprecated("use MutMap::delete")
 export fn HashMap::delete[K, V](m: MutMap[K, V], k: K) -> Bool {
-  MutMap::delete(m, k)
+  MutMap::delete(m, k = k)
 }
 
 #deprecated("use MutMap::size")

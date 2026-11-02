@@ -10,7 +10,7 @@ import ./key.vibe {
 //# Helpers
 
 fn get_or[K, V](m: MutMap[K, V], k: K, dflt: V) -> V {
-  match MutMap::get(m, k) {
+  match MutMap::get(m, k = k) {
     Some(v) => v,
     None => dflt
   }
@@ -21,12 +21,12 @@ fn get_or[K, V](m: MutMap[K, V], k: K, dflt: V) -> V {
 test "empty map" {
   let m: MutMap[Int, String] = MutMap::new_int()
   assert_eq(MutMap::size(m), 0)
-  assert_eq(MutMap::has(m, 1), false)
-  assert_eq(MutMap::delete(m, 1), false)
+  assert_eq(MutMap::has(m, k = 1), false)
+  assert_eq(MutMap::delete(m, k = 1), false)
   assert_eq(Array::length(MutMap::keys(m)), 0)
   assert_eq(Array::length(MutMap::values(m)), 0)
   assert_eq(Array::length(MutMap::to_array(m)), 0)
-  match MutMap::get(m, 1) {
+  match MutMap::get(m, k = 1) {
     Some(_) => assert_eq(1, 2),
     None => assert_eq(0, 0)
   }
@@ -34,82 +34,82 @@ test "empty map" {
 
 test "single element int map" {
   let m: MutMap[Int, String] = MutMap::new_int()
-  MutMap::set(m, 42, "answer")
+  MutMap::set(m, k = 42, v = "answer")
   assert_eq(MutMap::size(m), 1)
-  assert_eq(MutMap::has(m, 42), true)
-  assert_eq(MutMap::has(m, 43), false)
-  assert_eq(get_or(m, 42, "?"), "answer")
-  assert_eq(get_or(m, -42, "?"), "?")
+  assert_eq(MutMap::has(m, k = 42), true)
+  assert_eq(MutMap::has(m, k = 43), false)
+  assert_eq(get_or(m = m, k = 42, dflt = "?"), "answer")
+  assert_eq(get_or(m = m, k = -42, dflt = "?"), "?")
   let ks = MutMap::keys(m)
   assert_eq(Array::length(ks), 1)
-  assert_eq(Array::get(ks, 0), 42)
+  assert_eq(Array::get(ks, at = 0), 42)
 }
 
 test "duplicate set overwrites without growing" {
   let m: MutMap[Int, Int] = MutMap::new_int()
-  MutMap::set(m, 7, 1)
-  MutMap::set(m, 7, 2)
-  MutMap::set(m, 7, 3)
+  MutMap::set(m, k = 7, v = 1)
+  MutMap::set(m, k = 7, v = 2)
+  MutMap::set(m, k = 7, v = 3)
   assert_eq(MutMap::size(m), 1)
-  assert_eq(get_or(m, 7, -1), 3)
+  assert_eq(get_or(m = m, k = 7, dflt = -1), 3)
 }
 
 test "negative keys" {
   let m: MutMap[Int, Int] = MutMap::new_int()
-  MutMap::set(m, -5, 50)
-  MutMap::set(m, -1000000000000, 60)
-  assert_eq(get_or(m, -5, -1), 50)
-  assert_eq(get_or(m, -1000000000000, -1), 60)
+  MutMap::set(m, k = -5, v = 50)
+  MutMap::set(m, k = -1000000000000, v = 60)
+  assert_eq(get_or(m = m, k = -5, dflt = -1), 50)
+  assert_eq(get_or(m = m, k = -1000000000000, dflt = -1), 60)
   assert_eq(MutMap::size(m), 2)
 }
 
 test "delete then reinsert reuses tombstone" {
   let m: MutMap[Int, Int] = MutMap::new_int()
-  MutMap::set(m, 1, 10)
-  MutMap::set(m, 2, 20)
-  assert_eq(MutMap::delete(m, 1), true)
+  MutMap::set(m, k = 1, v = 10)
+  MutMap::set(m, k = 2, v = 20)
+  assert_eq(MutMap::delete(m, k = 1), true)
   assert_eq(MutMap::size(m), 1)
-  assert_eq(MutMap::has(m, 1), false)
-  assert_eq(get_or(m, 2, -1), 20)
-  MutMap::set(m, 1, 11)
+  assert_eq(MutMap::has(m, k = 1), false)
+  assert_eq(get_or(m = m, k = 2, dflt = -1), 20)
+  MutMap::set(m, k = 1, v = 11)
   assert_eq(MutMap::size(m), 2)
-  assert_eq(get_or(m, 1, -1), 11)
+  assert_eq(get_or(m = m, k = 1, dflt = -1), 11)
   // repeated delete/reinsert of the same key must not grow the table's
   // live count (tombstone accounting)
   let mut round = 0
   while round < 200 {
-    assert_eq(MutMap::delete(m, 1), true)
-    MutMap::set(m, 1, round)
+    assert_eq(MutMap::delete(m, k = 1), true)
+    MutMap::set(m, k = 1, v = round)
     round = round + 1
   }
   assert_eq(MutMap::size(m), 2)
-  assert_eq(get_or(m, 1, -1), 199)
+  assert_eq(get_or(m = m, k = 1, dflt = -1), 199)
 }
 
 test "rehash across growth with 300 int keys" {
   let m: MutMap[Int, Int] = MutMap::new_int()
   let mut i = 0
   while i < 300 {
-    MutMap::set(m, i * 7, i)
+    MutMap::set(m, k = i * 7, v = i)
     i = i + 1
   }
   assert_eq(MutMap::size(m), 300)
   let mut j = 0
   while j < 300 {
-    assert_eq(get_or(m, j * 7, -1), j)
+    assert_eq(get_or(m = m, k = j * 7, dflt = -1), j)
     j = j + 1
   }
-  assert_eq(MutMap::has(m, 1), false)
+  assert_eq(MutMap::has(m, k = 1), false)
   // delete every even entry, survivors intact
   let mut d = 0
   while d < 300 {
-    assert_eq(MutMap::delete(m, d * 7), true)
+    assert_eq(MutMap::delete(m, k = d * 7), true)
     d = d + 2
   }
   assert_eq(MutMap::size(m), 150)
   let mut c = 1
   while c < 300 {
-    assert_eq(get_or(m, c * 7, -1), c)
+    assert_eq(get_or(m = m, k = c * 7, dflt = -1), c)
     c = c + 2
   }
   // keys/values/to_array agree with size
@@ -122,7 +122,7 @@ test "keys and values are consistent" {
   let m: MutMap[Int, Int] = MutMap::new_int()
   let mut i = 0
   while i < 20 {
-    MutMap::set(m, i, i * 100)
+    MutMap::set(m, k = i, v = i * 100)
     i = i + 1
   }
   // slot order is unspecified: check by sum, not position
@@ -132,8 +132,8 @@ test "keys and values are consistent" {
   let mut val_sum = 0
   let mut j = 0
   while j < Array::length(ks) {
-    key_sum = key_sum + Array::get(ks, j)
-    val_sum = val_sum + Array::get(vs, j)
+    key_sum = key_sum + Array::get(ks, at = j)
+    val_sum = val_sum + Array::get(vs, at = j)
     j = j + 1
   }
   assert_eq(key_sum, 190)
@@ -142,7 +142,7 @@ test "keys and values are consistent" {
   let mut pair_ok = 0
   let mut p = 0
   while p < Array::length(entries) {
-    let (k, v) = Array::get(entries, p)
+    let (k, v) = Array::get(entries, at = p)
     if v == k * 100 {
       pair_ok = pair_ok + 1
     }
@@ -153,48 +153,48 @@ test "keys and values are consistent" {
 
 test "string keys basic and collisions" {
   let m: MutMap[String, Int] = MutMap::new_string()
-  MutMap::set(m, "", 0)
-  MutMap::set(m, "a", 1)
-  MutMap::set(m, "b", 2)
-  MutMap::set(m, "ab", 3)
-  MutMap::set(m, "ba", 4)
+  MutMap::set(m, k = "", v = 0)
+  MutMap::set(m, k = "a", v = 1)
+  MutMap::set(m, k = "b", v = 2)
+  MutMap::set(m, k = "ab", v = 3)
+  MutMap::set(m, k = "ba", v = 4)
   assert_eq(MutMap::size(m), 5)
-  assert_eq(get_or(m, "", -1), 0)
-  assert_eq(get_or(m, "a", -1), 1)
-  assert_eq(get_or(m, "b", -1), 2)
-  assert_eq(get_or(m, "ab", -1), 3)
-  assert_eq(get_or(m, "ba", -1), 4)
-  assert_eq(MutMap::has(m, "aa"), false)
-  assert_eq(MutMap::delete(m, "ab"), true)
-  assert_eq(MutMap::has(m, "ab"), false)
-  assert_eq(get_or(m, "ba", -1), 4)
+  assert_eq(get_or(m = m, k = "", dflt = -1), 0)
+  assert_eq(get_or(m = m, k = "a", dflt = -1), 1)
+  assert_eq(get_or(m = m, k = "b", dflt = -1), 2)
+  assert_eq(get_or(m = m, k = "ab", dflt = -1), 3)
+  assert_eq(get_or(m = m, k = "ba", dflt = -1), 4)
+  assert_eq(MutMap::has(m, k = "aa"), false)
+  assert_eq(MutMap::delete(m, k = "ab"), true)
+  assert_eq(MutMap::has(m, k = "ab"), false)
+  assert_eq(get_or(m = m, k = "ba", dflt = -1), 4)
 }
 
 test "string keys rehash across growth" {
   let m: MutMap[String, Int] = MutMap::new_string()
   let mut i = 0
   while i < 150 {
-    MutMap::set(m, "key-\{i}", i)
+    MutMap::set(m, k = "key-\{i}", v = i)
     i = i + 1
   }
   assert_eq(MutMap::size(m), 150)
   let mut j = 0
   while j < 150 {
-    assert_eq(get_or(m, "key-\{j}", -1), j)
+    assert_eq(get_or(m = m, k = "key-\{j}", dflt = -1), j)
     j = j + 1
   }
-  assert_eq(MutMap::has(m, "key-150"), false)
+  assert_eq(MutMap::has(m, k = "key-150"), false)
 }
 
 test "with_capacity clamps tiny capacity" {
   let m: MutMap[Int, Int] = MutMap::with_capacity_int(1)
   let mut i = 0
   while i < 50 {
-    MutMap::set(m, i, i + 1)
+    MutMap::set(m, k = i, v = i + 1)
     i = i + 1
   }
   assert_eq(MutMap::size(m), 50)
-  assert_eq(get_or(m, 49, -1), 50)
+  assert_eq(get_or(m = m, k = 49, dflt = -1), 50)
 }
 
 test "explicit dict custom key functions" {
@@ -210,33 +210,33 @@ test "explicit dict custom key functions" {
   let digit_eq: (Int, Int) -> Bool = (a, b) -> {
     digit_hash(a) == digit_hash(b)
   }
-  let m: MutMap[Int, String] = MutMap::new(digit_hash, digit_eq)
-  MutMap::set(m, 13, "three")
-  assert_eq(get_or(m, 3, "?"), "three")
-  assert_eq(get_or(m, 23, "?"), "three")
-  MutMap::set(m, 103, "THREE")
+  let m: MutMap[Int, String] = MutMap::new(hash_fn = digit_hash, eq_fn = digit_eq)
+  MutMap::set(m, k = 13, v = "three")
+  assert_eq(get_or(m = m, k = 3, dflt = "?"), "three")
+  assert_eq(get_or(m = m, k = 23, dflt = "?"), "three")
+  MutMap::set(m, k = 103, v = "THREE")
   assert_eq(MutMap::size(m), 1)
-  assert_eq(get_or(m, 13, "?"), "THREE")
-  assert_eq(MutMap::has(m, 4), false)
+  assert_eq(get_or(m = m, k = 13, dflt = "?"), "THREE")
+  assert_eq(MutMap::has(m, k = 4), false)
   // first-string key dictionary using the exported hash_string directly
-  let sm: MutMap[String, Int] = MutMap::new(hash_string, (a: String, b: String) -> Bool {
+  let sm: MutMap[String, Int] = MutMap::new(hash_fn = hash_string, eq_fn = (a: String, b: String) -> Bool {
     a == b
   })
-  MutMap::set(sm, "x", 9)
-  assert_eq(get_or(sm, "x", -1), 9)
+  MutMap::set(sm, k = "x", v = 9)
+  assert_eq(get_or(m = sm, k = "x", dflt = -1), 9)
 }
 
 test "generic explicit constructor with_capacity" {
-  let m: MutMap[Int, String] = MutMap::with_capacity((k: Int) -> Int {
+  let m: MutMap[Int, String] = MutMap::with_capacity(hash_fn = (k: Int) -> Int {
     k
-  }, (a: Int, b: Int) -> Bool {
+  }, eq_fn = (a: Int, b: Int) -> Bool {
     a == b
-  }, 4)
-  MutMap::set(m, 0, "zero")
-  MutMap::set(m, 4, "four")
-  MutMap::set(m, 8, "eight")
-  assert_eq(get_or(m, 4, "?"), "four")
-  assert_eq(get_or(m, 8, "?"), "eight")
+  }, capacity = 4)
+  MutMap::set(m, k = 0, v = "zero")
+  MutMap::set(m, k = 4, v = "four")
+  MutMap::set(m, k = 8, v = "eight")
+  assert_eq(get_or(m = m, k = 4, dflt = "?"), "four")
+  assert_eq(get_or(m = m, k = 8, dflt = "?"), "eight")
   assert_eq(MutMap::size(m), 3)
 }
 
@@ -244,14 +244,14 @@ test "rehash spare key slots stay None, not a copy of the last insert" {
   let m: MutMap[Int, Int] = MutMap::with_capacity_int(8)
   let mut i = 0
   while i < 20 {
-    MutMap::set(m, i, i)
+    MutMap::set(m, k = i, v = i)
     i = i + 1
   }
-  MutMap::set(m, 99, 99)
+  MutMap::set(m, k = 99, v = 99)
   let mut n99 = 0
   let mut j = 0
   while j < Array::length(m.keys) {
-    match Array::get(m.keys, j) {
+    match Array::get(m.keys, at = j) {
       Some(99) => {
         n99 = n99 + 1
       },
@@ -293,22 +293,22 @@ fn eq_i(a: Int, b: Int) -> Bool {
 }
 
 test "fingerprint collision: identical hash for every key" {
-  let m: MutMap[Int, Int] = MutMap::new(hash_const, eq_i)
+  let m: MutMap[Int, Int] = MutMap::new(hash_fn = hash_const, eq_fn = eq_i)
   let mut i = 0
   while i < 200 {
-    MutMap::set(m, i, i * 10)
+    MutMap::set(m, k = i, v = i * 10)
     i = i + 1
   }
   assert_eq(MutMap::size(m), 200)
   let mut j = 0
   while j < 200 {
-    assert_eq(get_or(m, j, -1), j * 10)
+    assert_eq(get_or(m = m, k = j, dflt = -1), j * 10)
     j = j + 1
   }
-  assert_eq(MutMap::has(m, 200), false)
-  assert_eq(MutMap::delete(m, 137), true)
-  assert_eq(MutMap::has(m, 137), false)
-  assert_eq(get_or(m, 138, -1), 1380)
+  assert_eq(MutMap::has(m, k = 200), false)
+  assert_eq(MutMap::delete(m, k = 137), true)
+  assert_eq(MutMap::has(m, k = 137), false)
+  assert_eq(get_or(m = m, k = 138, dflt = -1), 1380)
   assert_eq(MutMap::size(m), 199)
   assert_eq(Array::length(MutMap::keys(m)), 199)
 }
@@ -319,17 +319,17 @@ test "an insert probing past a tombstone in the last slot wraps to find the key"
   // must step past it and wrap to slot 0 to find the existing key, not insert
   // a second 15 in the tombstone. Found by `vibe mutate`: no other test
   // probes off the end of the table through a tombstone.
-  let m: MutMap[Int, String] = MutMap::with_capacity((k: Int) -> Int {
+  let m: MutMap[Int, String] = MutMap::with_capacity(hash_fn = (k: Int) -> Int {
     k
-  }, (a: Int, b: Int) -> Bool {
+  }, eq_fn = (a: Int, b: Int) -> Bool {
     a == b
-  }, 8)
-  MutMap::set(m, 7, "seven")
-  MutMap::set(m, 15, "fifteen")
-  assert(MutMap::delete(m, 7))
-  MutMap::set(m, 15, "FIFTEEN")
+  }, capacity = 8)
+  MutMap::set(m, k = 7, v = "seven")
+  MutMap::set(m, k = 15, v = "fifteen")
+  assert(MutMap::delete(m, k = 7))
+  MutMap::set(m, k = 15, v = "FIFTEEN")
   assert_eq(MutMap::size(m), 1)
-  assert_eq(get_or(m, 15, "?"), "FIFTEEN")
+  assert_eq(get_or(m = m, k = 15, dflt = "?"), "FIFTEEN")
   assert_eq(MutMap::keys(m), [15])
 }
 
@@ -343,62 +343,62 @@ test "the key hashes separate distinct keys" {
 }
 
 test "rehash keeps colliding boxed values alive through deletion and regrowth" {
-  let m: MutMap[Int, Array[Int]] = MutMap::with_capacity((k: Int) -> 0, (a: Int, b: Int) -> a == b, 8)
+  let m: MutMap[Int, Array[Int]] = MutMap::with_capacity(hash_fn = (k: Int) -> 0, eq_fn = (a: Int, b: Int) -> a == b, capacity = 8)
   let shared = [7]
-  MutMap::set(m, -1, shared)
+  MutMap::set(m, k = -1, v = shared)
   let mut i = 0
   while i < 80 {
-    MutMap::set(m, i, [i - 11])
+    MutMap::set(m, k = i, v = [i - 11])
     i = i + 1
   }
   i = 0
   while i < 80 {
-    assert(MutMap::delete(m, i))
+    assert(MutMap::delete(m, k = i))
     i = i + 2
   }
   while i < 400 {
-    MutMap::set(m, i, [i - 11])
+    MutMap::set(m, k = i, v = [i - 11])
     i = i + 1
   }
-  Array::push(shared, 13)
-  assert(get_or(m, -1, []) == [7, 13])
+  Array::push(shared, value = 13)
+  assert(get_or(m = m, k = -1, dflt = []) == [7, 13])
   i = 0
   while i < 400 {
     if i < 80 && i % 2 == 0 {
-      assert(!MutMap::has(m, i))
+      assert(!MutMap::has(m, k = i))
     } else {
-      assert(get_or(m, i, []) == [i - 11])
+      assert(get_or(m = m, k = i, dflt = []) == [i - 11])
     }
     i = i + 1
   }
-  MutMap::set(m, -1, [31])
-  assert(get_or(m, -1, []) == [31])
+  MutMap::set(m, k = -1, v = [31])
+  assert(get_or(m = m, k = -1, dflt = []) == [31])
   assert(shared == [7, 13])
 }
 
 test "lookup results survive replacement and a miss skips tombstones" {
-  let m: MutMap[Int, Array[Int]] = MutMap::with_capacity((k: Int) -> 0, (a: Int, b: Int) -> a == b, 8)
-  MutMap::set(m, 1, [3])
-  let missing = MutMap::get(m, 2)
-  let saved = MutMap::get(m, 1)
-  MutMap::set(m, 2, [5])
-  MutMap::set(m, 1, [7])
+  let m: MutMap[Int, Array[Int]] = MutMap::with_capacity(hash_fn = (k: Int) -> 0, eq_fn = (a: Int, b: Int) -> a == b, capacity = 8)
+  MutMap::set(m, k = 1, v = [3])
+  let missing = MutMap::get(m, k = 2)
+  let saved = MutMap::get(m, k = 1)
+  MutMap::set(m, k = 2, v = [5])
+  MutMap::set(m, k = 1, v = [7])
   assert(missing is None)
   assert(saved == Some([3]))
-  assert(MutMap::delete(m, 1))
-  assert(MutMap::get(m, 2) == Some([5]))
-  assert(MutMap::get(m, 3) is None)
+  assert(MutMap::delete(m, k = 1))
+  assert(MutMap::get(m, k = 2) == Some([5]))
+  assert(MutMap::get(m, k = 3) is None)
 }
 
 test "a full corrupted table still gives a bounded lookup miss" {
-  let m: MutMap[Int, Int] = MutMap::with_capacity((k: Int) -> 0, (a: Int, b: Int) -> a == b, 8)
+  let m: MutMap[Int, Int] = MutMap::with_capacity(hash_fn = (k: Int) -> 0, eq_fn = (a: Int, b: Int) -> a == b, capacity = 8)
   let mut i = 0
   while i < 8 {
-    Array::set(m.keys, i, Some(i))
-    Array::set(m.vals, i, Some(i + 10))
-    Bytes::set(m.ctrl, i, 128)
+    Array::set(m.keys, at = i, value = Some(i))
+    Array::set(m.vals, at = i, value = Some(i + 10))
+    Bytes::set(m.ctrl, at = i, value = 128)
     i = i + 1
   }
-  assert(MutMap::get(m, 99) is None)
-  assert(!MutMap::has(m, 99))
+  assert(MutMap::get(m, k = 99) is None)
+  assert(!MutMap::has(m, k = 99))
 }

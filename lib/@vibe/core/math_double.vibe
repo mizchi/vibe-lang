@@ -43,21 +43,21 @@ fn lo_word(_ x: Double) -> Int {
 
 /// `x` with its low word cleared (fdlibm `SET_LOW_WORD(x, 0)`).
 fn with_lo_zero(_ x: Double) -> Double {
-  dbits(hi_word(x), 0)
+  dbits(hi = hi_word(x), lo = 0)
 }
 
 /// `x` with its high word replaced (fdlibm `SET_HIGH_WORD`).
 fn with_hi(x: Double, hi: Int) -> Double {
-  dbits(hi, lo_word(x))
+  dbits(hi = hi, lo = lo_word(x))
 }
 
 fn abs_d(_ x: Double) -> Double {
-  dbits(hi_word(x)&0x7fffffff, lo_word(x))
+  dbits(hi = hi_word(x)&0x7fffffff, lo = lo_word(x))
 }
 
 /// Negation by flipping the sign bit, so `-0.0` and NaN stay exact.
 fn neg_d(_ x: Double) -> Double {
-  dbits(hi_word(x)^0x80000000, lo_word(x))
+  dbits(hi = hi_word(x)^0x80000000, lo = lo_word(x))
 }
 
 fn is_nan_d(_ x: Double) -> Bool {
@@ -78,26 +78,26 @@ fn signed_word(_ w: Int) -> Int {
   }
 }
 
-let inf_d: Double = dbits(0x7ff00000, 0)
+let inf_d: Double = dbits(hi = 0x7ff00000, lo = 0)
 
-let nan_d: Double = dbits(0x7ff80000, 0)
+let nan_d: Double = dbits(hi = 0x7ff80000, lo = 0)
 
-let two24: Double = dbits(0x41700000, 0)
+let two24: Double = dbits(hi = 0x41700000, lo = 0)
 
-let twom24: Double = dbits(0x3e700000, 0)
+let twom24: Double = dbits(hi = 0x3e700000, lo = 0)
 
-let two53: Double = dbits(0x43400000, 0)
+let two53: Double = dbits(hi = 0x43400000, lo = 0)
 
-let two54: Double = dbits(0x43500000, 0)
+let two54: Double = dbits(hi = 0x43500000, lo = 0)
 
-let two1023: Double = dbits(0x7fe00000, 0)
+let two1023: Double = dbits(hi = 0x7fe00000, lo = 0)
 
-let twom1022: Double = dbits(0x00100000, 0)
+let twom1022: Double = dbits(hi = 0x00100000, lo = 0)
 
 /// 1e300 and 1e-300: `huge * huge` overflows and `tiny * tiny` underflows.
-let huge: Double = dbits(0x7e37e43c, 0x8800759c)
+let huge: Double = dbits(hi = 0x7e37e43c, lo = 0x8800759c)
 
-let tiny: Double = dbits(0x01a56e1f, 0xc2f8f359)
+let tiny: Double = dbits(hi = 0x01a56e1f, lo = 0xc2f8f359)
 
 /// `x * 2^n`, rounded once (musl `scalbn`).
 fn scalbn(x: Double, n: Int) -> Double {
@@ -127,7 +127,7 @@ fn scalbn(x: Double, n: Int) -> Double {
       }
     }
   }
-  y * dbits((k + 1023)<<20, 0)
+  y * dbits(hi = (k + 1023)<<20, lo = 0)
 }
 
 //# Constants
@@ -218,7 +218,7 @@ export fn sqrt(_ x: Double) -> Double {
     mant = mant>>1
     scale = scale + 1
   }
-  dbits(((scale + 1075)<<20)|((mant>>32)&0xfffff), mant&0xffffffff)
+  dbits(hi = ((scale + 1075)<<20)|((mant>>32)&0xfffff), lo = mant&0xffffffff)
 }
 
 /// sqrt(x^2 + y^2) without spurious overflow or underflow (musl `hypot`'s
@@ -240,8 +240,8 @@ export fn hypot(x: Double, y: Double) -> Double {
   }
   let ex = hx>>20
   let ey = hy>>20
-  let mut a = dbits(hx, lx)
-  let mut b = dbits(hy, ly)
+  let mut a = dbits(hi = hx, lo = lx)
+  let mut b = dbits(hi = hy, lo = ly)
   // |a| >= |b| as bit patterns, so a NaN sorts above Infinity: an infinite
   // b with a NaN a answers Infinity.
   if ey == 0x7ff {
@@ -256,14 +256,14 @@ export fn hypot(x: Double, y: Double) -> Double {
   let mut z = 1.0
   let mut scale_down = false
   if ex > 0x3ff + 510 {
-    z = dbits(0x6bb00000, 0)
-    a = a * dbits(0x14300000, 0)
-    b = b * dbits(0x14300000, 0)
+    z = dbits(hi = 0x6bb00000, lo = 0)
+    a = a * dbits(hi = 0x14300000, lo = 0)
+    b = b * dbits(hi = 0x14300000, lo = 0)
   }
   else if ey < 0x3ff - 450 {
     scale_down = true
-    a = a * dbits(0x6bb00000, 0)
-    b = b * dbits(0x6bb00000, 0)
+    a = a * dbits(hi = 0x6bb00000, lo = 0)
+    b = b * dbits(hi = 0x6bb00000, lo = 0)
   }
   // a^2 + b^2 as s + e, exactly but for the rounding of the tail (musl
   // `hypot` takes it this far); then the square root of s + e, corrected
@@ -271,14 +271,14 @@ export fn hypot(x: Double, y: Double) -> Double {
   let ha = a * a
   let hb = b * b
   let s = ha + hb
-  let e = sum_err(ha, hb, s) + prod_err(a, a, ha) + prod_err(b, b, hb)
+  let e = sum_err(a = ha, b = hb, s = s) + prod_err(a = a, b = a, p = ha) + prod_err(a = b, b = b, p = hb)
   let r = sqrt(s)
   let p = r * r
-  let c = (((s - p) - prod_err(r, r, p)) + e) / (2.0 * r)
+  let c = (((s - p) - prod_err(a = r, b = r, p = p)) + e) / (2.0 * r)
   if scale_down {
     // the result may be subnormal: round it once, onto that grid
     let h = r + c
-    exp_scale(h, c - (h - r), -700)
+    exp_scale(h = h, l = c - (h - r), k = -700)
   }
   else {
     z * (r + c)
@@ -322,7 +322,7 @@ fn sum_err(a: Double, b: Double, s: Double) -> Double {
 /// (ah + al) + (bh + bl).
 fn dd_add(ah: Double, al: Double, bh: Double, bl: Double) -> (Double, Double) {
   let s = ah + bh
-  let e = sum_err(ah, bh, s) + al + bl
+  let e = sum_err(a = ah, b = bh, s = s) + al + bl
   let h = s + e
   (h, e - (h - s))
 }
@@ -330,26 +330,26 @@ fn dd_add(ah: Double, al: Double, bh: Double, bl: Double) -> (Double, Double) {
 /// (ah + al) * (bh + bl).
 fn dd_mul(ah: Double, al: Double, bh: Double, bl: Double) -> (Double, Double) {
   let p = ah * bh
-  let e = prod_err(ah, bh, p) + ah * bl + al * bh
+  let e = prod_err(a = ah, b = bh, p = p) + ah * bl + al * bh
   let h = p + e
   (h, e - (h - p))
 }
 
 //# Logarithms
 
-let ln2_1: Double = dbits(0x3fe62e42, 0xfee00000)
+let ln2_1: Double = dbits(hi = 0x3fe62e42, lo = 0xfee00000)
 
-let ln2_2: Double = dbits(0x3dea39ef, 0x35600000)
+let ln2_2: Double = dbits(hi = 0x3dea39ef, lo = 0x35600000)
 
-let ln2_3: Double = dbits(0x3be93c76, 0x73007e5f)
+let ln2_3: Double = dbits(hi = 0x3be93c76, lo = 0x73007e5f)
 
-let ivln10_hi: Double = dbits(0x3fdbcb7b, 0x1526e50e)
+let ivln10_hi: Double = dbits(hi = 0x3fdbcb7b, lo = 0x1526e50e)
 
-let ivln10_lo: Double = dbits(0x3c695355, 0xbaaafad3)
+let ivln10_lo: Double = dbits(hi = 0x3c695355, lo = 0xbaaafad3)
 
-let ivln2_hi: Double = dbits(0x3ff71547, 0x652b82fe)
+let ivln2_hi: Double = dbits(hi = 0x3ff71547, lo = 0x652b82fe)
 
-let ivln2_lo: Double = dbits(0x3c7777d0, 0xffda0d24)
+let ivln2_lo: Double = dbits(hi = 0x3c7777d0, lo = 0xffda0d24)
 
 /// The result of a logarithm at the arguments its reduction does not
 /// handle: `Some` for NaN, +-0, a negative, +Infinity and 1.
@@ -397,7 +397,7 @@ fn log_reduce_f(_ x: Double) -> Double {
     xx = x * two54
   }
   let hx = hi_word(xx) + 0x95f62
-  with_hi(xx, (hx&0xfffff) + 0x3fe6a09e) - 1.0
+  with_hi(x = xx, hi = (hx&0xfffff) + 0x3fe6a09e) - 1.0
 }
 
 /// 1/n as a double-double.
@@ -408,7 +408,7 @@ fn dd_recip_hi(_ n: Double) -> Double {
 fn dd_recip_lo(_ n: Double) -> Double {
   let h = 1.0 / n
   let p = h * n
-  ((1.0 - p) - prod_err(h, n, p)) / n
+  ((1.0 - p) - prod_err(a = h, b = n, p = p)) / n
 }
 
 /// ln(1 + f) for f = m - 1 as hi + lo, through
@@ -419,11 +419,11 @@ fn dd_recip_lo(_ n: Double) -> Double {
 fn log1p_dd(_ f: Double) -> (Double, Double) {
   // s = f / (2 + f) as sh + sl
   let dh = 2.0 + f
-  let dl = sum_err(2.0, f, dh)
+  let dl = sum_err(a = 2.0, b = f, s = dh)
   let sh = f / dh
   let p = sh * dh
-  let sl = ((f - p) - prod_err(sh, dh, p) - sh * dl) / dh
-  let (zh, zl) = dd_mul(sh, sl, sh, sl)
+  let sl = ((f - p) - prod_err(a = sh, b = dh, p = p) - sh * dl) / dh
+  let (zh, zl) = dd_mul(ah = sh, al = sl, bh = sh, bl = sl)
   // tail: 1/9 + z/11 + z^2/13 + ..., in double
   let mut tail = 0.0
   let mut n = 41
@@ -432,16 +432,16 @@ fn log1p_dd(_ f: Double) -> (Double, Double) {
     n = n - 2
   }
   // ((1/7 + z*tail) * z + 1/5) * z + 1/3, then * z, in double-double
-  let (a1h, a1l) = dd_mul(zh, zl, tail, 0.0)
-  let (b1h, b1l) = dd_add(dd_recip_hi(7.0), dd_recip_lo(7.0), a1h, a1l)
-  let (a2h, a2l) = dd_mul(zh, zl, b1h, b1l)
-  let (b2h, b2l) = dd_add(dd_recip_hi(5.0), dd_recip_lo(5.0), a2h, a2l)
-  let (a3h, a3l) = dd_mul(zh, zl, b2h, b2l)
-  let (b3h, b3l) = dd_add(dd_recip_hi(3.0), dd_recip_lo(3.0), a3h, a3l)
-  let (rh, rl) = dd_mul(zh, zl, b3h, b3l)
+  let (a1h, a1l) = dd_mul(ah = zh, al = zl, bh = tail, bl = 0.0)
+  let (b1h, b1l) = dd_add(ah = dd_recip_hi(7.0), al = dd_recip_lo(7.0), bh = a1h, bl = a1l)
+  let (a2h, a2l) = dd_mul(ah = zh, al = zl, bh = b1h, bl = b1l)
+  let (b2h, b2l) = dd_add(ah = dd_recip_hi(5.0), al = dd_recip_lo(5.0), bh = a2h, bl = a2l)
+  let (a3h, a3l) = dd_mul(ah = zh, al = zl, bh = b2h, bl = b2l)
+  let (b3h, b3l) = dd_add(ah = dd_recip_hi(3.0), al = dd_recip_lo(3.0), bh = a3h, bl = a3l)
+  let (rh, rl) = dd_mul(ah = zh, al = zl, bh = b3h, bl = b3l)
   // 2s + 2s*R
-  let (th, tl) = dd_mul(2.0 * sh, 2.0 * sl, rh, rl)
-  dd_add(2.0 * sh, 2.0 * sl, th, tl)
+  let (th, tl) = dd_mul(ah = 2.0 * sh, al = 2.0 * sl, bh = rh, bl = rl)
+  dd_add(ah = 2.0 * sh, al = 2.0 * sl, bh = th, bl = tl)
 }
 
 /// ln(x) as hi + lo for a positive finite x: k*ln(2) + ln(1 + f), with
@@ -452,7 +452,7 @@ fn ln_dd(_ x: Double) -> (Double, Double) {
   let a = kd * ln2_1
   let b = kd * ln2_2
   let s = a + b
-  let (h, l) = dd_add(s, sum_err(a, b, s) + kd * ln2_3, lh, ll)
+  let (h, l) = dd_add(ah = s, al = sum_err(a = a, b = b, s = s) + kd * ln2_3, bh = lh, bl = ll)
   (h, l)
 }
 
@@ -478,7 +478,7 @@ export fn log10(_ x: Double) -> Double {
     Some(v) => v,
     None => {
       let (lh, ll) = ln_dd(x)
-      let (h, l) = dd_mul(lh, ll, ivln10_hi, ivln10_lo)
+      let (h, l) = dd_mul(ah = lh, al = ll, bh = ivln10_hi, bl = ivln10_lo)
       h + l
     },
   }
@@ -492,8 +492,8 @@ export fn log2_double(_ x: Double) -> Double {
     None => {
       let kd = Int::to_double(log_reduce_k(x))
       let (lh, ll) = log1p_dd(log_reduce_f(x))
-      let (mh, ml) = dd_mul(lh, ll, ivln2_hi, ivln2_lo)
-      let (h, l) = dd_add(kd, 0.0, mh, ml)
+      let (mh, ml) = dd_mul(ah = lh, al = ll, bh = ivln2_hi, bl = ivln2_lo)
+      let (h, l) = dd_add(ah = kd, al = 0.0, bh = mh, bl = ml)
       h + l
     },
   }
@@ -501,9 +501,9 @@ export fn log2_double(_ x: Double) -> Double {
 
 //# Exponential and power
 
-let invln2: Double = dbits(0x3ff71547, 0x652b82fe)
+let invln2: Double = dbits(hi = 0x3ff71547, lo = 0x652b82fe)
 
-let twom8: Double = dbits(0x3f700000, 0)
+let twom8: Double = dbits(hi = 0x3f700000, lo = 0)
 
 /// e^(xh + xl) = 2^k * (h + l), returned as [h, l] in `out` with k the
 /// result, for |xh| <= ~746. x - k*ln(2) is formed in double-double from
@@ -521,46 +521,46 @@ fn exp_dd(xh: Double, xl: Double, out: Array[Double]) -> Int {
   let a = xh - kd * ln2_1
   let b = kd * ln2_2
   let r1 = a - b
-  let (rh, rl) = dd_add(r1, sum_err(a, 0.0 - b, r1), xl - kd * ln2_3, 0.0)
+  let (rh, rl) = dd_add(ah = r1, al = sum_err(a = a, b = 0.0 - b, s = r1), bh = xl - kd * ln2_3, bl = 0.0)
   let th = rh * twom8
   let tl = rl * twom8
-  let (t2h, t2l) = dd_mul(th, tl, th, tl)
+  let (t2h, t2l) = dd_mul(ah = th, al = tl, bh = th, bl = tl)
   let c3 = th * t2h * (1.0 / 6.0 + th * (1.0 / 24.0 + th * (1.0 / 120.0 + th * (1.0 / 720.0 + th * (1.0 / 5040.0)))))
-  let (s1h, s1l) = dd_add(th, tl, 0.5 * t2h, 0.5 * t2l)
-  let (mh0, ml0) = dd_add(s1h, s1l, c3, 0.0)
+  let (s1h, s1l) = dd_add(ah = th, al = tl, bh = 0.5 * t2h, bl = 0.5 * t2l)
+  let (mh0, ml0) = dd_add(ah = s1h, al = s1l, bh = c3, bl = 0.0)
   let mut mh = mh0
   let mut ml = ml0
   let mut i = 0
   while i < 8 {
-    let (ph, pl) = dd_mul(mh, ml, mh, ml)
-    let (nh, nl) = dd_add(2.0 * mh, 2.0 * ml, ph, pl)
+    let (ph, pl) = dd_mul(ah = mh, al = ml, bh = mh, bl = ml)
+    let (nh, nl) = dd_add(ah = 2.0 * mh, al = 2.0 * ml, bh = ph, bl = pl)
     mh = nh
     ml = nl
     i = i + 1
   }
-  let (h, l) = dd_add(1.0, 0.0, mh, ml)
-  Array::set(out, 0, h)
-  Array::set(out, 1, l)
+  let (h, l) = dd_add(ah = 1.0, al = 0.0, bh = mh, bl = ml)
+  Array::set(out, at = 0, value = h)
+  Array::set(out, at = 1, value = l)
   k
 }
 
 /// 2^k * (h + l), rounded once also when the result is subnormal.
 fn exp_scale(h: Double, l: Double, k: Int) -> Double {
-  let hk = scalbn(h, k)
+  let hk = scalbn(x = h, n = k)
   if (hi_word(hk)&0x7fffffff) >= 0x00100000 {
-    scalbn(h + l, k)
+    scalbn(x = h + l, n = k)
   }
   else {
     // h * 2^k was rounded onto the subnormal grid; what it dropped, plus
     // l, is rounded onto the same grid and added back exactly.
-    let back = scalbn(hk, 0 - k)
-    hk + scalbn((h - back) + l, k)
+    let back = scalbn(x = hk, n = 0 - k)
+    hk + scalbn(x = (h - back) + l, n = k)
   }
 }
 
-let exp_o_threshold: Double = dbits(0x40862e42, 0xfefa39ef)
+let exp_o_threshold: Double = dbits(hi = 0x40862e42, lo = 0xfefa39ef)
 
-let exp_u_threshold: Double = dbits(0xc0874910, 0xd52d3051)
+let exp_u_threshold: Double = dbits(hi = 0xc0874910, lo = 0xd52d3051)
 
 /// e^x, correctly rounded but for the rare argument within ~2^-20 ulp of a
 /// rounding boundary. Overflows to `Infinity` above ~709.78 and underflows
@@ -581,10 +581,10 @@ export fn exp_double(_ x: Double) -> Double {
     return 1.0 + x
   }
   let out = [0.0, 0.0]
-  let k = exp_dd(x, 0.0, out)
-  let h: Double = Array::get(out, 0)
-  let l: Double = Array::get(out, 1)
-  exp_scale(h, l, k)
+  let k = exp_dd(xh = x, xl = 0.0, out = out)
+  let h: Double = Array::get(out, at = 0)
+  let l: Double = Array::get(out, at = 1)
+  exp_scale(h = h, l = l, k = k)
 }
 
 /// 0 when y is not an integer, 1 for an odd integer, 2 for an even one;
@@ -650,7 +650,7 @@ export fn pow_double(base: Double, exponent: Double) -> Double {
     return x + y
   }
   let yisint = if hxs < 0 {
-    pow_yisint(iy, ly)
+    pow_yisint(iy = iy, ly = ly)
   } else {
     0
   }
@@ -725,26 +725,26 @@ export fn pow_double(base: Double, exponent: Double) -> Double {
   }
   let (lh, ll) = ln_dd(ax)
   let ph = y * lh
-  let pl = prod_err(y, lh, ph) + y * ll
+  let pl = prod_err(a = y, b = lh, p = ph) + y * ll
   if ph > 710.0 {
     return big
   }
   if ph < -746.0 {
     return small
   }
-  let yint = pow_yisint(iy, ly)
+  let yint = pow_yisint(iy = iy, ly = ly)
   if yint != 0 && iy < 0x41d00000 && ph < 600.0 && ph > -600.0 {
     // An integral |y| < 2^30 with the result far from overflow: x^|y| by
     // repeated squaring in double-double, which is exact whenever the
     // power fits in 106 bits, so an exact power that is a tie between two
     // doubles (7^19, 9^17) rounds to even as it must.
-    return s * pow_int_dd(ax, Double::to_int(abs_d(y)), hys < 0)
+    return s * pow_int_dd(ax = ax, n0 = Double::to_int(abs_d(y)), reciprocal = hys < 0)
   }
   let out = [0.0, 0.0]
-  let k = exp_dd(ph, pl, out)
-  let h: Double = Array::get(out, 0)
-  let l: Double = Array::get(out, 1)
-  s * exp_scale(h, l, k)
+  let k = exp_dd(xh = ph, xl = pl, out = out)
+  let h: Double = Array::get(out, at = 0)
+  let l: Double = Array::get(out, at = 1)
+  s * exp_scale(h = h, l = l, k = k)
 }
 
 /// ax^n (or its reciprocal) for n >= 1, by binary powering in
@@ -757,19 +757,19 @@ fn pow_int_dd(ax: Double, n0: Int, reciprocal: Bool) -> Double {
   let mut n = n0
   while n > 0 {
     if (n&1) != 0 {
-      let (h, l) = dd_mul(rh, rl, bh, bl)
+      let (h, l) = dd_mul(ah = rh, al = rl, bh = bh, bl = bl)
       rh = h
       rl = l
     }
     n = n>>1
     if n > 0 {
-      let (h, l) = dd_mul(bh, bl, bh, bl)
+      let (h, l) = dd_mul(ah = bh, al = bl, bh = bh, bl = bl)
       bh = h
       bl = l
     }
   }
   if reciprocal {
-    let (h, l) = dd_div(1.0, 0.0, rh, rl)
+    let (h, l) = dd_div(ah = 1.0, al = 0.0, bh = rh, bl = rl)
     h + l
   }
   else {
@@ -782,23 +782,23 @@ fn pow_int_dd(ax: Double, n0: Int, reciprocal: Bool) -> Double {
 // Reduced by x - n*pi/2 to about 106 bits (Cody-Waite below 2^20 * pi/2,
 // Payne-Hanek above), then evaluated in double-double and rounded once.
 
-let pio4: Double = dbits(0x3fe921fb, 0x54442d18)
+let pio4: Double = dbits(hi = 0x3fe921fb, lo = 0x54442d18)
 
-let toint_d: Double = dbits(0x43380000, 0)
+let toint_d: Double = dbits(hi = 0x43380000, lo = 0)
 
-let inv_pio2: Double = dbits(0x3fe45f30, 0x6dc9c883)
+let inv_pio2: Double = dbits(hi = 0x3fe45f30, lo = 0x6dc9c883)
 
-let pio2_1: Double = dbits(0x3ff921fb, 0x54400000)
+let pio2_1: Double = dbits(hi = 0x3ff921fb, lo = 0x54400000)
 
-let pio2_1t: Double = dbits(0x3dd0b461, 0x1a626331)
+let pio2_1t: Double = dbits(hi = 0x3dd0b461, lo = 0x1a626331)
 
-let pio2_2: Double = dbits(0x3dd0b461, 0x1a600000)
+let pio2_2: Double = dbits(hi = 0x3dd0b461, lo = 0x1a600000)
 
-let pio2_2t: Double = dbits(0x3ba3198a, 0x2e037073)
+let pio2_2t: Double = dbits(hi = 0x3ba3198a, lo = 0x2e037073)
 
-let pio2_3: Double = dbits(0x3ba3198a, 0x2e000000)
+let pio2_3: Double = dbits(hi = 0x3ba3198a, lo = 0x2e000000)
 
-let pio2_3t: Double = dbits(0x397b839a, 0x252049c1)
+let pio2_3t: Double = dbits(hi = 0x397b839a, lo = 0x252049c1)
 
 /// 2/pi in 24-bit chunks: enough for the largest finite double.
 let ipio2: Array[Int] = [
@@ -872,20 +872,20 @@ let ipio2: Array[Int] = [
 
 /// pi/2 in 24-bit pieces.
 let pio2_parts: Array[Double] = [
-  dbits(0x3ff921fb, 0x40000000),
-  dbits(0x3e74442d, 0x00000000),
-  dbits(0x3cf84698, 0x80000000),
-  dbits(0x3b78cc51, 0x60000000),
-  dbits(0x39f01b83, 0x80000000),
-  dbits(0x387a2520, 0x40000000),
-  dbits(0x36e38222, 0x80000000)
+  dbits(hi = 0x3ff921fb, lo = 0x40000000),
+  dbits(hi = 0x3e74442d, lo = 0x00000000),
+  dbits(hi = 0x3cf84698, lo = 0x80000000),
+  dbits(hi = 0x3b78cc51, lo = 0x60000000),
+  dbits(hi = 0x39f01b83, lo = 0x80000000),
+  dbits(hi = 0x387a2520, lo = 0x40000000),
+  dbits(hi = 0x36e38222, lo = 0x80000000)
 ]
 
 fn double_zeros(_ n: Int) -> Array[Double] {
   let out: Array[Double] = []
   let mut i = 0
   while i < n {
-    Array::push(out, 0.0)
+    Array::push(out, value = 0.0)
     i = i + 1
   }
   out
@@ -895,7 +895,7 @@ fn int_zeros(_ n: Int) -> Array[Int] {
   let out: Array[Int] = []
   let mut i = 0
   while i < n {
-    Array::push(out, 0)
+    Array::push(out, value = 0)
     i = i + 1
   }
   out
@@ -906,7 +906,7 @@ fn rem_pio2_dot(x: Array[Double], f: Array[Double], jx: Int, i: Int) -> Double {
   let mut fw = 0.0
   let mut j = 0
   while j <= jx {
-    fw = fw + Array::get(x, j) * Array::get(f, jx + i - j)
+    fw = fw + Array::get(x, at = j) * Array::get(f, at = jx + i - j)
     j = j + 1
   }
   fw
@@ -932,17 +932,17 @@ fn rem_pio2_large(x: Array[Double], nx: Int, y: Array[Double], e0: Int) -> Int {
   let mut j = jv - jx
   let mut i = 0
   while i <= jx + jk {
-    Array::set(f, i, if j < 0 {
+    Array::set(f, at = i, value = if j < 0 {
       0.0
     } else {
-      Int::to_double(Array::get(ipio2, j))
+      Int::to_double(Array::get(ipio2, at = j))
     })
     j = j + 1
     i = i + 1
   }
   i = 0
   while i <= jk {
-    Array::set(q, i, rem_pio2_dot(x, f, jx, i))
+    Array::set(q, at = i, value = rem_pio2_dot(x = x, f = f, jx = jx, i = i))
     i = i + 1
   }
   let mut jz = jk
@@ -954,29 +954,29 @@ fn rem_pio2_large(x: Array[Double], nx: Int, y: Array[Double], e0: Int) -> Int {
     recompute = false
     // distill q[] into iq[] reversingly
     i = 0
-    z = Array::get(q, jz)
+    z = Array::get(q, at = jz)
     j = jz
     while j >= 1 {
       let fw = Int::to_double(Double::to_int(twom24 * z))
-      Array::set(iq, i, Double::to_int(z - two24 * fw))
-      z = Array::get(q, j - 1) + fw
+      Array::set(iq, at = i, value = Double::to_int(z - two24 * fw))
+      z = Array::get(q, at = j - 1) + fw
       i = i + 1
       j = j - 1
     }
     // the integer part of z, mod 8 (z is non-negative and below 2^30)
-    z = scalbn(z, q0)
+    z = scalbn(x = z, n = q0)
     z = z - 8.0 * Int::to_double(Double::to_int(z * 0.125))
     n = Double::to_int(z)
     z = z - Int::to_double(n)
     ih = 0
     if q0 > 0 {
-      let top = Array::get(iq, jz - 1)>>(24 - q0)
+      let top = Array::get(iq, at = jz - 1)>>(24 - q0)
       n = n + top
-      Array::set(iq, jz - 1, Array::get(iq, jz - 1) - (top<<(24 - q0)))
-      ih = Array::get(iq, jz - 1)>>(23 - q0)
+      Array::set(iq, at = jz - 1, value = Array::get(iq, at = jz - 1) - (top<<(24 - q0)))
+      ih = Array::get(iq, at = jz - 1)>>(23 - q0)
     }
     else if q0 == 0 {
-      ih = Array::get(iq, jz - 1)>>23
+      ih = Array::get(iq, at = jz - 1)>>23
     }
     else if z >= 0.5 {
       ih = 2
@@ -987,28 +987,28 @@ fn rem_pio2_large(x: Array[Double], nx: Int, y: Array[Double], e0: Int) -> Int {
       let mut carry = 0
       i = 0
       while i < jz {
-        let v = Array::get(iq, i)
+        let v = Array::get(iq, at = i)
         if carry == 0 {
           if v != 0 {
             carry = 1
-            Array::set(iq, i, 0x1000000 - v)
+            Array::set(iq, at = i, value = 0x1000000 - v)
           }
         }
         else {
-          Array::set(iq, i, 0xffffff - v)
+          Array::set(iq, at = i, value = 0xffffff - v)
         }
         i = i + 1
       }
       if q0 == 1 {
-        Array::set(iq, jz - 1, Array::get(iq, jz - 1)&0x7fffff)
+        Array::set(iq, at = jz - 1, value = Array::get(iq, at = jz - 1)&0x7fffff)
       }
       else if q0 == 2 {
-        Array::set(iq, jz - 1, Array::get(iq, jz - 1)&0x3fffff)
+        Array::set(iq, at = jz - 1, value = Array::get(iq, at = jz - 1)&0x3fffff)
       }
       if ih == 2 {
         z = 1.0 - z
         if carry != 0 {
-          z = z - scalbn(1.0, q0)
+          z = z - scalbn(x = 1.0, n = q0)
         }
       }
     }
@@ -1016,19 +1016,19 @@ fn rem_pio2_large(x: Array[Double], nx: Int, y: Array[Double], e0: Int) -> Int {
       let mut acc = 0
       i = jz - 1
       while i >= jk {
-        acc = acc|Array::get(iq, i)
+        acc = acc|Array::get(iq, at = i)
         i = i - 1
       }
       if acc == 0 {
         // every chunk so far cancelled: take more terms of 2/pi
         let mut k = 1
-        while Array::get(iq, jk - k) == 0 {
+        while Array::get(iq, at = jk - k) == 0 {
           k = k + 1
         }
         i = jz + 1
         while i <= jz + k {
-          Array::set(f, jx + i, Int::to_double(Array::get(ipio2, jv + i)))
-          Array::set(q, i, rem_pio2_dot(x, f, jx, i))
+          Array::set(f, at = jx + i, value = Int::to_double(Array::get(ipio2, at = jv + i)))
+          Array::set(q, at = i, value = rem_pio2_dot(x = x, f = f, jx = jx, i = i))
           i = i + 1
         }
         jz = jz + k
@@ -1040,29 +1040,29 @@ fn rem_pio2_large(x: Array[Double], nx: Int, y: Array[Double], e0: Int) -> Int {
   if is_zero_d(z) {
     jz = jz - 1
     q0 = q0 - 24
-    while Array::get(iq, jz) == 0 {
+    while Array::get(iq, at = jz) == 0 {
       jz = jz - 1
       q0 = q0 - 24
     }
   }
   else {
-    z = scalbn(z, 0 - q0)
+    z = scalbn(x = z, n = 0 - q0)
     if z >= two24 {
       let fw = Int::to_double(Double::to_int(twom24 * z))
-      Array::set(iq, jz, Double::to_int(z - two24 * fw))
+      Array::set(iq, at = jz, value = Double::to_int(z - two24 * fw))
       jz = jz + 1
       q0 = q0 + 24
-      Array::set(iq, jz, Double::to_int(fw))
+      Array::set(iq, at = jz, value = Double::to_int(fw))
     }
     else {
-      Array::set(iq, jz, Double::to_int(z))
+      Array::set(iq, at = jz, value = Double::to_int(z))
     }
   }
   // integer chunks back to floating point
-  let mut fw = scalbn(1.0, q0)
+  let mut fw = scalbn(x = 1.0, n = q0)
   i = jz
   while i >= 0 {
-    Array::set(q, i, fw * Int::to_double(Array::get(iq, i)))
+    Array::set(q, at = i, value = fw * Int::to_double(Array::get(iq, at = i)))
     fw = fw * twom24
     i = i - 1
   }
@@ -1072,41 +1072,41 @@ fn rem_pio2_large(x: Array[Double], nx: Int, y: Array[Double], e0: Int) -> Int {
     let mut acc = 0.0
     let mut k = 0
     while k <= jp && k <= jz - i {
-      acc = acc + Array::get(pio2_parts, k) * Array::get(q, i + k)
+      acc = acc + Array::get(pio2_parts, at = k) * Array::get(q, at = i + k)
       k = k + 1
     }
-    Array::set(fq, jz - i, acc)
+    Array::set(fq, at = jz - i, value = acc)
     i = i - 1
   }
   // compress fq[] into y[0] + y[1] + y[2], 113 bits (fdlibm prec = 3)
   i = jz
   while i >= 1 {
-    let fw1 = Array::get(fq, i - 1) + Array::get(fq, i)
-    Array::set(fq, i, Array::get(fq, i) + (Array::get(fq, i - 1) - fw1))
-    Array::set(fq, i - 1, fw1)
+    let fw1 = Array::get(fq, at = i - 1) + Array::get(fq, at = i)
+    Array::set(fq, at = i, value = Array::get(fq, at = i) + (Array::get(fq, at = i - 1) - fw1))
+    Array::set(fq, at = i - 1, value = fw1)
     i = i - 1
   }
   i = jz
   while i >= 2 {
-    let fw2 = Array::get(fq, i - 1) + Array::get(fq, i)
-    Array::set(fq, i, Array::get(fq, i) + (Array::get(fq, i - 1) - fw2))
-    Array::set(fq, i - 1, fw2)
+    let fw2 = Array::get(fq, at = i - 1) + Array::get(fq, at = i)
+    Array::set(fq, at = i, value = Array::get(fq, at = i) + (Array::get(fq, at = i - 1) - fw2))
+    Array::set(fq, at = i - 1, value = fw2)
     i = i - 1
   }
   let mut rest = 0.0
   i = jz
   while i >= 2 {
-    rest = rest + Array::get(fq, i)
+    rest = rest + Array::get(fq, at = i)
     i = i - 1
   }
-  let y0: Double = Array::get(fq, 0)
-  let y1: Double = Array::get(fq, 1) + rest
-  Array::set(y, 0, if ih == 0 {
+  let y0: Double = Array::get(fq, at = 0)
+  let y1: Double = Array::get(fq, at = 1) + rest
+  Array::set(y, at = 0, value = if ih == 0 {
     y0
   } else {
     neg_d(y0)
   })
-  Array::set(y, 1, if ih == 0 {
+  Array::set(y, at = 1, value = if ih == 0 {
     y1
   } else {
     neg_d(y1)
@@ -1125,11 +1125,11 @@ fn rem_pio2_medium(x: Double, y: Array[Double]) -> Int {
   let n = Double::to_int(f_n)
   // exact: f_n * pio2_1 is within a factor of two of x
   let r1 = x - f_n * pio2_1
-  let (r2h, r2l) = dd_add(r1, 0.0, 0.0 - f_n * pio2_2, 0.0)
-  let (r3h, r3l) = dd_add(r2h, r2l, 0.0 - f_n * pio2_3, 0.0)
-  let (r4h, r4l) = dd_add(r3h, r3l, 0.0 - f_n * pio2_3t, 0.0)
-  Array::set(y, 0, r4h)
-  Array::set(y, 1, r4l)
+  let (r2h, r2l) = dd_add(ah = r1, al = 0.0, bh = 0.0 - f_n * pio2_2, bl = 0.0)
+  let (r3h, r3l) = dd_add(ah = r2h, al = r2l, bh = 0.0 - f_n * pio2_3, bl = 0.0)
+  let (r4h, r4l) = dd_add(ah = r3h, al = r3l, bh = 0.0 - f_n * pio2_3t, bl = 0.0)
+  Array::set(y, at = 0, value = r4h)
+  Array::set(y, at = 1, value = r4l)
   n
 }
 
@@ -1140,39 +1140,39 @@ fn rem_pio2(x: Double, y: Array[Double]) -> Int {
   let hx = hi_word(x)
   let ix = hx&0x7fffffff
   if ix < 0x413921fb {
-    rem_pio2_medium(x, y)
+    rem_pio2_medium(x = x, y = y)
   }
   else if ix >= 0x7ff00000 {
     let nan = x - x
-    Array::set(y, 0, nan)
-    Array::set(y, 1, nan)
+    Array::set(y, at = 0, value = nan)
+    Array::set(y, at = 1, value = nan)
     0
   }
   else {
     // |x| scaled to [2^23, 2^24), split into three 24-bit chunks
-    let mut z = dbits((hx&0xfffff)|((0x3ff + 23)<<20), lo_word(x))
+    let mut z = dbits(hi = (hx&0xfffff)|((0x3ff + 23)<<20), lo = lo_word(x))
     let tx = double_zeros(3)
     let mut i = 0
     while i < 2 {
-      Array::set(tx, i, Int::to_double(Double::to_int(z)))
-      z = (z - Array::get(tx, i)) * two24
+      Array::set(tx, at = i, value = Int::to_double(Double::to_int(z)))
+      z = (z - Array::get(tx, at = i)) * two24
       i = i + 1
     }
-    Array::set(tx, 2, z)
+    Array::set(tx, at = 2, value = z)
     let mut nx = 3
-    while nx > 1 && is_zero_d(Array::get(tx, nx - 1)) {
+    while nx > 1 && is_zero_d(Array::get(tx, at = nx - 1)) {
       nx = nx - 1
     }
     let ty = double_zeros(2)
-    let n = rem_pio2_large(tx, nx, ty, (ix>>20) - (0x3ff + 23))
+    let n = rem_pio2_large(x = tx, nx = nx, y = ty, e0 = (ix>>20) - (0x3ff + 23))
     if hx >= 0x80000000 {
-      Array::set(y, 0, neg_d(Array::get(ty, 0)))
-      Array::set(y, 1, neg_d(Array::get(ty, 1)))
+      Array::set(y, at = 0, value = neg_d(Array::get(ty, at = 0)))
+      Array::set(y, at = 1, value = neg_d(Array::get(ty, at = 1)))
       0 - n
     }
     else {
-      Array::set(y, 0, Array::get(ty, 0))
-      Array::set(y, 1, Array::get(ty, 1))
+      Array::set(y, at = 0, value = Array::get(ty, at = 0))
+      Array::set(y, at = 1, value = Array::get(ty, at = 1))
       n
     }
   }
@@ -1182,7 +1182,7 @@ fn rem_pio2(x: Double, y: Array[Double]) -> Int {
 fn dd_div(ah: Double, al: Double, bh: Double, bl: Double) -> (Double, Double) {
   let qh = ah / bh
   let p = qh * bh
-  let r = ((ah - p) - prod_err(qh, bh, p) + al - qh * bl) / bh
+  let r = ((ah - p) - prod_err(a = qh, b = bh, p = p) + al - qh * bl) / bh
   let h = qh + r
   (h, r - (h - qh))
 }
@@ -1192,7 +1192,7 @@ fn dd_div(ah: Double, al: Double, bh: Double, bl: Double) -> (Double, Double) {
 fn dd_sqrt(ah: Double, al: Double) -> (Double, Double) {
   let r = sqrt(ah)
   let p = r * r
-  let c = ((ah - p) - prod_err(r, r, p) + al) / (2.0 * r)
+  let c = ((ah - p) - prod_err(a = r, b = r, p = p) + al) / (2.0 * r)
   let h = r + c
   (h, c - (h - r))
 }
@@ -1200,9 +1200,9 @@ fn dd_sqrt(ah: Double, al: Double) -> (Double, Double) {
 /// 1 - (zh + zl) * (sh + sl) / k, one level of the nested Taylor forms
 /// below, in double-double.
 fn taylor_level(zh: Double, zl: Double, sh: Double, sl: Double, k: Double) -> (Double, Double) {
-  let (ph, pl) = dd_mul(zh, zl, sh, sl)
-  let (qh, ql) = dd_div(ph, pl, k, 0.0)
-  dd_add(1.0, 0.0, 0.0 - qh, 0.0 - ql)
+  let (ph, pl) = dd_mul(ah = zh, al = zl, bh = sh, bl = sl)
+  let (qh, ql) = dd_div(ah = ph, al = pl, bh = k, bl = 0.0)
+  dd_add(ah = 1.0, al = 0.0, bh = 0.0 - qh, bl = 0.0 - ql)
 }
 
 /// sin(rh + rl) for |r| <= ~pi/4, as hi + lo:
@@ -1210,7 +1210,7 @@ fn taylor_level(zh: Double, zl: Double, sh: Double, sl: Double, k: Double) -> (D
 /// outer levels run in double-double; the inner ones, which weigh below
 /// 2^-28 of the result, in double.
 fn sin_dd(rh: Double, rl: Double) -> (Double, Double) {
-  let (zh, zl) = dd_mul(rh, rl, rh, rl)
+  let (zh, zl) = dd_mul(ah = rh, al = rl, bh = rh, bl = rl)
   let mut t = 1.0
   let mut n = 14
   while n > 5 {
@@ -1220,18 +1220,18 @@ fn sin_dd(rh: Double, rl: Double) -> (Double, Double) {
   let mut sh = t
   let mut sl = 0.0
   while n >= 1 {
-    let (h, l) = taylor_level(zh, zl, sh, sl, Int::to_double((2 * n) * (2 * n + 1)))
+    let (h, l) = taylor_level(zh = zh, zl = zl, sh = sh, sl = sl, k = Int::to_double((2 * n) * (2 * n + 1)))
     sh = h
     sl = l
     n = n - 1
   }
-  dd_mul(rh, rl, sh, sl)
+  dd_mul(ah = rh, al = rl, bh = sh, bl = sl)
 }
 
 /// cos(rh + rl) for |r| <= ~pi/4, as hi + lo:
 /// 1 - z/(1*2) * (1 - z/(3*4) * (1 - ...)), the same split as `sin_dd`.
 fn cos_dd(rh: Double, rl: Double) -> (Double, Double) {
-  let (zh, zl) = dd_mul(rh, rl, rh, rl)
+  let (zh, zl) = dd_mul(ah = rh, al = rl, bh = rh, bl = rl)
   let mut t = 1.0
   let mut n = 14
   while n > 5 {
@@ -1241,7 +1241,7 @@ fn cos_dd(rh: Double, rl: Double) -> (Double, Double) {
   let mut ch = t
   let mut cl = 0.0
   while n >= 1 {
-    let (h, l) = taylor_level(zh, zl, ch, cl, Int::to_double((2 * n - 1) * (2 * n)))
+    let (h, l) = taylor_level(zh = zh, zl = zl, sh = ch, sl = cl, k = Int::to_double((2 * n - 1) * (2 * n)))
     ch = h
     cl = l
     n = n - 1
@@ -1256,23 +1256,23 @@ fn trig_dd(x: Double, which: Int) -> Double {
   let ix = hi_word(x)&0x7fffffff
   let y = [0.0, 0.0]
   let n = if ix <= 0x3fe921fb {
-    Array::set(y, 0, x)
+    Array::set(y, at = 0, value = x)
     0
   } else {
-    rem_pio2(x, y)&3
+    rem_pio2(x = x, y = y)&3
   }
-  let rh: Double = Array::get(y, 0)
-  let rl: Double = Array::get(y, 1)
+  let rh: Double = Array::get(y, at = 0)
+  let rl: Double = Array::get(y, at = 1)
   if which == 2 {
-    let (sh, sl) = sin_dd(rh, rl)
-    let (ch, cl) = cos_dd(rh, rl)
+    let (sh, sl) = sin_dd(rh = rh, rl = rl)
+    let (ch, cl) = cos_dd(rh = rh, rl = rl)
     if (n&1) == 0 {
-      let (h, l) = dd_div(sh, sl, ch, cl)
+      let (h, l) = dd_div(ah = sh, al = sl, bh = ch, bl = cl)
       h + l
     }
     else {
       // tan(r + pi/2) = -cos(r) / sin(r)
-      let (h, l) = dd_div(ch, cl, sh, sl)
+      let (h, l) = dd_div(ah = ch, al = cl, bh = sh, bl = sl)
       neg_d(h + l)
     }
   }
@@ -1280,10 +1280,10 @@ fn trig_dd(x: Double, which: Int) -> Double {
     // sin(r + n*pi/2) and cos(r + n*pi/2) cycle through +-sin and +-cos
     let m = (n + which)&3
     let v = if (m&1) == 0 {
-      let (h, l) = sin_dd(rh, rl)
+      let (h, l) = sin_dd(rh = rh, rl = rl)
       h + l
     } else {
-      let (h, l) = cos_dd(rh, rl)
+      let (h, l) = cos_dd(rh = rh, rl = rl)
       h + l
     }
     if m >= 2 {
@@ -1307,7 +1307,7 @@ export fn sin(_ x: Double) -> Double {
     x - x
   }
   else {
-    trig_dd(x, 0)
+    trig_dd(x = x, which = 0)
   }
 }
 
@@ -1322,7 +1322,7 @@ export fn cos(_ x: Double) -> Double {
     x - x
   }
   else {
-    trig_dd(x, 1)
+    trig_dd(x = x, which = 1)
   }
 }
 
@@ -1337,39 +1337,39 @@ export fn tan(_ x: Double) -> Double {
     x - x
   }
   else {
-    trig_dd(x, 2)
+    trig_dd(x = x, which = 2)
   }
 }
 
 //# Inverse trigonometric functions
 
-let atanhi0: Double = dbits(0x3fddac67, 0x0561bb4f)
+let atanhi0: Double = dbits(hi = 0x3fddac67, lo = 0x0561bb4f)
 
-let atanhi1: Double = dbits(0x3fe921fb, 0x54442d18)
+let atanhi1: Double = dbits(hi = 0x3fe921fb, lo = 0x54442d18)
 
-let atanhi2: Double = dbits(0x3fef730b, 0xd281f69b)
+let atanhi2: Double = dbits(hi = 0x3fef730b, lo = 0xd281f69b)
 
-let atanhi3: Double = dbits(0x3ff921fb, 0x54442d18)
+let atanhi3: Double = dbits(hi = 0x3ff921fb, lo = 0x54442d18)
 
-let atanlo0: Double = dbits(0x3c7a2b7f, 0x222f65e2)
+let atanlo0: Double = dbits(hi = 0x3c7a2b7f, lo = 0x222f65e2)
 
-let atanlo1: Double = dbits(0x3c81a626, 0x33145c07)
+let atanlo1: Double = dbits(hi = 0x3c81a626, lo = 0x33145c07)
 
-let atanlo2: Double = dbits(0x3c700788, 0x7af0cbbd)
+let atanlo2: Double = dbits(hi = 0x3c700788, lo = 0x7af0cbbd)
 
-let atanlo3: Double = dbits(0x3c91a626, 0x33145c07)
+let atanlo3: Double = dbits(hi = 0x3c91a626, lo = 0x33145c07)
 
-let pio2_hi: Double = dbits(0x3ff921fb, 0x54442d18)
+let pio2_hi: Double = dbits(hi = 0x3ff921fb, lo = 0x54442d18)
 
-let pio2_lo: Double = dbits(0x3c91a626, 0x33145c07)
+let pio2_lo: Double = dbits(hi = 0x3c91a626, lo = 0x33145c07)
 
-let pi_lo: Double = dbits(0x3ca1a626, 0x33145c07)
+let pi_lo: Double = dbits(hi = 0x3ca1a626, lo = 0x33145c07)
 
 /// atan(th + tl) for |t| <= 0.4375 as hi + lo: t * (1 - z/3 + z^2/5 - ...)
 /// with z = t^2 <= 0.192. The eight leading coefficients run in
 /// double-double, the tail (below 2^-23 of the sum) in double.
 fn atan_series_dd(th: Double, tl: Double) -> (Double, Double) {
-  let (zh, zl) = dd_mul(th, tl, th, tl)
+  let (zh, zl) = dd_mul(ah = th, al = tl, bh = th, bl = tl)
   let mut tail = 0.0
   let mut n = 34
   while n >= 8 {
@@ -1395,13 +1395,13 @@ fn atan_series_dd(th: Double, tl: Double) -> (Double, Double) {
     } else {
       0.0 - dd_recip_lo(d)
     }
-    let (ph, pl) = dd_mul(zh, zl, ah, al)
-    let (sh, sl) = dd_add(ch, cl, ph, pl)
+    let (ph, pl) = dd_mul(ah = zh, al = zl, bh = ah, bl = al)
+    let (sh, sl) = dd_add(ah = ch, al = cl, bh = ph, bl = pl)
     ah = sh
     al = sl
     n = n - 1
   }
-  dd_mul(th, tl, ah, al)
+  dd_mul(ah = th, al = tl, bh = ah, bl = al)
 }
 
 /// atan(ah + al) for 0 <= a < 2^66 as hi + lo, through fdlibm's
@@ -1413,41 +1413,41 @@ fn atan_dd(ah: Double, al: Double) -> (Double, Double) {
     // a < 0.4375
     if ix < 0x3e400000 {
       // a < 2^-27: a - a^3/3, the next term is below 2^-108 of a
-      dd_add(ah, al, 0.0 - ah * ah * ah / 3.0, 0.0)
+      dd_add(ah = ah, al = al, bh = 0.0 - ah * ah * ah / 3.0, bl = 0.0)
     } else {
-      atan_series_dd(ah, al)
+      atan_series_dd(th = ah, tl = al)
     }
   }
   else if ix < 0x3fe60000 {
     // 7/16 <= a < 11/16: t = (2a - 1) / (2 + a)
-    let (nh, nl) = dd_add(2.0 * ah, 2.0 * al, -1.0, 0.0)
-    let (dh, dl) = dd_add(2.0, 0.0, ah, al)
-    let (th, tl) = dd_div(nh, nl, dh, dl)
-    let (sh, sl) = atan_series_dd(th, tl)
-    dd_add(atanhi0, atanlo0, sh, sl)
+    let (nh, nl) = dd_add(ah = 2.0 * ah, al = 2.0 * al, bh = -1.0, bl = 0.0)
+    let (dh, dl) = dd_add(ah = 2.0, al = 0.0, bh = ah, bl = al)
+    let (th, tl) = dd_div(ah = nh, al = nl, bh = dh, bl = dl)
+    let (sh, sl) = atan_series_dd(th = th, tl = tl)
+    dd_add(ah = atanhi0, al = atanlo0, bh = sh, bl = sl)
   }
   else if ix < 0x3ff30000 {
     // 11/16 <= a < 19/16: t = (a - 1) / (a + 1)
-    let (nh, nl) = dd_add(ah, al, -1.0, 0.0)
-    let (dh, dl) = dd_add(ah, al, 1.0, 0.0)
-    let (th, tl) = dd_div(nh, nl, dh, dl)
-    let (sh, sl) = atan_series_dd(th, tl)
-    dd_add(atanhi1, atanlo1, sh, sl)
+    let (nh, nl) = dd_add(ah = ah, al = al, bh = -1.0, bl = 0.0)
+    let (dh, dl) = dd_add(ah = ah, al = al, bh = 1.0, bl = 0.0)
+    let (th, tl) = dd_div(ah = nh, al = nl, bh = dh, bl = dl)
+    let (sh, sl) = atan_series_dd(th = th, tl = tl)
+    dd_add(ah = atanhi1, al = atanlo1, bh = sh, bl = sl)
   }
   else if ix < 0x40038000 {
     // a < 2.4375: t = (a - 1.5) / (1 + 1.5a)
-    let (nh, nl) = dd_add(ah, al, -1.5, 0.0)
-    let (mh, ml) = dd_mul(1.5, 0.0, ah, al)
-    let (dh, dl) = dd_add(mh, ml, 1.0, 0.0)
-    let (th, tl) = dd_div(nh, nl, dh, dl)
-    let (sh, sl) = atan_series_dd(th, tl)
-    dd_add(atanhi2, atanlo2, sh, sl)
+    let (nh, nl) = dd_add(ah = ah, al = al, bh = -1.5, bl = 0.0)
+    let (mh, ml) = dd_mul(ah = 1.5, al = 0.0, bh = ah, bl = al)
+    let (dh, dl) = dd_add(ah = mh, al = ml, bh = 1.0, bl = 0.0)
+    let (th, tl) = dd_div(ah = nh, al = nl, bh = dh, bl = dl)
+    let (sh, sl) = atan_series_dd(th = th, tl = tl)
+    dd_add(ah = atanhi2, al = atanlo2, bh = sh, bl = sl)
   }
   else {
     // t = -1/a
-    let (th, tl) = dd_div(-1.0, 0.0, ah, al)
-    let (sh, sl) = atan_series_dd(th, tl)
-    dd_add(atanhi3, atanlo3, sh, sl)
+    let (th, tl) = dd_div(ah = -1.0, al = 0.0, bh = ah, bl = al)
+    let (sh, sl) = atan_series_dd(th = th, tl = tl)
+    dd_add(ah = atanhi3, al = atanlo3, bh = sh, bl = sl)
   }
 }
 
@@ -1468,7 +1468,7 @@ export fn atan(_ x: Double) -> Double {
       atanhi3
     }
   }
-  let (h, l) = atan_dd(abs_d(x), 0.0)
+  let (h, l) = atan_dd(ah = abs_d(x), al = 0.0)
   let z = h + l
   if hx >= 0x80000000 {
     neg_d(z)
@@ -1482,7 +1482,7 @@ export fn atan(_ x: Double) -> Double {
 fn one_minus_sq_dd(_ x: Double) -> (Double, Double) {
   let a = 1.0 - x
   let b = 1.0 + x
-  dd_mul(a, sum_err(1.0, 0.0 - x, a), b, sum_err(1.0, x, b))
+  dd_mul(ah = a, al = sum_err(a = 1.0, b = 0.0 - x, s = a), bh = b, bl = sum_err(a = 1.0, b = x, s = b))
 }
 
 /// The arcsine, in [-pi/2, pi/2]: atan(x / sqrt(1 - x^2)) in
@@ -1505,9 +1505,9 @@ export fn asin(_ x: Double) -> Double {
     return x
   }
   let (dh0, dl0) = one_minus_sq_dd(x)
-  let (dh, dl) = dd_sqrt(dh0, dl0)
-  let (qh, ql) = dd_div(abs_d(x), 0.0, dh, dl)
-  let (h, l) = atan_dd(qh, ql)
+  let (dh, dl) = dd_sqrt(ah = dh0, al = dl0)
+  let (qh, ql) = dd_div(ah = abs_d(x), al = 0.0, bh = dh, bl = dl)
+  let (h, l) = atan_dd(ah = qh, al = ql)
   let z = h + l
   if hx >= 0x80000000 {
     neg_d(z)
@@ -1541,9 +1541,9 @@ export fn acos(_ x: Double) -> Double {
   }
   let a = 1.0 - x
   let b = 1.0 + x
-  let (qh, ql) = dd_div(a, sum_err(1.0, 0.0 - x, a), b, sum_err(1.0, x, b))
-  let (rh, rl) = dd_sqrt(qh, ql)
-  let (h, l) = atan_dd(rh, rl)
+  let (qh, ql) = dd_div(ah = a, al = sum_err(a = 1.0, b = 0.0 - x, s = a), bh = b, bl = sum_err(a = 1.0, b = x, s = b))
+  let (rh, rl) = dd_sqrt(ah = qh, al = ql)
+  let (h, l) = atan_dd(ah = rh, al = rl)
   2.0 * h + 2.0 * l
 }
 
@@ -1632,8 +1632,8 @@ export fn atan2(y: Double, x: Double) -> Double {
   if (ix>>20) == 0 {
     e = ((hi_word(ax * two54)>>20)&0x7ff) - 0x3ff - 54
   }
-  let (qh, ql) = dd_div(scalbn(ay, 0 - e), 0.0, scalbn(ax, 0 - e), 0.0)
-  let (zh, zl) = atan_dd(qh, ql)
+  let (qh, ql) = dd_div(ah = scalbn(x = ay, n = 0 - e), al = 0.0, bh = scalbn(x = ax, n = 0 - e), bl = 0.0)
+  let (zh, zl) = atan_dd(ah = qh, al = ql)
   if m <= 1 {
     let z = zh + zl
     return if m == 0 {
@@ -1643,7 +1643,7 @@ export fn atan2(y: Double, x: Double) -> Double {
     }
   }
   // x < 0: pi - atan(|y/x|)
-  let (h, l) = dd_add(pi, pi_lo, 0.0 - zh, 0.0 - zl)
+  let (h, l) = dd_add(ah = pi, al = pi_lo, bh = 0.0 - zh, bl = 0.0 - zl)
   let res = h + l
   if m == 2 {
     res
@@ -1654,13 +1654,13 @@ export fn atan2(y: Double, x: Double) -> Double {
 
 //# Angle conversion
 
-let rad_to_deg_hi: Double = dbits(0x404ca5dc, 0x1a63c1f8)
+let rad_to_deg_hi: Double = dbits(hi = 0x404ca5dc, lo = 0x1a63c1f8)
 
-let rad_to_deg_lo: Double = dbits(0xbce1e7ab, 0x456405f9)
+let rad_to_deg_lo: Double = dbits(hi = 0xbce1e7ab, lo = 0x456405f9)
 
-let deg_to_rad_hi: Double = dbits(0x3f91df46, 0xa2529d39)
+let deg_to_rad_hi: Double = dbits(hi = 0x3f91df46, lo = 0xa2529d39)
 
-let deg_to_rad_lo: Double = dbits(0x3c15c1d8, 0xbecdd291)
+let deg_to_rad_lo: Double = dbits(hi = 0x3c15c1d8, lo = 0xbecdd291)
 
 /// x * (c_hi + c_lo) with the rounding error of x * c_hi recovered by
 /// Dekker's product, so the one remaining rounding is the final addition.
@@ -1674,10 +1674,10 @@ fn mul_by_constant(x: Double, c_hi: Double, c_lo: Double) -> Double {
   }
   else if ix < 0x20000000 {
     // scaled by 2^600 into the range where the split is exact
-    mul_by_constant(x * dbits(0x65700000, 0), c_hi, c_lo) * dbits(0x1a700000, 0)
+    mul_by_constant(x = x * dbits(hi = 0x65700000, lo = 0), c_hi = c_hi, c_lo = c_lo) * dbits(hi = 0x1a700000, lo = 0)
   }
   else if ix >= 0x5ff00000 {
-    mul_by_constant(x * dbits(0x1a700000, 0), c_hi, c_lo) * dbits(0x65700000, 0)
+    mul_by_constant(x = x * dbits(hi = 0x1a700000, lo = 0), c_hi = c_hi, c_lo = c_lo) * dbits(hi = 0x65700000, lo = 0)
   }
   else {
     let xc = x * 134217729.0
@@ -1693,10 +1693,10 @@ fn mul_by_constant(x: Double, c_hi: Double, c_lo: Double) -> Double {
 
 /// Radians to degrees, x * 180/pi.
 export fn degrees(_ rad: Double) -> Double {
-  mul_by_constant(rad, rad_to_deg_hi, rad_to_deg_lo)
+  mul_by_constant(x = rad, c_hi = rad_to_deg_hi, c_lo = rad_to_deg_lo)
 }
 
 /// Degrees to radians, x * pi/180.
 export fn radians(_ deg: Double) -> Double {
-  mul_by_constant(deg, deg_to_rad_hi, deg_to_rad_lo)
+  mul_by_constant(x = deg, c_hi = deg_to_rad_hi, c_lo = deg_to_rad_lo)
 }
