@@ -1,11 +1,14 @@
 //! Linking for typed core-wasm imports (`import ./x.wasm { .. }`).
 //!
 //! The compiler lowers such an import to core imports whose module is
-//! `vibe:wasm:<path>` (lib/@vibe/compiler/core/wasm_import_binding.vibe):
-//! one field per exported function, named exactly as the export, plus
-//! `vibe:memory.load8_u (i32) -> i32`, `vibe:memory.store8 (i32, i32)` and
-//! `vibe:memory.size () -> i64` when the foreign module has a memory. The
-//! foreign memory is not the vibe module's, so the host reads and writes it.
+//! `vibe:wasm:<path>` (lib/@vibe/compiler/core/wasm_import_binding.vibe), one
+//! field per exported function, named exactly as the export. When the foreign
+//! module has a memory, the accessors `vibe:memory.load8_u (i32) -> i32`,
+//! `vibe:memory.store8 (i32, i32)` and `vibe:memory.size () -> i64` are
+//! imported from a SEPARATE module, `vibe:wasm-memory:<path>`, so that no
+//! export of the foreign module -- whatever it is named -- can collide with
+//! them. The foreign memory is not the vibe module's, so the host reads and
+//! writes it.
 //!
 //! `link_foreign_wasm_modules` instantiates each such module from `<path>`
 //! (relative to `VIBE_WASM_LINK_DIR`, default the working directory -- where
@@ -20,6 +23,7 @@ use std::path::PathBuf;
 use wasmtime::{bail, format_err, Caller, Extern, ExternType, Linker, Memory, Module, Result, Store};
 
 pub(super) const FOREIGN_PREFIX: &str = "vibe:wasm:";
+pub(super) const FOREIGN_MEMORY_PREFIX: &str = "vibe:wasm-memory:";
 
 /// The start of every error a foreign-call bridge raises from inside a call
 /// (an Int that does not fit its WIT width, an out-of-range address, ...).
@@ -38,19 +42,29 @@ pub(super) fn foreign_call_refusal(error: &wasmtime::Error) -> Option<String> {
         .find(|text| text.starts_with(FOREIGN_CALL_PREFIX))
 }
 
-fn foreign_module_names(module: &Module) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
+/// The foreign module paths `module` imports from, through either the
+/// functions' namespace or the accessors' one (a program may use only the
+/// accessors), each once.
+fn foreign_module_paths(module: &Module) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
     for import in module.imports() {
         let m = import.module();
-        if m.starts_with(FOREIGN_PREFIX) && !names.iter().any(|n| n == m) {
-            names.push(m.to_string());
+        let rel = if let Some(rest) = m.strip_prefix(FOREIGN_PREFIX) {
+            rest
+        } else if let Some(rest) = m.strip_prefix(FOREIGN_MEMORY_PREFIX) {
+            rest
+        } else {
+            continue;
+        };
+        if !paths.iter().any(|p| p == rel) {
+            paths.push(rel.to_string());
         }
     }
-    names
+    paths
 }
 
-fn foreign_path(name: &str) -> PathBuf {
-    let rel = PathBuf::from(&name[FOREIGN_PREFIX.len()..]);
+fn foreign_path(rel_str: &str) -> PathBuf {
+    let rel = PathBuf::from(rel_str);
     if rel.is_absolute() {
         return rel;
     }
@@ -77,14 +91,16 @@ pub(super) fn link_foreign_wasm_modules<T: 'static>(
     store: &mut Store<T>,
     module: &Module,
 ) -> Result<usize> {
-    let names = foreign_module_names(module);
-    if names.is_empty() {
+    let paths = foreign_module_paths(module);
+    if paths.is_empty() {
         return Ok(0);
     }
     linker.allow_shadowing(true);
     let engine = store.engine().clone();
-    for name in &names {
-        let path = foreign_path(name);
+    for rel in &paths {
+        let name = format!("{FOREIGN_PREFIX}{rel}");
+        let memory_name = format!("{FOREIGN_MEMORY_PREFIX}{rel}");
+        let path = foreign_path(rel);
         let foreign = Module::from_file(&engine, &path)
             .map_err(|e| format_err!("cannot link '{name}': reading {}: {e}", path.display()))?;
         let needs: Vec<String> = foreign
@@ -122,7 +138,7 @@ pub(super) fn link_foreign_wasm_modules<T: 'static>(
         }
         if let Some(mem) = memory {
             linker.func_wrap(
-                name.as_str(),
+                memory_name.as_str(),
                 "vibe:memory.load8_u",
                 move |caller: Caller<'_, T>, addr: i32| -> Result<i32> {
                     let data = mem.data(&caller);
@@ -131,7 +147,7 @@ pub(super) fn link_foreign_wasm_modules<T: 'static>(
                 },
             )?;
             linker.func_wrap(
-                name.as_str(),
+                memory_name.as_str(),
                 "vibe:memory.store8",
                 move |mut caller: Caller<'_, T>, addr: i32, value: i32| -> Result<()> {
                     let data = mem.data_mut(&mut caller);
@@ -140,13 +156,13 @@ pub(super) fn link_foreign_wasm_modules<T: 'static>(
                     Ok(())
                 },
             )?;
-            linker.func_wrap(name.as_str(), "vibe:memory.size", move |caller: Caller<'_, T>| -> i64 {
+            linker.func_wrap(memory_name.as_str(), "vibe:memory.size", move |caller: Caller<'_, T>| -> i64 {
                 mem.data_size(&caller) as i64
             })?;
         }
     }
     linker.allow_shadowing(false);
-    Ok(names.len())
+    Ok(paths.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +183,35 @@ use wasmtime::Val;
 use super::{vibe_alloc_packed_str, vibe_read_packed_bytes, HostState};
 
 pub(super) const COMPONENT_PREFIX: &str = "vibe:component:";
+
+/// A WIT type's name as the compiler spells it in a component field
+/// (`wib_cv_name`); `?` for a type the bridge does not carry, which can never
+/// equal a compiled signature.
+fn wit_type_name(ty: &CType) -> &'static str {
+    match ty {
+        CType::Bool => "bool",
+        CType::S8 => "s8",
+        CType::U8 => "u8",
+        CType::S16 => "s16",
+        CType::U16 => "u16",
+        CType::S32 => "s32",
+        CType::U32 => "u32",
+        CType::S64 => "s64",
+        CType::U64 => "u64",
+        CType::Float32 => "f32",
+        CType::Float64 => "f64",
+        CType::Char => "char",
+        CType::String => "string",
+        _ => "?",
+    }
+}
+
+/// `<params>-><results>`, the signature half of a component field.
+fn component_sig_text(params: &[CType], results: &[CType]) -> String {
+    let ps: Vec<&str> = params.iter().map(wit_type_name).collect();
+    let rs: Vec<&str> = results.iter().map(wit_type_name).collect();
+    format!("{}->{}", ps.join(","), rs.join(","))
+}
 
 fn int_to_cval(field: &str, ty: &CType, v: i64) -> Result<CVal> {
     let out_of_range = || {
@@ -262,16 +307,32 @@ pub(super) fn link_component_modules(
             })
             .collect();
         for (field, core_ty) in fields {
-            let func = instance.get_func(&mut *store, field.as_str()).ok_or_else(|| {
-                format_err!("cannot link '{name}': the component exports no function '{field}'")
+            // `<export>#<WIT signature it was compiled against>`, e.g.
+            // `add#s32,s32->s32` (wasm_component_field in the compiler).
+            let (export, expected) = match field.rsplit_once('#') {
+                Some((e, sig)) => (e.to_string(), sig.to_string()),
+                None => bail!("cannot link '{name}': import '{field}' carries no WIT signature; rebuild the program with this compiler"),
+            };
+            let func = instance.get_func(&mut *store, export.as_str()).ok_or_else(|| {
+                format_err!("cannot link '{name}': the component exports no function '{export}'")
             })?;
             let fty = func.ty(&*store);
             let params: Vec<CType> = fty.params().map(|(_, t)| t).collect();
             let results: Vec<CType> = fty.results().collect();
-            if params.len() != core_ty.params().len() || results.len() != core_ty.results().len() {
-                bail!("cannot link '{name}': '{field}' does not have the shape this program was compiled against; rebuild it");
+            // Every value crosses in an i64 slot, so the core type cannot
+            // tell `-> s32` from `-> string`: compare the WIT signature, or a
+            // component rebuilt after the program would be converted by its
+            // NEW types and answer, say, a packed string pointer as an Int.
+            let actual = component_sig_text(&params, &results);
+            if actual != expected {
+                bail!(
+                    "cannot link '{name}': '{export}' is now ({actual}) but the program was compiled against ({expected}); rebuild the program"
+                );
             }
-            let label = field.clone();
+            if params.len() != core_ty.params().len() || results.len() != core_ty.results().len() {
+                bail!("cannot link '{name}': '{export}' does not have the shape this program was compiled against; rebuild it");
+            }
+            let label = export.clone();
             linker.func_new(
                 name.as_str(),
                 field.as_str(),

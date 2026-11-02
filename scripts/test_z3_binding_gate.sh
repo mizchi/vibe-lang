@@ -81,19 +81,28 @@ const want = {
   Z3_get_full_version: "() -> (i32)",
   malloc: "(i32) -> (i32)",
   free: "(i32) -> ()",
+};
+// The memory accessors live in their own import module, apart from z3.wasm's
+// exports, so no export can collide with them.
+const wantMemory = {
   "vibe:memory.load8_u": "(i32) -> (i32)",
   "vibe:memory.store8": "(i32, i32) -> ()",
 };
 const mod = "vibe:wasm:lib/@vibex/z3/z3.wasm";
-// Tree-shaken: exactly what the program calls (plus the memory accessor
-// pair), not the 853 functions the binding offers.
+const memMod = "vibe:wasm-memory:lib/@vibex/z3/z3.wasm";
+// Tree-shaken: exactly what the program calls, not the 853 functions the
+// binding offers.
 const got = imports.filter(([m]) => m === mod).map(([, f]) => f).sort();
 const wantNames = [...Object.keys(want), "Z3_del_config"].sort();
 if (JSON.stringify(got) !== JSON.stringify(wantNames)) throw new Error(`imports ${got.length} z3 functions (${got.slice(0, 12).join(" ")}${got.length > 12 ? " ..." : ""}); want the ${wantNames.length} it calls: ${wantNames.join(" ")}`);
-for (const [f, sig] of Object.entries(want)) {
-  const hit = imports.find(([m, ff]) => m === mod && ff === f);
-  if (!hit) throw new Error(`no import ${mod}.${f}`);
-  if (types[hit[2]] !== sig) throw new Error(`${f}: ${types[hit[2]]}, want ${sig}`);
+const gotMem = imports.filter(([m]) => m === memMod).map(([, f]) => f).sort();
+if (JSON.stringify(gotMem) !== JSON.stringify(Object.keys(wantMemory).sort())) throw new Error(`imports memory accessors ${gotMem.join(" ")}; want ${Object.keys(wantMemory).join(" ")}`);
+for (const [m, table] of [[mod, want], [memMod, wantMemory]]) {
+  for (const [f, sig] of Object.entries(table)) {
+    const hit = imports.find(([im, ff]) => im === m && ff === f);
+    if (!hit) throw new Error(`no import ${m}.${f}`);
+    if (types[hit[2]] !== sig) throw new Error(`${f}: ${types[hit[2]]}, want ${sig}`);
+  }
 }
 JS
 [ "$status" != 0 ] || fail "the run succeeded; update this gate to assert z3's answer (see header)"

@@ -2696,7 +2696,8 @@ function writeProfileRequest(req, elapsedUs) {
 //
 //   - one field per exported function, named exactly as the export;
 //   - `vibe:memory.load8_u (i32) -> i32`, `vibe:memory.store8 (i32, i32)` and
-//     `vibe:memory.size () -> i64` when the foreign module has a memory --
+//     `vibe:memory.size () -> i64` in the separate module
+//     `vibe:wasm-memory:<path>` when the foreign module has a memory --
 //     the foreign memory is not the vibe module's, so the host reads and
 //     writes it on the program's behalf.
 //
@@ -2714,12 +2715,19 @@ const foreignPath = require("node:path");
 const FOREIGN_PREFIX = "vibe:wasm:";
 const COMPONENT_PREFIX = "vibe:component:";
 
-function foreignModuleNames(wasmModule) {
-  const names = new Set();
+const FOREIGN_MEMORY_PREFIX = "vibe:wasm-memory:";
+
+// The foreign module paths a program imports from, through the functions'
+// namespace or the memory accessors' separate one (`vibe:wasm-memory:<path>`,
+// kept apart so no export of the module can collide with an accessor), each
+// once.
+function foreignModulePaths(wasmModule) {
+  const paths = new Set();
   for (const imp of WebAssembly.Module.imports(wasmModule)) {
-    if (imp.module.startsWith(FOREIGN_PREFIX)) names.add(imp.module);
+    if (imp.module.startsWith(FOREIGN_PREFIX)) paths.add(imp.module.slice(FOREIGN_PREFIX.length));
+    else if (imp.module.startsWith(FOREIGN_MEMORY_PREFIX)) paths.add(imp.module.slice(FOREIGN_MEMORY_PREFIX.length));
   }
-  return [...names];
+  return [...paths];
 }
 
 function outOfBounds(name, addr, size) {
@@ -2742,8 +2750,8 @@ async function linkForeignWasmModules(wasmModule, opts = {}) {
     );
   }
   const out = {};
-  for (const name of foreignModuleNames(wasmModule)) {
-    const rel = name.slice(FOREIGN_PREFIX.length);
+  for (const rel of foreignModulePaths(wasmModule)) {
+    const name = FOREIGN_PREFIX + rel;
     const file = foreignPath.isAbsolute(rel) ? rel : foreignPath.join(baseDir, rel);
     let bytes;
     try {
@@ -2767,19 +2775,21 @@ async function linkForeignWasmModules(wasmModule, opts = {}) {
     const memory = Object.values(instance.exports).find((v) => v instanceof WebAssembly.Memory) ?? null;
     const ns = { ...instance.exports };
     if (memory) {
-      ns["vibe:memory.load8_u"] = (addr) => {
+      const mem = {};
+      mem["vibe:memory.load8_u"] = (addr) => {
         const a = addr >>> 0;
         const view = new Uint8Array(memory.buffer);
         if (a >= view.length) throw outOfBounds("vibe:memory.load8_u", a, view.length);
         return view[a];
       };
-      ns["vibe:memory.store8"] = (addr, value) => {
+      mem["vibe:memory.store8"] = (addr, value) => {
         const a = addr >>> 0;
         const view = new Uint8Array(memory.buffer);
         if (a >= view.length) throw outOfBounds("vibe:memory.store8", a, view.length);
         view[a] = value & 0xff;
       };
-      ns["vibe:memory.size"] = () => BigInt(memory.buffer.byteLength);
+      mem["vibe:memory.size"] = () => BigInt(memory.buffer.byteLength);
+      out[FOREIGN_MEMORY_PREFIX + rel] = mem;
     }
     out[name] = ns;
   }

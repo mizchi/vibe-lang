@@ -25,7 +25,9 @@
 #      node runner, which cannot instantiate components, refuses it;
 #   9. `vibe run` from a package's subdirectory links the binary it compiled
 #      against (the compile runs in the project root, the program does not);
-#  10. `vibe bench` links the foreign module into each block's fresh store.
+#  10. `vibe bench` links the foreign module into each block's fresh store;
+#  11. a component whose WIT signature changed after the build is refused at
+#      link time rather than converted by its new types.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -168,5 +170,20 @@ status=0
 vibe "$VIBERUN" bench "$FX/counter_bench.vibe" >"$WORK/out" 2>"$WORK/err" || status=$?
 [ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun] counter_bench exited $status"; }
 grep -q "^bench counter_bench.vibe::foreign add_i32: " "$WORK/out" "$WORK/err" || { cat "$WORK/out" "$WORK/err" >&2; fail "[viberun] counter_bench reported no measurement"; }
+
+# 11. A component rebuilt after the program with a different WIT signature
+#     is refused at link time, not converted by its new types: build against
+#     greeter.component.wasm, then link against greeter_drift.component.wasm
+#     (`counter` retyped u64 -> s64) at the same path.
+vibe "$VIBERUN" build "$FX/greeter_main.vibex" -o "$WORK/greeter_main.wasm" >"$WORK/out" 2>&1 || { cat "$WORK/out" >&2; fail "[viberun] could not build greeter_main"; }
+DRIFT="$WORK/drift"
+mkdir -p "$DRIFT/$FX"
+cp "$FX/greeter_drift.component.wasm" "$DRIFT/$FX/greeter.component.wasm"
+status=0
+(cd "$DRIFT" && env -u RUST_BACKTRACE -u VIBE_RUNNER_BACKTRACE VIBE_WASM_LINK_DIR="$DRIFT" \
+  "$VIBERUN" "$WORK/greeter_main.wasm") >"$WORK/out" 2>"$WORK/err" || status=$?
+[ "$status" != 0 ] || fail "[viberun] a component whose WIT signature drifted was linked (printed $(printf '%q' "$(cat "$WORK/out")"))"
+grep -q "'counter' is now (->s64) but the program was compiled against (->u64); rebuild the program" "$WORK/err" \
+  || { cat "$WORK/err" >&2; fail "[viberun] the signature-drift refusal does not say why"; }
 
 echo "[wasm-import] ok (core: viberun + node, range traps, refusals; component: viberun, WIT range refusal, node refusal)"

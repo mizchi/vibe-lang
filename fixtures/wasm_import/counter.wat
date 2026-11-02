@@ -25,6 +25,9 @@
   ;; not offered: two exports with one vibe name
   (func (export "Same") (result i32) (i32.const 1))
   (func (export "same") (result i32) (i32.const 2))
+  ;; an export spelled like a memory accessor: the binding offers it as
+  ;; `vibe_memory_size`, and the real accessor must not replace it
+  (func (export "vibe:memory.size") (result i64) (i64.const 42))
   ;; string pointer into this module's own memory
   (func (export "greeting_ptr") (result i32) (i32.const 16))
   (func (export "greeting_len") (result i32) (i32.const 5))

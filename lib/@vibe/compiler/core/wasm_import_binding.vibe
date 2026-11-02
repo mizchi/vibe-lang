@@ -54,8 +54,9 @@ import ./inline_wasm_marker.vibe {
 // `wasm_memory_load_u8(addr) -> Int`, `wasm_memory_store_u8(addr, value)` and
 // `wasm_memory_size() -> Int` (bytes). The foreign memory is not this
 // module's memory; these go through runner-provided `vibe:memory.*` fields of
-// the same import module, which is how a binding passes strings to and from
-// the foreign side.
+// a separate import module, `vibe:wasm-memory:<path>` (so no export of the
+// module can collide with them), which is how a binding passes strings to and
+// from the foreign side.
 //
 // Export names are mapped to vibe identifiers by lower-casing ASCII letters
 // and replacing every other character outside `[a-z0-9_]` with `_`
@@ -70,6 +71,14 @@ export fn is_wasm_import_path(path: String) -> Bool {
 /// The core import module a binding of `path` calls through.
 export fn wasm_import_module_name(path: String) -> String {
   String::concat("vibe:wasm:", path)
+}
+
+/// The core import module the memory accessors of `path` call through. It is
+/// NOT the module's own namespace: a foreign export may be named anything,
+/// including `vibe:memory.size`, and an accessor defined beside it would
+/// replace the export the binding offers under that name.
+export fn wasm_memory_module_name(path: String) -> String {
+  String::concat("vibe:wasm-memory:", path)
 }
 
 fn wib_fresh_strings() -> Array[String] {
@@ -885,14 +894,14 @@ fn wib_core_binding_source(path: String, bytes: Bytes) -> String with Exception 
     i = i + 1
   }
   if has_memory {
-    wib_emit_fn(out, "wasm_memory_load_u8", "The byte at `a0` in the module's memory (0..255).", wasm_import_callee(module_name, "vibe:memory.load8_u", [
+    wib_emit_fn(out, "wasm_memory_load_u8", "The byte at `a0` in the module's memory (0..255).", wasm_import_callee(wasm_memory_module_name(path), "vibe:memory.load8_u", [
       0x7F
     ], [0x7F]), [0x7F], [0x7F])
-    wib_emit_fn(out, "wasm_memory_store_u8", "Store the low 8 bits of `a1` at `a0` in the module's memory.", wasm_import_callee(module_name, "vibe:memory.store8", [
+    wib_emit_fn(out, "wasm_memory_store_u8", "Store the low 8 bits of `a1` at `a0` in the module's memory.", wasm_import_callee(wasm_memory_module_name(path), "vibe:memory.store8", [
       0x7F,
       0x7F
     ], wib_fresh_ints()), [0x7F, 0x7F], wib_fresh_ints())
-    wib_emit_fn(out, "wasm_memory_size", "The module's memory size in bytes.", wasm_import_callee(module_name, "vibe:memory.size", wib_fresh_ints(), [
+    wib_emit_fn(out, "wasm_memory_size", "The module's memory size in bytes.", wasm_import_callee(wasm_memory_module_name(path), "vibe:memory.size", wib_fresh_ints(), [
       0x7E
     ]), wib_fresh_ints(), [0x7E])
   } else {
@@ -1347,6 +1356,21 @@ fn wib_read_component(bytes: Bytes) -> (Array[(String, Int, String)], Array[(Arr
   (exports, types)
 }
 
+/// `<export>#<params>-><result>` in WIT type names, e.g. `add#s32,s32->s32`,
+/// `greet#string->string`, `tick#->`. `#` cannot occur in a WIT name, so the
+/// runner splits at the last one.
+export fn wasm_component_field(name: String, params: Array[Int], results: Array[Int]) -> String {
+  let ps = wib_fresh_strings()
+  for c in params {
+    Array::push(ps, wib_cv_name(c))
+  }
+  let rs = wib_fresh_strings()
+  for c in results {
+    Array::push(rs, wib_cv_name(c))
+  }
+  "\{name}#\{String::join(ps, ",")}->\{String::join(rs, ",")}"
+}
+
 fn wib_component_sig_text(params: Array[Int], labels: Array[String], results: Array[Int]) -> String {
   let parts = wib_fresh_strings()
   let mut i = 0
@@ -1479,7 +1503,12 @@ fn wib_component_binding_source(path: String, bytes: Bytes) -> String with Excep
         for _c in rs {
           Array::push(core_results, 0x7E)
         }
-        wib_component_emit(out, vn, "`\{shown}: \{sig}` from the component \{wib_display_name(path)}.", wasm_import_callee(module_name, nm, core_params, core_results), ps, rs)
+        // The field carries the WIT signature the binding was typed against
+        // (`add#s32,s32->s32`): every value crosses in an i64 slot, so the
+        // core type cannot tell `-> s32` from `-> string`, and the runner
+        // refuses a component whose export no longer matches instead of
+        // converting by the new type.
+        wib_component_emit(out, vn, "`\{shown}: \{sig}` from the component \{wib_display_name(path)}.", wasm_import_callee(module_name, wasm_component_field(nm, ps, rs), core_params, core_results), ps, rs)
       }
     }
     i = i + 1

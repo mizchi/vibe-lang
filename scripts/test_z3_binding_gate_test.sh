@@ -37,7 +37,7 @@ echo "ok: unmutated copy passes"
 # 1. A Z3 function the program no longer calls leaves the import set.
 fresh; mutate "  Context::close(ctx)
 " ""
-expect_fail "a dropped call" "want the 10 it calls"
+expect_fail "a dropped call" "it calls: "
 
 # 2. A program that does not type-check against z3.wasm is caught.
 fresh; mutate "Context::eval_smtlib2(ctx, " "Context::eval_smtlib2(ctx, 1, "

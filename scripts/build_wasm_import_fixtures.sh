@@ -6,6 +6,9 @@
 #   counter.wasm            <- counter.wat                       (wat2wasm)
 #   greeter.component.wasm  <- greeter_core.wat + greeter.wit    (wat2wasm,
 #                              wasm-tools component embed / new)
+#   greeter_drift.component.wasm <- greeter_core.wat + greeter_drift.wit
+#                              (the same component with `counter` retyped
+#                              u64 -> s64, for the signature-drift refusal)
 #
 # --check rebuilds into a scratch directory and fails when a committed binary
 # differs, which is how scripts/test_wasm_import_gate.sh keeps them honest.
@@ -28,12 +31,14 @@ wat2wasm "$FX/counter.wat" -o "$out/counter.wasm"
 wat2wasm "$FX/greeter_core.wat" -o "$work/greeter_core.wasm"
 wasm-tools component embed "$FX/greeter.wit" "$work/greeter_core.wasm" -o "$work/greeter_embedded.wasm"
 wasm-tools component new "$work/greeter_embedded.wasm" -o "$out/greeter.component.wasm"
+wasm-tools component embed "$FX/greeter_drift.wit" "$work/greeter_core.wasm" -o "$work/greeter_drift_embedded.wasm"
+wasm-tools component new "$work/greeter_drift_embedded.wasm" -o "$out/greeter_drift.component.wasm"
 
 if [ "$check" = 1 ]; then
   # A component carries a `producers` section naming the wasm-tools version
   # that built it; compare with custom sections stripped so only the content
   # has to agree.
-  for f in counter.wasm greeter.component.wasm; do
+  for f in counter.wasm greeter.component.wasm greeter_drift.component.wasm; do
     wasm-tools strip --all "$out/$f" -o "$work/new_$f"
     wasm-tools strip --all "$FX/$f" -o "$work/old_$f"
     cmp -s "$work/new_$f" "$work/old_$f" || { echo "build_wasm_import_fixtures: fixtures/wasm_import/$f is stale; run bash scripts/build_wasm_import_fixtures.sh" >&2; exit 1; }
