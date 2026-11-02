@@ -29,10 +29,14 @@ VIBE_GUEST_PROFILE_LINT_ROOT="$STAGED_ROOT" \
 VIBE_DOC_CITATION_DOCS_ROOT="$STAGED_ROOT" \
   VIBE_DOC_CITATION_REPO_ROOT="$STAGED_ROOT" \
   bash "$SCRIPT_DIR/check_doc_path_citations.sh"
-# scripts/README.md names scripts; scripts get deleted. Same staged-tree rule
-# as the citation gate: a commit that deletes a script and its README mention
-# together passes, one that deletes only the script does not (#2001).
-VIBE_SCRIPTS_README_ROOT="$STAGED_ROOT" \
-  bash "$SCRIPT_DIR/check_scripts_readme.sh"
+# scripts/inventory.tsv registers every file under scripts/, and
+# scripts/README.md names scripts; scripts get added and deleted. Same
+# staged-tree rule as the citation gate: a commit that adds a script and its
+# row together passes, one that adds only the script does not (#3675). The
+# gate is this repository's .vibex, run on the staged snapshot; the snapshot
+# lies outside the repository, so the runner is given `/` to read it from
+# (VIBE_PREOPEN_DIR) for this one call.
+( cd "$SCRIPT_DIR/.." && VIBE_PREOPEN_DIR=/ bash scripts/vibe_run.sh scripts/check_scripts_inventory.vibex -- \
+    --root "$STAGED_ROOT" )
 
 echo "pre-commit: review-derived lint gates passed"

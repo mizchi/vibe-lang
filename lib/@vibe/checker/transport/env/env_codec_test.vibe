@@ -11,13 +11,13 @@ import @vibe/compiler/core {
 }
 
 test "checked environment preserves the v10 golden wire" {
-  let env = env_bind(EnvEmpty, "answer", CtInt)
+  let env = env_bind(env = EnvEmpty, name = "answer", ty = CtInt)
   let expected = "version\t10\nenv\t12:B6:answerIU0\n"
   assert(encode_checked_environment(env) == expected)
   match decode_checked_environment(expected) {
     Some(decoded) => {
       assert(encode_checked_environment(decoded) == expected)
-      match env_lookup(decoded, "answer") {
+      match env_lookup(env = decoded, name = "answer") {
         Some(CtInt) => (),
         _ => assert(false)
       }
@@ -29,8 +29,9 @@ test "checked environment preserves the v10 golden wire" {
 test "checked module product preserves missing versus checked empty lowering" {
   let missing = "version\t11\nenv\t1:0\nlowering\tmissing\n"
   let empty = "version\t11\nenv\t1:0\nmodule_typed_lowering_offsets\tv8\nmodule_typed_lowering_offsets\tcount\t0\nmodule_typed_lowering_offsets\teqcount\t0\nmodule_typed_lowering_offsets\tdigest\t0:17:29\nmodule_typed_lowering_offsets\tend\n"
-  assert(encode_checked_module_product(EnvEmpty, None) == missing)
-  assert(encode_checked_module_product(EnvEmpty, Some(([], [], []))) == empty)
+  assert(encode_checked_module_product(env = EnvEmpty, lowering = None) == missing)
+  assert(encode_checked_module_product(env = EnvEmpty, lowering = Some(([], [], [
+  ]))) == empty)
   match decode_checked_module_product(missing) {
     Some((_, None)) => (),
     _ => assert(false)
@@ -58,43 +59,44 @@ test "checked dependency codec preserves versions and repeated occurrences" {
   for item in cases {
     let (paths, expected) = item
     assert(encode_checked_dependency_paths(paths) == expected)
-    assert(decode_checked_dependency_paths(expected, "cache/file") == paths)
+    assert(decode_checked_dependency_paths(text = expected, cache_path = "cache/file") == paths)
   }
 }
 
 test "checked dependency codec rejects malformed bodies and headers" {
   let body_message = handle {
-    decode_checked_dependency_paths("version\t2\n1[1:a]tail", "cache/file")
+    decode_checked_dependency_paths(text = "version\t2\n1[1:a]tail", cache_path = "cache/file")
     "accepted"
   } with { Exception::Throw(message) => message }
   assert(body_message == "invalid persistent dep list body: cache/file")
   let header_message = handle {
-    decode_checked_dependency_paths("version\t99\n", "cache/file")
+    decode_checked_dependency_paths(text = "version\t99\n", cache_path = "cache/file")
     "accepted"
   } with { Exception::Throw(message) => message }
   assert(header_message == "invalid persistent dep list header: cache/file")
 }
 
 test "nested and repeated encodes preserve earlier returned strings" {
-  let env = EnvShowWrappers(["Pretty::to_string"], ["Unknown"], env_bind(EnvEmpty, "answer", CtInt))
+  let env = EnvShowWrappers(["Pretty::to_string"], ["Unknown"], env_bind(env = EnvEmpty, name = "answer", ty = CtInt))
   let saved = encode_checked_environment(env)
   let snapshot = String::concat(saved, "!")
-  let product = encode_checked_module_product(env, Some(([], [], [])))
+  let product = encode_checked_module_product(env = env, lowering = Some(([], [], [
+  ])))
   let product_snapshot = String::concat(product, "!")
   let mut i = 0
   while i < 40 {
-    let current = env_bind(env, "binding\{i}", CtString)
+    let current = env_bind(env = env, name = "binding\{i}", ty = CtString)
     let encoded = encode_checked_environment(current)
     match decode_checked_environment(encoded) {
       Some(decoded) => assert(encode_checked_environment(decoded) == encoded),
       None => assert(false)
     }
     assert(encode_checked_dependency_paths(["a", "a"]) == "version\t2\n2[1:a1:a]")
-    encode_checked_module_product(current, None)
+    encode_checked_module_product(env = current, lowering = None)
     i = i + 1
   }
   assert(String::concat(saved, "!") == snapshot)
   assert(String::concat(product, "!") == product_snapshot)
   assert(encode_checked_environment(env) == saved)
-  assert(encode_checked_module_product(env, Some(([], [], []))) == product)
+  assert(encode_checked_module_product(env = env, lowering = Some(([], [], []))) == product)
 }

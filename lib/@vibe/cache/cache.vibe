@@ -23,13 +23,13 @@ fn cache_root_prefix() -> String {
 // Bootstrap fallback: the previous compiler emits this ordinary Vibe loop.
 // A compiler containing #2241 resolves the same internal name to its direct
 // byte-scanning runtime builtin instead.
-fn __compact_fingerprint_hash(source: String) -> Int {
+fn __compact_fingerprint_hash(_ source: String) -> Int {
   let len = String::length(source)
   let mut h1 = 17
   let mut h2 = 29
   let mut i = 0
   while i < len {
-    let c = String::char_code_at(source, i)
+    let c = String::char_code_at(source, at = i)
     h1 = (h1 * 131 + c + 1) % 2147483647
     h2 = (h2 * 65599 + c + i + 1) % 2147483629
     i = i + 1
@@ -37,7 +37,7 @@ fn __compact_fingerprint_hash(source: String) -> Int {
   (h1<<31)|h2
 }
 
-export fn compact_string_fingerprint(source: String) -> String {
+export fn compact_string_fingerprint(_ source: String) -> String {
   let len = String::length(source)
   let packed = __compact_fingerprint_hash(source)
   let h1 = packed>>31
@@ -53,23 +53,23 @@ export fn stable_cache_path(version_tag: String, prefix: String, seed: String, s
   // both operands at every level, and a TDRE9 alias seed is a whole module
   // source plus its dependencies' env texts. The hashed bytes are unchanged.
   let key_sb = StringBuilder::new()
-  StringBuilder::push(key_sb, "persistent-cache-")
-  StringBuilder::push(key_sb, version_tag)
-  StringBuilder::push(key_sb, "|")
-  StringBuilder::push(key_sb, seed)
+  StringBuilder::push(key_sb, value = "persistent-cache-")
+  StringBuilder::push(key_sb, value = version_tag)
+  StringBuilder::push(key_sb, value = "|")
+  StringBuilder::push(key_sb, value = seed)
   let raw = compact_string_fingerprint(StringBuilder::freeze(key_sb))
   // O(N) build via StringBuilder; the previous `token = String::concat(token, ...)`
   // per char was O(N²) over the fingerprint length (issue #366).
   let token_sb = StringBuilder::new()
   let mut i = 0
   while i < String::length(raw) {
-    let c = String::char_code_at(raw, i)
+    let c = String::char_code_at(raw, at = i)
     let piece = if c == 58 {
       "_"
     } else {
       String::from_char_code(c)
     }
-    StringBuilder::push(token_sb, piece)
+    StringBuilder::push(token_sb, value = piece)
     i = i + 1
   }
   let token = StringBuilder::freeze(token_sb)
@@ -83,7 +83,7 @@ export fn compilation_input_fingerprint(sources: Array[(String, String)], entry_
   let mut acc = String::concat("compilation-input|entry=", entry_path)
   let mut i = 0
   while i < Array::length(sources) {
-    let (path, source) = Array::get(sources, i)
+    let (path, source) = Array::get(sources, at = i)
     let pair = String::concat(path, String::concat("=", compact_string_fingerprint(source)))
     acc = compact_string_fingerprint(String::concat(acc, String::concat("|", pair)))
     i = i + 1
@@ -91,12 +91,12 @@ export fn compilation_input_fingerprint(sources: Array[(String, String)], entry_
   acc
 }
 
-fn build_sources_fingerprint(sources: Array[(String, String)]) -> String {
-  compilation_input_fingerprint(sources, "")
+fn build_sources_fingerprint(_ sources: Array[(String, String)]) -> String {
+  compilation_input_fingerprint(sources = sources, entry_path = "")
 }
 
 export fn persistent_artifact_cache_path(version_tag: String, kind: String, entry_name: String, fingerprint: String) -> String {
-  stable_cache_path(version_tag, "selfhost_artifact", String::concat(kind, String::concat("|", String::concat(entry_name, String::concat("|", fingerprint)))), ".bin")
+  stable_cache_path(version_tag = version_tag, prefix = "selfhost_artifact", seed = String::concat(kind, String::concat("|", String::concat(entry_name, String::concat("|", fingerprint)))), suffix = ".bin")
 }
 
 /// #1326: artifact entries are wrapped in a length-validated envelope —
@@ -106,35 +106,35 @@ export fn persistent_artifact_cache_path(version_tag: String, kind: String, entr
 /// wasm trapped every later cache hit (CI even *saved* the poisoned entry
 /// into the shard cache, making the red deterministic). A reader that sees
 /// a length mismatch now treats the entry as a cache miss instead.
-export fn encode_persistent_artifact(bytes: Bytes) -> Bytes {
+export fn encode_persistent_artifact(_ bytes: Bytes) -> Bytes {
   let n = Bytes::length(bytes)
   let env = Bytes::new()
-  Bytes::push(env, 'V')
-  Bytes::push(env, 'A')
-  Bytes::push(env, 'R')
-  Bytes::push(env, 'T')
-  Bytes::push(env, '1')
-  Bytes::push(env, n&0xFF)
-  Bytes::push(env, (n>>8)&0xFF)
-  Bytes::push(env, (n>>16)&0xFF)
-  Bytes::push(env, (n>>24)&0xFF)
-  Bytes::blit(env, bytes, 0, n)
+  Bytes::push(env, value = 'V')
+  Bytes::push(env, value = 'A')
+  Bytes::push(env, value = 'R')
+  Bytes::push(env, value = 'T')
+  Bytes::push(env, value = '1')
+  Bytes::push(env, value = n&0xFF)
+  Bytes::push(env, value = (n>>8)&0xFF)
+  Bytes::push(env, value = (n>>16)&0xFF)
+  Bytes::push(env, value = (n>>24)&0xFF)
+  Bytes::blit(env, src = bytes, start = 0, end = n)
   env
 }
 
-export fn decode_persistent_artifact(env: Bytes) -> Option[Bytes] {
+export fn decode_persistent_artifact(_ env: Bytes) -> Option[Bytes] {
   let total = Bytes::length(env)
   if total < 9 {
     None
-  } else if Bytes::get(env, 0) != 'V' || Bytes::get(env, 1) != 'A' || Bytes::get(env, 2) != 'R' || Bytes::get(env, 3) != 'T' || Bytes::get(env, 4) != '1' {
+  } else if Bytes::get(env, at = 0) != 'V' || Bytes::get(env, at = 1) != 'A' || Bytes::get(env, at = 2) != 'R' || Bytes::get(env, at = 3) != 'T' || Bytes::get(env, at = 4) != '1' {
     None
   } else {
-    let n = Bytes::get(env, 5)|(Bytes::get(env, 6)<<8)|(Bytes::get(env, 7)<<16)|(Bytes::get(env, 8)<<24)
+    let n = Bytes::get(env, at = 5)|(Bytes::get(env, at = 6)<<8)|(Bytes::get(env, at = 7)<<16)|(Bytes::get(env, at = 8)<<24)
     if total != 9 + n {
       None
     } else {
       let out = Bytes::new()
-      Bytes::blit(out, env, 9, total)
+      Bytes::blit(out, src = env, start = 9, end = total)
       Some(out)
     }
   }
@@ -153,15 +153,15 @@ export fn decode_persistent_artifact(env: Bytes) -> Option[Bytes] {
 /// compile (#2402 review, three escalations of the same race). Any
 /// residual torn read is still caught by the envelope length check above.
 export fn store_persistent_artifact(version_tag: String, kind: String, entry_name: String, fingerprint: String, bytes: Bytes) -> Unit with Exception + Fs {
-  let path = persistent_artifact_cache_path(version_tag, kind, entry_name, fingerprint)
-  store_artifact_envelope_at(path, bytes)
+  let path = persistent_artifact_cache_path(version_tag = version_tag, kind = kind, entry_name = entry_name, fingerprint = fingerprint)
+  store_artifact_envelope_at(path = path, bytes = bytes)
 }
 
 export fn store_artifact_envelope_at(path: String, bytes: Bytes) -> Unit with Exception + Fs {
-  Fs::write_bytes(path, encode_persistent_artifact(bytes))
+  Fs::write_bytes(path, bytes = encode_persistent_artifact(bytes))
 }
 
-export fn load_artifact_envelope_at(path: String) -> Option[Bytes] with Exception + Fs {
+export fn load_artifact_envelope_at(_ path: String) -> Option[Bytes] with Exception + Fs {
   if !(Fs::exists(path)) {
     None
   } else {
@@ -170,18 +170,18 @@ export fn load_artifact_envelope_at(path: String) -> Option[Bytes] with Exceptio
 }
 
 export fn persistent_dep_list_cache_path(version_tag: String, path: String, source_fingerprint: String, resolution_seed: String) -> String {
-  stable_cache_path(version_tag, "selfhost_dep_list", String::concat(path, String::concat("|", String::concat(source_fingerprint, resolution_seed))), ".tsv")
+  stable_cache_path(version_tag = version_tag, prefix = "selfhost_dep_list", seed = String::concat(path, String::concat("|", String::concat(source_fingerprint, resolution_seed))), suffix = ".tsv")
 }
 
 export fn persistent_type_env_cache_path(version_tag: String, fingerprint: String) -> String {
-  stable_cache_path(version_tag, "selfhost_type_env_v10", fingerprint, ".tsv")
+  stable_cache_path(version_tag = version_tag, prefix = "selfhost_type_env_v10", seed = fingerprint, suffix = ".tsv")
 }
 
-export fn build_source_groups_fingerprint(groups: Array[(String, Array[(String, String)])]) -> String {
+export fn build_source_groups_fingerprint(_ groups: Array[(String, Array[(String, String)])]) -> String {
   let mut acc = "merged-groups"
   let mut i = 0
   while i < Array::length(groups) {
-    let (group_name, sources) = Array::get(groups, i)
+    let (group_name, sources) = Array::get(groups, at = i)
     let fingerprint = build_sources_fingerprint(sources)
     let next = String::concat(acc, String::concat("|", String::concat(group_name, String::concat("=", fingerprint))))
     acc = compact_string_fingerprint(next)
@@ -190,10 +190,10 @@ export fn build_source_groups_fingerprint(groups: Array[(String, Array[(String, 
   acc
 }
 
-export fn normalize_persistent_cache_text(text: String) -> String {
+export fn normalize_persistent_cache_text(_ text: String) -> String {
   let len = String::length(text)
   let mut start = 0
-  while start < len && String::char_code_at(text, start) == 0 {
+  while start < len && String::char_code_at(text, at = start) == 0 {
     start = start + 1
   }
   if start == 0 {
@@ -204,37 +204,37 @@ export fn normalize_persistent_cache_text(text: String) -> String {
 }
 
 export fn load_persistent_artifact(version_tag: String, kind: String, entry_name: String, fingerprint: String) -> Option[Bytes] with Exception + Fs {
-  load_artifact_envelope_at(persistent_artifact_cache_path(version_tag, kind, entry_name, fingerprint))
+  load_artifact_envelope_at(persistent_artifact_cache_path(version_tag = version_tag, kind = kind, entry_name = entry_name, fingerprint = fingerprint))
 }
 
 export fn persistent_source_list_cache_path(version_tag: String, entry_path: String, resolution_seed: String) -> String {
-  stable_cache_path(version_tag, "selfhost_source_list", String::concat(entry_path, resolution_seed), ".tsv")
+  stable_cache_path(version_tag = version_tag, prefix = "selfhost_source_list", seed = String::concat(entry_path, resolution_seed), suffix = ".tsv")
 }
 
 export fn persistent_source_group_cache_path(version_tag: String, entry_path: String, resolution_seed: String) -> String {
-  stable_cache_path(version_tag, "selfhost_source_groups", String::concat(entry_path, resolution_seed), ".tsv")
+  stable_cache_path(version_tag = version_tag, prefix = "selfhost_source_groups", seed = String::concat(entry_path, resolution_seed), suffix = ".tsv")
 }
 
 export fn persistent_module_header_cache_path(version_tag: String, path: String, source_fingerprint: String, resolution_seed: String) -> String {
-  stable_cache_path(version_tag, "selfhost_module_header_v2", String::concat(path, String::concat("|", String::concat(source_fingerprint, resolution_seed))), ".tsv")
+  stable_cache_path(version_tag = version_tag, prefix = "selfhost_module_header_v2", seed = String::concat(path, String::concat("|", String::concat(source_fingerprint, resolution_seed))), suffix = ".tsv")
 }
 
 export fn persistent_manifest_header_cache_path(version_tag: String, entry_path: String) -> String {
-  stable_cache_path(version_tag, "selfhost_manifest_headers", entry_path, ".tsv")
+  stable_cache_path(version_tag = version_tag, prefix = "selfhost_manifest_headers", seed = entry_path, suffix = ".tsv")
 }
 
 export fn persistent_leaf_fingerprint_cache_path(version_tag: String, path: String, source_fingerprint: String) -> String {
-  stable_cache_path(version_tag, "selfhost_leaf_fp_v2", String::concat(path, String::concat("|", source_fingerprint)), ".tsv")
+  stable_cache_path(version_tag = version_tag, prefix = "selfhost_leaf_fp_v2", seed = String::concat(path, String::concat("|", source_fingerprint)), suffix = ".tsv")
 }
 
-fn build_sources_fingerprint_from_compact_fingerprints(sources: Array[(String, String)]) -> String {
+fn build_sources_fingerprint_from_compact_fingerprints(_ sources: Array[(String, String)]) -> String {
   // Match compilation_input_fingerprint(sources, "") exactly, except the
   // already-computed content fingerprints replace source text. The cached
   // source-group fast path must therefore retain each source path too.
   let mut acc = "compilation-input|entry="
   let mut i = 0
   while i < Array::length(sources) {
-    let (path, source_fingerprint) = Array::get(sources, i)
+    let (path, source_fingerprint) = Array::get(sources, at = i)
     let pair = String::concat(path, String::concat("=", source_fingerprint))
     acc = compact_string_fingerprint(String::concat(acc, String::concat("|", pair)))
     i = i + 1
@@ -242,11 +242,11 @@ fn build_sources_fingerprint_from_compact_fingerprints(sources: Array[(String, S
   acc
 }
 
-export fn build_source_groups_fingerprint_from_compact_fingerprints(groups: Array[(String, Array[(String, String)])]) -> String {
+export fn build_source_groups_fingerprint_from_compact_fingerprints(_ groups: Array[(String, Array[(String, String)])]) -> String {
   let mut acc = "merged-groups"
   let mut i = 0
   while i < Array::length(groups) {
-    let (group_name, specs) = Array::get(groups, i)
+    let (group_name, specs) = Array::get(groups, at = i)
     let fingerprint = build_sources_fingerprint_from_compact_fingerprints(specs)
     let next = String::concat(acc, String::concat("|", String::concat(group_name, String::concat("=", fingerprint))))
     acc = compact_string_fingerprint(next)
@@ -260,11 +260,11 @@ export fn build_fs_compile_wasi_artifact_fingerprint_from_group_fingerprint(sour
 }
 
 export fn build_fs_compile_wasi_artifact_fingerprint(source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> String {
-  build_fs_compile_wasi_artifact_fingerprint_from_group_fingerprint(build_source_groups_fingerprint(source_groups), entry_name)
+  build_fs_compile_wasi_artifact_fingerprint_from_group_fingerprint(source_groups_fingerprint = build_source_groups_fingerprint(source_groups), entry_name = entry_name)
 }
 
 export fn build_fs_compile_wasi_artifact_fingerprint_for_entry_path(source_groups: Array[(String, Array[(String, String)])], entry_path: String, entry_name: String) -> String {
-  build_fs_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(build_source_groups_fingerprint(source_groups), entry_path, entry_name)
+  build_fs_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint = build_source_groups_fingerprint(source_groups), entry_path = entry_path, entry_name = entry_name)
 }
 
 export fn build_fs_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint: String, entry_path: String, entry_name: String) -> String {
@@ -276,38 +276,38 @@ export fn build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint(so
 }
 
 export fn build_file_compile_wasi_artifact_fingerprint(source_groups: Array[(String, Array[(String, String)])], entry_name: String, mode: String) -> String {
-  build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint(build_source_groups_fingerprint(source_groups), entry_name, mode)
+  build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint(source_groups_fingerprint = build_source_groups_fingerprint(source_groups), entry_name = entry_name, mode = mode)
 }
 
 export fn build_file_compile_wasi_artifact_fingerprint_for_entry_path(source_groups: Array[(String, Array[(String, String)])], entry_path: String, entry_name: String, mode: String) -> String {
-  build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(build_source_groups_fingerprint(source_groups), entry_path, entry_name, mode)
+  build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint = build_source_groups_fingerprint(source_groups), entry_path = entry_path, entry_name = entry_name, mode = mode)
 }
 
 export fn build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint: String, entry_path: String, entry_name: String, mode: String) -> String {
   compact_string_fingerprint(String::concat("file-compile|", String::concat(source_groups_fingerprint, String::concat("|", String::concat(entry_path, String::concat("|", String::concat(entry_name, String::concat("|", mode))))))))
 }
 
-export fn build_fs_compile_module_artifact_fingerprint_from_group_fingerprint(source_groups_fingerprint: String) -> String {
+export fn build_fs_compile_module_artifact_fingerprint_from_group_fingerprint(_ source_groups_fingerprint: String) -> String {
   compact_string_fingerprint(String::concat("fs-compile-module|", source_groups_fingerprint))
 }
 
-export fn build_fs_compile_module_artifact_fingerprint(source_groups: Array[(String, Array[(String, String)])]) -> String {
+export fn build_fs_compile_module_artifact_fingerprint(_ source_groups: Array[(String, Array[(String, String)])]) -> String {
   build_fs_compile_module_artifact_fingerprint_from_group_fingerprint(build_source_groups_fingerprint(source_groups))
 }
 
 export fn build_fs_compile_module_artifact_fingerprint_for_entry_path(source_groups: Array[(String, Array[(String, String)])], entry_path: String) -> String {
-  build_fs_compile_module_artifact_fingerprint_from_group_fingerprint_for_entry_path(build_source_groups_fingerprint(source_groups), entry_path)
+  build_fs_compile_module_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint = build_source_groups_fingerprint(source_groups), entry_path = entry_path)
 }
 
 export fn build_fs_compile_module_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint: String, entry_path: String) -> String {
   compact_string_fingerprint(String::concat("fs-compile-module|", String::concat(source_groups_fingerprint, String::concat("|", entry_path))))
 }
 
-export fn build_file_compile_module_artifact_fingerprint_from_group_fingerprint(source_groups_fingerprint: String) -> String {
+export fn build_file_compile_module_artifact_fingerprint_from_group_fingerprint(_ source_groups_fingerprint: String) -> String {
   compact_string_fingerprint(String::concat("file-compile-module|", source_groups_fingerprint))
 }
 
-export fn build_file_compile_module_artifact_fingerprint(source_groups: Array[(String, Array[(String, String)])]) -> String {
+export fn build_file_compile_module_artifact_fingerprint(_ source_groups: Array[(String, Array[(String, String)])]) -> String {
   build_file_compile_module_artifact_fingerprint_from_group_fingerprint(build_source_groups_fingerprint(source_groups))
 }
 

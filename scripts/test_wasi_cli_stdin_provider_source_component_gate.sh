@@ -23,9 +23,9 @@ COMPILER="$(cd "$(dirname "$COMPILER")" && pwd)/$(basename "$COMPILER")"
 command -v wasm-tools >/dev/null 2>&1 || { echo "stdin provider source gate FAILED: wasm-tools is required" >&2; exit 1; }
 grep -Fq 'type StdinStream' lib/@vibe/console/index.vpkg
 grep -Fq 'fn Stdin::read_via_stream() -> StdinStream with Stdin' lib/@vibe/console/index.vpkg
-grep -Fq 'fn StdinStream::next(stream: StdinStream) -> Int with Async' lib/@vibe/console/index.vpkg
-grep -Fq 'fn StdinStream::close(stream: StdinStream) -> Unit with Async' lib/@vibe/console/index.vpkg
-grep -Fq 'fn StdinStream::read_chunk(stream: StdinStream, chunk_size: Int) -> Option[String] with Async' lib/@vibe/console/index.vpkg
+grep -Fq 'fn StdinStream::next(_ stream: StdinStream) -> Int with Async' lib/@vibe/console/index.vpkg
+grep -Fq 'fn StdinStream::close(_ stream: StdinStream) -> Unit with Async' lib/@vibe/console/index.vpkg
+grep -Fq 'fn StdinStream::read_chunk(_ stream: StdinStream, chunk_size: Int) -> Option[String] with Async' lib/@vibe/console/index.vpkg
 if grep -Fq 'fn stdin_stream(' lib/@vibe/console/index.vpkg; then
   echo "stdin provider source gate FAILED: legacy stdin_stream remains public; use StdinStream::read_chunk" >&2
   exit 1
@@ -244,9 +244,9 @@ generated_hash =
 
 type StdinStream
 fn Stdin::read_via_stream() -> StdinStream with Stdin
-fn StdinStream::next(stream: StdinStream) -> Int with Async
-fn StdinStream::close(stream: StdinStream) -> Unit with Async
-fn StdinStream::read_chunk(stream: StdinStream, chunk_size: Int) -> Option[String] with Async
+fn StdinStream::next(_ stream: StdinStream) -> Int with Async
+fn StdinStream::close(_ stream: StdinStream) -> Unit with Async
+fn StdinStream::read_chunk(_ stream: StdinStream, chunk_size: Int) -> Option[String] with Async
 EOF
 
 compile_component() {

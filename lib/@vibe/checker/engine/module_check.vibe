@@ -85,18 +85,18 @@ import @vibe/core {
 fn engine_locate_fn_name_marker(source: String, msg: String, mi: Int) -> String {
   let marker = " [@fn="
   let inner_start = mi + String::length(marker)
-  let rel_end = String::index_of(String::substring(msg, inner_start, String::length(msg)), "]")
+  let rel_end = String::index_of(String::substring(msg, start = inner_start, end = String::length(msg)), needle = "]")
   if rel_end < 0 {
-    engine_locate_type_error_heuristic(source, String::substring(msg, 0, mi))
+    engine_locate_type_error_heuristic(source = source, msg = String::substring(msg, start = 0, end = mi))
   } else {
     let close = inner_start + rel_end
-    let marked = String::substring(msg, inner_start, close)
-    let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, close + 1, String::length(msg)))
+    let marked = String::substring(msg, start = inner_start, end = close)
+    let stripped = String::concat(String::substring(msg, start = 0, end = mi), String::substring(msg, start = close + 1, end = String::length(msg)))
     // #3548: `name#k` names the k-th top-level declaration of `name` (a
     // duplicate declaration is the second one, not the first).
-    let hash_at = String::index_of(marked, "#")
+    let hash_at = String::index_of(marked, needle = "#")
     let nth = if hash_at > 0 {
-      match Int::parse(String::substring(marked, hash_at + 1, String::length(marked))) {
+      match Int::parse(String::substring(marked, start = hash_at + 1, end = String::length(marked))) {
         Some(k) => k,
         None => 0
       }
@@ -104,23 +104,23 @@ fn engine_locate_fn_name_marker(source: String, msg: String, mi: Int) -> String 
       0
     }
     let name = if nth > 0 {
-      String::substring(marked, 0, hash_at)
+      String::substring(marked, start = 0, end = hash_at)
     } else {
       marked
     }
     let off = if nth > 0 {
-      engine_find_nth_decl_anchor_off(source, name, nth)
+      engine_find_nth_decl_anchor_off(source = source, name = name, nth = nth)
     } else {
-      engine_find_fn_anchor_off(source, name)
+      engine_find_fn_anchor_off(source = source, name = name)
     }
     if off >= 0 {
-      String::concat(engine_offset_line_col_range_prefix(source, off, off + String::length(name)), stripped)
+      String::concat(engine_offset_line_col_range_prefix(source = source, start = off, endo = off + String::length(name)), stripped)
     } else {
-      let (s, e) = engine_impl_method_binding_span(source, name, stripped)
+      let (s, e) = engine_impl_method_binding_span(source = source, name = name, msg = stripped)
       if s >= 0 {
-        String::concat(engine_offset_line_col_range_prefix(source, s, e), stripped)
+        String::concat(engine_offset_line_col_range_prefix(source = source, start = s, endo = e), stripped)
       } else {
-        engine_locate_type_error_heuristic(source, stripped)
+        engine_locate_type_error_heuristic(source = source, msg = stripped)
       }
     }
   }
@@ -134,12 +134,12 @@ fn engine_locate_fn_name_marker(source: String, msg: String, mi: Int) -> String 
 /// trait comes from the owner's `$impl$` segment; a plain impl's owner names
 /// none, and any impl of the owner that defines the method is taken.
 fn engine_impl_method_binding_span(source: String, name: String, msg: String) -> (Int, Int) {
-  let sep = String::index_of(name, "::")
+  let sep = String::index_of(name, needle = "::")
   if sep <= 0 {
     return (0 - 1, 0 - 1)
   }
-  let owner_full = String::substring(name, 0, sep)
-  let method = String::substring(name, sep + 2, String::length(name))
+  let owner_full = String::substring(name, start = 0, end = sep)
+  let method = String::substring(name, start = sep + 2, end = String::length(name))
   let key = impl_method_owner_trait_key(owner_full)
   let trait_head = if key == "" {
     ""
@@ -147,21 +147,21 @@ fn engine_impl_method_binding_span(source: String, name: String, msg: String) ->
     trait_ref_name(key)
   }
   let param_marker = " in parameter `"
-  let param_at = String::index_of(msg, param_marker)
+  let param_at = String::index_of(msg, needle = param_marker)
   let (part, param) = if param_at >= 0 {
-    let rest = String::substring(msg, param_at + String::length(param_marker), String::length(msg))
-    let close = String::index_of(rest, "`")
+    let rest = String::substring(msg, start = param_at + String::length(param_marker), end = String::length(msg))
+    let close = String::index_of(rest, needle = "`")
     if close > 0 {
-      ("param", String::substring(rest, 0, close))
+      ("param", String::substring(rest, start = 0, end = close))
     } else {
       ("name", "")
     }
-  } else if String::index_of(msg, " in the return type") >= 0 {
+  } else if String::index_of(msg, needle = " in the return type") >= 0 {
     ("ret", "")
   } else {
     ("name", "")
   }
-  engine_impl_method_span(source, trait_head, impl_method_owner_head(owner_full), method, part, param)
+  engine_impl_method_span(source = source, trait_head = trait_head, owner = impl_method_owner_head(owner_full), method = method, part = part, param = param)
 }
 
 /// Decode (and ALWAYS strip) the ` [@off=N]` marker the checker may have
@@ -180,13 +180,13 @@ fn engine_impl_method_binding_span(source: String, name: String, msg: String) ->
 /// -- so this can extend a range to the closing quote and never pull one in.
 fn engine_string_token_end(source: String, start: Int, fallback: Int) -> Int {
   let slen = String::length(source)
-  if start < 0 || start >= slen || String::byte_at(source, start) != 34 {
+  if start < 0 || start >= slen || String::byte_at(source, at = start) != 34 {
     fallback
   } else {
     let mut i = start + 1
     let mut found = 0 - 1
     while i < slen {
-      let c = String::byte_at(source, i)
+      let c = String::byte_at(source, at = i)
       if c == 92 {
         i = i + 2
       } else if c == 34 {
@@ -240,36 +240,36 @@ fn engine_string_token_end(source: String, start: Int, fallback: Int) -> Int {
 ///   * the statement ENDS right after it, so `(1, 2) == p` or `1 + x` keeps
 ///     the binder anchor rather than naming one operand as the initializer.
 fn engine_binding_literal_range(source: String, stripped: String, n: Int) -> (Int, Int) {
-  if n < 0 || n >= String::length(source) || !String::starts_with(stripped, "binding type mismatch") {
+  if n < 0 || n >= String::length(source) || !String::starts_with(stripped, prefix = "binding type mismatch") {
     (n, 0 - 1)
   } else {
     let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
-    let binder = engine_lit_token_index_at(tokens, starts, n)
+    let binder = engine_lit_token_index_at(tokens = tokens, starts = starts, off = n)
     let is_binder = if binder < 1 {
       false
     } else {
-      match (Array::get(tokens, binder - 1), Array::get(tokens, binder)) {
+      match (Array::get(tokens, at = binder - 1), Array::get(tokens, at = binder)) {
         (TLet, TIdent(_)) => true,
         (TMut, TIdent(_)) => true,
         _ => false
       }
     }
     let eq = if is_binder {
-      engine_lit_binding_eq(tokens, binder + 1)
+      engine_lit_binding_eq(tokens = tokens, from = binder + 1)
     } else {
       0 - 1
     }
     let last = if eq < 0 {
       0 - 1
     } else {
-      engine_lit_initializer_last(tokens, eq + 1)
+      engine_lit_initializer_last(tokens = tokens, first = eq + 1)
     }
     if last < 0 {
       (n, 0 - 1)
-    } else if !engine_lit_statement_ends_at(source, tokens, starts, ends, last + 1) {
+    } else if !engine_lit_statement_ends_at(source = source, tokens = tokens, starts = starts, ends = ends, next = last + 1) {
       (n, 0 - 1)
     } else {
-      (Array::get(starts, eq + 1), Array::get(ends, last))
+      (Array::get(starts, at = eq + 1), Array::get(ends, at = last))
     }
   }
 }
@@ -281,12 +281,12 @@ fn engine_lit_token_index_at(tokens: Array[Token], starts: Array[Int], off: Int)
   let mut found = 0 - 1
   let mut i = 0
   while found < 0 && i < Array::length(starts) {
-    let at = Array::get(starts, i)
+    let at = Array::get(starts, at = i)
     if at > off {
       i = Array::length(starts)
     } else if at == off {
-      let synthetic = match Array::get(tokens, i) {
-        TSemicolon => i + 1 < Array::length(starts) && Array::get(starts, i + 1) == off,
+      let synthetic = match Array::get(tokens, at = i) {
+        TSemicolon => i + 1 < Array::length(starts) && Array::get(starts, at = i + 1) == off,
         TEof => true,
         _ => false
       }
@@ -304,7 +304,7 @@ fn engine_lit_token_index_at(tokens: Array[Token], starts: Array[Int], off: Int)
 }
 
 /// 1 for `[`, 2 for `(`, 3 for `{`; the negation for the closer; 0 otherwise.
-fn engine_lit_bracket_kind(tok: Token) -> Int {
+fn engine_lit_bracket_kind(_ tok: Token) -> Int {
   match tok {
     TLBracket => 1,
     TLParen => 2,
@@ -322,7 +322,7 @@ fn engine_lit_matching_close(tokens: Array[Token], opener: Int) -> Int {
   let mut found = 0 - 1
   let mut i = opener
   while found < 0 && i < Array::length(tokens) {
-    let k = engine_lit_bracket_kind(Array::get(tokens, i))
+    let k = engine_lit_bracket_kind(Array::get(tokens, at = i))
     if k > 0 {
       depth = depth + 1
     } else if k < 0 {
@@ -347,7 +347,7 @@ fn engine_lit_binding_eq(tokens: Array[Token], from: Int) -> Int {
   let mut found = 0 - 1
   let mut i = from
   while found < 0 && i < Array::length(tokens) {
-    let tok = Array::get(tokens, i)
+    let tok = Array::get(tokens, at = i)
     let k = engine_lit_bracket_kind(tok)
     if k > 0 {
       depth = depth + 1
@@ -387,7 +387,7 @@ fn engine_lit_initializer_last(tokens: Array[Token], first: Int) -> Int {
   if first >= Array::length(tokens) {
     0 - 1
   } else {
-    match Array::get(tokens, first) {
+    match Array::get(tokens, at = first) {
       TInt(_) => first,
       TFloat(_) => first,
       TFloat32(_) => first,
@@ -396,8 +396,8 @@ fn engine_lit_initializer_last(tokens: Array[Token], first: Int) -> Int {
       } else {
         0 - 1
       },
-      TLParen => engine_lit_matching_close(tokens, first),
-      TLBracket => engine_lit_matching_close(tokens, first),
+      TLParen => engine_lit_matching_close(tokens = tokens, opener = first),
+      TLBracket => engine_lit_matching_close(tokens = tokens, opener = first),
       _ => 0 - 1
     }
   }
@@ -411,11 +411,11 @@ fn engine_lit_statement_ends_at(source: String, tokens: Array[Token], starts: Ar
   if next >= Array::length(tokens) {
     true
   } else {
-    match Array::get(tokens, next) {
+    match Array::get(tokens, at = next) {
       TSemicolon => true,
       TRBrace => true,
       TEof => true,
-      tok => if engine_lit_newline_between(source, Array::get(ends, next - 1), Array::get(starts, next)) {
+      tok => if engine_lit_newline_between(source = source, from = Array::get(ends, at = next - 1), to = Array::get(starts, at = next)) {
         engine_lit_token_starts_statement(tok)
       } else {
         false
@@ -428,13 +428,13 @@ fn engine_lit_newline_between(source: String, from: Int, to: Int) -> Bool {
   let mut found = false
   let mut i = from
   while !found && i < to {
-    found = String::byte_at(source, i) == 10
+    found = String::byte_at(source, at = i) == 10
     i = i + 1
   }
   found
 }
 
-fn engine_lit_token_starts_statement(tok: Token) -> Bool {
+fn engine_lit_token_starts_statement(_ tok: Token) -> Bool {
   match tok {
     TIdent(_) => true,
     TInt(_) => true,
@@ -476,12 +476,12 @@ fn engine_lit_token_starts_statement(tok: Token) -> Bool {
 /// in between -- returns no range, and the element itself stands.
 fn engine_enclosing_literal_range(source: String, elem: Int, path: String) -> (Int, Int) {
   let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
-  let at = engine_lit_token_index_at(tokens, starts, elem)
+  let at = engine_lit_token_index_at(tokens = tokens, starts = starts, off = elem)
   let depth = String::length(path)
   let anchored = if at < 0 || depth == 0 {
     false
   } else {
-    match Array::get(tokens, at) {
+    match Array::get(tokens, at = at) {
       TString(_) => true,
       TIdent(_) => true,
       _ => false
@@ -493,11 +493,11 @@ fn engine_enclosing_literal_range(source: String, elem: Int, path: String) -> (I
     let opened: Array[Int] = []
     let mut i = 0
     while i < at {
-      let k = engine_lit_bracket_kind(Array::get(tokens, i))
+      let k = engine_lit_bracket_kind(Array::get(tokens, at = i))
       if k > 0 {
-        Array::push(opened, i)
+        Array::push(opened, value = i)
       } else if k < 0 && Array::length(opened) > 0 {
-        Array::truncate(opened, Array::length(opened) - 1)
+        Array::truncate(opened, length = Array::length(opened) - 1)
       } else {
         ()
       }
@@ -507,19 +507,19 @@ fn engine_enclosing_literal_range(source: String, elem: Int, path: String) -> (I
     let mut ok = base >= 0
     let mut j = 0
     while ok && j < depth {
-      let want = String::byte_at(path, j) - 48
-      ok = engine_lit_bracket_kind(Array::get(tokens, Array::get(opened, base + j))) == want
+      let want = String::byte_at(path, at = j) - 48
+      ok = engine_lit_bracket_kind(Array::get(tokens, at = Array::get(opened, at = base + j))) == want
       j = j + 1
     }
     let close = if ok {
-      engine_lit_matching_close(tokens, Array::get(opened, base))
+      engine_lit_matching_close(tokens = tokens, opener = Array::get(opened, at = base))
     } else {
       0 - 1
     }
     if close < 0 {
       (0 - 1, 0 - 1)
     } else {
-      (Array::get(starts, Array::get(opened, base)), Array::get(ends, close))
+      (Array::get(starts, at = Array::get(opened, at = base)), Array::get(ends, at = close))
     }
   }
 }
@@ -538,25 +538,25 @@ fn engine_enclosing_literal_range(source: String, elem: Int, path: String) -> (I
 /// INDEX must be exactly the literal described. Anything else returns no
 /// range, and the callee stands.
 fn engine_call_argument_range(source: String, callee: Int, spec: String) -> (Int, Int) {
-  let fields = String::split(String::substring(spec, 1, String::length(spec)), "/")
+  let fields = String::split(String::substring(spec, start = 1, end = String::length(spec)), sep = "/")
   if Array::length(fields) != 4 {
     (0 - 1, 0 - 1)
   } else {
     let field = (k: Int) -> {
-      let f = Array::get(fields, k)
-      engine_parse_offset_digits(f, 0, String::length(f))
+      let f = Array::get(fields, at = k)
+      engine_parse_offset_digits(msg = f, start = 0, end = String::length(f))
     }
     let index = field(0)
     let count = field(1)
     let kind = field(2)
     let items = field(3)
     let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
-    let at = engine_lit_token_index_at(tokens, starts, callee)
-    let named = at >= 0 && match Array::get(tokens, at) {
+    let at = engine_lit_token_index_at(tokens = tokens, starts = starts, off = callee)
+    let named = at >= 0 && match Array::get(tokens, at = at) {
       TIdent(_) => true,
       _ => false
     }
-    let received = at > 0 && match Array::get(tokens, at - 1) {
+    let received = at > 0 && match Array::get(tokens, at = at - 1) {
       TDot => true,
       TPipeGt => true,
       TDoubleColon => true,
@@ -566,19 +566,19 @@ fn engine_call_argument_range(source: String, callee: Int, spec: String) -> (Int
       (0 - 1, 0 - 1)
     } else {
       let mut paren = at + 1
-      while paren + 1 < Array::length(tokens) && engine_call_arg_is_qualifier(Array::get(tokens, paren), Array::get(tokens, paren + 1)) {
+      while paren + 1 < Array::length(tokens) && engine_call_arg_is_qualifier(sep = Array::get(tokens, at = paren), name = Array::get(tokens, at = paren + 1)) {
         paren = paren + 2
       }
-      let opens_call = paren < Array::length(tokens) && match Array::get(tokens, paren) {
+      let opens_call = paren < Array::length(tokens) && match Array::get(tokens, at = paren) {
         TLParen => true,
         _ => false
       }
       let close = if opens_call {
-        engine_lit_matching_close(tokens, paren)
+        engine_lit_matching_close(tokens = tokens, opener = paren)
       } else {
         0 - 1
       }
-      let applied_again = close >= 0 && close + 1 < Array::length(tokens) && match Array::get(tokens, close + 1) {
+      let applied_again = close >= 0 && close + 1 < Array::length(tokens) && match Array::get(tokens, at = close + 1) {
         TLParen => true,
         _ => false
       }
@@ -587,22 +587,22 @@ fn engine_call_argument_range(source: String, callee: Int, spec: String) -> (Int
       } else {
         let firsts: Array[Int] = []
         let lasts: Array[Int] = []
-        let ok = engine_call_arg_segments(tokens, paren + 1, close, firsts, lasts)
+        let ok = engine_call_arg_segments(tokens = tokens, from = paren + 1, close = close, firsts = firsts, lasts = lasts)
         if !ok || Array::length(firsts) != count {
           (0 - 1, 0 - 1)
         } else {
-          let segment_first = Array::get(firsts, index)
-          let last = Array::get(lasts, index)
+          let segment_first = Array::get(firsts, at = index)
+          let last = Array::get(lasts, at = index)
           let first = if segment_first + 2 <= last {
-            match (Array::get(tokens, segment_first), Array::get(tokens, segment_first + 1)) {
+            match (Array::get(tokens, at = segment_first), Array::get(tokens, at = segment_first + 1)) {
               (TIdent(_), TEq) => segment_first + 2,
               _ => segment_first
             }
           } else {
             segment_first
           }
-          if engine_call_arg_is_literal(tokens, first, last, kind, items) {
-            (Array::get(starts, first), Array::get(ends, last))
+          if engine_call_arg_is_literal(tokens = tokens, first = first, last = last, kind = kind, items = items) {
+            (Array::get(starts, at = first), Array::get(ends, at = last))
           } else {
             (0 - 1, 0 - 1)
           }
@@ -633,7 +633,7 @@ fn engine_call_arg_segments(tokens: Array[Token], from: Int, close: Int, firsts:
   let mut seg = from
   let mut i = from
   while ok && i < close {
-    let tok = Array::get(tokens, i)
+    let tok = Array::get(tokens, at = i)
     let k = engine_lit_bracket_kind(tok)
     if k > 0 {
       depth = depth + 1
@@ -646,8 +646,8 @@ fn engine_call_arg_segments(tokens: Array[Token], from: Int, close: Int, firsts:
           if i == seg {
             ok = false
           } else {
-            Array::push(firsts, seg)
-            Array::push(lasts, i - 1)
+            Array::push(firsts, value = seg)
+            Array::push(lasts, value = i - 1)
           }
           seg = i + 1
         },
@@ -662,8 +662,8 @@ fn engine_call_arg_segments(tokens: Array[Token], from: Int, close: Int, firsts:
     i = i + 1
   }
   if ok && depth == 0 && seg < close {
-    Array::push(firsts, seg)
-    Array::push(lasts, close - 1)
+    Array::push(firsts, value = seg)
+    Array::push(lasts, value = close - 1)
   } else {
     ()
   }
@@ -675,25 +675,25 @@ fn engine_call_arg_segments(tokens: Array[Token], from: Int, close: Int, firsts:
 /// argument, or (`4`) a single `Int` / `Double` / `Bool` token?
 fn engine_call_arg_is_literal(tokens: Array[Token], first: Int, last: Int, kind: Int, items: Int) -> Bool {
   if kind == 4 {
-    first == last && match Array::get(tokens, first) {
+    first == last && match Array::get(tokens, at = first) {
       TInt(_) => true,
       TFloat(_) => true,
       TIdent(word) => word == "true" || word == "false",
       _ => false
     }
-  } else if (kind == 1 || kind == 2) && engine_lit_bracket_kind(Array::get(tokens, first)) == kind && engine_lit_matching_close(tokens, first) == last {
+  } else if (kind == 1 || kind == 2) && engine_lit_bracket_kind(Array::get(tokens, at = first)) == kind && engine_lit_matching_close(tokens = tokens, opener = first) == last {
     let firsts: Array[Int] = []
     let lasts: Array[Int] = []
-    let ok = engine_call_arg_segments(tokens, first + 1, last, firsts, lasts)
+    let ok = engine_call_arg_segments(tokens = tokens, from = first + 1, close = last, firsts = firsts, lasts = lasts)
     // A one-element tuple is written `(x,)`; `(x)` is grouping, not a tuple.
-    ok && Array::length(firsts) == items && (kind == 1 || items != 1 || engine_call_arg_trailing_comma(tokens, last))
+    ok && Array::length(firsts) == items && (kind == 1 || items != 1 || engine_call_arg_trailing_comma(tokens = tokens, close = last))
   } else {
     false
   }
 }
 
 fn engine_call_arg_trailing_comma(tokens: Array[Token], close: Int) -> Bool {
-  close > 0 && match Array::get(tokens, close - 1) {
+  close > 0 && match Array::get(tokens, at = close - 1) {
     TComma => true,
     _ => false
   }
@@ -709,10 +709,10 @@ fn engine_locate_each_line(path: String, source: String, msg: String) -> Array[S
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(parts) {
-    let part = Array::get(parts, i)
-    let located = engine_locate_physical(source, part)
-    match engine_type_diagnostic_display(path, source, located) {
-      (disp_path, disp_msg) => Array::push(out, String::concat(String::concat(disp_path, ": "), disp_msg))
+    let part = Array::get(parts, at = i)
+    let located = engine_locate_physical(source = source, msg = part)
+    match engine_type_diagnostic_display(path = path, source = source, located_msg = located) {
+      (disp_path, disp_msg) => Array::push(out, value = String::concat(String::concat(disp_path, ": "), disp_msg))
     }
     i = i + 1
   }
@@ -728,14 +728,14 @@ fn engine_locate_each_line(path: String, source: String, msg: String) -> Array[S
 /// -- or from a search by name that met the inherited import first; the
 /// search is then run again on the file as written.
 fn engine_locate_physical(source: String, msg: String) -> String {
-  let located = engine_locate_type_error(source, msg)
-  if loader_prepended_prefix_bytes(source) == 0 {
+  let located = engine_locate_type_error(source = source, msg = msg)
+  if loader_prepended_prefix_bytes(source = source) == 0 {
     located
   } else {
-    let physical = loader_physical_located(source, located)
-    let dropped = String::starts_with(located, "line ") && !String::starts_with(physical, "line ")
-    if dropped && !String::contains(msg, " [@off=") && !String::contains(msg, " [@assign-target") {
-      engine_locate_type_error(loader_physical_text(source), msg)
+    let physical = loader_physical_located(source = source, located = located)
+    let dropped = String::starts_with(located, prefix = "line ") && !String::starts_with(physical, prefix = "line ")
+    if dropped && !String::contains(msg, needle = " [@off=") && !String::contains(msg, needle = " [@assign-target") {
+      engine_locate_type_error(source = loader_physical_text(source = source), msg = msg)
     } else {
       physical
     }
@@ -759,32 +759,32 @@ fn engine_locate_physical(source: String, msg: String) -> String {
 /// framing and the locating live on opposite sides of the compiler, and a
 /// brand-new cross-file export plus its first caller in one commit is the
 /// shape the merge/flatten tool drops.
-export fn engine_split_diagnostics(msg: String) -> Array[String] {
-  let lines = String::split(msg, "\n")
+export fn engine_split_diagnostics(_ msg: String) -> Array[String] {
+  let lines = String::split(msg, sep = "\n")
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(lines) {
-    let line = Array::get(lines, i)
+    let line = Array::get(lines, at = i)
     if String::length(line) == 0 {
       ()
     } else if engine_diag_line_is_continuation(line) && Array::length(out) > 0 {
       let last = Array::length(out) - 1
-      Array::set(out, last, String::concat(Array::get(out, last), String::concat("\n", line)))
+      Array::set(out, at = last, value = String::concat(Array::get(out, at = last), String::concat("\n", line)))
     } else {
-      Array::push(out, line)
+      Array::push(out, value = line)
     }
     i = i + 1
   }
   out
 }
 
-fn engine_diag_line_is_continuation(line: String) -> Bool {
-  if String::starts_with(line, "hint: ") {
+fn engine_diag_line_is_continuation(_ line: String) -> Bool {
+  if String::starts_with(line, prefix = "hint: ") {
     true
   } else if String::length(line) == 0 {
     false
   } else {
-    let c = String::byte_at(line, 0)
+    let c = String::byte_at(line, at = 0)
     c == 32 || c == 9
   }
 }
@@ -805,41 +805,41 @@ fn engine_diag_line_is_continuation(line: String) -> Bool {
 fn engine_locate_assignment_target(source: String, msg: String, marker_at: Int) -> String {
   let marker = " [@assign-target"
   let body_start = marker_at + String::length(marker)
-  let rel_close = String::index_of(String::substring(msg, body_start, String::length(msg)), "]")
+  let rel_close = String::index_of(String::substring(msg, start = body_start, end = String::length(msg)), needle = "]")
   if rel_close < 0 {
-    return String::substring(msg, 0, marker_at)
+    return String::substring(msg, start = 0, end = marker_at)
   }
   let close = body_start + rel_close
-  let body = String::substring(msg, body_start, close)
-  let stripped = String::concat(String::substring(msg, 0, marker_at), String::substring(msg, close + 1, String::length(msg)))
-  let off = if String::starts_with(body, "=") {
-    engine_parse_offset_digits(body, 1, String::length(body))
+  let body = String::substring(msg, start = body_start, end = close)
+  let stripped = String::concat(String::substring(msg, start = 0, end = marker_at), String::substring(msg, start = close + 1, end = String::length(msg)))
+  let off = if String::starts_with(body, prefix = "=") {
+    engine_parse_offset_digits(msg = body, start = 1, end = String::length(body))
   } else {
     0 - 1
   }
   let name_marker = "unknown name: "
-  let start = String::index_of(stripped, name_marker)
+  let start = String::index_of(stripped, needle = name_marker)
   if off < 0 || start < 0 {
     return stripped
   }
   let name_start = start + String::length(name_marker)
-  let name_end = engine_typecheck_ident_run(stripped, name_start)
+  let name_end = engine_typecheck_ident_run(s = stripped, start = name_start)
   if name_end <= name_start {
     return stripped
   }
-  let name = String::substring(stripped, name_start, name_end)
+  let name = String::substring(stripped, start = name_start, end = name_end)
   let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
-  let at = engine_lit_token_index_at(tokens, starts, off)
+  let at = engine_lit_token_index_at(tokens = tokens, starts = starts, off = off)
   let named = if at < 0 {
     false
   } else {
-    match Array::get(tokens, at) {
+    match Array::get(tokens, at = at) {
       TIdent(spelled) => spelled == name,
       _ => false
     }
   }
   if named {
-    String::concat(engine_offset_line_col_range_prefix(source, Array::get(starts, at), Array::get(ends, at)), stripped)
+    String::concat(engine_offset_line_col_range_prefix(source = source, start = Array::get(starts, at = at), endo = Array::get(ends, at = at)), stripped)
   } else {
     stripped
   }
@@ -853,7 +853,7 @@ fn engine_impl_close_index(tokens: Array[Token], opener: Int) -> Int {
   let mut k = opener
   let mut close = n
   while k < n && close == n {
-    match Array::get(tokens, k) {
+    match Array::get(tokens, at = k) {
       TLParen => {
         depth = depth + 1
       },
@@ -892,7 +892,7 @@ fn engine_impl_method_name_index(tokens: Array[Token], trait_head: String, owner
   let mut found = 0 - 1
   let mut i = 0
   while i < n && found < 0 {
-    match Array::get(tokens, i) {
+    match Array::get(tokens, at = i) {
       TImpl => {
         let mut j = i + 1
         let mut depth = 0
@@ -901,7 +901,7 @@ fn engine_impl_method_name_index(tokens: Array[Token], trait_head: String, owner
         let mut owner_ok = false
         let mut header_done = false
         while j < n && !header_done {
-          match Array::get(tokens, j) {
+          match Array::get(tokens, at = j) {
             TLBracket => {
               depth = depth + 1
             },
@@ -914,7 +914,7 @@ fn engine_impl_method_name_index(tokens: Array[Token], trait_head: String, owner
               ()
             },
             TFor => if depth == 0 && j + 1 < n {
-              owner_ok = match Array::get(tokens, j + 1) {
+              owner_ok = match Array::get(tokens, at = j + 1) {
                 TIdent(name) => name == owner,
                 _ => false
               }
@@ -923,7 +923,7 @@ fn engine_impl_method_name_index(tokens: Array[Token], trait_head: String, owner
             },
             _ => ()
           }
-          match Array::get(tokens, j) {
+          match Array::get(tokens, at = j) {
             TLBrace => if depth == 0 {
               header_done = true
             } else {
@@ -953,16 +953,16 @@ fn engine_impl_method_name_index(tokens: Array[Token], trait_head: String, owner
             }
           }
         }
-        let has_body = j < n && match Array::get(tokens, j) {
+        let has_body = j < n && match Array::get(tokens, at = j) {
           TLBrace => true,
           _ => false
         }
         if has_body && saw_trait && owner_ok {
-          let body_end = engine_impl_close_index(tokens, j)
+          let body_end = engine_impl_close_index(tokens = tokens, opener = j)
           let mut k = j + 1
           let mut d = 1
           while k < body_end && found < 0 {
-            match Array::get(tokens, k) {
+            match Array::get(tokens, at = k) {
               TLBrace => {
                 d = d + 1
               },
@@ -971,7 +971,7 @@ fn engine_impl_method_name_index(tokens: Array[Token], trait_head: String, owner
               },
               // ... or by its own binder (`write[Y: Show](..)`).
               TIdent(name) => if d == 1 && name == method && k + 1 < n {
-                match Array::get(tokens, k + 1) {
+                match Array::get(tokens, at = k + 1) {
                   TLParen => {
                     found = k
                   },
@@ -1011,7 +1011,7 @@ fn engine_impl_head_span(source: String, trait_head: String, owner: String, nth:
   let mut span = (0 - 1, 0 - 1)
   let mut i = 0
   while i < n && nth > 0 && span.0 < 0 {
-    match Array::get(tokens, i) {
+    match Array::get(tokens, at = i) {
       TImpl => {
         let mut j = i + 1
         let mut depth = 0
@@ -1019,7 +1019,7 @@ fn engine_impl_head_span(source: String, trait_head: String, owner: String, nth:
         let mut owner_at = 0 - 1
         let mut header_done = false
         while j < n && !header_done {
-          match Array::get(tokens, j) {
+          match Array::get(tokens, at = j) {
             TLBracket => {
               depth = depth + 1
               j = j + 1
@@ -1038,7 +1038,7 @@ fn engine_impl_head_span(source: String, trait_head: String, owner: String, nth:
             },
             TFor => {
               if depth == 0 && j + 1 < n {
-                match Array::get(tokens, j + 1) {
+                match Array::get(tokens, at = j + 1) {
                   TIdent(name) => if name == owner {
                     owner_at = j + 1
                   } else {
@@ -1082,7 +1082,7 @@ fn engine_impl_head_span(source: String, trait_head: String, owner: String, nth:
         if saw_trait && owner_at >= 0 {
           seen = seen + 1
           if seen == nth {
-            span = (Array::get(starts, i), Array::get(ends, owner_at))
+            span = (Array::get(starts, at = i), Array::get(ends, at = owner_at))
           } else {
             ()
           }
@@ -1113,20 +1113,20 @@ fn engine_impl_head_span(source: String, trait_head: String, owner: String, nth:
 fn engine_impl_method_span(source: String, trait_head: String, owner: String, method: String, part: String, param: String) -> (Int, Int) {
   let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
   let n = Array::length(tokens)
-  let at = engine_impl_method_name_index(tokens, trait_head, owner, method)
+  let at = engine_impl_method_name_index(tokens = tokens, trait_head = trait_head, owner = owner, method = method)
   if at < 0 {
     return (0 - 1, 0 - 1)
   }
-  let name_span = (Array::get(starts, at), Array::get(ends, at))
+  let name_span = (Array::get(starts, at = at), Array::get(ends, at = at))
   // The parameter list opens after the method's own binder, if it has one.
-  let params_open = match Array::get(tokens, at + 1) {
-    TLBracket => engine_impl_close_index(tokens, at + 1) + 1,
+  let params_open = match Array::get(tokens, at = at + 1) {
+    TLBracket => engine_impl_close_index(tokens = tokens, opener = at + 1) + 1,
     _ => at + 1
   }
   if params_open >= n {
     return name_span
   }
-  let close = engine_impl_close_index(tokens, params_open)
+  let close = engine_impl_close_index(tokens = tokens, opener = params_open)
   if close >= n {
     return name_span
   }
@@ -1135,9 +1135,9 @@ fn engine_impl_method_span(source: String, trait_head: String, owner: String, me
     let mut k = at + 2
     let mut span = name_span
     while k < params_open - 1 {
-      match Array::get(tokens, k) {
-        TIdent(name) => if name == param && (span.0 == Array::get(starts, at)) {
-          span = (Array::get(starts, k), Array::get(ends, k))
+      match Array::get(tokens, at = k) {
+        TIdent(name) => if name == param && (span.0 == Array::get(starts, at = at)) {
+          span = (Array::get(starts, at = k), Array::get(ends, at = k))
         } else {
           ()
         },
@@ -1152,7 +1152,7 @@ fn engine_impl_method_span(source: String, trait_head: String, owner: String, me
     let mut span = name_span
     let mut done = false
     while k < close && !done {
-      match Array::get(tokens, k) {
+      match Array::get(tokens, at = k) {
         TLParen => {
           depth = depth + 1
         },
@@ -1166,13 +1166,13 @@ fn engine_impl_method_span(source: String, trait_head: String, owner: String, me
           depth = depth - 1
         },
         TIdent(name) => if depth == 1 && name == param {
-          let leads = match Array::get(tokens, k - 1) {
+          let leads = match Array::get(tokens, at = k - 1) {
             TLParen => true,
             TComma => true,
             _ => false
           }
           if leads {
-            span = (Array::get(starts, k), Array::get(ends, k))
+            span = (Array::get(starts, at = k), Array::get(ends, at = k))
             done = true
           } else {
             ()
@@ -1192,7 +1192,7 @@ fn engine_impl_method_span(source: String, trait_head: String, owner: String, me
     let mut with_at = 0 - 1
     let mut done = false
     while body < n && !done {
-      match Array::get(tokens, body) {
+      match Array::get(tokens, at = body) {
         TLBracket => {
           depth = depth + 1
           body = body + 1
@@ -1233,10 +1233,10 @@ fn engine_impl_method_span(source: String, trait_head: String, owner: String, me
       if with_at < 0 {
         name_span
       } else {
-        (Array::get(starts, with_at), Array::get(ends, body - 1))
+        (Array::get(starts, at = with_at), Array::get(ends, at = body - 1))
       }
     } else {
-      let has_arrow = match Array::get(tokens, close + 1) {
+      let has_arrow = match Array::get(tokens, at = close + 1) {
         TThinArrow => true,
         _ => false
       }
@@ -1246,7 +1246,7 @@ fn engine_impl_method_span(source: String, trait_head: String, owner: String, me
         with_at
       }
       if has_arrow && close + 2 < ret_end {
-        (Array::get(starts, close + 2), Array::get(ends, ret_end - 1))
+        (Array::get(starts, at = close + 2), Array::get(ends, at = ret_end - 1))
       } else {
         name_span
       }
@@ -1260,99 +1260,99 @@ fn engine_impl_method_span(source: String, trait_head: String, owner: String, me
 fn engine_locate_impl_method(source: String, msg: String, marker_at: Int) -> String {
   let marker = " [@impl-method="
   let body_start = marker_at + String::length(marker)
-  let rel_close = String::index_of(String::substring(msg, body_start, String::length(msg)), "]")
+  let rel_close = String::index_of(String::substring(msg, start = body_start, end = String::length(msg)), needle = "]")
   if rel_close < 0 {
-    return engine_locate_type_error_heuristic(source, String::substring(msg, 0, marker_at))
+    return engine_locate_type_error_heuristic(source = source, msg = String::substring(msg, start = 0, end = marker_at))
   }
   let close = body_start + rel_close
-  let fields = String::split(String::substring(msg, body_start, close), "|")
-  let stripped = String::concat(String::substring(msg, 0, marker_at), String::substring(msg, close + 1, String::length(msg)))
+  let fields = String::split(String::substring(msg, start = body_start, end = close), sep = "|")
+  let stripped = String::concat(String::substring(msg, start = 0, end = marker_at), String::substring(msg, start = close + 1, end = String::length(msg)))
   if Array::length(fields) != 5 {
-    return engine_locate_type_error_heuristic(source, stripped)
+    return engine_locate_type_error_heuristic(source = source, msg = stripped)
   }
-  if Array::get(fields, 3) == "head" {
+  if Array::get(fields, at = 3) == "head" {
     // #3548: the k-th `impl TRAIT for OWNER` header itself.
-    let nth = match Int::parse(Array::get(fields, 4)) {
+    let nth = match Int::parse(Array::get(fields, at = 4)) {
       Some(k) => k,
       None => 0
     }
-    let (hs, he) = engine_impl_head_span(source, Array::get(fields, 0), Array::get(fields, 1), nth)
+    let (hs, he) = engine_impl_head_span(source = source, trait_head = Array::get(fields, at = 0), owner = Array::get(fields, at = 1), nth = nth)
     return if hs < 0 {
-      engine_locate_type_error_heuristic(source, stripped)
+      engine_locate_type_error_heuristic(source = source, msg = stripped)
     } else {
-      String::concat(engine_offset_line_col_range_prefix(source, hs, he), stripped)
+      String::concat(engine_offset_line_col_range_prefix(source = source, start = hs, endo = he), stripped)
     }
   }
-  let (s, e) = engine_impl_method_span(source, Array::get(fields, 0), Array::get(fields, 1), Array::get(fields, 2), Array::get(fields, 3), Array::get(fields, 4))
+  let (s, e) = engine_impl_method_span(source = source, trait_head = Array::get(fields, at = 0), owner = Array::get(fields, at = 1), method = Array::get(fields, at = 2), part = Array::get(fields, at = 3), param = Array::get(fields, at = 4))
   if s < 0 {
-    engine_locate_type_error_heuristic(source, stripped)
+    engine_locate_type_error_heuristic(source = source, msg = stripped)
   } else {
-    String::concat(engine_offset_line_col_range_prefix(source, s, e), stripped)
+    String::concat(engine_offset_line_col_range_prefix(source = source, start = s, endo = e), stripped)
   }
 }
 
 export fn engine_locate_type_error(source: String, msg: String) -> String {
-  let assign_at = String::index_of(msg, " [@assign-target")
+  let assign_at = String::index_of(msg, needle = " [@assign-target")
   if assign_at >= 0 {
-    return engine_locate_assignment_target(source, msg, assign_at)
+    return engine_locate_assignment_target(source = source, msg = msg, marker_at = assign_at)
   }
-  let impl_method_at = String::index_of(msg, " [@impl-method=")
+  let impl_method_at = String::index_of(msg, needle = " [@impl-method=")
   if impl_method_at >= 0 {
-    return engine_locate_impl_method(source, msg, impl_method_at)
+    return engine_locate_impl_method(source = source, msg = msg, marker_at = impl_method_at)
   }
   let marker = " [@off="
-  let mi = String::index_of(msg, marker)
-  let fn_mi = String::index_of(msg, " [@fn=")
+  let mi = String::index_of(msg, needle = marker)
+  let fn_mi = String::index_of(msg, needle = " [@fn=")
   if mi < 0 {
     if fn_mi < 0 {
-      engine_locate_type_error_heuristic(source, msg)
+      engine_locate_type_error_heuristic(source = source, msg = msg)
     } else {
-      engine_locate_fn_name_marker(source, msg, fn_mi)
+      engine_locate_fn_name_marker(source = source, msg = msg, mi = fn_mi)
     }
   } else {
     let inner_start = mi + String::length(marker)
-    let rel_end = String::index_of(String::substring(msg, inner_start, String::length(msg)), "]")
+    let rel_end = String::index_of(String::substring(msg, start = inner_start, end = String::length(msg)), needle = "]")
     if rel_end < 0 {
       // Malformed marker (no closing `]`): strip from the marker onward.
-      engine_locate_type_error_heuristic(source, String::substring(msg, 0, mi))
+      engine_locate_type_error_heuristic(source = source, msg = String::substring(msg, start = 0, end = mi))
     } else {
       let close = inner_start + rel_end
       // inner is `N` (start only), `N:M` (start:end), or `N::PATH` (#3305: an
       // element inside a tuple / array literal, widened below). Split on `:`.
-      let whole = String::substring(msg, inner_start, close)
-      let path_at = String::index_of(whole, "::")
+      let whole = String::substring(msg, start = inner_start, end = close)
+      let path_at = String::index_of(whole, needle = "::")
       let inner = if path_at < 0 {
         whole
       } else {
-        String::substring(whole, 0, path_at)
+        String::substring(whole, start = 0, end = path_at)
       }
       let path = if path_at < 0 {
         ""
       } else {
-        String::substring(whole, path_at + 2, String::length(whole))
+        String::substring(whole, start = path_at + 2, end = String::length(whole))
       }
-      let colon = String::index_of(inner, ":")
+      let colon = String::index_of(inner, needle = ":")
       let n = if colon < 0 {
-        engine_parse_offset_digits(inner, 0, String::length(inner))
+        engine_parse_offset_digits(msg = inner, start = 0, end = String::length(inner))
       } else {
-        engine_parse_offset_digits(inner, 0, colon)
+        engine_parse_offset_digits(msg = inner, start = 0, end = colon)
       }
       let m = if colon < 0 {
         -1
       } else {
-        engine_parse_offset_digits(inner, colon + 1, String::length(inner))
+        engine_parse_offset_digits(msg = inner, start = colon + 1, end = String::length(inner))
       }
       // Strip the full ` [@off=...]` segment (marker .. closing `]` inclusive).
-      let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, close + 1, String::length(msg)))
+      let stripped = String::concat(String::substring(msg, start = 0, end = mi), String::substring(msg, start = close + 1, end = String::length(msg)))
       let slen = String::length(source)
       // #3305: widen an element of a tuple / array literal to the literal.
       // When the source does not show exactly that literal, the element
       // stands -- a position inside the literal, never outside it.
       let (n, m) = if String::length(path) > 0 {
-        let widened = if String::starts_with(path, "@") {
-          engine_call_argument_range(source, n, path)
+        let widened = if String::starts_with(path, prefix = "@") {
+          engine_call_argument_range(source = source, callee = n, spec = path)
         } else {
-          engine_enclosing_literal_range(source, n, path)
+          engine_enclosing_literal_range(source = source, elem = n, path = path)
         }
         match widened {
           (ls, le) => if ls >= 0 {
@@ -1370,11 +1370,11 @@ export fn engine_locate_type_error(source: String, msg: String) -> String {
       // the range inside the token, and every escape costs another byte. The
       // AST carries no token end and the checker has no source text; this
       // function has both, so the honest end is derived here.
-      let m = engine_string_token_end(source, n, m)
+      let m = engine_string_token_end(source = source, start = n, fallback = m)
       // #2831: a literal with no offset slot anchors its BINDER; move to the
       // literal when the source says that is what the initializer is.
       let (n, m) = if m < 0 {
-        match engine_binding_literal_range(source, stripped, n) {
+        match engine_binding_literal_range(source = source, stripped = stripped, n = n) {
           (ln, lm) => (ln, lm)
         }
       } else {
@@ -1382,12 +1382,12 @@ export fn engine_locate_type_error(source: String, msg: String) -> String {
       }
       if n >= 0 && n < slen {
         if m > n && m <= slen {
-          String::concat(engine_offset_line_col_range_prefix(source, n, m), stripped)
+          String::concat(engine_offset_line_col_range_prefix(source = source, start = n, endo = m), stripped)
         } else {
-          String::concat(engine_offset_line_col_prefix(source, n), stripped)
+          String::concat(engine_offset_line_col_prefix(source = source, off = n), stripped)
         }
       } else {
-        engine_locate_type_error_heuristic(source, stripped)
+        engine_locate_type_error_heuristic(source = source, msg = stripped)
       }
     }
   }
@@ -1406,15 +1406,15 @@ export enum ModuleOutcome {
 export enum CheckedModuleTypingArtifactFreshnessAttestation {
   AttestedCheckedModuleTypingArtifact(String)
 }
-fn engine_checked_module_dependency_interface_assumptions(dep_envs: Array[(String, TypeEnv)]) -> Array[(String, String)] with Exception {
+fn engine_checked_module_dependency_interface_assumptions(_ dep_envs: Array[(String, TypeEnv)]) -> Array[(String, String)] with Exception {
   let assumptions = array_empty()
   let mut i = 0
   while i < Array::length(dep_envs) {
-    let (path, env) = Array::get(dep_envs, i)
+    let (path, env) = Array::get(dep_envs, at = i)
     // check_module receives dependency environments only after they have been
     // restricted to their published export surfaces. Preserve their actual
     // import order and fingerprint exactly that checker-visible interface.
-    Array::push(assumptions, (path, engine_incremental_persistent_type_env_transport_identity(env)))
+    Array::push(assumptions, value = (path, engine_incremental_persistent_type_env_transport_identity(env)))
     i = i + 1
   }
   assumptions
@@ -1424,29 +1424,29 @@ let checked_module_typing_artifact_validation_attempts: Array[Int] = [0]
 /// Test-observation counter. It measures entry into artifact construction, not
 /// checker execution: ordinary and diagnosed paths remain zero.
 export fn engine_checked_module_typing_artifact_construction_attempt_count() -> Int {
-  Array::get(checked_module_typing_artifact_construction_attempts, 0)
+  Array::get(checked_module_typing_artifact_construction_attempts, at = 0)
 }
 export fn engine_reset_checked_module_typing_artifact_construction_attempt_count() -> Unit {
-  Array::set(checked_module_typing_artifact_construction_attempts, 0, 0)
+  Array::set(checked_module_typing_artifact_construction_attempts, at = 0, value = 0)
 }
 /// Test-only count of entries into the explicit freshness validator.
 export fn engine_checked_module_typing_artifact_validation_attempt_count() -> Int {
-  Array::get(checked_module_typing_artifact_validation_attempts, 0)
+  Array::get(checked_module_typing_artifact_validation_attempts, at = 0)
 }
 export fn engine_reset_checked_module_typing_artifact_validation_attempt_count() -> Unit {
-  Array::set(checked_module_typing_artifact_validation_attempts, 0, 0)
+  Array::set(checked_module_typing_artifact_validation_attempts, at = 0, value = 0)
 }
 fn engine_checked_module_typing_artifact_bytes(checked: CheckedProgram, job: CheckJob) -> Option[String] with Exception {
-  Array::set(checked_module_typing_artifact_construction_attempts, 0, Array::get(checked_module_typing_artifact_construction_attempts, 0) + 1)
+  Array::set(checked_module_typing_artifact_construction_attempts, at = 0, value = Array::get(checked_module_typing_artifact_construction_attempts, at = 0) + 1)
   // Both identities are derived here from the exact same already-ingested
   // CheckJob.source; there is no filesystem reread or caller identity input.
-  let source_identity = compact_source_fingerprint_memo(job.path, job.source)
+  let source_identity = compact_source_fingerprint_memo(path = job.path, source = job.source)
   let implementation_identity = engine_incremental_implementation_identity(job.source)
-  match checked_exported_interface_artifact_from_checked_program(checked) {
-    Some(exported_interface) => match shadow_unattested_checked_module_typing_artifact_v2_from_checked_program(checked, job.path, source_identity, source_identity, implementation_identity, implementation_identity, engine_checked_module_dependency_interface_assumptions(job.dep_envs), [
+  match checked_exported_interface_artifact_from_checked_program(checked = checked) {
+    Some(exported_interface) => match shadow_unattested_checked_module_typing_artifact_v2_from_checked_program(checked = checked, module_locator = job.path, observed_source_identity = source_identity, recorded_source_identity = source_identity, observed_implementation_identity = implementation_identity, recorded_implementation_identity = implementation_identity, dependency_interface_assumptions = engine_checked_module_dependency_interface_assumptions(job.dep_envs), recorded_implementation_closure = [
       (job.path, "provisional_token_stream_v1", implementation_identity)
-    ], exported_interface) {
-      Some(artifact) => Some(encode_checked_module_typing_artifact_v2(artifact)),
+    ], exported_interface = exported_interface) {
+      Some(artifact) => Some(encode_checked_module_typing_artifact_v2(artifact = artifact)),
       None => None
     },
     None => None
@@ -1455,7 +1455,7 @@ fn engine_checked_module_typing_artifact_bytes(checked: CheckedProgram, job: Che
 /// Read the optional snapshot retained in a Checked outcome. Diagnosed outcomes
 /// have no snapshot. These observations are not persisted or consulted by
 /// planning, cache lookup, TypeEnv assembly or reuse.
-export fn engine_checked_module_typing_artifact_observation(outcome: ModuleOutcome) -> Option[String] {
+export fn engine_checked_module_typing_artifact_observation(_ outcome: ModuleOutcome) -> Option[String] {
   match outcome {
     Checked(_, _, _, _, _, _, observation) => observation,
     Diagnosed(_, _) => None
@@ -1467,9 +1467,9 @@ export fn engine_checked_module_typing_artifact_observation(outcome: ModuleOutco
 /// singleton-closure matching. Missing, malformed, stale, or diagnosed inputs
 /// return None. Nothing is published, persisted, planned, cached, or reused.
 export fn engine_checked_module_typing_artifact_freshness_attestation_for_job(job: CheckJob, outcome: ModuleOutcome) -> Option[CheckedModuleTypingArtifactFreshnessAttestation] with Exception {
-  Array::set(checked_module_typing_artifact_validation_attempts, 0, Array::get(checked_module_typing_artifact_validation_attempts, 0) + 1)
+  Array::set(checked_module_typing_artifact_validation_attempts, at = 0, value = Array::get(checked_module_typing_artifact_validation_attempts, at = 0) + 1)
   match outcome {
-    Checked(_, _, _, _, _, _, Some(bytes)) => if checked_module_typing_artifact_v2_matches_exact_inputs(bytes, job.path, compact_source_fingerprint_memo(job.path, job.source), engine_incremental_implementation_identity(job.source), engine_checked_module_dependency_interface_assumptions(job.dep_envs)) {
+    Checked(_, _, _, _, _, _, Some(bytes)) => if checked_module_typing_artifact_v2_matches_exact_inputs(text = bytes, module_locator = job.path, source_identity = compact_source_fingerprint_memo(path = job.path, source = job.source), implementation_identity = engine_incremental_implementation_identity(job.source), dependency_interface_assumptions = engine_checked_module_dependency_interface_assumptions(job.dep_envs)) {
       Some(AttestedCheckedModuleTypingArtifact(bytes))
     } else {
       None
@@ -1480,14 +1480,14 @@ export fn engine_checked_module_typing_artifact_freshness_attestation_for_job(jo
 }
 /// Return the exact retained bytes that were validated when the opaque
 /// attestation was minted. This does not decode or re-encode the artifact.
-export fn engine_checked_module_typing_artifact_freshness_attestation_snapshot(attestation: CheckedModuleTypingArtifactFreshnessAttestation) -> String {
+export fn engine_checked_module_typing_artifact_freshness_attestation_snapshot(_ attestation: CheckedModuleTypingArtifactFreshnessAttestation) -> String {
   match attestation {
     AttestedCheckedModuleTypingArtifact(bytes) => bytes
   }
 }
 /// Compatibility observation over the opaque attestation API.
 export fn engine_checked_module_typing_artifact_observation_is_fresh_for_job(job: CheckJob, outcome: ModuleOutcome) -> Bool with Exception {
-  match engine_checked_module_typing_artifact_freshness_attestation_for_job(job, outcome) {
+  match engine_checked_module_typing_artifact_freshness_attestation_for_job(job = job, outcome = outcome) {
     Some(_) => true,
     None => false
   }
@@ -1500,13 +1500,13 @@ export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool,
   // Parse stays OUTSIDE the handler below: parse errors currently
   // propagate verbatim, while type errors get located and path-prefixed.
   // Folding both into one handler would relabel every parse diagnostic.
-  let stmts = engine_parse_program_with_path_impl(job.path, job.source, true)
+  let stmts = engine_parse_program_with_path_impl(path = job.path, source = job.source, observe_current_source_parse = true)
   // Match the shared parser's ownership contract: Stmt values are immutable,
   // while checker desugars replace entries in their top-level array.
   let parsed_snapshot: Array[Stmt] = []
   if artifact_output is Some(_) {
     for stmt in stmts {
-      Array::push(parsed_snapshot, stmt)
+      Array::push(parsed_snapshot, value = stmt)
     }
   }
   // #1521: importing a name the dependency does not export used to bind
@@ -1520,10 +1520,10 @@ export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool,
     Some(shared) => shared,
     None => engine_dependency_interface_set_new()
   }
-  engine_dependency_interface_set_supply_missing(published, job.dep_envs)
-  let (import_env, reexport_declarations) = engine_build_import_envs_from_interfaces(stmts, dir_of_path(job.path), published, for row in job.dep_envs {
+  engine_dependency_interface_set_supply_missing(interfaces = published, envs = job.dep_envs)
+  let (import_env, reexport_declarations) = engine_build_import_envs_from_interfaces(stmts = stmts, base_dir = dir_of_path(file_path = job.path), interfaces = published, dependency_paths = for row in job.dep_envs {
     row.0
-  }, unresolved_imports)
+  }, unresolved = unresolved_imports)
   // The CANONICAL fingerprint, computed the same way the serial walk
   // computes it (build_fingerprint, same file) from the same inputs: this
   // module's own source and each dependency's fingerprint in declaration
@@ -1531,31 +1531,31 @@ export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool,
   // handed to it -- could publish a checked environment that the serial
   // driver would never look up, which would make a parallel pre-check pass
   // silently do nothing.
-  let fingerprint = engine_typecheck_fs_build_fingerprint(job.path, job.source, job.dep_fps, typing_semantics_seed())
+  let fingerprint = engine_typecheck_fs_build_fingerprint(path = job.path, source = job.source, dep_fps = job.dep_fps, semantics_seed = typing_semantics_seed())
   if Array::length(unresolved_imports) > 0 {
     // An alias that takes a builtin namespace's name is pointed at in the
     // import that wrote it; the other import diagnostics name the import
     // in their text.
     Diagnosed(job.path, for msg in unresolved_imports {
-      String::concat(String::concat(job.path, ": "), engine_locate_import_alias_namespace_msg(job.source, msg))
+      String::concat(String::concat(job.path, ": "), engine_locate_import_alias_namespace_msg(source = job.source, msg = msg))
     })
   } else {
     handle {
       // Retain the opaque-producing checker result from this exact production
       // invocation. No caller-supplied CheckedProgram or diagnostic assertion
       // participates in the #1550 observation.
-      engine_incremental_typecheck_telemetry_add(6, 1)
+      engine_incremental_typecheck_telemetry_add(index = 6, amount = 1)
       // #2391: one checker invocation, two outputs -- the CheckedProgram this
       // function always produced (EnvEmpty delegates to the plain check, so
       // both former arms are preserved), plus this module's Double
       // call-result offsets for the FS lanes' float_call_offsets channel.
       // #3360: this module publishes what its exported functions keep.
-      retention_summaries_for_path(job.path)
-      declaring_module_path_set(job.path, job.ships_owned_heads)
+      retention_summaries_for_path(path = job.path)
+      declaring_module_path_set(path = job.path, ships_owned_heads = job.ships_owned_heads)
       // A check that throws must not leave this module named as the one
       // being checked: the cells are process-global.
       let (checked_program, located_offsets, eq_offs, eq_keys, placements) = handle {
-        check_program_with_projected_import_env_lowering_placements(stmts, import_env)
+        check_program_with_projected_import_env_lowering_placements(stmts = stmts, initial_env = import_env)
       } with { Exception::Throw(message) => {
         declaring_module_path_clear()
         retention_summaries_clear()
@@ -1565,11 +1565,11 @@ export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool,
       retention_summaries_clear()
       // Scalar observation may decline while call placements remain available.
       // Preserve that independent channel in both memo and artifact outputs.
-      engine_module_typed_lowering_memo_put(job.path, fingerprint, match located_offsets {
+      engine_module_typed_lowering_memo_put(path = job.path, fingerprint = fingerprint, offsets = match located_offsets {
         Some(offsets) => offsets,
         None => placements
-      }, eq_offs, eq_keys)
-      engine_module_typed_lowering_bind_source(job.path, fingerprint, job.source)
+      }, eq_offs = eq_offs, eq_keys = eq_keys)
+      engine_module_typed_lowering_bind_source(path = job.path, fingerprint = fingerprint, source = job.source)
       let full_checked_env = checked_program.final_env
       // #1533: what leaves this function is the module's PUBLISHED
       // environment -- restricted to its export surface -- because every
@@ -1584,9 +1584,9 @@ export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool,
       // still cached an artifact would be reused through
       // `checked_module_artifact_outcome` on the next build, and the refusal
       // would disappear.
-      let checked_env = engine_checked_module_public_env_for_path(job.path, stmts, full_checked_env, reexport_declarations)
+      let checked_env = engine_checked_module_public_env_for_path(path = job.path, stmts = stmts, full_checked_env = full_checked_env, reexport_declarations = reexport_declarations)
       let interface_identity = if engine_incremental_interface_trace_enabled() {
-        engine_incremental_interface_identity(job.source, checked_env)
+        engine_incremental_interface_identity(source = job.source, env = checked_env)
       } else {
         ""
       }
@@ -1601,16 +1601,16 @@ export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool,
         ""
       }
       let module_typing_artifact = if observe_typing_artifact {
-        engine_checked_module_typing_artifact_bytes(checked_program, job)
+        engine_checked_module_typing_artifact_bytes(checked = checked_program, job = job)
       } else {
         None
       }
       match program_transport {
-        Some(output) => Array::push(output, encode_checked_program(checked_program)),
+        Some(output) => Array::push(output, value = encode_checked_program(checked = checked_program)),
         None => ()
       }
       match artifact_output {
-        Some((input_identity, output)) => Array::push(output, CheckedModuleArtifact::{
+        Some((input_identity, output)) => Array::push(output, value = CheckedModuleArtifact::{
           input_identity,
           parsed_stmts: parsed_snapshot,
           checked_program,
@@ -1630,32 +1630,32 @@ export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool,
       // markers are per-diagnostic, so running this over the joined string
       // would stamp the FIRST `[@off=]` it found onto the whole report and
       // leave the rest unlocated (measured).
-      Diagnosed(job.path, engine_locate_each_line(job.path, job.source, msg))
+      Diagnosed(job.path, engine_locate_each_line(path = job.path, source = job.source, msg = msg))
     } }
   }
 }
 /// Run one production module check without constructing optional artifact observations.
 /// Production module check. No Fs: dependency environments are already values
 /// inside the job. Shadow artifact observation stays disabled by default.
-export fn engine_check_module(job: CheckJob) -> ModuleOutcome with Env + Exception {
-  engine_check_module_impl(job, false, None, None, None)
+export fn engine_check_module(_ job: CheckJob) -> ModuleOutcome with Env + Exception {
+  engine_check_module_impl(job = job, observe_typing_artifact = false, program_transport = None, artifact_output = None, interfaces = None)
 }
 /// Retain the optional canonical observation from this actual successful check.
 /// Opt-in trusted #1550 observation producer. This runs the same complete module
 /// checker and retains canonical bytes only in its opaque successful outcome.
-export fn engine_check_module_with_typing_artifact_observation(job: CheckJob) -> ModuleOutcome with Env + Exception {
-  engine_check_module_impl(job, true, None, None, None)
+export fn engine_check_module_with_typing_artifact_observation(_ job: CheckJob) -> ModuleOutcome with Env + Exception {
+  engine_check_module_impl(job = job, observe_typing_artifact = true, program_transport = None, artifact_output = None, interfaces = None)
 }
 /// Transport the result of the actual check; diagnosed modules produce no program bytes.
 /// Check against the job's actual import environment and retain the complete
 /// result from that one successful invocation. Diagnosed modules have no bytes;
 /// parse failures propagate exactly as in check_module. This transport has no
 /// persistent identity or cache authority until a coordinator binds its inputs.
-export fn engine_check_module_with_program_transport(job: CheckJob) -> (ModuleOutcome, Option[Bytes]) with Env + Exception {
+export fn engine_check_module_with_program_transport(_ job: CheckJob) -> (ModuleOutcome, Option[Bytes]) with Env + Exception {
   let output: Array[Bytes] = []
-  let outcome = engine_check_module_impl(job, false, Some(output), None, None)
+  let outcome = engine_check_module_impl(job = job, observe_typing_artifact = false, program_transport = Some(output), artifact_output = None, interfaces = None)
   let bytes = if Array::length(output) == 1 {
-    Some(Array::get(output, 0))
+    Some(Array::get(output, at = 0))
   } else {
     None
   }
@@ -1693,8 +1693,8 @@ export fn engine_job_dir_path(dir: String, name: String) -> String {
 /// other row. There is deliberately no `fingerprint` row for the job's OWN
 /// identity: that is check_module's output (via build_fingerprint), never
 /// an input a caller could get wrong or fail to keep in sync.
-export fn engine_parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) with Exception {
-  let lines = String::split(normalize_persistent_cache_text(job_text), "\n")
+export fn engine_parse_job_rows(_ job_text: String) -> (String, Array[String], Array[String]) with Exception {
+  let lines = String::split(normalize_persistent_cache_text(job_text), sep = "\n")
   let len = Array::length(lines)
   let deps = engine_empty_stack()
   let dep_fps = engine_empty_stack()
@@ -1702,20 +1702,20 @@ export fn engine_parse_job_rows(job_text: String) -> (String, Array[String], Arr
   let mut version_ok = false
   let mut i = 0
   while i < len {
-    let line = Array::get(lines, i)
+    let line = Array::get(lines, at = i)
     if String::length(line) == 0 {
       ()
     } else {
-      let parts = String::split(line, "\t")
+      let parts = String::split(line, sep = "\t")
       let plen = Array::length(parts)
       let key = if plen > 0 {
-        Array::get(parts, 0)
+        Array::get(parts, at = 0)
       } else {
         ""
       }
       if key == "dep" {
-        let dep_path = Array::get(parts, 1)
-        let dep_fp = Array::get(parts, 2)
+        let dep_path = Array::get(parts, at = 1)
+        let dep_fp = Array::get(parts, at = 2)
         if plen != 3 {
           throw(String::concat("invalid module job dep row (want path + fingerprint): ", line))
         } else if String::length(dep_path) == 0 || String::length(dep_fp) == 0 {
@@ -1728,13 +1728,13 @@ export fn engine_parse_job_rows(job_text: String) -> (String, Array[String], Arr
           // instead of the job being rejected as malformed.
           throw(String::concat("invalid module job dep row (empty path or fingerprint): ", line))
         } else {
-          Array::push(deps, dep_path)
-          Array::push(dep_fps, dep_fp)
+          Array::push(deps, value = dep_path)
+          Array::push(dep_fps, value = dep_fp)
         }
       } else if plen != 2 {
         throw(String::concat("invalid module job row: ", line))
       } else {
-        let value = Array::get(parts, 1)
+        let value = Array::get(parts, at = 1)
         if key == "version" {
           if value == "1" {
             version_ok = true
@@ -1759,7 +1759,7 @@ export fn engine_parse_job_rows(job_text: String) -> (String, Array[String], Arr
   }
 }
 /// Read one frozen job snapshot and write the outcome marker after complete checked products.
-export fn engine_run_module_job_dir(dir: String) -> Unit with Env + Exception + Fs {
+export fn engine_run_module_job_dir(_ dir: String) -> Unit with Env + Exception + Fs {
   // The source-text fingerprint memo spans one compile (the serial walk
   // resets it at its start). A worker process runs one module job after
   // another with no walk around them, so it resets the memo per job: the
@@ -1768,19 +1768,19 @@ export fn engine_run_module_job_dir(dir: String) -> Unit with Env + Exception + 
   // The source-text memo (#2386) is reset per job for the same reason.
   compact_source_fingerprint_memo_reset()
   cache_source_text_memo_reset()
-  let (path, deps, dep_fps) = engine_parse_job_rows(Fs::read_file(engine_job_dir_path(dir, "job.txt")))
-  let source = Fs::read_file(engine_job_dir_path(dir, "source.vibe"))
+  let (path, deps, dep_fps) = engine_parse_job_rows(Fs::read_file(engine_job_dir_path(dir = dir, name = "job.txt")))
+  let source = Fs::read_file(engine_job_dir_path(dir = dir, name = "source.vibe"))
   let dep_envs = array_empty()
   let job_dep_fps = array_empty()
   let mut i = 0
   let dlen = Array::length(deps)
   while i < dlen {
-    let dep_path = Array::get(deps, i)
-    Array::push(job_dep_fps, (dep_path, Array::get(dep_fps, i)))
-    let env_file = engine_job_dir_path(dir, String::concat(String::concat("dep", __to_string(i)), ".env"))
+    let dep_path = Array::get(deps, at = i)
+    Array::push(job_dep_fps, value = (dep_path, Array::get(dep_fps, at = i)))
+    let env_file = engine_job_dir_path(dir = dir, name = String::concat(String::concat("dep", __to_string(i)), ".env"))
     if Fs::exists(env_file) {
       match decode_checked_environment(Fs::read_file(env_file)) {
-        Some(env) => Array::push(dep_envs, (dep_path, env)),
+        Some(env) => Array::push(dep_envs, value = (dep_path, env)),
         // A dep<i>.env that exists but does not decode is an
         // INFRASTRUCTURE failure, not "no environment". Skipping it would
         // drop the dependency's interface and make its imports lenient
@@ -1802,7 +1802,7 @@ export fn engine_run_module_job_dir(dir: String) -> Unit with Env + Exception + 
     deps: deps,
     dep_fps: job_dep_fps,
     dep_envs: dep_envs,
-    ships_owned_heads: is_owned_head_source_location_env_fs(path)
+    ships_owned_heads: is_owned_head_source_location_env_fs(path = path)
   }
   // Parse errors are still an `Error` out of check_module (see the Phase 1
   // note above). At the transport boundary they have to become a value
@@ -1817,25 +1817,25 @@ export fn engine_run_module_job_dir(dir: String) -> Unit with Env + Exception + 
   // rather than a plausible-looking wrong answer.
   match outcome {
     Checked(_, fingerprint, env, _, _, _, _) => {
-      Fs::write_file(engine_job_dir_path(dir, "env.out"), encode_checked_environment(env))
+      Fs::write_file(engine_job_dir_path(dir = dir, name = "env.out"), contents = encode_checked_environment(env))
       // The same successful check populated the lowering memo. An absent
       // table is an infrastructure failure, never an authorized empty table.
       let cache_text = match engine_module_typed_lowering_memo_get_by_fp(fingerprint) {
-        Some(rows) => encode_checked_module_product(env, Some(rows)),
+        Some(rows) => encode_checked_module_product(env = env, lowering = Some(rows)),
         None => throw("module job: successful check has no lowering product")
       }
-      Fs::write_file(engine_job_dir_path(dir, "cache.out"), String::concat(String::concat("checked-worker-cache\t1\t", fingerprint), String::concat("\n", cache_text)))
+      Fs::write_file(engine_job_dir_path(dir = dir, name = "cache.out"), contents = String::concat(String::concat("checked-worker-cache\t1\t", fingerprint), String::concat("\n", cache_text)))
       // The module's own identity, as check_module computed it -- an
       // OUTPUT of this job, needed by the coordinator to build the NEXT
       // job's `dep\t<path>\t<fingerprint>` row for this module's
       // dependents, and eventually to publish this environment at the
       // real persistent-cache path a serial compile would look under.
-      Fs::write_file(engine_job_dir_path(dir, "fingerprint.out"), fingerprint)
-      Fs::write_file(engine_job_dir_path(dir, "outcome.txt"), "ok")
+      Fs::write_file(engine_job_dir_path(dir = dir, name = "fingerprint.out"), contents = fingerprint)
+      Fs::write_file(engine_job_dir_path(dir = dir, name = "outcome.txt"), contents = "ok")
     },
     Diagnosed(_, diags) => {
-      Fs::write_file(engine_job_dir_path(dir, "diag.txt"), String::join(diags, "\n"))
-      Fs::write_file(engine_job_dir_path(dir, "outcome.txt"), "diag")
+      Fs::write_file(engine_job_dir_path(dir = dir, name = "diag.txt"), contents = String::join(diags, sep = "\n"))
+      Fs::write_file(engine_job_dir_path(dir = dir, name = "outcome.txt"), contents = "diag")
     }
   }
 }

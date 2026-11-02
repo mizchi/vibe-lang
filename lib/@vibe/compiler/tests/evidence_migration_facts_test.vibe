@@ -1,0 +1,102 @@
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+import @vibe/core {
+  struct MutSet
+}
+import @vibe/compiler/lowering/effects/queries {
+  edp_collect_program_binders, edp_mf_set_stmt
+}
+import @vibe/compiler/lowering/effects/evidence {
+  edp_append_ctor_inert_names,
+  edp_append_free_host_inert_names,
+  edp_append_visible_pure_lambda_names,
+  edp_collect_fn_defs,
+  edp_mf_base,
+  edp_mf_binders,
+  edp_mf_new,
+  edp_mf_refresh,
+  edp_pure_fn_names
+}
+
+fn call(name: String) -> Expr {
+  ECall(EIdent(name, -1), [], -1, [])
+}
+
+fn pure_lambda() -> Expr {
+  EFn([], [], [("x", None)], None, None, EIdent("x", -1))
+}
+
+fn host_lambda() -> Expr {
+  EFn([], [], [("x", None)], None, None, call("vibe_clock_raw"))
+}
+
+fn top_fn(name: String, params: Array[(String, Option[TypeExpr])], body: Expr) -> Stmt {
+  SLet(false, false, name, None, EFn([], [], params, None, None, body))
+}
+
+// The whole-program walks a migration used to run on every rewritten tree.
+fn walked_base(stmts: Array[Stmt]) -> String {
+  let base = edp_pure_fn_names(edp_collect_fn_defs(stmts))
+  edp_append_free_host_inert_names(stmts, base)
+  edp_append_ctor_inert_names(stmts, base)
+  edp_append_visible_pure_lambda_names(stmts, base)
+  String::join(base, ",")
+}
+
+fn same_members(a: MutSet[String], b: MutSet[String]) -> Bool {
+  let mut same = MutSet::size(a) == MutSet::size(b)
+  for nm in MutSet::to_array(a) {
+    if !MutSet::has(b, nm) {
+      same = false
+    }
+  }
+  same
+}
+
+// Refresh, then demand exactly the walked answer: same names in the same
+// order, and the same binder census.
+fn facts_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String])], stmts: Array[Stmt]) -> Bool {
+  edp_mf_refresh(facts, stmts)
+  let from_facts = String::join(edp_mf_base(facts, stmts, edp_collect_fn_defs(stmts)), ",")
+  from_facts == walked_base(stmts) && same_members(edp_mf_binders(facts), edp_collect_program_binders(stmts))
+}
+
+fn program() -> Array[Stmt] {
+  let use_helper = ECall(EIdent("helper", -1), [EInt(1)], -1, [])
+  [
+    top_fn("top", [], ELet("helper", pure_lambda(), use_helper, -1)),
+    // `helper` is rebound as a parameter here, so it is not a sole spelling.
+    top_fn("other", [("helper", None)], ESeq(call("vibe_fs_raw"), EIdent("helper", -1))),
+    SLetMut("m", None, ELet("only", pure_lambda(), call("vibe_fs_raw"), -1)),
+    SExpr(ESeq(call("vibe_net_raw"), ELet("t", EInt(0), EIdent("t", -1), -1))),
+    SEnum(false, "Choice", [], [("Yes", []), ("No", [])], [])
+  ]
+}
+
+test "migration facts give the walked base and census, through marked rewrites and appends" {
+  let stmts = program()
+  let facts = edp_mf_new()
+  assert(facts_agree(facts, stmts))
+  inspect(walked_base(stmts), content = "top,other,vibe_fs_raw,vibe_net_raw,Some,Ok,Err,Yes,No,only")
+  // A marked rewrite: `other` no longer rebinds `helper`, so `helper` becomes
+  // a sole lambda spelling, and a host callee moves.
+  edp_mf_set_stmt(stmts, 1, top_fn("other", [], ESeq(call("vibe_env_raw"), EInt(0))))
+  assert(facts_agree(facts, stmts))
+  inspect(walked_base(stmts), content = "top,other,vibe_env_raw,vibe_fs_raw,vibe_net_raw,Some,Ok,Err,Yes,No,helper,only")
+  // An append past the end is walked as new.
+  Array::push(stmts, top_fn("late", [], ELet("only", host_lambda(), EInt(0), -1)))
+  assert(facts_agree(facts, stmts))
+  // The same statement rewritten twice before one refresh.
+  edp_mf_set_stmt(stmts, 3, SExpr(EInt(0)))
+  edp_mf_set_stmt(stmts, 3, SExpr(ELet("t2", EInt(0), call("vibe_tty_raw"), -1)))
+  assert(facts_agree(facts, stmts))
+}
+
+test "an unmarked rewrite is not seen, which is why every migration write is marked" {
+  let stmts = program()
+  let facts = edp_mf_new()
+  assert(facts_agree(facts, stmts))
+  Array::set(stmts, 1, top_fn("other", [], EInt(0)))
+  assert(!facts_agree(facts, stmts))
+}
