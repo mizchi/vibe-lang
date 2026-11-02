@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/contract {
-  contract_surface_effects, contract_surface_lines, contract_surface_rows_sorted, parse_contract_program
+  classify_contract_stmts, contract_surface_effects, contract_surface_lines, contract_surface_rows_sorted, parse_contract_program
 }
 
 import @vibe/compiler/syntax {
@@ -15,8 +15,9 @@ import @vibe/compiler/syntax {
 // property 4) and the same lines with each row's labels sorted.
 
 fn surface(contract: String) -> Array[String] with Exception {
-  let (d, o, _) = parse_contract_program(lex(contract))
-  contract_surface_lines(d, o, [])
+  let (d, o, extra) = parse_contract_program(lex(contract))
+  let (_, types) = classify_contract_stmts(extra)
+  contract_surface_lines(d, o, types)
 }
 
 //# Effects
@@ -26,9 +27,14 @@ test "each declaration's own row, one entry per label, in written order" {
   inspect(contract_surface_effects(lines), content = "[a\tFs, a\tConsole, b\tException, b\tHttp::request?]")
 }
 
-test "a row on a parameter's function type is the parameter's, not the declaration's" {
+test "every row counts, a parameter's function type included" {
   let lines = surface("fn run(f: () -> Int with Http) -> Int\nfn both(f: () -> Int with Http) -> Int with Fs\n")
-  inspect(contract_surface_effects(lines), content = "[both\tFs]")
+  inspect(contract_surface_effects(lines), content = "PENDING-8")
+}
+
+test "a function exported through a type alias carries the alias's row" {
+  let lines = surface("type Fetch = (String) -> String with Http\nlet fetch: Fetch\n")
+  inspect(contract_surface_effects(lines), content = "PENDING-9")
 }
 
 test "a function exported as an annotated value carries its row too" {

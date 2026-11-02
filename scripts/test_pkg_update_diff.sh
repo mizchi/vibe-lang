@@ -122,4 +122,24 @@ update
 grep -q 'update @diff3673/geo: 2.1.0 -> 2.2.0' "$WORK/upd.out" || fail "2.2.0 was not the update"
 grep -qF 'warning: effect surface: now requires Console (shout)' "$WORK/upd.out" || fail "a function-valued declaration's capability was not warned about"
 
-echo "[pkg-update-diff] ok (spelling-only change shows nothing; an addition lists one line and warns of Http; a removal lists it and drops Fs/Console; an effectset alias and a function-valued let are seen)"
+# 6. A function exported through a type alias carries its row on the alias's
+#    line, not its own.
+release 2.3.0 'effectset Disk = { Fs }
+type Clock = () -> Int with Process
+fn area(width: Int, height: Int) -> Int
+fn fetch(url: String) -> String with Http
+fn store(path: String) -> Unit with Disk
+let shout: (String) -> Unit with Console
+let tick: Clock
+' 'type Clock = () -> Int with Process
+export fn area(width: Int, height: Int) -> Int { width * height }
+export fn fetch(url: String) -> String with Http { url }
+export fn store(path: String) -> Unit with Fs { Fs::write_file(path, "") }
+export let shout: (String) -> Unit with Console = (s) -> { println(s) }
+export let tick: Clock = () -> { 0 }
+'
+update
+grep -q 'update @diff3673/geo: 2.2.0 -> 2.3.0' "$WORK/upd.out" || fail "2.3.0 was not the update"
+grep -qF 'warning: effect surface: now requires Process' "$WORK/upd.out" || fail "a capability behind a function type alias was not warned about"
+
+echo "[pkg-update-diff] ok (spelling-only change shows nothing; an addition lists one line and warns of Http; a removal lists it and drops Fs/Console; effectset and type aliases and function-valued lets are seen)"

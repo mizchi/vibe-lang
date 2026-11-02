@@ -2038,23 +2038,108 @@ fn surface_row_labels(line: String) -> Array[String] {
   out
 }
 
-/// The effect row of each `fn` surface line, one `<fn><TAB><label>` entry per
-/// label in the order written (registry-design property 4: the effect-row
-/// portion of `contract_surface_lines`).
+/// The name a surface line declares: the `fn` name, or the first name after
+/// a `type` line's keywords (`type Fetch = ..`, `type struct Box[T] ..`).
+fn surface_line_name(line: String) -> String {
+  let words = String::split(line, " ")
+  let mut i = 1
+  while i < Array::length(words) && (Array::get(words, i) == "type" || Array::get(words, i) == "struct" || Array::get(words, i) == "enum" || Array::get(words, i) == "effectset" || Array::get(words, i) == "export") {
+    i = i + 1
+  }
+  let word = if i < Array::length(words) {
+    Array::get(words, i)
+  } else {
+    ""
+  }
+  let mut end = 0
+  while end < String::length(word) && String::byte_at(word, end) != 91 && String::byte_at(word, end) != 40 {
+    end = end + 1
+  }
+  word[0: end]
+}
+
+/// Every effect label a surface line mentions, in every row it contains: a
+/// declaration's own, a parameter's or return value's function type, a type
+/// alias's function type. A braced row's labels run to its `}` and are
+/// `,`-separated; a bare row is `Label + Label ..`, each label an effect name
+/// with any `::op`, `[..]` and `?`.
+fn surface_line_effect_labels(line: String) -> Array[String] {
+  let out = array_empty()
+  let n = String::length(line)
+  let mut k = 0
+  while k + 6 <= n {
+    if line[k: k + 6] == " with " {
+      let mut p = k + 6
+      if p < n && String::byte_at(line, p) == 123 {
+        let close = String::index_of(line[p + 1: n], "}")
+        let stop = if close < 0 {
+          n
+        } else {
+          p + 1 + close
+        }
+        let labels = String::split(line[p + 1: stop], ",")
+        let mut j = 0
+        while j < Array::length(labels) {
+          let label = String::trim(Array::get(labels, j))
+          if label != "" {
+            Array::push(out, label)
+          } else ()
+          j = j + 1
+        }
+        k = stop
+      } else {
+        let mut more = true
+        while more {
+          let mut q = p
+          let mut depth = 0
+          let mut scanning = true
+          while scanning && q < n {
+            let c = String::byte_at(line, q)
+            if c == 91 {
+              depth = depth + 1
+              q = q + 1
+            } else if c == 93 && depth > 0 {
+              depth = depth - 1
+              q = q + 1
+            } else if depth == 0 && (c == 32 || c == 41 || c == 44 || c == 93 || c == 125) {
+              scanning = false
+            } else {
+              q = q + 1
+            }
+          }
+          if q > p {
+            Array::push(out, line[p: q])
+          } else ()
+          if q + 3 <= n && line[q: q + 3] == " + " {
+            p = q + 3
+          } else {
+            more = false
+          }
+          k = q
+        }
+      }
+    } else {
+      k = k + 1
+    }
+  }
+  out
+}
+
+/// Every effect label the contract surface mentions, one `<name><TAB><label>`
+/// entry per label (registry-design property 4: the effect-row portion of
+/// `contract_surface_lines`). Every row counts, not only a declaration's own:
+/// a function exported through a type alias (`type Fetch = (String) -> String
+/// with Http`, `let fetch: Fetch`) carries its row on the alias's line, and a
+/// row on a parameter's function type is authority the API is written
+/// against. Counting too much warns; counting too little is silent.
 export fn contract_surface_effects(lines: Array[String]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(lines) {
     let line = Array::get(lines, i)
-    if String::starts_with(line, "fn ") {
-      let rest = line[3: String::length(line)]
-      let space = String::index_of(rest, " ")
-      let name = if space < 0 {
-        rest
-      } else {
-        rest[0: space]
-      }
-      let labels = surface_row_labels(line)
+    let labels = surface_line_effect_labels(line)
+    if Array::length(labels) > 0 {
+      let name = surface_line_name(line)
       let mut j = 0
       while j < Array::length(labels) {
         Array::push(out, "\{name}\t\{Array::get(labels, j)}")
