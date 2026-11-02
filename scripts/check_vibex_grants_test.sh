@@ -65,6 +65,13 @@ sed 's/allows Console + Fs? {/allows Console + Fs ? {/' "$WORK/optional.vibex" >
 grep -q 'Fs ? {' "$WORK/optional_spaced.vibex" || fail "optional_spaced: the respelling did not apply"
 expect_refused optional_spaced '`Fs?` is wider than its use -- the file needs only `Fs::read_file?`' "$WORK_REL/optional_spaced.vibex"
 
+# A `where` contract after the row is not part of it: the row is read by its
+# own grammar, so only `Env` is dropped and the contract is kept.
+printf 'fn main() -> Unit allows Console + Env where { requires: true } {\n  println("x")\n}\n' > "$WORK/contract.vibex"
+expect_refused contract '`Env` is not needed' "$WORK_REL/contract.vibex"
+printf 'fn main() -> Unit allows Console where { requires: true } {\n  println("x")\n}\n' > "$WORK/contract_least.vibex"
+gate "$WORK_REL/contract_least.vibex" || { cat "$WORK/gate.out" >&2; fail "contract_least: a least-authority entry with a contract was refused"; }
+
 # A comment between `fn` and the name: the declaration is the compiler's
 # function row, not a text pattern, so it is still probed.
 printf 'fn // entry\nmain allows Console + Env {\n  println("x")\n}\n' > "$WORK/commented.vibex"
@@ -91,4 +98,4 @@ grep -qx 'scripts/test_report.vibex' "$WORK/list.out" || { cat "$WORK/list.out" 
 grep -qx 'scripts/check_vibex_grants.vibex' "$WORK/list.out" && fail "list: the default corpus contains the gate itself"
 gate scripts/check_vibex_grants.vibex || { cat "$WORK/gate.out" >&2; fail "self: the gate's own grant is not least authority"; }
 
-echo "[vibex-grants-test] ok (least authority passes; an unused label, Stderr beside Console, a capability wider than its use (optional grade too), a body opened on the next line, a comment before the name and an unchecked file are each refused; a pure entry passes; the gate is outside its own corpus, and its own grant is checked)"
+echo "[vibex-grants-test] ok (least authority passes; an unused label, Stderr beside Console, a capability wider than its use (optional grade too), a body opened on the next line, a comment before the name, a row before a where contract and an unchecked file are each refused; a pure entry passes; the gate is outside its own corpus, and its own grant is checked)"
