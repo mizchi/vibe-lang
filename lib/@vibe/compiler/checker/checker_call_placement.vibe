@@ -21,6 +21,7 @@ import @vibe/compiler/core {
   __to_string,
   builtin_param_labels,
   call_placement_capture_source,
+  call_placement_prepend_receiver,
   call_placement_publish,
   call_placement_raw,
   canonical_builtin_name,
@@ -264,6 +265,28 @@ export fn checker_bare_call_is_method_retry(env: TypeEnv, name: String, argc: In
     }
   } else {
     false
+  }
+}
+
+/// The retry checked a bare call as a dot call, where the receiver is not an
+/// argument. As written it is argument 0, a positional argument beside any
+/// labels, which only a `_` slot takes (ADR-0120 D4) -- the same answer the
+/// qualified `m |> Meter::shift(by = 7)` gets. Then restore the receiver in
+/// the placement the lowering applies to the written call.
+export fn checker_finish_method_retry_placement(cell: Array[Int], env: TypeEnv, qualified: String, ident_offset: Int, args: Array[Expr], errors: Array[String]) -> Unit {
+  let before = Array::length(errors)
+  match checker_call_header_names(env, qualified) {
+    Some(names) => if placement_plain_at_positional_slots(args, names) {
+      ()
+    } else {
+      placement_check_mixed(qualified, ident_offset, args, errors)
+    },
+    None => ()
+  }
+  if Array::length(errors) == before {
+    call_placement_prepend_receiver(cell, Array::length(args) - 1)
+  } else {
+    ()
   }
 }
 
