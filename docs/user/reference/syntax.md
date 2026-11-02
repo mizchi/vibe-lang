@@ -257,9 +257,7 @@ export let g2: () -> String = () -> { greet("hi", 3) }
   since a method call (`x.f(..)`) bypasses them.
 - An exported function keeps its defaults across the import (#3440): an
   importer, an alias and a re-export may omit the argument, and a written
-  `None` / `Some(..)` or use as a value is refused there too. A `.vpkg`
-  contract declares the parameter as `x?: T`, so a package's importer sees a
-  plain optional parameter.
+  `None` / `Some(..)` or use as a value is refused there too.
 
 `x?` is an optional parameter (#1500). It is declared at type `Option[T]` and
 the call site may omit it:
