@@ -54,6 +54,11 @@ expect_refused wide '`Fs` is wider than its use -- the file needs only `Fs::read
 printf 'fn main() -> Unit allows Console + Env\n{\n  println("x")\n}\n' > "$WORK/multiline.vibex"
 expect_refused multiline '`Env` is not needed' "$WORK_REL/multiline.vibex"
 
+# The optional grade is the same width question: `Fs?` where one optional
+# operation is all the script uses is `Fs::read_file?`.
+printf 'fn cached() -> Attempt[String, String] with Fs::read_file? {\n  perform? Fs::read_file("cache.json")\n}\n\nfn main allows Console + Fs? {\n  match cached() {\n    NotGranted => println("n"),\n    Errored(_) => println("e"),\n    Granted(_) => println("g")\n  }\n}\n' > "$WORK/optional.vibex"
+expect_refused optional '`Fs?` is wider than its use -- the file needs only `Fs::read_file?`' "$WORK_REL/optional.vibex"
+
 # A comment between `fn` and the name: the declaration is the compiler's
 # function row, not a text pattern, so it is still probed.
 printf 'fn // entry\nmain allows Console + Env {\n  println("x")\n}\n' > "$WORK/commented.vibex"
@@ -80,4 +85,4 @@ grep -qx 'scripts/test_report.vibex' "$WORK/list.out" || { cat "$WORK/list.out" 
 grep -qx 'scripts/check_vibex_grants.vibex' "$WORK/list.out" && fail "list: the default corpus contains the gate itself"
 gate scripts/check_vibex_grants.vibex || { cat "$WORK/gate.out" >&2; fail "self: the gate's own grant is not least authority"; }
 
-echo "[vibex-grants-test] ok (least authority passes; an unused label, Stderr beside Console, a capability wider than its use, a body opened on the next line, a comment before the name and an unchecked file are each refused; a pure entry passes; the gate is outside its own corpus, and its own grant is checked)"
+echo "[vibex-grants-test] ok (least authority passes; an unused label, Stderr beside Console, a capability wider than its use (optional grade too), a body opened on the next line, a comment before the name and an unchecked file are each refused; a pure entry passes; the gate is outside its own corpus, and its own grant is checked)"
