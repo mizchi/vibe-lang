@@ -187,6 +187,7 @@ import ./checker_stmt_imported_decl_kind.vibe {
   deferred_names_for_decl,
   duplicate_ctor_errors,
   duplicate_value_decl_errors,
+  float_width_decl_name_error,
   own_typedef_slot,
   preclaim_local_type_defs,
   top_level_reject_msg,
@@ -2405,15 +2406,31 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           (env, s, c)
         }
       },
-      SImport(_, names) => if imports_already_projected {
-        (env, s, c)
-      } else {
-        (bind_stmt_imports(env, names), s, c)
+      SImport(_, names) => {
+        for item in names {
+          match item.alias {
+            Some(a) => float_width_decl_name_error("import alias", a, errors),
+            None => ()
+          }
+        }
+        if imports_already_projected {
+          (env, s, c)
+        } else {
+          (bind_stmt_imports(env, names), s, c)
+        }
       },
-      SReExport(_, names) => if imports_already_projected {
-        (env, s, c)
-      } else {
-        (bind_stmt_imports(env, names), s, c)
+      SReExport(_, names) => {
+        for item in names {
+          match item.alias {
+            Some(a) => float_width_decl_name_error("re-export alias", a, errors),
+            None => ()
+          }
+        }
+        if imports_already_projected {
+          (env, s, c)
+        } else {
+          (bind_stmt_imports(env, names), s, c)
+        }
       },
       SReExportSourceBoundary(_, surface_only_names) => {
         let blocked = env_with_reexport_surface_blockers(env, surface_only_names)
@@ -2424,6 +2441,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
       SAliasDecl(_, _) => (env, s, c)
       ,
       STrait(_, name, supers, methods, method_gens, tparams) => {
+        float_width_decl_name_error("trait", name, errors)
         let mut mi = 0
         while mi < Array::length(methods) {
           let (mname, mparams, mret) = Array::get(methods, mi)
@@ -2529,6 +2547,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         (new_env, s, c)
       },
       SEffectDef(exported, ename, eparams, ops) => {
+        float_width_decl_name_error("effect", ename, errors)
         // #813: register the effect's operation signatures (resolved to
         // checker Types) so perform arguments, handler arm names/arity/
         // payload binds, and resume values can be validated. #1340
@@ -2563,6 +2582,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         }, env), s, c)
       },
       SEffectSet(exported, esname, esmembers) => {
+        float_width_decl_name_error("effect set", esname, errors)
         // ADR-0071 (#755): the ADR's Decision section calls out two specific
         // invalid-definition cases by name -- a cycle through member
         // references, and a qualified name colliding with an operation of

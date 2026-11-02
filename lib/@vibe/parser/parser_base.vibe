@@ -9,7 +9,7 @@ import @vibe/ast {
 }
 
 import ./intern.vibe {
-  intern_qualified
+  float_width_alias, intern_qualified
 }
 
 import ./parser_binder_context.vibe {
@@ -31,7 +31,40 @@ export fn peek(tokens: Array[Token], pos: Int) -> Token {
 /// Parse the optional constructor-kind suffix of a type binder. `F` has kind
 /// Type, `F[_]` has kind Type -> Type, and each additional underscore adds one
 /// input. The returned String is the AST contract key, not source spelling.
+/// #3727: `i32` used to be a second spelling of the 63-bit `Int`, so a program
+/// declaring 32 bits got 63-bit arithmetic with a clean check. It is no type
+/// at all now, and no declaration may take the name, so EVERY type position
+/// can refuse it on sight; the parser is the one place all of them pass
+/// through (`parse_type`, plus the row arguments collected as text).
+fn refuse_i32_type(name: String) -> Unit with Exception {
+  if name == "i32" {
+    throw("unknown type `i32` -- write `Int`: vibe's integer type is 63-bit and wraps at 63 bits, and there is no `i32`")
+  } else {
+    ()
+  }
+}
+
 export fn parse_type_param_kind(tokens: Array[Token], pos: Int, name: String) -> (String, Int) with Exception {
+  // ADR-0122 (#3728): `Float64` / `Float32` are the builtin float types'
+  // width-named spellings, read as `Double` / `Float` in every type position.
+  // A type parameter spelled with any name of a builtin float type would
+  // capture or be captured by that reading -- `[Float64]` could not be told
+  // apart from the builtin, and in `struct R[Double] { w: Float64 }` the
+  // field meant as a float would name the parameter -- so all six spellings
+  // are refused here, the one place every type-parameter collector goes
+  // through.
+  if name == "Float64" || name == "Float32" || name == "Double" || name == "Float" || name == "f64" || name == "f32" {
+    throw("rename this type parameter: `" + name + "` is the builtin float type's name, and every `" + name + "` in a type names that builtin")
+  } else {
+    ()
+  }
+  // #3727: `i32` is no type and no declaration may take it, so a type
+  // parameter of that name would make `i32` mean something again.
+  if name == "i32" {
+    throw("rename this type parameter: `i32` is reserved (the integer type is `Int`)")
+  } else {
+    ()
+  }
   // #2141 / #2474: `__Vfp_` is how normalize/desugar_trait_dict re-spells a
   // formal inside a synthesized `__arr_equals__` helper, and the checker's
   // `==`-needs-`Eq` rule exempts exactly that spelling because the helper's
@@ -1405,7 +1438,13 @@ fn parse_tparam_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) wi
 /// depth 1 and `acc` already holding `name[`.
 fn collect_row_item_targs(tokens: Array[Token], pos: Int, depth: Int, acc: String) -> (String, Int) with Exception {
   match peek(tokens = tokens, pos = pos) {
-    TIdent(nm) => collect_row_item_targs(tokens = tokens, pos = pos + 1, depth = depth, acc = String::concat(acc, nm)),
+    // ADR-0122 (#3728): a row's type arguments are collected as text, outside
+    // `parse_type`, so the width-named float spellings are canonicalized here
+    // too: `with Box[Float64]` names the same row as `with Box[Double]`.
+    TIdent(nm) => {
+      refuse_i32_type(name = nm)
+      collect_row_item_targs(tokens = tokens, pos = pos + 1, depth = depth, acc = String::concat(acc, float_width_alias(name = nm)))
+    },
     TComma => throw("a generic effect row item takes exactly one type argument for now (multi-argument instantiations in `with { ... }` are not yet supported)"),
     TLBracket => collect_row_item_targs(tokens = tokens, pos = pos + 1, depth = depth + 1, acc = String::concat(acc, "[")),
     TRBracket => if depth == 1 {
@@ -1839,20 +1878,24 @@ export fn parse_type_with_source_context(tokens: Array[Token], pos: Int, mode: I
       },
       TIdent(name) => match peek(tokens = tokens, pos = pos + 1) {
         TLBracket => {
+          refuse_i32_type(name = name)
           let (first, n1) = parse_type_with_source_context(tokens = tokens, pos = pos + 2, mode = 0, context = context)
           match peek(tokens = tokens, pos = n1) {
-            TRBracket => (TyApp(name, [first]), n1 + 1),
+            TRBracket => (TyApp(float_width_alias(name = name), [first]), n1 + 1),
             TComma => {
               let b = ArrayBuilder::new()
               ArrayBuilder::push(b, value = first)
               let (rest, end) = parse_type_list_rest(tokens = tokens, pos = n1, b = b, context = context)
               let en = expect_tk(tokens = tokens, pos = end, expected = "]");
-              (TyApp(name, rest), en)
+              (TyApp(float_width_alias(name = name), rest), en)
             },
             _ => throw("expected ']' or ',' in type application")
           }
         },
-        _ => (TyName(name), pos + 1)
+        _ => {
+          refuse_i32_type(name = name)
+          (TyName(float_width_alias(name = name)), pos + 1)
+        }
       },
       _ => {
         let actual = tk_name(peek(tokens = tokens, pos = pos))

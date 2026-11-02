@@ -1004,7 +1004,7 @@ Int | Float | Double | Bool | String | @core.Path | Unit
 - Alias resolution is applied to identifier/callee references (`ref`/`call`).
 - Record/map/record-type/variant ctor and enum ctor ordering is canonicalized.
 - Tests and import/export metadata are excluded from hash input.
-- `i32`/`f32`/`f64` surface aliases normalize to `Int`/`Float`/`Double`.
+- `f32`/`f64` surface aliases normalize to `Float`/`Double`. (`i32` is not a type, #3727.)
 
 ## Compile + run
 
