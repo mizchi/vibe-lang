@@ -66,7 +66,7 @@ function exactKeys(map, expected, label) {
   assert.deepEqual([...map.keys()].filter((x) => x !== "_").sort(), [...expected].sort(), label);
 }
 
-assert.match(parserFacade, /fn detach_stmts\(stmts: Array\[Stmt\]\) -> Array\[Stmt\]/);
+assert.match(parserFacade, /fn detach_stmts\(_ stmts: Array\[Stmt\]\) -> Array\[Stmt\]/);
 
 const pats = ["PWild", "PBind", "PInt", "PFloat", "PString", "PBool", "PCtor", "PTuple", "POr", "PStruct"];
 const types = ["TyName", "TyApp", "TyFn", "TyTuple", "TyUnit"];
