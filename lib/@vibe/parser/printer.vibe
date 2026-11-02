@@ -545,6 +545,90 @@ export fn print_expr(_ e: Expr) -> String {
   with_printable_match_temp(() -> print_expr_tree(e))
 }
 
+/// A block parses as a right-nested chain of `ELet` / `ELetRec` / `ELetMut` /
+/// `EAssign` / `EAssignOp` / `ESeq`, one link per statement, and prints as
+/// nested braces: `{ let a = 1; { let b = 2; tail } }`. Printing each link as
+/// `prefix ++ print(body) ++ " }"` copied the whole rest of the block once per
+/// statement, which is quadratic in the block's length. The merge-flatten
+/// print of the compiler spent 3.65 GB of its 4.08 GB heap peak there.
+///
+/// This walks the chain instead: each statement's prefix and the tail are
+/// printed once, then the closing braces are appended. The text is the same.
+fn print_block_chain(_ e: Expr) -> String {
+  let parts = ArrayBuilder::new()
+  let mut cur = e
+  let mut depth = 0
+  let mut walking = true
+  while walking {
+    match source_expr(cur) {
+      ELet(name, val, body, _) => {
+        ArrayBuilder::push(parts, value = "{ let ")
+        ArrayBuilder::push(parts, value = print_name(name))
+        ArrayBuilder::push(parts, value = " = ")
+        ArrayBuilder::push(parts, value = print_expr_tree(val))
+        ArrayBuilder::push(parts, value = "; ")
+        cur = body
+        depth = depth + 1
+      },
+      ELetRec(name, val, body) => {
+        ArrayBuilder::push(parts, value = "{ let rec ")
+        ArrayBuilder::push(parts, value = print_name(name))
+        ArrayBuilder::push(parts, value = " = ")
+        ArrayBuilder::push(parts, value = print_expr_tree(val))
+        ArrayBuilder::push(parts, value = "; ")
+        cur = body
+        depth = depth + 1
+      },
+      ELetMut(name, val, body, _) => {
+        ArrayBuilder::push(parts, value = "{ let mut ")
+        ArrayBuilder::push(parts, value = print_name(name))
+        ArrayBuilder::push(parts, value = " = ")
+        ArrayBuilder::push(parts, value = print_expr_tree(val))
+        ArrayBuilder::push(parts, value = "; ")
+        cur = body
+        depth = depth + 1
+      },
+      EAssign(name, val, body, _) => {
+        ArrayBuilder::push(parts, value = "{ ")
+        ArrayBuilder::push(parts, value = print_name(name))
+        ArrayBuilder::push(parts, value = " = ")
+        ArrayBuilder::push(parts, value = print_expr_tree(val))
+        ArrayBuilder::push(parts, value = "; ")
+        cur = body
+        depth = depth + 1
+      },
+      EAssignOp(name, op, val, body, _) => {
+        ArrayBuilder::push(parts, value = "{ ")
+        ArrayBuilder::push(parts, value = print_name(name))
+        ArrayBuilder::push(parts, value = " ")
+        ArrayBuilder::push(parts, value = op)
+        ArrayBuilder::push(parts, value = "= ")
+        ArrayBuilder::push(parts, value = print_expr_tree(val))
+        ArrayBuilder::push(parts, value = "; ")
+        cur = body
+        depth = depth + 1
+      },
+      ESeq(a, b) => {
+        ArrayBuilder::push(parts, value = "{ ")
+        ArrayBuilder::push(parts, value = print_expr_tree(a))
+        ArrayBuilder::push(parts, value = "; ")
+        cur = b
+        depth = depth + 1
+      },
+      _ => {
+        walking = false
+      }
+    }
+  }
+  ArrayBuilder::push(parts, value = print_expr_tree(cur))
+  let mut closed = 0
+  while closed < depth {
+    ArrayBuilder::push(parts, value = " }")
+    closed = closed + 1
+  }
+  String::join(ArrayBuilder::freeze(parts), sep = "")
+}
+
 fn print_expr_tree(_ e: Expr) -> String {
   match source_expr(e) {
     EInt(n) => __to_string(n),
@@ -591,12 +675,12 @@ fn print_expr_tree(_ e: Expr) -> String {
       EUnit => String::concat("if ", String::concat(print_expr_tree(cond), String::concat(" { ", String::concat(print_expr_tree(then_e), " }")))),
       _ => String::concat("if ", String::concat(print_expr_tree(cond), String::concat(" { ", String::concat(print_expr_tree(then_e), String::concat(" } else { ", String::concat(print_expr_tree(else_e), " }"))))))
     },
-    ELet(name, val, body, _) => String::concat("{ let ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr_tree(val), String::concat("; ", String::concat(print_expr_tree(body), " }")))))),
-    ELetRec(name, val, body) => String::concat("{ let rec ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr_tree(val), String::concat("; ", String::concat(print_expr_tree(body), " }")))))),
-    ELetMut(name, val, body, _) => String::concat("{ let mut ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr_tree(val), String::concat("; ", String::concat(print_expr_tree(body), " }")))))),
-    EAssign(name, val, body, _) => String::concat("{ ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr_tree(val), String::concat("; ", String::concat(print_expr_tree(body), " }")))))),
-    EAssignOp(name, op, val, body, _) => String::concat("{ ", String::concat(print_name(name), String::concat(" ", String::concat(op, String::concat("= ", String::concat(print_expr_tree(val), String::concat("; ", String::concat(print_expr_tree(body), " }")))))))),
-    ESeq(a, b) => String::concat("{ ", String::concat(print_expr_tree(a), String::concat("; ", String::concat(print_expr_tree(b), " }")))),
+    ELet(_, _, _, _) => print_block_chain(e),
+    ELetRec(_, _, _) => print_block_chain(e),
+    ELetMut(_, _, _, _) => print_block_chain(e),
+    EAssign(_, _, _, _) => print_block_chain(e),
+    EAssignOp(_, _, _, _, _) => print_block_chain(e),
+    ESeq(_, _) => print_block_chain(e),
     EMatch(scrutinee, arms) => {
       let parts = for arm in arms {
         let (pat, expr) = arm
