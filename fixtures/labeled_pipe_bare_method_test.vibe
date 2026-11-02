@@ -1,0 +1,43 @@
+// ADR-0120 D4: a pipe fills the first slot. When the right-hand side names a
+// method bare (`b |> take(n = 3)`, resolved as `b.take(n = 3)`), the piped value
+// fills the `_` receiver and the labels place the rest, exactly as the
+// qualified spelling and the dot call do.
+
+struct Meter {
+  base: Int
+}
+
+fn Meter::take(_ m: Meter, a: Int, b: Int) -> Int {
+  m.base + a - b
+}
+
+fn Meter::shift(_ m: Meter, by: Int) -> Int {
+  m.base - by
+}
+
+fn note(log: Array[String], s: String, v: Int) -> Int {
+  Array::push(log, s)
+  v
+}
+
+test "a bare method pipe places its labels" {
+  let m = Meter::{ base: 100 }
+  inspect(m |> take(a = 10, b = 1), content = "109")
+  inspect(m |> take(b = 1, a = 10), content = "109")
+  inspect(m |> shift(by = 7), content = "93")
+}
+
+test "the bare, qualified, and dot spellings agree" {
+  let m = Meter::{ base: 100 }
+  inspect(m |> Meter::take(a = 10, b = 1), content = "109")
+  inspect(m.take(a = 10, b = 1), content = "109")
+  inspect(m |> take(10, 1), content = "109")
+}
+
+test "a bare method pipe evaluates its arguments in written order" {
+  let m = Meter::{ base: 0 }
+  let log: Array[String] = []
+  let r = m |> take(b = note(log, "b", 1), a = note(log, "a", 10))
+  inspect(String::join(log, ","), content = "b,a")
+  inspect(r, content = "9")
+}

@@ -21,14 +21,20 @@ import @vibe/compiler/core {
   __to_string,
   builtin_param_labels,
   call_placement_capture_source,
+  call_placement_prepend_receiver,
   call_placement_publish,
   call_placement_raw,
   canonical_builtin_name,
+  env_lookup,
   env_lookup_binding
 }
 
 import @vibe/compiler/checker/builtin_sigs {
   builtin_resolves_at, lookup_builtin
+}
+
+import ./checker_builtin_arg_head_rest.vibe {
+  lookup_builtin_in_env
 }
 
 import ./checker_call_header.vibe {
@@ -248,42 +254,107 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
   }
 }
 
+/// A bare callee that nothing binds is retried as a method on its first
+/// argument (`xs |> length` is `xs.length()`, the #736 arm of
+/// `check_call_expr`). Mirrors that arm's gate exactly.
+export fn checker_bare_call_is_method_retry(env: TypeEnv, name: String, argc: Int) -> Bool {
+  if String::index_of(name, "::") < 0 && argc >= 1 {
+    match env_lookup(env, name) {
+      Some(_) => false,
+      None => lookup_builtin_in_env(env, name) is None
+    }
+  } else {
+    false
+  }
+}
+
+/// The retry checked a bare call as a dot call, where the receiver is not an
+/// argument. As written it is argument 0, a positional argument beside any
+/// labels, which only a `_` slot takes (ADR-0120 D4) -- the same answer the
+/// qualified `m |> Meter::shift(by = 7)` gets. Then restore the receiver in
+/// the placement the lowering applies to the written call.
+export fn checker_finish_method_retry_placement(cell: Array[Int], env: TypeEnv, qualified: String, ident_offset: Int, args: Array[Expr], errors: Array[String]) -> Unit {
+  let before = Array::length(errors)
+  match checker_call_header_names(env, qualified) {
+    Some(names) => if placement_plain_at_positional_slots(args, names) {
+      ()
+    } else {
+      placement_check_mixed(qualified, ident_offset, args, errors)
+    },
+    None => ()
+  }
+  if Array::length(errors) == before {
+    call_placement_prepend_receiver(cell, Array::length(args) - 1)
+  } else {
+    ()
+  }
+}
+
 /// Precheck macros carry the original snapshot on their typed replacement.
 /// Resolve that source callee in the actual environment at this point.
+///
+/// A bare callee the method retry may take is neither captured nor placed
+/// here: the retry checks it as a dot call, which captures and places it at
+/// the method it resolves (`call_placement_prepend_receiver` then restores
+/// the written receiver). Placing the unbound spelling first reported
+/// `b |> bump(n = 3)` as a mixed call even though `Box::bump` declares its
+/// receiver `_`. When the retry declines, the caller places it through
+/// `checker_record_declined_retry_call_placement`.
 export fn checker_record_call_placement(expr: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
+  placement_record_call(expr, env, errors, true)
+}
+
+/// The method retry declined this bare call: place it as written.
+export fn checker_record_declined_retry_call_placement(expr: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
+  placement_record_call(expr, env, errors, false)
+}
+
+fn placement_record_call(expr: Expr, env: TypeEnv, errors: Array[String], defer_retry: Bool) -> Unit {
   match expr {
     ECall(callee, args, offset, cell) => {
-      let mut needed = placement_has_labels(args)
-      match callee {
-        EIdent(name, _) => needed = needed || checker_call_header_has_optional(env, name),
-        // Namespace and receiver dispatch select their declaration below.
-        _ => ()
+      let deferred = defer_retry && match callee {
+        EIdent(name, _) => checker_bare_call_is_method_retry(env, name, Array::length(args)),
+        _ => false
       }
-      if needed && !checker_call_header_is_probe() {
-        call_placement_capture_source(callee, args, offset, cell, false)
-      } else {
+      if deferred {
         ()
-      }
-      match callee {
-        EIdent(name, ident_offset) => checker_note_label_site(env, name, ident_offset, offset, args, false),
-        _ => ()
-      }
-      match call_placement_raw(cell) {
-        Some((raw_callee, _, _, _)) => match raw_callee {
-          EIdent(name, ident_offset) => checker_record_resolved_call_placement(cell, env, name, ident_offset, false, errors),
-          _ => match callee {
-            // Namespace and UFCS dispatch publish explicitly at their resolved
-            // binding. Optional filling can also increase arity by one, so
-            // argument counts cannot identify an implicit receiver.
-            EIdent(_, _) => (),
-            EDot(_, _, _, _) => (),
-            _ => checker_record_opaque_call_placement(cell, errors)
-          }
-        },
-        None => ()
+      } else {
+        let mut needed = placement_has_labels(args)
+        match callee {
+          EIdent(name, _) => needed = needed || checker_call_header_has_optional(env, name),
+          // Namespace and receiver dispatch select their declaration below.
+          _ => ()
+        }
+        if needed && !checker_call_header_is_probe() {
+          call_placement_capture_source(callee, args, offset, cell, false)
+        } else {
+          ()
+        }
+        placement_note_and_resolve(callee, offset, cell, args, env, errors)
       }
     },
     _ => ()
+  }
+}
+
+fn placement_note_and_resolve(callee: Expr, offset: Int, cell: Array[Int], args: Array[Expr], env: TypeEnv, errors: Array[String]) -> Unit {
+  match callee {
+    EIdent(name, ident_offset) => checker_note_label_site(env, name, ident_offset, offset, args, false),
+    _ => ()
+  }
+  match call_placement_raw(cell) {
+    Some((raw_callee, _, _, _)) => match raw_callee {
+      EIdent(name, ident_offset) => checker_record_resolved_call_placement(cell, env, name, ident_offset, false, errors),
+      _ => match callee {
+        // Namespace and UFCS dispatch publish explicitly at their resolved
+        // binding. Optional filling can also increase arity by one, so
+        // argument counts cannot identify an implicit receiver.
+        EIdent(_, _) => (),
+        EDot(_, _, _, _) => (),
+        _ => checker_record_opaque_call_placement(cell, errors)
+      }
+    },
+    None => ()
   }
 }
 
