@@ -16,6 +16,10 @@
 #
 # The failure report under a FAIL line is not compared: the launcher's and the
 # script's differ by design (@vibe/testreport's launcher and script reports).
+#
+# VIBE_TEST_PARITY_LAUNCHER / VIBE_TEST_PARITY_SCRIPT replace the two runners;
+# scripts/test_vibe_test_parity_test.sh points them at mutants to prove this
+# gate fails.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,6 +28,8 @@ CLI="${1:-}"
 [ -n "$CLI" ] && [ -s "$CLI" ] || { echo "usage: test_vibe_test_parity.sh <stage2.wasm>" >&2; exit 2; }
 case "$CLI" in /*) ;; *) CLI="$ROOT_DIR/$CLI" ;; esac
 unset VIBE_TEST_BACKEND VIBE_BACKEND VIBE_TEST_RESULTS VIBE_TEST_NESTED VIBE_TEST_JOBS || true
+LAUNCHER="${VIBE_TEST_PARITY_LAUNCHER:-$ROOT_DIR/runtime/vibe}"
+SCRIPT="${VIBE_TEST_PARITY_SCRIPT:-$ROOT_DIR/scripts/vibe_test.sh}"
 
 WORK_REL="_build/vibe_test_parity.$$"
 WORK="$ROOT_DIR/$WORK_REL"
@@ -41,12 +47,12 @@ printf 'test "broken" {\n  assert(undefined_name == 1)\n}\n' > "$WORK/broken_tes
 via_launcher() { # <name> <files...>
   local name="$1"; shift
   VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_BUILD_DIR="$OUT/build.$name" \
-    bash "$ROOT_DIR/runtime/vibe" test --no-cache "$@" > "$OUT/$name.launcher" 2>&1 || true
+    bash "$LAUNCHER" test --no-cache "$@" > "$OUT/$name.launcher" 2>&1 || true
 }
 via_script() { # <name> <files...>
   local name="$1"; shift
   VIBE_TEST_CLI_WASM="$CLI" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
-    bash "$ROOT_DIR/scripts/vibe_test.sh" "$@" > "$OUT/$name.script" 2>&1 || true
+    bash "$SCRIPT" "$@" > "$OUT/$name.script" 2>&1 || true
 }
 # The verdict lines, sorted (the script's workers finish in any order), and the
 # `[vibe-test]` lines: the summary and its notes. (The script's compiler notice
