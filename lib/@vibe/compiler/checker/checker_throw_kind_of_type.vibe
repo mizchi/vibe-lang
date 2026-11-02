@@ -621,9 +621,79 @@ fn report_unknown_type_names_only(te: TypeExpr, defs: Array[TypeDef], shadow: Ar
     if is_type_formal || trait_erased_by_impl || at_row_slot {
       ()
     } else {
-      Array::push(errors, String::concat(String::concat(String::concat("unknown type `", name), "` in "), where_label))
+      Array::push(errors, String::concat(String::concat(String::concat(String::concat("unknown type `", name), "` in "), where_label), sized_int_spelling_hint(name)))
     }
     i = i + 1
+  }
+}
+
+/// The edit for a fixed-width integer spelling from another language (`i32`,
+/// `u64`, ...), appended to its unknown-type message; "" for any other name.
+/// vibe has one integer type, `Int`, and it is 63-bit (#3727: `i32` used to
+/// be silently accepted as `Int`).
+fn sized_int_spelling_hint(name: String) -> String {
+  let sized = [
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "i128",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "u128",
+    "isize",
+    "usize"
+  ]
+  let mut hit = false
+  for s in sized {
+    if s == name {
+      hit = true
+    } else {
+      ()
+    }
+  }
+  if hit {
+    " -- write `Int`: vibe's integer type is 63-bit and wraps at 63 bits, and there is no `\{name}`"
+  } else {
+    ""
+  }
+}
+
+/// #3727: a fixed-width integer spelling (`i32`, `u64`, ...) anywhere in `te`
+/// is refused with the same message as `report_unknown_type_names` gives.
+/// This is for the positions that do not run that check: a type alias's body
+/// and an effect operation's signature. There an unresolved name used to stand
+/// for any type, so `Op() -> i32` resumed with an `Int` answered 63-bit
+/// arithmetic with a clean check. A name in `shadow` is the declaration's own
+/// type parameter and is left alone.
+export fn report_sized_int_spellings(te: TypeExpr, shadow: Array[String], where_label: String, errors: Array[String]) -> Unit {
+  match te {
+    TyName(n) => {
+      let hint = sized_int_spelling_hint(n)
+      if hint != "" && !checker_string_array_has(shadow, n) {
+        Array::push(errors, "unknown type `\{n}` in \{where_label}\{hint}")
+      } else {
+        ()
+      }
+    },
+    TyApp(head, args) => {
+      report_sized_int_spellings(TyName(head), shadow, where_label, errors)
+      for a in args {
+        report_sized_int_spellings(a, shadow, where_label, errors)
+      }
+    },
+    TyFn(ps, r, _) => {
+      for a in ps {
+        report_sized_int_spellings(a, shadow, where_label, errors)
+      }
+      report_sized_int_spellings(r, shadow, where_label, errors)
+    },
+    TyTuple(ts) => for a in ts {
+      report_sized_int_spellings(a, shadow, where_label, errors)
+    },
+    TyUnit => ()
   }
 }
 

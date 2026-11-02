@@ -307,11 +307,13 @@ enum Color { Red; Green; Blue } derive(Eq)
 export enum Shape { Circle(Int); Rect(Int, Int) }
 ```
 
-A declaration may not take a builtin type's spelling: `Int`, `Bool`, `i32`
+A declaration may not take a builtin type's spelling: `Int`, `Bool`, `f64`
 and the like at arity 0, and `Array[_]` / `Option[_]` at arity 1. An
 annotation resolves those to the builtin before it looks at declarations, so
 such a type could never be named in one, and the declaration is refused with
-a message naming the rename (#2475). This example used to declare
+a message naming the rename (#2475). `i32` is refused too: it is no longer a
+type (below), and stays reserved so that no declaration gives it a new
+meaning. This example used to declare
 `enum Option[T]`, which is why the rule is worth stating here.
 
 Constructors may be used in expressions and patterns.
@@ -829,7 +831,6 @@ Bool
 Char
 String
 Unit
-i32
 f32
 f64
 
@@ -845,8 +846,13 @@ Option[T]
 
 Rules:
 
-- `i32`, `f32`, and `f64` are aliases for `Int`, `Float`, and `Double` in type
-  positions.
+- `f32` and `f64` are aliases for `Float` and `Double` in type positions
+  (both retire in favour of `Float32` / `Float64`, ADR-0122).
+- There is no `i32`: vibe's integer type is `Int`, which is 63-bit. `i32`
+  used to be accepted as an alias of `Int`, so code that declared 32 bits got
+  63-bit arithmetic (`2147483647 + 1` was `2147483648`); it is now an unknown
+  type whose message names `Int` (#3727). The same hint follows `i64`, `u32`
+  and the other fixed-width spellings.
 - Function effects appear after return type: `-> T with Effect`.
 - A type-constructor parameter may declare its arity with underscore slots:
   `F[_]` has one input and `F[_, _]` has two, and those forms are
