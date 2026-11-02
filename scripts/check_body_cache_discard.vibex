@@ -1,0 +1,145 @@
+// #2873: a compile that will not READ its body cache must say so. #3672 ported
+// this gate from check_body_cache_discard.sh.
+//
+//   bash scripts/vibe_run.sh scripts/check_body_cache_discard.vibex -- [--root DIR]
+//
+// `compile_wasi_module_linked_impl_with_split` records into `body_cache_out`
+// unconditionally -- per user function a body, three meta counts, its lambda /
+// funcref-slot / blind-reference slices, and since #2199 one row per
+// `vibe.linemap` site. A caller that passes a fresh cache for BOTH parameters
+// never reads any of it, and on the bump lane none of those arrays are ever
+// reclaimed. #2867 added `codegen_body_cache_discard()` -- a cache whose
+// `record` is a no-op -- and used it on the `vibe run` / `vibe test` lane for
+// -9.05 MiB of the selfcompile KPI heap from ONE call site.
+//
+// THE INVARIANT: `codegen_body_cache_new(), codegen_body_cache_new()` does not
+// appear in production compiler source. The convention is `body_cache_in,
+// body_cache_out` adjacent and in that order, so the second of a doubled inline
+// `new()` is the OUT cache -- and an INLINE `new()` in the out position is
+// provably unread, because the caller never bound it to a name. That is what
+// makes this decidable lexically instead of by dataflow.
+//
+// Measured on the coverage lane (one of the 21 sites this rule cleared),
+// isolated cold cache, two runs each, byte-identical within each column:
+//
+//   input                                    before          after
+//   lib/@vibe/compiler/checker/checker.vibe  361,431,568     360,861,680
+//   .../tests/codegen_lexer_test.vibe        977,731,744     976,561,864
+//
+// and the selfcompile KPI -- the lane that ALREADY discarded -- moved
+// 1,015,266,344 -> 1,015,258,768, which is the control: the rule is inert where
+// the work was already done.
+//
+// TESTS ARE EXEMPT, deliberately: a file whose path has a `tests/` segment. A
+// test that passes two fresh caches is exercising the RECORDING path;
+// switching it to `discard()` would delete that coverage rather than save
+// anything, and those tests (`codegen_body_cache_persist_test`,
+// `body_cache_pruned_test`, `linked_compile_prov_inert_test`,
+// `const_bool_params_test`, `inline_wasm_test`) are what would catch a cache
+// someone DOES read being switched by accident. Generated bundles
+// (`*_bundle.vibe`, `*_cli_adapter_module_source.vibe`) are exempt too.
+//
+// --root DIR scans another tree (the self-test's); the default is lib.
+
+import @vibe/builtin {
+  String::index_of_from
+}
+import @vibe/process {
+  exit
+}
+import @vibex/shell {
+  find, sort_str
+}
+
+fn option(name: String, fallback: String) -> String with Env {
+  let mut out = fallback
+  let mut i = 0
+  while i + 1 < Env::args_len() {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn needle() -> String {
+  "codegen_body_cache_new(), codegen_body_cache_new()"
+}
+
+fn exempt(path: String) -> Bool {
+  String::index_of_from("/\{path}", "/tests/", 0) >= 0 || String::ends_with(path, "_cli_adapter_module_source.vibe") || String::ends_with(path, "_bundle.vibe")
+}
+
+fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process {
+  let root = option("--root", "lib")
+  let collected: Array[String] = []
+  if Fs::is_dir(root) {
+    let entries = find(root)
+    let mut i = 0
+    while i < Array::length(entries) {
+      let entry = Array::get(entries, i)
+      if !entry.is_dir && String::ends_with(entry.name, ".vibe") {
+        Array::push(collected, entry.path)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  let files = sort_str(collected)
+  // `found` counts every .vibe file, `scanned` only the non-exempt ones; the
+  // emptiness guard reads `found`, so a tree whose files are all exempt is a
+  // correct exemption, not "nothing to look at".
+  if Array::length(files) == 0 {
+    Stderr::write_stream("[body-cache-discard] FAIL: no .vibe files scanned under \{root}\n")
+    exit(1)
+  } else {
+    let mut scanned = 0
+    let mut bad = false
+    let mut i = 0
+    while i < Array::length(files) {
+      let path = Array::get(files, i)
+      if exempt(path) {
+        ()
+      } else {
+        scanned = scanned + 1
+        let lines = String::split(Fs::read_file(path), "\n")
+        let hits: Array[String] = []
+        let mut n = 0
+        while n < Array::length(lines) {
+          let line = Array::get(lines, n)
+          if String::index_of_from(line, needle(), 0) >= 0 {
+            Array::push(hits, "    \{n + 1}:\{line}")
+          } else {
+            ()
+          }
+          n = n + 1
+        }
+        if Array::length(hits) > 0 {
+          bad = true
+          Stderr::write_stream("[body-cache-discard] FAIL: \{path} passes a fresh cache as the OUT parameter (#2873)\n")
+          let mut k = 0
+          while k < Array::length(hits) {
+            Stderr::write_stream("\{Array::get(hits, k)}\n")
+            k = k + 1
+          }
+        } else {
+          ()
+        }
+      }
+      i = i + 1
+    }
+    if bad {
+      Stderr::write_stream("  The OUT cache is the SECOND of the pair. Pass codegen_body_cache_discard()\n")
+      Stderr::write_stream("  when nothing reads it; leave codegen_body_cache_new() on caches someone does.\n")
+      exit(1)
+    } else {
+      Console::write_stream("[body-cache-discard] ok (\{scanned} production file(s) of \{Array::length(files)}; no unread OUT cache records)\n")
+    }
+  }
+}
