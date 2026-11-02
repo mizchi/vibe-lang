@@ -1767,6 +1767,35 @@ export fn edp_collect_handle_sites(stmts: Array[Stmt], ename: String) -> Array[(
   out
 }
 
+/// `edp_collect_handle_sites`, reading only the statements `indices` names
+/// (`edp_handle_statement_indices` of an `edp_handle_statement_index` of this
+/// tree, ascending). That index lists a statement when any arm of any handle in
+/// it names the effect -- the same `edp_split_qualified(edp_pat_qname(..))`
+/// test, over the same five statement forms, that `edp_handle_matches_effect`
+/// applies here -- so the statements it skips hold no site. Visiting the rest
+/// in ascending order yields the same sites in the same order. Valid while the
+/// index's own reuse condition holds: statement order unchanged, and no
+/// rewrite adding a handle to a statement that had none.
+export fn edp_collect_handle_sites_in(stmts: Array[Stmt], ename: String, indices: Array[Int]) -> Array[(Expr, Array[(Pat, Expr)])] {
+  let out = array_empty()
+  let mut k = 0
+  while k < Array::length(indices) {
+    let i = Array::get(indices, k)
+    if i >= 0 && i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(_, _, _, _, expr) => edp_collect_handle_sites_expr(expr, ename, out),
+        SLetMut(_, _, expr) => edp_collect_handle_sites_expr(expr, ename, out),
+        SExpr(expr) => edp_collect_handle_sites_expr(expr, ename, out),
+        STest(_, expr) => edp_collect_handle_sites_expr(expr, ename, out),
+        SBench(_, expr) => edp_collect_handle_sites_expr(expr, ename, out),
+        _ => ()
+      }
+    } else ()
+    k = k + 1
+  }
+  out
+}
+
 /// Every effect label named by a handle site anywhere in `stmts` (deduped,
 /// appended into `out`). `Error` is excluded -- it is the one handler class
 /// that still has real codegen (compile_expr_tail6) and must never be
