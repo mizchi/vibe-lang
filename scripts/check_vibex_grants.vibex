@@ -224,19 +224,30 @@ fn label_end(src: String, from: Int) -> Int {
   if from >= n || !is_ident_start(String::byte_at(src, from)) {
     -1
   } else {
+    // Blanks (whitespace, `//` comments) may sit between any two tokens of a
+    // label, as the compiler's effect-item parser allows: `Fs :: read_file`,
+    // `Exception [String]`, `Fs ?`.
     let mut i = from
     let mut more = true
     while more {
       while i < n && is_word(String::byte_at(src, i)) {
         i = i + 1
       }
-      if i + 2 < n && String::byte_at(src, i) == ':' && String::byte_at(src, i + 1) == ':' && is_ident_start(String::byte_at(src, i + 2)) {
-        i = i + 2
+      let colons = skip_blank(src, i)
+      if colons + 1 < n && String::byte_at(src, colons) == ':' && String::byte_at(src, colons + 1) == ':' {
+        let op = skip_blank(src, colons + 2)
+        if op < n && is_ident_start(String::byte_at(src, op)) {
+          i = op
+        } else {
+          more = false
+        }
       } else {
         more = false
       }
     }
-    if i < n && String::byte_at(src, i) == '[' {
+    let bracket = skip_blank(src, i)
+    if bracket < n && String::byte_at(src, bracket) == '[' {
+      i = bracket
       let mut depth = 0
       let mut closed = false
       while i < n && !closed {

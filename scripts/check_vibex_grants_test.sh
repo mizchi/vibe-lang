@@ -81,6 +81,13 @@ expect_refused set 'If `AppCaps` is an effectset, write its members in `allows` 
 printf '// effectset AppCaps = { Console }\neffectset Output = { Console }\neffectset AppCaps = { Output, Env }\n\nfn main allows AppCaps {\n  println("x")\n}\n' > "$WORK/set_nested.vibex"
 expect_refused set_nested 'If `AppCaps` is an effectset, write its members in `allows` instead' "$WORK_REL/set_nested.vibex"
 
+# Blanks between a label's tokens are legal (`Fs :: read_file`): the label is
+# read whole and compared as the compiler spells it.
+printf 'fn main allows Console + Fs :: read_file {\n  println(Fs::read_file("README.md"))\n}\n' > "$WORK/spaced_op.vibex"
+gate "$WORK_REL/spaced_op.vibex" || { cat "$WORK/gate.out" >&2; fail "spaced_op: a least-authority grant spelled with blanks around :: was refused"; }
+printf 'fn main allows Console + Fs :: read_file + Env {\n  println(Fs::read_file("README.md"))\n}\n' > "$WORK/spaced_op_extra.vibex"
+expect_refused spaced_op_extra '`Env` is not needed' "$WORK_REL/spaced_op_extra.vibex"
+
 # A comment between `fn` and the name: the declaration is the compiler's
 # function row, not a text pattern, so it is still probed.
 printf 'fn // entry\nmain allows Console + Env {\n  println("x")\n}\n' > "$WORK/commented.vibex"
@@ -107,4 +114,4 @@ grep -qx 'scripts/test_report.vibex' "$WORK/list.out" || { cat "$WORK/list.out" 
 grep -qx 'scripts/check_vibex_grants.vibex' "$WORK/list.out" && fail "list: the default corpus contains the gate itself"
 gate scripts/check_vibex_grants.vibex || { cat "$WORK/gate.out" >&2; fail "self: the gate's own grant is not least authority"; }
 
-echo "[vibex-grants-test] ok (least authority passes; an unused label, Stderr beside Console, a capability wider than its use (optional grade too), a body opened on the next line, a comment before the name, a row before a where contract, an effectset grant and an unchecked file are each refused; a pure entry passes; the gate is outside its own corpus, and its own grant is checked)"
+echo "[vibex-grants-test] ok (least authority passes; an unused label, Stderr beside Console, a capability wider than its use (optional grade too), a body opened on the next line, a comment before the name, a row before a where contract, an effectset grant and an unchecked file are each refused; a pure entry and a label spelled with blanks pass; the gate is outside its own corpus, and its own grant is checked)"
