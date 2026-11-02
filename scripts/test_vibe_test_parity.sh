@@ -27,7 +27,11 @@ cd "$ROOT_DIR"
 CLI="${1:-}"
 [ -n "$CLI" ] && [ -s "$CLI" ] || { echo "usage: test_vibe_test_parity.sh <stage2.wasm>" >&2; exit 2; }
 case "$CLI" in /*) ;; *) CLI="$ROOT_DIR/$CLI" ;; esac
-unset VIBE_TEST_BACKEND VIBE_BACKEND VIBE_TEST_RESULTS VIBE_TEST_NESTED VIBE_TEST_JOBS || true
+# The runners are compared on the default (RC) lane. tests/gates/lib.sh
+# exports VIBE_RC=0, and on that legacy bump lane the launcher refuses a file
+# with no functions (`no functions found to compile`) where vibe_test.sh
+# reports `(no tests found)` -- a lane difference, not a reporting one.
+unset VIBE_TEST_BACKEND VIBE_BACKEND VIBE_RC VIBE_TEST_RESULTS VIBE_TEST_NESTED VIBE_TEST_JOBS || true
 LAUNCHER="${VIBE_TEST_PARITY_LAUNCHER:-$ROOT_DIR/runtime/vibe}"
 SCRIPT="${VIBE_TEST_PARITY_SCRIPT:-$ROOT_DIR/scripts/vibe_test.sh}"
 
