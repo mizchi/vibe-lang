@@ -75,7 +75,7 @@ import ./evidence_handle_effect_names_expr.vibe {
   edp_collect_handle_effect_names,
   edp_collect_handle_sites,
   edp_drop_self_discharging_needing,
-  edp_drop_shadowed_needing,
+  edp_drop_shadowed_needing_with_binders,
   edp_drop_unreachable_needing,
   edp_expr_binds_name,
   edp_live_handle_dirty_selfdischarge,
@@ -1701,7 +1701,17 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       // the program is never safe to leave in `needing` regardless of
       // dead-code/self-discharge status -- see edp_drop_shadowed_needing's
       // own doc comment), so it applies before the self-discharging filter.
-      let needing_unshadowed = edp_drop_shadowed_needing(needing_all, stmts)
+      // One census per tree, shared with the eligibility attempts below: it is
+      // recomputed after every eta rebuild, the only write this loop makes.
+      let binders = match eligibility_binders {
+        Some(census) => census,
+        None => {
+          let census = edp_collect_program_binders(stmts)
+          eligibility_binders = Some(census)
+          census
+        }
+      }
+      let needing_unshadowed = edp_drop_shadowed_needing_with_binders(needing_all, stmts, binders)
       // Self-discharging exclusion is unconditional (a self-discharging
       // function never needs the dict for itself, dead or not -- see
       // edp_drop_self_discharging_needing's doc comment), so it applies to
@@ -1715,14 +1725,6 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       let pf_inert = Array::concat(plan_base_inert, empty_str_array())
       edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pf_inert, row_labels)
       edp_append_perform_free_row_fns(stmts, fn_defs, ename, pf_inert, row_labels)
-      let binders = match eligibility_binders {
-        Some(census) => census,
-        None => {
-          let census = edp_collect_program_binders(stmts)
-          eligibility_binders = Some(census)
-          census
-        }
-      }
       edp_append_effect_irrelevant_row_fns_with_binders(stmts, fn_defs, ename, pf_inert, row_labels, binders)
       let needing_full = array_empty()
       let mut pfi = 0
