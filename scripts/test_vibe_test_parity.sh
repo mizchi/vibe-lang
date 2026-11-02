@@ -13,6 +13,8 @@
 #    files-only -- a file with no count must not make the total too small.
 # 3. The gc backend, which strips the names: neither runner presents its raw
 #    over-count as a total, and neither calls a file with tests empty.
+# 4. The legacy bump lane (VIBE_RC=0): the same files as 1, the same answers.
+#    The launcher used to refuse the file with no functions there (#3706).
 #
 # The failure report under a FAIL line is not compared: the launcher's and the
 # script's differ by design (@vibe/testreport's launcher and script reports).
@@ -27,10 +29,8 @@ cd "$ROOT_DIR"
 CLI="${1:-}"
 [ -n "$CLI" ] && [ -s "$CLI" ] || { echo "usage: test_vibe_test_parity.sh <stage2.wasm>" >&2; exit 2; }
 case "$CLI" in /*) ;; *) CLI="$ROOT_DIR/$CLI" ;; esac
-# The runners are compared on the default (RC) lane. tests/gates/lib.sh
-# exports VIBE_RC=0, and on that legacy bump lane the launcher refuses a file
-# with no functions (`no functions found to compile`) where vibe_test.sh
-# reports `(no tests found)` -- a lane difference, not a reporting one.
+# Every case names its lane: tests/gates/lib.sh exports VIBE_RC=0, so an
+# inherited value would silently turn cases 1-3 into a second run of case 4.
 unset VIBE_TEST_BACKEND VIBE_BACKEND VIBE_RC VIBE_TEST_RESULTS VIBE_TEST_NESTED VIBE_TEST_JOBS || true
 LAUNCHER="${VIBE_TEST_PARITY_LAUNCHER:-$ROOT_DIR/runtime/vibe}"
 SCRIPT="${VIBE_TEST_PARITY_SCRIPT:-$ROOT_DIR/scripts/vibe_test.sh}"
@@ -106,4 +106,12 @@ else
   echo "[vibe-test-parity] note: wasmtime not found; the gc case was not run" >&2
 fi
 
-echo "[vibe-test-parity] ok (the same verdicts and summaries from both runners: counted, a compile failure files-only, gc uncounted)"
+# --- 4. the legacy bump lane ---------------------------------------------------
+VIBE_RC=0 via_launcher bump "${set1[@]}"
+VIBE_RC=0 via_script bump "${set1[@]}"
+compare bump
+diff -u "$OUT/counted.ls" "$OUT/bump.ls" >&2 || fail "the bump lane's summary differs from the default lane's"
+grep -qxF "ok   $WORK_REL/helper_test.vibe (no tests found)" "$OUT/bump.lv" \
+  || { cat "$OUT/bump.launcher" >&2; fail "the bump lane does not report a file without functions as having no tests (#3706)"; }
+
+echo "[vibe-test-parity] ok (the same verdicts and summaries from both runners: counted, a compile failure files-only, gc uncounted, the bump lane)"
