@@ -57,8 +57,11 @@ import @vibe/compiler/contract {
   classify_contract_stmts,
   contract_facade_marker,
   contract_hash_with,
+  contract_surface_effects,
   contract_surface_lines,
   contract_surface_rows_sorted,
+  ctr_es_collect_tables,
+  ctr_es_expand_row_string,
   deps_missing_for_imports,
   extract_package_deps,
   extract_package_name,
@@ -977,6 +980,34 @@ export fn contract_surface_lines_fs(path: String) -> Array[String] with Exceptio
   let (d, o, extra) = parse_contract_program(lex(blanked))
   let (_, types) = classify_contract_stmts(extra)
   contract_surface_lines(d, o, types)
+}
+
+/// `contract_surface_effects` of the contract at `path`, with every effectset
+/// alias expanded through the contract's own `effectset` definitions, the
+/// way conformance expands them: `fn fetch() -> String with Network` under
+/// `effectset Network = { Http }` requires Http, and a report keyed on the
+/// alias would miss it.
+export fn contract_surface_effects_fs(path: String) -> Array[String] with Exception + Fs {
+  let (_, blanked) = extract_require_pins(Fs::read_file(path))
+  let (d, o, extra) = parse_contract_program(lex(blanked))
+  let (_, types) = classify_contract_stmts(extra)
+  let (es_names, es_members) = ctr_es_collect_tables(types)
+  let effects = contract_surface_effects(contract_surface_lines(d, o, types))
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(effects) {
+    let entry = Array::get(effects, i)
+    let tab = String::index_of(entry, "\t")
+    let name = String::substring(entry, 0, tab)
+    let labels = String::split(ctr_es_expand_row_string(String::substring(entry, tab + 1, String::length(entry)), es_names, es_members), ", ")
+    let mut j = 0
+    while j < Array::length(labels) {
+      Array::push(out, "\{name}\t\{Array::get(labels, j)}")
+      j = j + 1
+    }
+    i = i + 1
+  }
+  out
 }
 
 /// #2676: the require pins that apply to `path`: those of its owning

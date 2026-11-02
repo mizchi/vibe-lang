@@ -11,6 +11,8 @@
 #    that the contract now requires the new capability.
 # 3. A version that removes a declaration lists it, and says the capability
 #    only it needed is no longer required.
+# 4. A capability required through an effectset alias is reported as that
+#    capability.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -90,4 +92,18 @@ grep -qF 'effect surface: no longer requires Fs' "$WORK/upd.out" || fail "the dr
 grep -qF 'effect surface: no longer requires Console' "$WORK/upd.out" || fail "the dropped Console was not reported"
 grep -q 'now requires' "$WORK/upd.out" && fail "a removal was reported as a new requirement"
 
-echo "[pkg-update-diff] ok (spelling-only change shows nothing; an addition lists one line and warns of Http; a removal lists it and drops Fs/Console)"
+# 4. A capability reached through an effectset alias is still a capability:
+#    the row names `Disk`, and `Disk` is Fs.
+release 2.1.0 'effectset Disk = { Fs }
+fn area(width: Int, height: Int) -> Int
+fn fetch(url: String) -> String with Http
+fn store(path: String) -> Unit with Disk
+' 'export fn area(width: Int, height: Int) -> Int { width * height }
+export fn fetch(url: String) -> String with Http { url }
+export fn store(path: String) -> Unit with Fs { Fs::write_file(path, "") }
+'
+update
+grep -q 'update @diff3673/geo: 2.0.0 -> 2.1.0' "$WORK/upd.out" || fail "2.1.0 was not the update"
+grep -qF 'warning: effect surface: now requires Fs (store)' "$WORK/upd.out" || fail "a capability behind an effectset alias was not warned about"
+
+echo "[pkg-update-diff] ok (spelling-only change shows nothing; an addition lists one line and warns of Http; a removal lists it and drops Fs/Console; an effectset alias is expanded)"

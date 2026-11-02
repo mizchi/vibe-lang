@@ -16,7 +16,7 @@
 //# Imports
 
 import @vibe/compiler/contract {
-  contract_surface_effects, contract_surface_rows_sorted, extract_package_name, extract_package_version, extract_require_sources
+  contract_surface_rows_sorted, extract_package_name, extract_package_version, extract_require_sources
 }
 
 import @vibe/compiler/core {
@@ -24,7 +24,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/loader {
-  contract_package_hashes_fs, contract_package_hashes_fs_algo, contract_surface_lines_fs, publish_check_fs
+  contract_package_hashes_fs, contract_package_hashes_fs_algo, contract_surface_effects_fs, contract_surface_lines_fs, publish_check_fs
 }
 
 import @vibe/pkgstore {
@@ -757,9 +757,10 @@ fn label_capability(label: String) -> String {
   }
 }
 
-/// `cap<TAB>fn, fn` for each host capability some declaration's row needs.
-fn surface_capabilities(lines: Array[String]) -> Array[(String, Array[String])] {
-  let effects = contract_surface_effects(lines)
+/// Each host capability some declaration's row needs, with the declarations
+/// that need it, from `contract_surface_effects_fs` entries (effectset
+/// aliases already expanded).
+fn surface_capabilities(effects: Array[String]) -> Array[(String, Array[String])] {
   let caps: Array[(String, Array[String])] = []
   let mut i = 0
   while i < Array::length(effects) {
@@ -808,7 +809,7 @@ fn capability_names(caps: Array[(String, Array[String])]) -> Array[String] {
 /// new version drops and adds; then the host capabilities its effect rows
 /// newly require (`warning:` -- the update grants the dependency more
 /// authority) or no longer require.
-fn report_surface_change(old_lines: Array[String], new_lines: Array[String], label: String) -> Unit with Console {
+fn report_surface_change(old_lines: Array[String], new_lines: Array[String], old_effects: Array[String], new_effects: Array[String], label: String) -> Unit with Console {
   let old_rows = contract_surface_rows_sorted(old_lines)
   let new_rows = contract_surface_rows_sorted(new_lines)
   let removed = lines_missing(old_rows, new_rows)
@@ -827,8 +828,8 @@ fn report_surface_change(old_lines: Array[String], new_lines: Array[String], lab
     say("  +\{Array::get(added, a)}")
     a = a + 1
   }
-  let old_caps = surface_capabilities(old_lines)
-  let new_caps = surface_capabilities(new_lines)
+  let old_caps = surface_capabilities(old_effects)
+  let new_caps = surface_capabilities(new_effects)
   let old_names = capability_names(old_caps)
   let new_names = capability_names(new_caps)
   let mut changed = false
@@ -948,7 +949,7 @@ fn pkg_update(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception 
       say("contract surface: unchanged (\{cur_contract})")
     } else {
       say("contract surface: \{cur_contract} -> \{best_contract}")
-      report_surface_change(contract_surface_lines_fs(installed_index), contract_surface_lines_fs(best_index), "\{installed_index} -> \{name}@\{best}")
+      report_surface_change(contract_surface_lines_fs(installed_index), contract_surface_lines_fs(best_index), contract_surface_effects_fs(installed_index), contract_surface_effects_fs(best_index), "\{installed_index} -> \{name}@\{best}")
     }
     materialize(paths, name, best, best_hash, store)
     0
