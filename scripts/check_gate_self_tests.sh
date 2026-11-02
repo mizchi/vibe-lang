@@ -15,6 +15,14 @@ set -euo pipefail
 
 # Overridable so this gate's own self-test can point it at a scratch tree.
 ROOT_DIR="${VIBE_GATE_SELF_TEST_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+# Whether LIST (one entry per line) holds exactly NAME. A here-string, never
+# `printf | grep -q`: grep -q exits at its first match, bash's printf writes
+# line by line, and under pipefail the SIGPIPE it then takes makes a LISTED
+# name read as absent. Measured: a release-selftests probe reported
+# scripts/check_vibe_fmt.sh as "no self-test" while it was on the allowlist,
+# with `printf: write error: Broken pipe` on the membership line (#3672).
+has_line() { grep -qxF -- "$2" <<< "$1"; }
 cd "$ROOT_DIR"
 
 WORK_LOG="$(mktemp "${TMPDIR:-/tmp}/vibe_gate_selftest.XXXXXX")"
@@ -92,13 +100,13 @@ fi
 not_baseline=""
 while IFS= read -r name; do
   [ -n "$name" ] || continue
-  printf '%s\n' $baseline_no_test | grep -qxF "$name" || not_baseline="$not_baseline $ALLOWLIST:$name"
+  has_line "$(printf '%s\n' $baseline_no_test)" "$name" || not_baseline="$not_baseline $ALLOWLIST:$name"
 done <<EOF2
 $allowed
 EOF2
 while IFS= read -r name; do
   [ -n "$name" ] || continue
-  printf '%s\n' $baseline_failing | grep -qxF "$name" || not_baseline="$not_baseline $FAILING:$name"
+  has_line "$(printf '%s\n' $baseline_failing)" "$name" || not_baseline="$not_baseline $FAILING:$name"
 done <<EOF3
 $failing_allowed
 EOF3
@@ -146,7 +154,7 @@ for f in scripts/check_*.sh scripts/lint_*.sh scripts/*_gate.sh scripts/*_oracle
   [ -f "${base}.test.mjs" ] && continue
   [ -f "${base}_test.py" ] && continue
   name="${f#scripts/}"
-  if ! printf '%s\n' "$allowed" | grep -qxF "$name"; then
+  if ! has_line "$allowed" "$name"; then
     missing="$missing $name"
   fi
 done
@@ -310,7 +318,7 @@ fi
 SHARD_PINS="scripts/gate_self_test_shards.txt"
 pins=""
 [ -f "$SHARD_PINS" ] && pins="$(grep -v '^\s*#' "$SHARD_PINS" | grep -v '^\s*$' || true)"
-pin_slot() { printf '%s\n' "$pins" | awk -v n="$1" '$1 == n { print $2; exit }'; }
+pin_slot() { awk -v n="$1" '$1 == n { print $2; exit }' <<< "$pins"; }
 
 failed_tests=""
 repaired=""
@@ -355,7 +363,7 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
     fi
     [ $((slot % shard_n)) -eq "$shard_i" ] || continue
     ran=$((ran + 1))
-    if printf '%s\n' "$failing_allowed" | grep -qxF "$base"; then
+    if has_line "$failing_allowed" "$base"; then
       # A known-failing exemption is still RUN, because the interesting case is
       # that it starts passing: skipping it outright means a repaired test (or
       # one whose missing dependency arrived) stays permanently unexecuted, and
@@ -363,7 +371,7 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
       # hand (#2248 review). The ratchet has to notice its own entries going
       # stale, exactly as the no-test allowlist does.
       if run_checked "$t" \
-         && printf '%s\n' "$failing_broken" | grep -qxF "$base"; then
+         && has_line "$failing_broken" "$base"; then
         repaired="$repaired $base"
       fi
       continue
@@ -388,7 +396,7 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
   while read -r name slot _; do
     [ -n "$name" ] || continue
     case "$slot" in ''|*[!0-9]*) stale_pins="$stale_pins $name(slot-not-a-number)"; continue ;; esac
-    printf ' %s \n' "$seen_pins " | grep -qF " $name " || stale_pins="$stale_pins $name(no-such-companion)"
+    grep -qF -- " $name " <<< " $seen_pins " || stale_pins="$stale_pins $name(no-such-companion)"
   done <<EOF4
 $pins
 EOF4
