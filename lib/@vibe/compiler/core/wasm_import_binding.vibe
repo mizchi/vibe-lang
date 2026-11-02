@@ -710,8 +710,11 @@ fn wib_sig_wat(params: Array[Int], results: Array[Int]) -> String {
 // ---------------------------------------------------------------------------
 // Emission
 
+/// The number an `Int` param holds. `vibe.int.untag` assembles to the
+/// compiling lane's representation (a shift on RC, nothing on bump), so the
+/// synthesized text is right on both.
 fn wib_untag(param: String) -> String {
-  "(i64.shr_s (local.get $\{param}) (i64.const 1))"
+  "(vibe.int.untag (local.get $\{param}))"
 }
 
 /// The inline-wasm body for one foreign function.
@@ -733,9 +736,9 @@ fn wib_body(callee: String, params: Array[Int], results: Array[Int]) -> String {
   if Array::length(results) == 0 {
     "\{checks}\{call} (i64.const 0)"
   } else if Array::get(results, 0) == 0x7F {
-    "\{checks}(i64.shl (i64.extend_i32_s \{call}) (i64.const 1))"
+    "\{checks}(vibe.int.tag (i64.extend_i32_s \{call}))"
   } else {
-    "(local $r i64) \{checks}(local.set $r \{call}) (if (i64.ne (i64.shr_s (i64.shl (local.get $r) (i64.const 1)) (i64.const 1)) (local.get $r)) (then unreachable)) (i64.shl (local.get $r) (i64.const 1))"
+    "(local $r i64) \{checks}(local.set $r \{call}) (if (i64.ne (i64.shr_s (i64.shl (local.get $r) (i64.const 1)) (i64.const 1)) (local.get $r)) (then unreachable)) (vibe.int.tag (local.get $r))"
   }
 }
 
@@ -1384,7 +1387,7 @@ fn wib_component_emit(out: Array[String], vibe_name: String, doc: String, callee
   } else if result_is_string {
     ("String", call, "String")
   } else {
-    ("Int", "(i64.shl \{call} (i64.const 1))", "Int")
+    ("Int", "(vibe.int.tag \{call})", "Int")
   }
   Array::push(out, "/// \{doc}\n")
   Array::push(out, "fn wasm_raw_\{vibe_name}(\{String::join(raw_params, ", ")}) -> \{raw_ret} = wasm \"\{body}\"\n")

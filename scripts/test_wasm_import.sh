@@ -9,7 +9,8 @@
 #
 # What is asserted, per runner (viberun and the node runner):
 #   1. fixtures/wasm_import/counter_main.vibex prints `count=42` -- i32 and
-#      i64 values cross both ways and a void export mutates foreign state.
+#      i64 values cross both ways and a void export mutates foreign state --
+#      and its artifact imports only the three functions it calls;
 #   2. an Int that fits no reading of 32 bits, passed as an i32, TRAPS
 #      (trap_i32_param.vibex) -- it must not reach the foreign function as a
 #      truncated value, so `r=` is never printed;
@@ -42,9 +43,15 @@ fi
 [ -x "$VIBERUN" ] || fail "viberun not available: $VIBERUN"
 NODE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh"
 
+# The allocator lane is set per call, never inherited: the RC lane tags an
+# Int (`n << 1`) and the bump lane does not, so the binding's conversions
+# differ between them, and a gate that ran whichever lane its caller had
+# exported checked one of them at random (tests/gates/lib.sh exports
+# VIBE_RC=0; a shell usually has none).
+LANE_RC="${LANE_RC:-1}"
 vibe() { # <runner> <vibe args...>
   local runner="$1"; shift
-  VIBE_RUNNER="$runner" VIBE_CLI_WASM="$CLI" VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  VIBE_RC="$LANE_RC" VIBE_RUNNER="$runner" VIBE_CLI_WASM="$CLI" VIBE_PREOPEN_DIR="$ROOT_DIR" \
     VIBE_BUILD_DIR="$WORK/build" "$ROOT_DIR/runtime/vibe" "$@"
 }
 
@@ -55,13 +62,29 @@ else
   echo "[wasm-import] note: wat2wasm / wasm-tools not installed; not rebuilding the fixture binaries"
 fi
 
-for runner in "$VIBERUN" "$NODE_RUNNER"; do
-  label="$(basename "$runner")"
+# The foreign functions an artifact imports from <module>, sorted, one line.
+foreign_imports() { # <artifact.wasm> <module>
+  node -e '
+    const m = new WebAssembly.Module(require("node:fs").readFileSync(process.argv[1]));
+    const names = WebAssembly.Module.imports(m).filter((i) => i.module === process.argv[2]).map((i) => i.name).sort();
+    console.log(names.join(" "));
+  ' "$1" "$2"
+}
+
+for lane_and_runner in "1 $VIBERUN" "0 $VIBERUN" "1 $NODE_RUNNER" "0 $NODE_RUNNER"; do
+  LANE_RC="${lane_and_runner%% *}"
+  runner="${lane_and_runner#* }"
+  label="$(basename "$runner") VIBE_RC=$LANE_RC"
   # 1.
   status=0
   out="$(vibe "$runner" run "$FX/counter_main.vibex" 2>"$WORK/err")" || status=$?
   [ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[$label] counter_main exited $status"; }
   [ "$out" = "count=42" ] || fail "[$label] counter_main printed $(printf '%q' "$out"), want count=42"
+  # Tree-shaken: the artifact imports the three functions it calls, not
+  # every export the binding offers (the late DCE knows the release
+  # artifact's exports are stripped).
+  got="$(foreign_imports "$WORK/build/run/counter_main.wasm" "vibe:wasm:$FX/counter.wasm")"
+  [ "$got" = "Add_I32 bump count" ] || fail "[$label] counter_main imports '$got' from counter.wasm, want 'Add_I32 bump count'"
   # 2. and 3.
   for t in trap_i32_param trap_i64_result; do
     status=0
@@ -79,12 +102,16 @@ vibe "$NODE_RUNNER" check "$FX/err_not_offered.vibe" >"$WORK/out" 2>&1 || status
 grep -q "'half' is not exported by './counter.wasm'" "$WORK/out" || { cat "$WORK/out" >&2; fail "refusal does not name 'half'"; }
 
 # 6. A COMPONENT import (greeter.component.wasm, typed by greeter.wit) runs on
-#    viberun: a string crosses both ways, Ints cross and state persists.
-status=0
-out="$(vibe "$VIBERUN" run "$FX/greeter_main.vibex" 2>"$WORK/err")" || status=$?
-[ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun] greeter_main exited $status"; }
+#    viberun, on both lanes: a string crosses both ways, Ints cross and state
+#    persists.
 want="$(printf 'hi, vibe\nadd=42\ncounter=2')"
-[ "$out" = "$want" ] || fail "[viberun] greeter_main printed $(printf '%q' "$out"), want $(printf '%q' "$want")"
+for LANE_RC in 1 0; do
+  status=0
+  out="$(vibe "$VIBERUN" run "$FX/greeter_main.vibex" 2>"$WORK/err")" || status=$?
+  [ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun VIBE_RC=$LANE_RC] greeter_main exited $status"; }
+  [ "$out" = "$want" ] || fail "[viberun VIBE_RC=$LANE_RC] greeter_main printed $(printf '%q' "$out"), want $(printf '%q' "$want")"
+done
+LANE_RC=1
 # 7. An Int outside the WIT width is refused by the lowering, not truncated.
 status=0
 out="$(vibe "$VIBERUN" run "$FX/trap_component_s32.vibex" 2>"$WORK/err")" || status=$?

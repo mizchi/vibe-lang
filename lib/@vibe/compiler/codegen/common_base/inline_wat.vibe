@@ -1267,7 +1267,23 @@ fn iw_operand_valtype(kinds: Array[Int], texts: Array[String], pos: Int, end: In
         0
       }
     } else if head == "call" {
-      // Every inline-wasm fn returns Int, a raw tagged i64 (parser-enforced).
+      // Every inline-wasm fn returns Int, a raw tagged i64 (parser-enforced);
+      // a foreign core-wasm callee returns what its spelling says.
+      let foreign_result = if pos + 2 < end && Array::get(kinds, pos + 2) == 3 && String::length(Array::get(texts, pos + 2)) > 1 {
+        let tok = Array::get(texts, pos + 2)
+        match wasm_import_decode_callee(String::substring(tok, 1, String::length(tok))) {
+          Some((_, _, _, frs)) => if Array::length(frs) == 0 {
+            0
+          } else {
+            Array::get(frs, 0)
+          },
+          None => 0x7E
+        }
+      } else {
+        0x7E
+      }
+      foreign_result
+    } else if head == "vibe.int.untag" || head == "vibe.int.tag" {
       0x7E
     } else if head == "br" || head == "br_if" || head == "local.set" || head == "global.set" || head == "global.get" {
       0
@@ -1939,6 +1955,60 @@ fn iw_folded_call(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[S
   }
 }
 
+/// Whether the lane being assembled for carries an `Int` TAGGED (`n << 1`,
+/// the RC lane) or raw (the bump lane). Set by the codegen per compile with
+/// `set_inline_wat_int_tagged`; `vibe check`'s validation leaves the default,
+/// which assembles the same instructions' types either way.
+let iw_int_tagged_cell: Array[Bool] = [true]
+
+export fn set_inline_wat_int_tagged(tagged: Bool) -> Unit {
+  Array::set(iw_int_tagged_cell, 0, tagged)
+}
+
+/// `(vibe.int.untag x)` / `(vibe.int.tag x)`: an `Int` slot's raw value and
+/// back, in the representation of the lane being compiled -- `i64.shr_s 1` /
+/// `i64.shl 1` on the RC lane, nothing on the bump lane. A body that has to
+/// compute with the NUMBER an `Int` holds (a foreign-function binding,
+/// core/wasm_import_binding.vibe) cannot know which lane will assemble it;
+/// spelling the shift by hand answered wrong on the bump lane, silently
+/// (`mul64(6, 7)` was 18 there). Exactly one i64 operand.
+fn iw_folded_int_tag(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack, tag: Bool) -> Int with Exception {
+  let head = Array::get(texts, pos + 1)
+  let mut p = pos + 2
+  let mut argc = 0
+  let mut done = false
+  while !done {
+    if p >= end {
+      throw(iw_err(fn_name, "missing ')' closing '(\{head}'", Array::get(offs, pos)))
+    } else if Array::get(kinds, p) == 2 {
+      done = true
+    } else if Array::get(kinds, p) == 1 {
+      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth, callees, st)
+      argc = argc + 1
+    } else {
+      throw(iw_err(fn_name, "unexpected '\{Array::get(texts, p)}' inside '(\{head}' -- its operand must be parenthesized", Array::get(offs, p)))
+    }
+  }
+  if argc != 1 {
+    throw(iw_err(fn_name, "'\{head}' takes exactly one i64 operand, got \{argc}", Array::get(offs, pos)))
+  } else {
+    ()
+  }
+  iw_apply(st, fn_name, head, [0x7E], 0x7E, Array::get(offs, pos))
+  if Array::get(iw_int_tagged_cell, 0) {
+    bytebuf_push(out, 0x42)
+    leb128_encode_s64(out, 1)
+    bytebuf_push(out, if tag {
+      0x86
+    } else {
+      0x87
+    })
+  } else {
+    ()
+  }
+  p + 1
+}
+
 /// One sequence item at `pos`: either a folded `(...)` expression or a plain
 /// instruction word. Returns the position after the item.
 fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
@@ -1964,6 +2034,8 @@ fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String],
       iw_folded_if(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees, st)
     } else if head == "then" || head == "else" || head == "result" {
       throw(iw_err(fn_name, "misplaced '(\{head} ...)' clause", Array::get(offs, pos)))
+    } else if head == "vibe.int.untag" || head == "vibe.int.tag" {
+      iw_folded_int_tag(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees, st, head == "vibe.int.tag")
     } else {
       iw_folded_op(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees, st)
     }

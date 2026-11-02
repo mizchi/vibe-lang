@@ -3249,6 +3249,12 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   xor/compares) may skip the dance; mul/div/shift must not.
 - **Linear backend only** — the wasm-gc backend rejects it with a compile
   error. The declared signature is trusted (extern-let style).
+- **`(vibe.int.untag x)` / `(vibe.int.tag x)`** give the number an `Int`
+  slot holds and back, in the compiling lane's representation: `i64.shr_s 1`
+  / `i64.shl 1` on the RC lane, nothing on the bump lane (`VIBE_RC=0`), where
+  an `Int` is raw. A body that computes with the number should use these
+  rather than spelling the shift: the hand-written shift is right on RC only
+  (`fixtures/inline_wasm_int_tag_test.vibe`).
 - **v0.3 slice restrictions**: monomorphic only (no `[T]`), empty effect row,
   no `where` contracts, params typed `Int`, `Bytes` or `Array[Int]`, return
   type `Int` or `String`. An `Int` result uses the tagged integer ABI above;
@@ -3421,6 +3427,12 @@ it needs — nothing provides another module's host imports yet. That is why
 `lib/@vibex/z3` (the npm z3-solver build, an emscripten module that imports
 its JS runtime) type-checks and builds against the real `z3.wasm` but does
 not run: `scripts/test_z3_binding.sh` asserts exactly that.
+
+**Tree shaking.** A `vibe build` / `vibe run` artifact imports only the
+foreign functions the program reaches: the late DCE drops the unused binding
+stubs (and unused exports of any imported module), so a program calling ten
+of z3.wasm's functions imports those ten, not all 853. A `vibe test`
+artifact (no entry) still compiles, and imports, every offered function.
 
 Linear backend only (the binding is inline wasm). Fixtures:
 `fixtures/wasm_import/`, gate: `scripts/test_wasm_import.sh`.

@@ -7,8 +7,9 @@
 # Asserted:
 #   1. lib/@vibex/z3 and fixtures/z3/smtlib_main.vibex type-check against the
 #      pinned binary (scripts/fetch_z3_wasm.sh);
-#   2. the built program imports the Z3 functions it calls with the signatures
-#      z3.wasm declares (Z3_eval_smtlib2_string: (i32, i32) -> i32, ...);
+#   2. the built program imports exactly the Z3 functions it calls (not all
+#      853 the binding offers), each with the signature z3.wasm declares
+#      (Z3_eval_smtlib2_string: (i32, i32) -> i32, ...);
 #   3. running it is REFUSED, naming what z3.wasm needs. This is the npm
 #      build of z3: an emscripten module that imports its JS runtime
 #      (env.* -- pthreads, JS-side C++ exceptions, EM_ASM) and its memory, and
@@ -81,6 +82,11 @@ const want = {
   "vibe:memory.store8": "(i32, i32) -> ()",
 };
 const mod = "vibe:wasm:lib/@vibex/z3/z3.wasm";
+// Tree-shaken: exactly what the program calls (plus the memory accessor
+// pair), not the 853 functions the binding offers.
+const got = imports.filter(([m]) => m === mod).map(([, f]) => f).sort();
+const wantNames = [...Object.keys(want), "Z3_del_config"].sort();
+if (JSON.stringify(got) !== JSON.stringify(wantNames)) throw new Error(`imports ${got.length} z3 functions (${got.slice(0, 12).join(" ")}${got.length > 12 ? " ..." : ""}); want the ${wantNames.length} it calls: ${wantNames.join(" ")}`);
 for (const [f, sig] of Object.entries(want)) {
   const hit = imports.find(([m, ff]) => m === mod && ff === f);
   if (!hit) throw new Error(`no import ${mod}.${f}`);
