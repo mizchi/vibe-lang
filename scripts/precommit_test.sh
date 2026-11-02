@@ -21,11 +21,13 @@ EOF
 cat > "$TMP_ROOT/lib/@vibe/compiler/checker/pass.vibe" <<'EOF'
 fn check() -> Bool { true }
 EOF
-# The hook checks scripts/README.md against the scripts it names (#2001), so
-# the synthetic repository carries a one-entry index of its own.
+# The hook checks scripts/README.md against the scripts it names (#2001), and
+# every file under scripts/ against scripts/inventory.tsv (#3675), so the
+# synthetic repository carries a one-entry index and inventory of its own.
 mkdir -p "$TMP_ROOT/scripts"
 printf '#!/usr/bin/env bash\n' > "$TMP_ROOT/scripts/probe.sh"
 printf '# scripts/\n\n- `probe.sh`\n' > "$TMP_ROOT/scripts/README.md"
+printf 'README.md\tdoc\tmanual\t-\t-\ninventory.tsv\tdata\tmanual\t-\t-\nprobe.sh\ttool\tmanual\t#3672\t-\n' > "$TMP_ROOT/scripts/inventory.tsv"
 git -C "$TMP_ROOT" add .
 git -C "$TMP_ROOT" commit -qm base
 
@@ -120,10 +122,12 @@ if ! grep -qF 'names `probe.sh`' "$TMP_ROOT/readme-fail.out"; then
   exit 1
 fi
 
-# Deleting the script and its mention together passes.
+# Deleting the script with its mention and its inventory row, and adding one
+# with its row, passes (#2001, #3675).
 printf '# scripts/\n\nNo entries yet: `*.sh` covers what lands here.\n' > "$TMP_ROOT/scripts/README.md"
 printf '#!/usr/bin/env bash\n' > "$TMP_ROOT/scripts/other.sh"
-git -C "$TMP_ROOT" add scripts/README.md scripts/other.sh
+printf 'README.md\tdoc\tmanual\t-\t-\ninventory.tsv\tdata\tmanual\t-\t-\nother.sh\ttool\tmanual\t#3672\t-\n' > "$TMP_ROOT/scripts/inventory.tsv"
+git -C "$TMP_ROOT" add scripts/README.md scripts/other.sh scripts/inventory.tsv
 
 VIBE_PRECOMMIT_PROJECT_ROOT="$TMP_ROOT" \
   VIBE_ARCH_LINT_RULES="$TMP_ROOT/scripts-rules.tsv" \
