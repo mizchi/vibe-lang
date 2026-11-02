@@ -2102,6 +2102,24 @@ REPL_HELP
       done
       [ -n "$total" ] && [ "$(grep -c . "$out" || true)" = "$total" ]
     }
+    # A run-tests plan record (`src<TAB>wasm<TAB>...`, see plan_test_record)
+    # into mrec_src / mrec_wasm, splitting on EVERY tab. `IFS=<tab> read`
+    # cannot do this: tab is IFS whitespace, so a run of tabs is one
+    # separator and an empty field vanishes. A file that did not compile has
+    # an empty wasm, and since its record also carries the verdict lines
+    # (`src<TAB><TAB><TAB><TAB>FAIL (compile) ...`, #3711), `read` handed the
+    # fail line back as the wasm path and the mutant was run instead of being
+    # counted unviable.
+    mutate_plan_record() {
+      local rest
+      mrec_src="${1%%	*}"
+      rest="${1#*	}"
+      if [ "$rest" = "$1" ]; then
+        mrec_wasm=""
+      else
+        mrec_wasm="${rest%%	*}"
+      fi
+    }
     mutate_wasm_path() {
       case "$1" in /*) printf '%s' "$1" ;; '') ;; *) printf '%s' "$PROJECT_ROOT/$1" ;; esac
     }
@@ -2167,8 +2185,10 @@ REPL_HELP
     printf 'target\t%s\t%s\n' "$mtarget" "$msnap" > "$mresults"
     mfi=0; mtid=0; mbase_ok=1
     : > "$mwork/tests.tsv"
-    while IFS="$(printf '\t')" read -r msrc mwasm _; do
-      mwasm="$(mutate_wasm_path "$mwasm")"
+    while IFS= read -r mrec; do
+      mutate_plan_record "$mrec"
+      msrc="$mrec_src"
+      mwasm="$(mutate_wasm_path "$mrec_wasm")"
       [ -n "$mwasm" ] || { cat "$mwork/compile.log" >&2; die "vibe mutate: $msrc did not compile"; }
       cp "$mwasm" "$mwork/base/$mfi.wasm"
       printf '%s\n' "$msrc" >> "$mwork/tests.files"
@@ -2202,8 +2222,9 @@ REPL_HELP
       mkillers=""; mcompiled=0; mdiffer=0
       if VIBE_SOURCE_OVERLAY="$mabs" VIBE_SOURCE_OVERLAY_WITH="$mfile" mutate_compile "$mwork/m.plan" "${mrel[@]}"; then
         mfi=0
-        while IFS="$(printf '\t')" read -r _ mwasm _; do
-          mwasm="$(mutate_wasm_path "$mwasm")"
+        while IFS= read -r mrec; do
+          mutate_plan_record "$mrec"
+          mwasm="$(mutate_wasm_path "$mrec_wasm")"
           if [ -n "$mwasm" ]; then
             mcompiled=1
             if ! cmp -s "$mwasm" "$mwork/base/$mfi.wasm"; then
