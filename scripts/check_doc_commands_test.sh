@@ -4,12 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/doc_commands_test.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
-mkdir -p "$SCRATCH/scripts/pkfire" "$SCRATCH/runtime" "$SCRATCH/lib/@vibe/compiler"
+mkdir -p "$SCRATCH/scripts/pkfire" "$SCRATCH/runtime" "$SCRATCH/lib/@vibe/cli/commands"
 cp "$ROOT/Taskfile.pkl" "$SCRATCH/"
 cp "$ROOT/scripts/pkfire/"*.pkl "$SCRATCH/scripts/pkfire/"
 cp "$ROOT/scripts/check_doc_commands.sh" "$ROOT/scripts/source_files.py" "$SCRATCH/scripts/"
 cp "$ROOT/runtime/vibe" "$SCRATCH/runtime/"
-cp "$ROOT/lib/@vibe/compiler/user_dispatch"*.vibe "$SCRATCH/lib/@vibe/compiler/"
+cp "$ROOT/lib/@vibe/cli/commands/dispatch.vibe" "$SCRATCH/lib/@vibe/cli/commands/"
 cd "$SCRATCH"
 python3 - <<'PY'
 from pathlib import Path
@@ -41,7 +41,7 @@ PY
 expect_failure 'removed imported task' '`pkf run test-affected` -- no such task'
 cp quality.original scripts/pkfire/quality_tasks.pkl
 
-dispatcher=lib/@vibe/compiler/user_dispatch_selfhost_cli_user_grep_args.vibe
+dispatcher=lib/@vibe/cli/commands/dispatch.vibe
 cp "$dispatcher" dispatcher.original
 python3 - "$dispatcher" <<'PY'
 from pathlib import Path
@@ -60,4 +60,6 @@ rm scripts/pkfire/quality_tasks.pkl
 expect_failure 'missing imported task module' 'quality_tasks.pkl'
 cp quality.original scripts/pkfire/quality_tasks.pkl
 bash scripts/check_doc_commands.sh > result.log 2>&1 || { cat result.log >&2; exit 1; }
+rm "$dispatcher"
+expect_failure 'missing CLI dispatcher' 'cannot read CLI dispatcher'
 echo 'doc-commands self-test: imported tasks, split verbs, and refusal controls passed'

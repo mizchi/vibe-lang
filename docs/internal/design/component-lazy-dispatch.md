@@ -51,10 +51,11 @@ replaced `no-dce` on the adapter door the other kept `no-dce` — the same
 `vibe build --component` then produced a 40 MB artifact through the user CLI
 and a 2.6 MB one through the launcher. Both now read
 `command_component_entry()` and `command_component_compile_mode()` from
-`lib/@vibe/compiler/cli_support.vibe`, so the pair has one spelling and a
+`lib/@vibe/cli/support/compile_support.vibe`, so the pair has one spelling and a
 future lane change cannot land on one door only. `lib/@vibe/cli/dispatch_test.vibe`
-asserts the door returns exactly that pair rather than a literal that happens
-to agree today.
+checks the shared component entry and compile mode, while
+`lib/@vibe/cli/commands/commands_test.vibe` checks component option parsing and
+refuses core-only minification options on that route.
 
 The first version of this lane had only the verb arm. Measured:
 `vibe build --component app.vibex` printed

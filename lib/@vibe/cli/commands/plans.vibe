@@ -1,4 +1,4 @@
-// lib/@vibe/compiler/user_dispatch.vibe — selfhost cli test plan args.
+// CLI argument helpers and run/test host-action plans.
 
 import @vibe/compiler/cache {
   ingestion_fingerprint_telemetry_json
@@ -56,21 +56,22 @@ import @vibe/compiler/syntax {
   lex, lex_with_offsets, located_lex_message, parse_program, parse_program_located
 }
 
-import ./cli_support.vibe {
+import @vibe/cli/support {
   check_unstable_surface_warnings_from_closure,
   check_unstable_surface_warnings_from_path,
   command_component_compile_mode,
-  executable_exports_stripped,
-  strip_executable_wasm,
-  strip_executable_wasm_env,
   unstable_closure_reset
 }
 
-import ./inspect_update.vibe {
+import @vibe/compiler/codegen/executable {
+  executable_exports_stripped, strip_executable_wasm, strip_executable_wasm_env
+}
+
+import @vibe/compiler/refactor {
   compute_updated_source
 }
 
-import ./wit_gen.vibe {
+import @vibe/compiler/codegen/wit {
   serve_handler_param_names, serve_handler_takes_body_stream, validate_serve_handler, wit_from_program
 }
 
@@ -78,17 +79,17 @@ import @vibe/lsp {
   lsp_diagnostics_json_of_messages, lsp_main
 }
 
-import ./user_refactor.vibe {
+import ./refactor.vibe {
   selfhost_cli_user_refactor_args, user_check_missing_label_rows_single
 }
 
 //# Helpers
 
 fn cli_bytes(value: String) -> Bytes {
-  let out = Array::slice([0], 0, 0)
+  let out = Array::slice([0], start = 0, end = 0)
   let mut i = 0
   while i < String::length(value) {
-    Array::push(out, String::byte_at(value, i))
+    Array::push(out, value = String::byte_at(value, at = i))
     i = i + 1
   }
   Bytes::from_array(out)
@@ -99,7 +100,7 @@ fn last_slash_index(path: String) -> Int {
   let mut last = -1
   let mut i = 0
   while i < len {
-    if String::byte_at(path, i) == 47 {
+    if String::byte_at(path, at = i) == 47 {
       last = i
     }
     i = i + 1
@@ -108,7 +109,7 @@ fn last_slash_index(path: String) -> Int {
 }
 
 fn dirname_of(path: String) -> String {
-  let slash = last_slash_index(path)
+  let slash = last_slash_index(path = path)
   if slash <= 0 {
     ""
   } else {
@@ -117,7 +118,7 @@ fn dirname_of(path: String) -> String {
 }
 
 export fn basename_of(path: String) -> String {
-  let slash = last_slash_index(path)
+  let slash = last_slash_index(path = path)
   let len = String::length(path)
   if slash >= 0 {
     path[slash + 1: len]
@@ -138,17 +139,17 @@ export fn strip_vibe_suffix(path: String) -> String {
 }
 
 export fn is_vibex_path(path: String) -> Bool {
-  String::ends_with(path, ".vibex")
+  String::ends_with(path, suffix = ".vibex")
 }
 
 export fn path_has_suffix(s: String, suffix: String) -> Bool {
   let n = String::length(s)
   let m = String::length(suffix)
-  n >= m && String::substring(s, n - m, n) == suffix
+  n >= m && String::substring(s, start = n - m, end = n) == suffix
 }
 
 export fn ensure_parent_dir(path: String) -> Unit with Fs {
-  let dir = dirname_of(path)
+  let dir = dirname_of(path = path)
   if dir == "" {
     ()
   } else {
@@ -166,7 +167,7 @@ export fn default_build_dir() -> String with Env {
 }
 
 export fn display_under_root(path: String, build_dir: String) -> String {
-  if build_dir != "" && String::starts_with(path, build_dir) && String::ends_with(build_dir, "/.vibe/build") {
+  if build_dir != "" && String::starts_with(path, prefix = build_dir) && String::ends_with(build_dir, suffix = "/.vibe/build") {
     String::concat(".vibe/build", path[String::length(build_dir): String::length(path)])
   } else {
     path
@@ -174,15 +175,15 @@ export fn display_under_root(path: String, build_dir: String) -> String {
 }
 
 fn default_out_wasm(input_path: String) -> String with Env {
-  String::concat(default_build_dir(), String::concat("/out/", String::concat(basename_of(strip_vibe_suffix(input_path)), ".wasm")))
+  String::concat(default_build_dir(), String::concat("/out/", String::concat(basename_of(path = strip_vibe_suffix(path = input_path)), ".wasm")))
 }
 
 fn default_run_wasm(input_path: String) -> String with Env {
-  String::concat(default_build_dir(), String::concat("/run/", String::concat(basename_of(strip_vibe_suffix(input_path)), ".wasm")))
+  String::concat(default_build_dir(), String::concat("/run/", String::concat(basename_of(path = strip_vibe_suffix(path = input_path)), ".wasm")))
 }
 
 fn default_wit_path(input_path: String) -> String with Env {
-  String::concat(default_build_dir(), String::concat("/out/", String::concat(basename_of(strip_vibe_suffix(input_path)), ".wit")))
+  String::concat(default_build_dir(), String::concat("/out/", String::concat(basename_of(path = strip_vibe_suffix(path = input_path)), ".wit")))
 }
 
 export fn user_dispatch_parse_int_or(s: String, default: Int) -> Int {
@@ -194,7 +195,7 @@ export fn user_dispatch_parse_int_or(s: String, default: Int) -> Int {
     let mut acc = 0
     let mut ok = true
     while ok && i < len {
-      let c = String::byte_at(s, i)
+      let c = String::byte_at(s, at = i)
       if c >= '0' && c <= '9' {
         acc = acc * 10 + (c - '0')
         i = i + 1
@@ -215,7 +216,7 @@ export fn user_dispatch_parse_int_or(s: String, default: Int) -> Int {
 /// `build` retains it in its native TaskGroup request and additionally checks
 /// its supported slot counts. `check` accepts it for compatibility.
 export fn parse_jobs_value(raw: String) -> Int with Exception {
-  let n = user_dispatch_parse_int_or(raw, 0)
+  let n = user_dispatch_parse_int_or(s = raw, default = 0)
   if n <= 0 {
     throw(String::concat("--jobs must be a positive integer, got: ", raw))
   } else {
@@ -227,7 +228,7 @@ export fn need_value(args: Array[String], index: Int, command: String, flag: Str
   if index >= Array::length(args) {
     throw(String::concat(command, String::concat(": missing value after ", flag)))
   } else {
-    Array::get(args, index)
+    Array::get(args, at = index)
   }
 }
 
@@ -235,7 +236,7 @@ export fn line_terminated(text: String) -> String {
   let n = String::length(text)
   if n == 0 {
     text
-  } else if String::byte_at(text, n - 1) == 10 {
+  } else if String::byte_at(text, at = n - 1) == 10 {
     text
   } else {
     String::concat(text, "\n")
@@ -246,7 +247,7 @@ export fn print_text(text: String) -> Unit with Console {
   if text == "" {
     ()
   } else {
-    print(line_terminated(text))
+    print(line_terminated(text = text))
   }
 }
 
@@ -265,10 +266,10 @@ export fn parse_error_of(src: String) -> String {
 }
 
 fn is_warning_line(line: String) -> Bool {
-  if String::starts_with(line, "warning: ") {
+  if String::starts_with(line, prefix = "warning: ") {
     true
-  } else if String::starts_with(line, "line ") {
-    String::contains(line, " warning: ")
+  } else if String::starts_with(line, prefix = "line ") {
+    String::contains(line, needle = " warning: ")
   } else {
     false
   }
@@ -280,13 +281,13 @@ export fn unstable_opt_in() -> Bool with Env {
 
 fn compile_user_wasm(input_path: String, entry_name: String, kind: String, grants: Array[(String, String)]) -> Bytes with Exception + Fs + Env {
   if kind == "trace" {
-    compile_file_fs_mode_trace(input_path, entry_name)
+    compile_file_fs_mode_trace(entry_path = input_path, entry_name = entry_name)
   } else if kind == "break" {
-    compile_file_fs_mode_break(input_path, entry_name)
+    compile_file_fs_mode_break(entry_path = input_path, entry_name = entry_name)
   } else if kind == "coverage" {
-    compile_file_fs_mode_coverage(input_path, entry_name)
+    compile_file_fs_mode_coverage(entry_path = input_path, entry_name = entry_name)
   } else if kind == "gc" {
-    compile_file_fs_mode_gc(input_path, entry_name)
+    compile_file_fs_mode_gc(entry_path = input_path, entry_name = entry_name)
   } else if kind == "component" {
     // A COMMAND component prunes from the module's own command entry and emits
     // a LIBRARY, which is why it needs its own mode rather than `mvp`
@@ -294,7 +295,7 @@ fn compile_user_wasm(input_path: String, entry_name: String, kind: String, grant
     // `cli_support.vibe` so this door and the `.vibex` CLI's `build
     // --component` cannot drift apart (#2863: the same flag produced 40 MB
     // through one door and 2.6 MB through the other).
-    compile_file_fs_mode(input_path, entry_name, command_component_compile_mode())
+    compile_file_fs_mode(entry_path = input_path, entry_name = entry_name, mode = command_component_compile_mode())
   } else {
     // The release artifact is written with its exports stripped to the
     // entry's keep list (`write_user_executable` / `write_user_run_executable`),
@@ -303,9 +304,9 @@ fn compile_user_wasm(input_path: String, entry_name: String, kind: String, grant
     // Without it, an unused export of an imported module was compiled in, and
     // an unused export of an imported `.wasm` binding was also IMPORTED: a
     // program calling 10 of z3.wasm's functions asked the runner for all 853.
-    set_executable_exports_stripped(executable_exports_stripped(entry_name))
-    let bytes = compile_release_lane(input_path, entry_name, grants)
-    set_executable_exports_stripped(false)
+    set_executable_exports_stripped(stripped = executable_exports_stripped(entry_name = entry_name))
+    let bytes = compile_release_lane(input_path = input_path, entry_name = entry_name, grants = grants)
+    set_executable_exports_stripped(stripped = false)
     bytes
   }
 }
@@ -324,11 +325,11 @@ fn compile_release_lane(input_path: String, entry_name: String, grants: Array[(S
     // `VIBE_RC=0` and `VIBE_RC=shadow` silently answered `NotGranted` for every
     // optional capability -- authority became a function of which allocator was
     // selected, which is the "silently wrong" this project ranks worst.
-    compile_file_fs_mode_grants(input_path, entry_name, "mvp", grants)
+    compile_file_fs_mode_grants(entry_path = input_path, entry_name = entry_name, mode = "mvp", grants = grants)
   } else if rc_flag == "shadow" {
-    compile_file_fs_mode_rc_shadow_grants(input_path, entry_name, grants)
+    compile_file_fs_mode_rc_shadow_grants(entry_path = input_path, entry_name = entry_name, grants = grants)
   } else {
-    compile_file_fs_mode_rc_grants(input_path, entry_name, grants)
+    compile_file_fs_mode_rc_grants(entry_path = input_path, entry_name = entry_name, grants = grants)
   }
 }
 
@@ -347,9 +348,9 @@ export fn reject_unstable_entry_surface(input_path: String) -> Unit with Excepti
   if unstable_opt_in() {
     ()
   } else {
-    let diags = check_unstable_surface_warnings_from_path(input_path)
+    let diags = check_unstable_surface_warnings_from_path(input_path = input_path)
     if Array::length(diags) > 0 {
-      throw(String::join(diags, "\n"))
+      throw(String::join(diags, sep = "\n"))
     } else {
       ()
     }
@@ -365,7 +366,7 @@ export fn reject_unstable_closure_surface() -> Unit with Exception + Fs + Env {
   } else {
     let diags = check_unstable_surface_warnings_from_closure()
     if Array::length(diags) > 0 {
-      throw(String::join(diags, "\n"))
+      throw(String::join(diags, sep = "\n"))
     } else {
       ()
     }
@@ -375,9 +376,9 @@ export fn reject_unstable_closure_surface() -> Unit with Exception + Fs + Env {
 /// Every artifact this dispatcher compiles goes through here: entry gate,
 /// compile, closure gate.
 export fn compile_user_artifact(input_path: String, entry_name: String, kind: String, grants: Array[(String, String)]) -> Bytes with Exception + Fs + Env {
-  reject_unstable_entry_surface(input_path)
+  reject_unstable_entry_surface(input_path = input_path)
   unstable_closure_reset()
-  let bytes = compile_user_wasm(input_path, entry_name, kind, grants)
+  let bytes = compile_user_wasm(input_path = input_path, entry_name = entry_name, kind = kind, grants = grants)
   reject_unstable_closure_surface()
   bytes
 }
@@ -391,11 +392,11 @@ export fn compile_user_artifact(input_path: String, entry_name: String, kind: St
 /// both, so they keep the plain write, and the strip is itself a no-op for the
 /// `__no_entry__` test/bench builds.
 export fn write_user_executable(output_path: String, bytes: Bytes, entry_name: String, kind: String) -> Unit with Fs + Env {
-  ensure_parent_dir(output_path)
+  ensure_parent_dir(path = output_path)
   if kind == "trace" || kind == "break" {
-    Fs::write_bytes(output_path, bytes)
+    Fs::write_bytes(output_path, bytes = bytes)
   } else {
-    Fs::write_bytes(output_path, strip_executable_wasm_env(bytes, entry_name))
+    Fs::write_bytes(output_path, bytes = strip_executable_wasm_env(wasm = bytes, entry_name = entry_name))
   }
 }
 
@@ -408,11 +409,11 @@ export fn write_user_executable(output_path: String, bytes: Bytes, entry_name: S
 /// carry their own sections and are written as compiled: the coverage dump
 /// reads the `vibe_cov` sections, which the strip would drop.
 fn write_user_run_executable(output_path: String, bytes: Bytes, kind: String) -> Unit with Fs + Env {
-  ensure_parent_dir(output_path)
+  ensure_parent_dir(path = output_path)
   if kind == "trace" || kind == "break" || kind == "coverage" {
-    Fs::write_bytes(output_path, bytes)
+    Fs::write_bytes(output_path, bytes = bytes)
   } else {
-    Fs::write_bytes(output_path, strip_executable_wasm(bytes, "main", false, Env::get("VIBE_WASM_KEEP_EXPORTS") != "1"))
+    Fs::write_bytes(output_path, bytes = strip_executable_wasm(wasm = bytes, entry_name = "main", strip_names = false, filter_exports = Env::get("VIBE_WASM_KEEP_EXPORTS") != "1"))
   }
 }
 
@@ -444,12 +445,12 @@ fn user_backend_kind(var: String) -> String with Exception + Env {
 /// `--break` instrumentation kinds keep precedence over it, as in the adapter
 /// (`fs_lane_request`).
 export fn user_artifact_backend_kind() -> String with Exception + Env {
-  user_backend_kind("VIBE_BACKEND")
+  user_backend_kind(var = "VIBE_BACKEND")
 }
 
 export fn write_wasm(output_path: String, bytes: Bytes) -> Unit with Fs {
-  ensure_parent_dir(output_path)
-  Fs::write_bytes(output_path, bytes)
+  ensure_parent_dir(path = output_path)
+  Fs::write_bytes(output_path, bytes = bytes)
 }
 
 /// The parser hands back the DEFAULT build path spelled literally
@@ -460,7 +461,7 @@ export fn write_wasm(output_path: String, bytes: Bytes) -> Unit with Fs {
 /// indistinguishable from the default and was moved into the override
 /// directory (Codex review of #2858).
 export fn resolve_user_build_output(output_path: String, output_given: Bool) -> String with Env {
-  if !output_given && String::starts_with(output_path, ".vibe/build/") {
+  if !output_given && String::starts_with(output_path, prefix = ".vibe/build/") {
     String::concat(default_build_dir(), output_path[11: String::length(output_path)])
   } else {
     output_path
@@ -471,19 +472,19 @@ export fn write_host_action(action_path: String, body: String) -> Int with Excep
   if action_path == "" {
     throw("this command requires a host launcher to execute the planned action")
   } else {
-    Fs::write_bytes(action_path, cli_bytes(body))
+    Fs::write_bytes(action_path, bytes = cli_bytes(value = body))
     0
   }
 }
 
 fn path_is_absolute(path: String) -> Bool {
-  String::length(path) > 0 && String::byte_at(path, 0) == 47
+  String::length(path) > 0 && String::byte_at(path, at = 0) == 47
 }
 
 fn join_path(dir: String, name: String) -> String {
   if dir == "" {
     name
-  } else if String::ends_with(dir, "/") {
+  } else if String::ends_with(dir, suffix = "/") {
     String::concat(dir, name)
   } else {
     String::concat(dir, String::concat("/", name))
@@ -491,7 +492,7 @@ fn join_path(dir: String, name: String) -> String {
 }
 
 fn strip_dot_slash(path: String) -> String {
-  if String::starts_with(path, "./") {
+  if String::starts_with(path, prefix = "./") {
     path[2: String::length(path)]
   } else {
     path
@@ -503,7 +504,7 @@ fn invoke_rel_of(invoke_dir: String, project_root: String) -> String {
     ""
   } else {
     let prefix = String::concat(project_root, "/")
-    if String::starts_with(invoke_dir, prefix) {
+    if String::starts_with(invoke_dir, prefix = prefix) {
       invoke_dir[String::length(prefix): String::length(invoke_dir)]
     } else {
       ""
@@ -512,7 +513,7 @@ fn invoke_rel_of(invoke_dir: String, project_root: String) -> String {
 }
 
 export fn root_rel_from_invoke(invoke_rel: String, path: String) -> String {
-  if path_is_absolute(path) {
+  if path_is_absolute(path = path) {
     path
   } else if path == "." {
     if invoke_rel == "" {
@@ -521,7 +522,7 @@ export fn root_rel_from_invoke(invoke_rel: String, path: String) -> String {
       invoke_rel
     }
   } else {
-    let stripped = strip_dot_slash(path)
+    let stripped = strip_dot_slash(path = path)
     if invoke_rel == "" {
       stripped
     } else {
@@ -555,73 +556,73 @@ fn flag_takes_non_path(flag: String) -> Bool {
 }
 
 fn invoke_arg_exists(invoke_dir: String, arg: String) -> Bool with Fs {
-  if path_is_absolute(arg) {
+  if path_is_absolute(path = arg) {
     Fs::exists(arg)
   } else {
-    Fs::exists(join_path(invoke_dir, strip_dot_slash(arg)))
+    Fs::exists(join_path(dir = invoke_dir, name = strip_dot_slash(path = arg)))
   }
 }
 
 fn looks_like_user_path(arg: String, invoke_dir: String) -> Bool with Fs {
-  if String::contains(arg, "/") || String::contains(arg, ".") {
+  if String::contains(arg, needle = "/") || String::contains(arg, needle = ".") {
     true
   } else {
-    Fs::is_dir(join_path(invoke_dir, arg))
+    Fs::is_dir(join_path(dir = invoke_dir, name = arg))
   }
 }
 
 export fn rewrite_user_argv(args: Array[String], invoke_dir: String, project_root: String) -> Array[String] with Fs {
-  let invoke_rel = invoke_rel_of(invoke_dir, project_root)
+  let invoke_rel = invoke_rel_of(invoke_dir = invoke_dir, project_root = project_root)
   if invoke_rel == "" || Array::length(args) == 0 {
     args
   } else {
     let out: Array[String] = []
-    Array::push(out, Array::get(args, 0))
+    Array::push(out, value = Array::get(args, at = 0))
     let mut prev = ""
     let mut passthrough = false
     let mut i = 1
     while i < Array::length(args) {
-      let a = Array::get(args, i)
+      let a = Array::get(args, at = i)
       if passthrough {
-        Array::push(out, a)
+        Array::push(out, value = a)
       } else if a == "--" {
         passthrough = true
-        Array::push(out, a)
+        Array::push(out, value = a)
         prev = ""
-      } else if flag_takes_output_path(prev) {
-        Array::push(out, root_rel_from_invoke(invoke_rel, a))
+      } else if flag_takes_output_path(flag = prev) {
+        Array::push(out, value = root_rel_from_invoke(invoke_rel = invoke_rel, path = a))
         prev = ""
-      } else if flag_takes_non_path(prev) {
-        Array::push(out, a)
+      } else if flag_takes_non_path(flag = prev) {
+        Array::push(out, value = a)
         prev = ""
-      } else if String::starts_with(a, "--guest-profile=") {
-        Array::push(out, String::concat("--guest-profile=", root_rel_from_invoke(invoke_rel, a[16: String::length(a)])))
+      } else if String::starts_with(a, prefix = "--guest-profile=") {
+        Array::push(out, value = String::concat("--guest-profile=", root_rel_from_invoke(invoke_rel = invoke_rel, path = a[16: String::length(a)])))
         prev = ""
-      } else if String::starts_with(a, "--file-list=") {
+      } else if String::starts_with(a, prefix = "--file-list=") {
         // The equals spellings need their own arms for the same reason
         // `--guest-profile=` and `--out=` do: an argument beginning with `-`
         // never reaches the generic path branch, so the value rides through
         // untouched and resolves against the wrong directory.
-        Array::push(out, String::concat("--file-list=", root_rel_from_invoke(invoke_rel, a[12: String::length(a)])))
+        Array::push(out, value = String::concat("--file-list=", root_rel_from_invoke(invoke_rel = invoke_rel, path = a[12: String::length(a)])))
         prev = ""
         ()
-      } else if String::starts_with(a, "--resume-out=") {
-        Array::push(out, String::concat("--resume-out=", root_rel_from_invoke(invoke_rel, a[13: String::length(a)])))
+      } else if String::starts_with(a, prefix = "--resume-out=") {
+        Array::push(out, value = String::concat("--resume-out=", root_rel_from_invoke(invoke_rel = invoke_rel, path = a[13: String::length(a)])))
         prev = ""
         ()
-      } else if String::starts_with(a, "--out=") {
+      } else if String::starts_with(a, prefix = "--out=") {
         // The equals spelling `vibe profile --out=prof.json` names an output
         // path the same way the split one does (Codex review of #2858).
-        Array::push(out, String::concat("--out=", root_rel_from_invoke(invoke_rel, a[6: String::length(a)])))
+        Array::push(out, value = String::concat("--out=", root_rel_from_invoke(invoke_rel = invoke_rel, path = a[6: String::length(a)])))
         prev = ""
-      } else if String::length(a) > 0 && String::byte_at(a, 0) == 45 {
-        Array::push(out, a)
+      } else if String::length(a) > 0 && String::byte_at(a, at = 0) == 45 {
+        Array::push(out, value = a)
         prev = a
-      } else if looks_like_user_path(a, invoke_dir) && invoke_arg_exists(invoke_dir, a) {
-        Array::push(out, root_rel_from_invoke(invoke_rel, a))
+      } else if looks_like_user_path(arg = a, invoke_dir = invoke_dir) && invoke_arg_exists(invoke_dir = invoke_dir, arg = a) {
+        Array::push(out, value = root_rel_from_invoke(invoke_rel = invoke_rel, path = a))
         prev = ""
       } else {
-        Array::push(out, a)
+        Array::push(out, value = a)
         prev = ""
       }
       i = i + 1
@@ -641,8 +642,8 @@ fn path_bytes_lt(a: String, b: String) -> Bool {
   let mut i = 0
   let mut decided = 0
   while decided == 0 && i < n {
-    let ca = String::byte_at(a, i)
-    let cb = String::byte_at(b, i)
+    let ca = String::byte_at(a, at = i)
+    let cb = String::byte_at(b, at = i)
     if ca < cb {
       decided = 1
     } else if ca > cb {
@@ -667,7 +668,7 @@ fn sort_paths(items: Array[String]) -> Unit {
     let mut min_index = i
     let mut j = i + 1
     while j < len {
-      if path_bytes_lt(Array::get(items, j), Array::get(items, min_index)) {
+      if path_bytes_lt(a = Array::get(items, at = j), b = Array::get(items, at = min_index)) {
         min_index = j
       } else {
         ()
@@ -675,9 +676,9 @@ fn sort_paths(items: Array[String]) -> Unit {
       j = j + 1
     }
     if min_index != i {
-      let tmp = Array::get(items, i)
-      Array::set(items, i, Array::get(items, min_index))
-      Array::set(items, min_index, tmp)
+      let tmp = Array::get(items, at = i)
+      Array::set(items, at = i, value = Array::get(items, at = min_index))
+      Array::set(items, at = min_index, value = tmp)
     } else {
       ()
     }
@@ -689,15 +690,15 @@ fn collect_star_test_vibe(dir: String, out: Array[String]) -> Unit with Fs {
   let names = Fs::readdir(dir)
   let mut i = 0
   while i < Array::length(names) {
-    let name = Array::get(names, i)
+    let name = Array::get(names, at = i)
     if name == "." || name == ".." {
       ()
     } else {
-      let child = join_path(dir, name)
+      let child = join_path(dir = dir, name = name)
       if Fs::is_dir(child) {
-        collect_star_test_vibe(child, out)
-      } else if String::ends_with(name, "_test.vibe") {
-        Array::push(out, child)
+        collect_star_test_vibe(dir = child, out = out)
+      } else if String::ends_with(name, suffix = "_test.vibe") {
+        Array::push(out, value = child)
       } else {
         ()
       }
@@ -710,17 +711,17 @@ export fn expand_user_test_inputs(files: Array[String]) -> Array[String] with Ex
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(files) {
-    let src = Array::get(files, i)
+    let src = Array::get(files, at = i)
     if Fs::is_dir(src) {
-      collect_star_test_vibe(src, out)
+      collect_star_test_vibe(dir = src, out = out)
     } else if Fs::exists(src) {
-      Array::push(out, src)
+      Array::push(out, value = src)
     } else {
       throw(String::concat("not found: ", src))
     }
     i = i + 1
   }
-  sort_paths(out)
+  sort_paths(items = out)
   if Array::length(out) == 0 {
     throw("vibe test: no test files found")
   } else {
@@ -737,7 +738,7 @@ export fn user_dispatch_is_verb(name: String) -> Bool {
 //# check
 
 export fn parse_user_check_args(args: Array[String]) -> (String, Bool, Bool) with Exception {
-  if Array::length(args) == 0 || Array::get(args, 0) != "check" {
+  if Array::length(args) == 0 || Array::get(args, at = 0) != "check" {
     throw("check: expected command")
   } else {
     let mut src = ""
@@ -747,7 +748,7 @@ export fn parse_user_check_args(args: Array[String]) -> (String, Bool, Bool) wit
     let mut deps_missing = false
     let mut i = 1
     while i < Array::length(args) {
-      let arg = Array::get(args, i)
+      let arg = Array::get(args, at = i)
       if arg == "--single-file" {
         single = true
         ()
@@ -756,7 +757,7 @@ export fn parse_user_check_args(args: Array[String]) -> (String, Bool, Bool) wit
         ()
       } else if arg == "--jobs" {
         i = i + 1
-        let _ = parse_jobs_value(need_value(args, i, "check", arg))
+        let _ = parse_jobs_value(raw = need_value(args = args, index = i, command = "check", flag = arg))
         ()
       } else if arg == "--missing-vpkg" {
         missing_vpkg = true
@@ -770,9 +771,9 @@ export fn parse_user_check_args(args: Array[String]) -> (String, Bool, Bool) wit
         ()
       } else if arg == "--profile" || arg == "--profile-tsv" || arg == "--profile-callstack" {
         i = i + 1
-        let _ = need_value(args, i, "check", arg)
+        let _ = need_value(args = args, index = i, command = "check", flag = arg)
         ()
-      } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
+      } else if String::length(arg) > 0 && String::byte_at(arg, at = 0) == 45 {
         throw(String::concat("check: unknown option: ", arg))
       } else if src == "" {
         src = arg
@@ -805,9 +806,9 @@ export fn user_check_scan(root: String, missing_vpkg: Bool) -> Int with Env + Ex
     ()
   }
   let rows = if missing_vpkg {
-    find_missing_vpkg_dirs(root)
+    find_missing_vpkg_dirs(root = root)
   } else {
-    find_deps_missing(root)
+    find_deps_missing(root = root)
   }
   if Array::length(rows) == 0 {
     if missing_vpkg {
@@ -817,7 +818,7 @@ export fn user_check_scan(root: String, missing_vpkg: Bool) -> Int with Env + Ex
     }
     0
   } else {
-    print(line_terminated(String::join(rows, "\n")))
+    print(line_terminated(text = String::join(rows, sep = "\n")))
     1
   }
 }
@@ -854,35 +855,35 @@ export fn user_check_single(src: String, json: Bool, warn_labels: Bool) -> Int w
     // is deprecated and FROZEN at exit 0 for the editors still calling it, so
     // unfreezing it is a separate decision, not this fix.
     let collected = handle {
-      collect_all_diagnostics_with_unstable_for_path(src, text, unstable_opt_in())
+      collect_all_diagnostics_with_unstable_for_path(input_path = src, source = text, allow_unstable = unstable_opt_in())
     } with { Exception::Throw(message) => {
       let failed: Array[String] = []
-      Array::push(failed, String::concat("check failed: ", message))
+      Array::push(failed, value = String::concat("check failed: ", message))
       failed
     } }
     let diags: Array[String] = []
     let mut collected_error = false
     for d in collected {
-      Array::push(diags, d)
-      collected_error = collected_error || !is_warning_line(d)
+      Array::push(diags, value = d)
+      collected_error = collected_error || !is_warning_line(line = d)
     }
     // A file with errors reports its errors only, as on the import-resolving
     // lane. The label pass types the buffer on its own, and some errors (an
     // inline-Wasm operand, say) come from passes after typing, so its own
     // success says nothing about them.
     if warn_labels && !collected_error {
-      for row in user_check_missing_label_rows_single(src, text) {
-        Array::push(diags, row)
+      for row in user_check_missing_label_rows_single(path = src, source = text) {
+        Array::push(diags, value = row)
       }
     } else {
       ()
     }
     if json {
-      print(line_terminated(lsp_diagnostics_json_of_messages(text, diags)))
+      print(line_terminated(text = lsp_diagnostics_json_of_messages(source = text, msgs = diags)))
       let mut has_error = false
       let mut i = 0
       while i < Array::length(diags) {
-        if !is_warning_line(Array::get(diags, i)) {
+        if !is_warning_line(line = Array::get(diags, at = i)) {
           has_error = true
         }
         i = i + 1
@@ -900,23 +901,23 @@ export fn user_check_single(src: String, json: Bool, warn_labels: Bool) -> Int w
       let warnings: Array[String] = []
       let mut i = 0
       while i < Array::length(diags) {
-        let line = Array::get(diags, i)
-        if is_warning_line(line) {
-          Array::push(warnings, line)
+        let line = Array::get(diags, at = i)
+        if is_warning_line(line = line) {
+          Array::push(warnings, value = line)
         } else {
-          Array::push(errors, line)
+          Array::push(errors, value = line)
         }
         i = i + 1
       }
       if Array::length(warnings) > 0 {
-        Stderr::write_stream(line_terminated(String::join(warnings, "\n")))
+        Stderr::write_stream(line_terminated(text = String::join(warnings, sep = "\n")))
       } else {
         ()
       }
       if Array::length(errors) == 0 {
         0
       } else {
-        throw(String::join(errors, "\n"))
+        throw(String::join(errors, sep = "\n"))
       }
     }
   }
@@ -940,23 +941,23 @@ fn split_capability_flags(args: Array[String]) -> (Array[String], Array[String],
   let mut after_separator = false
   let mut i = 0
   while i < Array::length(args) {
-    let arg = Array::get(args, i)
+    let arg = Array::get(args, at = i)
     if after_separator {
-      Array::push(rest, arg)
+      Array::push(rest, value = arg)
     } else if arg == "--" {
       after_separator = true
-      Array::push(rest, arg)
-    } else if String::starts_with(arg, "--allow-") || String::starts_with(arg, "--deny-") {
-      let provider = authority_for_capability_flag(arg)
+      Array::push(rest, value = arg)
+    } else if String::starts_with(arg, prefix = "--allow-") || String::starts_with(arg, prefix = "--deny-") {
+      let provider = authority_for_capability_flag(flag = arg)
       if provider == "" {
         throw(String::concat(arg, ": not a capability; the providers a grant may name are Fs, Env, Stdin, Stdout, Stderr, Console, Process, Profiler, Http and Socket"))
-      } else if String::starts_with(arg, "--allow-") {
-        Array::push(allows, provider)
+      } else if String::starts_with(arg, prefix = "--allow-") {
+        Array::push(allows, value = provider)
       } else {
-        Array::push(denies, provider)
+        Array::push(denies, value = provider)
       }
     } else {
-      Array::push(rest, arg)
+      Array::push(rest, value = arg)
     }
     i = i + 1
   }
@@ -986,11 +987,11 @@ export fn no_grants() -> Array[(String, String)] {
 /// `NotGranted`. That keeps the table fail-closed by construction -- a
 /// provider nobody thought about cannot be granted by omission.
 fn optional_grants_from_flags(allows: Array[String], denies: Array[String]) -> Array[(String, String)] {
-  let granted = host_granted_from_flags(allows, denies)
+  let granted = host_granted_from_flags(allows = allows, denies = denies)
   let out: Array[(String, String)] = []
   let mut i = 0
   while i < Array::length(granted) {
-    Array::push(out, (Array::get(granted, i), "Granted"))
+    Array::push(out, value = (Array::get(granted, at = i), "Granted"))
     i = i + 1
   }
   out
@@ -1005,11 +1006,11 @@ fn host_granted_from_flags(allows: Array[String], denies: Array[String]) -> Arra
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(base) {
-    let p = Array::get(base, i)
+    let p = Array::get(base, at = i)
     let mut denied = false
     let mut j = 0
     while j < Array::length(denies) {
-      if Array::get(denies, j) == p {
+      if Array::get(denies, at = j) == p {
         denied = true
       } else {
         ()
@@ -1019,7 +1020,7 @@ fn host_granted_from_flags(allows: Array[String], denies: Array[String]) -> Arra
     if denied {
       ()
     } else {
-      Array::push(out, p)
+      Array::push(out, value = p)
     }
     i = i + 1
   }
@@ -1056,31 +1057,31 @@ fn header_prefix_is(lines: Array[String], k: Int, pin_err: String) -> Bool {
   let mut j = 0
   while j < k {
     if j > 0 {
-      StringBuilder::push(sb, "\n")
+      StringBuilder::push(sb, value = "\n")
     } else {
       ()
     }
-    StringBuilder::push(sb, Array::get(lines, j))
+    StringBuilder::push(sb, value = Array::get(lines, at = j))
     j = j + 1
   }
   let m = handle {
-    let (_pins, _blanked) = extract_require_pins(StringBuilder::freeze(sb))
+    let (_pins, _blanked) = extract_require_pins(source = StringBuilder::freeze(sb))
     ""
   } with { Exception::Throw(m2) => m2 }
   m == pin_err
 }
 
 fn header_error_line(source: String, pin_err: String) -> Int {
-  let lines = String::split(source, "\n")
+  let lines = String::split(source, sep = "\n")
   let nlines = Array::length(lines)
-  if nlines == 0 || !header_prefix_is(lines, nlines, pin_err) {
+  if nlines == 0 || !header_prefix_is(lines = lines, k = nlines, pin_err = pin_err) {
     0 - 1
   } else {
     let mut lo = 0
     let mut hi = nlines
     while hi - lo > 1 {
       let mid = (lo + hi) / 2
-      if header_prefix_is(lines, mid, pin_err) {
+      if header_prefix_is(lines = lines, k = mid, pin_err = pin_err) {
         hi = mid
       } else {
         lo = mid
@@ -1100,11 +1101,11 @@ export fn parse_user_entry_file(src: String) -> Array[Stmt] with Exception + Fs 
   // column. A head the scanner rejects is located here: throwing before
   // the handler below dropped the path (#2938).
   let (source, pin_err) = handle {
-    let (_, blanked) = extract_require_pins(raw)
+    let (_, blanked) = extract_require_pins(source = raw)
     (blanked, "")
   } with { Exception::Throw(m) => (raw, m) }
   if pin_err != "" {
-    let line = header_error_line(raw, pin_err)
+    let line = header_error_line(source = raw, pin_err = pin_err)
     let body = if line > 0 {
       String::concat("line ", String::concat(__to_string(line), String::concat(":1: ", pin_err)))
     } else {
@@ -1118,17 +1119,17 @@ export fn parse_user_entry_file(src: String) -> Array[Stmt] with Exception + Fs 
   // (and never the raw `at #N` token index a tokens-only parse leaves in).
   handle {
     let (tokens, starts, _ends) = lex_with_offsets(source)
-    parse_program_located(tokens, starts, source)
-  } with { Exception::Throw(msg) => throw(String::concat(String::concat(src, ": "), located_lex_message(source, msg))) }
+    parse_program_located(tokens = tokens, starts = starts, source = source)
+  } with { Exception::Throw(msg) => throw(String::concat(String::concat(src, ": "), located_lex_message(source = source, msg = msg))) }
 }
 
 fn preflight_entry_authority(src: String, allows: Array[String], denies: Array[String]) -> Unit with Exception + Fs {
-  let stmts = parse_user_entry_file(src)
-  let labels = entry_declared_authority(stmts)
+  let stmts = parse_user_entry_file(src = src)
+  let labels = entry_declared_authority(stmts = stmts)
   if Array::length(labels) == 0 {
     ()
   } else {
-    let _ = preflight_instantiate(labels, host_granted_from_flags(allows, denies))
+    let _ = preflight_instantiate(labels = labels, host_granted = host_granted_from_flags(allows = allows, denies = denies))
     ()
   }
 }
@@ -1140,7 +1141,7 @@ fn preflight_entry_authority(src: String, allows: Array[String], denies: Array[S
 /// run of an entry that declares an optional grade is refused rather than
 /// answered differently.
 fn refuse_gc_optional_entry_authority(src: String) -> Unit with Exception + Fs {
-  let label = first_optional_entry_grant(src)
+  let label = first_optional_entry_grant(src = src)
   if label != "" {
     throw("VIBE_BACKEND=gc cannot run `main`: it declares the optional grant `\{label}`, and the wasm-gc backend does not apply `--allow-*` grants to `perform?` yet (every one would answer `NotGranted`). Run without VIBE_BACKEND=gc, or make the grant required.")
   } else {
@@ -1153,7 +1154,7 @@ fn refuse_gc_optional_entry_authority(src: String) -> Unit with Exception + Fs {
 /// `Granted` and the measured one `NotGranted`, so the report would describe
 /// a different execution.
 fn refuse_coverage_optional_entry_authority(src: String) -> Unit with Exception + Fs {
-  let label = first_optional_entry_grant(src)
+  let label = first_optional_entry_grant(src = src)
   if label != "" {
     throw("vibe run --coverage cannot run `main`: it declares the optional grant `\{label}`, and the coverage build does not apply `--allow-*` grants to `perform?` yet (every one would answer `NotGranted`). Measure without --coverage, or make the grant required.")
   } else {
@@ -1163,13 +1164,13 @@ fn refuse_coverage_optional_entry_authority(src: String) -> Unit with Exception 
 
 /// The first optional (`?`) grant `main` declares, or "" when it has none.
 fn first_optional_entry_grant(src: String) -> String with Exception + Fs {
-  let labels = entry_declared_authority(parse_user_entry_file(src))
+  let labels = entry_declared_authority(stmts = parse_user_entry_file(src = src))
   let mut found = ""
   let mut i = 0
   while found == "" && i < Array::length(labels) {
-    let label = Array::get(labels, i)
+    let label = Array::get(labels, at = i)
     let n = String::length(label)
-    if n > 0 && String::byte_at(label, n - 1) == 63 {
+    if n > 0 && String::byte_at(label, at = n - 1) == 63 {
       found = label
     } else {
       ()
@@ -1205,9 +1206,9 @@ fn parse_run_flags(args: Array[String]) -> (String, Bool, Bool, String, Bool, St
   let mut after_separator = false
   let mut i = 1
   while i < Array::length(args) {
-    let arg = Array::get(args, i)
+    let arg = Array::get(args, at = i)
     if after_separator {
-      Array::push(guest_args, arg)
+      Array::push(guest_args, value = arg)
       i = i + 1
     } else if arg == "--" {
       after_separator = true
@@ -1221,9 +1222,9 @@ fn parse_run_flags(args: Array[String]) -> (String, Bool, Bool, String, Bool, St
     } else if arg == "--break" {
       i = i + 1
       brk = true
-      break_spec = need_value(args, i, "run", arg)
+      break_spec = need_value(args = args, index = i, command = "run", flag = arg)
       i = i + 1
-    } else if String::starts_with(arg, "--break=") {
+    } else if String::starts_with(arg, prefix = "--break=") {
       brk = true
       break_spec = arg[8: String::length(arg)]
       i = i + 1
@@ -1233,23 +1234,23 @@ fn parse_run_flags(args: Array[String]) -> (String, Bool, Bool, String, Bool, St
     } else if arg == "--mem-sample" {
       mem_sample = "1"
       i = i + 1
-    } else if String::starts_with(arg, "--mem-sample=") {
+    } else if String::starts_with(arg, prefix = "--mem-sample=") {
       mem_sample = arg[13: String::length(arg)]
       i = i + 1
     } else if arg == "--alloc-site" {
       allocsite = true
       i = i + 1
-    } else if String::starts_with(arg, "--alloc-site=") {
+    } else if String::starts_with(arg, prefix = "--alloc-site=") {
       allocsite = true
       allocsite_top = arg[13: String::length(arg)]
       i = i + 1
-    } else if String::starts_with(arg, "--guest-profile=") {
+    } else if String::starts_with(arg, prefix = "--guest-profile=") {
       guest_profile = arg[16: String::length(arg)]
       i = i + 1
-    } else if String::starts_with(arg, "--guest-profile-interval-us=") {
+    } else if String::starts_with(arg, prefix = "--guest-profile-interval-us=") {
       guest_interval = arg[28: String::length(arg)]
       i = i + 1
-    } else if String::starts_with(arg, "-") {
+    } else if String::starts_with(arg, prefix = "-") {
       throw(String::concat("run: unknown option ", arg))
     } else if src == "" {
       src = arg
@@ -1260,7 +1261,7 @@ fn parse_run_flags(args: Array[String]) -> (String, Bool, Bool, String, Bool, St
   }
   if src == "" {
     throw("usage: vibe run [--trace] [--coverage] [--break <fn>[,<fn>...]] [--mem] [--alloc-site[=N]] <file.vibex> [-- args]")
-  } else if !is_vibex_path(src) {
+  } else if !is_vibex_path(path = src) {
     throw(String::concat("vibe run requires a .vibex executable root: ", src))
   } else if brk && break_spec == "" {
     throw("usage: vibe run --break <fn>[,<fn>...] <file.vibex>")
@@ -1287,8 +1288,8 @@ fn write_user_funcmap(input_path: String, output_path: String) -> Unit with Fs {
     ()
   }
   handle {
-    let text = build_funcmap_from_source(Fs::read_file(input_path))
-    Fs::write_bytes(sidecar, cli_bytes(text))
+    let text = build_funcmap_from_source(source = Fs::read_file(input_path))
+    Fs::write_bytes(sidecar, bytes = cli_bytes(value = text))
   } with { Exception::Throw(_) => () }
 }
 
@@ -1298,7 +1299,7 @@ fn args_contain_newline(args: Array[String]) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(args) {
-    if String::contains(Array::get(args, i), "\n") {
+    if String::contains(Array::get(args, at = i), needle = "\n") {
       found = true
     } else {
       ()
@@ -1309,93 +1310,93 @@ fn args_contain_newline(args: Array[String]) -> Bool {
 }
 
 export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env {
-  let (run_args, allows, denies) = split_capability_flags(args)
-  let (src, coverage, trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args) = parse_run_flags(run_args)
+  let (run_args, allows, denies) = split_capability_flags(args = args)
+  let (src, coverage, trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args) = parse_run_flags(args = run_args)
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
-  } else if String::contains(src, "\n") || String::contains(guest_profile, "\n") {
+  } else if String::contains(src, needle = "\n") || String::contains(guest_profile, needle = "\n") {
     throw("run: newlines are not supported in host-action fields")
-  } else if args_contain_newline(guest_args) {
+  } else if args_contain_newline(args = guest_args) {
     throw("run: newlines are not supported in guest arguments")
   } else {
     // ADR-0088 L3: BEFORE the artifact is built, so a run without the
     // authority its entry requires costs nothing and says which flag supplies
     // it. Authorization is settled once, at the earliest phase that can answer
     // (ADR-0075), and never changes mid-run.
-    preflight_entry_authority(src, allows, denies)
-    let out = default_run_wasm(src)
+    preflight_entry_authority(src = src, allows = allows, denies = denies)
+    let out = default_run_wasm(input_path = src)
     let kind = if trace {
       "trace"
     } else if break_spec != "" || allocsite {
       "break"
     } else if coverage {
       refuse_gc_coverage()
-      refuse_coverage_optional_entry_authority(src)
+      refuse_coverage_optional_entry_authority(src = src)
       "coverage"
     } else {
       user_artifact_backend_kind()
     }
     if kind == "gc" {
-      refuse_gc_optional_entry_authority(src)
+      refuse_gc_optional_entry_authority(src = src)
     } else {
       ()
     }
-    let bytes = compile_user_artifact(src, "main", kind, optional_grants_from_flags(allows, denies))
-    write_user_run_executable(out, bytes, kind)
-    write_user_funcmap(src, out)
+    let bytes = compile_user_artifact(input_path = src, entry_name = "main", kind = kind, grants = optional_grants_from_flags(allows = allows, denies = denies))
+    write_user_run_executable(output_path = out, bytes = bytes, kind = kind)
+    write_user_funcmap(input_path = src, output_path = out)
     let acc = StringBuilder::new()
     // `run-guest-coverage` is `run-guest` with the report path in line 3 and
     // every other line one further down. A separate kind, not a new line in
     // `run-guest`: a launcher reads `run-guest` positionally, guest argv
     // last, so an extra line there would arrive as a guest argument.
     if coverage {
-      StringBuilder::push(acc, "vibe-host-action-v1\nrun-guest-coverage\n")
-      StringBuilder::push(acc, String::concat(out[0: String::length(out) - 5], ".cov.json"))
-      StringBuilder::push(acc, "\n")
+      StringBuilder::push(acc, value = "vibe-host-action-v1\nrun-guest-coverage\n")
+      StringBuilder::push(acc, value = String::concat(out[0: String::length(out) - 5], ".cov.json"))
+      StringBuilder::push(acc, value = "\n")
     } else {
-      StringBuilder::push(acc, "vibe-host-action-v1\nrun-guest\n")
+      StringBuilder::push(acc, value = "vibe-host-action-v1\nrun-guest\n")
     }
-    StringBuilder::push(acc, out)
-    StringBuilder::push(acc, "\n")
-    StringBuilder::push(acc, src)
-    StringBuilder::push(acc, "\n")
+    StringBuilder::push(acc, value = out)
+    StringBuilder::push(acc, value = "\n")
+    StringBuilder::push(acc, value = src)
+    StringBuilder::push(acc, value = "\n")
     if trace {
-      StringBuilder::push(acc, "1\n")
+      StringBuilder::push(acc, value = "1\n")
     } else {
-      StringBuilder::push(acc, "0\n")
+      StringBuilder::push(acc, value = "0\n")
     }
-    StringBuilder::push(acc, break_spec)
-    StringBuilder::push(acc, "\n")
+    StringBuilder::push(acc, value = break_spec)
+    StringBuilder::push(acc, value = "\n")
     if mem {
-      StringBuilder::push(acc, "1\n")
+      StringBuilder::push(acc, value = "1\n")
     } else {
-      StringBuilder::push(acc, "0\n")
+      StringBuilder::push(acc, value = "0\n")
     }
-    StringBuilder::push(acc, mem_sample)
-    StringBuilder::push(acc, "\n")
+    StringBuilder::push(acc, value = mem_sample)
+    StringBuilder::push(acc, value = "\n")
     if allocsite {
-      StringBuilder::push(acc, "1\n")
+      StringBuilder::push(acc, value = "1\n")
     } else {
-      StringBuilder::push(acc, "0\n")
+      StringBuilder::push(acc, value = "0\n")
     }
-    StringBuilder::push(acc, allocsite_top)
-    StringBuilder::push(acc, "\n")
-    StringBuilder::push(acc, guest_profile)
-    StringBuilder::push(acc, "\n")
-    StringBuilder::push(acc, guest_interval)
-    StringBuilder::push(acc, "\n")
+    StringBuilder::push(acc, value = allocsite_top)
+    StringBuilder::push(acc, value = "\n")
+    StringBuilder::push(acc, value = guest_profile)
+    StringBuilder::push(acc, value = "\n")
+    StringBuilder::push(acc, value = guest_interval)
+    StringBuilder::push(acc, value = "\n")
     let mut gi = 0
     while gi < Array::length(guest_args) {
-      StringBuilder::push(acc, Array::get(guest_args, gi))
-      StringBuilder::push(acc, "\n")
+      StringBuilder::push(acc, value = Array::get(guest_args, at = gi))
+      StringBuilder::push(acc, value = "\n")
       gi = gi + 1
     }
-    write_host_action(action_path, StringBuilder::freeze(acc))
+    write_host_action(action_path = action_path, body = StringBuilder::freeze(acc))
   }
 }
 
 export fn selfhost_cli_user_run_args(args: Array[String]) -> Int with Exception + Fs + Env {
-  selfhost_cli_run_plan_args(args, Env::get("VIBE_HOST_ACTION_OUT"))
+  selfhost_cli_run_plan_args(args = args, action_path = Env::get("VIBE_HOST_ACTION_OUT"))
 }
 
 /// Where `vibe test` puts the artifact for `src`, relative to
@@ -1415,29 +1416,29 @@ export fn selfhost_cli_user_run_args(args: Array[String]) -> Int with Exception 
 /// absolute source lives under `_abs/`, as it always has. Plain relative
 /// spellings map exactly as before.
 export fn test_artifact_rel(src: String) -> String {
-  let parts = String::split(strip_vibe_suffix(src), "/")
+  let parts = String::split(strip_vibe_suffix(path = src), sep = "/")
   let acc = StringBuilder::new()
-  if path_is_absolute(src) {
-    StringBuilder::push(acc, "_abs")
+  if path_is_absolute(path = src) {
+    StringBuilder::push(acc, value = "_abs")
   } else {
     ()
   }
-  let mut first = !path_is_absolute(src)
+  let mut first = !path_is_absolute(path = src)
   let mut i = 0
   while i < Array::length(parts) {
-    let seg = Array::get(parts, i)
+    let seg = Array::get(parts, at = i)
     if seg == "" || seg == "." {
       ()
     } else {
       if first {
         first = false
       } else {
-        StringBuilder::push(acc, "/")
+        StringBuilder::push(acc, value = "/")
       }
       if seg == ".." {
-        StringBuilder::push(acc, "_up")
+        StringBuilder::push(acc, value = "_up")
       } else {
-        StringBuilder::push(acc, seg)
+        StringBuilder::push(acc, value = seg)
       }
     }
     i = i + 1
@@ -1450,7 +1451,7 @@ fn test_artifact_taken(out: String, src: String, seen_srcs: Array[String], seen_
   let mut taken = false
   let mut j = 0
   while j < Array::length(seen_outs) {
-    if Array::get(seen_outs, j) == out && Array::get(seen_srcs, j) != src {
+    if Array::get(seen_outs, at = j) == out && Array::get(seen_srcs, at = j) != src {
       taken = true
     } else {
       ()
@@ -1470,13 +1471,13 @@ fn test_artifact_taken(out: String, src: String, seen_srcs: Array[String], seen_
 /// never assumed free. The same spelling twice is the same file, so it gets
 /// the artifact that spelling was given first.
 export fn test_artifact_out(build_dir: String, src: String, index: Int, seen_srcs: Array[String], seen_outs: Array[String]) -> String {
-  let base = String::concat(build_dir, String::concat("/test/", test_artifact_rel(src)))
+  let base = String::concat(build_dir, String::concat("/test/", test_artifact_rel(src = src)))
   let mut out = String::concat(base, ".wasm")
   let mut known = false
   let mut j = 0
   while j < Array::length(seen_srcs) {
-    if !known && Array::get(seen_srcs, j) == src {
-      out = Array::get(seen_outs, j)
+    if !known && Array::get(seen_srcs, at = j) == src {
+      out = Array::get(seen_outs, at = j)
       known = true
     } else {
       ()
@@ -1484,7 +1485,7 @@ export fn test_artifact_out(build_dir: String, src: String, index: Int, seen_src
     j = j + 1
   }
   let mut k = 0
-  while !known && test_artifact_taken(out, src, seen_srcs, seen_outs) {
+  while !known && test_artifact_taken(out = out, src = src, seen_srcs = seen_srcs, seen_outs = seen_outs) {
     let tag = if k == 0 {
       __to_string(index)
     } else {
@@ -1515,8 +1516,8 @@ fn test_plan_patches() -> Int with Env {
   let s = Env::get("VIBE_TEST_UPDATE_PATCHES")
   let mut v = 0
   let mut i = 0
-  while i < String::length(s) && String::byte_at(s, i) >= '0' && String::byte_at(s, i) <= '9' {
-    v = v * 10 + (String::byte_at(s, i) - '0')
+  while i < String::length(s) && String::byte_at(s, at = i) >= '0' && String::byte_at(s, at = i) <= '9' {
+    v = v * 10 + (String::byte_at(s, at = i) - '0')
     i = i + 1
   }
   v
@@ -1524,11 +1525,11 @@ fn test_plan_patches() -> Int with Env {
 
 /// `text` up to its first newline.
 fn test_plan_first_line(text: String) -> String {
-  let at = String::index_of(text, "\n")
+  let at = String::index_of(text, needle = "\n")
   if at < 0 {
     text
   } else {
-    String::substring(text, 0, at)
+    String::substring(text, start = 0, end = at)
   }
 }
 
@@ -1539,7 +1540,7 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
   let files: Array[String] = []
   let mut i = 1
   while i < Array::length(args) {
-    let arg = Array::get(args, i)
+    let arg = Array::get(args, at = i)
     if arg == "--update" {
       update = true
       no_cache = true
@@ -1549,50 +1550,50 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
       ()
     } else if arg == "--jobs" {
       i = i + 1
-      jobs = parse_jobs_value(need_value(args, i, "test", arg))
+      jobs = parse_jobs_value(raw = need_value(args = args, index = i, command = "test", flag = arg))
       ()
-    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
+    } else if String::length(arg) > 0 && String::byte_at(arg, at = 0) == 45 {
       throw(String::concat("test: unknown flag: ", arg))
     } else {
-      Array::push(files, arg)
+      Array::push(files, value = arg)
     }
     i = i + 1
   }
   if Array::length(files) == 0 {
     throw("usage: vibe test [--no-cache] [--update] [--jobs N] <file_test.vibe | dir> [more...]")
   } else {
-    let expanded = expand_user_test_inputs(files)
-    let backend_kind = user_backend_kind("VIBE_TEST_BACKEND")
+    let expanded = expand_user_test_inputs(files = files)
+    let backend_kind = user_backend_kind(var = "VIBE_TEST_BACKEND")
     let acc = StringBuilder::new()
-    StringBuilder::push(acc, "vibe-host-action-v1\nrun-tests\n")
+    StringBuilder::push(acc, value = "vibe-host-action-v1\nrun-tests\n")
     if update {
-      StringBuilder::push(acc, "1\n")
+      StringBuilder::push(acc, value = "1\n")
     } else {
-      StringBuilder::push(acc, "0\n")
+      StringBuilder::push(acc, value = "0\n")
     }
     if no_cache {
-      StringBuilder::push(acc, "1\n")
+      StringBuilder::push(acc, value = "1\n")
     } else {
-      StringBuilder::push(acc, "0\n")
+      StringBuilder::push(acc, value = "0\n")
     }
     // Line 5: how many files the host may run concurrently (`--jobs N`).
-    StringBuilder::push(acc, __to_string(jobs))
-    StringBuilder::push(acc, "\n")
+    StringBuilder::push(acc, value = __to_string(jobs))
+    StringBuilder::push(acc, value = "\n")
     let seen_srcs: Array[String] = []
     let seen_outs: Array[String] = []
     let mut fi = 0
     while fi < Array::length(expanded) {
-      let src = Array::get(expanded, fi)
+      let src = Array::get(expanded, at = fi)
       // An absolute source lives under `test/_abs/...`: with `/tmp/a_test.vibe`
       // and a project-relative `tmp/a_test.vibe` in one invocation, the plain
       // join gave both the same artifact path and the second compile
       // overwrote the first before either ran (Codex review of #2858). `.`
       // and `..` segments are normalized away (#3505, `test_artifact_rel`).
-      let out = test_artifact_out(default_build_dir(), src, fi, seen_srcs, seen_outs)
-      Array::push(seen_srcs, src)
-      Array::push(seen_outs, out)
+      let out = test_artifact_out(build_dir = default_build_dir(), src = src, index = fi, seen_srcs = seen_srcs, seen_outs = seen_outs)
+      Array::push(seen_srcs, value = src)
+      Array::push(seen_outs, value = out)
       let meta = String::concat(out, ".testmeta")
-      ensure_parent_dir(out)
+      ensure_parent_dir(path = out)
       // A file that does not compile is one FAILED record, not the end of the
       // suite (Codex review of #2858): its diagnostic goes to stderr here and
       // the record carries an EMPTY wasm path, which the launcher's run-tests
@@ -1602,7 +1603,7 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
       // record's third field, read from the bytes just written: the one
       // counter both test runners use.
       let compiled = handle {
-        reject_unstable_entry_surface(src)
+        reject_unstable_entry_surface(input_path = src)
         unstable_closure_reset()
         // The pure-test pass cache (#634, ADR-0026) reads the `.testmeta`
         // verdict the launcher's run-tests arm keys on. Only the legacy bump
@@ -1619,17 +1620,17 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
         // `no functions found to compile`, where scripts/vibe_test.sh and the
         // RC default report it `ok ... (no tests found)` (#948).
         let bytes = if backend_kind == "mvp" && Env::get("VIBE_RC") == "0" {
-          compile_file_fs_mode_testmeta(src, "__no_entry__", "no-dce", meta)
+          compile_file_fs_mode_testmeta(entry_path = src, entry_name = "__no_entry__", mode = "no-dce", meta_out = meta)
         } else {
           if Fs::exists(meta) {
             Fs::remove(meta)
           } else {
             ()
           }
-          compile_user_wasm(src, "__no_entry__", backend_kind, no_grants())
+          compile_user_wasm(input_path = src, entry_name = "__no_entry__", kind = backend_kind, grants = no_grants())
         }
         reject_unstable_closure_surface()
-        write_wasm(out, bytes)
+        write_wasm(output_path = out, bytes = bytes)
         // #2870: the trap-frame annotation the launcher prints on a failing
         // test reads this sidecar, exactly as `vibe run` does. Without it a
         // frame is a bare `at helper` -- a name with no file and no line --
@@ -1639,44 +1640,44 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
         // (#2228). Best-effort by construction: `write_user_funcmap` swallows
         // its own failure and removes a stale sidecar first, so a map it
         // cannot build costs an unannotated frame and never a failed test run.
-        write_user_funcmap(src, out)
+        write_user_funcmap(input_path = src, output_path = out)
         Some(test_run_count_label(bytes))
       } with { Exception::Throw(e) => {
-        Stderr::write_stream(line_terminated(format_check_report(e)))
+        Stderr::write_stream(line_terminated(text = format_check_report(payload = e)))
         None
       } }
       // The record's last two fields are the file's line when it passes and
       // when it fails, rendered by @vibe/testrun exactly as
       // scripts/vibe_test.sh renders them (#3703); the launcher prints one of
       // them and adds only ` (cached)`. A compile failure has no pass line.
-      let shown = test_plan_display(src, Array::length(expanded))
+      let shown = test_plan_display(src = src, files = Array::length(expanded))
       let patches = test_plan_patches()
-      StringBuilder::push(acc, src)
-      StringBuilder::push(acc, "\t")
+      StringBuilder::push(acc, value = src)
+      StringBuilder::push(acc, value = "\t")
       match compiled {
         Some(label) => {
-          StringBuilder::push(acc, out)
-          StringBuilder::push(acc, "\t")
-          StringBuilder::push(acc, label)
-          StringBuilder::push(acc, "\t")
-          StringBuilder::push(acc, test_plan_first_line(test_run_pass(shown, label, patches)))
-          StringBuilder::push(acc, "\t")
-          StringBuilder::push(acc, test_plan_first_line(test_run_failure(shown, patches, "")))
+          StringBuilder::push(acc, value = out)
+          StringBuilder::push(acc, value = "\t")
+          StringBuilder::push(acc, value = label)
+          StringBuilder::push(acc, value = "\t")
+          StringBuilder::push(acc, value = test_plan_first_line(text = test_run_pass(src_rel = shown, tests = label, patches = patches)))
+          StringBuilder::push(acc, value = "\t")
+          StringBuilder::push(acc, value = test_plan_first_line(text = test_run_failure(src_rel = shown, patches = patches, detail = "")))
         }
         None => {
-          StringBuilder::push(acc, "\t\t\t")
-          StringBuilder::push(acc, test_plan_first_line(test_run_compile_failure(shown, "")))
+          StringBuilder::push(acc, value = "\t\t\t")
+          StringBuilder::push(acc, value = test_plan_first_line(text = test_run_compile_failure(src_rel = shown, diag = "")))
         }
       }
-      StringBuilder::push(acc, "\n")
+      StringBuilder::push(acc, value = "\n")
       fi = fi + 1
     }
-    write_host_action(action_path, StringBuilder::freeze(acc))
+    write_host_action(action_path = action_path, body = StringBuilder::freeze(acc))
   }
 }
 
 export fn selfhost_cli_user_test_args(args: Array[String]) -> Int with Exception + Fs + Env + Stderr {
-  selfhost_cli_test_plan_args(args, Env::get("VIBE_HOST_ACTION_OUT"))
+  selfhost_cli_test_plan_args(args = args, action_path = Env::get("VIBE_HOST_ACTION_OUT"))
 }
 
 export fn selfhost_cli_user_bench_args(args: Array[String]) -> Int with Exception + Fs + Env {
@@ -1688,38 +1689,38 @@ export fn selfhost_cli_user_bench_args(args: Array[String]) -> Int with Exceptio
   let mut guest_interval = "1000"
   let mut i = 1
   while i < Array::length(args) {
-    let arg = Array::get(args, i)
+    let arg = Array::get(args, at = i)
     if arg == "--iters" {
       i = i + 1
-      iters = need_value(args, i, "bench", arg)
+      iters = need_value(args = args, index = i, command = "bench", flag = arg)
       ()
-    } else if String::starts_with(arg, "--iters=") {
+    } else if String::starts_with(arg, prefix = "--iters=") {
       iters = arg[8: String::length(arg)]
       ()
     } else if arg == "--warmup" {
       i = i + 1
-      warmup = need_value(args, i, "bench", arg)
+      warmup = need_value(args = args, index = i, command = "bench", flag = arg)
       ()
-    } else if String::starts_with(arg, "--warmup=") {
+    } else if String::starts_with(arg, prefix = "--warmup=") {
       warmup = arg[9: String::length(arg)]
       ()
     } else if arg == "--guest-profile" {
       guest_profile_requested = true
       i = i + 1
-      guest_profile_dir = need_value(args, i, "bench", arg)
+      guest_profile_dir = need_value(args = args, index = i, command = "bench", flag = arg)
       ()
-    } else if String::starts_with(arg, "--guest-profile=") {
+    } else if String::starts_with(arg, prefix = "--guest-profile=") {
       guest_profile_requested = true
       guest_profile_dir = arg[16: String::length(arg)]
       ()
     } else if arg == "--interval-us" {
       i = i + 1
-      guest_interval = need_value(args, i, "bench", arg)
+      guest_interval = need_value(args = args, index = i, command = "bench", flag = arg)
       ()
-    } else if String::starts_with(arg, "--interval-us=") {
+    } else if String::starts_with(arg, prefix = "--interval-us=") {
       guest_interval = arg[14: String::length(arg)]
       ()
-    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
+    } else if String::length(arg) > 0 && String::byte_at(arg, at = 0) == 45 {
       throw(String::concat("bench: unknown flag: ", arg))
     } else {
       src = arg
@@ -1738,33 +1739,33 @@ export fn selfhost_cli_user_bench_args(args: Array[String]) -> Int with Exceptio
     } else {
       ""
     }
-    let out = String::concat(default_build_dir(), String::concat("/bench/", String::concat(basename_of(strip_vibe_suffix(src)), ".wasm")))
-    let backend_kind = user_backend_kind("VIBE_BENCH_BACKEND")
-    let bytes = compile_user_artifact(src, "__no_entry__", backend_kind, no_grants())
-    write_wasm(out, bytes)
+    let out = String::concat(default_build_dir(), String::concat("/bench/", String::concat(basename_of(path = strip_vibe_suffix(path = src)), ".wasm")))
+    let backend_kind = user_backend_kind(var = "VIBE_BENCH_BACKEND")
+    let bytes = compile_user_artifact(input_path = src, entry_name = "__no_entry__", kind = backend_kind, grants = no_grants())
+    write_wasm(output_path = out, bytes = bytes)
     let acc = StringBuilder::new()
-    StringBuilder::push(acc, "vibe-host-action-v1\nrun-benches\n")
-    StringBuilder::push(acc, src)
-    StringBuilder::push(acc, "\n")
-    StringBuilder::push(acc, out)
-    StringBuilder::push(acc, "\n")
-    StringBuilder::push(acc, iters)
-    StringBuilder::push(acc, "\n")
-    StringBuilder::push(acc, warmup)
-    StringBuilder::push(acc, "\n")
-    StringBuilder::push(acc, guest_profile_dir)
-    StringBuilder::push(acc, "\n")
-    StringBuilder::push(acc, guest_interval)
-    StringBuilder::push(acc, "\n")
-    StringBuilder::push(acc, bench_keep_names)
-    StringBuilder::push(acc, "\n")
+    StringBuilder::push(acc, value = "vibe-host-action-v1\nrun-benches\n")
+    StringBuilder::push(acc, value = src)
+    StringBuilder::push(acc, value = "\n")
+    StringBuilder::push(acc, value = out)
+    StringBuilder::push(acc, value = "\n")
+    StringBuilder::push(acc, value = iters)
+    StringBuilder::push(acc, value = "\n")
+    StringBuilder::push(acc, value = warmup)
+    StringBuilder::push(acc, value = "\n")
+    StringBuilder::push(acc, value = guest_profile_dir)
+    StringBuilder::push(acc, value = "\n")
+    StringBuilder::push(acc, value = guest_interval)
+    StringBuilder::push(acc, value = "\n")
+    StringBuilder::push(acc, value = bench_keep_names)
+    StringBuilder::push(acc, value = "\n")
     // Line 10: the backend the artifact was lowered for. The host refuses a
     // gc artifact with no `__bench_` export before starting the runner, which
     // would otherwise time `_start` and print numbers for something other
     // than the bench blocks (Codex review of #2858).
-    StringBuilder::push(acc, backend_kind)
-    StringBuilder::push(acc, "\n")
-    write_host_action(Env::get("VIBE_HOST_ACTION_OUT"), StringBuilder::freeze(acc))
+    StringBuilder::push(acc, value = backend_kind)
+    StringBuilder::push(acc, value = "\n")
+    write_host_action(action_path = Env::get("VIBE_HOST_ACTION_OUT"), body = StringBuilder::freeze(acc))
   }
 }
 
@@ -1776,27 +1777,27 @@ export fn selfhost_cli_user_serve_args(args: Array[String]) -> Int with Exceptio
   let mut no_run = false
   let mut i = 1
   while i < Array::length(args) {
-    let arg = Array::get(args, i)
+    let arg = Array::get(args, at = i)
     if arg == "--addr" {
       i = i + 1
-      addr = need_value(args, i, "serve", arg)
+      addr = need_value(args = args, index = i, command = "serve", flag = arg)
       ()
     } else if arg == "--port" {
       i = i + 1
-      addr = String::concat("127.0.0.1:", need_value(args, i, "serve", arg))
+      addr = String::concat("127.0.0.1:", need_value(args = args, index = i, command = "serve", flag = arg))
       ()
     } else if arg == "-o" || arg == "--output" {
       i = i + 1
-      out = need_value(args, i, "serve", arg)
+      out = need_value(args = args, index = i, command = "serve", flag = arg)
       ()
     } else if arg == "--adapter" {
       i = i + 1
-      adapter = need_value(args, i, "serve", arg)
+      adapter = need_value(args = args, index = i, command = "serve", flag = arg)
       ()
     } else if arg == "--no-run" {
       no_run = true
       ()
-    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
+    } else if String::length(arg) > 0 && String::byte_at(arg, at = 0) == 45 {
       throw(String::concat("serve: unknown flag: ", arg))
     } else {
       src = arg
@@ -1809,88 +1810,91 @@ export fn selfhost_cli_user_serve_args(args: Array[String]) -> Int with Exceptio
     throw(String::concat("not found: ", src))
   } else {
     let resolved = if out == "" {
-      String::concat(default_build_dir(), String::concat("/out/", String::concat(basename_of(strip_vibe_suffix(src)), ".component.wasm")))
+      String::concat(default_build_dir(), String::concat("/out/", String::concat(basename_of(path = strip_vibe_suffix(path = src)), ".component.wasm")))
     } else {
       out
     }
-    let entry_stmts = parse_user_entry_file(src)
-    validate_serve_handler(entry_stmts)
-    let core = compile_user_artifact(src, "__no_entry__", "mvp", no_grants())
-    let body_stream = serve_handler_takes_body_stream(entry_stmts)
+    let entry_stmts = parse_user_entry_file(src = src)
+    validate_serve_handler(entry_stmts = entry_stmts)
+    let core = compile_user_artifact(input_path = src, entry_name = "__no_entry__", kind = "mvp", grants = no_grants())
+    let body_stream = serve_handler_takes_body_stream(entry_stmts = entry_stmts)
     let component = if body_stream {
-      comp_emit_component_wasm_stream_handler(core, "handler", "handler", serve_handler_param_names())
+      comp_emit_component_wasm_stream_handler(core_wasm = core, target_func_name = "handler", export_name = "handler", param_names = serve_handler_param_names())
     } else {
-      comp_emit_component_wasm_string_handler(core, "handler", "handler", serve_handler_param_names())
+      comp_emit_component_wasm_string_handler(core_wasm = core, target_func_name = "handler", export_name = "handler", param_names = serve_handler_param_names())
     }
-    write_wasm(resolved, component)
+    write_wasm(output_path = resolved, bytes = component)
     // The WIT sidecar sits beside the component: `<name>.component.wasm` ->
     // `<name>.wit`, any other spelling of `-o` -> `<out>.wit` (the launcher's
     // former `${out%.component.wasm}.wit`). The 15-byte strip belongs to the
     // matching branch only -- applied to `app.wasm` it produced `.wit` (Codex
     // review of #2858).
-    let wit_path = if path_has_suffix(resolved, ".component.wasm") {
-      String::concat(String::substring(resolved, 0, String::length(resolved) - 15), ".wit")
+    let wit_path = if path_has_suffix(s = resolved, suffix = ".component.wasm") {
+      String::concat(String::substring(resolved, start = 0, end = String::length(resolved) - 15), ".wit")
     } else {
       String::concat(resolved, ".wit")
     }
-    Fs::write_file(wit_path, wit_from_program(entry_stmts, entry_stmts, basename_of(strip_vibe_suffix(src))))
+    Fs::write_file(wit_path, contents = wit_from_program(export_stmts = entry_stmts, effect_stmts = entry_stmts, world_name = basename_of(path = strip_vibe_suffix(path = src))))
     println(String::concat("component ", String::concat(src, String::concat(" -> ", resolved))))
     if no_run {
       0
     } else {
       let acc = StringBuilder::new()
-      StringBuilder::push(acc, "vibe-host-action-v1\nwasmtime-serve\n")
-      StringBuilder::push(acc, resolved)
-      StringBuilder::push(acc, "\n")
-      StringBuilder::push(acc, addr)
-      StringBuilder::push(acc, "\n")
-      StringBuilder::push(acc, adapter)
-      StringBuilder::push(acc, "\n")
+      StringBuilder::push(acc, value = "vibe-host-action-v1\nwasmtime-serve\n")
+      StringBuilder::push(acc, value = resolved)
+      StringBuilder::push(acc, value = "\n")
+      StringBuilder::push(acc, value = addr)
+      StringBuilder::push(acc, value = "\n")
+      StringBuilder::push(acc, value = adapter)
+      StringBuilder::push(acc, value = "\n")
       // Line 6: which P3 adapter the host composes with when none is named
       // (#1540 scope 4). A handler taking `HostStream` was lifted as the stream
       // handler above, and the String-body adapter leaves its import
       // unsatisfied -- `wac plug` promotes that to a root import instead of
       // failing (#1796), so the host has to be told (Codex review of #2858).
       if body_stream {
-        StringBuilder::push(acc, "1\n")
+        StringBuilder::push(acc, value = "1\n")
       } else {
-        StringBuilder::push(acc, "0\n")
+        StringBuilder::push(acc, value = "0\n")
       }
-      write_host_action(Env::get("VIBE_HOST_ACTION_OUT"), StringBuilder::freeze(acc))
+      write_host_action(action_path = Env::get("VIBE_HOST_ACTION_OUT"), body = StringBuilder::freeze(acc))
     }
   }
 }
 
-export fn selfhost_cli_user_profile_args(args: Array[String]) -> Int with Exception + Fs + Env {
+/// Plan a host-owned guest-profile action. The selfhost CLI owns the command
+/// grammar, while the launcher executes the resulting action because Wasmtime's
+/// Engine/Store hooks must be installed before the target guest starts.
+export fn selfhost_cli_profile_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs {
   let mut source = ""
   let mut output = "profile.json"
   let mut interval = "1000"
-  let guest_args = Array::slice([""], 0, 0)
+  let guest_args = Array::slice([""], start = 0, end = 0)
   let mut after_separator = false
   let mut i = 1
   while i < Array::length(args) {
-    let arg = Array::get(args, i)
+    let arg = Array::get(args, at = i)
     if after_separator {
-      Array::push(guest_args, arg)
+      Array::push(guest_args, value = arg)
       i = i + 1
     } else if arg == "--" {
       after_separator = true
       i = i + 1
     } else if arg == "--out" || arg == "--interval-us" {
-      let value = need_value(args, i + 1, "profile", arg)
+      let value = need_value(args = args, index = i + 1, command = "profile", flag = arg)
       if arg == "--out" {
         output = value
       } else {
         interval = value
       }
       i = i + 2
-    } else if String::starts_with(arg, "--out=") {
+    } else if String::starts_with(arg, prefix = "--out=") {
       output = arg[6: String::length(arg)]
       i = i + 1
-    } else if String::starts_with(arg, "--interval-us=") {
+    } else if String::starts_with(arg, prefix = "--interval-us=") {
       interval = arg[14: String::length(arg)]
       i = i + 1
-    } else if String::starts_with(arg, "-") {
+    } else if String::starts_with(arg, prefix = "-") {
       throw(String::concat("profile: unknown option ", arg))
     } else if source == "" {
       source = arg
@@ -1905,9 +1909,9 @@ export fn selfhost_cli_user_profile_args(args: Array[String]) -> Int with Except
     throw("profile: --out must not be empty")
   } else if source == output {
     throw("profile: --out must not resolve to the source file")
-  } else if String::contains(source, "\n") || String::contains(output, "\n") || String::contains(interval, "\n") {
+  } else if String::contains(source, needle = "\n") || String::contains(output, needle = "\n") || String::contains(interval, needle = "\n") {
     throw("profile: newlines are not supported in host-action fields")
-  } else if args_contain_newline(guest_args) {
+  } else if args_contain_newline(args = guest_args) {
     throw("profile: newlines are not supported in guest arguments")
   } else {
     let mut plan = String::concat("vibe-host-action-v1\nrun-guest-profile\n", String::concat(source, "\n"))
@@ -1915,11 +1919,15 @@ export fn selfhost_cli_user_profile_args(args: Array[String]) -> Int with Except
     plan = String::concat(plan, String::concat(interval, "\n"))
     let mut gi = 0
     while gi < Array::length(guest_args) {
-      plan = String::concat(plan, String::concat(Array::get(guest_args, gi), "\n"))
+      plan = String::concat(plan, String::concat(Array::get(guest_args, at = gi), "\n"))
       gi = gi + 1
     }
-    write_host_action(Env::get("VIBE_HOST_ACTION_OUT"), plan)
+    write_host_action(action_path = action_path, body = plan)
   }
+}
+
+export fn selfhost_cli_user_profile_args(args: Array[String]) -> Int with Exception + Fs + Env {
+  selfhost_cli_profile_plan_args(args = args, action_path = Env::get("VIBE_HOST_ACTION_OUT"))
 }
 
 /// The embedded server (`vibe lsp --selfhost`). `VIBE_UNSTABLE=1` is the
@@ -1944,11 +1952,11 @@ export fn selfhost_cli_user_hash_args(args: Array[String]) -> Int with Env + Exc
   let mut src = ""
   let mut i = 1
   while i < Array::length(args) {
-    let arg = Array::get(args, i)
+    let arg = Array::get(args, at = i)
     if arg == "--write" {
       write = true
       ()
-    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
+    } else if String::length(arg) > 0 && String::byte_at(arg, at = 0) == 45 {
       // A mistyped `--writ` used to be taken for the target and then replaced
       // by the real one: hashes printed, exit 0, nothing written.
       throw(String::concat("hash: unknown flag: ", arg))
@@ -1975,16 +1983,16 @@ export fn selfhost_cli_user_hash_args(args: Array[String]) -> Int with Env + Exc
     if !Fs::exists(target) {
       throw(String::concat("not found: ", target))
     } else if write {
-      if !path_has_suffix(target, ".vpkg") {
+      if !path_has_suffix(s = target, suffix = ".vpkg") {
         throw(String::concat("vibe hash --write requires an index.vpkg target (got ", String::concat(target, "); generated_hash is a #1128 directive, the legacy index.vibei format has no such field")))
       } else {
-        let rewritten = write_generated_hash_fs(target)
-        Fs::write_file(target, rewritten)
-        let lines = String::split(rewritten, "\n")
+        let rewritten = write_generated_hash_fs(path = target)
+        Fs::write_file(target, contents = rewritten)
+        let lines = String::split(rewritten, sep = "\n")
         let mut li = 0
         while li < Array::length(lines) {
-          let line = Array::get(lines, li)
-          if String::starts_with(line, "generated_hash = ") {
+          let line = Array::get(lines, at = li)
+          if String::starts_with(line, prefix = "generated_hash = ") {
             println(String::concat("wrote to ", String::concat(target, String::concat(": ", line))))
           } else {
             ()
@@ -1994,8 +2002,8 @@ export fn selfhost_cli_user_hash_args(args: Array[String]) -> Int with Env + Exc
         0
       }
     } else {
-      let (pkg_hash, ct_hash) = contract_package_hashes_fs(target)
-      print_text(String::concat("package #", String::concat(pkg_hash, String::concat("\ncontract ", ct_hash))))
+      let (pkg_hash, ct_hash) = contract_package_hashes_fs(path = target)
+      print_text(text = String::concat("package #", String::concat(pkg_hash, String::concat("\ncontract ", ct_hash))))
       0
     }
   }
@@ -2014,14 +2022,14 @@ export fn selfhost_cli_user_inspect_update_args(args: Array[String]) -> Int with
   if Array::length(args) < 3 {
     throw("usage: vibe inspect-update <file.vibe> <captured-stdout>")
   } else {
-    let src = Array::get(args, 1)
-    let captured = Fs::read_file(Array::get(args, 2))
+    let src = Array::get(args, at = 1)
+    let captured = Fs::read_file(Array::get(args, at = 2))
     let original = Fs::read_file(src)
-    let patched = match compute_updated_source(original, captured) {
+    let patched = match compute_updated_source(src = original, captured = captured) {
       Some(new_src) => new_src,
       None => original
     }
-    Fs::write_file(src, patched)
+    Fs::write_file(src, contents = patched)
     0
   }
 }
@@ -2029,12 +2037,12 @@ export fn selfhost_cli_user_inspect_update_args(args: Array[String]) -> Int with
 //# Dispatch
 
 export fn is_check_report_continuation(line: String) -> Bool {
-  if String::starts_with(line, "hint: ") {
+  if String::starts_with(line, prefix = "hint: ") {
     true
   } else if String::length(line) == 0 {
     false
   } else {
-    let c = String::byte_at(line, 0)
+    let c = String::byte_at(line, at = 0)
     c == ' ' || c == '\t'
   }
 }
@@ -2045,28 +2053,28 @@ export fn is_check_report_continuation(line: String) -> Bool {
 /// #1888). Shared by both doors -- lib/@vibe/cli/entry.vibe and
 /// cli_adapter.vibe's verb branch -- so they cannot frame differently.
 export fn format_check_report(payload: String) -> String {
-  let lines = String::split(payload, "\n")
+  let lines = String::split(payload, sep = "\n")
   let n = Array::length(lines)
   if n == 0 {
     "error: "
   } else {
-    let mut framed = Array::slice([""], 0, 0)
+    let mut framed = Array::slice([""], start = 0, end = 0)
     let mut i = 0
     while i < n {
-      let line = Array::get(lines, i)
+      let line = Array::get(lines, at = i)
       if i == n - 1 && line == "" {
         ()
-      } else if is_check_report_continuation(line) {
-        Array::push(framed, String::concat("  ", line))
+      } else if is_check_report_continuation(line = line) {
+        Array::push(framed, value = String::concat("  ", line))
       } else {
-        Array::push(framed, String::concat("error: ", line))
+        Array::push(framed, value = String::concat("error: ", line))
       }
       i = i + 1
     }
     if Array::length(framed) == 0 {
       "error: "
     } else {
-      String::join(framed, "\n")
+      String::join(framed, sep = "\n")
     }
   }
 }
