@@ -124,7 +124,16 @@ import ./typecheck_fs_find_fn_anchor_off.vibe {
 }
 
 import ./typecheck_fs_finish_typecheck_fs_impl.vibe {
-  locate_type_error, locate_type_error_lines, plan_deps_of, plan_import_graph_fs, step_module_fs_using_interfaces
+  DepLookup,
+  PlanCache,
+  fs_deps_answer,
+  fs_leaf_fingerprint_answer,
+  fs_prefetch_answer,
+  locate_type_error,
+  locate_type_error_lines,
+  plan_deps_of,
+  plan_import_graph_core,
+  step_module_fs_using_interfaces
 }
 
 import ./typecheck_fs_interface_decl_lines.vibe {
@@ -362,20 +371,41 @@ fn scheduler_trace_project(buf: StringBuilder, order: Array[String], ranks: Arra
 /// that matters: it is exactly the choice a parallel coordinator makes
 /// differently from run to run, and scripts/dep_order_oracle.sh asserts the
 /// compiled output is byte-identical across seeds regardless.
-export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
-  // #2391: the float-offsets memo lives for exactly one walk -- every module
-  // this walk accepts re-binds its row (from the check, the combined entry, or the
-  // TDRE10 target), and the FS merge consumes the rows right after the walk
-  // returns. Resetting here is what rules out a row surviving from an
-  // earlier compile of a since-edited file, without any eviction policy that
-  // could drop a row the ACTIVE compile still needs.
-  let interfaces = dependency_interface_set_new()
-  module_typed_lowering_memo_reset()
-  typing_dependency_env_reuse_valid_witness_memo_reset()
-  checked_module_cache_reset()
-  // #2386: the source-text fingerprint memo spans one compile too.
-  compact_source_fingerprint_memo_reset()
-  let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_fs(rdb, dep_source_cache, parse_count, path)
+/// #1872 boundary 2: one module's step on the shared walk
+/// (`typecheck_walk_core`), and where its scheduler trace goes. `Step` is
+/// asked once per scheduled module with the plan, the accepted fingerprints
+/// and the walk's state as of entry to the step; it answers the module's
+/// fingerprint and the state after it, or the module's diagnostic, which the
+/// walk raises or collects. A failed step's state is ignored.
+export effect ModuleStep {
+  Step(Array[(String, String)], Array[(String, Array[String])], Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int, String, DependencyInterfaceSet) -> ((String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int), Option[String])
+  Trace(String, String) -> Unit
+}
+
+/// The filesystem step: the persistent caches, then the check.
+fn fs_step_answer(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: DependencyInterfaceSet) -> ((String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int), Option[String]) with Env + Fs {
+  handle {
+    (step_module_fs_using_interfaces(plan_leaf_fps, plan_edges, fps, rdb, env_cache, dep_source_cache, parse_count, path, interfaces), None)
+  } with { Exception::Throw(msg) => ((String::concat("diagnosed:", path), rdb, env_cache, dep_source_cache, parse_count), Some(msg)) }
+}
+
+/// #1872 boundary 2: the type-db walk itself -- plan, order, step each wave,
+/// collect diagnostics -- shared by every provider. What differs between the
+/// filesystem lane and an in-memory db is asked for, not branched on: the
+/// dependencies (`DepLookup`), the planning caches (`PlanCache`) and the step
+/// of one module (`ModuleStep`), which is where a provider's persistent cache
+/// lives. Process-wide memo resets and the root's final environment belong to
+/// the caller, since a warm in-memory db reuses memos across walks.
+///
+/// The result -- the root's fingerprint and the walk's state after it -- is
+/// pushed onto `out` rather than returned. A caller answers the walk's
+/// effects with a `handle`, and a handled call whose result can hold a
+/// function (the db and the environments can) reads to the checker as one
+/// that may return a closure performing those effects past the handler. The
+/// walk returns no closure; handing the state back through a cell the caller
+/// creates inside its `handle` says so without that question arising.
+export fn typecheck_walk_core(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: DependencyInterfaceSet, out: Array[(String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int)]) -> Unit with Env + Exception + DepLookup + PlanCache + ModuleStep {
+  let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_core(rdb, dep_source_cache, parse_count, path)
   // #1239 step 4(A): an import cycle is rejected HERE -- before a single
   // module is checked, committed, or written to the persistent cache --
   // instead of incidentally, partway through the walk, on whichever module a
@@ -444,13 +474,19 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
         let cur_envc = envc
         let cur_dsc = dsc
         let cur_pc = pc
+        // The provider steps the module and answers its failure rather than
+        // raising it, so the step's handler arm never throws.
+        let (stepped, step_failure) = perform ModuleStep::Step(plan_leaf_fps, plan_edges, fps, cur_db, cur_envc, cur_dsc, cur_pc, m, interfaces)
         let raised = empty_stack()
-        let (fp, next_db, next_envc, next_dsc, next_pc) = handle {
-          step_module_fs_using_interfaces(plan_leaf_fps, plan_edges, fps, cur_db, cur_envc, cur_dsc, cur_pc, m, interfaces)
-        } with { Exception::Throw(msg) => {
-          Array::push(raised, msg)
+        match step_failure {
+          Some(msg) => Array::push(raised, msg),
+          None => ()
+        }
+        let (fp, next_db, next_envc, next_dsc, next_pc) = if Array::length(raised) > 0 {
           (String::concat("diagnosed:", m), cur_db, cur_envc, cur_dsc, cur_pc)
-        } }
+        } else {
+          stepped
+        }
         if Array::length(raised) > 0 {
           let msg = Array::get(raised, 0)
           // Re-raised OUTSIDE the handler, so this is ordinary propagation
@@ -535,7 +571,7 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
     i = j
   }
   if tracing {
-    Fs::write_file(trace_path, StringBuilder::freeze(trace))
+    perform ModuleStep::Trace(trace_path, StringBuilder::freeze(trace))
   } else {
     ()
   }
@@ -554,8 +590,35 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
     // stepped; this is the empty-graph shape rather than a miss.
     None => String::concat("missing:", path)
   }
-  let final_env_cache = ensure_env_cache_for_path(db, envc, path)
   incremental_typecheck_telemetry_add(3, pc - parse_count)
+  Array::push(out, (root_fingerprint, db, envc, dsc, pc))
+}
+
+export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  // #2391: the float-offsets memo lives for exactly one walk -- every module
+  // this walk accepts re-binds its row (from the check, the combined entry, or the
+  // TDRE10 target), and the FS merge consumes the rows right after the walk
+  // returns. Resetting here is what rules out a row surviving from an
+  // earlier compile of a since-edited file, without any eviction policy that
+  // could drop a row the ACTIVE compile still needs.
+  module_typed_lowering_memo_reset()
+  typing_dependency_env_reuse_valid_witness_memo_reset()
+  checked_module_cache_reset()
+  // #2386: the source-text fingerprint memo spans one compile too.
+  compact_source_fingerprint_memo_reset()
+  let (root_fingerprint, db, envc, dsc, pc) = handle {
+    // The walk hands its result back through `out` (see
+    // typecheck_walk_core); the step receives the interface set from it.
+    let interfaces = dependency_interface_set_new()
+    let out: Array[(String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int)] = [
+    ]
+    typecheck_walk_core(rdb, env_cache, dep_source_cache, parse_count, path, interfaces, out)
+    Array::get(out, 0)
+  } with { DepLookup::Compute(p, text, c) => resume(fs_deps_answer(p, text, c)); PlanCache::Prefetch(p, text) => resume(fs_prefetch_answer(p, text)); PlanCache::LeafFingerprint(p, text) => resume(fs_leaf_fingerprint_answer(p, text)); ModuleStep::Step(leaf_fps, edges, fps, cur_db, cur_envc, cur_dsc, cur_pc, m, step_interfaces) => resume(fs_step_answer(leaf_fps, edges, fps, cur_db, cur_envc, cur_dsc, cur_pc, m, step_interfaces)); ModuleStep::Trace(trace_path, text) => {
+    Fs::write_file(trace_path, text)
+    resume(())
+  } }
+  let final_env_cache = ensure_env_cache_for_path(db, envc, path)
   (root_fingerprint, db, final_env_cache, dsc, pc)
 }
 /// #946: drop exact duplicates from a diagnostics list, preserving first-seen
@@ -1879,5 +1942,5 @@ export fn unstable_import_diagnostics(input_path: String, detected: String, loca
 }
 
 import ./typecheck_fs_bind_import_names_from_cache_collecting.vibe {
-  dependency_interface_set_new, dependency_interface_set_publish
+  DependencyInterfaceSet, dependency_interface_set_new, dependency_interface_set_publish
 }

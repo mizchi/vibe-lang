@@ -210,6 +210,12 @@ fn checked_module_public_env_for_path(path: String, stmts: Array[Stmt], full_che
 fn locate_type_error(source: String, msg: String) -> String
 fn locate_type_error_lines(source: String, msg: String) -> Array[String]
 fn locate_type_error_lines_except_paths(source: String, msg: String, paths: Array[String]) -> Array[String]
+// #1872 boundary 2: the shared type-db walk and one module's step.
+effect ModuleStep {
+  Step(Array[(String, String)], Array[(String, Array[String])], Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int, String, DependencyInterfaceSet) -> ((String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int), Option[String])
+  Trace(String, String) -> Unit
+}
+fn typecheck_walk_core(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: DependencyInterfaceSet, out: Array[(String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int)]) -> Unit with Env + Exception + DepLookup + PlanCache + ModuleStep
 fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs
 // #1100: memoized located lex+parse shared by the typecheck walk and the
 // merge (see typecheck_fs.vibe). Returns a fresh top-level statement array
@@ -443,6 +449,20 @@ fn offset_line_col_prefix(source: String, off: Int) -> String
 fn offset_line_col_range_prefix(source: String, start: Int, endo: Int) -> String
 fn parse_offset_digits(msg: String, start: Int, end: Int) -> Int
 fn find_fn_anchor_off(source: String, name: String) -> Int
+// #1872 boundary 3: the dependency-resolution policy both type-db walks share.
+effect DepLookup {
+  Compute(String, String, Int) -> ((Array[String], Int), Option[String])
+}
+fn resolve_deps_policy(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Exception + DepLookup
+fn fs_deps_answer(path: String, source: String, parse_count: Int) -> ((Array[String], Int), Option[String]) with Env + Fs
+fn fs_prefetch_answer(path: String, source: String) -> (Bool, Option[String]) with Env + Fs
+fn fs_leaf_fingerprint_answer(path: String, source: String) -> (Option[String], Option[String]) with Env + Fs
+// #1872 boundary 2: the planner core and what it asks of a provider's caches.
+effect PlanCache {
+  Prefetch(String, String) -> (Bool, Option[String])
+  LeafFingerprint(String, String) -> (Option[String], Option[String])
+}
+fn plan_import_graph_core(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with Env + Exception + DepLookup + PlanCache
 fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with Env + Exception + Fs
 fn plan_deps_of(plan_edges: Array[(String, Array[String])], path: String) -> Option[Array[String]]
 fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs

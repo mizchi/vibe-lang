@@ -63,17 +63,7 @@ import @vibe/compiler/runtime/checked_module_cache {
 }
 
 import @vibe/compiler/core {
-  BindingOrigin,
-  EnvValueBinding,
-  Expr,
-  Stmt,
-  Type,
-  TypeDef,
-  TypeEnv,
-  dir_of_path,
-  is_builtin_iterator_serialized_boundary_path,
-  is_owned_head_source_location_env_fs,
-  resolve_import_path
+  BindingOrigin, EnvValueBinding, Expr, Type, TypeDef, TypeEnv, dir_of_path, is_owned_head_source_location_env_fs
 }
 
 import @vibe/compiler/codegen {
@@ -89,7 +79,7 @@ import @vibe/compiler/contract {
 }
 
 import @vibe/compiler/loader {
-  ast_cache_prefetch_fs, load_or_parse_module_header_fs
+  ast_cache_prefetch_fs, load_or_parse_module_header_fs, source_answer
 }
 
 import @vibe/compiler/incremental {
@@ -739,54 +729,97 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
       }
     }
   }
-} fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String) -> Array[String] {
-  // Iterative push: previously the recursive `Array::concat(acc, [x])`
-  // copied the full prefix on each new dep — O(N^2) for files with
-  // many imports.
-  let out = empty_stack()
-  let mut i = 0
-  let len = Array::length(stmts)
-  while i < len {
-    match Array::get(stmts, i) {
-      SImport(raw_path, _) => if String::length(raw_path) > 0 && !is_builtin_iterator_serialized_boundary_path(raw_path) {
-        let resolved = resolve_import_path(base_dir, raw_path)
-        if !contains_str(out, resolved) {
-          Array::push(out, resolved)
-        }
-      },
-      SReExport(raw_path, _) => if String::length(raw_path) > 0 {
-        let resolved = resolve_import_path(base_dir, raw_path)
-        if !contains_str(out, resolved) {
-          Array::push(out, resolved)
-        }
-      },
-      _ => ()
-    }
-    i = i + 1
+}
+
+/// #1872 boundary 3: how a walk learns a module's dependencies when its
+/// own reuse rule (`resolve_deps_policy`) does not answer. The answer is the
+/// resolved deps with the parse count after computing them, or the failure
+/// (`source_answer` rethrows it): the filesystem lane reads its persistent
+/// dep list or module header, an in-memory db computes the header with the
+/// same core (`module_header_source`) over its own sources.
+export effect DepLookup {
+  Compute(String, String, Int) -> ((Array[String], Int), Option[String])
+}
+
+/// #1872 boundary 3: the dependency-resolution policy both type-db walks
+/// share. A module whose source is the one this walk last resolved, and
+/// whose deps the db recorded, reuses them; otherwise the deps are computed
+/// (`DepLookup`) and the source is remembered for the next ask.
+export fn resolve_deps_policy(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Exception + DepLookup {
+  let same_source = match typecheck_fs_lookup_string_pair(dep_source_cache, path) {
+    Some(cached_source) => cached_source == source,
+    None => false
   }
-  out
-} fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
-  match load_persistent_dep_list(path, source) {
-    Some(deps) => (deps, typecheck_fs_upsert_string_pair(dep_source_cache, path, source), parse_count),
+  let recorded = if same_source {
+    ripple_get_deps(rdb, path)
+  } else {
+    None
+  }
+  match recorded {
+    Some(deps) => (deps, dep_source_cache, parse_count),
     None => {
-      let (deps, _, next_parse_count) = load_or_parse_module_header_fs(path, source, parse_count)
+      let (deps, next_parse_count) = source_answer(perform DepLookup::Compute(path, source, parse_count))
       (deps, typecheck_fs_upsert_string_pair(dep_source_cache, path, source), next_parse_count)
     }
   }
-} fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
-  match typecheck_fs_lookup_string_pair(dep_source_cache, path) {
-    Some(cached_source) =>
-    if cached_source == source {
-      match ripple_get_deps(rdb, path) {
-        Some(deps) => (deps, dep_source_cache, parse_count),
-        None => load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
-      }
-    } else {
-      load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
-    },
-    None => load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
-  }
 }
+
+/// The filesystem `DepLookup` answer: the persistent dep list when it is
+/// valid for this source (no parse), else the cached module header.
+export fn fs_deps_answer(path: String, source: String, parse_count: Int) -> ((Array[String], Int), Option[String]) with Env + Fs {
+  handle {
+    // A plain Bool dispatch, not the header parse inside an Option match
+    // arm (the #708 shape).
+    let listed = load_persistent_dep_list(path, source)
+    let has_list = match listed {
+      Some(_) => true,
+      None => false
+    }
+    if has_list {
+      let deps = match listed {
+        Some(d) => d,
+        None => empty_stack()
+      }
+      ((deps, parse_count), None)
+    } else {
+      let (deps, _, next_parse_count) = load_or_parse_module_header_fs(path, source, parse_count)
+      ((deps, next_parse_count), None)
+    }
+  } with { Exception::Throw(message) => ((empty_stack(), parse_count), Some(message)) }
+}
+
+/// #1872 boundary 2: what planning asks of the provider's caches, beside the
+/// dependencies (`DepLookup`). `Prefetch` hands a module its stored AST before
+/// planning decides whether it needs parsing; `LeafFingerprint` is the
+/// persistent fingerprint of a dependency-free module whose cache is valid.
+/// The filesystem lane answers both from disk; a provider with no persistent
+/// cache answers "nothing stored". Failures are answers (`source_answer`
+/// rethrows them), so no arm throws.
+export effect PlanCache {
+  Prefetch(String, String) -> (Bool, Option[String])
+  LeafFingerprint(String, String) -> (Option[String], Option[String])
+}
+
+export fn fs_prefetch_answer(path: String, source: String) -> (Bool, Option[String]) with Env + Fs {
+  handle {
+    (ast_cache_prefetch_fs(path, source), None)
+  } with { Exception::Throw(message) => (false, Some(message)) }
+}
+
+export fn fs_leaf_fingerprint_answer(path: String, source: String) -> (Option[String], Option[String]) with Env + Fs {
+  handle {
+    (valid_persistent_leaf_fingerprint(path, source), None)
+  } with { Exception::Throw(message) => (None, Some(message)) }
+}
+
+/// The planner over the filesystem: dependencies, stored ASTs and leaf
+/// fingerprints all come from disk.
+export fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with Env + Exception + Fs {
+  handle {
+    plan_import_graph_core(rdb, dep_source_cache, parse_count, root)
+  } with { DepLookup::Compute(p, text, pc) => resume(fs_deps_answer(p, text, pc)); PlanCache::Prefetch(p, text) => resume(fs_prefetch_answer(p, text)); PlanCache::LeafFingerprint(p, text) => resume(fs_leaf_fingerprint_answer(p, text)) }
+}
+
 /// #1239 step 4(A), on the real fs path: the coordinator-side upfront pass.
 ///
 /// Walks the import graph from `root` ONCE and records, per reachable module,
@@ -799,7 +832,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
 /// says nothing about whether one of those dependencies changed. Only a missing
 /// source or a validated dependency-free leaf can terminate planning early.
 /// Source/header caches avoid reparsing unchanged dependency lists.
-export fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with Env + Exception + Fs {
+export fn plan_import_graph_core(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with Env + Exception + DepLookup + PlanCache {
   let leaf_fps = typecheck_fs_empty_dep_fps()
   let plan_diags: Array[(String, String)] = []
   let edges: Array[(String, Array[String])] = []
@@ -856,8 +889,8 @@ export fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, S
         // runs before this one -- and a policy or a count written at one call
         // site is simply absent at the other. Both were, until Codex found
         // them on #2771.
-        let _ = ast_cache_prefetch_fs(path, source)
-        match valid_persistent_leaf_fingerprint(path, source) {
+        let _ = source_answer(perform PlanCache::Prefetch(path, source))
+        match source_answer(perform PlanCache::LeafFingerprint(path, source)) {
           Some(leaf_fingerprint) => Array::push(leaf_fps, (path, leaf_fingerprint)),
           None => {
             // Codex review P2: resolving a module's imports PARSES it, so a
@@ -874,7 +907,7 @@ export fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, S
             // rather than cascading.
             let plan_raised = empty_stack()
             let (deps_raw, _, next_pc) = handle {
-              resolve_deps_for_source_fs(rdb, scratch_cache, path, source, pc)
+              resolve_deps_policy(rdb, scratch_cache, path, source, pc)
             } with { Exception::Throw(msg) => {
               Array::push(plan_raised, msg)
               (empty_stack(), scratch_cache, pc)
