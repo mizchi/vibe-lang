@@ -14,7 +14,7 @@
 //# `Int` / `Float` / `Record` / `Map` / `Set` / `ArrayBuilder`, so
 //# implementing the document would have encoded a shape this compiler
 //# does not have. That is fixed — the tables are now this compiler's
-//# `TypeExpr` / `Pat` / `Expr` / `Stmt` (5 / 10 / 33 / 26 variants),
+//# `TypeExpr` / `Pat` / `Expr` / `Stmt` (5 / 10 / 33 / 27 variants),
 //# tagged in DECLARATION ORDER, and `scripts/check_ast_binary_tags.sh`
 //# holds them to `lib/@vibe/ast/index.vpkg` so they cannot drift back.
 //# (The count recorded one commit earlier said 27 statements; the
@@ -1831,6 +1831,8 @@ export let AST_BINARY_TAG_S_EFFECT_DEF: Int = 23
 export let AST_BINARY_TAG_S_EFFECT_SET: Int = 24
 export let AST_BINARY_TAG_S_RESOURCE: Int = 25
 export let AST_BINARY_TAG_S_FN_DECL: Int = 26
+// Appended after SFnDecl, whatever its declaration position (ADR-0120 D3).
+export let AST_BINARY_TAG_S_POSITIONAL_PARAMS: Int = 27
 
 export fn ast_binary_write_stmt(buf: Bytes, st: Stmt) -> Unit {
   match st {
@@ -1949,6 +1951,18 @@ export fn ast_binary_write_stmt(buf: Bytes, st: Stmt) -> Unit {
     STestEffectRows(pairs) => {
       Bytes::push(buf, AST_BINARY_TAG_S_TEST_EFFECT_ROWS)
       ast_binary_write_string_pairs(buf, pairs)
+    }
+    SPositionalParams(rows) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_POSITIONAL_PARAMS)
+      ast_binary_write_varint(buf, Array::length(rows))
+      for row in rows {
+        let (name, slots) = row
+        ast_binary_write_string(buf, name)
+        ast_binary_write_varint(buf, Array::length(slots))
+        for slot in slots {
+          ast_binary_write_varint(buf, slot)
+        }
+      }
     }
     SLetPat(p, v) => {
       Bytes::push(buf, AST_BINARY_TAG_S_LET_PAT)
@@ -2095,6 +2109,23 @@ export fn ast_binary_read_stmt(r: AstBinaryReader) -> Stmt with Exception {
     SQualifiedPatternRefs(ast_binary_read_string_pairs(r))
   } else if tag == AST_BINARY_TAG_S_TEST_EFFECT_ROWS {
     STestEffectRows(ast_binary_read_string_pairs(r))
+  } else if tag == AST_BINARY_TAG_S_POSITIONAL_PARAMS {
+    let count = ast_binary_read_count_checked(r)
+    let rows: Array[(String, Array[Int])] = []
+    let mut i = 0
+    while i < count {
+      let name = ast_binary_read_string_checked(r)
+      let n = ast_binary_read_count_checked(r)
+      let slots: Array[Int] = []
+      let mut j = 0
+      while j < n {
+        Array::push(slots, ast_binary_read_varint_checked(r))
+        j = j + 1
+      }
+      Array::push(rows, (name, slots))
+      i = i + 1
+    }
+    SPositionalParams(rows)
   } else if tag == AST_BINARY_TAG_S_LET_PAT {
     let p = ast_binary_read_pat(r)
     let v = ast_binary_read_expr(r)

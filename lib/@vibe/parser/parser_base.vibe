@@ -322,6 +322,14 @@ export fn pattern_ref_mark() -> (Int, Int) {
   (Array::length(qualified_pattern_refs), Array::length(bare_pattern_refs))
 }
 
+/// The pattern refs and the positional log for a fresh program, without
+/// building a mark: every parse entry calls it.
+export fn reset_pattern_refs() -> Unit {
+  Array::truncate(qualified_pattern_refs, 0)
+  Array::truncate(bare_pattern_refs, 0)
+  Array::truncate(positional_param_rows, 0)
+}
+
 export fn restore_pattern_refs(mark: (Int, Int)) -> Unit {
   Array::truncate(qualified_pattern_refs, mark.0)
   Array::truncate(bare_pattern_refs, mark.1)
@@ -452,6 +460,113 @@ export fn take_test_effect_rows() -> Array[(String, String)] {
   let n = Array::length(test_effect_rows)
   let out = Array::slice(test_effect_rows, 0, n)
   Array::truncate(test_effect_rows, 0)
+  out
+}
+
+/// ADR-0120 D3 (#3681): `(declaration name, slot indices)` for every `fn`
+/// declaration this parse saw with a `_` before a parameter. Same
+/// log-then-fold-into-a-marker shape as `test_effect_rows` above: the slots
+/// travel in a trailing `SPositionalParams` statement, not on the parameter.
+let positional_param_rows: Array[(String, Array[Int])] = Array::slice([("", [0])], 0, 0)
+
+export fn record_positional_params(name: String, slots: Array[Int]) -> Unit {
+  Array::push(positional_param_rows, (name, slots))
+}
+
+#zero_alloc
+export fn has_positional_params() -> Bool {
+  Array::length(positional_param_rows) > 0
+}
+
+/// `let f = (_ x: Int) -> ..`: the top-level `let` arms this just before its
+/// initializer, and the first lambda parameter list parsed after that takes
+/// it -- the initializer's own, when the initializer is a lambda. Any other
+/// list that writes `_` before a parameter is refused, so the marker can
+/// never ride a nested lambda unread.
+let lambda_positional_armed: Array[Bool] = Array::slice([false, false], 0, 1)
+let lambda_positional_slots: Array[Int] = Array::slice([0], 0, 0)
+
+export fn arm_lambda_positional() -> Unit {
+  Array::set(lambda_positional_armed, 0, true)
+  Array::truncate(lambda_positional_slots, 0)
+}
+
+/// Disarm and hand back the slots the armed list wrote.
+export fn disarm_lambda_positional() -> Array[Int] {
+  Array::set(lambda_positional_armed, 0, false)
+  // Every top-level statement disarms, so the common case hands back the
+  // shared empty array and allocates nothing.
+  if Array::length(lambda_positional_slots) == 0 {
+    no_lambda_positional_slots
+  } else {
+    let out = Array::slice(lambda_positional_slots, 0, Array::length(lambda_positional_slots))
+    Array::truncate(lambda_positional_slots, 0)
+    out
+  }
+}
+
+let no_lambda_positional_slots: Array[Int] = Array::slice([0], 0, 0)
+
+/// Is the token at `pos` a `_` written before a parameter's name? Nested
+/// matches, not a match on a tuple: this runs for every parameter parsed, and
+/// the tuple was a per-parameter allocation the parser benches caught.
+export fn positional_marker_at(tokens: Array[Token], pos: Int) -> Bool {
+  match peek(tokens, pos) {
+    TIdent(u) => u == "_" && match peek(tokens, pos + 1) {
+      TIdent(_) => true,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn take_lambda_positional_armed() -> Bool {
+  let armed = Array::get(lambda_positional_armed, 0)
+  Array::set(lambda_positional_armed, 0, false)
+  armed
+}
+
+/// A `_` before a lambda parameter's name: skipped and recorded when this
+/// list took the arming, refused otherwise.
+fn lambda_param_marker(tokens: Array[Token], pos: Int, index: Int, armed: Bool) -> Int with Exception {
+  let marked = positional_marker_at(tokens, pos)
+  if !marked {
+    pos
+  } else if armed {
+    Array::push(lambda_positional_slots, index)
+    pos + 1
+  } else {
+    throw("`_` before a parameter marks a positional slot, which only a `fn` declaration or the lambda a top-level `let` is bound to can declare: remove `_ `, or declare the function with `fn` (`fn f(_ x: T) -> R { .. }`) at #\{pos}")
+  }
+}
+
+/// The positional log's length, for `take_positional_params_since`.
+export fn positional_params_mark() -> Int {
+  Array::length(positional_param_rows)
+}
+
+/// Drop the rows recorded since `mark` (ADR-0120 D3): a discarded parse, such
+/// as an inactive `#cfg` statement, must not leave a `fn f(_ x: Int)`'s slots
+/// for an active `fn f(x: Int)` of the same name. An `Int` mark beside the
+/// pattern-ref pair rather than a third member of it: the recovering parse
+/// takes that pair for every statement, and the parser benches gate bytes
+/// per op.
+export fn restore_positional_params(mark: Int) -> Unit {
+  Array::truncate(positional_param_rows, mark)
+}
+
+/// The rows recorded since `mark`, removed from the log.
+export fn take_positional_params_since(mark: Int) -> Array[(String, Array[Int])] {
+  let n = Array::length(positional_param_rows)
+  let out = Array::slice(positional_param_rows, mark, n)
+  Array::truncate(positional_param_rows, mark)
+  out
+}
+
+export fn take_positional_params() -> Array[(String, Array[Int])] {
+  let n = Array::length(positional_param_rows)
+  let out = Array::slice(positional_param_rows, 0, n)
+  Array::truncate(positional_param_rows, 0)
   out
 }
 
@@ -1910,14 +2025,15 @@ export fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, co
   ((name, ty), next)
 }
 
-fn parse_param_cont_with_binder_context(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Option[TypeExpr])], context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Int) with Exception {
+fn parse_param_cont_with_binder_context(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Option[TypeExpr])], context: Option[ParserBinderContext], armed: Bool, count: Int) -> (Array[(String, Option[TypeExpr])], Int) with Exception {
   match peek(tokens, pos) {
     TComma => match peek(tokens, pos + 1) {
       TRParen => (ArrayBuilder::freeze(b), pos + 2),
       _ => {
-        let (p, pn) = parse_one_param_with_binder_context(tokens, pos + 1, context)
+        let at = lambda_param_marker(tokens, pos + 1, count, armed)
+        let (p, pn) = parse_one_param_with_binder_context(tokens, at, context)
         ArrayBuilder::push(b, p)
-        parse_param_cont_with_binder_context(tokens, pn, b, context)
+        parse_param_cont_with_binder_context(tokens, pn, b, context, armed, count + 1)
       }
     },
     TRParen => (ArrayBuilder::freeze(b), pos + 1),
@@ -1932,13 +2048,15 @@ fn parse_param_cont_with_binder_context(tokens: Array[Token], pos: Int, b: Array
 }
 
 export fn parse_param_list_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Int) with Exception {
+  let armed = take_lambda_positional_armed()
   match peek(tokens, pos) {
     TRParen => (empty_params(), pos + 1),
     _ => {
-      let (f, fn1) = parse_one_param_with_binder_context(tokens, pos, context)
+      let at = lambda_param_marker(tokens, pos, 0, armed)
+      let (f, fn1) = parse_one_param_with_binder_context(tokens, at, context)
       let b = ArrayBuilder::new()
       ArrayBuilder::push(b, f)
-      parse_param_cont_with_binder_context(tokens, fn1, b, context)
+      parse_param_cont_with_binder_context(tokens, fn1, b, context, armed, 1)
     }
   }
 }

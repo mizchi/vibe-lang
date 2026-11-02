@@ -71,7 +71,7 @@ assert.match(parserFacade, /fn detach_stmts\(stmts: Array\[Stmt\]\) -> Array\[St
 const pats = ["PWild", "PBind", "PInt", "PFloat", "PString", "PBool", "PCtor", "PTuple", "POr", "PStruct"];
 const types = ["TyName", "TyApp", "TyFn", "TyTuple", "TyUnit"];
 const exprs = ["EInt", "EFloat", "EString", "EBool", "EIdent", "ETuple", "EArray", "ERecord", "EIf", "ELet", "ELetRec", "ELetMut", "EAssign", "EAssignOp", "ESeq", "EMatch", "EHandle", "EWhile", "ELoop", "EForIn", "ECall", "EBinOp", "EUnaryOp", "EFn", "EDot", "ELabeledArg", "EReturn", "EBreak", "EContinue", "EMap", "ESpread", "EStringInterp", "EUnit"];
-const stmts = ["SLet", "SLetMut", "SEnum", "SSuberror", "SStruct", "STypeAlias", "STrait", "SImpl", "SExternLet", "SImport", "STest", "SBench", "SExample", "SExpr", "SExport", "SReExport", "SReExportSourceBoundary", "SAliasDecl", "SQualifiedPatternRefs", "STestEffectRows", "SLetPat", "SModule", "SEffectDef", "SEffectSet", "SResource", "SFnDecl"];
+const stmts = ["SLet", "SLetMut", "SEnum", "SSuberror", "SStruct", "STypeAlias", "STrait", "SImpl", "SExternLet", "SImport", "STest", "SBench", "SExample", "SExpr", "SExport", "SReExport", "SReExportSourceBoundary", "SAliasDecl", "SQualifiedPatternRefs", "STestEffectRows", "SPositionalParams", "SLetPat", "SModule", "SEffectDef", "SEffectSet", "SResource", "SFnDecl"];
 exactKeys(outerArms(detach, "detach_pat"), pats, "10 Pat detachment arms");
 exactKeys(outerArms(detach, "detach_type_expr"), types, "5 TypeExpr detachment arms");
 exactKeys(outerArms(detach, "detach_expr"), exprs, "33 Expr detachment arms");

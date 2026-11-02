@@ -527,6 +527,11 @@ export fn namespace_private_value_stmts_after_renames(path: String, stmts: Array
 fn namespace_private_stmt_after_renames(stmt: Stmt, exports: AliasIdx, privates: AliasIdx, both: AliasIdx) -> Stmt {
   match stmt {
     SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, aliasidx_rename(both, name), ty, rewrite_alias_expr_ix(body, both)),
+    // ADR-0120 D3: a declaration's `_` slots follow its `SLet` name.
+    SPositionalParams(rows) => SPositionalParams(for row in rows {
+      let (decl, slots) = row
+      (aliasidx_rename(both, decl), slots)
+    }),
     SLetMut(name, ty, body) => SLetMut(aliasidx_rename(privates, name), ty, rewrite_alias_expr_ix(body, both)),
     SFnDecl(exported, name, body, requires, ensures) => SFnDecl(exported, aliasidx_rename(exports, name), rewrite_alias_expr_ix(body, exports), for requirement in requires {
       rewrite_alias_expr_ix(requirement, exports)
@@ -2065,6 +2070,13 @@ export fn apply_export_renames_stmts(stmts: Array[Stmt], renames: Array[(String,
           })
         },
         SLetMut(name, ty, body) => SLetMut(name, ty, rewrite_alias_expr_ix(body, am)),
+        SPositionalParams(rows) => SPositionalParams(for row in rows {
+          let (decl, slots) = row
+          match aliasidx_get(am, decl) {
+            Some(renamed) => (renamed, slots),
+            None => (decl, slots)
+          }
+        }),
         SExport(items) => SExport(for item in items {
           match aliasidx_get(am, item) {
             Some(renamed) => renamed,
