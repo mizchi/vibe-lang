@@ -59,6 +59,12 @@ expect_refused multiline '`Env` is not needed' "$WORK_REL/multiline.vibex"
 printf 'fn cached() -> Attempt[String, String] with Fs::read_file? {\n  perform? Fs::read_file("cache.json")\n}\n\nfn main allows Console + Fs? {\n  match cached() {\n    NotGranted => println("n"),\n    Errored(_) => println("e"),\n    Granted(_) => println("g")\n  }\n}\n' > "$WORK/optional.vibex"
 expect_refused optional '`Fs?` is wider than its use -- the file needs only `Fs::read_file?`' "$WORK_REL/optional.vibex"
 
+# The same, spelled with whitespace before the grade: a label is compared as
+# the compiler spells it, so `Fs ?` is `Fs?`.
+sed 's/allows Console + Fs? {/allows Console + Fs ? {/' "$WORK/optional.vibex" > "$WORK/optional_spaced.vibex"
+grep -q 'Fs ? {' "$WORK/optional_spaced.vibex" || fail "optional_spaced: the respelling did not apply"
+expect_refused optional_spaced '`Fs?` is wider than its use -- the file needs only `Fs::read_file?`' "$WORK_REL/optional_spaced.vibex"
+
 # A comment between `fn` and the name: the declaration is the compiler's
 # function row, not a text pattern, so it is still probed.
 printf 'fn // entry\nmain allows Console + Env {\n  println("x")\n}\n' > "$WORK/commented.vibex"

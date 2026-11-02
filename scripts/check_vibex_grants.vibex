@@ -203,6 +203,23 @@ fn strip_comments(row: String) -> String {
   String::join(kept, " ")
 }
 
+/// A label as the compiler spells it in a diagnostic: whitespace carries no
+/// meaning inside one (`Fs ?` is `Fs?`), so none is kept.
+fn canonical(label: String) -> String {
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(label) {
+    let c = String::byte_at(label, i)
+    if !is_space(c) {
+      StringBuilder::push(out, String::from_byte(c))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
 fn row_labels(written: String) -> Array[String] {
   let out: Array[String] = []
   let row = strip_comments(written)
@@ -210,7 +227,7 @@ fn row_labels(written: String) -> Array[String] {
     let parts = String::split(row, "+")
     let mut i = 0
     while i < Array::length(parts) {
-      let p = String::trim(Array::get(parts, i))
+      let p = canonical(Array::get(parts, i))
       if p != "" {
         Array::push(out, p)
       } else {
@@ -366,25 +383,29 @@ fn verdict(job: Job, rc: Int, out: String) -> String {
   } else if String::index_of(out, "effect row mismatch") < 0 || String::index_of(out, "hint: change 'allows") < 0 {
     let first = Array::get(String::split(out, "\n"), 0)
     "FAIL \{at}: dropping `\{job.label}` was refused, but not as a missing grant with an edit to make:\n       \{first}"
-  } else if String::index_of(job.label, "::") >= 0 {
-    ""
   } else {
+    // What the refusal asks for, read against the removed label: the label
+    // itself (any grade), or operations of it. A refusal that names neither
+    // says nothing about this label, and fails rather than pass unread.
     let missing = missing_labels(out)
+    let base = ungraded(job.label)
     let ops: Array[String] = []
     let mut coarse = false
     let mut i = 0
     while i < Array::length(missing) {
       let item = Array::get(missing, i)
-      if in_family(ungraded(item), ungraded(job.label)) {
+      if in_family(ungraded(item), base) {
         coarse = true
-      } else if op_of(ungraded(item), ungraded(job.label)) && !contains(ops, item) {
+      } else if op_of(ungraded(item), base) && !contains(ops, item) {
         Array::push(ops, item)
       } else {
         ()
       }
       i = i + 1
     }
-    if !coarse && Array::length(ops) > 0 {
+    if !coarse && Array::length(ops) == 0 {
+      "FAIL \{at}: dropping `\{job.label}` was refused, but the refusal names neither it nor an operation of it (missing: \{String::join(missing, ", ")})"
+    } else if !coarse && String::index_of(base, "::") < 0 {
       "FAIL \{at}: `\{job.label}` is wider than its use -- the file needs only `\{String::join(sort_str(ops), " + ")}`"
     } else {
       ""
