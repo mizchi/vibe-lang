@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — edp apply migration.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, expr_children
+  Expr, Pat, Stmt, TypeExpr, expr_any_node, expr_children
 }
 
 import @vibe/core {
@@ -745,17 +745,38 @@ fn edp_migrate_closure_binding_stmts(stmts: Array[Stmt], xname: String, ename: S
           Some(new_expr) => edp_mf_set_stmt(stmts, i, SLet(exported, is_rec, nm, ty, new_expr)),
           None => ()
         }
-      } else {
+      } else if edp_expr_lets_name(expr, xname) {
         edp_mf_set_stmt(stmts, i, SLet(exported, is_rec, nm, ty, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)))
-      },
-      SLetMut(nm2, ty2, expr) => edp_mf_set_stmt(stmts, i, SLetMut(nm2, ty2, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))),
-      SExpr(expr) => edp_mf_set_stmt(stmts, i, SExpr(edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))),
-      STest(tn, expr) => edp_mf_set_stmt(stmts, i, STest(tn, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))),
-      SBench(bn, expr) => edp_mf_set_stmt(stmts, i, SBench(bn, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))),
+      } else (),
+      SLetMut(nm2, ty2, expr) => if edp_expr_lets_name(expr, xname) {
+        edp_mf_set_stmt(stmts, i, SLetMut(nm2, ty2, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)))
+      } else (),
+      SExpr(expr) => if edp_expr_lets_name(expr, xname) {
+        edp_mf_set_stmt(stmts, i, SExpr(edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)))
+      } else (),
+      STest(tn, expr) => if edp_expr_lets_name(expr, xname) {
+        edp_mf_set_stmt(stmts, i, STest(tn, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)))
+      } else (),
+      SBench(bn, expr) => if edp_expr_lets_name(expr, xname) {
+        edp_mf_set_stmt(stmts, i, SBench(bn, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)))
+      } else (),
       _ => ()
     }
     i = i + 1
   }
+}
+
+/// Does `expr` bind `xname` with a `let` / `let rec` anywhere?
+/// edp_migrate_closure_binding_expr changes only those bindings and rebuilds
+/// every other node as it was, so a statement without one is left in place
+/// (and stays clean for the statement facts) instead of being rebuilt into an
+/// equal tree.
+fn edp_expr_lets_name(expr: Expr, xname: String) -> Bool {
+  expr_any_node(expr, (e: Expr) -> match e {
+    ELet(n, _, _, _) => n == xname,
+    ELetRec(n, _, _) => n == xname,
+    _ => false
+  })
 }
 
 fn edp_migrate_closure_binding_expr(expr: Expr, xname: String, ename: String, dict_pname: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Expr {
