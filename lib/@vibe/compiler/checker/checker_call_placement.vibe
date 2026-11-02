@@ -221,12 +221,7 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
         } else {
           match checker_call_header_names(env, name) {
             Some(all_names) => {
-              // The bare-callee method retry (`b |> bump(n = 3)` checked as
-              // `b.bump(n = 3)`) keeps the snapshot of the call as written,
-              // where the receiver IS argument 0 -- slicing it off the names
-              // would place every argument one slot early.
-              let receiver_written = callee is EIdent(_, _)
-              let names = if implicit_receiver && !receiver_written && Array::length(all_names) > 0 {
+              let names = if implicit_receiver && Array::length(all_names) > 0 {
                 Array::slice(all_names, 1, Array::length(all_names))
               } else {
                 all_names
@@ -275,11 +270,13 @@ export fn checker_bare_call_is_method_retry(env: TypeEnv, name: String, argc: In
 /// Precheck macros carry the original snapshot on their typed replacement.
 /// Resolve that source callee in the actual environment at this point.
 ///
-/// A bare callee the method retry may take is NOT placed here: the retry
-/// places it at the declaration it resolves, and placing the unbound
-/// spelling first reported `b |> bump(n = 3)` as a mixed call even though
-/// `Box::bump` declares its receiver `_`. When the retry declines, the
-/// caller places it through `checker_record_declined_retry_call_placement`.
+/// A bare callee the method retry may take is neither captured nor placed
+/// here: the retry checks it as a dot call, which captures and places it at
+/// the method it resolves (`call_placement_prepend_receiver` then restores
+/// the written receiver). Placing the unbound spelling first reported
+/// `b |> bump(n = 3)` as a mixed call even though `Box::bump` declares its
+/// receiver `_`. When the retry declines, the caller places it through
+/// `checker_record_declined_retry_call_placement`.
 export fn checker_record_call_placement(expr: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
   placement_record_call(expr, env, errors, true)
 }
@@ -292,17 +289,6 @@ export fn checker_record_declined_retry_call_placement(expr: Expr, env: TypeEnv,
 fn placement_record_call(expr: Expr, env: TypeEnv, errors: Array[String], defer_retry: Bool) -> Unit {
   match expr {
     ECall(callee, args, offset, cell) => {
-      let mut needed = placement_has_labels(args)
-      match callee {
-        EIdent(name, _) => needed = needed || checker_call_header_has_optional(env, name),
-        // Namespace and receiver dispatch select their declaration below.
-        _ => ()
-      }
-      if needed && !checker_call_header_is_probe() {
-        call_placement_capture_source(callee, args, offset, cell, false)
-      } else {
-        ()
-      }
       let deferred = defer_retry && match callee {
         EIdent(name, _) => checker_bare_call_is_method_retry(env, name, Array::length(args)),
         _ => false
@@ -310,6 +296,17 @@ fn placement_record_call(expr: Expr, env: TypeEnv, errors: Array[String], defer_
       if deferred {
         ()
       } else {
+        let mut needed = placement_has_labels(args)
+        match callee {
+          EIdent(name, _) => needed = needed || checker_call_header_has_optional(env, name),
+          // Namespace and receiver dispatch select their declaration below.
+          _ => ()
+        }
+        if needed && !checker_call_header_is_probe() {
+          call_placement_capture_source(callee, args, offset, cell, false)
+        } else {
+          ()
+        }
         placement_note_and_resolve(callee, offset, cell, args, env, errors)
       }
     },
@@ -324,12 +321,7 @@ fn placement_note_and_resolve(callee: Expr, offset: Int, cell: Array[Int], args:
   }
   match call_placement_raw(cell) {
     Some((raw_callee, _, _, _)) => match raw_callee {
-      EIdent(name, ident_offset) => match callee {
-        // The method retry re-checks a bare call in dot form; the dot arm
-        // places it at the method it resolves.
-        EDot(_, _, _, _) => (),
-        _ => checker_record_resolved_call_placement(cell, env, name, ident_offset, false, errors)
-      },
+      EIdent(name, ident_offset) => checker_record_resolved_call_placement(cell, env, name, ident_offset, false, errors),
       _ => match callee {
         // Namespace and UFCS dispatch publish explicitly at their resolved
         // binding. Optional filling can also increase arity by one, so
