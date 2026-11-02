@@ -8,6 +8,8 @@ import @vibe/compiler/loader {
   apply_vpkg_directory_shared_imports_fs,
   collect_all_sources_fs,
   collect_sources_source,
+  contract_package_hashes_fs,
+  contract_package_hashes_source,
   desugar_contract_source,
   module_header_source,
   parse_program_located_shared,
@@ -142,11 +144,6 @@ fn mem_facade(tree: MemTree, facades: Array[(String, String)], path: String, tex
   }
 }
 
-fn mem_record(verified: Array[String], row: String) -> (Unit, Option[String]) {
-  Array::push(verified, row)
-  ((), None)
-}
-
 // The real shared-import core over the tree; a types module it computes is
 // added to the tree, as the filesystem lane publishes it.
 fn mem_share(tree: MemTree, path: String, text: String) -> (String, Option[String]) {
@@ -165,12 +162,11 @@ fn mem_share(tree: MemTree, path: String, text: String) -> (String, Option[Strin
 
 // Collect from `entry` over the tree. Contracts desugar to `facades` (path,
 // facade text) or, when not listed, through the real desugaring core;
-// ordinary modules ingest unchanged. Every package-hash
-// verification the core asks for is recorded in `verified`.
-fn mem_collect(tree: MemTree, facades: Array[(String, String)], verified: Array[String], entry: String) -> Array[(String, String)] with Env + Exception {
+// ordinary modules ingest unchanged.
+fn mem_collect(tree: MemTree, facades: Array[(String, String)], entry: String) -> Array[(String, String)] with Env + Exception {
   handle {
     collect_sources_source(entry)
-  } with { SourceIngest::Header(p, text) => resume(mem_header(tree, p, text)); SourceIngest::DesugarContract(p, text) => resume(mem_facade(tree, facades, p, text)); SourceIngest::ShareImports(p, text) => resume(mem_share(tree, p, text)); SourceIngest::VerifyPackageHash(importer, name, pin_hash, index_path, copy_kind) => resume(mem_record(verified, "\{importer} \{name} \{pin_hash} \{index_path} \{copy_kind}")); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+  } with { SourceIngest::Header(p, text) => resume(mem_header(tree, p, text)); SourceIngest::DesugarContract(p, text) => resume(mem_facade(tree, facades, p, text)); SourceIngest::ShareImports(p, text) => resume(mem_share(tree, p, text)); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
 }
 
 fn collected_paths(sources: Array[(String, String)]) -> Array[String] {
@@ -184,7 +180,7 @@ fn collected_paths(sources: Array[(String, String)]) -> Array[String] {
 
 fn mem_collect_error(tree: MemTree, entry: String) -> String with Env {
   handle {
-    let _ = mem_collect(tree, [], [], entry)
+    let _ = mem_collect(tree, [], entry)
     "accepted"
   } with { Exception::Throw(message) => message }
 }
@@ -201,7 +197,7 @@ fn diamond() -> MemTree {
 }
 
 test "the collection core orders dependencies first and visits each module once" {
-  let sources = mem_collect(diamond(), [], [], "app/main.vibe")
+  let sources = mem_collect(diamond(), [], "app/main.vibe")
   inspect(collected_paths(sources), "[app/b.vibe, app/a.vibe, app/main.vibe]")
 }
 
@@ -265,17 +261,30 @@ let package_facades: Array[(String, String)] = [
 ]
 
 test "the collection core ingests a package contract through its facade" {
-  let verified: Array[String] = []
-  let sources = mem_collect(package_tree(""), package_facades, verified, "app/main.vibe")
+  let sources = mem_collect(package_tree(""), package_facades, "app/main.vibe")
   inspect(collected_paths(sources), "[lib/@acme/base/base.vibe, lib/@acme/base/index.vpkg, app/main.vibe]")
-  // An unpinned dev-mode package is not hash-verified.
-  inspect(verified, "[]")
 }
 
-test "the collection core verifies a pinned package against the importer's pin" {
-  let verified: Array[String] = []
-  let _ = mem_collect(package_tree("require @acme/base 0.1.0 = #pkg:b3:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n"), package_facades, verified, "app/main.vibe")
-  inspect(verified, "[app/main.vibe @acme/base pkg:b3:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f lib/@acme/base/index.vpkg lib/]")
+// The package hash of the tree's `@acme/base`, computed by the same core the
+// walk verifies a pin with.
+fn mem_package_hash(tree: MemTree, contract: String) -> String with Env + Exception {
+  let (pkg_hash, _) = handle {
+    contract_package_hashes_source(contract, "b3")
+  } with { SourceIngest::Header(p, text) => resume(mem_header(tree, p, text)); SourceIngest::DesugarContract(p, text) => resume(mem_facade(tree, [
+  ], p, text)); SourceIngest::ShareImports(p, text) => resume(mem_share(tree, p, text)); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+  pkg_hash
+}
+
+test "the collection core refuses a package whose content does not match the pin" {
+  let tree = package_tree("require @acme/base 0.1.0 = #pkg:b3:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n")
+  let actual = mem_package_hash(tree, "lib/@acme/base/index.vpkg")
+  assert_eq(mem_collect_error(tree, "app/main.vibe"), "pin mismatch for @acme/base: app/main.vibe requires #pkg:b3:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f but the lib/ copy is #\{actual}")
+}
+
+test "the collection core accepts a package whose content matches the pin" {
+  let pin = mem_package_hash(package_tree(""), "lib/@acme/base/index.vpkg")
+  let tree = package_tree("require @acme/base 0.1.0 = #\{pin}\n")
+  inspect(collected_paths(mem_collect(tree, package_facades, "app/main.vibe")), "[lib/@acme/base/base.vibe, lib/@acme/base/index.vpkg, app/main.vibe]")
 }
 
 fn source_of(sources: Array[(String, String)], path: String) -> String {
@@ -292,7 +301,7 @@ fn source_of(sources: Array[(String, String)], path: String) -> String {
 }
 
 test "the collection core desugars a package contract with the shared core" {
-  let sources = mem_collect(package_tree(""), [], [], "app/main.vibe")
+  let sources = mem_collect(package_tree(""), [], "app/main.vibe")
   inspect(collected_paths(sources), "[lib/@acme/base/base.vibe, lib/@acme/base/index.vpkg, app/main.vibe]")
   inspect(source_of(sources, "lib/@acme/base/index.vpkg"), "// vibe: contract facade (desugared from .vibei)\nexport ./base.vibe { greet }\n")
 }
@@ -331,8 +340,22 @@ test "the filesystem adapter desugars a contract to the in-memory facade" {
     Fs::write_file(String::concat(root, String::concat("/", p)), text)
   }
   let on_disk = collect_all_sources_fs(String::concat(root, "/app/main.vibe"))
-  let in_memory = mem_collect(relative_package_tree(), [], [], "app/main.vibe")
+  let in_memory = mem_collect(relative_package_tree(), [], "app/main.vibe")
   assert_eq(source_of(on_disk, String::concat(root, "/pkg/index.vpkg")), source_of(in_memory, "pkg/index.vpkg"))
+}
+
+// The package hash is location-independent: the same package on disk hashes,
+// through the filesystem adapter, to what the in-memory provider computes.
+test "the filesystem adapter hashes a package to the in-memory hash" {
+  let root = "/tmp/vibe_source_1872_hash"
+  Fs::mkdir_p(String::concat(root, "/app"))
+  Fs::mkdir_p(String::concat(root, "/pkg"))
+  for entry in relative_package_tree().files {
+    let (p, text) = entry
+    Fs::write_file(String::concat(root, String::concat("/", p)), text)
+  }
+  let (on_disk, _) = contract_package_hashes_fs(String::concat(root, "/pkg/index.vpkg"))
+  assert_eq(on_disk, mem_package_hash(relative_package_tree(), "pkg/index.vpkg"))
 }
 
 fn share_tree(root: String) -> MemTree {
@@ -385,5 +408,5 @@ test "the filesystem adapter collects the in-memory tree in the same order" {
   for p in collected_paths(collect_all_sources_fs(String::concat(root, "/app/main.vibe"))) {
     Array::push(on_disk, p[String::length(root) + 1: String::length(p)])
   }
-  assert_eq(on_disk, collected_paths(mem_collect(diamond(), [], [], "app/main.vibe")))
+  assert_eq(on_disk, collected_paths(mem_collect(diamond(), [], "app/main.vibe")))
 }
