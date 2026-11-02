@@ -79,6 +79,10 @@ import ./evidence_handle_effect_names_expr.vibe {
   edp_drop_unreachable_needing,
   edp_expr_binds_name,
   edp_live_handle_dirty_selfdischarge,
+  edp_mf_base,
+  edp_mf_binders,
+  edp_mf_new,
+  edp_mf_refresh,
   edp_rowvar_withheld_callees,
   edp_unmangle_shadow_name
 }
@@ -710,23 +714,22 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   for refusal in edp_slot_refusals_for(planned, edp_es_names, edp_es_members_list) {
     Array::push(errs, refusal)
   }
+  // Nothing writes the program between planning and the first migration,
+  // so that one reuses the planner's facts. Every later one follows a
+  // migration's rewrite: its facts come from per-statement shares, walked
+  // again only for the statements the earlier migrations replaced.
+  let migration_facts = edp_mf_new()
   let mut pi = 0
   while pi < Array::length(plans) {
     let (ename, ops, needing, handle_sites) = Array::get(plans, pi)
-    // Nothing writes the program between planning and the first migration,
-    // so that one reuses the planner's facts; every later one follows a
-    // migration's rewrite and recomputes them.
-    let first_base = if pi == 0 && Array::length(plan_base) == 1 {
-      Some(Array::get(plan_base, 0))
+    let reuse_plan = pi == 0 && Array::length(plan_base) == 1 && Array::length(plan_binders) == 1
+    let (base, binders) = if reuse_plan {
+      (Array::get(plan_base, 0), Array::get(plan_binders, 0))
     } else {
-      None
+      edp_mf_refresh(migration_facts, stmts)
+      (edp_mf_base(migration_facts, stmts, fn_defs), edp_mf_binders(migration_facts))
     }
-    let first_binders = if pi == 0 && Array::length(plan_binders) == 1 {
-      Some(Array::get(plan_binders, 0))
-    } else {
-      None
-    }
-    edp_apply_migration_with_tree_facts(stmts, ename, ops, needing, handle_sites, fn_defs, fn_row_labels, keep, errs, Some(edp_handle_statement_indices(handle_statements, ename)), first_base, first_binders)
+    edp_apply_migration_with_tree_facts(stmts, ename, ops, needing, handle_sites, fn_defs, fn_row_labels, keep, errs, Some(edp_handle_statement_indices(handle_statements, ename)), Some(base), Some(binders))
     pi = pi + 1
   }
   // V2 step 3: the replay frontier is gone from codegen, so any non-Error
