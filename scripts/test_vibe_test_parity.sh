@@ -15,6 +15,10 @@
 #    over-count as a total, and neither calls a file with tests empty.
 # 4. The legacy bump lane (VIBE_RC=0): the same files as 1, the same answers.
 #    The launcher used to refuse the file with no functions there (#3706).
+# 5. --update: a stale snapshot is patched and the file passes, noted with the
+#    patch count; a file that still fails after its patch says so. Each runner
+#    patches its own copy, so the copies' directories are the one difference
+#    allowed between the two outputs.
 #
 # The failure report under a FAIL line is not compared: the launcher's and the
 # script's differ by design (@vibe/testreport's launcher and script reports).
@@ -114,4 +118,23 @@ diff -u "$OUT/counted.ls" "$OUT/bump.ls" >&2 || fail "the bump lane's summary di
 grep -qxF "ok   $WORK_REL/helper_test.vibe (no tests found)" "$OUT/bump.lv" \
   || { cat "$OUT/bump.launcher" >&2; fail "the bump lane does not report a file without functions as having no tests (#3706)"; }
 
-echo "[vibe-test-parity] ok (the same verdicts and summaries from both runners: counted, a compile failure files-only, gc uncounted, the bump lane)"
+# --- 5. --update -----------------------------------------------------------------
+for side in l s; do
+  mkdir -p "$WORK/upd_$side"
+  printf 'test "snap" {\n  inspect(1 + 2, content = "0")\n}\n' > "$WORK/upd_$side/fix_test.vibe"
+  printf 'test "snap" {\n  inspect(1 + 2, content = "0")\n  assert(1 == 2)\n}\n' > "$WORK/upd_$side/stuck_test.vibe"
+done
+VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_BUILD_DIR="$OUT/build.upd" \
+  bash "$LAUNCHER" test --update "$WORK_REL/upd_l/fix_test.vibe" "$WORK_REL/upd_l/stuck_test.vibe" > "$OUT/upd.launcher.raw" 2>&1 || true
+VIBE_TEST_CLI_WASM="$CLI" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+  bash "$SCRIPT" --update "$WORK_REL/upd_s/fix_test.vibe" "$WORK_REL/upd_s/stuck_test.vibe" > "$OUT/upd.script.raw" 2>&1 || true
+sed "s#$WORK_REL/upd_l/#$WORK_REL/upd/#g" "$OUT/upd.launcher.raw" > "$OUT/upd.launcher"
+sed "s#$WORK_REL/upd_s/#$WORK_REL/upd/#g" "$OUT/upd.script.raw" > "$OUT/upd.script"
+compare upd
+grep -qxF "ok   $WORK_REL/upd/fix_test.vibe (updated 1 snapshot(s))" "$OUT/upd.lv" \
+  || { cat "$OUT/upd.launcher" >&2; fail "a patched file is not reported as updated"; }
+grep -qxF "FAIL $WORK_REL/upd/stuck_test.vibe (after 1 snapshot patch(es))" "$OUT/upd.lv" \
+  || { cat "$OUT/upd.launcher" >&2; fail "a file that still fails after its patch does not say so"; }
+cmp -s "$WORK/upd_l/fix_test.vibe" "$WORK/upd_s/fix_test.vibe" || fail "the two runners patched the snapshot differently"
+
+echo "[vibe-test-parity] ok (the same verdicts and summaries from both runners: counted, a compile failure files-only, gc uncounted, the bump lane, --update)"
