@@ -40,6 +40,7 @@ import @vibe/compiler/lowering/effects/queries {
   edp_pat_qname,
   edp_rq_fold,
   edp_split_qualified,
+  edp_statement_binder_log,
   edp_str_array_contains,
   edp_strip_tilde,
   scps_pat_binds_resume,
@@ -1078,12 +1079,26 @@ fn edp_collect_lambda_candidates_expr(expr: Expr, names: Array[String], bodies: 
 
 // Keep exact counts in a dense mutable array. Map entries are stable indices,
 // so repeated spellings do not allocate a replacement Option on every tally.
-type EdpBinderCounts = (MutMap[String, Int], Array[Int])
+// The fourth field selects a LOG instead: a tally appends the name to the
+// third field and the map is never touched. A statement's share of the counts
+// is recorded that way (a map per statement was most of the facts'
+// allocation), and edp_mf_base replays the log with edp_tally. Nothing reads
+// a log's counts; edp_binder_count is only asked of a map.
+type EdpBinderCounts = (MutMap[String, Int], Array[Int], Array[String], Bool)
+
+let edp_binder_unused_index: MutMap[String, Int] = MutMap::new_string()
+let edp_binder_unused_values: Array[Int] = []
+let edp_binder_unused_log: Array[String] = []
 
 fn edp_binder_counts_new() -> EdpBinderCounts {
   let index: MutMap[String, Int] = MutMap::new_string()
   let values: Array[Int] = []
-  (index, values)
+  (index, values, edp_binder_unused_log, false)
+}
+
+fn edp_binder_counts_log() -> EdpBinderCounts {
+  let log: Array[String] = []
+  (edp_binder_unused_index, edp_binder_unused_values, log, true)
 }
 
 fn edp_binder_count(counts: EdpBinderCounts, name: String) -> Int {
@@ -1093,22 +1108,16 @@ fn edp_binder_count(counts: EdpBinderCounts, name: String) -> Int {
   }
 }
 
-fn edp_tally_n(bcount: EdpBinderCounts, nm: String, n: Int) -> Unit {
-  match MutMap::get(bcount.0, nm) {
-    Some(index) => Array::set(bcount.1, index, Array::get(bcount.1, index) + n),
-    None => {
-      MutMap::set(bcount.0, nm, Array::length(bcount.1))
-      Array::push(bcount.1, n)
-    }
-  }
-}
-
 fn edp_tally(bcount: EdpBinderCounts, nm: String) -> Unit {
-  match MutMap::get(bcount.0, nm) {
-    Some(index) => Array::set(bcount.1, index, Array::get(bcount.1, index) + 1),
-    None => {
-      MutMap::set(bcount.0, nm, Array::length(bcount.1))
-      Array::push(bcount.1, 1)
+  if bcount.3 {
+    Array::push(bcount.2, nm)
+  } else {
+    match MutMap::get(bcount.0, nm) {
+      Some(index) => Array::set(bcount.1, index, Array::get(bcount.1, index) + 1),
+      None => {
+        MutMap::set(bcount.0, nm, Array::length(bcount.1))
+        Array::push(bcount.1, 1)
+      }
     }
   }
 }
@@ -2006,11 +2015,13 @@ fn edp_collect_handle_effect_names_expr(expr: Expr, out: Array[String]) -> Unit 
 // are combined in statement order, so the result is the whole walk's, not
 // merely an equivalent one.
 
-/// (lambda names, lambda literals, binder counts, host-raw callees, binders)
-type EdpStmtFacts = (Array[String], Array[Expr], Array[(String, Int)], Array[String], Array[String])
+/// (lambda names, lambda literals, binder tally log, host-raw callees, binder
+/// log). The two logs keep repeats; replaying them gives the counts and the
+/// census without a map or a set per statement.
+type EdpStmtFacts = (Array[String], Array[Expr], Array[String], Array[String], Array[String])
 
 /// Facts of each statement, valid for the tree as of the last refresh.
-export fn edp_mf_new() -> Array[(Array[String], Array[Expr], Array[(String, Int)], Array[String], Array[String])] {
+export fn edp_mf_new() -> Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String])] {
   edp_mf_dirty_reset()
   []
 }
@@ -2018,17 +2029,11 @@ export fn edp_mf_new() -> Array[(Array[String], Array[Expr], Array[(String, Int)
 fn edp_mf_stmt_facts(stmt: Stmt) -> EdpStmtFacts {
   let names = empty_str_array()
   let bodies: Array[Expr] = []
-  let bcount = edp_binder_counts_new()
-  edp_lambda_candidates_stmt(stmt, names, bodies, bcount)
-  let counts: Array[(String, Int)] = []
-  for row in MutMap::to_array(bcount.0) {
-    let (nm, index) = row
-    Array::push(counts, (nm, Array::get(bcount.1, index)))
-  }
+  let tallies = edp_binder_counts_log()
+  edp_lambda_candidates_stmt(stmt, names, bodies, tallies)
   let host = empty_str_array()
   edp_host_raw_callees_stmt(stmt, host)
-  let single: Array[Stmt] = [stmt]
-  (names, bodies, counts, host, MutSet::to_array(edp_collect_program_binders(single)))
+  (names, bodies, tallies.2, host, edp_statement_binder_log(stmt))
 }
 
 /// Bring the facts up to the current tree: walk the statements replaced since
@@ -2036,7 +2041,7 @@ fn edp_mf_stmt_facts(stmt: Stmt) -> EdpStmtFacts {
 /// once per write (a migration's closure-binding rewrite replaces every
 /// statement once per candidate), so each statement is walked once, as it now
 /// stands.
-export fn edp_mf_refresh(facts: Array[(Array[String], Array[Expr], Array[(String, Int)], Array[String], Array[String])], stmts: Array[Stmt]) -> Unit {
+export fn edp_mf_refresh(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String])], stmts: Array[Stmt]) -> Unit {
   let known = Array::length(facts)
   let walked = MutSet::new_int()
   for i in edp_mf_dirty_indices() {
@@ -2055,7 +2060,7 @@ export fn edp_mf_refresh(facts: Array[(Array[String], Array[Expr], Array[(String
 
 /// The inert base edp_apply_migration_with_tree_facts computes for `stmts`
 /// when it is given none, from refreshed facts.
-export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[(String, Int)], Array[String], Array[String])], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Array[String] {
+export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String])], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Array[String] {
   let fresh = edp_pure_fn_names(fn_defs)
   let top_names = empty_str_array()
   for stmt in stmts {
@@ -2080,16 +2085,15 @@ export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[(String, I
   let bodies: Array[Expr] = []
   let bcount = edp_binder_counts_new()
   for fact in facts {
-    let (fnames, fbodies, counts, _, _) = fact
+    let (fnames, fbodies, tallies, _, _) = fact
     for nm in fnames {
       Array::push(names, nm)
     }
     for body in fbodies {
       Array::push(bodies, body)
     }
-    for row in counts {
-      let (nm, n) = row
-      edp_tally_n(bcount, nm, n)
+    for nm in tallies {
+      edp_tally(bcount, nm)
     }
   }
   edp_append_visible_pure_from_candidates(stmts, fresh, names, bodies, bcount)
@@ -2097,7 +2101,7 @@ export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[(String, I
 }
 
 /// edp_collect_program_binders of `stmts`, from refreshed facts.
-export fn edp_mf_binders(facts: Array[(Array[String], Array[Expr], Array[(String, Int)], Array[String], Array[String])]) -> MutSet[String] {
+export fn edp_mf_binders(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String])]) -> MutSet[String] {
   let out = MutSet::new_string()
   for fact in facts {
     let (_, _, _, _, binders) = fact
