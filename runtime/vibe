@@ -61,6 +61,8 @@
 #                                         preview or apply a checked function extraction
 #   vibe refactor add-labels [--write] [--positional=none|receiver|receiver+single] <path>...
 #                                         insert argument labels the checker resolves (ADR-0120)
+#   vibe refactor mark-positional [--write] <path>...
+#                                         declare receiver / single-parameter slots `_` (ADR-0120)
 #   vibe symbols [--with-path] <path>...  print declaration outline (NAME KIND START END [DOC] per line;
 #                                       a directory / several paths / --with-path prefix each line with PATH)
 #   vibe symbols --legend                 print KIND NAME table (LSP SymbolKind + 27 Test / 28 Bench, v2 2026-09-12)
@@ -650,13 +652,21 @@ host_test_summary() {
   fi
   [ "$t_pass" = "$t_all" ]
 }
-# A run-tests plan record, `src<TAB>wasm<TAB>tests`, into src / wasm / tests.
-# A file that did not compile has an empty wasm and no count; a compiler that
-# predates the count (#3703) writes two fields, and its count is unknown.
+# A run-tests plan record, `src<TAB>wasm<TAB>tests<TAB>pass<TAB>fail`, into
+# src / wasm / tests / pass_line / fail_line. A file that did not compile has
+# an empty wasm, no count and no pass line. The two lines are the file's
+# verdict as @vibe/testrun renders it -- the same text scripts/vibe_test.sh
+# prints (#3703). A compiler that predates them writes fewer fields, and
+# host_run_test falls back to the bare verdict.
 plan_test_record() {
-  local rest
-  src="${1%%	*}"; rest="${1#*	}"; wasm="${rest%%	*}"; tests=""
-  [ "$rest" != "$wasm" ] && tests="${rest#*	}"
+  local rest="$1" fields=() f
+  while :; do
+    f="${rest%%	*}"; fields+=("$f")
+    [ "$f" = "$rest" ] && break
+    rest="${rest#*	}"
+  done
+  src="${fields[0]}"; wasm="${fields[1]:-}"; tests="${fields[2]:-}"
+  pass_line="${fields[3]:-}"; fail_line="${fields[4]:-}"
   return 0
 }
 # `vibe test`'s per-file runner. Stdout is captured ALWAYS (#2199/#2202): the
@@ -672,23 +682,24 @@ plan_test_record() {
 # folds source, deps and compiler). Only PASS is cached -- a fail always
 # re-runs -- and --no-cache (implied by --update) bypasses it.
 # $1 = src as the plan spelled it, $2 = compiled test wasm, $3 = --update (0|1),
-# $4 = --no-cache (0|1), $5 = the compiler's test-count label for the wasm.
+# $4 = --no-cache (0|1), $5 = the compiler's test-count label for the wasm,
+# $6 / $7 = the line to print when the file passes / fails (plan_test_record).
 host_run_test() {
-  local src="$1" wasm="$2" update="$3" no_cache="${4:-0}" tests="${5:-}" tout terr rc=0 src_abs="$1" key="" note="" pre_abort
+  local src="$1" wasm="$2" update="$3" no_cache="${4:-0}" tests="${5:-}" pass_line="${6:-}" fail_line="${7:-}" tout terr rc=0 src_abs="$1" key="" pre_abort
   local patches="${VIBE_TEST_UPDATE_PATCHES:-0}" depth="${VIBE_TEST_UPDATE_DEPTH:-0}" tcache="$VIBE_HOME/cache/test"
   case "$src_abs" in /*) ;; *) src_abs="$PROJECT_ROOT/$src_abs" ;; esac
   # An empty wasm path is the dispatcher's record of a file that did not
   # compile (its diagnostic already went to stderr): one FAILED file whose
   # test count is unknown, so the summary degrades to files-only.
-  if [ -z "$wasm" ]; then echo "FAIL (compile) $src"; host_test_record fail ""; return 1; fi
-  # #948: a file that lowers zero `__test_` functions (a typo'd block passes
-  # silently via an empty `_start`) is annotated; zero tests stays ok so
-  # helper-only files keep working.
-  [ "$tests" = 0 ] && note=" (no tests found)"
+  if [ -z "$wasm" ]; then printf '%s\n' "${fail_line:-FAIL (compile) $src}"; host_test_record fail ""; return 1; fi
+  # The lines carry the #948 `(no tests found)` note and the --update patch
+  # count; this function adds only ` (cached)`, which no other runner has.
+  [ -n "$pass_line" ] || pass_line="ok   $src"
+  [ -n "$fail_line" ] || fail_line="FAIL $src"
   if [ "$no_cache" = 0 ] && [ -s "$wasm.testmeta" ] && [ "$(cat "$wasm.testmeta" 2>/dev/null)" = "1" ]; then
     key="$(_sha256_file "$wasm")"
     if [ -n "$key" ] && [ -f "$tcache/$key.pass" ]; then
-      echo "ok   $src$note (cached)"; host_test_record ok "$tests"; return 0
+      printf '%s (cached)\n' "$pass_line"; host_test_record ok "$tests"; return 0
     fi
   fi
   tout="$(mktemp -t vibe-test-out-XXXXXX)"; terr="$(mktemp -t vibe-test-err-XXXXXX)"
@@ -696,7 +707,7 @@ host_run_test() {
   if [ "$rc" = 0 ]; then
     [ -s "$tout" ] && cat "$tout"
     [ -s "$terr" ] && cat "$terr" >&2
-    if [ "$patches" -gt 0 ]; then echo "ok   $src$note (updated $patches snapshot(s))"; else echo "ok   $src$note"; fi
+    printf '%s\n' "$pass_line"
     [ -n "$key" ] && mkdir -p "$tcache" && : > "$tcache/$key.pass"
     host_test_record ok "$tests"
     rm -f "$tout" "$terr"; return 0
@@ -706,14 +717,16 @@ host_run_test() {
   # file again. Compiling is the guest's job, so the re-run goes back through
   # invoke_cli and re-enters the run-tests arm with the counters advanced;
   # the bound keeps a file whose inspect() calls can never all agree from
-  # looping forever.
+  # looping forever. The re-run compiles the absolute path; the spelling the
+  # outer run was given rides in VIBE_TEST_DISPLAY_SRC so its line names the
+  # file that way.
   if [ "$update" = 1 ] && [ "$depth" -lt 50 ] && host_try_update_patch "$src_abs" "$tout"; then
     rm -f "$tout" "$terr"
     VIBE_TEST_NESTED=1 VIBE_TEST_UPDATE_DEPTH=$((depth + 1)) VIBE_TEST_UPDATE_PATCHES=$((patches + 1)) \
-      invoke_cli test --update "$src_abs"
+      VIBE_TEST_DISPLAY_SRC="${VIBE_TEST_DISPLAY_SRC:-$src}" invoke_cli test --update "$src_abs"
     return $?
   fi
-  echo "FAIL $src"
+  printf '%s\n' "$fail_line"
   pre_abort=0
   [ -s "$tout" ] && [ "$(tail -n 1 "$tout")" = "assert failed: aborting" ] && pre_abort=1
   condense_test_trap "$terr" "$wasm.funcmap" "$(basename "$src")" "$pre_abort"
@@ -735,7 +748,7 @@ execute_host_action() {
   # The counters are local because a `--update` re-run re-enters this
   # function from host_run_test while the outer run-tests loop is live.
   local plan="$1" kind src wasm addr adapter line t_fail t_pass update no_cache body_stream be_backend
-  local own_results tests
+  local own_results tests pass_line fail_line
   kind="$(sed -n '2p' "$plan")"
   case "$kind" in
     build-taskgroup)
@@ -890,7 +903,7 @@ execute_host_action() {
           while [ "$rec_i" -lt "${#recs[@]}" ] && [ "$n" -lt "$jobs" ]; do
             plan_test_record "${recs[$rec_i]}"
             log="$(mktemp -t vibe-test-batch-XXXXXX)"
-            ( host_run_test "$src" "$wasm" 0 "$no_cache" "$tests" >"$log.out" 2>"$log.err"; echo $? >"$log.rc" ) &
+            ( host_run_test "$src" "$wasm" 0 "$no_cache" "$tests" "$pass_line" "$fail_line" >"$log.out" 2>"$log.err"; echo $? >"$log.rc" ) &
             batch_pids+=($!); batch_logs+=("$log"); rec_i=$((rec_i + 1)); n=$((n + 1))
           done
           for p in "${batch_pids[@]}"; do wait "$p" || true; done
@@ -905,7 +918,7 @@ execute_host_action() {
         while IFS= read -r rec; do
           [ -n "$rec" ] || continue
           plan_test_record "$rec"
-          if host_run_test "$src" "$wasm" "$update" "$no_cache" "$tests"; then t_pass=$((t_pass+1)); else t_fail=$((t_fail+1)); fi
+          if host_run_test "$src" "$wasm" "$update" "$no_cache" "$tests" "$pass_line" "$fail_line"; then t_pass=$((t_pass+1)); else t_fail=$((t_fail+1)); fi
         done < <(sed -n '6,$p' "$plan")
       fi
       # A nested --update re-run reports through the outer run's summary.
@@ -1800,9 +1813,11 @@ REPL_HELP
         --help|-h)
           printf '%s\n' 'usage: vibe refactor extract-function <file.vibe> <start-byte> <end-byte> <name> [--write]' \
             '       vibe refactor add-labels [--write] [--positional=none|receiver|receiver+single] <path>...' \
+            '       vibe refactor mark-positional [--write] <path>...' \
             'extract-function: the range is half-open. The default prints the edited source; --write updates the file after validation.' \
             'add-labels: inserts `name = ` before each unlabeled argument of a call the checker resolved to a declaration (ADR-0120).' \
-            'The default reports one row per call it would edit; --write rewrites the files. --positional picks the slots left positional (default receiver+single).'
+            'The default reports one row per call it would edit; --write rewrites the files. --positional picks the slots left positional (default receiver+single).' \
+            'mark-positional: writes `_` before the receiver of each `T::f` and the only parameter of each one-parameter `fn`, in .vibe and .vpkg files alike.'
           exit 0 ;;
       esac
     fi
@@ -2041,8 +2056,8 @@ REPL_HELP
     # a mutant's and is deleted after it.
     mkdir -p "$mwork/cache"
     # Compile test files into a test plan WITHOUT running it; the plan's
-    # records (line 6 on) are `src<TAB>wasm<TAB>tests`, an empty wasm being a
-    # compile failure. Extra environment (the overlay) comes from the caller.
+    # records (line 6 on) are `src<TAB>wasm<TAB>...` (plan_test_record), an
+    # empty wasm being a compile failure. Extra environment (the overlay) comes from the caller.
     mutate_compile() {
       local plan="$1"; shift
       rm -f "$plan"

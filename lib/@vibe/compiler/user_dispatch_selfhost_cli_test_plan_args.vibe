@@ -49,7 +49,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/testrun {
-  test_run_count_label
+  test_run_compile_failure, test_run_count_label, test_run_failure, test_run_pass
 }
 
 import @vibe/compiler/syntax {
@@ -1496,6 +1496,42 @@ export fn test_artifact_out(build_dir: String, src: String, index: Int, seen_src
   out
 }
 
+/// The spelling a test file's line names it by. A `--update` re-run compiles
+/// one file again through an absolute path; the launcher passes the spelling
+/// the outer run used in VIBE_TEST_DISPLAY_SRC, so the line names the file the
+/// way the run was asked to (#3703).
+fn test_plan_display(src: String, files: Int) -> String with Env {
+  let given = Env::get("VIBE_TEST_DISPLAY_SRC")
+  if files == 1 && given != "" && Env::get("VIBE_TEST_NESTED") == "1" {
+    given
+  } else {
+    src
+  }
+}
+
+/// How many snapshot patches `--update` applied before this compile: the
+/// launcher counts them across its re-runs in VIBE_TEST_UPDATE_PATCHES.
+fn test_plan_patches() -> Int with Env {
+  let s = Env::get("VIBE_TEST_UPDATE_PATCHES")
+  let mut v = 0
+  let mut i = 0
+  while i < String::length(s) && String::byte_at(s, i) >= '0' && String::byte_at(s, i) <= '9' {
+    v = v * 10 + (String::byte_at(s, i) - '0')
+    i = i + 1
+  }
+  v
+}
+
+/// `text` up to its first newline.
+fn test_plan_first_line(text: String) -> String {
+  let at = String::index_of(text, "\n")
+  if at < 0 {
+    text
+  } else {
+    String::substring(text, 0, at)
+  }
+}
+
 export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env + Stderr {
   let mut update = false
   let mut no_cache = false
@@ -1609,6 +1645,12 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
         Stderr::write_stream(line_terminated(format_check_report(e)))
         None
       } }
+      // The record's last two fields are the file's line when it passes and
+      // when it fails, rendered by @vibe/testrun exactly as
+      // scripts/vibe_test.sh renders them (#3703); the launcher prints one of
+      // them and adds only ` (cached)`. A compile failure has no pass line.
+      let shown = test_plan_display(src, Array::length(expanded))
+      let patches = test_plan_patches()
       StringBuilder::push(acc, src)
       StringBuilder::push(acc, "\t")
       match compiled {
@@ -1616,8 +1658,15 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
           StringBuilder::push(acc, out)
           StringBuilder::push(acc, "\t")
           StringBuilder::push(acc, label)
+          StringBuilder::push(acc, "\t")
+          StringBuilder::push(acc, test_plan_first_line(test_run_pass(shown, label, patches)))
+          StringBuilder::push(acc, "\t")
+          StringBuilder::push(acc, test_plan_first_line(test_run_failure(shown, patches, "")))
         }
-        None => ()
+        None => {
+          StringBuilder::push(acc, "\t\t\t")
+          StringBuilder::push(acc, test_plan_first_line(test_run_compile_failure(shown, "")))
+        }
       }
       StringBuilder::push(acc, "\n")
       fi = fi + 1
