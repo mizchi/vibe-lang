@@ -54,6 +54,16 @@ expect_refused wide '`Fs` is wider than its use -- the file needs only `Fs::read
 printf 'fn main() -> Unit allows Console + Env\n{\n  println("x")\n}\n' > "$WORK/multiline.vibex"
 expect_refused multiline '`Env` is not needed' "$WORK_REL/multiline.vibex"
 
+# A comment between `fn` and the name: the declaration is the compiler's
+# function row, not a text pattern, so it is still probed.
+printf 'fn // entry\nmain allows Console + Env {\n  println("x")\n}\n' > "$WORK/commented.vibex"
+expect_refused commented '`Env` is not needed' "$WORK_REL/commented.vibex"
+
+# A pure entry grants nothing and needs nothing: its `()` row is read, and
+# there is no label to probe.
+printf 'fn main allows () {\n  ()\n}\n' > "$WORK/pure.vibex"
+gate "$WORK_REL/pure.vibex" || { cat "$WORK/gate.out" >&2; fail "pure: an entry declaring allows () was refused"; }
+
 # A file that does not check as written is not graded at all.
 printf 'fn main() -> Unit allows Console {\n  let x: Int = "s"\n  println("x")\n}\n' > "$WORK/broken.vibex"
 expect_refused broken 'does not check clean as written' "$WORK_REL/broken.vibex"
@@ -62,4 +72,12 @@ expect_refused broken 'does not check clean as written' "$WORK_REL/broken.vibex"
 gate "$WORK_REL/least.vibex" "$WORK_REL/unused.vibex" && fail "several: one refused file among several passed"
 grep -qF "$WORK_REL/unused.vibex" "$WORK/gate.out" || { cat "$WORK/gate.out" >&2; fail "several: the refusal does not name the file"; }
 
-echo "[vibex-grants-test] ok (least authority passes; an unused label, Stderr beside Console, a capability wider than its use, a body opened on the next line and an unchecked file are each refused)"
+# The default corpus is every script but the gate itself (a gate must not see
+# itself), and the gate's own grant is still checked, by naming the file.
+VIBE_GRANTS_TAG="selftest$$" bash "$ROOT_DIR/scripts/vibe_run.sh" scripts/check_vibex_grants.vibex -- --list > "$WORK/list.out" 2>&1 \
+  || { cat "$WORK/list.out" >&2; fail "list: --list failed"; }
+grep -qx 'scripts/test_report.vibex' "$WORK/list.out" || { cat "$WORK/list.out" >&2; fail "list: the default corpus is missing scripts/test_report.vibex"; }
+grep -qx 'scripts/check_vibex_grants.vibex' "$WORK/list.out" && fail "list: the default corpus contains the gate itself"
+gate scripts/check_vibex_grants.vibex || { cat "$WORK/gate.out" >&2; fail "self: the gate's own grant is not least authority"; }
+
+echo "[vibex-grants-test] ok (least authority passes; an unused label, Stderr beside Console, a capability wider than its use, a body opened on the next line, a comment before the name and an unchecked file are each refused; a pure entry passes; the gate is outside its own corpus, and its own grant is checked)"

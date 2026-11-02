@@ -2,6 +2,7 @@
 // dropping any of it is refused before the tool runs (#3676):
 //
 //   bash scripts/vibe_run.sh scripts/check_vibex_grants.vibex -- <cli.wasm> [file.vibex ...]
+//   bash scripts/vibe_run.sh scripts/check_vibex_grants.vibex -- --list
 //
 // Run from the repository root. For each `fn ... allows <row>` declaration
 // (every scripts/**/*.vibex by default):
@@ -17,9 +18,12 @@
 //    the file uses: removing `Fs` must be refused for `Fs` itself, not only for
 //    `Fs::read_bytes`. `Console` counts the legacy tty labels as its own.
 //
-// The declarations come from the compiler (`vibe symbols`), not from a text
-// pattern: a header is read from the function's name to the `{` that opens
-// its body, so a row written across lines is read like any other. A probe is
+// The declarations come from the compiler (`vibe symbols`, function rows), not
+// from a text pattern: a header is read from the function's name to the `{`
+// that opens its body, across lines and past `//` comments. A `main` whose row
+// cannot be read fails; it is never left unchecked. The default corpus leaves
+// out this gate's own file (a gate must not see itself); its grant is checked
+// by naming it, as the self-test does. A probe is
 // the file with one label removed, written next to it (its relative imports
 // must still resolve) under a dot-name and removed afterwards. The checks run
 // four at a time through one generated job script.
@@ -36,6 +40,7 @@ import @vibex/shell {
 
 struct Clause {
   file: String;
+  name: String;
   line: Int;
   row_start: Int;
   row_end: Int;
@@ -77,14 +82,22 @@ fn dirname(path: String) -> String {
   }
 }
 
-/// Every scripts/**/*.vibex, without the dot-named probes.
+/// This gate's own file: never in the corpus it sweeps by default (a gate
+/// must not be able to see itself). Its grant is checked by naming it
+/// explicitly, which scripts/check_vibex_grants_test.sh does.
+fn self_path() -> String {
+  "scripts/check_vibex_grants.vibex"
+}
+
+/// Every scripts/**/*.vibex, without the dot-named probes and without this
+/// gate.
 fn default_files() -> Array[String] with Fs {
   let out: Array[String] = []
   let entries = find("scripts")
   let mut i = 0
   while i < Array::length(entries) {
     let e = Array::get(entries, i)
-    if !e.is_dir && String::ends_with(e.path, ".vibex") && !String::starts_with(basename(e.path), ".") {
+    if !e.is_dir && String::ends_with(e.path, ".vibex") && !String::starts_with(basename(e.path), ".") && e.path != self_path() {
       Array::push(out, e.path)
     } else {
       ()
@@ -118,56 +131,81 @@ fn line_of(src: String, at: Int) -> Int {
   n
 }
 
-/// The `allows` row of the function named at `name_start`, as the byte range
-/// of its text: from after `allows` to the `{` that opens the body, at bracket
-/// depth 0. `(-1, -1)` when the name is not a function's, or it has no row.
-fn row_of(src: String, name_start: Int, name_end: Int) -> (Int, Int) {
+/// The `allows` row of the function whose name ends at `name_end`, as the
+/// byte range of its text: from after `allows` to the `{` that opens the body,
+/// at bracket depth 0, across lines. `//` comments and string literals in the
+/// header are skipped. `(-1, -1)` when the header has no row.
+fn row_of(src: String, name_end: Int) -> (Int, Int) {
   let n = String::length(src)
-  let mut k = name_start - 1
-  while k >= 0 && is_space(String::byte_at(src, k)) {
-    k = k - 1
+  let mut depth = 0
+  let mut i = name_end
+  let mut row = -1
+  let mut stop = -1
+  while stop < 0 && i < n {
+    let c = String::byte_at(src, i)
+    if c == '/' && i + 1 < n && String::byte_at(src, i + 1) == '/' {
+      while i < n && String::byte_at(src, i) != '\n' {
+        i = i + 1
+      }
+    } else if c == '"' {
+      i = i + 1
+      while i < n && String::byte_at(src, i) != '"' {
+        if String::byte_at(src, i) == '\\' {
+          i = i + 1
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    } else if c == '(' || c == '[' {
+      depth = depth + 1
+    } else if c == ')' || c == ']' {
+      depth = depth - 1
+    } else if c == '{' && depth == 0 {
+      stop = i
+    } else if depth == 0 && c == 'a' && row < 0 && i > 0 && i + 6 <= n && String::substring(src, i, i + 6) == "allows" && !is_word(String::byte_at(src, i - 1)) && (i + 6 >= n || !is_word(String::byte_at(src, i + 6))) {
+      row = i + 6
+    } else {
+      ()
+    }
+    i = i + 1
   }
-  let after_fn = k >= 1 && String::byte_at(src, k) == 'n' && String::byte_at(src, k - 1) == 'f' && (k < 2 || !is_word(String::byte_at(src, k - 2)))
-  if !after_fn {
+  if row < 0 || stop < 0 {
     (-1, -1)
   } else {
-    let mut depth = 0
-    let mut i = name_end
-    let mut row = -1
-    let mut stop = -1
-    while stop < 0 && i < n {
-      let c = String::byte_at(src, i)
-      if c == '(' || c == '[' {
-        depth = depth + 1
-      } else if c == ')' || c == ']' {
-        depth = depth - 1
-      } else if c == '{' && depth == 0 {
-        stop = i
-      } else if depth == 0 && c == 'a' && row < 0 && i > 0 && i + 6 <= n && String::substring(src, i, i + 6) == "allows" && !is_word(String::byte_at(src, i - 1)) && (i + 6 >= n || !is_word(String::byte_at(src, i + 6))) {
-        row = i + 6
-      } else {
-        ()
-      }
-      i = i + 1
+    let mut s = row
+    while s < stop && is_space(String::byte_at(src, s)) {
+      s = s + 1
     }
-    if row < 0 || stop < 0 {
-      (-1, -1)
-    } else {
-      let mut s = row
-      while s < stop && is_space(String::byte_at(src, s)) {
-        s = s + 1
-      }
-      let mut e = stop
-      while e > s && is_space(String::byte_at(src, e - 1)) {
-        e = e - 1
-      }
-      (s, e)
+    let mut e = stop
+    while e > s && is_space(String::byte_at(src, e - 1)) {
+      e = e - 1
     }
+    (s, e)
   }
 }
 
-fn row_labels(row: String) -> Array[String] {
+/// The row's text without its `//` comments.
+fn strip_comments(row: String) -> String {
+  let lines = String::split(row, "\n")
+  let kept: Array[String] = []
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    let at = String::index_of(line, "//")
+    if at < 0 {
+      Array::push(kept, line)
+    } else {
+      Array::push(kept, String::substring(line, 0, at))
+    }
+    i = i + 1
+  }
+  String::join(kept, " ")
+}
+
+fn row_labels(written: String) -> Array[String] {
   let out: Array[String] = []
+  let row = strip_comments(written)
   if String::trim(row) != "()" {
     let parts = String::split(row, "+")
     let mut i = 0
@@ -205,30 +243,34 @@ fn row_without(labels: Array[String], label: String) -> String {
   }
 }
 
-/// `path name kind start end [doc]` rows of `vibe symbols --with-path`.
-fn clauses_of(symbols: String) -> Array[Clause] with Fs {
+/// The function rows (LSP kind 12) of `vibe symbols --with-path`, as
+/// `path name kind start end [doc]`: each one's `allows` clause, kept even
+/// when the row is `()` (it is read; it has no label to probe). The second
+/// result names each `main` whose row could not be read, which must fail
+/// rather than leave the file unchecked.
+fn clauses_of(symbols: String) -> (Array[Clause], Array[String]) with Fs {
   let out: Array[Clause] = []
+  let unread: Array[String] = []
   let lines = String::split(symbols, "\n")
   let mut i = 0
   while i < Array::length(lines) {
     let f = String::split(Array::get(lines, i), " ")
-    if Array::length(f) >= 5 {
+    if Array::length(f) >= 5 && Array::get(f, 2) == "12" {
       let path = Array::get(f, 0)
+      let name = Array::get(f, 1)
       let src = Fs::read_file(path)
-      let (s, e) = row_of(src, parse_int(Array::get(f, 3)), parse_int(Array::get(f, 4)))
+      let (s, e) = row_of(src, parse_int(Array::get(f, 4)))
       if s >= 0 {
-        let labels = row_labels(String::substring(src, s, e))
-        if Array::length(labels) > 0 {
-          Array::push(out, Clause::{
-            file: path,
-            line: line_of(src, s),
-            row_start: s,
-            row_end: e,
-            labels: labels
-          })
-        } else {
-          ()
-        }
+        Array::push(out, Clause::{
+          file: path,
+          name: name,
+          line: line_of(src, s),
+          row_start: s,
+          row_end: e,
+          labels: row_labels(String::substring(src, s, e))
+        })
+      } else if name == "main" {
+        Array::push(unread, "\{path}:\{line_of(src, parse_int(Array::get(f, 3)))}")
       } else {
         ()
       }
@@ -237,7 +279,7 @@ fn clauses_of(symbols: String) -> Array[Clause] with Fs {
     }
     i = i + 1
   }
-  out
+  (out, unread)
 }
 
 fn parse_int(s: String) -> Int {
@@ -382,6 +424,16 @@ fn check_all(cli: String, paths: Array[String], work: String) -> Array[(Int, Str
   out
 }
 
+fn unread_files(unread: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(unread) {
+    Array::push(out, Array::get(String::split(Array::get(unread, i), ":"), 0))
+    i = i + 1
+  }
+  out
+}
+
 fn run(cli: String, files: Array[String]) -> Int with Env + Fs + Process + Console {
   // VIBE_GRANTS_TAG keeps concurrent runs (the self-test beside the gate
   // lane) out of each other's work directory and probe names.
@@ -415,7 +467,7 @@ fn run(cli: String, files: Array[String]) -> Int with Env + Fs + Process + Conso
     Array::push(quoted, shell_quote(Array::get(checked, q)))
     q = q + 1
   }
-  let clauses = if Array::length(checked) > 0 {
+  let (clauses, unread) = if Array::length(checked) > 0 {
     let sym = sh_capture("VIBE_CLI_WASM=\{shell_quote(cli)} VIBE_RUNNER=scripts/viberun_node.sh bash runtime/vibe symbols --with-path \{String::join(quoted, " ")}")
     if sym.exit_code != 0 {
       Stderr::write_stream("FAIL: vibe symbols did not read the files:\n\{sym.stderr}\n")
@@ -425,7 +477,7 @@ fn run(cli: String, files: Array[String]) -> Int with Env + Fs + Process + Conso
     }
     clauses_of(sym.stdout)
   } else {
-    []
+    ([], [])
   }
   let jobs: Array[Job] = []
   let probes: Array[String] = []
@@ -463,22 +515,30 @@ fn run(cli: String, files: Array[String]) -> Int with Env + Fs + Process + Conso
     Fs::remove(Array::get(probes, p))
     p = p + 1
   }
-  // A file with an entry point but no row this gate read is not checked.
+  // An entry this gate could not read the row of is not checked, so it fails
+  // here rather than pass with no probe; so does a file with no entry at all.
+  let mut u = 0
+  while u < Array::length(unread) {
+    Stderr::write_stream("FAIL \{Array::get(unread, u)}: the `allows` row of `main` could not be read\n")
+    failures = failures + 1
+    u = u + 1
+  }
   let mut f = 0
   while f < Array::length(checked) {
     let path = Array::get(checked, f)
     let mut has = false
     let mut k = 0
     while k < Array::length(clauses) {
-      if Array::get(clauses, k).file == path {
+      let cl = Array::get(clauses, k)
+      if cl.file == path && cl.name == "main" {
         has = true
       } else {
         ()
       }
       k = k + 1
     }
-    if !has && String::index_of(Fs::read_file(path), "fn main") >= 0 {
-      Stderr::write_stream("FAIL \{path}: no `allows` row on a function was found to check\n")
+    if !has && !contains(unread_files(unread), path) {
+      Stderr::write_stream("FAIL \{path}: no `fn main ... allows` entry was found to check\n")
       failures = failures + 1
     } else {
       ()
@@ -496,7 +556,11 @@ fn run(cli: String, files: Array[String]) -> Int with Env + Fs + Process + Conso
 
 fn main allows Env + Fs + Process + Console {
   let cli = arg(0)
-  if cli == "" || !Fs::is_file(cli) {
+  if cli == "--list" {
+    // The default corpus, one path per line: what the self-test reads to
+    // prove this gate is not in it.
+    Console::write_stream(String::join(default_files(), "\n") + "\n")
+  } else if cli == "" || !Fs::is_file(cli) {
     Stderr::write_stream("usage: check_vibex_grants.vibex <cli.wasm> [file.vibex ...] (from the repository root)\n")
     exit(2)
   } else if !Fs::is_file("runtime/vibe") {
