@@ -2,6 +2,7 @@
 "use strict";
 
 const { createHostRuntime } = require("./wasm_vibe_host_runtime.js");
+const { linkForeignWasmModules } = require("./wasm_foreign_link.js");
 const host = createHostRuntime();
 const {
   GuestExit,
@@ -1124,8 +1125,13 @@ async function main() {
     },
   };
 
+  // Typed core-wasm imports (`import ./x.wasm`): instantiate each foreign
+  // module and expose it under its `vibe:wasm:<path>` import name.
+  const compiledModule = await WebAssembly.compile(wasmBytes);
+  const foreignModules = await linkForeignWasmModules(compiledModule);
   const imports = new Proxy(
     {
+      ...foreignModules,
       vibe: vibeModule,
       Env: envModule,
       Fs: fsModule,
@@ -1157,7 +1163,7 @@ async function main() {
     },
   );
 
-  const { instance } = await WebAssembly.instantiate(wasmBytes, imports);
+  const instance = await WebAssembly.instantiate(compiledModule, imports);
   instanceRef = instance;
   host.instanceRefGlobal = instance;
   host.hostAllocPtrGlobal = null;

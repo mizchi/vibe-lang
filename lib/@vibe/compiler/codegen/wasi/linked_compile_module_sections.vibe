@@ -9,7 +9,8 @@ import @vibe/compiler/core {
   bytebuf_push_section,
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
-  leb128_encode_u32
+  leb128_encode_u32,
+  wasm_import_decode_callee
 }
 
 import @vibe/core {
@@ -528,8 +529,27 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
   }
   let bytes_blit_type_idx = num_base_types + num_closure_types + extra_dbg_types + extra_http_types
   Array::set(builtin_type_idxs, bytes_blit_idx - num_imported_funcs, bytes_blit_type_idx)
+  // Foreign core-wasm imports (`import ./x.wasm`): one func type each, with
+  // the signature its callee spelling carries, appended after every other
+  // type so no existing index moves. -1 entries of linked_imports only.
+  let foreign_type_params: Array[Array[Int]] = []
+  let foreign_type_results: Array[Array[Int]] = []
+  for fli in linked_imports {
+    let (_, fcallee, fparams, _) = fli
+    if fparams < 0 {
+      match wasm_import_decode_callee(fcallee) {
+        Some((_, _, fps, frs)) => {
+          Array::push(foreign_type_params, fps)
+          Array::push(foreign_type_results, frs)
+        },
+        None => throw("internal: undecodable foreign import callee '\{fcallee}'")
+      }
+    } else {
+      ()
+    }
+  }
   let type_content = bytebuf_new()
-  bytebuf_push_vec_header(type_content, bytes_blit_type_idx + 1)
+  bytebuf_push_vec_header(type_content, bytes_blit_type_idx + 1 + Array::length(foreign_type_params))
   emit_func_type_raw(type_content, [127, 127, 127, 127], [127])
   emit_func_type_raw(type_content, [126], array_empty())
   emit_func_type_raw(type_content, array_empty(), array_empty())
@@ -567,6 +587,11 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
     ()
   }
   emit_func_type_raw(type_content, [126, 126, 126, 126], array_empty())
+  let mut fti_emit = 0
+  while fti_emit < Array::length(foreign_type_params) {
+    emit_func_type_raw(type_content, Array::get(foreign_type_params, fti_emit), Array::get(foreign_type_results, fti_emit))
+    fti_emit = fti_emit + 1
+  }
   // Code and string payloads dominate the module. Reserve them once, with
   // room for indices, names and small section headers. This is only a hint:
   // unusually large debug/custom sections can still grow the buffer.
@@ -1585,13 +1610,28 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
     ()
   }
   let mut li_emit = 0
+  let mut li_foreign = 0
   while li_emit < Array::length(linked_imports) {
     let (lmod, lfn, lparams, _) = Array::get(linked_imports, li_emit)
-    emit_name(import_content, lmod)
-    emit_name(import_content, lfn)
-    bytebuf_push(import_content, 0)
-    let type_idx = num_base_types + lparams
-    leb128_encode_u32(import_content, type_idx)
+    if lparams < 0 {
+      // A foreign core-wasm function: the field is the export's own name,
+      // the type the one appended for it above.
+      let ffield = match wasm_import_decode_callee(lfn) {
+        Some((_, f, _, _)) => f,
+        None => throw("internal: undecodable foreign import callee '\{lfn}'")
+      }
+      emit_name(import_content, lmod)
+      emit_name(import_content, ffield)
+      bytebuf_push(import_content, 0)
+      leb128_encode_u32(import_content, bytes_blit_type_idx + 1 + li_foreign)
+      li_foreign = li_foreign + 1
+    } else {
+      emit_name(import_content, lmod)
+      emit_name(import_content, lfn)
+      bytebuf_push(import_content, 0)
+      let type_idx = num_base_types + lparams
+      leb128_encode_u32(import_content, type_idx)
+    }
     li_emit = li_emit + 1
   }
   bytebuf_push_section(out, 2, import_content)

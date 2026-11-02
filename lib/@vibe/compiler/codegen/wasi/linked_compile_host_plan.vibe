@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/codegen/wasi/linked_compile.vibe — host plan.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, builtin_registry, bytebuf_new
+  Expr, Pat, Stmt, TypeExpr, builtin_registry, bytebuf_new, wasm_import_callees_in, wasm_import_decode_callee
 }
 
 import @vibe/ast {
@@ -1760,5 +1760,46 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
     tcp_read_import_idx: tcp_read_import_idx,
     tcp_write_idx: tcp_write_idx,
     tcp_write_import_idx: tcp_write_import_idx
+  }
+}
+
+/// `linked_imports` plus one `(module, callee, -1, -1)` entry per distinct
+/// foreign core-wasm function the inline-wasm bodies `iw_wats` call
+/// (`import ./x.wasm`, see core/wasm_import_binding.vibe). The callee
+/// spelling carries the field name and signature; the -1 param count is what
+/// tells the import emission and the builtin registration apart from a vibe
+/// linked import.
+export fn lc_with_foreign_imports(linked_imports: Array[(String, String, Int, Int)], iw_wats: Array[String]) -> Array[(String, String, Int, Int)] {
+  let foreign = wasm_import_callees_in(iw_wats)
+  if Array::length(foreign) == 0 {
+    linked_imports
+  } else {
+    let out: Array[(String, String, Int, Int)] = []
+    for li in linked_imports {
+      Array::push(out, li)
+    }
+    for callee in foreign {
+      match wasm_import_decode_callee(callee) {
+        Some((m, _, _, _)) => Array::push(out, (m, callee, -1, -1)),
+        None => ()
+      }
+    }
+    out
+  }
+}
+
+/// The foreign entries of `linked_imports_all` as inline-wasm callees:
+/// `(callee, import index, -1)`. The -1 arity is how the assembler knows to
+/// take the signature from the callee spelling and emit no closure-env slot.
+export fn lc_push_foreign_iw_callees(iw_callees: Array[(String, Int, Int)], linked_imports_all: Array[(String, String, Int, Int)], linked_import_indices: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(linked_imports_all) {
+    let (_, callee, lparams, _) = Array::get(linked_imports_all, i)
+    if lparams < 0 {
+      Array::push(iw_callees, (callee, Array::get(linked_import_indices, i), -1))
+    } else {
+      ()
+    }
+    i = i + 1
   }
 }

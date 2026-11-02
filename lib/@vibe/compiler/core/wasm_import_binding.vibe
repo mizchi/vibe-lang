@@ -1,0 +1,926 @@
+//# Imports
+
+import @vibe/core {
+  array_empty
+}
+
+import ./inline_wasm_marker.vibe {
+  wat_callee_names
+}
+
+//# Functions
+
+// `import ./z3.wasm { z3_mk_config }` -- a foreign CORE wasm module imported
+// with the types its own binary declares.
+//
+// The loader does not parse a `.wasm` file as vibe source. It hands the bytes
+// to `wasm_import_binding_source`, which reads the type, import, function and
+// export sections and writes the binding module as vibe text. Every later
+// phase -- header collection, the checker, `vibe check`, codegen -- sees an
+// ordinary module, so the import list, `as` renames and "is not exported by"
+// diagnostics behave exactly as they do for a `.vibe` file.
+//
+// Each exported function `F` with an admitted signature becomes two
+// declarations:
+//
+//   fn wasm_raw_f(a0: Int, ..) -> Int = wasm "..(call $__wasm_import.<id> ..).."
+//   export fn f(a0: Int, ..) -> R { wasm_raw_f(a0, ..) }
+//
+// The inline-wasm body converts between vibe's tagged `Int` and the core
+// value types, and calls the foreign function through a core import whose
+// module is `vibe:wasm:<path>` and whose field is the export's own name
+// (`wasm_import_callee`). The codegen collects those callees from the
+// inline-wasm bodies, emits one typed import per distinct callee, and a
+// runner links the module at `<path>` under that name.
+//
+// The admitted signatures, and why the rest are refused rather than guessed:
+//
+//   - `i32` param: an `Int` in -2^31 .. 2^32-1 (either the signed or the
+//     unsigned reading of the same 32 bits); anything else TRAPS rather than
+//     being truncated to a different value.
+//   - `i32` result: read as signed, so a value round-trips bit-exactly when
+//     passed back.
+//   - `i64` param: exact (a 63-bit `Int` sign-extends into 64 bits).
+//   - `i64` result: TRAPS when the value needs the 64th bit, since a 63-bit
+//     `Int` cannot hold it.
+//   - no result: the wrapper returns `Unit`.
+//   - `f32` / `f64` / `v128` / reference types / multiple results: not
+//     offered. A `Double` is a boxed value on the linear lane, and no
+//     inline-wasm boundary for it exists yet; the binding lists these exports
+//     in a comment instead of exposing a wrong type.
+//
+// A module that has a memory (defined or imported) additionally gets
+// `wasm_memory_load_u8(addr) -> Int`, `wasm_memory_store_u8(addr, value)` and
+// `wasm_memory_size() -> Int` (bytes). The foreign memory is not this
+// module's memory; these go through runner-provided `vibe:memory.*` fields of
+// the same import module, which is how a binding passes strings to and from
+// the foreign side.
+//
+// Export names are mapped to vibe identifiers by lower-casing ASCII letters
+// and replacing every other character outside `[a-z0-9_]` with `_`
+// (`Z3_mk_config` -> `z3_mk_config`). Two exports that map to the same name
+// are BOTH withheld (listed in the comment) rather than one silently winning.
+
+/// Is `path` a foreign core-wasm import (`import ./x.wasm { .. }`)?
+export fn is_wasm_import_path(path: String) -> Bool {
+  String::ends_with(path, ".wasm")
+}
+
+/// The core import module a binding of `path` calls through.
+export fn wasm_import_module_name(path: String) -> String {
+  String::concat("vibe:wasm:", path)
+}
+
+fn wib_fresh_strings() -> Array[String] {
+  array_empty()
+}
+
+fn wib_fresh_ints() -> Array[Int] {
+  array_empty()
+}
+
+fn wib_fresh_sigs() -> Array[(Array[Int], Array[Int])] {
+  array_empty()
+}
+
+fn wib_hex_digit(n: Int) -> String {
+  "0123456789abcdef"[n: n + 1]
+}
+
+/// Lower-case hex of every byte of `s`. A module path and an export name may
+/// hold any byte, and the inline-wasm tokenizer ends a word at whitespace,
+/// `(`, `)` and `;`; hex keeps the callee one word whatever they contain.
+export fn wasm_import_hex(s: String) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < String::length(s) {
+    let b = String::byte_at(s, i)
+    out = String::concat(out, String::concat(wib_hex_digit(b>>4), wib_hex_digit(b&15)))
+    i = i + 1
+  }
+  out
+}
+
+fn wib_hex_value(c: Int) -> Int {
+  if c >= 48 && c <= 57 {
+    c - 48
+  } else if c >= 97 && c <= 102 {
+    c - 87
+  } else {
+    -1
+  }
+}
+
+/// The inverse of `wasm_import_hex`; `None` when `s` is not lower-case hex
+/// of an even length.
+export fn wasm_import_unhex(s: String) -> Option[String] {
+  let n = String::length(s)
+  if n % 2 != 0 {
+    None
+  } else {
+    let mut out = ""
+    let mut ok = true
+    let mut i = 0
+    while ok && i < n {
+      let hi = wib_hex_value(String::byte_at(s, i))
+      let lo = wib_hex_value(String::byte_at(s, i + 1))
+      if hi < 0 || lo < 0 {
+        ok = false
+      } else {
+        out = String::concat(out, String::from_byte(hi * 16 + lo))
+      }
+      i = i + 2
+    }
+    if ok {
+      Some(out)
+    } else {
+      None
+    }
+  }
+}
+
+/// The signature spelling a callee carries: one letter per param (`i` = i32,
+/// `I` = i64), `_`, then the result letter or nothing. `(i32, i64) -> i32`
+/// is `iI_i`; `() -> ()` is `_`.
+export fn wasm_import_sig_text(params: Array[Int], results: Array[Int]) -> String {
+  let mut out = ""
+  for p in params {
+    out = String::concat(out, wib_valtype_letter(p))
+  }
+  out = String::concat(out, "_")
+  for r in results {
+    out = String::concat(out, wib_valtype_letter(r))
+  }
+  out
+}
+
+fn wib_valtype_letter(vt: Int) -> String {
+  if vt == 0x7F {
+    "i"
+  } else if vt == 0x7E {
+    "I"
+  } else {
+    "?"
+  }
+}
+
+/// The inline-wasm callee that names one foreign function:
+/// `__wasm_import.<hex module>.<hex field>.<sig>`.
+export fn wasm_import_callee(module_name: String, field: String, params: Array[Int], results: Array[Int]) -> String {
+  String::concat("__wasm_import.", String::concat(wasm_import_hex(module_name), String::concat(".", String::concat(wasm_import_hex(field), String::concat(".", wasm_import_sig_text(params, results))))))
+}
+
+/// The callee prefix every foreign-function call in an inline-wasm body
+/// starts with.
+export fn wasm_import_callee_prefix() -> String {
+  "__wasm_import."
+}
+
+/// Decode a callee minted by `wasm_import_callee` into
+/// `(module, field, params, results)` valtype codes. `None` for anything
+/// else -- including a signature letter that is not `i` / `I`, so a
+/// hand-written callee cannot ask for a type the conversion does not cover.
+export fn wasm_import_decode_callee(callee: String) -> Option[(String, String, Array[Int], Array[Int])] {
+  let prefix = wasm_import_callee_prefix()
+  if !String::starts_with(callee, prefix) {
+    None
+  } else {
+    let rest = String::substring(callee, String::length(prefix), String::length(callee))
+    let d1 = String::index_of(rest, ".")
+    if d1 < 0 {
+      None
+    } else {
+      let after1 = String::substring(rest, d1 + 1, String::length(rest))
+      let d2 = String::index_of(after1, ".")
+      if d2 < 0 {
+        None
+      } else {
+        let sig = String::substring(after1, d2 + 1, String::length(after1))
+        match (wasm_import_unhex(String::substring(rest, 0, d1)), wasm_import_unhex(String::substring(after1, 0, d2))) {
+          (Some(m), Some(f)) => match wib_decode_sig(sig) {
+            Some((ps, rs)) => Some((m, f, ps, rs)),
+            None => None
+          },
+          _ => None
+        }
+      }
+    }
+  }
+}
+
+fn wib_decode_sig(sig: String) -> Option[(Array[Int], Array[Int])] {
+  let us = String::index_of(sig, "_")
+  if us < 0 {
+    None
+  } else {
+    let ps = wib_fresh_ints()
+    let rs = wib_fresh_ints()
+    let mut ok = true
+    let mut i = 0
+    while i < String::length(sig) {
+      if i != us {
+        let c = String::byte_at(sig, i)
+        let vt = if c == 105 {
+          0x7F
+        } else if c == 73 {
+          0x7E
+        } else {
+          0
+        }
+        if vt == 0 {
+          ok = false
+        } else if i < us {
+          Array::push(ps, vt)
+        } else {
+          Array::push(rs, vt)
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if ok && Array::length(rs) <= 1 && String::index_of(String::substring(sig, us + 1, String::length(sig)), "_") < 0 {
+      Some((ps, rs))
+    } else {
+      None
+    }
+  }
+}
+
+/// Every distinct foreign-function callee the inline-wasm bodies `wats`
+/// call, sorted, so the import indices the codegen reserves for them do not
+/// depend on declaration order.
+export fn wasm_import_callees_in(wats: Array[String]) -> Array[String] {
+  let found = wib_fresh_strings()
+  for wat in wats {
+    for name in wat_callee_names(wat) {
+      if wib_is_foreign_callee(name) {
+        let mut seen = false
+        for f in found {
+          if f == name {
+            seen = true
+          } else {
+            ()
+          }
+        }
+        if !seen {
+          Array::push(found, name)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    }
+  }
+  // Insertion sort: a module imports a handful of foreign functions, and the
+  // byte order of the callee spelling is all that is needed.
+  let n = Array::length(found)
+  let mut i = 1
+  while i < n {
+    let mut j = i
+    while j > 0 && wib_str_lt(Array::get(found, j), Array::get(found, j - 1)) {
+      let t = Array::get(found, j)
+      Array::set(found, j, Array::get(found, j - 1))
+      Array::set(found, j - 1, t)
+      j = j - 1
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn wib_is_foreign_callee(name: String) -> Bool {
+  match wasm_import_decode_callee(name) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// Byte-wise `a < b` (see CLAUDE.md on why `String <` is not used here).
+fn wib_str_lt(a: String, b: String) -> Bool {
+  let la = String::length(a)
+  let lb = String::length(b)
+  let mut i = 0
+  let mut res = la < lb
+  let mut decided = false
+  while !decided && i < la && i < lb {
+    let ca = String::byte_at(a, i)
+    let cb = String::byte_at(b, i)
+    if ca != cb {
+      res = ca < cb
+      decided = true
+    } else {
+      i = i + 1
+    }
+  }
+  res
+}
+
+// ---------------------------------------------------------------------------
+// Binary reading
+
+fn wib_byte(bytes: Bytes, pos: Int) -> Int with Exception {
+  if pos < 0 || pos >= Bytes::length(bytes) {
+    throw("truncated wasm binary (read past byte \{pos})")
+  } else {
+    Bytes::get(bytes, pos)
+  }
+}
+
+/// Unsigned LEB128 at `pos`: `(value, next position)`. Values wider than 62
+/// bits are refused instead of wrapping into a different number.
+fn wib_leb_u(bytes: Bytes, pos: Int) -> (Int, Int) with Exception {
+  let mut result = 0
+  let mut shift = 0
+  let mut p = pos
+  let mut more = true
+  while more {
+    let b = wib_byte(bytes, p)
+    if shift >= 62 {
+      throw("malformed wasm binary: LEB128 at byte \{pos} is too wide")
+    } else {
+      ()
+    }
+    result = result|((b&0x7F)<<shift)
+    shift = shift + 7
+    p = p + 1
+    more = (b&0x80) != 0
+  }
+  (result, p)
+}
+
+fn wib_name(bytes: Bytes, pos: Int) -> (String, Int) with Exception {
+  let (len, p) = wib_leb_u(bytes, pos)
+  if p + len > Bytes::length(bytes) {
+    throw("truncated wasm binary (a name at byte \{pos} runs past the end)")
+  } else {
+    let parts = wib_fresh_strings()
+    let mut i = p
+    while i < p + len {
+      Array::push(parts, String::from_byte(Bytes::get(bytes, i)))
+      i = i + 1
+    }
+    (String::join(parts, ""), p + len)
+  }
+}
+
+/// Skip a value type, including the multi-byte reference forms
+/// (`(ref null? <heaptype>)`, 0x63 / 0x64 + s33 heap type).
+fn wib_skip_valtype(bytes: Bytes, pos: Int) -> Int with Exception {
+  let b = wib_byte(bytes, pos)
+  if b == 0x63 || b == 0x64 {
+    let (_, p) = wib_leb_u(bytes, pos + 1)
+    p
+  } else {
+    pos + 1
+  }
+}
+
+fn wib_skip_limits(bytes: Bytes, pos: Int) -> Int with Exception {
+  let flags = wib_byte(bytes, pos)
+  let (_, p1) = wib_leb_u(bytes, pos + 1)
+  if (flags&1) != 0 {
+    let (_, p2) = wib_leb_u(bytes, p1)
+    p2
+  } else {
+    p1
+  }
+}
+
+/// `(params, results)` for every type in the type section; a non-function
+/// form (a GC struct / array type, a rec group) gets an entry whose params
+/// hold `-1`, so a function of that type is reported as not offered instead
+/// of misread.
+fn wib_parse_types(bytes: Bytes, start: Int) -> Array[(Array[Int], Array[Int])] with Exception {
+  let out = wib_fresh_sigs()
+  let (count, p0) = wib_leb_u(bytes, start)
+  let mut p = p0
+  let mut i = 0
+  while i < count {
+    let form = wib_byte(bytes, p)
+    if form != 0x60 {
+      // Anything else changes how the rest of the section is laid out, and
+      // this reader does not follow those layouts: stop here. Types past
+      // this point resolve to "unknown type" below.
+      i = count
+    } else {
+      let ps = wib_fresh_ints()
+      let rs = wib_fresh_ints()
+      let (np, pp) = wib_leb_u(bytes, p + 1)
+      let mut q = pp
+      let mut k = 0
+      while k < np {
+        let vt = wib_byte(bytes, q)
+        Array::push(ps, vt)
+        q = wib_skip_valtype(bytes, q)
+        k = k + 1
+      }
+      let (nr, rp) = wib_leb_u(bytes, q)
+      q = rp
+      k = 0
+      while k < nr {
+        let vt = wib_byte(bytes, q)
+        Array::push(rs, vt)
+        q = wib_skip_valtype(bytes, q)
+        k = k + 1
+      }
+      Array::push(out, (ps, rs))
+      p = q
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// What the binding needs from a core module: the type of each function in
+/// the function index space (imports first), the exported functions as
+/// `(name, function index)`, and whether the module has a memory.
+fn wib_read_module(bytes: Bytes) -> (Array[(Array[Int], Array[Int])], Array[Int], Array[(String, Int)], Bool) with Exception {
+  let n0 = Bytes::length(bytes)
+  if n0 < 8 || Bytes::get(bytes, 0) != 0 || Bytes::get(bytes, 1) != 97 || Bytes::get(bytes, 2) != 115 || Bytes::get(bytes, 3) != 109 {
+    throw("not a wasm binary (missing the \\0asm header)")
+  } else if Bytes::get(bytes, 4) != 1 || Bytes::get(bytes, 5) != 0 || Bytes::get(bytes, 6) != 0 || Bytes::get(bytes, 7) != 0 {
+    if Bytes::get(bytes, 4) == 0x0D && Bytes::get(bytes, 6) == 1 {
+      throw("this is a wasm COMPONENT, not a core module; importing a component is not supported yet -- import a core module, or build bindings from the component's WIT")
+    } else {
+      throw("unsupported wasm binary version (only core wasm version 1 is read)")
+    }
+  } else {
+    ()
+  }
+  let mut types = wib_fresh_sigs()
+  let func_types = wib_fresh_ints()
+  let exports: Array[(String, Int)] = []
+  let mut has_memory = false
+  let mut p = 8
+  let n = n0
+  while p < n {
+    let id = wib_byte(bytes, p)
+    let (size, body) = wib_leb_u(bytes, p + 1)
+    let end = body + size
+    if end > n {
+      throw("truncated wasm binary (section \{id} runs past the end)")
+    } else {
+      ()
+    }
+    if id == 1 {
+      types = wib_parse_types(bytes, body)
+    } else if id == 2 {
+      let (count, p0) = wib_leb_u(bytes, body)
+      let mut q = p0
+      let mut i = 0
+      while i < count {
+        let (_, q1) = wib_name(bytes, q)
+        let (_, q2) = wib_name(bytes, q1)
+        let kind = wib_byte(bytes, q2)
+        if kind == 0 {
+          let (ti, q3) = wib_leb_u(bytes, q2 + 1)
+          Array::push(func_types, ti)
+          q = q3
+        } else if kind == 1 {
+          q = wib_skip_limits(bytes, wib_skip_valtype(bytes, q2 + 1))
+        } else if kind == 2 {
+          has_memory = true
+          q = wib_skip_limits(bytes, q2 + 1)
+        } else if kind == 3 {
+          q = wib_skip_valtype(bytes, q2 + 1) + 1
+        } else if kind == 4 {
+          let (_, q3) = wib_leb_u(bytes, q2 + 2)
+          q = q3
+        } else {
+          throw("malformed wasm binary: unknown import kind \{kind}")
+        }
+        i = i + 1
+      }
+    } else if id == 3 {
+      let (count, p0) = wib_leb_u(bytes, body)
+      let mut q = p0
+      let mut i = 0
+      while i < count {
+        let (ti, q1) = wib_leb_u(bytes, q)
+        Array::push(func_types, ti)
+        q = q1
+        i = i + 1
+      }
+    } else if id == 5 {
+      let (count, _) = wib_leb_u(bytes, body)
+      if count > 0 {
+        has_memory = true
+      } else {
+        ()
+      }
+    } else if id == 7 {
+      let (count, p0) = wib_leb_u(bytes, body)
+      let mut q = p0
+      let mut i = 0
+      while i < count {
+        let (nm, q1) = wib_name(bytes, q)
+        let kind = wib_byte(bytes, q1)
+        let (idx, q2) = wib_leb_u(bytes, q1 + 1)
+        if kind == 0 {
+          Array::push(exports, (nm, idx))
+        } else {
+          ()
+        }
+        q = q2
+        i = i + 1
+      }
+    } else {
+      ()
+    }
+    p = end
+  }
+  let fn_sigs = wib_fresh_sigs()
+  for ti in func_types {
+    if ti < Array::length(types) {
+      Array::push(fn_sigs, Array::get(types, ti))
+    } else {
+      Array::push(fn_sigs, ([-1], wib_fresh_ints()))
+    }
+  }
+  (fn_sigs, func_types, exports, has_memory)
+}
+
+// ---------------------------------------------------------------------------
+// Naming
+
+fn wib_reserved_words() -> Array[String] {
+  [
+    "fn",
+    "let",
+    "mut",
+    "rec",
+    "if",
+    "else",
+    "match",
+    "while",
+    "for",
+    "in",
+    "loop",
+    "break",
+    "continue",
+    "return",
+    "true",
+    "false",
+    "with",
+    "handle",
+    "perform",
+    "resume",
+    "effect",
+    "effectset",
+    "test",
+    "example",
+    "bench",
+    "enum",
+    "struct",
+    "trait",
+    "impl",
+    "type",
+    "opaque",
+    "import",
+    "export",
+    "module",
+    "extern",
+    "internal",
+    "as",
+    "only",
+    "where",
+    "requires",
+    "ensures",
+    "is",
+    "guard",
+    "resource",
+    "suberror",
+    "throw",
+    "await",
+    "async",
+    "region",
+    "self",
+    "wasm",
+    "and",
+    "or",
+    "not"
+  ]
+}
+
+/// The vibe identifier an export is offered under, or "" when none can be
+/// formed (an empty name, or one that maps to the wildcard `_`).
+export fn wasm_import_vibe_name(export_name: String) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < String::length(export_name) {
+    let c = String::byte_at(export_name, i)
+    let mapped = if c >= 65 && c <= 90 {
+      c + 32
+    } else if (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 {
+      c
+    } else {
+      95
+    }
+    out = String::concat(out, String::from_byte(mapped))
+    i = i + 1
+  }
+  if out == "" || out == "_" {
+    ""
+  } else {
+    let first = String::byte_at(out, 0)
+    let led = if first >= 48 && first <= 57 {
+      String::concat("_", out)
+    } else {
+      out
+    }
+    let mut reserved = false
+    for w in wib_reserved_words() {
+      if w == led {
+        reserved = true
+      } else {
+        ()
+      }
+    }
+    if reserved {
+      String::concat(led, "_")
+    } else {
+      led
+    }
+  }
+}
+
+fn wib_sig_admitted(params: Array[Int], results: Array[Int]) -> Bool {
+  let mut ok = Array::length(results) <= 1
+  for p in params {
+    if p != 0x7F && p != 0x7E {
+      ok = false
+    } else {
+      ()
+    }
+  }
+  for r in results {
+    if r != 0x7F && r != 0x7E {
+      ok = false
+    } else {
+      ()
+    }
+  }
+  ok
+}
+
+fn wib_valtype_wat(vt: Int) -> String {
+  if vt == 0x7F {
+    "i32"
+  } else if vt == 0x7E {
+    "i64"
+  } else if vt == 0x7D {
+    "f32"
+  } else if vt == 0x7C {
+    "f64"
+  } else if vt == 0x7B {
+    "v128"
+  } else if vt < 0 {
+    "<unknown type>"
+  } else {
+    "ref"
+  }
+}
+
+fn wib_sig_wat(params: Array[Int], results: Array[Int]) -> String {
+  let mut ps = ""
+  let mut i = 0
+  while i < Array::length(params) {
+    ps = String::concat(ps, String::concat(if i > 0 {
+      ", "
+    } else {
+      ""
+    }, wib_valtype_wat(Array::get(params, i))))
+    i = i + 1
+  }
+  let mut rs = ""
+  let mut j = 0
+  while j < Array::length(results) {
+    rs = String::concat(rs, String::concat(if j > 0 {
+      ", "
+    } else {
+      ""
+    }, wib_valtype_wat(Array::get(results, j))))
+    j = j + 1
+  }
+  "(\{ps}) -> (\{rs})"
+}
+
+// ---------------------------------------------------------------------------
+// Emission
+
+fn wib_untag(param: String) -> String {
+  "(i64.shr_s (local.get $\{param}) (i64.const 1))"
+}
+
+/// The inline-wasm body for one foreign function.
+fn wib_body(callee: String, params: Array[Int], results: Array[Int]) -> String {
+  let mut checks = ""
+  let mut args = ""
+  let mut i = 0
+  while i < Array::length(params) {
+    let pn = "a\{i}"
+    if Array::get(params, i) == 0x7F {
+      checks = String::concat(checks, "(if (i64.lt_s \{wib_untag(pn)} (i64.const -2147483648)) (then unreachable)) (if (i64.gt_s \{wib_untag(pn)} (i64.const 4294967295)) (then unreachable)) ")
+      args = String::concat(args, " (i32.wrap_i64 \{wib_untag(pn)})")
+    } else {
+      args = String::concat(args, " \{wib_untag(pn)}")
+    }
+    i = i + 1
+  }
+  let call = "(call $\{callee}\{args})"
+  if Array::length(results) == 0 {
+    "\{checks}\{call} (i64.const 0)"
+  } else if Array::get(results, 0) == 0x7F {
+    "\{checks}(i64.shl (i64.extend_i32_s \{call}) (i64.const 1))"
+  } else {
+    "(local $r i64) \{checks}(local.set $r \{call}) (if (i64.ne (i64.shr_s (i64.shl (local.get $r) (i64.const 1)) (i64.const 1)) (local.get $r)) (then unreachable)) (i64.shl (local.get $r) (i64.const 1))"
+  }
+}
+
+fn wib_param_list(n: Int) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < n {
+    out = String::concat(out, String::concat(if i > 0 {
+      ", "
+    } else {
+      ""
+    }, "a\{i}: Int"))
+    i = i + 1
+  }
+  out
+}
+
+fn wib_arg_list(n: Int) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < n {
+    out = String::concat(out, String::concat(if i > 0 {
+      ", "
+    } else {
+      ""
+    }, "a\{i}"))
+    i = i + 1
+  }
+  out
+}
+
+/// A doc-comment-safe rendering of an export name: bytes outside printable
+/// ASCII, and the backtick, are shown as `\xNN`.
+fn wib_display_name(name: String) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < String::length(name) {
+    let c = String::byte_at(name, i)
+    if c >= 32 && c < 127 && c != 96 && c != 92 {
+      out = String::concat(out, String::from_byte(c))
+    } else {
+      out = String::concat(out, String::concat("\\x", String::concat(wib_hex_digit(c>>4), wib_hex_digit(c&15))))
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn wib_emit_fn(out: Array[String], vibe_name: String, doc: String, callee: String, params: Array[Int], results: Array[Int]) -> Unit {
+  let n = Array::length(params)
+  let ret = if Array::length(results) == 0 {
+    "Unit"
+  } else {
+    "Int"
+  }
+  Array::push(out, "/// \{doc}\n")
+  Array::push(out, "fn wasm_raw_\{vibe_name}(\{wib_param_list(n)}) -> Int = wasm \"\{wib_body(callee, params, results)}\"\n")
+  if Array::length(results) == 0 {
+    Array::push(out, "export fn \{vibe_name}(\{wib_param_list(n)}) -> \{ret} {\n  let _ = wasm_raw_\{vibe_name}(\{wib_arg_list(n)})\n  ()\n}\n\n")
+  } else {
+    Array::push(out, "export fn \{vibe_name}(\{wib_param_list(n)}) -> \{ret} {\n  wasm_raw_\{vibe_name}(\{wib_arg_list(n)})\n}\n\n")
+  }
+}
+
+/// The vibe source of the binding module for the core wasm binary `bytes`
+/// at `path`. Throws a located-by-path message when the binary cannot be
+/// read.
+export fn wasm_import_binding_source(path: String, bytes: Bytes) -> String with Exception {
+  let (fn_sigs, _, exports, has_memory) = handle {
+    wib_read_module(bytes)
+  } with { Exception::Throw(msg) => throw("cannot import \{path}: \{msg}") }
+  let module_name = wasm_import_module_name(path)
+  let names = wib_fresh_strings()
+  for ex in exports {
+    let (nm, _) = ex
+    Array::push(names, wasm_import_vibe_name(nm))
+  }
+  let mem_names = [
+    "wasm_memory_load_u8",
+    "wasm_memory_store_u8",
+    "wasm_memory_size"
+  ]
+  let out = wib_fresh_strings()
+  let withheld = wib_fresh_strings()
+  Array::push(out, "// Bindings synthesized from the core wasm module \{wib_display_name(path)}.\n// Imports resolve through `\{wib_display_name(module_name)}`.\n\n")
+  let mut i = 0
+  while i < Array::length(exports) {
+    let (nm, fidx) = Array::get(exports, i)
+    let vn = Array::get(names, i)
+    let mut dup = false
+    let mut j = 0
+    while j < Array::length(names) {
+      if j != i && Array::get(names, j) == vn {
+        dup = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    for m in mem_names {
+      if has_memory && m == vn {
+        dup = true
+      } else {
+        ()
+      }
+    }
+    let (ps, rs) = if fidx < Array::length(fn_sigs) {
+      Array::get(fn_sigs, fidx)
+    } else {
+      ([-1], wib_fresh_ints())
+    }
+    let shown = wib_display_name(nm)
+    if vn == "" {
+      Array::push(withheld, "`\{shown}`: no vibe identifier can be formed from the name")
+    } else if dup {
+      Array::push(withheld, "`\{shown}`: its vibe name `\{vn}` is shared with another export")
+    } else if !wib_sig_admitted(ps, rs) {
+      Array::push(withheld, "`\{shown}` \{wib_sig_wat(ps, rs)}: only i32 / i64 params and at most one i32 / i64 result cross the boundary")
+    } else {
+      wib_emit_fn(out, vn, "`\{shown}` from \{wib_display_name(path)}: core wasm \{wib_sig_wat(ps, rs)}.", wasm_import_callee(module_name, nm, ps, rs), ps, rs)
+    }
+    i = i + 1
+  }
+  if has_memory {
+    wib_emit_fn(out, "wasm_memory_load_u8", "The byte at `a0` in the module's memory (0..255).", wasm_import_callee(module_name, "vibe:memory.load8_u", [
+      0x7F
+    ], [0x7F]), [0x7F], [0x7F])
+    wib_emit_fn(out, "wasm_memory_store_u8", "Store the low 8 bits of `a1` at `a0` in the module's memory.", wasm_import_callee(module_name, "vibe:memory.store8", [
+      0x7F,
+      0x7F
+    ], wib_fresh_ints()), [0x7F, 0x7F], wib_fresh_ints())
+    wib_emit_fn(out, "wasm_memory_size", "The module's memory size in bytes.", wasm_import_callee(module_name, "vibe:memory.size", wib_fresh_ints(), [
+      0x7E
+    ]), wib_fresh_ints(), [0x7E])
+  } else {
+    ()
+  }
+  if Array::length(withheld) > 0 {
+    Array::push(out, "// Exports not offered:\n")
+    for w in withheld {
+      Array::push(out, String::concat("//   ", String::concat(w, "\n")))
+    }
+  } else {
+    ()
+  }
+  String::join(out, "")
+}
+
+/// The first line of the text a failed synthesis returns instead of a
+/// binding. It is a comment, so a lane that does not look for it still
+/// parses an empty module (and reports the imported names as not exported);
+/// the loader lanes look for it and refuse the import with the message.
+export fn wasm_import_error_marker() -> String {
+  "//! vibe-wasm-import-error: "
+}
+
+/// `wasm_import_binding_source` for a read path that cannot throw: the
+/// failure comes back as `wasm_import_error_marker()` + the message.
+export fn wasm_import_binding_source_or_error(path: String, bytes: Bytes) -> String {
+  handle {
+    wasm_import_binding_source(path, bytes)
+  } with { Exception::Throw(msg) => String::concat(wasm_import_error_marker(), String::concat(msg, "\n")) }
+}
+
+/// The message of a failed synthesis, if `text` is one.
+export fn wasm_import_error_in(text: String) -> Option[String] {
+  let marker = wasm_import_error_marker()
+  if String::starts_with(text, marker) {
+    let nl = String::index_of(text, "\n")
+    let stop = if nl < 0 {
+      String::length(text)
+    } else {
+      nl
+    }
+    Some(String::substring(text, String::length(marker), stop))
+  } else {
+    None
+  }
+}
+
+/// Throw the message of a failed `.wasm` synthesis (see
+/// `wasm_import_binding_source_or_error`); any other text passes.
+export fn refuse_failed_wasm_import(text: String) -> Unit with Exception {
+  match wasm_import_error_in(text) {
+    Some(msg) => throw(msg),
+    None => ()
+  }
+}

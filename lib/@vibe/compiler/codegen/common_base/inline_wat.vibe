@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  bytebuf_new, bytebuf_push, bytebuf_push_buf, leb128_encode_s32, leb128_encode_s64, leb128_encode_u32
+  bytebuf_new, bytebuf_push, bytebuf_push_buf, leb128_encode_s32, leb128_encode_s64, leb128_encode_u32, wasm_import_decode_callee
 }
 
 import @vibe/core {
@@ -1858,7 +1858,20 @@ fn iw_folded_call(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[S
   } else {
     ()
   }
-  let (_cn, cidx, carity) = Array::get(callees, slot)
+  let (_cn, cidx, carity_declared) = Array::get(callees, slot)
+  // A foreign core-wasm function (`import ./x.wasm`, wasm_import_binding):
+  // its callee spelling carries the signature, so the operands are checked
+  // against the FOREIGN valtypes, the result is the foreign one (or none),
+  // and there is no closure-env slot -- it is a real wasm import.
+  let (foreign, fparams, fresults) = match wasm_import_decode_callee(callee) {
+    Some((_, _, fps, frs)) => (carity_declared < 0, fps, frs),
+    None => (false, iw_fresh_ints(), iw_fresh_ints())
+  }
+  let carity = if foreign {
+    Array::length(fparams)
+  } else {
+    carity_declared
+  }
   let mut p = pos + 3
   let mut argc = 0
   let mut done = false
@@ -1869,7 +1882,14 @@ fn iw_folded_call(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[S
       done = true
     } else if Array::get(kinds, p) == 1 {
       let operand_ty = iw_operand_valtype(kinds, texts, p, end, locals)
-      if operand_ty != 0x7E {
+      let want_ty = if foreign && argc < Array::length(fparams) {
+        Array::get(fparams, argc)
+      } else {
+        0x7E
+      }
+      if foreign && operand_ty != want_ty {
+        throw(iw_err(fn_name, "argument \{argc + 1} of '(call $\{callee}' produces \{iw_valtype_name(operand_ty)}, but the foreign function takes \{iw_valtype_name(want_ty)} there", Array::get(offs, p)))
+      } else if !foreign && operand_ty != 0x7E {
         let why = if operand_ty == 0 {
           "does not produce an i64 value (it leaves nothing on the stack, or the assembler cannot type it; a `(block ...)`/`(if ...)` operand needs an explicit `(result i64)`)"
         } else {
@@ -1892,19 +1912,31 @@ fn iw_folded_call(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[S
   }
   // #2401: the arguments are on the stack now. Every inline-wasm parameter
   // and result is an i64, so the effect is `carity` i64s in, one i64 out.
-  let cps = iw_fresh_ints()
-  let mut cpi = 0
-  while cpi < carity {
-    Array::push(cps, 0x7E)
-    cpi = cpi + 1
+  if foreign {
+    let fresult = if Array::length(fresults) == 0 {
+      0
+    } else {
+      Array::get(fresults, 0)
+    }
+    iw_apply(st, fn_name, "call $\{callee}", fparams, fresult, head_off)
+    bytebuf_push(out, 0x10)
+    leb128_encode_u32(out, cidx)
+    p + 1
+  } else {
+    let cps = iw_fresh_ints()
+    let mut cpi = 0
+    while cpi < carity {
+      Array::push(cps, 0x7E)
+      cpi = cpi + 1
+    }
+    iw_apply(st, fn_name, "call $\{callee}", cps, 0x7E, head_off)
+    // The closure-env slot: every user function's last wasm param.
+    bytebuf_push(out, 0x42)
+    leb128_encode_s64(out, 0)
+    bytebuf_push(out, 0x10)
+    leb128_encode_u32(out, cidx)
+    p + 1
   }
-  iw_apply(st, fn_name, "call $\{callee}", cps, 0x7E, head_off)
-  // The closure-env slot: every user function's last wasm param.
-  bytebuf_push(out, 0x42)
-  leb128_encode_s64(out, 0)
-  bytebuf_push(out, 0x10)
-  leb128_encode_u32(out, cidx)
-  p + 1
 }
 
 /// One sequence item at `pos`: either a folded `(...)` expression or a plain

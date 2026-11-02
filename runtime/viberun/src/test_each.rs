@@ -264,6 +264,10 @@ pub(super) fn test_each(args: Vec<String>) -> Result<i32> {
         store.set_epoch_deadline(timeout_ms);
         *watch.lock().unwrap() = Some((index, Instant::now()));
         let verdict: std::result::Result<(), (bool, String)> = (|| {
+            // A fresh store per block gets fresh foreign instances too, so
+            // one block's writes to a linked module cannot leak into the next.
+            link_foreign_wasm_modules(&mut linker, &mut store, &module)
+                .map_err(|e| (false, first_line(&e)))?;
             let instance = linker
                 .instantiate(&mut store, &module)
                 .map_err(|e| (false, first_line(&e)))?;

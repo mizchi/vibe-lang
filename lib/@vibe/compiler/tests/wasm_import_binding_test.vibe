@@ -1,0 +1,65 @@
+//# Imports
+
+import @vibe/compiler/core {
+  wasm_import_binding_source, wasm_import_callee, wasm_import_decode_callee, wasm_import_vibe_name
+}
+
+//# Misc
+
+test "export names map to vibe identifiers" {
+  inspect(wasm_import_vibe_name("Z3_mk_config"), content = "z3_mk_config")
+  inspect(wasm_import_vibe_name("fn"), content = "fn_")
+  inspect(wasm_import_vibe_name("9lives"), content = "_9lives")
+  inspect(wasm_import_vibe_name("a.b-c"), content = "a_b_c")
+  inspect(wasm_import_vibe_name("_"), content = "")
+}
+
+test "a callee round-trips through its encoding" {
+  let callee = wasm_import_callee("vibe:wasm:x y.wasm", "f(o)o", [0x7F, 0x7E], [
+    0x7F
+  ])
+  match wasm_import_decode_callee(callee) {
+    Some((m, f, ps, rs)) => {
+      inspect(m, content = "vibe:wasm:x y.wasm")
+      inspect(f, content = "f(o)o")
+      inspect(Array::length(ps), content = "2")
+      inspect(Array::get(ps, 1) == 0x7E, content = "true")
+      inspect(Array::length(rs), content = "1")
+    },
+    None => assert(false)
+  }
+}
+
+test "a callee asking for a float type is not decoded" {
+  let decoded = match wasm_import_decode_callee("__wasm_import.61.62.F_i") {
+    Some(_) => "decoded",
+    None => "refused"
+  }
+  inspect(decoded, content = "refused")
+}
+
+test "the counter fixture's binding" {
+  let src = wasm_import_binding_source("fixtures/wasm_import/counter.wasm", Fs::read_bytes("fixtures/wasm_import/counter.wasm"))
+  inspect(String::index_of(src, "export fn add_i32(a0: Int, a1: Int) -> Int {") >= 0, content = "true")
+  inspect(String::index_of(src, "export fn bump(a0: Int) -> Unit {") >= 0, content = "true")
+  inspect(String::index_of(src, "export fn wasm_memory_load_u8(a0: Int) -> Int {") >= 0, content = "true")
+  inspect(String::index_of(src, "`half` (f64) -> (f64): only i32 / i64 params") >= 0, content = "true")
+  inspect(String::index_of(src, "`Same`: its vibe name `same` is shared with another export") >= 0, content = "true")
+  inspect(String::index_of(src, "export fn same(") < 0, content = "true")
+}
+
+test "a component binary is refused with the reason" {
+  let r = handle {
+    wasm_import_binding_source("c.wasm", Bytes::from_array([
+      0,
+      97,
+      115,
+      109,
+      13,
+      0,
+      1,
+      0
+    ]))
+  } with { Exception::Throw(m) => m }
+  inspect(String::index_of(r, "is a wasm COMPONENT") >= 0, content = "true")
+}

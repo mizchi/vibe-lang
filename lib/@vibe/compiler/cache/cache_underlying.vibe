@@ -11,6 +11,10 @@
 // determinism_test failure). Real wrapper functions survive the strip: their
 // bodies call the @vibe/cache definitions by their own exported names, which
 // the merge resolves. Keep this file alias-free.
+import @vibe/compiler/core {
+  is_wasm_import_path, wasm_import_binding_source_or_error
+}
+
 import @vibe/core {
   struct MutMap
 }
@@ -194,7 +198,15 @@ let source_text_memo_reads: Array[Int] = [0]
 
 fn source_text_memo_read_counted(path: String) -> String with Fs {
   Array::set(source_text_memo_reads, 0, Array::get(source_text_memo_reads, 0) + 1)
-  Fs::read_file(path)
+  // A foreign core-wasm module (`import ./x.wasm { .. }`) is read as BYTES
+  // -- `Fs::read_file` decodes UTF-8 and would rewrite the binary -- and
+  // answered with the binding module synthesized from it, so every lane
+  // that reads sources through this memo sees ordinary vibe text.
+  if is_wasm_import_path(path) {
+    wasm_import_binding_source_or_error(path, Fs::read_bytes(path))
+  } else {
+    Fs::read_file(path)
+  }
 }
 
 export fn cache_source_text_memo_read_count() -> Int {

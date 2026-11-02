@@ -1037,6 +1037,7 @@ fn run_core(
     {
         function_phases::restrict_finisher(&mut linker, &module, scope)?;
     }
+    link_foreign_wasm_modules(&mut linker, &mut store, &module)?;
 
     let instance = linker.instantiate(&mut store, &module)?;
     let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
@@ -1956,12 +1957,14 @@ fn daemon(args: Vec<String>) -> Result<i32> {
 
 mod component_runtime;
 mod diagnostics;
+mod foreign_link;
 mod host_imports;
 mod source_overlay;
 mod test_each;
 
 use component_runtime::*;
 use diagnostics::*;
+use foreign_link::*;
 use host_imports::*;
 use source_overlay::*;
 

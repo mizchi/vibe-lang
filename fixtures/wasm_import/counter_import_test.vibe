@@ -1,0 +1,46 @@
+// `import ./counter.wasm { .. }`: a core wasm module imported with the types
+// its own binary declares (core/wasm_import_binding.vibe). counter.wasm is
+// built from counter.wat by scripts/build_wasm_import_fixtures.sh.
+import ./counter.wasm {
+  add_i32, mul64, bump, count, is_all_ones, greeting_ptr, greeting_len, wasm_memory_load_u8, wasm_memory_store_u8
+}
+
+fn read_greeting() -> String {
+  let ptr = greeting_ptr()
+  let n = greeting_len()
+  let mut out = ""
+  let mut i = 0
+  while i < n {
+    out = String::concat(out, String::from_byte(wasm_memory_load_u8(ptr + i)))
+    i = i + 1
+  }
+  out
+}
+
+test "i32 arguments and result" {
+  inspect(add_i32(40, 2), content="42")
+  // i32 arithmetic wraps in the foreign function; the result is read signed.
+  inspect(add_i32(2147483647, 1), content="-2147483648")
+}
+
+test "an i32 parameter accepts the unsigned spelling of the same bits" {
+  inspect(is_all_ones(4294967295), content="1")
+  inspect(is_all_ones(-1), content="1")
+  inspect(is_all_ones(1), content="0")
+}
+
+test "i64 arguments and result" {
+  inspect(mul64(123456789, 1000), content="123456789000")
+}
+
+test "a void export mutates the foreign module's state" {
+  bump(5)
+  bump(37)
+  inspect(count(), content="42")
+}
+
+test "the foreign memory is reachable through the accessors" {
+  inspect(read_greeting(), content="hello")
+  wasm_memory_store_u8(greeting_ptr(), 74)
+  inspect(read_greeting(), content="Jello")
+}
