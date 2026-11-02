@@ -1,0 +1,47 @@
+//# Imports
+
+import @vibe/compiler/contract {
+  contract_surface_effects, contract_surface_lines, contract_surface_rows_sorted, parse_contract_program
+}
+
+import @vibe/compiler/syntax {
+  lex
+}
+
+//# Fixture
+
+// `vibe pkg update` (#3673) compares two versions' surfaces through these:
+// the effect-row portion of `contract_surface_lines` (registry-design
+// property 4) and the same lines with each row's labels sorted.
+
+fn surface(contract: String) -> Array[String] with Exception {
+  let (d, o, _) = parse_contract_program(lex(contract))
+  contract_surface_lines(d, o, [])
+}
+
+//# Effects
+
+test "each declaration's own row, one entry per label, in written order" {
+  let lines = surface("fn a(x: Int) -> Int with Fs + Console\nfn b(p: String) -> String with Exception + Http::request?\nfn c() -> Int\n")
+  inspect(contract_surface_effects(lines), content = "[a\tFs, a\tConsole, b\tException, b\tHttp::request?]")
+}
+
+test "a row on a parameter's function type is the parameter's, not the declaration's" {
+  let lines = surface("fn run(f: () -> Int with Http) -> Int\nfn both(f: () -> Int with Http) -> Int with Fs\n")
+  inspect(contract_surface_effects(lines), content = "[both\tFs]")
+}
+
+//# Sorted rows
+
+test "two orders of one row compare equal once sorted; the written lines do not" {
+  let one = surface("fn a(x: Int) -> Int with Fs + Console\n")
+  let two = surface("fn a(y: Int) -> Int with Console + Fs\n")
+  assert(one != two)
+  assert(contract_surface_rows_sorted(one) == contract_surface_rows_sorted(two))
+  inspect(contract_surface_rows_sorted(two), content = "[fn a (Int) -> Int with { Console, Fs }]")
+}
+
+test "a line without a row, and a parameter's row, are left as written" {
+  let lines = surface("fn c() -> Int\nfn run(f: () -> Int with Http + Fs) -> Int\n")
+  inspect(contract_surface_rows_sorted(lines) == lines, content = "true")
+}

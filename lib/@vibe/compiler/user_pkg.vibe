@@ -16,11 +16,15 @@
 //# Imports
 
 import @vibe/compiler/contract {
-  extract_package_name, extract_package_version, extract_require_sources
+  contract_surface_effects, contract_surface_rows_sorted, extract_package_name, extract_package_version, extract_require_sources
+}
+
+import @vibe/compiler/core {
+  standard_host_provider_names
 }
 
 import @vibe/compiler/loader {
-  contract_package_hashes_fs, contract_package_hashes_fs_algo, publish_check_fs
+  contract_package_hashes_fs, contract_package_hashes_fs_algo, contract_surface_lines_fs, publish_check_fs
 }
 
 import @vibe/pkgstore {
@@ -733,6 +737,124 @@ fn lines_missing(a: Array[String], b: Array[String]) -> Array[String] {
   out
 }
 
+/// The host capability an effect label needs (`Fs` for `Fs::read_file?`), or
+/// "" for an effect no host provides (`Exception`, a program's own effect).
+fn label_capability(label: String) -> String {
+  let mut end = String::length(label)
+  let mut k = 0
+  while k < end {
+    let c = String::byte_at(label, k)
+    if c == ':' || c == '[' || c == '?' {
+      end = k
+    } else ()
+    k = k + 1
+  }
+  let head = label[0: end]
+  if contains_str(standard_host_provider_names(), head) {
+    head
+  } else {
+    ""
+  }
+}
+
+/// `cap<TAB>fn, fn` for each host capability some declaration's row needs.
+fn surface_capabilities(lines: Array[String]) -> Array[(String, Array[String])] {
+  let effects = contract_surface_effects(lines)
+  let caps: Array[(String, Array[String])] = []
+  let mut i = 0
+  while i < Array::length(effects) {
+    let entry = Array::get(effects, i)
+    let tab = String::index_of(entry, "\t")
+    let fn_name = entry[0: tab]
+    let cap = label_capability(entry[tab + 1: String::length(entry)])
+    if cap != "" {
+      let mut found = false
+      let mut j = 0
+      while j < Array::length(caps) {
+        let (c, fns) = Array::get(caps, j)
+        if c == cap {
+          found = true
+          if !contains_str(fns, fn_name) {
+            Array::push(fns, fn_name)
+          } else ()
+        } else ()
+        j = j + 1
+      }
+      if !found {
+        Array::push(caps, (cap, [fn_name]))
+      } else ()
+    } else ()
+    i = i + 1
+  }
+  caps
+}
+
+fn capability_names(caps: Array[(String, Array[String])]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(caps) {
+    let (c, _) = Array::get(caps, i)
+    Array::push(out, c)
+    i = i + 1
+  }
+  out
+}
+
+/// How a contract's surface changes between two versions (#3673,
+/// registry-design property 4). The comparison is over the canonical surface
+/// lines `contract_hash` is computed from, with each effect row's labels
+/// sorted, so a contract that only reorders or reformats its declarations or
+/// their effect rows shows no change; then the declarations the
+/// new version drops and adds; then the host capabilities its effect rows
+/// newly require (`warning:` -- the update grants the dependency more
+/// authority) or no longer require.
+fn report_surface_change(old_lines: Array[String], new_lines: Array[String], label: String) -> Unit with Console {
+  let old_rows = contract_surface_rows_sorted(old_lines)
+  let new_rows = contract_surface_rows_sorted(new_lines)
+  let removed = lines_missing(old_rows, new_rows)
+  let added = lines_missing(new_rows, old_rows)
+  say("contract diff (\{label}):")
+  if Array::length(removed) == 0 && Array::length(added) == 0 {
+    say("  (no declaration changed: the versions differ only in how their contracts are written)")
+  } else ()
+  let mut r = 0
+  while r < Array::length(removed) {
+    say("  -\{Array::get(removed, r)}")
+    r = r + 1
+  }
+  let mut a = 0
+  while a < Array::length(added) {
+    say("  +\{Array::get(added, a)}")
+    a = a + 1
+  }
+  let old_caps = surface_capabilities(old_lines)
+  let new_caps = surface_capabilities(new_lines)
+  let old_names = capability_names(old_caps)
+  let new_names = capability_names(new_caps)
+  let mut changed = false
+  let mut n = 0
+  while n < Array::length(new_caps) {
+    let (cap, fns) = Array::get(new_caps, n)
+    if !contains_str(old_names, cap) {
+      say("warning: effect surface: now requires \{cap} (\{String::join(fns, ", ")})")
+      changed = true
+    } else ()
+    n = n + 1
+  }
+  let mut o = 0
+  while o < Array::length(old_caps) {
+    let (cap, _) = Array::get(old_caps, o)
+    if !contains_str(new_names, cap) {
+      say("effect surface: no longer requires \{cap}")
+      changed = true
+    } else ()
+    o = o + 1
+  }
+  if !changed {
+    say("effect surface: unchanged")
+  } else ()
+}
+
 fn pkg_update(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception + Fs + Console {
   let usage = "usage: vibe pkg update @scope/name [--store]"
   let mut name = ""
@@ -826,23 +948,7 @@ fn pkg_update(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception 
       say("contract surface: unchanged (\{cur_contract})")
     } else {
       say("contract surface: \{cur_contract} -> \{best_contract}")
-      // A line set difference of the contract files: the lines the new
-      // contract drops, then the ones it adds.
-      let old_lines = String::split(Fs::read_file(installed_index), "\n")
-      let new_lines = String::split(Fs::read_file(best_index), "\n")
-      say("contract diff (\{installed_index} -> \{name}@\{best}):")
-      let removed = lines_missing(old_lines, new_lines)
-      let added = lines_missing(new_lines, old_lines)
-      let mut r = 0
-      while r < Array::length(removed) {
-        say("  -\{Array::get(removed, r)}")
-        r = r + 1
-      }
-      let mut a = 0
-      while a < Array::length(added) {
-        say("  +\{Array::get(added, a)}")
-        a = a + 1
-      }
+      report_surface_change(contract_surface_lines_fs(installed_index), contract_surface_lines_fs(best_index), "\{installed_index} -> \{name}@\{best}")
     }
     materialize(paths, name, best, best_hash, store)
     0
@@ -850,6 +956,199 @@ fn pkg_update(paths: PkgPaths, args: Array[String]) -> Int with Env + Exception 
 }
 
 //# Command
+
+//# Authority (#3673)
+
+// Each subcommand runs with only the host imports its grant names. The
+// launcher asks `pkg authority <sub>` and has the runner withhold every
+// `vibe.*` import outside the grant (VIBE_HOST_WITHHOLD), so a call beyond it
+// traps naming the import instead of succeeding: the boundary is the host's,
+// not this function's effect row.
+//
+// The fields are the runner's import names, the unit a host links and
+// withholds. A field missing from `pkg_known_host_imports` would stay linked
+// for every subcommand, so scripts/test_pkg_authority.sh refuses a CLI wasm
+// that imports a `vibe.*` field this list does not name.
+
+/// Every `vibe.*` host import the compiler emits.
+let pkg_known_host_imports: Array[String] = [
+  "args-get",
+  "args-len",
+  "compiler_lowering_run",
+  "dbg_break",
+  "dbg_line",
+  "env-get",
+  "fs_append",
+  "fs_chdir",
+  "fs_copy",
+  "fs_exists",
+  "fs_getcwd",
+  "fs_is_dir",
+  "fs_is_file",
+  "fs_mkdir",
+  "fs_mkdir_p",
+  "fs_publish_immutable_text",
+  "fs_read_bytes",
+  "fs_read_dir_nul",
+  "fs_read_file",
+  "fs_remove",
+  "fs_remove_file",
+  "fs_remove_tree",
+  "fs_rename",
+  "fs_stat_token",
+  "fs_write_bytes",
+  "fs_write_file",
+  "host_arg_push",
+  "host_future_arm",
+  "host_future_cancel",
+  "host_future_get",
+  "host_future_wait",
+  "host_future_wait_any",
+  "host_sleep_arm",
+  "host_sleep_cancel",
+  "host_stream_arm",
+  "host_stream_cancel",
+  "host_stream_claim",
+  "host_stream_close",
+  "host_stream_read",
+  "http_close",
+  "http_request",
+  "http_response_body",
+  "http_response_header",
+  "http_response_status",
+  "process_exit",
+  "profile-heap-bytes",
+  "profile-now-us",
+  "resolve_path",
+  "sh",
+  "sh_capture",
+  "sh_capture_close",
+  "sh_capture_exit_code",
+  "sh_capture_stderr",
+  "sh_capture_stdout",
+  "sh_lines",
+  "sleep",
+  "stderr_write_char",
+  "stderr_write_stream",
+  "stdin_provider_acquire",
+  "stdin_provider_close",
+  "stdin_provider_read",
+  "stdin_read_char",
+  "stdin_read_stream",
+  "stdout_write_char",
+  "stdout_write_stream",
+  "tcp_close",
+  "tcp_connect",
+  "tcp_read",
+  "tcp_write"
+]
+
+/// What every subcommand needs, because the CLI itself does before it
+/// dispatches and when it reports: argv and the environment, the working
+/// directory, output, and its exit status.
+let pkg_base_grant: Array[String] = [
+  "args-get",
+  "args-len",
+  "env-get",
+  "fs_getcwd",
+  "process_exit",
+  "stdout_write_char",
+  "stdout_write_stream",
+  "stderr_write_char",
+  "stderr_write_stream"
+]
+
+/// `Fs`: the subcommands that read and write the store, the log and package
+/// directories.
+let pkg_fs_grant: Array[String] = [
+  "fs_append",
+  "fs_copy",
+  "fs_exists",
+  "fs_is_dir",
+  "fs_is_file",
+  "fs_mkdir",
+  "fs_mkdir_p",
+  "fs_publish_immutable_text",
+  "fs_read_bytes",
+  "fs_read_dir_nul",
+  "fs_read_file",
+  "fs_remove",
+  "fs_remove_file",
+  "fs_remove_tree",
+  "fs_rename",
+  "fs_stat_token",
+  "fs_write_bytes",
+  "fs_write_file"
+]
+
+/// The subcommands that touch the filesystem. `spec` only parses its
+/// argument; an unknown subcommand gets the base grant, enough to say so.
+fn pkg_needs_fs(sub: String) -> Bool {
+  sub == "publish" || sub == "install" || sub == "add-fetched" || sub == "fetch-pins" || sub == "yank" || sub == "update"
+}
+
+fn contains_str(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(xs) {
+    found = Array::get(xs, i) == x
+    i = i + 1
+  }
+  found
+}
+
+/// The host imports `vibe pkg <sub>` may call. No subcommand gets `Stdin`,
+/// `Process` beyond its own exit status (git runs in the launcher), `Http`,
+/// `Socket` or the profiler.
+fn pkg_granted_imports(sub: String) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(pkg_base_grant) {
+    Array::push(out, Array::get(pkg_base_grant, i))
+    i = i + 1
+  }
+  if pkg_needs_fs(sub) {
+    let mut j = 0
+    while j < Array::length(pkg_fs_grant) {
+      Array::push(out, Array::get(pkg_fs_grant, j))
+      j = j + 1
+    }
+  } else {
+    ()
+  }
+  out
+}
+
+/// Every known host import outside `pkg_granted_imports(sub)`: what the
+/// launcher has the runner withhold.
+fn pkg_withheld_imports(sub: String) -> Array[String] {
+  let granted = pkg_granted_imports(sub)
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(pkg_known_host_imports) {
+    let f = Array::get(pkg_known_host_imports, i)
+    if !contains_str(granted, f) {
+      Array::push(out, f)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// `pkg authority <sub>`: `grant<TAB>a,b,...`, `withhold<TAB>c,d,...` and
+/// `known<TAB>...`, one row each. The launcher withholds the second row.
+fn pkg_authority(args: Array[String]) -> Int with Exception + Console {
+  if Array::length(args) != 3 {
+    throw("usage: vibe pkg authority <subcommand>")
+  } else ()
+  let sub = Array::get(args, 2)
+  println("grant\t\{String::join(pkg_granted_imports(sub), ",")}")
+  println("withhold\t\{String::join(pkg_withheld_imports(sub), ",")}")
+  println("known\t\{String::join(pkg_known_host_imports, ",")}")
+  0
+}
 
 let pkg_usage: String = "usage: vibe pkg publish <pkg_dir> | install @scope/name@x.y.z [--store] [--allow-yanked] | add <source-spec> [#pkg:b3:<64hex>|#pkg:sha1:<40hex>] [--store] | fetch-pins <index.vpkg> [--store] | yank @scope/name@x.y.z | update @scope/name [--store]"
 
@@ -872,6 +1171,7 @@ export fn selfhost_cli_user_pkg_args(args: Array[String]) -> Int with Env + Exce
     "install" => pkg_install(paths, args),
     "add-fetched" => pkg_add_fetched(paths, args),
     "spec" => pkg_spec(args),
+    "authority" => pkg_authority(args),
     "fetch-pins" => pkg_fetch_pins(paths, args),
     "yank" => pkg_yank(paths, if Array::length(args) > 2 {
       Array::get(args, 2)

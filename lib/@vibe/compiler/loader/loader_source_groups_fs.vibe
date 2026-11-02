@@ -58,6 +58,7 @@ import @vibe/compiler/contract {
   contract_facade_marker,
   contract_hash_with,
   contract_surface_lines,
+  contract_surface_rows_sorted,
   deps_missing_for_imports,
   extract_package_deps,
   extract_package_name,
@@ -962,8 +963,20 @@ export fn publish_check_fs(prev_contract_path: String, next_contract_path: Strin
   } else if Array::length(errors) > 0 {
     errors
   } else {
-    verify_publish_bump(pv, nv, contract_surface_lines(pd, po, ptypes), contract_surface_lines(nd, no, ntypes))
+    // Rows sorted: `with { Fs, Console }` and `with { Console, Fs }` require
+    // the same authority, so reordering one is not a breaking change (#3673).
+    verify_publish_bump(pv, nv, contract_surface_rows_sorted(contract_surface_lines(pd, po, ptypes)), contract_surface_rows_sorted(contract_surface_lines(nd, no, ntypes)))
   }
+}
+
+/// The canonical surface of the contract at `path`, as `contract_surface_lines`
+/// reads it (the lines `contract_hash` is computed over, before sorting):
+/// what `vibe pkg update` compares, so a reordered contract is unchanged.
+export fn contract_surface_lines_fs(path: String) -> Array[String] with Exception + Fs {
+  let (_, blanked) = extract_require_pins(Fs::read_file(path))
+  let (d, o, extra) = parse_contract_program(lex(blanked))
+  let (_, types) = classify_contract_stmts(extra)
+  contract_surface_lines(d, o, types)
 }
 
 /// #2676: the require pins that apply to `path`: those of its owning

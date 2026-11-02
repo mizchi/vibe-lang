@@ -1977,6 +1977,105 @@ export fn contract_surface_lines(fn_decls: Array[(String, String)], opaque_names
   lines
 }
 
+/// Where a `fn` surface line's own effect row is: the labels between the
+/// last `with {` outside every parenthesis and bracket and its `}`, as
+/// `(start, end)`, or `(-1, -1)` for a declaration without one. A row on a
+/// parameter's function type belongs to that parameter, not to the
+/// declaration.
+fn surface_row_span(line: String) -> (Int, Int) {
+  let n = String::length(line)
+  let mut depth = 0
+  let mut row_start = -1
+  let mut k = 0
+  while k < n {
+    let c = String::byte_at(line, k)
+    if c == 40 || c == 91 {
+      depth = depth + 1
+    } else if c == 41 || c == 93 {
+      depth = depth - 1
+    } else if depth == 0 && k + 7 <= n && line[k: k + 7] == " with {" {
+      row_start = k + 7
+    } else ()
+    k = k + 1
+  }
+  if row_start < 0 {
+    (-1, -1)
+  } else {
+    let close = String::index_of(line[row_start: n], "}")
+    if close < 0 {
+      (row_start, n)
+    } else {
+      (row_start, row_start + close)
+    }
+  }
+}
+
+fn surface_row_labels(line: String) -> Array[String] {
+  let out = array_empty()
+  let (a, b) = surface_row_span(line)
+  if a >= 0 {
+    let labels = String::split(line[a: b], ",")
+    let mut j = 0
+    while j < Array::length(labels) {
+      let label = String::trim(Array::get(labels, j))
+      if label != "" {
+        Array::push(out, label)
+      } else ()
+      j = j + 1
+    }
+  } else ()
+  out
+}
+
+/// The effect row of each `fn` surface line, one `<fn><TAB><label>` entry per
+/// label in the order written (registry-design property 4: the effect-row
+/// portion of `contract_surface_lines`).
+export fn contract_surface_effects(lines: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, "fn ") {
+      let rest = line[3: String::length(line)]
+      let space = String::index_of(rest, " ")
+      let name = if space < 0 {
+        rest
+      } else {
+        rest[0: space]
+      }
+      let labels = surface_row_labels(line)
+      let mut j = 0
+      while j < Array::length(labels) {
+        Array::push(out, "\{name}\t\{Array::get(labels, j)}")
+        j = j + 1
+      }
+    } else ()
+    i = i + 1
+  }
+  out
+}
+
+/// The surface lines with each declaration's own effect row in sorted order,
+/// for comparing two versions: `with { Fs, Console }` and `with { Console,
+/// Fs }` require the same authority. `contract_surface_lines` keeps the
+/// written order, because `contract_hash` is computed over it.
+export fn contract_surface_rows_sorted(lines: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    let (a, b) = surface_row_span(line)
+    if String::starts_with(line, "fn ") && a >= 0 {
+      let sorted = sorted_strings(surface_row_labels(line))
+      Array::push(out, "\{line[0: a]} \{String::join(sorted, ", ")} \{line[b: String::length(line)]}")
+    } else {
+      Array::push(out, line)
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// "patch" | "minor" | "major" for old -> new surface lines.
 export fn classify_contract_change(old_lines: Array[String], new_lines: Array[String]) -> String {
   let mut all_old_kept = true

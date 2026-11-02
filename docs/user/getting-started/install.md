@@ -351,6 +351,19 @@ workspace `lib/`, then the `VIBE_LIB` roots with the active toolchain's
 stdlib first. `vibe new <dir>` names the project `@local/<dir>` unless
 `--name @scope/name` is given; `vibe pkg publish` refuses the `@local` scope.
 
+Each package command runs with only the host access it needs. The runner
+withholds every other host import, so a call outside the grant fails naming
+the import:
+
+| command | granted |
+| --- | --- |
+| `vibe pkg spec` (used by `add`) | arguments, environment, output, the working directory |
+| `publish`, `install`, `add`, `fetch` (`fetch-pins`), `yank`, `update` | the above, and the filesystem |
+
+No package command reads stdin, starts a process (the launcher runs `git`
+itself), opens a network connection or uses the profiler. `vibe pkg authority
+<command>` prints the grant and the withheld imports.
+
 ## Editor support (LSP)
 
 `vibe lsp` starts a stdio LSP server that drives the compiler. It
