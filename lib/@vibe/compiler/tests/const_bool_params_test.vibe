@@ -9,7 +9,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, fold_const_bool_params, set_executable_exports_stripped
+  Expr, Stmt, TypeExpr, fold_const_bool_params, fold_const_bool_params_signed, set_executable_exports_stripped
 }
 
 import @vibe/compiler/syntax {
@@ -155,6 +155,56 @@ test "a wrapper that forwards its parameter is folded first, then its callee: fi
     },
     _ => assert(false)
   }
+}
+
+//# Fold signatures (#2818)
+
+test "the fold signature names each rewritten function's substitutions, and nothing else" {
+  // Same chain as the fixpoint test, plus a function the pass cannot fold
+  // (its callers disagree) and one whose decided parameter is never read.
+  let inner = fn_stmt(false, "inner", [("flag", bool_ty())], EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
+  let outer = fn_stmt(false, "outer", [("flag", bool_ty())], call1("inner", EIdent("flag", -1)))
+  let mixed = fn_stmt(false, "mixed", [("flag", bool_ty())], EIf(EIdent("flag", -1), EInt(1), EInt(2)))
+  let unread = fn_stmt(false, "unread", [("n", int_ty()), ("flag", bool_ty())], EIf(EBool(true), EInt(1), EInt(2)))
+  let unread_args = [EInt(3), EBool(true)]
+  let unread_call = ECall(EIdent("unread", -1), unread_args, -1, [])
+  let main_body = ESeq(call1("outer", EBool(false)), ESeq(call1("mixed", EBool(true)), ESeq(call1("mixed", EBool(false)), unread_call)))
+  let stmts = [helper_stmt(), inner, outer, mixed, unread, main_stmt(main_body)]
+  let names: Array[String] = []
+  let sigs: Array[String] = []
+  let n = fold_const_bool_params_signed(stmts, "main", no_wat(), names, sigs)
+  assert(eq(n, 2))
+  // Sorted by name; `mixed` is unfolded and `unread` replaced no read, so
+  // neither appears -- an absent function is exactly its source text.
+  inspect(names, content = "[inner, outer]")
+  inspect(sigs, content = "[0f, 0f]")
+  // Which is why `unread` must keep its source body: the decided parameter
+  // has no read, so no substitution ran and the literal `if` the source wrote
+  // is still there. A substitution that replaced nothing would have folded it,
+  // making the body depend on how many rounds the whole program took.
+  match body_of(stmts, "unread") {
+    EIf(EBool(true), _, _) => (),
+    _ => assert(false)
+  }
+}
+
+test "the unsigned entry point folds exactly what the signed one does" {
+  let names: Array[String] = []
+  let sigs: Array[String] = []
+  let a = [
+    helper_stmt(),
+    work_stmt(false),
+    main_stmt(call1("work", EBool(false)))
+  ]
+  let b = [
+    helper_stmt(),
+    work_stmt(false),
+    main_stmt(call1("work", EBool(false)))
+  ]
+  assert(eq(fold_const_bool_params(a, "main", no_wat()), fold_const_bool_params_signed(b, "main", no_wat(), names, sigs)))
+  assert(is_int_one(body_of(a, "work")))
+  assert(is_int_one(body_of(b, "work")))
+  inspect(names, content = "[work]")
 }
 
 test "`!flag && other` with flag = false leaves exactly `other` as the condition" {

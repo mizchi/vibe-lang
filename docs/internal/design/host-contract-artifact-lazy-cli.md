@@ -433,9 +433,12 @@ measurements already in hand:
   feed. It is not the artifact to hang more on.
 - #2825 §3 found the persisted codegen body cache (16 MB) carrying the
   expensive phases, and found it never fired on a build with an entry because
-  the capability const-fold rewrote bodies. The 2026-09-15 amendment to
-  ADR-0088 removes that fold, which is exactly what makes a body
-  **capability-independent** — one body serves every grant set.
+  the constant-Bool fold (`fold_const_bool_params`) rewrote bodies. #2818 makes
+  a folded body replayable by keying each cached entry on the fold's
+  per-function signature. Separately, the 2026-09-15 amendment to ADR-0088
+  moves `perform?` from a compile-time resolution to an instantiate-time
+  branch, which is what makes a body **capability-independent**: one body
+  serves every grant set.
 
 So the intermediate that matters for per-verb artifacts is the body cache, and
 what a per-verb build does is *link*: prune from one root (`dce-root`) over

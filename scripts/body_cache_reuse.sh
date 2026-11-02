@@ -5,11 +5,17 @@
 #   bash scripts/body_cache_reuse.sh [corpus] [leaf] [entry]
 #
 # The ENTRY matters and used to be hardcoded to `__no_entry__`, which is the
-# library shape. Measured 2026-09-15 on the CLI closure, same corpus, same
-# cache, only the entry changed: `__no_entry__` offers 9752 of 10478 bodies
-# warm, `cli_main` offers ZERO and recompiles all 10287 -- warm identical to
-# cold. Every row this script has ever published was the library shape, so
-# make the entry visible rather than assumed.
+# library shape. Only an entry runs the constant-Bool fold, and until #2818 a
+# fold withheld every guard: on the CLI closure `cli_main` offered ZERO bodies
+# warm while `__no_entry__` offered nearly all of them. So make the entry
+# visible rather than assumed:
+#
+#   bash scripts/body_cache_reuse.sh lib/@vibe/cli/entry.vibe \
+#     lib/@vibe/core/defaults.vibe cli_main
+#
+# That closure (685 files) overflows the default node stack in the
+# seed-compiled harness; raise it with `ulimit -s unlimited` and
+# `VIBE_NODE_STACK_SIZE=500000`.
 #
 # This is a MEASUREMENT, not a gate: it prints numbers and always exits 0, so
 # there is no pass/fail property for a `_test.sh` to red-test. That is also why

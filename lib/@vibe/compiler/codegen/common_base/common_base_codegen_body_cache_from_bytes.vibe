@@ -263,6 +263,7 @@ export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, fn_n
     Array::push(cache.fn_meta_i32, Array::get(meta_i32, Array::length(meta_i32) - 1))
     Array::push(cache.fn_meta_i64, Array::get(meta_i64, Array::length(meta_i64) - 1))
     Array::push(cache.fn_meta_v128, Array::get(meta_v128, Array::length(meta_v128) - 1))
+    Array::push(cache.fn_fold_sigs, codegen_body_cache_fold_sig(cache.guard_fold_names, cache.guard_fold_sigs, fn_name))
     let mut li = lam_lo
     while li < lam_hi {
       Array::push(cache.lam_owner, fn_index)
@@ -333,6 +334,7 @@ export fn codegen_body_cache_merge(a: CodegenBodyCache, b: CodegenBodyCache) -> 
       Array::push(out.fn_meta_i32, Array::get(src.fn_meta_i32, i))
       Array::push(out.fn_meta_i64, Array::get(src.fn_meta_i64, i))
       Array::push(out.fn_meta_v128, Array::get(src.fn_meta_v128, i))
+      Array::push(out.fn_fold_sigs, Array::get(src.fn_fold_sigs, i))
       i = i + 1
     }
     let lam_n = Array::length(src.lam_owner)
@@ -454,6 +456,91 @@ fn bcc_copy_guards(src: CodegenBodyCache, out: CodegenBodyCache) -> Unit {
   while gt < Array::length(src.guard_typed_lowering) {
     Array::push(out.guard_typed_lowering, Array::get(src.guard_typed_lowering, gt))
     gt = gt + 1
+  }
+  let mut gf = 0
+  while gf < Array::length(src.guard_fold_names) {
+    Array::push(out.guard_fold_names, Array::get(src.guard_fold_names, gf))
+    Array::push(out.guard_fold_sigs, Array::get(src.guard_fold_sigs, gf))
+    gf = gf + 1
+  }
+}
+
+/// #2818: the constant-Bool fold signature a compile's fold table gives
+/// `name` -- `""` when the fold left that function as its source text.
+/// `names` is sorted (`fold_const_bool_params_signed` emits it that way) and
+/// `sigs` aligned with it.
+export fn codegen_body_cache_fold_sig(names: Array[String], sigs: Array[String], name: String) -> String {
+  let at = bsearch_leftmost(names, name)
+  if at >= 0 {
+    Array::get(sigs, at)
+  } else {
+    ""
+  }
+}
+
+/// #2818: install a compile's fold table on the cache it is about to harvest
+/// into, so every entry `codegen_body_cache_record` appends carries the
+/// signature its body was compiled under. Replaces whatever table was there:
+/// a cache describes one compile's harvest.
+export fn codegen_body_cache_set_fold_table(cache: CodegenBodyCache, names: Array[String], sigs: Array[String]) -> Unit {
+  Array::truncate(cache.guard_fold_names, 0)
+  Array::truncate(cache.guard_fold_sigs, 0)
+  let mut i = 0
+  while i < Array::length(names) {
+    Array::push(cache.guard_fold_names, Array::get(names, i))
+    Array::push(cache.guard_fold_sigs, Array::get(sigs, i))
+    i = i + 1
+  }
+}
+
+/// #2818: the entries of `cache` that the compile described by the fold table
+/// `names` / `sigs` may replay -- those whose function that compile folds
+/// exactly as the entry's own compile did, `""` (left as source) included.
+///
+/// This is what lets a folded build use the cache at all. A folded body's
+/// bytes depend on call sites in OTHER files, which the file table cannot see:
+/// `gate(on: Bool)` called only as `gate(true)` compiles to its `true` arm, and
+/// editing a caller in another file to pass `false` leaves `gate`'s file
+/// unchanged while its body must change. The signature is that dependence made
+/// explicit, so the entry for `gate` is dropped and recompiled while every
+/// other entry stays.
+///
+/// Returns `cache` itself when every entry matches, which is the common case
+/// and keeps a warm build from copying the whole cache to drop nothing.
+/// `consumer_src_limit` describes the CONSUMING build, not the harvest, so a
+/// filtered copy carries it over unchanged.
+export fn codegen_body_cache_filter_fold_sigs(cache: CodegenBodyCache, names: Array[String], sigs: Array[String]) -> CodegenBodyCache {
+  let flags = array_empty()
+  let mut dropped = 0
+  let mut i = 0
+  while i < Array::length(cache.fn_indices) {
+    let have = if i < Array::length(cache.fn_fold_sigs) {
+      Some(Array::get(cache.fn_fold_sigs, i))
+    } else {
+      None
+    }
+    let keep = match have {
+      Some(sig) => sig == codegen_body_cache_fold_sig(names, sigs, Array::get(cache.fn_names, i)),
+      None => false
+    }
+    if keep {
+      Array::push(flags, 1)
+    } else {
+      Array::push(flags, 0)
+      dropped = dropped + 1
+    }
+    i = i + 1
+  }
+  if dropped == 0 {
+    cache
+  } else {
+    let out = bcc_filter_entries(cache, flags)
+    let mut ci = 0
+    while ci < Array::length(cache.consumer_src_limit) {
+      Array::push(out.consumer_src_limit, Array::get(cache.consumer_src_limit, ci))
+      ci = ci + 1
+    }
+    out
   }
 }
 
@@ -783,6 +870,26 @@ fn bcc_src_region_n(cache: CodegenBodyCache) -> Int {
 /// to could have moved. `guard_layout` is what replaces that, and the body
 /// loop narrows back to the prefix when it does not hold.
 export fn codegen_body_cache_filter_src_keep(cache: CodegenBodyCache, keep_file: Array[Int]) -> CodegenBodyCache {
+  bcc_filter_entries(cache, bcc_keep_flags_files(cache, keep_file))
+}
+
+/// Would `codegen_body_cache_filter_src_keep(cache, keep_file)` drop any
+/// entry? A caller that refilters an already-filtered cache can skip the copy
+/// when it would not (#2818): the filter rebuilds every column, and on a warm
+/// build of the CLI closure that is ~15k entries and their lambda, slot,
+/// blind and linemap rows, for nothing.
+export fn codegen_body_cache_src_keep_drops_any(cache: CodegenBodyCache, keep_file: Array[Int]) -> Bool {
+  let flags = bcc_keep_flags_files(cache, keep_file)
+  let mut drops = false
+  let mut i = 0
+  while !drops && i < Array::length(flags) {
+    drops = Array::get(flags, i) == 0
+    i = i + 1
+  }
+  drops
+}
+
+fn bcc_keep_flags_files(cache: CodegenBodyCache, keep_file: Array[Int]) -> Array[Int] {
   let src_region_n = bcc_src_region_n(cache)
   let flags = array_empty()
   let mut i = 0
@@ -800,7 +907,7 @@ export fn codegen_body_cache_filter_src_keep(cache: CodegenBodyCache, keep_file:
     }
     i = i + 1
   }
-  bcc_filter_entries(cache, flags)
+  flags
 }
 
 /// The subset of `cache` whose entry flag is 1, with each kept function's
@@ -808,13 +915,33 @@ export fn codegen_body_cache_filter_src_keep(cache: CodegenBodyCache, keep_file:
 /// copied verbatim. The input is not mutated.
 fn bcc_filter_entries(cache: CodegenBodyCache, keep_entry: Array[Int]) -> CodegenBodyCache {
   let out = codegen_body_cache_new()
-  let keep_fn = array_empty()
+  // Which function indices are kept, direct-addressed. The owner columns below
+  // (lambdas, slots, blind references, linemap rows) are each far longer than
+  // the function list, and a linear membership scan per row made this
+  // quadratic: on the CLI closure, ~14k kept functions against every linemap
+  // row, paid on every warm decode (#2818).
+  let mut max_fn = 0 - 1
+  let mut mi = 0
+  while mi < Array::length(cache.fn_indices) {
+    if Array::get(cache.fn_indices, mi) > max_fn {
+      max_fn = Array::get(cache.fn_indices, mi)
+    } else {
+      ()
+    }
+    mi = mi + 1
+  }
+  let keep_fn: Array[Int] = Array::with_capacity(max_fn + 1)
+  let mut zi = 0
+  while zi <= max_fn {
+    Array::push(keep_fn, 0)
+    zi = zi + 1
+  }
   let mut i = 0
   while i < Array::length(cache.fn_indices) {
     let src_stmt = Array::get(cache.fn_src_stmts, i)
     if i < Array::length(keep_entry) && Array::get(keep_entry, i) == 1 {
       let fni = Array::get(cache.fn_indices, i)
-      Array::push(keep_fn, fni)
+      Array::set(keep_fn, fni, 1)
       Array::push(out.fn_indices, fni)
       Array::push(out.fn_names, Array::get(cache.fn_names, i))
       Array::push(out.fn_files, Array::get(cache.fn_files, i))
@@ -823,6 +950,7 @@ fn bcc_filter_entries(cache: CodegenBodyCache, keep_entry: Array[Int]) -> Codege
       Array::push(out.fn_meta_i32, Array::get(cache.fn_meta_i32, i))
       Array::push(out.fn_meta_i64, Array::get(cache.fn_meta_i64, i))
       Array::push(out.fn_meta_v128, Array::get(cache.fn_meta_v128, i))
+      Array::push(out.fn_fold_sigs, Array::get(cache.fn_fold_sigs, i))
     } else {
       ()
     }
@@ -831,7 +959,7 @@ fn bcc_filter_entries(cache: CodegenBodyCache, keep_entry: Array[Int]) -> Codege
   let mut j = 0
   while j < Array::length(cache.lam_owner) {
     let owner = Array::get(cache.lam_owner, j)
-    if array_contains_int_bcc(keep_fn, owner) {
+    if bcc_fn_kept(keep_fn, owner) {
       Array::push(out.lam_owner, owner)
       Array::push(out.lam_indices, Array::get(cache.lam_indices, j))
       Array::push(out.lam_bodies, Array::get(cache.lam_bodies, j))
@@ -847,7 +975,7 @@ fn bcc_filter_entries(cache: CodegenBodyCache, keep_entry: Array[Int]) -> Codege
   let mut m = 0
   while m < Array::length(cache.blind_fn) {
     let bowner = Array::get(cache.blind_fn, m)
-    if array_contains_int_bcc(keep_fn, bowner) {
+    if bcc_fn_kept(keep_fn, bowner) {
       Array::push(out.blind_fn, bowner)
       Array::push(out.blind_body, Array::get(cache.blind_body, m))
       Array::push(out.blind_offsets, Array::get(cache.blind_offsets, m))
@@ -861,7 +989,7 @@ fn bcc_filter_entries(cache: CodegenBodyCache, keep_entry: Array[Int]) -> Codege
   let mut k = 0
   while k < Array::length(cache.slot_owner) {
     let sowner = Array::get(cache.slot_owner, k)
-    if array_contains_int_bcc(keep_fn, sowner) {
+    if bcc_fn_kept(keep_fn, sowner) {
       Array::push(out.slot_owner, sowner)
       Array::push(out.slot_values, Array::get(cache.slot_values, k))
     } else {
@@ -872,7 +1000,7 @@ fn bcc_filter_entries(cache: CodegenBodyCache, keep_entry: Array[Int]) -> Codege
   let mut lmi = 0
   while lmi < Array::length(cache.lm_owner) {
     let lowner = Array::get(cache.lm_owner, lmi)
-    if array_contains_int_bcc(keep_fn, lowner) {
+    if bcc_fn_kept(keep_fn, lowner) {
       Array::push(out.lm_owner, lowner)
       Array::push(out.lm_offsets, Array::get(cache.lm_offsets, lmi))
       Array::push(out.lm_file_ids, Array::get(cache.lm_file_ids, lmi))
@@ -886,18 +1014,8 @@ fn bcc_filter_entries(cache: CodegenBodyCache, keep_entry: Array[Int]) -> Codege
   out
 }
 
-fn array_contains_int_bcc(xs: Array[Int], v: Int) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while !found && i < Array::length(xs) {
-    if Array::get(xs, i) == v {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
+fn bcc_fn_kept(keep_fn: Array[Int], owner: Int) -> Bool {
+  owner >= 0 && owner < Array::length(keep_fn) && Array::get(keep_fn, owner) == 1
 }
 
 export fn emit_i32_ge_u(buf: Bytes) -> Unit {

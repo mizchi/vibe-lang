@@ -35,6 +35,7 @@ import ./shape_environment.vibe {
 }
 
 import ./state.vibe {
+  dtd_context_renderers,
   dtd_derived_renderers,
   dtd_generic_show_shims,
   dtd_interp_site_off,
@@ -50,12 +51,66 @@ import ./utilities.vibe {
   empty_str_array, str_array_contains
 }
 
+import @vibe/core {
+  str_lt
+}
+
 export fn show_self_fn_set(name: String) -> Unit {
   Array::set(dtd_show_self_fn, 0, name)
 }
 
 export fn derived_renderers_reset() -> Unit {
   Array::truncate(dtd_derived_renderers, 0)
+  Array::truncate(dtd_context_renderers, 0)
+}
+
+/// #2826: a renderer a DEPENDENCY's per-module run generates. Recorded as
+/// derived, like this run's own, and remembered separately because its
+/// `T::to_string` is not among this run's statements:
+/// `add_context_renderer_returns` lets the return table know it exists.
+export fn context_renderer_record(tname: String) -> Unit {
+  Array::push(dtd_derived_renderers, tname)
+  Array::push(dtd_context_renderers, tname)
+}
+
+/// Give `fn_returns` a `T::to_string -> String` row for every context-derived
+/// renderer it lacks. The interpolation rewrite renders a declared type only
+/// when that function exists, and on the per-module prelude it exists in the
+/// dependency's output, not here; without the row `"\{dep_value}"` was
+/// refused as having no Show renderer. The link joins the call to the
+/// dependency's definition, so nothing is generated twice.
+export fn add_context_renderer_returns(fn_returns: Array[(String, String)]) -> Unit {
+  let mut ti = 0
+  while ti < Array::length(dtd_context_renderers) {
+    let fname = String::concat(Array::get(dtd_context_renderers, ti), "::to_string")
+    let mut present = false
+    let mut ri = 0
+    while !present && ri < Array::length(fn_returns) {
+      let (rname, _) = Array::get(fn_returns, ri)
+      present = rname == fname
+      ri = ri + 1
+    }
+    if !present {
+      // The table is sorted and searched by bisection (`fn_returns_find`),
+      // so the row goes in at its place, not at the end.
+      Array::push(fn_returns, (fname, "String"))
+      let mut at = Array::length(fn_returns) - 1
+      let mut moving = true
+      while moving && at > 0 {
+        let (prev, _) = Array::get(fn_returns, at - 1)
+        if str_lt(fname, prev) {
+          Array::set(fn_returns, at, Array::get(fn_returns, at - 1))
+          Array::set(fn_returns, at - 1, (fname, "String"))
+          at = at - 1
+        } else {
+          moving = false
+        }
+      }
+    } else {
+      ()
+    }
+    ti = ti + 1
+  }
 }
 
 export fn derived_renderer_record(tname: String) -> Unit {
