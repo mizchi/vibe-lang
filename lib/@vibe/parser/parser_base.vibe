@@ -31,10 +31,6 @@ export fn peek(tokens: Array[Token], pos: Int) -> Token {
 /// Parse the optional constructor-kind suffix of a type binder. `F` has kind
 /// Type, `F[_]` has kind Type -> Type, and each additional underscore adds one
 /// input. The returned String is the AST contract key, not source spelling.
-/// ADR-0122 (#3728): a binder spelled `Float64` / `Float32` is keyed as
-/// `Double` / `Float`, the spelling every use of it is parsed to
-/// (`float_width_alias`), so `struct Box[Float64] { value: Float64 }` keeps
-/// its field a type parameter.
 export fn parse_type_param_kind(tokens: Array[Token], pos: Int, name: String) -> (String, Int) with Exception {
   // #2141 / #2474: `__Vfp_` is how normalize/desugar_trait_dict re-spells a
   // formal inside a synthesized `__arr_equals__` helper, and the checker's
@@ -46,6 +42,16 @@ export fn parse_type_param_kind(tokens: Array[Token], pos: Int, name: String) ->
   // through this function. The one parse that reads such a binder
   // legitimately -- the module-source builder re-reading the merged program
   // the compiler printed itself -- says so first (`compiler_spelled_type_params`).
+  // ADR-0122 (#3728): `Float64` / `Float32` are the builtin float types'
+  // width-named spellings, read as `Double` / `Float` in every type position.
+  // A type parameter of that name could neither be referred to as itself nor
+  // be told apart from the builtin, so it is refused here, the one place every
+  // type-parameter collector goes through.
+  if name == "Float64" || name == "Float32" {
+    throw("rename this type parameter: `" + name + "` is the builtin float type's name, and every `" + name + "` in a type names that builtin")
+  } else {
+    ()
+  }
   if String::starts_with(name, "__Vfp_") && !reads_compiler_spelled_type_params() {
     throw(String::concat("type parameter `", String::concat(name, "` uses the reserved `__Vfp_` prefix (compiler-generated type-variable spellings) -- rename it (#2141)")))
   } else {
@@ -78,9 +84,9 @@ export fn parse_type_param_kind(tokens: Array[Token], pos: Int, name: String) ->
           _ => throw("expected '_' in a constructor type parameter, such as F[_]")
         }
       }
-      (type_param_key(float_width_alias(name), arity), p)
+      (type_param_key(name, arity), p)
     },
-    _ => (type_param_key(float_width_alias(name), 0), pos)
+    _ => (type_param_key(name, 0), pos)
   }
 }
 
@@ -1008,7 +1014,7 @@ fn parse_bounded_type_params_with_binder_context(tokens: Array[Token], pos: Int,
         break
       },
       TIdent(name) => {
-        binder_capture_source(context, float_width_alias(name), p, p)
+        binder_capture_source(context, name, p, p)
         let (param_key, after_kind) = parse_type_param_kind(tokens, p + 1, name)
         ArrayBuilder::push(names, param_key)
         p = after_kind
@@ -1371,7 +1377,7 @@ export fn parse_tparam_names_with_binder_context(tokens: Array[Token], pos: Int,
           },
           TIdent(nm) => {
             if depth == 1 && expect_name {
-              binder_capture_source(context, float_width_alias(nm), skip, skip)
+              binder_capture_source(context, nm, skip, skip)
               let (param_key, after_kind) = parse_type_param_kind(tokens, skip + 1, nm)
               ArrayBuilder::push(b, param_key)
               expect_name = false
@@ -1409,10 +1415,9 @@ fn parse_tparam_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) wi
 /// depth 1 and `acc` already holding `name[`.
 fn collect_row_item_targs(tokens: Array[Token], pos: Int, depth: Int, acc: String) -> (String, Int) with Exception {
   match peek(tokens, pos) {
-    // ADR-0122 (#3728): a row's type arguments are collected as text, so the
-    // width-named float spellings are canonicalized here too -- otherwise a
-    // `Float64` formal (keyed `Double` by `parse_type_param_kind`) would not
-    // match its own reference in `with Box[Float64]`.
+    // ADR-0122 (#3728): a row's type arguments are collected as text, outside
+    // `parse_type`, so the width-named float spellings are canonicalized here
+    // too: `with Box[Float64]` names the same row as `with Box[Double]`.
     TIdent(nm) => collect_row_item_targs(tokens, pos + 1, depth, String::concat(acc, float_width_alias(nm))),
     TComma => throw("a generic effect row item takes exactly one type argument for now (multi-argument instantiations in `with { ... }` are not yet supported)"),
     TLBracket => collect_row_item_targs(tokens, pos + 1, depth + 1, String::concat(acc, "[")),
