@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Red tests for check_ast_binary_tags.sh (#2510).
+# Red tests for check_ast_binary_tags.vibex (#2510; #3672 ported the gate).
 #
 # Each case mutates a COPY of the real inputs and asserts the gate fails with
 # the message for that specific check -- not merely that it failed, since a
@@ -8,17 +8,16 @@
 # would sail through while proving nothing (#2248).
 set -euo pipefail
 
-# The gate reads this; inheriting a value from the surrounding shell (a
-# SessionStart hook, a previous case) would silently point every case at the
-# wrong tree (#2252).
-unset VIBE_AST_BINARY_TAGS_ROOT
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CHECK="$SCRIPT_DIR/check_ast_binary_tags.sh"
 REAL_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$REAL_ROOT"
 
-tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/vibe_ast_binary_tags_test.XXXXXX")"
+# The gate reads only inside the repository, so the copy lives under _build/.
+tmp_rel="_build/ast_binary_tags_test.$$"
+tmp_root="$REAL_ROOT/$tmp_rel"
+mkdir -p "$tmp_root"
 trap 'rm -rf "$tmp_root"' EXIT
+run_gate() { bash "$REAL_ROOT/scripts/vibe_run.sh" scripts/check_ast_binary_tags.vibex -- --root "$tmp_rel" > "$1" 2>&1; }
 
 VPKG_REL="lib/@vibe/ast/index.vpkg"
 DOC_REL="docs/internal/compiler/ast_binary_abi.md"
@@ -36,7 +35,7 @@ fail() { echo "check_ast_binary_tags self-test: $1" >&2; exit 1; }
 assert_red() {
   name="$1"; want="$2"
   set +e
-  VIBE_AST_BINARY_TAGS_ROOT="$tmp_root" bash "$CHECK" > "$tmp_root/out" 2>&1
+  run_gate "$tmp_root/out"
   st=$?
   set -e
   [ "$st" -ne 0 ] || { cat "$tmp_root/out" >&2; fail "$name: expected a failure, got ok"; }
@@ -48,7 +47,7 @@ assert_red() {
 
 # The unmutated copy must pass, or every red result below is meaningless.
 reset_tree
-VIBE_AST_BINARY_TAGS_ROOT="$tmp_root" bash "$CHECK" > "$tmp_root/green.out" 2>&1 ||
+run_gate "$tmp_root/green.out" ||
   { cat "$tmp_root/green.out" >&2; fail "unmutated copy of the real tree must pass"; }
 grep -q '^\[ast-binary-tags\] ok$' "$tmp_root/green.out" || fail "unmutated copy printed no ok line"
 
@@ -103,5 +102,26 @@ assert_red "case 6 (missing section)" "no '### Pat tags' section"
 reset_tree
 rm -f "$tmp_root/$DOC_REL"
 assert_red "case 7 (missing doc)" 'FAIL: missing'
+
+# 8. A row whose variant appears twice in the table.
+reset_tree
+grep -q '^| 0x21 | `EUnit`' "$tmp_root/$DOC_REL" || fail "case 8: EUnit row not present to repeat"
+awk '{ print } /^\| 0x21 \| `EUnit`/ { print "| 0x7f | `EUnit` | `-` |" }' \
+  "$tmp_root/$DOC_REL" > "$tmp_root/t" && mv "$tmp_root/t" "$tmp_root/$DOC_REL"
+[ "$(grep -c '| `EUnit` |' "$tmp_root/$DOC_REL")" -eq 2 ] || fail "case 8: mutation did not land"
+assert_red "case 8 (a variant with two rows)" 'Expr variant has 2 rows, expected 1: EUnit'
+
+# 9. The heading loses its count.
+reset_tree
+sed 's|^### Pat tags (10 variants)$|### Pat tags|' "$tmp_root/$DOC_REL" > "$tmp_root/t" &&
+  mv "$tmp_root/t" "$tmp_root/$DOC_REL"
+grep -q '^### Pat tags$' "$tmp_root/$DOC_REL" || fail "case 9: mutation did not land"
+assert_red "case 9 (heading without a count)" "'### Pat tags' heading must end with '(N variants)'"
+
+# 10. A comment and a trailing semicolon on a variant line are not part of it.
+reset_tree
+sed 's|^  TyUnit$|  TyUnit; // the unit type|' "$tmp_root/$VPKG_REL" > "$tmp_root/t" && mv "$tmp_root/t" "$tmp_root/$VPKG_REL"
+grep -q '^  TyUnit; // the unit type$' "$tmp_root/$VPKG_REL" || fail "case 10: mutation did not land"
+run_gate "$tmp_root/green.out" || { cat "$tmp_root/green.out" >&2; fail "case 10: a commented variant line was misread"; }
 
 echo "check_ast_binary_tags self-test: ok"

@@ -1,0 +1,159 @@
+import @vibe/compiler/incremental {
+  RippleDb, ripple_get_deps
+}
+
+import @vibe/compiler/core {
+  str_lt
+}
+import @vibe/compiler/module_graph {
+  plan_module_order
+}
+import @vibe/core {
+  array_empty
+}
+
+export effect ModuleWalk {
+  Planned(Array[String], Array[Int], Array[(String, Array[String])]) -> Unit
+  Visit(Int) -> Array[Int]
+  Step(Array[(String, String)], ModuleWalkState, String) -> (String, ModuleWalkState, Option[String])
+  Published(String, String, ModuleWalkState, Int) -> Unit
+  Failed(String) -> Unit
+  Complete -> Unit
+  Finish(ModuleWalkState, String) -> Option[String]
+}
+
+fn walk_has_path(paths: Array[String], path: String) -> Bool {
+  Array::any(paths, f = (p) -> p == path)
+}
+
+fn walk_is_blocked(edges: Array[(String, Array[String])], failed: Array[String], path: String) -> Bool {
+  let mut blocked = false
+  let mut i = 0
+  while i < Array::length(edges) && !blocked && Array::length(failed) > 0 {
+    let (owner, deps) = Array::get(edges, at = i)
+    if owner == path {
+      blocked = Array::any(deps, f = (dep) -> walk_has_path(paths = failed, path = dep))
+    } else ()
+    i = i + 1
+  }
+  blocked
+}
+
+fn walk_diagnostic_lt(a: (String, String), b: (String, String)) -> Bool {
+  if a.0 == b.0 {
+    str_lt(a = a.1, b = b.1)
+  } else {
+    str_lt(a = a.0, b = b.0)
+  }
+}
+
+/// Canonical path/message order, with exact duplicate messages removed.
+fn walk_diagnostics(_ diags: Array[(String, String)]) -> String {
+  let sorted: Array[(String, String)] = []
+  let mut i = 0
+  while i < Array::length(diags) {
+    let entry = Array::get(diags, at = i)
+    Array::push(sorted, value = entry)
+    let mut j = Array::length(sorted) - 1
+    while j > 0 && walk_diagnostic_lt(a = entry, b = Array::get(sorted, at = j - 1)) {
+      Array::set(sorted, at = j, value = Array::get(sorted, at = j - 1))
+      j = j - 1
+    }
+    Array::set(sorted, at = j, value = entry)
+    i = i + 1
+  }
+  let messages: Array[String] = []
+  for entry in sorted {
+    if !walk_has_path(paths = messages, path = entry.1) {
+      Array::push(messages, value = entry.1)
+    } else ()
+  }
+  String::join(messages, sep = "\n")
+}
+
+/// One coordinator for every provider: rank the graph, reject cycles before
+/// any check, publish successful modules, and block only failed dependents.
+/// Source loading, persistent-cache IO and module checks remain provider-owned.
+export fn run_module_typecheck_walk(edges: Array[(String, Array[String])], planning_diagnostics: Array[(String, String)], initial: ModuleWalkState, root: String, collect_diagnostics: Bool) -> String with Exception + ModuleWalk {
+  let (order, ranks) = plan_module_order(edges = edges, root = root)
+  perform ModuleWalk::Planned(order, ranks, edges)
+  let failed: Array[String] = []
+  let diags: Array[(String, String)] = []
+  for entry in planning_diagnostics {
+    Array::push(failed, value = entry.0)
+    Array::push(diags, value = entry)
+  }
+  let fps: Array[(String, String)] = []
+  let mut state = initial
+  let mut i = 0
+  while i < Array::length(order) {
+    let rank = Array::get(ranks, at = i)
+    let mut j = i
+    while j < Array::length(order) && Array::get(ranks, at = j) == rank {
+      j = j + 1
+    }
+    let wave = j - i
+    let visit = perform ModuleWalk::Visit(wave)
+    let mut k = 0
+    while k < wave {
+      let path = Array::get(order, at = i + Array::get(visit, at = k))
+      if walk_has_path(paths = failed, path = path) || walk_is_blocked(edges = edges, failed = failed, path = path) {
+        perform ModuleWalk::Failed(path)
+        Array::push(failed, value = path)
+      } else {
+        let before = state
+        let (fp, next, error) = perform ModuleWalk::Step(fps, before, path)
+        match error {
+          Some(message) => if !collect_diagnostics || String::starts_with(message, prefix = "type_db: ") {
+            throw(message)
+          } else {
+            perform ModuleWalk::Failed(path)
+            Array::push(failed, value = path)
+            Array::push(diags, value = (path, message))
+          },
+          None => {
+            state = next
+            Array::push(fps, value = (path, fp))
+            perform ModuleWalk::Published(path, fp, next, before.parse_count)
+          }
+        }
+      }
+      k = k + 1
+    }
+    i = j
+  }
+  // A collected failure still emits the completed scheduler trace, just as a
+  // successful walk does. Fail-fast errors leave the walk immediately.
+  perform ModuleWalk::Complete
+  if Array::length(diags) > 0 {
+    throw(walk_diagnostics(diags))
+  } else ()
+  let error = perform ModuleWalk::Finish(state, root)
+  match error {
+    Some(message) => throw(message),
+    None => ()
+  }
+  let mut root_fp = String::concat("missing:", root)
+  for entry in fps {
+    if entry.0 == root {
+      root_fp = entry.1
+    } else ()
+  }
+  root_fp
+}
+
+// The source stamp and recorded dependency list form one cache witness. IO
+// providers decide how to rebuild it; neither can accept only half of it.
+export fn cached_module_dependencies(rdb: RippleDb, source_cache: Array[(String, String)], path: String, source: String) -> Option[Array[String]] {
+  let mut unchanged = false
+  for entry in source_cache {
+    if entry.0 == path {
+      unchanged = entry.1 == source
+    } else ()
+  }
+  if unchanged {
+    ripple_get_deps(db = rdb, path = path)
+  } else {
+    None
+  }
+}

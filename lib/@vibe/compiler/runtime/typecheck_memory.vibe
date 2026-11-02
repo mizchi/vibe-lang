@@ -1,0 +1,173 @@
+import ./typecheck_fs_find_fn_anchor_off.vibe {
+  typecheck_fs_upsert_env_cache, typecheck_fs_upsert_string_pair
+}
+
+import @vibe/checker/engine {
+  CheckJob,
+  CheckJob::check_with_raw_diagnostics,
+  DependencyInterfaceSet,
+  ModuleOutcome,
+  engine_dependency_interface_set_new,
+  engine_dependency_interface_set_publish,
+  engine_typecheck_fs_build_fingerprint
+}
+import @vibe/compiler/core {
+  TypeEnv
+}
+import @vibe/compiler/checker {
+  typing_semantics_seed
+}
+import @vibe/compiler/incremental {
+  RippleDb, ripple_get_fingerprint, ripple_get_source, ripple_record_eval
+}
+import @vibe/compiler/runtime/memory_source {
+  MemorySources, memory_module_header, memory_module_ships_owned_heads, memory_sources_new
+}
+import @vibe/compiler/runtime/typecheck_walk {
+  ModuleWalk, ModuleWalkState, cached_module_dependencies, run_module_typecheck_walk
+}
+import ./typecheck_fs_local_type_member_markers.vibe {
+  ensure_module_typed_lowering_offsets_for_source, typecheck_fs_lookup_env_cache
+}
+import ./typecheck_fs_finish_typecheck_fs_impl.vibe {
+  plan_deps_of
+}
+
+// Discovery only reads sources. Successful checks record the dependency list;
+// a failed plan cannot commit an unvalidated list into the linear db.
+fn memory_plan(state: ModuleWalkState, sources: MemorySources, root: String) -> (Array[(String, Array[String])], Int) with Env + Exception {
+  let pending = [root]
+  let seen: Array[String] = []
+  let edges: Array[(String, Array[String])] = []
+  let mut parse_count = state.parse_count
+  let mut i = 0
+  while i < Array::length(pending) {
+    let path = Array::get(pending, at = i)
+    if !Array::any(seen, f = (known) -> known == path) {
+      Array::push(seen, value = path)
+      let deps = match ripple_get_source(db = state.rdb, path = path) {
+        None => [],
+        Some(source) => match cached_module_dependencies(rdb = state.rdb, source_cache = state.dep_sources, path = path, source = source) {
+          Some(deps) => deps,
+          None => {
+            let (deps, _, count) = memory_module_header(sources = sources, path = path, source = source, parse_count = parse_count)
+            parse_count = count
+            deps
+          }
+        }
+      }
+      Array::push(edges, value = (path, deps))
+      for dep in deps {
+        Array::push(pending, value = dep)
+      }
+    } else ()
+    i = i + 1
+  }
+  (edges, parse_count)
+}
+
+fn memory_step(edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, sources: MemorySources, path: String, interfaces: DependencyInterfaceSet) -> (String, ModuleWalkState) with Env + Exception {
+  match ripple_get_source(db = state.rdb, path = path) {
+    None => ("missing:" + path, state),
+    Some(source) => {
+      let deps = match plan_deps_of(plan_edges = edges, path = path) {
+        Some(deps) => deps,
+        None => throw("type_db: module missing from the import plan: " + path)
+      }
+      let dep_fps: Array[(String, String)] = []
+      let dep_envs: Array[(String, TypeEnv)] = []
+      for dep in deps {
+        for entry in fps {
+          if entry.0 == dep {
+            Array::push(dep_fps, value = entry)
+          } else ()
+        }
+        match typecheck_fs_lookup_env_cache(cache = state.env_cache, path = dep) {
+          Some(env) => Array::push(dep_envs, value = (dep, env)),
+          None => ()
+        }
+      }
+      let fingerprint = engine_typecheck_fs_build_fingerprint(path = path, source = source, dep_fps = dep_fps, semantics_seed = typing_semantics_seed())
+      let cached = match ripple_get_fingerprint(db = state.rdb, path = path) {
+        Some(fp) => fp == fingerprint,
+        None => false
+      }
+      let has_env = typecheck_fs_lookup_env_cache(cache = state.env_cache, path = path) is Some(_)
+      if cached && has_env && ensure_module_typed_lowering_offsets_for_source(path = path, fingerprint = fingerprint, source = source) {
+        let dep_sources = typecheck_fs_upsert_string_pair(pairs = state.dep_sources, key = path, value = source)
+        (fingerprint, ModuleWalkState::{
+          rdb: state.rdb,
+          env_cache: state.env_cache,
+          dep_sources,
+          parse_count: state.parse_count
+        })
+      } else {
+        let job = CheckJob::{
+          path,
+          source,
+          deps,
+          dep_fps,
+          dep_envs,
+          ships_owned_heads: memory_module_ships_owned_heads(sources = sources, path = path)
+        }
+        match CheckJob::check_with_raw_diagnostics(job, interfaces = interfaces) {
+          Diagnosed(_, diagnostics) => throw(String::join(diagnostics, sep = "\n")),
+          Checked(_, checked_fp, env, _, _, _, _) => {
+            // Source stamps alias the input TypeDb. Publish this stamp only
+            // after its matching dependency list has been committed: a failed
+            // check must leave the previous source/dependency witness intact.
+            let rdb = ripple_record_eval(db = state.rdb, path = path, fingerprint = checked_fp, deps = deps)
+            let dep_sources = typecheck_fs_upsert_string_pair(pairs = state.dep_sources, key = path, value = source)
+            (checked_fp, ModuleWalkState::{
+              rdb,
+              env_cache: typecheck_fs_upsert_env_cache(cache = state.env_cache, path = path, env = env),
+              dep_sources,
+              parse_count: state.parse_count + 1
+            })
+          }
+        }
+      }
+    }
+  }
+}
+
+fn memory_step_answer(edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, sources: MemorySources, path: String, interfaces: DependencyInterfaceSet) -> (String, ModuleWalkState, Option[String]) with Env {
+  handle {
+    let (fp, next) = memory_step(edges = edges, fps = fps, state = state, sources = sources, path = path, interfaces = interfaces)
+    (fp, next, None)
+  } with { Exception::Throw(message) => ("diagnosed:" + path, state, Some(message)) }
+}
+
+/// Check an in-memory graph through the shared coordinator and checker.
+/// Cache hits must restore source-bound typed rows; this lane never acquires Fs.
+/// TypeDb validates the source-set revision before supplying dependency stamps.
+export fn ensure_fingerprint_memory(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_sources: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception {
+  let sources = memory_sources_new(rdb)
+  let initial = ModuleWalkState::{ rdb, env_cache, dep_sources, parse_count }
+  let (edges, planned_count) = memory_plan(state = initial, sources = sources, root = path)
+  let output = [
+    ModuleWalkState::{ rdb, env_cache, dep_sources, parse_count: planned_count }
+  ]
+  let interfaces = engine_dependency_interface_set_new()
+  let fingerprint = handle {
+    run_module_typecheck_walk(edges = edges, planning_diagnostics = [], initial = Array::get(output, at = 0), root = path, collect_diagnostics = false)
+  } with { ModuleWalk::Planned(_, _, _) => resume(()); ModuleWalk::Visit(n) => {
+    let order: Array[Int] = []
+    let mut i = 0
+    while i < n {
+      Array::push(order, value = i); i = i + 1
+    }
+    resume(order)
+  }; ModuleWalk::Step(fps, state, p) => resume(memory_step_answer(edges = edges, fps = fps, state = state, sources = sources, path = p, interfaces = interfaces)); ModuleWalk::Published(p, _, state, _) => {
+    match typecheck_fs_lookup_env_cache(cache = state.env_cache, path = p) {
+      Some(env) => engine_dependency_interface_set_publish(interfaces = interfaces, path = p, env = env),
+      None => ()
+    }
+    resume(())
+  }; ModuleWalk::Failed(_) => resume(()); ModuleWalk::Complete => resume(()); ModuleWalk::Finish(state, _) => {
+    Array::set(output, at = 0, value = state)
+    resume(None)
+  } }
+  let state = Array::get(output, at = 0)
+  (fingerprint, state.rdb, state.env_cache, state.dep_sources, state.parse_count)
+}

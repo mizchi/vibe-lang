@@ -1,0 +1,412 @@
+import @vibe/core {
+  struct MutMap
+}
+
+import @vibe/compiler/loader {
+  flatten_group_sources, load_or_parse_module_header_fs, module_reexport_deps_fs
+}
+
+fn lc_fresh_str_row() -> Array[String] {
+  []
+}
+
+/// #2388: a dependency naming a `.vpkg` CONTRACT reaches that package's sibling
+/// implementations, because the contract is a surface and the merge carries the
+/// implementations.
+///
+/// This is not "siblings share scope" -- they do not, and an explicit relative
+/// import is required between them (`scripts/check_package_sibling_scope.sh`).
+/// It is that an import OF THE PACKAGE reaches everything the package's
+/// contract publishes, which is implemented next to it. Without this a module
+/// importing `@vibe/compiler/runtime` got the contract's materialized surface
+/// and not the sibling whose return types the prelude reads, which manufactured
+/// a difference the per-module lane does not really have.
+///
+/// NEAREST contract wins: a source under a deeper package belongs to that one,
+/// so `runtime/eval_loader/x.vibe` is not reached by importing `runtime`.
+fn expand_contract_dependency(dep: String, own: Array[Int], flat: Array[(String, String)], contract_dirs: Array[String]) -> Array[Int] {
+  if !String::ends_with(dep, suffix = "/index.vpkg") {
+    own
+  } else {
+    let dir = String::substring(dep, start = 0, end = String::length(dep) - 11)
+    let out = lc_fresh_int_row()
+    let mut k = 0
+    while k < Array::length(own) {
+      Array::push(out, value = Array::get(own, at = k))
+      k = k + 1
+    }
+    let mut i = 0
+    while i < Array::length(flat) {
+      let (path, _) = Array::get(flat, at = i)
+      if String::starts_with(path, prefix = String::concat(dir, "/")) && nearest_contract_dir(path = path, contract_dirs = contract_dirs) == dir && !import_closure_row_has(row = out, v = i) {
+        Array::push(out, value = i)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// The longest contract directory that is a prefix of `path`.
+fn nearest_contract_dir(path: String, contract_dirs: Array[String]) -> String {
+  let mut best = ""
+  let mut i = 0
+  while i < Array::length(contract_dirs) {
+    let d = Array::get(contract_dirs, at = i)
+    if String::starts_with(path, prefix = String::concat(d, "/")) && String::length(d) > String::length(best) {
+      best = d
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  best
+}
+
+fn lc_fresh_int_row() -> Array[Int] {
+  []
+}
+
+/// #2388: for each flat source, the indices of the sources it can see -- its
+/// own resolved imports, transitively -- plus the number of dependency edges
+/// this could NOT place in that source list.
+///
+/// This is what turns the per-module oracle's green from the weaker claim ("no
+/// module needed anything the whole program did not have") into the real one
+/// ("no module needed anything it imports"). The edges come from the LOADER
+/// (`load_or_parse_module_header_fs`, the same header scan the FS typecheck
+/// lane plans module order with), because the merge drops `SImport` /
+/// `SReExport` as already resolved, so they cannot be read back off the merged
+/// program.
+///
+/// ONE HOP. A dep naming a `.vpkg` contract expands to that group's sibling
+/// implementations, which are the sources the merge actually carries; nothing
+/// else is followed. See the note at the closure itself for why transitive is
+/// wrong here.
+///
+/// The unresolved count is returned rather than swallowed. A dropped edge
+/// narrows a module's context, so it can only manufacture a `missing`, never
+/// hide one -- but a caller that does not print it cannot tell a closure built
+/// from every edge from one built from half of them, and those two greens are
+/// not the same claim.
+fn direct_import_closure(_ source_groups: Array[(String, Array[(String, String)])]) -> (Array[Array[Int]], Int) with Env + Exception + Fs {
+  let flat = flatten_group_sources(source_groups)
+  let n = Array::length(flat)
+  // path -> EVERY flat index carrying it, and group key -> that group's flat
+  // indices. Every index, not the first: a source that appears in two groups
+  // is two modules in the merged program, and an edge to only one of them
+  // would give a dependent the declarations of one copy and not the other --
+  // a narrowing that looks exactly like a real import boundary (ARCH011).
+  let index_of: MutMap[String, Array[Int]] = MutMap::new_string()
+  let mut i = 0
+  while i < n {
+    let (path, _) = Array::get(flat, at = i)
+    match MutMap::get(index_of, k = path) {
+      Some(seats) => Array::push(seats, value = i),
+      None => MutMap::set(index_of, k = path, v = [i])
+    }
+    i = i + 1
+  }
+  // Every `.vpkg` contract in the flat list, by its directory. An import names
+  // a PACKAGE; the declarations it publishes are implemented by that package's
+  // sibling sources, and it is those the merge carries.
+  let contract_dirs = lc_fresh_str_row()
+  i = 0
+  while i < n {
+    let (path, _) = Array::get(flat, at = i)
+    if String::ends_with(path, suffix = "/index.vpkg") {
+      Array::push(contract_dirs, value = String::substring(path, start = 0, end = String::length(path) - 11))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let group_members: MutMap[String, Array[Int]] = MutMap::new_string()
+  let mut gi = 0
+  let mut flat_at = 0
+  while gi < Array::length(source_groups) {
+    let (key, sources) = Array::get(source_groups, at = gi)
+    let members: Array[Int] = []
+    let mut si = 0
+    while si < Array::length(sources) {
+      Array::push(members, value = flat_at + si)
+      si = si + 1
+    }
+    flat_at = flat_at + Array::length(sources)
+    if MutMap::has(group_members, k = key) {
+      ()
+    } else {
+      MutMap::set(group_members, k = key, v = members)
+    }
+    gi = gi + 1
+  }
+  // Expansion depends only on this walk's immutable flat file space.
+  // Reuse a contract's complete set of seats across its importers; each row
+  // below only reads the seats, preserving duplicate source provenance.
+  let expanded_deps: MutMap[String, Array[Int]] = MutMap::new_string()
+  // Direct edges, from the loader's own header scan.
+  let direct: Array[Array[Int]] = []
+  let mut unresolved = 0
+  i = 0
+  while i < n {
+    let (path, source) = Array::get(flat, at = i)
+    let (dep_paths, _, _) = load_or_parse_module_header_fs(path = path, source = source, parse_count = 0)
+    let row: Array[Int] = []
+    let mut d = 0
+    while d < Array::length(dep_paths) {
+      let dep = Array::get(dep_paths, at = d)
+      // A dep names a source, or a `.vpkg` group whose sibling implementations
+      // are what the merge actually carries. Either way it resolves to a SET
+      // of seats, and every one of them is an edge.
+      let seats = match MutMap::get(index_of, k = dep) {
+        Some(found) => match MutMap::get(expanded_deps, k = dep) {
+          Some(seats) => seats,
+          None => {
+            let seats = expand_contract_dependency(dep = dep, own = found, flat = flat, contract_dirs = contract_dirs)
+            MutMap::set(expanded_deps, k = dep, v = seats)
+            seats
+          }
+        },
+        None =>
+        match MutMap::get(group_members, k = dep) {
+          Some(members) => members,
+          None => {
+            unresolved = unresolved + 1
+            []
+          }
+        }
+      }
+      let mut m = 0
+      while m < Array::length(seats) {
+        let at = Array::get(seats, at = m)
+        if at == i {
+          ()
+        } else {
+          Array::push(row, value = at)
+        }
+        m = m + 1
+      }
+      d = d + 1
+    }
+    Array::push(direct, value = row)
+    i = i + 1
+  }
+  // DIRECT edges only -- a module's own imports, not its dependencies'.
+  //
+  // This used to close transitively, justified as "a module sees what its
+  // dependencies re-export". That is wrong as implemented (Codex round on
+  // #2623): when A imports B and B imports C PRIVATELY, a transitive closure
+  // hands A the declarations of C, which no real compile of A exposes. The
+  // oracle could then report agreement only because it was given context a
+  // module does not have -- the one failure mode that makes a green
+  // meaningless.
+  //
+  // Closing only across re-export edges would be the exact rule, and the
+  // loader's header scan does not distinguish them: it returns a module's deps
+  // and its export NAMES, with no record of which deps a dep re-exports. So
+  // this takes the safe side instead: direct-only is an UNDER-approximation,
+  // and `unresolved` is reported rather than swallowed for the same reason.
+  //
+  // The approximation is NOT one-sided: it can hide a difference as well as
+  // manufacture one, so do not restore an "only manufactures" claim here.
+  // Narrowing a module's context changes the EXECUTION PATH, not just the
+  // inputs -- a module that cannot see enough defers, and
+  // `eq_mint_deferred_into` builds the helper at the link against the
+  // concatenated program, which is the whole program. A module that would have
+  // synthesized a DIFFERING helper under exact context receives the
+  // whole-program one instead, green over a real difference.
+  // `prelude_module_oracle_test.vibe` relies on exactly that to make a module
+  // defer on demand.
+  //
+  // So the oracle's zero supports "the LINKED program equals the whole-program
+  // one" -- the question a per-module driver has -- and not "every module
+  // synthesized faithfully". `SYNTH deferred=` / `minted=` separate the two by
+  // counting how much of the green is the link's work.
+  // Measured on the compiler's own CLI closure, and the transitivity was very
+  // much load-bearing -- 32017 reachable pairs against 1415 one-hop ones, 22x
+  // wider. Under it the split read `missing=1 content=4 invisible_split=2`;
+  // with real one-hop context it reads `missing=6 content=9
+  // invisible_split=15`. Every one of those extra differences was being hidden
+  // by context no module has.
+  let out: Array[Array[Int]] = []
+  i = 0
+  while i < n {
+    let row = lc_fresh_int_row()
+    let dr = Array::get(direct, at = i)
+    let mut d = 0
+    while d < Array::length(dr) {
+      let at = Array::get(dr, at = d)
+      if at == i || import_closure_row_has(row = row, v = at) {
+        ()
+      } else {
+        Array::push(row, value = at)
+      }
+      d = d + 1
+    }
+    Array::push(out, value = row)
+    i = i + 1
+  }
+  (out, unresolved)
+}
+
+fn path_directory(_ path: String) -> String {
+  let mut cut = 0 - 1
+  let mut i = 0
+  while i < String::length(path) {
+    if String::char_code_at(path, at = i) == 47 {
+      cut = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if cut < 0 {
+    ""
+  } else {
+    String::substring(path, start = 0, end = cut)
+  }
+}
+
+export fn import_closure_row_has(row: Array[Int], v: Int) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(row) {
+    if Array::get(row, at = i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Is flat index `jpath` reached through one of `re_paths` -- a module's
+/// RE-EXPORTED deps?
+///
+/// The directory arm mirrors `expand_contract_dependency`: a dep naming a
+/// `.vpkg` contract expands to that package's sibling implementations, and it
+/// is those the merge carries, so a re-exported contract has to admit its
+/// siblings or the edge disappears exactly where packages are involved.
+fn reexport_admits(re_paths: Array[String], jpath: String) -> Bool {
+  let mut ok = false
+  let mut i = 0
+  while !ok && i < Array::length(re_paths) {
+    let rp = Array::get(re_paths, at = i)
+    if rp == jpath {
+      ok = true
+    } else if String::ends_with(rp, suffix = "/index.vpkg") && path_directory(rp) == path_directory(jpath) {
+      ok = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// Everything reachable from `start` across RE-EXPORT edges, accumulated into
+/// `row`. Worklist rather than recursion because a re-export cycle is a
+/// legal shape and would not otherwise terminate.
+fn add_reexport_reach(reexport_rows: Array[Array[Int]], start: Int, self_i: Int, row: Array[Int]) -> Unit {
+  let pending: Array[Int] = []
+  let seen: Array[Int] = []
+  Array::push(pending, value = start)
+  let mut head = 0
+  while head < Array::length(pending) {
+    let at = Array::get(pending, at = head)
+    head = head + 1
+    if import_closure_row_has(row = seen, v = at) {
+      ()
+    } else {
+      Array::push(seen, value = at)
+      let rr = Array::get(reexport_rows, at = at)
+      let mut k = 0
+      while k < Array::length(rr) {
+        let next = Array::get(rr, at = k)
+        if next != self_i && !import_closure_row_has(row = row, v = next) {
+          Array::push(row, value = next)
+        } else {
+          ()
+        }
+        Array::push(pending, value = next)
+        k = k + 1
+      }
+    }
+  }
+}
+
+/// The closure a PRODUCTION split needs (#2658): a module's direct imports,
+/// plus everything reachable from them across RE-EXPORT edges only.
+///
+/// `direct_import_closure` is direct-edges-only and explains why at length.
+/// That under-approximation is right for a MEASUREMENT and wrong for codegen:
+/// a module that imports B and cannot see what B re-exports from C lowers a
+/// call to C's bounded generic without the witness argument C's rewritten
+/// generic requires (#2647 Codex round 9).
+///
+/// Closing over ALL edges instead is wrong in both directions. It hands a
+/// module its dependencies' PRIVATE imports, which no real compile of it
+/// exposes -- and, the reason it matters here rather than only for the
+/// oracle, it gives every module the whole program's declarations, which is
+/// precisely the live set #2494 exists to bound. The re-export closure is the
+/// point that is both correct and minimal.
+///
+/// The re-export subset comes from the LOADER (`module_reexport_deps_fs`),
+/// not from re-reading source text here, so it cannot drift from what the
+/// loader actually resolves.
+export fn exact_import_closure(_ source_groups: Array[(String, Array[(String, String)])]) -> (Array[Array[Int]], Int) with Env + Exception + Fs {
+  let (direct, unresolved) = direct_import_closure(source_groups)
+  let flat = flatten_group_sources(source_groups)
+  let n = Array::length(flat)
+  if Array::length(direct) != n {
+    (direct, unresolved)
+  } else {
+    // Which of each module's direct edges are RE-EXPORT edges. Derived by
+    // testing the oracle's already-expanded indices against the loader's
+    // resolved re-export paths, so contract expansion is not re-implemented.
+    let reexport_rows: Array[Array[Int]] = []
+    let mut i = 0
+    while i < n {
+      let (path, source) = Array::get(flat, at = i)
+      let re_paths = module_reexport_deps_fs(path = path, source = source)
+      let row: Array[Int] = []
+      let dr = Array::get(direct, at = i)
+      let mut d = 0
+      while d < Array::length(dr) {
+        let j = Array::get(dr, at = d)
+        let (jpath, _) = Array::get(flat, at = j)
+        if reexport_admits(re_paths = re_paths, jpath = jpath) {
+          Array::push(row, value = j)
+        } else {
+          ()
+        }
+        d = d + 1
+      }
+      Array::push(reexport_rows, value = row)
+      i = i + 1
+    }
+    let out: Array[Array[Int]] = []
+    i = 0
+    while i < n {
+      let row: Array[Int] = []
+      let dr = Array::get(direct, at = i)
+      let mut d = 0
+      while d < Array::length(dr) {
+        let j = Array::get(dr, at = d)
+        if j != i && !import_closure_row_has(row = row, v = j) {
+          Array::push(row, value = j)
+        } else {
+          ()
+        }
+        add_reexport_reach(reexport_rows = reexport_rows, start = j, self_i = i, row = row)
+        d = d + 1
+      }
+      Array::push(out, value = row)
+      i = i + 1
+    }
+    (out, unresolved)
+  }
+}

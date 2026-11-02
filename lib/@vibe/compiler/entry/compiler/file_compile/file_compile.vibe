@@ -1,3 +1,21 @@
+import @vibe/compiler/linker/merge {
+  build_grouped_merged_stmts,
+  build_grouped_merged_stmts_counted,
+  build_grouped_merged_stmts_gc,
+  build_grouped_merged_stmts_prov,
+  build_grouped_merged_stmts_with_offsets,
+  merged_stmts_and_offsets,
+  ordinary_lane_dbg_prov
+}
+
+import @vibe/compiler/linker/import_closure {
+  exact_import_closure, import_closure_row_has
+}
+
+import @vibe/compiler/entry/compiler/file_compile/oracle {
+  prelude_module_full_oracle_report, prelude_module_import_closure_report, prelude_module_oracle_report, prelude_ordinary_lane_prov_report
+}
+
 import ./file_body_preparation.vibe {
   FileBodyPreparation, typed_lowering_guard_for_files
 }
@@ -5,15 +23,7 @@ import ./file_body_preparation.vibe {
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex,
-  lex_with_offsets,
-  parse_program,
-  parse_program_located,
-  print_program,
-  print_stmt,
-  rewrite_string_binops_stmts,
-  shift_stmt_offsets,
-  shift_stmts_offsets
+  print_program, print_stmt, rewrite_string_binops_stmts
 }
 
 // #897: this used to also import `empty_stmt_array` via a leaf path into
@@ -27,47 +37,21 @@ import @vibe/compiler/syntax {
 // call `array_empty()` directly instead -- same fix cli_support.vibe needed
 // for the same reason.
 import @vibe/core {
-  array_empty, struct MutMap
+  array_empty
 }
 
 import @vibe/compiler/core {
-  ExportRenamePlan,
-  LinkedUnit,
   Stmt,
-  append_builtin_iterator_plan_operation_markers,
-  append_import_alias_rewritten_non_import_stmts_with_renames,
-  append_non_import_stmts_without_alias_rewrite,
-  apply_export_renames_stmts,
-  build_export_rename_plan,
   builtin_iterator_serialized_boundary_markers,
-  collect_import_alias_collision_refs,
-  collect_import_value_renames,
   dce_stmts_before_trait_desugar,
-  dir_of_path,
-  export_plan_renames_for,
-  import_value_rename_locals,
-  linked_unit_in,
-  loader_prepended_prefix_bytes,
   mark_private_builtin_references,
-  merged_offset_space_add,
   merged_offset_space_reset,
-  merged_source_boundary_names,
-  namespace_entry_import_shadows,
   namespace_private_value_stmts,
-  namespace_private_value_stmts_after_renames,
-  namespace_rename_originals_reset,
-  refuse_linked_impl_overlaps,
-  resolution_env_seed,
-  resolve_import_path,
-  resolved_callee_row_rebase,
-  rewrite_imported_value_stmt_to_local,
-  stmts_have_import_deep,
-  trait_import_local_operation_renames,
-  trait_import_local_operation_renames_preserving_exports
+  resolution_env_seed
 }
 
 import @vibe/compiler/codegen {
-  compile_module_with_typed_offsets, compile_wasi_module
+  compile_module_with_typed_offsets
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -75,8 +59,6 @@ import @vibe/compiler/codegen/common_base {
   DbgProv,
   ModuleSplit,
   bcc_int_lists_equal,
-  bcc_layout_fp_ints,
-  bcc_layout_fp_strings,
   bcc_string_lists_equal,
   codegen_body_cache_discard,
   codegen_body_cache_filter_fold_sigs,
@@ -92,22 +74,17 @@ import @vibe/compiler/codegen/common_base {
 
 import @vibe/compiler/codegen/wasi {
   LinkedModulePreparation,
-  compile_wasi_module_impl_with_typed_offsets,
   compile_wasi_module_impl_with_typed_offsets_grants,
   compile_wasi_module_no_dce_impl_with_typed_offsets,
-  compile_wasi_module_rc_cached_impl_with_prov,
   compile_wasi_module_rc_cached_impl_with_prov_grants,
   compile_wasi_module_rc_cached_impl_with_split,
-  compile_wasi_module_rc_cached_impl_with_typed_offsets,
   compile_wasi_module_rc_impl_with_typed_offsets,
-  compile_wasi_module_rc_shadow_impl_with_typed_offsets,
   compile_wasi_module_rc_shadow_impl_with_typed_offsets_grants,
   compile_wasi_module_with_sources_break_impl_with_typed_offsets,
   compile_wasi_module_with_sources_coverage_impl_with_typed_offsets,
   compile_wasi_module_with_sources_trace_impl_with_typed_offsets,
   effect_lowering_prelude,
   lc_prepare_wasi_module_rc_cached_with_split_grants,
-  prelude_module_full_oracle_line,
   prelude_pass_module_oracle_step
 }
 
@@ -118,9 +95,8 @@ import @vibe/compiler/entry/source_compile/gc_only {
 import @vibe/compiler/loader {
   artifact_input_trace_resolution_context_fingerprint_fs,
   collect_source_groups_fs,
-  load_or_parse_module_header_fs,
-  load_persistent_source_group_fingerprint_if_valid,
-  module_reexport_deps_fs
+  flatten_group_sources,
+  load_persistent_source_group_fingerprint_if_valid
 }
 
 import @vibe/compiler/checker {
@@ -135,9 +111,6 @@ import @vibe/compiler/runtime {
   db_set_source,
   db_store_artifact,
   db_typecheck_fs,
-  module_typed_eq_rows_for_path,
-  module_typed_lowering_offsets_for_path,
-  parse_program_with_path,
   split_typed_lowering_offsets,
   union_module_typed_eq_rows,
   union_module_typed_lowering_with_clones
@@ -146,10 +119,8 @@ import @vibe/compiler/runtime {
 import @vibe/compiler/cache {
   build_file_compile_module_artifact_fingerprint_for_entry_path,
   build_file_compile_module_artifact_fingerprint_from_group_fingerprint_for_entry_path,
-  build_file_compile_wasi_artifact_fingerprint_for_entry_path,
   build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path,
   build_source_groups_fingerprint,
-  compact_source_fingerprint_memo,
   compact_string_fingerprint,
   load_persistent_artifact,
   persistent_cache_version_tag_for_observation,
@@ -214,365 +185,6 @@ fn seed_type_db_from_source_groups(db: TypeDb, source_groups: Array[(String, Arr
   seeded
 }
 
-fn append_stmt_array(dst: Array[Stmt], src: Array[Stmt]) -> Unit {
-  let mut i = 0
-  while i < Array::length(src) {
-    Array::push(dst, value = Array::get(src, at = i))
-    i = i + 1
-  }
-}
-
-fn flatten_source_groups_local(_ source_groups: Array[(String, Array[(String, String)])]) -> Array[(String, String)] {
-  let flat = array_empty()
-  let mut gi = 0
-  while gi < Array::length(source_groups) {
-    let (_, sources) = Array::get(source_groups, at = gi)
-    let mut si = 0
-    while si < Array::length(sources) {
-      Array::push(flat, value = Array::get(sources, at = si))
-      si = si + 1
-    }
-    gi = gi + 1
-  }
-  flat
-}
-
-fn string_array_contains(items: Array[String], target: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(items) && !found {
-    if Array::get(items, at = i) == target {
-      found = true
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-fn lookup_source_stmts_by_path(sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], target_path: String) -> Option[Array[Stmt]] {
-  let mut i = 0
-  let mut found = None
-  while i < Array::length(sources) {
-    let (path, _) = Array::get(sources, at = i)
-    if path == target_path {
-      found = Some(Array::get(source_stmts, at = i))
-      i = Array::length(sources)
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-/// #1100: was a byte-for-byte duplicate of runtime's parse_program_with_path
-/// (same located lex+parse, same `<path>: <msg>` wrapping), so a cold compile
-/// parsed every source twice -- once for the typecheck walk and once here for
-/// the merge. Route both through the memoized one; it hands back a fresh
-/// top-level array each call, which is what the in-place desugars downstream
-/// require. Interior-line breakpoints (span-arc step5) still get their real
-/// EIdent char-offsets: the memoized parse is the same located one.
-fn parse_program_for_path(path: String, source: String) -> Array[Stmt] with Env + Exception {
-  parse_program_with_path(path = path, source = source)
-}
-
-/// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
-/// are the locals the export-rename plan already rewrites; the inline copy gets
-/// the target file's export renames applied first.
-fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, excluded_locals: Array[String], flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int]) -> Array[String] with Exception {
-  let refs = collect_import_alias_collision_refs(stmts)
-  let emitted = array_empty()
-  let base_dir = dir_of_path(current_path)
-  let mut i = 0
-  while i < Array::length(refs) {
-    let (raw_path, original, local) = Array::get(refs, at = i)
-    if !string_array_contains(items = emitted, target = local) && !string_array_contains(items = excluded_locals, target = local) {
-      let resolved = resolve_import_path(base_dir = base_dir, raw_path = raw_path)
-      match lookup_source_stmts_by_path(sources = sources, source_stmts = source_stmts, target_path = resolved) {
-        Some(parsed_source_stmts) => {
-          // Reuse the merge's authoritative parsed copy. In the GC lane this
-          // copy already carries the provider file's rebased offsets; reparsing
-          // the raw source here would silently return to source-relative
-          // offsets only for alias-collision fallback definitions.
-          let provider_stmts = namespace_private_value_stmts_after_renames(path = resolved, stmts = parsed_source_stmts, export_renames = export_plan_renames_for(plan = plan, path = resolved))
-          let mut j = 0
-          let mut done = false
-          while j < Array::length(provider_stmts) && !done {
-            match rewrite_imported_value_stmt_to_local(stmt = Array::get(provider_stmts, at = j), original = original, local = local) {
-              Some(local_stmt) => {
-                let located_local_stmt = if fallback_clone_offset_span > 0 {
-                  // A fallback is a real second copy of the provider body, so
-                  // it needs a second location range too. Reusing the provider
-                  // offsets would make the fail-closed call-result filter drop
-                  // both the original and the clone's Double observations.
-                  let delta = Array::get(fallback_clone_offset_delta, at = 0)
-                  Array::set(fallback_clone_offset_delta, at = 0, value = delta + fallback_clone_offset_span)
-                  // #2391 (#2425 review): the clone is a second copy of
-                  // provider CODE in a fresh offset range, so it needs a
-                  // second copy of the provider's Double call-result offsets
-                  // too, or a Double-returning call inside the clone's body
-                  // falls back to the syntactic classifier and prints raw
-                  // bits. The clone's node offsets are the provider's
-                  // MERGE-SPACE offsets (its file base plus its module-space
-                  // offset -- source_stmts is the rebased table) plus this
-                  // clone's delta; entries for provider statements the clone
-                  // does not contain match no call node and stay inert.
-                  match lookup_flat_base(flat_paths = flat_paths, flat_bases = flat_bases, path = resolved) {
-                    Some(provider_base) => match module_typed_lowering_offsets_for_path(resolved) {
-                      Some(provider_offsets) => {
-                        let mut k = 0
-                        while k < Array::length(provider_offsets) {
-                          // The table is tag-encoded (offset * 16 + tag, see
-                          // typed_lowering_enc), so shifting a row by the
-                          // clone's merge-space delta adds (base + delta) * 16
-                          // -- the tag bits stay untouched. Callee tag 7 has one
-                          // more identity field, so rebasing is shared with core/resolved_callee.
-                          let row = Array::get(provider_offsets, at = k)
-                          Array::push(clone_float_offsets_out, value = resolved_callee_row_rebase(row = row, base = (provider_base + delta)))
-                          k = k + 1
-                        }
-                      },
-                      None => ()
-                    },
-                    None => ()
-                  }
-                  shift_stmt_offsets(stmt = local_stmt, delta = delta)
-                } else {
-                  local_stmt
-                }
-                Array::push(merged, value = located_local_stmt)
-                Array::push(emitted, value = local)
-                done = true
-              },
-              None => ()
-            }
-            j = j + 1
-          }
-        },
-        None => ()
-      }
-    }
-    i = i + 1
-  }
-  emitted
-}
-
-/// The disjoint-merge offset base recorded for `path`, or None when the merge
-/// runs without disjoint offset spaces (the callers then pass empty tables).
-fn lookup_flat_base(flat_paths: Array[String], flat_bases: Array[Int], path: String) -> Option[Int] {
-  let n = Array::length(flat_paths)
-  let mut i = 0
-  let mut found: Option[Int] = None
-  while i < n {
-    if Array::get(flat_paths, at = i) == path {
-      found = Some(Array::get(flat_bases, at = i))
-      i = n
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-/// #716: parse every source once and build the export-rename plan for the whole
-/// program (the merge output of one file depends on the export surfaces of ALL
-/// files: ambiguous exported names are renamed at their defs and at importing
-/// files' references).
-fn parse_sources_for_merge(_ sources: Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with Env + Exception {
-  let file_paths = array_empty()
-  let file_stmts = array_empty()
-  let mut si = 0
-  while si < Array::length(sources) {
-    let (path, source) = Array::get(sources, at = si)
-    Array::push(file_paths, value = path)
-    Array::push(file_stmts, value = parse_program_for_path(path = path, source = source))
-    si = si + 1
-  }
-  (file_paths, file_stmts)
-}
-
-/// One file's contribution to the merged program. `stmts` are the file's parsed
-/// statements, `is_entry_source` mirrors the pre-#716 per-group entry rule
-/// (entry keeps its private names), and `plan`/`sources` drive the export-name
-/// rewriting and the collision-def fallback.
-fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int], units: Array[LinkedUnit]) -> Unit with Env + Exception {
-  let unit_start = Array::length(merged)
-  // Preserve the proof that an optimized trait namespace came from the
-  // standard module. Desugaring consumes this source-local marker before
-  // codegen; it is not part of the runtime program.
-  let import_renames = if stmts_have_import_deep(stmts) {
-    collect_import_value_renames(plan = plan, path = path, stmts = stmts)
-  } else {
-    array_empty()
-  }
-  let (boundary_locals, boundary_surface_only) = merged_source_boundary_names(stmts)
-  append_builtin_iterator_plan_operation_markers(markers = boundary_locals, renames = import_renames, plan = plan)
-  Array::push(merged, value = SReExportSourceBoundary(boundary_locals, boundary_surface_only))
-  let collision_renames = if is_entry_source {
-    trait_import_local_operation_renames_preserving_exports(stmts = stmts, path = path)
-  } else {
-    trait_import_local_operation_renames(stmts = stmts, path = path)
-  }
-  let collision_renamed = apply_export_renames_stmts(stmts = stmts, renames = collision_renames)
-  let namespaced_stmts = if is_entry_source {
-    namespace_entry_import_shadows(path = path, stmts = collision_renamed)
-  } else {
-    namespace_private_value_stmts_after_renames(path = path, stmts = collision_renamed, export_renames = export_plan_renames_for(plan = plan, path = path))
-  }
-  if stmts_have_import_deep(stmts) {
-    // #3443: only the locals the fallback cloned stop being rewritten. A
-    // collision local with no value to clone (a type, a constructor) keeps
-    // its alias: dropping it left `B::plain` unresolved at codegen when `Box`
-    // also arrived through a re-export of the same module.
-    let skipped_locals = append_import_alias_collision_defs_from_sources(merged = merged, current_path = path, stmts = stmts, sources = sources, source_stmts = source_stmts, plan = plan, fallback_clone_offset_delta = fallback_clone_offset_delta, fallback_clone_offset_span = fallback_clone_offset_span, excluded_locals = import_value_rename_locals(import_renames), flat_paths = flat_paths, flat_bases = flat_bases, clone_float_offsets_out = clone_float_offsets_out)
-    append_import_alias_rewritten_non_import_stmts_with_renames(merged = merged, stmts = namespaced_stmts, skipped_locals = skipped_locals, extra_renames = import_renames)
-  } else {
-    append_non_import_stmts_without_alias_rewrite(merged = merged, stmts = namespaced_stmts)
-  }
-  // #3544: this file's share of the linked program, for the impl-overlap check.
-  Array::push(units, value = linked_unit_in(sources = sources, path = path, start = unit_start, end = Array::length(merged)))
-}
-
-fn build_merged_stmts_from_sources(entry_path: String, sources: Array[(String, String)]) -> Array[Stmt] with Env + Exception {
-  // #2205: the rename table describes ONE merged program.
-  namespace_rename_originals_reset()
-  let merged = array_empty()
-  let source_count = Array::length(sources)
-  let (file_paths, file_stmts) = parse_sources_for_merge(sources)
-  let plan_entry = if entry_path == "" {
-    if source_count > 0 {
-      Array::get(file_paths, at = source_count - 1)
-    } else {
-      ""
-    }
-  } else {
-    entry_path
-  }
-  let plan = build_export_rename_plan(paths = file_paths, stmts_list = file_stmts, entry_path = plan_entry)
-  let fallback_clone_offset_delta = [0]
-  let units = []
-  let mut si = 0
-  while si < source_count {
-    let path = Array::get(file_paths, at = si)
-    let is_entry_source = if entry_path == "" {
-      si == source_count - 1
-    } else {
-      path == entry_path
-    }
-    append_merged_stmts_for_file(merged = merged, path = path, stmts = Array::get(file_stmts, at = si), is_entry_source = is_entry_source, plan = plan, sources = sources, source_stmts = file_stmts, fallback_clone_offset_delta = fallback_clone_offset_delta, fallback_clone_offset_span = 0, flat_paths = array_empty(), flat_bases = array_empty(), clone_float_offsets_out = array_empty(), units = units)
-    si = si + 1
-  }
-  refuse_linked_impl_overlaps(merged = merged, units = units)
-  merged
-}
-
-/// #2388: `stmt_file_id_out[s]` is the flat source index of merged statement
-/// `s` -- which module owns it. Filled on EVERY lane, at one Int per top-level
-/// statement, because a consumer that has to place something in the merged
-/// program (the break lane's file map today, a per-module prelude tomorrow)
-/// otherwise has to reconstruct it, and reconstructing it is what the two
-/// defects behind this issue both did wrong.
-///
-/// It used to exist only in a second, near-identical copy of this function
-/// (`build_grouped_merged_stmts_prov`), whose sameness was asserted in a
-/// comment -- "so `merged` stays identical to the normal merge" -- and
-/// enforced by nothing. That copy is now a thin wrapper over this one, so the
-/// assertion is a fact.
-fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, String)])], disjoint_offset_spaces: Bool, flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int], stmt_file_id_out: Array[Int]) -> Array[Stmt] with Env + Exception {
-  // #2205: the rename table describes ONE merged program.
-  namespace_rename_originals_reset()
-  let merged = array_empty()
-  // #716: the plan spans ALL groups (imports cross group boundaries), so the
-  // flat source list is parsed once here and reused per group.
-  let flat_sources = flatten_source_groups_local(source_groups)
-  let (file_paths, file_stmts) = parse_sources_for_merge(flat_sources)
-  let fallback_clone_offset_delta = [0]
-  // #3090: record the offset space this merge builds, and only a DISJOINT one:
-  // without the rebase every file's offsets start at 0, so a merged offset
-  // names no one file.
-  merged_offset_space_reset()
-  // Keep one authoritative parsed copy per file for both the ordinary merge
-  // contribution and alias-collision fallback definitions. The GC variant
-  // rebases the whole table up front, so no later helper can accidentally
-  // reintroduce source-relative offsets by reparsing a provider.
-  let located_file_stmts = if disjoint_offset_spaces {
-    let out = array_empty()
-    let mut offset_base = 0
-    let mut source_idx = 0
-    while source_idx < Array::length(flat_sources) {
-      Array::push(out, value = shift_stmts_offsets(stmts = Array::get(file_stmts, at = source_idx), delta = offset_base))
-      // #2391: report each flat file's offset base so a caller can shift
-      // per-module offset tables (module_typed_lowering_offsets_for_path, keyed
-      // in each file's OWN offset space) into this merge's space.
-      Array::push(flat_paths_out, value = Array::get(file_paths, at = source_idx))
-      Array::push(flat_bases_out, value = offset_base)
-      let (source_path, source) = Array::get(flat_sources, at = source_idx)
-      merged_offset_space_add(path = source_path, source = source, base = offset_base)
-      // A source of N bytes occupies [base, base + N). The extra byte keeps
-      // even an offset exactly at EOF disjoint from the following file.
-      offset_base = offset_base + String::length(source) + 1
-      source_idx = source_idx + 1
-    }
-    Array::set(fallback_clone_offset_delta, at = 0, value = offset_base)
-    out
-  } else {
-    file_stmts
-  }
-  let fallback_clone_offset_span = Array::get(fallback_clone_offset_delta, at = 0)
-  let plan_entry = if Array::length(file_paths) > 0 {
-    Array::get(file_paths, at = Array::length(file_paths) - 1)
-  } else {
-    ""
-  }
-  let plan = build_export_rename_plan(paths = file_paths, stmts_list = file_stmts, entry_path = plan_entry)
-  // #740: the is-entry flag must mean "the LAST file of the WHOLE merge"
-  // (the plan entry, whose exports stay unrenamed). It was `si ==
-  // source_count - 1` — the last file of EVERY GROUP — so every group
-  // tail (ripple/ripple.vibe, desugar_trait_dict.vibe, ...) skipped its
-  // export renames while callers were rewritten to the renamed names:
-  // "undefined variable (local): <name>_exp_<path>" at codegen.
-  let flat_total = Array::length(file_paths)
-  let units = []
-  let mut flat_idx = 0
-  let mut gi = 0
-  while gi < Array::length(source_groups) {
-    let (_, sources) = Array::get(source_groups, at = gi)
-    let source_count = Array::length(sources)
-    let mut si = 0
-    while si < source_count {
-      let path = Array::get(file_paths, at = flat_idx)
-      let stmts = Array::get(located_file_stmts, at = flat_idx)
-      let before = Array::length(merged)
-      // Every parser offset is relative to one file. The GC checker's
-      // call-result table is keyed by those offsets, so merging files without
-      // rebasing lets one file's Double call classify another file's Int call.
-      // Shift before the namespace/import rewrites; they preserve locations.
-      append_merged_stmts_for_file(merged = merged, path = path, stmts = stmts, is_entry_source = flat_idx == flat_total - 1, plan = plan, sources = flat_sources, source_stmts = located_file_stmts, fallback_clone_offset_delta = fallback_clone_offset_delta, fallback_clone_offset_span = fallback_clone_offset_span, flat_paths = flat_paths_out, flat_bases = flat_bases_out, clone_float_offsets_out = clone_float_offsets_out, units = units)
-      // Everything this file contributed, including the alias-collision
-      // fallback definitions it pulls in from providers, belongs to it: they
-      // are emitted into this file's region and rewritten against its imports.
-      let mut prov_k = before
-      while prov_k < Array::length(merged) {
-        Array::push(stmt_file_id_out, value = flat_idx)
-        prov_k = prov_k + 1
-      }
-      flat_idx = flat_idx + 1
-      si = si + 1
-    }
-    gi = gi + 1
-  }
-  refuse_linked_impl_overlaps(merged = merged, units = units)
-  merged
-}
-
-fn build_grouped_merged_stmts(_ source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Env + Exception {
-  build_grouped_merged_stmts_impl(source_groups = source_groups, disjoint_offset_spaces = false, flat_paths_out = array_empty(), flat_bases_out = array_empty(), clone_float_offsets_out = array_empty(), stmt_file_id_out = array_empty())
-}
-
-fn build_grouped_merged_stmts_gc(_ source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Env + Exception {
-  build_grouped_merged_stmts_impl(source_groups = source_groups, disjoint_offset_spaces = true, flat_paths_out = array_empty(), flat_bases_out = array_empty(), clone_float_offsets_out = array_empty(), stmt_file_id_out = array_empty())
-}
-
 /// #2388 measurement: run every pre-codegen pass on the entry's closure both
 /// whole-program and one file at a time from the same state, and report per
 /// pass whether the two render identically (prelude_pass_module_oracle_step).
@@ -581,16 +193,7 @@ fn build_grouped_merged_stmts_gc(_ source_groups: Array[(String, Array[(String, 
 export fn prelude_module_oracle_report_fs(entry_path: String, entry_name: String, pass_limit: Int) -> String with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let _ = prepare_file_fs_from_source_groups_persistent_cached(db = db_new(), entry_path = entry_path, source_groups = source_groups)
-  let (a, _, _, _) = prelude_oracle_merge(source_groups = source_groups, out_paths = lc_ignored_paths())
-  let mut report = ""
-  let mut k = 0
-  while k <= pass_limit {
-    let (c, files, c_file_id, eq) = prelude_oracle_merge(source_groups = source_groups, out_paths = lc_ignored_paths())
-    let (eq_offs, eq_keys) = eq
-    report = String::concat(report, prelude_pass_module_oracle_step(k = k, a = a, c = c, c_file_id = c_file_id, file_count = Array::length(files), entry_name = entry_name, checker_eq_offsets = eq_offs, checker_eq_type_keys = eq_keys, render = print_stmt))
-    k = k + 1
-  }
-  report
+  prelude_module_oracle_report(source_groups = source_groups, entry_name = entry_name, pass_limit = pass_limit)
 }
 
 /// #2388 measurement: the same closure through the WHOLE prelude per module.
@@ -601,135 +204,7 @@ export fn prelude_module_oracle_report_fs(entry_path: String, entry_name: String
 export fn prelude_module_full_oracle_report_fs(entry_path: String, entry_name: String) -> String with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let _ = prepare_file_fs_from_source_groups_persistent_cached(db = db_new(), entry_path = entry_path, source_groups = source_groups)
-  let (a, _, _, _) = prelude_oracle_merge(source_groups = source_groups, out_paths = lc_ignored_paths())
-  let module_paths: Array[String] = []
-  let (c, files, c_file_id, eq) = prelude_oracle_merge(source_groups = source_groups, out_paths = module_paths)
-  let (eq_offs, eq_keys) = eq
-  // #2633: the closure PRODUCTION uses (`ordinary_lane_module_split`), not the
-  // direct-edge-only one. The oracle answers "does the per-module lane
-  // reproduce the whole-program one", and the per-module lane production runs
-  // has direct imports plus re-export chains, taken from the loader via
-  // `module_reexport_deps_fs`.
-  //
-  // The objection recorded in `oracle_import_closure` is against a TRANSITIVE
-  // closure -- A imports B, B imports C privately, and a transitive closure
-  // hands A the declarations of C, which no real compile of A exposes. It does
-  // not reach this one: direct plus RE-EXPORT edges only is exactly what a real
-  // compile of that module sees, so this is not context a module lacks.
-  //
-  // Measured on `lib/@vibe/cli/entry.vibe`, 369 modules (2026-09-12), the two
-  // closures side by side:
-  //
-  //                        direct-only   exact
-  //   keyed content                  1       0
-  //   unresolved_exp                83       0
-  //   invisible_split                8       2
-  //   zero (modules given none)     37      30
-  //   decls handed out         121 981 167 382
-  //   seen (denominator)        25 556  25 556
-  //   missing / extra / collisions 0/0/0   0/0/0
-  //
-  // `content` reaching 0 is the per-module lane reproducing the whole-program
-  // prelude exactly. The row that closed was
-  // `parse_contract_program_spans`, whose thrown payload's type comes through
-  // `fn_returns` from `allows_outside_entry_error` -- declared in
-  // `@vibe/parser/parser_base.vibe` and reaching `contract.vibe` via a
-  // RE-EXPORT. It was recorded on #2633 three times as the `__exn_kind_cell`
-  // family (#2510's); the shape is that, the cause was this closure.
-  //
-  // The direct-only figures are a stricter lower bound on what a module needs.
-  // That signal is kept HERE, in writing, rather than by measuring a lane
-  // production does not run.
-  let (import_closure, unresolved_edges) = exact_import_closure(source_groups)
-  // The closure is indexed by FLAT SOURCE, the oracle by MERGED FILE ID. They
-  // are the same space only because the merge keeps one file entry per flat
-  // source; if that ever stops holding, every row would be read for the wrong
-  // module and the comparison would be quietly meaningless rather than wrong
-  // in a way anyone could see.
-  if Array::length(import_closure) != Array::length(files) {
-    throw(String::concat("prelude oracle: import closure is indexed by flat source but the merge reports a different file count -- ", String::concat(Int::to_string(Array::length(import_closure)), String::concat(" vs ", Int::to_string(Array::length(files))))))
-  } else {
-    ()
-  }
-  let line = prelude_module_full_oracle_line(a = a, c = c, c_file_id = c_file_id, file_count = Array::length(files), entry_name = entry_name, checker_eq_offsets = eq_offs, checker_eq_type_keys = eq_keys, import_closure = import_closure, render = print_stmt, module_paths = module_paths)
-  String::concat(String::concat(line, "edges_unresolved="), String::concat(Int::to_string(unresolved_edges), "\n"))
-}
-
-fn lc_fresh_str_row() -> Array[String] {
-  []
-}
-
-/// #2388: a dependency naming a `.vpkg` CONTRACT reaches that package's sibling
-/// implementations, because the contract is a surface and the merge carries the
-/// implementations.
-///
-/// This is not "siblings share scope" -- they do not, and an explicit relative
-/// import is required between them (`scripts/check_package_sibling_scope.sh`).
-/// It is that an import OF THE PACKAGE reaches everything the package's
-/// contract publishes, which is implemented next to it. Without this a module
-/// importing `@vibe/compiler/runtime` got the contract's materialized surface
-/// and not the sibling whose return types the prelude reads, which manufactured
-/// a difference the per-module lane does not really have.
-///
-/// NEAREST contract wins: a source under a deeper package belongs to that one,
-/// so `runtime/eval_loader/x.vibe` is not reached by importing `runtime`.
-fn oracle_expand_contract_dep(dep: String, own: Array[Int], flat: Array[(String, String)], contract_dirs: Array[String]) -> Array[Int] {
-  if !String::ends_with(dep, suffix = "/index.vpkg") {
-    own
-  } else {
-    let dir = String::substring(dep, start = 0, end = String::length(dep) - 11)
-    let out = lc_fresh_int_row()
-    let mut k = 0
-    while k < Array::length(own) {
-      Array::push(out, value = Array::get(own, at = k))
-      k = k + 1
-    }
-    let mut i = 0
-    while i < Array::length(flat) {
-      let (path, _) = Array::get(flat, at = i)
-      if String::starts_with(path, prefix = String::concat(dir, "/")) && oracle_nearest_contract_dir(path = path, contract_dirs = contract_dirs) == dir && !lc_int_row_has(xs = out, v = i) {
-        Array::push(out, value = i)
-      } else {
-        ()
-      }
-      i = i + 1
-    }
-    out
-  }
-}
-
-/// The longest contract directory that is a prefix of `path`.
-fn oracle_nearest_contract_dir(path: String, contract_dirs: Array[String]) -> String {
-  let mut best = ""
-  let mut i = 0
-  while i < Array::length(contract_dirs) {
-    let d = Array::get(contract_dirs, at = i)
-    if String::starts_with(path, prefix = String::concat(d, "/")) && String::length(d) > String::length(best) {
-      best = d
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  best
-}
-
-fn lc_fresh_int_row() -> Array[Int] {
-  []
-}
-
-fn lc_int_row_has(xs: Array[Int], v: Int) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(xs) && !found {
-    if Array::get(xs, at = i) == v {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
+  prelude_module_full_oracle_report(source_groups = source_groups, entry_name = entry_name)
 }
 
 /// #2575 item 2: does the ORDINARY compile lane carry a usable statement to
@@ -745,10 +220,7 @@ fn lc_int_row_has(xs: Array[Int], v: Int) -> Bool {
 export fn prelude_ordinary_lane_prov_report_fs(_ entry_path: String) -> String with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let _ = prepare_file_fs_from_source_groups_persistent_cached(db = db_new(), entry_path = entry_path, source_groups = source_groups)
-  let stmt_file_id: Array[Int] = []
-  let (merged, _, _, _, _, _) = merged_stmts_and_offsets_prov(source_groups = source_groups, stmt_file_id_out = stmt_file_id)
-  let files = flatten_source_groups_local(source_groups)
-  String::concat(String::concat("PROV stmts=", Int::to_string(Array::length(merged))), String::concat(String::concat(" ids=", Int::to_string(Array::length(stmt_file_id))), String::concat(" files=", String::concat(Int::to_string(Array::length(files)), "\n"))))
+  prelude_ordinary_lane_prov_report(source_groups)
 }
 
 /// #2388 measurement: the shape of the import closure the per-module oracle
@@ -763,431 +235,7 @@ export fn prelude_ordinary_lane_prov_report_fs(_ entry_path: String) -> String w
 /// real import graph.
 export fn prelude_module_import_closure_report_fs(_ entry_path: String) -> String with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
-  // #2633: the closure the full oracle ACTUALLY runs under, so this report
-  // cannot describe a different one than the lane it is named for.
-  let (closure, unresolved) = exact_import_closure(source_groups)
-  let mut edges = 0
-  let mut i = 0
-  while i < Array::length(closure) {
-    edges = edges + Array::length(Array::get(closure, at = i))
-    i = i + 1
-  }
-  String::concat(String::concat(String::concat("CLOSURE files=", Int::to_string(Array::length(closure))), String::concat(" edges=", Int::to_string(edges))), String::concat(" unresolved=", String::concat(Int::to_string(unresolved), "\n")))
-}
-
-/// #2388: for each flat source, the indices of the sources it can see -- its
-/// own resolved imports, transitively -- plus the number of dependency edges
-/// this could NOT place in that source list.
-///
-/// This is what turns the per-module oracle's green from the weaker claim ("no
-/// module needed anything the whole program did not have") into the real one
-/// ("no module needed anything it imports"). The edges come from the LOADER
-/// (`load_or_parse_module_header_fs`, the same header scan the FS typecheck
-/// lane plans module order with), because the merge drops `SImport` /
-/// `SReExport` as already resolved, so they cannot be read back off the merged
-/// program.
-///
-/// ONE HOP. A dep naming a `.vpkg` contract expands to that group's sibling
-/// implementations, which are the sources the merge actually carries; nothing
-/// else is followed. See the note at the closure itself for why transitive is
-/// wrong here.
-///
-/// The unresolved count is returned rather than swallowed. A dropped edge
-/// narrows a module's context, so it can only manufacture a `missing`, never
-/// hide one -- but a caller that does not print it cannot tell a closure built
-/// from every edge from one built from half of them, and those two greens are
-/// not the same claim.
-fn oracle_import_closure(_ source_groups: Array[(String, Array[(String, String)])]) -> (Array[Array[Int]], Int) with Env + Exception + Fs {
-  let flat = flatten_source_groups_local(source_groups)
-  let n = Array::length(flat)
-  // path -> EVERY flat index carrying it, and group key -> that group's flat
-  // indices. Every index, not the first: a source that appears in two groups
-  // is two modules in the merged program, and an edge to only one of them
-  // would give a dependent the declarations of one copy and not the other --
-  // a narrowing that looks exactly like a real import boundary (ARCH011).
-  let index_of: MutMap[String, Array[Int]] = MutMap::new_string()
-  let mut i = 0
-  while i < n {
-    let (path, _) = Array::get(flat, at = i)
-    match MutMap::get(index_of, k = path) {
-      Some(seats) => Array::push(seats, value = i),
-      None => MutMap::set(index_of, k = path, v = [i])
-    }
-    i = i + 1
-  }
-  // Every `.vpkg` contract in the flat list, by its directory. An import names
-  // a PACKAGE; the declarations it publishes are implemented by that package's
-  // sibling sources, and it is those the merge carries.
-  let contract_dirs = lc_fresh_str_row()
-  i = 0
-  while i < n {
-    let (path, _) = Array::get(flat, at = i)
-    if String::ends_with(path, suffix = "/index.vpkg") {
-      Array::push(contract_dirs, value = String::substring(path, start = 0, end = String::length(path) - 11))
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  let group_members: MutMap[String, Array[Int]] = MutMap::new_string()
-  let mut gi = 0
-  let mut flat_at = 0
-  while gi < Array::length(source_groups) {
-    let (key, sources) = Array::get(source_groups, at = gi)
-    let members: Array[Int] = []
-    let mut si = 0
-    while si < Array::length(sources) {
-      Array::push(members, value = flat_at + si)
-      si = si + 1
-    }
-    flat_at = flat_at + Array::length(sources)
-    if MutMap::has(group_members, k = key) {
-      ()
-    } else {
-      MutMap::set(group_members, k = key, v = members)
-    }
-    gi = gi + 1
-  }
-  // Expansion depends only on this walk's immutable flat file space.
-  // Reuse a contract's complete set of seats across its importers; each row
-  // below only reads the seats, preserving duplicate source provenance.
-  let expanded_deps: MutMap[String, Array[Int]] = MutMap::new_string()
-  // Direct edges, from the loader's own header scan.
-  let direct: Array[Array[Int]] = []
-  let mut unresolved = 0
-  i = 0
-  while i < n {
-    let (path, source) = Array::get(flat, at = i)
-    let (dep_paths, _, _) = load_or_parse_module_header_fs(path = path, source = source, parse_count = 0)
-    let row: Array[Int] = []
-    let mut d = 0
-    while d < Array::length(dep_paths) {
-      let dep = Array::get(dep_paths, at = d)
-      // A dep names a source, or a `.vpkg` group whose sibling implementations
-      // are what the merge actually carries. Either way it resolves to a SET
-      // of seats, and every one of them is an edge.
-      let seats = match MutMap::get(index_of, k = dep) {
-        Some(found) => match MutMap::get(expanded_deps, k = dep) {
-          Some(seats) => seats,
-          None => {
-            let seats = oracle_expand_contract_dep(dep = dep, own = found, flat = flat, contract_dirs = contract_dirs)
-            MutMap::set(expanded_deps, k = dep, v = seats)
-            seats
-          }
-        },
-        None =>
-        match MutMap::get(group_members, k = dep) {
-          Some(members) => members,
-          None => {
-            unresolved = unresolved + 1
-            []
-          }
-        }
-      }
-      let mut m = 0
-      while m < Array::length(seats) {
-        let at = Array::get(seats, at = m)
-        if at == i {
-          ()
-        } else {
-          Array::push(row, value = at)
-        }
-        m = m + 1
-      }
-      d = d + 1
-    }
-    Array::push(direct, value = row)
-    i = i + 1
-  }
-  // DIRECT edges only -- a module's own imports, not its dependencies'.
-  //
-  // This used to close transitively, justified as "a module sees what its
-  // dependencies re-export". That is wrong as implemented (Codex round on
-  // #2623): when A imports B and B imports C PRIVATELY, a transitive closure
-  // hands A the declarations of C, which no real compile of A exposes. The
-  // oracle could then report agreement only because it was given context a
-  // module does not have -- the one failure mode that makes a green
-  // meaningless.
-  //
-  // Closing only across re-export edges would be the exact rule, and the
-  // loader's header scan does not distinguish them: it returns a module's deps
-  // and its export NAMES, with no record of which deps a dep re-exports. So
-  // this takes the safe side instead: direct-only is an UNDER-approximation,
-  // and `unresolved` is reported rather than swallowed for the same reason.
-  //
-  // The approximation is NOT one-sided: it can hide a difference as well as
-  // manufacture one, so do not restore an "only manufactures" claim here.
-  // Narrowing a module's context changes the EXECUTION PATH, not just the
-  // inputs -- a module that cannot see enough defers, and
-  // `eq_mint_deferred_into` builds the helper at the link against the
-  // concatenated program, which is the whole program. A module that would have
-  // synthesized a DIFFERING helper under exact context receives the
-  // whole-program one instead, green over a real difference.
-  // `prelude_module_oracle_test.vibe` relies on exactly that to make a module
-  // defer on demand.
-  //
-  // So the oracle's zero supports "the LINKED program equals the whole-program
-  // one" -- the question a per-module driver has -- and not "every module
-  // synthesized faithfully". `SYNTH deferred=` / `minted=` separate the two by
-  // counting how much of the green is the link's work.
-  // Measured on the compiler's own CLI closure, and the transitivity was very
-  // much load-bearing -- 32017 reachable pairs against 1415 one-hop ones, 22x
-  // wider. Under it the split read `missing=1 content=4 invisible_split=2`;
-  // with real one-hop context it reads `missing=6 content=9
-  // invisible_split=15`. Every one of those extra differences was being hidden
-  // by context no module has.
-  let out: Array[Array[Int]] = []
-  i = 0
-  while i < n {
-    let row = lc_fresh_int_row()
-    let dr = Array::get(direct, at = i)
-    let mut d = 0
-    while d < Array::length(dr) {
-      let at = Array::get(dr, at = d)
-      if at == i || lc_int_row_has(xs = row, v = at) {
-        ()
-      } else {
-        Array::push(row, value = at)
-      }
-      d = d + 1
-    }
-    Array::push(out, value = row)
-    i = i + 1
-  }
-  (out, unresolved)
-}
-
-fn eic_dir_of(_ path: String) -> String {
-  let mut cut = 0 - 1
-  let mut i = 0
-  while i < String::length(path) {
-    if String::char_code_at(path, at = i) == 47 {
-      cut = i
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  if cut < 0 {
-    ""
-  } else {
-    String::substring(path, start = 0, end = cut)
-  }
-}
-
-fn eic_row_holds(row: Array[Int], v: Int) -> Bool {
-  let mut found = false
-  let mut i = 0
-  while !found && i < Array::length(row) {
-    if Array::get(row, at = i) == v {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
-}
-
-/// Is flat index `jpath` reached through one of `re_paths` -- a module's
-/// RE-EXPORTED deps?
-///
-/// The directory arm mirrors `oracle_expand_contract_dep`: a dep naming a
-/// `.vpkg` contract expands to that package's sibling implementations, and it
-/// is those the merge carries, so a re-exported contract has to admit its
-/// siblings or the edge disappears exactly where packages are involved.
-fn eic_reexport_admits(re_paths: Array[String], jpath: String) -> Bool {
-  let mut ok = false
-  let mut i = 0
-  while !ok && i < Array::length(re_paths) {
-    let rp = Array::get(re_paths, at = i)
-    if rp == jpath {
-      ok = true
-    } else if String::ends_with(rp, suffix = "/index.vpkg") && eic_dir_of(rp) == eic_dir_of(jpath) {
-      ok = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  ok
-}
-
-/// Everything reachable from `start` across RE-EXPORT edges, accumulated into
-/// `row`. Worklist rather than recursion because a re-export cycle is a
-/// legal shape and would not otherwise terminate.
-fn eic_add_reexport_reach(reexport_rows: Array[Array[Int]], start: Int, self_i: Int, row: Array[Int]) -> Unit {
-  let pending: Array[Int] = []
-  let seen: Array[Int] = []
-  Array::push(pending, value = start)
-  let mut head = 0
-  while head < Array::length(pending) {
-    let at = Array::get(pending, at = head)
-    head = head + 1
-    if eic_row_holds(row = seen, v = at) {
-      ()
-    } else {
-      Array::push(seen, value = at)
-      let rr = Array::get(reexport_rows, at = at)
-      let mut k = 0
-      while k < Array::length(rr) {
-        let next = Array::get(rr, at = k)
-        if next != self_i && !eic_row_holds(row = row, v = next) {
-          Array::push(row, value = next)
-        } else {
-          ()
-        }
-        Array::push(pending, value = next)
-        k = k + 1
-      }
-    }
-  }
-}
-
-/// The closure a PRODUCTION split needs (#2658): a module's direct imports,
-/// plus everything reachable from them across RE-EXPORT edges only.
-///
-/// `oracle_import_closure` is direct-edges-only and explains why at length.
-/// That under-approximation is right for a MEASUREMENT and wrong for codegen:
-/// a module that imports B and cannot see what B re-exports from C lowers a
-/// call to C's bounded generic without the witness argument C's rewritten
-/// generic requires (#2647 Codex round 9).
-///
-/// Closing over ALL edges instead is wrong in both directions. It hands a
-/// module its dependencies' PRIVATE imports, which no real compile of it
-/// exposes -- and, the reason it matters here rather than only for the
-/// oracle, it gives every module the whole program's declarations, which is
-/// precisely the live set #2494 exists to bound. The re-export closure is the
-/// point that is both correct and minimal.
-///
-/// The re-export subset comes from the LOADER (`module_reexport_deps_fs`),
-/// not from re-reading source text here, so it cannot drift from what the
-/// loader actually resolves.
-fn exact_import_closure(_ source_groups: Array[(String, Array[(String, String)])]) -> (Array[Array[Int]], Int) with Env + Exception + Fs {
-  let (direct, unresolved) = oracle_import_closure(source_groups)
-  let flat = flatten_source_groups_local(source_groups)
-  let n = Array::length(flat)
-  if Array::length(direct) != n {
-    (direct, unresolved)
-  } else {
-    // Which of each module's direct edges are RE-EXPORT edges. Derived by
-    // testing the oracle's already-expanded indices against the loader's
-    // resolved re-export paths, so contract expansion is not re-implemented.
-    let reexport_rows: Array[Array[Int]] = []
-    let mut i = 0
-    while i < n {
-      let (path, source) = Array::get(flat, at = i)
-      let re_paths = module_reexport_deps_fs(path = path, source = source)
-      let row: Array[Int] = []
-      let dr = Array::get(direct, at = i)
-      let mut d = 0
-      while d < Array::length(dr) {
-        let j = Array::get(dr, at = d)
-        let (jpath, _) = Array::get(flat, at = j)
-        if eic_reexport_admits(re_paths = re_paths, jpath = jpath) {
-          Array::push(row, value = j)
-        } else {
-          ()
-        }
-        d = d + 1
-      }
-      Array::push(reexport_rows, value = row)
-      i = i + 1
-    }
-    let out: Array[Array[Int]] = []
-    i = 0
-    while i < n {
-      let row: Array[Int] = []
-      let dr = Array::get(direct, at = i)
-      let mut d = 0
-      while d < Array::length(dr) {
-        let j = Array::get(dr, at = d)
-        if j != i && !eic_row_holds(row = row, v = j) {
-          Array::push(row, value = j)
-        } else {
-          ()
-        }
-        eic_add_reexport_reach(reexport_rows = reexport_rows, start = j, self_i = i, row = row)
-        d = d + 1
-      }
-      Array::push(out, value = row)
-      i = i + 1
-    }
-    (out, unresolved)
-  }
-}
-
-/// A throwaway sink for the path out-param, for callers that do not want it.
-fn lc_ignored_paths() -> Array[String] {
-  []
-}
-
-fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])], out_paths: Array[String]) -> (Array[Stmt], Array[String], Array[Int], (Array[Int], Array[String])) with Env + Exception {
-  let flat_paths: Array[String] = []
-  let flat_bases: Array[Int] = []
-  let clone_float_offsets: Array[Int] = []
-  let (merged, files, _, stmt_file_id) = build_grouped_merged_stmts_prov(source_groups = source_groups, flat_paths_out = flat_paths, flat_bases_out = flat_bases, clone_float_offsets_out = clone_float_offsets)
-  let (_, rels, pluses, _, _) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths = flat_paths, flat_bases = flat_bases, clone_float_offsets = clone_float_offsets))
-  let (eq_offs, eq_keys) = union_module_typed_eq_rows(flat_paths = flat_paths, flat_bases = flat_bases)
-  let stmts = rewrite_string_binops_stmts(stmts = merged, rels = rels, pluses = pluses, anchor = typed_lowering_binop_anchor)
-  if Array::length(stmts) != Array::length(stmt_file_id) {
-    throw("prelude oracle: the binop rewrite changed the statement count")
-  } else {
-    ()
-  }
-  // #2704: the SOURCE PATHS, in merged-file-id order. `flat_paths` is filled
-  // from the very `file_paths` array the merge mangles with
-  // (`build_grouped_merged_stmts_impl` pushes `file_paths[source_idx]`), so
-  // `sanitize_namespace_path` of one of these IS a module's stamp -- no
-  // parsing, no ambiguity. `files` carries the same paths (#2199) but is a
-  // per-FILE table, not the per-statement one this builds.
-  let mut fp = 0
-  while fp < Array::length(flat_paths) {
-    Array::push(out_paths, value = Array::get(flat_paths, at = fp))
-    fp = fp + 1
-  }
-  (stmts, files, stmt_file_id, (eq_offs, eq_keys))
-}
-
-/// #2391: the merge every offsets-consuming linear FS lane shares -- each file
-/// rebased into a disjoint offset range (same rebase as the gc lane, #2226) so
-/// the per-module offset tables union without collisions. Returns the merged
-/// program -- with the typed String-binop rewrite (slice 2) already applied:
-/// `a < b` becomes `str_lex_diff(a, b) < 0` and `a + b` becomes
-/// `String::concat(a, b)` exactly where the modular check recorded a String
-/// operand, the same forms the desugar tracker emits for the shapes it can
-/// classify syntactically -- plus the Double call-result offset table for
-/// codegen. The rewrite anchors with the checker's own channel anchor
-/// (typed_lowering_binop_anchor), so
-/// both sides compute the anchor identically by construction.
-fn merged_stmts_and_offsets(_ source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Env + Exception {
-  merged_stmts_and_offsets_prov(source_groups = source_groups, stmt_file_id_out = array_empty())
-}
-
-/// #2575 item 2: the same merge, keeping the per-statement MODULE id.
-///
-/// The ordinary lane computed that map and threw it away -- the out-parameter
-/// was `array_empty()` -- and then handed codegen an `empty_dbg_prov()`. So the
-/// information a per-module driver needs was being produced and discarded on
-/// the one path that matters, which is why "wire the per-module prelude" looked
-/// like a driver problem and is really a plumbing one.
-///
-/// `stmt_file_id_out` stays optional: a caller that does not want the map
-/// passes `array_empty()` and pays nothing. One `Int` per top-level statement
-/// when it does -- about 79 kB on the compiler's own closure, against a
-/// selfcompile heap of ~814 MiB.
-///
-/// The binop rewrite below does not change the statement count (the oracle's
-/// merge asserts exactly that), so the ids stay aligned with what it returns.
-fn merged_stmts_and_offsets_prov(source_groups: Array[(String, Array[(String, String)])], stmt_file_id_out: Array[Int]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Env + Exception {
-  let flat_paths: Array[String] = []
-  let flat_bases: Array[Int] = []
-  let clone_float_offsets: Array[Int] = []
-  let merged = build_grouped_merged_stmts_impl(source_groups = source_groups, disjoint_offset_spaces = true, flat_paths_out = flat_paths, flat_bases_out = flat_bases, clone_float_offsets_out = clone_float_offsets, stmt_file_id_out = stmt_file_id_out)
-  let (floats, rels, pluses, int_renders, bool_renders) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths = flat_paths, flat_bases = flat_bases, clone_float_offsets = clone_float_offsets))
-  // #2441: the typed-`==` rows ride the same disjoint offset spaces.
-  let (eq_offs, eq_keys) = union_module_typed_eq_rows(flat_paths = flat_paths, flat_bases = flat_bases)
-  (rewrite_string_binops_stmts(stmts = merged, rels = rels, pluses = pluses, anchor = typed_lowering_binop_anchor), floats, int_renders, bool_renders, eq_offs, eq_keys)
+  prelude_module_import_closure_report(source_groups)
 }
 
 /// The statement filter `build_module_source` (runtime.vibe) applies while
@@ -1261,107 +309,6 @@ fn module_lane_filter_stmts(_ stmts: Array[Stmt]) -> Array[Stmt] {
   filtered
 }
 
-/// Interior-line breakpoints: sorted offsets of each '\n' in `src` past the block the loader
-/// prepends to a directory-shared sibling, so lines count on disk (#3656). Local codegen copy.
-///
-/// Sized by a counting pass first: grown from empty, a compiler-sized source
-/// list left every doubling's buffer behind on the heap.
-fn file_newline_offsets(_ src: String) -> Array[Int] {
-  let n = String::length(src)
-  let mut count = 0
-  let mut j = loader_prepended_prefix_bytes(src)
-  while j < n {
-    if String::byte_at(src, at = j) == 10 {
-      count = count + 1
-    }
-    j = j + 1
-  }
-  let arr = Array::with_capacity(count)
-  let mut i = loader_prepended_prefix_bytes(src)
-  while i < n {
-    if String::char_code_at(src, at = i) == 10 {
-      Array::push(arr, value = i)
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  arr
-}
-
-/// Interior-line breakpoints (span-arc step5, multi-file): like
-/// build_grouped_merged_stmts but ALSO records, per merged top-level statement,
-/// which SOURCE FILE it came from — so codegen can map each statement's char
-/// offset to a line IN ITS OWN FILE (offsets from different files collide after
-/// the merge). Returns (merged, file_basenames, file_newlines, stmt_file_id):
-///   file_basenames[k] / file_newlines[k]  — the k-th distinct source file
-///   stmt_file_id[s]                        — file id of merged top-level stmt s
-/// Provenance is captured by measuring the merged-array length delta around each
-/// source's append, so it stays aligned no matter how many statements a source
-/// contributes; the append calls themselves mirror the ordinary offsets merge
-/// exactly, so `merged` is identical to the normal (rc/bump) path.
-///
-/// #2391: the merge is disjoint-rebased like the ordinary path, and each
-/// file's NEWLINE table is shifted by the same base. `offset_to_line` only
-/// compares newline offsets against statement offsets, so shifting both
-/// sides by one base leaves every computed line number unchanged -- the
-/// break lane keeps its per-file line mapping with no codegen change, and
-/// the float-offset union (via the caller-passed sinks, same contract as
-/// build_grouped_merged_stmts_impl) speaks the same offset space.
-/// #2388: the merge plus the per-file debug provenance the break lane needs --
-/// `files[k]` the PATH of flat source k, `file_nls[k]` its newline offsets
-/// already shifted into the merge's offset space, `stmt_file_id[s]` the flat
-/// source that owns merged statement s.
-///
-/// #2199: the path, not the basename it used to be. `files` is also what a
-/// production trap prints (`vibe.dbgfiles`, via `frame: main (<file>:<line>)`),
-/// and a basename there is not a thing to open from the project root -- and
-/// names no one file as soon as the program pulls in two packages, each with
-/// its own `index.vibe` (Codex P2 on PR #2867). What the loader opened is what
-/// the reader can open. The break lane is unaffected: a `--break <file>:<line>`
-/// spec is reduced to its basename before matching, and the runner matches and
-/// prints these entries by basename too.
-///
-/// This used to be a SECOND COPY of build_grouped_merged_stmts_impl with the
-/// provenance collection interleaved, carrying a comment promising that its
-/// `merged` "stays identical to the normal (non-break) merge" -- a property
-/// nothing checked, between two bodies that had to be edited in step. It is a
-/// wrapper now, so the promise holds by construction.
-///
-/// `files` and `file_nls` are derived here rather than inside the merge
-/// because a newline table costs a scan of every source byte, and only the
-/// break lane reads one. The bases come from the merge's own
-/// `flat_bases_out`: its first `Array::length(flat_sources)` entries are the
-/// per-source offset bases, recorded before the append loop runs (the
-/// alias-collision fallback appends further entries after those, which is why
-/// the count is taken from the sources and not from the array's length).
-fn build_grouped_merged_stmts_prov(source_groups: Array[(String, Array[(String, String)])], flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int]) -> (Array[Stmt], Array[String], Array[Array[Int]], Array[Int]) with Env + Exception {
-  let stmt_file_id = array_empty()
-  let merged = build_grouped_merged_stmts_impl(source_groups = source_groups, disjoint_offset_spaces = true, flat_paths_out = flat_paths_out, flat_bases_out = flat_bases_out, clone_float_offsets_out = clone_float_offsets_out, stmt_file_id_out = stmt_file_id)
-  let flat_sources = flatten_source_groups_local(source_groups)
-  let files = array_empty()
-  let file_nls = array_empty()
-  let mut si = 0
-  while si < Array::length(flat_sources) {
-    let (flat_path, flat_source) = Array::get(flat_sources, at = si)
-    Array::push(files, value = flat_path)
-    let base = if si < Array::length(flat_bases_out) {
-      Array::get(flat_bases_out, at = si)
-    } else {
-      0
-    }
-    let nls = file_newline_offsets(flat_source)
-    let mut nli = 0
-    while nli < Array::length(nls) {
-      Array::set(nls, at = nli, value = Array::get(nls, at = nli) + base)
-      nli = nli + 1
-    }
-    Array::push(file_nls, value = nls)
-    si = si + 1
-  }
-  (merged, files, file_nls, stmt_file_id)
-}
-
 fn prepare_file_fs_from_source_groups_persistent_cached(db: TypeDb, entry_path: String, source_groups: Array[(String, Array[(String, String)])]) -> TypeDb with Env + Exception + Fs {
   let seeded = seed_type_db_from_source_groups(db = db, source_groups = source_groups)
   db_typecheck_fs(db = seeded, path = entry_path)
@@ -1411,7 +358,7 @@ export fn check_file_fs_mode_from_source_groups(entry_path: String, source_group
   // throws is mapped back to its file (cli_support `marker_in_file_space`).
   let flat_paths: Array[String] = array_empty()
   let flat_bases: Array[Int] = array_empty()
-  let merged_stmts = build_grouped_merged_stmts_impl(source_groups = source_groups, disjoint_offset_spaces = true, flat_paths_out = flat_paths, flat_bases_out = flat_bases, clone_float_offsets_out = array_empty(), stmt_file_id_out = array_empty())
+  let merged_stmts = build_grouped_merged_stmts_with_offsets(source_groups = source_groups, flat_paths = flat_paths, flat_bases = flat_bases)
   let (eq_offs, eq_keys) = union_module_typed_eq_rows(flat_paths = flat_paths, flat_bases = flat_bases)
   let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_merge")
   let lowering_errs = effect_lowering_prelude(stmts = merged_stmts, entry_name = "main", linked_imports = array_empty(), iw_names = array_empty(), iw_wats = array_empty(), checker_eq_offsets = eq_offs, checker_eq_type_keys = eq_keys)
@@ -1474,9 +421,7 @@ fn compile_merged_for_mode(mode: String, merged_stmts: Array[Stmt], entry_name: 
 /// #2828 rung 2: the grant-carrying arity.
 fn compile_merged_for_mode_grants(mode: String, merged_stmts: Array[Stmt], entry_name: String, float_offsets: Array[Int], int_offsets: Array[Int], bool_offsets: Array[Int], eq_offsets: Array[Int], eq_keys: Array[String], grants: Array[(String, String)]) -> Bytes with Exception {
   if mode == "mvp" {
-    let pruned_stmts = dce_stmts_before_trait_desugar(stmts = merged_stmts, entry_names = [
-      entry_name
-    ])
+    let pruned_stmts = dce_stmts_before_trait_desugar(stmts = merged_stmts, entry_names = [entry_name])
     compile_wasi_module_impl_with_typed_offsets_grants(stmts = pruned_stmts, entry_name = entry_name, checker_float_call_offsets = float_offsets, checker_int_render_offsets = int_offsets, checker_bool_render_offsets = bool_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys, grants = grants)
   } else if mode == "no-dce" {
     compile_wasi_module_no_dce_impl_with_typed_offsets(stmts = merged_stmts, entry_name = entry_name, checker_float_call_offsets = float_offsets, checker_int_render_offsets = int_offsets, checker_bool_render_offsets = bool_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys)
@@ -1490,9 +435,7 @@ fn compile_merged_for_mode_grants(mode: String, merged_stmts: Array[Stmt], entry
     // `no-dce` and is 2.6 MB rooted here.
     //
     // `entry_name` is the DCE ROOT; the codegen entry is the library sentinel.
-    let pruned_stmts = dce_stmts_before_trait_desugar(stmts = merged_stmts, entry_names = [
-      entry_name
-    ])
+    let pruned_stmts = dce_stmts_before_trait_desugar(stmts = merged_stmts, entry_names = [entry_name])
     compile_wasi_module_no_dce_impl_with_typed_offsets(stmts = pruned_stmts, entry_name = "__no_entry__", checker_float_call_offsets = float_offsets, checker_int_render_offsets = int_offsets, checker_bool_render_offsets = bool_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys)
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
@@ -1605,74 +548,6 @@ export fn compile_file_fs_mode_rc_grants(entry_path: String, entry_name: String,
     file_nls: dbg_file_nls,
     stmt_file_id: dbg_stmt_file_id
   }, checker_float_call_offsets = float_offsets, checker_int_render_offsets = int_offsets, checker_bool_render_offsets = bool_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys, grants = grants)
-}
-
-/// #2388 step 3: like the rc lane's merge, but ALSO reports, per flat source
-/// file, its path, its content fingerprint, how many merged top-level
-/// statements it contributed -- measured by length delta around each append,
-/// the same technique build_grouped_merged_stmts_prov uses, so the counts
-/// stay aligned however many statements a file contributes -- and (#2391) its
-/// disjoint offset base for the float-offset union. `merged` is identical to
-/// the ordinary rc lane's (merged_stmts_and_float_offsets).
-fn build_grouped_merged_stmts_counted(_ source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[String], Array[Int], Array[Int], Array[Int]) with Env + Exception {
-  namespace_rename_originals_reset()
-  let merged = array_empty()
-  let out_paths = array_empty()
-  let out_fps = array_empty()
-  let out_counts = array_empty()
-  let clone_float_offsets_out: Array[Int] = []
-  let flat_sources = flatten_source_groups_local(source_groups)
-  let (file_paths, file_stmts) = parse_sources_for_merge(flat_sources)
-  // #2391: mirror build_grouped_merged_stmts_impl's disjoint-offset rebase,
-  // so the body-cached lane's `merged` stays byte-identical to the ordinary
-  // rc lane's (codegen_body_cache_persist_test compares the two), and record
-  // each file's base for the float-offset union. The paths/fps rows are
-  // filled HERE, not in the append loop below, so the table is complete
-  // before the first append -- an alias-collision clone may reference a
-  // provider LATER in the flat order than the importing file.
-  let located_file_stmts = array_empty()
-  let out_bases: Array[Int] = []
-  let mut offset_base = 0
-  let mut source_idx = 0
-  // #3090: the same record build_grouped_merged_stmts_impl keeps.
-  merged_offset_space_reset()
-  while source_idx < Array::length(flat_sources) {
-    Array::push(located_file_stmts, value = shift_stmts_offsets(stmts = Array::get(file_stmts, at = source_idx), delta = offset_base))
-    let (flat_path, flat_source) = Array::get(flat_sources, at = source_idx)
-    merged_offset_space_add(path = flat_path, source = flat_source, base = offset_base)
-    Array::push(out_paths, value = flat_path)
-    Array::push(out_fps, value = compact_source_fingerprint_memo(path = flat_path, source = flat_source))
-    Array::push(out_bases, value = offset_base)
-    offset_base = offset_base + String::length(flat_source) + 1
-    source_idx = source_idx + 1
-  }
-  let plan_entry = if Array::length(file_paths) > 0 {
-    Array::get(file_paths, at = Array::length(file_paths) - 1)
-  } else {
-    ""
-  }
-  let plan = build_export_rename_plan(paths = file_paths, stmts_list = file_stmts, entry_path = plan_entry)
-  let fallback_clone_offset_delta = [offset_base]
-  let fallback_clone_offset_span = offset_base
-  let units = []
-  let mut flat_idx = 0
-  let mut gi = 0
-  while gi < Array::length(source_groups) {
-    let (_, sources) = Array::get(source_groups, at = gi)
-    let source_count = Array::length(sources)
-    let mut si = 0
-    while si < source_count {
-      let (path, _) = Array::get(sources, at = si)
-      let before = Array::length(merged)
-      append_merged_stmts_for_file(merged = merged, path = path, stmts = Array::get(located_file_stmts, at = flat_idx), is_entry_source = flat_idx == Array::length(file_paths) - 1, plan = plan, sources = flat_sources, source_stmts = located_file_stmts, fallback_clone_offset_delta = fallback_clone_offset_delta, fallback_clone_offset_span = fallback_clone_offset_span, flat_paths = out_paths, flat_bases = out_bases, clone_float_offsets_out = clone_float_offsets_out, units = units)
-      Array::push(out_counts, value = Array::length(merged) - before)
-      flat_idx = flat_idx + 1
-      si = si + 1
-    }
-    gi = gi + 1
-  }
-  refuse_linked_impl_overlaps(merged = merged, units = units)
-  (merged, out_paths, out_fps, out_counts, out_bases, clone_float_offsets_out)
 }
 
 //# #2388 step 3: codegen body-cache artifact (wrapper codec)
@@ -1982,66 +857,6 @@ fn record_typed_lowering_guard(cache: CodegenBodyCache, rows: Array[Int]) -> Uni
   }
 }
 
-/// #2575 item 2: the ordinary lane's statement-to-module map, as a `DbgProv`.
-///
-/// This is the input `prelude_run_per_module` needs and no production compile
-/// could give it: `effect_lowering_prelude` takes only the merged statement
-/// array, so nothing downstream can split it by module.
-///
-/// It costs an expansion and no new merge work. `file_counts[i]` is how many
-/// merged top-level statements flat file `i` contributed, in merge order --
-/// `build_grouped_merged_stmts_counted` already produces it because the
-/// codegen body cache needs the same table -- so the per-statement ids are a
-/// run-length decode of something this lane holds either way.
-///
-/// #2199: also fills `file_nls` so production compiles can emit a compact
-/// `vibe.linemap` without debug-break probes. The per-file newline tables are
-/// the same rebased offsets the break lane uses. A caller that passes empty
-/// `source_groups` / `file_bases` still gets empty `file_nls`, and
-/// `linked_compile_prov_inert_test.vibe` keeps compiling that shape.
-///
-/// Alignment holds across `elaborate_heap_params`, which runs between this and
-/// the owner scan that reads it: that pass pushes exactly one statement per
-/// input statement, so the count and order it hands on are the merge's.
-fn ordinary_lane_dbg_prov(file_paths: Array[String], file_counts: Array[Int], source_groups: Array[(String, Array[(String, String)])], file_bases: Array[Int]) -> DbgProv {
-  let files = array_empty()
-  let stmt_file_id = array_empty()
-  let mut i = 0
-  while i < Array::length(file_paths) && i < Array::length(file_counts) {
-    // #2199: the path the loader opened, like `build_grouped_merged_stmts_prov`
-    // -- the two lanes feed the same `vibe.dbgfiles`, so a basename here would
-    // make a trap's location depend on whether the body cache was on.
-    Array::push(files, value = Array::get(file_paths, at = i))
-    let n = Array::get(file_counts, at = i)
-    let mut k = 0
-    while k < n {
-      Array::push(stmt_file_id, value = i)
-      k = k + 1
-    }
-    i = i + 1
-  }
-  let flat = flatten_source_groups_local(source_groups)
-  let file_nls = array_empty()
-  let mut si = 0
-  while si < Array::length(flat) {
-    let (_, flat_source) = Array::get(flat, at = si)
-    let base = if si < Array::length(file_bases) {
-      Array::get(file_bases, at = si)
-    } else {
-      0
-    }
-    let nls = file_newline_offsets(flat_source)
-    let mut nli = 0
-    while nli < Array::length(nls) {
-      Array::set(nls, at = nli, value = Array::get(nls, at = nli) + base)
-      nli = nli + 1
-    }
-    Array::push(file_nls, value = nls)
-    si = si + 1
-  }
-  DbgProv::{ files: files, file_nls: file_nls, stmt_file_id: stmt_file_id }
-}
-
 /// #2575 item 2 step 3b: the ordinary FS lane's `ModuleSplit`, or an unusable
 /// one.
 ///
@@ -2049,7 +864,7 @@ fn ordinary_lane_dbg_prov(file_paths: Array[String], file_counts: Array[Int], so
 /// over the same `file_counts`, so the two describe one partition of one
 /// array.
 ///
-/// The closure comes from `oracle_import_closure`, and TWO conditions make this
+/// The closure comes from `exact_import_closure`, and TWO conditions make this
 /// return `module_split_none()` -- which is the whole-program prelude:
 ///
 ///   * `unresolved > 0`. A dropped edge narrows a module's context, and
@@ -2158,13 +973,13 @@ export fn ordinary_lane_closure_admits(entry_path: String, owner: String, member
   if unresolved > 0 {
     false
   } else {
-    let flat = flatten_source_groups_local(source_groups)
+    let flat = flatten_group_sources(source_groups)
     let oi = eic_index_of_suffix(flat = flat, suffix = owner)
     let mi = eic_index_of_suffix(flat = flat, suffix = member)
     if oi < 0 || mi < 0 || oi >= Array::length(closure) {
       false
     } else {
-      eic_row_holds(row = Array::get(closure, at = oi), v = mi)
+      import_closure_row_has(row = Array::get(closure, at = oi), v = mi)
     }
   }
 }

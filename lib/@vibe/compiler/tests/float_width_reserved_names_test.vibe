@@ -1,0 +1,43 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+//# Misc
+
+// ADR-0122 (#3728): the parser reads `Float64` / `Float32` as `Double` /
+// `Float` in every type position and `X::` namespace. A declaration that
+// keeps the written spelling as its own name would then be referenced by the
+// other one (`effect Float64` performed as `Double::Op`), so every kind that
+// introduces a name usable in those positions refuses it.
+
+test "Float64 / Float32 are refused as declaration names" {
+  assert(check_source_err_contains(source = "struct Float64 { v: Int }\nfn main() -> Int { 0 }", needle = "rename this struct: `Float64`"))
+  assert(check_source_err_contains(source = "enum Float32[T] { A(T) }\nfn main() -> Int { 0 }", needle = "rename this enum: `Float32`"))
+  assert(check_source_err_contains(source = "trait Float64 {\n  m(Self) -> Int\n}\nfn main() -> Int { 0 }", needle = "rename this trait: `Float64`"))
+  assert(check_source_err_contains(source = "effect Float64 {\n  Op() -> Int\n}\nfn main() -> Int { 0 }", needle = "rename this effect: `Float64`"))
+  assert(check_source_err_contains(source = "effect Ask {\n  Get() -> Int\n}\neffectset Float32 = { Ask }\nfn main() -> Int { 0 }", needle = "rename this effect set: `Float32`"))
+  assert(check_source_err_contains(source = "import ./other.vibe { Hue as Float64 }\nfn main() -> Int { 0 }", needle = "rename this import alias: `Float64`"))
+}
+
+test "a type parameter named Float64 / Float32 is refused" {
+  // It could not be told apart from the builtin: in
+  // `struct Reading[Float64] { value: Float64; weight: Double }` both fields
+  // would otherwise name one thing.
+  assert(check_source_err_contains(source = "struct Reading[Float64] { value: Float64; weight: Double }\nfn main() -> Int { 0 }", needle = "rename this type parameter: `Float64`"))
+  assert(check_source_err_contains(source = "fn same[Float32](x: Float32) -> Float32 { x }\nfn main() -> Int { 0 }", needle = "rename this type parameter: `Float32`"))
+  assert(check_source_err_contains(source = "struct Holder[Float64[_]] { v: Int }\nfn main() -> Int { 0 }", needle = "rename this type parameter: `Float64`"))
+  // The legacy names too: in `struct Reading[Double] { value: Double; weight:
+  // Float64 }` the field written as a float would otherwise name the
+  // parameter.
+  assert(check_source_err_contains(source = "struct Reading[Double] { value: Double; weight: Float64 }\nfn main() -> Int { 0 }", needle = "rename this type parameter: `Double`"))
+  assert(check_source_err_contains(source = "fn id[Float](x: Float) -> Float { x }\nfn main() -> Int { 0 }", needle = "rename this type parameter: `Float`"))
+  assert(check_source_err_contains(source = "fn id[f64](x: f64) -> f64 { x }\nfn main() -> Int { 0 }", needle = "rename this type parameter: `f64`"))
+  // A non-float builtin spelling still shadows as before.
+  assert(check_source_ok("struct Box[Int] { value: Int }\nfn main() -> Int { 0 }"))
+}
+
+test "a constructor named Float64 is fine" {
+  assert(check_source_ok("enum Num {\n  Float64(Int);\n  Other\n}\nfn main() -> Int { 0 }"))
+}

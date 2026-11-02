@@ -1,0 +1,103 @@
+import @vibe/compiler/loader {
+  collect_source_groups_fs, flatten_group_sources
+}
+
+import @vibe/compiler/linker/import_closure {
+  exact_import_closure, import_closure_row_has
+}
+
+// Keep every provider as a real filesystem source: header resolution uses
+// existence, and nonexistent files would test unresolved-edge behavior instead.
+test "private imports remain private and duplicate re-export seats are visible" {
+  let leaf = "/tmp/vibe_linker_closure_leaf.vibe"
+  let mid = "/tmp/vibe_linker_closure_mid.vibe"
+  let main_path = "/tmp/vibe_linker_closure_main.vibe"
+  let leaf_text = "export fn leaf() -> Int { 1 }\n"
+  let private_text = "import ./vibe_linker_closure_leaf.vibe { leaf }\nexport fn middle() -> Int { leaf() }\n"
+  let main_text = "import ./vibe_linker_closure_mid.vibe { middle }\nfn main() -> Int { middle() }\n"
+  Fs::write_file(leaf, contents = leaf_text)
+  Fs::write_file(mid, contents = private_text)
+  Fs::write_file(main_path, contents = main_text)
+  let (private_rows, private_unresolved) = exact_import_closure([
+    ("a", [(leaf, leaf_text), (mid, private_text)]),
+    ("b", [(leaf, leaf_text), (main_path, main_text)])
+  ])
+  assert_eq(private_unresolved, 0)
+  assert_eq(Array::length(private_rows), 4)
+  let main_row = Array::get(private_rows, at = 3)
+  assert(import_closure_row_has(row = main_row, v = 1))
+  assert(!import_closure_row_has(row = main_row, v = 0))
+  assert(!import_closure_row_has(row = main_row, v = 2))
+  assert(import_closure_row_has(row = Array::get(private_rows, at = 1), v = 0))
+  assert(import_closure_row_has(row = Array::get(private_rows, at = 1), v = 2))
+  let public_text = "export ./vibe_linker_closure_leaf.vibe { leaf }\nexport fn middle() -> Int { 2 }\n"
+  Fs::write_file(mid, contents = public_text)
+  let (public_rows, public_unresolved) = exact_import_closure([
+    ("a", [(leaf, leaf_text), (mid, public_text)]),
+    ("b", [(leaf, leaf_text), (main_path, main_text)])
+  ])
+  assert_eq(public_unresolved, 0)
+  let public_row = Array::get(public_rows, at = 3)
+  assert(import_closure_row_has(row = public_row, v = 1))
+  assert(import_closure_row_has(row = public_row, v = 0))
+  assert(import_closure_row_has(row = public_row, v = 2))
+  assert(!import_closure_row_has(row = public_row, v = 3))
+}
+
+test "dependencies absent from the supplied merge space remain unresolved" {
+  let leaf = "/tmp/vibe_linker_unresolved_leaf.vibe"
+  let main_path = "/tmp/vibe_linker_unresolved_main.vibe"
+  let leaf_text = "export fn leaf() -> Int { 1 }\n"
+  let main_text = "import ./vibe_linker_unresolved_leaf.vibe { leaf }\nfn main() -> Int { leaf() }\n"
+  Fs::write_file(leaf, contents = leaf_text)
+  Fs::write_file(main_path, contents = main_text)
+  let (rows, unresolved) = exact_import_closure([
+    ("main", [(main_path, main_text)])
+  ])
+  assert_eq(Array::length(rows), 1)
+  assert_eq(Array::length(Array::get(rows, at = 0)), 0)
+  assert_eq(unresolved, 1)
+}
+
+fn source_seat(flat: Array[(String, String)], path: String) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(flat) {
+    let (p, _) = Array::get(flat, at = i)
+    if p == path {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "contract expansion excludes implementations owned by a nested package" {
+  let dir = "/tmp/vibe_linker_closure_contract"
+  let pkg = String::concat(dir, "/pkg")
+  let nested = String::concat(pkg, "/nested")
+  Fs::mkdir_p(nested)
+  Fs::write_file(String::concat(pkg, "/index.vpkg"), contents = "name = @linker/parent\nversion = 0.0.1\ndeps = {}\ngenerated_hash =\nfn published() -> Int\n")
+  Fs::write_file(String::concat(pkg, "/impl.vibe"), contents = "export fn published() -> Int { 1 }\n")
+  Fs::write_file(String::concat(nested, "/index.vpkg"), contents = "name = @linker/nested\nversion = 0.0.1\ndeps = {}\ngenerated_hash =\nfn nested_value() -> Int\n")
+  Fs::write_file(String::concat(nested, "/hidden.vibe"), contents = "export fn nested_value() -> Int { 2 }\n")
+  let user_path = String::concat(dir, "/user.vibe")
+  Fs::write_file(user_path, contents = "import ./pkg { published }\nexport fn user() -> Int { published() }\n")
+  let entry = String::concat(dir, "/main.vibe")
+  Fs::write_file(entry, contents = "import ./user.vibe { user }\nimport ./pkg/nested { nested_value }\nfn main() -> Int { user() + nested_value() }\n")
+  let groups = collect_source_groups_fs(entry)
+  let flat = flatten_group_sources(groups)
+  let (rows, unresolved) = exact_import_closure(groups)
+  assert_eq(unresolved, 0)
+  let user_at = source_seat(flat = flat, path = user_path)
+  let public_at = source_seat(flat = flat, path = String::concat(pkg, "/impl.vibe"))
+  let hidden_at = source_seat(flat = flat, path = String::concat(nested, "/hidden.vibe"))
+  assert(user_at >= 0)
+  assert(public_at >= 0)
+  assert(hidden_at >= 0)
+  let row = Array::get(rows, at = user_at)
+  assert(import_closure_row_has(row = row, v = public_at))
+  assert(!import_closure_row_has(row = row, v = hidden_at))
+}

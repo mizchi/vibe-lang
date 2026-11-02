@@ -1,7 +1,15 @@
 //# Imports
 
 import ./incremental.vibe {
-  RippleDb, ripple_eval_count, ripple_get_fingerprint, ripple_get_source, ripple_new, ripple_record_eval, ripple_set_source
+  RippleDb,
+  ripple_eval_count,
+  ripple_get_fingerprint,
+  ripple_get_source,
+  ripple_new,
+  ripple_record_eval,
+  ripple_set_source,
+  ripple_source_paths,
+  ripple_source_revision
 }
 
 //# Misc
@@ -94,4 +102,30 @@ test "compiler ripple stores latest fingerprint" {
     Some(fp) => assert(fp == "fp2"),
     None => assert(false)
   }
+}
+
+test "ripple source paths exclude fingerprint records and cannot mutate the map" {
+  let db = ripple_set_source(db = ripple_new(), path = "a.vibe", source = "one")
+  let db = ripple_set_source(db = db, path = "a.vibe", source = "two")
+  let db = ripple_record_eval(db = db, path = "only-fingerprint.vibe", fingerprint = "fp", deps = [])
+  let paths = ripple_source_paths(db)
+  inspect(Array::length(paths), content = "1")
+  inspect(Array::get(paths, at = 0), content = "a.vibe")
+  Array::set(paths, at = 0, value = "changed.vibe")
+  inspect(Array::get(ripple_source_paths(db), at = 0), content = "a.vibe")
+  inspect(ripple_get_source(db = db, path = "a.vibe"), content = "Some(two)")
+}
+
+test "source membership revision changes only when a new source is inserted" {
+  let db = ripple_new()
+  inspect(ripple_source_revision(db), content = "0")
+  let db = ripple_record_eval(db = db, path = "a.vibe", fingerprint = "fp", deps = [])
+  inspect(ripple_source_revision(db), content = "0")
+  let db = ripple_set_source(db = db, path = "a.vibe", source = "one")
+  inspect(ripple_source_revision(db), content = "1")
+  let db = ripple_set_source(db = db, path = "a.vibe", source = "two")
+  inspect(ripple_source_revision(db), content = "1")
+  let db = ripple_set_source(db = db, path = "b.vibe", source = "three")
+  inspect(ripple_source_revision(db), content = "2")
+  inspect(ripple_eval_count(db), content = "1")
 }

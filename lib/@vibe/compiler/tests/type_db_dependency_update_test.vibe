@@ -3,7 +3,7 @@ import @vibe/compiler/core {
 }
 
 import ../type_db.vibe {
-  TypeDb, db_new, db_set_source, db_typecheck, db_typecheck_fs, db_check_env, db_typecheck_count
+  TypeDb, db_new, db_set_source, db_typecheck, db_typecheck_fs, db_check_env, db_typecheck_count, db_parse_count
 }
 
 fn update_dependency_module(db: TypeDb, path: String, source: String, filesystem: Bool) -> TypeDb with Fs {
@@ -73,15 +73,19 @@ fn dependency_update_graph(_ filesystem: Bool) -> Unit with Env + Exception + Fs
   assert(env_lookup(env = old_left, name = "result") == Some(CtInt))
   assert(env_lookup(env = dependency_checked_env(db = cold, path = right), name = "result") == Some(CtInt))
   let cold_count = db_typecheck_count(cold)
+  let cold_parses = db_parse_count(cold)
   let warm = check_dependency_graph(db = cold, path = root, filesystem = filesystem)
   assert(db_typecheck_count(warm) == cold_count)
+  assert(db_parse_count(warm) == cold_parses)
   assert(env_lookup(env = dependency_checked_env(db = warm, path = right), name = "result") == Some(CtInt))
   let changed = check_dependency_graph(db = update_dependency_module(db = warm, path = dep, source = after, filesystem = filesystem), path = root, filesystem = filesystem)
   assert(db_typecheck_count(changed) == cold_count + 5)
   assert(env_lookup(env = dependency_checked_env(db = changed, path = left), name = "result") == Some(CtString))
   assert(env_lookup(env = dependency_checked_env(db = changed, path = right), name = "result") == Some(CtString))
   assert(env_lookup(env = old_left, name = "result") == Some(CtInt))
+  let changed_parses = db_parse_count(changed)
   let changed_warm = check_dependency_graph(db = changed, path = root, filesystem = filesystem)
+  assert(db_parse_count(changed_warm) == changed_parses)
   assert(env_lookup(env = dependency_checked_env(db = changed_warm, path = root), name = "result") == Some(CtString))
 }
 
@@ -132,10 +136,7 @@ test "filesystem dependency edits recheck a parent's declared return type" {
   let after = "export let value = \"changed\"\n"
   let source = "import ./dep.vibe { value }\nexport fn read() -> Int { value }\n"
   let db = update_dependency_module(db = update_dependency_module(db = db_new(), path = dep, source = before, filesystem = true), path = root, source = source, filesystem = true)
-  remove_dependency_graph_cache(paths = [dep, root], sources = [before, source], deps = [
-    [],
-    [0]
-  ])
+  remove_dependency_graph_cache(paths = [dep, root], sources = [before, source], deps = [[], [0]])
   let checked = check_dependency_graph(db = db, path = root, filesystem = true)
   let message = handle {
     let _ = check_dependency_graph(db = update_dependency_module(db = checked, path = dep, source = after, filesystem = true), path = root, filesystem = true)

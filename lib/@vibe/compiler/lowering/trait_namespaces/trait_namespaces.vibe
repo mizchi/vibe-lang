@@ -418,12 +418,186 @@ fn inject_method_generics_reporting_change(stmts: Array[Stmt], impl_map: Array[(
 export fn inject_trait_method_generics_with_reporting_change(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], own_end: Int) -> Bool {
   assert(own_end >= 0 && own_end <= Array::length(stmts))
   let method_gen_table = collect_trait_method_gens(stmts)
-  if Array::length(method_gen_table) > 0 {
+  let injected = if Array::length(method_gen_table) > 0 {
     let impl_map = collect_impl_trait_map(stmts)
     inject_method_generics_reporting_change(stmts = stmts, impl_map = impl_map, gen_table = method_gen_table, traits = traits, own_end = own_end)
   } else {
     false
   }
+  // Runs after the method-generic injection, which annotates every parameter
+  // of the methods it re-types; this fills what is still unannotated.
+  let annotated = annotate_impl_params_from_trait(stmts = stmts, traits = traits, own_end = own_end)
+  injected || annotated
+}
+
+// ---- #3737: unannotated impl-method parameters ----
+//
+// `impl Describe for Double { describe(x) -> String { "\{x}" } }` parses to
+// `SLet("Double::describe", EFn(.., [(x, None)], ..))`. With no annotation the
+// checker generalized the binding over `x`, so every type-directed lowering
+// in the body saw a type variable instead of `Double`: the interpolation
+// printed the boxed value's address (`f64 300`), and `a < b` on two such
+// parameters was refused against an `Int` it had guessed. The trait's
+// signature says what each parameter is, `Self` being the impl's target, so
+// the parameter is annotated with that before checking.
+//
+// Only types the impl's own module can spell are written in: `Self` (the
+// target, which the impl itself names) and the builtin scalars, through
+// `Array` / `Option` / tuples / pure function types. A user type the trait
+// names may not be in scope where the impl is, and the checker's own advice
+// for that case is to leave the position unannotated. A name the trait or the
+// method binds as a type parameter is never written in. Generic impls
+// (`impl[T] .. for Box[T]`) are left as they were.
+
+fn impl_param_builtin_scalar(_ name: String) -> Bool {
+  name == "Int" || name == "Double" || name == "Float" || name == "String" || name == "Bool" || name == "Char" || name == "Bytes" || name == "Unit"
+}
+
+fn impl_param_type_spellable(te: TypeExpr, formals: Array[String]) -> Bool {
+  match te {
+    TyName(n) => !Array::any(formals, f = (f) -> type_param_name(f) == n) && (n == "Self" || impl_param_builtin_scalar(n)),
+    TyApp(head, args) => (head == "Array" || head == "Option") && Array::length(args) == 1 && impl_param_type_spellable(te = Array::get(args, at = 0), formals = formals),
+    TyTuple(items) => Array::all(items, f = (t) -> impl_param_type_spellable(te = t, formals = formals)),
+    TyFn(ps, r, eff) => eff == None && Array::all(ps, f = (t) -> impl_param_type_spellable(te = t, formals = formals)) && impl_param_type_spellable(te = r, formals = formals),
+    TyUnit => true
+  }
+}
+
+fn impl_param_self_as(te: TypeExpr, target: TypeExpr) -> TypeExpr {
+  match te {
+    TyName(n) => if n == "Self" {
+      target
+    } else {
+      te
+    },
+    TyApp(head, args) => TyApp(head, Array::map(args, f = (t) -> impl_param_self_as(te = t, target = target))),
+    TyTuple(items) => TyTuple(Array::map(items, f = (t) -> impl_param_self_as(te = t, target = target))),
+    TyFn(ps, r, eff) => TyFn(Array::map(ps, f = (t) -> impl_param_self_as(te = t, target = target)), impl_param_self_as(te = r, target = target), eff),
+    TyUnit => TyUnit
+  }
+}
+
+/// The type-parameter names the trait `trait_name` binds, at trait level and
+/// on `method`; None when the trait is not declared in `stmts`.
+fn impl_param_trait_formals(stmts: Array[Stmt], trait_name: String, method: String) -> Option[Array[String]] {
+  let mut out = None
+  for s in stmts {
+    match s {
+      STrait(_, tname, _, _, method_gens, tparams) => if tname == trait_name {
+        let names = empty_str_array()
+        for tp in tparams {
+          Array::push(names, value = tp)
+        }
+        for g in method_gens {
+          let (mname, tps, _) = g
+          if mname == method {
+            for tp in tps {
+              Array::push(names, value = tp)
+            }
+          } else {
+            ()
+          }
+        }
+        out = Some(names)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+fn annotate_impl_params_from_trait(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], own_end: Int) -> Bool {
+  let impls: Array[(String, String, TypeExpr)] = []
+  for s in stmts {
+    match s {
+      SImpl(tps, _, tn, target) => if Array::length(tps) == 0 {
+        Array::push(impls, value = (impl_method_owner(tparams = tps, trait_name = tn, target = target), tn, target))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  let mut changed = false
+  if Array::length(impls) > 0 {
+    let mut i = 0
+    while i < own_end {
+      match Array::get(stmts, at = i) {
+        SLet(exp, isrec, qname, ann, body) => match body {
+          EFn(tparams, bounds, params, ret, eff, fbody) => if Array::length(tparams) == 0 {
+            match split_qualified(qname) {
+              Some(parts) => {
+                let (owner, method) = parts
+                match impl_param_annotation(stmts = stmts, traits = traits, impls = impls, owner = owner, method = method, params = params) {
+                  Some(new_params) => {
+                    Array::set(stmts, at = i, value = SLet(exp, isrec, qname, ann, EFn(tparams, bounds, new_params, ret, eff, fbody)))
+                    changed = true
+                  },
+                  None => ()
+                }
+              },
+              None => ()
+            }
+          } else {
+            ()
+          },
+          _ => ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  changed
+}
+
+/// The params of `owner::method` with each unannotated one the trait spells
+/// spellably filled in, or None when nothing changes.
+fn impl_param_annotation(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], impls: Array[(String, String, TypeExpr)], owner: String, method: String, params: Array[(String, Option[TypeExpr])]) -> Option[Array[(String, Option[TypeExpr])]] {
+  let mut result = None
+  for entry in impls {
+    let (o, trait_name, target) = entry
+    if o == owner && result == None {
+      match lookup_trait_method_param_types(traits = traits, trait_name = trait_name, method = method) {
+        Some(ptypes) => match impl_param_trait_formals(stmts = stmts, trait_name = trait_name, method = method) {
+          Some(formals) => {
+            let out: Array[(String, Option[TypeExpr])] = []
+            let mut any = false
+            let mut pi = 0
+            while pi < Array::length(params) {
+              let (pname, pann) = Array::get(params, at = pi)
+              let unannotated = match pann {
+                Some(TyName(tn)) => tn == "__rc_heap",
+                Some(_) => false,
+                None => true
+              }
+              if unannotated && pi < Array::length(ptypes) && impl_param_type_spellable(te = Array::get(ptypes, at = pi), formals = formals) {
+                Array::push(out, value = (pname, Some(impl_param_self_as(te = Array::get(ptypes, at = pi), target = target))))
+                any = true
+              } else {
+                Array::push(out, value = (pname, pann))
+              }
+              pi = pi + 1
+            }
+            if any {
+              result = Some(out)
+            } else {
+              ()
+            }
+          },
+          None => ()
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+  }
+  result
 }
 
 /// Whether a value parameter can carry the witness for `name` through the

@@ -10,10 +10,6 @@ import ./typed_lowering_rows.vibe {
   lowering_row_encode
 }
 
-import @vibe/core {
-  struct MutMap
-}
-
 // A suffix leaves the callee's operation in slot zero. Raw snapshots exist
 // only during one check; checked placements contain no pool IDs or AST nodes.
 export let param_names_prefix: String = "#params:"
@@ -287,7 +283,10 @@ export fn call_placement_is_canonical(_ cell: Array[Int]) -> Bool {
 }
 
 fn placement_slots_valid(written: Int, mode: Int, slots: Array[Int], start: Int) -> Bool {
-  let used: MutMap[Int, Bool] = MutMap::new_int()
+  // A call's arity is small, so a repeated source is found by scanning the
+  // slots before it. This runs several times per labeled call (the checker's
+  // views, the lowering), and the hash set it used to build per call was most
+  // of what a label cost the checker.
   let mut valid = written >= 0 && (mode >= 0 && mode <= 2)
   let mut count = 0
   let mut i = start
@@ -299,10 +298,9 @@ fn placement_slots_valid(written: Int, mode: Int, slots: Array[Int], start: Int)
       valid = false
     } else {
       let source = slot / 2 - 1
-      if source >= written || MutMap::has(used, k = source) {
+      if source >= written || placement_source_seen(slots = slots, start = start, end = i, source = source) {
         valid = false
       } else {
-        MutMap::set(used, k = source, v = true)
         count = count + 1
       }
     }
@@ -314,6 +312,17 @@ fn placement_slots_valid(written: Int, mode: Int, slots: Array[Int], start: Int)
     i = i + 1
   }
   valid && count == written && (mode == 0 || Array::length(slots) - start == written)
+}
+
+fn placement_source_seen(slots: Array[Int], start: Int, end: Int, source: Int) -> Bool {
+  let mut seen = false
+  let mut j = start
+  while j < end && !seen {
+    let earlier = Array::get(slots, at = j)
+    seen = earlier >= 2 && earlier / 2 - 1 == source
+    j = j + 1
+  }
+  seen
 }
 
 /// One payload grammar serves source-row restoration and binary AST transport.
@@ -406,11 +415,37 @@ export fn call_placement_source_slot(cell: Array[Int], source: Int, written: Int
   result
 }
 
+/// A checked placement that fills formal slot `i` from written argument `i`,
+/// for every one of `written` slots, with no `Some` wrapping: what a call whose
+/// labels follow the declaration's order publishes, and so nearly every
+/// labeled call. Read in place, so asking costs no copy of the payload.
+export fn call_placement_is_identity(cell: Array[Int], written: Int) -> Bool {
+  let role = placement_role(cell)
+  if (role == 1 || role == 4) && Array::length(cell) == 5 + written && Array::get(cell, at = 3) == written && Array::get(cell, at = 4) == 0 {
+    let mut same = true
+    let mut i = 0
+    while same && i < written {
+      same = Array::get(cell, at = 5 + i) == (i + 1) * 2
+      i = i + 1
+    }
+    same
+  } else {
+    false
+  }
+}
+
 /// Read checked formal arguments for semantic checks. The source expressions
 /// and their call cells remain unchanged. Some owns a new formal-order array;
 /// ordinary positional calls answer None without allocating.
 export fn call_placement_argument_view(args: Array[Expr], cell: Array[Int]) -> Option[Array[Expr]] {
-  if call_placement_is_pending(cell) && call_placement_mode(cell) == 0 {
+  if call_placement_is_pending(cell) && call_placement_is_identity(cell = cell, written = Array::length(args)) {
+    Some(for arg in args {
+      match arg {
+        ELabeledArg(_, _, value) => value,
+        value => value
+      }
+    })
+  } else if call_placement_is_pending(cell) && call_placement_mode(cell) == 0 {
     match call_placement_get(cell) {
       Some((written, mode, slots)) => if written == Array::length(args) && call_placement_payload_valid(written = written, mode = mode, slots = slots) {
         Some(for code in slots {

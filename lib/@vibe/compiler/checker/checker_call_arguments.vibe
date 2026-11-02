@@ -6,6 +6,7 @@ import @vibe/compiler/core {
   TypeEnv,
   call_placement_error,
   call_placement_get,
+  call_placement_is_identity,
   call_placement_is_pending,
   call_placement_mode,
   call_placement_payload_valid,
@@ -38,22 +39,33 @@ export fn checker_call_argument_value(_ arg: Expr) -> Expr {
 /// is checked. It never leaks into a nested call or a cached environment.
 export fn checker_call_argument_env(arg: Expr, env: TypeEnv, cell: Array[Int]) -> TypeEnv {
   if (arg is ELabeledArg(_, _, _)) {
-    let rest = match env {
-      EnvBind(name, _, rest) => if name == labeled_value_marker {
-        rest
+    let known = call_placement_mode(cell) == 0
+    match env {
+      // Already wrapped for this call (the written-argument loop wraps, and
+      // the call's child checker wraps again): keep it rather than build an
+      // identical binding per argument.
+      EnvBind(name, binding, rest) => if name == labeled_value_marker {
+        if (binding.ty == CtUnit) == known {
+          env
+        } else {
+          labeled_value_env(rest = rest, known = known)
+        }
       } else {
-        env
+        labeled_value_env(rest = env, known = known)
       },
-      _ => env
+      _ => labeled_value_env(rest = env, known = known)
     }
-    EnvBind(labeled_value_marker, env_value_binding(if call_placement_mode(cell) == 0 {
-      CtUnit
-    } else {
-      CtUnknown
-    }), rest)
   } else {
     env
   }
+}
+
+fn labeled_value_env(rest: TypeEnv, known: Bool) -> TypeEnv {
+  EnvBind(labeled_value_marker, env_value_binding(if known {
+    CtUnit
+  } else {
+    CtUnknown
+  }), rest)
 }
 
 /// Pop the call-local wrapper context without walking or changing its value's
@@ -87,6 +99,16 @@ fn written_formal_slot(slots: Array[Int], written: Int) -> Int {
 // Checking a closure body does not evaluate the argument. Check value
 // expressions in written order first, then seed literal callbacks from the
 // preceding formal arguments, as declaration-order inference did before.
+fn call_args_have_callback(_ args: Array[Expr]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(args) {
+    found = checker_call_argument_value(Array::get(args, at = i)) is EFn(_, _, _, _, _, _)
+    i = i + 1
+  }
+  found
+}
+
 fn call_argument_visit_order(args: Array[Expr], slots: Array[Int]) -> Option[Array[Int]] {
   let mut has_callback = false
   for arg in args {
@@ -151,7 +173,10 @@ fn call_argument_capture_cursor(capture: Option[TypedOccurrenceRoleLaneCapture],
 /// after value expressions are checked. Omitted slots have logical None types.
 /// The caller keeps the expression view; this result owns only the checked types.
 export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Expr], cell: Array[Int], param_tys: Array[Type], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, callee_inst: Option[(Type, Type)], name: String, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Array[Type], Subst, Int) {
-  let plan = if call_placement_is_pending(cell) {
+  // An identity placement with no literal callback is a positional call, so
+  // it takes that path without copying the payload. A callback keeps the plan:
+  // its visit order checks callbacks after the value arguments after them.
+  let plan = if call_placement_is_pending(cell) && !(call_placement_is_identity(cell = cell, written = Array::length(args)) && !call_args_have_callback(args)) {
     match call_placement_get(cell) {
       Some((written, mode, slots)) => if mode != 0 {
         None
@@ -335,7 +360,7 @@ export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Exp
 
 /// Preserve source positions independently of the logical formal-order view.
 export fn checker_call_argument_positions(_ cell: Array[Int]) -> Option[(Array[Int], Int)] {
-  if call_placement_is_pending(cell) {
+  if call_placement_is_pending(cell) && !call_placement_is_identity(cell = cell, written = Array::length(cell) - 5) {
     match call_placement_get(cell) {
       Some((written, mode, slots)) => if mode == 0 {
         Some((slots, written))

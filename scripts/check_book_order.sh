@@ -59,7 +59,7 @@ def check_spine(prefix, prev_kw, next_kw, required):
     next_kw  -- ... the next one
     required -- fail when the file is missing (en), or skip it (ja: a chapter
                 may legitimately have no translation yet -- that is
-                check_tutorial_translation_parity.sh's question, not this one)
+                check_tutorial_translation_parity.vibex's question, not this one)
     """
     for i, (title, path) in enumerate(spine):
         name = path.split("/")[-1]

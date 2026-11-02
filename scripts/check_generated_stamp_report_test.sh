@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Red test for check_generated_stamp_report.sh (#2248: a gate means nothing
-# until it is known to be able to fail).
+# Red test for check_generated_stamp_report.vibex (#2248: a gate means nothing
+# until it is known to be able to fail; #3672 ported the gate).
 #
 # Three cases. RED 1 and RED 2 mutate the gate's input and assert it rejects;
 # RED 0 comes first and is not a mutation at all -- it DEMONSTRATES the abort in
@@ -11,18 +11,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# The gate reads these; inherit nothing (#2252).
-unset VIBE_GENERATED_STAMP_REPORT_ROOT
-unset VIBE_GENERATED_STAMP_REPORT_TARGET
-
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe_genstamp_selftest.XXXXXX")"
+# The gate reads only inside the repository, so the mutants live under _build/.
+WORK_REL="_build/generated_stamp_report_test.$$"
+WORK="$ROOT_DIR/$WORK_REL"
+mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 
 fail() { echo "[generated-stamp-report-test] FAIL: $*" >&2; exit 1; }
 
-run_gate() { # run_gate <target>
-  VIBE_GENERATED_STAMP_REPORT_TARGET="$1" \
-    bash scripts/check_generated_stamp_report.sh >"$WORK/out" 2>&1
+run_gate() { # run_gate <target, relative to the repository>
+  bash scripts/vibe_run.sh scripts/check_generated_stamp_report.vibex -- --target "$1" >"$WORK/out" 2>&1
 }
 
 # GREEN control. Without it a gate failing for an unrelated reason would make
@@ -75,7 +73,7 @@ done
 sed "s@| sed -n '1,20p' >&2@| head -20 >\&2@" scripts/ensure_generated.sh > "$WORK/head.sh"
 grep -qF '| head -20 >&2' "$WORK/head.sh" \
   || fail "RED 1 mutation did not land (the reader was not rewritten)"
-if run_gate "$WORK/head.sh"; then
+if run_gate "$WORK_REL/head.sh"; then
   fail "RED 1: the gate accepted a report piping into 'head' (it is not checking the reader)"
 fi
 grep -qF 'closes early' "$WORK/out" \
@@ -87,10 +85,34 @@ grep -v '\$diff_out' scripts/ensure_generated.sh > "$WORK/gone.sh"
 if grep -q '\$diff_out' "$WORK/gone.sh"; then
   fail "RED 2 mutation did not land (a \$diff_out line survived)"
 fi
-if run_gate "$WORK/gone.sh"; then
+if run_gate "$WORK_REL/gone.sh"; then
   fail "RED 2: the gate passed a script with no report pipeline at all"
 fi
 grep -qF 'no $diff_out pipeline found' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 2 failed for the wrong reason"; }
 
-echo "[generated-stamp-report-test] ok (the abort demonstrated, 2 red cases, each mutation verified to land)"
+# RED 3: the same hazard spelled as the other early closers, each on the real
+# report line, and the draining spelling as their control.
+expect_closer() { # <case> <replacement reader>
+  sed "s@| sed -n '1,20p' >&2@| $2 >\&2@" scripts/ensure_generated.sh > "$WORK/closer.sh"
+  grep -qF "| $2 >&2" "$WORK/closer.sh" || fail "RED 3 ($1) mutation did not land"
+  if run_gate "$WORK_REL/closer.sh"; then
+    fail "RED 3 ($1): the gate accepted a report piping into '$2'"
+  fi
+  grep -qF 'closes early' "$WORK/out" || { cat "$WORK/out" >&2; fail "RED 3 ($1) failed for the wrong reason"; }
+}
+expect_closer "sed quit" "sed -n '20q'"
+expect_closer "sed print-and-quit range" "sed -n  '1,20q'"
+expect_closer "awk exit" "awk 'NR<=20 { print } NR==20 { exit }'"
+expect_closer "head after blanks" "   head -n 20"
+for drains in "sed -n '1,20p'" "awk 'NR<=20 { print }'" "cat"; do
+  sed "s@| sed -n '1,20p' >&2@| $drains >\&2@" scripts/ensure_generated.sh > "$WORK/drain.sh"
+  grep -qF "| $drains >&2" "$WORK/drain.sh" || fail "control ($drains) mutation did not land"
+  run_gate "$WORK_REL/drain.sh" || { cat "$WORK/out" >&2; fail "control: a draining reader ($drains) was refused"; }
+done
+
+# RED 4: a target that is not there.
+if run_gate "$WORK_REL/absent.sh"; then fail "RED 4: the gate passed a target that does not exist"; fi
+grep -qF 'does not exist' "$WORK/out" || { cat "$WORK/out" >&2; fail "RED 4 failed for the wrong reason"; }
+
+echo "[generated-stamp-report-test] ok (the abort demonstrated, 8 red cases and 3 draining controls, each mutation verified to land)"

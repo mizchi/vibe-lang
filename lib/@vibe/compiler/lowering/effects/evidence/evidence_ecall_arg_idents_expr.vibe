@@ -19,6 +19,7 @@ import @vibe/compiler/lowering/effects/queries {
   edp_handle_matches_effect,
   edp_has_unsafe_construct,
   edp_is_identity_ascription,
+  edp_mf_set_stmt,
   edp_pat_binds,
   edp_rq_fold,
   edp_str_array_contains,
@@ -299,12 +300,12 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
           _ => edp_stamp_expr(e = e, stmts = stmts, fn_index = fn_index, scope = top, pure_names = pure_names)
         }
         match stmt {
-          SLet(exported, is_rec, nm, ty, _) => Array::set(stmts, at = i, value = SLet(exported, is_rec, nm, ty, stamped)),
-          SLetMut(nm, ty, _) => Array::set(stmts, at = i, value = SLetMut(nm, ty, stamped)),
-          SExpr(_) => Array::set(stmts, at = i, value = SExpr(stamped)),
-          STest(tn, _) => Array::set(stmts, at = i, value = STest(tn, stamped)),
-          SBench(bn, _) => Array::set(stmts, at = i, value = SBench(bn, stamped)),
-          SLetPat(pt, _) => Array::set(stmts, at = i, value = SLetPat(pt, stamped)),
+          SLet(exported, is_rec, nm, ty, _) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SLet(exported, is_rec, nm, ty, stamped)),
+          SLetMut(nm, ty, _) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SLetMut(nm, ty, stamped)),
+          SExpr(_) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SExpr(stamped)),
+          STest(tn, _) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = STest(tn, stamped)),
+          SBench(bn, _) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SBench(bn, stamped)),
+          SLetPat(pt, _) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SLetPat(pt, stamped)),
           _ => ()
         }
       } else {
@@ -335,7 +336,7 @@ fn edp_stamp_returned_closure(stmts: Array[Stmt], i: Int, pure_names: MutSet[Str
         pi = pi + 1
       }
       match edp_stamp_declared_result(fb = fb, rty = rty, stmts = stmts, scope = scope, pure_names = pure_names) {
-        Some(fb2) => Array::set(stmts, at = i, value = SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(rty), eff, fb2))),
+        Some(fb2) => edp_mf_set_stmt(stmts = stmts, i = i, stmt = SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(rty), eff, fb2))),
         None => ()
       }
     },
@@ -795,9 +796,7 @@ fn edp_stamp_assigned_lits(e: Expr, marker: String, slot: (Int, String), scope: 
     ELetMut(x, v, b, off) => ELetMut(x, edp_stamp_assigned_lits(e = v, marker = marker, slot = slot, scope = scope, pure_names = pure_names, state = state), edp_stamp_assigned_scoped(e = b, names = [
       x
     ], marker = marker, slot = slot, scope = scope, pure_names = pure_names, state = state), off),
-    ELetRec(x, v, b) => ELetRec(x, v, edp_stamp_assigned_scoped(e = b, names = [
-      x
-    ], marker = marker, slot = slot, scope = scope, pure_names = pure_names, state = state)),
+    ELetRec(x, v, b) => ELetRec(x, v, edp_stamp_assigned_scoped(e = b, names = [x], marker = marker, slot = slot, scope = scope, pure_names = pure_names, state = state)),
     // A lambda that captures the binding can assign it whenever it runs
     // (#3463), so its body is walked with its parameters in scope.
     EFn(tps, tbs, ps, ret, eff, fb) => EFn(tps, tbs, ps, ret, eff, edp_stamp_assigned_scoped(e = fb, names = for pp in ps {
@@ -963,7 +962,7 @@ export fn edp_stamp_alias_annotated_lets(_ stmts: Array[Stmt]) -> Unit {
         ]) {
           ()
         } else {
-          Array::set(stmts, at = i, value = SLet(exported, is_rec, nm, Some(TyFn(fps, fr, Some(row))), EFn(tps, tbs, ps, ret, Some(row), b)))
+          edp_mf_set_stmt(stmts = stmts, i = i, stmt = SLet(exported, is_rec, nm, Some(TyFn(fps, fr, Some(row))), EFn(tps, tbs, ps, ret, Some(row), b)))
         },
         _ => ()
       },
@@ -2247,31 +2246,31 @@ export fn edp_etawrap_stmts_with_rebuild(stmts: Array[Stmt], needing: Array[Stri
       SLet(ex, isrec, nm, ty, expr) => if edp_rq_fold(q = nq, e = expr) > 0 {
         let scope = edp_str_array_contains(arr = needing, v = nm)
         rebuilt = true
-        Array::set(stmts, at = i, value = SLet(ex, isrec, nm, ty, edp_etawrap_expr(e = expr, in_scope = scope, needing = needing, ename = ename, wc = wc, aliases = array_empty())))
+        edp_mf_set_stmt(stmts = stmts, i = i, stmt = SLet(ex, isrec, nm, ty, edp_etawrap_expr(e = expr, in_scope = scope, needing = needing, ename = ename, wc = wc, aliases = array_empty())))
       } else {
         ()
       },
       SLetMut(nm, ty, expr) => if edp_rq_fold(q = nq, e = expr) > 0 {
         rebuilt = true
-        Array::set(stmts, at = i, value = SLetMut(nm, ty, edp_etawrap_expr(e = expr, in_scope = false, needing = needing, ename = ename, wc = wc, aliases = array_empty())))
+        edp_mf_set_stmt(stmts = stmts, i = i, stmt = SLetMut(nm, ty, edp_etawrap_expr(e = expr, in_scope = false, needing = needing, ename = ename, wc = wc, aliases = array_empty())))
       } else {
         ()
       },
       SExpr(expr) => if edp_rq_fold(q = nq, e = expr) > 0 {
         rebuilt = true
-        Array::set(stmts, at = i, value = SExpr(edp_etawrap_expr(e = expr, in_scope = false, needing = needing, ename = ename, wc = wc, aliases = array_empty())))
+        edp_mf_set_stmt(stmts = stmts, i = i, stmt = SExpr(edp_etawrap_expr(e = expr, in_scope = false, needing = needing, ename = ename, wc = wc, aliases = array_empty())))
       } else {
         ()
       },
       STest(nm, expr) => if edp_rq_fold(q = nq, e = expr) > 0 {
         rebuilt = true
-        Array::set(stmts, at = i, value = STest(nm, edp_etawrap_expr(e = expr, in_scope = false, needing = needing, ename = ename, wc = wc, aliases = array_empty())))
+        edp_mf_set_stmt(stmts = stmts, i = i, stmt = STest(nm, edp_etawrap_expr(e = expr, in_scope = false, needing = needing, ename = ename, wc = wc, aliases = array_empty())))
       } else {
         ()
       },
       SBench(nm, expr) => if edp_rq_fold(q = nq, e = expr) > 0 {
         rebuilt = true
-        Array::set(stmts, at = i, value = SBench(nm, edp_etawrap_expr(e = expr, in_scope = false, needing = needing, ename = ename, wc = wc, aliases = array_empty())))
+        edp_mf_set_stmt(stmts = stmts, i = i, stmt = SBench(nm, edp_etawrap_expr(e = expr, in_scope = false, needing = needing, ename = ename, wc = wc, aliases = array_empty())))
       } else {
         ()
       },

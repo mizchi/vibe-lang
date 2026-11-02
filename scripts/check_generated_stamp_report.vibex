@@ -1,0 +1,194 @@
+// The "say what moved" report in `ensure_generated.sh` must not be able to kill
+// the regeneration it explains. #3672 ported this gate from
+// check_generated_stamp_report.sh.
+//
+//   bash scripts/vibe_run.sh scripts/check_generated_stamp_report.vibex -- [--target FILE]
+//
+// The report slices the stamped-vs-current input diff to 20 lines. Spelled with
+// `head -20`, that slice EXITS after its 20th line; a diff longer than the
+// 64KiB pipe buffer leaves `printf` still writing, so `printf` takes SIGPIPE,
+// `pipefail` makes 141 the pipeline's status, and `set -e` ends the script --
+// BEFORE the `regenerating 5 artifacts` line. Measured 2026-09-18 on a tree
+// whose stamped list differed by 869 lines: `bash scripts/ensure_generated.sh`
+// exited 141, wrote no artifacts, and printed only the diff.
+//
+// It fails only in the LARGE case, which is the fresh-clone and seed-bump case
+// -- exactly when regeneration is needed and when nobody is reading the exit
+// status of a step that just printed a plausible-looking report.
+//
+// This gate is LEXICAL on purpose. Reproducing the real abort needs a tree with
+// a stale stamp and a ~120KiB diff, which is minutes of setup for a property
+// that is decided by one token. What it checks instead is the property itself
+// and not a proxy: no pipeline that carries `$diff_out` may pipe into a reader
+// that closes its input early -- `head`, `sed -n` with a `q` address, or `awk`
+// with `exit }`. The RED cases are in
+// `scripts/check_generated_stamp_report_test.sh`, which rewrites the line back
+// to `head` and asserts this gate rejects it, and separately DEMONSTRATES the
+// abort in a standalone harness, so the reason the token matters is measured
+// rather than asserted.
+//
+// Only lines that name `$diff_out` are read: naming the variable keeps this
+// from becoming a repo-wide ban on `head`, which would be a different rule. A
+// target with no such pipeline fails, because silence is "unchecked", not
+// "clean". --target FILE checks another script (the self-test's mutants).
+
+import @vibe/builtin {
+  String::index_of_from
+}
+import @vibe/process {
+  exit
+}
+
+fn option(name: String, fallback: String) -> String with Env {
+  let mut out = fallback
+  let mut i = 0
+  while i + 1 < Env::args_len() {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// POSIX `[[:space:]]`.
+fn is_space(c: Char) -> Bool {
+  let code = Char::to_int(c)
+  c == ' ' || (code >= 9 && code <= 13)
+}
+
+fn is_digit_or_comma(c: Char) -> Bool {
+  (c >= '0' && c <= '9') || c == ','
+}
+
+fn spelled_at(line: String, at: Int, word: String) -> Bool {
+  let end = at + String::length(word)
+  end <= String::length(line) && String::substring(line, at, end) == word
+}
+
+/// `sed -n[[:space:]]+.[0-9,]+q` at `at`: a print-only sed whose address ends
+/// in `q`, so it quits once it has printed.
+fn sed_quits_at(line: String, at: Int) -> Bool {
+  let n = String::length(line)
+  if !spelled_at(line, at, "sed -n") {
+    false
+  } else {
+    let mut found = false
+    // `+` takes one or more blanks; the `.` after them may itself be a blank,
+    // so every split of the run is tried.
+    let mut j = at + 6
+    while j < n && is_space(String::byte_at(line, j)) && !found {
+      let dot = j + 1
+      if dot < n {
+        let mut k = dot + 1
+        while k < n && is_digit_or_comma(String::byte_at(line, k)) {
+          k = k + 1
+        }
+        if k > dot + 1 && k < n && String::byte_at(line, k) == 'q' {
+          found = true
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    found
+  }
+}
+
+/// `awk[^|]*[[:space:]]exit[[:space:]]*}` at `at`: an awk program that exits.
+fn awk_exits_at(line: String, at: Int) -> Bool {
+  let n = String::length(line)
+  if !spelled_at(line, at, "awk") {
+    false
+  } else {
+    let mut found = false
+    let mut r = at + 3
+    while r < n && String::byte_at(line, r) != '|' && !found {
+      if is_space(String::byte_at(line, r)) && spelled_at(line, r + 1, "exit") {
+        let mut k = r + 5
+        while k < n && is_space(String::byte_at(line, k)) {
+          k = k + 1
+        }
+        if k < n && String::byte_at(line, k) == '}' {
+          found = true
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      r = r + 1
+    }
+    found
+  }
+}
+
+/// Whether some `|` in the line is followed (after blanks) by a reader that
+/// closes its input early.
+fn pipes_into_early_closer(line: String) -> Bool {
+  let n = String::length(line)
+  let mut found = false
+  let mut p = 0
+  while p < n && !found {
+    if String::byte_at(line, p) == '|' {
+      let mut q = p + 1
+      while q < n && is_space(String::byte_at(line, q)) {
+        q = q + 1
+      }
+      if spelled_at(line, q, "head") || sed_quits_at(line, q) || awk_exits_at(line, q) {
+        found = true
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    p = p + 1
+  }
+  found
+}
+
+fn main allows Env + Fs::is_file + Fs::read_file + Console::write_stream + Stderr::write_stream + Process {
+  let target = option("--target", "scripts/ensure_generated.sh")
+  if !Fs::is_file(target) {
+    Stderr::write_stream("[generated-stamp-report] FAIL: \{target} does not exist\n")
+    exit(1)
+  } else {
+    let lines = String::split(Fs::read_file(target), "\n")
+    let mut found = 0
+    let mut bad = ""
+    let mut i = 0
+    while i < Array::length(lines) {
+      let line = Array::get(lines, i)
+      if String::index_of_from(line, "$diff_out", 0) >= 0 && String::index_of_from(line, "|", 0) >= 0 {
+        found = found + 1
+        if bad == "" && pipes_into_early_closer(line) {
+          bad = "\{i + 1}:\{line}"
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if bad != "" {
+      Stderr::write_stream("[generated-stamp-report] FAIL: the stamped-diff report pipes into a reader that closes early\n")
+      Stderr::write_stream("  \{bad}\n")
+      Stderr::write_stream("  Such a reader makes printf take SIGPIPE; with pipefail + set -e that\n")
+      Stderr::write_stream("  ABORTS the regeneration (exit 141) whenever the diff exceeds the pipe\n")
+      Stderr::write_stream("  buffer. Use a slicer that drains its input, e.g. sed -n '1,20p'.\n")
+      exit(1)
+    } else if found == 0 {
+      Stderr::write_stream("[generated-stamp-report] FAIL: no $diff_out pipeline found in \{target}\n")
+      exit(1)
+    } else {
+      Console::write_stream("[generated-stamp-report] ok (\{found} $diff_out pipeline(s), none closes its input early)\n")
+    }
+  }
+}

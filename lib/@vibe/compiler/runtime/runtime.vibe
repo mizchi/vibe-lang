@@ -1,15 +1,13 @@
-//# Imports
-
-import ./typecheck_fs_local_type_member_markers.vibe {
-  ensure_module_typed_lowering_offsets_for_source, module_typed_lowering_bind_source
+import ./typecheck_memory.vibe {
+  ensure_fingerprint_memory
 }
+
+//# Imports
 
 import @vibe/compiler/core {
   ExportRenamePlan,
   LinkedUnit,
-  Source,
   Stmt,
-  Type,
   TypeEnv,
   append_builtin_iterator_operation_markers,
   append_import_alias_rewritten_non_import_stmts_with_renames,
@@ -21,27 +19,18 @@ import @vibe/compiler/core {
   collect_import_alias_collision_refs,
   collect_import_value_renames,
   dir_of_path,
-  env_bind,
-  env_flat_bindings,
-  env_lookup_flat,
   export_plan_fingerprint_text,
   export_plan_renames_for,
-  external_lib_roots,
   import_value_rename_locals,
-  is_builtin_iterator_serialized_boundary_path,
-  is_owned_head_source_location,
   linked_unit,
   merged_source_boundary_names,
   namespace_entry_import_shadows,
-  namespace_private_value_stmts,
   namespace_private_value_stmts_after_renames,
   namespace_rename_originals_reset,
-  normalize_path,
   record_namespace_rename_originals_for_file,
   refuse_linked_impl_overlaps,
   reject_user_iterator_serialized_boundaries,
   resolve_import_path,
-  resolve_import_path_candidates,
   rewrite_imported_value_stmt_to_local,
   stmts_have_import_deep,
   trait_import_local_operation_renames,
@@ -53,11 +42,6 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker {
-  check_program_with_projected_import_env_lowering_placements,
-  declaring_module_path_clear,
-  declaring_module_path_set,
-  retention_summaries_clear,
-  retention_summaries_for_path,
   typing_semantics_seed
 }
 
@@ -65,39 +49,20 @@ import @vibe/compiler/runtime/eval_loader {
   contains_str
 }
 
-import @vibe/compiler/module_graph {
-  import_cycle_message
-}
-
 import ./typecheck_fs.vibe {
-  checked_module_public_env_for_path,
-  checked_module_public_env_with_reexport_declarations,
-  ensure_fingerprint_fs_impl,
-  load_persistent_dep_list,
-  load_persistent_leaf_fingerprint,
-  load_persistent_type_env,
-  parse_program_with_path,
-  persistent_dep_list_text,
-  persistent_leaf_fingerprint_text,
-  persistent_type_env_cache_text,
-  publish_module_typed_lowering_offsets,
-  rebind_module_typed_lowering_offsets
+  ensure_fingerprint_fs_impl, parse_program_with_path, rebind_module_typed_lowering_offsets
 }
 
 import @vibe/compiler/syntax {
   lex, parse_program, print_program
 }
 
-import @vibe/compiler/loader {
-  load_or_parse_module_header_fs
-}
-
 import @vibe/compiler/cache {
-  compilation_input_fingerprint, persistent_dep_list_cache_path, persistent_leaf_fingerprint_cache_path, persistent_type_env_cache_path
+  compilation_input_fingerprint
 }
 
 import @vibe/compiler/incremental {
-  RippleDb, ripple_eval_count, ripple_get_deps, ripple_get_fingerprint, ripple_get_source, ripple_new, ripple_record_eval, ripple_set_source
+  RippleDb, ripple_eval_count, ripple_get_fingerprint, ripple_get_source, ripple_new, ripple_set_source, ripple_source_revision
 }
 
 // #847 Phase C: facade re-exports so external callers reach this directory
@@ -133,8 +98,13 @@ enum StringTriple {
   StringTriple(String, String, String)
 }
 
+struct DependencySources {
+  entries: Array[(String, String)];
+  source_revision: Int
+}
+
 enum TypeDbState {
-  TypeDbState(RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Array[StringTriple], Array[StringTriple], Array[StringTriple], Int, Int, Int, Int)
+  TypeDbState(RippleDb, Array[(String, TypeEnv)], DependencySources, Array[StringTriple], Array[StringTriple], Array[StringTriple], Int, Int, Int, Int)
 }
 
 export enum TypeDb {
@@ -153,27 +123,7 @@ fn wrap_db(_ state: TypeDbState) -> TypeDb {
   TypeDb(state)
 }
 
-fn add_dep(acc: Array[String], raw_path: String, base_dir: String) -> Array[String] {
-  // Mutates `acc` in place. Caller pattern is `acc = add_dep(acc, ...)`
-  // so the same reference is returned either way.
-  if String::length(raw_path) == 0 {
-    acc
-  } else {
-    let resolved = resolve_import_path(base_dir = base_dir, raw_path = raw_path)
-    if contains_str(arr = acc, target = resolved) {
-      acc
-    } else {
-      Array::push(acc, value = resolved)
-      acc
-    }
-  }
-}
-
 fn empty_strings() -> Array[String] {
-  array_empty()
-}
-
-fn empty_dep_fps() -> Array[(String, String)] {
   array_empty()
 }
 
@@ -194,44 +144,11 @@ fn empty_stmt_array() -> Array[Stmt] {
 }
 
 export fn db_new() -> TypeDb {
-  wrap_db(TypeDbState(ripple_new(), empty_env_cache(), empty_string_pairs(), empty_string_triples(), empty_string_triples(), empty_string_triples(), 0, 0, 0, 0))
-}
-
-fn lookup_string_pair(pairs: Array[(String, String)], key: String) -> Option[String] {
-  let len = Array::length(pairs)
-  let rec go: (Int) -> Option[String] = (i) -> {
-    if i >= len {
-      None
-    } else {
-      let (k, v) = Array::get(pairs, at = i)
-      if k == key {
-        Some(v)
-      } else {
-        go(i + 1)
-      }
-    }
+  let deps = DependencySources::{
+    entries: empty_string_pairs(),
+    source_revision: 0
   }
-  go(0)
-}
-
-fn upsert_string_pair(pairs: Array[(String, String)], key: String, value: String) -> Array[(String, String)] {
-  let len = Array::length(pairs)
-  let b = ArrayBuilder::new()
-  let rec build: (Int) -> Array[(String, String)] = (i) -> {
-    if i >= len {
-      ArrayBuilder::push(b, value = (key, value))
-      ArrayBuilder::freeze(b)
-    } else {
-      let (k, v) = Array::get(pairs, at = i)
-      if k == key {
-        build(i + 1)
-      } else {
-        ArrayBuilder::push(b, value = (k, v))
-        build(i + 1)
-      }
-    }
-  }
-  build(0)
+  wrap_db(TypeDbState(ripple_new(), empty_env_cache(), deps, empty_string_triples(), empty_string_triples(), empty_string_triples(), 0, 0, 0, 0))
 }
 
 fn lookup_source_cache(cache: Array[StringTriple], path: String, fingerprint: String) -> Option[String] {
@@ -324,38 +241,6 @@ export fn db_check_env(db: TypeDb, path: String) -> Option[TypeEnv] {
   }
 }
 
-/// Both walks project the same authoritative interfaces. The snapshot belongs
-/// to this TypeDb check, so a later source update cannot reuse a previous view.
-fn build_import_envs(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], interfaces: DependencyInterfaceSet) -> (TypeEnv, TypeEnv) with Env + Exception {
-  let unresolved: Array[String] = []
-  let envs = build_import_envs_from_published_cache(stmts = stmts, base_dir = base_dir, cache = cache, interfaces = interfaces, unresolved = unresolved)
-  if Array::length(unresolved) == 0 {
-    envs
-  } else {
-    throw(Array::get(unresolved, at = 0))
-  }
-}
-
-fn upsert_env_cache(cache: Array[(String, TypeEnv)], path: String, env: TypeEnv) -> Array[(String, TypeEnv)] {
-  let len = Array::length(cache)
-  let b = ArrayBuilder::new()
-  let rec build: (Int) -> Array[(String, TypeEnv)] = (i) -> {
-    if i >= len {
-      ArrayBuilder::push(b, value = (path, env))
-      ArrayBuilder::freeze(b)
-    } else {
-      let (p, e) = Array::get(cache, at = i)
-      if p == path {
-        build(i + 1)
-      } else {
-        ArrayBuilder::push(b, value = (p, e))
-        build(i + 1)
-      }
-    }
-  }
-  build(0)
-}
-
 fn compact_string_fingerprint(_ source: String) -> String {
   let mod1 = 2147483647
   let mod2 = 2147483629
@@ -372,20 +257,6 @@ fn compact_string_fingerprint(_ source: String) -> String {
     i = i + 1
   }
   String::concat(__to_string(len), String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2)))))
-}
-
-fn build_fingerprint(source: String, dep_fps: Array[(String, String)]) -> String {
-  let mut acc = compact_string_fingerprint(source)
-  let mut i = 0
-  while i < Array::length(dep_fps) {
-    let dep_pair = Array::get(dep_fps, at = i)
-    let dep_path = dep_pair.0
-    let dep_fp = dep_pair.1
-    let next = String::concat(acc, String::concat("|", String::concat(dep_path, String::concat("=", dep_fp))))
-    acc = compact_string_fingerprint(next)
-    i = i + 1
-  }
-  acc
 }
 
 export fn db_typecheck_count(_ db: TypeDb) -> Int {
@@ -418,259 +289,28 @@ export fn db_codegen_count(_ db: TypeDb) -> Int {
   }
 }
 
-fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String) -> Array[String] {
-  let len = Array::length(stmts)
-  let rec go: (Int, Array[String]) -> Array[String] = (i, acc) -> {
-    if i >= len {
-      acc
-    } else {
-      let next = match Array::get(stmts, at = i) {
-        SImport(raw_path, _) => if is_builtin_iterator_serialized_boundary_path(raw_path) {
-          acc
-        } else {
-          add_dep(acc = acc, raw_path = raw_path, base_dir = base_dir)
-        },
-        SReExport(raw_path, _) => add_dep(acc = acc, raw_path = raw_path, base_dir = base_dir),
-        _ => acc
-      }
-      go(i + 1, next)
-    }
-  }
-  go(0, empty_strings())
-}
-
-fn resolve_deps_for_source(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Env + Exception {
-  match lookup_string_pair(pairs = dep_source_cache, key = path) {
-    Some(cached_source) =>
-    if cached_source == source {
-      match ripple_get_deps(db = rdb, path = path) {
-        Some(deps) => (deps, dep_source_cache, parse_count),
-        None => {
-          let stmts = parse_program_with_path(path = path, source = source)
-          let deps = collect_import_deps_from_stmts(stmts = stmts, base_dir = dir_of_path(path))
-          (deps, upsert_string_pair(pairs = dep_source_cache, key = path, value = source), parse_count + 1)
-        }
-      }
-    } else {
-      let stmts = parse_program_with_path(path = path, source = source)
-      let deps = collect_import_deps_from_stmts(stmts = stmts, base_dir = dir_of_path(path))
-      (deps, upsert_string_pair(pairs = dep_source_cache, key = path, value = source), parse_count + 1)
-    },
-    None => {
-      let stmts = parse_program_with_path(path = path, source = source)
-      let deps = collect_import_deps_from_stmts(stmts = stmts, base_dir = dir_of_path(path))
-      (deps, upsert_string_pair(pairs = dep_source_cache, key = path, value = source), parse_count + 1)
-    }
-  }
-}
-
-fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
-  match load_persistent_dep_list(path = path, source = source) {
-    Some(deps) => (deps, upsert_string_pair(pairs = dep_source_cache, key = path, value = source), parse_count),
-    None => {
-      let (deps, _, next_parse_count) = load_or_parse_module_header_fs(path = path, source = source, parse_count = parse_count)
-      (deps, upsert_string_pair(pairs = dep_source_cache, key = path, value = source), next_parse_count)
-    }
-  }
-}
-
-fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
-  match lookup_string_pair(pairs = dep_source_cache, key = path) {
-    Some(cached_source) =>
-    if cached_source == source {
-      match ripple_get_deps(db = rdb, path = path) {
-        Some(deps) => (deps, dep_source_cache, parse_count),
-        None => load_or_parse_deps_for_source_fs(dep_source_cache = dep_source_cache, path = path, source = source, parse_count = parse_count)
-      }
-    } else {
-      load_or_parse_deps_for_source_fs(dep_source_cache = dep_source_cache, path = path, source = source, parse_count = parse_count)
-    },
-    None => load_or_parse_deps_for_source_fs(dep_source_cache = dep_source_cache, path = path, source = source, parse_count = parse_count)
-  }
-}
-
-/// #3551 review: whether the module at `path` ships the region-first owned
-/// heads, on the walk whose files are the db's sources. The package resolver
-/// selects the first of `@vibe/concurrent/experimental`'s candidates that
-/// EXISTS, and here a file exists when the db holds it, so the shipped module
-/// is `concurrent.vibe` beside the first contract candidate the db holds.
-fn db_module_ships_owned_heads(rdb: RippleDb, path: String) -> Bool with Env {
-  if String::ends_with(normalize_path(path), suffix = "@vibe/concurrent/experimental/concurrent.vibe") {
-    handle {
-      is_owned_head_source_location(path = path, roots = external_lib_roots())
-    } with {
-      Source::Read(p) => resume(match ripple_get_source(db = rdb, path = p) {
-        Some(source) => source,
-        None => ""
-      });
-      Source::Exists(p) => resume(match ripple_get_source(db = rdb, path = p) {
-        Some(_) => true,
-        None => false
-      });
-      // This existence-only provider must never receive metadata operations.
-      // Abort on an internal contract violation; the typed resumes cannot run.
-      Source::List(_) => {
-        abort("internal compiler error: owned-head resolution cannot list source directories")
-        resume([])
-      };
-      Source::StatToken(_) => {
-        abort("internal compiler error: owned-head resolution cannot stat source entries")
-        resume(0)
-      }
-    }
+// Source stamps are reusable only in the resolution universe that produced
+// their dependency paths. The revision lives in RippleDb, so additions through
+// FS loading and failed walks invalidate stamps just like db_set_source does.
+fn dependency_sources_for_walk(cache: DependencySources, source_revision: Int) -> Array[(String, String)] {
+  if cache.source_revision == source_revision {
+    cache.entries
   } else {
-    false
-  }
-}
-
-/// #2449: the in-memory module walk's check, with the typed-lowering tables
-/// published per module the way the FS lane publishes them
-/// (`check_module_impl` in typecheck_fs.vibe).
-///
-/// Before this the walk called `check_program_with_env`, which reports only a
-/// TypeEnv, so every module of the "sources passed in memory" family recorded
-/// NO table -- and the inline merge downstream therefore compiled with each
-/// typed-lowering channel empty, on the linked lane included. The observation
-/// entry runs the same check; the only addition is the capture.
-///
-/// A module whose parse carried no offsets publishes the empty table, which
-/// classifies nothing and leaves the syntactic classifiers in charge -- the
-/// same degradation `module_typed_lowering_offsets_for_path` answering `None`
-/// produces, and never a wrong classification.
-///
-/// #2915: the PROJECTED entry, matching the FS lane (`check_module_impl`).
-/// `import_env` is `build_import_envs`' projection of THIS module's import
-/// statements, so replaying those statements over it (the
-/// `imports_already_projected = false` this lane used until #2915) rebound
-/// each alias to whatever its ORIGINAL name resolved to -- which is the local
-/// declaration the alias exists to avoid naming. Measured on a stage2 at
-/// 3260d45f: `import ./dep.vibe { f as nf }` beside a local two-parameter
-/// `fn f` made `db_typecheck` throw `function arity mismatch for nf: expected
-/// 2 args, got 3` on a three-argument call to the three-parameter import,
-/// while `vibe check` on the same pair was clean. `db_typecheck` is published
-/// from `@vibe/compiler/type_db`, so that divergence was part of the public
-/// surface.
-fn check_module_publishing_typed_lowering_offsets(path: String, ships_owned_heads: Bool, fingerprint: String, source: String, stmts: Array[Stmt], import_env: TypeEnv) -> TypeEnv with Exception {
-  // #3360: this module publishes what its exported functions keep.
-  retention_summaries_for_path(path)
-  declaring_module_path_set(path = path, ships_owned_heads = ships_owned_heads)
-  // A check that throws must not leave this module named as the one being
-  // checked: the cells are process-global.
-  let (checked, offsets, eq_offs, eq_keys, placements) = handle {
-    check_program_with_projected_import_env_lowering_placements(stmts = stmts, initial_env = import_env)
-  } with { Exception::Throw(message) => {
-    declaring_module_path_clear()
-    retention_summaries_clear()
-    throw(message)
-  } }
-  declaring_module_path_clear()
-  retention_summaries_clear()
-  publish_module_typed_lowering_offsets(path = path, fingerprint = fingerprint, offsets = Some(match offsets {
-    Some(rows) => rows,
-    None => placements
-  }), eq_offs = eq_offs, eq_keys = eq_keys)
-  module_typed_lowering_bind_source(path = path, fingerprint = fingerprint, source = source)
-  checked.final_env
-}
-
-fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String], interfaces: DependencyInterfaceSet) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception {
-  if contains_str(arr = stack, target = path) {
-    // #3548: the stack holds the import path that came back to `path`.
-    let chain: Array[String] = []
-    let mut on_path = false
-    for p in stack {
-      if p == path {
-        on_path = true
-      } else {
-        ()
-      }
-      if on_path {
-        Array::push(chain, value = p)
-      } else {
-        ()
-      }
-    }
-    Array::push(chain, value = path)
-    throw(import_cycle_message(chain))
-  } else {
-    match ripple_get_source(db = rdb, path = path) {
-      None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),
-      Some(source) => {
-        let (deps, next_dep_source_cache, initial_parse_count) = resolve_deps_for_source(rdb = rdb, dep_source_cache = dep_source_cache, path = path, source = source, parse_count = parse_count)
-        let dlen = Array::length(deps)
-        // Cycle-detection stack: push self before recursing, truncate back after.
-        // O(1) per frame vs. previous Array::concat(stack, [path]) which was O(depth) per frame.
-        let saved_stack_len = Array::length(stack)
-        Array::push(stack, value = path)
-        // Tail-recursive over `deps`, accumulating (dep_path, dep_fp)
-        // pairs into `dep_acc`. Previously each recursion did
-        // `Array::concat(dep_acc, [tuple])` — O(N) copy per step,
-        // O(N²) over the deps list. Mutating in place is safe because
-        // `dep_acc` flows linearly down the recursion (one path, no
-        // sibling branches that need the old prefix).
-        let rec resolve_nested: (Int, Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) -> (Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception = (i, dep_acc, dep_db, dep_env_cache, dep_source_cache2, dep_parse_count) -> {
-          if i >= dlen {
-            (dep_acc, dep_db, dep_env_cache, dep_source_cache2, dep_parse_count)
-          } else {
-            let dep_path = Array::get(deps, at = i)
-            let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint(rdb = dep_db, env_cache = dep_env_cache, dep_source_cache = dep_source_cache2, parse_count = dep_parse_count, path = dep_path, stack = stack, interfaces = interfaces)
-            Array::push(dep_acc, value = (dep_path, dep_fp))
-            resolve_nested(i + 1, dep_acc, next_db, next_env_cache, next_dep_source_cache2, next_parse_count)
-          }
-        }
-        let resolved_nested = resolve_nested(0, empty_dep_fps(), rdb, env_cache, next_dep_source_cache, initial_parse_count)
-        Array::truncate(stack, length = saved_stack_len)
-        let dep_fps = resolved_nested.0
-        let db_after_deps = resolved_nested.1
-        let env_cache_after_deps = resolved_nested.2
-        let dep_source_cache_after_deps = resolved_nested.3
-        let parse_count_after_deps = resolved_nested.4
-        let fingerprint = build_fingerprint(source = source, dep_fps = dep_fps)
-        match ripple_get_fingerprint(db = db_after_deps, path = path) {
-          Some(cached_fp) =>
-          // #2449 (Codex review on #2453): a cache hit skips the check, and a
-          // skip publishes no typed-lowering rows -- so the hit must also
-          // REBIND this module's rows from the memo, and must fall through to
-          // a real check when it cannot. Without the second half the merge
-          // downstream reads whatever another compile in this process left at
-          // this path: measured, rows went 1 -> 0 across a warm-db re-prepare.
-          // Same fail-closed rule the FS lane's reuse arms follow
-          // (`ensure_module_typed_lowering_offsets`).
-          if cached_fp == fingerprint && ensure_module_typed_lowering_offsets_for_source(path = path, fingerprint = fingerprint, source = source) {
-            (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
-          } else {
-            let stmts = parse_program_with_path(path = path, source = source)
-            let final_parse_count = parse_count_after_deps + 1
-            let (import_env, reexport_declarations) = build_import_envs(stmts = stmts, base_dir = dir_of_path(path), cache = env_cache_after_deps, interfaces = interfaces)
-            let full_checked_env = check_module_publishing_typed_lowering_offsets(path = path, ships_owned_heads = db_module_ships_owned_heads(rdb = db_after_deps, path = path), fingerprint = fingerprint, source = source, stmts = stmts, import_env = import_env)
-            let checked_env = checked_module_public_env_for_path(path = path, stmts = stmts, full_checked_env = full_checked_env, reexport_declarations = reexport_declarations)
-            dependency_interface_set_publish(interfaces = interfaces, path = path, env = checked_env)
-            let next_env_cache = upsert_env_cache(cache = env_cache_after_deps, path = path, env = checked_env)
-            let next_db = ripple_record_eval(db = db_after_deps, path = path, fingerprint = fingerprint, deps = deps)
-            (fingerprint, next_db, next_env_cache, dep_source_cache_after_deps, final_parse_count)
-          },
-          None => {
-            let stmts = parse_program_with_path(path = path, source = source)
-            let final_parse_count = parse_count_after_deps + 1
-            let (import_env, reexport_declarations) = build_import_envs(stmts = stmts, base_dir = dir_of_path(path), cache = env_cache_after_deps, interfaces = interfaces)
-            let full_checked_env = check_module_publishing_typed_lowering_offsets(path = path, ships_owned_heads = db_module_ships_owned_heads(rdb = db_after_deps, path = path), fingerprint = fingerprint, source = source, stmts = stmts, import_env = import_env)
-            let checked_env = checked_module_public_env_for_path(path = path, stmts = stmts, full_checked_env = full_checked_env, reexport_declarations = reexport_declarations)
-            dependency_interface_set_publish(interfaces = interfaces, path = path, env = checked_env)
-            let next_env_cache = upsert_env_cache(cache = env_cache_after_deps, path = path, env = checked_env)
-            let next_db = ripple_record_eval(db = db_after_deps, path = path, fingerprint = fingerprint, deps = deps)
-            (fingerprint, next_db, next_env_cache, dep_source_cache_after_deps, final_parse_count)
-          }
-        }
-      }
-    }
+    empty_string_pairs()
   }
 }
 
 export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with Env + Exception {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
-      let (_, next_rdb, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, stack = empty_strings(), interfaces = dependency_interface_set_new())
-      wrap_db(TypeDbState(next_rdb, next_env_cache, next_dep_source_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count))
+      let revision = ripple_source_revision(rdb)
+      let entries = dependency_sources_for_walk(cache = dep_source_cache, source_revision = revision)
+      let (_, next_rdb, next_env_cache, next_entries, next_parse_count) = ensure_fingerprint_memory(rdb = rdb, env_cache = env_cache, dep_sources = entries, parse_count = parse_count, path = path)
+      let next_cache = DependencySources::{
+        entries: next_entries,
+        source_revision: revision
+      }
+      wrap_db(TypeDbState(next_rdb, next_env_cache, next_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count))
     }
   }
 }
@@ -678,8 +318,16 @@ export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with Env + Exception 
 export fn db_typecheck_fs(db: TypeDb, path: String) -> TypeDb with Env + Exception + Fs {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
-      let (_, next_rdb, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint_fs_impl(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path)
-      wrap_db(TypeDbState(next_rdb, next_env_cache, next_dep_source_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count))
+      let revision = ripple_source_revision(rdb)
+      let entries = dependency_sources_for_walk(cache = dep_source_cache, source_revision = revision)
+      let (_, next_rdb, next_env_cache, next_entries, next_parse_count) = ensure_fingerprint_fs_impl(rdb = rdb, env_cache = env_cache, dep_source_cache = entries, parse_count = parse_count, path = path)
+      // Keep the entry revision: this FS walk may have loaded new sources
+      // after reusing other headers. Those stamps need revalidation next time.
+      let next_cache = DependencySources::{
+        entries: next_entries,
+        source_revision: revision
+      }
+      wrap_db(TypeDbState(next_rdb, next_env_cache, next_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count))
     }
   }
 }
@@ -1149,8 +797,4 @@ export fn db_store_artifact(db: TypeDb, _path: String, kind: String, entry_name:
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) =>
     wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, upsert_source_cache(cache = artifact_cache, path = artifact_cache_key(kind = kind, entry_name = entry_name), fingerprint = fingerprint, source = bytes_to_hex(bytes)), parse_count, merge_count, module_source_count, codegen_count + 1))
   }
-}
-
-import ./typecheck_fs_bind_import_names_from_cache_collecting.vibe {
-  DependencyInterfaceSet, build_import_envs_from_published_cache, dependency_interface_set_new, dependency_interface_set_publish
 }
