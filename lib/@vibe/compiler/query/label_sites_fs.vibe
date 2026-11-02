@@ -4,34 +4,14 @@
 // way `vibe check` types it. The label codemod (`vibe refactor add-labels`)
 // reads these rows; it never resolves a callee itself.
 //
-// The import walk is grep's typed tier (grep_fs.vibe): every reachable
+// The project_context package also prepares grep's typed tier: every reachable
 // module's ingested source is seeded into the ripple db, the walk publishes
 // each dependency's environment, and the entry is checked against the
 // projected import environment. The three caches are threaded through the
 // sweep for the same reason grep threads them (#2914).
 
-import @vibe/compiler/core {
-  TypeEnv
-}
-
 import @vibe/core {
   array_empty
-}
-
-import @vibe/compiler/loader {
-  collect_source_groups_fs
-}
-
-import @vibe/compiler/incremental {
-  RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_new, ripple_set_source
-}
-
-import @vibe/compiler/runtime {
-  ensure_fingerprint_fs_impl, load_persistent_type_env, projected_import_env_for_test
-}
-
-import @vibe/compiler/contract {
-  extract_require_pins
 }
 
 import @vibe/compiler/checker {
@@ -40,6 +20,13 @@ import @vibe/compiler/checker {
 
 import @vibe/parser {
   lex_with_offsets, parse_program_located
+}
+
+import @vibe/compiler/core {
+  TypeEnv
+}
+import @vibe/compiler/query/project_context {
+  QueryProjectEdit, QueryProjectState, query_project_context_fs, query_project_state_new
 }
 
 //# Model
@@ -55,32 +42,6 @@ import @vibe/parser {
 
 //# Functions
 
-fn label_sites_cache_has(cache: Array[(String, TypeEnv)], path: String) -> Bool {
-  let mut found = false
-  for entry in cache {
-    let (p, _) = entry
-    found = found || p == path
-  }
-  found
-}
-
-fn label_sites_fill_dep_envs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], deps: Array[String]) -> Array[(String, TypeEnv)] with Env + Exception + Fs {
-  for dep in deps {
-    if !label_sites_cache_has(env_cache, dep) {
-      match ripple_get_fingerprint(rdb, dep) {
-        Some(fingerprint) => match load_persistent_type_env(fingerprint) {
-          Some(dep_env) => Array::push(env_cache, (dep, dep_env)),
-          None => ()
-        },
-        None => ()
-      }
-    } else {
-      ()
-    }
-  }
-  env_cache
-}
-
 fn label_sites_failed(path: String, source: String, message: String) -> LabelSiteFile {
   LabelSiteFile::{
     path: path,
@@ -91,88 +52,25 @@ fn label_sites_failed(path: String, source: String, message: String) -> LabelSit
   }
 }
 
-/// One file: its answer and the three caches after it. The caches are
-/// returned rather than assigned from inside the `handle`, the shape
-/// grep_fs_typed_context uses. With a `replacement`, the file is typed as if
-/// `source` read `replacement` instead: the ingested prefix is kept, and the
-/// answer's `source` is the replacement.
-fn label_sites_file(path: String, source: String, replacement: Option[String], cache_in: Array[(String, TypeEnv)], rdb_in: RippleDb, dep_sources_in: Array[(String, String)]) -> (LabelSiteFile, Array[(String, TypeEnv)], RippleDb, Array[(String, String)]) with Env + Fs {
+/// Query-specific checking and failure presentation. The same project state
+/// flows through the sweep, including the complete per-module rows retained
+/// when a dependency walk throws. The replacement is never written to disk.
+fn label_sites_file(path: String, source: String, replacement: Option[String], state: QueryProjectState) -> (LabelSiteFile, QueryProjectState) with Env + Fs {
   handle {
-    let groups = collect_source_groups_fs(path)
-    let mut rdb = rdb_in
-    let mut entry_source = source
-    let mut gi = 0
-    while gi < Array::length(groups) {
-      let (_, sources) = Array::get(groups, gi)
-      let mut si = 0
-      while si < Array::length(sources) {
-        let (p, ingested) = Array::get(sources, si)
-        let text = if p == path {
-          label_sites_entry_text(ingested, source, replacement)
-        } else {
-          ingested
-        }
-        rdb = ripple_set_source(rdb, p, text)
-        if p == path {
-          entry_source = text
-        } else {
-          ()
-        }
-        si = si + 1
-      }
-      gi = gi + 1
+    let edit = match replacement {
+      None => None,
+      Some(r) => Some(QueryProjectEdit::{
+        replacement: r,
+        mismatch_message: "add-labels: the edited file cannot stand in for the ingested one; leaving it alone"
+      })
     }
-    let (_, walked, env_cache, dep_sources, _) = ensure_fingerprint_fs_impl(rdb, cache_in, dep_sources_in, 0, path)
-    let deps = match ripple_get_deps(walked, path) {
-      Some(d) => d,
-      None => array_empty()
-    }
-    let import_env = projected_import_env_for_test(entry_source, path, deps, label_sites_fill_dep_envs(walked, env_cache, deps))
+    let context = query_project_context_fs(path, source, edit, state)
     let written = match replacement {
       Some(r) => r,
       None => source
     }
-    (label_sites_typed(path, written, entry_source, import_env), env_cache, walked, dep_sources)
-  } with { Exception::Throw(message) => (label_sites_failed(path, source, message), cache_in, rdb_in, dep_sources_in) }
-}
-
-/// The ingested text with the file's own bytes swapped for `replacement`, or
-/// None when it cannot be. The ingested text is the file plus a prefix, and a
-/// leading `require ... = #pkg:..` head may arrive blanked to spaces -- then
-/// the tail is compared, and the replacement written, blanked the same way.
-/// None makes the recheck refuse: typing the unedited file instead would
-/// certify an edit nobody checked.
-fn label_sites_replace(ingested: String, source: String, replacement: String) -> Option[String] with Exception {
-  let cut = String::length(ingested) - String::length(source)
-  if cut < 0 {
-    None
-  } else {
-    let tail = ingested[cut: String::length(ingested)]
-    if tail == source {
-      Some(ingested[0: cut] + replacement)
-    } else {
-      let (_, blanked_source) = extract_require_pins(source)
-      if tail == blanked_source {
-        let (_, blanked_replacement) = extract_require_pins(replacement)
-        Some(ingested[0: cut] + blanked_replacement)
-      } else {
-        None
-      }
-    }
-  }
-}
-
-/// The entry's text to type: as ingested, or with `replacement` standing in
-/// for the file. A replacement that cannot stand in is refused rather than
-/// typed as the unedited file.
-fn label_sites_entry_text(ingested: String, source: String, replacement: Option[String]) -> String with Exception {
-  match replacement {
-    None => ingested,
-    Some(r) => match label_sites_replace(ingested, source, r) {
-      Some(t) => t,
-      None => throw("add-labels: the edited file cannot stand in for the ingested one; leaving it alone")
-    }
-  }
+    (label_sites_typed(path, written, context.entry_source, context.import_env), context.state)
+  } with { Exception::Throw(message) => (label_sites_failed(path, source, message), state) }
 }
 
 /// Check the ingested `entry_source` against `import_env` with the site
@@ -209,16 +107,12 @@ fn label_sites_typed(path: String, source: String, entry_source: String, import_
 /// resolved call sites.
 export fn query_label_sites_fs(files: Array[String]) -> Array[LabelSiteFile] with Env + Exception + Fs {
   let out: Array[LabelSiteFile] = []
-  let mut env_cache: Array[(String, TypeEnv)] = array_empty()
-  let mut rdb = ripple_new()
-  let mut dep_sources: Array[(String, String)] = array_empty()
+  let mut state = query_project_state_new()
   let mut i = 0
   while i < Array::length(files) {
     let path = Array::get(files, i)
-    let (answer, next_cache, next_rdb, next_dep_sources) = label_sites_file(path, Fs::read_file(path), None, env_cache, rdb, dep_sources)
-    env_cache = next_cache
-    rdb = next_rdb
-    dep_sources = next_dep_sources
+    let (answer, next_state) = label_sites_file(path, Fs::read_file(path), None, state)
+    state = next_state
     Array::push(out, answer)
     i = i + 1
   }
@@ -229,6 +123,6 @@ export fn query_label_sites_fs(files: Array[String]) -> Array[LabelSiteFile] wit
 /// still check? "" when it does, else the checker's message. The codemod asks
 /// this of every edit before it reports or writes it.
 export fn query_label_sites_recheck_fs(path: String, source: String, edited: String) -> String with Env + Fs {
-  let (answer, _, _, _) = label_sites_file(path, source, Some(edited), array_empty(), ripple_new(), array_empty())
+  let (answer, _) = label_sites_file(path, source, Some(edited), query_project_state_new())
   answer.error
 }

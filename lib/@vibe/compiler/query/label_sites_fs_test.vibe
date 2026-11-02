@@ -44,3 +44,20 @@ test "the recheck types the edit, not the original, under a require head" {
   let broken = query_label_sites_recheck_fs(path, source, head + "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nfn main() -> Int {\n  sub(x = 10, z = 3)\n}\n")
   inspect(String::length(broken) > 0, content = "true")
 }
+
+test "a failed import has no label sites and does not abort the next file" {
+  let dir = "_build/vibe_label_sites_failed_project_context"
+  Fs::mkdir_p(dir)
+  let broken = dir + "/broken.vibe"
+  let good = dir + "/good.vibe"
+  Fs::write_file(broken, "import ./missing.vibe { nope }\nfn main() -> Int { nope() }\n")
+  Fs::write_file(good, "fn sub(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { sub(10, 3) }\n")
+  let answers = query_label_sites_fs([broken, good])
+  inspect(Array::length(answers), content = "2")
+  let failed = Array::get(answers, 0)
+  inspect(String::length(failed.error) > 0, content = "true")
+  inspect(Array::length(failed.sites), content = "0")
+  let checked = Array::get(answers, 1)
+  inspect(checked.error, content = "")
+  inspect(Array::length(checked.sites) > 0, content = "true")
+}

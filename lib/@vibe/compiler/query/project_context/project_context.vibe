@@ -1,0 +1,170 @@
+// Shared source ingestion and dependency typing for grep and label queries.
+// Keep the final parse/check in each consumer: they record different answers.
+import @vibe/compiler/core {
+  TypeEnv
+}
+import @vibe/core {
+  array_empty
+}
+import @vibe/compiler/incremental {
+  RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_new, ripple_set_source
+}
+import @vibe/compiler/loader {
+  collect_source_groups_fs
+}
+import @vibe/compiler/runtime {
+  ensure_fingerprint_fs_impl, load_persistent_type_env, projected_import_env_for_test
+}
+import @vibe/compiler/contract {
+  extract_require_pins
+}
+
+// These caches are keyed by dependency path, never by the current entry.
+// Sharing only the RippleDb is insufficient: reuse also checks the previously
+// walked source, and a persistent hit may need its environment hydrated.
+export struct QueryProjectState {
+  env_cache: Array[(String, TypeEnv)];
+  rdb: RippleDb;
+  dep_sources: Array[(String, String)]
+}
+
+export fn query_project_state_new() -> QueryProjectState {
+  QueryProjectState::{
+    env_cache: array_empty(),
+    rdb: ripple_new(),
+    dep_sources: array_empty()
+  }
+}
+
+/// Collect and seed every reachable module's ingested source before walking.
+/// Omitting a source makes the walk lose the imported module's types. Warm
+/// walks need the same environment projection as cold ones, including modules
+/// whose fingerprint hit the persistent cache instead of re-checking.
+///
+/// Failures propagate to the query's own error result, never to single-file
+/// typing. Callers retain their incoming state on failure: array-backed rows
+/// already published for a complete module remain reusable on the next file.
+export fn query_project_context_fs(path: String, source: String, replacement: Option[QueryProjectEdit], state: QueryProjectState) -> QueryProjectContext with Env + Exception + Fs {
+  let groups = collect_source_groups_fs(path)
+  let mut rdb = state.rdb
+  let mut entry_source = source
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (_, sources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (p, ingested) = Array::get(sources, si)
+      let text = if p == path {
+        query_project_entry_text(ingested, source, replacement)
+      } else {
+        ingested
+      }
+      rdb = ripple_set_source(rdb, p, text)
+      if p == path {
+        entry_source = text
+      } else {
+        ()
+      }
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  let (_, walked, env_cache, dep_sources, _) = ensure_fingerprint_fs_impl(rdb, state.env_cache, state.dep_sources, 0, path)
+  let deps = match ripple_get_deps(walked, path) {
+    Some(d) => d,
+    None => array_empty()
+  }
+  let import_env = projected_import_env_for_test(entry_source, path, deps, query_project_fill_dep_envs(walked, env_cache, deps))
+  QueryProjectContext::{
+    entry_source: entry_source,
+    import_env: import_env,
+    state: QueryProjectState::{
+      env_cache: env_cache,
+      rdb: walked,
+      dep_sources: dep_sources
+    }
+  }
+}
+
+fn query_project_cache_has(cache: Array[(String, TypeEnv)], path: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(cache) {
+    let (p, _) = Array::get(cache, i)
+    if p == path {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Fill in the dependency environments the walk did NOT return in-memory.
+///
+/// `ensure_fingerprint_fs_impl` only adds a module to its env cache when it
+/// actually re-checks it; a module whose persistent environment was already on
+/// disk is recorded in the ripple db and skipped. That is the normal (warm)
+/// case, so without this step a repeat run resolves imports against an empty
+/// cache -- `projected_import_env_for_test` then throws and every imported name
+/// types as `CtUnknown`. Reading each missing dependency back from the same
+/// persistent store the walk published to is what makes the typed tier behave
+/// the same warm as cold.
+fn query_project_fill_dep_envs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], deps: Array[String]) -> Array[(String, TypeEnv)] with Env + Exception + Fs {
+  let mut i = 0
+  while i < Array::length(deps) {
+    let dep = Array::get(deps, i)
+    if !query_project_cache_has(env_cache, dep) {
+      match ripple_get_fingerprint(rdb, dep) {
+        Some(fingerprint) => match load_persistent_type_env(fingerprint) {
+          Some(dep_env) => Array::push(env_cache, (dep, dep_env)),
+          None => ()
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  env_cache
+}
+
+/// The ingested text with the file's own bytes swapped for `replacement`, or
+/// None when it cannot be. The ingested text is the file plus a prefix, and a
+/// leading `require ... = #pkg:..` head may arrive blanked to spaces -- then
+/// the tail is compared, and the replacement written, blanked the same way.
+/// None makes the recheck refuse: typing the unedited file instead would
+/// certify an edit nobody checked.
+fn query_project_replace(ingested: String, source: String, replacement: String) -> Option[String] with Exception {
+  let cut = String::length(ingested) - String::length(source)
+  if cut < 0 {
+    None
+  } else {
+    let tail = ingested[cut: String::length(ingested)]
+    if tail == source {
+      Some(ingested[0: cut] + replacement)
+    } else {
+      let (_, blanked_source) = extract_require_pins(source)
+      if tail == blanked_source {
+        let (_, blanked_replacement) = extract_require_pins(replacement)
+        Some(ingested[0: cut] + blanked_replacement)
+      } else {
+        None
+      }
+    }
+  }
+}
+
+/// The entry's text to type: as ingested, or with `replacement` standing in
+/// for the file. A replacement that cannot stand in is refused rather than
+/// typed as the unedited file.
+fn query_project_entry_text(ingested: String, source: String, replacement: Option[QueryProjectEdit]) -> String with Exception {
+  match replacement {
+    None => ingested,
+    Some(edit) => match query_project_replace(ingested, source, edit.replacement) {
+      Some(t) => t,
+      None => throw(edit.mismatch_message)
+    }
+  }
+}
