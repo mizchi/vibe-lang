@@ -62,7 +62,7 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/compiler/incremental {
-  RippleDb, ripple_eval_count, ripple_get_fingerprint, ripple_get_source, ripple_new, ripple_set_source
+  RippleDb, ripple_eval_count, ripple_get_fingerprint, ripple_get_source, ripple_new, ripple_set_source, ripple_source_revision
 }
 
 // #847 Phase C: facade re-exports so external callers reach this directory
@@ -98,8 +98,13 @@ enum StringTriple {
   StringTriple(String, String, String)
 }
 
+struct DependencySources {
+  entries: Array[(String, String)];
+  source_revision: Int
+}
+
 enum TypeDbState {
-  TypeDbState(RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Array[StringTriple], Array[StringTriple], Array[StringTriple], Int, Int, Int, Int)
+  TypeDbState(RippleDb, Array[(String, TypeEnv)], DependencySources, Array[StringTriple], Array[StringTriple], Array[StringTriple], Int, Int, Int, Int)
 }
 
 export enum TypeDb {
@@ -139,7 +144,11 @@ fn empty_stmt_array() -> Array[Stmt] {
 }
 
 export fn db_new() -> TypeDb {
-  wrap_db(TypeDbState(ripple_new(), empty_env_cache(), empty_string_pairs(), empty_string_triples(), empty_string_triples(), empty_string_triples(), 0, 0, 0, 0))
+  let deps = DependencySources::{
+    entries: empty_string_pairs(),
+    source_revision: 0
+  }
+  wrap_db(TypeDbState(ripple_new(), empty_env_cache(), deps, empty_string_triples(), empty_string_triples(), empty_string_triples(), 0, 0, 0, 0))
 }
 
 fn lookup_source_cache(cache: Array[StringTriple], path: String, fingerprint: String) -> Option[String] {
@@ -280,11 +289,28 @@ export fn db_codegen_count(db: TypeDb) -> Int {
   }
 }
 
+// Source stamps are reusable only in the resolution universe that produced
+// their dependency paths. The revision lives in RippleDb, so additions through
+// FS loading and failed walks invalidate stamps just like db_set_source does.
+fn dependency_sources_for_walk(cache: DependencySources, source_revision: Int) -> Array[(String, String)] {
+  if cache.source_revision == source_revision {
+    cache.entries
+  } else {
+    empty_string_pairs()
+  }
+}
+
 export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with Env + Exception {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
-      let (_, next_rdb, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint_memory(rdb, env_cache, dep_source_cache, parse_count, path)
-      wrap_db(TypeDbState(next_rdb, next_env_cache, next_dep_source_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count))
+      let revision = ripple_source_revision(rdb)
+      let entries = dependency_sources_for_walk(dep_source_cache, revision)
+      let (_, next_rdb, next_env_cache, next_entries, next_parse_count) = ensure_fingerprint_memory(rdb, env_cache, entries, parse_count, path)
+      let next_cache = DependencySources::{
+        entries: next_entries,
+        source_revision: revision
+      }
+      wrap_db(TypeDbState(next_rdb, next_env_cache, next_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count))
     }
   }
 }
@@ -292,8 +318,16 @@ export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with Env + Exception 
 export fn db_typecheck_fs(db: TypeDb, path: String) -> TypeDb with Env + Exception + Fs {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
-      let (_, next_rdb, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path)
-      wrap_db(TypeDbState(next_rdb, next_env_cache, next_dep_source_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count))
+      let revision = ripple_source_revision(rdb)
+      let entries = dependency_sources_for_walk(dep_source_cache, revision)
+      let (_, next_rdb, next_env_cache, next_entries, next_parse_count) = ensure_fingerprint_fs_impl(rdb, env_cache, entries, parse_count, path)
+      // Keep the entry revision: this FS walk may have loaded new sources
+      // after reusing other headers. Those stamps need revalidation next time.
+      let next_cache = DependencySources::{
+        entries: next_entries,
+        source_revision: revision
+      }
+      wrap_db(TypeDbState(next_rdb, next_env_cache, next_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count))
     }
   }
 }
