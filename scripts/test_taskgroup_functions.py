@@ -154,7 +154,7 @@ def assert_finisher_recompile_refused(repo, compiler, artifacts, runner, env, pr
     private.mkdir()
     target = repo / "lib/@vibe/function_build/phases/entry.vibe"
     source = target.read_text()
-    before = "finish_function_assembly(assembly, merged)"
+    before = "finish_function_assembly(state = assembly, products = merged)"
     after = 'compile_file_fs_mode_rc_body_cached(Env::get("VIBE_LOWERING_INPUT"), Env::get("VIBE_LOWERING_ENTRY"), "off")'
     assert source.count(before) == 1
     overlay = private / "serial-finisher.vibe"
