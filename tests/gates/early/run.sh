@@ -24,6 +24,12 @@ bash "$ROOT_DIR/scripts/test_pkg_authority.sh" "$stage2_wasm"
 echo "[compiler-gate] vibe pkg update reports the canonical surface and effect change (#3673)"
 bash "$ROOT_DIR/scripts/test_pkg_update_diff.sh" "$stage2_wasm"
 
+echo "[compiler-gate] typed core-wasm import links and runs on viberun and node"
+bash "$ROOT_DIR/scripts/test_wasm_import_gate.sh" "$stage2_wasm"
+
+echo "[compiler-gate] @vibex/z3 binds the real z3.wasm by its declared types"
+bash "$ROOT_DIR/scripts/test_z3_binding_gate.sh" "$stage2_wasm"
+
 echo "[compiler-gate] vibe test and vibe_test.sh count tests and summarize a run the same way (#3703)"
 bash "$ROOT_DIR/scripts/test_vibe_test_parity.sh" "$stage2_wasm"
 

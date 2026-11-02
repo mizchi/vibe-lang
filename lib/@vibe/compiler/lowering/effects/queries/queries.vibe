@@ -75,6 +75,11 @@ export enum EdpReadQuery {
   // Return 1 for a direct perform or opaque call; otherwise collect known
   // callees into the scratch output. The AST itself remains read-only.
   RQPerformSummary(String, MutSet[String], MutSet[String], Array[String]);
+  // The effect-independent half of RQPerformSummary, for every effect at
+  // once: never stops, records each node's performed effect (deduplicated),
+  // sets the flag on an opaque call, and collects known callees exactly as
+  // RQPerformSummary does on a tree it does not hit. See edp_perform_facts.
+  RQPerformFacts(MutSet[String], MutSet[String], Array[String], Array[String], Array[Bool]);
   RQEdpBindsName(String);
   RQIdentUses(String);
   RQSafeClosureBindings(String, String, Array[String], Array[String], Array[String], Array[Array[String]]);
@@ -344,6 +349,24 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
         _ => 0
       }
     },
+    RQPerformFacts(inert, fn_names, calls, effects, opaque) => {
+      let performed = edp_user_perform_effect_of(e)
+      if String::length(performed) > 0 && !edp_str_array_contains(effects, performed) {
+        Array::push(effects, performed)
+      }
+      match e {
+        ECall(EIdent(name, _), _, _, _) => if !edp_callee_is_resolvable(name, inert, fn_names) {
+          Array::set(opaque, 0, true)
+        } else if MutSet::has(fn_names, name) {
+          Array::push(calls, name)
+        } else {
+          ()
+        },
+        ECall(_, _, _, _) => Array::set(opaque, 0, true),
+        _ => ()
+      }
+      0
+    },
     RQEdpBindsName(_)|RQScpsBindsName(_) => match e {
       ELet(name, _, _, _) => edp_rq_plain_binder(q, name),
       ELetMut(name, _, _, _) => edp_rq_plain_binder(q, name),
@@ -604,6 +627,80 @@ export fn edp_performing_names(names: Array[String], bodies: Array[Option[Expr]]
                 Some(entries) => Array::push(entries, name),
                 None => MutMap::set(callers, callee, [name])
               }
+            }
+          }
+        },
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  let mut head = 0
+  while head < Array::length(out) {
+    match MutMap::get(callers, Array::get(out, head)) {
+      Some(entries) => for name in entries {
+        if !MutSet::has(member, name) {
+          MutSet::add(member, name)
+          Array::push(out, name)
+        }
+      },
+      None => ()
+    }
+    head = head + 1
+  }
+  out
+}
+
+/// Effect-independent reachability facts of one tree: whether it makes an
+/// opaque call, the effects it performs directly, and the known callees in
+/// visit order. RQPerformSummary(effect) hits a tree exactly when it is opaque
+/// or performs `effect` (`perform` itself is resolvable, so a perform node is
+/// never the opaque call), and on a tree it does not hit it visits every node
+/// this walk visits, in the same order, so the callees match. One walk of the
+/// facts answers what one RQPerformSummary walk per effect answered.
+export fn edp_perform_facts(e: Expr, inert: MutSet[String], fn_names: MutSet[String]) -> (Bool, Array[String], Array[String]) {
+  let calls: Array[String] = []
+  let effects: Array[String] = []
+  let opaque = [false]
+  edp_rq_fold(RQPerformFacts(inert, fn_names, calls, effects, opaque), e)
+  (Array::get(opaque, 0), effects, calls)
+}
+
+/// Would RQPerformSummary(effect) or RQPerformsUserEffect(effect) hit the
+/// tree these facts describe? The empty effect name matches every
+/// non-perform node, and every tree holds one, so both hit any tree for it.
+export fn edp_perform_facts_hit(facts: (Bool, Array[String], Array[String]), effect: String) -> Bool {
+  let (opaque, effects, _) = facts
+  String::length(effect) == 0 || opaque || edp_str_array_contains(effects, effect)
+}
+
+/// Does the tree perform `effect` directly (RQPerformsUserEffect)?
+export fn edp_perform_facts_performs(facts: (Bool, Array[String], Array[String]), effect: String) -> Bool {
+  let (_, effects, _) = facts
+  String::length(effect) == 0 || edp_str_array_contains(effects, effect)
+}
+
+/// edp_performing_names over precomputed edp_perform_facts of the bodies,
+/// with the same `inert` / `fn_names`. Same visit order, same graph, same
+/// queue, so the same result in the same order.
+export fn edp_performing_names_from_facts(names: Array[String], facts: Array[Option[(Bool, Array[String], Array[String])]], effect: String) -> Array[String] {
+  let callers: MutMap[String, Array[String]] = MutMap::new_string()
+  let member: MutSet[String] = MutSet::new_string()
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if !MutSet::has(member, name) {
+      match Array::get(facts, i) {
+        Some(fact) => if edp_perform_facts_hit(fact, effect) {
+          MutSet::add(member, name)
+          Array::push(out, name)
+        } else {
+          let (_, _, calls) = fact
+          for callee in calls {
+            match MutMap::get(callers, callee) {
+              Some(entries) => Array::push(entries, name),
+              None => MutMap::set(callers, callee, [name])
             }
           }
         },

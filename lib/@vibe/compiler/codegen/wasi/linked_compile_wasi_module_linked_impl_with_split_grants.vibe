@@ -115,7 +115,7 @@ import ./linked_function_plan.vibe {
 }
 
 import ./linked_compile_host_plan.vibe {
-  lc_build_host_plan
+  lc_build_host_plan, lc_push_foreign_iw_callees, lc_with_foreign_imports
 }
 
 import ./linked_compile_lc_inject_async_sleep_boundary.vibe {
@@ -1190,7 +1190,12 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
   } else {
     ()
   }
-  let linked_host_plan = lc_build_host_plan(dbg_line_on, debug_break, enable_rc, entry_name, linemap_on, linked_imports, need_div_zero_abort, need_region_arena, pre_prelude_let_files, pre_prelude_let_names, pre_prelude_owner_files, pre_prelude_owner_keys, rc_shadow, stmts, used_builtin_names)
+  // Foreign core-wasm functions (`import ./x.wasm`) are imports the program
+  // reaches only through its inline-wasm bodies; they ride the linked-import
+  // channel with a -1 param count (lc_with_foreign_imports), which reserves
+  // their indices and emits them with their own foreign signature.
+  let linked_imports_all = lc_with_foreign_imports(linked_imports, stmts, iw_names, iw_wats)
+  let linked_host_plan = lc_build_host_plan(dbg_line_on, debug_break, enable_rc, entry_name, linemap_on, linked_imports_all, need_div_zero_abort, need_region_arena, pre_prelude_let_files, pre_prelude_let_names, pre_prelude_owner_files, pre_prelude_owner_keys, rc_shadow, stmts, used_builtin_names)
   let arr_concat_idx = linked_host_plan.arr_concat_idx
   let arr_get_idx = linked_host_plan.arr_get_idx
   let arr_len_idx = linked_host_plan.arr_len_idx
@@ -1802,13 +1807,19 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
     hs_reg_i = hs_reg_i + 1
   }
   let mut li_reg = 0
-  while li_reg < Array::length(linked_imports) {
-    let (_, lfn_name, lparams, lreturns) = Array::get(linked_imports, li_reg)
-    Array::push(builtin_names_list, lfn_name)
-    Array::push(builtin_param_counts, lparams)
-    Array::push(builtin_needs_env_list, true)
-    Array::push(builtin_indices_list, Array::get(linked_import_indices, li_reg))
-    Array::push(builtin_returns_list, lreturns)
+  while li_reg < Array::length(linked_imports_all) {
+    let (_, lfn_name, lparams, lreturns) = Array::get(linked_imports_all, li_reg)
+    // A foreign function (-1) is not callable from vibe code, only from the
+    // inline-wasm body that names it (lc_push_foreign_iw_callees).
+    if lparams >= 0 {
+      Array::push(builtin_names_list, lfn_name)
+      Array::push(builtin_param_counts, lparams)
+      Array::push(builtin_needs_env_list, true)
+      Array::push(builtin_indices_list, Array::get(linked_import_indices, li_reg))
+      Array::push(builtin_returns_list, lreturns)
+    } else {
+      ()
+    }
     li_reg = li_reg + 1
   }
   // #3115 review: read before the builtin names are appended below --
@@ -1854,6 +1865,7 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
   // #2348: built once here, from the finalized func-table lists, and shared
   // by every inline-wasm body the loop below assembles.
   let iw_callees = lc_build_iw_callees(iw_names, all_fn_names_list, all_fn_indices_list, all_fn_param_counts, num_user_funcs)
+  lc_push_foreign_iw_callees(iw_callees, linked_imports_all, linked_import_indices)
   let num_base_types = 9
   let lt_w = LambdaTable::{
     base: 0,
@@ -2168,7 +2180,7 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
     library_mode: library_mode,
     linemap_on: linemap_on,
     linemap_state: linemap_state,
-    linked_imports: linked_imports,
+    linked_imports: linked_imports_all,
     lt_w: lt_w,
     need_div_zero_abort: need_div_zero_abort,
     need_host_future_builtin: need_host_future_builtin,
