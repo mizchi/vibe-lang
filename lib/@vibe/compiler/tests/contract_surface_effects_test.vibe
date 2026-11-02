@@ -1,0 +1,70 @@
+//# Imports
+
+import @vibe/compiler/contract {
+  classify_contract_stmts, contract_surface_effects, contract_surface_lines, contract_surface_rows_sorted, parse_contract_program
+}
+
+import @vibe/compiler/syntax {
+  lex
+}
+
+//# Fixture
+
+// `vibe pkg update` (#3673) compares two versions' surfaces through these:
+// the effect-row portion of `contract_surface_lines` (registry-design
+// property 4) and the same lines with each row's labels sorted.
+
+fn surface(contract: String) -> Array[String] with Exception {
+  let (d, o, extra) = parse_contract_program(lex(contract))
+  let (_, types) = classify_contract_stmts(extra)
+  contract_surface_lines(d, o, types)
+}
+
+//# Effects
+
+test "each declaration's own row, one entry per label, in written order" {
+  let lines = surface("fn a(x: Int) -> Int with Fs + Console\nfn b(p: String) -> String with Exception + Http::request?\nfn c() -> Int\n")
+  inspect(contract_surface_effects(lines), content = "[a\tFs, a\tConsole, b\tException, b\tHttp::request?]")
+}
+
+test "every row counts, a parameter's function type included" {
+  let lines = surface("fn run(f: () -> Int with Http) -> Int\nfn both(f: () -> Int with Http) -> Int with Fs\n")
+  inspect(contract_surface_effects(lines), content = "[run\tHttp, both\tHttp, both\tFs]")
+}
+
+test "a function exported through a type alias carries the alias's row" {
+  let lines = surface("type Fetch = (String) -> String with Http\nlet fetch: Fetch\n")
+  inspect(contract_surface_effects(lines), content = "[Fetch\tHttp]")
+}
+
+test "a function exported as an annotated value carries its row too" {
+  let lines = surface("let fetch: (String) -> String with Http\nlet both: (String) -> String with Http + Fs\n")
+  inspect(contract_surface_effects(lines), content = "[fetch\tHttp, both\tHttp, both\tFs]")
+}
+
+test "a bare row ends where an effect name ends, whatever follows it" {
+  let lines = surface("struct Client { fetch: () -> String with Http; id: Int }\nfn pair() -> (() -> Int with Fs, Int)\n")
+  inspect(contract_surface_effects(lines), content = "[pair\tFs, Client\tHttp]")
+}
+
+//# Sorted rows
+
+test "two orders of one row compare equal once sorted; the written lines do not" {
+  let one = surface("fn a(x: Int) -> Int with Fs + Console\n")
+  let two = surface("fn a(y: Int) -> Int with Console + Fs\n")
+  assert(one != two)
+  assert(contract_surface_rows_sorted(one) == contract_surface_rows_sorted(two))
+  inspect(contract_surface_rows_sorted(two), content = "[fn a (Int) -> Int with { Console, Fs }]")
+}
+
+test "a function-valued declaration's bare row sorts the same way" {
+  let one = surface("let both: (String) -> String with Http + Fs\n")
+  let two = surface("let both: (String) -> String with Fs + Http\n")
+  assert(one != two)
+  inspect(contract_surface_rows_sorted(one) == contract_surface_rows_sorted(two), content = "true")
+}
+
+test "a line without a row, and a parameter's row, are left as written" {
+  let lines = surface("fn c() -> Int\nfn run(f: () -> Int with Http + Fs) -> Int\n")
+  inspect(contract_surface_rows_sorted(lines) == lines, content = "true")
+}

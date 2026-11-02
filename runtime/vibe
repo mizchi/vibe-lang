@@ -346,11 +346,24 @@ pkg_home_abs() {
   esac
   export VIBE_HOME
 }
+# Runs `vibe pkg <sub> ...` with only the host imports that subcommand is
+# granted (#3673). The CLI states the grant (`pkg authority <sub>`); the runner
+# withholds every other `vibe.*` import (VIBE_HOST_WITHHOLD, on top of any the
+# caller already withholds), so a call outside the grant traps naming the
+# import. A compiler that cannot state the grant is refused: running the
+# subcommand with the CLI's full authority is the case this exists to remove.
+invoke_pkg() {
+  local sub="${1:-}" authority withheld
+  authority="$(invoke_cli pkg authority "$sub")" || die "pkg: this compiler does not state the authority of 'pkg $sub' (update the toolchain)"
+  withheld="$(printf '%s\n' "$authority" | awk -F'\t' '$1 == "withhold" { print $2 }')"
+  [ -n "$withheld" ] || die "pkg: the compiler named no host imports to withhold for 'pkg $sub'"
+  VIBE_HOST_WITHHOLD="${VIBE_HOST_WITHHOLD:+$VIBE_HOST_WITHHOLD,}$withheld" invoke_cli pkg "$@"
+}
 pkg_git_add() {
   local spec="$1" info url ref subdir work commit src status=0
   shift
   pkg_home_abs
-  info="$(invoke_cli pkg spec "$spec")" || return 1
+  info="$(invoke_pkg spec "$spec")" || return 1
   url="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "url" { print $2 }')"
   ref="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "ref" { print $2 }')"
   subdir="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "subdir" { print $2 }')"
@@ -369,7 +382,7 @@ pkg_git_add() {
   commit="$(git -C "$work/checkout" rev-parse FETCH_HEAD)"
   git -C "$work/checkout" -c advice.detachedHead=false checkout -q FETCH_HEAD
   src="$work/checkout${subdir:+/$subdir}"
-  invoke_cli pkg add-fetched "$src" "$spec" "$commit" "$@" || status=$?
+  invoke_pkg add-fetched "$src" "$spec" "$commit" "$@" || status=$?
   rm -rf "$work"
   return "$status"
 }
@@ -384,7 +397,7 @@ pkg_fetch_pins() {
   for arg in "$@"; do [ "$arg" = --store ] && store=--store; done
   pkg_home_abs
   while :; do
-    out="$(invoke_cli pkg fetch-pins "$@")" || { printf '%s\n' "$out" | grep -v $'^need\t'; return 1; }
+    out="$(invoke_pkg fetch-pins "$@")" || { printf '%s\n' "$out" | grep -v $'^need\t'; return 1; }
     printf '%s\n' "$out" | grep -v $'^need\t' || true
     needs="$(printf '%s\n' "$out" | grep $'^need\t' || true)"
     [ -n "$needs" ] || return 0
@@ -1717,7 +1730,7 @@ EOF
         ;;
       *)
         pkg_home_abs
-        invoke_cli pkg "$@"
+        invoke_pkg "$@"
         ;;
     esac
     ;;
