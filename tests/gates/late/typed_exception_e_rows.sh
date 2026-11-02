@@ -2003,7 +2003,7 @@ CHECK_JSON_PARITY_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_check_json
 # pipefail + set -e turn that into exit 141 with no artifacts written. Measured
 # at 869 differing lines. It fires only in the LARGE case -- a fresh clone or a
 # seed bump -- which is exactly when the regeneration is needed.
-bash "$ROOT_DIR/scripts/check_generated_stamp_report.sh"
+bash "$ROOT_DIR/scripts/vibe_run.sh" scripts/check_generated_stamp_report.vibex
 bash "$ROOT_DIR/scripts/check_generated_stamp_report_test.sh"
 # ...and the fourth: a MEASUREMENT whose input moves with the change it is
 # measuring. The lex/parse series read the live compiler sources, so a PR that
@@ -2019,7 +2019,7 @@ bash "$ROOT_DIR/scripts/check_bench_corpus_test.sh"
 # caller never bound -- and on the bump lane none of it is ever reclaimed
 # (#2873). The OUT cache is the second of the pair, so an inline
 # `codegen_body_cache_new()` there is provably unread.
-bash "$ROOT_DIR/scripts/check_body_cache_discard.sh"
+bash "$ROOT_DIR/scripts/vibe_run.sh" scripts/check_body_cache_discard.vibex
 bash "$ROOT_DIR/scripts/check_body_cache_discard_test.sh"
 # ...and the sixth: a lane that CAN no longer do its work and does not say so.
 # Several compiler-sized compiles in one `--daemon` exhaust the wasm32 address
