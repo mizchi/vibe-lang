@@ -18,7 +18,8 @@ test "rebind names avoid an already live user local" {
   let body = ETuple([EIdent("x", 0), EIdent("__shadow_0_x", 0)])
   let expr = ELet("__shadow_0_x", EInt(99), rebind_with_body(body), 0)
   // review-lint: allow-fixed-synthetic-name -- adversarial user binding for collision regression
-  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = []) {
+  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = [
+  ]) {
     ELet(user, _, ELetMut(_, _, ELetMut(replacement, _, _, _), _), _) => {
       assert_eq(user, "__shadow_0_x")
       assert(replacement != user)
@@ -59,7 +60,8 @@ test "ordinary shadows avoid future parameter pattern and loop names" {
     EForIn("__shadow_3_x", Some("__shadow_4_x"), EArray([]), EUnit)
   ])
   let expr = ELet("x", EInt(1), ELet("x", EInt(2), future, 0), 0)
-  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = []) {
+  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = [
+  ]) {
     ELet(_, _, ELet(fresh, _, _, _), _) => assert_eq(fresh, "__shadow_5_x"),
     _ => assert(false)
   }
@@ -79,7 +81,8 @@ test "fresh names also avoid names supplied by the caller" {
 test "a single immediate reassignment separates old and replacement lifetimes" {
   let rhs = ECall(EIdent("replace", 1), [EIdent("x", 2)], 3, [])
   let expr = ELetMut("x", EInt(1), EAssign("x", rhs, EIdent("x", 4), -1), 5)
-  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = []) {
+  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = [
+  ]) {
     ELetMut(old, _, ELetMut(replacement, value, EIdent(use_name, 4), _), 5) => {
       assert(old != replacement)
       assert_eq(use_name, replacement)
@@ -104,12 +107,14 @@ test "reassignment keeps a mutable slot when another write can observe it" {
   for write in writes {
     let rhs = ECall(EIdent("replace", 0), [EIdent("x", 0)], 0, [])
     let expr = ELetMut("x", EInt(1), EAssign("x", rhs, write, -1), 0)
-    match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = []) {
+    match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = [
+    ]) {
       ELetMut(_, _, EAssign(_, _, _, _), _) => assert(true),
       _ => assert(false)
     }
     let rhs_write = ELetMut("x", EInt(1), EAssign("x", write, EIdent("x", 0), -1), 0)
-    match uniquify_shadowed_bindings_fresh(expr = rhs_write, counter = fresh_counter(), seen = []) {
+    match uniquify_shadowed_bindings_fresh(expr = rhs_write, counter = fresh_counter(), seen = [
+    ]) {
       ELetMut(_, _, EAssign(_, _, _, _), _) => assert(true),
       _ => assert(false)
     }
@@ -120,7 +125,8 @@ test "a closure made before the store must keep observing the mutable slot" {
   let closure = EFn([], [], [], None, None, EIdent("x", 0))
   let rhs = ELet("saved", closure, EInt(2), 0)
   let expr = ELetMut("x", EInt(1), EAssign("x", rhs, EIdent("x", 0), -1), 0)
-  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = []) {
+  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = [
+  ]) {
     ELetMut(_, _, EAssign(_, _, _, _), _) => assert(true),
     _ => assert(false)
   }
@@ -133,7 +139,8 @@ test "an overwrite without uses on both sides keeps its original lifetime" {
   ]
   for body in bodies {
     let expr = ELetMut("x", EInt(1), body, 0)
-    match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = []) {
+    match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = [
+    ]) {
       ELetMut(_, _, EAssign(_, _, _, _), _) => assert(true),
       _ => assert(false)
     }
@@ -148,7 +155,8 @@ test "conditional and repeated assignments keep their mutable slot" {
   ]
   for body in bodies {
     let expr = ELetMut("x", EInt(1), body, 0)
-    match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = []) {
+    match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = [
+    ]) {
       ELetMut(_, _, _, _) => assert(true),
       _ => assert(false)
     }
@@ -157,7 +165,8 @@ test "conditional and repeated assignments keep their mutable slot" {
 
 test "nested binding shadows through the lexical stack" {
   let expr = ELet("x", EInt(1), ELet("x", EInt(2), EIdent("x", 0), 0), 0)
-  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = []) {
+  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = [
+  ]) {
     ELet("x", _, ELet(inner, _, EIdent(use_name, _), _), _) => {
       assert(inner != "x")
       assert_eq(use_name, inner)
@@ -193,7 +202,8 @@ test "same-named sibling pattern binders remain globally unique" {
 test "labeled parameter base name is occupied for inner bindings" {
   let body = ELet("arg", EInt(1), EIdent("arg", 0), 0)
   let expr = EFn([], [], [("arg~", None)], None, None, body)
-  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = []) {
+  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = [
+  ]) {
     EFn(_, _, _, _, _, ELet(inner, _, EIdent(use_name, _), _)) => {
       assert(inner != "arg")
       assert_eq(use_name, inner)
@@ -204,7 +214,8 @@ test "labeled parameter base name is occupied for inner bindings" {
 
 test "let rec self reference resolves to its rewritten binding" {
   let expr = ELet("f", EInt(0), ELetRec("f", EIdent("f", 0), EIdent("f", 0)), 0)
-  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = []) {
+  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = [
+  ]) {
     ELet(_, _, ELetRec(inner, EIdent(value_name, _), EIdent(body_name, _)), _) => {
       assert(inner != "f")
       assert_eq(value_name, inner)
@@ -216,7 +227,8 @@ test "let rec self reference resolves to its rewritten binding" {
 
 test "loop initializers all read the outer scope" {
   let expr = ELet("x", EInt(7), ELoop([("x", EInt(0)), ("y", EIdent("x", 0))], EIdent("y", 0)), 0)
-  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = []) {
+  match uniquify_shadowed_bindings_fresh(expr = expr, counter = fresh_counter(), seen = [
+  ]) {
     ELet(outer, _, ELoop(params, EIdent(body_name, _)), _) => {
       let (inner, _) = Array::get(params, at = 0)
       let (y_name, y_init) = Array::get(params, at = 1)

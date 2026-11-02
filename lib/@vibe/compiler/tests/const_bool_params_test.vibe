@@ -137,8 +137,12 @@ test "every call passes true: the if folds to the then arm" {
 test "a wrapper that forwards its parameter is folded first, then its callee: fixpoint" {
   // outer(flag) = inner(flag); main = outer(false). Round 1 fixes outer's
   // flag (main passes false); round 2 sees inner(false) and fixes inner's.
-  let inner = fn_stmt(exported = false, name = "inner", params = [("flag", bool_ty())], body = EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
-  let outer = fn_stmt(exported = false, name = "outer", params = [("flag", bool_ty())], body = call1(name = "inner", arg = EIdent("flag", -1)))
+  let inner = fn_stmt(exported = false, name = "inner", params = [
+    ("flag", bool_ty())
+  ], body = EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
+  let outer = fn_stmt(exported = false, name = "outer", params = [
+    ("flag", bool_ty())
+  ], body = call1(name = "inner", arg = EIdent("flag", -1)))
   let stmts = [
     helper_stmt(),
     inner,
@@ -162,10 +166,19 @@ test "a wrapper that forwards its parameter is folded first, then its callee: fi
 test "the fold signature names each rewritten function's substitutions, and nothing else" {
   // Same chain as the fixpoint test, plus a function the pass cannot fold
   // (its callers disagree) and one whose decided parameter is never read.
-  let inner = fn_stmt(exported = false, name = "inner", params = [("flag", bool_ty())], body = EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
-  let outer = fn_stmt(exported = false, name = "outer", params = [("flag", bool_ty())], body = call1(name = "inner", arg = EIdent("flag", -1)))
-  let mixed = fn_stmt(exported = false, name = "mixed", params = [("flag", bool_ty())], body = EIf(EIdent("flag", -1), EInt(1), EInt(2)))
-  let unread = fn_stmt(exported = false, name = "unread", params = [("n", int_ty()), ("flag", bool_ty())], body = EIf(EBool(true), EInt(1), EInt(2)))
+  let inner = fn_stmt(exported = false, name = "inner", params = [
+    ("flag", bool_ty())
+  ], body = EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
+  let outer = fn_stmt(exported = false, name = "outer", params = [
+    ("flag", bool_ty())
+  ], body = call1(name = "inner", arg = EIdent("flag", -1)))
+  let mixed = fn_stmt(exported = false, name = "mixed", params = [
+    ("flag", bool_ty())
+  ], body = EIf(EIdent("flag", -1), EInt(1), EInt(2)))
+  let unread = fn_stmt(exported = false, name = "unread", params = [
+    ("n", int_ty()),
+    ("flag", bool_ty())
+  ], body = EIf(EBool(true), EInt(1), EInt(2)))
   let unread_args = [EInt(3), EBool(true)]
   let unread_call = ECall(EIdent("unread", -1), unread_args, -1, [])
   let main_body = ESeq(call1(name = "outer", arg = EBool(false)), ESeq(call1(name = "mixed", arg = EBool(true)), ESeq(call1(name = "mixed", arg = EBool(false)), unread_call)))
@@ -209,7 +222,10 @@ test "the unsigned entry point folds exactly what the signed one does" {
 
 test "`!flag && other` with flag = false leaves exactly `other` as the condition" {
   let body = EIf(EBinOp("&&", EUnaryOp("!", EIdent("flag", -1)), EIdent("other", -1), -1), call0("helper"), EInt(1))
-  let work = fn_stmt(exported = false, name = "work", params = [("flag", bool_ty()), ("other", bool_ty())], body = body)
+  let work = fn_stmt(exported = false, name = "work", params = [
+    ("flag", bool_ty()),
+    ("other", bool_ty())
+  ], body = body)
   let stmts = [
     helper_stmt(),
     work,
@@ -226,8 +242,14 @@ test "`!flag && other` with flag = false leaves exactly `other` as the condition
 
 test "`flag || other` with flag = true folds the whole condition to true" {
   let body = EIf(EBinOp("||", EIdent("flag", -1), call0("side_effect"), -1), call0("helper"), EInt(1))
-  let work = fn_stmt(exported = false, name = "work", params = [("flag", bool_ty())], body = body)
-  let stmts = [helper_stmt(), work, main_stmt(call1(name = "work", arg = EBool(true)))]
+  let work = fn_stmt(exported = false, name = "work", params = [
+    ("flag", bool_ty())
+  ], body = body)
+  let stmts = [
+    helper_stmt(),
+    work,
+    main_stmt(call1(name = "work", arg = EBool(true)))
+  ]
   let _ = fold_const_bool_params(stmts = stmts, entry_name = "main", wat_texts = no_wat())
   match body_of(stmts = stmts, name = "work") {
     ECall(EIdent("helper", _), _, _, _) => (),
@@ -237,8 +259,14 @@ test "`flag || other` with flag = true folds the whole condition to true" {
 
 test "a literal on the RIGHT of && keeps the left operand: it may have effects" {
   let body = EIf(EBinOp("&&", call0("probe"), EIdent("flag", -1), -1), call0("helper"), EInt(1))
-  let work = fn_stmt(exported = false, name = "work", params = [("flag", bool_ty())], body = body)
-  let stmts = [helper_stmt(), work, main_stmt(call1(name = "work", arg = EBool(false)))]
+  let work = fn_stmt(exported = false, name = "work", params = [
+    ("flag", bool_ty())
+  ], body = body)
+  let stmts = [
+    helper_stmt(),
+    work,
+    main_stmt(call1(name = "work", arg = EBool(false)))
+  ]
   let _ = fold_const_bool_params(stmts = stmts, entry_name = "main", wat_texts = no_wat())
   // `probe() && false` is not folded to `false`: probe() must still run.
   match body_of(stmts = stmts, name = "work") {
@@ -312,8 +340,12 @@ test "with the strip announced, the exports the strip keeps still refuse" {
   // `cli_main` and the per-block `__test_*` / `__bench_*` exports survive
   // `strip_executable_wasm`, so a host can still call them.
   set_executable_exports_stripped(true)
-  let cli = fn_stmt(exported = true, name = "cli_main", params = [("flag", bool_ty())], body = EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
-  let blk = fn_stmt(exported = true, name = "__test_x", params = [("flag", bool_ty())], body = EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
+  let cli = fn_stmt(exported = true, name = "cli_main", params = [
+    ("flag", bool_ty())
+  ], body = EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
+  let blk = fn_stmt(exported = true, name = "__test_x", params = [
+    ("flag", bool_ty())
+  ], body = EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
   let stmts = [
     helper_stmt(),
     cli,
@@ -340,8 +372,14 @@ test "the entry itself refuses even when unexported: the host calls it" {
 test "a body that rebinds the parameter's name refuses" {
   // work(flag) = { let flag = read(); if flag { helper() } else { 1 } }
   let body = ELet("flag", call0("read_flag"), EIf(EIdent("flag", -1), call0("helper"), EInt(1)), -1)
-  let work = fn_stmt(exported = false, name = "work", params = [("flag", bool_ty())], body = body)
-  let stmts = [helper_stmt(), work, main_stmt(call1(name = "work", arg = EBool(false)))]
+  let work = fn_stmt(exported = false, name = "work", params = [
+    ("flag", bool_ty())
+  ], body = body)
+  let stmts = [
+    helper_stmt(),
+    work,
+    main_stmt(call1(name = "work", arg = EBool(false)))
+  ]
   assert(eq(fold_const_bool_params(stmts = stmts, entry_name = "main", wat_texts = no_wat()), 0))
   match body_of(stmts = stmts, name = "work") {
     ELet("flag", _, EIf(EIdent("flag", _), _, _), _) => (),
@@ -352,8 +390,14 @@ test "a body that rebinds the parameter's name refuses" {
 test "a lambda parameter of the same name refuses" {
   let lam = EFn(array_empty(), array_empty(), [("flag", bool_ty())], no_ty(), None, EIdent("flag", -1))
   let body = ESeq(ELet("f", lam, EUnit, -1), EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
-  let work = fn_stmt(exported = false, name = "work", params = [("flag", bool_ty())], body = body)
-  let stmts = [helper_stmt(), work, main_stmt(call1(name = "work", arg = EBool(false)))]
+  let work = fn_stmt(exported = false, name = "work", params = [
+    ("flag", bool_ty())
+  ], body = body)
+  let stmts = [
+    helper_stmt(),
+    work,
+    main_stmt(call1(name = "work", arg = EBool(false)))
+  ]
   assert(eq(fold_const_bool_params(stmts = stmts, entry_name = "main", wat_texts = no_wat()), 0))
 }
 
@@ -363,13 +407,19 @@ test "a WAT body that names the function refuses" {
     work_stmt(false),
     main_stmt(call1(name = "work", arg = EBool(false)))
   ]
-  assert(eq(fold_const_bool_params(stmts = stmts, entry_name = "main", wat_texts = ["(call $work (i64.const 0))"]), 0))
+  assert(eq(fold_const_bool_params(stmts = stmts, entry_name = "main", wat_texts = [
+    "(call $work (i64.const 0))"
+  ]), 0))
   assert(is_if_on_flag(body_of(stmts = stmts, name = "work")))
 }
 
 test "a non-Bool parameter is never folded, even when every call agrees" {
   let work = fn_stmt(exported = false, name = "work", params = [("n", int_ty())], body = EIf(EBinOp("==", EIdent("n", -1), EInt(1), -1), call0("helper"), EInt(1)))
-  let stmts = [helper_stmt(), work, main_stmt(call1(name = "work", arg = EInt(1)))]
+  let stmts = [
+    helper_stmt(),
+    work,
+    main_stmt(call1(name = "work", arg = EInt(1)))
+  ]
   assert(eq(fold_const_bool_params(stmts = stmts, entry_name = "main", wat_texts = no_wat()), 0))
 }
 
@@ -403,7 +453,11 @@ test "a method-style call site refuses the same-named function" {
 test "a generic function refuses" {
   let params = [("flag", bool_ty())]
   let generic = SLet(false, true, "work", no_ty(), EFn(["T"], array_empty(), params, no_ty(), None, EIf(EIdent("flag", -1), call0("helper"), EInt(1))))
-  let stmts = [helper_stmt(), generic, main_stmt(call1(name = "work", arg = EBool(false)))]
+  let stmts = [
+    helper_stmt(),
+    generic,
+    main_stmt(call1(name = "work", arg = EBool(false)))
+  ]
   assert(eq(fold_const_bool_params(stmts = stmts, entry_name = "main", wat_texts = no_wat()), 0))
 }
 

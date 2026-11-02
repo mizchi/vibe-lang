@@ -42,7 +42,9 @@ test "borrow inference follows long wrapper chains in either declaration order" 
       "reader_\{i + 1}"
     }
     Array::push(wanted, value = name)
-    Array::push(chain, value = declaration(name = name, params = ["xs"], body = call(name = next, args = ["xs"])))
+    Array::push(chain, value = declaration(name = name, params = ["xs"], body = call(name = next, args = [
+      "xs"
+    ])))
     i = i + 1
   }
   inspect(masks_for(stmts = chain, wanted = wanted), content = "[1, 1, 1, 1, 1, 1, 1, 1]")
@@ -58,7 +60,9 @@ test "recursive readers propagate their borrowed ABI back to wrappers" {
   let walk = declaration(name = "walk", params = ["xs"], body = EIf(EBool(true), call(name = "Array::length", args = [
     "xs"
   ]), call(name = "walk", args = ["xs"])))
-  let wrapper = declaration(name = "wrapper", params = ["xs"], body = call(name = "walk", args = ["xs"]))
+  let wrapper = declaration(name = "wrapper", params = ["xs"], body = call(name = "walk", args = [
+    "xs"
+  ]))
   inspect(masks_for(stmts = [wrapper, walk], wanted = ["wrapper", "walk"]), content = "[1, 1]")
 }
 
@@ -66,12 +70,18 @@ test "mutually recursive readers reach a borrowed fixed point" {
   let left = declaration(name = "left", params = ["xs"], body = EIf(EBool(true), call(name = "Array::length", args = [
     "xs"
   ]), call(name = "right", args = ["xs"])))
-  let right = declaration(name = "right", params = ["xs"], body = call(name = "left", args = ["xs"]))
+  let right = declaration(name = "right", params = ["xs"], body = call(name = "left", args = [
+    "xs"
+  ]))
   inspect(masks_for(stmts = [left, right], wanted = ["left", "right"]), content = "[1, 1]")
 }
 
 test "an owned return propagates through mutually recursive permutations" {
-  let left = declaration(name = "left", params = ["a", "b", "c"], body = call(name = "right", args = ["b", "c", "a"]))
+  let left = declaration(name = "left", params = ["a", "b", "c"], body = call(name = "right", args = [
+    "b",
+    "c",
+    "a"
+  ]))
   let right = declaration(name = "right", params = ["a", "b", "c"], body = EIf(EBool(true), EIdent("a", -1), call(name = "left", args = [
     "a",
     "b",
@@ -81,23 +91,34 @@ test "an owned return propagates through mutually recursive permutations" {
 }
 
 test "temporary arguments propagate ownership through a recursive component" {
-  let left = declaration(name = "left", params = ["a", "b"], body = call(name = "right", args = ["b", "a"]))
-  let right = declaration(name = "right", params = ["a", "b"], body = call(name = "left", args = ["a", "b"]))
+  let left = declaration(name = "left", params = ["a", "b"], body = call(name = "right", args = [
+    "b",
+    "a"
+  ]))
+  let right = declaration(name = "right", params = ["a", "b"], body = call(name = "left", args = [
+    "a",
+    "b"
+  ]))
   let caller = SExpr(ECall(EIdent("right", -1), [EArray([]), EIdent("xs", -1)], -1, [
   ]))
   inspect(masks_for(stmts = [left, right, caller], wanted = ["left", "right"]), content = "[0, 0]")
 }
 
 test "function parameters shadow transitive callees including labeled spellings" {
-  let reader = declaration(name = "reader", params = ["xs"], body = call(name = "Array::length", args = ["xs"]))
+  let reader = declaration(name = "reader", params = ["xs"], body = call(name = "Array::length", args = [
+    "xs"
+  ]))
   let wrappers = ["reader", "reader~", "reader?"]
   let got: Array[Int] = []
   let mut i = 0
   while i < Array::length(wrappers) {
-    let wrapper = declaration(name = "wrapper", params = ["xs", Array::get(wrappers, at = i)], body = call(name = "reader", args = [
-      "xs"
-    ]))
-    Array::push(got, value = Array::get(masks_for(stmts = [reader, wrapper], wanted = ["wrapper"]), at = 0)&1)
+    let wrapper = declaration(name = "wrapper", params = [
+      "xs",
+      Array::get(wrappers, at = i)
+    ], body = call(name = "reader", args = ["xs"]))
+    Array::push(got, value = Array::get(masks_for(stmts = [reader, wrapper], wanted = [
+      "wrapper"
+    ]), at = 0)&1)
     i = i + 1
   }
   inspect(got, content = "[0, 0, 0]")
@@ -105,14 +126,25 @@ test "function parameters shadow transitive callees including labeled spellings"
 
 test "a source-owned builtin cannot seed borrowing into a wrapper" {
   let owned = declaration(name = "Map::iter_get", params = ["xs"], body = EIdent("xs", -1))
-  let wrapper = declaration(name = "wrapper", params = ["xs"], body = call(name = "Map::iter_get", args = ["xs"]))
-  inspect(masks_for(stmts = [owned, wrapper], wanted = ["Map::iter_get", "wrapper"]), content = "[0, 0]")
+  let wrapper = declaration(name = "wrapper", params = ["xs"], body = call(name = "Map::iter_get", args = [
+    "xs"
+  ]))
+  inspect(masks_for(stmts = [owned, wrapper], wanted = [
+    "Map::iter_get",
+    "wrapper"
+  ]), content = "[0, 0]")
 }
 
 test "module linking follows transitive edges and global exclusions" {
-  let leaf = declaration(name = "leaf", params = ["xs"], body = call(name = "Array::length", args = ["xs"]))
-  let mid = declaration(name = "mid", params = ["xs"], body = call(name = "leaf", args = ["xs"]))
-  let root = declaration(name = "root", params = ["xs"], body = call(name = "mid", args = ["xs"]))
+  let leaf = declaration(name = "leaf", params = ["xs"], body = call(name = "Array::length", args = [
+    "xs"
+  ]))
+  let mid = declaration(name = "mid", params = ["xs"], body = call(name = "leaf", args = [
+    "xs"
+  ]))
+  let root = declaration(name = "root", params = ["xs"], body = call(name = "mid", args = [
+    "xs"
+  ]))
   let parts = [[root], [mid], [leaf]]
   let valued: Array[String] = []
   let nonident: Array[String] = []
@@ -123,7 +155,8 @@ test "module linking follows transitive edges and global exclusions" {
     i = i + 1
   }
   let masks: Array[Int] = []
-  let names = borrow_fixpoint_link_parts(parts = parts, valued = valued, nonident_fns = nonident, nonident_pos = positions, exclude = [], out_masks = masks)
+  let names = borrow_fixpoint_link_parts(parts = parts, valued = valued, nonident_fns = nonident, nonident_pos = positions, exclude = [
+  ], out_masks = masks)
   inspect(names, content = "[leaf, mid, root]")
   inspect(masks, content = "[1, 1, 1]")
   let excluded_masks: Array[Int] = []
@@ -138,16 +171,26 @@ test "module linking follows transitive edges and global exclusions" {
 }
 
 test "duplicate definitions do not publish a speculative borrowed ABI" {
-  let leaf = declaration(name = "leaf", params = ["xs"], body = call(name = "Array::length", args = ["xs"]))
+  let leaf = declaration(name = "leaf", params = ["xs"], body = call(name = "Array::length", args = [
+    "xs"
+  ]))
   let owned = declaration(name = "leaf", params = ["xs"], body = EIdent("xs", -1))
-  let wrapper = declaration(name = "wrapper", params = ["xs"], body = call(name = "leaf", args = ["xs"]))
+  let wrapper = declaration(name = "wrapper", params = ["xs"], body = call(name = "leaf", args = [
+    "xs"
+  ]))
   inspect(masks_for(stmts = [leaf, owned, wrapper], wanted = ["leaf", "wrapper"]), content = "[0, 0]")
   inspect(masks_for(stmts = [owned, leaf, wrapper], wanted = ["leaf", "wrapper"]), content = "[0, 0]")
 }
 
 test "capturing a parameter keeps its recursive callers owned" {
-  let closure = EFn([], [], [], None, None, call(name = "Array::length", args = ["xs"]))
-  let left = declaration(name = "left", params = ["xs"], body = ESeq(closure, call(name = "right", args = ["xs"])))
-  let right = declaration(name = "right", params = ["xs"], body = call(name = "left", args = ["xs"]))
+  let closure = EFn([], [], [], None, None, call(name = "Array::length", args = [
+    "xs"
+  ]))
+  let left = declaration(name = "left", params = ["xs"], body = ESeq(closure, call(name = "right", args = [
+    "xs"
+  ])))
+  let right = declaration(name = "right", params = ["xs"], body = call(name = "left", args = [
+    "xs"
+  ]))
   inspect(masks_for(stmts = [left, right], wanted = ["left", "right"]), content = "[0, 0]")
 }

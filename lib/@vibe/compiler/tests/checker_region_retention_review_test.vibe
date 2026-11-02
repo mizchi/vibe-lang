@@ -43,7 +43,8 @@ test "region retention aligns reordered method arguments after the receiver" {
 
 fn review_region_env() -> TypeEnv {
   let outside = env_bind(env = EnvEmpty, name = "f", ty = CtFn([], CtInt, None))
-  let active = env_bind(env = outside, name = "#active_region", ty = CtNamed("#region_review", []))
+  let active = env_bind(env = outside, name = "#active_region", ty = CtNamed("#region_review", [
+  ]))
   env_bind(env = active, name = "h", ty = CtNamed("TaskHandle", [
     CtNamed("#region_review", []),
     CtInt
@@ -71,7 +72,8 @@ test "tuple pattern provenance belongs to the selected component" {
   let selected_handle = EMatch(pair, [
     (PTuple([PBind("selected"), PWild]), EIdent("selected", 3))
   ])
-  assert_eq(retention_value_regions(expr = independent, env = env, defs = [], s = SubstEmpty), [])
+  assert_eq(retention_value_regions(expr = independent, env = env, defs = [], s = SubstEmpty), [
+  ])
   assert_eq(retention_value_regions(expr = selected_handle, env = env, defs = [], s = SubstEmpty), [
     "#region_review"
   ])
@@ -84,22 +86,20 @@ test "a write into a shadowing local does not taint the outer location" {
   let inner = ELet("box", box, ESeq(write, EUnit), 10)
   let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
   let retaining = ELet("box", box, ESeq(write, EIdent("box", 4)), 11)
-  assert_eq(retention_value_regions(expr = safe, env = review_region_env(), defs = [], s = SubstEmpty), [
-  ])
-  assert_eq(retention_value_regions(expr = retaining, env = review_region_env(), defs = [], s = SubstEmpty), [
-    "#region_review"
-  ])
+  assert_eq(retention_value_regions(expr = safe, env = review_region_env(), defs = [
+  ], s = SubstEmpty), [])
+  assert_eq(retention_value_regions(expr = retaining, env = review_region_env(), defs = [
+  ], s = SubstEmpty), ["#region_review"])
 }
 
 test "a loop result carries early break values without tainting a consumed result" {
   let early = EIf(EBool(true), EBreak(Some(EIdent("h", 1))), EUnit)
   let loop_value = ELoop([], ESeq(early, EInt(0)))
-  assert_eq(retention_value_regions(expr = loop_value, env = review_region_env(), defs = [], s = SubstEmpty), [
-    "#region_review"
-  ])
+  assert_eq(retention_value_regions(expr = loop_value, env = review_region_env(), defs = [
+  ], s = SubstEmpty), ["#region_review"])
   let consumed = ESeq(loop_value, EInt(42))
-  assert_eq(retention_value_regions(expr = consumed, env = review_region_env(), defs = [], s = SubstEmpty), [
-  ])
+  assert_eq(retention_value_regions(expr = consumed, env = review_region_env(), defs = [
+  ], s = SubstEmpty), [])
 }
 
 test "a closure parameter shadows an outer location in the write scan" {
@@ -108,8 +108,8 @@ test "a closure parameter shadows an outer location in the write scan" {
   ])
   let inner = EFn([], [], [("box", None)], None, None, write)
   let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
-  assert_eq(retention_value_regions(expr = safe, env = review_region_env(), defs = [], s = SubstEmpty), [
-  ])
+  assert_eq(retention_value_regions(expr = safe, env = review_region_env(), defs = [
+  ], s = SubstEmpty), [])
 }
 
 test "match and for binders own their locations, including genuine aliases" {
@@ -120,24 +120,23 @@ test "match and for binders own their locations, including genuine aliases" {
   let inner_for = EForIn("box", None, EArray([box]), ESeq(write, EUnit))
   for inner in [inner_match, inner_for] {
     let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
-    assert_eq(retention_value_regions(expr = safe, env = review_region_env(), defs = [], s = SubstEmpty), [
-    ])
+    assert_eq(retention_value_regions(expr = safe, env = review_region_env(), defs = [
+    ], s = SubstEmpty), [])
   }
   let same_location = EMatch(EIdent("box", 5), [
     (PBind("box"), ESeq(write, EUnit))
   ])
   let retaining = ELet("box", box, ESeq(same_location, EIdent("box", 4)), 11)
-  assert_eq(retention_value_regions(expr = retaining, env = review_region_env(), defs = [], s = SubstEmpty), [
-    "#region_review"
-  ])
+  assert_eq(retention_value_regions(expr = retaining, env = review_region_env(), defs = [
+  ], s = SubstEmpty), ["#region_review"])
 }
 
 test "a recursive binding shadows the outer location before its initializer" {
   let box = ERecord("Box", [("v", EInt(0))], [])
   let inner = ELetRec("box", EFn([], [], [], None, None, EIdent("h", 1)), EUnit)
   let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
-  assert_eq(retention_value_regions(expr = safe, env = review_region_env(), defs = [], s = SubstEmpty), [
-  ])
+  assert_eq(retention_value_regions(expr = safe, env = review_region_env(), defs = [
+  ], s = SubstEmpty), [])
 }
 
 test "a handler payload binder owns a different location from its outer namesake" {
@@ -146,8 +145,8 @@ test "a handler payload binder owns a different location from its outer namesake
   ])
   let inner = EHandle(box, [(PCtor("E::P", [PBind("box")]), ESeq(write, EUnit))])
   let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
-  assert_eq(retention_value_regions(expr = safe, env = review_region_env(), defs = [], s = SubstEmpty), [
-  ])
+  assert_eq(retention_value_regions(expr = safe, env = review_region_env(), defs = [
+  ], s = SubstEmpty), [])
 }
 
 test "recursive type arguments retain changed hidden regions with bounded expansion" {
@@ -178,9 +177,8 @@ test "recursive type arguments retain changed hidden regions with bounded expans
 test "recursive self references add no region but external captures do" {
   let pure = ELetRec("self", EFn([], [], [], None, None, EIdent("self", 1)), EIdent("self", 2))
   let capturing = ELetRec("self", EFn([], [], [], None, None, ESeq(EIdent("self", 1), EIdent("h", 3))), EIdent("self", 2))
-  assert_eq(retention_value_regions(expr = pure, env = review_region_env(), defs = [], s = SubstEmpty), [
-  ])
-  assert_eq(retention_value_regions(expr = capturing, env = review_region_env(), defs = [], s = SubstEmpty), [
-    "#region_review"
-  ])
+  assert_eq(retention_value_regions(expr = pure, env = review_region_env(), defs = [
+  ], s = SubstEmpty), [])
+  assert_eq(retention_value_regions(expr = capturing, env = review_region_env(), defs = [
+  ], s = SubstEmpty), ["#region_review"])
 }

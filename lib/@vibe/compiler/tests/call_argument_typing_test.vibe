@@ -27,7 +27,8 @@ fn labeled_call(_ value: Expr) -> Expr {
 
 fn argument_errors(expr: Expr, env: TypeEnv) -> Array[String] {
   let errors: Array[String] = []
-  let _ = check_expr(expr = expr, env = env, defs = [], s = SubstEmpty, c = 0, errors = errors, tytab = [])
+  let _ = check_expr(expr = expr, env = env, defs = [], s = SubstEmpty, c = 0, errors = errors, tytab = [
+  ])
   errors
 }
 
@@ -64,10 +65,10 @@ test "type probes preserve a call's published placement" {
 /// Standalone call typing resolves source labels without preinstalled rows or
 /// a precheck pass, using the declaration attached to the selected binding.
 test "raw known labels check the type of their declared slot" {
-  let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([CtInt, CtString], CtInt, None), origin = BindingOriginFunctionHeader([
-    "x",
-    "y"
-  ]))
+  let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([
+    CtInt,
+    CtString
+  ], CtInt, None), origin = BindingOriginFunctionHeader(["x", "y"]))
   assert(Array::length(argument_errors(expr = labeled_call(EString("ok", 14)), env = env)) == 0)
   let errors = argument_errors(expr = labeled_call(EInt(3)), env = env)
   assert(Array::length(errors) > 0)
@@ -77,9 +78,11 @@ test "raw known labels check the type of their declared slot" {
 
 /// A known outer label must not lend its typing policy to an opaque inner call.
 test "a known outer label does not change an opaque nested call" {
-  let env = env_bind(env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([CtInt], CtInt, None), origin = BindingOriginFunctionHeader([
-    "x"
-  ])), name = "g", ty = CtFn([CtInt], CtInt, None))
+  let env = env_bind(env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([
+    CtInt
+  ], CtInt, None), origin = BindingOriginFunctionHeader(["x"])), name = "g", ty = CtFn([
+    CtInt
+  ], CtInt, None))
   let inner = ECall(EIdent("g", 9), [
     ELabeledArg("whatever", "", EString("legacy", 15))
   ], 9, [])
@@ -89,9 +92,9 @@ test "a known outer label does not change an opaque nested call" {
 
 /// Optional payloads are checked even when this expression has no prior rows.
 test "optional labeled values retain their payload types" {
-  let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([CtOption(CtInt)], CtInt, None), origin = BindingOriginFunctionHeader([
-    "x?"
-  ]))
+  let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([
+    CtOption(CtInt)
+  ], CtInt, None), origin = BindingOriginFunctionHeader(["x?"]))
   assert(Array::length(argument_errors(expr = ECall(EIdent("f", 7), [
     ELabeledArg("x", "", EInt(3))
   ], 7, []), env = env)) == 0)
@@ -152,9 +155,9 @@ test "call typing rejects mixed argument modes on an opaque value" {
 /// A written None must not acquire omission semantics at a declaration that
 /// carries a default; only that resolved binding supplies the default fact.
 test "call typing rejects a written None for the resolved defaulted slot" {
-  let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([CtOption(CtInt)], CtInt, None), origin = BindingOriginDefaultedFunctionHeader([
-    "x?"
-  ], [true]))
+  let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([
+    CtOption(CtInt)
+  ], CtInt, None), origin = BindingOriginDefaultedFunctionHeader(["x?"], [true]))
   let errors = argument_errors(expr = unresolved_source_call(name = "f", args = [
     ELabeledArg("x", "", EIdent("None", 14))
   ]), env = env)
@@ -164,9 +167,9 @@ test "call typing rejects a written None for the resolved defaulted slot" {
 /// Declaration-only defaults cannot silently escape behind an ordinary
 /// function type through a value reference, even in the expression API.
 test "value typing refuses escaping a resolved defaulted declaration" {
-  let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([CtOption(CtInt)], CtInt, None), origin = BindingOriginDefaultedFunctionHeader([
-    "x?"
-  ], [true]))
+  let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([
+    CtOption(CtInt)
+  ], CtInt, None), origin = BindingOriginDefaultedFunctionHeader(["x?"], [true]))
   let errors = argument_errors(expr = EIdent("f", 7), env = env)
   assert(String::contains(String::join(errors, sep = "\n"), needle = "has parameter defaults"))
 }
@@ -174,7 +177,10 @@ test "value typing refuses escaping a resolved defaulted declaration" {
 /// An uncertain mutable declaration is distinct from a value whose interface
 /// never declared labels; accepting an identity placement would swap values.
 test "call typing refuses labels on an uncertain mutable declaration" {
-  let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([CtInt, CtInt], CtInt, None), origin = BindingOriginUncertainFunctionHeader)
+  let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([
+    CtInt,
+    CtInt
+  ], CtInt, None), origin = BindingOriginUncertainFunctionHeader)
   let errors = argument_errors(expr = unresolved_source_call(name = "f", args = [
     ELabeledArg("x", "", EInt(1)),
     ELabeledArg("y", "", EInt(2))
@@ -185,14 +191,14 @@ test "call typing refuses labels on an uncertain mutable declaration" {
 /// Reusing source in a new check cannot reuse the old binding's slot mapping.
 test "standalone checks recapture reused source against the current binding" {
   let expr = labeled_call(EString("ok", 14))
-  let original = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([CtInt, CtString], CtInt, None), origin = BindingOriginFunctionHeader([
-    "x",
-    "y"
-  ]))
-  let different = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([CtInt, CtString], CtInt, None), origin = BindingOriginFunctionHeader([
-    "y",
-    "x"
-  ]))
+  let original = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([
+    CtInt,
+    CtString
+  ], CtInt, None), origin = BindingOriginFunctionHeader(["x", "y"]))
+  let different = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([
+    CtInt,
+    CtString
+  ], CtInt, None), origin = BindingOriginFunctionHeader(["y", "x"]))
   let opaque = env_bind(env = EnvEmpty, name = "f", ty = CtFn([CtInt, CtString], CtInt, None))
   assert(Array::length(argument_errors(expr = expr, env = original)) == 0)
   assert(Array::length(argument_errors(expr = expr, env = different)) > 0)
@@ -203,14 +209,16 @@ test "standalone checks recapture reused source against the current binding" {
 /// Earlier diagnostics must not turn a later valid optional call into a false
 /// arity error or suppress a later call's own unknown-label diagnostic.
 test "placement validation uses each call's own error boundary" {
-  let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([CtOption(CtInt)], CtInt, None), origin = BindingOriginFunctionHeader([
-    "x?"
-  ]))
+  let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([
+    CtOption(CtInt)
+  ], CtInt, None), origin = BindingOriginFunctionHeader(["x?"]))
   let errors = ["previous diagnostic"]
-  let _ = check_expr(expr = ECall(EIdent("f", 7), [], 7, []), env = env, defs = [], s = SubstEmpty, c = 0, errors = errors, tytab = [
-  ])
+  let _ = check_expr(expr = ECall(EIdent("f", 7), [], 7, []), env = env, defs = [
+  ], s = SubstEmpty, c = 0, errors = errors, tytab = [])
   assert(Array::length(errors) == 1)
-  let _ = check_expr(expr = ECall(EIdent("f", 7), [ELabeledArg("typo", "", EInt(1))], 7, [
-  ]), env = env, defs = [], s = SubstEmpty, c = 0, errors = errors, tytab = [])
+  let _ = check_expr(expr = ECall(EIdent("f", 7), [
+    ELabeledArg("typo", "", EInt(1))
+  ], 7, []), env = env, defs = [], s = SubstEmpty, c = 0, errors = errors, tytab = [
+  ])
   assert(String::contains(String::join(errors, sep = "\n"), needle = "unknown labeled argument `typo`"))
 }
