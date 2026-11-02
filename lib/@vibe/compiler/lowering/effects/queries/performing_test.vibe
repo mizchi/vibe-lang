@@ -5,7 +5,13 @@ import @vibe/core {
   struct MutSet
 }
 import @vibe/compiler/lowering/effects/queries {
-  EdpReadQuery, edp_performing_names, edp_rq_fold
+  EdpReadQuery,
+  edp_perform_facts,
+  edp_perform_facts_hit,
+  edp_perform_facts_performs,
+  edp_performing_names,
+  edp_performing_names_from_facts,
+  edp_rq_fold
 }
 
 fn call(name: String) -> Expr {
@@ -48,9 +54,54 @@ fn oracle(names: Array[String], bodies: Array[Option[Expr]], effect: String, ine
   out
 }
 
+// The per-effect walks and the one effect-independent walk must give the
+// same answer, in the same order, for every body and every effect.
+fn check_facts_agree(names: Array[String], bodies: Array[Option[Expr]], effect: String, inert: MutSet[String], known: MutSet[String], actual: Array[String]) -> Unit {
+  let facts: Array[Option[(Bool, Array[String], Array[String])]] = []
+  for body in bodies {
+    Array::push(facts, match body {
+      Some(b) => Some(edp_perform_facts(b, inert, known)),
+      None => None
+    })
+  }
+  let from_facts = edp_performing_names_from_facts(names, facts, effect)
+  assert(Array::length(from_facts) == Array::length(actual))
+  let mut k = 0
+  while k < Array::length(actual) {
+    assert(Array::get(from_facts, k) == Array::get(actual, k)); k = k + 1
+  }
+  for body in bodies {
+    match body {
+      Some(b) => {
+        let fact = edp_perform_facts(b, inert, known)
+        for e in [effect, "Ask", "Other", ""] {
+          let scratch: Array[String] = []
+          assert(edp_perform_facts_hit(fact, e) == (edp_rq_fold(RQPerformSummary(e, inert, known, scratch), b) > 0))
+          assert(edp_perform_facts_performs(fact, e) == (edp_rq_fold(RQPerformsUserEffect(e), b) > 0))
+        }
+        // On a tree it does not hit, the per-effect walk collects the same
+        // callees in the same order.
+        let calls: Array[String] = []
+        if edp_rq_fold(RQPerformSummary(effect, inert, known, calls), b) == 0 {
+          let (_, _, fact_calls) = fact
+          assert(Array::length(calls) == Array::length(fact_calls))
+          let mut j = 0
+          while j < Array::length(calls) {
+            assert(Array::get(calls, j) == Array::get(fact_calls, j)); j = j + 1
+          }
+        }
+      },
+      None => ()
+    }
+  }
+  ()
+}
+
 fn check_graph(names: Array[String], bodies: Array[Option[Expr]], effect: String) -> Array[String] {
   let inert = name_set(["Ask::Get", "Other::Get"])
-  let actual = edp_performing_names(names, bodies, effect, inert, name_set(names))
+  let known = name_set(names)
+  let actual = edp_performing_names(names, bodies, effect, inert, known)
+  check_facts_agree(names, bodies, effect, inert, known, actual)
   let set = name_set(actual)
   let expected = oracle(names, bodies, effect, inert)
   for name in names {
@@ -182,4 +233,31 @@ fn chain_graph(size: Int) -> (Array[String], Array[Option[Expr]]) {
 test "effect reachability propagates through a long reverse-ordered chain" {
   let (names, bodies) = chain_graph(64)
   assert(Array::length(check_graph(names, bodies, "Ask")) == 64)
+}
+
+test "one facts walk answers every effect the per-effect walks answer" {
+  let perform_other = ECall(EIdent("perform", -1), [call("Other::Get")], -1, [])
+  let names = [
+    "both",
+    "loopy",
+    "nested",
+    "calls_both",
+    "calls_loopy",
+    "quiet",
+    "opaque"
+  ]
+  let bodies: Array[Option[Expr]] = [
+    Some(ESeq(perform_ask(), perform_other)),
+    Some(ELoop([("x", call("quiet"))], ESeq(call("calls_both"), perform_other))),
+    Some(ECall(EIdent("perform", -1), [
+      ECall(EIdent("Ask::Get", -1), [perform_other], -1, [])
+    ], -1, [])),
+    Some(ESeq(call("quiet"), call("both"))),
+    Some(ESeq(call("loopy"), call("quiet"))),
+    Some(ESeq(call("String::length"), EInt(1))),
+    Some(ECall(EIdent("unknown", -1), [call("quiet")], -1, []))
+  ]
+  for effect in ["Ask", "Other", "Missing", ""] {
+    check_graph(names, bodies, effect)
+  }
 }
