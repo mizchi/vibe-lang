@@ -48,6 +48,10 @@ import @vibe/compiler/core {
   Stmt, standard_host_provider_names
 }
 
+import @vibe/testrun {
+  test_run_count_label
+}
+
 import @vibe/compiler/syntax {
   lex, lex_with_offsets, located_lex_message, parse_program, parse_program_located
 }
@@ -1547,6 +1551,9 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
       // the record carries an EMPTY wasm path, which the launcher's run-tests
       // arm reports as `FAIL (compile) <src>` and counts, so `vibe test bad
       // good` still runs and reports `good`.
+      // The file's test-count label (@vibe/testrun, #3703) rides as the
+      // record's third field, read from the bytes just written: the one
+      // counter both test runners use.
       let compiled = handle {
         reject_unstable_entry_surface(src)
         unstable_closure_reset()
@@ -1579,17 +1586,20 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
         // its own failure and removes a stale sidecar first, so a map it
         // cannot build costs an unannotated frame and never a failed test run.
         write_user_funcmap(src, out)
-        true
+        Some(test_run_count_label(bytes))
       } with { Exception::Throw(e) => {
         Stderr::write_stream(line_terminated(format_check_report(e)))
-        false
+        None
       } }
       StringBuilder::push(acc, src)
       StringBuilder::push(acc, "\t")
-      if compiled {
-        StringBuilder::push(acc, out)
-      } else {
-        ()
+      match compiled {
+        Some(label) => {
+          StringBuilder::push(acc, out)
+          StringBuilder::push(acc, "\t")
+          StringBuilder::push(acc, label)
+        }
+        None => ()
       }
       StringBuilder::push(acc, "\n")
       fi = fi + 1
