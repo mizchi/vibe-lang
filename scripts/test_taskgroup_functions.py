@@ -188,7 +188,7 @@ def assert_original_phase_receipt_bound(repo, compiler, artifacts, runner, env, 
     """A valid rewritten packet needs its original returned digest, not a file."""
     target = repo / "lib/@vibe/function_build/phases/entry.vibe"
     source = target.read_text()
-    marker = '  Fs::write_bytes(directory + "/function.assembly", packet)\n'
+    marker = '  Fs::write_bytes(directory + "/function.assembly", bytes = packet)\n'
     assert source.count(marker) == 1
     rewrite = '''  Array::push(assembly.replay.guard_layout, 9)
   let changed_packet = write_function_assembly(assembly, context_digest)
