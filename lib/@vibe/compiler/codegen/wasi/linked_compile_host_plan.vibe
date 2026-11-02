@@ -1770,35 +1770,37 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
 /// tells the import emission and the builtin registration apart from a vibe
 /// linked import.
 export fn lc_with_foreign_imports(linked_imports: Array[(String, String, Int, Int)], stmts: Array[Stmt], iw_names: Array[String], iw_wats: Array[String]) -> Array[(String, String, Int, Int)] {
-  // Only the bodies late DCE left in the program: a binding offers every
-  // export of its module (z3.wasm has 853), and an import nothing reaches is
-  // still one the runner has to satisfy.
-  let defined: MutMap[String, Bool] = MutMap::new_string()
-  for st in stmts {
-    match st {
-      SLet(_, _, name, _, _) => MutMap::set(defined, name, true),
-      _ => ()
-    }
-  }
-  let live_wats: Array[String] = []
-  let mut wi = 0
-  while wi < Array::length(iw_wats) && wi < Array::length(iw_names) {
-    if MutMap::has(defined, Array::get(iw_names, wi)) {
-      Array::push(live_wats, Array::get(iw_wats, wi))
-    } else {
-      ()
-    }
-    wi = wi + 1
-  }
-  let foreign = wasm_import_callees_in(live_wats)
-  if Array::length(foreign) == 0 {
+  // Nothing to do -- and nothing to allocate -- for a program that imports
+  // no `.wasm` (every compile of the compiler itself): ask the cheap
+  // question over all bodies first.
+  if Array::length(wasm_import_callees_in(iw_wats)) == 0 {
     linked_imports
   } else {
+    // Only the bodies late DCE left in the program: a binding offers every
+    // export of its module (z3.wasm has 853), and an import nothing reaches
+    // is still one the runner has to satisfy.
+    let defined: MutMap[String, Bool] = MutMap::new_string()
+    for st in stmts {
+      match st {
+        SLet(_, _, name, _, _) => MutMap::set(defined, name, true),
+        _ => ()
+      }
+    }
+    let live_wats: Array[String] = []
+    let mut wi = 0
+    while wi < Array::length(iw_wats) && wi < Array::length(iw_names) {
+      if MutMap::has(defined, Array::get(iw_names, wi)) {
+        Array::push(live_wats, Array::get(iw_wats, wi))
+      } else {
+        ()
+      }
+      wi = wi + 1
+    }
     let out: Array[(String, String, Int, Int)] = []
     for li in linked_imports {
       Array::push(out, li)
     }
-    for callee in foreign {
+    for callee in wasm_import_callees_in(live_wats) {
       match wasm_import_decode_callee(callee) {
         Some((m, _, _, _)) => Array::push(out, (m, callee, -1, -1)),
         None => ()
